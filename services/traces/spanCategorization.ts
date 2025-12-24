@@ -73,7 +73,8 @@ export function getCategoryMeta(category: SpanCategory): CategoryMeta {
 }
 
 /**
- * Determine span category based on OTel gen_ai.operation.name attribute
+ * Determine span category based on OTel gen_ai.operation.name attribute,
+ * with fallback to name-based pattern matching for legacy agents (e.g., Pulsar).
  */
 export function getSpanCategory(span: Span): SpanCategory {
   // Error status takes precedence
@@ -81,6 +82,7 @@ export function getSpanCategory(span: Span): SpanCategory {
     return 'ERROR';
   }
 
+  // 1. Standards-first: OTel GenAI semantic conventions
   const operationName = span.attributes?.['gen_ai.operation.name'];
 
   if (operationName) {
@@ -93,6 +95,25 @@ export function getSpanCategory(span: Span): SpanCategory {
     if (TOOL_OPERATIONS.includes(operationName)) {
       return 'TOOL';
     }
+  }
+
+  // 2. Fallback: Name-based pattern matching (for Pulsar, legacy agents)
+  const name = span.name?.toLowerCase() || '';
+
+  // LLM patterns - check first as they're most specific
+  if (name.includes('bedrock') || name.includes('converse') || name.includes('callmodel') || name.includes('llm')) {
+    return 'LLM';
+  }
+
+  // Tool patterns - check before agent since tool spans may contain 'agent' prefix
+  if (name.includes('executetool') || name.includes('tool.execute')) {
+    return 'TOOL';
+  }
+
+  // Agent patterns - root spans, orchestration, and internal processing
+  if (name.includes('agent.run') || name.includes('invoke_agent') ||
+      name.includes('generateresponse') || name.includes('processinput')) {
+    return 'AGENT';
   }
 
   return 'OTHER';
