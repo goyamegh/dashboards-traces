@@ -1,5 +1,5 @@
 {
-  "name": "opensearch-agent-health",
+  "name": "@opensearch-project/agent-health",
   "version": "0.1.0",
   "type": "module",
   "description": "Observability Agent Evaluation Framework for Root Cause Analysis",
@@ -25,11 +25,20 @@
   "engines": {
     "node": ">=18.0.0"
   },
+  "bin": {
+    "agent-health": "./bin/cli.js"
+  },
+  "files": [
+    "bin/",
+    "cli/dist/",
+    "server/dist/",
+    "dist/"
+  ],
   "scripts": {
     "dev": "vite",
     "dev:server": "npm run build:server && node server/dist/index.js",
     "build": "tsc && vite build",
-    "build:server": "esbuild server/index.ts --bundle --platform=node --format=esm --outfile=server/dist/index.js --packages=external",
+    "build:server": "esbuild server/index.ts server/app.ts --bundle --platform=node --format=esm --outdir=server/dist --packages=external",
     "server": "npm run build && npm run build:server && node server/dist/index.js",
     "preview": "vite preview",
     "eval": "ts-node src/eval_framework/cli.ts",
@@ -42,10 +51,20 @@
     "test:integration": "jest --testPathPatterns='tests/integration'",
     "test:integration:experimentRunner": "jest --testPathPatterns=experimentRunner",
     "test:integration:tracePoller": "jest --testPathPatterns=tracePoller",
-    "test:all": "npm run test:unit && npm run test:integration"
+    "test:all": "npm run test:unit && npm run test:integration",
+    "build:cli": "esbuild cli/index.ts cli/commands/demo.ts cli/commands/configure.ts cli/demo/sampleTestCases.ts cli/demo/sampleExperiments.ts cli/demo/sampleRuns.ts cli/demo/sampleTraces.ts cli/types.ts cli/utils/startServer.ts --bundle --platform=node --format=esm --outdir=cli/dist --packages=external --external:inquirer",
+    "build:all": "npm run build && npm run build:server && npm run build:cli",
+    "demo": "npm run build:all && node cli/dist/index.js --demo",
+    "prepublishOnly": "npm run build:all"
   },
   "dependencies": {
     "@ag-ui/core": "^0.0.41",
+    "chalk": "^5.3.0",
+    "commander": "^12.1.0",
+    "execa": "^9.5.2",
+    "inquirer": "^12.4.2",
+    "open": "^10.1.0",
+    "ora": "^8.1.1",
     "@aws-sdk/client-bedrock-runtime": "^3.936.0",
     "@aws-sdk/credential-providers": "^3.936.0",
     "@opensearch-project/opensearch": "^3.5.1",
