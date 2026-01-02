@@ -1,17 +1,25 @@
-import { IRouter } from '../../../../src/core/server';
+/**
+ * Routes Aggregator - Combines all route modules
+ */
 
-export function defineRoutes(router: IRouter) {
-  router.get(
-    {
-      path: '/api/dashboards_traces/example',
-      validate: false,
-    },
-    async (context, request, response) => {
-      return response.ok({
-        body: {
-          time: new Date().toISOString(),
-        },
-      });
-    }
-  );
-}
+import { Router } from 'express';
+import healthRoutes from './health';
+import judgeRoutes from './judge';
+import agentRoutes from './agent';
+import tracesRoutes from './traces';
+import metricsRoutes from './metrics';
+import logsRoutes from './logs';
+import storageRoutes from './storage';
+
+const router = Router();
+
+// Mount all routes
+router.use(healthRoutes);      // /health
+router.use(judgeRoutes);        // /api/judge
+router.use(agentRoutes);        // /api/agent
+router.use(tracesRoutes);       // /api/traces, /api/traces/health
+router.use(metricsRoutes);      // /api/metrics/*
+router.use(logsRoutes);         // /api/logs, /api/opensearch/logs
+router.use(storageRoutes);      // /api/storage/*
+
+export default router;
