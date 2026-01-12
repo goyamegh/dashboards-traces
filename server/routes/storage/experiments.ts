@@ -106,8 +106,19 @@ router.get('/api/storage/experiments', async (_req: Request, res: Response) => {
       }
     }
 
-    // Merge: sample data first, then real data
-    const allData = [...SAMPLE_EXPERIMENTS, ...realData];
+    // Sort real data by createdAt descending (newest first)
+    // OpenSearch query already sorts, but ensure consistency
+    const sortedRealData = realData.sort((a, b) =>
+      new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+
+    // Sort sample data by createdAt descending
+    const sortedSampleData = [...SAMPLE_EXPERIMENTS].sort((a, b) =>
+      new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+
+    // User data first, then sample data
+    const allData = [...sortedRealData, ...sortedSampleData];
     res.json({ experiments: allData, total: allData.length });
   } catch (error: any) {
     console.error('[StorageAPI] List experiments failed:', error.message);

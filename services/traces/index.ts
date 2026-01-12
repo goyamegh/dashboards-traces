@@ -3,6 +3,9 @@
  */
 
 import { Span, TimeRange, TraceQueryParams, TraceSearchResult } from '@/types';
+
+// Re-export trace grouping utilities
+export { groupSpansByTrace, getSpansForTrace } from './traceGrouping';
 import { ENV_CONFIG } from '@/lib/config';
 
 /**

@@ -56,8 +56,13 @@ router.get('/api/storage/runs', async (req: Request, res: Response) => {
       }
     }
 
-    // Merge: sample data first, then real data
-    const allData = [...SAMPLE_RUNS, ...realData];
+    // Sort sample data by timestamp descending (newest first)
+    const sortedSampleData = [...SAMPLE_RUNS].sort((a, b) =>
+      new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime()
+    );
+
+    // User data first, then sample data
+    const allData = [...realData, ...sortedSampleData];
     const total = allData.length;
 
     res.json({ runs: allData, total, size: parseInt(size as string), from: parseInt(from as string) });
@@ -235,8 +240,13 @@ router.post('/api/storage/runs/search', async (req: Request, res: Response) => {
       }
     }
 
-    // Merge results
-    const allData = [...sampleResults, ...realData];
+    // Sort sample results by timestamp descending (newest first)
+    const sortedSampleResults = sampleResults.sort((a, b) =>
+      new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime()
+    );
+
+    // User data first, then sample data
+    const allData = [...realData, ...sortedSampleResults];
     res.json({ runs: allData, total: allData.length });
   } catch (error: any) {
     console.error('[StorageAPI] Search runs failed:', error.message);
@@ -273,7 +283,13 @@ router.get('/api/storage/runs/by-test-case/:testCaseId', async (req: Request, re
       }
     }
 
-    const allData = [...sampleResults, ...realData];
+    // Sort sample results by timestamp descending (newest first)
+    const sortedSampleResults = sampleResults.sort((a, b) =>
+      new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime()
+    );
+
+    // User data first, then sample data
+    const allData = [...realData, ...sortedSampleResults];
     res.json({ runs: allData, total: allData.length });
   } catch (error: any) {
     console.error('[StorageAPI] Get runs by test case failed:', error.message);
@@ -310,7 +326,13 @@ router.get('/api/storage/runs/by-experiment/:experimentId', async (req: Request,
       }
     }
 
-    const allData = [...sampleResults, ...realData];
+    // Sort sample results by timestamp descending (newest first)
+    const sortedSampleResults = sampleResults.sort((a, b) =>
+      new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime()
+    );
+
+    // User data first, then sample data
+    const allData = [...realData, ...sortedSampleResults];
     res.json({ runs: allData, total: allData.length });
   } catch (error: any) {
     console.error('[StorageAPI] Get runs by experiment failed:', error.message);
@@ -351,7 +373,13 @@ router.get('/api/storage/runs/by-experiment-run/:experimentId/:runId', async (re
       }
     }
 
-    const allData = [...sampleResults, ...realData];
+    // Sort sample results by timestamp descending (newest first)
+    const sortedSampleResults = sampleResults.sort((a, b) =>
+      new Date(b.timestamp || 0).getTime() - new Date(a.timestamp || 0).getTime()
+    );
+
+    // User data first, then sample data
+    const allData = [...realData, ...sortedSampleResults];
     res.json({ runs: allData, total: allData.length });
   } catch (error: any) {
     console.error('[StorageAPI] Get runs by experiment run failed:', error.message);
@@ -396,7 +424,13 @@ router.get('/api/storage/runs/iterations/:experimentId/:testCaseId', async (req:
       }
     }
 
-    const allData = [...sampleResults, ...realData];
+    // Sort sample results by iteration ascending (iteration is an optional field on stored runs)
+    const sortedSampleResults = sampleResults.sort((a, b) =>
+      ((a as any).iteration || 1) - ((b as any).iteration || 1)
+    );
+
+    // User data first, then sample data
+    const allData = [...realData, ...sortedSampleResults];
     res.json({
       runs: allData,
       total: allData.length,

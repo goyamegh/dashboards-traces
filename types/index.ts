@@ -303,6 +303,21 @@ export interface TraceSearchResult {
   total: number;
 }
 
+/**
+ * Summary of a single trace (grouped spans)
+ * Used for trace list display before selecting one for detailed view
+ */
+export interface TraceSummary {
+  traceId: string;
+  serviceName: string;
+  spanCount: number;
+  rootSpanName: string;
+  startTime: string;
+  duration: number;
+  hasErrors: boolean;
+  spans: Span[];
+}
+
 // ============ Experiment Types ============
 
 // Result status for a single use case within a run

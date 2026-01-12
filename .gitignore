@@ -17,4 +17,5 @@ judge.log
 .DS_Store
 
 # Backup files
-*.backup*
+*.backup*coverage/
+/coverage/

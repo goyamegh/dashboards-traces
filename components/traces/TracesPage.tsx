@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
-import { Search, Play, RefreshCw, AlertCircle, Activity } from 'lucide-react';
+import { Search, Play, RefreshCw, AlertCircle, Activity, List } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -7,17 +7,19 @@ import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Span } from '@/types';
+import { Span, TraceSummary } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import {
   fetchTraceById,
   fetchTracesByRunIds,
   processSpansIntoTree,
   calculateTimeRange,
+  groupSpansByTrace,
 } from '@/services/traces';
 import { formatDuration } from '@/services/traces/utils';
 import TraceTimelineChart from './TraceTimelineChart';
 import SpanDetailsPanel from './SpanDetailsPanel';
+import TraceListItem from './TraceListItem';
 import {
   SSEClient,
   AGUIToTrajectoryConverter,
@@ -43,11 +45,31 @@ export const TracesPage: React.FC = () => {
   const [selectedSpan, setSelectedSpan] = useState<Span | null>(null);
   const [expandedSpans, setExpandedSpans] = useState<Set<string>>(new Set());
 
+  // Trace list state
+  const [selectedTraceId, setSelectedTraceId] = useState<string | null>(null);
+
   const agent = DEFAULT_CONFIG.agents.find(a => a.name === selectedAgentName);
 
-  // Process spans into tree
-  const spanTree = useMemo(() => processSpansIntoTree(spans), [spans]);
-  const timeRange = useMemo(() => calculateTimeRange(spans), [spans]);
+  // Group spans by trace for the list view
+  const traces = useMemo(() => groupSpansByTrace(spans), [spans]);
+
+  // Get spans for selected trace
+  const selectedTraceSpans = useMemo(() => {
+    if (!selectedTraceId) return [];
+    const trace = traces.find(t => t.traceId === selectedTraceId);
+    return trace?.spans || [];
+  }, [traces, selectedTraceId]);
+
+  // Process selected trace spans into tree
+  const spanTree = useMemo(() => processSpansIntoTree(selectedTraceSpans), [selectedTraceSpans]);
+  const timeRange = useMemo(() => calculateTimeRange(selectedTraceSpans), [selectedTraceSpans]);
+
+  // Auto-select first trace when data loads
+  useEffect(() => {
+    if (traces.length > 0 && !selectedTraceId) {
+      setSelectedTraceId(traces[0].traceId);
+    }
+  }, [traces, selectedTraceId]);
 
   // Initialize expanded spans when tree changes
   useEffect(() => {
@@ -79,6 +101,12 @@ export const TracesPage: React.FC = () => {
     });
   }, []);
 
+  // Handle trace selection
+  const handleTraceSelect = useCallback((traceId: string) => {
+    setSelectedTraceId(traceId);
+    setSelectedSpan(null); // Clear span selection when switching traces
+  }, []);
+
   // Search by trace ID
   const handleSearch = async () => {
     if (!traceId.trim()) return;
@@ -87,6 +115,7 @@ export const TracesPage: React.FC = () => {
     setSearchError(null);
     setSpans([]);
     setSelectedSpan(null);
+    setSelectedTraceId(null);
 
     try {
       const result = await fetchTraceById(traceId.trim());
@@ -110,6 +139,7 @@ export const TracesPage: React.FC = () => {
     setAgentRunId(null);
     setSpans([]);
     setSelectedSpan(null);
+    setSelectedTraceId(null);
 
     try {
       const modelConfig = DEFAULT_CONFIG.models[selectedModel];
@@ -327,7 +357,7 @@ export const TracesPage: React.FC = () => {
           </TabsContent>
         </Tabs>
 
-        {/* Trace Visualization */}
+        {/* Trace Visualization with List Sidebar */}
         <Card className="flex-1 flex flex-col overflow-hidden">
           <CardHeader className="py-2 px-4 border-b">
             <div className="flex items-center justify-between">
@@ -337,13 +367,14 @@ export const TracesPage: React.FC = () => {
               </CardTitle>
               <div className="flex items-center gap-3 text-xs text-muted-foreground">
                 <span>{spans.length} spans</span>
+                <span>{traces.length} trace{traces.length !== 1 ? 's' : ''}</span>
                 {timeRange.duration > 0 && (
                   <span>{formatDuration(timeRange.duration)}</span>
                 )}
               </div>
             </div>
           </CardHeader>
-          <CardContent className="flex-1 p-0 overflow-hidden flex flex-col">
+          <CardContent className="flex-1 p-0 overflow-hidden flex">
             {spans.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
                 <Activity size={48} className="mb-4 opacity-20" />
@@ -352,27 +383,61 @@ export const TracesPage: React.FC = () => {
               </div>
             ) : (
               <>
-                {/* Timeline Chart */}
-                <ScrollArea className="flex-1 border-b">
-                  <TraceTimelineChart
-                    spanTree={spanTree}
-                    timeRange={timeRange}
-                    selectedSpan={selectedSpan}
-                    onSelect={setSelectedSpan}
-                    expandedSpans={expandedSpans}
-                    onToggleExpand={handleToggleExpand}
-                  />
-                </ScrollArea>
-
-                {/* Span Details Panel */}
-                {selectedSpan && (
-                  <div className="h-[300px] overflow-hidden">
-                    <SpanDetailsPanel
-                      span={selectedSpan}
-                      onClose={() => setSelectedSpan(null)}
-                    />
+                {/* Left Sidebar - Trace List */}
+                <div className="w-72 border-r flex flex-col bg-muted/30">
+                  <div className="px-3 py-2 border-b flex items-center gap-2">
+                    <List size={14} className="text-muted-foreground" />
+                    <span className="text-sm font-medium">
+                      {traces.length} Trace{traces.length !== 1 ? 's' : ''}
+                    </span>
                   </div>
-                )}
+                  <ScrollArea className="flex-1">
+                    <div className="divide-y divide-border/50">
+                      {traces.map(trace => (
+                        <TraceListItem
+                          key={trace.traceId}
+                          trace={trace}
+                          isSelected={trace.traceId === selectedTraceId}
+                          onClick={() => handleTraceSelect(trace.traceId)}
+                        />
+                      ))}
+                    </div>
+                  </ScrollArea>
+                </div>
+
+                {/* Right Main Area - Trace Detail */}
+                <div className="flex-1 flex flex-col overflow-hidden">
+                  {selectedTraceSpans.length > 0 ? (
+                    <>
+                      {/* Timeline Chart */}
+                      <ScrollArea className="flex-1 border-b">
+                        <TraceTimelineChart
+                          spanTree={spanTree}
+                          timeRange={timeRange}
+                          selectedSpan={selectedSpan}
+                          onSelect={setSelectedSpan}
+                          expandedSpans={expandedSpans}
+                          onToggleExpand={handleToggleExpand}
+                        />
+                      </ScrollArea>
+
+                      {/* Span Details Panel */}
+                      {selectedSpan && (
+                        <div className="h-[300px] overflow-hidden">
+                          <SpanDetailsPanel
+                            span={selectedSpan}
+                            onClose={() => setSelectedSpan(null)}
+                          />
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <div className="flex-1 flex flex-col items-center justify-center text-muted-foreground">
+                      <Activity size={32} className="mb-2 opacity-20" />
+                      <p className="text-sm">Select a trace to view details</p>
+                    </div>
+                  )}
+                </div>
               </>
             )}
           </CardContent>

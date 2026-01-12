@@ -98,9 +98,18 @@ router.get('/api/storage/test-cases', async (_req: Request, res: Response) => {
       }
     }
 
-    // Merge: sample data first, then real data
-    const sampleData = getSampleTestCases();
-    const allData = [...sampleData, ...realData];
+    // Sort real data by createdAt descending (newest first)
+    const sortedRealData = realData.sort((a, b) =>
+      new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+
+    // Sort sample data by createdAt descending
+    const sampleData = getSampleTestCases().sort((a, b) =>
+      new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+
+    // User data first, then sample data
+    const allData = [...sortedRealData, ...sampleData];
 
     res.json({ testCases: allData, total: allData.length });
   } catch (error: any) {
