@@ -6,13 +6,19 @@ import { Span, TimeRange, TraceQueryParams, TraceSearchResult } from '@/types';
 
 // Re-export trace grouping utilities
 export { groupSpansByTrace, getSpansForTrace } from './traceGrouping';
-import { ENV_CONFIG } from '@/lib/config';
 
 /**
- * Get API base URL from judge API config
+ * Get API base URL dynamically
+ * Server-side (Node.js): Use localhost with PORT env var
+ * Client-side (browser): Use relative URLs
  */
 function getApiBaseUrl(): string {
-  return ENV_CONFIG.judgeApiUrl.replace('/api/judge', '');
+  const isServerSide = typeof window === 'undefined';
+  if (isServerSide) {
+    const port = process.env?.PORT || '4001';
+    return `http://localhost:${port}`;
+  }
+  return ''; // Relative URLs in browser
 }
 
 /**

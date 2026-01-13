@@ -39,7 +39,7 @@ npx @opensearch-project/agent-health --configure
 ```
 Interactive wizard to connect to your infrastructure:
 - OpenSearch storage (optional - for persisting your own data)
-- Agent endpoint (ML-Commons or Pulsar)
+- Agent endpoint (ML-Commons or Langgraph)
 - LLM Judge (AWS Bedrock)
 - Traces endpoint (for OTel trace visualization)
 

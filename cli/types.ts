@@ -18,7 +18,7 @@ export interface CLIConfig {
     password?: string;
   };
   agent: {
-    type: 'mock' | 'mlcommons' | 'pulsar';
+    type: 'mock' | 'mlcommons' | 'langgraph';
     endpoint?: string;
   };
   judge: {

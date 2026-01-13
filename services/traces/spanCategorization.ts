@@ -97,7 +97,7 @@ export function getCategoryMeta(category: SpanCategory): CategoryMeta {
 
 /**
  * Determine span category based on OTel gen_ai.operation.name attribute,
- * with fallback to name-based pattern matching for legacy agents (e.g., Pulsar).
+ * with fallback to name-based pattern matching for legacy agents (e.g., Langgraph).
  */
 export function getSpanCategory(span: Span): SpanCategory {
   // Error status takes precedence
@@ -120,7 +120,7 @@ export function getSpanCategory(span: Span): SpanCategory {
     }
   }
 
-  // 2. Fallback: Name-based pattern matching (for Pulsar, legacy agents)
+  // 2. Fallback: Name-based pattern matching (for Langgraph, legacy agents)
   const name = span.name?.toLowerCase() || '';
 
   // LLM patterns - check first as they're most specific

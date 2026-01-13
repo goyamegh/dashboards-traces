@@ -359,8 +359,9 @@ describe('fetchTraces', () => {
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       const rangeFilter = body.query.bool.must.find((m: any) => m.range);
-      expect(rangeFilter.range.startTime.gte).toBe(1000);
-      expect(rangeFilter.range.startTime.lte).toBe(2000);
+      // Implementation converts timestamps to ISO strings
+      expect(rangeFilter.range.startTime.gte).toBe(new Date(1000).toISOString());
+      expect(rangeFilter.range.startTime.lte).toBe(new Date(2000).toISOString());
     });
 
     it('builds query with serviceName filter', async () => {
@@ -372,7 +373,9 @@ describe('fetchTraces', () => {
       await fetchTraces({ traceId: 't1', serviceName: 'my-service' }, defaultConfig);
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(body.query.bool.must).toContainEqual({ term: { 'serviceName': 'my-service' } });
+      // Implementation uses bool/should query to check both serviceName and agent name
+      const serviceFilter = body.query.bool.must.find((m: any) => m.bool?.should);
+      expect(serviceFilter.bool.should).toContainEqual({ term: { 'serviceName': 'my-service' } });
     });
 
     it('builds query with textSearch filter', async () => {
@@ -384,9 +387,10 @@ describe('fetchTraces', () => {
       await fetchTraces({ traceId: 't1', textSearch: 'error' }, defaultConfig);
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-      const multiMatch = body.query.bool.must.find((m: any) => m.multi_match);
-      expect(multiMatch.multi_match.query).toBe('error');
-      expect(multiMatch.multi_match.fields).toContain('name');
+      // Implementation uses query_string instead of multi_match
+      const queryString = body.query.bool.must.find((m: any) => m.query_string);
+      expect(queryString.query_string.query).toBe('*error*');
+      expect(queryString.query_string.fields).toContain('name');
     });
 
     it('uses custom size parameter', async () => {

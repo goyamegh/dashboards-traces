@@ -43,7 +43,7 @@ export const MOCK_RUNS: ExperimentRun[] = [
     id: 'run-baseline',
     name: 'Baseline v1',
     createdAt: '2025-01-15T10:00:00Z',
-    agentKey: 'pulsar',
+    agentKey: 'langgraph',
     modelId: 'claude-sonnet-4',
     results: {
       'baseline-01': { reportId: 'report-baseline-01-r1', status: 'completed' },
@@ -56,7 +56,7 @@ export const MOCK_RUNS: ExperimentRun[] = [
     id: 'run-contextfix',
     name: 'With Context Fix',
     createdAt: '2025-01-16T14:30:00Z',
-    agentKey: 'pulsar',
+    agentKey: 'langgraph',
     modelId: 'claude-sonnet-4',
     results: {
       'baseline-01': { reportId: 'report-baseline-01-r2', status: 'completed' },
@@ -70,7 +70,7 @@ export const MOCK_RUNS: ExperimentRun[] = [
     id: 'run-claude45',
     name: 'Claude 4.5 Test',
     createdAt: '2025-01-17T09:15:00Z',
-    agentKey: 'pulsar',
+    agentKey: 'langgraph',
     modelId: 'claude-opus-4-5',
     results: {
       'baseline-01': { reportId: 'report-baseline-01-r3', status: 'completed' },
@@ -122,7 +122,7 @@ export const MOCK_REPORTS: Record<string, EvaluationReport> = {
   'report-baseline-01-r1': {
     id: 'report-baseline-01-r1',
     timestamp: '2025-01-15T10:05:00Z',
-    agentName: 'Pulsar',
+    agentName: 'Langgraph',
     modelName: 'Claude Sonnet 4',
     testCaseId: 'baseline-01',
     status: 'completed',
@@ -147,7 +147,7 @@ export const MOCK_REPORTS: Record<string, EvaluationReport> = {
   'report-baseline-02-r1': {
     id: 'report-baseline-02-r1',
     timestamp: '2025-01-15T10:10:00Z',
-    agentName: 'Pulsar',
+    agentName: 'Langgraph',
     modelName: 'Claude Sonnet 4',
     testCaseId: 'baseline-02',
     status: 'completed',
@@ -175,7 +175,7 @@ export const MOCK_REPORTS: Record<string, EvaluationReport> = {
   'report-rca-01-r1': {
     id: 'report-rca-01-r1',
     timestamp: '2025-01-15T10:15:00Z',
-    agentName: 'Pulsar',
+    agentName: 'Langgraph',
     modelName: 'Claude Sonnet 4',
     testCaseId: 'rca-01',
     status: 'completed',
@@ -203,7 +203,7 @@ export const MOCK_REPORTS: Record<string, EvaluationReport> = {
   'report-conv-01-r1': {
     id: 'report-conv-01-r1',
     timestamp: '2025-01-15T10:20:00Z',
-    agentName: 'Pulsar',
+    agentName: 'Langgraph',
     modelName: 'Claude Sonnet 4',
     testCaseId: 'conv-01',
     status: 'completed',
@@ -228,7 +228,7 @@ export const MOCK_REPORTS: Record<string, EvaluationReport> = {
   'report-baseline-01-r2': {
     id: 'report-baseline-01-r2',
     timestamp: '2025-01-16T14:35:00Z',
-    agentName: 'Pulsar',
+    agentName: 'Langgraph',
     modelName: 'Claude Sonnet 4',
     testCaseId: 'baseline-01',
     status: 'completed',
@@ -249,7 +249,7 @@ export const MOCK_REPORTS: Record<string, EvaluationReport> = {
   'report-baseline-02-r2': {
     id: 'report-baseline-02-r2',
     timestamp: '2025-01-16T14:40:00Z',
-    agentName: 'Pulsar',
+    agentName: 'Langgraph',
     modelName: 'Claude Sonnet 4',
     testCaseId: 'baseline-02',
     status: 'completed',
@@ -272,7 +272,7 @@ export const MOCK_REPORTS: Record<string, EvaluationReport> = {
   'report-rca-01-r2': {
     id: 'report-rca-01-r2',
     timestamp: '2025-01-16T14:45:00Z',
-    agentName: 'Pulsar',
+    agentName: 'Langgraph',
     modelName: 'Claude Sonnet 4',
     testCaseId: 'rca-01',
     status: 'completed',
@@ -299,7 +299,7 @@ export const MOCK_REPORTS: Record<string, EvaluationReport> = {
   'report-rca-02-r2': {
     id: 'report-rca-02-r2',
     timestamp: '2025-01-16T14:50:00Z',
-    agentName: 'Pulsar',
+    agentName: 'Langgraph',
     modelName: 'Claude Sonnet 4',
     testCaseId: 'rca-02',
     status: 'completed',
@@ -322,7 +322,7 @@ export const MOCK_REPORTS: Record<string, EvaluationReport> = {
   'report-conv-01-r2': {
     id: 'report-conv-01-r2',
     timestamp: '2025-01-16T14:55:00Z',
-    agentName: 'Pulsar',
+    agentName: 'Langgraph',
     modelName: 'Claude Sonnet 4',
     testCaseId: 'conv-01',
     status: 'completed',
@@ -343,7 +343,7 @@ export const MOCK_REPORTS: Record<string, EvaluationReport> = {
   'report-baseline-01-r3': {
     id: 'report-baseline-01-r3',
     timestamp: '2025-01-17T09:20:00Z',
-    agentName: 'Pulsar',
+    agentName: 'Langgraph',
     modelName: 'Claude Opus 4.5',
     testCaseId: 'baseline-01',
     status: 'completed',
@@ -364,7 +364,7 @@ export const MOCK_REPORTS: Record<string, EvaluationReport> = {
   'report-baseline-02-r3': {
     id: 'report-baseline-02-r3',
     timestamp: '2025-01-17T09:25:00Z',
-    agentName: 'Pulsar',
+    agentName: 'Langgraph',
     modelName: 'Claude Opus 4.5',
     testCaseId: 'baseline-02',
     status: 'failed',
@@ -386,7 +386,7 @@ export const MOCK_REPORTS: Record<string, EvaluationReport> = {
   'report-rca-01-r3': {
     id: 'report-rca-01-r3',
     timestamp: '2025-01-17T09:30:00Z',
-    agentName: 'Pulsar',
+    agentName: 'Langgraph',
     modelName: 'Claude Opus 4.5',
     testCaseId: 'rca-01',
     status: 'completed',
@@ -409,7 +409,7 @@ export const MOCK_REPORTS: Record<string, EvaluationReport> = {
   'report-rca-02-r3': {
     id: 'report-rca-02-r3',
     timestamp: '2025-01-17T09:35:00Z',
-    agentName: 'Pulsar',
+    agentName: 'Langgraph',
     modelName: 'Claude Opus 4.5',
     testCaseId: 'rca-02',
     status: 'completed',

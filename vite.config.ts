@@ -27,7 +27,7 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.OPENSEARCH_INDEX_PREFIX': JSON.stringify(env.OPENSEARCH_INDEX_PREFIX),
       'import.meta.env.OPENSEARCH_TIME_RANGE_MINUTES': JSON.stringify(env.OPENSEARCH_TIME_RANGE_MINUTES),
       // Per-agent endpoints
-      'import.meta.env.PULSAR_ENDPOINT': JSON.stringify(env.PULSAR_ENDPOINT),
+      'import.meta.env.LANGGRAPH_ENDPOINT': JSON.stringify(env.LANGGRAPH_ENDPOINT),
       'import.meta.env.MLCOMMONS_ENDPOINT': JSON.stringify(env.MLCOMMONS_ENDPOINT),
       'import.meta.env.OPENSEARCH_FETCH_DELAY_MS': JSON.stringify(env.OPENSEARCH_FETCH_DELAY_MS),
       // ML-Commons agent headers (for agent to access data source)

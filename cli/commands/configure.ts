@@ -72,7 +72,7 @@ export async function runConfigureMode(options: ConfigureOptions): Promise<void>
         choices: [
           { name: 'Mock (simulated responses)', value: 'mock' },
           { name: 'ML-Commons Agent', value: 'mlcommons' },
-          { name: 'Pulsar Agent', value: 'pulsar' },
+          { name: 'Langgraph Agent', value: 'langgraph' },
         ],
       },
     ]);

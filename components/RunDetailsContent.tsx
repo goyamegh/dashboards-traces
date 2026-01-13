@@ -236,8 +236,9 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
   const modelDisplayName = DEFAULT_CONFIG.models[report.modelName]?.display_name || report.modelName;
 
   // Check if this agent uses trace mode
+  // Default to true since all configured agents use traces
   const agentConfig = DEFAULT_CONFIG.agents.find(a => a.key === report.agentKey || a.name === report.agentName);
-  const isTraceMode = agentConfig?.useTraces ?? false;
+  const isTraceMode = agentConfig?.useTraces ?? true;
 
   // Load test case and annotations on mount
   useEffect(() => {
