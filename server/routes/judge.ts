@@ -47,14 +47,16 @@ ${expectedOutcomes?.map((outcome, i) => `${i + 1}. "${outcome.substring(0, 50)}.
 *Note: This is a simulated evaluation for demo purposes.*`,
     improvementStrategies: passFailStatus === 'failed' ? [
       {
-        priority: 'high',
         category: 'Tool Usage',
-        suggestion: 'Consider using more diagnostic tools before drawing conclusions'
+        issue: 'Insufficient diagnostic tool usage',
+        recommendation: 'Consider using more diagnostic tools before drawing conclusions',
+        priority: 'high'
       },
       {
-        priority: 'medium',
         category: 'Analysis Depth',
-        suggestion: 'Provide more detailed reasoning connecting observations to root cause'
+        issue: 'Reasoning could be more detailed',
+        recommendation: 'Provide more detailed reasoning connecting observations to root cause',
+        priority: 'medium'
       }
     ] : []
   };

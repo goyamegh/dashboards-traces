@@ -22,7 +22,8 @@ import { startServer } from './utils/startServer.js';
 // Get package.json for version
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const packageJsonPath = join(__dirname, '..', 'package.json');
+// From cli/dist/ go up two levels to package root
+const packageJsonPath = join(__dirname, '..', '..', 'package.json');
 
 let version = '0.1.0';
 try {
@@ -70,6 +71,10 @@ program
 
 program.action(async (options) => {
   console.log(chalk.cyan.bold(`\n  Agent Health v${version} - AI Agent Evaluation Framework\n`));
+
+  // Show directory paths for debugging
+  console.log(chalk.gray(`  Working directory: ${process.cwd()}`));
+  console.log(chalk.gray(`  Package directory: ${__dirname}`));
 
   // Load environment file if specified
   if (options.envFile) {
