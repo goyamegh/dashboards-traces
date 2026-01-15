@@ -33,11 +33,12 @@ interface ExpectedBehavior {
 /**
  * Real Bedrock Judge implementation via backend proxy with exponential backoff retry
  * Calls the backend API which handles AWS Bedrock communication
+ * The backend routes to the appropriate provider (demo/bedrock/ollama) based on modelId
  * @param trajectory - The agent's execution trajectory
  * @param expected - Expected outcomes or trajectory
  * @param logs - Optional OpenSearch logs
  * @param onProgress - Optional progress callback
- * @param modelId - Optional model ID for judge evaluation (falls back to BEDROCK_MODEL_ID env var)
+ * @param modelId - Model ID for judge evaluation (determines provider routing)
  */
 export async function callBedrockJudge(
   trajectory: TrajectoryStep[],

@@ -11,9 +11,13 @@ export type Difficulty = 'Easy' | 'Medium' | 'Hard';
 // Date formatting variants
 export type DateFormatVariant = 'date' | 'datetime' | 'detailed';
 
+// Judge provider determines which backend service handles evaluation
+export type JudgeProvider = 'demo' | 'bedrock' | 'ollama' | 'openai';
+
 export interface ModelConfig {
   model_id: string;
   display_name: string;
+  provider: JudgeProvider;
   context_window: number;
   max_output_tokens: number;
 }
@@ -485,7 +489,7 @@ export interface ExperimentRun {
   // Configuration snapshot
   agentKey: string;                // Reference to AgentConfig.key
   agentEndpoint?: string;          // Override agent endpoint (optional)
-  modelId: string;                 // Model to use
+  modelId: string;                 // Model to use (also determines judge provider)
   headers?: Record<string, string>; // Custom headers
 
   // Results (directly embedded, no separate VariantRun type)

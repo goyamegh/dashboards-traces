@@ -28,6 +28,15 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
 export const DEFAULT_CONFIG: AppConfig = {
   agents: [
     {
+      key: "demo",
+      name: "Demo Agent",
+      endpoint: "mock://demo",
+      description: "Mock agent for testing (simulated responses)",
+      models: ["demo-model"],
+      headers: {},
+      useTraces: false,
+    },
+    {
       key: "langgraph",
       name: "Langgraph",
       endpoint: ENV_CONFIG.langgraphEndpoint,
@@ -72,39 +81,52 @@ export const DEFAULT_CONFIG: AppConfig = {
     }
   ],
   models: {
+    "demo-model": {
+      model_id: "mock://demo-model",
+      display_name: "Demo Model",
+      provider: "demo",
+      context_window: 200000,
+      max_output_tokens: 4096
+    },
     "claude-sonnet-4": {
       model_id: "anthropic.claude-sonnet-4-20250514-v1:0",
       display_name: "Claude Sonnet 4",
+      provider: "bedrock",
       context_window: 200000,
       max_output_tokens: 4096
     },
     "claude-sonnet-4.5": {
       model_id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
       display_name: "Claude Sonnet 4.5",
+      provider: "bedrock",
       context_window: 200000,
       max_output_tokens: 4096
     },
     "claude-haiku-4.5": {
       model_id: "anthropic.claude-haiku-4-5-20250514-v1:0",
       display_name: "Claude Haiku 4.5",
+      provider: "bedrock",
       context_window: 200000,
       max_output_tokens: 4096
     },
     "claude-sonnet-3.5": {
       model_id: "anthropic.claude-3-5-sonnet-20241022-v2:0",
       display_name: "Claude Sonnet 3.5",
+      provider: "bedrock",
       context_window: 200000,
       max_output_tokens: 8192
     },
     "claude-sonnet-3.7": {
       model_id: "anthropic.claude-3-7-sonnet-20250219-v1:0",
       display_name: "Claude Sonnet 3.7",
+      provider: "bedrock",
       context_window: 200000,
       max_output_tokens: 8192
     },
     "claude-opus-4.5": {
       model_id: "global.anthropic.claude-opus-4-5-20251101-v1:0",
       display_name: "Claude Opus 4.5",
+      provider: "bedrock",
       context_window: 200000,
       max_output_tokens: 32000
     }
