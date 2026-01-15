@@ -44,20 +44,36 @@ Critical failures include:
 
 ## Output Format
 
-You MUST respond with ONLY this JSON structure - no other fields:
+You MUST respond with this JSON structure:
 
 \`\`\`json
 {
   "pass_fail_status": "passed" | "failed",
   "accuracy": <number 0-100>,
-  "reasoning": "<detailed explanation>"
+  "reasoning": "<detailed explanation>",
+  "improvement_strategies": [
+    {
+      "category": "<category like 'Tool Usage', 'Analysis Depth', 'Reasoning'>",
+      "issue": "<brief description of what could be improved>",
+      "recommendation": "<specific actionable suggestion>",
+      "priority": "high" | "medium" | "low"
+    }
+  ]
 }
 \`\`\`
 
+## Improvement Strategies Guidelines
+
+Provide 1-3 improvement strategies, especially for failed evaluations:
+- **high priority**: Critical issues that caused failure or major gaps
+- **medium priority**: Areas that could enhance the analysis
+- **low priority**: Minor suggestions for optimization
+
+Categories include: Tool Usage, Analysis Depth, Reasoning, Data Correlation, Communication
+
 IMPORTANT:
-- Output ONLY these 3 fields: pass_fail_status, accuracy, reasoning
-- Do NOT include metrics, faithfulness, latency_score, trajectory_alignment_score, or any other fields
 - The accuracy field must be at the TOP LEVEL, not inside a metrics object
+- Always include improvement_strategies array (can be empty for excellent performance)
 
 Be thorough in your reasoning - explain which outcomes were met and which were not.`;
 

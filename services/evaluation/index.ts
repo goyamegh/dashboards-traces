@@ -123,7 +123,6 @@ export async function runEvaluation(
     // Traces take ~5 minutes to propagate, so we'll poll for them later
     if (agent.useTraces) {
       console.info('[Eval] TRACE MODE: Skipping logs/judge, will poll for traces');
-      const totalEvalTime = Date.now() - evalStartTime;
 
       return {
         id: reportId,
@@ -165,9 +164,11 @@ export async function runEvaluation(
     }
 
     // Call judge
-    // Resolve model key to full Bedrock model ID
-    const judgeModelId = DEFAULT_CONFIG.models[modelId]?.model_id || modelId;
-    console.info('[Eval] Calling Bedrock judge with model:', judgeModelId);
+    // Resolve model key to full Bedrock model ID and get provider
+    const modelConfig = DEFAULT_CONFIG.models[modelId];
+    const judgeModelId = modelConfig?.model_id || modelId;
+    const provider = modelConfig?.provider || 'bedrock';
+    console.info('[Eval] Calling judge with model:', judgeModelId, 'provider:', provider);
     const judgeStartTime = Date.now();
     const judgment = await callBedrockJudge(
       fullTrajectory,
@@ -205,7 +206,9 @@ export async function runEvaluation(
       id: reportId,
       timestamp: new Date().toISOString(),
       agentName: agent.name,
+      agentKey: agent.key,
       modelName: modelId,
+      modelId,
       testCaseId: testCase.id,
       testCaseVersion: testCase.currentVersion ?? 1,
       status: 'completed',
@@ -227,7 +230,9 @@ export async function runEvaluation(
       id: reportId,
       timestamp: new Date().toISOString(),
       agentName: agent.name,
+      agentKey: agent.key,
       modelName: modelId,
+      modelId,
       testCaseId: testCase.id,
       testCaseVersion: testCase.currentVersion ?? 1,
       status: 'failed',

@@ -12,9 +12,10 @@ import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { TestCase, TrajectoryStep, EvaluationReport } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
+import { parseLabels } from '@/lib/labels';
 import { runEvaluation } from '@/services/evaluation';
 import { asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
 import { TrajectoryView } from './TrajectoryView';
@@ -46,6 +47,21 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
   const [report, setReport] = useState<EvaluationReport | null>(null);
 
   const selectedAgent = DEFAULT_CONFIG.agents.find(a => a.key === selectedAgentKey);
+
+  // Group models by provider for the dropdown
+  const modelsByProvider = Object.entries(DEFAULT_CONFIG.models).reduce((acc, [key, model]) => {
+    const provider = model.provider || 'bedrock';
+    if (!acc[provider]) acc[provider] = [];
+    acc[provider].push({ key, ...model });
+    return acc;
+  }, {} as Record<string, Array<{ key: string; display_name: string; provider: string }>>);
+
+  const providerLabels: Record<string, string> = {
+    demo: 'Demo',
+    bedrock: 'AWS Bedrock',
+    ollama: 'Ollama',
+    openai: 'OpenAI',
+  };
 
   // Lock body scroll when modal is open
   useEffect(() => {
@@ -164,7 +180,7 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
             </CardTitle>
             {testCase && (
               <p className="text-xs text-muted-foreground mt-1">
-                Version {testCase.currentVersion} · {testCase.category}
+                Version {testCase.currentVersion} · {parseLabels(testCase.labels || []).category || 'Uncategorized'}
               </p>
             )}
           </div>
@@ -223,7 +239,7 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                 </Select>
               </div>
 
-              {/* Model Selection */}
+              {/* Model Selection (grouped by provider) */}
               <div className="space-y-1">
                 <Label className="text-xs">Judge Model</Label>
                 <Select value={selectedModelId} onValueChange={setSelectedModelId}>
@@ -231,10 +247,15 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    {Object.entries(DEFAULT_CONFIG.models).map(([key, model]) => (
-                      <SelectItem key={key} value={key}>
-                        {model.display_name}
-                      </SelectItem>
+                    {Object.entries(modelsByProvider).map(([provider, models]) => (
+                      <SelectGroup key={provider}>
+                        <SelectLabel>{providerLabels[provider] || provider}</SelectLabel>
+                        {models.map(model => (
+                          <SelectItem key={model.key} value={model.key}>
+                            {model.display_name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
                     ))}
                   </SelectContent>
                 </Select>

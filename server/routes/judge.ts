@@ -9,7 +9,7 @@
 
 import { Request, Response, Router } from 'express';
 import { evaluateTrajectory, parseBedrockError } from '../services/bedrockService';
-import { useMockJudge } from '../app.js';
+import { DEFAULT_CONFIG } from '../../lib/constants';
 
 const router = Router();
 
@@ -47,14 +47,16 @@ ${expectedOutcomes?.map((outcome, i) => `${i + 1}. "${outcome.substring(0, 50)}.
 *Note: This is a simulated evaluation for demo purposes.*`,
     improvementStrategies: passFailStatus === 'failed' ? [
       {
-        priority: 'high',
         category: 'Tool Usage',
-        suggestion: 'Consider using more diagnostic tools before drawing conclusions'
+        issue: 'Insufficient diagnostic tool usage',
+        recommendation: 'Consider using more diagnostic tools before drawing conclusions',
+        priority: 'high'
       },
       {
-        priority: 'medium',
         category: 'Analysis Depth',
-        suggestion: 'Provide more detailed reasoning connecting observations to root cause'
+        issue: 'Reasoning could be more detailed',
+        recommendation: 'Provide more detailed reasoning connecting observations to root cause',
+        priority: 'medium'
       }
     ] : []
   };
@@ -80,15 +82,25 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       });
     }
 
-    // Use mock judge in demo mode
-    if (useMockJudge()) {
-      console.log('[JudgeAPI] Using mock judge (demo mode)');
+    // Determine provider from model config
+    // Look up by model key first, then by model_id for full Bedrock model IDs
+    let modelConfig = DEFAULT_CONFIG.models[modelId];
+    if (!modelConfig) {
+      // Try to find by model_id (in case full Bedrock ID was passed)
+      modelConfig = Object.values(DEFAULT_CONFIG.models).find(m => m.model_id === modelId);
+    }
+    const provider = modelConfig?.provider || 'bedrock';
+
+    // Route to appropriate provider
+    if (provider === 'demo') {
+      console.log('[JudgeAPI] Demo provider - returning mock evaluation');
       const mockResult = generateMockEvaluation(trajectory, expectedOutcomes);
       return res.json(mockResult);
     }
 
-    // Call Bedrock service to evaluate trajectory
-    // modelId is optional - falls back to BEDROCK_MODEL_ID env var if not provided
+    // For now, only bedrock is supported for real evaluation
+    // Future: add ollama, openai providers here
+    console.log('[JudgeAPI] Using provider:', provider, 'model:', modelId);
     const result = await evaluateTrajectory({
       trajectory,
       expectedOutcomes,

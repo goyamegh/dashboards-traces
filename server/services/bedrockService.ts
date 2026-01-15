@@ -9,7 +9,7 @@
 
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
 import config from '../config';
-import { TrajectoryStep } from '@/types';
+import { TrajectoryStep, ImprovementStrategy } from '@/types';
 import { JUDGE_SYSTEM_PROMPT } from '../prompts/judgePrompt';
 
 // ============================================================================
@@ -32,7 +32,7 @@ export interface JudgeResponse {
     trajectory_alignment_score?: number;
   };
   llmJudgeReasoning: string;
-  improvementStrategies: string[];
+  improvementStrategies: ImprovementStrategy[];
   duration: number;
 }
 
@@ -46,7 +46,7 @@ interface BedrockJudgeResult {
     trajectory_alignment_score?: number;
   };
   reasoning: string;
-  improvement_strategies?: string[];
+  improvement_strategies?: ImprovementStrategy[];
 }
 
 // ============================================================================
@@ -257,6 +257,12 @@ export async function evaluateTrajectory(
   // Handle both new simplified format (accuracy at top level) and legacy format (accuracy in metrics)
   const accuracy = result.accuracy ?? result.metrics?.accuracy ?? 0;
   console.log('[JudgeAPI] Accuracy:', accuracy);
+  console.log('[JudgeAPI] Improvement Strategies:', result.improvement_strategies?.length ?? 0, 'items');
+  if (result.improvement_strategies?.length) {
+    result.improvement_strategies.forEach((s, i) => {
+      console.log(`  ${i + 1}. [${s.priority}] ${s.category}: ${s.issue}`);
+    });
+  }
   console.log('[JudgeAPI] ✓ Evaluation completed successfully\n');
 
   // Return structured response - simplified metrics
