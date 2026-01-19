@@ -123,7 +123,7 @@ jobs:
         run: npm ci
 
       - name: Check license headers
-        run: npm run test:unit -- --testPathIgnorePatterns='.*' tests/unit/licenseHeaders.test.ts
+        run: npx jest tests/unit/licenseHeaders.test.ts
 
   security-scan:
     runs-on: ubuntu-latest
