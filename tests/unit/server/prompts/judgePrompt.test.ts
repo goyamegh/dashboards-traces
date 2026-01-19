@@ -53,8 +53,11 @@ describe('judgePrompt', () => {
       expect(JUDGE_SYSTEM_PROMPT).toContain('70');
     });
 
-    it('should instruct to output ONLY 3 fields', () => {
-      expect(JUDGE_SYSTEM_PROMPT).toContain('ONLY these 3 fields');
+    it('should specify required output fields', () => {
+      expect(JUDGE_SYSTEM_PROMPT).toContain('pass_fail_status');
+      expect(JUDGE_SYSTEM_PROMPT).toContain('accuracy');
+      expect(JUDGE_SYSTEM_PROMPT).toContain('reasoning');
+      expect(JUDGE_SYSTEM_PROMPT).toContain('improvement_strategies');
     });
 
     it('should mention evaluator role for RCA agents', () => {
