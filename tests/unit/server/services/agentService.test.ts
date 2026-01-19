@@ -12,12 +12,6 @@ import {
   AgentProxyRequest,
 } from '@/server/services/agentService';
 
-// Mock the app module
-const mockUseMockAgent = jest.fn().mockReturnValue(false);
-jest.mock('@/server/app', () => ({
-  useMockAgent: () => mockUseMockAgent(),
-}));
-
 // Mock fetch globally
 const mockFetch = jest.fn();
 global.fetch = mockFetch as any;
@@ -35,7 +29,12 @@ function createMockResponse() {
 describe('AgentService', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockUseMockAgent.mockReturnValue(false);
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   describe('setSSEHeaders', () => {
@@ -117,10 +116,10 @@ describe('AgentService', () => {
 
   describe('proxyAgentRequest', () => {
     it('should set SSE headers on response', async () => {
-      mockUseMockAgent.mockReturnValue(true);
+      // Use mock:// endpoint for demo mode
       const res = createMockResponse();
       const request: AgentProxyRequest = {
-        endpoint: 'http://localhost:3000/api/agent',
+        endpoint: 'mock://demo-agent',
         payload: { question: 'test' },
       };
 
@@ -129,17 +128,16 @@ describe('AgentService', () => {
       expect(res.setHeader).toHaveBeenCalledWith('Content-Type', 'text/event-stream');
     });
 
-    it('should use mock agent in demo mode', async () => {
-      mockUseMockAgent.mockReturnValue(true);
+    it('should use mock agent when endpoint starts with mock://', async () => {
       const res = createMockResponse();
       const request: AgentProxyRequest = {
-        endpoint: 'http://localhost:3000/api/agent',
+        endpoint: 'mock://demo-agent',
         payload: { question: 'test' },
       };
 
       await proxyAgentRequest(request, res);
 
-      // Should not call fetch in mock mode
+      // Should not call fetch for mock endpoint
       expect(mockFetch).not.toHaveBeenCalled();
       // Should write events
       expect(res.write).toHaveBeenCalled();
@@ -148,10 +146,9 @@ describe('AgentService', () => {
     });
 
     it('should stream RUN_STARTED and RUN_FINISHED events in mock mode', async () => {
-      mockUseMockAgent.mockReturnValue(true);
       const res = createMockResponse();
       const request: AgentProxyRequest = {
-        endpoint: 'http://localhost:3000/api/agent',
+        endpoint: 'mock://demo-agent',
         payload: { question: 'test' },
       };
 
@@ -166,7 +163,6 @@ describe('AgentService', () => {
     });
 
     it('should send error event when agent returns error', async () => {
-      mockUseMockAgent.mockReturnValue(false);
       mockFetch.mockResolvedValue({
         ok: false,
         status: 500,
@@ -186,7 +182,6 @@ describe('AgentService', () => {
     });
 
     it('should send error event when no response body', async () => {
-      mockUseMockAgent.mockReturnValue(false);
       mockFetch.mockResolvedValue({
         ok: true,
         body: null,
@@ -206,8 +201,6 @@ describe('AgentService', () => {
     });
 
     it('should stream response from agent endpoint', async () => {
-      mockUseMockAgent.mockReturnValue(false);
-
       // Create a mock ReadableStream reader
       const chunks = [
         new TextEncoder().encode('data: {"type":"RUN_STARTED"}\n\n'),
@@ -254,8 +247,6 @@ describe('AgentService', () => {
     });
 
     it('should include custom headers in request', async () => {
-      mockUseMockAgent.mockReturnValue(false);
-
       const mockReader = {
         read: jest.fn().mockResolvedValue({ done: true, value: undefined }),
         releaseLock: jest.fn(),
@@ -287,8 +278,6 @@ describe('AgentService', () => {
     });
 
     it('should handle stream errors gracefully', async () => {
-      mockUseMockAgent.mockReturnValue(false);
-
       const mockReader = {
         read: jest.fn().mockRejectedValue(new Error('Stream error')),
         releaseLock: jest.fn(),

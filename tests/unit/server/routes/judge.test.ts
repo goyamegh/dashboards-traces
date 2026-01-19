@@ -6,16 +6,11 @@
 import { Request, Response } from 'express';
 import judgeRoutes from '@/server/routes/judge';
 import { evaluateTrajectory, parseBedrockError } from '@/server/services/bedrockService';
+
 // Mock the bedrock service
 jest.mock('@/server/services/bedrockService', () => ({
   evaluateTrajectory: jest.fn(),
   parseBedrockError: jest.fn(),
-}));
-
-// Mock the app module (server/app.ts from server/routes/__tests__)
-const mockUseMockJudge = jest.fn().mockReturnValue(false);
-jest.mock('@/server/app', () => ({
-  useMockJudge: () => mockUseMockJudge(),
 }));
 
 const mockEvaluateTrajectory = evaluateTrajectory as jest.MockedFunction<typeof evaluateTrajectory>;
@@ -48,7 +43,12 @@ function getRouteHandler(router: any, method: string, path: string) {
 describe('Judge Routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockUseMockJudge.mockReturnValue(false);
+    jest.spyOn(console, 'log').mockImplementation(() => {});
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   describe('POST /api/judge', () => {
@@ -78,12 +78,11 @@ describe('Judge Routes', () => {
       });
     });
 
-    it('uses mock judge in demo mode', async () => {
-      mockUseMockJudge.mockReturnValue(true);
-
+    it('uses mock judge when demo-model is specified', async () => {
       const { req, res } = createMocks({
         trajectory: [{ type: 'action', toolName: 'cluster_health' }],
         expectedOutcomes: ['Identify root cause'],
+        modelId: 'demo-model', // Use demo-model which has provider: 'demo'
       });
       const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
 
@@ -100,7 +99,6 @@ describe('Judge Routes', () => {
     });
 
     it('calls Bedrock service for real evaluation', async () => {
-      mockUseMockJudge.mockReturnValue(false);
       mockEvaluateTrajectory.mockResolvedValue({
         passFailStatus: 'passed',
         metrics: {
@@ -114,7 +112,7 @@ describe('Judge Routes', () => {
       const { req, res } = createMocks({
         trajectory: [{ type: 'action', toolName: 'cluster_health' }],
         expectedOutcomes: ['Identify root cause'],
-        modelId: 'test-model',
+        modelId: 'claude-sonnet-4', // Use bedrock model
       });
       const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
 
@@ -125,7 +123,7 @@ describe('Judge Routes', () => {
           trajectory: expect.any(Array),
           expectedOutcomes: expect.any(Array),
         }),
-        'test-model'
+        'claude-sonnet-4'
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -138,7 +136,6 @@ describe('Judge Routes', () => {
     });
 
     it('returns 500 on Bedrock error', async () => {
-      mockUseMockJudge.mockReturnValue(false);
       const error = new Error('Bedrock connection failed');
       mockEvaluateTrajectory.mockRejectedValue(error);
       mockParseBedrockError.mockReturnValue('Bedrock connection failed');
@@ -146,6 +143,7 @@ describe('Judge Routes', () => {
       const { req, res } = createMocks({
         trajectory: [{ type: 'action' }],
         expectedOutcomes: ['Test'],
+        modelId: 'claude-sonnet-4', // Use bedrock model
       });
       const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
 
@@ -159,15 +157,14 @@ describe('Judge Routes', () => {
       );
     });
 
-    it('handles trajectory with tool calls in mock mode', async () => {
-      mockUseMockJudge.mockReturnValue(true);
-
+    it('handles trajectory with tool calls in demo mode', async () => {
       const { req, res } = createMocks({
         trajectory: [
           { type: 'action', toolName: 'cluster_health' },
           { type: 'response', content: 'The root cause is...' },
         ],
         expectedOutcomes: ['Check cluster health', 'Identify root cause'],
+        modelId: 'demo-model', // Use demo-model
       });
       const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
 
@@ -180,6 +177,28 @@ describe('Judge Routes', () => {
           reasoning: expect.stringContaining('diagnostic tools'),
         })
       );
+    });
+
+    it('defaults to bedrock provider when model not found', async () => {
+      mockEvaluateTrajectory.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 0.85 },
+        llmJudgeReasoning: 'Good',
+        improvementStrategies: [],
+        duration: 50,
+      });
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'test' }],
+        expectedOutcomes: ['Test outcome'],
+        modelId: 'unknown-model', // Model not in config
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      // Should fall through to bedrock provider (default)
+      expect(mockEvaluateTrajectory).toHaveBeenCalled();
     });
   });
 });

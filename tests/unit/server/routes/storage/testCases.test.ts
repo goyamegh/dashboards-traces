@@ -495,4 +495,221 @@ describe('Test Cases Storage Routes', () => {
       );
     });
   });
+
+  describe('Error Handling - 500 errors', () => {
+    it('GET /api/storage/test-cases/:id should handle OpenSearch errors', async () => {
+      mockSearch.mockRejectedValue(new Error('Database connection lost'));
+
+      const { req, res } = createMocks({ id: 'tc-123' });
+      const handler = getRouteHandler(testCasesRoutes, 'get', '/api/storage/test-cases/:id');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Database connection lost' });
+    });
+
+    it('GET /api/storage/test-cases/:id/versions should handle OpenSearch errors', async () => {
+      mockSearch.mockRejectedValue(new Error('Index not found'));
+
+      const { req, res } = createMocks({ id: 'tc-123' });
+      const handler = getRouteHandler(testCasesRoutes, 'get', '/api/storage/test-cases/:id/versions');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Index not found' });
+    });
+
+    it('GET /api/storage/test-cases/:id/versions/:version should handle OpenSearch errors', async () => {
+      mockSearch.mockRejectedValue(new Error('Query timeout'));
+
+      const { req, res } = createMocks({ id: 'tc-123', version: '1' });
+      const handler = getRouteHandler(
+        testCasesRoutes,
+        'get',
+        '/api/storage/test-cases/:id/versions/:version'
+      );
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Query timeout' });
+    });
+
+    it('POST /api/storage/test-cases should handle index errors', async () => {
+      mockIndex.mockRejectedValue(new Error('Index write failed'));
+
+      const { req, res } = createMocks({}, { name: 'New Test Case' });
+      const handler = getRouteHandler(testCasesRoutes, 'post', '/api/storage/test-cases');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Index write failed' });
+    });
+
+    it('PUT /api/storage/test-cases/:id should handle update errors', async () => {
+      mockSearch.mockResolvedValue({
+        body: { hits: { hits: [{ _source: { id: 'tc-123', version: 1 } }] } },
+      });
+      mockIndex.mockRejectedValue(new Error('Update failed'));
+
+      const { req, res } = createMocks({ id: 'tc-123' }, { name: 'Updated' });
+      const handler = getRouteHandler(testCasesRoutes, 'put', '/api/storage/test-cases/:id');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Update failed' });
+    });
+
+    it('DELETE /api/storage/test-cases/:id should handle delete errors', async () => {
+      mockDeleteByQuery.mockRejectedValue(new Error('Delete failed'));
+
+      const { req, res } = createMocks({ id: 'tc-123' });
+      const handler = getRouteHandler(testCasesRoutes, 'delete', '/api/storage/test-cases/:id');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Delete failed' });
+    });
+
+    it('POST /api/storage/test-cases/bulk should handle bulk errors', async () => {
+      mockBulk.mockRejectedValue(new Error('Bulk operation failed'));
+
+      const { req, res } = createMocks({}, { testCases: [{ name: 'Test' }] });
+      const handler = getRouteHandler(testCasesRoutes, 'post', '/api/storage/test-cases/bulk');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Bulk operation failed' });
+    });
+  });
+
+  describe('Storage Not Configured - fallback behavior', () => {
+    beforeEach(() => {
+      const { isStorageConfigured } = require('@/server/services/opensearchClient');
+      isStorageConfigured.mockReturnValue(false);
+    });
+
+    afterEach(() => {
+      const { isStorageConfigured } = require('@/server/services/opensearchClient');
+      isStorageConfigured.mockReturnValue(true);
+    });
+
+    it('GET /api/storage/test-cases/:id should return 404 when storage not configured', async () => {
+      const { req, res } = createMocks({ id: 'tc-123' });
+      const handler = getRouteHandler(testCasesRoutes, 'get', '/api/storage/test-cases/:id');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Test case not found' });
+    });
+
+    it('GET /api/storage/test-cases/:id/versions should return 404 when storage not configured', async () => {
+      const { req, res } = createMocks({ id: 'tc-123' });
+      const handler = getRouteHandler(testCasesRoutes, 'get', '/api/storage/test-cases/:id/versions');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Test case not found' });
+    });
+
+    it('GET /api/storage/test-cases/:id/versions/:version should return 404 when storage not configured', async () => {
+      const { req, res } = createMocks({ id: 'tc-123', version: '1' });
+      const handler = getRouteHandler(
+        testCasesRoutes,
+        'get',
+        '/api/storage/test-cases/:id/versions/:version'
+      );
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Test case version not found' });
+    });
+
+    it('POST /api/storage/test-cases should return 400 when storage not configured', async () => {
+      const { req, res } = createMocks({}, { name: 'New Test' });
+      const handler = getRouteHandler(testCasesRoutes, 'post', '/api/storage/test-cases');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'OpenSearch not configured. Cannot create new test cases in sample-only mode.',
+      });
+    });
+
+    it('PUT /api/storage/test-cases/:id should return 400 when storage not configured', async () => {
+      const { req, res } = createMocks({ id: 'tc-123' }, { name: 'Updated' });
+      const handler = getRouteHandler(testCasesRoutes, 'put', '/api/storage/test-cases/:id');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'OpenSearch not configured. Cannot update test cases in sample-only mode.',
+      });
+    });
+
+    it('DELETE /api/storage/test-cases/:id should return 400 when storage not configured', async () => {
+      const { req, res } = createMocks({ id: 'tc-123' });
+      const handler = getRouteHandler(testCasesRoutes, 'delete', '/api/storage/test-cases/:id');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'OpenSearch not configured. Cannot delete test cases in sample-only mode.',
+      });
+    });
+
+    it('POST /api/storage/test-cases/bulk should return 400 when storage not configured', async () => {
+      const { req, res } = createMocks({}, { testCases: [{ name: 'Test' }] });
+      const handler = getRouteHandler(testCasesRoutes, 'post', '/api/storage/test-cases/bulk');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'OpenSearch not configured. Cannot create test cases in sample-only mode.',
+      });
+    });
+  });
+
+  describe('Additional 404 scenarios', () => {
+    it('GET /api/storage/test-cases/:id/versions should return 404 for non-existent demo', async () => {
+      const { req, res } = createMocks({ id: 'demo-nonexistent' });
+      const handler = getRouteHandler(testCasesRoutes, 'get', '/api/storage/test-cases/:id/versions');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Test case not found' });
+    });
+
+    it('GET /api/storage/test-cases/:id/versions/:version should return 404 for not found', async () => {
+      mockSearch.mockResolvedValue({
+        body: { hits: { hits: [] } },
+      });
+
+      const { req, res } = createMocks({ id: 'tc-123', version: '99' });
+      const handler = getRouteHandler(
+        testCasesRoutes,
+        'get',
+        '/api/storage/test-cases/:id/versions/:version'
+      );
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).toHaveBeenCalledWith({ error: 'Test case version not found' });
+    });
+  });
 });

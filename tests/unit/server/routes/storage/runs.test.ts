@@ -828,3 +828,107 @@ describe('Runs Storage Routes - OpenSearch not configured', () => {
     expect(res.status).toHaveBeenCalledWith(400);
   });
 });
+
+describe('Runs Storage Routes - Error Handling (500 errors)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    const { isStorageConfigured } = require('@/server/services/opensearchClient');
+    (isStorageConfigured as jest.Mock).mockReturnValue(true);
+  });
+
+  it('GET /api/storage/runs/:id should handle errors', async () => {
+    mockGetRunById.mockRejectedValue(new Error('Database error'));
+
+    const { req, res } = createMocks({ id: 'run-123' });
+    const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/:id');
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Database error' });
+  });
+
+  it('POST /api/storage/runs should handle errors', async () => {
+    mockCreateRun.mockRejectedValue(new Error('Create failed'));
+
+    const { req, res } = createMocks({}, { testCaseId: 'tc-123' });
+    const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Create failed' });
+  });
+
+  it('PATCH /api/storage/runs/:id should handle non-404 errors', async () => {
+    mockUpdateRun.mockRejectedValue(new Error('Update failed'));
+
+    const { req, res } = createMocks({ id: 'run-123' }, { status: 'completed' });
+    const handler = getRouteHandler(runsRoutes, 'patch', '/api/storage/runs/:id');
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Update failed' });
+  });
+
+  it('DELETE /api/storage/runs/:id should handle non-404 errors', async () => {
+    mockDelete.mockRejectedValue(new Error('Delete failed'));
+
+    const { req, res } = createMocks({ id: 'run-123' });
+    const handler = getRouteHandler(runsRoutes, 'delete', '/api/storage/runs/:id');
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Delete failed' });
+  });
+
+  it('POST /api/storage/runs/:id/annotations should handle errors', async () => {
+    mockUpdate.mockRejectedValue(new Error('Update failed'));
+
+    const { req, res } = createMocks({ id: 'run-123' }, { text: 'Test' });
+    const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs/:id/annotations');
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Update failed' });
+  });
+
+  it('PUT /api/storage/runs/:id/annotations/:annotationId should handle errors', async () => {
+    mockUpdate.mockRejectedValue(new Error('Update failed'));
+
+    const { req, res } = createMocks({ id: 'run-123', annotationId: 'ann-1' }, { text: 'Test' });
+    const handler = getRouteHandler(runsRoutes, 'put', '/api/storage/runs/:id/annotations/:annotationId');
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Update failed' });
+  });
+
+  it('DELETE /api/storage/runs/:id/annotations/:annotationId should handle errors', async () => {
+    mockUpdate.mockRejectedValue(new Error('Delete failed'));
+
+    const { req, res } = createMocks({ id: 'run-123', annotationId: 'ann-1' });
+    const handler = getRouteHandler(runsRoutes, 'delete', '/api/storage/runs/:id/annotations/:annotationId');
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Delete failed' });
+  });
+
+  it('POST /api/storage/runs/bulk should handle errors', async () => {
+    mockBulk.mockRejectedValue(new Error('Bulk failed'));
+
+    const { req, res } = createMocks({}, { runs: [{ testCaseId: 'tc-1' }] });
+    const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs/bulk');
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(500);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Bulk failed' });
+  });
+});

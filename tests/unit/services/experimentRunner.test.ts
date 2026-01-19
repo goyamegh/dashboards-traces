@@ -554,5 +554,56 @@ describe('Experiment Runner', () => {
 
       expect(mockStartPolling).not.toHaveBeenCalled();
     });
+
+    it('should call onAttempt callback during polling', async () => {
+      const testCase = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run = createExperimentRun('run-1');
+
+      mockGetAllTestCases.mockResolvedValue([testCase]);
+      mockRunEvaluation.mockResolvedValue({ id: 'report-1', trajectory: [] });
+      mockSaveReport.mockResolvedValue({
+        id: 'saved-report-1',
+        runId: 'trace-run-id',
+        metricsStatus: 'pending',
+      });
+
+      await executeRun(experiment, run, jest.fn());
+
+      // Get the callbacks
+      const callbacks = mockStartPolling.mock.calls[0][2];
+
+      // Simulate attempt callback
+      callbacks.onAttempt(1, 10);
+
+      // Verify console.info was called (indirectly test the callback)
+      expect(console.info).toHaveBeenCalled();
+    });
+
+    it('should call onError callback when polling fails', async () => {
+      const testCase = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run = createExperimentRun('run-1');
+
+      mockGetAllTestCases.mockResolvedValue([testCase]);
+      mockRunEvaluation.mockResolvedValue({ id: 'report-1', trajectory: [] });
+      mockSaveReport.mockResolvedValue({
+        id: 'saved-report-1',
+        runId: 'trace-run-id',
+        metricsStatus: 'pending',
+      });
+
+      await executeRun(experiment, run, jest.fn());
+
+      // Get the callbacks
+      const callbacks = mockStartPolling.mock.calls[0][2];
+
+      // Simulate error callback
+      callbacks.onError(new Error('Polling failed'));
+
+      // Verify console.error was called
+      expect(console.error).toHaveBeenCalled();
+    });
   });
+
 });
