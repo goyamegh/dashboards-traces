@@ -15,6 +15,7 @@
  */
 
 import { getOpenSearchClient, INDEXES, isStorageConfigured } from '../opensearchClient.js';
+import type { Client } from '@opensearch-project/opensearch';
 
 // Re-export for convenience
 export { isStorageConfigured };
@@ -80,15 +81,10 @@ export async function getTestCaseById(id: string): Promise<any | null> {
 // ==================== Runs ====================
 
 /**
- * Create a run
- * Throws if storage is not configured
+ * Create a run with an explicit client
+ * Used by routes that have the client from middleware
  */
-export async function createRun(run: any): Promise<any> {
-  const client = getOpenSearchClient();
-  if (!client) {
-    throw new Error('Storage not configured');
-  }
-
+export async function createRunWithClient(client: Client, run: any): Promise<any> {
   const id = run.id || generateId('run');
   const createdAt = new Date().toISOString();
 
@@ -107,7 +103,7 @@ export async function createRun(run: any): Promise<any> {
   });
 
   // Write analytics (non-blocking)
-  writeAnalyticsRecord(doc).catch((e) =>
+  writeAnalyticsRecordWithClient(client, doc).catch((e) =>
     console.warn('[StorageService] Analytics write failed:', e.message)
   );
 
@@ -115,15 +111,23 @@ export async function createRun(run: any): Promise<any> {
 }
 
 /**
- * Get run by ID
+ * Create a run
  * Throws if storage is not configured
+ * @deprecated Use createRunWithClient with request-scoped client
  */
-export async function getRunById(id: string): Promise<any | null> {
+export async function createRun(run: any): Promise<any> {
   const client = getOpenSearchClient();
   if (!client) {
     throw new Error('Storage not configured');
   }
+  return createRunWithClient(client, run);
+}
 
+/**
+ * Get run by ID with an explicit client
+ * Used by routes that have the client from middleware
+ */
+export async function getRunByIdWithClient(client: Client, id: string): Promise<any | null> {
   try {
     const result = await client.get({ index: INDEXES.runs, id });
     return result.body.found ? result.body._source : null;
@@ -136,15 +140,23 @@ export async function getRunById(id: string): Promise<any | null> {
 }
 
 /**
- * Partial update of a run
+ * Get run by ID
  * Throws if storage is not configured
+ * @deprecated Use getRunByIdWithClient with request-scoped client
  */
-export async function updateRun(id: string, updates: any): Promise<any> {
+export async function getRunById(id: string): Promise<any | null> {
   const client = getOpenSearchClient();
   if (!client) {
     throw new Error('Storage not configured');
   }
+  return getRunByIdWithClient(client, id);
+}
 
+/**
+ * Partial update of a run with an explicit client
+ * Used by routes that have the client from middleware
+ */
+export async function updateRunWithClient(client: Client, id: string, updates: any): Promise<any> {
   await client.update({
     index: INDEXES.runs,
     id,
@@ -154,6 +166,19 @@ export async function updateRun(id: string, updates: any): Promise<any> {
 
   const result = await client.get({ index: INDEXES.runs, id });
   return result.body._source;
+}
+
+/**
+ * Partial update of a run
+ * Throws if storage is not configured
+ * @deprecated Use updateRunWithClient with request-scoped client
+ */
+export async function updateRun(id: string, updates: any): Promise<any> {
+  const client = getOpenSearchClient();
+  if (!client) {
+    throw new Error('Storage not configured');
+  }
+  return updateRunWithClient(client, id, updates);
 }
 
 /**
@@ -210,10 +235,10 @@ function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
-async function writeAnalyticsRecord(run: any): Promise<void> {
-  const client = getOpenSearchClient();
-  if (!client) return; // Skip analytics if no storage
-
+/**
+ * Write analytics record with explicit client
+ */
+async function writeAnalyticsRecordWithClient(client: Client, run: any): Promise<void> {
   const analyticsDoc: any = {
     analyticsId: `analytics-${run.id}`,
     runId: run.id,
@@ -244,4 +269,13 @@ async function writeAnalyticsRecord(run: any): Promise<void> {
     body: analyticsDoc,
     refresh: true,
   });
+}
+
+/**
+ * @deprecated Use writeAnalyticsRecordWithClient with request-scoped client
+ */
+async function writeAnalyticsRecord(run: any): Promise<void> {
+  const client = getOpenSearchClient();
+  if (!client) return; // Skip analytics if no storage
+  return writeAnalyticsRecordWithClient(client, run);
 }
