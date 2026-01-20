@@ -6,7 +6,7 @@
 import { Request, Response } from 'express';
 import adminRoutes from '@/server/routes/storage/admin';
 
-// Mock the opensearchClient
+// Mock client methods
 const mockClusterHealth = jest.fn();
 const mockIndicesExists = jest.fn();
 const mockIndicesCreate = jest.fn();
@@ -14,15 +14,19 @@ const mockCount = jest.fn();
 const mockSearch = jest.fn();
 const mockIndex = jest.fn();
 
-jest.mock('@/server/services/opensearchClient', () => ({
-  getOpenSearchClient: () => ({
-    cluster: { health: mockClusterHealth },
-    indices: { exists: mockIndicesExists, create: mockIndicesCreate },
-    count: mockCount,
-    search: mockSearch,
-    index: mockIndex,
-  }),
-  isStorageConfigured: jest.fn().mockReturnValue(true),
+// Create mock client
+const mockClient = {
+  cluster: { health: mockClusterHealth },
+  indices: { exists: mockIndicesExists, create: mockIndicesCreate },
+  count: mockCount,
+  search: mockSearch,
+  index: mockIndex,
+};
+
+// Mock the storageClient middleware
+jest.mock('@/server/middleware/storageClient', () => ({
+  isStorageAvailable: jest.fn(),
+  requireStorageClient: jest.fn(),
   INDEXES: {
     testCases: 'test-cases-index',
     experiments: 'experiments-index',
@@ -30,6 +34,23 @@ jest.mock('@/server/services/opensearchClient', () => ({
     analytics: 'analytics-index',
   },
 }));
+
+// Mock dataSourceConfig
+jest.mock('@/server/middleware/dataSourceConfig', () => ({
+  resolveStorageConfig: jest.fn(),
+}));
+
+// Mock adapters
+jest.mock('@/server/adapters/index', () => ({
+  testStorageConnection: jest.fn(),
+}));
+
+// Import mocked adapter functions
+import { testStorageConnection } from '@/server/adapters/index';
+import { resolveStorageConfig } from '@/server/middleware/dataSourceConfig';
+
+const mockTestStorageConnection = testStorageConnection as jest.Mock;
+const mockResolveStorageConfig = resolveStorageConfig as jest.Mock;
 
 // Mock index mappings
 jest.mock('@/server/constants/indexMappings', () => ({
@@ -40,6 +61,12 @@ jest.mock('@/server/constants/indexMappings', () => ({
     'analytics-index': { mappings: {} },
   },
 }));
+
+// Import mocked functions
+import {
+  isStorageAvailable,
+  requireStorageClient,
+} from '@/server/middleware/storageClient';
 
 // Silence console output
 beforeAll(() => {
@@ -63,6 +90,8 @@ function createMocks(params: any = {}, body: any = {}, query: any = {}) {
     params,
     body,
     query,
+    storageClient: mockClient,
+    storageConfig: { endpoint: 'https://localhost:9200' },
   } as unknown as Request;
   const res = {
     json: jest.fn().mockImplementation((data) => {
@@ -101,12 +130,19 @@ async function callHandler(handler: any, req: Request, res: Response, jsonPromis
 describe('Admin Storage Routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Default: storage is available
+    (isStorageAvailable as jest.Mock).mockReturnValue(true);
+    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
+    // Default: config resolved
+    mockResolveStorageConfig.mockReturnValue({ endpoint: 'https://localhost:9200' });
   });
 
   describe('GET /api/storage/health', () => {
     it('should return ok status when cluster is healthy', async () => {
-      mockClusterHealth.mockResolvedValue({
-        body: { status: 'green', cluster_name: 'test-cluster' },
+      mockTestStorageConnection.mockResolvedValue({
+        status: 'ok',
+        clusterName: 'test-cluster',
+        clusterStatus: 'green',
       });
 
       const { req, res } = createMocks();
@@ -114,7 +150,7 @@ describe('Admin Storage Routes', () => {
 
       await handler(req, res);
 
-      expect(mockClusterHealth).toHaveBeenCalled();
+      expect(mockTestStorageConnection).toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           status: 'ok',
@@ -124,22 +160,25 @@ describe('Admin Storage Routes', () => {
     });
 
     it('should return not_configured when storage not configured', async () => {
-      const { isStorageConfigured } = require('@/server/services/opensearchClient');
-      (isStorageConfigured as jest.Mock).mockReturnValueOnce(false);
+      mockResolveStorageConfig.mockReturnValue(null);
 
       const { req, res } = createMocks();
+      req.storageClient = null;
       const handler = getRouteHandler(adminRoutes, 'get', '/api/storage/health');
 
       await handler(req, res);
 
       expect(res.json).toHaveBeenCalledWith({
         status: 'not_configured',
-        message: 'Storage environment variables not set',
+        message: 'Storage not configured',
       });
     });
 
     it('should return error status on health check failure', async () => {
-      mockClusterHealth.mockRejectedValue(new Error('Connection refused'));
+      mockTestStorageConnection.mockResolvedValue({
+        status: 'error',
+        message: 'Connection refused',
+      });
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(adminRoutes, 'get', '/api/storage/health');

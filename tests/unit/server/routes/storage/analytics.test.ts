@@ -6,15 +6,26 @@
 import { Request, Response } from 'express';
 import analyticsRoutes from '@/server/routes/storage/analytics';
 
-// Mock the opensearchClient
+// Mock client methods
 const mockSearch = jest.fn();
 
-jest.mock('@/server/services/opensearchClient', () => ({
-  getOpenSearchClient: () => ({
-    search: mockSearch,
-  }),
+// Create mock client
+const mockClient = {
+  search: mockSearch,
+};
+
+// Mock the storageClient middleware
+jest.mock('@/server/middleware/storageClient', () => ({
+  isStorageAvailable: jest.fn(),
+  requireStorageClient: jest.fn(),
   INDEXES: { analytics: 'analytics-index' },
 }));
+
+// Import mocked functions
+import {
+  isStorageAvailable,
+  requireStorageClient,
+} from '@/server/middleware/storageClient';
 
 // Silence console output
 beforeAll(() => {
@@ -33,6 +44,8 @@ function createMocks(params: any = {}, body: any = {}, query: any = {}) {
     params,
     body,
     query,
+    storageClient: mockClient,
+    storageConfig: { endpoint: 'https://localhost:9200' },
   } as unknown as Request;
   const res = {
     json: jest.fn().mockReturnThis(),
@@ -56,6 +69,9 @@ function getRouteHandler(router: any, method: string, path: string) {
 describe('Analytics Storage Routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Default: storage is available
+    (isStorageAvailable as jest.Mock).mockReturnValue(true);
+    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
   describe('GET /api/storage/analytics', () => {
