@@ -11,7 +11,7 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { getOpenSearchClient, isStorageConfigured, INDEXES } from '../../services/opensearchClient.js';
+import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middleware/storageClient.js';
 import {
   SAMPLE_RUNS,
   getSampleRun,
@@ -19,8 +19,9 @@ import {
   getSampleRunsByExperiment,
   getSampleRunsByExperimentRun,
 } from '../../../cli/demo/sampleRuns.js';
-import { createRun, getRunById, updateRun } from '../../services/storage/index.js';
+import { createRunWithClient, getRunByIdWithClient, updateRunWithClient } from '../../services/storage/index.js';
 import type { TestCaseRun } from '../../../types/index.js';
+import type { Client } from '@opensearch-project/opensearch';
 
 const router = Router();
 const INDEX = INDEXES.runs;
@@ -43,9 +44,9 @@ router.get('/api/storage/runs', async (req: Request, res: Response) => {
     let realData: TestCaseRun[] = [];
 
     // Fetch from OpenSearch if configured
-    if (isStorageConfigured()) {
+    if (isStorageAvailable(req)) {
       try {
-        const client = getOpenSearchClient()!;
+        const client = requireStorageClient(req);
         const result = await client.search({
           index: INDEX,
           body: {
@@ -92,11 +93,12 @@ router.get('/api/storage/runs/:id', async (req: Request, res: Response) => {
     }
 
     // Fetch from OpenSearch
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(404).json({ error: 'Run not found' });
     }
 
-    const run = await getRunById(id);
+    const client = requireStorageClient(req);
+    const run = await getRunByIdWithClient(client, id);
     if (!run) {
       return res.status(404).json({ error: 'Run not found' });
     }
@@ -118,11 +120,12 @@ router.post('/api/storage/runs', async (req: Request, res: Response) => {
     }
 
     // Require OpenSearch for writes
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(400).json({ error: 'OpenSearch not configured. Cannot create runs in sample-only mode.' });
     }
 
-    const run = await createRun(runData);
+    const client = requireStorageClient(req);
+    const run = await createRunWithClient(client, runData);
     console.log(`[StorageAPI] Created run: ${run.id}`);
     res.status(201).json(run);
   } catch (error: any) {
@@ -147,11 +150,12 @@ router.patch('/api/storage/runs/:id', async (req: Request, res: Response) => {
     }
 
     // Require OpenSearch for writes
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(400).json({ error: 'OpenSearch not configured. Cannot update runs in sample-only mode.' });
     }
 
-    const updated = await updateRun(id, updates);
+    const client = requireStorageClient(req);
+    const updated = await updateRunWithClient(client, id, updates);
     console.log(`[StorageAPI] Updated run: ${id}`);
     res.json(updated);
   } catch (error: any) {
@@ -174,11 +178,11 @@ router.delete('/api/storage/runs/:id', async (req: Request, res: Response) => {
     }
 
     // Require OpenSearch for writes
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(400).json({ error: 'OpenSearch not configured. Cannot delete runs in sample-only mode.' });
     }
 
-    const client = getOpenSearchClient()!;
+    const client = requireStorageClient(req);
     await client.delete({ index: INDEX, id, refresh: true });
 
     console.log(`[StorageAPI] Deleted run: ${id}`);
@@ -211,7 +215,7 @@ router.post('/api/storage/runs/search', async (req: Request, res: Response) => {
     let realData: TestCaseRun[] = [];
 
     // Fetch from OpenSearch if configured
-    if (isStorageConfigured()) {
+    if (isStorageAvailable(req)) {
       try {
         const must: any[] = [];
         if (experimentId) must.push({ term: { experimentId } });
@@ -230,7 +234,7 @@ router.post('/api/storage/runs/search', async (req: Request, res: Response) => {
           must.push({ range });
         }
 
-        const client = getOpenSearchClient()!;
+        const client = requireStorageClient(req);
         const result = await client.search({
           index: INDEX,
           body: {
@@ -271,9 +275,9 @@ router.get('/api/storage/runs/by-test-case/:testCaseId', async (req: Request, re
     let realData: TestCaseRun[] = [];
 
     // Fetch from OpenSearch if configured
-    if (isStorageConfigured()) {
+    if (isStorageAvailable(req)) {
       try {
-        const client = getOpenSearchClient()!;
+        const client = requireStorageClient(req);
         const result = await client.search({
           index: INDEX,
           body: {
@@ -314,9 +318,9 @@ router.get('/api/storage/runs/by-experiment/:experimentId', async (req: Request,
     let realData: TestCaseRun[] = [];
 
     // Fetch from OpenSearch if configured
-    if (isStorageConfigured()) {
+    if (isStorageAvailable(req)) {
       try {
-        const client = getOpenSearchClient()!;
+        const client = requireStorageClient(req);
         const result = await client.search({
           index: INDEX,
           body: {
@@ -357,9 +361,9 @@ router.get('/api/storage/runs/by-experiment-run/:experimentId/:runId', async (re
     let realData: TestCaseRun[] = [];
 
     // Fetch from OpenSearch if configured
-    if (isStorageConfigured()) {
+    if (isStorageAvailable(req)) {
       try {
-        const client = getOpenSearchClient()!;
+        const client = requireStorageClient(req);
         const result = await client.search({
           index: INDEX,
           body: {
@@ -409,12 +413,12 @@ router.get('/api/storage/runs/iterations/:experimentId/:testCaseId', async (req:
     let realData: TestCaseRun[] = [];
 
     // Fetch from OpenSearch if configured
-    if (isStorageConfigured()) {
+    if (isStorageAvailable(req)) {
       try {
         const must: any[] = [{ term: { experimentId } }, { term: { testCaseId } }];
         if (experimentRunId) must.push({ term: { experimentRunId } });
 
-        const client = getOpenSearchClient()!;
+        const client = requireStorageClient(req);
         const result = await client.search({
           index: INDEX,
           body: {
@@ -458,7 +462,7 @@ router.post('/api/storage/runs/:id/annotations', async (req: Request, res: Respo
     }
 
     // Require OpenSearch for writes
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(400).json({ error: 'OpenSearch not configured. Cannot add annotations in sample-only mode.' });
     }
 
@@ -467,7 +471,7 @@ router.post('/api/storage/runs/:id/annotations', async (req: Request, res: Respo
     annotation.createdAt = new Date().toISOString();
     annotation.updatedAt = annotation.createdAt;
 
-    const client = getOpenSearchClient()!;
+    const client = requireStorageClient(req);
     await client.update({
       index: INDEX, id,
       body: {
@@ -498,13 +502,13 @@ router.put('/api/storage/runs/:id/annotations/:annotationId', async (req: Reques
     }
 
     // Require OpenSearch for writes
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(400).json({ error: 'OpenSearch not configured. Cannot update annotations in sample-only mode.' });
     }
 
     const updates = { ...req.body, updatedAt: new Date().toISOString() };
 
-    const client = getOpenSearchClient()!;
+    const client = requireStorageClient(req);
     await client.update({
       index: INDEX, id,
       body: {
@@ -544,11 +548,11 @@ router.delete('/api/storage/runs/:id/annotations/:annotationId', async (req: Req
     }
 
     // Require OpenSearch for writes
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(400).json({ error: 'OpenSearch not configured. Cannot delete annotations in sample-only mode.' });
     }
 
-    const client = getOpenSearchClient()!;
+    const client = requireStorageClient(req);
     await client.update({
       index: INDEX, id,
       body: {
@@ -583,11 +587,11 @@ router.post('/api/storage/runs/bulk', async (req: Request, res: Response) => {
     }
 
     // Require OpenSearch for writes
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(400).json({ error: 'OpenSearch not configured. Cannot create runs in sample-only mode.' });
     }
 
-    const client = getOpenSearchClient()!;
+    const client = requireStorageClient(req);
     const now = new Date().toISOString();
     const operations: any[] = [];
 

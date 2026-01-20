@@ -13,6 +13,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { storageClientMiddleware } from './storageClient.js';
 
 // Get directory of this file for resolving paths relative to package location
 // Server always runs from server/dist/, so path resolution is straightforward
@@ -77,10 +78,19 @@ function setupStaticServing(app: Express): void {
 }
 
 /**
+ * Setup storage client middleware
+ * Attaches req.storageClient and req.storageConfig to each request
+ */
+function setupStorageClient(app: Express): void {
+  app.use(storageClientMiddleware);
+}
+
+/**
  * Setup all middleware for the Express app
  */
 export function setupMiddleware(app: Express): void {
   setupCors(app);
   setupJsonParser(app);
+  setupStorageClient(app);  // Add storage client before routes
   setupStaticServing(app);
 }

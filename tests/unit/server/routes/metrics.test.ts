@@ -17,10 +17,11 @@ const mockComputeMetrics = computeMetrics as jest.MockedFunction<typeof computeM
 const mockComputeAggregateMetrics = computeAggregateMetrics as jest.MockedFunction<typeof computeAggregateMetrics>;
 
 // Helper to create mock request/response
-function createMocks(params: any = {}, body: any = {}) {
+function createMocks(params: any = {}, body: any = {}, headers: any = {}) {
   const req = {
     params,
     body,
+    headers,
   } as Request;
   const res = {
     json: jest.fn().mockReturnThis(),
@@ -83,12 +84,14 @@ describe('Metrics Routes', () => {
 
       expect(mockComputeMetrics).toHaveBeenCalledWith('test-run-123', expect.objectContaining({
         endpoint: 'http://localhost:9200',
+        username: 'admin',
+        password: 'admin',
         indexPattern: 'otel-traces-*',
       }));
       expect(res.json).toHaveBeenCalledWith(mockMetrics);
     });
 
-    it('should return 500 when OpenSearch not configured', async () => {
+    it('should return 503 when observability not configured', async () => {
       process.env.OPENSEARCH_LOGS_ENDPOINT = '';
 
       const { req, res } = createMocks({ runId: 'test-run-123' });
@@ -96,9 +99,9 @@ describe('Metrics Routes', () => {
 
       await handler(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.status).toHaveBeenCalledWith(503);
       expect(res.json).toHaveBeenCalledWith({
-        error: expect.stringContaining('not configured'),
+        error: 'Observability data source not configured',
       });
     });
 
@@ -190,17 +193,17 @@ describe('Metrics Routes', () => {
       });
     });
 
-    it('should return 500 when OpenSearch not configured', async () => {
-      process.env.OPENSEARCH_LOGS_USERNAME = '';
+    it('should return 503 when observability not configured', async () => {
+      process.env.OPENSEARCH_LOGS_ENDPOINT = '';
 
       const { req, res } = createMocks({}, { runIds: ['run-1'] });
       const handler = getRouteHandler(metricsRoutes, 'post', '/api/metrics/batch');
 
       await handler(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.status).toHaveBeenCalledWith(503);
       expect(res.json).toHaveBeenCalledWith({
-        error: 'OpenSearch traces not configured',
+        error: 'Observability data source not configured',
       });
     });
 

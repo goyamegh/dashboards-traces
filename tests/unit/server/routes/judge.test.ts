@@ -123,7 +123,7 @@ describe('Judge Routes', () => {
           trajectory: expect.any(Array),
           expectedOutcomes: expect.any(Array),
         }),
-        'claude-sonnet-4'
+        expect.any(String) // Resolved model ID from config
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({

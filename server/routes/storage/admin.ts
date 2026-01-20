@@ -9,7 +9,7 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { getOpenSearchClient, isStorageConfigured, INDEXES } from '../../services/opensearchClient';
+import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middleware/storageClient.js';
 import { INDEX_MAPPINGS } from '../../constants/indexMappings';
 import { testStorageConnection } from '../../adapters/index.js';
 import { resolveStorageConfig } from '../../middleware/dataSourceConfig.js';
@@ -85,8 +85,12 @@ router.post('/api/storage/test-connection', async (req: Request, res: Response) 
 
 router.post(
   '/api/storage/init-indexes',
-  asyncHandler(async (_req: Request, res: Response) => {
-    const client = getOpenSearchClient();
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!isStorageAvailable(req)) {
+      return res.status(400).json({ error: 'Storage not configured' });
+    }
+
+    const client = requireStorageClient(req);
     const results: Record<string, any> = {};
 
     for (const [indexName, mapping] of Object.entries(INDEX_MAPPINGS)) {
@@ -117,8 +121,17 @@ router.post(
 
 router.get(
   '/api/storage/stats',
-  asyncHandler(async (_req: Request, res: Response) => {
-    const client = getOpenSearchClient();
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!isStorageAvailable(req)) {
+      // Return empty stats when storage not configured
+      const stats: Record<string, any> = {};
+      for (const indexName of Object.values(INDEXES)) {
+        stats[indexName] = { count: 0, error: 'Storage not configured' };
+      }
+      return res.json({ stats });
+    }
+
+    const client = requireStorageClient(req);
     const stats: Record<string, any> = {};
 
     for (const indexName of Object.values(INDEXES)) {
@@ -140,8 +153,12 @@ router.get(
 
 router.post(
   '/api/storage/backfill-analytics',
-  asyncHandler(async (_req: Request, res: Response) => {
-    const client = getOpenSearchClient();
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!isStorageAvailable(req)) {
+      return res.status(400).json({ error: 'Storage not configured' });
+    }
+
+    const client = requireStorageClient(req);
 
     // Fetch all runs
     const result = await client.search({

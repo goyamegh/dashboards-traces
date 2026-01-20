@@ -27,6 +27,7 @@ jest.mock('@/server/routes/traces', () => ({ default: 'tracesRoutes' }));
 jest.mock('@/server/routes/metrics', () => ({ default: 'metricsRoutes' }));
 jest.mock('@/server/routes/logs', () => ({ default: 'logsRoutes' }));
 jest.mock('@/server/routes/storage', () => ({ default: 'storageRoutes' }));
+jest.mock('@/server/routes/observability', () => ({ default: 'observabilityRoutes' }));
 
 describe('Routes Aggregator', () => {
   beforeEach(() => {
@@ -48,6 +49,7 @@ describe('Routes Aggregator', () => {
     expect(mockUse).toHaveBeenCalledWith('metricsRoutes');
     expect(mockUse).toHaveBeenCalledWith('logsRoutes');
     expect(mockUse).toHaveBeenCalledWith('storageRoutes');
+    expect(mockUse).toHaveBeenCalledWith('observabilityRoutes');
   });
 
   it('should mount routes in the correct order', () => {
@@ -66,6 +68,7 @@ describe('Routes Aggregator', () => {
       'metricsRoutes',
       'logsRoutes',
       'storageRoutes',
+      'observabilityRoutes',
     ]);
   });
 

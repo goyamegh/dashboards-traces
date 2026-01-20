@@ -272,7 +272,7 @@ describe('Traces Service Index', () => {
         expect.stringContaining('/api/traces'),
         expect.objectContaining({
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: expect.objectContaining({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(params),
         })
       );
@@ -398,7 +398,10 @@ describe('Traces Service Index', () => {
       const result = await checkTracesHealth();
 
       expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/traces/health')
+        expect.stringContaining('/api/traces/health'),
+        expect.objectContaining({
+          headers: expect.any(Object),
+        })
       );
       expect(result).toEqual(mockResponse);
     });

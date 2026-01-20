@@ -11,7 +11,7 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { getOpenSearchClient, isStorageConfigured, INDEXES } from '../../services/opensearchClient.js';
+import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middleware/storageClient.js';
 import { SAMPLE_TEST_CASES } from '../../../cli/demo/sampleTestCases.js';
 import type { TestCase } from '../../../types/index.js';
 
@@ -66,14 +66,14 @@ function getSampleTestCases(): TestCase[] {
 }
 
 // GET /api/storage/test-cases - List all (latest versions)
-router.get('/api/storage/test-cases', async (_req: Request, res: Response) => {
+router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
   try {
     let realData: TestCase[] = [];
 
     // Fetch from OpenSearch if configured
-    if (isStorageConfigured()) {
+    if (isStorageAvailable(req)) {
       try {
-        const client = getOpenSearchClient()!;
+        const client = requireStorageClient(req);
 
         // Get latest version of each test case using aggregation
         const result = await client.search({
@@ -138,11 +138,11 @@ router.get('/api/storage/test-cases/:id', async (req: Request, res: Response) =>
     }
 
     // Fetch from OpenSearch
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(404).json({ error: 'Test case not found' });
     }
 
-    const client = getOpenSearchClient()!;
+    const client = requireStorageClient(req);
     const result = await client.search({
       index: INDEX,
       body: {
@@ -178,11 +178,11 @@ router.get('/api/storage/test-cases/:id/versions', async (req: Request, res: Res
       return res.status(404).json({ error: 'Test case not found' });
     }
 
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(404).json({ error: 'Test case not found' });
     }
 
-    const client = getOpenSearchClient()!;
+    const client = requireStorageClient(req);
     const result = await client.search({
       index: INDEX,
       body: {
@@ -216,11 +216,11 @@ router.get('/api/storage/test-cases/:id/versions/:version', async (req: Request,
       return res.status(404).json({ error: 'Test case version not found' });
     }
 
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(404).json({ error: 'Test case version not found' });
     }
 
-    const client = getOpenSearchClient()!;
+    const client = requireStorageClient(req);
     const result = await client.search({
       index: INDEX,
       body: {
@@ -255,11 +255,11 @@ router.post('/api/storage/test-cases', async (req: Request, res: Response) => {
     }
 
     // Require OpenSearch for writes
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(400).json({ error: 'OpenSearch not configured. Cannot create new test cases in sample-only mode.' });
     }
 
-    const client = getOpenSearchClient()!;
+    const client = requireStorageClient(req);
 
     if (!testCase.id) testCase.id = generateId();
     testCase.version = 1;
@@ -288,11 +288,11 @@ router.put('/api/storage/test-cases/:id', async (req: Request, res: Response) =>
     }
 
     // Require OpenSearch for writes
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(400).json({ error: 'OpenSearch not configured. Cannot update test cases in sample-only mode.' });
     }
 
-    const client = getOpenSearchClient()!;
+    const client = requireStorageClient(req);
 
     // Get current latest version
     const searchResult = await client.search({
@@ -336,11 +336,11 @@ router.delete('/api/storage/test-cases/:id', async (req: Request, res: Response)
     }
 
     // Require OpenSearch for writes
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(400).json({ error: 'OpenSearch not configured. Cannot delete test cases in sample-only mode.' });
     }
 
-    const client = getOpenSearchClient()!;
+    const client = requireStorageClient(req);
 
     const result = await client.deleteByQuery({
       index: INDEX,
@@ -372,11 +372,11 @@ router.post('/api/storage/test-cases/bulk', async (req: Request, res: Response) 
     }
 
     // Require OpenSearch for writes
-    if (!isStorageConfigured()) {
+    if (!isStorageAvailable(req)) {
       return res.status(400).json({ error: 'OpenSearch not configured. Cannot create test cases in sample-only mode.' });
     }
 
-    const client = getOpenSearchClient()!;
+    const client = requireStorageClient(req);
     const now = new Date().toISOString();
     const operations: any[] = [];
 

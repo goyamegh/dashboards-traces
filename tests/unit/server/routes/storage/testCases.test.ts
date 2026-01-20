@@ -6,22 +6,32 @@
 import { Request, Response } from 'express';
 import testCasesRoutes from '@/server/routes/storage/testCases';
 
-// Mock the opensearchClient
+// Mock client methods
 const mockSearch = jest.fn();
 const mockIndex = jest.fn();
 const mockDeleteByQuery = jest.fn();
 const mockBulk = jest.fn();
 
-jest.mock('@/server/services/opensearchClient', () => ({
-  getOpenSearchClient: () => ({
-    search: mockSearch,
-    index: mockIndex,
-    deleteByQuery: mockDeleteByQuery,
-    bulk: mockBulk,
-  }),
-  isStorageConfigured: jest.fn().mockReturnValue(true),
+// Create mock client
+const mockClient = {
+  search: mockSearch,
+  index: mockIndex,
+  deleteByQuery: mockDeleteByQuery,
+  bulk: mockBulk,
+};
+
+// Mock the storageClient middleware
+jest.mock('@/server/middleware/storageClient', () => ({
+  isStorageAvailable: jest.fn(),
+  requireStorageClient: jest.fn(),
   INDEXES: { testCases: 'test-cases-index' },
 }));
+
+// Import mocked functions
+import {
+  isStorageAvailable,
+  requireStorageClient,
+} from '@/server/middleware/storageClient';
 
 // Mock sample test cases
 jest.mock('@/cli/demo/sampleTestCases', () => ({
@@ -52,7 +62,12 @@ afterAll(() => {
 
 // Helper to create mock request/response
 function createMocks(params: any = {}, body: any = {}) {
-  const req = { params, body } as Request;
+  const req = {
+    params,
+    body,
+    storageClient: mockClient,
+    storageConfig: { endpoint: 'https://localhost:9200' },
+  } as unknown as Request;
   const res = {
     json: jest.fn().mockReturnThis(),
     status: jest.fn().mockReturnThis(),
@@ -75,6 +90,9 @@ function getRouteHandler(router: any, method: string, path: string) {
 describe('Test Cases Storage Routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Default: storage is available
+    (isStorageAvailable as jest.Mock).mockReturnValue(true);
+    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
   describe('GET /api/storage/test-cases', () => {
@@ -591,13 +609,11 @@ describe('Test Cases Storage Routes', () => {
 
   describe('Storage Not Configured - fallback behavior', () => {
     beforeEach(() => {
-      const { isStorageConfigured } = require('@/server/services/opensearchClient');
-      isStorageConfigured.mockReturnValue(false);
+      (isStorageAvailable as jest.Mock).mockReturnValue(false);
     });
 
     afterEach(() => {
-      const { isStorageConfigured } = require('@/server/services/opensearchClient');
-      isStorageConfigured.mockReturnValue(true);
+      (isStorageAvailable as jest.Mock).mockReturnValue(true);
     });
 
     it('GET /api/storage/test-cases/:id should return 404 when storage not configured', async () => {

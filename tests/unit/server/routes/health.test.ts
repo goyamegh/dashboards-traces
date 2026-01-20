@@ -4,6 +4,12 @@
  */
 
 import { Request, Response } from 'express';
+
+// Mock the version utility
+jest.mock('@/server/utils/version', () => ({
+  getVersion: jest.fn().mockReturnValue('1.0.0'),
+}));
+
 import healthRoutes from '@/server/routes/health';
 
 // Helper to create mock request/response
@@ -35,7 +41,8 @@ describe('Health Routes', () => {
 
       expect(res.json).toHaveBeenCalledWith({
         status: 'ok',
-        service: 'bedrock-judge-proxy',
+        version: '1.0.0',
+        service: 'agent-health',
       });
     });
   });

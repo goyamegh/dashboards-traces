@@ -6,7 +6,7 @@
 import { Request, Response } from 'express';
 import experimentsRoutes from '@/server/routes/storage/experiments';
 
-// Mock the opensearchClient
+// Mock client methods
 const mockSearch = jest.fn();
 const mockIndex = jest.fn();
 const mockGet = jest.fn();
@@ -14,18 +14,28 @@ const mockUpdate = jest.fn();
 const mockDelete = jest.fn();
 const mockBulk = jest.fn();
 
-jest.mock('@/server/services/opensearchClient', () => ({
-  getOpenSearchClient: () => ({
-    search: mockSearch,
-    index: mockIndex,
-    get: mockGet,
-    update: mockUpdate,
-    delete: mockDelete,
-    bulk: mockBulk,
-  }),
-  isStorageConfigured: jest.fn().mockReturnValue(true),
+// Create mock client
+const mockClient = {
+  search: mockSearch,
+  index: mockIndex,
+  get: mockGet,
+  update: mockUpdate,
+  delete: mockDelete,
+  bulk: mockBulk,
+};
+
+// Mock the storageClient middleware
+jest.mock('@/server/middleware/storageClient', () => ({
+  isStorageAvailable: jest.fn(),
+  requireStorageClient: jest.fn(),
   INDEXES: { experiments: 'experiments-index', testCases: 'test-cases-index' },
 }));
+
+// Import mocked functions
+import {
+  isStorageAvailable,
+  requireStorageClient,
+} from '@/server/middleware/storageClient';
 
 // Mock sample experiments
 jest.mock('@/cli/demo/sampleExperiments', () => ({
@@ -91,6 +101,8 @@ function createMocks(params: any = {}, body: any = {}) {
     params,
     body,
     on: jest.fn(),
+    storageClient: mockClient,
+    storageConfig: { endpoint: 'https://localhost:9200' },
   } as unknown as Request;
   const res = {
     json: jest.fn().mockReturnThis(),
@@ -119,6 +131,9 @@ function getRouteHandler(router: any, method: string, path: string) {
 describe('Experiments Storage Routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Default: storage is available
+    (isStorageAvailable as jest.Mock).mockReturnValue(true);
+    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
   describe('GET /api/storage/experiments', () => {
@@ -660,13 +675,12 @@ describe('Experiments Storage Routes', () => {
 describe('Experiments Storage Routes - OpenSearch not configured', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    const { isStorageConfigured } = require('@/server/services/opensearchClient');
-    (isStorageConfigured as jest.Mock).mockReturnValue(false);
+    (isStorageAvailable as jest.Mock).mockReturnValue(false);
   });
 
   afterEach(() => {
-    const { isStorageConfigured } = require('@/server/services/opensearchClient');
-    (isStorageConfigured as jest.Mock).mockReturnValue(true);
+    (isStorageAvailable as jest.Mock).mockReturnValue(true);
+    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
   it('GET /api/storage/experiments/:id should return 404 for non-sample ID when not configured', async () => {
@@ -759,9 +773,8 @@ describe('Experiments Storage Routes - Error Handling', () => {
 
   describe('GET /api/storage/experiments - Error cases', () => {
     it('should handle unexpected errors and return 500', async () => {
-      // Mock isStorageConfigured to throw
-      const { isStorageConfigured } = require('@/server/services/opensearchClient');
-      (isStorageConfigured as jest.Mock).mockImplementation(() => {
+      // Mock isStorageAvailable to throw
+      (isStorageAvailable as jest.Mock).mockImplementation(() => {
         throw new Error('Unexpected error');
       });
 
@@ -774,7 +787,8 @@ describe('Experiments Storage Routes - Error Handling', () => {
       expect(res.json).toHaveBeenCalledWith({ error: 'Unexpected error' });
 
       // Restore
-      (isStorageConfigured as jest.Mock).mockReturnValue(true);
+      (isStorageAvailable as jest.Mock).mockReturnValue(true);
+      (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
     });
   });
 

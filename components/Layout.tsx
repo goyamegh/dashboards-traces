@@ -14,6 +14,7 @@ import {
 } from "lucide-react";
 import OpenSearchLogo from "@/assets/opensearch-logo.svg";
 import { Link, useLocation } from "react-router-dom";
+import { useServerStatus } from "@/hooks/useServerStatus";
 import {
   Sidebar,
   SidebarContent,
@@ -47,6 +48,7 @@ const settingsItems = [
 
 export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
+  const { status, version, loading } = useServerStatus();
 
   return (
     <SidebarProvider>
@@ -116,11 +118,19 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                 Status
               </h4>
               <div className="flex items-center space-x-2 text-sm">
-                <span className="w-2 h-2 bg-opensearch-blue rounded-full animate-pulse"></span>
-                <span className="text-opensearch-blue">Server Online</span>
+                <span
+                  className={`w-2 h-2 rounded-full ${
+                    status === 'online'
+                      ? 'bg-green-400 animate-pulse'
+                      : 'bg-red-500'
+                  }`}
+                ></span>
+                <span className={status === 'online' ? 'text-green-400' : 'text-red-500'}>
+                  {status === 'online' ? 'Server Online' : 'Server Offline'}
+                </span>
               </div>
               <div className="mt-2 text-xs text-sidebar-foreground/50 font-mono">
-                v0.0.39-beta
+                {loading ? '...' : version ? `v${version}` : '—'}
               </div>
             </CardContent>
           </Card>
