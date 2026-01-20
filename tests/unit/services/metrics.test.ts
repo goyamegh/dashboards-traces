@@ -116,7 +116,10 @@ describe('metrics API functions', () => {
       const result = await fetchRunMetrics('test-run-123');
 
       expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('/api/metrics/test-run-123')
+        expect.stringContaining('/api/metrics/test-run-123'),
+        expect.objectContaining({
+          headers: expect.any(Object),
+        })
       );
       expect(result).toEqual(mockMetrics);
     });
@@ -131,7 +134,8 @@ describe('metrics API functions', () => {
       await fetchRunMetrics('run/with/slashes');
 
       expect(global.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('run%2Fwith%2Fslashes')
+        expect.stringContaining('run%2Fwith%2Fslashes'),
+        expect.any(Object)
       );
     });
 

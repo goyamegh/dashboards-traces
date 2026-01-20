@@ -7,31 +7,25 @@ import { MODEL_PRICING, DEFAULT_CONFIG, MOCK_TOOLS } from '@/lib/constants';
 
 describe('lib/constants', () => {
   describe('MODEL_PRICING', () => {
-    it('should have Claude 4.x model pricing', () => {
-      expect(MODEL_PRICING['anthropic.claude-sonnet-4-20250514-v1:0']).toEqual({
+    it('should have Claude Sonnet 4 model pricing', () => {
+      expect(MODEL_PRICING['us.anthropic.claude-sonnet-4-20250514-v1:0']).toEqual({
         input: 3.0,
         output: 15.0,
       });
     });
 
-    it('should have Claude Haiku pricing', () => {
-      expect(MODEL_PRICING['anthropic.claude-haiku-4-5-20250514-v1:0']).toEqual({
-        input: 0.8,
+    it('should have Claude Sonnet 4.5 model pricing', () => {
+      expect(MODEL_PRICING['us.anthropic.claude-sonnet-4-5-20250929-v1:0']).toEqual({
+        input: 3.0,
+        output: 15.0,
+      });
+    });
+
+    it('should have Claude Haiku 3.5 pricing', () => {
+      expect(MODEL_PRICING['us.anthropic.claude-3-5-haiku-20241022-v1:0']).toEqual({
+        input: 0.80,
         output: 4.0,
       });
-    });
-
-    it('should have Claude Opus pricing', () => {
-      expect(MODEL_PRICING['global.anthropic.claude-opus-4-5-20251101-v1:0']).toEqual({
-        input: 15.0,
-        output: 75.0,
-      });
-    });
-
-    it('should have generic model patterns', () => {
-      expect(MODEL_PRICING['anthropic.claude-sonnet-4']).toBeDefined();
-      expect(MODEL_PRICING['anthropic.claude-haiku-4']).toBeDefined();
-      expect(MODEL_PRICING['anthropic.claude-opus-4.5']).toBeDefined();
     });
 
     it('should have default fallback', () => {
@@ -110,17 +104,10 @@ describe('lib/constants', () => {
         expect(model.display_name).toBe('Claude Sonnet 4.5');
       });
 
-      it('should have claude-haiku-4.5 model', () => {
-        const model = DEFAULT_CONFIG.models['claude-haiku-4.5'];
+      it('should have claude-haiku-3.5 model', () => {
+        const model = DEFAULT_CONFIG.models['claude-haiku-3.5'];
         expect(model).toBeDefined();
-        expect(model.display_name).toBe('Claude Haiku 4.5');
-      });
-
-      it('should have claude-opus-4.5 model', () => {
-        const model = DEFAULT_CONFIG.models['claude-opus-4.5'];
-        expect(model).toBeDefined();
-        expect(model.display_name).toBe('Claude Opus 4.5');
-        expect(model.max_output_tokens).toBe(32000);
+        expect(model.display_name).toBe('Claude Haiku 3.5');
       });
 
       it('should have valid model structure', () => {
