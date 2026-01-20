@@ -9,6 +9,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Check DCO signoff
-        uses: tisonkun/actions-dco@v1.2
+        uses: tisonkun/actions-dco@v1.1
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
