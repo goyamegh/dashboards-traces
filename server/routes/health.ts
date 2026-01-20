@@ -8,6 +8,7 @@
  */
 
 import { Request, Response, Router } from 'express';
+import { getVersion } from '../utils/version';
 
 const router = Router();
 
@@ -15,7 +16,11 @@ const router = Router();
  * GET /health - Simple health check endpoint
  */
 router.get('/health', (req: Request, res: Response) => {
-  res.json({ status: 'ok', service: 'bedrock-judge-proxy' });
+  res.json({
+    status: 'ok',
+    version: getVersion(),
+    service: 'agent-health'
+  });
 });
 
 export default router;

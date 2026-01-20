@@ -6,7 +6,7 @@
 import { Request, Response } from 'express';
 import runsRoutes from '@/server/routes/storage/runs';
 
-// Mock the opensearchClient
+// Mock client methods
 const mockSearch = jest.fn();
 const mockIndex = jest.fn();
 const mockGet = jest.fn();
@@ -14,18 +14,28 @@ const mockUpdate = jest.fn();
 const mockDelete = jest.fn();
 const mockBulk = jest.fn();
 
-jest.mock('@/server/services/opensearchClient', () => ({
-  getOpenSearchClient: () => ({
-    search: mockSearch,
-    index: mockIndex,
-    get: mockGet,
-    update: mockUpdate,
-    delete: mockDelete,
-    bulk: mockBulk,
-  }),
-  isStorageConfigured: jest.fn().mockReturnValue(true),
-  INDEXES: { runs: 'runs-index' },
+// Create mock client
+const mockClient = {
+  search: mockSearch,
+  index: mockIndex,
+  get: mockGet,
+  update: mockUpdate,
+  delete: mockDelete,
+  bulk: mockBulk,
+};
+
+// Mock the storageClient middleware
+jest.mock('@/server/middleware/storageClient', () => ({
+  isStorageAvailable: jest.fn(),
+  requireStorageClient: jest.fn(),
+  INDEXES: { runs: 'runs-index', analytics: 'analytics-index' },
 }));
+
+// Import mocked functions
+import {
+  isStorageAvailable,
+  requireStorageClient,
+} from '@/server/middleware/storageClient';
 
 // Mock sample runs
 jest.mock('@/cli/demo/sampleRuns', () => ({
@@ -83,15 +93,15 @@ jest.mock('@/cli/demo/sampleRuns', () => ({
   },
 }));
 
-// Mock storage service
-const mockCreateRun = jest.fn();
-const mockGetRunById = jest.fn();
-const mockUpdateRun = jest.fn();
+// Mock storage service (using WithClient versions)
+const mockCreateRunWithClient = jest.fn();
+const mockGetRunByIdWithClient = jest.fn();
+const mockUpdateRunWithClient = jest.fn();
 
 jest.mock('@/server/services/storage/index', () => ({
-  createRun: (...args: any[]) => mockCreateRun(...args),
-  getRunById: (...args: any[]) => mockGetRunById(...args),
-  updateRun: (...args: any[]) => mockUpdateRun(...args),
+  createRunWithClient: (...args: any[]) => mockCreateRunWithClient(...args),
+  getRunByIdWithClient: (...args: any[]) => mockGetRunByIdWithClient(...args),
+  updateRunWithClient: (...args: any[]) => mockUpdateRunWithClient(...args),
 }));
 
 // Silence console output
@@ -111,6 +121,8 @@ function createMocks(params: any = {}, body: any = {}, query: any = {}) {
     params,
     body,
     query,
+    storageClient: mockClient,
+    storageConfig: { endpoint: 'https://localhost:9200' },
   } as unknown as Request;
   const res = {
     json: jest.fn().mockReturnThis(),
@@ -134,6 +146,9 @@ function getRouteHandler(router: any, method: string, path: string) {
 describe('Runs Storage Routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Default: storage is available
+    (isStorageAvailable as jest.Mock).mockReturnValue(true);
+    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
   describe('GET /api/storage/runs', () => {
@@ -213,7 +228,7 @@ describe('Runs Storage Routes', () => {
     });
 
     it('should fetch from OpenSearch for non-sample ID', async () => {
-      mockGetRunById.mockResolvedValue({
+      mockGetRunByIdWithClient.mockResolvedValue({
         id: 'run-123',
         testCaseId: 'tc-123',
       });
@@ -223,14 +238,14 @@ describe('Runs Storage Routes', () => {
 
       await handler(req, res);
 
-      expect(mockGetRunById).toHaveBeenCalledWith('run-123');
+      expect(mockGetRunByIdWithClient).toHaveBeenCalledWith(mockClient, 'run-123');
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'run-123' })
       );
     });
 
     it('should return 404 when run not found', async () => {
-      mockGetRunById.mockResolvedValue(null);
+      mockGetRunByIdWithClient.mockResolvedValue(null);
 
       const { req, res } = createMocks({ id: 'run-nonexistent' });
       const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/:id');
@@ -258,14 +273,14 @@ describe('Runs Storage Routes', () => {
 
     it('should create new run', async () => {
       const newRun = { id: 'run-123', testCaseId: 'tc-123', status: 'pending' };
-      mockCreateRun.mockResolvedValue(newRun);
+      mockCreateRunWithClient.mockResolvedValue(newRun);
 
       const { req, res } = createMocks({}, { testCaseId: 'tc-123' });
       const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
 
       await handler(req, res);
 
-      expect(mockCreateRun).toHaveBeenCalled();
+      expect(mockCreateRunWithClient).toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(201);
       expect(res.json).toHaveBeenCalledWith(newRun);
     });
@@ -298,21 +313,21 @@ describe('Runs Storage Routes', () => {
 
     it('should update run', async () => {
       const updatedRun = { id: 'run-123', status: 'completed' };
-      mockUpdateRun.mockResolvedValue(updatedRun);
+      mockUpdateRunWithClient.mockResolvedValue(updatedRun);
 
       const { req, res } = createMocks({ id: 'run-123' }, { status: 'completed' });
       const handler = getRouteHandler(runsRoutes, 'patch', '/api/storage/runs/:id');
 
       await handler(req, res);
 
-      expect(mockUpdateRun).toHaveBeenCalledWith('run-123', { status: 'completed' });
+      expect(mockUpdateRunWithClient).toHaveBeenCalledWith(mockClient, 'run-123', { status: 'completed' });
       expect(res.json).toHaveBeenCalledWith(updatedRun);
     });
 
     it('should return 404 when run not found', async () => {
       const error: any = new Error('Not found');
       error.meta = { statusCode: 404 };
-      mockUpdateRun.mockRejectedValue(error);
+      mockUpdateRunWithClient.mockRejectedValue(error);
 
       const { req, res } = createMocks({ id: 'run-nonexistent' }, { status: 'completed' });
       const handler = getRouteHandler(runsRoutes, 'patch', '/api/storage/runs/:id');
@@ -742,13 +757,12 @@ describe('Runs Storage Routes', () => {
 describe('Runs Storage Routes - OpenSearch not configured', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    const { isStorageConfigured } = require('@/server/services/opensearchClient');
-    (isStorageConfigured as jest.Mock).mockReturnValue(false);
+    (isStorageAvailable as jest.Mock).mockReturnValue(false);
   });
 
   afterEach(() => {
-    const { isStorageConfigured } = require('@/server/services/opensearchClient');
-    (isStorageConfigured as jest.Mock).mockReturnValue(true);
+    (isStorageAvailable as jest.Mock).mockReturnValue(true);
+    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
   it('GET /api/storage/runs/:id should return 404 for non-sample ID when not configured', async () => {
@@ -832,12 +846,12 @@ describe('Runs Storage Routes - OpenSearch not configured', () => {
 describe('Runs Storage Routes - Error Handling (500 errors)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    const { isStorageConfigured } = require('@/server/services/opensearchClient');
-    (isStorageConfigured as jest.Mock).mockReturnValue(true);
+    (isStorageAvailable as jest.Mock).mockReturnValue(true);
+    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
   it('GET /api/storage/runs/:id should handle errors', async () => {
-    mockGetRunById.mockRejectedValue(new Error('Database error'));
+    mockGetRunByIdWithClient.mockRejectedValue(new Error('Database error'));
 
     const { req, res } = createMocks({ id: 'run-123' });
     const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/:id');
@@ -849,7 +863,7 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
   });
 
   it('POST /api/storage/runs should handle errors', async () => {
-    mockCreateRun.mockRejectedValue(new Error('Create failed'));
+    mockCreateRunWithClient.mockRejectedValue(new Error('Create failed'));
 
     const { req, res } = createMocks({}, { testCaseId: 'tc-123' });
     const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
@@ -861,7 +875,7 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
   });
 
   it('PATCH /api/storage/runs/:id should handle non-404 errors', async () => {
-    mockUpdateRun.mockRejectedValue(new Error('Update failed'));
+    mockUpdateRunWithClient.mockRejectedValue(new Error('Update failed'));
 
     const { req, res } = createMocks({ id: 'run-123' }, { status: 'completed' });
     const handler = getRouteHandler(runsRoutes, 'patch', '/api/storage/runs/:id');

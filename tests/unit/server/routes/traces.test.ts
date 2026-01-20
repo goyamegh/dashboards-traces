@@ -35,9 +35,10 @@ const mockGetAllSampleTraceSpans = getAllSampleTraceSpans as jest.MockedFunction
 const mockIsSampleTraceId = isSampleTraceId as jest.MockedFunction<typeof isSampleTraceId>;
 
 // Helper to create mock request/response
-function createMocks(body: any = {}) {
+function createMocks(body: any = {}, headers: any = {}) {
   const req = {
     body,
+    headers,
   } as Request;
   const res = {
     json: jest.fn().mockReturnThis(),

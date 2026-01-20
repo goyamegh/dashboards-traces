@@ -5,9 +5,21 @@
 
 /**
  * OpenSearch Client Service
- * Provides a singleton client for OpenSearch storage operations using the official SDK.
  *
- * Storage is optional - when not configured, APIs return sample data only.
+ * NOTE: This file provides a singleton client based on environment variables.
+ * For request-scoped clients that respect UI-configured data sources, use
+ * the storageClient middleware instead:
+ *
+ *   import { isStorageAvailable, requireStorageClient } from '../middleware/storageClient.js';
+ *
+ * The middleware attaches `req.storageClient` to each request after resolving
+ * configuration from headers (X-Storage-*) or environment variables.
+ *
+ * This singleton is still useful for:
+ * - Server startup logging (checking if env vars are configured)
+ * - Background jobs that don't have a request context
+ *
+ * @see server/middleware/storageClient.ts for request-scoped clients
  */
 
 import { Client } from '@opensearch-project/opensearch';
@@ -31,6 +43,12 @@ export function isStorageConfigured(): boolean {
 /**
  * Get or create the OpenSearch client singleton.
  * Returns null if storage is not configured.
+ *
+ * @deprecated For route handlers, use the request-scoped client from middleware:
+ *   `const client = requireStorageClient(req);`
+ *
+ * This function only checks environment variables and doesn't respect
+ * UI-configured data sources passed via headers.
  */
 export function getOpenSearchClient(): Client | null {
   if (!clientInitialized) {

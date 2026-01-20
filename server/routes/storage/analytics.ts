@@ -8,7 +8,7 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { getOpenSearchClient, INDEXES } from '../../services/opensearchClient';
+import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middleware/storageClient.js';
 
 const router = Router();
 const INDEX = INDEXES.analytics;
@@ -16,6 +16,10 @@ const INDEX = INDEXES.analytics;
 // GET /api/storage/analytics - Query with filters
 router.get('/api/storage/analytics', async (req: Request, res: Response) => {
   try {
+    if (!isStorageAvailable(req)) {
+      return res.json({ records: [], total: 0 });
+    }
+
     const { experimentId, testCaseId, agentId, modelId, passFailStatus, size = '1000', from = '0' } = req.query;
 
     const must: any[] = [];
@@ -25,7 +29,7 @@ router.get('/api/storage/analytics', async (req: Request, res: Response) => {
     if (modelId) must.push({ term: { modelId } });
     if (passFailStatus) must.push({ term: { passFailStatus } });
 
-    const client = getOpenSearchClient();
+    const client = requireStorageClient(req);
     const result = await client.search({
       index: INDEX,
       body: {
@@ -48,12 +52,16 @@ router.get('/api/storage/analytics', async (req: Request, res: Response) => {
 // GET /api/storage/analytics/aggregations - Aggregated metrics
 router.get('/api/storage/analytics/aggregations', async (req: Request, res: Response) => {
   try {
+    if (!isStorageAvailable(req)) {
+      return res.json({ aggregations: [], groupBy: req.query.groupBy || 'agentId' });
+    }
+
     const { experimentId, groupBy = 'agentId' } = req.query;
 
     const must: any[] = [];
     if (experimentId) must.push({ term: { experimentId } });
 
-    const client = getOpenSearchClient();
+    const client = requireStorageClient(req);
     const result = await client.search({
       index: INDEX,
       body: {
@@ -100,6 +108,10 @@ router.get('/api/storage/analytics/aggregations', async (req: Request, res: Resp
 // POST /api/storage/analytics/search - Complex search with custom aggs
 router.post('/api/storage/analytics/search', async (req: Request, res: Response) => {
   try {
+    if (!isStorageAvailable(req)) {
+      return res.json({ records: [], total: 0, aggregations: {} });
+    }
+
     const { filters, aggs, size = 1000, from = 0 } = req.body;
 
     const body: any = {
@@ -123,7 +135,7 @@ router.post('/api/storage/analytics/search', async (req: Request, res: Response)
 
     if (aggs) body.aggs = aggs;
 
-    const client = getOpenSearchClient();
+    const client = requireStorageClient(req);
     const result = await client.search({ index: INDEX, body });
 
     const records = result.body.hits?.hits?.map((hit: any) => hit._source) || [];
