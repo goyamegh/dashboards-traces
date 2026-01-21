@@ -92,8 +92,10 @@ describe('Judge Routes', () => {
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           passFailStatus: expect.stringMatching(/passed|failed/),
-          accuracy: expect.any(Number),
-          reasoning: expect.any(String),
+          metrics: expect.objectContaining({
+            accuracy: expect.any(Number),
+          }),
+          llmJudgeReasoning: expect.any(String),
         })
       );
     });
@@ -173,8 +175,10 @@ describe('Judge Routes', () => {
       // With tool calls and conclusion, should have higher accuracy
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          accuracy: expect.any(Number),
-          reasoning: expect.stringContaining('diagnostic tools'),
+          metrics: expect.objectContaining({
+            accuracy: expect.any(Number),
+          }),
+          llmJudgeReasoning: expect.stringContaining('diagnostic tools'),
         })
       );
     });
