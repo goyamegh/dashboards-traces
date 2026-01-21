@@ -17,6 +17,8 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Enhanced storage route tests with additional coverage
 
 ### Changed
+- Renamed Experiment to Benchmark throughout the codebase for clearer terminology
+- Enhanced benchmark and run storage with improved sorting and field limits
 - Simplified CLI by removing demo and configure commands
 - Updated setup script with improved AWS profile handling and service shutdown logic
 - Refactored agentService to use mock:// endpoint prefix for demo mode
