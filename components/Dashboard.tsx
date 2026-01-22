@@ -251,9 +251,9 @@ export const Dashboard: React.FC = () => {
   const hasData = benchmarks.length > 0 && benchmarks.some(b => b.runs && b.runs.length > 0);
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-8">
+    <div className="p-6 max-w-7xl mx-auto space-y-8" data-testid="dashboard-page">
       <div>
-        <h2 className="text-2xl font-bold">Leaderboard Overview</h2>
+        <h2 className="text-2xl font-bold" data-testid="dashboard-title">Leaderboard Overview</h2>
         <p className="text-muted-foreground">Monitor agent performance trends and compare benchmark metrics</p>
       </div>
 

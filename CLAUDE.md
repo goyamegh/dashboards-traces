@@ -45,6 +45,10 @@ npm run build   # TypeScript compile + Vite production build
 npm test                    # Run all tests (unit + integration)
 npm run test:unit           # Unit tests only
 npm run test:integration    # Integration tests only
+npm run test:e2e            # E2E tests with Playwright
+npm run test:e2e:ui         # E2E tests with Playwright UI mode
+npm run test:e2e:report     # View Playwright HTML report
+npm run test:all            # Run all tests (unit + integration + e2e)
 npm test -- --watch         # Watch mode
 npm test -- path/to/file.test.ts  # Single test file
 ```

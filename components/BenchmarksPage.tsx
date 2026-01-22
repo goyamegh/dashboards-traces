@@ -358,11 +358,11 @@ export const BenchmarksPage: React.FC = () => {
   }
 
   return (
-    <div className="p-6 h-full flex flex-col">
+    <div className="p-6 h-full flex flex-col" data-testid="benchmarks-page">
       {/* Header */}
       <div className="flex justify-between items-center mb-6">
         <div>
-          <h2 className="text-2xl font-bold">Benchmarks</h2>
+          <h2 className="text-2xl font-bold" data-testid="benchmarks-title">Benchmarks</h2>
           <p className="text-xs text-muted-foreground mt-1">
             {benchmarks.length} benchmark{benchmarks.length !== 1 ? 's' : ''} created
           </p>
@@ -370,6 +370,7 @@ export const BenchmarksPage: React.FC = () => {
         <Button
           onClick={handleNewBenchmark}
           className="bg-opensearch-blue hover:bg-blue-600 text-white"
+          data-testid="new-benchmark-button"
         >
           <Plus size={18} className="mr-2" />
           New Benchmark

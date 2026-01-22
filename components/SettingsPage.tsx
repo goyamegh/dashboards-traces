@@ -494,8 +494,8 @@ export const SettingsPage: React.FC = () => {
   };
 
   return (
-    <div className="p-6 max-w-4xl mx-auto">
-      <h2 className="text-2xl font-bold mb-6">Settings</h2>
+    <div className="p-6 max-w-4xl mx-auto" data-testid="settings-page">
+      <h2 className="text-2xl font-bold mb-6" data-testid="settings-title">Settings</h2>
 
       {/* Debug Settings */}
       <Card className="mb-6">

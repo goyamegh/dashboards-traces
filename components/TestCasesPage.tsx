@@ -485,11 +485,11 @@ export const TestCasesPage: React.FC = () => {
   };
 
   return (
-    <div className="p-6 max-w-7xl mx-auto space-y-6">
+    <div className="p-6 max-w-7xl mx-auto space-y-6" data-testid="test-cases-page">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
-          <h2 className="text-2xl font-bold">Test Cases</h2>
+          <h2 className="text-2xl font-bold" data-testid="test-cases-title">Test Cases</h2>
           <p className="text-muted-foreground">
             Manage your test case library ({testCases.length} total)
           </p>
@@ -506,11 +506,12 @@ export const TestCasesPage: React.FC = () => {
             variant="outline"
             onClick={() => fileInputRef.current?.click()}
             disabled={isImporting}
+            data-testid="import-json-button"
           >
             <Upload size={16} className="mr-2" />
             {isImporting ? 'Importing...' : 'Import JSON'}
           </Button>
-          <Button onClick={handleCreateNew}>
+          <Button onClick={handleCreateNew} data-testid="new-test-case-button">
             <Plus size={16} className="mr-2" />
             New Test Case
           </Button>
@@ -535,6 +536,7 @@ export const TestCasesPage: React.FC = () => {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 className="pl-9"
+                data-testid="search-test-cases"
               />
             </div>
 

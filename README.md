@@ -110,6 +110,9 @@ See `.env.example` for all available options.
 | `npm test` | Run all tests |
 | `npm run test:unit` | Run unit tests only |
 | `npm run test:integration` | Run integration tests only |
+| `npm run test:e2e` | Run E2E tests with Playwright |
+| `npm run test:e2e:ui` | Run E2E tests with Playwright UI |
+| `npm run test:all` | Run all tests (unit + integration + e2e) |
 | `npm test -- --coverage` | Run tests with coverage report |
 | `npm run build:all` | Build UI + server + CLI |
 | `npm run build:cli` | Build CLI only |
