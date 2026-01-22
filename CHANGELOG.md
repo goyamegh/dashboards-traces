@@ -10,6 +10,11 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ## [Unreleased]
 
 ### Added
+- JSON import functionality for test cases with automatic benchmark creation ([#20](https://github.com/opensearch-project/dashboards-traces/pull/20))
+- Benchmark run cancellation with state management and status transitions ([#20](https://github.com/opensearch-project/dashboards-traces/pull/20))
+- Integration tests for benchmark cancellation and JSON import workflows ([#20](https://github.com/opensearch-project/dashboards-traces/pull/20))
+- Collapsible "Evals" section in sidebar navigation ([#20](https://github.com/opensearch-project/dashboards-traces/pull/20))
+- NPX usage instructions in documentation ([#20](https://github.com/opensearch-project/dashboards-traces/pull/20))
 - Request-scoped storage client middleware for dynamic data source configuration
 - Comprehensive unit tests for flow transformation and trace polling
 - Unit tests for trace statistics, utility functions, and trajectory diff service
@@ -17,6 +22,8 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Enhanced storage route tests with additional coverage
 
 ### Changed
+- Enhanced CORS middleware setup for better cross-origin support ([#20](https://github.com/opensearch-project/dashboards-traces/pull/20))
+- Refactored routing and layout structure for improved navigation ([#20](https://github.com/opensearch-project/dashboards-traces/pull/20))
 - Renamed Experiment to Benchmark throughout the codebase for clearer terminology
 - Enhanced benchmark and run storage with improved sorting and field limits
 - Simplified CLI by removing demo and configure commands
