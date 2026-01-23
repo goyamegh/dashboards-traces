@@ -11,6 +11,11 @@ module.exports = {
   testMatch: ['**/tests/**/*.test.ts'],
   moduleNameMapper: {
     '^@/lib/config$': '<rootDir>/__mocks__/@/lib/config.ts',
+    // Mock configService to avoid import.meta.url issues in Jest
+    // Must catch: @/server/services/configService, ../services/configService.js, ../../services/configService.js
+    '^@/server/services/configService$': '<rootDir>/__mocks__/@/server/services/configService.ts',
+    '^\\.\\./services/configService\\.js$': '<rootDir>/__mocks__/@/server/services/configService.ts',
+    '^\\.\\./\\.\\./services/configService\\.js$': '<rootDir>/__mocks__/@/server/services/configService.ts',
     // Mock data files to avoid JSON import issues in tests
     '^@/data/testCases$': '<rootDir>/__mocks__/@/data/testCases.ts',
     '^@/data/mockComparisonData$': '<rootDir>/__mocks__/@/data/mockComparisonData.ts',

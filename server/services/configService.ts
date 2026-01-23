@@ -17,8 +17,8 @@ import yaml from 'js-yaml';
 import type { StorageClusterConfig, ObservabilityClusterConfig } from '../../types/index.js';
 
 // ESM equivalent of __dirname
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const currentFilename = fileURLToPath(import.meta.url);
+const currentDirname = path.dirname(currentFilename);
 
 // Config file path - at project root
 const CONFIG_FILE_NAME = 'agent-health.yaml';
@@ -73,7 +73,7 @@ function getConfigFilePath(): string {
   }
 
   // Then check the directory where this file is located (project root from server/services/)
-  const projectRootPath = path.join(__dirname, '..', '..', CONFIG_FILE_NAME);
+  const projectRootPath = path.join(currentDirname, '..', '..', CONFIG_FILE_NAME);
   return projectRootPath;
 }
 
