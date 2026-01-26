@@ -13,11 +13,13 @@ test.describe('Benchmark Runs Page', () => {
     await page.waitForTimeout(2000);
   });
 
-  test('should navigate to benchmark runs page via View Latest button', async ({ page }) => {
-    const viewLatestButton = page.locator('button:has-text("View Latest")').first();
+  test('should navigate to benchmark runs page via benchmark card click', async ({ page }) => {
+    // Click on the benchmark name/card area (not View Latest button) to navigate to runs page
+    const benchmarkCard = page.locator('[class*="card"]').filter({ hasText: /\\d+ runs?/ }).first();
 
-    if (await viewLatestButton.isVisible().catch(() => false)) {
-      await viewLatestButton.click();
+    if (await benchmarkCard.isVisible().catch(() => false)) {
+      // Click on the benchmark name/info area
+      await benchmarkCard.locator('h3').first().click();
       await page.waitForTimeout(2000);
 
       // Should be on benchmark runs page
@@ -26,10 +28,10 @@ test.describe('Benchmark Runs Page', () => {
   });
 
   test('should display benchmark name in header', async ({ page }) => {
-    const viewLatestButton = page.locator('button:has-text("View Latest")').first();
+    const benchmarkCard = page.locator('[class*="card"]').filter({ hasText: /\\d+ runs?/ }).first();
 
-    if (await viewLatestButton.isVisible().catch(() => false)) {
-      await viewLatestButton.click();
+    if (await benchmarkCard.isVisible().catch(() => false)) {
+      await benchmarkCard.locator('h3').first().click();
       await page.waitForTimeout(2000);
 
       await expect(page.locator('[data-testid="benchmark-name"]')).toBeVisible();
@@ -37,10 +39,10 @@ test.describe('Benchmark Runs Page', () => {
   });
 
   test('should have back button to return to benchmarks', async ({ page }) => {
-    const viewLatestButton = page.locator('button:has-text("View Latest")').first();
+    const benchmarkCard = page.locator('[class*="card"]').filter({ hasText: /\\d+ runs?/ }).first();
 
-    if (await viewLatestButton.isVisible().catch(() => false)) {
-      await viewLatestButton.click();
+    if (await benchmarkCard.isVisible().catch(() => false)) {
+      await benchmarkCard.locator('h3').first().click();
       await page.waitForTimeout(2000);
 
       const backButton = page.locator('[data-testid="back-button"]');
@@ -52,10 +54,10 @@ test.describe('Benchmark Runs Page', () => {
   });
 
   test('should show run count in page', async ({ page }) => {
-    const viewLatestButton = page.locator('button:has-text("View Latest")').first();
+    const benchmarkCard = page.locator('[class*="card"]').filter({ hasText: /\\d+ runs?/ }).first();
 
-    if (await viewLatestButton.isVisible().catch(() => false)) {
-      await viewLatestButton.click();
+    if (await benchmarkCard.isVisible().catch(() => false)) {
+      await benchmarkCard.locator('h3').first().click();
       await page.waitForTimeout(2000);
 
       // Should show run count text
@@ -64,10 +66,10 @@ test.describe('Benchmark Runs Page', () => {
   });
 
   test('should have Add Run button', async ({ page }) => {
-    const viewLatestButton = page.locator('button:has-text("View Latest")').first();
+    const benchmarkCard = page.locator('[class*="card"]').filter({ hasText: /\\d+ runs?/ }).first();
 
-    if (await viewLatestButton.isVisible().catch(() => false)) {
-      await viewLatestButton.click();
+    if (await benchmarkCard.isVisible().catch(() => false)) {
+      await benchmarkCard.locator('h3').first().click();
       await page.waitForTimeout(2000);
 
       const addRunButton = page.locator('button:has-text("Add Run")');
