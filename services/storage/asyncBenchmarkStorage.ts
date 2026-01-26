@@ -69,7 +69,8 @@ function toBenchmarkRun(stored: StorageBenchmarkRunConfig): BenchmarkRun {
     name: stored.name,
     description: stored.description,
     createdAt: stored.createdAt,
-    agentKey: stored.agentId,
+    // Handle both current (agentKey) and legacy (agentId) field names
+    agentKey: stored.agentKey || stored.agentId || '',
     modelId: stored.modelId,
     headers: stored.headers,
     benchmarkVersion: (stored as any).benchmarkVersion ?? 1,
@@ -100,12 +101,13 @@ function toStorageFormat(benchmark: Partial<Benchmark>): Record<string, any> {
   }
 
   // Convert runs with version tracking fields
+  // Use agentKey to match server route behavior
   if (benchmark.runs) {
     result.runs = benchmark.runs.map(run => ({
       id: run.id,
       name: run.name,
       description: run.description,
-      agentId: run.agentKey,
+      agentKey: run.agentKey,
       modelId: run.modelId,
       headers: run.headers,
       createdAt: run.createdAt,
@@ -239,15 +241,19 @@ class AsyncBenchmarkStorage {
       updatedRuns = [...currentRuns, run];
     }
 
-    // Convert to storage format
+    // Convert to storage format (preserve all version tracking fields)
+    // Use agentKey to match server route behavior
     const storageRuns = updatedRuns.map(r => ({
       id: r.id,
       name: r.name,
       description: r.description,
-      agentId: r.agentKey,
+      agentKey: r.agentKey,
       modelId: r.modelId,
       headers: r.headers,
       createdAt: r.createdAt,
+      status: r.status,
+      benchmarkVersion: r.benchmarkVersion,
+      testCaseSnapshots: r.testCaseSnapshots,
       results: r.results,
     }));
 
@@ -258,32 +264,31 @@ class AsyncBenchmarkStorage {
   }
 
   /**
-   * Delete a run config from a benchmark
+   * Delete a run config from a benchmark using atomic server-side operation.
+   * This avoids the read-modify-write pattern that could corrupt other runs.
    */
   async deleteRun(benchmarkId: string, runId: string): Promise<boolean> {
-    const benchmark = await this.getById(benchmarkId);
-    if (!benchmark) return false;
+    try {
+      const response = await fetch(`/api/storage/benchmarks/${benchmarkId}/runs/${runId}`, {
+        method: 'DELETE',
+      });
 
-    const currentRuns = benchmark.runs || [];
-    const filteredRuns = currentRuns.filter(r => r.id !== runId);
+      if (response.status === 404) {
+        // Either benchmark or run not found
+        return false;
+      }
 
-    // If no run was removed, return false
-    if (filteredRuns.length === currentRuns.length) return false;
+      if (!response.ok) {
+        const error = await response.json();
+        console.error('[asyncBenchmarkStorage] deleteRun failed:', error);
+        return false;
+      }
 
-    // Update the benchmark with the filtered runs
-    const updatedRuns = filteredRuns.map(run => ({
-      id: run.id,
-      name: run.name,
-      description: run.description,
-      agentId: run.agentKey,
-      modelId: run.modelId,
-      headers: run.headers,
-      createdAt: run.createdAt,
-      results: run.results,
-    }));
-
-    await opensearchBenchmarks.update(benchmarkId, { runs: updatedRuns });
-    return true;
+      return true;
+    } catch (error) {
+      console.error('[asyncBenchmarkStorage] deleteRun failed:', error);
+      return false;
+    }
   }
 
   // ==================== Utility Functions ====================

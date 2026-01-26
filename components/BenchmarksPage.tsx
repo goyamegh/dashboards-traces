@@ -15,7 +15,8 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { asyncBenchmarkStorage, asyncTestCaseStorage } from '@/services/storage';
-import { executeBenchmarkRun, cancelBenchmarkRun } from '@/services/client';
+import { executeBenchmarkRun } from '@/services/client';
+import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
 import { Benchmark, BenchmarkRun, BenchmarkProgress, TestCase } from '@/types';
 import { BenchmarkEditor, RunConfigForExecution } from './BenchmarkEditor';
 import { BenchmarkResultsView } from './BenchmarkResultsView';
@@ -43,7 +44,7 @@ export const BenchmarksPage: React.FC = () => {
   const [useCaseStatuses, setUseCaseStatuses] = useState<UseCaseRunStatus[]>([]);
   const [editingDescriptionId, setEditingDescriptionId] = useState<string | null>(null);
   const [editingDescriptionValue, setEditingDescriptionValue] = useState('');
-  const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
+  const { cancellingRunId, handleCancelRun: cancelRun } = useBenchmarkCancellation();
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Load test cases on mount
@@ -146,9 +147,6 @@ export const BenchmarksPage: React.FC = () => {
   };
 
   const handleCancelRun = async (benchmarkId: string, runId: string) => {
-    // Immediately disable the cancel button and update UI
-    setCancellingRunId(runId);
-
     // Clear local running state if this was a locally-initiated run
     if (runningBenchmarkId === benchmarkId) {
       setRunningBenchmarkId(null);
@@ -159,14 +157,7 @@ export const BenchmarksPage: React.FC = () => {
       ));
     }
 
-    try {
-      await cancelBenchmarkRun(benchmarkId, runId);
-      await loadBenchmarks();
-    } catch (error) {
-      console.error('Failed to cancel run:', error);
-    } finally {
-      setCancellingRunId(null);
-    }
+    await cancelRun(benchmarkId, runId, loadBenchmarks);
   };
 
   const handleSaveBenchmark = async (bench: Benchmark) => {

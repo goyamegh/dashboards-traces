@@ -75,7 +75,8 @@ export interface StorageBenchmarkRunConfig {
   id: string;
   name: string;
   description?: string;
-  agentId: string;
+  agentKey: string;  // Agent key (matches server route behavior)
+  agentId?: string;  // Legacy field name (for backwards compatibility)
   modelId: string;
   headers?: Record<string, string>;
   iterationCount?: number;

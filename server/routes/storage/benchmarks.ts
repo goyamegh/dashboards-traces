@@ -778,6 +778,64 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
   }
 });
 
+// DELETE /api/storage/benchmarks/:id/runs/:runId - Delete a specific run (atomic)
+router.delete('/api/storage/benchmarks/:id/runs/:runId', async (req: Request, res: Response) => {
+  const { id, runId } = req.params;
+
+  // Reject modifying sample data
+  if (isSampleId(id)) {
+    return res.status(400).json({ error: 'Cannot modify sample data. Sample benchmarks are read-only.' });
+  }
+
+  if (!isStorageAvailable(req)) {
+    return res.status(400).json({ error: 'OpenSearch not configured' });
+  }
+
+  const client = requireStorageClient(req);
+
+  try {
+    // Use Painless script to atomically remove only the specific run
+    // This avoids the read-modify-write pattern that could corrupt other runs
+    const result = await client.update({
+      index: INDEX,
+      id,
+      body: {
+        script: {
+          source: `
+            def runIndex = -1;
+            for (int i = 0; i < ctx._source.runs.size(); i++) {
+              if (ctx._source.runs[i].id == params.runId) {
+                runIndex = i;
+                break;
+              }
+            }
+            if (runIndex >= 0) {
+              ctx._source.runs.remove(runIndex);
+            } else {
+              ctx.op = 'noop';
+            }
+          `,
+          params: { runId },
+        },
+      },
+      refresh: true,
+    });
+
+    // Check if the script found and removed the run
+    if (result.body.result === 'noop') {
+      return res.status(404).json({ error: 'Run not found' });
+    }
+
+    res.json({ deleted: true, runId });
+  } catch (error: any) {
+    if (error.meta?.statusCode === 404) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
+    console.error('[StorageAPI] Delete run failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // POST /api/storage/benchmarks/:id/cancel - Cancel an in-progress run
 router.post('/api/storage/benchmarks/:id/cancel', async (req: Request, res: Response) => {
   const { id } = req.params;

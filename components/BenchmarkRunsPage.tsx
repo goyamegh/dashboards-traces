@@ -15,11 +15,20 @@ import { Textarea } from '@/components/ui/textarea';
 import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Checkbox } from '@/components/ui/checkbox';
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { asyncBenchmarkStorage, asyncRunStorage, asyncTestCaseStorage } from '@/services/storage';
-import { executeBenchmarkRun, cancelBenchmarkRun } from '@/services/client';
+import { executeBenchmarkRun } from '@/services/client';
+import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
 import { Benchmark, BenchmarkRun, EvaluationReport, TestCase, BenchmarkProgress, BenchmarkStartedEvent } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { getLabelColor, formatDate, getModelName } from '@/lib/utils';
+import {
+  computeVersionData,
+  getSelectedVersionData,
+  getVersionTestCases,
+  filterRunsByVersion,
+  VersionData,
+} from '@/lib/benchmarkVersionUtils';
 import { RunConfigForExecution } from './BenchmarkEditor';
 
 // Track individual use case status during run
@@ -93,6 +102,13 @@ export const BenchmarkRunsPage: React.FC = () => {
   // Selected runs for comparison
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
 
+  // Version panel state
+  const [testCaseVersion, setTestCaseVersion] = useState<number | null>(null); // null = latest
+  const [runVersionFilter, setRunVersionFilter] = useState<number | 'all'>('all');
+
+  // Cancellation hook
+  const { isCancelling, handleCancelRun } = useBenchmarkCancellation();
+
   // Load test cases on mount
   useEffect(() => {
     asyncTestCaseStorage.getAll().then(setTestCases);
@@ -123,11 +139,38 @@ export const BenchmarkRunsPage: React.FC = () => {
     loadBenchmark();
   }, [loadBenchmark]);
 
-  // Filter test cases to only those in this benchmark
+  // Filter test cases to only those in this benchmark (current version)
   const benchmarkTestCases = useMemo(() =>
     testCases.filter(tc => benchmark?.testCaseIds.includes(tc.id)),
     [testCases, benchmark]
   );
+
+  // Compute version data with diff information using utility function
+  const versionData = useMemo<VersionData[]>(
+    () => computeVersionData(benchmark),
+    [benchmark]
+  );
+
+  // Get selected version data for left panel
+  const selectedVersionData = useMemo(
+    () => getSelectedVersionData(versionData, testCaseVersion),
+    [versionData, testCaseVersion]
+  );
+
+  // Get test cases for the selected version
+  const versionTestCases = useMemo(
+    () => getVersionTestCases(testCases, selectedVersionData),
+    [selectedVersionData, testCases]
+  );
+
+  // Filter runs by selected version
+  const filteredRuns = useMemo(
+    () => filterRunsByVersion(benchmark?.runs, runVersionFilter),
+    [benchmark?.runs, runVersionFilter]
+  );
+
+  // Check if benchmark has multiple versions
+  const hasMultipleVersions = versionData.length > 1;
 
   const handleDeleteRun = async (run: BenchmarkRun) => {
     if (!benchmarkId) return;
@@ -361,9 +404,18 @@ export const BenchmarkRunsPage: React.FC = () => {
             <ArrowLeft size={18} />
           </Button>
           <div>
-            <h2 className="text-2xl font-bold">{benchmark.name}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-2xl font-bold">{benchmark.name}</h2>
+              {hasMultipleVersions && (
+                <Badge variant="outline" className="text-xs">
+                  v{benchmark.currentVersion}
+                </Badge>
+              )}
+            </div>
             <p className="text-xs text-muted-foreground">
               {runs.length} run{runs.length !== 1 ? 's' : ''}
+              {hasMultipleVersions && ` · ${versionData.length} versions`}
+              {runs.length > 0 && ` · Latest: ${formatDate(filteredRuns[0]?.createdAt || runs[0]?.createdAt)}`}
               {benchmark.description && ` · ${benchmark.description}`}
             </p>
           </div>
@@ -417,272 +469,357 @@ export const BenchmarkRunsPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Main Content - Side by Side Layout */}
-      <div className="flex gap-4 flex-1 overflow-hidden">
-        {/* Left Panel - Test Cases (30%) */}
-        <div className="w-[30%] flex-shrink-0 overflow-y-auto border-r border-border pr-4">
-          {/* Metadata */}
-          <div className="space-y-2 mb-4">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground">
-              <Calendar size={12} />
-              <span>Created {formatDate(benchmark.createdAt)}</span>
+      {/* Main Content - Two-Panel Resizable Layout */}
+      <ResizablePanelGroup direction="horizontal" className="flex-1 overflow-hidden">
+        {/* Left Panel - Test Cases (Version-Aware) */}
+        <ResizablePanel defaultSize={35} minSize={25} maxSize={50}>
+          <div className="h-full overflow-y-auto pr-4">
+            {/* Panel Header with Version Dropdown */}
+            <div className="sticky top-0 bg-background pb-3 border-b border-border mb-3">
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                  Test Cases
+                </h3>
+                {hasMultipleVersions && (
+                  <Select
+                    value={testCaseVersion === null ? 'latest' : String(testCaseVersion)}
+                    onValueChange={(val) => setTestCaseVersion(val === 'latest' ? null : Number(val))}
+                  >
+                    <SelectTrigger className="w-[140px] h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {versionData.map((v) => (
+                        <SelectItem key={v.version} value={v.isLatest ? 'latest' : String(v.version)}>
+                          v{v.version}{v.isLatest ? ' (latest)' : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+
+              {/* Version Metadata */}
+              {selectedVersionData && (
+                <div className="space-y-1">
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Calendar size={12} />
+                    <span>Created {formatDate(selectedVersionData.createdAt)}</span>
+                  </div>
+                  <div className="text-sm font-medium">
+                    {versionTestCases.length} test case{versionTestCases.length !== 1 ? 's' : ''}
+                  </div>
+                  {/* Diff from previous version */}
+                  {(selectedVersionData.added.length > 0 || selectedVersionData.removed.length > 0) && (
+                    <div className="flex items-center gap-2 text-xs">
+                      {selectedVersionData.added.length > 0 && (
+                        <span className="text-green-400">+{selectedVersionData.added.length} added</span>
+                      )}
+                      {selectedVersionData.removed.length > 0 && (
+                        <span className="text-red-400">-{selectedVersionData.removed.length} removed</span>
+                      )}
+                      <span className="text-muted-foreground">from v{selectedVersionData.version - 1}</span>
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
-            <div className="text-sm font-medium">
-              {benchmarkTestCases.length} test case{benchmarkTestCases.length !== 1 ? 's' : ''}
+
+            {/* Test Cases List */}
+            <div className="space-y-2">
+              {versionTestCases.length === 0 ? (
+                <p className="text-sm text-muted-foreground">No test cases in this version</p>
+              ) : (
+                versionTestCases.map(tc => {
+                  const isAddedInThisVersion = selectedVersionData?.added.includes(tc.id);
+                  return (
+                    <Card
+                      key={tc.id}
+                      className={`cursor-pointer hover:border-primary/50 transition-colors ${
+                        isAddedInThisVersion ? 'border-green-500/30 bg-green-500/5' : ''
+                      }`}
+                      onClick={() => navigate(`/test-cases/${tc.id}/runs`)}
+                    >
+                      <CardContent className="p-3">
+                        <div className="flex items-center justify-between">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <p className="text-sm font-medium truncate">{tc.name}</p>
+                              {isAddedInThisVersion && (
+                                <Badge className="text-xs bg-green-500/20 text-green-400 border-green-500/30">
+                                  new
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 mt-1 flex-wrap">
+                              {(tc.labels || []).slice(0, 2).map((label) => (
+                                <Badge key={label} className={`text-xs ${getLabelColor(label)}`}>
+                                  {label}
+                                </Badge>
+                              ))}
+                              {(tc.labels || []).length > 2 && (
+                                <span className="text-xs text-muted-foreground">
+                                  +{(tc.labels || []).length - 2}
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                          <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })
+              )}
             </div>
           </div>
+        </ResizablePanel>
 
-          {/* Test Cases List */}
-          <div className="space-y-2">
-            {benchmarkTestCases.length === 0 ? (
-              <p className="text-sm text-muted-foreground">No test cases in this benchmark</p>
-            ) : (
-              benchmarkTestCases.map(tc => (
-                <Card
-                  key={tc.id}
-                  className="cursor-pointer hover:border-primary/50 transition-colors"
-                  onClick={() => navigate(`/test-cases/${tc.id}/runs`)}
-                >
-                  <CardContent className="p-3">
-                    <div className="flex items-center justify-between">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium truncate">{tc.name}</p>
-                        <div className="flex items-center gap-2 mt-1 flex-wrap">
-                          {(tc.labels || []).slice(0, 2).map((label) => (
-                            <Badge key={label} className={`text-xs ${getLabelColor(label)}`}>
-                              {label}
-                            </Badge>
-                          ))}
-                          {(tc.labels || []).length > 2 && (
-                            <span className="text-xs text-muted-foreground">
-                              +{(tc.labels || []).length - 2}
-                            </span>
-                          )}
-                        </div>
+        <ResizableHandle withHandle />
+
+        {/* Right Panel - Runs (Filterable by Version) */}
+        <ResizablePanel defaultSize={65} minSize={40}>
+          <div className="h-full overflow-y-auto pl-4 flex flex-col">
+            {/* Panel Header with Version Filter */}
+            <div className="sticky top-0 bg-background pb-3 border-b border-border mb-3">
+              <div className="flex items-center justify-between">
+                <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">
+                  Runs
+                </h3>
+                {hasMultipleVersions && (
+                  <Select
+                    value={runVersionFilter === 'all' ? 'all' : String(runVersionFilter)}
+                    onValueChange={(val) => setRunVersionFilter(val === 'all' ? 'all' : Number(val))}
+                  >
+                    <SelectTrigger className="w-[160px] h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">
+                        All Versions ({runs.length})
+                      </SelectItem>
+                      {versionData.map((v) => (
+                        <SelectItem key={v.version} value={String(v.version)}>
+                          v{v.version} ({v.runCount} run{v.runCount !== 1 ? 's' : ''})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                )}
+              </div>
+            </div>
+
+            {/* Running Progress */}
+            {isRunning && useCaseStatuses.length > 0 && (
+              <Card className="mb-4 border-blue-500/50 flex-shrink-0">
+                <CardContent className="p-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm font-medium flex items-center gap-2">
+                      <Loader2 size={14} className="animate-spin" />
+                      Running...
+                    </span>
+                    <span className="text-xs text-muted-foreground">
+                      {useCaseStatuses.filter(uc => uc.status === 'completed').length} / {useCaseStatuses.length}
+                    </span>
+                  </div>
+                  <Progress
+                    value={(useCaseStatuses.filter(uc => uc.status === 'completed' || uc.status === 'failed' || uc.status === 'cancelled').length / useCaseStatuses.length) * 100}
+                    className="h-2 mb-3"
+                  />
+                  <div className="space-y-1 max-h-32 overflow-y-auto">
+                    {useCaseStatuses.map(uc => (
+                      <div key={uc.id} className="flex items-center gap-2 text-xs">
+                        {uc.status === 'pending' && <Circle size={12} className="text-muted-foreground" />}
+                        {uc.status === 'running' && <Loader2 size={12} className="text-blue-400 animate-spin" />}
+                        {uc.status === 'completed' && <CheckCircle2 size={12} className="text-opensearch-blue" />}
+                        {uc.status === 'failed' && <XCircle size={12} className="text-red-400" />}
+                        {uc.status === 'cancelled' && <Ban size={12} className="text-orange-400" />}
+                        <span className={uc.status === 'running' ? 'text-blue-400' : uc.status === 'cancelled' ? 'text-orange-400' : 'text-muted-foreground'}>
+                          {uc.name}
+                        </span>
                       </div>
-                      <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
-                    </div>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+
+            {/* Runs List */}
+            <div className="flex-1 space-y-3">
+              {filteredRuns.length === 0 ? (
+                <Card className="border-dashed">
+                  <CardContent className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+                    <Play size={48} className="mb-4 opacity-20" />
+                    <p className="text-lg font-medium">
+                      {runVersionFilter === 'all' ? 'No runs yet' : `No runs for v${runVersionFilter}`}
+                    </p>
+                    <p className="text-sm">
+                      {runVersionFilter === 'all'
+                        ? 'Run this benchmark to see results here'
+                        : 'Try selecting a different version or "All Versions"'}
+                    </p>
                   </CardContent>
                 </Card>
-              ))
+              ) : (
+                filteredRuns.map((run, index) => {
+                  const stats = getRunStats(run);
+                  const isLatestRun = index === 0 && runVersionFilter === 'all';
+                  const isSelected = selectedRunIds.includes(run.id);
+
+                  return (
+                    <Card
+                      key={run.id}
+                      className={`transition-colors cursor-pointer ${
+                        isSelected
+                          ? 'border-primary bg-primary/5'
+                          : 'hover:border-primary/50'
+                      }`}
+                      onClick={() => {
+                        navigate(`/benchmarks/${benchmarkId}/runs/${run.id}`);
+                      }}
+                    >
+                      <CardContent className="p-4">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3 flex-1">
+                            {hasMultipleRuns && (
+                              <Checkbox
+                                checked={isSelected}
+                                onCheckedChange={() => toggleRunSelection(run.id)}
+                                onClick={(e) => e.stopPropagation()}
+                                className="h-5 w-5"
+                              />
+                            )}
+                            <div className="flex-1">
+                              <div className="flex items-center gap-2 mb-1">
+                                <h3 className="font-semibold">{run.name}</h3>
+                                {getEffectiveRunStatus(run) === 'running' && (
+                                  <Badge className="text-xs bg-blue-500/20 text-blue-400 border-blue-500/30 animate-pulse">
+                                    <Loader2 size={12} className="mr-1 animate-spin" />
+                                    Running
+                                  </Badge>
+                                )}
+                                {getEffectiveRunStatus(run) === 'cancelled' && (
+                                  <Badge className="text-xs bg-gray-500/20 text-gray-400 border-gray-500/30">
+                                    <XCircle size={12} className="mr-1" />
+                                    Cancelled
+                                  </Badge>
+                                )}
+                                {isLatestRun && (
+                                  <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30">
+                                    Latest
+                                  </Badge>
+                                )}
+                                {/* Version badge */}
+                                {run.benchmarkVersion && benchmark && (
+                                  <Badge
+                                    variant="outline"
+                                    className={`text-xs ${
+                                      run.benchmarkVersion < benchmark.currentVersion
+                                        ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30'
+                                        : 'text-muted-foreground'
+                                    }`}
+                                    title={run.benchmarkVersion < (benchmark.currentVersion || 1)
+                                      ? `Run used v${run.benchmarkVersion}, current is v${benchmark.currentVersion}`
+                                      : `Run used v${run.benchmarkVersion}`}
+                                  >
+                                    v{run.benchmarkVersion}
+                                    {run.benchmarkVersion < (benchmark.currentVersion || 1) && ' (outdated)'}
+                                  </Badge>
+                                )}
+                              </div>
+                              {run.description && (
+                                <p className="text-sm text-muted-foreground mb-2">{run.description}</p>
+                              )}
+                              <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                                <span className="flex items-center gap-1">
+                                  <Calendar size={12} />
+                                  {formatDate(run.createdAt)}
+                                </span>
+                                <span>Agent: {DEFAULT_CONFIG.agents.find(a => a.key === run.agentKey)?.name || run.agentKey}</span>
+                                <span>Model: {getModelName(run.modelId)}</span>
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Stats and Actions */}
+                          <div className="flex items-center gap-4">
+                            {(stats.total > 0 || getEffectiveRunStatus(run) === 'running') && (
+                              <div className="flex items-center gap-4 text-sm">
+                                {stats.running > 0 && (
+                                  <span className="flex items-center gap-1 text-blue-400" title="Running">
+                                    <Loader2 size={14} className="animate-spin" />
+                                    {stats.running}
+                                  </span>
+                                )}
+                                {stats.pending > 0 && (
+                                  <span className="flex items-center gap-1 text-yellow-400" title="Pending">
+                                    <Clock size={14} />
+                                    {stats.pending}
+                                  </span>
+                                )}
+                                <span className="flex items-center gap-1 text-opensearch-blue">
+                                  <CheckCircle2 size={14} />
+                                  {stats.passed}
+                                </span>
+                                <span className="flex items-center gap-1 text-red-400">
+                                  <XCircle size={14} />
+                                  {stats.failed}
+                                </span>
+                                <span className="text-muted-foreground">
+                                  / {stats.total}
+                                </span>
+                              </div>
+                            )}
+                            {getEffectiveRunStatus(run) === 'running' && (
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                disabled={isCancelling(run.id)}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  if (!benchmarkId) return;
+                                  handleCancelRun(benchmarkId, run.id, loadBenchmark);
+                                }}
+                                className="text-red-400 hover:text-red-300 hover:bg-red-500/10 border-red-500/30 disabled:opacity-50"
+                              >
+                                {isCancelling(run.id) ? (
+                                  <Loader2 size={14} className="mr-1 animate-spin" />
+                                ) : (
+                                  <StopCircle size={14} className="mr-1" />
+                                )}
+                                {isCancelling(run.id) ? 'Cancelling...' : 'Cancel'}
+                              </Button>
+                            )}
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteRun(run);
+                              }}
+                              className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                              title="Delete run"
+                            >
+                              <Trash2 size={14} />
+                            </Button>
+                          </div>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  );
+                })
+              )}
+            </div>
+
+            {/* Footer hint */}
+            {runs.length === 1 && (
+              <p className="text-xs text-muted-foreground text-center mt-4 flex-shrink-0">
+                Add more runs to enable comparison
+              </p>
             )}
           </div>
-        </div>
-
-        {/* Right Panel - Runs (70%) */}
-        <div className="flex-1 overflow-y-auto flex flex-col">
-          {/* Running Progress */}
-          {isRunning && useCaseStatuses.length > 0 && (
-            <Card className="mb-4 border-blue-500/50">
-              <CardContent className="p-4">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium flex items-center gap-2">
-                    <Loader2 size={14} className="animate-spin" />
-                    Running...
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {useCaseStatuses.filter(uc => uc.status === 'completed').length} / {useCaseStatuses.length}
-                  </span>
-                </div>
-                <Progress
-                  value={(useCaseStatuses.filter(uc => uc.status === 'completed' || uc.status === 'failed' || uc.status === 'cancelled').length / useCaseStatuses.length) * 100}
-                  className="h-2 mb-3"
-                />
-                <div className="space-y-1 max-h-32 overflow-y-auto">
-                  {useCaseStatuses.map(uc => (
-                    <div key={uc.id} className="flex items-center gap-2 text-xs">
-                      {uc.status === 'pending' && <Circle size={12} className="text-muted-foreground" />}
-                      {uc.status === 'running' && <Loader2 size={12} className="text-blue-400 animate-spin" />}
-                      {uc.status === 'completed' && <CheckCircle2 size={12} className="text-opensearch-blue" />}
-                      {uc.status === 'failed' && <XCircle size={12} className="text-red-400" />}
-                      {uc.status === 'cancelled' && <Ban size={12} className="text-orange-400" />}
-                      <span className={uc.status === 'running' ? 'text-blue-400' : uc.status === 'cancelled' ? 'text-orange-400' : 'text-muted-foreground'}>
-                        {uc.name}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
-          {/* Runs List */}
-          <div className="flex-1 space-y-3">
-        {runs.length === 0 ? (
-          <Card className="border-dashed">
-            <CardContent className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-              <Play size={48} className="mb-4 opacity-20" />
-              <p className="text-lg font-medium">No runs yet</p>
-              <p className="text-sm">Run this benchmark to see results here</p>
-            </CardContent>
-          </Card>
-        ) : (
-          runs
-            .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
-            .map((run, index) => {
-              const stats = getRunStats(run);
-              const isLatest = index === 0;
-              const isSelected = selectedRunIds.includes(run.id);
-
-              return (
-                <Card
-                  key={run.id}
-                  className={`transition-colors cursor-pointer ${
-                    isSelected
-                      ? 'border-primary bg-primary/5'
-                      : 'hover:border-primary/50'
-                  }`}
-                  onClick={() => {
-                    // Navigate with BenchmarkRun.id - RunDetailsPage handles all states
-                    navigate(`/benchmarks/${benchmarkId}/runs/${run.id}`);
-                  }}
-                >
-                  <CardContent className="p-4">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-3 flex-1">
-                        {/* Checkbox for selection - always visible when multiple runs */}
-                        {hasMultipleRuns && (
-                          <Checkbox
-                            checked={isSelected}
-                            onCheckedChange={() => toggleRunSelection(run.id)}
-                            onClick={(e) => e.stopPropagation()}
-                            className="h-5 w-5"
-                          />
-                        )}
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2 mb-1">
-                            <h3 className="font-semibold">{run.name}</h3>
-                            {getEffectiveRunStatus(run) === 'running' && (
-                              <Badge className="text-xs bg-blue-500/20 text-blue-400 border-blue-500/30 animate-pulse">
-                                <Loader2 size={12} className="mr-1 animate-spin" />
-                                Running
-                              </Badge>
-                            )}
-                            {getEffectiveRunStatus(run) === 'cancelled' && (
-                              <Badge className="text-xs bg-gray-500/20 text-gray-400 border-gray-500/30">
-                                <XCircle size={12} className="mr-1" />
-                                Cancelled
-                              </Badge>
-                            )}
-                            {isLatest && (
-                              <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30">
-                                Latest
-                              </Badge>
-                            )}
-                            {/* Version badge - show which benchmark version was used */}
-                            {run.benchmarkVersion && benchmark && (
-                              <Badge
-                                variant="outline"
-                                className={`text-xs ${
-                                  run.benchmarkVersion < benchmark.currentVersion
-                                    ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30'
-                                    : 'text-muted-foreground'
-                                }`}
-                                title={run.benchmarkVersion < (benchmark.currentVersion || 1)
-                                  ? `Run used v${run.benchmarkVersion}, current is v${benchmark.currentVersion}`
-                                  : `Run used v${run.benchmarkVersion}`}
-                              >
-                                v{run.benchmarkVersion}
-                                {run.benchmarkVersion < (benchmark.currentVersion || 1) && ' (outdated)'}
-                              </Badge>
-                            )}
-                          </div>
-                          {run.description && (
-                            <p className="text-sm text-muted-foreground mb-2">{run.description}</p>
-                          )}
-                          <div className="flex items-center gap-4 text-xs text-muted-foreground">
-                            <span className="flex items-center gap-1">
-                              <Calendar size={12} />
-                              {formatDate(run.createdAt)}
-                            </span>
-                            <span>Agent: {DEFAULT_CONFIG.agents.find(a => a.key === run.agentKey)?.name || run.agentKey}</span>
-                            <span>Model: {getModelName(run.modelId)}</span>
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Stats and Actions */}
-                      <div className="flex items-center gap-4">
-                        {(stats.total > 0 || getEffectiveRunStatus(run) === 'running') && (
-                          <div className="flex items-center gap-4 text-sm">
-                            {/* Show running indicator */}
-                            {stats.running > 0 && (
-                              <span className="flex items-center gap-1 text-blue-400" title="Running">
-                                <Loader2 size={14} className="animate-spin" />
-                                {stats.running}
-                              </span>
-                            )}
-                            {/* Show pending */}
-                            {stats.pending > 0 && (
-                              <span className="flex items-center gap-1 text-yellow-400" title="Pending">
-                                <Clock size={14} />
-                                {stats.pending}
-                              </span>
-                            )}
-                            {/* Show passed/failed */}
-                            <span className="flex items-center gap-1 text-opensearch-blue">
-                              <CheckCircle2 size={14} />
-                              {stats.passed}
-                            </span>
-                            <span className="flex items-center gap-1 text-red-400">
-                              <XCircle size={14} />
-                              {stats.failed}
-                            </span>
-                            <span className="text-muted-foreground">
-                              / {stats.total}
-                            </span>
-                          </div>
-                        )}
-                        {/* Cancel button for running runs */}
-                        {getEffectiveRunStatus(run) === 'running' && (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              if (!benchmarkId) return;
-                              try {
-                                await cancelBenchmarkRun(benchmarkId, run.id);
-                                loadBenchmark();
-                              } catch (error) {
-                                console.error('Failed to cancel run:', error);
-                              }
-                            }}
-                            className="text-red-400 hover:text-red-300 hover:bg-red-500/10 border-red-500/30"
-                          >
-                            <StopCircle size={14} className="mr-1" />
-                            Cancel
-                          </Button>
-                        )}
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleDeleteRun(run);
-                          }}
-                          className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
-                          title="Delete run"
-                        >
-                          <Trash2 size={14} />
-                        </Button>
-                      </div>
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })
-          )}
-          </div>
-
-          {/* Footer hint */}
-          {runs.length === 1 && (
-            <p className="text-xs text-muted-foreground text-center mt-4">
-              Add more runs to enable comparison
-            </p>
-          )}
-        </div>
-      </div>
+        </ResizablePanel>
+      </ResizablePanelGroup>
 
       {/* Run Configuration Dialog */}
       {isRunConfigOpen && (
