@@ -12,6 +12,7 @@ import {
   Activity,
   ChevronRight,
   TestTube,
+  Table2,
 } from "lucide-react";
 import OpenSearchLogo from "@/assets/opensearch-logo.svg";
 import { Link, useLocation, useNavigate } from "react-router-dom";
@@ -44,7 +45,8 @@ interface LayoutProps {
 
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Overview" },
-  { to: "/traces", icon: Activity, label: "Agent Traces" },
+  { to: "/agent-traces", icon: Table2, label: "Agent Traces" },
+  { to: "/traces", icon: Activity, label: "Live Traces" },
 ];
 
 const evalsSubItems = [

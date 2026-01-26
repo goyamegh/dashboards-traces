@@ -52,11 +52,11 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.AGENT_HEADER_AWS_SESSION_TOKEN': JSON.stringify(env.AGENT_HEADER_AWS_SESSION_TOKEN),
     },
     server: {
-      port: 4000,
+      port: parseInt(env.VITE_PORT || '4000'),
       host: true,
       proxy: {
         '/api': {
-          target: 'http://localhost:4001',
+          target: `http://localhost:${env.BACKEND_PORT || '4001'}`,
           changeOrigin: true
         }
       }

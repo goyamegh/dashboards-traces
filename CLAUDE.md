@@ -95,6 +95,8 @@ npx @opensearch-project/agent-health --env-file .env
 **Trace Services** (`services/traces/`):
 - `tracePoller.ts`: Polls for traces with configurable delay (traces take ~5 min to propagate)
 - `index.ts`: Trace fetching and metrics calculation from OTel spans
+- `traceGrouping.ts`: Groups flat spans by traceId with summary statistics for table view
+- `spanCategorization.ts`: Categorizes spans by type (AGENT, LLM, TOOL, etc.) based on OTEL conventions
 
 **Other Services**:
 - `comparisonService.ts`: Aggregate metrics and side-by-side comparison logic

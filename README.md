@@ -12,6 +12,7 @@ An evaluation and observability framework for AI agents. Features real-time trac
 - **Evals**: Real-time agent evaluation with trajectory streaming
 - **Experiments**: Batch evaluation runs with configurable parameters
 - **Compare**: Side-by-side trace comparison with aligned and merged views
+- **Agent Traces**: Table-based trace view with latency histogram, filtering, and detailed flyout with input/output display
 - **Live Traces**: Real-time trace monitoring with auto-refresh and filtering
 - **Trace Views**: Timeline and Flow visualizations for debugging
 - **Reports**: Evaluation reports with LLM judge reasoning
