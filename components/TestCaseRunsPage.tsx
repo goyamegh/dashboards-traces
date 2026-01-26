@@ -211,15 +211,15 @@ export const TestCaseRunsPage: React.FC = () => {
   }
 
   return (
-    <div className="p-6 h-full flex flex-col">
+    <div className="p-6 h-full flex flex-col" data-testid="test-case-runs-page">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/test-cases')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/test-cases')} data-testid="back-button">
             <ArrowLeft size={18} />
           </Button>
           <div>
-            <h2 className="text-2xl font-bold">{testCase.name}</h2>
+            <h2 className="text-2xl font-bold" data-testid="test-case-name">{testCase.name}</h2>
           </div>
         </div>
         <div className="flex items-center gap-2">

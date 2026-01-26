@@ -501,15 +501,15 @@ export const RunDetailsPage: React.FC = () => {
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col" data-testid="run-details-page">
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={handleBack}>
+          <Button variant="ghost" size="icon" onClick={handleBack} data-testid="back-button">
             <ArrowLeft size={18} />
           </Button>
           <div>
-            <h2 className="text-xl font-bold">
+            <h2 className="text-xl font-bold" data-testid="run-title">
               {experimentContext ? experimentContext.experimentRun.name : testCase?.name || 'Run Details'}
             </h2>
             {/* Show run description if available */}

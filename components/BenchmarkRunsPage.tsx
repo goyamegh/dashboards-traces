@@ -396,16 +396,16 @@ export const BenchmarkRunsPage: React.FC = () => {
   const hasMultipleRuns = runs.length >= 2;
 
   return (
-    <div className="p-6 h-full flex flex-col">
+    <div className="p-6 h-full flex flex-col" data-testid="benchmark-runs-page">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/benchmarks')}>
+          <Button variant="ghost" size="icon" onClick={() => navigate('/benchmarks')} data-testid="back-button">
             <ArrowLeft size={18} />
           </Button>
           <div>
             <div className="flex items-center gap-2">
-              <h2 className="text-2xl font-bold">{benchmark.name}</h2>
+              <h2 className="text-2xl font-bold" data-testid="benchmark-name">{benchmark.name}</h2>
               {hasMultipleVersions && (
                 <Badge variant="outline" className="text-xs">
                   v{benchmark.currentVersion}

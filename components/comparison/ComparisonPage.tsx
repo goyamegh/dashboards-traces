@@ -286,7 +286,7 @@ export const ComparisonPage: React.FC = () => {
   }
 
   return (
-    <div className="p-6 space-y-6">
+    <div className="p-6 space-y-6" data-testid="comparison-page">
       {/* Header */}
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
@@ -294,12 +294,13 @@ export const ComparisonPage: React.FC = () => {
             variant="ghost"
             size="icon"
             onClick={() => navigate(`/benchmarks/${benchmarkId}/runs`)}
+            data-testid="back-button"
           >
             <ArrowLeft size={18} />
           </Button>
           <GitCompare className="h-6 w-6 text-primary" />
           <div>
-            <h1 className="text-2xl font-semibold">Compare Runs</h1>
+            <h1 className="text-2xl font-semibold" data-testid="comparison-title">Compare Runs</h1>
             <p className="text-xs text-muted-foreground">{benchmark.name}</p>
           </div>
         </div>
