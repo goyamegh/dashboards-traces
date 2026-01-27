@@ -148,6 +148,8 @@ jobs:
           node server/dist/index.js &
           echo $! > server.pid
           echo "Server PID: $(cat server.pid)"
+        env:
+          PORT: 4001
 
       - name: Wait for server to be healthy
         run: |
