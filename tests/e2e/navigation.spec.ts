@@ -18,7 +18,7 @@ test.describe('Navigation', () => {
 
     // Check all main navigation links are present
     await expect(page.locator('[data-testid="nav-overview"]')).toBeVisible();
-    await expect(page.locator('[data-testid="nav-traces"]')).toBeVisible();
+    await expect(page.locator('[data-testid="nav-agent-traces"]')).toBeVisible();
     await expect(page.locator('[data-testid="nav-test-cases"]')).toBeVisible();
     await expect(page.locator('[data-testid="nav-benchmarks"]')).toBeVisible();
     await expect(page.locator('[data-testid="nav-settings"]')).toBeVisible();
@@ -49,9 +49,9 @@ test.describe('Navigation', () => {
   });
 
   test('should navigate to Agent Traces page', async ({ page }) => {
-    await page.click('[data-testid="nav-traces"]');
-    // Check that the URL changed to traces
-    await expect(page).toHaveURL(/.*#\/traces/);
+    await page.click('[data-testid="nav-agent-traces"]');
+    // Check that the URL changed to agent-traces
+    await expect(page).toHaveURL(/.*#\/agent-traces/);
   });
 
   test('should show server status in sidebar footer', async ({ page }) => {

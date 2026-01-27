@@ -7,9 +7,6 @@ import React, { useState } from "react";
 import {
   LayoutDashboard,
   Settings,
-  ClipboardList,
-  FlaskConical,
-  Activity,
   ChevronRight,
   TestTube,
   Table2,
@@ -46,7 +43,6 @@ interface LayoutProps {
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Overview", testId: "nav-overview" },
   { to: "/agent-traces", icon: Table2, label: "Agent Traces", testId: "nav-agent-traces" },
-  { to: "/traces", icon: Activity, label: "Live Traces", testId: "nav-live-traces" },
 ];
 
 const evalsSubItems = [

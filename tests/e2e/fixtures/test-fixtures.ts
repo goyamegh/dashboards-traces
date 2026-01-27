@@ -48,7 +48,7 @@ export async function navigateToPage(
     'Overview': 'nav-overview',
     'Test Cases': 'nav-test-cases',
     'Benchmarks': 'nav-benchmarks',
-    'Agent Traces': 'nav-traces',
+    'Agent Traces': 'nav-agent-traces',
     'Settings': 'nav-settings',
   };
 
