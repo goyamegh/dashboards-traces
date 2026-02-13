@@ -222,7 +222,8 @@ describe('Config Endpoints Integration Tests', () => {
           body: JSON.stringify(TEST_AGENT),
         });
         expect(createResponse.status).toBe(201);
-        const created = await createResponse.json();
+        const createData = await createResponse.json();
+        const created = createData.agent;
         expect(created).toHaveProperty('key');
         expect(created.name).toBe(TEST_AGENT.name);
         expect(created.endpoint).toBe(TEST_AGENT.endpoint);
