@@ -53,6 +53,8 @@ npm test -- --watch         # Watch mode
 npm test -- path/to/file.test.ts  # Single test file
 ```
 
+**IMPORTANT:** After making code changes, always run `npm run build:all && npm run test:all` to verify the build succeeds and all tests pass. A pre-push hook enforces this automatically.
+
 ### CLI / NPX Package
 ```bash
 npm run build:cli           # Build CLI only
