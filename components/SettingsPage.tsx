@@ -742,6 +742,7 @@ export const SettingsPage: React.FC = () => {
                           size="sm"
                           onClick={() => handleDeleteEndpoint(ep.id)}
                           className="text-red-400 hover:text-red-300"
+                          aria-label={`Remove ${ep.name}`}
                         >
                           <Trash2 size={14} />
                         </Button>

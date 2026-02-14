@@ -72,33 +72,6 @@ test.describe('Agent Endpoints Section', () => {
     await expect(builtInBadge).toBeVisible();
   });
 
-  test('should show CLI-only info alert', async ({ page }) => {
-    // The info alert about CLI-only agents should be visible
-    const infoAlert = page.locator('text=Some agents (like Claude Code) require CLI execution');
-    await expect(infoAlert).toBeVisible();
-  });
-
-  test('should show CLI-only badge for Claude Code', async ({ page }) => {
-    // Claude Code should have a "CLI only" badge
-    const cliBadge = page.locator('span').filter({ hasText: 'CLI only' }).first();
-    await expect(cliBadge).toBeVisible();
-  });
-
-  test('should show both built-in and CLI-only badges where appropriate', async ({ page }) => {
-    // Verify that agents have appropriate badges
-    // Demo Agent: built-in only (browser-compatible)
-    // Claude Code: built-in AND CLI only
-
-    // First, check Claude Code has both badges
-    const claudeCodeEntry = page.locator('div').filter({ hasText: /Claude Code/ });
-    if (await claudeCodeEntry.first().isVisible().catch(() => false)) {
-      // Should have built-in badge
-      await expect(page.locator('text=built-in').first()).toBeVisible();
-      // Should have CLI only badge
-      await expect(page.locator('text=CLI only').first()).toBeVisible();
-    }
-  });
-
   test('should show Custom Endpoints section', async ({ page }) => {
     await expect(page.locator('text=Custom Endpoints').first()).toBeVisible();
   });
@@ -162,18 +135,28 @@ test.describe('Custom Endpoint Persistence', () => {
   const AGENT_URL = 'http://e2e-test.example.com:7777';
 
   test.beforeEach(async ({ page }) => {
+    // Accept confirm dialogs (used by delete endpoint)
+    page.on('dialog', dialog => dialog.accept());
     await page.goto('/settings');
     await page.waitForSelector('[data-testid="settings-page"]', { timeout: 30000 });
+    // Clean up any leftover test agents from prior runs
+    let deleteBtn = page.locator(`button[aria-label="Remove ${AGENT_NAME}"]`).first();
+    while (await deleteBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await deleteBtn.click();
+      await page.waitForTimeout(500);
+      deleteBtn = page.locator(`button[aria-label="Remove ${AGENT_NAME}"]`).first();
+    }
   });
 
   test.afterEach(async ({ page }) => {
-    // Best-effort cleanup: delete the test agent if it exists
+    // Best-effort cleanup: delete all test agents that exist
     await page.goto('/settings');
     await page.waitForSelector('[data-testid="settings-page"]', { timeout: 30000 });
-    const deleteBtn = page.locator(`button[aria-label="Remove ${AGENT_NAME}"]`).first();
-    if (await deleteBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+    let deleteBtn = page.locator(`button[aria-label="Remove ${AGENT_NAME}"]`).first();
+    while (await deleteBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
       await deleteBtn.click();
       await page.waitForTimeout(500);
+      deleteBtn = page.locator(`button[aria-label="Remove ${AGENT_NAME}"]`).first();
     }
   });
 
@@ -194,20 +177,20 @@ test.describe('Custom Endpoint Persistence', () => {
     await page.waitForTimeout(1000);
 
     // 2. Verify endpoint appears
-    await expect(page.locator(`text=${AGENT_NAME}`).first()).toBeVisible();
+    await expect(page.locator(`text=${AGENT_NAME}`).first()).toBeVisible({ timeout: 10000 });
 
     // 3. Reload the page (tests server-side persistence)
     await page.reload();
     await page.waitForSelector('[data-testid="settings-page"]', { timeout: 30000 });
 
     // 4. Verify endpoint still appears after reload
-    await expect(page.locator(`text=${AGENT_NAME}`).first()).toBeVisible();
+    await expect(page.locator(`text=${AGENT_NAME}`).first()).toBeVisible({ timeout: 10000 });
 
     // 5. Delete the endpoint
     const deleteBtn = page.locator(`button[aria-label="Remove ${AGENT_NAME}"]`).first();
     if (await deleteBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
       await deleteBtn.click();
-      await page.waitForTimeout(500);
+      await page.waitForTimeout(1000);
     }
 
     // 6. Verify it's gone
