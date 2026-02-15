@@ -180,6 +180,7 @@ connectorRegistry.register(new CustomConnector());
 
 - `constants.ts`: Agent configs, model configs, tool definitions
 - `config.ts`: Runtime config loading from env vars
+- `debug.ts`: Universal debug logging (browser localStorage + Node.js in-memory flag)
 - `labels.ts`: Unified labeling system (replaces category/difficulty)
 - `testCaseValidation.ts`: Zod schemas for test case validation
 
@@ -279,6 +280,7 @@ The Bedrock LLM judge (`server/routes/judge.ts`) evaluates agent performance:
 ### Backend Server (`server/`)
 
 Express server on port 4001 provides:
+- `/api/debug` - Debug mode toggle (GET status, POST to enable/disable)
 - `/api/judge` - Bedrock evaluation proxy
 - `/api/agent/stream` - Agent execution proxy (SSE)
 - `/api/logs/*` - OpenSearch log queries
@@ -293,6 +295,7 @@ Express server on port 4001 provides:
 - Or explicit credentials: `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`
 
 **Optional** (all have sensible defaults):
+- `DEBUG`: Enable verbose debug logging on server startup (`true`/`false`, default: `false`)
 - `LANGGRAPH_ENDPOINT` / `HOLMESGPT_ENDPOINT` / `MLCOMMONS_ENDPOINT`: Agent endpoints
 - `OPENSEARCH_STORAGE_*`: Storage cluster for test cases/benchmarks (features degrade if missing)
 - `OPENSEARCH_LOGS_*`: Logs cluster for agent execution logs (features degrade if missing)

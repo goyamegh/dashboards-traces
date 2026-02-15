@@ -9,6 +9,7 @@
  */
 
 import type { AgentHooks, BeforeRequestContext } from '@/types';
+import { debug } from '@/lib/debug';
 
 /**
  * Execute the beforeRequest hook if defined on the agent.
@@ -26,6 +27,7 @@ export async function executeBeforeRequestHook(
     return context;
   }
 
+  debug('Hooks', `Executing beforeRequest hook for agent "${agentKey}"`);
   try {
     const result = await hooks.beforeRequest(context);
 
@@ -43,6 +45,7 @@ export async function executeBeforeRequestHook(
       throw new Error('beforeRequest hook must return an object with an object "headers" field');
     }
 
+    debug('Hooks', `beforeRequest hook for "${agentKey}" completed, endpoint:`, result.endpoint);
     return result;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

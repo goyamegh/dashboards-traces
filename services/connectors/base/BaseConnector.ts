@@ -4,6 +4,7 @@
  */
 
 import type { TrajectoryStep } from '@/types';
+import { debug as centralDebug } from '@/lib/debug';
 import type {
   AgentConnector,
   ConnectorAuth,
@@ -161,7 +162,7 @@ export abstract class BaseConnector implements AgentConnector {
    * Log debug message with connector type prefix
    */
   protected debug(message: string, ...args: any[]): void {
-    console.log(`[${this.type}] ${message}`, ...args);
+    centralDebug(this.type, message, ...args);
   }
 
   /**

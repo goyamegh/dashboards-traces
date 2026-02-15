@@ -7,6 +7,8 @@
  * Logs Service - Fetch agent execution logs from OpenSearch
  */
 
+import { debug } from '@/lib/debug';
+
 // ============================================================================
 // Types
 // ============================================================================
@@ -70,7 +72,7 @@ export async function fetchLogs(
     throw new Error('OpenSearch Logs not configured. Please set OPENSEARCH_LOGS_ENDPOINT');
   }
 
-  console.log('[LogsService] Fetching logs:', { runId, query, size });
+  debug('LogsService', 'Fetching logs:', { runId, query, size });
 
   // Build OpenSearch query
   const searchBody: any = {
@@ -121,7 +123,7 @@ export async function fetchLogs(
   }
 
   const url = `${endpoint}/${indexPattern}/_search`;
-  console.log('[LogsService] Request URL:', url);
+  debug('LogsService', 'Request URL:', url);
 
   const response = await fetch(url, {
     method: 'POST',
@@ -137,7 +139,7 @@ export async function fetchLogs(
 
   const data = await response.json();
   const hitCount = data.hits?.total?.value || data.hits?.hits?.length || 0;
-  console.log('[LogsService] Found', hitCount, 'logs');
+  debug('LogsService', 'Found', hitCount, 'logs');
 
   // Transform hits to log format
   const logs: LogEntry[] = (data.hits?.hits || []).map((hit: any) => {
@@ -174,9 +176,9 @@ export async function fetchLogsLegacy(options: LegacyLogsQueryOptions): Promise<
     throw new Error('Missing required fields: endpoint, indexPattern, and query');
   }
 
-  console.log('[LogsService] Legacy proxy - Fetching logs from:', endpoint);
-  console.log('[LogsService] Index pattern:', indexPattern);
-  console.log('[LogsService] Query:', JSON.stringify(query).substring(0, 200));
+  debug('LogsService', 'Legacy proxy - Fetching logs from:', endpoint);
+  debug('LogsService', 'Index pattern:', indexPattern);
+  debug('LogsService', 'Query:', JSON.stringify(query).substring(0, 200));
 
   // Build headers
   const headers: Record<string, string> = {
@@ -189,7 +191,7 @@ export async function fetchLogsLegacy(options: LegacyLogsQueryOptions): Promise<
   }
 
   const url = `${endpoint}/${indexPattern}/_search`;
-  console.log('[LogsService] Request URL:', url);
+  debug('LogsService', 'Legacy request URL:', url);
 
   const response = await fetch(url, {
     method: 'POST',
@@ -204,7 +206,7 @@ export async function fetchLogsLegacy(options: LegacyLogsQueryOptions): Promise<
   }
 
   const data = await response.json();
-  console.log('[LogsService] Response hits:', data.hits?.total?.value || data.hits?.hits?.length || 0);
+  debug('LogsService', 'Response hits:', data.hits?.total?.value || data.hits?.hits?.length || 0);
 
   return data;
 }

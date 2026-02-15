@@ -11,6 +11,7 @@
  */
 
 import { Span, EvaluationReport } from '@/types';
+import { debug } from '@/lib/debug';
 import { fetchTracesByRunIds } from './index';
 import { asyncRunStorage } from '../storage/asyncRunStorage';
 
@@ -60,7 +61,7 @@ class TracePollingManager {
   ): void {
     // Don't start if already polling for this report
     if (this.polls.has(reportId) && this.polls.get(reportId)!.running) {
-      console.log(`[TracePoller] Already polling for report ${reportId}`);
+      debug('TracePoller', `Already polling for report ${reportId}`);
       return;
     }
 
@@ -77,7 +78,7 @@ class TracePollingManager {
     this.polls.set(reportId, state);
     this.callbacks.set(reportId, callbacks);
 
-    console.log(`[TracePoller] Starting polling for report ${reportId}, runId ${runId}`);
+    debug('TracePoller', `Starting polling for report ${reportId}, runId ${runId}`);
     this.poll(reportId);
   }
 
@@ -91,7 +92,7 @@ class TracePollingManager {
         clearTimeout(state.timerId);
       }
       state.running = false;
-      console.log(`[TracePoller] Stopped polling for report ${reportId}`);
+      debug('TracePoller', `Stopped polling for report ${reportId}`);
     }
     this.callbacks.delete(reportId);
     this.polls.delete(reportId);
@@ -131,7 +132,7 @@ class TracePollingManager {
     state.attempts++;
     state.lastAttempt = new Date().toISOString();
 
-    console.log(`[TracePoller] Poll attempt ${state.attempts}/${state.maxAttempts} for report ${reportId}`);
+    debug('TracePoller', `Poll attempt ${state.attempts}/${state.maxAttempts} for report ${reportId}`);
 
     // Notify about attempt
     callbacks?.onAttempt?.(state.attempts, state.maxAttempts);
@@ -152,7 +153,7 @@ class TracePollingManager {
 
       if (result.spans && result.spans.length > 0) {
         // Traces found!
-        console.log(`[TracePoller] Found ${result.spans.length} spans for report ${reportId}`);
+        debug('TracePoller', `Found ${result.spans.length} spans for report ${reportId}`);
 
         // Get the current report
         const report = await asyncRunStorage.getReportById(reportId);
@@ -170,7 +171,7 @@ class TracePollingManager {
         // No traces yet
         if (state.attempts >= state.maxAttempts) {
           // Max attempts reached
-          console.log(`[TracePoller] Max attempts reached for report ${reportId}`);
+          debug('TracePoller', `Max attempts reached for report ${reportId}`);
           state.running = false;
 
           callbacks?.onError(new Error(`Traces not available after ${state.maxAttempts} attempts`));

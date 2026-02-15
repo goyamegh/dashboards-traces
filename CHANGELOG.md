@@ -10,6 +10,12 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ## [Unreleased]
 
 ### Added
+- Universal debug logging system with `lib/debug.ts` supporting both browser (localStorage) and Node.js (in-memory flag) environments
+- `GET/POST /api/debug` endpoint for runtime toggle of server-side verbose logging
+- Settings page debug toggle now syncs to both browser console and server terminal output
+- `DEBUG` environment variable for server-side debug initialization
+- Converted `console.log` to structured `debug()` calls across 30+ server routes, services, and connectors
+- Unit, integration, and E2E tests for debug logging system
 - Pagination and total count support for benchmarks, test case runs, and reports ([#35](https://github.com/opensearch-project/agent-health/pull/35))
 - Lazy backfill for benchmark run stats and `migrate` CLI command for denormalized `RunStats` ([#35](https://github.com/opensearch-project/agent-health/pull/35))
 - Benchmark export to JSON format for sharing and reproducibility ([#35](https://github.com/opensearch-project/agent-health/pull/35))

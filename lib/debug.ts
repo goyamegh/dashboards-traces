@@ -5,20 +5,38 @@
 
 /**
  * Simple Debug Utility
- * Uses standard console levels with a verbose toggle
+ * Uses standard console levels with a verbose toggle.
+ * Works in both browser (localStorage) and Node.js (in-memory flag / env var).
  */
+
+const isBrowser = typeof window !== 'undefined';
+
+// Server-side in-memory flag, initialized from process.env.DEBUG
+let serverDebugEnabled =
+  !isBrowser && typeof process !== 'undefined' && process.env?.DEBUG === 'true';
 
 // Check localStorage for debug setting, default to false
 export function isDebugEnabled(): boolean {
-  try {
-    return localStorage.getItem('agenteval_debug') === 'true';
-  } catch {
-    return false;
+  if (isBrowser) {
+    try {
+      return localStorage.getItem('agenteval_debug') === 'true';
+    } catch {
+      return false;
+    }
   }
+  return serverDebugEnabled;
 }
 
 export function setDebugEnabled(enabled: boolean): void {
-  localStorage.setItem('agenteval_debug', String(enabled));
+  if (isBrowser) {
+    try {
+      localStorage.setItem('agenteval_debug', String(enabled));
+    } catch {
+      // Ignore errors (e.g. private browsing)
+    }
+  } else {
+    serverDebugEnabled = enabled;
+  }
 }
 
 /**

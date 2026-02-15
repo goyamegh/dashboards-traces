@@ -11,6 +11,7 @@
  */
 
 import { Router, Request, Response } from 'express';
+import { debug } from '@/lib/debug';
 import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middleware/storageClient.js';
 import { SAMPLE_BENCHMARKS, isSampleBenchmarkId } from '../../../cli/demo/sampleBenchmarks.js';
 import { SAMPLE_TEST_CASES } from '../../../cli/demo/sampleTestCases.js';
@@ -607,7 +608,7 @@ router.post('/api/storage/benchmarks', async (req: Request, res: Response) => {
 
     await client.index({ index: INDEX, id: benchmark.id, body: benchmark, refresh: true });
 
-    console.log(`[StorageAPI] Created benchmark: ${benchmark.id} (v1)`);
+    debug('StorageAPI', `Created benchmark: ${benchmark.id} (v1)`);
     res.status(201).json(benchmark);
   } catch (error: any) {
     console.error('[StorageAPI] Create benchmark failed:', error.message);
@@ -677,7 +678,7 @@ router.put('/api/storage/benchmarks/:id', async (req: Request, res: Response) =>
         testCaseIds: newTestCaseIds,
       };
 
-      console.log(`[StorageAPI] Updated benchmark: ${id} (v${existing.currentVersion} → v${newVersion}, test cases changed)`);
+      debug('StorageAPI', `Updated benchmark: ${id} (v${existing.currentVersion} → v${newVersion}, test cases changed)`);
     } else {
       // Metadata only - no version change
       updated = {
@@ -687,7 +688,7 @@ router.put('/api/storage/benchmarks/:id', async (req: Request, res: Response) =>
         updatedAt: now,
       };
 
-      console.log(`[StorageAPI] Updated benchmark metadata: ${id} (v${existing.currentVersion}, no version change)`);
+      debug('StorageAPI', `Updated benchmark metadata: ${id} (v${existing.currentVersion}, no version change)`);
     }
 
     // Handle runs update if provided
@@ -752,7 +753,7 @@ router.patch('/api/storage/benchmarks/:id/metadata', async (req: Request, res: R
 
     await client.index({ index: INDEX, id, body: updated, refresh: true });
 
-    console.log(`[StorageAPI] Updated benchmark metadata: ${id} (v${existing.currentVersion})`);
+    debug('StorageAPI', `Updated benchmark metadata: ${id} (v${existing.currentVersion})`);
     res.json(updated);
   } catch (error: any) {
     if (error.meta?.statusCode === 404) {
@@ -872,7 +873,7 @@ router.delete('/api/storage/benchmarks/:id', async (req: Request, res: Response)
     const client = requireStorageClient(req);
     await client.delete({ index: INDEX, id, refresh: true });
 
-    console.log(`[StorageAPI] Deleted benchmark: ${id}`);
+    debug('StorageAPI', `Deleted benchmark: ${id}`);
     res.json({ deleted: true });
   } catch (error: any) {
     if (error.meta?.statusCode === 404) {
@@ -928,7 +929,7 @@ router.post('/api/storage/benchmarks/bulk', async (req: Request, res: Response) 
 
     const result = await client.bulk({ body: operations, refresh: true });
 
-    console.log(`[StorageAPI] Bulk created ${benchmarks.length} benchmarks`);
+    debug('StorageAPI', `Bulk created ${benchmarks.length} benchmarks`);
     res.json({ created: benchmarks.length, errors: result.body.errors });
   } catch (error: any) {
     console.error('[StorageAPI] Bulk create benchmarks failed:', error.message);
@@ -938,9 +939,9 @@ router.post('/api/storage/benchmarks/bulk', async (req: Request, res: Response) 
 
 // POST /api/storage/benchmarks/:id/execute - Execute benchmark and stream progress via SSE
 router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Response) => {
-  console.log('[Execute] ========== BENCHMARK EXECUTION STARTED ==========');
-  console.log('[Execute] Request params:', req.params);
-  console.log('[Execute] Request body:', JSON.stringify(req.body, null, 2));
+  debug('StorageAPI', '========== BENCHMARK EXECUTION STARTED ==========');
+  debug('StorageAPI', 'Execute request params:', req.params);
+  debug('StorageAPI', 'Execute request body:', JSON.stringify(req.body, null, 2));
 
   const { id } = req.params;
   const runConfig: RunConfigInput = req.body;
@@ -973,13 +974,13 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
     }
 
     const benchmark = normalizeBenchmark(getResult.body._source);
-    console.log('[Execute] Benchmark loaded:', benchmark.id, benchmark.name);
-    console.log('[Execute] Test case IDs:', benchmark.testCaseIds);
+    debug('StorageAPI', 'Benchmark loaded:', benchmark.id, benchmark.name);
+    debug('StorageAPI', 'Test case IDs:', benchmark.testCaseIds);
 
     // Fetch test cases for progress display and version snapshots
-    console.log('[Execute] Fetching test cases...');
+    debug('StorageAPI', 'Fetching test cases...');
     const allTestCases = await getAllTestCases(req);
-    console.log('[Execute] Found', allTestCases.length, 'test cases');
+    debug('StorageAPI', 'Found', allTestCases.length, 'test cases');
     const testCaseMap = new Map(allTestCases.map((tc: any) => [tc.id, tc]));
 
     // Capture test case snapshots at execution time (for reproducibility)
@@ -1046,14 +1047,14 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
 
     try {
       // Execute the run
-      console.log('[Execute] Starting executeRun for run:', run.id);
-      console.log('[Execute] Run config:', { agentKey: run.agentKey, modelId: run.modelId });
+      debug('StorageAPI', 'Starting executeRun for run:', run.id);
+      debug('StorageAPI', 'Run config:', { agentKey: run.agentKey, modelId: run.modelId });
       const completedRun = await executeRun(
         benchmark,
         run,
         (progress: BenchmarkProgress) => {
           // Stream progress to client
-          console.log('[Execute] Progress:', progress.currentTestCaseIndex + 1, '/', progress.totalTestCases, 'status:', progress.status);
+          debug('StorageAPI', 'Execute progress:', progress.currentTestCaseIndex + 1, '/', progress.totalTestCases, 'status:', progress.status);
           res.write(`data: ${JSON.stringify({ type: 'progress', ...progress })}\n\n`);
         },
         {
@@ -1069,7 +1070,7 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
           },
         }
       );
-      console.log('[Execute] executeRun completed');
+      debug('StorageAPI', 'executeRun completed');
 
       // Determine final status - check if cancelled
       const wasCancelled = cancellationToken.isCancelled;
@@ -1277,7 +1278,7 @@ router.patch('/api/storage/benchmarks/:id/runs/:runId/stats', async (req: Reques
       return res.status(404).json({ error: 'Run not found' });
     }
 
-    console.log(`[StorageAPI] Updated stats for run ${runId}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}`);
+    debug('StorageAPI', `Updated stats for run ${runId}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}`);
     res.json({ updated: true, runId, stats });
   } catch (error: any) {
     if (error.meta?.statusCode === 404) {

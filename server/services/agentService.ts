@@ -8,6 +8,7 @@
  */
 
 import { Response } from 'express';
+import { debug } from '@/lib/debug';
 
 // ============================================================================
 // Types
@@ -167,24 +168,24 @@ export async function proxyAgentRequest(
 ): Promise<void> {
   const { endpoint, payload, headers: customHeaders = {} } = request;
 
-  console.log('\n========== AGENT PROXY REQUEST ==========');
-  console.log('[AgentProxy] Timestamp:', new Date().toISOString());
-  console.log('[AgentProxy] Target endpoint:', endpoint);
-  console.log('[AgentProxy] Custom headers:', JSON.stringify(customHeaders));
-  console.log('[AgentProxy] Payload preview:', JSON.stringify(payload).substring(0, 300) + '...');
+  debug('AgentProxy', '========== AGENT PROXY REQUEST ==========');
+  debug('AgentProxy', 'Timestamp:', new Date().toISOString());
+  debug('AgentProxy', 'Target endpoint:', endpoint);
+  debug('AgentProxy', 'Custom headers:', JSON.stringify(customHeaders));
+  debug('AgentProxy', 'Payload preview:', JSON.stringify(payload).substring(0, 300) + '...');
 
   // Set SSE headers for streaming response
   setSSEHeaders(res);
 
   // Check if Demo Agent selected (mock:// endpoint)
   if (endpoint.startsWith('mock://')) {
-    console.log('[AgentProxy] Demo Agent - returning mock response');
+    debug('AgentProxy', 'Demo Agent - returning mock response');
     await streamMockAgentResponse(payload, res);
     res.end();
     return;
   }
 
-  console.log('[AgentProxy] Calling real endpoint:', endpoint);
+  debug('AgentProxy', 'Calling real endpoint:', endpoint);
 
   // Make request to agent endpoint
   const response = await fetch(endpoint, {
@@ -206,8 +207,8 @@ export async function proxyAgentRequest(
     return;
   }
 
-  console.log('[AgentProxy] Connected to agent, streaming response...');
-  console.log('[AgentProxy] Response headers:', Object.fromEntries(response.headers.entries()));
+  debug('AgentProxy', 'Connected to agent, streaming response...');
+  debug('AgentProxy', 'Response headers:', Object.fromEntries(response.headers.entries()));
 
   // Stream the response back to client
   const reader = response.body?.getReader();
@@ -232,7 +233,7 @@ export async function proxyAgentRequest(
 
       // Log first few chunks and then periodically
       if (chunkCount <= 3 || chunkCount % 10 === 0) {
-        console.log(`[AgentProxy] Chunk #${chunkCount} (${value.length} bytes):`,
+        debug('AgentProxy', `Chunk #${chunkCount} (${value.length} bytes):`,
           chunk.substring(0, 200) + (chunk.length > 200 ? '...' : ''));
       }
 
@@ -244,7 +245,7 @@ export async function proxyAgentRequest(
     reader.releaseLock();
   }
 
-  console.log(`[AgentProxy] Stream completed - ${chunkCount} chunks, ${totalBytes} bytes total`);
+  debug('AgentProxy', `Stream completed - ${chunkCount} chunks, ${totalBytes} bytes total`);
   res.end();
 }
 

@@ -10,6 +10,7 @@
 import { Request, Response, Router } from 'express';
 import { evaluateTrajectory, parseBedrockError } from '../services/bedrockService';
 import { loadConfigSync } from '../../lib/config/index';
+import { debug } from '@/lib/debug';
 
 const router = Router();
 
@@ -100,7 +101,7 @@ router.post('/api/judge', async (req: Request, res: Response) => {
 
     // Route to appropriate provider
     if (provider === 'demo') {
-      console.log('[JudgeAPI] Demo provider - returning mock evaluation');
+      debug('JudgeAPI', 'Demo provider - returning mock evaluation');
       const mockResult = generateMockEvaluation(trajectory, expectedOutcomes);
       return res.json(mockResult);
     }
@@ -109,7 +110,7 @@ router.post('/api/judge', async (req: Request, res: Response) => {
     // Future: add ollama, openai providers here
     // Use the resolved model_id from config, not the key
     const resolvedModelId = modelConfig?.model_id || modelId;
-    console.log('[JudgeAPI] Using provider:', provider, 'model:', resolvedModelId);
+    debug('JudgeAPI', 'Using provider:', provider, 'model:', resolvedModelId);
     const result = await evaluateTrajectory({
       trajectory,
       expectedOutcomes,

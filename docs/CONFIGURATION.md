@@ -82,6 +82,14 @@ Headers for ML-Commons agent to access data sources.
 | `MLCOMMONS_HEADER_AWS_SECRET_ACCESS_KEY` | Secret key for SigV4 |
 | `MLCOMMONS_HEADER_AWS_SESSION_TOKEN` | Session token for SigV4 |
 
+### Debug Logging
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `DEBUG` | Enable verbose debug logging on server startup | `false` |
+
+Debug logging can also be toggled at runtime via the Settings page "Verbose Logging" toggle or the `POST /api/debug` endpoint. When enabled, structured debug output appears in both the browser console and server terminal.
+
 ### Advanced Settings
 
 | Variable | Description | Default |

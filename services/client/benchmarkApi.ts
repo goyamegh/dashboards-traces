@@ -11,6 +11,7 @@
  */
 
 import { BenchmarkRun, BenchmarkProgress, BenchmarkStartedEvent, RunConfigInput } from '@/types';
+import { debug } from '@/lib/debug';
 
 /**
  * Execute a benchmark run via the server-side API with SSE streaming.
@@ -30,6 +31,7 @@ export async function executeBenchmarkRun(
   onProgress: (progress: BenchmarkProgress) => void,
   onStarted?: (event: BenchmarkStartedEvent) => void
 ): Promise<BenchmarkRun> {
+  debug('ClientAPI', 'Executing benchmark run:', benchmarkId);
   const response = await fetch(`/api/storage/benchmarks/${benchmarkId}/execute`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -116,6 +118,7 @@ export async function executeBenchmarkRun(
     throw new Error('Run completed without returning result');
   }
 
+  debug('ClientAPI', 'Benchmark run completed:', completedRun.id);
   return completedRun;
 }
 
@@ -130,6 +133,7 @@ export async function cancelBenchmarkRun(
   benchmarkId: string,
   runId: string
 ): Promise<boolean> {
+  debug('ClientAPI', 'Cancelling benchmark run:', benchmarkId, runId);
   const response = await fetch(`/api/storage/benchmarks/${benchmarkId}/cancel`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

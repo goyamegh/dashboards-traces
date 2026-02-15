@@ -77,24 +77,19 @@ export class SubprocessConnector extends BaseConnector {
     onProgress?: ConnectorProgressCallback,
     onRawEvent?: ConnectorRawEventCallback
   ): Promise<ConnectorResponse> {
-    console.log('[Subprocess] ========== execute() STARTED ==========');
+    this.debug('========== execute() STARTED ==========');
     const command = endpoint || this.config.command;
     const args = this.config.args || [];
     // Use pre-built payload from hook if available, otherwise build fresh
     const input = request.payload || this.buildPayload(request);
 
-    console.log('[Subprocess] Command:', command);
-    console.log('[Subprocess] Args:', args);
-    console.log('[Subprocess] Input mode:', this.config.inputMode);
-    console.log('[Subprocess] Output parser:', this.config.outputParser);
-    console.log('[Subprocess] Timeout:', this.config.timeout);
-    console.log('[Subprocess] Input (first 500 chars):', input.substring(0, 500));
-    console.log('[Subprocess] Working dir:', this.config.workingDir || process.cwd());
-
-    this.debug('Executing subprocess');
     this.debug('Command:', command);
-    this.debug('Args:', args.join(' '));
-    this.debug('Input:', input.substring(0, 200));
+    this.debug('Args:', args);
+    this.debug('Input mode:', this.config.inputMode);
+    this.debug('Output parser:', this.config.outputParser);
+    this.debug('Timeout:', this.config.timeout);
+    this.debug('Input (first 500 chars):', input.substring(0, 500));
+    this.debug('Working dir:', this.config.workingDir || process.cwd());
 
     // Merge environment variables
     const env = {
@@ -115,37 +110,37 @@ export class SubprocessConnector extends BaseConnector {
         ? [...args, input]
         : args;
 
-      console.log('[Subprocess] Spawning process...');
-      console.log('[Subprocess] Full command:', command, finalArgs.join(' '));
+      this.debug('Spawning process...');
+      this.debug('Full command:', command, finalArgs.join(' '));
       const proc = spawn(command, finalArgs, {
         env,
         cwd: this.config.workingDir,
         shell: true,
       });
-      console.log('[Subprocess] Process spawned, PID:', proc.pid);
+      this.debug('Process spawned, PID:', proc.pid);
 
       // Set timeout
       const timeoutId = setTimeout(() => {
         if (settled) return;
         settled = true;
-        console.log('[Subprocess] TIMEOUT reached, killing process');
+        this.debug('TIMEOUT reached, killing process');
         proc.kill('SIGTERM');
         reject(new Error(`Subprocess timed out after ${this.config.timeout}ms`));
       }, this.config.timeout);
 
       // Send input via stdin if inputMode is 'stdin'
       if (this.config.inputMode === 'stdin') {
-        console.log('[Subprocess] Writing input to stdin...');
+        this.debug('Writing input to stdin...');
         proc.stdin.write(input);
         proc.stdin.end();
-        console.log('[Subprocess] stdin closed');
+        this.debug('stdin closed');
       }
 
       // Handle stdout
       proc.stdout.on('data', (data: Buffer) => {
         const chunk = data.toString();
-        console.log('[Subprocess] stdout received:', chunk.length, 'bytes');
-        console.log('[Subprocess] stdout preview:', chunk.substring(0, 200));
+        this.debug('stdout received:', chunk.length, 'bytes');
+        this.debug('stdout preview:', chunk.substring(0, 200));
         stdout += chunk;
         rawOutput.push({ type: 'stdout', data: chunk, timestamp: Date.now() });
         onRawEvent?.({ type: 'stdout', data: chunk });
@@ -159,8 +154,8 @@ export class SubprocessConnector extends BaseConnector {
       // Handle stderr
       proc.stderr.on('data', (data: Buffer) => {
         const chunk = data.toString();
-        console.log('[Subprocess] stderr received:', chunk.length, 'bytes');
-        console.log('[Subprocess] stderr:', chunk);
+        this.debug('stderr received:', chunk.length, 'bytes');
+        this.debug('stderr:', chunk);
         stderr += chunk;
         onRawEvent?.({ type: 'stderr', data: chunk });
         this.debug('stderr:', chunk);
@@ -168,14 +163,14 @@ export class SubprocessConnector extends BaseConnector {
 
       // Handle process exit
       proc.on('close', (code: number, signal: string) => {
-        console.log('[Subprocess] Process closed with code:', code, 'signal:', signal);
+        this.debug('Process closed with code:', code, 'signal:', signal);
         clearTimeout(timeoutId);
         if (settled) return;
         settled = true;
 
         if (code !== 0) {
           // Non-zero exit code - create error response but don't reject
-          console.log('[Subprocess] Non-zero exit code:', code);
+          this.debug('Non-zero exit code:', code);
           this.error(`Process exited with code ${code}`);
           this.error('stderr:', stderr);
         }
@@ -190,7 +185,7 @@ export class SubprocessConnector extends BaseConnector {
           finalTrajectory.forEach(step => onProgress?.(step));
         }
 
-        console.log('[Subprocess] Resolving with trajectory of', finalTrajectory.length, 'steps');
+        this.debug('Resolving with trajectory of', finalTrajectory.length, 'steps');
         resolve({
           trajectory: finalTrajectory,
           runId: `subprocess-${Date.now()}`,
@@ -206,7 +201,7 @@ export class SubprocessConnector extends BaseConnector {
 
       // Handle errors
       proc.on('error', (error: Error) => {
-        console.log('[Subprocess] ERROR event:', error.message);
+        this.debug('ERROR event:', error.message);
         clearTimeout(timeoutId);
         if (settled) return;
         settled = true;
@@ -227,7 +222,7 @@ export class SubprocessConnector extends BaseConnector {
         reject(new Error(errorMsg));
       });
     });
-    console.log('[Subprocess] ========== execute() COMPLETED ==========');
+    this.debug('========== execute() COMPLETED ==========');
   }
 
   /**

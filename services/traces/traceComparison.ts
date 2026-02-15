@@ -17,6 +17,7 @@ import {
   TraceComparisonResult,
   ToolSimilarityConfig,
 } from '@/types';
+import { debug } from '@/lib/debug';
 import { categorizeSpanTree } from './spanCategorization';
 import { calculateToolSimilarity } from './toolSimilarity';
 import {
@@ -300,6 +301,7 @@ export function compareTraces(
   rightSpans: Span[],
   toolConfig?: ToolSimilarityConfig
 ): TraceComparisonResult {
+  debug('TraceComparison', 'Comparing traces:', leftSpans.length, 'vs', rightSpans.length, 'spans');
   // Categorize both trees
   const leftCategorized = categorizeSpanTree(leftSpans);
   const rightCategorized = categorizeSpanTree(rightSpans);

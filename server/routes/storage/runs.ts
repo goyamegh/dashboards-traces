@@ -11,6 +11,7 @@
  */
 
 import { Router, Request, Response } from 'express';
+import { debug } from '@/lib/debug';
 import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middleware/storageClient.js';
 import {
   SAMPLE_RUNS,
@@ -188,7 +189,7 @@ router.post('/api/storage/runs', async (req: Request, res: Response) => {
 
     const client = requireStorageClient(req);
     const run = await createRunWithClient(client, runData);
-    console.log(`[StorageAPI] Created run: ${run.id}`);
+    debug('StorageAPI', `Created run: ${run.id}`);
     res.status(201).json(run);
   } catch (error: any) {
     console.error('[StorageAPI] Create run failed:', error.message);
@@ -218,7 +219,7 @@ router.patch('/api/storage/runs/:id', async (req: Request, res: Response) => {
 
     const client = requireStorageClient(req);
     const updated = await updateRunWithClient(client, id, updates);
-    console.log(`[StorageAPI] Updated run: ${id}`);
+    debug('StorageAPI', `Updated run: ${id}`);
     res.json(updated);
   } catch (error: any) {
     if (error.meta?.statusCode === 404) {
@@ -247,7 +248,7 @@ router.delete('/api/storage/runs/:id', async (req: Request, res: Response) => {
     const client = requireStorageClient(req);
     await client.delete({ index: INDEX, id, refresh: true });
 
-    console.log(`[StorageAPI] Deleted run: ${id}`);
+    debug('StorageAPI', `Deleted run: ${id}`);
     res.json({ deleted: true });
   } catch (error: any) {
     if (error.meta?.statusCode === 404) {
@@ -555,7 +556,7 @@ router.post('/api/storage/runs/:id/annotations', async (req: Request, res: Respo
       refresh: true,
     });
 
-    console.log(`[StorageAPI] Added annotation to run: ${id}`);
+    debug('StorageAPI', `Added annotation to run: ${id}`);
     res.status(201).json(annotation);
   } catch (error: any) {
     console.error('[StorageAPI] Add annotation failed:', error.message);
@@ -601,7 +602,7 @@ router.put('/api/storage/runs/:id/annotations/:annotationId', async (req: Reques
       refresh: true,
     });
 
-    console.log(`[StorageAPI] Updated annotation ${annotationId} on run: ${id}`);
+    debug('StorageAPI', `Updated annotation ${annotationId} on run: ${id}`);
     res.json({ ...updates, id: annotationId });
   } catch (error: any) {
     console.error('[StorageAPI] Update annotation failed:', error.message);
@@ -636,7 +637,7 @@ router.delete('/api/storage/runs/:id/annotations/:annotationId', async (req: Req
       refresh: true,
     });
 
-    console.log(`[StorageAPI] Deleted annotation ${annotationId} from run: ${id}`);
+    debug('StorageAPI', `Deleted annotation ${annotationId} from run: ${id}`);
     res.json({ deleted: true });
   } catch (error: any) {
     console.error('[StorageAPI] Delete annotation failed:', error.message);
@@ -678,7 +679,7 @@ router.post('/api/storage/runs/bulk', async (req: Request, res: Response) => {
 
     const result = await client.bulk({ body: operations, refresh: true });
 
-    console.log(`[StorageAPI] Bulk created ${runs.length} runs`);
+    debug('StorageAPI', `Bulk created ${runs.length} runs`);
     res.json({ created: runs.length, errors: result.body.errors });
   } catch (error: any) {
     console.error('[StorageAPI] Bulk create runs failed:', error.message);

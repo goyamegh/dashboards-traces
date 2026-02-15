@@ -152,6 +152,9 @@ OPENSEARCH_STORAGE_PASSWORD=your_password
 # Optional: Traces (reuse the same cluster for simplicity)
 OPENSEARCH_LOGS_ENDPOINT=https://your-traces-cluster.opensearch.amazonaws.com
 OPENSEARCH_LOGS_TRACES_INDEX=otel-v1-apm-span-*
+
+# Optional: Debug Logging (default: false)
+DEBUG=false
 ```
 
 Use this for custom env file path (defaults to root folder for .env file):
@@ -360,6 +363,20 @@ Full screen mode provides:
 
 ## API Reference
 
+### Debug API
+
+```bash
+# Get debug logging status
+GET /api/debug
+# Response: { "enabled": false }
+
+# Toggle debug logging
+POST /api/debug
+Content-Type: application/json
+{ "enabled": true }
+# Response: { "enabled": true }
+```
+
 ### Storage APIs
 
 ```bash
@@ -441,6 +458,27 @@ If `--no-browser` wasn't specified but browser doesn't open:
 open http://localhost:4001  # macOS
 xdg-open http://localhost:4001  # Linux
 start http://localhost:4001  # Windows
+```
+
+### Enabling Debug Logging
+
+For detailed diagnostic output when troubleshooting:
+
+```bash
+# Start with debug logging enabled
+DEBUG=true npx @opensearch-project/agent-health
+
+# Or toggle at runtime from the Settings page "Verbose Logging" switch
+```
+
+Debug output appears in both the browser console and server terminal. You can also toggle via the API:
+
+```bash
+# Enable
+curl -X POST http://localhost:4001/api/debug -H 'Content-Type: application/json' -d '{"enabled":true}'
+
+# Check status
+curl http://localhost:4001/api/debug
 ```
 
 ### Module Not Found Errors

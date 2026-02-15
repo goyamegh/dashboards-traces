@@ -11,6 +11,8 @@
  * See: vite.config.ts and https://vitejs.dev/guide/env-and-mode.html
  */
 
+import { debug } from '@/lib/debug';
+
 // =============================================================================
 // Backend URL Configuration (single source of truth)
 // =============================================================================
@@ -129,6 +131,7 @@ export const ENV_CONFIG: EnvConfig = {
  * Region is always included as it may be needed for both auth methods
  */
 export function buildMLCommonsHeaders(): Record<string, string> {
+  debug('Config', 'Building ML-Commons headers');
   const headers: Record<string, string> = {};
 
   if (ENV_CONFIG.mlcommonsHeaderOpenSearchUrl) {
@@ -159,5 +162,6 @@ export function buildMLCommonsHeaders(): Record<string, string> {
     }
   }
 
+  debug('Config', 'ML-Commons headers built, keys:', Object.keys(headers));
   return headers;
 }

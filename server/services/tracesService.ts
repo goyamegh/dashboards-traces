@@ -9,6 +9,7 @@
 
 import https from 'https';
 import http from 'http';
+import { debug } from '../../lib/debug.js';
 
 /**
  * Make HTTP/HTTPS request with configurable TLS verification
@@ -215,7 +216,7 @@ export async function fetchTraces(
     throw new Error('Either traceId, runIds, or time range is required');
   }
 
-  console.log('[TracesService] Fetching traces:', { traceId, runIds: runIds?.length, serviceName, textSearch, size });
+  debug('TracesService', 'Fetching traces:', { traceId, runIds: runIds?.length, serviceName, textSearch, size });
 
   // Build OpenSearch query
   const must: any[] = [];
@@ -289,7 +290,7 @@ export async function fetchTraces(
   // Transform spans
   const spans = (data.hits?.hits || []).map((hit: any) => transformSpan(hit._source));
 
-  console.log('[TracesService] Found', spans.length, 'spans');
+  debug('TracesService', 'Found', spans.length, 'spans');
 
   return {
     spans,

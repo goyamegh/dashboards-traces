@@ -13,6 +13,7 @@ import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { debug } from '../../lib/debug.js';
 import { storageClientMiddleware } from './storageClient.js';
 
 // Get directory of this file for resolving paths relative to package location
@@ -50,17 +51,17 @@ function setupStaticServing(app: Express): void {
   const indexPath = path.join(distPath, 'index.html');
   const indexExists = fs.existsSync(indexPath);
 
-  console.log('[StaticServer] __dirname:', __dirname);
-  console.log('[StaticServer] Computed distPath:', distPath);
-  console.log('[StaticServer] index.html exists:', indexExists);
+  debug('StaticServer', '__dirname:', __dirname);
+  debug('StaticServer', 'Computed distPath:', distPath);
+  debug('StaticServer', 'index.html exists:', indexExists);
 
   if (indexExists) {
-    console.log('[StaticServer] Serving frontend from dist/ folder');
+    debug('StaticServer', 'Serving frontend from dist/ folder');
     app.use(express.static(distPath, {
       index: false,  // Don't serve index.html for directory requests — let SPA fallback handle it
     }));
   } else {
-    console.log('[StaticServer] dist/index.html not found - API-only mode');
+    debug('StaticServer', 'dist/index.html not found - API-only mode');
   }
 }
 

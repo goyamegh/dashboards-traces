@@ -8,6 +8,7 @@
  */
 
 import { Request, Response, Router } from 'express';
+import { debug } from '@/lib/debug';
 import { computeMetrics, computeAggregateMetrics } from '../services/metricsService';
 import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
 import { MetricsResult } from '@/types';
@@ -32,7 +33,7 @@ router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
 
     const indexPattern = config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces;
 
-    console.log('[MetricsAPI] Computing metrics for runId:', runId);
+    debug('MetricsAPI', 'Computing metrics for runId:', runId);
 
     const metrics = await computeMetrics(runId, {
       endpoint: config.endpoint,
@@ -41,7 +42,7 @@ router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
       indexPattern
     });
 
-    console.log('[MetricsAPI] Metrics computed:', {
+    debug('MetricsAPI', 'Metrics computed:', {
       runId: metrics.runId,
       totalTokens: metrics.totalTokens,
       costUsd: metrics.costUsd?.toFixed(4),
@@ -80,7 +81,7 @@ router.post('/api/metrics/batch', async (req: Request, res: Response) => {
 
     const indexPattern = config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces;
 
-    console.log('[MetricsAPI] Computing batch metrics for', runIds.length, 'runs');
+    debug('MetricsAPI', 'Computing batch metrics for', runIds.length, 'runs');
 
     const osConfig = {
       endpoint: config.endpoint,
@@ -103,7 +104,7 @@ router.post('/api/metrics/batch', async (req: Request, res: Response) => {
     const successfulMetrics = results.filter((r): r is MetricsResult => !('error' in r));
     const aggregate = computeAggregateMetrics(successfulMetrics);
 
-    console.log('[MetricsAPI] Batch metrics computed:', {
+    debug('MetricsAPI', 'Batch metrics computed:', {
       total: runIds.length,
       successful: successfulMetrics.length,
       totalCost: aggregate.totalCostUsd?.toFixed(4)

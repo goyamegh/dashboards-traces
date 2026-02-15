@@ -191,6 +191,8 @@ Key endpoints used by CLI:
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check |
+| `/api/debug` | GET | Get current debug logging state |
+| `/api/debug` | POST | Toggle debug logging (`{ enabled: boolean }`) |
 | `/api/storage/benchmarks` | GET | List benchmarks |
 | `/api/storage/benchmarks/:id` | GET | Get benchmark by ID |
 | `/api/storage/benchmarks/:id/execute` | POST | Execute benchmark (SSE) |

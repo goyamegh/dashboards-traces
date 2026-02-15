@@ -11,6 +11,7 @@
  */
 
 import { Span, SpanCategory, CategorizedSpan, OTelComplianceResult } from '@/types';
+import { debug } from '@/lib/debug';
 import {
   // Attribute names
   ATTR_GEN_AI_OPERATION_NAME,
@@ -202,6 +203,7 @@ export function categorizeSpan(span: Span): CategorizedSpan {
  * Categorize an array of spans
  */
 export function categorizeSpans(spans: Span[]): CategorizedSpan[] {
+  debug('SpanCategorization', 'Categorizing', spans.length, 'spans');
   return spans.map(categorizeSpan);
 }
 

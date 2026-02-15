@@ -214,15 +214,15 @@ export class ClaudeCodeConnector extends SubprocessConnector {
     onProgress?: ConnectorProgressCallback,
     onRawEvent?: (event: any) => void
   ): Promise<import('../types').ConnectorResponse> {
-    console.log('[ClaudeCode] ========== execute() STARTED ==========');
-    console.log('[ClaudeCode] Endpoint:', endpoint);
-    console.log('[ClaudeCode] Test case:', request.testCase.name);
-    console.log('[ClaudeCode] Config:', this['config']);
+    this.debug('========== execute() STARTED ==========');
+    this.debug('Endpoint:', endpoint);
+    this.debug('Test case:', request.testCase.name);
+    this.debug('Config:', this['config']);
     this.resetState();
-    console.log('[ClaudeCode] State reset, calling super.execute()...');
+    this.debug('State reset, calling super.execute()...');
     const result = await super.execute(endpoint, request, auth, onProgress, onRawEvent);
-    console.log('[ClaudeCode] super.execute() returned with', result.trajectory.length, 'steps');
-    console.log('[ClaudeCode] ========== execute() COMPLETED ==========');
+    this.debug('super.execute() returned with', result.trajectory.length, 'steps');
+    this.debug('========== execute() COMPLETED ==========');
     return result;
   }
 

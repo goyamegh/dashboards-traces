@@ -11,6 +11,7 @@ import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-r
 import config from '../config';
 import { TrajectoryStep, ImprovementStrategy } from '@/types';
 import { JUDGE_SYSTEM_PROMPT } from '../prompts/judgePrompt';
+import { debug } from '@/lib/debug';
 
 // ============================================================================
 // Types
@@ -165,37 +166,37 @@ export async function evaluateTrajectory(
   // Use provided modelId or fall back to configured default
   const effectiveModelId = modelId || config.BEDROCK_MODEL_ID;
 
-  console.log('\n========== BEDROCK JUDGE REQUEST ==========');
-  console.log('[JudgeAPI] Received evaluation request');
-  console.log('[JudgeAPI] Trajectory steps:', trajectory.length);
-  console.log('[JudgeAPI] Expected outcomes:', expectedOutcomes?.length || 0);
-  console.log('[JudgeAPI] Expected trajectory steps:', expectedTrajectory?.length || 0);
-  console.log('[JudgeAPI] Logs provided:', logs?.length || 0);
-  console.log('[JudgeAPI] Model:', effectiveModelId, modelId ? '(from request)' : '(default)');
+  debug('JudgeAPI', '========== BEDROCK JUDGE REQUEST ==========');
+  debug('JudgeAPI', 'Received evaluation request');
+  debug('JudgeAPI', 'Trajectory steps:', trajectory.length);
+  debug('JudgeAPI', 'Expected outcomes:', expectedOutcomes?.length || 0);
+  debug('JudgeAPI', 'Expected trajectory steps:', expectedTrajectory?.length || 0);
+  debug('JudgeAPI', 'Logs provided:', logs?.length || 0);
+  debug('JudgeAPI', 'Model:', effectiveModelId, modelId ? '(from request)' : '(default)');
 
   // Log trajectory summary for debugging
-  console.log('\n--- Trajectory Summary ---');
+  debug('JudgeAPI', '--- Trajectory Summary ---');
   trajectory.forEach((step, idx) => {
-    console.log(`Step ${idx + 1}: ${step.type} ${step.toolName ? `(${step.toolName})` : ''}`);
+    debug('JudgeAPI', `Step ${idx + 1}: ${step.type} ${step.toolName ? `(${step.toolName})` : ''}`);
   });
 
   // Log expected outcomes or trajectory
   if (expectedOutcomes?.length) {
-    console.log('\n--- Expected Outcomes ---');
+    debug('JudgeAPI', '--- Expected Outcomes ---');
     expectedOutcomes.forEach((outcome, idx) => {
-      console.log(`${idx + 1}. ${outcome}`);
+      debug('JudgeAPI', `${idx + 1}. ${outcome}`);
     });
   } else if (expectedTrajectory?.length) {
-    console.log('\n--- Expected Trajectory (Legacy) ---');
+    debug('JudgeAPI', '--- Expected Trajectory (Legacy) ---');
     expectedTrajectory.forEach((step: any, idx) => {
-      console.log(`Step ${idx + 1}: ${step.description} (Tools: ${step.requiredTools?.join(', ') || 'none'})`);
+      debug('JudgeAPI', `Step ${idx + 1}: ${step.description} (Tools: ${step.requiredTools?.join(', ') || 'none'})`);
     });
   }
 
   // Build evaluation prompt
   const userPrompt = buildEvaluationPrompt(trajectory, expectedOutcomes, expectedTrajectory, logs);
 
-  console.log('\n[JudgeAPI] Prompt built, length:', userPrompt.length, 'characters');
+  debug('JudgeAPI', 'Prompt built, length:', userPrompt.length, 'characters');
 
   // Create Bedrock command
   const command = new ConverseCommand({
@@ -214,12 +215,12 @@ export async function evaluateTrajectory(
   });
 
   // Call Bedrock
-  console.log('\n[JudgeAPI] Calling Bedrock API...');
+  debug('JudgeAPI', 'Calling Bedrock API...');
   const startTime = Date.now();
   const response = await bedrockClient.send(command);
   const duration = Date.now() - startTime;
 
-  console.log('[JudgeAPI] ✓ Response received in', duration, 'ms');
+  debug('JudgeAPI', 'Response received in', duration, 'ms');
 
   // Extract response text
   let responseText = '';
@@ -231,39 +232,39 @@ export async function evaluateTrajectory(
     }
   }
 
-  console.log('\n--- Raw Bedrock Response ---');
-  console.log(responseText.substring(0, 500) + (responseText.length > 500 ? '...' : ''));
+  debug('JudgeAPI', '--- Raw Bedrock Response ---');
+  debug('JudgeAPI', responseText.substring(0, 500) + (responseText.length > 500 ? '...' : ''));
 
   // Parse JSON response
   let jsonText = responseText.trim();
   const jsonMatch = jsonText.match(/```json\s*([\s\S]*?)\s*```/);
   if (jsonMatch) {
     jsonText = jsonMatch[1];
-    console.log('[JudgeAPI] Extracted JSON from markdown code block');
+    debug('JudgeAPI', 'Extracted JSON from markdown code block');
   } else {
     const startIdx = jsonText.indexOf('{');
     const endIdx = jsonText.lastIndexOf('}');
     if (startIdx !== -1 && endIdx !== -1) {
       jsonText = jsonText.slice(startIdx, endIdx + 1);
-      console.log('[JudgeAPI] Extracted JSON from text');
+      debug('JudgeAPI', 'Extracted JSON from text');
     }
   }
 
   const result: BedrockJudgeResult = JSON.parse(jsonText);
 
-  console.log('\n========== BEDROCK JUDGE RESPONSE ==========');
-  console.log('[JudgeAPI] Pass/Fail Status:', result.pass_fail_status?.toUpperCase() || 'MISSING');
+  debug('JudgeAPI', '========== BEDROCK JUDGE RESPONSE ==========');
+  debug('JudgeAPI', 'Pass/Fail Status:', result.pass_fail_status?.toUpperCase() || 'MISSING');
 
   // Handle both new simplified format (accuracy at top level) and legacy format (accuracy in metrics)
   const accuracy = result.accuracy ?? result.metrics?.accuracy ?? 0;
-  console.log('[JudgeAPI] Accuracy:', accuracy);
-  console.log('[JudgeAPI] Improvement Strategies:', result.improvement_strategies?.length ?? 0, 'items');
+  debug('JudgeAPI', 'Accuracy:', accuracy);
+  debug('JudgeAPI', 'Improvement Strategies:', result.improvement_strategies?.length ?? 0, 'items');
   if (result.improvement_strategies?.length) {
     result.improvement_strategies.forEach((s, i) => {
-      console.log(`  ${i + 1}. [${s.priority}] ${s.category}: ${s.issue}`);
+      debug('JudgeAPI', `  ${i + 1}. [${s.priority}] ${s.category}: ${s.issue}`);
     });
   }
-  console.log('[JudgeAPI] ✓ Evaluation completed successfully\n');
+  debug('JudgeAPI', 'Evaluation completed successfully');
 
   // Return structured response - simplified metrics
   return {

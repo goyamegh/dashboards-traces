@@ -11,6 +11,7 @@
  */
 
 import { Router, Request, Response } from 'express';
+import { debug } from '@/lib/debug';
 import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middleware/storageClient.js';
 import { SAMPLE_TEST_CASES } from '../../../cli/demo/sampleTestCases.js';
 import type { TestCase, StorageMetadata } from '../../../types/index.js';
@@ -432,7 +433,7 @@ router.post('/api/storage/test-cases', async (req: Request, res: Response) => {
     const docId = `${testCase.id}-v${testCase.version}`;
     await client.index({ index: INDEX, id: docId, body: testCase, refresh: true });
 
-    console.log(`[StorageAPI] Created test case: ${testCase.id} v${testCase.version}`);
+    debug('StorageAPI', `Created test case: ${testCase.id} v${testCase.version}`);
     res.status(201).json(testCase);
   } catch (error: any) {
     console.error('[StorageAPI] Create test case failed:', error.message);
@@ -480,7 +481,7 @@ router.put('/api/storage/test-cases/:id', async (req: Request, res: Response) =>
     const docId = `${id}-v${newTestCase.version}`;
     await client.index({ index: INDEX, id: docId, body: newTestCase, refresh: true });
 
-    console.log(`[StorageAPI] Updated test case: ${id} → v${newTestCase.version}`);
+    debug('StorageAPI', `Updated test case: ${id} → v${newTestCase.version}`);
     res.json(newTestCase);
   } catch (error: any) {
     console.error('[StorageAPI] Update test case failed:', error.message);
@@ -512,7 +513,7 @@ router.delete('/api/storage/test-cases/:id', async (req: Request, res: Response)
     });
 
     const deleted = (result.body as any).deleted || 0;
-    console.log(`[StorageAPI] Deleted test case: ${id} (${deleted} versions)`);
+    debug('StorageAPI', `Deleted test case: ${id} (${deleted} versions)`);
     res.json({ deleted });
   } catch (error: any) {
     console.error('[StorageAPI] Delete test case failed:', error.message);
@@ -556,7 +557,7 @@ router.post('/api/storage/test-cases/bulk', async (req: Request, res: Response) 
 
     const result = await client.bulk({ body: operations, refresh: true });
 
-    console.log(`[StorageAPI] Bulk created ${testCases.length} test cases`);
+    debug('StorageAPI', `Bulk created ${testCases.length} test cases`);
     res.json({ created: testCases.length, errors: result.body.errors, testCases });
   } catch (error: any) {
     console.error('[StorageAPI] Bulk create test cases failed:', error.message);

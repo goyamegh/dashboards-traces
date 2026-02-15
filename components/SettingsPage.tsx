@@ -307,9 +307,19 @@ export const SettingsPage: React.FC = () => {
     setEndpointUrlError(null);
   };
 
-  const handleDebugToggle = (checked: boolean) => {
+  const handleDebugToggle = async (checked: boolean) => {
     setDebugEnabled(checked);
     setDebugMode(checked);
+    // Sync debug state to the server so server-side logging is also toggled
+    try {
+      await fetch(`${ENV_CONFIG.backendUrl}/api/debug`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: checked }),
+      });
+    } catch {
+      // Best effort - server may not be running
+    }
   };
 
   const handleMigrate = async () => {
@@ -560,8 +570,8 @@ export const SettingsPage: React.FC = () => {
                 Verbose Logging
               </Label>
               <p className="text-xs text-muted-foreground">
-                Enable detailed console.debug() logs for SSE events, trajectory conversion, and evaluation flow.
-                Open browser DevTools to view logs.
+                Enable detailed console.debug() logs for SSE events, trajectory conversion, and evaluation flow
+                in both browser console and server terminal output.
               </p>
             </div>
             <Switch
@@ -575,7 +585,7 @@ export const SettingsPage: React.FC = () => {
             <Alert className="bg-amber-900/20 border-amber-700/30">
               <AlertTriangle className="h-4 w-4 text-amber-400" />
               <AlertDescription className="text-amber-400">
-                Debug mode enabled. Check browser console for detailed logs.
+                Debug mode enabled. Check browser console and server terminal for detailed logs.
               </AlertDescription>
             </Alert>
           )}

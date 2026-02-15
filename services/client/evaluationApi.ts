@@ -13,6 +13,7 @@
  */
 
 import type { TestCase, TrajectoryStep, EvaluationReport, EvaluationMetrics, ImprovementStrategy, PassFailStatus, MetricsStatus } from '@/types';
+import { debug } from '@/lib/debug';
 
 /**
  * Request options for server-side evaluation
@@ -61,6 +62,7 @@ export async function runServerEvaluation(
   request: ServerEvaluationRequest,
   onStep?: (step: TrajectoryStep) => void
 ): Promise<ServerEvaluationResult> {
+  debug('ClientAPI', 'Running server evaluation:', request.agentKey, request.modelId);
   const response = await fetch('/api/evaluate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -115,6 +117,7 @@ export async function runServerEvaluation(
     throw new Error('Evaluation completed without returning result');
   }
 
+  debug('ClientAPI', 'Evaluation completed, reportId:', result.reportId);
   return result;
 }
 

@@ -11,6 +11,7 @@
  */
 
 import { Span, TraceSummary } from '@/types';
+import { debug } from '@/lib/debug';
 
 /**
  * Extract service name from span attributes
@@ -79,6 +80,7 @@ function getEarliestStartTime(spans: Span[]): string {
  */
 export function groupSpansByTrace(spans: Span[]): TraceSummary[] {
   if (!spans || spans.length === 0) return [];
+  debug('TraceGrouping', 'Grouping', spans.length, 'spans by traceId');
 
   // Group spans by traceId
   const traceGroups = new Map<string, Span[]>();
@@ -115,6 +117,7 @@ export function groupSpansByTrace(spans: Span[]): TraceSummary[] {
     new Date(b.startTime).getTime() - new Date(a.startTime).getTime()
   );
 
+  debug('TraceGrouping', 'Grouped into', summaries.length, 'traces');
   return summaries;
 }
 

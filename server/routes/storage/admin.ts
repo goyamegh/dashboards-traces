@@ -13,6 +13,7 @@ import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middlew
 import { INDEX_MAPPINGS } from '../../constants/indexMappings';
 import { testStorageConnection } from '../../adapters/index.js';
 import { resolveStorageConfig } from '../../middleware/dataSourceConfig.js';
+import { debug } from '@/lib/debug';
 import {
   getConfigStatus,
   saveStorageConfig,
@@ -117,7 +118,7 @@ router.post(
 
         await client.indices.create({ index: indexName, body: mapping as any });
         results[indexName] = { status: 'created' };
-        console.log(`[StorageAPI] Created index: ${indexName}`);
+        debug('StorageAPI', `Created index: ${indexName}`);
       } catch (error: any) {
         results[indexName] = { status: 'error', error: error.message };
         console.error(`[StorageAPI] Failed to create index ${indexName}:`, error.message);
@@ -226,7 +227,7 @@ router.post(
       }
     }
 
-    console.log(`[StorageAPI] Backfilled ${backfilled} analytics records (${errors} errors)`);
+    debug('StorageAPI', `Backfilled ${backfilled} analytics records (${errors} errors)`);
     res.json({ backfilled, errors, total: runs.length });
   })
 );

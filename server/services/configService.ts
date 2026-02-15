@@ -14,6 +14,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import yaml from 'js-yaml';
+import { debug } from '../../lib/debug.js';
 import type { StorageClusterConfig, ObservabilityClusterConfig } from '../../types/index.js';
 
 // ESM equivalent of __dirname
@@ -118,7 +119,7 @@ function writeConfigFile(config: ConfigFile): void {
       forceQuotes: false,
     });
     fs.writeFileSync(targetPath, content, 'utf8');
-    console.log(`[ConfigService] Config saved to ${targetPath}`);
+    debug('ConfigService', `Config saved to ${targetPath}`);
   } catch (error) {
     console.error('[ConfigService] Failed to write config file:', error);
     throw error;
@@ -184,7 +185,7 @@ export function clearStorageConfig(): void {
     const configPath = getConfigFilePath();
     if (fs.existsSync(configPath)) {
       fs.unlinkSync(configPath);
-      console.log('[ConfigService] Config file deleted (empty)');
+      debug('ConfigService', 'Config file deleted (empty)');
     }
   } else {
     writeConfigFile(existingConfig);
@@ -254,7 +255,7 @@ export function clearObservabilityConfig(): void {
     const configPath = getConfigFilePath();
     if (fs.existsSync(configPath)) {
       fs.unlinkSync(configPath);
-      console.log('[ConfigService] Config file deleted (empty)');
+      debug('ConfigService', 'Config file deleted (empty)');
     }
   } else {
     writeConfigFile(existingConfig);

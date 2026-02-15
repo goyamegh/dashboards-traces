@@ -310,6 +310,22 @@ Agent Health supports multiple agent types:
 
 ---
 
+## Debugging
+
+Enable verbose debug logging to diagnose issues:
+
+```bash
+# Via environment variable
+DEBUG=true npx @opensearch-project/agent-health
+
+# Or toggle at runtime via API
+curl -X POST http://localhost:4001/api/debug -H 'Content-Type: application/json' -d '{"enabled":true}'
+```
+
+Debug logging can also be toggled from the **Settings** page using the "Verbose Logging" switch, which syncs to both the browser console and server terminal.
+
+---
+
 ## Troubleshooting
 
 | Issue | Solution |
@@ -317,6 +333,7 @@ Agent Health supports multiple agent types:
 | Cannot connect to backend | Run `npm run dev:server`, check `curl http://localhost:4001/health` |
 | AWS credentials expired | Refresh credentials in `.env` |
 | Storage/Traces not working | Check OpenSearch endpoint and credentials in `.env` |
+| Need verbose logs | Set `DEBUG=true` in `.env` or toggle in Settings page |
 
 ---
 
