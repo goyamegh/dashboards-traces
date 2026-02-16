@@ -22,7 +22,7 @@ export interface SSEClientOptions {
   onComplete?: () => void;
   /** Complete stream when RUN_FINISHED or RUN_ERROR event is received */
   completeOnRunEnd?: boolean;
-  /** Timeout (ms) after last event to assume stream is complete (default: 10000) */
+  /** Timeout (ms) after last event to assume stream is complete (default: 120000) */
   idleTimeoutMs?: number;
 }
 
@@ -42,7 +42,7 @@ export class SSEClient {
       onError,
       onComplete,
       completeOnRunEnd = false,
-      idleTimeoutMs = 10000, // 10 second idle timeout by default
+      idleTimeoutMs = 120000, // 2 minute idle timeout by default (LLM agents can be slow)
     } = options;
 
     this.abortController = new AbortController();
@@ -104,7 +104,7 @@ export class SSEClient {
     stream: ReadableStream<Uint8Array>,
     onEvent: (event: AGUIEvent) => void,
     completeOnRunEnd: boolean = false,
-    idleTimeoutMs: number = 10000
+    idleTimeoutMs: number = 120000
   ): Promise<string> {
     const reader = stream.getReader();
     const decoder = new TextDecoder();
@@ -206,7 +206,8 @@ export async function consumeSSEStream(
   url: string,
   payload: any,
   onEvent: (event: AGUIEvent) => void,
-  headers?: Record<string, string>
+  headers?: Record<string, string>,
+  options?: { idleTimeoutMs?: number }
 ): Promise<void> {
   const client = new SSEClient();
 
@@ -222,6 +223,7 @@ export async function consumeSSEStream(
       // Enable auto-completion on RUN_FINISHED/RUN_ERROR events
       // This prevents hanging when the agent doesn't close the connection
       completeOnRunEnd: true,
+      idleTimeoutMs: options?.idleTimeoutMs,
     });
   });
 }

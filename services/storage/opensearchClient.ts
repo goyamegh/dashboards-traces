@@ -147,6 +147,7 @@ export interface StorageRun {
     recommendation: string;
     priority: 'high' | 'medium' | 'low';
   }[];
+  connectorProtocol?: string;
 }
 
 export interface StorageAnalyticsRecord {

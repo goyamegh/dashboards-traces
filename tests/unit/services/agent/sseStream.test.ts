@@ -513,6 +513,51 @@ describe('consumeSSEStream', () => {
     );
   });
 
+  it('should pass custom idleTimeoutMs via options', async () => {
+    // Create a stream that sends one event then goes idle
+    const encoder = new TextEncoder();
+    let sentEvent = false;
+    const mockStream = new ReadableStream<Uint8Array>({
+      async pull(controller) {
+        if (!sentEvent) {
+          controller.enqueue(
+            encoder.encode(sseData({ type: AGUIEventType.RUN_STARTED, runId: 'run-123', threadId: 'thread-1' }))
+          );
+          sentEvent = true;
+        }
+        // Don't close the stream - simulate idle
+        await new Promise((resolve) => setTimeout(resolve, 100000));
+      },
+    });
+
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      headers: new Headers(),
+      body: mockStream,
+    });
+
+    const onEvent = jest.fn();
+
+    const streamPromise = consumeSSEStream(
+      'http://test.com/stream',
+      { prompt: 'test' },
+      onEvent,
+      undefined,
+      { idleTimeoutMs: 3000 }
+    );
+
+    // Process the initial event
+    await jest.advanceTimersByTimeAsync(100);
+
+    // Advance past the custom idle timeout (3s)
+    await jest.advanceTimersByTimeAsync(4000);
+
+    await streamPromise;
+
+    expect(onEvent).toHaveBeenCalledTimes(1);
+  });
+
   it('should pass custom headers to fetch', async () => {
     const mockStream = createMockReadableStream([
       sseData({ type: AGUIEventType.RUN_FINISHED, runId: 'run-123', threadId: 'thread-1' }),
