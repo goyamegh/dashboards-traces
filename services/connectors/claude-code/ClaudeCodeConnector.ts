@@ -238,16 +238,27 @@ export class ClaudeCodeConnector extends SubprocessConnector {
  * Create a Claude Code connector with specific Bedrock configuration
  */
 export function createBedrockClaudeCodeConnector(): ClaudeCodeConnector {
-  return new ClaudeCodeConnector({
-    env: {
-      AWS_PROFILE: process.env.AWS_PROFILE || 'Bedrock',
-      CLAUDE_CODE_USE_BEDROCK: '1',
-      AWS_REGION: process.env.AWS_REGION || 'us-west-2',
-      DISABLE_PROMPT_CACHING: '1',
-      DISABLE_ERROR_REPORTING: '1',
-      DISABLE_TELEMETRY: '1',
-    },
-  });
+  const env: Record<string, string> = {
+    AWS_PROFILE: process.env.AWS_PROFILE || 'Bedrock',
+    CLAUDE_CODE_USE_BEDROCK: '1',
+    AWS_REGION: process.env.AWS_REGION || 'us-west-2',
+    DISABLE_PROMPT_CACHING: '1',
+    DISABLE_ERROR_REPORTING: '1',
+  };
+
+  const telemetryEnabled = process.env.CLAUDE_CODE_TELEMETRY_ENABLED === 'true';
+  const otelEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
+  if (telemetryEnabled && otelEndpoint) {
+    env.CLAUDE_CODE_ENABLE_TELEMETRY = '1';
+    env.OTEL_EXPORTER_OTLP_ENDPOINT = otelEndpoint;
+    if (process.env.OTEL_SERVICE_NAME) env.OTEL_SERVICE_NAME = process.env.OTEL_SERVICE_NAME;
+    if (process.env.OTEL_EXPORTER_OTLP_PROTOCOL) env.OTEL_EXPORTER_OTLP_PROTOCOL = process.env.OTEL_EXPORTER_OTLP_PROTOCOL;
+    if (process.env.OTEL_EXPORTER_OTLP_HEADERS) env.OTEL_EXPORTER_OTLP_HEADERS = process.env.OTEL_EXPORTER_OTLP_HEADERS;
+  } else {
+    env.DISABLE_TELEMETRY = '1';
+  }
+
+  return new ClaudeCodeConnector({ env });
 }
 
 /**

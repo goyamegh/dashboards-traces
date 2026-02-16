@@ -12,14 +12,29 @@ import { ENV_CONFIG, buildMLCommonsHeaders } from '@/lib/config';
  * not at module load time.
  */
 function getClaudeCodeConnectorEnv(): Record<string, string> {
-  return {
+  const env: Record<string, string> = {
     AWS_PROFILE: process.env.AWS_PROFILE || "Bedrock",
     CLAUDE_CODE_USE_BEDROCK: "1",
     AWS_REGION: process.env.AWS_REGION || "us-west-2",
     DISABLE_PROMPT_CACHING: "1",
     DISABLE_ERROR_REPORTING: "1",
-    DISABLE_TELEMETRY: "1",
   };
+
+  if (ENV_CONFIG.claudeCodeTelemetryEnabled && ENV_CONFIG.otelExporterEndpoint) {
+    env.CLAUDE_CODE_ENABLE_TELEMETRY = '1';
+    env.OTEL_EXPORTER_OTLP_ENDPOINT = ENV_CONFIG.otelExporterEndpoint;
+    env.OTEL_SERVICE_NAME = ENV_CONFIG.otelServiceName;
+    if (ENV_CONFIG.otelExporterProtocol) {
+      env.OTEL_EXPORTER_OTLP_PROTOCOL = ENV_CONFIG.otelExporterProtocol;
+    }
+    if (ENV_CONFIG.otelExporterHeaders) {
+      env.OTEL_EXPORTER_OTLP_HEADERS = ENV_CONFIG.otelExporterHeaders;
+    }
+  } else {
+    env.DISABLE_TELEMETRY = '1';
+  }
+
+  return env;
 }
 
 // Model pricing per 1M tokens (USD)
@@ -95,7 +110,9 @@ export const DEFAULT_CONFIG: AppConfig = {
       connectorType: "claude-code",
       models: ["claude-sonnet-4"],
       headers: {},
-      useTraces: false,
+      get useTraces(): boolean {
+        return !!(ENV_CONFIG.claudeCodeTelemetryEnabled && ENV_CONFIG.otelExporterEndpoint);
+      },
       // connectorConfig env vars are evaluated at runtime by getClaudeCodeConnectorEnv()
       get connectorConfig() {
         return {

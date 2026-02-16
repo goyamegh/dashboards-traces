@@ -32,6 +32,11 @@ export interface EnvConfig {
   mlcommonsHeaderAwsAccessKeyId: string;
   mlcommonsHeaderAwsSecretAccessKey: string;
   mlcommonsHeaderAwsSessionToken: string;
+  claudeCodeTelemetryEnabled: boolean;
+  otelExporterEndpoint: string;
+  otelServiceName: string;
+  otelExporterProtocol: string;
+  otelExporterHeaders: string;
 }
 
 const BACKEND_URL = 'http://localhost:4001';
@@ -60,6 +65,11 @@ export const ENV_CONFIG: EnvConfig = {
   mlcommonsHeaderAwsAccessKeyId: '',
   mlcommonsHeaderAwsSecretAccessKey: '',
   mlcommonsHeaderAwsSessionToken: '',
+  claudeCodeTelemetryEnabled: false,
+  otelExporterEndpoint: '',
+  otelServiceName: 'claude-code-agent',
+  otelExporterProtocol: '',
+  otelExporterHeaders: '',
 };
 
 export function buildMLCommonsHeaders(): Record<string, string> {
