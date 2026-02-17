@@ -4,7 +4,7 @@
  */
 
 import { RunAggregateMetrics } from '@/types';
-import { getPassRateColorClass, getVisibleMetricRows } from '@/components/comparison/RunSummaryTable';
+import { getPassRateColorClass, getVisibleMetricRows, getUniformValue, getHeatmapClass } from '@/components/comparison/RunSummaryTable';
 
 // Mock DEFAULT_CONFIG to avoid importing real config
 jest.mock('@/lib/constants', () => ({
@@ -280,6 +280,167 @@ describe('RunSummaryTable', () => {
 
       const traceRows = rows.filter(r => r.isTraceMetric);
       expect(traceRows.every(r => !r.showDelta)).toBe(true);
+    });
+  });
+
+  describe('group configuration', () => {
+    it('assigns config group to agent, model, and date rows', () => {
+      const run = createMockRun();
+      const rows = getVisibleMetricRows([run]);
+
+      expect(rows.find(r => r.key === 'agent')!.group).toBe('config');
+      expect(rows.find(r => r.key === 'model')!.group).toBe('config');
+      expect(rows.find(r => r.key === 'date')!.group).toBe('config');
+    });
+
+    it('assigns performance group to passRate and accuracy', () => {
+      const run = createMockRun();
+      const rows = getVisibleMetricRows([run]);
+
+      expect(rows.find(r => r.key === 'passRate')!.group).toBe('performance');
+      expect(rows.find(r => r.key === 'accuracy')!.group).toBe('performance');
+    });
+
+    it('assigns resource group to tokens, cost, and duration', () => {
+      const run = createMockRun({ totalTokens: 1000 });
+      const rows = getVisibleMetricRows([run]);
+
+      expect(rows.find(r => r.key === 'tokens')!.group).toBe('resource');
+      expect(rows.find(r => r.key === 'cost')!.group).toBe('resource');
+      expect(rows.find(r => r.key === 'duration')!.group).toBe('resource');
+    });
+  });
+
+  describe('getUniformValue', () => {
+    it('returns value when all runs have the same value', () => {
+      const runs = [
+        createMockRun({ runId: 'run-1', agentKey: 'pulsar' }),
+        createMockRun({ runId: 'run-2', agentKey: 'pulsar' }),
+        createMockRun({ runId: 'run-3', agentKey: 'pulsar' }),
+      ];
+
+      const result = getUniformValue(runs, r => r.agentKey);
+      expect(result).toBe('pulsar');
+    });
+
+    it('returns null when runs have different values', () => {
+      const runs = [
+        createMockRun({ runId: 'run-1', agentKey: 'pulsar' }),
+        createMockRun({ runId: 'run-2', agentKey: 'holmesgpt' }),
+      ];
+
+      const result = getUniformValue(runs, r => r.agentKey);
+      expect(result).toBeNull();
+    });
+
+    it('returns the value for a single run', () => {
+      const runs = [createMockRun({ agentKey: 'pulsar' })];
+
+      const result = getUniformValue(runs, r => r.agentKey);
+      expect(result).toBe('pulsar');
+    });
+
+    it('returns null for empty runs array', () => {
+      const result = getUniformValue([], r => r.agentKey);
+      expect(result).toBeNull();
+    });
+
+    it('returns null when only one run differs', () => {
+      const runs = [
+        createMockRun({ runId: 'run-1', modelId: 'model-a' }),
+        createMockRun({ runId: 'run-2', modelId: 'model-a' }),
+        createMockRun({ runId: 'run-3', modelId: 'model-b' }),
+      ];
+
+      const result = getUniformValue(runs, r => r.modelId);
+      expect(result).toBeNull();
+    });
+
+    it('works with getValue functions from SUMMARY_ROWS', () => {
+      const runs = [
+        createMockRun({ runId: 'run-1', agentKey: 'pulsar' }),
+        createMockRun({ runId: 'run-2', agentKey: 'pulsar' }),
+      ];
+      const rows = getVisibleMetricRows(runs);
+      const agentRow = rows.find(r => r.key === 'agent')!;
+
+      // Uses the agent display name resolver
+      const result = getUniformValue(runs, agentRow.getValue);
+      expect(result).toBe('Pulsar');
+    });
+  });
+
+  describe('getHeatmapClass', () => {
+    describe('higherIsBetter = true', () => {
+      it('returns emerald/10 for values at the top (>= 80th percentile)', () => {
+        expect(getHeatmapClass(100, 0, 100, true)).toBe('bg-emerald-500/10');
+        expect(getHeatmapClass(90, 0, 100, true)).toBe('bg-emerald-500/10');
+        expect(getHeatmapClass(80, 0, 100, true)).toBe('bg-emerald-500/10');
+      });
+
+      it('returns emerald/5 for values in 60-80th percentile', () => {
+        expect(getHeatmapClass(70, 0, 100, true)).toBe('bg-emerald-500/5');
+        expect(getHeatmapClass(60, 0, 100, true)).toBe('bg-emerald-500/5');
+      });
+
+      it('returns empty string for middle values (40-60th percentile)', () => {
+        expect(getHeatmapClass(50, 0, 100, true)).toBe('');
+        expect(getHeatmapClass(40, 0, 100, true)).toBe('');
+      });
+
+      it('returns red/5 for values in 20-40th percentile', () => {
+        expect(getHeatmapClass(30, 0, 100, true)).toBe('bg-red-500/5');
+        expect(getHeatmapClass(20, 0, 100, true)).toBe('bg-red-500/5');
+      });
+
+      it('returns red/10 for values at the bottom (< 20th percentile)', () => {
+        expect(getHeatmapClass(10, 0, 100, true)).toBe('bg-red-500/10');
+        expect(getHeatmapClass(0, 0, 100, true)).toBe('bg-red-500/10');
+      });
+    });
+
+    describe('higherIsBetter = false (lower is better)', () => {
+      it('returns emerald/10 for lowest values', () => {
+        expect(getHeatmapClass(0, 0, 100, false)).toBe('bg-emerald-500/10');
+        expect(getHeatmapClass(10, 0, 100, false)).toBe('bg-emerald-500/10');
+      });
+
+      it('returns red/10 for highest values', () => {
+        expect(getHeatmapClass(100, 0, 100, false)).toBe('bg-red-500/10');
+        expect(getHeatmapClass(90, 0, 100, false)).toBe('bg-red-500/10');
+      });
+
+      it('returns empty string for middle values', () => {
+        expect(getHeatmapClass(50, 0, 100, false)).toBe('');
+      });
+    });
+
+    describe('edge cases', () => {
+      it('returns empty string when min equals max (all identical)', () => {
+        expect(getHeatmapClass(50, 50, 50, true)).toBe('');
+        expect(getHeatmapClass(50, 50, 50, false)).toBe('');
+      });
+
+      it('handles boundary values correctly', () => {
+        // At min boundary
+        expect(getHeatmapClass(0, 0, 100, true)).toBe('bg-red-500/10');
+        // At max boundary
+        expect(getHeatmapClass(100, 0, 100, true)).toBe('bg-emerald-500/10');
+      });
+
+      it('handles small ranges', () => {
+        // Range of 1: value at max
+        expect(getHeatmapClass(11, 10, 11, true)).toBe('bg-emerald-500/10');
+        // Range of 1: value at min
+        expect(getHeatmapClass(10, 10, 11, true)).toBe('bg-red-500/10');
+      });
+
+      it('handles decimal values', () => {
+        // 8.5 / 10 = 0.85 normalized → best bucket
+        expect(getHeatmapClass(8.5, 0, 10.0, true)).toBe('bg-emerald-500/10');
+        // 2.5 / 10 = 0.25 normalized → poor bucket
+        expect(getHeatmapClass(2.5, 0, 10.0, true)).toBe('bg-red-500/5');
+      });
     });
   });
 });
