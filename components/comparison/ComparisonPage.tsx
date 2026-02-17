@@ -18,7 +18,7 @@ import {
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { GitCompare, ArrowLeft } from 'lucide-react';
-import { RunSummaryCards } from './RunSummaryCards';
+import { RunSummaryTable } from './RunSummaryTable';
 import { AggregateMetricsChart } from './AggregateMetricsChart';
 import { MetricsTimeSeriesChart } from './MetricsTimeSeriesChart';
 import { UseCaseComparisonTable } from './UseCaseComparisonTable';
@@ -373,7 +373,7 @@ export const ComparisonPage: React.FC = () => {
         <>
           <section>
             <h2 className="text-lg font-medium mb-4">Run Summary</h2>
-            <RunSummaryCards runs={runAggregates} baselineRunId={baselineRunId} />
+            <RunSummaryTable runs={runAggregates} baselineRunId={baselineRunId} />
           </section>
 
           {/* Metrics Section - Side by Side */}

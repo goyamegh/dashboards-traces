@@ -4,7 +4,7 @@
  */
 
 export { ComparisonPage } from './ComparisonPage';
-export { RunSummaryCards } from './RunSummaryCards';
+export { RunSummaryTable } from './RunSummaryTable';
 export { AggregateMetricsTable } from './AggregateMetricsTable';
 export { UseCaseComparisonTable } from './UseCaseComparisonTable';
 export { MetricCell } from './MetricCell';
