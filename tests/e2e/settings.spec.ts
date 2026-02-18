@@ -186,7 +186,8 @@ test.describe('Custom Endpoint Persistence', () => {
     // 4. Verify endpoint still appears after reload
     await expect(page.locator(`text=${AGENT_NAME}`).first()).toBeVisible({ timeout: 10000 });
 
-    // 5. Delete the endpoint
+    // 5. Delete the endpoint (accept the confirmation dialog)
+    page.once('dialog', dialog => dialog.accept());
     const deleteBtn = page.locator(`button[aria-label="Remove ${AGENT_NAME}"]`).first();
     if (await deleteBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
       await deleteBtn.click();
