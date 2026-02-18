@@ -66,8 +66,7 @@
     "build:lib": "esbuild lib/index.ts lib/config/index.ts --bundle --platform=node --format=esm --outdir=lib/dist --packages=external",
     "build:all": "npm run build && npm run build:server && npm run build:cli && npm run build:lib",
     "demo": "npm run build:all && node cli/dist/index.js",
-    "prepublishOnly": "npm run build:all",
-    "prepare": "husky"
+    "prepublishOnly": "npm run build:all"
   },
   "dependencies": {
     "@ag-ui/core": "^0.0.41",
