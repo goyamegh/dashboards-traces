@@ -65,12 +65,14 @@ test.describe('Benchmark Editor', () => {
   });
 
   test('should have Cancel button', async ({ page }) => {
-    const cancelButton = page.locator('button:has-text("Cancel")');
+    // Use .last() to target the editor's Cancel button, not the benchmark card's cancel-run button
+    const cancelButton = page.getByRole('button', { name: 'Cancel' }).last();
     await expect(cancelButton).toBeVisible();
   });
 
   test('should close editor when clicking Cancel', async ({ page }) => {
-    await page.click('button:has-text("Cancel")');
+    // Use .last() to target the editor's Cancel button (the card's cancel-run button is behind the modal overlay)
+    await page.getByRole('button', { name: 'Cancel' }).last().click();
     await expect(page.locator('[data-testid="benchmarks-page"]')).toBeVisible();
   });
 

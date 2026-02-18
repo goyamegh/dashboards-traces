@@ -144,22 +144,40 @@ test.describe('Single Test Case Evaluation Flow', () => {
         await runButton.click();
         await page.waitForTimeout(1000);
 
-        // Select Demo Agent if dialog appears
-        const demoAgentOption = page.locator('text=Demo Agent').first();
-        if (await demoAgentOption.isVisible().catch(() => false)) {
-          await demoAgentOption.click();
+        // Select Demo Agent via the combobox (Radix Select renders as role="combobox")
+        const comboboxes = page.getByRole('combobox');
+        const agentCombobox = comboboxes.first();
+        if (await agentCombobox.isVisible().catch(() => false)) {
+          await agentCombobox.click();
+          await page.waitForTimeout(300);
+          const demoAgentOption = page.getByRole('option', { name: 'Demo Agent' });
+          if (await demoAgentOption.isVisible().catch(() => false)) {
+            await demoAgentOption.click();
+          } else {
+            await page.keyboard.press('Escape');
+          }
+          await page.waitForTimeout(300);
         }
 
-        // Select Demo Model
-        const demoModelOption = page.locator('text=Demo Model').first();
-        if (await demoModelOption.isVisible().catch(() => false)) {
-          await demoModelOption.click();
+        // Select Demo Model via the second combobox
+        const modelCombobox = comboboxes.nth(1);
+        if (await modelCombobox.isVisible().catch(() => false)) {
+          await modelCombobox.click();
+          await page.waitForTimeout(300);
+          const demoModelOption = page.getByRole('option', { name: 'Demo Model' });
+          if (await demoModelOption.isVisible().catch(() => false)) {
+            await demoModelOption.click();
+          } else {
+            await page.keyboard.press('Escape');
+          }
+          await page.waitForTimeout(300);
         }
 
-        // Start Run
-        const startButton = page.locator('button:has-text("Start Run"), button:has-text("Run")').last();
+        // Click the Run button inside the modal
+        // Use force:true to bypass pointer interception from the modal's fixed overlay + body overflow:hidden
+        const startButton = page.locator('button:has-text("Run")').last();
         if (await startButton.isVisible().catch(() => false)) {
-          await startButton.click();
+          await startButton.click({ force: true });
           await page.waitForTimeout(8000);
         }
 
