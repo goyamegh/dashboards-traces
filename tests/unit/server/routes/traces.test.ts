@@ -106,7 +106,7 @@ describe('Traces Routes', () => {
         expect.objectContaining({ traceId: 'trace-123' }),
         expect.any(Object)
       );
-      expect(res.json).toHaveBeenCalledWith({ spans: [], total: 0 });
+      expect(res.json).toHaveBeenCalledWith({ spans: [], total: 0, warning: undefined });
     });
 
     it('should accept runIds filter', async () => {
@@ -163,6 +163,7 @@ describe('Traces Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         spans: sampleSpans,
         total: 1,
+        warning: undefined,
       });
     });
 
@@ -181,6 +182,7 @@ describe('Traces Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         spans: [...sampleSpans, ...realSpans],
         total: 2,
+        warning: undefined,
       });
     });
 
@@ -198,7 +200,7 @@ describe('Traces Routes', () => {
       );
     });
 
-    it('should return only sample data when logs not configured', async () => {
+    it('should return only sample data with warning when logs not configured', async () => {
       process.env.OPENSEARCH_LOGS_ENDPOINT = '';
       const sampleSpans = [{ traceId: 'sample', spanId: 'ss1', name: 'sample' }];
       mockGetSampleSpansForRunIds.mockReturnValue(sampleSpans as any);
@@ -212,10 +214,11 @@ describe('Traces Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         spans: sampleSpans,
         total: 1,
+        warning: 'Observability data source not configured',
       });
     });
 
-    it('should return sample data when logs fetch fails', async () => {
+    it('should return sample data with warning when logs fetch fails', async () => {
       const sampleSpans = [{ traceId: 'sample', spanId: 'ss1', name: 'sample' }];
       mockGetSampleSpansForRunIds.mockReturnValue(sampleSpans as any);
       mockFetchTraces.mockRejectedValue(new Error('Connection failed'));
@@ -228,6 +231,88 @@ describe('Traces Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         spans: sampleSpans,
         total: 1,
+        warning: 'Connection failed',
+      });
+    });
+
+    it('should return live traces for time-range-only query', async () => {
+      const liveSpans = [
+        { traceId: 'live-1', spanId: 'ls1', name: 'live-span', startTime: '2024-01-01', endTime: '2024-01-01', duration: 50, status: 'OK' as const, attributes: {}, events: [] },
+      ];
+      mockFetchTraces.mockResolvedValue({ spans: liveSpans as any, total: 1 });
+
+      const { req, res } = createMocks({
+        startTime: 1704067200000,
+        endTime: 1704153600000,
+      });
+      const handler = getRouteHandler(tracesRoutes, 'post', '/api/traces');
+
+      await handler(req, res);
+
+      expect(mockFetchTraces).toHaveBeenCalledWith(
+        expect.objectContaining({ startTime: 1704067200000, endTime: 1704153600000 }),
+        expect.any(Object)
+      );
+      expect(mockGetSampleSpansForRunIds).not.toHaveBeenCalled();
+      expect(mockGetSampleSpansByTraceId).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({
+        spans: liveSpans,
+        total: 1,
+        warning: undefined,
+      });
+    });
+
+    it('should surface OpenSearch error as warning in response', async () => {
+      mockFetchTraces.mockRejectedValue(new Error('index_not_found_exception'));
+
+      const { req, res } = createMocks({ traceId: 'trace-123' });
+      const handler = getRouteHandler(tracesRoutes, 'post', '/api/traces');
+
+      await handler(req, res);
+
+      expect(res.json).toHaveBeenCalledWith({
+        spans: [],
+        total: 0,
+        warning: 'index_not_found_exception',
+      });
+    });
+
+    it('should return warning when observability config is missing', async () => {
+      process.env.OPENSEARCH_LOGS_ENDPOINT = '';
+
+      const { req, res } = createMocks({
+        startTime: 1704067200000,
+        endTime: 1704153600000,
+      });
+      const handler = getRouteHandler(tracesRoutes, 'post', '/api/traces');
+
+      await handler(req, res);
+
+      expect(mockFetchTraces).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({
+        spans: [],
+        total: 0,
+        warning: 'Observability data source not configured',
+      });
+    });
+
+    it('should not return sample traces for time-range-only queries', async () => {
+      mockFetchTraces.mockResolvedValue({ spans: [], total: 0 });
+
+      const { req, res } = createMocks({
+        startTime: 1704067200000,
+        endTime: 1704153600000,
+      });
+      const handler = getRouteHandler(tracesRoutes, 'post', '/api/traces');
+
+      await handler(req, res);
+
+      expect(mockGetSampleSpansForRunIds).not.toHaveBeenCalled();
+      expect(mockGetSampleSpansByTraceId).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({
+        spans: [],
+        total: 0,
+        warning: undefined,
       });
     });
 

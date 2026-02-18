@@ -268,6 +268,8 @@ export async function fetchTraces(
     query: { bool: { must } }
   };
 
+  debug('TracesService', 'OpenSearch query:', JSON.stringify(query, null, 2));
+
   // Query OpenSearch traces index
   const response = await makeRequest(`${endpoint}/${indexPattern}/_search`, {
     method: 'POST',

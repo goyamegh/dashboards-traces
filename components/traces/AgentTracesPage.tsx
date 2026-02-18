@@ -224,6 +224,10 @@ export const AgentTracesPage: React.FC = () => {
         size: 1000,
       });
 
+      if (result.warning) {
+        setError(`Trace query warning: ${result.warning}`);
+      }
+
       setSpans(result.spans);
       setTraces(processSpansToTraces(result.spans));
       setLastRefresh(new Date());

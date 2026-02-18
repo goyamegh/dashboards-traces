@@ -40,26 +40,21 @@ router.post('/api/traces', async (req: Request, res: Response) => {
       });
     }
 
-    // Get sample traces that match the query
+    // 1. Handle sample/demo trace lookups
     let sampleSpans: Span[] = [];
 
-    if (traceId) {
-      // If querying by trace ID, check sample data first
-      if (isSampleTraceId(traceId)) {
-        sampleSpans = getSampleSpansByTraceId(traceId);
-      }
+    if (traceId && isSampleTraceId(traceId)) {
+      sampleSpans = getSampleSpansByTraceId(traceId);
     } else if (runIds && runIds.length > 0) {
-      // Filter sample spans by run IDs (via run.id attribute)
       sampleSpans = getSampleSpansForRunIds(runIds);
     }
 
+    // 2. Query live OpenSearch traces (independent of sample logic)
     let realSpans: Span[] = [];
-
-    // Get observability configuration from headers or env vars
+    let warning: string | undefined;
     const config = resolveObservabilityConfig(req);
 
-    // Fetch from observability cluster if configured
-    if (config) {
+    if (config && (traceId || (runIds && runIds.length > 0) || startTime || endTime)) {
       try {
         const indexPattern = config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces;
 
@@ -76,14 +71,17 @@ router.post('/api/traces', async (req: Request, res: Response) => {
 
         realSpans = (result.spans || []) as Span[];
       } catch (e: any) {
-        console.warn('[TracesAPI] Observability data source unavailable, returning sample data only:', e.message);
+        console.warn('[TracesAPI] OpenSearch query failed:', e.message);
+        warning = e.message;
       }
+    } else if (!config) {
+      warning = 'Observability data source not configured';
     }
 
     // Merge: sample spans first, then real spans
     const allSpans = [...sampleSpans, ...realSpans];
 
-    res.json({ spans: allSpans, total: allSpans.length });
+    res.json({ spans: allSpans, total: allSpans.length, warning });
 
   } catch (error: any) {
     console.error('[TracesAPI] Error:', error);

@@ -334,6 +334,7 @@ export interface TraceQueryParams {
 export interface TraceSearchResult {
   spans: Span[];
   total: number;
+  warning?: string;
 }
 
 /**
