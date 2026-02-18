@@ -87,6 +87,10 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Fixed high severity ReDoS vulnerability in @modelcontextprotocol/sdk
 
 ### Security
+- Updated ajv from 8.17.1 to 8.18.0 to fix GHSA-2g4f-4pwh-qvx6 ReDoS vulnerability ([#39](https://github.com/opensearch-project/agent-health/pull/39))
+- Updated fast-xml-parser from 5.3.4 to 5.3.6 to fix GHSA-jmr7-xgp7-cmfj DoS vulnerability ([#39](https://github.com/opensearch-project/agent-health/pull/39))
+- Updated qs from 6.14.1 to 6.15.0 to fix GHSA-w7fw-mjwx-w883 arrayLimit bypass vulnerability ([#39](https://github.com/opensearch-project/agent-health/pull/39))
+- Updated @aws-sdk/xml-builder from 3.972.4 to 3.972.5 (transitive dependency fix) ([#39](https://github.com/opensearch-project/agent-health/pull/39))
 - Updated @modelcontextprotocol/sdk to address GHSA-8r9q-7v3j-jr4g
 - Updated lodash from 4.17.21 to 4.17.23 to fix CVE-2025-13465 prototype pollution vulnerability
 - Updated lycheeverse/lychee-action from v1 to v2.0.2 in CI workflow
