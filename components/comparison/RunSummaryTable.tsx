@@ -12,7 +12,6 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Badge } from '@/components/ui/badge';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { RunAggregateMetrics } from '@/types';
 import { cn, formatDate } from '@/lib/utils';
@@ -189,17 +188,17 @@ export function getVisibleMetricRows(runs: RunAggregateMetrics[]): SummaryRow[] 
 
 interface RunSummaryTableProps {
   runs: RunAggregateMetrics[];
-  baselineRunId?: string;
+  referenceRunId?: string;
 }
 
 export const RunSummaryTable: React.FC<RunSummaryTableProps> = ({
   runs,
-  baselineRunId,
+  referenceRunId,
 }) => {
   if (runs.length === 0) return null;
 
   const visibleRows = getVisibleMetricRows(runs);
-  const effectiveBaselineId = baselineRunId || runs[0]?.runId;
+  const effectiveReferenceId = referenceRunId || runs[0]?.runId;
 
   // Detect uniform config values to collapse redundant rows
   const uniformParts: string[] = [];
@@ -263,26 +262,16 @@ export const RunSummaryTable: React.FC<RunSummaryTableProps> = ({
                   Metric
                 </TableHead>
                 {runs.map((run, idx) => {
-                  const isBaseline = run.runId === effectiveBaselineId;
+                  const isReference = run.runId === effectiveReferenceId;
                   return (
                     <TableHead
                       key={run.runId}
                       className={cn(
                         'text-center min-w-36',
-                        isBaseline && 'bg-blue-500/5'
+                        isReference && 'bg-blue-500/5'
                       )}
                     >
-                      <div className="flex items-center justify-center gap-2">
-                        <span className="truncate">#{idx + 1} &middot; {run.runName}</span>
-                        {isBaseline && (
-                          <Badge
-                            variant="outline"
-                            className="bg-blue-500/10 text-blue-400 border-blue-500/30 text-xs"
-                          >
-                            Baseline
-                          </Badge>
-                        )}
-                      </div>
+                      <span className="truncate">#{idx + 1} &middot; {run.runName}</span>
                     </TableHead>
                   );
                 })}
@@ -291,7 +280,7 @@ export const RunSummaryTable: React.FC<RunSummaryTableProps> = ({
             <TableBody>
               {displayRows.map((row, rowIdx) => {
                 const bestRunId = findBestRunId(row);
-                const baselineRun = runs.find(r => r.runId === effectiveBaselineId);
+                const referenceRun = runs.find(r => r.runId === effectiveReferenceId);
                 const minMax = getRowMinMax(row);
 
                 // Determine if this row starts a new group (section separator)
@@ -307,17 +296,17 @@ export const RunSummaryTable: React.FC<RunSummaryTableProps> = ({
                       {row.label}
                     </TableCell>
                     {runs.map((run) => {
-                      const isBaseline = run.runId === effectiveBaselineId;
+                      const isReference = run.runId === effectiveReferenceId;
                       const isBest = bestRunId === run.runId && runs.length > 1;
                       const displayValue = row.getValue(run);
 
                       // Calculate delta for percentage metrics
                       let deltaElement: React.ReactNode = null;
-                      if (row.showDelta && !isBaseline && baselineRun && row.getNumericValue) {
+                      if (row.showDelta && !isReference && referenceRun && row.getNumericValue) {
                         const currentVal = row.getNumericValue(run);
-                        const baselineVal = row.getNumericValue(baselineRun);
-                        if (currentVal !== undefined && baselineVal !== undefined) {
-                          const delta = currentVal - baselineVal;
+                        const referenceVal = row.getNumericValue(referenceRun);
+                        if (currentVal !== undefined && referenceVal !== undefined) {
+                          const delta = currentVal - referenceVal;
                           if (delta !== 0) {
                             deltaElement = (
                               <span className={cn('text-xs ml-1', getDeltaColorClass(delta))}>
@@ -350,7 +339,7 @@ export const RunSummaryTable: React.FC<RunSummaryTableProps> = ({
                             key={run.runId}
                             className={cn(
                               'text-center',
-                              isBaseline && 'bg-blue-500/5',
+                              isReference && 'bg-blue-500/5',
                               isBest && 'bg-opensearch-blue/5',
                               heatmapClass
                             )}
@@ -378,7 +367,7 @@ export const RunSummaryTable: React.FC<RunSummaryTableProps> = ({
                           key={run.runId}
                           className={cn(
                             'text-center',
-                            isBaseline && 'bg-blue-500/5',
+                            isReference && 'bg-blue-500/5',
                             isBest && 'bg-opensearch-blue/5',
                             heatmapClass
                           )}

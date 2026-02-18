@@ -118,6 +118,10 @@ npx @opensearch-project/agent-health init           # Initialize config files
 - `traceGrouping.ts`: Groups flat spans by traceId with summary statistics for table view
 - `spanCategorization.ts`: Categorizes spans by type (AGENT, LLM, TOOL, etc.) based on OTEL conventions
 
+**Client Services** (`services/client/`):
+- `evaluationApi.ts`: Browser-side API client for server-mediated evaluation (SSE streaming)
+- `index.ts`: Barrel exports for all client API modules
+
 **Other Services**:
 - `comparisonService.ts`: Aggregate metrics and side-by-side comparison logic
 - `benchmarkRunner.ts`: Batch execution of test cases across runs
@@ -178,11 +182,44 @@ connectorRegistry.register(new CustomConnector());
 
 ### Configuration (`lib/`)
 
-- `constants.ts`: Agent configs, model configs, tool definitions
-- `config.ts`: Runtime config loading from env vars
-- `debug.ts`: Universal debug logging (browser localStorage + Node.js in-memory flag)
+- `constants.ts`: Default agent configs, model configs, tool definitions
+- `config/loader.ts`: Loads and merges `agent-health.config.ts` with built-in defaults
+- `config/types.ts`: `UserAgentConfig`, `UserModelConfig`, `AgentHealthConfig` types
+- `debug.ts`: Universal debug logging (browser `localStorage` + Node.js in-memory flag / `DEBUG` env var)
+- `hooks.ts`: `executeBeforeRequestHook()` - runs user-defined lifecycle hooks
 - `labels.ts`: Unified labeling system (replaces category/difficulty)
 - `testCaseValidation.ts`: Zod schemas for test case validation
+- `runStats.ts`: Aggregate pass/fail/accuracy statistics from benchmark run results
+
+#### Config File System
+
+Agents and models can be configured via `agent-health.config.ts` in the working directory (also `.js` or `.mjs`). User config is merged with built-in defaults unless `extends: false` is set. See `agent-health.config.example.ts` for the full schema.
+
+```typescript
+// agent-health.config.ts
+export default {
+  agents: [
+    { key: "my-agent", name: "My Agent", endpoint: "http://localhost:3000/agent",
+      connectorType: "agui-streaming", models: ["claude-sonnet-4"] }
+  ],
+  // extends: false,  // Set to use ONLY your agents/models (no built-in defaults)
+};
+```
+
+Agent keys matching built-in keys (e.g., `"langgraph"`) override the built-in agent. The `init` CLI command generates this file.
+
+#### Lifecycle Hooks
+
+Agents can define a `beforeRequest` hook in config to customize requests:
+
+```typescript
+hooks: {
+  beforeRequest: async ({ endpoint, payload, headers }) => {
+    // e.g., pre-create a thread, modify payload, add auth headers
+    return { endpoint, payload, headers };
+  },
+}
+```
 
 ### Type System (`types/index.ts`)
 
@@ -205,11 +242,15 @@ import { getConfig } from '@/lib/config';
 
 Entry point for NPX package (`bin/cli.js` → `cli/index.ts`):
 - `commands/list.ts`: List agents, test cases, benchmarks, connectors
-- `commands/run.ts`: Run test cases against agents
+- `commands/run.ts`: Run single test case against an agent
+- `commands/benchmark.ts`: Run full benchmark across multiple test cases and agents
 - `commands/doctor.ts`: Check configuration and system requirements
-- `commands/init.ts`: Initialize configuration files
+- `commands/init.ts`: Initialize `agent-health.config.ts` configuration file
+- `utils/serverLifecycle.ts`: Playwright-style server auto-start (start if not running, auto-stop on exit)
+- `utils/apiClient.ts`: Typed HTTP client wrapping all server API calls for CLI
 - `demo/sample*.ts`: Sample test cases, benchmarks, runs, traces
-- `utils/startServer.ts`: Server bootstrap for CLI context
+
+**Server Auto-Start Pattern:** CLI commands that need the backend use `ensureServer()` from `serverLifecycle.ts`. This checks if a server is already running, starts one if not, and registers cleanup handlers. Similar to Playwright's `webServer` pattern.
 
 ### Directory Structure
 
@@ -280,7 +321,9 @@ The Bedrock LLM judge (`server/routes/judge.ts`) evaluates agent performance:
 ### Backend Server (`server/`)
 
 Express server on port 4001 provides:
+- `/api/agents`, `/api/models` - Agent/model configuration (list, add/remove custom agents)
 - `/api/debug` - Debug mode toggle (GET status, POST to enable/disable)
+- `/api/evaluate` - Server-side evaluation execution (used by CLI)
 - `/api/judge` - Bedrock evaluation proxy
 - `/api/agent/stream` - Agent execution proxy (SSE)
 - `/api/logs/*` - OpenSearch log queries
@@ -540,6 +583,16 @@ jest.mock('../../../services/opensearchClient');
 | Lib utilities | `@/lib/<name>` |
 | CLI commands | `@/cli/commands/<name>` |
 
+### Global Mocks (`__mocks__/`)
+
+Some modules use `import.meta.url` or browser-only APIs that don't work in Jest. These are globally mocked via `__mocks__/` and `moduleNameMapper` in `jest.config.cjs`:
+- `__mocks__/@/lib/config.ts` - config loader (avoids dynamic `import()`)
+- `__mocks__/@/server/services/configService.ts` - server config service
+- `__mocks__/@/server/utils/version.ts` - version utility
+- `__mocks__/dagre.ts`, `__mocks__/xyflow-react.ts` - browser-only graph libraries
+
+If you add a module that uses `import.meta.url`, you'll need a mock here and a corresponding `moduleNameMapper` entry in `jest.config.cjs`.
+
 ### Mocking Patterns
 
 **Mock external modules:**
@@ -795,7 +848,6 @@ git rebase -i HEAD~N  # then use 'edit' and run: git commit --amend -s --no-edit
 The following features are planned but not yet implemented:
 
 ### CLI Enhancements
-- `benchmark` command: Run full benchmark across multiple test cases
 - `compare` command: Side-by-side comparison of agent results
 - JSON/Table/Markdown output formats for all commands
 - Parallel test case execution with `--parallel` flag

@@ -217,7 +217,7 @@ export function findBestRunForMetric(
 }
 
 /**
- * Calculate delta between a value and a baseline
+ * Calculate delta between a value and the reference run
  */
 export function calculateDelta(value: number, baseline: number): number {
   return value - baseline;
@@ -307,7 +307,7 @@ export function calculateCombinedScore(result: TestCaseRunResult): number {
 
 /**
  * Determine if a row represents a regression, improvement, or mixed result
- * compared to the baseline run
+ * compared to the reference run (oldest run)
  */
 export function calculateRowStatus(
   row: TestCaseComparisonRow,

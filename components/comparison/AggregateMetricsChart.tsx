@@ -19,12 +19,12 @@ import { RunAggregateMetrics } from '@/types';
 interface AggregateMetricsChartProps {
   runs: RunAggregateMetrics[];
   height?: number;
-  baselineRunId?: string;
+  referenceRunId?: string;
 }
 
 // Color palette for runs (up to 6 runs)
 const RUN_COLORS = [
-  '#3b82f6', // blue-500 (baseline)
+  '#3b82f6', // blue-500 (reference/oldest)
   '#015aa3', // opensearch-blue
   '#f59e0b', // amber-500
   '#8b5cf6', // purple-500
@@ -50,31 +50,31 @@ const RADAR_METRICS: MetricConfig[] = [
 ];
 
 /**
- * Calculate value as percentage of baseline
- * For inverted metrics (lower is better): baseline/value * 100
- * For normal metrics (higher is better): value/baseline * 100
+ * Calculate value as percentage of the reference run (oldest run)
+ * For inverted metrics (lower is better): reference/value * 100
+ * For normal metrics (higher is better): value/reference * 100
  */
-function calculatePercentOfBaseline(
+function calculatePercentOfReference(
   value: number,
-  baselineValue: number,
+  referenceValue: number,
   invert: boolean
 ): number {
   if (value === undefined || value === null || value === 0) return 0;
-  if (baselineValue === undefined || baselineValue === null || baselineValue === 0) return 100;
+  if (referenceValue === undefined || referenceValue === null || referenceValue === 0) return 100;
 
   if (invert) {
-    // Lower is better: if value < baseline, result > 100 (better)
-    return Math.round((baselineValue / value) * 100);
+    // Lower is better: if value < reference, result > 100 (better)
+    return Math.round((referenceValue / value) * 100);
   } else {
-    // Higher is better: if value > baseline, result > 100 (better)
-    return Math.round((value / baselineValue) * 100);
+    // Higher is better: if value > reference, result > 100 (better)
+    return Math.round((value / referenceValue) * 100);
   }
 }
 
 export const AggregateMetricsChart: React.FC<AggregateMetricsChartProps> = ({
   runs,
   height = 350,
-  baselineRunId,
+  referenceRunId,
 }) => {
   if (!runs || runs.length === 0) {
     return (
@@ -96,31 +96,31 @@ export const AggregateMetricsChart: React.FC<AggregateMetricsChartProps> = ({
     return true;
   });
 
-  // Find baseline run by ID, or fall back to first run
-  const baselineRun = baselineRunId
-    ? runs.find(r => r.runId === baselineRunId) || runs[0]
+  // Find reference run by ID, or fall back to first run
+  const referenceRun = referenceRunId
+    ? runs.find(r => r.runId === referenceRunId) || runs[0]
     : runs[0];
 
   // Transform data for radar chart
-  // Each data point represents a metric with values as % of baseline
+  // Each data point represents a metric with values as % of reference run
   const radarData = activeMetrics.map(metric => {
     const dataPoint: Record<string, string | number> = { metric: metric.label };
-    const baselineValue = (baselineRun as any)[metric.key] ?? 0;
+    const referenceValue = (referenceRun as any)[metric.key] ?? 0;
 
     runs.forEach(run => {
       const rawValue = (run as any)[metric.key];
-      const percentOfBaseline = calculatePercentOfBaseline(
+      const percentOfReference = calculatePercentOfReference(
         rawValue ?? 0,
-        baselineValue,
+        referenceValue,
         metric.invert
       );
-      dataPoint[run.runName] = percentOfBaseline;
+      dataPoint[run.runName] = percentOfReference;
     });
 
     return dataPoint;
   });
 
-  // Calculate max value for chart domain (to handle runs > 100% of baseline)
+  // Calculate max value for chart domain (to handle runs > 100% of reference)
   const maxPercent = Math.max(
     100,
     ...radarData.flatMap(d =>
@@ -171,12 +171,12 @@ export const AggregateMetricsChart: React.FC<AggregateMetricsChartProps> = ({
               />
               <span className="text-muted-foreground">{entry.name}:</span>
               <span className="font-medium">{formattedRaw}</span>
-              <span className="text-muted-foreground">({entry.value}% of baseline)</span>
+              <span className="text-muted-foreground">({entry.value}% of oldest run)</span>
             </div>
           );
         })}
         <p className="text-xs text-muted-foreground mt-2 italic">
-          100% = baseline, {'>'} 100% = better than baseline
+          100% = oldest run, {'>'} 100% = better
         </p>
       </div>
     );
@@ -184,9 +184,9 @@ export const AggregateMetricsChart: React.FC<AggregateMetricsChartProps> = ({
 
   return (
     <div>
-      <h4 className="text-sm font-medium text-muted-foreground mb-3">Performance vs Baseline</h4>
+      <h4 className="text-sm font-medium text-muted-foreground mb-3">Performance vs Oldest Run</h4>
       <p className="text-xs text-muted-foreground mb-4">
-        All metrics as % of {baselineRun.runName}. 100% = baseline, {'>'}100% = better.
+        All metrics as % of {referenceRun.runName}. 100% = reference, {'>'}100% = better.
       </p>
       <ResponsiveContainer width="100%" height={height}>
         <RadarChart data={radarData} margin={{ top: 20, right: 40, bottom: 20, left: 40 }}>

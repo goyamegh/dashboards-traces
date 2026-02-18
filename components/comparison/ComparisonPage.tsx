@@ -60,8 +60,6 @@ export const ComparisonPage: React.FC = () => {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   const [rowStatusFilter, setRowStatusFilter] = useState<RowStatus | 'all'>('all');
 
-  // State for baseline selection
-  const [baselineRunId, setBaselineRunId] = useState<string>('');
 
   // Load benchmark data
   useEffect(() => {
@@ -228,17 +226,18 @@ export const ComparisonPage: React.FC = () => {
     return buildTestCaseComparisonRows(selectedRuns, reports, getRealTestCaseMeta);
   }, [selectedRuns, reports]);
 
-  // Initialize baseline to first selected run if not set or invalid
-  useEffect(() => {
-    if (selectedRunIds.length > 0 && (!baselineRunId || !selectedRunIds.includes(baselineRunId))) {
-      setBaselineRunId(selectedRunIds[0]);
-    }
-  }, [selectedRunIds, baselineRunId]);
+  // Derive the reference run automatically: oldest run by createdAt
+  const referenceRunId = useMemo(() => {
+    const sorted = [...selectedRuns].sort((a, b) =>
+      new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime()
+    );
+    return sorted[0]?.id ?? '';
+  }, [selectedRuns]);
 
   // Count rows by status for summary banner
   const rowStatusCounts = useMemo(() => {
-    return countRowsByStatus(allComparisonRows, baselineRunId);
-  }, [allComparisonRows, baselineRunId]);
+    return countRowsByStatus(allComparisonRows, referenceRunId);
+  }, [allComparisonRows, referenceRunId]);
 
   // Apply filters
   const filteredRows = useMemo((): TestCaseComparisonRow[] => {
@@ -248,11 +247,11 @@ export const ComparisonPage: React.FC = () => {
 
     // Apply row status filter (regression/improvement/mixed/neutral)
     if (rowStatusFilter !== 'all') {
-      rows = rows.filter(row => calculateRowStatus(row, baselineRunId) === rowStatusFilter);
+      rows = rows.filter(row => calculateRowStatus(row, referenceRunId) === rowStatusFilter);
     }
 
     return rows;
-  }, [allComparisonRows, categoryFilter, statusFilter, selectedRunIds, rowStatusFilter, baselineRunId]);
+  }, [allComparisonRows, categoryFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId]);
 
   // Get unique categories from rows
   const categories = useMemo(() => {
@@ -315,26 +314,7 @@ export const ComparisonPage: React.FC = () => {
       {/* Run Selector */}
       <Card>
         <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-sm font-medium">Select Runs to Compare</CardTitle>
-            {selectedRunIds.length >= 2 && (
-              <div className="flex items-center gap-2">
-                <Label className="text-sm text-muted-foreground">Baseline:</Label>
-                <Select value={baselineRunId} onValueChange={setBaselineRunId}>
-                  <SelectTrigger className="w-40 h-8">
-                    <SelectValue placeholder="Select baseline" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {selectedRuns.map((run) => (
-                      <SelectItem key={run.id} value={run.id}>
-                        {run.name}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-            )}
-          </div>
+          <CardTitle className="text-sm font-medium">Select Runs to Compare</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="flex flex-wrap gap-4">
@@ -373,7 +353,7 @@ export const ComparisonPage: React.FC = () => {
         <>
           <section>
             <h2 className="text-lg font-medium mb-4">Run Summary</h2>
-            <RunSummaryTable runs={runAggregates} baselineRunId={baselineRunId} />
+            <RunSummaryTable runs={runAggregates} referenceRunId={referenceRunId} />
           </section>
 
           {/* Metrics Section - Side by Side */}
@@ -381,7 +361,7 @@ export const ComparisonPage: React.FC = () => {
             <h2 className="text-lg font-medium mb-4">Metrics</h2>
             <div className="flex flex-col md:flex-row gap-6">
               <div className="w-full md:w-[420px] flex-shrink-0">
-                <AggregateMetricsChart runs={runAggregates} height={300} baselineRunId={baselineRunId} />
+                <AggregateMetricsChart runs={runAggregates} height={300} referenceRunId={referenceRunId} />
               </div>
               <div className="flex-1 min-w-0">
                 <MetricsTimeSeriesChart runs={runAggregates} height={300} />
@@ -431,7 +411,7 @@ export const ComparisonPage: React.FC = () => {
                 </Select>
               </div>
             </div>
-            <UseCaseComparisonTable rows={filteredRows} runs={selectedRuns} reports={reports} baselineRunId={baselineRunId} />
+            <UseCaseComparisonTable rows={filteredRows} runs={selectedRuns} reports={reports} referenceRunId={referenceRunId} />
             {filteredRows.length === 0 && allComparisonRows.length > 0 && (
               <p className="text-sm text-muted-foreground text-center mt-4">
                 No use cases match the current filters

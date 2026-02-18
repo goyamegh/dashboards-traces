@@ -10,13 +10,13 @@ import { TestCaseRunResult } from '@/types';
 
 interface MetricCellProps {
   result: TestCaseRunResult;
-  isBaseline?: boolean;
+  isReference?: boolean;
   baselineAccuracy?: number;
 }
 
 export const MetricCell: React.FC<MetricCellProps> = ({
   result,
-  isBaseline = false,
+  isReference = false,
   baselineAccuracy,
 }) => {
   if (result.status === 'missing') {
@@ -31,8 +31,8 @@ export const MetricCell: React.FC<MetricCellProps> = ({
   const isPassed = result.passFailStatus === 'passed';
   const accuracy = result.accuracy ?? 0;
 
-  // Calculate delta if not baseline and baseline value exists
-  const delta = !isBaseline && baselineAccuracy !== undefined
+  // Calculate delta if not the reference run and reference value exists
+  const delta = !isReference && baselineAccuracy !== undefined
     ? accuracy - baselineAccuracy
     : undefined;
 

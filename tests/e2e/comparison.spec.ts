@@ -114,7 +114,7 @@ test.describe('Comparison Page', () => {
     }
   });
 
-  test('should show baseline selector when runs are selected', async ({ page }) => {
+  test('should not show a baseline selector', async ({ page }) => {
     const viewLatestButton = page.locator('button:has-text("View Latest")').first();
 
     if (await viewLatestButton.isVisible().catch(() => false)) {
@@ -132,9 +132,9 @@ test.describe('Comparison Page', () => {
         await compareButton.click();
         await page.waitForTimeout(2000);
 
-        // Should show baseline selector
+        // Should NOT show a baseline selector (removed in favor of automatic oldest-run reference)
         const hasBaseline = await page.locator('text=Baseline').isVisible().catch(() => false);
-        expect(hasBaseline).toBeTruthy();
+        expect(hasBaseline).toBeFalsy();
       }
     }
   });

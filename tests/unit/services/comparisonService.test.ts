@@ -561,9 +561,9 @@ describe('comparisonService', () => {
   });
 
   describe('calculateRowStatus', () => {
-    const baselineRunId = 'baseline';
+    const referenceRunId = 'oldest-run';
 
-    it('should return neutral when baseline has no completed result', () => {
+    it('should return neutral when reference run has no completed result', () => {
       const row: TestCaseComparisonRow = {
         testCaseId: '1',
         testCaseName: 'TC1',
@@ -571,13 +571,13 @@ describe('comparisonService', () => {
         difficulty: 'Easy',
         labels: [],
         results: {
-          baseline: { status: 'missing' },
+          'oldest-run': { status: 'missing' },
         },
         hasVersionDifference: false,
         versions: [],
       };
 
-      expect(calculateRowStatus(row, baselineRunId)).toBe('neutral');
+      expect(calculateRowStatus(row, referenceRunId)).toBe('neutral');
     });
 
     it('should detect regression', () => {
@@ -588,14 +588,14 @@ describe('comparisonService', () => {
         difficulty: 'Easy',
         labels: [],
         results: {
-          baseline: { status: 'completed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
+          'oldest-run': { status: 'completed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
           'run-2': { status: 'completed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
         },
         hasVersionDifference: false,
         versions: [],
       };
 
-      expect(calculateRowStatus(row, baselineRunId)).toBe('regression');
+      expect(calculateRowStatus(row, referenceRunId)).toBe('regression');
     });
 
     it('should detect improvement', () => {
@@ -606,14 +606,14 @@ describe('comparisonService', () => {
         difficulty: 'Easy',
         labels: [],
         results: {
-          baseline: { status: 'completed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
+          'oldest-run': { status: 'completed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
           'run-2': { status: 'completed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
         },
         hasVersionDifference: false,
         versions: [],
       };
 
-      expect(calculateRowStatus(row, baselineRunId)).toBe('improvement');
+      expect(calculateRowStatus(row, referenceRunId)).toBe('improvement');
     });
 
     it('should detect mixed status', () => {
@@ -624,7 +624,7 @@ describe('comparisonService', () => {
         difficulty: 'Easy',
         labels: [],
         results: {
-          baseline: { status: 'completed', accuracy: 70, faithfulness: 70, trajectoryAlignment: 70, latencyScore: 70 },
+          'oldest-run': { status: 'completed', accuracy: 70, faithfulness: 70, trajectoryAlignment: 70, latencyScore: 70 },
           'run-2': { status: 'completed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
           'run-3': { status: 'completed', accuracy: 40, faithfulness: 40, trajectoryAlignment: 40, latencyScore: 40 },
         },
@@ -632,12 +632,12 @@ describe('comparisonService', () => {
         versions: [],
       };
 
-      expect(calculateRowStatus(row, baselineRunId)).toBe('mixed');
+      expect(calculateRowStatus(row, referenceRunId)).toBe('mixed');
     });
   });
 
   describe('countRowsByStatus', () => {
-    const baselineRunId = 'baseline';
+    const referenceRunId = 'oldest-run';
 
     const rows: TestCaseComparisonRow[] = [
       {
@@ -647,7 +647,7 @@ describe('comparisonService', () => {
         difficulty: 'Easy',
         labels: [],
         results: {
-          baseline: { status: 'completed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
+          'oldest-run': { status: 'completed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
           'run-2': { status: 'completed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
         },
         hasVersionDifference: false,
@@ -660,7 +660,7 @@ describe('comparisonService', () => {
         difficulty: 'Medium',
         labels: [],
         results: {
-          baseline: { status: 'completed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
+          'oldest-run': { status: 'completed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
           'run-2': { status: 'completed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
         },
         hasVersionDifference: false,
@@ -673,7 +673,7 @@ describe('comparisonService', () => {
         difficulty: 'Hard',
         labels: [],
         results: {
-          baseline: { status: 'completed', accuracy: 70, faithfulness: 70, trajectoryAlignment: 70, latencyScore: 70 },
+          'oldest-run': { status: 'completed', accuracy: 70, faithfulness: 70, trajectoryAlignment: 70, latencyScore: 70 },
           'run-2': { status: 'completed', accuracy: 71, faithfulness: 71, trajectoryAlignment: 71, latencyScore: 71 },
         },
         hasVersionDifference: false,
@@ -682,7 +682,7 @@ describe('comparisonService', () => {
     ];
 
     it('should count rows by status correctly', () => {
-      const counts = countRowsByStatus(rows, baselineRunId);
+      const counts = countRowsByStatus(rows, referenceRunId);
 
       expect(counts.improvement).toBe(1);
       expect(counts.regression).toBe(1);

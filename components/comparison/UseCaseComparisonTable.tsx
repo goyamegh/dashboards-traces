@@ -33,7 +33,7 @@ interface UseCaseComparisonTableProps {
   rows: TestCaseComparisonRow[];
   runs: BenchmarkRun[];
   reports: Record<string, EvaluationReport>;
-  baselineRunId?: string;
+  referenceRunId?: string;
 }
 
 const rowStatusStyles: Record<RowStatus, string> = {
@@ -47,12 +47,12 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
   rows,
   runs,
   reports,
-  baselineRunId: propBaselineRunId,
+  referenceRunId: propReferenceRunId,
 }) => {
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
   // Use prop if provided, otherwise fall back to first run
-  const baselineRunId = propBaselineRunId || runs[0]?.id;
+  const referenceRunId = propReferenceRunId || runs[0]?.id;
 
   const toggleRow = (useCaseId: string) => {
     setExpandedRows((prev) => {
@@ -91,19 +91,16 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
                   <div className="text-xs text-muted-foreground font-normal truncate">
                     {getAgentName(run.agentKey)}
                   </div>
-                  {run.id === baselineRunId && (
-                    <div className="text-xs text-muted-foreground font-normal">(baseline)</div>
-                  )}
                 </TableHead>
               ))}
             </TableRow>
           </TableHeader>
           <TableBody>
             {rows.map((row) => {
-              const baselineResult = row.results[baselineRunId];
-              const baselineAccuracy = baselineResult?.accuracy;
+              const referenceResult = row.results[referenceRunId];
+              const referenceAccuracy = referenceResult?.accuracy;
               const isExpanded = expandedRows.has(row.testCaseId);
-              const rowStatus = calculateRowStatus(row, baselineRunId);
+              const rowStatus = calculateRowStatus(row, referenceRunId);
 
               return (
                 <React.Fragment key={row.testCaseId}>
@@ -154,14 +151,14 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
                     </TableCell>
                     {runs.map((run) => {
                       const result = row.results[run.id] || { status: 'missing' as const };
-                      const isBaseline = run.id === baselineRunId;
+                      const isReference = run.id === referenceRunId;
 
                       return (
                         <TableCell key={run.id} className="p-0">
                           <MetricCell
                             result={result}
-                            isBaseline={isBaseline}
-                            baselineAccuracy={baselineAccuracy}
+                            isReference={isReference}
+                            baselineAccuracy={referenceAccuracy}
                           />
                         </TableCell>
                       );
