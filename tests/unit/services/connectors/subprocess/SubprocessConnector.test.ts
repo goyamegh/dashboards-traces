@@ -612,4 +612,275 @@ describe('SubprocessConnector', () => {
       );
     });
   });
+
+  describe('spawn error codes', () => {
+    it('should provide helpful message for EACCES error', async () => {
+      // Create a fresh mock process to avoid any cross-test interference
+      const errorProcess = new EventEmitter() as any;
+      errorProcess.stdout = new EventEmitter();
+      errorProcess.stderr = new EventEmitter();
+      errorProcess.stdin = { write: jest.fn(), end: jest.fn() };
+      errorProcess.pid = 99901;
+      errorProcess.kill = jest.fn();
+      (spawn as jest.Mock).mockReturnValueOnce(errorProcess);
+
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+      };
+
+      const promise = connector.execute('test-command', request, mockAuth);
+
+      // Emit error after execute has attached listeners
+      process.nextTick(() => {
+        errorProcess.emit('error', new Error('spawn test-command EACCES'));
+      });
+
+      await expect(promise).rejects.toThrow("Permission denied executing 'test-command'");
+    });
+
+    it('should provide helpful message for EPERM error', async () => {
+      const errorProcess = new EventEmitter() as any;
+      errorProcess.stdout = new EventEmitter();
+      errorProcess.stderr = new EventEmitter();
+      errorProcess.stdin = { write: jest.fn(), end: jest.fn() };
+      errorProcess.pid = 99902;
+      errorProcess.kill = jest.fn();
+      (spawn as jest.Mock).mockReturnValueOnce(errorProcess);
+
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+      };
+
+      const promise = connector.execute('test-command', request, mockAuth);
+
+      process.nextTick(() => {
+        errorProcess.emit('error', new Error('spawn test-command EPERM'));
+      });
+
+      await expect(promise).rejects.toThrow("Operation not permitted for 'test-command'");
+    });
+
+    it('should use generic message for unknown errors', async () => {
+      const errorProcess = new EventEmitter() as any;
+      errorProcess.stdout = new EventEmitter();
+      errorProcess.stderr = new EventEmitter();
+      errorProcess.stdin = { write: jest.fn(), end: jest.fn() };
+      errorProcess.pid = 99903;
+      errorProcess.kill = jest.fn();
+      (spawn as jest.Mock).mockReturnValueOnce(errorProcess);
+
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+      };
+
+      const promise = connector.execute('test-command', request, mockAuth);
+
+      process.nextTick(() => {
+        errorProcess.emit('error', new Error('spawn test-command UNKNOWN_ERROR'));
+      });
+
+      await expect(promise).rejects.toThrow('Failed to spawn subprocess: spawn test-command UNKNOWN_ERROR');
+    });
+
+    it('should not settle twice when error fires after close', async () => {
+      const errorProcess = new EventEmitter() as any;
+      errorProcess.stdout = new EventEmitter();
+      errorProcess.stderr = new EventEmitter();
+      errorProcess.stdin = { write: jest.fn(), end: jest.fn() };
+      errorProcess.pid = 99904;
+      errorProcess.kill = jest.fn();
+      (spawn as jest.Mock).mockReturnValueOnce(errorProcess);
+
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+      };
+
+      const promise = connector.execute('test-command', request, mockAuth);
+
+      process.nextTick(() => {
+        errorProcess.emit('close', 0, null);
+        // Error fires after close - should be ignored due to settled flag
+        errorProcess.emit('error', new Error('late error'));
+      });
+
+      const response = await promise;
+      expect(response.trajectory).toBeDefined();
+    });
+  });
+
+  describe('input mode arg', () => {
+    it('should pass input as argument when inputMode is arg', async () => {
+      const argConnector = new SubprocessConnector({
+        inputMode: 'arg',
+        args: ['--query'],
+      });
+
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+      };
+
+      setTimeout(() => {
+        mockProcess.emit('close', 0, null);
+      }, 10);
+
+      await argConnector.execute('test-command', request, mockAuth);
+
+      expect(spawn).toHaveBeenCalledWith(
+        'test-command',
+        expect.arrayContaining(['--query']),
+        expect.any(Object)
+      );
+      // stdin should not be written to
+      expect(mockProcess.stdin.write).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('pre-built payload', () => {
+    it('should use request.payload when available', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        payload: 'pre-built payload content',
+      };
+
+      setTimeout(() => {
+        mockProcess.emit('close', 0, null);
+      }, 10);
+
+      await connector.execute('test-command', request, mockAuth);
+
+      expect(mockProcess.stdin.write).toHaveBeenCalledWith('pre-built payload content');
+    });
+  });
+
+  describe('JSON output with steps', () => {
+    it('should parse JSON with steps array', () => {
+      const jsonConnector = new SubprocessConnector({
+        outputParser: 'json',
+      });
+
+      const steps = jsonConnector.parseResponse({
+        stdout: JSON.stringify({
+          thinking: 'Let me analyze...',
+          steps: [
+            { type: 'action', content: 'Calling API', toolName: 'http', toolArgs: '{}' },
+          ],
+          response: 'Done',
+        }),
+        stderr: '',
+        exitCode: 0,
+      });
+
+      expect(steps.length).toBe(3);
+      expect(steps[0].type).toBe('thinking');
+      expect(steps[1].type).toBe('action');
+      expect(steps[1].toolName).toBe('http');
+      expect(steps[2].type).toBe('response');
+    });
+
+    it('should parse JSON with answer field', () => {
+      const jsonConnector = new SubprocessConnector({
+        outputParser: 'json',
+      });
+
+      const steps = jsonConnector.parseResponse({
+        stdout: JSON.stringify({ answer: 'The answer is 42' }),
+        stderr: '',
+        exitCode: 0,
+      });
+
+      expect(steps.length).toBe(1);
+      expect(steps[0].type).toBe('response');
+      expect(steps[0].content).toBe('The answer is 42');
+    });
+
+    it('should parse JSON with content field', () => {
+      const jsonConnector = new SubprocessConnector({
+        outputParser: 'json',
+      });
+
+      const steps = jsonConnector.parseResponse({
+        stdout: JSON.stringify({ content: 'Some content' }),
+        stderr: '',
+        exitCode: 0,
+      });
+
+      expect(steps.length).toBe(1);
+      expect(steps[0].type).toBe('response');
+      expect(steps[0].content).toBe('Some content');
+    });
+
+    it('should handle steps with default type', () => {
+      const jsonConnector = new SubprocessConnector({
+        outputParser: 'json',
+      });
+
+      const steps = jsonConnector.parseResponse({
+        stdout: JSON.stringify({
+          steps: [{ content: 'No type specified' }],
+        }),
+        stderr: '',
+        exitCode: 0,
+      });
+
+      expect(steps.length).toBe(1);
+      expect(steps[0].type).toBe('assistant');
+    });
+  });
+
+  describe('healthCheck with config command', () => {
+    it('should use config command when endpoint is empty', async () => {
+      const configConnector = new SubprocessConnector({ command: 'node' });
+
+      const healthProcess = new EventEmitter() as any;
+      healthProcess.stdout = new EventEmitter();
+      healthProcess.stderr = new EventEmitter();
+      healthProcess.stdin = { write: jest.fn(), end: jest.fn() };
+      (spawn as jest.Mock).mockReturnValue(healthProcess);
+
+      const resultPromise = configConnector.healthCheck('', mockAuth);
+
+      setTimeout(() => {
+        healthProcess.emit('close', 1);
+      }, 10);
+
+      const result = await resultPromise;
+      // empty endpoint, but config.command 'node' is used
+      // The healthCheck checks `const command = endpoint || this.config.command`
+      // Since endpoint is empty string, it uses config.command 'node'
+      expect(result).toBe(false); // which returns 1 exit code in our mock
+    });
+  });
+
+  describe('execute with working directory', () => {
+    it('should pass workingDir to spawn', async () => {
+      const wdConnector = new SubprocessConnector({
+        workingDir: '/custom/path',
+      });
+
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+      };
+
+      setTimeout(() => {
+        mockProcess.emit('close', 0, null);
+      }, 10);
+
+      await wdConnector.execute('test-command', request, mockAuth);
+
+      expect(spawn).toHaveBeenCalledWith(
+        'test-command',
+        expect.any(Array),
+        expect.objectContaining({
+          cwd: '/custom/path',
+        })
+      );
+    });
+  });
 });
