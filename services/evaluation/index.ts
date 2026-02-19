@@ -271,13 +271,31 @@ export async function runEvaluationWithConnector(
   } catch (error) {
     console.error('[Eval] Error:', error instanceof Error ? error.message : error);
 
+    // Enhanced debug logging for connection failures
+    if (error instanceof Error) {
+      debug('Eval', 'Error details:', {
+        name: error.name,
+        message: error.message,
+        stack: error.stack,
+        cause: (error as any).cause,
+        agent: agent.name,
+        endpoint: agent.endpoint,
+        modelId,
+        testCaseId: testCase.id,
+      });
+    } else {
+      debug('Eval', 'Unknown error:', error);
+    }
+
     // Get connector type for error case (may not be available if error was in getting connector)
     let connectorType: ConnectorProtocol | undefined;
     try {
       const agentWithConnector = agent as AgentConfigWithConnector;
       const connector = connectorRegistry.getForAgent(agentWithConnector);
       connectorType = connector.type as ConnectorProtocol;
-    } catch {
+      debug('Eval', 'Connector type:', connectorType);
+    } catch (connectorError) {
+      debug('Eval', 'Failed to get connector type:', connectorError);
       // Connector lookup failed, leave undefined
     }
 
