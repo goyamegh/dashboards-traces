@@ -12,6 +12,27 @@
 import { Benchmark, BenchmarkRun, EvaluationReport } from '@/types';
 
 /**
+ * Pre-index reports by experimentRunId for O(1) lookup
+ * Replaces O(runs × reports) filter pattern with O(runs + reports)
+ *
+ * @param reports - Array of evaluation reports
+ * @returns Map of experimentRunId -> reports array
+ */
+function indexReportsByRunId(reports: EvaluationReport[]): Map<string, EvaluationReport[]> {
+  const index = new Map<string, EvaluationReport[]>();
+
+  for (const report of reports) {
+    if (!report.experimentRunId) continue;
+
+    const existing = index.get(report.experimentRunId) || [];
+    existing.push(report);
+    index.set(report.experimentRunId, existing);
+  }
+
+  return index;
+}
+
+/**
  * A single data point for the trend chart, representing metrics at a point in time
  */
 export interface TrendDataPoint {
@@ -107,6 +128,9 @@ export function aggregateMetricsByDate(
 ): TrendDataPoint[] {
   const cutoffDate = getDateCutoff(timeRange);
 
+  // Pre-index reports for O(1) lookup
+  const reportsByRunId = indexReportsByRunId(reports);
+
   // Group data by date + agentKey
   const groupedData = new Map<string, {
     costs: number[];
@@ -132,8 +156,8 @@ export function aggregateMetricsByDate(
       const dateStr = toDateString(run.createdAt);
       const groupKey = `${dateStr}|${run.agentKey}`;
 
-      // Get reports for this run
-      const runReports = reports.filter(r => r.experimentRunId === run.id);
+      // Get reports for this run using pre-indexed lookup
+      const runReports = reportsByRunId.get(run.id) || [];
       if (runReports.length === 0) continue;
 
       // Calculate metrics from metricsMap
@@ -209,6 +233,9 @@ export function aggregateMetricsByBenchmarkAgent(
   reports: EvaluationReport[],
   metricsMap: Map<string, { costUsd: number; durationMs: number; tokens: number }>
 ): BenchmarkAgentMetrics[] {
+  // Pre-index reports for O(1) lookup
+  const reportsByRunId = indexReportsByRunId(reports);
+
   // Group by benchmark × agent
   const groupedData = new Map<string, {
     benchmarkId: string;
@@ -225,8 +252,8 @@ export function aggregateMetricsByBenchmarkAgent(
     for (const run of benchmark.runs || []) {
       const groupKey = `${benchmark.id}|${run.agentKey}`;
 
-      // Get reports for this run
-      const runReports = reports.filter(r => r.experimentRunId === run.id);
+      // Get reports for this run using pre-indexed lookup
+      const runReports = reportsByRunId.get(run.id) || [];
 
       // Calculate metrics
       let totalCost = 0;
