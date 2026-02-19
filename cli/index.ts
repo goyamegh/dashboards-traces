@@ -23,6 +23,7 @@ import {
   createRunCommand,
   createBenchmarkCommand,
   createExportCommand,
+  createReportCommand,
   createDoctorCommand,
   createInitCommand,
   createMigrateCommand,
@@ -136,6 +137,7 @@ program.addCommand(createListCommand());
 program.addCommand(createRunCommand());
 program.addCommand(createBenchmarkCommand());
 program.addCommand(createExportCommand());
+program.addCommand(createReportCommand());
 program.addCommand(createDoctorCommand());
 program.addCommand(createInitCommand());
 program.addCommand(createMigrateCommand());

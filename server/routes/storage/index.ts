@@ -14,6 +14,7 @@ import testCasesRoutes from './testCases';
 import benchmarksRoutes from './benchmarks';
 import runsRoutes from './runs';
 import analyticsRoutes from './analytics';
+import reportsRoutes from './reports';
 
 const router = Router();
 
@@ -22,5 +23,6 @@ router.use(testCasesRoutes);
 router.use(benchmarksRoutes);
 router.use(runsRoutes);
 router.use(analyticsRoutes);
+router.use(reportsRoutes);
 
 export default router;
