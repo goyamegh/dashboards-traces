@@ -79,6 +79,15 @@ export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }
         </div>
       )}
 
+      {steps.length === 0 && !loading && (
+        <div className="text-muted-foreground py-8 text-center space-y-2">
+          <div className="text-sm">No conversation history available</div>
+          <div className="text-xs opacity-70">
+            The agent did not produce any trajectory steps. Check the Summary tab for error details.
+          </div>
+        </div>
+      )}
+
       {steps.map((step) => {
         const isExpanded = expandedSteps.has(step.id);
         const collapsible = isCollapsible(step);
