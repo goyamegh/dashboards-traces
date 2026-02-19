@@ -16,6 +16,7 @@ import {
   getAllTestCasesWithClient,
   saveReportWithClient,
   updateRunWithClient,
+  updateBenchmarkRunStatsForReport,
 } from '@/server/services/storage';
 import type { Client } from '@opensearch-project/opensearch';
 import { runEvaluationWithConnector, callBedrockJudge } from './evaluation';
@@ -351,13 +352,23 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
             llmJudgeReasoning: judgment.llmJudgeReasoning,
             improvementStrategies: judgment.improvementStrategies,
           });
+
+          // Update parent benchmark run stats now that this report is complete
+          if (report.experimentId) {
+            await updateBenchmarkRunStatsForReport(client, report.experimentId, report.id);
+          }
         } catch (error) {
           console.error(`[BenchmarkRunner] Failed to judge report ${report.id}:`, error instanceof Error ? error.message : error);
-          // Still mark as ready but with error info
+          // Still mark as error
           await updateRunWithClient(client, report.id, {
             metricsStatus: 'error',
             traceError: `Judge evaluation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
           });
+
+          // Update parent benchmark run stats (error counts as failed)
+          if (report.experimentId) {
+            await updateBenchmarkRunStatsForReport(client, report.experimentId, report.id);
+          }
         }
       },
       onAttempt: () => {}, // No verbose logging
