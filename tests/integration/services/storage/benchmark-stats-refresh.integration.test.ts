@@ -5,42 +5,26 @@
 
 /**
  * Integration tests for benchmark stats refresh functionality
- * Tests the full flow from HTTP request through the storage adapter
+ * Tests the full flow from HTTP request to OpenSearch updates
  */
 
 import { jest } from '@jest/globals';
-import type { Application } from 'express';
+import request from 'supertest';
+import express from 'express';
 import type { BenchmarkRun } from '@/types';
 
-// Use require for CommonJS module compatibility in Jest
-const request = require('supertest');
-
-// Mock adapter functions
-const mockBenchmarkGetById = jest.fn();
-const mockBenchmarkUpdateRun = jest.fn();
-const mockRunGetById = jest.fn();
-
-jest.mock('@/server/adapters/index', () => ({
-  getStorageModule: jest.fn().mockReturnValue({
-    isConfigured: jest.fn().mockReturnValue(true),
-    benchmarks: {
-      getAll: jest.fn().mockResolvedValue({ items: [], total: 0 }),
-      getById: (...args: any[]) => mockBenchmarkGetById(...args),
-      updateRun: (...args: any[]) => mockBenchmarkUpdateRun(...args),
-    },
-    runs: {
-      getById: (...args: any[]) => mockRunGetById(...args),
-    },
-    testCases: {
-      getAll: jest.fn().mockResolvedValue({ items: [], total: 0 }),
-    },
-  }),
-}));
-
-// Still need storageClient mock for execute/cancel paths (not tested here but imported by route)
+// Mock OpenSearch client
 const mockGet = jest.fn();
 const mockSearch = jest.fn();
 const mockUpdate = jest.fn();
+
+jest.mock('@opensearch-project/opensearch', () => ({
+  Client: jest.fn().mockImplementation(() => ({
+    get: mockGet,
+    search: mockSearch,
+    update: mockUpdate,
+  })),
+}));
 
 jest.mock('@/server/middleware/storageClient', () => ({
   isStorageAvailable: jest.fn().mockReturnValue(true),
@@ -60,18 +44,15 @@ jest.mock('@/lib/debug', () => ({
 }));
 
 describe('Benchmark Stats Refresh Integration', () => {
-  let app: Application;
+  let app: express.Application;
 
   beforeEach(async () => {
     jest.clearAllMocks();
-    mockBenchmarkUpdateRun.mockResolvedValue(true);
-    // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const express = require('express');
     app = express();
     app.use(express.json());
 
     const router = await import('@/server/routes/storage/benchmarks');
-    app.use(router.default);
+    app.use('/api/storage', router.default);
   });
 
   describe('End-to-end stats backfill flow', () => {
@@ -101,14 +82,29 @@ describe('Benchmark Stats Refresh Integration', () => {
         ],
       };
 
-      // Step 1: GET benchmark via adapter
-      mockBenchmarkGetById.mockResolvedValueOnce(benchmarkData);
+      // Step 1: GET benchmark request
+      mockGet.mockResolvedValueOnce({
+        body: {
+          found: true,
+          _source: benchmarkData,
+        },
+      });
 
-      // Step 2: Backfill detects stale stats and fetches reports via adapter
-      mockRunGetById
-        .mockResolvedValueOnce({ id: 'report-1', passFailStatus: 'passed', metricsStatus: 'ready' })
-        .mockResolvedValueOnce({ id: 'report-2', passFailStatus: 'passed', metricsStatus: 'ready' })
-        .mockResolvedValueOnce({ id: 'report-3', passFailStatus: 'failed', metricsStatus: 'ready' });
+      // Step 2: Backfill detects stale stats and fetches reports
+      mockSearch.mockResolvedValueOnce({
+        body: {
+          hits: {
+            hits: [
+              { _source: { id: 'report-1', passFailStatus: 'passed', metricsStatus: 'ready' } },
+              { _source: { id: 'report-2', passFailStatus: 'passed', metricsStatus: 'ready' } },
+              { _source: { id: 'report-3', passFailStatus: 'failed', metricsStatus: 'ready' } },
+            ],
+          },
+        },
+      });
+
+      // Step 3: Update benchmark with corrected stats
+      mockUpdate.mockResolvedValueOnce({ body: {} });
 
       // Execute request
       const response = await request(app).get(`/api/storage/benchmarks/${benchmarkId}`);
@@ -122,17 +118,24 @@ describe('Benchmark Stats Refresh Integration', () => {
         total: 3,
       });
 
-      // Verify adapter updateRun was called with correct stats
-      expect(mockBenchmarkUpdateRun).toHaveBeenCalledWith(
-        benchmarkId,
-        'run-1',
+      // Verify OpenSearch update was called with correct stats
+      expect(mockUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
-          stats: {
-            passed: 2,
-            failed: 1,
-            pending: 0,
-            total: 3,
-          },
+          index: 'evals_benchmarks',
+          id: benchmarkId,
+          body: expect.objectContaining({
+            script: expect.objectContaining({
+              params: expect.objectContaining({
+                runId: 'run-1',
+                stats: {
+                  passed: 2,
+                  failed: 1,
+                  pending: 0,
+                  total: 3,
+                },
+              }),
+            }),
+          }),
         })
       );
     });
@@ -174,19 +177,30 @@ describe('Benchmark Stats Refresh Integration', () => {
         ],
       };
 
-      mockBenchmarkGetById.mockResolvedValueOnce(benchmarkData);
+      mockGet.mockResolvedValueOnce({
+        body: { found: true, _source: benchmarkData },
+      });
 
       // Only fetch reports for stale run
-      mockRunGetById
-        .mockResolvedValueOnce({ id: 'report-1', passFailStatus: 'passed', metricsStatus: 'ready' })
-        .mockResolvedValueOnce({ id: 'report-2', passFailStatus: 'passed', metricsStatus: 'ready' });
+      mockSearch.mockResolvedValueOnce({
+        body: {
+          hits: {
+            hits: [
+              { _source: { id: 'report-1', passFailStatus: 'passed', metricsStatus: 'ready' } },
+              { _source: { id: 'report-2', passFailStatus: 'passed', metricsStatus: 'ready' } },
+            ],
+          },
+        },
+      });
+
+      mockUpdate.mockResolvedValueOnce({ body: {} });
 
       const response = await request(app).get(`/api/storage/benchmarks/${benchmarkId}`);
 
       expect(response.status).toBe(200);
       expect(response.body.runs[0].stats.pending).toBe(0); // Fixed
       expect(response.body.runs[1].stats.pending).toBe(0); // Unchanged
-      expect(mockBenchmarkUpdateRun).toHaveBeenCalledTimes(1); // Only stale run updated
+      expect(mockUpdate).toHaveBeenCalledTimes(1); // Only stale run updated
     });
   });
 
@@ -222,19 +236,35 @@ describe('Benchmark Stats Refresh Integration', () => {
         ],
       };
 
-      mockBenchmarkGetById.mockResolvedValueOnce(benchmarkData);
+      mockGet.mockResolvedValueOnce({
+        body: { found: true, _source: benchmarkData },
+      });
 
       // Mock report fetches for each run
-      mockRunGetById
-        .mockResolvedValueOnce({ id: 'report-1', passFailStatus: 'passed', metricsStatus: 'ready' })
-        .mockResolvedValueOnce({ id: 'report-2', passFailStatus: 'failed', metricsStatus: 'ready' });
+      mockSearch
+        .mockResolvedValueOnce({
+          body: {
+            hits: {
+              hits: [{ _source: { id: 'report-1', passFailStatus: 'passed', metricsStatus: 'ready' } }],
+            },
+          },
+        })
+        .mockResolvedValueOnce({
+          body: {
+            hits: {
+              hits: [{ _source: { id: 'report-2', passFailStatus: 'failed', metricsStatus: 'ready' } }],
+            },
+          },
+        });
+
+      mockUpdate.mockResolvedValue({ body: {} });
 
       const response = await request(app)
         .post(`/api/storage/benchmarks/${benchmarkId}/refresh-all-stats`);
 
       expect(response.status).toBe(200);
       expect(response.body.refreshed).toBe(2);
-      expect(mockBenchmarkUpdateRun).toHaveBeenCalledTimes(2);
+      expect(mockUpdate).toHaveBeenCalledTimes(2);
     });
 
     it('should refresh single run on demand', async () => {
@@ -271,11 +301,22 @@ describe('Benchmark Stats Refresh Integration', () => {
         ],
       };
 
-      mockBenchmarkGetById.mockResolvedValueOnce(benchmarkData);
+      mockGet.mockResolvedValueOnce({
+        body: { found: true, _source: benchmarkData },
+      });
 
-      mockRunGetById
-        .mockResolvedValueOnce({ id: 'report-1', passFailStatus: 'passed', metricsStatus: 'ready' })
-        .mockResolvedValueOnce({ id: 'report-2', passFailStatus: 'failed', metricsStatus: 'ready' });
+      mockSearch.mockResolvedValueOnce({
+        body: {
+          hits: {
+            hits: [
+              { _source: { id: 'report-1', passFailStatus: 'passed', metricsStatus: 'ready' } },
+              { _source: { id: 'report-2', passFailStatus: 'failed', metricsStatus: 'ready' } },
+            ],
+          },
+        },
+      });
+
+      mockUpdate.mockResolvedValueOnce({ body: {} });
 
       const response = await request(app)
         .post(`/api/storage/benchmarks/${benchmarkId}/runs/${targetRunId}/refresh-stats`);
@@ -289,13 +330,15 @@ describe('Benchmark Stats Refresh Integration', () => {
         pending: 0,
         total: 2,
       });
-      expect(mockBenchmarkUpdateRun).toHaveBeenCalledTimes(1); // Only target run
+      expect(mockUpdate).toHaveBeenCalledTimes(1); // Only target run
     });
   });
 
   describe('Trace-mode report completion flow', () => {
     it('should update stats when trace-mode report completes', async () => {
-      // This tests the service-layer function directly (still uses raw client)
+      // This tests the flow: report PATCH → stats update triggered
+      // We'll test this indirectly by verifying the stats update function is called
+
       const benchmarkId = 'bench-trace';
       const reportId = 'report-trace-1';
 
@@ -317,8 +360,7 @@ describe('Benchmark Stats Refresh Integration', () => {
         ],
       };
 
-      // Import and call the function directly (simulates what PATCH endpoint does)
-      // This still uses raw OpenSearch client
+      // Simulate the backend calling updateBenchmarkRunStatsForReport
       mockGet.mockResolvedValueOnce({
         body: { found: true, _source: benchmarkData },
       });
@@ -335,12 +377,13 @@ describe('Benchmark Stats Refresh Integration', () => {
 
       mockUpdate.mockResolvedValueOnce({ body: {} });
 
+      // Import and call the function directly (simulates what PATCH endpoint does)
       const { updateBenchmarkRunStatsForReport } = await import('@/server/services/storage/index');
       const mockClient = { get: mockGet, search: mockSearch, update: mockUpdate };
 
       await updateBenchmarkRunStatsForReport(mockClient as any, benchmarkId, reportId);
 
-      // Verify stats were updated via raw client (service layer still uses raw OpenSearch)
+      // Verify stats were updated
       expect(mockUpdate).toHaveBeenCalledWith(
         expect.objectContaining({
           body: expect.objectContaining({
@@ -361,14 +404,14 @@ describe('Benchmark Stats Refresh Integration', () => {
   });
 
   describe('Error handling', () => {
-    it('should handle storage errors gracefully', async () => {
+    it('should handle OpenSearch connection errors gracefully', async () => {
       const benchmarkId = 'bench-error';
 
-      mockBenchmarkGetById.mockRejectedValueOnce(new Error('Connection refused'));
+      mockGet.mockRejectedValueOnce(new Error('Connection refused'));
 
       const response = await request(app).get(`/api/storage/benchmarks/${benchmarkId}`);
 
-      // Should return error, not crash
+      // Should redirect/404, not crash
       expect(response.status).toBeGreaterThanOrEqual(400);
     });
 
@@ -393,10 +436,11 @@ describe('Benchmark Stats Refresh Integration', () => {
         ],
       };
 
-      mockBenchmarkGetById.mockResolvedValueOnce(benchmarkData);
+      mockGet.mockResolvedValueOnce({
+        body: { found: true, _source: benchmarkData },
+      });
 
-      // Report fetch fails
-      mockRunGetById.mockRejectedValueOnce(new Error('Report index unavailable'));
+      mockSearch.mockRejectedValueOnce(new Error('Report index unavailable'));
 
       const response = await request(app).get(`/api/storage/benchmarks/${benchmarkId}`);
 

@@ -189,12 +189,10 @@ describe('AsyncBenchmarkStorage Stats Refresh', () => {
 
       mockFetch.mockResolvedValueOnce({
         ok: true,
-        status: 200,
-        statusText: 'OK',
         json: async () => {
-          throw new SyntaxError('Invalid JSON');
+          throw new Error('Invalid JSON');
         },
-      } as any);
+      });
 
       const result = await asyncBenchmarkStorage.refreshAllStats(benchmarkId);
 

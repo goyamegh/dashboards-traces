@@ -13,17 +13,14 @@ import { jest } from '@jest/globals';
 const mockDebug = jest.fn();
 jest.mock('@/lib/debug', () => ({
   debug: mockDebug,
-  isDebugEnabled: jest.fn().mockReturnValue(false),
 }));
 
 // Mock connector registry
 const mockExecute = jest.fn();
-const mockBuildPayload = jest.fn().mockReturnValue({ test: 'payload' });
 const mockConnectorRegistry = {
   getForAgent: jest.fn().mockReturnValue({
     type: 'agui-streaming',
     execute: mockExecute,
-    buildPayload: mockBuildPayload,
   }),
 };
 
@@ -38,14 +35,11 @@ jest.mock('@/services/evaluation/bedrockJudge', () => ({
 
 describe('Evaluation Service Debug Enhancements', () => {
   let runEvaluationWithConnector: any;
-  let callBedrockJudge: any;
 
   beforeEach(async () => {
     jest.clearAllMocks();
     const module = await import('@/services/evaluation/index');
     runEvaluationWithConnector = module.runEvaluationWithConnector;
-    const judgeModule = await import('@/services/evaluation/bedrockJudge');
-    callBedrockJudge = judgeModule.callBedrockJudge;
   });
 
   describe('Error logging', () => {
@@ -70,17 +64,15 @@ describe('Evaluation Service Debug Enhancements', () => {
         connectorType: 'agui-streaming',
       };
 
-      const result = await runEvaluationWithConnector(
-        agent as any,
-        'test-model',
-        testCase as any,
-        jest.fn(),
-        { registry: mockConnectorRegistry }
-      );
-
-      // Should return a failed report instead of throwing
-      expect(result.status).toBe('failed');
-      expect(result.llmJudgeReasoning).toContain('Connection refused');
+      await expect(
+        runEvaluationWithConnector(
+          testCase as any,
+          agent as any,
+          'test-model',
+          {},
+          {}
+        )
+      ).rejects.toThrow();
 
       // Verify detailed error logging
       expect(mockDebug).toHaveBeenCalledWith('Eval', 'Error details:', expect.objectContaining({
@@ -111,15 +103,16 @@ describe('Evaluation Service Debug Enhancements', () => {
         connectorType: 'agui-streaming',
       };
 
-      const result = await runEvaluationWithConnector(
-        agent as any,
-        'test-model',
-        testCase as any,
-        jest.fn(),
-        { registry: mockConnectorRegistry }
-      );
+      await expect(
+        runEvaluationWithConnector(
+          testCase as any,
+          agent as any,
+          'test-model',
+          {},
+          {}
+        )
+      ).rejects.toThrow();
 
-      expect(result.status).toBe('failed');
       expect(mockDebug).toHaveBeenCalledWith('Eval', 'Unknown error:', 'string error message');
     });
 
@@ -141,20 +134,21 @@ describe('Evaluation Service Debug Enhancements', () => {
         connectorType: 'agui-streaming',
       };
 
-      const result = await runEvaluationWithConnector(
-        agent as any,
-        'test-model',
-        testCase as any,
-        jest.fn(),
-        { registry: mockConnectorRegistry }
-      );
+      await expect(
+        runEvaluationWithConnector(
+          testCase as any,
+          agent as any,
+          'test-model',
+          {},
+          {}
+        )
+      ).rejects.toThrow();
 
-      expect(result.status).toBe('failed');
       expect(mockDebug).toHaveBeenCalledWith('Eval', 'Connector type:', 'agui-streaming');
     });
 
     it('should handle connector registry lookup failure', async () => {
-      mockConnectorRegistry.getForAgent.mockImplementation(() => {
+      mockConnectorRegistry.getForAgent.mockImplementationOnce(() => {
         throw new Error('Connector not found');
       });
 
@@ -172,23 +166,17 @@ describe('Evaluation Service Debug Enhancements', () => {
         connectorType: 'unknown',
       };
 
-      const result = await runEvaluationWithConnector(
-        agent as any,
-        'test-model',
-        testCase as any,
-        jest.fn(),
-        { registry: mockConnectorRegistry }
-      );
+      await expect(
+        runEvaluationWithConnector(
+          testCase as any,
+          agent as any,
+          'test-model',
+          {},
+          {}
+        )
+      ).rejects.toThrow();
 
-      expect(result.status).toBe('failed');
       expect(mockDebug).toHaveBeenCalledWith('Eval', 'Failed to get connector type:', expect.any(Error));
-
-      // Restore mock for other tests
-      mockConnectorRegistry.getForAgent.mockReturnValue({
-        type: 'agui-streaming',
-        execute: mockExecute,
-        buildPayload: mockBuildPayload,
-      });
     });
   });
 
@@ -213,15 +201,16 @@ describe('Evaluation Service Debug Enhancements', () => {
         connectorType: 'agui-streaming',
       };
 
-      const result = await runEvaluationWithConnector(
-        agent as any,
-        'test-model',
-        testCase as any,
-        jest.fn(),
-        { registry: mockConnectorRegistry }
-      );
+      await expect(
+        runEvaluationWithConnector(
+          testCase as any,
+          agent as any,
+          'test-model',
+          {},
+          {}
+        )
+      ).rejects.toThrow();
 
-      expect(result.status).toBe('failed');
       expect(mockDebug).toHaveBeenCalledWith('Eval', 'Error details:', expect.objectContaining({
         stack: expect.stringContaining('test.ts:123:45'),
       }));
@@ -247,15 +236,15 @@ describe('Evaluation Service Debug Enhancements', () => {
         connectorType: 'rest',
       };
 
-      const result = await runEvaluationWithConnector(
-        agent as any,
-        'claude-4',
-        testCase as any,
-        jest.fn(),
-        { registry: mockConnectorRegistry }
-      );
-
-      expect(result.status).toBe('failed');
+      await expect(
+        runEvaluationWithConnector(
+          testCase as any,
+          agent as any,
+          'claude-4',
+          {},
+          {}
+        )
+      ).rejects.toThrow();
 
       const errorDetailsCall = mockDebug.mock.calls.find(
         (call) => call[0] === 'Eval' && call[1] === 'Error details:'
@@ -282,20 +271,7 @@ describe('Evaluation Service Debug Enhancements', () => {
         rawEvents: [],
       };
 
-      const mockJudgment = {
-        passFailStatus: 'passed',
-        metrics: {
-          accuracy: 0.9,
-          faithfulness: 0.85,
-          latency_score: 0.95,
-          trajectory_alignment_score: 0.88,
-        },
-        reasoning: 'Test passed successfully',
-        improvementStrategies: [],
-      };
-
       mockExecute.mockResolvedValueOnce(mockResponse);
-      (callBedrockJudge as jest.Mock).mockResolvedValueOnce(mockJudgment);
 
       const testCase = {
         id: 'tc-success',
@@ -312,11 +288,11 @@ describe('Evaluation Service Debug Enhancements', () => {
       };
 
       await runEvaluationWithConnector(
+        testCase as any,
         agent as any,
         'test-model',
-        testCase as any,
-        jest.fn(),
-        { registry: mockConnectorRegistry }
+        {},
+        {}
       );
 
       // Should not log error details on success
