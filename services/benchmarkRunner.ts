@@ -155,8 +155,9 @@ export async function executeRun(
       const testCase = testCaseMap.get(testCaseId);
 
       if (!testCase) {
-        console.warn(`[BenchmarkRunner] Test case not found: ${testCaseId}`);
-        run.results[testCaseId] = { reportId: '', status: 'failed' };
+        const errorMsg = `Test case not found: ${testCaseId}`;
+        console.warn(`[BenchmarkRunner] ${errorMsg}`);
+        run.results[testCaseId] = { reportId: '', status: 'failed', error: errorMsg };
         continue;
       }
 
@@ -209,8 +210,9 @@ export async function executeRun(
             .catch(err => console.warn(`[BenchmarkRunner] Failed to persist progress for ${testCaseId}:`, err.message));
         }
       } catch (error) {
-        console.error(`[BenchmarkRunner] Error in test case ${testCaseId}:`, error instanceof Error ? error.message : error);
-        run.results[testCaseId] = { reportId: '', status: 'failed' };
+        const errorMsg = error instanceof Error ? error.message : String(error);
+        console.error(`[BenchmarkRunner] Error in test case ${testCaseId}:`, errorMsg);
+        run.results[testCaseId] = { reportId: '', status: 'failed', error: errorMsg };
 
         // Persist failure progress to OpenSearch (fire-and-forget with logging)
         if (onTestCaseComplete) {
@@ -232,9 +234,10 @@ export async function executeRun(
     return run;
   } catch (error) {
     // Mark any pending test cases as failed
+    const errorMsg = error instanceof Error ? error.message : String(error);
     benchmark.testCaseIds.forEach(testCaseId => {
       if (!run.results[testCaseId] || run.results[testCaseId].status === 'pending') {
-        run.results[testCaseId] = { reportId: '', status: 'failed' };
+        run.results[testCaseId] = { reportId: '', status: 'failed', error: `Benchmark execution failed: ${errorMsg}` };
       }
     });
 
