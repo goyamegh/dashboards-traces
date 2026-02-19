@@ -305,3 +305,176 @@ async function writeAnalyticsRecord(run: any): Promise<void> {
   if (!client) return; // Skip analytics if no storage
   return writeAnalyticsRecordWithClient(client, run);
 }
+
+// ==================== Benchmarks ====================
+
+/**
+ * Update benchmark run stats after a report status changes.
+ * Finds the benchmark and run containing the given reportId, recomputes stats,
+ * and persists the updated stats back to OpenSearch.
+ *
+ * Called when a report transitions from 'pending' to 'ready' to refresh
+ * denormalized stats counters.
+ *
+ * @param client - OpenSearch client
+ * @param benchmarkId - Benchmark ID (report.experimentId)
+ * @param reportId - Report ID that was just updated
+ */
+export async function updateBenchmarkRunStatsForReport(
+  client: Client,
+  benchmarkId: string,
+  reportId: string
+): Promise<void> {
+  if (!benchmarkId || !reportId) {
+    console.warn('[StorageService] updateBenchmarkRunStatsForReport: missing benchmarkId or reportId');
+    return;
+  }
+
+  try {
+    // Fetch the benchmark document
+    const benchmarkResult = await client.get({
+      index: INDEXES.benchmarks,
+      id: benchmarkId,
+    });
+
+    if (!benchmarkResult.body.found) {
+      console.warn(`[StorageService] Benchmark ${benchmarkId} not found`);
+      return;
+    }
+
+    const benchmark = benchmarkResult.body._source;
+    const runs = benchmark.runs || [];
+
+    // Find which run contains this reportId
+    const targetRun = runs.find((run: any) =>
+      Object.values(run.results || {}).some((result: any) => result.reportId === reportId)
+    );
+
+    if (!targetRun) {
+      console.warn(`[StorageService] Report ${reportId} not found in benchmark ${benchmarkId} runs`);
+      return;
+    }
+
+    // Recompute stats for this run
+    const updatedStats = await computeStatsForRunWithClient(client, targetRun);
+
+    // Update the benchmark document with new stats using Painless script
+    await client.update({
+      index: INDEXES.benchmarks,
+      id: benchmarkId,
+      retry_on_conflict: 3,
+      body: {
+        script: {
+          source: `
+            for (int i = 0; i < ctx._source.runs.size(); i++) {
+              if (ctx._source.runs[i].id == params.runId) {
+                ctx._source.runs[i].stats = params.stats;
+                break;
+              }
+            }
+          `,
+          params: { runId: targetRun.id, stats: updatedStats },
+        },
+      },
+    });
+
+    console.info(`[StorageService] Updated stats for run ${targetRun.id} in benchmark ${benchmarkId}`);
+  } catch (error: any) {
+    console.error(`[StorageService] Failed to update benchmark run stats:`, error.message);
+  }
+}
+
+/**
+ * Compute stats for a benchmark run by fetching and analyzing its reports.
+ * This is the same logic as in server/routes/storage/benchmarks.ts but
+ * extracted for reuse.
+ */
+async function computeStatsForRunWithClient(
+  client: Client,
+  run: any
+): Promise<{ passed: number; failed: number; pending: number; total: number }> {
+  // Collect report IDs from run results
+  const reportIds = Object.values(run.results || {})
+    .map((r: any) => r.reportId)
+    .filter(Boolean);
+
+  let passed = 0;
+  let failed = 0;
+  let pending = 0;
+  const total = Object.keys(run.results || {}).length;
+
+  // Fetch reports to get passFailStatus
+  if (reportIds.length > 0) {
+    try {
+      const reportsResult = await client.search({
+        index: INDEXES.runs,
+        body: {
+          size: reportIds.length,
+          query: {
+            terms: { id: reportIds },
+          },
+          _source: ['id', 'passFailStatus', 'metricsStatus', 'status'],
+        },
+      });
+
+      const reportsMap = new Map<string, any>();
+      (reportsResult.body.hits?.hits || []).forEach((hit: any) => {
+        reportsMap.set(hit._source.id, hit._source);
+      });
+
+      // Count stats based on result status and report passFailStatus
+      Object.values(run.results || {}).forEach((result: any) => {
+        if (result.status === 'pending' || result.status === 'running') {
+          pending++;
+          return;
+        }
+
+        if (result.status === 'failed' || result.status === 'cancelled') {
+          failed++;
+          return;
+        }
+
+        // For completed results, check the report
+        if (result.status === 'completed' && result.reportId) {
+          const report = reportsMap.get(result.reportId);
+          if (!report) {
+            pending++;
+            return;
+          }
+
+          // Check if evaluation is still pending (trace mode)
+          if (report.metricsStatus === 'pending' || report.metricsStatus === 'calculating') {
+            pending++;
+            return;
+          }
+
+          if (report.passFailStatus === 'passed') {
+            passed++;
+          } else {
+            failed++;
+          }
+        } else {
+          pending++;
+        }
+      });
+    } catch (e: any) {
+      console.warn('[StorageService] Failed to fetch reports for stats computation:', e.message);
+      // Fall back to counting by result status only
+      Object.values(run.results || {}).forEach((result: any) => {
+        if (result.status === 'completed') {
+          // Can't determine pass/fail without reports, count as pending
+          pending++;
+        } else if (result.status === 'failed' || result.status === 'cancelled') {
+          failed++;
+        } else {
+          pending++;
+        }
+      });
+    }
+  } else {
+    // No reports yet - all results are pending
+    pending = total;
+  }
+
+  return { passed, failed, pending, total };
+}

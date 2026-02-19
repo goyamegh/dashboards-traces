@@ -65,7 +65,7 @@ const router = Router();
 const INDEX = INDEXES.benchmarks;
 
 /**
- * Lazy backfill stats for completed runs that are missing them.
+ * Lazy backfill stats for completed runs that are missing them or have stale stats.
  * Computes stats from reports and mutates the runs in place.
  * Persists updated stats back to OpenSearch (fire-and-forget).
  */
@@ -74,16 +74,37 @@ async function backfillRunStats(
   benchmarkId: string,
   runs: BenchmarkRun[]
 ): Promise<void> {
-  const runsNeedingStats = runs.filter(
-    (r) => !r.stats && (r.status === 'completed' || r.status === 'cancelled')
-  );
+  const runsNeedingStats = runs.filter((r) => {
+    // Case 1: No stats at all
+    if (!r.stats && (r.status === 'completed' || r.status === 'cancelled')) {
+      debug('StorageAPI', `[Backfill] Run ${r.id} has no stats, will backfill`);
+      return true;
+    }
+
+    // Case 2: Has stats but they appear stale (pending > 0 when all results are completed)
+    if (r.stats && r.stats.pending > 0 && r.status === 'completed') {
+      const allResultsCompleted = Object.values(r.results || {})
+        .every((result: any) => result.status === 'completed' || result.status === 'failed' || result.status === 'cancelled');
+
+      if (allResultsCompleted) {
+        debug('StorageAPI', `[Backfill] Run ${r.id} has stale stats (pending: ${r.stats.pending}), will recompute`);
+        return true;
+      }
+    }
+
+    return false;
+  });
 
   if (runsNeedingStats.length === 0) return;
+
+  debug('StorageAPI', `[Backfill] Backfilling stats for ${runsNeedingStats.length} runs in benchmark ${benchmarkId}`);
 
   await Promise.all(runsNeedingStats.map(async (run) => {
     try {
       const stats = await computeStatsForRun(client, run);
       run.stats = stats;
+
+      debug('StorageAPI', `[Backfill] Computed stats for run ${run.id}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
 
       // Persist back to OpenSearch (fire-and-forget)
       client.update({
@@ -104,7 +125,9 @@ async function backfillRunStats(
           },
         },
       }).catch((e: any) => {
-        console.warn('[StorageAPI] Failed to persist backfilled stats:', e.message);
+        console.warn('[StorageAPI] Failed to persist backfilled stats for run', run.id, ':', e.message);
+      }).then(() => {
+        debug('StorageAPI', `[Backfill] Successfully persisted stats for run ${run.id}`);
       });
     } catch (e: any) {
       console.warn('[StorageAPI] Failed to compute stats for run:', run.id, e.message);
@@ -1085,7 +1108,9 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
       }
 
       // Compute final stats from reports
+      debug('StorageAPI', '[StatsUpdate] Computing final stats for completed run:', run.id);
       const stats = await computeStatsForRun(client, completedRun);
+      debug('StorageAPI', `[StatsUpdate] Final stats for run ${run.id}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
 
       const finalRun = {
         ...completedRun,
@@ -1334,6 +1359,146 @@ router.post('/api/storage/benchmarks/:id/cancel', async (req: Request, res: Resp
   }
 
   res.json({ cancelled: true, runId });
+});
+
+// POST /api/storage/benchmarks/:id/refresh-all-stats - Force recompute stats for all runs
+router.post('/api/storage/benchmarks/:id/refresh-all-stats', async (req: Request, res: Response) => {
+  const { id } = req.params;
+
+  // Reject modifying sample data
+  if (isSampleId(id)) {
+    return res.status(400).json({ error: 'Cannot refresh stats for sample data. Sample benchmarks are read-only.' });
+  }
+
+  if (!isStorageAvailable(req)) {
+    return res.status(400).json({ error: 'OpenSearch not configured' });
+  }
+
+  const client = requireStorageClient(req);
+
+  try {
+    // Fetch benchmark
+    const result = await client.get({ index: INDEX, id });
+    if (!result.body.found) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
+
+    const benchmark = normalizeBenchmark(result.body._source);
+    const runs = benchmark.runs || [];
+
+    debug('StorageAPI', `[RefreshStats] Manually refreshing stats for ${runs.length} runs in benchmark ${id}`);
+
+    // Recompute stats for ALL runs (not just those missing stats)
+    await Promise.all(runs.map(async (run) => {
+      try {
+        const stats = await computeStatsForRun(client, run);
+        run.stats = stats;
+
+        debug('StorageAPI', `[RefreshStats] Computed stats for run ${run.id}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
+
+        // Persist back to OpenSearch
+        await client.update({
+          index: INDEX,
+          id,
+          retry_on_conflict: 3,
+          body: {
+            script: {
+              source: `
+                for (int i = 0; i < ctx._source.runs.size(); i++) {
+                  if (ctx._source.runs[i].id == params.runId) {
+                    ctx._source.runs[i].stats = params.stats;
+                    break;
+                  }
+                }
+              `,
+              params: { runId: run.id, stats },
+            },
+          },
+        });
+
+        debug('StorageAPI', `[RefreshStats] Successfully updated stats for run ${run.id}`);
+      } catch (e: any) {
+        console.warn('[StorageAPI] Failed to refresh stats for run:', run.id, e.message);
+      }
+    }));
+
+    debug('StorageAPI', `[RefreshStats] Completed manual stats refresh for benchmark ${id}`);
+    res.json({ refreshed: runs.length });
+  } catch (error: any) {
+    if (error.meta?.statusCode === 404) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
+    console.error('[StorageAPI] Refresh all stats failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/storage/benchmarks/:id/runs/:runId/refresh-stats - Refresh stats for a single run
+router.post('/api/storage/benchmarks/:id/runs/:runId/refresh-stats', async (req: Request, res: Response) => {
+  const { id, runId } = req.params;
+
+  // Reject modifying sample data
+  if (isSampleId(id)) {
+    return res.status(400).json({ error: 'Cannot refresh stats for sample data. Sample benchmarks are read-only.' });
+  }
+
+  if (!isStorageAvailable(req)) {
+    return res.status(400).json({ error: 'OpenSearch not configured' });
+  }
+
+  const client = requireStorageClient(req);
+
+  try {
+    // Fetch benchmark
+    const result = await client.get({ index: INDEX, id });
+    if (!result.body.found) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
+
+    const benchmark = normalizeBenchmark(result.body._source);
+    const run = benchmark.runs?.find((r: BenchmarkRun) => r.id === runId);
+
+    if (!run) {
+      return res.status(404).json({ error: 'Run not found in benchmark' });
+    }
+
+    debug('StorageAPI', `[RefreshStats] Manually refreshing stats for run ${runId} in benchmark ${id}`);
+
+    // Recompute stats for the run
+    const stats = await computeStatsForRun(client, run);
+
+    debug('StorageAPI', `[RefreshStats] Computed stats for run ${runId}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
+
+    // Persist back to OpenSearch
+    await client.update({
+      index: INDEX,
+      id,
+      retry_on_conflict: 3,
+      body: {
+        script: {
+          source: `
+            for (int i = 0; i < ctx._source.runs.size(); i++) {
+              if (ctx._source.runs[i].id == params.runId) {
+                ctx._source.runs[i].stats = params.stats;
+                break;
+              }
+            }
+          `,
+          params: { runId, stats },
+        },
+      },
+      refresh: true,
+    });
+
+    debug('StorageAPI', `[RefreshStats] Successfully updated stats for run ${runId}`);
+    res.json({ refreshed: true, runId, stats });
+  } catch (error: any) {
+    if (error.meta?.statusCode === 404) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
+    console.error('[StorageAPI] Refresh run stats failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
 });
 
 export default router;
