@@ -25,6 +25,7 @@ jest.mock('@/server/routes/storage/testCases', () => ({ default: 'testCasesRoute
 jest.mock('@/server/routes/storage/benchmarks', () => ({ default: 'benchmarksRoutes' }));
 jest.mock('@/server/routes/storage/runs', () => ({ default: 'runsRoutes' }));
 jest.mock('@/server/routes/storage/analytics', () => ({ default: 'analyticsRoutes' }));
+jest.mock('@/server/routes/storage/reports', () => ({ default: 'reportsRoutes' }));
 
 describe('Storage Routes Aggregator', () => {
   beforeEach(() => {
@@ -44,6 +45,7 @@ describe('Storage Routes Aggregator', () => {
     expect(mockUse).toHaveBeenCalledWith('benchmarksRoutes');
     expect(mockUse).toHaveBeenCalledWith('runsRoutes');
     expect(mockUse).toHaveBeenCalledWith('analyticsRoutes');
+    expect(mockUse).toHaveBeenCalledWith('reportsRoutes');
   });
 
   it('should mount routes in the correct order', () => {
@@ -60,6 +62,7 @@ describe('Storage Routes Aggregator', () => {
       'benchmarksRoutes',
       'runsRoutes',
       'analyticsRoutes',
+      'reportsRoutes',
     ]);
   });
 

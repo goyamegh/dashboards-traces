@@ -29,6 +29,7 @@ interface BenchmarkOptions {
   output: string;
   verbose?: boolean;
   export?: string;
+  format: string;
   stopServer?: boolean;
   file?: string;
 }
@@ -283,34 +284,70 @@ function displaySummaryTable(allResults: AgentResults[], totalTestCases: number)
 }
 
 /**
- * Export results to JSON file
+ * Export results to file
+ * When format is 'json', exports raw results directly.
+ * For other formats, calls the server report API endpoint.
  */
-function exportResults(
+async function exportResults(
   benchmark: Benchmark,
   allResults: AgentResults[],
-  exportPath: string
-): void {
-  const exportData = {
-    benchmark: {
-      id: benchmark.id,
-      name: benchmark.name,
-      testCaseCount: benchmark.testCaseIds.length,
-    },
-    runs: allResults.map((r) => ({
-      agent: { key: r.agent.key, name: r.agent.name },
-      runId: r.run?.id || r.runId,
-      status: r.run?.status,
-      passed: r.passed,
-      failed: r.failed,
-      passRate:
-        benchmark.testCaseIds.length > 0 ? (r.passed / benchmark.testCaseIds.length) * 100 : 0,
-      results: r.run?.results,
-      reports: r.reports,
-    })),
-    exportedAt: new Date().toISOString(),
-  };
+  exportPath: string,
+  format: string,
+  serverBaseUrl: string
+): Promise<void> {
+  if (format !== 'json') {
+    // Use server report API for non-JSON formats
+    const runIds = allResults
+      .map((r) => r.run?.id || r.runId)
+      .filter((id): id is string => !!id);
 
-  writeFileSync(exportPath, JSON.stringify(exportData, null, 2));
+    const params = new URLSearchParams({ format });
+    if (runIds.length > 0) {
+      params.set('runIds', runIds.join(','));
+    }
+
+    const url = `${serverBaseUrl}/api/storage/benchmarks/${encodeURIComponent(benchmark.id)}/report?${params.toString()}`;
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      const errorBody = await response.json().catch(() => ({ error: 'Unknown error' }));
+      console.error(chalk.red(`\nExport failed: ${errorBody.error}`));
+      return;
+    }
+
+    const contentType = response.headers.get('content-type') || '';
+    if (contentType.includes('application/pdf')) {
+      const buffer = Buffer.from(await response.arrayBuffer());
+      writeFileSync(exportPath, buffer);
+    } else {
+      const text = await response.text();
+      writeFileSync(exportPath, text);
+    }
+  } else {
+    // Direct JSON export (existing behavior)
+    const exportData = {
+      benchmark: {
+        id: benchmark.id,
+        name: benchmark.name,
+        testCaseCount: benchmark.testCaseIds.length,
+      },
+      runs: allResults.map((r) => ({
+        agent: { key: r.agent.key, name: r.agent.name },
+        runId: r.run?.id || r.runId,
+        status: r.run?.status,
+        passed: r.passed,
+        failed: r.failed,
+        passRate:
+          benchmark.testCaseIds.length > 0 ? (r.passed / benchmark.testCaseIds.length) * 100 : 0,
+        results: r.run?.results,
+        reports: r.reports,
+      })),
+      exportedAt: new Date().toISOString(),
+    };
+
+    writeFileSync(exportPath, JSON.stringify(exportData, null, 2));
+  }
+
   console.log(chalk.green(`\nResults exported to: ${exportPath}`));
 }
 
@@ -330,7 +367,8 @@ export function createBenchmarkCommand(): Command {
     )
     .option('-m, --model <id>', 'Model ID (uses agent default if not specified)')
     .option('-o, --output <format>', 'Output format: table, json', 'table')
-    .option('--export <path>', 'Export results to JSON file')
+    .option('--export <path>', 'Export results to file')
+    .option('--format <type>', 'Report format for --export: json (default), html, pdf', 'json')
     .option('-v, --verbose', 'Show detailed output')
     .option('--stop-server', 'Stop the server after benchmark completes (default: keep running)')
     .action(async (options: BenchmarkOptions & { name?: string }) => {
@@ -545,7 +583,7 @@ export function createBenchmarkCommand(): Command {
 
         // Export if requested
         if (options.export) {
-          exportResults(benchmark, allResults, options.export);
+          await exportResults(benchmark, allResults, options.export, options.format, serverResult.baseUrl);
         }
 
         // Show links to view results
