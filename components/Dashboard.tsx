@@ -165,7 +165,7 @@ export const Dashboard: React.FC = () => {
 
   // Filter state
   const [filters, setFilters] = useState<DashboardFilter>({});
-  const [timeRange, setTimeRange] = useState<TimeRange>('7d');
+  const [timeRange, setTimeRange] = useState<TimeRange>('all');
   const [selectedMetric, setSelectedMetric] = useState<TrendMetric>('passRate');
 
   useEffect(() => {
@@ -176,8 +176,12 @@ export const Dashboard: React.FC = () => {
         const allBenchmarks = await asyncExperimentStorage.getAll();
         setBenchmarks(allBenchmarks);
 
-        // Load all reports
-        const allReports = await asyncRunStorage.getAllReports({ sortBy: 'timestamp', order: 'desc' });
+        // Load recent reports (limited to prevent performance issues)
+        const allReports = await asyncRunStorage.getAllReports({
+          sortBy: 'timestamp',
+          order: 'desc',
+          limit: 30  // Limit to recent 30 to avoid overwhelming metrics API
+        });
         setReports(allReports);
 
         // Fetch metrics for all reports with runIds

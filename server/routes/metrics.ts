@@ -60,6 +60,25 @@ router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
 });
 
 /**
+ * Process array in batches to avoid overwhelming OpenSearch
+ */
+async function processBatches<T, R>(
+  items: T[],
+  batchSize: number,
+  processor: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = [];
+
+  for (let i = 0; i < items.length; i += batchSize) {
+    const batch = items.slice(i, i + batchSize);
+    const batchResults = await Promise.all(batch.map(processor));
+    results.push(...batchResults);
+  }
+
+  return results;
+}
+
+/**
  * POST /api/metrics/batch - Compute metrics for multiple runs
  */
 router.post('/api/metrics/batch', async (req: Request, res: Response) => {
@@ -90,14 +109,16 @@ router.post('/api/metrics/batch', async (req: Request, res: Response) => {
       indexPattern
     };
 
-    const results = await Promise.all(
-      runIds.map(runId =>
-        computeMetrics(runId, osConfig).catch(e => ({
-          runId,
-          error: e.message,
-          status: 'error'
-        }))
-      )
+    // Process metrics in batches of 10 to avoid overwhelming OpenSearch
+    const BATCH_SIZE = 10;
+    const results = await processBatches(
+      runIds,
+      BATCH_SIZE,
+      (runId) => computeMetrics(runId, osConfig).catch(e => ({
+        runId,
+        error: e.message,
+        status: 'error'
+      }))
     );
 
     // Also compute aggregate metrics (filter out errors with type guard)
