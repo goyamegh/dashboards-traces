@@ -17,7 +17,13 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { GitCompare, ArrowLeft } from 'lucide-react';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu';
+import { GitCompare, ArrowLeft, Download } from 'lucide-react';
 import { RunSummaryTable } from './RunSummaryTable';
 import { AggregateMetricsChart } from './AggregateMetricsChart';
 import { MetricsTimeSeriesChart } from './MetricsTimeSeriesChart';
@@ -37,6 +43,7 @@ import {
 } from '@/services/comparisonService';
 import { fetchBatchMetrics } from '@/services/metrics';
 import { Category, Benchmark, BenchmarkRun, EvaluationReport, RunAggregateMetrics, TestCaseComparisonRow, TraceMetrics } from '@/types';
+import { ENV_CONFIG } from '@/lib/config';
 
 type StatusFilter = 'all' | 'passed' | 'failed' | 'mixed';
 
@@ -271,6 +278,112 @@ export const ComparisonPage: React.FC = () => {
     }
   };
 
+  // Capture current page as a self-contained HTML string
+  const capturePageHtml = (): string => {
+    const content = document.querySelector('[data-testid="comparison-page"]');
+    if (!content) return '';
+
+    // Preserve the <html> element's classes (includes "dark" for theme)
+    const htmlClasses = document.documentElement.className;
+
+    // Collect all stylesheets into inline <style> blocks
+    const styles: string[] = [];
+    for (const sheet of Array.from(document.styleSheets)) {
+      try {
+        const rules = Array.from(sheet.cssRules).map((r) => r.cssText).join('\n');
+        styles.push(rules);
+      } catch {
+        // Skip cross-origin stylesheets
+        if (sheet.href) {
+          styles.push(`@import url("${sheet.href}");`);
+        }
+      }
+    }
+
+    // Clone content and remove interactive elements
+    const clone = content.cloneNode(true) as HTMLElement;
+    clone.querySelectorAll('[data-testid="back-button"]').forEach((el) => el.remove());
+    clone.querySelectorAll('[data-testid="download-report-menu"]').forEach((el) => el.remove());
+
+    const title = benchmark?.name || 'Benchmark Report';
+    return `<!DOCTYPE html>
+<html lang="en" class="${htmlClasses}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${title} - Report</title>
+  <style>${styles.join('\n')}</style>
+  <style>
+    body { margin: 0; padding: 2rem; }
+    @media print {
+      html { color-scheme: light; }
+      body { background: white; color: black; }
+    }
+  </style>
+</head>
+<body>
+  ${clone.outerHTML}
+  <footer style="margin-top:2rem;padding-top:1rem;border-top:1px solid #333;font-size:0.75rem;color:#888;">
+    Generated from AgentHealth on ${new Date().toLocaleString()}
+  </footer>
+</body>
+</html>`;
+  };
+
+  // Download report in specified format
+  const downloadReport = async (format: string) => {
+    if (!benchmarkId) return;
+    const safeName = (benchmark?.name || 'report').replace(/[^a-zA-Z0-9_-]/g, '_');
+
+    // HTML: capture the current page DOM directly
+    if (format === 'html') {
+      const html = capturePageHtml();
+      if (!html) return;
+      const blob = new Blob([html], { type: 'text/html' });
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `${safeName}_report.html`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+      return;
+    }
+
+    // JSON + PDF: fetch from server API
+    const params = new URLSearchParams({ format });
+    if (selectedRunIds.length < allRuns.length) {
+      params.set('runIds', selectedRunIds.join(','));
+    }
+    const url = `${ENV_CONFIG.backendUrl}/api/storage/benchmarks/${encodeURIComponent(benchmarkId)}/report?${params.toString()}`;
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({ error: response.statusText }));
+        alert(`Report download failed: ${errorBody.error || response.statusText}`);
+        return;
+      }
+
+      const contentDisposition = response.headers.get('content-disposition') || '';
+      const filenameMatch = contentDisposition.match(/filename="([^"]+)"/);
+      const filename = filenameMatch?.[1] || `${safeName}_report.${format}`;
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error('Report download failed:', error);
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="p-6 flex items-center justify-center h-full">
@@ -306,9 +419,24 @@ export const ComparisonPage: React.FC = () => {
             <p className="text-xs text-muted-foreground">{benchmark.name}</p>
           </div>
         </div>
-        <Badge variant="outline" className="text-xs">
-          {selectedRunIds.length} of {allRuns.length} runs selected
-        </Badge>
+        <div className="flex items-center gap-3">
+          <Badge variant="outline" className="text-xs">
+            {selectedRunIds.length} of {allRuns.length} runs selected
+          </Badge>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild data-testid="download-report-menu">
+              <Button variant="outline" size="sm" data-testid="download-report-button">
+                <Download size={16} className="mr-2" />
+                Download Report
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent>
+              <DropdownMenuItem onClick={() => downloadReport('json')}>JSON</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => downloadReport('html')}>HTML</DropdownMenuItem>
+              <DropdownMenuItem onClick={() => downloadReport('pdf')}>PDF</DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </div>
       </div>
 
       {/* Run Selector */}
