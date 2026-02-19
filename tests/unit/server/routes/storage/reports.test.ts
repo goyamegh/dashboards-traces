@@ -4,21 +4,29 @@
  */
 
 import { Request, Response } from 'express';
+import reportsRoutes from '@/server/routes/storage/reports';
 
-// Create mock storage module
-const mockStorage = {
-  isConfigured: jest.fn().mockReturnValue(true),
-  benchmarks: { getById: jest.fn() },
-  runs: { getById: jest.fn() },
+// Mock client methods
+const mockSearch = jest.fn();
+const mockGet = jest.fn();
+
+// Create mock client
+const mockClient = {
+  search: mockSearch,
+  get: mockGet,
 };
 
-// Mock the storage adapter
-jest.mock('@/server/adapters/index', () => ({
-  getStorageModule: jest.fn(() => mockStorage),
+// Mock the storageClient middleware
+jest.mock('@/server/middleware/storageClient', () => ({
+  isStorageAvailable: jest.fn(),
+  requireStorageClient: jest.fn(),
+  INDEXES: { benchmarks: 'experiments-index', runs: 'runs-index', testCases: 'test-cases-index' },
 }));
 
-import { getStorageModule } from '@/server/adapters/index';
-import reportsRoutes from '@/server/routes/storage/reports';
+import {
+  isStorageAvailable,
+  requireStorageClient,
+} from '@/server/middleware/storageClient';
 
 // Mock sample benchmarks
 jest.mock('@/cli/demo/sampleBenchmarks', () => ({
@@ -124,6 +132,8 @@ function createMocks(params: any = {}, query: any = {}) {
   const req = {
     params,
     query,
+    storageClient: mockClient,
+    storageConfig: { endpoint: 'https://localhost:9200' },
   } as unknown as Request;
   const res = {
     json: jest.fn().mockReturnThis(),
@@ -149,9 +159,8 @@ function getRouteHandler(router: any, method: string, path: string) {
 describe('Reports Storage Routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    mockStorage.isConfigured.mockReturnValue(true);
-    mockStorage.benchmarks.getById.mockResolvedValue(null);
-    mockStorage.runs.getById.mockResolvedValue(null);
+    (isStorageAvailable as jest.Mock).mockReturnValue(true);
+    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
   describe('GET /api/storage/benchmarks/:id/report', () => {
@@ -168,7 +177,7 @@ describe('Reports Storage Routes', () => {
     });
 
     it('should return 404 for non-existent benchmark', async () => {
-      mockStorage.benchmarks.getById.mockResolvedValue(null);
+      (isStorageAvailable as jest.Mock).mockReturnValue(false);
       const { req, res } = createMocks({ id: 'non-existent' }, { format: 'json' });
       await handler(req, res);
 
@@ -229,37 +238,54 @@ describe('Reports Storage Routes', () => {
       expect(res.send).toHaveBeenCalled();
     });
 
-    it('should fetch benchmark from storage when not sample', async () => {
-      mockStorage.benchmarks.getById.mockResolvedValue({
-        id: 'real-bench-1',
-        name: 'Real Benchmark',
-        testCaseIds: ['tc-1'],
-        runs: [
-          {
-            id: 'real-run-1',
-            name: 'Real Run',
-            agentKey: 'agent',
-            modelId: 'model',
-            status: 'completed',
-            results: { 'tc-1': { reportId: 'real-report-1', status: 'completed' } },
-            createdAt: '2024-02-01T00:00:00Z',
+    it('should fetch benchmark from OpenSearch when not sample', async () => {
+      mockGet.mockResolvedValue({
+        body: {
+          found: true,
+          _source: {
+            id: 'real-bench-1',
+            name: 'Real Benchmark',
+            testCaseIds: ['tc-1'],
+            runs: [
+              {
+                id: 'real-run-1',
+                name: 'Real Run',
+                agentKey: 'agent',
+                modelId: 'model',
+                status: 'completed',
+                results: { 'tc-1': { reportId: 'real-report-1', status: 'completed' } },
+                createdAt: '2024-02-01T00:00:00Z',
+              },
+            ],
+            createdAt: '2024-01-01T00:00:00Z',
           },
-        ],
-        createdAt: '2024-01-01T00:00:00Z',
+        },
       });
 
-      mockStorage.runs.getById.mockResolvedValue({
-        id: 'real-report-1',
-        testCaseId: 'tc-1',
-        status: 'completed',
-        passFailStatus: 'passed',
-        metrics: { accuracy: 80 },
+      mockSearch.mockResolvedValue({
+        body: {
+          hits: {
+            hits: [
+              {
+                _source: {
+                  id: 'real-report-1',
+                  testCaseId: 'tc-1',
+                  status: 'completed',
+                  passFailStatus: 'passed',
+                  metrics: { accuracy: 80 },
+                },
+              },
+            ],
+          },
+        },
       });
 
       const { req, res } = createMocks({ id: 'real-bench-1' }, { format: 'json' });
       await handler(req, res);
 
-      expect(mockStorage.benchmarks.getById).toHaveBeenCalledWith('real-bench-1');
+      expect(mockGet).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'real-bench-1' })
+      );
       expect(res.send).toHaveBeenCalled();
     });
 
@@ -284,8 +310,11 @@ describe('Reports Storage Routes', () => {
       );
     });
 
-    it('should handle storage error gracefully and return 404', async () => {
-      mockStorage.benchmarks.getById.mockRejectedValue(new Error('Connection refused'));
+    it('should handle 404 from OpenSearch gracefully', async () => {
+      mockGet.mockRejectedValue({
+        meta: { statusCode: 404 },
+        message: 'Not found',
+      });
 
       const { req, res } = createMocks({ id: 'missing-bench' }, { format: 'json' });
       await handler(req, res);

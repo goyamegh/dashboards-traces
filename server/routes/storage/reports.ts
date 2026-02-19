@@ -6,8 +6,6 @@
 /**
  * Reports Routes - Generate downloadable reports for benchmark runs
  *
- * Storage-backend agnostic: uses IStorageModule adapter (file or OpenSearch).
- *
  * GET /api/storage/benchmarks/:id/report
  *   Query params:
  *     format  - 'json' | 'html' | 'pdf' (default: 'json')
@@ -15,7 +13,7 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { getStorageModule } from '../../adapters/index.js';
+import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middleware/storageClient.js';
 import { SAMPLE_BENCHMARKS } from '../../../cli/demo/sampleBenchmarks.js';
 import { SAMPLE_RUNS } from '../../../cli/demo/sampleRuns.js';
 import { reportFormatterRegistry, collectReportData } from '../../../services/report/server.js';
@@ -56,22 +54,27 @@ function validateReportParams(format: string): string | null {
 }
 
 /**
- * Fetch a benchmark by ID from sample data or storage
+ * Fetch a benchmark by ID from sample data or OpenSearch
  */
-async function fetchBenchmark(id: string): Promise<Benchmark | null> {
+async function fetchBenchmark(id: string, req: Request): Promise<Benchmark | null> {
   // Check sample data first
   if (id.startsWith('demo-')) {
     const sample = SAMPLE_BENCHMARKS.find((bench) => bench.id === id);
     if (sample) return normalizeBenchmark(sample);
   }
 
-  // Fetch from storage
-  const storage = getStorageModule();
-  try {
-    const benchmark = await storage.benchmarks.getById(id);
-    if (benchmark) return normalizeBenchmark(benchmark);
-  } catch {
-    // Fall through to null
+  // Fetch from OpenSearch
+  if (isStorageAvailable(req)) {
+    try {
+      const client = requireStorageClient(req);
+      const result = await client.get({ index: INDEXES.benchmarks, id });
+      if (result.body.found) {
+        return normalizeBenchmark(result.body._source);
+      }
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return null;
+      throw error;
+    }
   }
 
   return null;
@@ -80,7 +83,10 @@ async function fetchBenchmark(id: string): Promise<Benchmark | null> {
 /**
  * Fetch reports for given report IDs
  */
-async function fetchReports(reportIds: string[]): Promise<Record<string, EvaluationReport>> {
+async function fetchReports(
+  reportIds: string[],
+  req: Request
+): Promise<Record<string, EvaluationReport>> {
   const reports: Record<string, EvaluationReport> = {};
   if (reportIds.length === 0) return reports;
 
@@ -90,21 +96,28 @@ async function fetchReports(reportIds: string[]): Promise<Record<string, Evaluat
     reports[r.id] = r as EvaluationReport;
   }
 
-  // Fetch remaining from storage
+  // Fetch remaining from OpenSearch
   const resolvedIds = new Set(Object.keys(reports));
   const unresolvedIds = reportIds.filter((id) => !resolvedIds.has(id));
 
-  if (unresolvedIds.length > 0) {
-    const storage = getStorageModule();
-    for (const id of unresolvedIds) {
-      try {
-        const report = await storage.runs.getById(id);
-        if (report) {
-          reports[report.id] = report as EvaluationReport;
-        }
-      } catch {
-        // Skip failed fetches
+  if (unresolvedIds.length > 0 && isStorageAvailable(req)) {
+    try {
+      const client = requireStorageClient(req);
+      const result = await client.search({
+        index: INDEXES.runs,
+        body: {
+          size: unresolvedIds.length,
+          query: { terms: { id: unresolvedIds } },
+        },
+      });
+
+      const hits = result.body.hits?.hits || [];
+      for (const hit of hits) {
+        const report = hit._source as EvaluationReport;
+        reports[report.id] = report;
       }
+    } catch (error: any) {
+      console.warn('[ReportsAPI] Failed to fetch reports:', error.message);
     }
   }
 
@@ -125,7 +138,7 @@ router.get('/api/storage/benchmarks/:id/report', async (req: Request, res: Respo
     }
 
     // Fetch benchmark
-    const benchmark = await fetchBenchmark(id);
+    const benchmark = await fetchBenchmark(id, req);
     if (!benchmark) {
       return res.status(404).json({ error: 'Benchmark not found' });
     }
@@ -151,7 +164,7 @@ router.get('/api/storage/benchmarks/:id/report', async (req: Request, res: Respo
     }
 
     // Fetch reports
-    const reports = await fetchReports(reportIds);
+    const reports = await fetchReports(reportIds, req);
 
     // Assemble report data
     const reportData = collectReportData(benchmark, selectedRuns, reports, undefined, 'api');
