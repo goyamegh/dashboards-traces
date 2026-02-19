@@ -89,6 +89,8 @@ npx @opensearch-project/agent-health init           # Initialize config files
 
 > **Full documentation:** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture patterns, including the server-mediated CLI design and Playwright-style server lifecycle.
 
+> **Performance optimization:** See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for detailed performance optimizations in the Benchmark Runs Overview page, including lightweight polling, field projection, pagination, and adaptive intervals.
+
 ### Key Architecture Principle
 
 **All clients (CLI, UI) access OpenSearch through the server HTTP API.** Never bypass the server to access OpenSearch directly from CLI commands. This ensures consistent behavior and single source of truth. See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for details.

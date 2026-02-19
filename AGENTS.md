@@ -49,6 +49,9 @@ Copy `.env.example` to `.env`. Key variables:
 
 ## Architecture
 
+> **Full documentation:** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture patterns.
+> **Performance optimization:** See [docs/PERFORMANCE.md](docs/PERFORMANCE.md) for performance optimizations in the Benchmark Runs Overview page.
+
 ### Two-Server Architecture
 
 - **Frontend (Vite + React)**: Port 4000 (development) - UI for running evaluations

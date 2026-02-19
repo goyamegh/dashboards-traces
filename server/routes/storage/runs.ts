@@ -240,9 +240,15 @@ router.patch('/api/storage/runs/:id', async (req: Request, res: Response) => {
     // If this is a trace-mode completion, fetch the report to get experimentId
     let experimentId: string | undefined;
     if (isMetricsStatusUpdate) {
+      debug('StorageAPI', `[StatsUpdate] Detected metricsStatus update to '${updates.metricsStatus}' for report ${id}`);
       try {
         const report = await getRunByIdWithClient(client, id);
         experimentId = report?.experimentId;
+        if (experimentId) {
+          debug('StorageAPI', `[StatsUpdate] Report ${id} belongs to benchmark ${experimentId}`);
+        } else {
+          debug('StorageAPI', `[StatsUpdate] Report ${id} has no experimentId, skipping stats refresh`);
+        }
       } catch (err) {
         console.warn(`[StorageAPI] Failed to fetch report for benchmark stats update:`, err);
       }
@@ -253,9 +259,12 @@ router.patch('/api/storage/runs/:id', async (req: Request, res: Response) => {
 
     // Update parent benchmark run stats if this was a trace-mode completion
     if (isMetricsStatusUpdate && experimentId) {
+      debug('StorageAPI', `[StatsUpdate] Triggering stats refresh for benchmark ${experimentId} after report ${id} completion`);
       // Fire-and-forget - don't block the response
       updateBenchmarkRunStatsForReport(client, experimentId, id).catch(err => {
         console.warn(`[StorageAPI] Failed to update benchmark stats after report update:`, err);
+      }).then(() => {
+        debug('StorageAPI', `[StatsUpdate] Successfully refreshed stats for benchmark ${experimentId}`);
       });
     }
 
