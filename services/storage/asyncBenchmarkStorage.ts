@@ -430,7 +430,7 @@ class AsyncBenchmarkStorage {
         return null;
       }
 
-      return await response.json();
+      return response.json();
     } catch (error) {
       console.error('[asyncBenchmarkStorage] refreshAllStats failed:', error);
       return null;

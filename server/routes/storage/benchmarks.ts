@@ -13,7 +13,6 @@
 import { Router, Request, Response } from 'express';
 import { debug } from '@/lib/debug';
 import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middleware/storageClient.js';
-import { getStorageModule } from '../../adapters/index.js';
 import { SAMPLE_BENCHMARKS, isSampleBenchmarkId } from '../../../cli/demo/sampleBenchmarks.js';
 import { SAMPLE_TEST_CASES } from '../../../cli/demo/sampleTestCases.js';
 import { Benchmark, BenchmarkRun, BenchmarkProgress, RunConfigInput, TestCase, BenchmarkVersion, TestCaseSnapshot, StorageMetadata, RunStats, EvaluationReport } from '../../../types/index.js';
@@ -71,6 +70,7 @@ const INDEX = INDEXES.benchmarks;
  * Persists updated stats back to OpenSearch (fire-and-forget).
  */
 async function backfillRunStats(
+  client: any,
   benchmarkId: string,
   runs: BenchmarkRun[]
 ): Promise<void> {
@@ -99,22 +99,36 @@ async function backfillRunStats(
 
   debug('StorageAPI', `[Backfill] Backfilling stats for ${runsNeedingStats.length} runs in benchmark ${benchmarkId}`);
 
-  const storage = getStorageModule();
   await Promise.all(runsNeedingStats.map(async (run) => {
     try {
-      const stats = await computeStatsForRun(run);
+      const stats = await computeStatsForRun(client, run);
       run.stats = stats;
 
       debug('StorageAPI', `[Backfill] Computed stats for run ${run.id}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
 
-      // Persist via adapter (fire-and-forget)
-      storage.benchmarks.updateRun(benchmarkId, run.id, { stats } as any)
-        .catch((e: any) => {
-          console.warn('[StorageAPI] Failed to persist backfilled stats for run', run.id, ':', e.message);
-        })
-        .then(() => {
-          debug('StorageAPI', `[Backfill] Successfully persisted stats for run ${run.id}`);
-        });
+      // Persist back to OpenSearch (fire-and-forget)
+      client.update({
+        index: INDEX,
+        id: benchmarkId,
+        retry_on_conflict: 3,
+        body: {
+          script: {
+            source: `
+              for (int i = 0; i < ctx._source.runs.size(); i++) {
+                if (ctx._source.runs[i].id == params.runId) {
+                  ctx._source.runs[i].stats = params.stats;
+                  break;
+                }
+              }
+            `,
+            params: { runId: run.id, stats },
+          },
+        },
+      }).catch((e: any) => {
+        console.warn('[StorageAPI] Failed to persist backfilled stats for run', run.id, ':', e.message);
+      }).then(() => {
+        debug('StorageAPI', `[Backfill] Successfully persisted stats for run ${run.id}`);
+      });
     } catch (e: any) {
       console.warn('[StorageAPI] Failed to compute stats for run:', run.id, e.message);
     }
@@ -122,13 +136,11 @@ async function backfillRunStats(
 }
 
 /**
- * Compute stats for a benchmark run by fetching its reports.
- * Accepts an optional raw OpenSearch client for use during execution (Painless script paths).
- * Falls back to storage adapter when no client provided.
+ * Compute stats for a benchmark run by fetching its reports
  */
 async function computeStatsForRun(
-  run: BenchmarkRun,
-  client?: any
+  client: any,
+  run: BenchmarkRun
 ): Promise<RunStats> {
   // Collect report IDs from run results
   const reportIds = Object.values(run.results || {})
@@ -143,31 +155,21 @@ async function computeStatsForRun(
   // Fetch reports to get passFailStatus
   if (reportIds.length > 0) {
     try {
-      const reportsMap = new Map<string, any>();
-
-      if (client) {
-        // Use raw client during execution (OpenSearch path)
-        const reportsResult = await client.search({
-          index: INDEXES.runs,
-          body: {
-            size: reportIds.length,
-            query: { terms: { 'id': reportIds } },
-            _source: ['id', 'passFailStatus', 'metricsStatus', 'status'],
+      const reportsResult = await client.search({
+        index: INDEXES.runs,
+        body: {
+          size: reportIds.length,
+          query: {
+            terms: { 'id': reportIds },
           },
-        });
-        (reportsResult.body.hits?.hits || []).forEach((hit: any) => {
-          reportsMap.set(hit._source.id, hit._source);
-        });
-      } else {
-        // Use storage adapter
-        const storage = getStorageModule();
-        for (const reportId of reportIds) {
-          try {
-            const report = await storage.runs.getById(reportId);
-            if (report) reportsMap.set(report.id, report);
-          } catch { /* skip */ }
-        }
-      }
+          _source: ['id', 'passFailStatus', 'metricsStatus', 'status'],
+        },
+      });
+
+      const reportsMap = new Map<string, any>();
+      (reportsResult.body.hits?.hits || []).forEach((hit: any) => {
+        reportsMap.set(hit._source.id, hit._source);
+      });
 
       // Count stats based on result status and report passFailStatus
       Object.values(run.results || {}).forEach((result) => {
@@ -209,6 +211,7 @@ async function computeStatsForRun(
       // Fall back to counting by result status only
       Object.values(run.results || {}).forEach((result) => {
         if (result.status === 'completed') {
+          // Can't determine pass/fail without reports, count as pending
           pending++;
         } else if (result.status === 'failed' || result.status === 'cancelled') {
           failed++;
@@ -303,21 +306,27 @@ function validateRunConfig(config: any): string | null {
 /**
  * Get all test cases (sample + real) for lookups
  */
-async function getAllTestCases(): Promise<TestCase[]> {
+async function getAllTestCases(req: Request): Promise<TestCase[]> {
   const sampleTestCases = SAMPLE_TEST_CASES.map(s => ({
     id: s.id,
     name: s.name,
   })) as TestCase[];
 
-  const storage = getStorageModule();
-  if (!storage.isConfigured()) {
+  if (!isStorageAvailable(req)) {
     return sampleTestCases;
   }
 
   try {
-    const result = await storage.testCases.getAll({ size: 10000 });
-    // Only need id and name for lookups
-    const realTestCases = result.items.map(tc => ({ id: tc.id, name: tc.name })) as TestCase[];
+    const client = requireStorageClient(req);
+    const result = await client.search({
+      index: INDEXES.testCases,
+      body: {
+        size: 10000,
+        _source: ['id', 'name'],
+        query: { match_all: {} },
+      },
+    });
+    const realTestCases = result.body.hits?.hits?.map((hit: any) => hit._source) || [];
     return [...sampleTestCases, ...realTestCases];
   } catch {
     return sampleTestCases;
@@ -330,18 +339,25 @@ router.get('/api/storage/benchmarks', async (req: Request, res: Response) => {
     let realData: Benchmark[] = [];
     const warnings: string[] = [];
     let storageReachable = false;
-    const storage = getStorageModule();
-    const storageConfigured = storage.isConfigured();
+    const storageConfigured = isStorageAvailable(req);
 
-    // Fetch from storage backend
+    // Fetch from OpenSearch if configured
     if (storageConfigured) {
       try {
-        const result = await storage.benchmarks.getAll({ size: 1000 });
-        realData = result.items.map(normalizeBenchmark);
+        const client = requireStorageClient(req);
+        const result = await client.search({
+          index: INDEX,
+          body: {
+            size: 1000,
+            sort: [{ updatedAt: { order: 'desc' } }],
+            query: { match_all: {} },
+          },
+        });
+        realData = result.body.hits?.hits?.map((hit: any) => normalizeBenchmark(hit._source)) || [];
         storageReachable = true;
       } catch (e: any) {
-        console.warn('[StorageAPI] Storage unavailable, returning sample data only:', e.message);
-        warnings.push(`Storage unavailable: ${e.message}`);
+        console.warn('[StorageAPI] OpenSearch unavailable, returning sample data only:', e.message);
+        warnings.push(`OpenSearch unavailable: ${e.message}`);
       }
     }
 
@@ -429,18 +445,29 @@ router.get('/api/storage/benchmarks/:id', async (req: Request, res: Response) =>
       return res.status(404).json({ error: 'Benchmark not found' });
     }
 
-    // Fetch from storage backend
-    const storage = getStorageModule();
-    const rawBenchmark = await storage.benchmarks.getById(id);
-
-    if (!rawBenchmark) {
+    // Fetch from OpenSearch
+    if (!isStorageAvailable(req)) {
       return res.status(404).json({ error: 'Benchmark not found' });
     }
 
-    const normalized = normalizeBenchmark(rawBenchmark);
+    const client = requireStorageClient(req);
+
+    // Use _source_excludes in polling mode to reduce payload
+    const getOptions: any = { index: INDEX, id };
+    if (isPolling) {
+      getOptions._source_excludes = 'versions,runs.testCaseSnapshots,runs.headers';
+    }
+
+    const result = await client.get(getOptions);
+
+    if (!result.body.found) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
+
+    const normalized = normalizeBenchmark(result.body._source);
 
     // Lazy backfill: compute stats for completed runs missing them
-    await backfillRunStats(id, normalized.runs);
+    await backfillRunStats(client, id, normalized.runs);
 
     // Paginate runs
     if (runsSize !== null) {
@@ -477,11 +504,18 @@ router.get('/api/storage/benchmarks/:id/export', async (req: Request, res: Respo
       if (sample) {
         benchmark = normalizeBenchmark(sample);
       }
-    } else {
-      const storage = getStorageModule();
-      const rawBenchmark = await storage.benchmarks.getById(id);
-      if (rawBenchmark) {
-        benchmark = normalizeBenchmark(rawBenchmark);
+    } else if (isStorageAvailable(req)) {
+      try {
+        const client = requireStorageClient(req);
+        const result = await client.get({ index: INDEX, id });
+        if (result.body.found) {
+          benchmark = normalizeBenchmark(result.body._source);
+        }
+      } catch (error: any) {
+        if (error.meta?.statusCode === 404) {
+          return res.status(404).json({ error: 'Benchmark not found' });
+        }
+        throw error;
       }
     }
 
@@ -499,19 +533,48 @@ router.get('/api/storage/benchmarks/:id/export', async (req: Request, res: Respo
     ) as unknown as TestCase[];
     fullTestCases.push(...sampleTestCases);
 
-    // Fetch remaining from storage
+    // Fetch remaining from OpenSearch
     const resolvedIds = new Set(fullTestCases.map(tc => tc.id));
-    const unresolvedIds = testCaseIds.filter(tcId => !resolvedIds.has(tcId));
+    const unresolvedIds = testCaseIds.filter(id => !resolvedIds.has(id));
 
-    if (unresolvedIds.length > 0) {
-      const storage = getStorageModule();
-      for (const tcId of unresolvedIds) {
-        try {
-          const tc = await storage.testCases.getById(tcId);
-          if (tc) fullTestCases.push(tc);
-        } catch (e: any) {
-          console.warn('[StorageAPI] Failed to fetch test case for export:', e.message);
+    if (unresolvedIds.length > 0 && isStorageAvailable(req)) {
+      try {
+        const client = requireStorageClient(req);
+
+        // Use aggregation to get latest version of each test case (same pattern as testCases route)
+        // Docs are stored as {id}-v{version}, so we aggregate by id and take the top hit per id
+        const result = await client.search({
+          index: INDEXES.testCases,
+          body: {
+            size: 0,
+            aggs: {
+              by_id: {
+                terms: { field: 'id', size: unresolvedIds.length },
+                aggs: {
+                  latest: {
+                    top_hits: {
+                      size: 1,
+                      sort: [{ version: { order: 'desc' } }],
+                    },
+                  },
+                },
+              },
+            },
+            query: {
+              terms: { id: unresolvedIds },
+            },
+          },
+        });
+
+        const buckets = (result.body.aggregations?.by_id as any)?.buckets || [];
+        for (const bucket of buckets) {
+          const tc = bucket.latest.hits.hits[0]?._source as TestCase;
+          if (tc) {
+            fullTestCases.push(tc);
+          }
         }
+      } catch (e: any) {
+        console.warn('[StorageAPI] Failed to fetch test cases for export:', e.message);
       }
     }
 
@@ -538,7 +601,17 @@ router.post('/api/storage/benchmarks', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Cannot create benchmark with demo- prefix (reserved for sample data)' });
     }
 
+    // Require OpenSearch for writes
+    if (!isStorageAvailable(req)) {
+      return res.status(400).json({ error: 'OpenSearch not configured. Cannot create benchmarks in sample-only mode.' });
+    }
+
+    const client = requireStorageClient(req);
     const now = new Date().toISOString();
+
+    if (!benchmark.id) benchmark.id = generateId('bench');
+    benchmark.createdAt = now;
+    benchmark.updatedAt = now;
 
     // Initialize versioning - start at version 1
     benchmark.currentVersion = 1;
@@ -556,11 +629,10 @@ router.post('/api/storage/benchmarks', async (req: Request, res: Response) => {
       testCaseSnapshots: [],
     }));
 
-    const storage = getStorageModule();
-    const created = await storage.benchmarks.create(benchmark);
+    await client.index({ index: INDEX, id: benchmark.id, body: benchmark, refresh: true });
 
-    debug('StorageAPI', `Created benchmark: ${created.id} (v1)`);
-    res.status(201).json(created);
+    debug('StorageAPI', `Created benchmark: ${benchmark.id} (v1)`);
+    res.status(201).json(benchmark);
   } catch (error: any) {
     console.error('[StorageAPI] Create benchmark failed:', error.message);
     res.status(500).json({ error: error.message });
@@ -588,15 +660,20 @@ router.put('/api/storage/benchmarks/:id', async (req: Request, res: Response) =>
       return res.status(400).json({ error: 'Cannot modify sample data. Sample benchmarks are read-only.' });
     }
 
-    const storage = getStorageModule();
+    // Require OpenSearch for writes
+    if (!isStorageAvailable(req)) {
+      return res.status(400).json({ error: 'OpenSearch not configured. Cannot update benchmarks in sample-only mode.' });
+    }
+
+    const client = requireStorageClient(req);
 
     // Get existing benchmark
-    const rawExisting = await storage.benchmarks.getById(id);
-    if (!rawExisting) {
+    const getResult = await client.get({ index: INDEX, id });
+    if (!getResult.body.found) {
       return res.status(404).json({ error: 'Benchmark not found' });
     }
 
-    const existing = normalizeBenchmark(rawExisting);
+    const existing = normalizeBenchmark(getResult.body._source);
     const now = new Date().toISOString();
 
     // Check if test cases changed (triggers new version)
@@ -648,8 +725,8 @@ router.put('/api/storage/benchmarks/:id', async (req: Request, res: Response) =>
       }));
     }
 
-    const saved = await storage.benchmarks.update(id, updated);
-    res.json(saved);
+    await client.index({ index: INDEX, id, body: updated, refresh: true });
+    res.json(updated);
   } catch (error: any) {
     if (error.meta?.statusCode === 404) {
       return res.status(404).json({ error: 'Benchmark not found' });
@@ -674,22 +751,30 @@ router.patch('/api/storage/benchmarks/:id/metadata', async (req: Request, res: R
       return res.status(400).json({ error: 'Provide name and/or description to update' });
     }
 
-    const storage = getStorageModule();
+    // Require OpenSearch for writes
+    if (!isStorageAvailable(req)) {
+      return res.status(400).json({ error: 'OpenSearch not configured. Cannot update benchmarks in sample-only mode.' });
+    }
+
+    const client = requireStorageClient(req);
 
     // Get existing benchmark
-    const rawExisting = await storage.benchmarks.getById(id);
-    if (!rawExisting) {
+    const getResult = await client.get({ index: INDEX, id });
+    if (!getResult.body.found) {
       return res.status(404).json({ error: 'Benchmark not found' });
     }
 
-    const existing = normalizeBenchmark(rawExisting);
+    const existing = normalizeBenchmark(getResult.body._source);
     const now = new Date().toISOString();
 
-    const updates: Partial<Benchmark> = { updatedAt: now };
-    if (name !== undefined) updates.name = name;
-    if (description !== undefined) updates.description = description;
+    const updated = {
+      ...existing,
+      name: name ?? existing.name,
+      description: description ?? existing.description,
+      updatedAt: now,
+    };
 
-    const updated = await storage.benchmarks.update(id, updates);
+    await client.index({ index: INDEX, id, body: updated, refresh: true });
 
     debug('StorageAPI', `Updated benchmark metadata: ${id} (v${existing.currentVersion})`);
     res.json(updated);
@@ -717,15 +802,19 @@ router.get('/api/storage/benchmarks/:id/versions', async (req: Request, res: Res
       return res.status(404).json({ error: 'Benchmark not found' });
     }
 
-    // Fetch from storage backend
-    const storage = getStorageModule();
-    const rawBenchmark = await storage.benchmarks.getById(id);
-
-    if (!rawBenchmark) {
+    // Fetch from OpenSearch
+    if (!isStorageAvailable(req)) {
       return res.status(404).json({ error: 'Benchmark not found' });
     }
 
-    const benchmark = normalizeBenchmark(rawBenchmark);
+    const client = requireStorageClient(req);
+    const result = await client.get({ index: INDEX, id });
+
+    if (!result.body.found) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
+
+    const benchmark = normalizeBenchmark(result.body._source);
     res.json({ versions: benchmark.versions, total: benchmark.versions.length });
   } catch (error: any) {
     if (error.meta?.statusCode === 404) {
@@ -760,15 +849,19 @@ router.get('/api/storage/benchmarks/:id/versions/:version', async (req: Request,
       return res.status(404).json({ error: 'Benchmark not found' });
     }
 
-    // Fetch from storage backend
-    const storage = getStorageModule();
-    const rawBenchmark = await storage.benchmarks.getById(id);
-
-    if (!rawBenchmark) {
+    // Fetch from OpenSearch
+    if (!isStorageAvailable(req)) {
       return res.status(404).json({ error: 'Benchmark not found' });
     }
 
-    const benchmark = normalizeBenchmark(rawBenchmark);
+    const client = requireStorageClient(req);
+    const result = await client.get({ index: INDEX, id });
+
+    if (!result.body.found) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
+
+    const benchmark = normalizeBenchmark(result.body._source);
     const versionEntry = benchmark.versions.find(v => v.version === targetVersion);
 
     if (!versionEntry) {
@@ -795,8 +888,13 @@ router.delete('/api/storage/benchmarks/:id', async (req: Request, res: Response)
       return res.status(400).json({ error: 'Cannot delete sample data. Sample benchmarks are read-only.' });
     }
 
-    const storage = getStorageModule();
-    await storage.benchmarks.delete(id);
+    // Require OpenSearch for writes
+    if (!isStorageAvailable(req)) {
+      return res.status(400).json({ error: 'OpenSearch not configured. Cannot delete benchmarks in sample-only mode.' });
+    }
+
+    const client = requireStorageClient(req);
+    await client.delete({ index: INDEX, id, refresh: true });
 
     debug('StorageAPI', `Deleted benchmark: ${id}`);
     res.json({ deleted: true });
@@ -823,8 +921,16 @@ router.post('/api/storage/benchmarks/bulk', async (req: Request, res: Response) 
       return res.status(400).json({ error: 'Cannot create benchmarks with demo- prefix (reserved for sample data)' });
     }
 
+    // Require OpenSearch for writes
+    if (!isStorageAvailable(req)) {
+      return res.status(400).json({ error: 'OpenSearch not configured. Cannot create benchmarks in sample-only mode.' });
+    }
+
+    const client = requireStorageClient(req);
     const now = new Date().toISOString();
-    const prepared = benchmarks.map(bench => {
+    const operations: any[] = [];
+
+    for (const bench of benchmarks) {
       if (!bench.id) bench.id = generateId('bench');
       bench.createdAt = bench.createdAt || now;
       bench.updatedAt = bench.updatedAt || now;
@@ -839,14 +945,15 @@ router.post('/api/storage/benchmarks/bulk', async (req: Request, res: Response) 
           testCaseIds: bench.testCaseIds || [],
         }];
       }
-      return bench;
-    });
 
-    const storage = getStorageModule();
-    const result = await storage.benchmarks.bulkCreate(prepared);
+      operations.push({ index: { _index: INDEX, _id: bench.id } });
+      operations.push(bench);
+    }
 
-    debug('StorageAPI', `Bulk created ${result.created} benchmarks`);
-    res.json(result);
+    const result = await client.bulk({ body: operations, refresh: true });
+
+    debug('StorageAPI', `Bulk created ${benchmarks.length} benchmarks`);
+    res.json({ created: benchmarks.length, errors: result.body.errors });
   } catch (error: any) {
     console.error('[StorageAPI] Bulk create benchmarks failed:', error.message);
     res.status(500).json({ error: error.message });
@@ -895,7 +1002,7 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
 
     // Fetch test cases for progress display and version snapshots
     debug('StorageAPI', 'Fetching test cases...');
-    const allTestCases = await getAllTestCases();
+    const allTestCases = await getAllTestCases(req);
     debug('StorageAPI', 'Found', allTestCases.length, 'test cases');
     const testCaseMap = new Map(allTestCases.map((tc: any) => [tc.id, tc]));
 
@@ -1002,7 +1109,7 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
 
       // Compute final stats from reports
       debug('StorageAPI', '[StatsUpdate] Computing final stats for completed run:', run.id);
-      const stats = await computeStatsForRun(completedRun, client);
+      const stats = await computeStatsForRun(client, completedRun);
       debug('StorageAPI', `[StatsUpdate] Final stats for run ${run.id}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
 
       const finalRun = {
@@ -1085,7 +1192,7 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
   }
 });
 
-// DELETE /api/storage/benchmarks/:id/runs/:runId - Delete a specific run
+// DELETE /api/storage/benchmarks/:id/runs/:runId - Delete a specific run (atomic)
 router.delete('/api/storage/benchmarks/:id/runs/:runId', async (req: Request, res: Response) => {
   const { id, runId } = req.params;
 
@@ -1094,11 +1201,42 @@ router.delete('/api/storage/benchmarks/:id/runs/:runId', async (req: Request, re
     return res.status(400).json({ error: 'Cannot modify sample data. Sample benchmarks are read-only.' });
   }
 
-  try {
-    const storage = getStorageModule();
-    const deleted = await storage.benchmarks.deleteRun(id, runId);
+  if (!isStorageAvailable(req)) {
+    return res.status(400).json({ error: 'OpenSearch not configured' });
+  }
 
-    if (!deleted) {
+  const client = requireStorageClient(req);
+
+  try {
+    // Use Painless script to atomically remove only the specific run
+    // This avoids the read-modify-write pattern that could corrupt other runs
+    const result = await client.update({
+      index: INDEX,
+      id,
+      body: {
+        script: {
+          source: `
+            def runIndex = -1;
+            for (int i = 0; i < ctx._source.runs.size(); i++) {
+              if (ctx._source.runs[i].id == params.runId) {
+                runIndex = i;
+                break;
+              }
+            }
+            if (runIndex >= 0) {
+              ctx._source.runs.remove(runIndex);
+            } else {
+              ctx.op = 'noop';
+            }
+          `,
+          params: { runId },
+        },
+      },
+      refresh: true,
+    });
+
+    // Check if the script found and removed the run
+    if (result.body.result === 'noop') {
       return res.status(404).json({ error: 'Run not found' });
     }
 
@@ -1128,11 +1266,40 @@ router.patch('/api/storage/benchmarks/:id/runs/:runId/stats', async (req: Reques
     return res.status(400).json({ error: 'Cannot modify sample data. Sample benchmarks are read-only.' });
   }
 
-  try {
-    const storage = getStorageModule();
-    const updated = await storage.benchmarks.updateRun(id, runId, { stats } as any);
+  if (!isStorageAvailable(req)) {
+    return res.status(400).json({ error: 'OpenSearch not configured' });
+  }
 
-    if (!updated) {
+  const client = requireStorageClient(req);
+
+  try {
+    // Use Painless script to atomically update only the stats field of the run
+    const result = await client.update({
+      index: INDEX,
+      id,
+      body: {
+        script: {
+          source: `
+            def runIndex = -1;
+            for (int i = 0; i < ctx._source.runs.size(); i++) {
+              if (ctx._source.runs[i].id == params.runId) {
+                runIndex = i;
+                break;
+              }
+            }
+            if (runIndex >= 0) {
+              ctx._source.runs[runIndex].stats = params.stats;
+            } else {
+              ctx.op = 'noop';
+            }
+          `,
+          params: { runId, stats },
+        },
+      },
+      refresh: true,
+    });
+
+    if (result.body.result === 'noop') {
       return res.status(404).json({ error: 'Run not found' });
     }
 
@@ -1203,15 +1370,20 @@ router.post('/api/storage/benchmarks/:id/refresh-all-stats', async (req: Request
     return res.status(400).json({ error: 'Cannot refresh stats for sample data. Sample benchmarks are read-only.' });
   }
 
-  try {
-    const storage = getStorageModule();
-    const rawBenchmark = await storage.benchmarks.getById(id);
+  if (!isStorageAvailable(req)) {
+    return res.status(400).json({ error: 'OpenSearch not configured' });
+  }
 
-    if (!rawBenchmark) {
+  const client = requireStorageClient(req);
+
+  try {
+    // Fetch benchmark
+    const result = await client.get({ index: INDEX, id });
+    if (!result.body.found) {
       return res.status(404).json({ error: 'Benchmark not found' });
     }
 
-    const benchmark = normalizeBenchmark(rawBenchmark);
+    const benchmark = normalizeBenchmark(result.body._source);
     const runs = benchmark.runs || [];
 
     debug('StorageAPI', `[RefreshStats] Manually refreshing stats for ${runs.length} runs in benchmark ${id}`);
@@ -1219,13 +1391,30 @@ router.post('/api/storage/benchmarks/:id/refresh-all-stats', async (req: Request
     // Recompute stats for ALL runs (not just those missing stats)
     await Promise.all(runs.map(async (run) => {
       try {
-        const stats = await computeStatsForRun(run);
+        const stats = await computeStatsForRun(client, run);
         run.stats = stats;
 
         debug('StorageAPI', `[RefreshStats] Computed stats for run ${run.id}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
 
-        // Persist via adapter
-        await storage.benchmarks.updateRun(id, run.id, { stats } as any);
+        // Persist back to OpenSearch
+        await client.update({
+          index: INDEX,
+          id,
+          retry_on_conflict: 3,
+          body: {
+            script: {
+              source: `
+                for (int i = 0; i < ctx._source.runs.size(); i++) {
+                  if (ctx._source.runs[i].id == params.runId) {
+                    ctx._source.runs[i].stats = params.stats;
+                    break;
+                  }
+                }
+              `,
+              params: { runId: run.id, stats },
+            },
+          },
+        });
 
         debug('StorageAPI', `[RefreshStats] Successfully updated stats for run ${run.id}`);
       } catch (e: any) {
@@ -1253,15 +1442,20 @@ router.post('/api/storage/benchmarks/:id/runs/:runId/refresh-stats', async (req:
     return res.status(400).json({ error: 'Cannot refresh stats for sample data. Sample benchmarks are read-only.' });
   }
 
-  try {
-    const storage = getStorageModule();
-    const rawBenchmark = await storage.benchmarks.getById(id);
+  if (!isStorageAvailable(req)) {
+    return res.status(400).json({ error: 'OpenSearch not configured' });
+  }
 
-    if (!rawBenchmark) {
+  const client = requireStorageClient(req);
+
+  try {
+    // Fetch benchmark
+    const result = await client.get({ index: INDEX, id });
+    if (!result.body.found) {
       return res.status(404).json({ error: 'Benchmark not found' });
     }
 
-    const benchmark = normalizeBenchmark(rawBenchmark);
+    const benchmark = normalizeBenchmark(result.body._source);
     const run = benchmark.runs?.find((r: BenchmarkRun) => r.id === runId);
 
     if (!run) {
@@ -1271,12 +1465,30 @@ router.post('/api/storage/benchmarks/:id/runs/:runId/refresh-stats', async (req:
     debug('StorageAPI', `[RefreshStats] Manually refreshing stats for run ${runId} in benchmark ${id}`);
 
     // Recompute stats for the run
-    const stats = await computeStatsForRun(run);
+    const stats = await computeStatsForRun(client, run);
 
     debug('StorageAPI', `[RefreshStats] Computed stats for run ${runId}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
 
-    // Persist via adapter
-    await storage.benchmarks.updateRun(id, runId, { stats } as any);
+    // Persist back to OpenSearch
+    await client.update({
+      index: INDEX,
+      id,
+      retry_on_conflict: 3,
+      body: {
+        script: {
+          source: `
+            for (int i = 0; i < ctx._source.runs.size(); i++) {
+              if (ctx._source.runs[i].id == params.runId) {
+                ctx._source.runs[i].stats = params.stats;
+                break;
+              }
+            }
+          `,
+          params: { runId, stats },
+        },
+      },
+      refresh: true,
+    });
 
     debug('StorageAPI', `[RefreshStats] Successfully updated stats for run ${runId}`);
     res.json({ refreshed: true, runId, stats });
