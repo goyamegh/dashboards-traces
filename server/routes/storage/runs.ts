@@ -20,7 +20,12 @@ import {
   getSampleRunsByBenchmark,
   getSampleRunsByBenchmarkRun,
 } from '../../../cli/demo/sampleRuns.js';
-import { createRunWithClient, getRunByIdWithClient, updateRunWithClient } from '../../services/storage/index.js';
+import {
+  createRunWithClient,
+  getRunByIdWithClient,
+  updateRunWithClient,
+  updateBenchmarkRunStatsForReport,
+} from '../../services/storage/index.js';
 import type { TestCaseRun } from '../../../types/index.js';
 import type { Client } from '@opensearch-project/opensearch';
 
@@ -50,21 +55,30 @@ function getTimestampMs(run: { timestamp?: string; createdAt?: string }): number
 // GET /api/storage/runs - List all (paginated)
 router.get('/api/storage/runs', async (req: Request, res: Response) => {
   try {
-    const { size = '100', from = '0' } = req.query;
+    const { size = '100', from = '0', fields } = req.query;
     let realData: TestCaseRun[] = [];
 
     // Fetch from OpenSearch if configured
     if (isStorageAvailable(req)) {
       try {
         const client = requireStorageClient(req);
+
+        // Build query body with optional field projection
+        const queryBody: any = {
+          size: parseInt(size as string),
+          from: parseInt(from as string),
+          sort: [{ createdAt: { order: 'desc' } }],
+          query: { match_all: {} },
+        };
+
+        // Add field projection if specified (comma-separated list)
+        if (fields && typeof fields === 'string') {
+          queryBody._source = fields.split(',');
+        }
+
         const result = await client.search({
           index: INDEX,
-          body: {
-            size: parseInt(size as string),
-            from: parseInt(from as string),
-            sort: [{ createdAt: { order: 'desc' } }],
-            query: { match_all: {} },
-          },
+          body: queryBody,
         });
         realData = result.body.hits?.hits?.map((hit: any) => hit._source) || [];
       } catch (e: any) {
@@ -218,8 +232,33 @@ router.patch('/api/storage/runs/:id', async (req: Request, res: Response) => {
     }
 
     const client = requireStorageClient(req);
+
+    // Check if metricsStatus is being updated (trace-mode completion)
+    const isMetricsStatusUpdate = updates.metricsStatus !== undefined &&
+                                   updates.metricsStatus !== 'pending';
+
+    // If this is a trace-mode completion, fetch the report to get experimentId
+    let experimentId: string | undefined;
+    if (isMetricsStatusUpdate) {
+      try {
+        const report = await getRunByIdWithClient(client, id);
+        experimentId = report?.experimentId;
+      } catch (err) {
+        console.warn(`[StorageAPI] Failed to fetch report for benchmark stats update:`, err);
+      }
+    }
+
     const updated = await updateRunWithClient(client, id, updates);
     debug('StorageAPI', `Updated run: ${id}`);
+
+    // Update parent benchmark run stats if this was a trace-mode completion
+    if (isMetricsStatusUpdate && experimentId) {
+      // Fire-and-forget - don't block the response
+      updateBenchmarkRunStatsForReport(client, experimentId, id).catch(err => {
+        console.warn(`[StorageAPI] Failed to update benchmark stats after report update:`, err);
+      });
+    }
+
     res.json(updated);
   } catch (error: any) {
     if (error.meta?.statusCode === 404) {
