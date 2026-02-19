@@ -431,6 +431,21 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
           </Card>
         )}
 
+        {/* Evaluation Error: Agent endpoint failed */}
+        {liveReport.status === 'failed' && liveReport.llmJudgeReasoning && (
+          <Card className="bg-red-500/10 border-red-500/30 mt-4">
+            <CardContent className="p-3 flex items-start gap-3">
+              <AlertCircle className="text-red-400 shrink-0 mt-0.5" size={18} />
+              <div className="flex-1">
+                <div className="text-sm font-medium text-red-400 mb-1">Evaluation Failed</div>
+                <div className="text-xs text-muted-foreground whitespace-pre-wrap">
+                  {liveReport.llmJudgeReasoning}
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        )}
+
         {/* Trace Mode: Spans received */}
         {liveReport.spans && liveReport.spans.length > 0 && (
           <Card className="bg-opensearch-blue/10 border-opensearch-blue/30 mt-4">

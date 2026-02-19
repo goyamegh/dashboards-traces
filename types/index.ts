@@ -575,6 +575,7 @@ export interface BenchmarkRun {
   results: Record<string, {        // testCaseId → result
     reportId: string;              // References EvaluationReport.id
     status: RunResultStatus;
+    error?: string;                // Error message if status is 'failed'
   }>;
 
   // Denormalized stats (computed from reports, stored for fast list display)
@@ -667,6 +668,8 @@ export interface TestCaseRunResult {
   trajectoryAlignment?: number;
   latencyScore?: number;
   testCaseVersion?: string;
+  /** Error message if status is 'failed' */
+  error?: string;
 }
 
 // Per-test-case comparison row

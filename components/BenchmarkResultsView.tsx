@@ -385,6 +385,17 @@ export const BenchmarkResultsView: React.FC<BenchmarkResultsViewProps> = ({
                                     <span className="inline-flex items-center gap-1 text-red-400">
                                       <XCircle size={14} /> FAILED
                                     </span>
+                                  ) : result?.status === 'failed' ? (
+                                    <div className="flex flex-col items-center gap-1">
+                                      <span className="inline-flex items-center gap-1 text-red-400">
+                                        <XCircle size={14} /> ERROR
+                                      </span>
+                                      {result.error && (
+                                        <span className="text-xs text-red-400/80 max-w-[200px] truncate" title={result.error}>
+                                          {result.error}
+                                        </span>
+                                      )}
+                                    </div>
                                   ) : result?.status === 'running' ? (
                                     <span className="text-muted-foreground">Running...</span>
                                   ) : (

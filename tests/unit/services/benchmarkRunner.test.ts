@@ -445,10 +445,11 @@ describe('Experiment Runner', () => {
         onTestCaseComplete,
       });
 
-      // Should still call onTestCaseComplete with failed status
+      // Should still call onTestCaseComplete with failed status and error message
       expect(onTestCaseComplete).toHaveBeenCalledTimes(1);
-      expect(onTestCaseComplete).toHaveBeenCalledWith('tc-1', { reportId: '', status: 'failed' });
+      expect(onTestCaseComplete).toHaveBeenCalledWith('tc-1', { reportId: '', status: 'failed', error: 'Evaluation failed' });
       expect(result.results['tc-1'].status).toBe('failed');
+      expect(result.results['tc-1'].error).toBe('Evaluation failed');
     });
 
     it('should not call onTestCaseComplete if not provided', async () => {

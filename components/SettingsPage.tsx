@@ -627,7 +627,18 @@ export const SettingsPage: React.FC = () => {
             <Alert className="bg-amber-900/20 border-amber-700/30">
               <AlertTriangle className="h-4 w-4 text-amber-400" />
               <AlertDescription className="text-amber-400">
-                Debug mode enabled. Check browser console and server terminal for detailed logs.
+                <div className="space-y-2">
+                  <div>Debug mode enabled. Detailed logs appear in browser console and server terminal.</div>
+                  <div className="text-xs opacity-80">
+                    <strong>Note:</strong> Browser debug logs use console.debug() which may be hidden by default.
+                    <br />
+                    • <strong>Chrome:</strong> Console settings (⚙️) → Check "Verbose"
+                    <br />
+                    • <strong>Firefox:</strong> Console settings → Enable all log levels
+                    <br />
+                    • <strong>Safari:</strong> Develop → Show JavaScript Console → All levels
+                  </div>
+                </div>
               </AlertDescription>
             </Alert>
           )}
