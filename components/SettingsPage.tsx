@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { AlertTriangle, Trash2, Database, CheckCircle2, XCircle, Upload, Download, Loader2, Server, Plus, Edit2, X, Save, ExternalLink, Eye, EyeOff, ChevronDown, ChevronRight, RefreshCw, Palette } from 'lucide-react';
+import { isDebugEnabled, setDebugEnabled } from '@/lib/debug';
 import { getTheme, setTheme, type Theme } from '@/lib/theme';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
@@ -159,39 +160,7 @@ export const SettingsPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    // Load debug state from server API (single source of truth: agent-health.config.json)
-    // and sync to localStorage for fast browser-side checks
-    fetch(`${ENV_CONFIG.backendUrl}/api/debug`)
-      .then(res => res.json())
-      .then(data => {
-        setDebugMode(data.enabled);
-        localStorage.setItem('agenteval_debug', String(data.enabled));
-
-        // IMPORTANT: Also sync DEBUG_PERFORMANCE with debug mode state
-        if (data.enabled) {
-          localStorage.setItem('DEBUG_PERFORMANCE', 'true');
-        } else {
-          localStorage.removeItem('DEBUG_PERFORMANCE');
-        }
-      })
-      .catch(() => {
-        // Fallback to localStorage if API fails
-        try {
-          const cached = localStorage.getItem('agenteval_debug') === 'true';
-          setDebugMode(cached);
-
-          // Also sync DEBUG_PERFORMANCE
-          if (cached) {
-            localStorage.setItem('DEBUG_PERFORMANCE', 'true');
-          } else {
-            localStorage.removeItem('DEBUG_PERFORMANCE');
-          }
-        } catch {
-          setDebugMode(false);
-          localStorage.removeItem('DEBUG_PERFORMANCE');
-        }
-      });
-
+    setDebugMode(isDebugEnabled());
     setCurrentTheme(getTheme());
     loadStorageStats();
     loadConfigStatus();
@@ -343,60 +312,17 @@ export const SettingsPage: React.FC = () => {
   };
 
   const handleDebugToggle = async (checked: boolean) => {
-    // Update local state immediately for responsiveness
+    setDebugEnabled(checked);
     setDebugMode(checked);
-
-    // Update localStorage for BOTH debug logging AND performance monitoring
+    // Sync debug state to the server so server-side logging is also toggled
     try {
-      localStorage.setItem('agenteval_debug', String(checked));
-
-      // Also control performance monitoring with the same toggle
-      if (checked) {
-        localStorage.setItem('DEBUG_PERFORMANCE', 'true');
-      } else {
-        localStorage.removeItem('DEBUG_PERFORMANCE');
-      }
-    } catch {
-      // Ignore localStorage errors
-    }
-
-    // Persist to server (agent-health.config.json) - single source of truth
-    try {
-      const response = await fetch(`${ENV_CONFIG.backendUrl}/api/debug`, {
+      await fetch(`${ENV_CONFIG.backendUrl}/api/debug`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: checked }),
       });
-
-      if (!response.ok) {
-        throw new Error('Failed to update debug mode');
-      }
-
-      const data = await response.json();
-      setDebugMode(data.enabled); // Sync with server's actual state
-      localStorage.setItem('agenteval_debug', String(data.enabled)); // Sync localStorage too
-
-      // Sync performance monitoring too
-      if (data.enabled) {
-        localStorage.setItem('DEBUG_PERFORMANCE', 'true');
-      } else {
-        localStorage.removeItem('DEBUG_PERFORMANCE');
-      }
-    } catch (error) {
-      console.error('Failed to toggle debug mode:', error);
-      // Revert to server state on error
-      fetch(`${ENV_CONFIG.backendUrl}/api/debug`)
-        .then(res => res.json())
-        .then(data => {
-          setDebugMode(data.enabled);
-          localStorage.setItem('agenteval_debug', String(data.enabled));
-          if (data.enabled) {
-            localStorage.setItem('DEBUG_PERFORMANCE', 'true');
-          } else {
-            localStorage.removeItem('DEBUG_PERFORMANCE');
-          }
-        })
-        .catch(() => {}); // Ignore fetch error, keep local state
+    } catch {
+      // Best effort - server may not be running
     }
   };
 
@@ -684,11 +610,11 @@ export const SettingsPage: React.FC = () => {
           <div className="flex items-center justify-between">
             <div className="space-y-1">
               <Label htmlFor="debug-mode" className="text-sm font-medium">
-                Debug Mode
+                Verbose Logging
               </Label>
               <p className="text-xs text-muted-foreground">
-                Enable verbose logging (console.debug) AND real-time performance metrics overlay.
-                Useful for debugging evaluation flow, SSE events, and performance issues.
+                Enable detailed console.debug() logs for SSE events, trajectory conversion, and evaluation flow
+                in both browser console and server terminal output.
               </p>
             </div>
             <Switch
@@ -703,12 +629,7 @@ export const SettingsPage: React.FC = () => {
               <AlertTriangle className="h-4 w-4 text-amber-400" />
               <AlertDescription className="text-amber-400">
                 <div className="space-y-2">
-                  <div className="font-medium">Debug mode enabled</div>
-
-                  {/* Verbose Logging Info */}
-                  <div className="text-sm">
-                    <strong>Verbose Logging:</strong> Detailed logs appear in browser console and server terminal.
-                  </div>
+                  <div>Debug mode enabled. Detailed logs appear in browser console and server terminal.</div>
                   <div className="text-xs opacity-80">
                     <strong>Note:</strong> Browser debug logs use console.debug() which may be hidden by default.
                     <br />
@@ -717,16 +638,6 @@ export const SettingsPage: React.FC = () => {
                     • <strong>Firefox:</strong> Console settings → Enable all log levels
                     <br />
                     • <strong>Safari:</strong> Develop → Show JavaScript Console → All levels
-                  </div>
-
-                  {/* Performance Monitoring Info */}
-                  <div className="text-sm mt-3 pt-3 border-t border-amber-700/30">
-                    <strong>Performance Monitoring:</strong> A metrics overlay will appear in the bottom-right corner on instrumented pages (Agent Traces, etc.).
-                  </div>
-                  <div className="text-xs opacity-80">
-                    <strong>Color coding:</strong> 🟢 Fast (&lt; 50ms) · 🟡 OK (&lt; 200ms) · 🔴 Slow (&gt; 200ms)
-                    <br />
-                    <strong>Tracked:</strong> API calls, tree processing, render performance
                   </div>
                 </div>
               </AlertDescription>
@@ -942,7 +853,7 @@ export const SettingsPage: React.FC = () => {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-muted-foreground">
-            Configure the OpenSearch cluster for storing evaluation data. Credentials are stored securely on the server (in agent-health.config.json), not in your browser.
+            Configure the OpenSearch cluster for storing evaluation data. Credentials are stored securely on the server (in agent-health.yaml), not in your browser.
           </p>
 
           <div className="space-y-3">
@@ -1012,7 +923,7 @@ export const SettingsPage: React.FC = () => {
                   ? 'bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50'
                   : 'bg-gray-100 text-gray-900 border border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700/50'
               }`}>
-                {configStatus.storage.source === 'file' ? 'Config file (agent-health.config.json)' :
+                {configStatus.storage.source === 'file' ? 'Server file (agent-health.yaml)' :
                  configStatus.storage.source === 'environment' ? 'Environment variables' :
                  'Not configured'}
               </span>
@@ -1152,7 +1063,7 @@ export const SettingsPage: React.FC = () => {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-muted-foreground">
-            Configure the OpenSearch cluster for observability data. Credentials are stored securely on the server (in agent-health.config.json), not in your browser.
+            Configure the OpenSearch cluster for observability data. Credentials are stored securely on the server (in agent-health.yaml), not in your browser.
           </p>
 
           <div className="space-y-3">
@@ -1265,7 +1176,7 @@ export const SettingsPage: React.FC = () => {
                   ? 'bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50'
                   : 'bg-gray-100 text-gray-900 border border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700/50'
               }`}>
-                {configStatus.observability.source === 'file' ? 'Config file (agent-health.config.json)' :
+                {configStatus.observability.source === 'file' ? 'Server file (agent-health.yaml)' :
                  configStatus.observability.source === 'environment' ? 'Environment variables' :
                  'Not configured'}
               </span>
