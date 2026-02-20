@@ -66,11 +66,11 @@ describe('Evaluation Service Debug Enhancements', () => {
 
       await expect(
         runEvaluationWithConnector(
-          testCase as any,
           agent as any,
           'test-model',
-          {},
-          {}
+          testCase as any,
+          jest.fn(),
+          { registry: mockConnectorRegistry }
         )
       ).rejects.toThrow();
 
@@ -105,11 +105,11 @@ describe('Evaluation Service Debug Enhancements', () => {
 
       await expect(
         runEvaluationWithConnector(
-          testCase as any,
           agent as any,
           'test-model',
-          {},
-          {}
+          testCase as any,
+          jest.fn(),
+          { registry: mockConnectorRegistry }
         )
       ).rejects.toThrow();
 
@@ -136,11 +136,11 @@ describe('Evaluation Service Debug Enhancements', () => {
 
       await expect(
         runEvaluationWithConnector(
-          testCase as any,
           agent as any,
           'test-model',
-          {},
-          {}
+          testCase as any,
+          jest.fn(),
+          { registry: mockConnectorRegistry }
         )
       ).rejects.toThrow();
 
@@ -168,11 +168,11 @@ describe('Evaluation Service Debug Enhancements', () => {
 
       await expect(
         runEvaluationWithConnector(
-          testCase as any,
           agent as any,
           'test-model',
-          {},
-          {}
+          testCase as any,
+          jest.fn(),
+          { registry: mockConnectorRegistry }
         )
       ).rejects.toThrow();
 
@@ -203,11 +203,11 @@ describe('Evaluation Service Debug Enhancements', () => {
 
       await expect(
         runEvaluationWithConnector(
-          testCase as any,
           agent as any,
           'test-model',
-          {},
-          {}
+          testCase as any,
+          jest.fn(),
+          { registry: mockConnectorRegistry }
         )
       ).rejects.toThrow();
 
