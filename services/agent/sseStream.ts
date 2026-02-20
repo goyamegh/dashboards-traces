@@ -50,7 +50,7 @@ export class SSEClient {
     debug('SSE', 'Connecting to', url);
     debug('SSE', 'Method:', method);
     debug('SSE', 'Headers:', headers);
-    debug('SSE', 'Payload:', JSON.stringify(body, null, 2).substring(0, 500));
+    debug('SSE', 'Payload:', body ? JSON.stringify(body, null, 2).substring(0, 500) : 'none');
     debug('SSE', 'Timeout:', idleTimeoutMs, 'ms');
 
     try {
