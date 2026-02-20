@@ -48,7 +48,7 @@ describe('SSEClient Debug Enhancements', () => {
         'X-Custom-Header': 'value',
       };
 
-      await client.connect({
+      await client.consume({
         url: 'http://test.com/stream',
         method: 'POST',
         headers,
@@ -77,7 +77,7 @@ describe('SSEClient Debug Enhancements', () => {
 
       mockFetch.mockResolvedValueOnce(mockResponse);
 
-      await client.connect({
+      await client.consume({
         url: 'http://test.com/stream',
       });
 
@@ -97,7 +97,7 @@ describe('SSEClient Debug Enhancements', () => {
 
       const onError = jest.fn();
 
-      await client.connect({
+      await client.consume({
         url: 'http://test.com/stream',
         onError,
       });
@@ -118,7 +118,7 @@ describe('SSEClient Debug Enhancements', () => {
       const error = new Error('fetch failed');
       mockFetch.mockRejectedValueOnce(error);
 
-      await client.connect({
+      await client.consume({
         url: 'http://test.com/stream',
         onError: jest.fn(),
       });
@@ -136,7 +136,7 @@ describe('SSEClient Debug Enhancements', () => {
       const error = new Error('Request timeout');
       mockFetch.mockRejectedValueOnce(error);
 
-      await client.connect({
+      await client.consume({
         url: 'http://test.com/stream',
         onError: jest.fn(),
       });
@@ -150,7 +150,7 @@ describe('SSEClient Debug Enhancements', () => {
       const error = new Error('getaddrinfo ENOTFOUND test.com');
       mockFetch.mockRejectedValueOnce(error);
 
-      await client.connect({
+      await client.consume({
         url: 'http://test.com/stream',
         onError: jest.fn(),
       });
@@ -164,7 +164,7 @@ describe('SSEClient Debug Enhancements', () => {
       const error = new Error('connect ECONNREFUSED 127.0.0.1:8080');
       mockFetch.mockRejectedValueOnce(error);
 
-      await client.connect({
+      await client.consume({
         url: 'http://127.0.0.1:8080/stream',
         onError: jest.fn(),
       });
@@ -187,7 +187,7 @@ describe('SSEClient Debug Enhancements', () => {
 
       const onError = jest.fn();
 
-      await client.connect({
+      await client.consume({
         url: 'http://test.com/stream',
         onError,
       });
@@ -212,7 +212,7 @@ describe('SSEClient Debug Enhancements', () => {
 
       mockFetch.mockResolvedValueOnce(mockResponse);
 
-      await client.connect({
+      await client.consume({
         url: 'http://test.com/stream',
         onError: jest.fn(),
       });
@@ -238,7 +238,7 @@ describe('SSEClient Debug Enhancements', () => {
 
       const onError = jest.fn();
 
-      await client.connect({
+      await client.consume({
         url: 'http://test.com/stream',
         onError,
       });
@@ -269,11 +269,11 @@ describe('SSEClient Debug Enhancements', () => {
 
       mockFetch.mockResolvedValueOnce(mockResponse);
 
-      const onChunk = jest.fn();
+      const onEvent = jest.fn();
 
-      await client.connect({
+      await client.consume({
         url: 'http://test.com/stream',
-        onChunk,
+        onEvent,
       });
 
       // Basic connection logs should exist
