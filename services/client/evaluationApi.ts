@@ -62,7 +62,8 @@ export async function runServerEvaluation(
   request: ServerEvaluationRequest,
   onStep?: (step: TrajectoryStep) => void
 ): Promise<ServerEvaluationResult> {
-  debug('ClientAPI', 'Running server evaluation:', request.agentKey, request.modelId);
+  console.info('[ClientAPI] Running server evaluation:', request.agentKey, request.modelId);
+  debug('ClientAPI', 'Request details:', request);
   const response = await fetch('/api/evaluate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -117,7 +118,8 @@ export async function runServerEvaluation(
     throw new Error('Evaluation completed without returning result');
   }
 
-  debug('ClientAPI', 'Evaluation completed, reportId:', result.reportId);
+  console.info('[ClientAPI] Evaluation completed, reportId:', result.reportId);
+  debug('ClientAPI', 'Full result:', result);
   return result;
 }
 
@@ -135,16 +137,21 @@ function parseSSEEvent(
         const data = JSON.parse(line.slice(6));
 
         if (data.type === 'step' && onStep) {
+          debug('ClientAPI', 'Received trajectory step:', data.step.type);
           onStep(data.step as TrajectoryStep);
         } else if (data.type === 'completed') {
+          console.info('[ClientAPI] Evaluation job completed on server');
           return {
             reportId: data.reportId,
             report: data.report as ServerEvaluationReport,
           };
         } else if (data.type === 'error') {
+          console.error('[ClientAPI] Evaluation error:', data.error);
           throw new Error(data.error);
+        } else if (data.type === 'started') {
+          console.info('[ClientAPI] Evaluation job started on server, streaming trajectory...');
         }
-        // 'started' events are informational — no action needed
+        // Other events are informational — no action needed
       } catch (e) {
         // Rethrow application errors, ignore JSON parse errors for incomplete chunks
         if (e instanceof Error && !(e instanceof SyntaxError)) {
