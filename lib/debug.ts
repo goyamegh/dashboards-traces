@@ -6,30 +6,29 @@
 /**
  * Simple Debug Utility
  *
- * Single source of truth: agent-health.config.json on server
+ * Single source of truth: agent-health.yaml on server
  *
- * Server: Reads/writes agent-health.config.json
+ * Server: Reads/writes agent-health.yaml
  * Browser: Uses localStorage cache (synced via Settings page API calls)
  */
 
 import fs from 'fs';
 import path from 'path';
+import yaml from 'yaml';
 
 const isBrowser = typeof window !== 'undefined';
 
-const CONFIG_FILENAME = 'agent-health.config.json';
-
-// Server-side: persist debug state in agent-health.config.json
+// Server-side: persist debug state in agent-health.yaml
 let serverDebugEnabled = false;
 
-// Initialize server debug state from agent-health.config.json or env var
+// Initialize server debug state from agent-health.yaml or env var
 if (!isBrowser) {
   try {
-    const configPath = path.join(process.cwd(), CONFIG_FILENAME);
+    const configPath = path.join(process.cwd(), 'agent-health.yaml');
 
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, 'utf-8');
-      const config = JSON.parse(content) || {};
+      const config = yaml.parse(content) || {};
       serverDebugEnabled = config.debug === true;
     } else if (process.env?.DEBUG === 'true') {
       serverDebugEnabled = true;
@@ -44,7 +43,7 @@ if (!isBrowser) {
 
 /**
  * Check if debug mode is enabled
- * Server: reads from memory (loaded from agent-health.config.json)
+ * Server: reads from memory (loaded from agent-health.yaml)
  * Browser: reads from localStorage cache (synced by Settings page)
  */
 export function isDebugEnabled(): boolean {
@@ -60,7 +59,7 @@ export function isDebugEnabled(): boolean {
 
 /**
  * Set debug state
- * Server: updates memory + persists to agent-health.config.json
+ * Server: updates memory + persists to agent-health.yaml
  * Browser: updates localStorage cache (Settings page also calls /api/debug)
  */
 export function setDebugEnabled(enabled: boolean): void {
@@ -73,24 +72,24 @@ export function setDebugEnabled(enabled: boolean): void {
     return;
   }
 
-  // Server-side: update memory + persist to JSON config
+  // Server-side: update memory + persist to yaml
   serverDebugEnabled = enabled;
 
   try {
-    const configPath = path.join(process.cwd(), CONFIG_FILENAME);
+    const configPath = path.join(process.cwd(), 'agent-health.yaml');
 
     let config: any = {};
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, 'utf-8');
-      config = JSON.parse(content) || {};
+      config = yaml.parse(content) || {};
     }
 
     config.debug = enabled;
 
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-    console.info(`[Debug] Debug mode ${enabled ? 'enabled' : 'disabled'}, persisted to ${CONFIG_FILENAME}`);
+    fs.writeFileSync(configPath, yaml.stringify(config), 'utf-8');
+    console.info(`[Debug] Debug mode ${enabled ? 'enabled' : 'disabled'}, persisted to agent-health.yaml`);
   } catch (err) {
-    console.warn(`[Debug] Failed to persist debug state to ${CONFIG_FILENAME}:`, err);
+    console.warn('[Debug] Failed to persist debug state to agent-health.yaml:', err);
   }
 }
 
