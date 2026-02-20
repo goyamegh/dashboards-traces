@@ -10,7 +10,7 @@
 
 import { jest } from '@jest/globals';
 import request from 'supertest';
-import express from 'express';
+import type { Application } from 'express';
 import type { BenchmarkRun } from '@/types';
 
 // Mock OpenSearch client
@@ -44,10 +44,12 @@ jest.mock('@/lib/debug', () => ({
 }));
 
 describe('Benchmark Stats Refresh Integration', () => {
-  let app: express.Application;
+  let app: Application;
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const express = require('express');
     app = express();
     app.use(express.json());
 
