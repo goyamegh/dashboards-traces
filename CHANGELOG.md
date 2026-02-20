@@ -11,6 +11,19 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ### Added
 - Light and dark mode theme support with dynamic switching and OUI font integration
+- Report generation system with HTML, JSON, and PDF formatters for benchmark results
+- `cli/commands/report.ts` CLI command for generating formatted reports
+- `services/report/` module with BaseFormatter, HtmlFormatter, JsonFormatter, and PdfFormatter
+- AGENTS.md documentation for agent guidance and project overview
+- PERFORMANCE.md documentation for performance optimization guidelines
+- Unit tests for report data collection and formatting services
+- Unit tests for benchmark stats refresh functionality
+- Unit tests for SSE stream debugging utilities
+- Unit tests for evaluation service with mock trajectories
+- Unit tests for async benchmark storage stats operations
+- E2E test for benchmark stats refresh
+- Empty conversation history message in TrajectoryView component
+- react-is dependency for enhanced React type checking
 - Universal debug logging system with `lib/debug.ts` supporting both browser (localStorage) and Node.js (in-memory flag) environments
 - `GET/POST /api/debug` endpoint for runtime toggle of server-side verbose logging
 - Settings page debug toggle now syncs to both browser console and server terminal output
@@ -60,6 +73,11 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Enhanced storage route tests with additional coverage
 
 ### Changed
+- Enhanced error handling in benchmark execution and reporting for improved reliability
+- Optimized metrics processing with batching for better performance
+- Updated time range default to 7 days for more relevant trace data
+- Optimized report fetching with field projection and pre-indexing to reduce memory usage
+- Enhanced logging throughout services and connectors for better debugging
 - Integrated custom agents from JSON-backed store into benchmark execution ([#35](https://github.com/opensearch-project/agent-health/pull/35))
 - Updated observability agent benchmark scenarios for OTEL demo ([#35](https://github.com/opensearch-project/agent-health/pull/35))
 - Optimized run statistics calculations to avoid expensive per-request aggregation ([#35](https://github.com/opensearch-project/agent-health/pull/35))
