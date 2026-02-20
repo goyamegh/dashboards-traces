@@ -4,9 +4,10 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, useParams } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useParams, useLocation } from 'react-router-dom';
 import { refreshConfig, subscribeConfigChange } from '@/lib/constants';
 import { initializeTheme } from '@/lib/theme';
+import { ENV_CONFIG } from '@/lib/config';
 import { Layout } from './components/Layout';
 import { Dashboard } from './components/Dashboard';
 import { BenchmarksPage } from './components/BenchmarksPage';
@@ -22,6 +23,45 @@ import { AgentTracesPage } from './components/traces/AgentTracesPage';
 function ExperimentRunsRedirect() {
   const { experimentId } = useParams();
   return <Navigate to={`/benchmarks/${experimentId}/runs`} replace />;
+}
+
+/**
+ * Sync debug state from server to localStorage cache
+ * Keeps browser cache in sync with agent-health.yaml (single source of truth)
+ */
+function DebugStateSync() {
+  const location = useLocation();
+
+  // Helper function to sync debug state
+  const syncDebugState = () => {
+    fetch(`${ENV_CONFIG.backendUrl}/api/debug`)
+      .then(res => res.json())
+      .then(data => {
+        localStorage.setItem('agenteval_debug', String(data.enabled));
+      })
+      .catch(() => {
+        // Silently fail - debug sync is non-critical
+      });
+  };
+
+  // Sync on route change (catches page navigation)
+  useEffect(() => {
+    syncDebugState();
+  }, [location.pathname]);
+
+  // Sync when tab becomes visible (catches when user switches back)
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      if (!document.hidden) {
+        syncDebugState();
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
+  }, []);
+
+  return null; // This component doesn't render anything
 }
 
 function App() {
@@ -42,6 +82,7 @@ function App() {
 
   return (
     <Router>
+      <DebugStateSync />
       <Layout>
         <Routes>
           {/* Primary routes */}

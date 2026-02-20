@@ -13,6 +13,7 @@ build
 judge.log
 
 # Configuration files (may contain credentials)
+# agent-health.yaml stores runtime state (debug mode, data source config)
 agent-health.yaml
 agent-health.config.ts
 agent-health.config.js
