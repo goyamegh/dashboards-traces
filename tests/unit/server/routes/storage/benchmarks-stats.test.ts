@@ -40,14 +40,16 @@ jest.mock('@/lib/debug', () => ({
 }));
 
 import request from 'supertest';
-import express from 'express';
+import type { Application } from 'express';
 import type { BenchmarkRun, RunStats } from '@/types';
 
 describe('Benchmark Stats Backfill', () => {
-  let app: express.Application;
+  let app: Application;
 
   beforeEach(() => {
     jest.clearAllMocks();
+    // eslint-disable-next-line @typescript-eslint/no-var-requires
+    const express = require('express');
     app = express();
     app.use(express.json());
 
