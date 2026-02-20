@@ -9,7 +9,7 @@
  */
 
 import { AGUIEvent, AGUIEventType } from '@/types/agui';
-import { debug } from '@/lib/debug';
+import { debug, isDebugEnabled } from '@/lib/debug';
 
 export interface SSEClientOptions {
   url: string;
@@ -86,13 +86,14 @@ export class SSEClient {
         throw new Error('Response body is null');
       }
 
-      debug('SSE', 'Connected, streaming events...');
+      console.info('[SSE] Connected to agent endpoint, streaming events...');
       debug('SSE', 'Response status:', response.status);
       debug('SSE', 'Content-Type:', response.headers.get('content-type'));
 
       // Process the stream with idle timeout support
       const completionReason = await this.processStream(response.body, onEvent, completeOnRunEnd, idleTimeoutMs);
 
+      console.info(`[SSE] Stream completed: ${completionReason}`);
       debug('SSE', `Stream completed: ${completionReason}`);
       onComplete?.();
     } catch (error) {
@@ -103,6 +104,7 @@ export class SSEClient {
           onComplete?.();
         } else {
           console.error('[SSE] Stream error:', error.message);
+          console.error('[SSE] Debug mode is:', isDebugEnabled() ? 'ENABLED ✅' : 'DISABLED ❌');
 
           // Detailed debug logging with diagnostics
           const errorDetails = {
@@ -202,8 +204,14 @@ export class SSEClient {
 
                 try {
                   const event = JSON.parse(data) as AGUIEvent;
-                  debug('SSE', 'Parsed:', event.type);
+                  debug('SSE', 'Parsed event:', event.type);
                   eventCount++;
+
+                  // Log progress milestone every 10 events
+                  if (eventCount % 10 === 0) {
+                    console.info(`[SSE] Processed ${eventCount} events...`);
+                  }
+
                   onEvent(event);
 
                   // Check for run-ending events when completeOnRunEnd is enabled

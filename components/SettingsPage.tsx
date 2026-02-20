@@ -5,7 +5,6 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { AlertTriangle, Trash2, Database, CheckCircle2, XCircle, Upload, Download, Loader2, Server, Plus, Edit2, X, Save, ExternalLink, Eye, EyeOff, ChevronDown, ChevronRight, RefreshCw, Palette } from 'lucide-react';
-import { isDebugEnabled, setDebugEnabled } from '@/lib/debug';
 import { getTheme, setTheme, type Theme } from '@/lib/theme';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
@@ -159,7 +158,24 @@ export const SettingsPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    setDebugMode(isDebugEnabled());
+    // Load debug state from server API (single source of truth: agent-health.yaml)
+    // and sync to localStorage for fast browser-side checks
+    fetch(`${ENV_CONFIG.backendUrl}/api/debug`)
+      .then(res => res.json())
+      .then(data => {
+        setDebugMode(data.enabled);
+        localStorage.setItem('agenteval_debug', String(data.enabled));
+      })
+      .catch(() => {
+        // Fallback to localStorage if API fails
+        try {
+          const cached = localStorage.getItem('agenteval_debug') === 'true';
+          setDebugMode(cached);
+        } catch {
+          setDebugMode(false);
+        }
+      });
+
     setCurrentTheme(getTheme());
     loadStorageStats();
     loadConfigStatus();
@@ -311,17 +327,41 @@ export const SettingsPage: React.FC = () => {
   };
 
   const handleDebugToggle = async (checked: boolean) => {
-    setDebugEnabled(checked);
+    // Update local state immediately for responsiveness
     setDebugMode(checked);
-    // Sync debug state to the server so server-side logging is also toggled
+
+    // Update localStorage (for fast browser-side debug() checks)
     try {
-      await fetch(`${ENV_CONFIG.backendUrl}/api/debug`, {
+      localStorage.setItem('agenteval_debug', String(checked));
+    } catch {
+      // Ignore localStorage errors
+    }
+
+    // Persist to server (agent-health.yaml) - single source of truth
+    try {
+      const response = await fetch(`${ENV_CONFIG.backendUrl}/api/debug`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ enabled: checked }),
       });
-    } catch {
-      // Best effort - server may not be running
+
+      if (!response.ok) {
+        throw new Error('Failed to update debug mode');
+      }
+
+      const data = await response.json();
+      setDebugMode(data.enabled); // Sync with server's actual state
+      localStorage.setItem('agenteval_debug', String(data.enabled)); // Sync localStorage too
+    } catch (error) {
+      console.error('Failed to toggle debug mode:', error);
+      // Revert to server state on error
+      fetch(`${ENV_CONFIG.backendUrl}/api/debug`)
+        .then(res => res.json())
+        .then(data => {
+          setDebugMode(data.enabled);
+          localStorage.setItem('agenteval_debug', String(data.enabled));
+        })
+        .catch(() => {}); // Ignore fetch error, keep local state
     }
   };
 
