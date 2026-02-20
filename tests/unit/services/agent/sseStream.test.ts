@@ -11,6 +11,7 @@ import type { AGUIEvent } from '@/types/agui';
 // Mock debug
 jest.mock('@/lib/debug', () => ({
   debug: jest.fn(),
+  isDebugEnabled: jest.fn().mockReturnValue(false),
 }));
 
 // Helper to create a mock ReadableStream
