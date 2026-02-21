@@ -7,7 +7,7 @@
  * Data Source Configuration - Frontend API Client
  *
  * This module provides API calls to manage server-side configuration.
- * Credentials are stored on the server (in agent-health.yaml), NOT in browser.
+ * Credentials are stored on the server (in agent-health.config.json), NOT in browser.
  *
  * Security: No credentials are ever stored in localStorage or sent via headers.
  */
@@ -73,7 +73,7 @@ export async function getConfigStatus(): Promise<ConfigStatus> {
 // ============================================================================
 
 /**
- * Save storage configuration to server (agent-health.yaml)
+ * Save storage configuration to server (agent-health.config.json)
  */
 export async function saveStorageConfig(config: StorageClusterConfig): Promise<void> {
   const response = await fetch(`${API_BASE}/api/storage/config/storage`, {
@@ -112,7 +112,7 @@ export async function clearStorageConfig(): Promise<void> {
 // ============================================================================
 
 /**
- * Save observability configuration to server (agent-health.yaml)
+ * Save observability configuration to server (agent-health.config.json)
  */
 export async function saveObservabilityConfig(config: ObservabilityClusterConfig): Promise<void> {
   const response = await fetch(`${API_BASE}/api/storage/config/observability`, {

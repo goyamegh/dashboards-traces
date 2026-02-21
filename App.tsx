@@ -28,7 +28,7 @@ function ExperimentRunsRedirect() {
 
 /**
  * Sync debug state from server to localStorage cache
- * Keeps browser cache in sync with agent-health.yaml (single source of truth)
+ * Keeps browser cache in sync with agent-health.config.json (single source of truth)
  */
 function DebugStateSync() {
   const location = useLocation();
