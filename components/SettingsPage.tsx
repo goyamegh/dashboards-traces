@@ -165,14 +165,29 @@ export const SettingsPage: React.FC = () => {
       .then(data => {
         setDebugMode(data.enabled);
         localStorage.setItem('agenteval_debug', String(data.enabled));
+
+        // IMPORTANT: Also sync DEBUG_PERFORMANCE with debug mode state
+        if (data.enabled) {
+          localStorage.setItem('DEBUG_PERFORMANCE', 'true');
+        } else {
+          localStorage.removeItem('DEBUG_PERFORMANCE');
+        }
       })
       .catch(() => {
         // Fallback to localStorage if API fails
         try {
           const cached = localStorage.getItem('agenteval_debug') === 'true';
           setDebugMode(cached);
+
+          // Also sync DEBUG_PERFORMANCE
+          if (cached) {
+            localStorage.setItem('DEBUG_PERFORMANCE', 'true');
+          } else {
+            localStorage.removeItem('DEBUG_PERFORMANCE');
+          }
         } catch {
           setDebugMode(false);
+          localStorage.removeItem('DEBUG_PERFORMANCE');
         }
       });
 
@@ -330,9 +345,16 @@ export const SettingsPage: React.FC = () => {
     // Update local state immediately for responsiveness
     setDebugMode(checked);
 
-    // Update localStorage (for fast browser-side debug() checks)
+    // Update localStorage for BOTH debug logging AND performance monitoring
     try {
       localStorage.setItem('agenteval_debug', String(checked));
+
+      // Also control performance monitoring with the same toggle
+      if (checked) {
+        localStorage.setItem('DEBUG_PERFORMANCE', 'true');
+      } else {
+        localStorage.removeItem('DEBUG_PERFORMANCE');
+      }
     } catch {
       // Ignore localStorage errors
     }
@@ -352,6 +374,13 @@ export const SettingsPage: React.FC = () => {
       const data = await response.json();
       setDebugMode(data.enabled); // Sync with server's actual state
       localStorage.setItem('agenteval_debug', String(data.enabled)); // Sync localStorage too
+
+      // Sync performance monitoring too
+      if (data.enabled) {
+        localStorage.setItem('DEBUG_PERFORMANCE', 'true');
+      } else {
+        localStorage.removeItem('DEBUG_PERFORMANCE');
+      }
     } catch (error) {
       console.error('Failed to toggle debug mode:', error);
       // Revert to server state on error
@@ -360,6 +389,11 @@ export const SettingsPage: React.FC = () => {
         .then(data => {
           setDebugMode(data.enabled);
           localStorage.setItem('agenteval_debug', String(data.enabled));
+          if (data.enabled) {
+            localStorage.setItem('DEBUG_PERFORMANCE', 'true');
+          } else {
+            localStorage.removeItem('DEBUG_PERFORMANCE');
+          }
         })
         .catch(() => {}); // Ignore fetch error, keep local state
     }
@@ -649,11 +683,11 @@ export const SettingsPage: React.FC = () => {
           <div className="flex items-center justify-between">
             <div className="space-y-1">
               <Label htmlFor="debug-mode" className="text-sm font-medium">
-                Verbose Logging
+                Debug Mode
               </Label>
               <p className="text-xs text-muted-foreground">
-                Enable detailed console.debug() logs for SSE events, trajectory conversion, and evaluation flow
-                in both browser console and server terminal output.
+                Enable verbose logging (console.debug) AND real-time performance metrics overlay.
+                Useful for debugging evaluation flow, SSE events, and performance issues.
               </p>
             </div>
             <Switch
@@ -668,7 +702,12 @@ export const SettingsPage: React.FC = () => {
               <AlertTriangle className="h-4 w-4 text-amber-400" />
               <AlertDescription className="text-amber-400">
                 <div className="space-y-2">
-                  <div>Debug mode enabled. Detailed logs appear in browser console and server terminal.</div>
+                  <div className="font-medium">Debug mode enabled</div>
+
+                  {/* Verbose Logging Info */}
+                  <div className="text-sm">
+                    <strong>Verbose Logging:</strong> Detailed logs appear in browser console and server terminal.
+                  </div>
                   <div className="text-xs opacity-80">
                     <strong>Note:</strong> Browser debug logs use console.debug() which may be hidden by default.
                     <br />
@@ -677,6 +716,16 @@ export const SettingsPage: React.FC = () => {
                     • <strong>Firefox:</strong> Console settings → Enable all log levels
                     <br />
                     • <strong>Safari:</strong> Develop → Show JavaScript Console → All levels
+                  </div>
+
+                  {/* Performance Monitoring Info */}
+                  <div className="text-sm mt-3 pt-3 border-t border-amber-700/30">
+                    <strong>Performance Monitoring:</strong> A metrics overlay will appear in the bottom-right corner on instrumented pages (Agent Traces, etc.).
+                  </div>
+                  <div className="text-xs opacity-80">
+                    <strong>Color coding:</strong> 🟢 Fast (&lt; 50ms) · 🟡 OK (&lt; 200ms) · 🔴 Slow (&gt; 200ms)
+                    <br />
+                    <strong>Tracked:</strong> API calls, tree processing, render performance
                   </div>
                 </div>
               </AlertDescription>
