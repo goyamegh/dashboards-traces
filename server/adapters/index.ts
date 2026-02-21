@@ -6,8 +6,13 @@
 /**
  * Data Source Adapter Factory
  *
- * Creates and manages data source adapters.
- * Currently supports OpenSearch adapter only.
+ * Storage module singleton: FileStorageModule by default,
+ * can be swapped to OpenSearch when a storage cluster is configured.
+ *
+ * Usage in routes:
+ *   import { getStorageModule } from '../adapters/index.js';
+ *   const storage = getStorageModule();
+ *   const testCases = await storage.testCases.getAll();
  */
 
 import { Client } from '@opensearch-project/opensearch';
@@ -17,6 +22,8 @@ import type {
   HealthStatus,
 } from '../../types/index.js';
 import { STORAGE_INDEXES, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
+import type { IStorageModule } from './types.js';
+import { FileStorageModule } from './file/StorageModule.js';
 
 // ============================================================================
 // OpenSearch Client Helpers
@@ -209,7 +216,43 @@ export async function checkObservabilityHealth(config: ObservabilityClusterConfi
 }
 
 // ============================================================================
+// Storage Module Singleton
+// ============================================================================
+
+/**
+ * Default storage module: JSON files in agent-health-data/.
+ * Always available, no configuration needed.
+ */
+let storageModule: IStorageModule = new FileStorageModule();
+
+/**
+ * Get the current storage module.
+ * Returns FileStorageModule by default — always configured, zero dependencies.
+ * Can be swapped to OpenSearch via setStorageModule() when storage cluster is configured.
+ */
+export function getStorageModule(): IStorageModule {
+  return storageModule;
+}
+
+/**
+ * Replace the storage module (e.g., when OpenSearch becomes available).
+ * Used at startup or when storage config changes at runtime.
+ */
+export function setStorageModule(module: IStorageModule): void {
+  storageModule = module;
+}
+
+/**
+ * Check if file-based storage is active (vs OpenSearch).
+ */
+export function isFileStorage(): boolean {
+  return storageModule instanceof FileStorageModule;
+}
+
+// ============================================================================
 // Exports
 // ============================================================================
 
 export { STORAGE_INDEXES, DEFAULT_OTEL_INDEXES };
+export { FileStorageModule } from './file/StorageModule.js';
+export type { IStorageModule } from './types.js';
