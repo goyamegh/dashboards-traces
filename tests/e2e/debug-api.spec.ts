@@ -5,7 +5,19 @@
 
 import { test, expect } from '@playwright/test';
 
+// Run these tests serially to avoid race conditions with shared debug state
+test.describe.configure({ mode: 'serial' });
+
 test.describe('Debug API E2E', () => {
+  test.beforeEach(async ({ request }) => {
+    // Reset debug state before each test
+    await request.post('/api/debug', {
+      data: { enabled: false },
+    });
+    // Small delay to ensure state is settled
+    await new Promise(resolve => setTimeout(resolve, 200));
+  });
+
   test.afterEach(async ({ request }) => {
     // Reset debug state after each test
     await request.post('/api/debug', {
@@ -29,6 +41,9 @@ test.describe('Debug API E2E', () => {
 
     const data = await response.json();
     expect(data.enabled).toBe(true);
+
+    // Wait a moment for state to persist
+    await new Promise(resolve => setTimeout(resolve, 200));
 
     // Verify via GET
     const getResponse = await request.get('/api/debug');
