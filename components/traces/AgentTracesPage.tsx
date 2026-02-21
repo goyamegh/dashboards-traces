@@ -56,6 +56,7 @@ import {
   groupSpansByTrace,
 } from '@/services/traces';
 import { formatDuration } from '@/services/traces/utils';
+import { startMeasure, endMeasure } from '@/lib/performance';
 import TraceVisualization from './TraceVisualization';
 import ViewToggle, { ViewMode } from './ViewToggle';
 import { TraceFlyoutContent } from './TraceFlyoutContent';
@@ -222,31 +223,37 @@ export const AgentTracesPage: React.FC = () => {
 
   // Fetch traces
   const fetchTraces = useCallback(async () => {
+    startMeasure('AgentTracesPage.fetchTraces');
     setIsLoading(true);
     setError(null);
 
     try {
+      startMeasure('AgentTracesPage.apiCall');
       const result = await fetchRecentTraces({
         minutesAgo: parseInt(timeRange),
         serviceName: selectedAgent !== 'all' ? selectedAgent : undefined,
         textSearch: debouncedSearch || undefined,
-        size: 1000,
+        size: 100, // Reduced from 1000 to 100 for better performance
       });
+      endMeasure('AgentTracesPage.apiCall');
 
       if (result.warning) {
         setError(`Trace query warning: ${result.warning}`);
       }
 
+      startMeasure('AgentTracesPage.processTraces');
       setSpans(result.spans);
       const processedTraces = processSpansToTraces(result.spans);
       setAllTraces(processedTraces);
       setDisplayedTraces(processedTraces.slice(0, 100)); // Initially show first 100
       setDisplayCount(100);
       setLastRefresh(new Date());
+      endMeasure('AgentTracesPage.processTraces');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to fetch traces');
     } finally {
       setIsLoading(false);
+      endMeasure('AgentTracesPage.fetchTraces');
     }
   }, [selectedAgent, debouncedSearch, timeRange, processSpansToTraces]);
 
