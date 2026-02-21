@@ -65,10 +65,12 @@ test.describe('Dashboard Performance Section', () => {
     const hasTrendChart = await page.locator('text=Performance Trends').isVisible().catch(() => false);
 
     if (hasTrendChart) {
-      // Should have metric selector
-      await expect(page.locator('text=Pass Rate').or(page.locator('text=Cost')).first()).toBeVisible();
+      // Should have metric selector - look for the select trigger button
+      const metricSelector = page.locator('button').filter({ hasText: /Pass Rate|Cost|Tokens|Latency|Metric/ });
+      await expect(metricSelector.first()).toBeVisible();
       // Should have time range selector
-      await expect(page.locator('text=Last 7 days').or(page.locator('text=Last 30 days')).first()).toBeVisible();
+      const timeRangeSelector = page.locator('button').filter({ hasText: /Last 7 days|Last 30 days|All time/ });
+      await expect(timeRangeSelector.first()).toBeVisible();
     }
   });
 

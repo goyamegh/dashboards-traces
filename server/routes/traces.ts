@@ -28,7 +28,7 @@ const router = Router();
  */
 router.post('/api/traces', async (req: Request, res: Response) => {
   try {
-    const { traceId, runIds, startTime, endTime, size = 500, serviceName, textSearch } = req.body;
+    const { traceId, runIds, startTime, endTime, size = 100, serviceName, textSearch, cursor } = req.body;
 
     // Validate request - allow time range queries for live tailing
     const hasTimeRange = startTime || endTime;
@@ -52,6 +52,8 @@ router.post('/api/traces', async (req: Request, res: Response) => {
     // 2. Query live OpenSearch traces (independent of sample logic)
     let realSpans: Span[] = [];
     let warning: string | undefined;
+    let nextCursor: string | null = null;
+    let hasMore: boolean = false;
     const config = resolveObservabilityConfig(req);
 
     if (config && (traceId || (runIds && runIds.length > 0) || startTime || endTime)) {
@@ -59,7 +61,7 @@ router.post('/api/traces', async (req: Request, res: Response) => {
         const indexPattern = config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces;
 
         const result = await fetchTraces(
-          { traceId, runIds, startTime, endTime, size, serviceName, textSearch },
+          { traceId, runIds, startTime, endTime, size, serviceName, textSearch, cursor },
           {
             endpoint: config.endpoint,
             username: config.username,
@@ -70,6 +72,8 @@ router.post('/api/traces', async (req: Request, res: Response) => {
         );
 
         realSpans = (result.spans || []) as Span[];
+        nextCursor = result.nextCursor || null;
+        hasMore = result.hasMore || false;
       } catch (e: any) {
         console.warn('[TracesAPI] OpenSearch query failed:', e.message);
         warning = e.message;
@@ -81,7 +85,13 @@ router.post('/api/traces', async (req: Request, res: Response) => {
     // Merge: sample spans first, then real spans
     const allSpans = [...sampleSpans, ...realSpans];
 
-    res.json({ spans: allSpans, total: allSpans.length, warning });
+    res.json({
+      spans: allSpans,
+      total: allSpans.length,
+      nextCursor,
+      hasMore,
+      warning
+    });
 
   } catch (error: any) {
     console.error('[TracesAPI] Error:', error);

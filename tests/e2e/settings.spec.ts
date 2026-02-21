@@ -46,11 +46,12 @@ test.describe('Settings Page', () => {
     const state = await toggle.getAttribute('data-state');
     if (state !== 'checked') {
       await toggle.click();
-      await page.waitForTimeout(500);
+      // Wait for API call and state update
+      await page.waitForTimeout(1500);
     }
 
-    // Warning should be visible
-    await expect(page.locator('text=Debug mode enabled')).toBeVisible();
+    // Warning should be visible - wait longer for the alert to appear
+    await expect(page.locator('text=Debug mode enabled')).toBeVisible({ timeout: 5000 });
   });
 });
 

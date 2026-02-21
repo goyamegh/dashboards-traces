@@ -97,11 +97,14 @@ export interface TracesQueryOptions {
   size?: number;
   serviceName?: string;
   textSearch?: string;
+  cursor?: string; // For pagination: encoded search_after values
 }
 
 export interface TracesResponse {
   spans: NormalizedSpan[];
   total: number;
+  nextCursor?: string | null; // Next page cursor (null if no more pages)
+  hasMore?: boolean; // Whether more results are available
 }
 
 export interface HealthStatus {
@@ -205,7 +208,7 @@ export async function fetchTraces(
   options: TracesQueryOptions,
   config: OpenSearchConfig
 ): Promise<TracesResponse> {
-  const { traceId, runIds, startTime, endTime, size = 500, serviceName, textSearch } = options;
+  const { traceId, runIds, startTime, endTime, size = 100, serviceName, textSearch, cursor } = options;
   const { endpoint, username, password, indexPattern = 'otel-v1-apm-span-*', tlsSkipVerify } = config;
 
   // For live tailing, we allow queries with just time range + optional filters
@@ -216,7 +219,7 @@ export async function fetchTraces(
     throw new Error('Either traceId, runIds, or time range is required');
   }
 
-  debug('TracesService', 'Fetching traces:', { traceId, runIds: runIds?.length, serviceName, textSearch, size });
+  debug('TracesService', 'Fetching traces:', { traceId, runIds: runIds?.length, serviceName, textSearch, size, cursor: cursor ? 'present' : 'none' });
 
   // Build OpenSearch query
   const must: any[] = [];
@@ -262,11 +265,22 @@ export async function fetchTraces(
     });
   }
 
-  const query = {
+  const query: any = {
     size,
     sort: [{ 'startTime': { order: 'desc' } }],  // Most recent first for live tailing
     query: { bool: { must } }
   };
+
+  // Add cursor for pagination (search_after in OpenSearch)
+  if (cursor) {
+    try {
+      query.search_after = JSON.parse(decodeURIComponent(cursor));
+      debug('TracesService', 'Using cursor (search_after):', query.search_after);
+    } catch (e) {
+      console.error('[TracesService] Invalid cursor:', e);
+      // Continue without cursor if invalid
+    }
+  }
 
   debug('TracesService', 'OpenSearch query:', JSON.stringify(query, null, 2));
 
@@ -290,13 +304,25 @@ export async function fetchTraces(
   const data = await response.json();
 
   // Transform spans
-  const spans = (data.hits?.hits || []).map((hit: any) => transformSpan(hit._source));
+  const hits = data.hits?.hits || [];
+  const spans = hits.map((hit: any) => transformSpan(hit._source));
 
-  debug('TracesService', 'Found', spans.length, 'spans');
+  // Generate next cursor from last hit's sort values
+  const lastHit = hits[hits.length - 1];
+  const nextCursor = lastHit?.sort
+    ? encodeURIComponent(JSON.stringify(lastHit.sort))
+    : null;
+
+  // Check if there are more results (when we get exactly 'size' results, assume there might be more)
+  const hasMore = spans.length === size;
+
+  debug('TracesService', 'Found', spans.length, 'spans', hasMore ? '(more available)' : '(end of results)');
 
   return {
     spans,
-    total: data.hits?.total?.value || spans.length
+    total: data.hits?.total?.value || spans.length,
+    nextCursor,
+    hasMore
   };
 }
 
