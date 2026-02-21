@@ -12,6 +12,7 @@ import express, { Express } from 'express';
 import routes from './routes/index.js';
 import { setupMiddleware, setupSpaFallback } from './middleware/index.js';
 import { loadConfig } from '@/lib/config/index';
+import { migrateYamlToJsonIfNeeded } from './services/configMigration.js';
 
 // Register server-side connectors (subprocess, claude-code)
 // This import has side effects that register connectors with the registry
@@ -24,6 +25,9 @@ import '@/services/connectors/server';
  * @returns Configured Express app
  */
 export async function createApp(): Promise<Express> {
+  // Migrate agent-health.yaml → agent-health.config.json if needed (one-time)
+  await migrateYamlToJsonIfNeeded();
+
   await loadConfig();
 
   const app = express();

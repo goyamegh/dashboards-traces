@@ -72,7 +72,7 @@ ${Object.values(DEFAULT_CONFIG.models).map(model => `  ${model.display_name}:
 
         <CardFooter className="border-t justify-between">
           <p className="text-xs text-muted-foreground italic">
-            This configuration is loaded from the server. Edit <code className="bg-muted px-1 rounded">config.yaml</code> to update.
+            This configuration is loaded from the server. Edit <code className="bg-muted px-1 rounded">agent-health.config.json</code> or <code className="bg-muted px-1 rounded">agent-health.config.ts</code> to update.
           </p>
           <Button variant="outline" size="sm">
             <RefreshCw size={14} className="mr-2" />

@@ -159,7 +159,7 @@ export const SettingsPage: React.FC = () => {
   }, []);
 
   useEffect(() => {
-    // Load debug state from server API (single source of truth: agent-health.yaml)
+    // Load debug state from server API (single source of truth: agent-health.config.json)
     // and sync to localStorage for fast browser-side checks
     fetch(`${ENV_CONFIG.backendUrl}/api/debug`)
       .then(res => res.json())
@@ -360,7 +360,7 @@ export const SettingsPage: React.FC = () => {
       // Ignore localStorage errors
     }
 
-    // Persist to server (agent-health.yaml) - single source of truth
+    // Persist to server (agent-health.config.json) - single source of truth
     try {
       const response = await fetch(`${ENV_CONFIG.backendUrl}/api/debug`, {
         method: 'POST',
@@ -942,7 +942,7 @@ export const SettingsPage: React.FC = () => {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-muted-foreground">
-            Configure the OpenSearch cluster for storing evaluation data. Credentials are stored securely on the server (in agent-health.yaml), not in your browser.
+            Configure the OpenSearch cluster for storing evaluation data. Credentials are stored securely on the server (in agent-health.config.json), not in your browser.
           </p>
 
           <div className="space-y-3">
@@ -1012,7 +1012,7 @@ export const SettingsPage: React.FC = () => {
                   ? 'bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50'
                   : 'bg-gray-100 text-gray-900 border border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700/50'
               }`}>
-                {configStatus.storage.source === 'file' ? 'Server file (agent-health.yaml)' :
+                {configStatus.storage.source === 'file' ? 'Config file (agent-health.config.json)' :
                  configStatus.storage.source === 'environment' ? 'Environment variables' :
                  'Not configured'}
               </span>
@@ -1152,7 +1152,7 @@ export const SettingsPage: React.FC = () => {
         </CardHeader>
         <CardContent className="space-y-4">
           <p className="text-xs text-muted-foreground">
-            Configure the OpenSearch cluster for observability data. Credentials are stored securely on the server (in agent-health.yaml), not in your browser.
+            Configure the OpenSearch cluster for observability data. Credentials are stored securely on the server (in agent-health.config.json), not in your browser.
           </p>
 
           <div className="space-y-3">
@@ -1265,7 +1265,7 @@ export const SettingsPage: React.FC = () => {
                   ? 'bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50'
                   : 'bg-gray-100 text-gray-900 border border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700/50'
               }`}>
-                {configStatus.observability.source === 'file' ? 'Server file (agent-health.yaml)' :
+                {configStatus.observability.source === 'file' ? 'Config file (agent-health.config.json)' :
                  configStatus.observability.source === 'environment' ? 'Environment variables' :
                  'Not configured'}
               </span>

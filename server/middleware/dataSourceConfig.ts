@@ -7,7 +7,7 @@
  * Data Source Configuration Resolution
  *
  * Resolves data source configuration from:
- * 1. File (agent-health.yaml) - highest priority
+ * 1. File (agent-health.config.json) - highest priority
  * 2. Environment variables - fallback
  *
  * NO HEADERS - credentials are never sent from browser for security.
@@ -40,7 +40,7 @@ export const STORAGE_INDEXES = {
  * Resolve storage cluster configuration
  *
  * Priority:
- * 1. File config (agent-health.yaml)
+ * 1. File config (agent-health.config.json)
  * 2. Environment variables (OPENSEARCH_STORAGE_*)
  * 3. null (not configured)
  */
@@ -71,7 +71,7 @@ export function resolveStorageConfig(req: Request): StorageClusterConfig | null 
  * Resolve observability cluster configuration
  *
  * Priority:
- * 1. File config (agent-health.yaml)
+ * 1. File config (agent-health.config.json)
  * 2. Environment variables (OPENSEARCH_LOGS_*)
  * 3. null (not configured)
  *
