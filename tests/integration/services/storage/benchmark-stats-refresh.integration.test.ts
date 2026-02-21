@@ -9,9 +9,11 @@
  */
 
 import { jest } from '@jest/globals';
-import request from 'supertest';
 import type { Application } from 'express';
 import type { BenchmarkRun } from '@/types';
+
+// Use require for CommonJS module compatibility in Jest
+const request = require('supertest');
 
 // Mock OpenSearch client
 const mockGet = jest.fn();
@@ -54,7 +56,7 @@ describe('Benchmark Stats Refresh Integration', () => {
     app.use(express.json());
 
     const router = await import('@/server/routes/storage/benchmarks');
-    app.use('/api/storage', router.default);
+    app.use(router.default);
   });
 
   describe('End-to-end stats backfill flow', () => {

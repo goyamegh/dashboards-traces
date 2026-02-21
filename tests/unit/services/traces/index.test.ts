@@ -359,7 +359,7 @@ describe('Traces Service Index', () => {
       await fetchRecentTraces({});
 
       const callBody = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
-      expect(callBody.size).toBe(500);
+      expect(callBody.size).toBe(100); // Changed default from 500 to 100 for pagination
       expect(callBody.endTime).toBeDefined();
       expect(callBody.startTime).toBeLessThan(callBody.endTime);
       // Default 5 minutes = 300000ms
