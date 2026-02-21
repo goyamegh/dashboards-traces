@@ -122,6 +122,87 @@ Environment variables are exposed via `vite.config.ts` using `loadEnv()`. Access
 - Simpler local agent without ML-Commons dependencies
 - Endpoint configured via `LANGGRAPH_ENDPOINT`
 
+## OpenTelemetry Instrumentation Standards
+
+**CRITICAL:** All agents integrating with Agent Health MUST follow OpenTelemetry semantic conventions for instrumentation data.
+
+### Required Semantic Conventions
+
+Agent instrumentation MUST use the standardized attributes defined in:
+- **Gen AI Conventions**: https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/
+
+### Key Requirements
+
+1. **Span Naming**: Follow the `gen_ai.operation.name` convention
+   - Use standard operation types: `chat`, `completion`, `embedding`, etc.
+
+2. **Required Attributes**:
+   - `gen_ai.system` - AI system identifier (e.g., `openai`, `anthropic`, `aws.bedrock`)
+   - `gen_ai.request.model` - Model identifier
+   - `gen_ai.operation.name` - Operation type
+   - `gen_ai.request.temperature` - Sampling temperature (if applicable)
+   - `gen_ai.request.max_tokens` - Maximum tokens requested
+   - `gen_ai.usage.prompt_tokens` - Input token count
+   - `gen_ai.usage.completion_tokens` - Output token count
+
+3. **Span Hierarchy**:
+   - Root span: Agent execution
+   - Child spans: LLM calls, tool invocations, retrieval operations
+   - Follow parent-child relationships for accurate trace visualization
+
+4. **Tool Invocation Spans**:
+   - Use `gen_ai.tool.name` for tool identification
+   - Include `gen_ai.tool.description` for context
+   - Capture tool input/output as span events
+
+### Example Instrumentation
+
+```python
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
+
+tracer = trace.get_tracer(__name__)
+
+with tracer.start_as_current_span(
+    "chat",
+    kind=SpanKind.CLIENT,
+    attributes={
+        "gen_ai.system": "anthropic",
+        "gen_ai.request.model": "claude-sonnet-4",
+        "gen_ai.operation.name": "chat",
+        "gen_ai.request.temperature": 0.7,
+        "gen_ai.request.max_tokens": 4096,
+    }
+) as span:
+    response = call_llm(prompt)
+
+    span.set_attributes({
+        "gen_ai.usage.prompt_tokens": response.usage.input_tokens,
+        "gen_ai.usage.completion_tokens": response.usage.output_tokens,
+    })
+```
+
+### Why This Matters
+
+- **Trace Visualization**: Agent Health categorizes spans based on these attributes
+- **Metrics Calculation**: Token counts and costs are computed from semantic attributes
+- **Cross-Agent Comparison**: Standardized attributes enable fair comparisons
+- **Debugging**: Consistent naming helps identify issues across different agents
+
+### Validation
+
+Use the Agent Health trace viewer to validate your instrumentation:
+1. Run an evaluation with `useTraces: true`
+2. View the trace in the Traces page
+3. Verify spans have correct `gen_ai.*` attributes
+4. Check that span hierarchy matches expected flow
+
+### Additional Resources
+
+- [OpenTelemetry Gen AI Semantic Conventions](https://opentelemetry.io/docs/specs/semconv/gen-ai/)
+- [OpenTelemetry Span Attributes Registry](https://opentelemetry.io/docs/specs/semconv/registry/attributes/gen-ai/)
+- [Agent Health Trace Categorization](./services/traces/spanCategorization.ts)
+
 ## Testing
 
 Tests use Jest with ts-jest. Test files are in `__tests__/` directories or named `*.test.ts`.
