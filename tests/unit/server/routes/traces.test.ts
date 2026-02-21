@@ -106,7 +106,7 @@ describe('Traces Routes', () => {
         expect.objectContaining({ traceId: 'trace-123' }),
         expect.any(Object)
       );
-      expect(res.json).toHaveBeenCalledWith({ spans: [], total: 0, warning: undefined });
+      expect(res.json).toHaveBeenCalledWith({ spans: [], total: 0, nextCursor: null, hasMore: false, warning: undefined });
     });
 
     it('should accept runIds filter', async () => {
@@ -163,6 +163,8 @@ describe('Traces Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         spans: sampleSpans,
         total: 1,
+        nextCursor: null,
+        hasMore: false,
         warning: undefined,
       });
     });
@@ -182,6 +184,8 @@ describe('Traces Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         spans: [...sampleSpans, ...realSpans],
         total: 2,
+        nextCursor: null,
+        hasMore: false,
         warning: undefined,
       });
     });
@@ -195,7 +199,7 @@ describe('Traces Routes', () => {
       await handler(req, res);
 
       expect(mockFetchTraces).toHaveBeenCalledWith(
-        expect.objectContaining({ size: 500 }),
+        expect.objectContaining({ size: 100 }), // Changed default from 500 to 100 for pagination
         expect.any(Object)
       );
     });
@@ -214,6 +218,8 @@ describe('Traces Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         spans: sampleSpans,
         total: 1,
+        nextCursor: null,
+        hasMore: false,
         warning: 'Observability data source not configured',
       });
     });
@@ -231,6 +237,8 @@ describe('Traces Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         spans: sampleSpans,
         total: 1,
+        nextCursor: null,
+        hasMore: false,
         warning: 'Connection failed',
       });
     });
@@ -258,6 +266,8 @@ describe('Traces Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         spans: liveSpans,
         total: 1,
+        nextCursor: null,
+        hasMore: false,
         warning: undefined,
       });
     });
@@ -273,6 +283,8 @@ describe('Traces Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         spans: [],
         total: 0,
+        nextCursor: null,
+        hasMore: false,
         warning: 'index_not_found_exception',
       });
     });
@@ -292,6 +304,8 @@ describe('Traces Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         spans: [],
         total: 0,
+        nextCursor: null,
+        hasMore: false,
         warning: 'Observability data source not configured',
       });
     });
@@ -312,6 +326,8 @@ describe('Traces Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         spans: [],
         total: 0,
+        nextCursor: null,
+        hasMore: false,
         warning: undefined,
       });
     });

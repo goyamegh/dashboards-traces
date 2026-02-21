@@ -13,7 +13,7 @@ import { test, expect } from '@playwright/test';
 test.describe('Benchmark Stats Refresh E2E', () => {
   test.beforeEach(async ({ page }) => {
     // Navigate to benchmarks page
-    await page.goto('http://localhost:4001');
+    await page.goto('/');
     await page.waitForLoadState('networkidle');
   });
 
@@ -269,7 +269,7 @@ test.describe('Benchmark Stats Refresh E2E', () => {
 
 test.describe('Benchmark Stats Edge Cases', () => {
   test('should handle cancelled runs correctly', async ({ page }) => {
-    await page.goto('http://localhost:4001');
+    await page.goto('/');
     await page.getByRole('link', { name: /benchmarks/i }).click();
 
     // Look for cancelled runs
@@ -285,7 +285,7 @@ test.describe('Benchmark Stats Edge Cases', () => {
   });
 
   test('should handle runs with mixed result statuses', async ({ page }) => {
-    await page.goto('http://localhost:4001');
+    await page.goto('/');
     await page.getByRole('link', { name: /benchmarks/i }).click();
 
     const benchmarkLinks = await page.getByRole('link', { name: /runs/i }).all();
