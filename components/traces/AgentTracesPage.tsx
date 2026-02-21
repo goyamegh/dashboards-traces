@@ -24,43 +24,24 @@ import {
   XCircle,
   ChevronRight,
   BarChart3,
-  Filter,
-  X,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@/components/ui/table';
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-  SheetDescription,
-} from '@/components/ui/sheet';
-import { Span, TraceSummary, TimeRange } from '@/types';
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
+import { Span } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import {
   fetchRecentTraces,
-  processSpansIntoTree,
-  calculateTimeRange,
   groupSpansByTrace,
 } from '@/services/traces';
 import { formatDuration } from '@/services/traces/utils';
 import { startMeasure, endMeasure } from '@/lib/performance';
-import TraceVisualization from './TraceVisualization';
-import ViewToggle, { ViewMode } from './ViewToggle';
 import { TraceFlyoutContent } from './TraceFlyoutContent';
-import { LatencyHistogram } from './LatencyHistogram';
+import MetricsOverview from './MetricsOverview';
+import { useSidebarCollapse } from '../Layout';
 
 // ==================== Types ====================
 
@@ -85,11 +66,14 @@ interface TraceRowProps {
 
 const TraceRow: React.FC<TraceRowProps> = ({ trace, onSelect, isSelected }) => {
   return (
-    <TableRow
-      className={`cursor-pointer hover:bg-muted/50 ${isSelected ? 'bg-muted/70' : ''}`}
+    <tr
+      className={`border-b transition-colors cursor-pointer hover:bg-muted/50 ${isSelected ? 'bg-muted/70' : ''}`}
       onClick={onSelect}
     >
-      <TableCell className="font-mono text-xs">
+      <td className="p-4 align-middle text-xs text-muted-foreground w-[180px]">
+        {trace.startTime.toLocaleString()}
+      </td>
+      <td className="p-4 align-middle font-mono text-xs">
         <div className="flex items-center gap-2">
           {trace.hasErrors ? (
             <XCircle size={14} className="text-red-700 dark:text-red-400" />
@@ -100,40 +84,40 @@ const TraceRow: React.FC<TraceRowProps> = ({ trace, onSelect, isSelected }) => {
             {trace.traceId}
           </span>
         </div>
-      </TableCell>
-      <TableCell>
+      </td>
+      <td className="p-4 align-middle">
         <span title={trace.rootSpanName}>
           {trace.rootSpanName}
         </span>
-      </TableCell>
-      <TableCell>
+      </td>
+      <td className="p-4 align-middle">
         <Badge variant="outline" className="text-xs">
           {trace.serviceName || 'unknown'}
         </Badge>
-      </TableCell>
-      <TableCell className="text-xs text-muted-foreground">
-        {trace.startTime.toLocaleString()}
-      </TableCell>
-      <TableCell>
+      </td>
+      <td className="p-4 align-middle">
         <span className={`font-mono text-xs ${trace.duration > 5000 ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
           {formatDuration(trace.duration)}
         </span>
-      </TableCell>
-      <TableCell className="text-center">
+      </td>
+      <td className="p-4 align-middle text-center">
         <Badge variant="secondary" className="text-xs">
           {trace.spanCount}
         </Badge>
-      </TableCell>
-      <TableCell>
+      </td>
+      <td className="p-4 align-middle">
         <ChevronRight size={16} className="text-muted-foreground" />
-      </TableCell>
-    </TableRow>
+      </td>
+    </tr>
   );
 };
 
 // ==================== Main Component ====================
 
 export const AgentTracesPage: React.FC = () => {
+  // Sidebar collapse control
+  const { isCollapsed, setIsCollapsed } = useSidebarCollapse();
+  
   // Filter state
   const [selectedAgent, setSelectedAgent] = useState<string>('all');
   const [textSearch, setTextSearch] = useState('');
@@ -154,11 +138,10 @@ export const AgentTracesPage: React.FC = () => {
   // Flyout state
   const [flyoutOpen, setFlyoutOpen] = useState(false);
   const [selectedTrace, setSelectedTrace] = useState<TraceTableRow | null>(null);
-  const [traceViewMode, setTraceViewMode] = useState<ViewMode>('timeline');
-  
-  // Flyout resize state
-  const [flyoutWidth, setFlyoutWidth] = useState(800);
-  const [isResizing, setIsResizing] = useState(false);
+
+  // Scroll state for hiding container header
+  const [isScrolled, setIsScrolled] = useState(false);
+  const scrollContainerRef = React.useRef<HTMLDivElement>(null);
 
   // Intersection observer ref for lazy loading
   const loadMoreRef = React.useRef<HTMLTableRowElement>(null);
@@ -174,14 +157,14 @@ export const AgentTracesPage: React.FC = () => {
 
   // Time range options
   const timeRangeOptions = [
-    { value: '15', label: 'Last 15 minutes' },
-    { value: '60', label: 'Last hour' },
-    { value: '180', label: 'Last 3 hours' },
-    { value: '360', label: 'Last 6 hours' },
-    { value: '720', label: 'Last 12 hours' },
-    { value: '1440', label: 'Last 24 hours' },
-    { value: '4320', label: 'Last 3 days' },
-    { value: '10080', label: 'Last 7 days' },
+    { value: '15', label: 'Last 15m' },
+    { value: '60', label: 'Last 1hr' },
+    { value: '180', label: 'Last 3hr' },
+    { value: '360', label: 'Last 6hr' },
+    { value: '720', label: 'Last 12hr' },
+    { value: '1440', label: 'Last 1d' },
+    { value: '4320', label: 'Last 3d' },
+    { value: '10080', label: 'Last 7d' },
   ];
 
   // Debounce text search
@@ -262,6 +245,20 @@ export const AgentTracesPage: React.FC = () => {
     fetchTraces();
   }, [fetchTraces]);
 
+  // Handle scroll to hide/show container header
+  useEffect(() => {
+    const scrollContainer = scrollContainerRef.current;
+    if (!scrollContainer) return;
+
+    const handleScroll = () => {
+      // Hide header when scrolled more than 10px
+      setIsScrolled(scrollContainer.scrollTop > 10);
+    };
+
+    scrollContainer.addEventListener('scroll', handleScroll);
+    return () => scrollContainer.removeEventListener('scroll', handleScroll);
+  }, []);
+
   // Lazy loading with intersection observer
   useEffect(() => {
     const currentRef = loadMoreRef.current;
@@ -293,8 +290,14 @@ export const AgentTracesPage: React.FC = () => {
 
   // Handle trace selection
   const handleSelectTrace = (trace: TraceTableRow) => {
+    // If flyout is already open, just update the selected trace (no close/reopen flash)
+    // If flyout is closed, open it with the selected trace and collapse the sidebar
     setSelectedTrace(trace);
-    setFlyoutOpen(true);
+    if (!flyoutOpen) {
+      setFlyoutOpen(true);
+      // Collapse sidebar when opening flyout for more screen space
+      setIsCollapsed(true);
+    }
   };
 
   // Close flyout
@@ -302,42 +305,6 @@ export const AgentTracesPage: React.FC = () => {
     setFlyoutOpen(false);
     setSelectedTrace(null);
   };
-
-  // Resize handlers for flyout
-  const handleMouseDown = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    setIsResizing(true);
-  }, []);
-
-  useEffect(() => {
-    const handleMouseMove = (e: MouseEvent) => {
-      if (!isResizing) return;
-      
-      const newWidth = window.innerWidth - e.clientX;
-      // Constrain width between 400px and 90% of window width
-      const minWidth = 400;
-      const maxWidth = window.innerWidth * 0.9;
-      setFlyoutWidth(Math.max(minWidth, Math.min(newWidth, maxWidth)));
-    };
-
-    const handleMouseUp = () => {
-      setIsResizing(false);
-    };
-
-    if (isResizing) {
-      document.addEventListener('mousemove', handleMouseMove);
-      document.addEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = 'ew-resize';
-      document.body.style.userSelect = 'none';
-    }
-
-    return () => {
-      document.removeEventListener('mousemove', handleMouseMove);
-      document.removeEventListener('mouseup', handleMouseUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    };
-  }, [isResizing]);
 
   // Calculate latency distribution for histogram
   const latencyDistribution = useMemo(() => {
@@ -361,6 +328,49 @@ export const AgentTracesPage: React.FC = () => {
     return buckets;
   }, [allTraces]);
 
+  // Calculate time series data for errors and requests
+  const { errorTimeSeries, requestTimeSeries } = useMemo(() => {
+    if (allTraces.length === 0) {
+      return {
+        errorTimeSeries: [],
+        requestTimeSeries: [],
+      };
+    }
+
+    // Create 20 time buckets for the selected time range
+    const numBuckets = 20;
+    const now = Date.now();
+    const timeRangeMs = parseInt(timeRange) * 60 * 1000;
+    const bucketSize = timeRangeMs / numBuckets;
+
+    const errorBuckets = Array(numBuckets).fill(0);
+    const requestBuckets = Array(numBuckets).fill(0);
+
+    allTraces.forEach(trace => {
+      const traceTime = trace.startTime.getTime();
+      const bucketIndex = Math.floor((now - traceTime) / bucketSize);
+      const reversedIndex = numBuckets - 1 - bucketIndex;
+
+      if (reversedIndex >= 0 && reversedIndex < numBuckets) {
+        requestBuckets[reversedIndex]++;
+        if (trace.hasErrors) {
+          errorBuckets[reversedIndex]++;
+        }
+      }
+    });
+
+    return {
+      errorTimeSeries: errorBuckets.map((count, idx) => ({
+        timestamp: new Date(now - (numBuckets - idx) * bucketSize),
+        value: count,
+      })),
+      requestTimeSeries: requestBuckets.map((count, idx) => ({
+        timestamp: new Date(now - (numBuckets - idx) * bucketSize),
+        value: count,
+      })),
+    };
+  }, [allTraces, timeRange]);
+
   // Calculate stats
   const stats = useMemo(() => {
     if (allTraces.length === 0) return { total: 0, errors: 0, avgDuration: 0 };
@@ -376,110 +386,69 @@ export const AgentTracesPage: React.FC = () => {
   }, [allTraces]);
 
   return (
-    <div className="p-6 h-full flex flex-col">
-      {/* Header */}
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h2 className="text-2xl font-bold">Agent Traces</h2>
-          <p className="text-xs text-muted-foreground mt-1">
-            View and analyze agent execution traces from OTEL instrumentation
-          </p>
-        </div>
-        <div className="flex items-center gap-3">
-          {lastRefresh && (
-            <span className="text-xs text-muted-foreground">
-              Last updated: {lastRefresh.toLocaleTimeString()}
-            </span>
-          )}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={fetchTraces}
-            disabled={isLoading}
-          >
-            <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
-          </Button>
-        </div>
-      </div>
+    <div className="h-full flex flex-col">
+      {/* Compact Header with Inline Stats and Filters */}
+      <div className="px-6 pt-6 pb-4 border-b">
+        {/* Single Row: Title + Stats + Filters */}
+        <div className="flex items-start justify-between gap-4">
+          {/* Left: Title and Description */}
+          <div className="flex-shrink-0">
+            <h2 className="text-2xl font-bold">Agent Traces</h2>
+            <p className="text-xs text-muted-foreground mt-1">
+              Analyze agent execution traces from OTEL
+            </p>
+          </div>
 
-      {/* Stats Cards */}
-      <div className="grid grid-cols-4 gap-4 mb-6">
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-muted-foreground">Total Traces</p>
-                <p className="text-2xl font-bold">{stats.total}</p>
+          {/* Right: Stats and Filters with Last Updated below */}
+          <div className="flex flex-col items-end gap-1 flex-shrink-0">
+            <div className="flex items-center gap-3">
+              {/* Inline Stats */}
+              <div className="flex items-center gap-2 text-sm">
+                <div className="flex items-center gap-1">
+                  <Activity size={13} className="text-opensearch-blue" />
+                  <span className="font-semibold text-opensearch-blue">{allTraces.length}</span>
+                  <span className="text-muted-foreground">traces</span>
+                </div>
+                <span className="text-muted-foreground">•</span>
+                <div className="flex items-center gap-1">
+                  <BarChart3 size={13} className="text-purple-700 dark:text-purple-400" />
+                  <span className="font-semibold text-purple-700 dark:text-purple-400">{spans.length}</span>
+                  <span className="text-muted-foreground">spans</span>
+                </div>
+                <span className="text-muted-foreground">•</span>
+                <div className="flex items-center gap-1">
+                  <AlertCircle size={13} className="text-red-700 dark:text-red-400" />
+                  <span className="font-semibold text-red-700 dark:text-red-400">
+                    {stats.total > 0 ? ((stats.errors / stats.total) * 100).toFixed(1) : 0}%
+                  </span>
+                  <span className="text-muted-foreground">({stats.errors}) errors</span>
+                </div>
+                <span className="text-muted-foreground">•</span>
+                <div className="flex items-center gap-1">
+                  <Clock size={13} className="text-amber-700 dark:text-amber-400" />
+                  <span className="font-semibold text-amber-700 dark:text-amber-400">
+                    {formatDuration(stats.avgDuration)}
+                  </span>
+                  <span className="text-muted-foreground">avg latency</span>
+                </div>
               </div>
-              <Activity className="text-opensearch-blue" size={24} />
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-muted-foreground">Error Rate</p>
-                <p className="text-2xl font-bold text-red-700 dark:text-red-400">
-                  {stats.total > 0 ? ((stats.errors / stats.total) * 100).toFixed(1) : 0}%
-                </p>
-              </div>
-              <AlertCircle className="text-red-700 dark:text-red-400" size={24} />
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-muted-foreground">Avg Duration</p>
-                <p className="text-2xl font-bold text-amber-700 dark:text-amber-400">
-                  {formatDuration(stats.avgDuration)}
-                </p>
-              </div>
-              <Clock className="text-amber-700 dark:text-amber-400" size={24} />
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="p-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-muted-foreground">Total Spans</p>
-                <p className="text-2xl font-bold text-purple-700 dark:text-purple-400">{spans.length}</p>
-              </div>
-              <BarChart3 className="text-purple-700 dark:text-purple-400" size={24} />
-            </div>
-          </CardContent>
-        </Card>
-      </div>
 
-      {/* Filters */}
-      <Card className="mb-4">
-        <CardContent className="p-4">
-          <div className="flex gap-4 items-end">
-            {/* Time Range */}
-            <div className="w-48 space-y-1.5">
-              <label className="text-xs text-muted-foreground">Time Range</label>
-              <Select value={timeRange} onValueChange={setTimeRange}>
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {timeRangeOptions.map(opt => (
-                    <SelectItem key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
+              {/* Search Bar */}
+              <div className="w-[220px]">
+                <div className="relative">
+                  <Search size={14} className="absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    placeholder="Search"
+                    value={textSearch}
+                    onChange={(e) => setTextSearch(e.target.value)}
+                    className="pl-8 h-8 text-sm"
+                  />
+                </div>
+              </div>
 
-            {/* Agent Filter */}
-            <div className="w-48 space-y-1.5">
-              <label className="text-xs text-muted-foreground">Agent</label>
+              {/* Agent Filter */}
               <Select value={selectedAgent} onValueChange={setSelectedAgent}>
-                <SelectTrigger>
+                <SelectTrigger className="w-[110px] h-8 text-sm">
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
@@ -490,64 +459,71 @@ export const AgentTracesPage: React.FC = () => {
                   ))}
                 </SelectContent>
               </Select>
-            </div>
 
-            {/* Text Search */}
-            <div className="flex-1 space-y-1.5">
-              <label className="text-xs text-muted-foreground">Search</label>
-              <div className="relative">
-                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
-                <Input
-                  placeholder="Search trace IDs, span names, attributes..."
-                  value={textSearch}
-                  onChange={(e) => setTextSearch(e.target.value)}
-                  className="pl-9"
-                />
-              </div>
+              {/* Time Range */}
+              <Select value={timeRange} onValueChange={setTimeRange}>
+                <SelectTrigger className="w-[90px] h-8 text-sm">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {timeRangeOptions.map(opt => (
+                    <SelectItem key={opt.value} value={opt.value}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+
+              {/* Refresh Button */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={fetchTraces}
+                disabled={isLoading}
+                className="h-8"
+              >
+                <RefreshCw size={14} className={isLoading ? 'animate-spin' : ''} />
+              </Button>
             </div>
+            
+            {/* Last Updated - Below stats and filters */}
+            {lastRefresh && (
+              <span className="text-xs text-muted-foreground">
+                Last updated: {lastRefresh.toLocaleTimeString()}
+              </span>
+            )}
           </div>
-        </CardContent>
-      </Card>
+        </div>
+      </div>
 
-      {/* Latency Histogram */}
-      {allTraces.length > 0 && (
-        <Card className="mb-4">
-          <CardHeader className="py-3 px-4">
-            <CardTitle className="text-sm font-medium flex items-center gap-2">
-              <BarChart3 size={14} />
-              Latency Distribution
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="p-4 pt-0">
-            <LatencyHistogram data={latencyDistribution} />
-          </CardContent>
-        </Card>
-      )}
+      {/* Metrics Overview - Trends */}
+      <div className="px-6 pt-4">
+        {allTraces.length > 0 && (
+          <MetricsOverview
+            latencyDistribution={latencyDistribution}
+            errorTimeSeries={errorTimeSeries}
+            requestTimeSeries={requestTimeSeries}
+            totalRequests={stats.total}
+            totalErrors={stats.errors}
+            avgLatency={stats.avgDuration}
+          />
+        )}
+      </div>
 
       {/* Error State */}
       {error && (
-        <Card className="mb-4 bg-red-500/10 border-red-500/30">
-          <CardContent className="p-4 text-sm text-red-400">
-            {error}
-          </CardContent>
-        </Card>
+        <div className="px-6 pt-4">
+          <Card className="bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30">
+            <CardContent className="p-4 text-sm text-red-700 dark:text-red-400">
+              {error}
+            </CardContent>
+          </Card>
+        </div>
       )}
 
       {/* Traces Table */}
-      <Card className="flex-1 flex flex-col overflow-hidden">
-        <CardHeader className="py-2 px-4 border-b">
-          <CardTitle className="text-sm font-medium flex items-center gap-2">
-            <Activity size={14} />
-            Traces
-            <Badge variant="secondary" className="ml-2">{allTraces.length}</Badge>
-            {displayedTraces.length < allTraces.length && (
-              <span className="text-xs text-muted-foreground ml-2">
-                (showing {displayedTraces.length})
-              </span>
-            )}
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="flex-1 p-0 overflow-auto">
+      <Card className="flex-1 flex flex-col overflow-hidden mx-6 mt-4 mb-6">
+        <div ref={scrollContainerRef} className="relative flex-1 overflow-auto">
           {allTraces.length === 0 && !isLoading ? (
             <div className="h-full flex flex-col items-center justify-center text-muted-foreground py-12">
               <Activity size={48} className="mb-4 opacity-20" />
@@ -559,70 +535,110 @@ export const AgentTracesPage: React.FC = () => {
               </p>
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Trace ID</TableHead>
-                  <TableHead>Root Span</TableHead>
-                  <TableHead>Service</TableHead>
-                  <TableHead>Start Time</TableHead>
-                  <TableHead>Duration</TableHead>
-                  <TableHead className="text-center">Spans</TableHead>
-                  <TableHead></TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {displayedTraces.map((trace, index) => (
-                  <TraceRow
-                    key={trace.traceId}
-                    trace={trace}
-                    onSelect={() => handleSelectTrace(trace)}
-                    isSelected={selectedTrace?.traceId === trace.traceId}
-                  />
-                ))}
-                {/* Intersection observer target for lazy loading */}
-                {displayedTraces.length < allTraces.length && (
-                  <TableRow ref={loadMoreRef} className="hover:bg-transparent">
-                    <TableCell colSpan={7} className="text-center py-8">
-                      <div className="flex items-center justify-center gap-2 text-muted-foreground">
-                        <RefreshCw size={16} className="animate-spin" />
-                        <span className="text-sm">Loading more traces...</span>
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
+            <div className="relative">
+              {/* Card Header - fades out on scroll, positioned above table */}
+              <div 
+                className={`sticky top-0 z-20 bg-background border-b py-2 px-4 transition-all duration-200 ${
+                  isScrolled ? 'opacity-0 h-0 py-0 border-0 overflow-hidden' : 'opacity-100'
+                }`}
+              >
+                <div className="text-sm font-medium flex items-center gap-2 whitespace-nowrap">
+                  <Activity size={14} />
+                  Traces
+                  <Badge variant="secondary" className="ml-2">{allTraces.length}</Badge>
+                  {displayedTraces.length < allTraces.length && (
+                    <span className="text-xs text-muted-foreground ml-2">
+                      (showing {displayedTraces.length})
+                    </span>
+                  )}
+                </div>
+              </div>
+
+              {/* Table with sticky header */}
+              <div className="relative">
+                <table className="w-full caption-bottom text-sm">
+                  <thead className={`sticky top-0 z-10 bg-background transition-shadow duration-200 ${
+                    isScrolled ? 'shadow-sm' : ''
+                  }`}>
+                    <tr className="border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted">
+                      <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground w-[180px] bg-background border-b">
+                        Start Time
+                      </th>
+                      <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground bg-background border-b">
+                        Trace ID
+                      </th>
+                      <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground bg-background border-b">
+                        Root Span
+                      </th>
+                      <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground bg-background border-b">
+                        Service
+                      </th>
+                      <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground bg-background border-b">
+                        Duration
+                      </th>
+                      <th className="h-12 px-4 text-center align-middle font-medium text-muted-foreground bg-background border-b">
+                        Spans
+                      </th>
+                      <th className="h-12 px-4 text-left align-middle font-medium text-muted-foreground bg-background border-b"></th>
+                    </tr>
+                  </thead>
+                  <tbody className="[&_tr:last-child]:border-0">
+                    {displayedTraces.map((trace) => (
+                      <TraceRow
+                        key={trace.traceId}
+                        trace={trace}
+                        onSelect={() => handleSelectTrace(trace)}
+                        isSelected={selectedTrace?.traceId === trace.traceId}
+                      />
+                    ))}
+                    {/* Intersection observer target for lazy loading */}
+                    {displayedTraces.length < allTraces.length && (
+                      <tr ref={loadMoreRef} className="hover:bg-transparent border-b transition-colors">
+                        <td colSpan={7} className="p-4 align-middle text-center py-8">
+                          <div className="flex items-center justify-center gap-2 text-muted-foreground">
+                            <RefreshCw size={16} className="animate-spin" />
+                            <span className="text-sm">Loading more traces...</span>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           )}
-        </CardContent>
+        </div>
       </Card>
 
-      {/* Trace Detail Flyout */}
-      <Sheet open={flyoutOpen} onOpenChange={setFlyoutOpen}>
-        <SheetContent 
-          side="right" 
-          className="p-0 overflow-hidden"
-          style={{ width: `${flyoutWidth}px`, maxWidth: `${flyoutWidth}px` }}
-        >
-          {/* Resize Handle */}
-          <div
-            onMouseDown={handleMouseDown}
-            className="absolute left-0 top-0 bottom-0 w-1 cursor-ew-resize hover:bg-opensearch-blue/50 active:bg-opensearch-blue transition-colors z-50"
-            style={{
-              background: isResizing ? 'hsl(var(--primary))' : 'transparent',
-            }}
-          >
-            <div className="absolute left-0 top-0 bottom-0 w-4 -translate-x-1.5" />
-          </div>
-          
-          {selectedTrace && (
-            <TraceFlyoutContent
-              trace={selectedTrace}
-              onClose={handleCloseFlyout}
+      {/* Trace Detail Flyout - Resizable Panel */}
+      {flyoutOpen && selectedTrace && (
+        <div className="fixed inset-0 z-50 pointer-events-none">
+          <ResizablePanelGroup direction="horizontal" className="h-full pointer-events-none">
+            {/* Left invisible panel - allows content below to be interactive */}
+            <ResizablePanel 
+              defaultSize={40}
+              minSize={10}
+              maxSize={70}
+              className="pointer-events-none"
             />
-          )}
-        </SheetContent>
-      </Sheet>
+            
+            <ResizableHandle withHandle className="pointer-events-auto" />
+            
+            {/* Right panel - Flyout content */}
+            <ResizablePanel 
+              defaultSize={60}
+              minSize={30}
+              maxSize={90}
+              className="bg-background border-l shadow-2xl pointer-events-auto"
+            >
+              <TraceFlyoutContent
+                trace={selectedTrace}
+                onClose={handleCloseFlyout}
+              />
+            </ResizablePanel>
+          </ResizablePanelGroup>
+        </div>
+      )}
     </div>
   );
 };
