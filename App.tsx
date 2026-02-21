@@ -19,6 +19,7 @@ import { TestCaseRunsPage } from './components/TestCaseRunsPage';
 import { ComparisonPage } from './components/comparison/ComparisonPage';
 import { TracesPage } from './components/traces/TracesPage';
 import { AgentTracesPage } from './components/traces/AgentTracesPage';
+import { PerformanceOverlay } from './components/PerformanceOverlay';
 
 function ExperimentRunsRedirect() {
   const { experimentId } = useParams();
@@ -81,49 +82,52 @@ function App() {
   }, []);
 
   return (
-    <Router>
-      <DebugStateSync />
-      <Layout>
-        <Routes>
-          {/* Primary routes */}
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/test-cases" element={<TestCasesPage />} />
-          <Route path="/test-cases/:testCaseId/runs" element={<TestCaseRunsPage />} />
-          <Route path="/benchmarks" element={<BenchmarksPage />} />
-          <Route path="/benchmarks/:benchmarkId/runs" element={<BenchmarkRunsPage />} />
+    <>
+      <Router>
+        <DebugStateSync />
+        <Layout>
+          <Routes>
+            {/* Primary routes */}
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/test-cases" element={<TestCasesPage />} />
+            <Route path="/test-cases/:testCaseId/runs" element={<TestCaseRunsPage />} />
+            <Route path="/benchmarks" element={<BenchmarksPage />} />
+            <Route path="/benchmarks/:benchmarkId/runs" element={<BenchmarkRunsPage />} />
 
-          {/* Unified run details page - works for both test case and benchmark runs */}
-          <Route path="/runs/:runId" element={<RunDetailsPage />} />
+            {/* Unified run details page - works for both test case and benchmark runs */}
+            <Route path="/runs/:runId" element={<RunDetailsPage />} />
 
-          {/* Backwards compatibility - redirect old benchmark run route to new unified route */}
-          <Route path="/benchmarks/:benchmarkId/runs/:runId" element={<RunDetailsPage />} />
+            {/* Backwards compatibility - redirect old benchmark run route to new unified route */}
+            <Route path="/benchmarks/:benchmarkId/runs/:runId" element={<RunDetailsPage />} />
 
-          {/* Settings */}
-          <Route path="/settings" element={<SettingsPage />} />
+            {/* Settings */}
+            <Route path="/settings" element={<SettingsPage />} />
 
-          {/* Comparison */}
-          <Route path="/compare/:benchmarkId" element={<ComparisonPage />} />
+            {/* Comparison */}
+            <Route path="/compare/:benchmarkId" element={<ComparisonPage />} />
 
-          {/* Live Traces */}
-          <Route path="/traces" element={<TracesPage />} />
+            {/* Live Traces */}
+            <Route path="/traces" element={<TracesPage />} />
 
-          {/* Agent Traces - Table View */}
-          <Route path="/agent-traces" element={<AgentTracesPage />} />
+            {/* Agent Traces - Table View */}
+            <Route path="/agent-traces" element={<AgentTracesPage />} />
 
-          {/* Redirects for deprecated routes */}
-          <Route path="/evals" element={<Navigate to="/test-cases" replace />} />
-          <Route path="/run" element={<Navigate to="/test-cases" replace />} />
-          <Route path="/reports" element={<Navigate to="/benchmarks" replace />} />
-          <Route path="/experiments" element={<Navigate to="/benchmarks" replace />} />
-          <Route path="/experiments/:experimentId/runs" element={<ExperimentRunsRedirect />} />
+            {/* Redirects for deprecated routes */}
+            <Route path="/evals" element={<Navigate to="/test-cases" replace />} />
+            <Route path="/run" element={<Navigate to="/test-cases" replace />} />
+            <Route path="/reports" element={<Navigate to="/benchmarks" replace />} />
+            <Route path="/experiments" element={<Navigate to="/benchmarks" replace />} />
+            <Route path="/experiments/:experimentId/runs" element={<ExperimentRunsRedirect />} />
 
-          {/* Catch-all: redirect unknown sub-paths to their parent list pages */}
-          <Route path="/benchmarks/*" element={<Navigate to="/benchmarks" replace />} />
-          <Route path="/test-cases/*" element={<Navigate to="/test-cases" replace />} />
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
-      </Layout>
-    </Router>
+            {/* Catch-all: redirect unknown sub-paths to their parent list pages */}
+            <Route path="/benchmarks/*" element={<Navigate to="/benchmarks" replace />} />
+            <Route path="/test-cases/*" element={<Navigate to="/test-cases" replace />} />
+            <Route path="*" element={<Navigate to="/" replace />} />
+          </Routes>
+        </Layout>
+      </Router>
+      <PerformanceOverlay />
+    </>
   );
 }
 
