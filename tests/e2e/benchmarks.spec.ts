@@ -267,9 +267,23 @@ test.describe('Run Configuration Dialog', () => {
 });
 
 test.describe('Import JSON on Benchmarks Page', () => {
+  const createdBenchmarkIds: string[] = [];
+
   test.beforeEach(async ({ page }) => {
     await page.goto('/benchmarks');
     await page.waitForSelector('[data-testid="benchmarks-page"]', { timeout: 30000 });
+  });
+
+  test.afterEach(async ({ page, baseURL }) => {
+    // Clean up any benchmarks created during tests
+    for (const benchmarkId of createdBenchmarkIds) {
+      try {
+        await page.request.delete(`${baseURL}/api/storage/benchmarks/${benchmarkId}`);
+      } catch (error) {
+        // Ignore cleanup errors - benchmark might not exist or storage might be unavailable
+      }
+    }
+    createdBenchmarkIds.length = 0; // Clear array
   });
 
   test('should show Import JSON button', async ({ page }) => {
@@ -330,6 +344,15 @@ test.describe('Import JSON on Benchmarks Page', () => {
       page.locator('text=Import Failed').waitFor({ state: 'visible', timeout: 15000 }).then(() => 'error'),
     ]).catch(() => 'timeout');
 
+    // Extract benchmark ID from URL for cleanup
+    if (navigationOrError === 'navigated') {
+      const url = page.url();
+      const match = url.match(/\/benchmarks\/(bench-[^\/]+)\/runs/);
+      if (match) {
+        createdBenchmarkIds.push(match[1]);
+      }
+    }
+
     // Either successfully navigated or got an expected error (e.g., storage not configured)
     expect(navigationOrError === 'navigated' || navigationOrError === 'error').toBeTruthy();
   });
@@ -350,5 +373,12 @@ test.describe('Import JSON on Benchmarks Page', () => {
 
     // Wait for the import to complete (either navigation or error)
     await page.waitForTimeout(5000);
+
+    // Extract benchmark ID from URL for cleanup if navigation succeeded
+    const url = page.url();
+    const match = url.match(/\/benchmarks\/(bench-[^\/]+)\/runs/);
+    if (match) {
+      createdBenchmarkIds.push(match[1]);
+    }
   });
 });
