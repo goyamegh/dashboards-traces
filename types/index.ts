@@ -329,12 +329,15 @@ export interface TraceQueryParams {
   size?: number;
   serviceName?: string;
   textSearch?: string;
+  cursor?: string; // For pagination
 }
 
 export interface TraceSearchResult {
   spans: Span[];
   total: number;
   warning?: string;
+  nextCursor?: string | null;
+  hasMore?: boolean;
 }
 
 /**
