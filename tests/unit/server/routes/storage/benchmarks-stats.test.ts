@@ -39,9 +39,11 @@ jest.mock('@/lib/debug', () => ({
   debug: jest.fn(),
 }));
 
-import request from 'supertest';
 import type { Application } from 'express';
 import type { BenchmarkRun, RunStats } from '@/types';
+
+// Use require for CommonJS module compatibility in Jest
+const request = require('supertest');
 
 describe('Benchmark Stats Backfill', () => {
   let app: Application;
@@ -96,7 +98,7 @@ describe('Benchmark Stats Backfill', () => {
       mockUpdate.mockResolvedValueOnce({ body: {} });
 
       const router = await import('@/server/routes/storage/benchmarks');
-      app.use('/api/storage', router.default);
+      app.use(router.default);
 
       const response = await request(app).get('/api/storage/benchmarks/bench-1');
 
@@ -146,7 +148,7 @@ describe('Benchmark Stats Backfill', () => {
       mockUpdate.mockResolvedValueOnce({ body: {} });
 
       const router = await import('@/server/routes/storage/benchmarks');
-      app.use('/api/storage', router.default);
+      app.use(router.default);
 
       const response = await request(app).get('/api/storage/benchmarks/bench-2');
 
@@ -183,7 +185,7 @@ describe('Benchmark Stats Backfill', () => {
       });
 
       const router = await import('@/server/routes/storage/benchmarks');
-      app.use('/api/storage', router.default);
+      app.use(router.default);
 
       const response = await request(app).get('/api/storage/benchmarks/bench-3');
 
@@ -229,7 +231,7 @@ describe('Benchmark Stats Backfill', () => {
       });
 
       const router = await import('@/server/routes/storage/benchmarks');
-      app.use('/api/storage', router.default);
+      app.use(router.default);
 
       const response = await request(app).get('/api/storage/benchmarks/bench-4');
 
@@ -302,7 +304,7 @@ describe('Benchmark Stats Backfill', () => {
         mockUpdate.mockResolvedValue({ body: {} });
 
         const router = await import('@/server/routes/storage/benchmarks');
-        app.use('/api/storage', router.default);
+        app.use(router.default);
 
         const response = await request(app)
           .post('/api/storage/benchmarks/bench-5/refresh-all-stats');
@@ -320,7 +322,7 @@ describe('Benchmark Stats Backfill', () => {
         });
 
         const router = await import('@/server/routes/storage/benchmarks');
-        app.use('/api/storage', router.default);
+        app.use(router.default);
 
         const response = await request(app)
           .post('/api/storage/benchmarks/non-existent/refresh-all-stats');
@@ -379,7 +381,7 @@ describe('Benchmark Stats Backfill', () => {
         mockUpdate.mockResolvedValueOnce({ body: {} });
 
         const router = await import('@/server/routes/storage/benchmarks');
-        app.use('/api/storage', router.default);
+        app.use(router.default);
 
         const response = await request(app)
           .post('/api/storage/benchmarks/bench-6/runs/run-target/refresh-stats');
@@ -418,7 +420,7 @@ describe('Benchmark Stats Backfill', () => {
         });
 
         const router = await import('@/server/routes/storage/benchmarks');
-        app.use('/api/storage', router.default);
+        app.use(router.default);
 
         const response = await request(app)
           .post('/api/storage/benchmarks/bench-7/runs/non-existent/refresh-stats');
@@ -472,7 +474,7 @@ describe('Benchmark Stats Backfill', () => {
       mockUpdate.mockResolvedValueOnce({ body: {} });
 
       const router = await import('@/server/routes/storage/benchmarks');
-      app.use('/api/storage', router.default);
+      app.use(router.default);
 
       const response = await request(app).get('/api/storage/benchmarks/bench-test');
 
@@ -522,7 +524,7 @@ describe('Benchmark Stats Backfill', () => {
       mockUpdate.mockResolvedValueOnce({ body: {} });
 
       const router = await import('@/server/routes/storage/benchmarks');
-      app.use('/api/storage', router.default);
+      app.use(router.default);
 
       const response = await request(app).get('/api/storage/benchmarks/bench-test2');
 
