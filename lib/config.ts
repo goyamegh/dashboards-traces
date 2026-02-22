@@ -51,6 +51,7 @@ export interface EnvConfig {
   langgraphEndpoint: string;
   mlcommonsEndpoint: string;
   holmesGptEndpoint: string;
+  litellmEndpoint: string;
 
   // ML-Commons agent headers (for agent to access data source)
   mlcommonsHeaderOpenSearchUrl: string;
@@ -119,6 +120,7 @@ export const ENV_CONFIG: EnvConfig = {
   langgraphEndpoint: getEnvVar('LANGGRAPH_ENDPOINT', 'http://localhost:3000'),
   mlcommonsEndpoint: getEnvVar('MLCOMMONS_ENDPOINT', 'http://localhost:9200/_plugins/_ml/agents/{agent_id}/_execute/stream'),
   holmesGptEndpoint: getEnvVar('HOLMESGPT_ENDPOINT', 'http://localhost:5050/api/agui/chat'),
+  litellmEndpoint: getEnvVar('LITELLM_ENDPOINT', 'http://localhost:4000/v1/chat/completions'),
 
   // ML-Commons agent headers
   mlcommonsHeaderOpenSearchUrl: getEnvVar('MLCOMMONS_HEADER_OPENSEARCH_URL', ''),

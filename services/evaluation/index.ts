@@ -56,10 +56,20 @@ import type {
 const USE_MOCK_AGENT = false;
 
 /**
- * Build ConnectorAuth from AgentConfig headers
+ * Build ConnectorAuth from AgentConfig.
+ * Prefers explicit `auth` field if present, falls back to header inference.
  */
 function buildConnectorAuth(agent: AgentConfig): ConnectorAuth {
-  // Check for common auth patterns in headers
+  // Prefer explicit auth config (new pattern)
+  if (agent.auth && agent.auth.type !== 'none') {
+    return {
+      ...agent.auth,
+      // Merge any extra headers on top
+      headers: { ...agent.headers, ...agent.auth.headers },
+    };
+  }
+
+  // Legacy: infer from headers
   const headers = agent.headers || {};
 
   if (headers['Authorization']?.startsWith('Bearer ')) {
