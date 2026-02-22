@@ -15,7 +15,7 @@ export type DateFormatVariant = 'date' | 'datetime' | 'detailed';
 export type JudgeProvider = 'demo' | 'bedrock' | 'ollama' | 'openai';
 
 // Connector protocol for agent communication
-export type ConnectorProtocol = 'agui-streaming' | 'rest' | 'subprocess' | 'claude-code' | 'mock';
+export type ConnectorProtocol = 'agui-streaming' | 'rest' | 'litellm' | 'subprocess' | 'claude-code' | 'mock';
 
 export interface ModelConfig {
   model_id: string;
@@ -45,11 +45,26 @@ export interface AgentConfig {
   enabled?: boolean;
   models: string[]; // Keys referring to ModelConfig
   headers?: Record<string, string>; // Custom headers for agent endpoint (e.g., AWS credentials)
+  auth?: ConnectorAuthConfig; // Explicit auth config (preferred over headers inference)
   useTraces?: boolean; // When true, fetch traces instead of logs for evaluation
   connectorType?: ConnectorProtocol; // Connector protocol (defaults to 'agui-streaming')
   connectorConfig?: Record<string, any>; // Connector-specific configuration
   hooks?: AgentHooks; // Lifecycle hooks for custom setup/transform logic
   isCustom?: boolean; // True for user-added custom endpoints (not from config file)
+}
+
+/**
+ * Authentication config for agents (serializable subset of ConnectorAuth).
+ * Used in AgentConfig for config files — avoids importing connector types.
+ */
+export interface ConnectorAuthConfig {
+  type: 'none' | 'basic' | 'bearer' | 'api-key' | 'aws-sigv4';
+  username?: string;
+  password?: string;
+  token?: string;
+  awsRegion?: string;
+  awsService?: string;
+  headers?: Record<string, string>;
 }
 
 export interface AppConfig {

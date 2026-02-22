@@ -120,6 +120,19 @@ export const DEFAULT_CONFIG: AppConfig = {
         };
       },
     },
+    {
+      key: "litellm",
+      name: "LiteLLM Proxy",
+      endpoint: ENV_CONFIG.litellmEndpoint,
+      description: "OpenAI-compatible proxy (LiteLLM, vLLM, Ollama, etc.)",
+      connectorType: "litellm",
+      models: [
+        "claude-sonnet-4",
+        "gpt-4o",
+      ],
+      headers: {},
+      useTraces: false,
+    },
   ],
   models: {
     "demo-model": {
