@@ -6,9 +6,16 @@
 /**
  * Sample Test Cases for Demo Mode
  *
- * Pre-configured RCA scenarios based on realistic e-commerce microservices.
- * These test cases demonstrate the evaluation framework's capabilities
- * without requiring external dependencies.
+ * Pre-configured Travel Planner scenarios based on a multi-agent orchestration
+ * architecture. These test cases demonstrate the evaluation framework's
+ * capabilities without requiring external dependencies.
+ *
+ * Agent Architecture:
+ * - Travel Coordinator (orchestrator): Routes requests to specialist agents
+ * - Weather Agent: Fetches weather forecasts
+ * - Events Agent: Finds local events, festivals, activities
+ * - Booking Agent: Handles hotel, flight, restaurant reservations
+ * - Budget Agent: Optimizes costs, finds deals
  */
 
 export interface SampleTestCase {
@@ -24,198 +31,226 @@ export interface SampleTestCase {
 
 export const SAMPLE_TEST_CASES: SampleTestCase[] = [
   {
-    id: 'demo-otel-001',
-    name: 'Payment Service Latency Spike',
-    description: 'Investigate a 5x latency increase in the payment service',
-    initialPrompt: `The payment service in our e-commerce app is showing 5x increased latency.
-P99 went from 200ms to 1000ms in the last hour.
-Investigate the root cause using available traces and logs.`,
+    id: 'demo-travel-001',
+    name: 'Weekend Getaway to Napa Valley',
+    description: 'Plan a weekend getaway with weather, events, and restaurant reservations',
+    initialPrompt: `Plan a weekend getaway to Napa Valley for two people.
+We want to visit wineries, enjoy good food, and relax.
+Check the weather, find local events, and book restaurants.`,
     context: [
       {
-        type: 'system_architecture',
-        content: `E-commerce microservices architecture:
-- frontend → cart-service → checkout-service → payment-service → fraud-detection
-- Payment service calls external Stripe payment gateway
-- All services instrumented with OpenTelemetry
-- Traces available in OpenSearch (otel-v1-apm-span-* index)`
+        type: 'agent_architecture',
+        content: `Multi-agent Travel Planner system:
+- Travel Coordinator (orchestrator) delegates to specialist sub-agents
+- Weather Agent: Fetches forecasts from weather APIs
+- Events Agent: Finds local events, festivals, wine tastings
+- Booking Agent: Handles restaurant reservations and hotel bookings
+- All agents instrumented with OpenTelemetry Gen-AI semantic conventions`
       },
       {
-        type: 'recent_changes',
-        content: `Recent deployments:
-- payment-service: v2.3.1 deployed 3 hours ago (connection pool config change)
-- fraud-detection: v1.8.0 deployed 6 hours ago (new ML model)`
+        type: 'user_preferences',
+        content: `Traveler preferences:
+- Travel dates: Next Saturday-Sunday
+- Party size: 2 adults
+- Interests: Wine tasting, fine dining, scenic views
+- Budget: Moderate (~$800 total)
+- Dietary: No restrictions`
       }
     ],
     expectedOutcomes: [
-      'Identify the specific service or dependency causing latency',
-      'Analyze trace spans to find the bottleneck (likely external payment gateway or fraud-detection)',
-      'Correlate latency spike timing with recent deployments',
-      'Recommend mitigation steps (rollback, timeout adjustment, circuit breaker)'
+      'Invoke the Weather Agent to check weekend forecast for Napa Valley',
+      'Invoke the Events Agent to find wine tastings, vineyard tours, or local festivals',
+      'Invoke the Booking Agent to reserve a restaurant for dinner Saturday evening',
+      'Produce a cohesive weekend itinerary with timing, locations, and reservations'
     ],
-    labels: ['category:RCA', 'difficulty:Medium', 'domain:E-commerce', 'type:Latency'],
+    labels: ['category:Travel-Planning', 'difficulty:Easy', 'domain:Domestic', 'type:Weekend-Trip'],
     tags: ['promoted']
   },
   {
-    id: 'demo-otel-002',
-    name: 'Cart Service Error Rate Spike',
-    description: 'Debug a sudden increase in checkout failures',
-    initialPrompt: `Users are reporting failed checkouts. The cart service error rate jumped from 0.1% to 15% in the last 30 minutes.
-Find the root cause and recommend a fix.`,
+    id: 'demo-travel-002',
+    name: 'Japan Cherry Blossom Season Trip',
+    description: 'Plan a complex 10-day multi-city international itinerary',
+    initialPrompt: `Plan a 10-day trip to Japan during cherry blossom season.
+I want to visit Tokyo, Kyoto, and Osaka. Include cultural experiences,
+temple visits, and authentic cuisine. Book flights and hotels.`,
     context: [
       {
-        type: 'system_architecture',
-        content: `Cart service dependencies:
-- inventory-service: Check stock availability
-- pricing-service: Get current prices and discounts
-- redis-cache: Session and cart data caching
-- PostgreSQL: Persistent cart storage`
+        type: 'agent_architecture',
+        content: `Multi-agent Travel Planner system:
+- Travel Coordinator routes to Weather, Events, and Booking agents
+- Booking Agent handles international flights, hotels, and rail passes
+- Events Agent searches for cherry blossom festivals, tea ceremonies, temple events
+- Weather Agent provides multi-city forecasts for itinerary optimization`
       },
       {
-        type: 'recent_changes',
-        content: `Recent changes:
-- inventory-service: v3.1.0 deployed 2 hours ago (new inventory API)
-- redis-cache: Maintenance window completed 1 hour ago
-- No changes to cart-service itself`
+        type: 'user_preferences',
+        content: `Traveler preferences:
+- Travel dates: Late March to early April (peak cherry blossom)
+- Party size: 2 adults
+- Interests: Cherry blossoms, temples, traditional cuisine, cultural experiences
+- Budget: ~$5,000 per person (flights, hotels, activities)
+- Accommodation: Mix of traditional ryokan and modern hotels`
       },
       {
-        type: 'error_samples',
-        content: `Sample errors from logs:
-- "Connection refused: inventory-service:8080"
-- "Timeout waiting for inventory response"
-- HTTP 503 from inventory-service`
+        type: 'travel_constraints',
+        content: `Logistics considerations:
+- International flights from San Francisco (SFO)
+- Japan Rail Pass for inter-city travel
+- Tokyo (4 nights) -> Kyoto (3 nights) -> Osaka (2 nights)
+- Need pocket WiFi or SIM card recommendation
+- Visa not required for US citizens (90-day tourist waiver)`
       }
     ],
     expectedOutcomes: [
-      'Identify the failing dependency (inventory-service)',
-      'Find error patterns in traces showing 503 responses',
-      'Correlate errors with inventory-service deployment',
-      'Recommend rollback or fix for inventory-service'
+      'Search for round-trip flights SFO to Tokyo (NRT/HND) with return from Osaka (KIX)',
+      'Check cherry blossom forecast across Tokyo, Kyoto, and Osaka for optimal timing',
+      'Find cultural events: hanami parties, tea ceremonies, temple illuminations',
+      'Book hotels including at least one traditional ryokan in Kyoto',
+      'Produce a day-by-day itinerary with transport, accommodations, and activities'
     ],
-    labels: ['category:RCA', 'difficulty:Medium', 'domain:E-commerce', 'type:Errors'],
+    labels: ['category:Travel-Planning', 'difficulty:Hard', 'domain:International', 'type:Multi-City'],
     tags: ['promoted']
   },
   {
-    id: 'demo-otel-003',
-    name: 'Database Connection Pool Exhaustion',
-    description: 'Investigate intermittent database connection timeouts',
-    initialPrompt: `The order-service is experiencing intermittent failures with connection timeout errors to the database.
-This started during our flash sale event. Investigate the root cause.`,
+    id: 'demo-travel-003',
+    name: 'Budget Southeast Asia Adventure',
+    description: 'Plan a budget-friendly 5-day trip under $1500',
+    initialPrompt: `Plan a budget-friendly 5-day trip to Southeast Asia for under $1500 total.
+I'm flexible on destination but want beaches, street food, and temples.
+Optimize for the best experience at the lowest cost.`,
     context: [
       {
-        type: 'system_architecture',
-        content: `Order service database setup:
-- PostgreSQL 14.x primary database
-- Connection pool: HikariCP with maxPoolSize=20
-- Read replicas available but not used by order-service
-- Average query time: 15ms`
+        type: 'agent_architecture',
+        content: `Multi-agent Travel Planner system:
+- Travel Coordinator uses Budget Agent as primary advisor
+- Budget Agent: Compares costs across destinations, finds deals
+- Booking Agent: Searches budget airlines, hostels, guesthouses
+- Events Agent: Finds free/cheap activities, walking tours, markets`
       },
       {
-        type: 'current_situation',
-        content: `Flash sale metrics:
-- Normal traffic: 100 req/s
-- Flash sale traffic: 2000 req/s (20x spike)
-- Order creation endpoint most affected
-- Error: "Connection is not available, request timed out after 30000ms"`
+        type: 'user_preferences',
+        content: `Traveler preferences:
+- Total budget: $1,500 maximum (flights, accommodation, food, activities)
+- Duration: 5 days
+- Solo traveler
+- Interests: Beaches, temples, street food, local culture
+- Accommodation: Budget-friendly (hostels, guesthouses OK)
+- Flexible on exact destination within Southeast Asia`
       },
       {
-        type: 'database_metrics',
-        content: `Database observations:
-- Active connections: 20/20 (pool exhausted)
-- Wait queue: Growing steadily
-- Some queries taking 500ms+ (normally 15ms)
-- One slow query: "SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC"`
+        type: 'budget_constraints',
+        content: `Cost optimization targets:
+- Flights: Under $600 round-trip
+- Accommodation: Under $30/night
+- Food: Under $15/day (street food preferred)
+- Activities: Under $200 total
+- Emergency fund: $100 buffer
+- Departing from Los Angeles (LAX)`
       }
     ],
     expectedOutcomes: [
-      'Identify connection pool exhaustion from trace/log correlation',
-      'Find slow queries holding connections too long',
-      'Identify the specific slow query pattern',
-      'Recommend: increase pool size, optimize slow query, add index, use read replica'
+      'Invoke Budget Agent to compare costs across Thailand, Vietnam, and Cambodia',
+      'Search for budget flights from LAX to selected destination under $600',
+      'Find accommodations under $30/night with good reviews',
+      'Produce a detailed budget breakdown showing total under $1500',
+      'Include free or low-cost activities: temples, beaches, markets'
     ],
-    labels: ['category:RCA', 'difficulty:Hard', 'domain:Database', 'type:Performance'],
+    labels: ['category:Travel-Planning', 'difficulty:Medium', 'domain:International', 'type:Budget'],
     tags: ['promoted']
   },
   {
-    id: 'demo-otel-004',
-    name: 'Recommendation Service Cold Start',
-    description: 'Diagnose slow initial requests after pod scaling',
-    initialPrompt: `First requests to the recommendation-service after pod scaling take 30+ seconds.
-Subsequent requests are fast (under 100ms).
-This is causing timeouts for users during traffic spikes. Diagnose the issue.`,
+    id: 'demo-travel-004',
+    name: 'Team Building Retreat in Colorado',
+    description: 'Plan a group retreat for 12 people with activities and dietary requirements',
+    initialPrompt: `Plan a 3-day team building retreat in Colorado for 12 people.
+We need outdoor activities, meeting space, group dining, and
+accommodation that keeps everyone together. Several team members
+have dietary restrictions.`,
     context: [
       {
-        type: 'system_architecture',
-        content: `Recommendation service setup:
-- Kubernetes deployment with HPA (Horizontal Pod Autoscaler)
-- Service loads 2GB ML model on startup
-- Model loaded from S3 bucket
-- Readiness probe: HTTP /health endpoint`
+        type: 'agent_architecture',
+        content: `Multi-agent Travel Planner system:
+- Travel Coordinator manages complex group logistics
+- Booking Agent: Group rates for lodges, conference rooms
+- Events Agent: Team building activities, guided hikes, rafting
+- Weather Agent: Outdoor activity safety and planning`
       },
       {
-        type: 'kubernetes_config',
-        content: `Current K8s configuration:
-- minReplicas: 2, maxReplicas: 10
-- CPU threshold for scaling: 70%
-- Readiness probe: initialDelaySeconds=10, periodSeconds=5
-- No preStop lifecycle hook configured`
+        type: 'group_details',
+        content: `Group information:
+- 12 people from engineering team
+- 3 vegetarians, 1 vegan, 1 gluten-free, 1 nut allergy
+- Mix of fitness levels (some prefer gentle hikes, others want challenging trails)
+- Need WiFi for one 2-hour strategy session
+- Ages range from 25 to 55
+- Flying from Austin, TX (AUS)`
       },
       {
-        type: 'trace_pattern',
-        content: `Observed trace pattern:
-- First request after scale-up: 32000ms (model loading)
-- Model load breakdown: S3 download (8s) + deserialization (20s) + warmup (4s)
-- Subsequent requests: 50-100ms`
+        type: 'retreat_requirements',
+        content: `Retreat specifications:
+- Duration: Thursday afternoon to Sunday morning (3 nights)
+- Activities: Mix of adventure (rafting, hiking) and relaxed (campfire, stargazing)
+- Accommodation: Lodge or cabin that fits all 12 (or adjacent units)
+- Meeting space: Room for 12 with projector/screen
+- Group dining: All meals together, accommodating dietary needs
+- Budget: $1,200 per person ($14,400 total)`
       }
     ],
     expectedOutcomes: [
-      'Identify cold start pattern in traces (30s+ first request)',
-      'Find initialization bottleneck (ML model loading from S3)',
-      'Recognize readiness probe misconfiguration (allowing traffic before model ready)',
-      'Suggest: increase initialDelaySeconds, implement model preloading, use init containers'
+      'Check weather forecast for Colorado mountain areas for safe outdoor planning',
+      'Find lodge or cabin accommodations for 12 with meeting space',
+      'Book team activities: guided hike, rafting trip, and evening entertainment',
+      'Arrange group dining with dietary accommodation for all restrictions',
+      'Produce a group itinerary with logistics for all 12 participants'
     ],
-    labels: ['category:RCA', 'difficulty:Medium', 'domain:ML', 'type:Cold-Start'],
+    labels: ['category:Travel-Planning', 'difficulty:Hard', 'domain:Domestic', 'type:Group'],
     tags: ['promoted']
   },
   {
-    id: 'demo-otel-005',
-    name: 'Cascading Failure Investigation',
-    description: 'Trace a multi-service failure cascade',
-    initialPrompt: `Multiple services are showing errors. It started with notification-service,
-and now order-service and user-service are also affected.
-Trace the failure cascade and identify the root cause.`,
+    id: 'demo-travel-005',
+    name: 'Last-Minute Holiday Deal',
+    description: 'Find a last-minute holiday deal for next weekend under time pressure',
+    initialPrompt: `Find me a last-minute holiday deal for next weekend. I'm flexible on
+destination but want somewhere warm with a beach. Need to book
+everything today since deals are going fast. Budget is $1000.`,
     context: [
       {
-        type: 'system_architecture',
-        content: `Service dependencies:
-- order-service → notification-service (async, for order confirmations)
-- user-service → notification-service (async, for account alerts)
-- notification-service → external SMS provider (Twilio)
-- Circuit breakers configured on all external calls`
+        type: 'agent_architecture',
+        content: `Multi-agent Travel Planner system:
+- Travel Coordinator operates under time pressure
+- Booking Agent: Searches last-minute deals, flash sales
+- Budget Agent: Validates deals are genuine savings
+- Weather Agent: Confirms warm beach weather at candidates
+- Events Agent: Quick check for any destination warnings/closures`
       },
       {
-        type: 'timeline',
-        content: `Failure timeline:
-- T+0: notification-service starts returning 503
-- T+5min: order-service response times increase 3x
-- T+10min: user-service starts timing out
-- T+15min: Circuit breakers not tripping as expected`
+        type: 'user_preferences',
+        content: `Traveler preferences:
+- Travel: This Friday evening to Sunday night
+- Budget: $1,000 maximum all-inclusive
+- Requirements: Warm weather, beach access
+- Solo traveler, departing from Miami (MIA)
+- Open to: Caribbean islands, Mexico, Florida Keys
+- Needs: Flight + hotel package deals`
       },
       {
-        type: 'circuit_breaker_config',
-        content: `Circuit breaker configuration:
-- Failure threshold: 50% in 10 seconds
-- Open duration: 30 seconds
-- Half-open max requests: 3
-- Issue: Async calls not properly wrapped with circuit breaker`
+        type: 'time_constraints',
+        content: `Urgency factors:
+- Booking must happen within the hour
+- Last-minute deals change rapidly
+- Need fallback options if first choice sells out
+- Cancellation policy important (weather risk)
+- Travel insurance recommendation needed`
       }
     ],
     expectedOutcomes: [
-      'Trace failure propagation: Twilio → notification → order/user services',
-      'Identify root cause: external SMS provider (Twilio) outage',
-      'Find circuit breaker misconfiguration (async calls not protected)',
-      'Recommend: fix circuit breaker wrapper, add fallback for notifications'
+      'Search multiple last-minute deal sources for beach destinations from MIA',
+      'Verify weather is warm and sunny at candidate destinations',
+      'Check availability in real-time and handle sold-out scenarios with fallbacks',
+      'Compare at least 3 deal options with price breakdowns under $1000',
+      'Present a bookable itinerary with cancellation policy details'
     ],
-    labels: ['category:RCA', 'difficulty:Hard', 'domain:Reliability', 'type:Cascading-Failure'],
+    labels: ['category:Travel-Planning', 'difficulty:Medium', 'domain:Domestic', 'type:Last-Minute'],
     tags: ['promoted']
   }
 ];
