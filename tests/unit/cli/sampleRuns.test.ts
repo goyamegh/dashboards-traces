@@ -19,8 +19,8 @@ import {
 
 describe('Sample Runs', () => {
   describe('SAMPLE_RUNS', () => {
-    it('should have 5 sample runs', () => {
-      expect(SAMPLE_RUNS.length).toBe(5);
+    it('should have 6 sample runs', () => {
+      expect(SAMPLE_RUNS.length).toBe(6);
     });
 
     it('should have demo- prefix for all IDs', () => {
@@ -70,10 +70,10 @@ describe('Sample Runs', () => {
       });
     });
 
-    it('should reference demo benchmark and run IDs', () => {
+    it('should reference demo benchmark IDs', () => {
       SAMPLE_RUNS.forEach((run) => {
-        expect(run.experimentId).toBe('demo-benchmark-001');
-        expect(run.experimentRunId).toBe('demo-run-001');
+        expect(run.experimentId).toMatch(/^demo-bench-/);
+        expect(run.experimentRunId).toMatch(/^demo-run-/);
       });
     });
   });
@@ -82,7 +82,7 @@ describe('Sample Runs', () => {
     it('should return run by ID', () => {
       const run = getSampleRun('demo-report-001');
       expect(run).toBeDefined();
-      expect(run?.testCaseId).toBe('demo-otel-001');
+      expect(run?.testCaseId).toBe('demo-travel-001');
     });
 
     it('should return undefined for unknown ID', () => {
@@ -94,7 +94,7 @@ describe('Sample Runs', () => {
   describe('getAllSampleRuns', () => {
     it('should return a copy of all runs', () => {
       const runs = getAllSampleRuns();
-      expect(runs.length).toBe(5);
+      expect(runs.length).toBe(6);
 
       // Verify it's a copy, not the original
       const originalLength = SAMPLE_RUNS.length;
@@ -121,9 +121,15 @@ describe('Sample Runs', () => {
 
   describe('getSampleRunsByTestCase', () => {
     it('should return runs for specific test case', () => {
-      const runs = getSampleRunsByTestCase('demo-otel-001');
+      const runs = getSampleRunsByTestCase('demo-travel-001');
       expect(runs.length).toBe(1);
       expect(runs[0].id).toBe('demo-report-001');
+    });
+
+    it('should return multiple runs for shared test case', () => {
+      // demo-travel-003 is in both benchmarks
+      const runs = getSampleRunsByTestCase('demo-travel-003');
+      expect(runs.length).toBe(2);
     });
 
     it('should return empty array for unknown test case', () => {
@@ -133,9 +139,14 @@ describe('Sample Runs', () => {
   });
 
   describe('getSampleRunsByBenchmark', () => {
-    it('should return all runs for demo benchmark', () => {
-      const runs = getSampleRunsByBenchmark('demo-benchmark-001');
-      expect(runs.length).toBe(5);
+    it('should return runs for basic benchmark', () => {
+      const runs = getSampleRunsByBenchmark('demo-bench-basic');
+      expect(runs.length).toBe(3);
+    });
+
+    it('should return runs for advanced benchmark', () => {
+      const runs = getSampleRunsByBenchmark('demo-bench-advanced');
+      expect(runs.length).toBe(3);
     });
 
     it('should return empty array for unknown benchmark', () => {
@@ -146,8 +157,13 @@ describe('Sample Runs', () => {
 
   describe('getSampleRunsByBenchmarkRun', () => {
     it('should return runs for specific benchmark run', () => {
-      const runs = getSampleRunsByBenchmarkRun('demo-benchmark-001', 'demo-run-001');
-      expect(runs.length).toBe(5);
+      const runs = getSampleRunsByBenchmarkRun('demo-bench-basic', 'demo-run-001');
+      expect(runs.length).toBe(3);
+    });
+
+    it('should return runs for advanced benchmark run', () => {
+      const runs = getSampleRunsByBenchmarkRun('demo-bench-advanced', 'demo-run-002');
+      expect(runs.length).toBe(3);
     });
 
     it('should return empty array for mismatched benchmark', () => {
@@ -156,7 +172,7 @@ describe('Sample Runs', () => {
     });
 
     it('should return empty array for mismatched run', () => {
-      const runs = getSampleRunsByBenchmarkRun('demo-benchmark-001', 'unknown-run');
+      const runs = getSampleRunsByBenchmarkRun('demo-bench-basic', 'unknown-run');
       expect(runs).toEqual([]);
     });
   });
@@ -180,46 +196,48 @@ describe('Sample Runs', () => {
   });
 
   describe('Sample Run Content Quality', () => {
-    it('should have realistic payment latency scenario', () => {
+    it('should have weekend trip scenario', () => {
       const run = getSampleRun('demo-report-001');
       expect(run?.trajectory.some(step =>
-        step.content.toLowerCase().includes('latency') ||
-        step.content.toLowerCase().includes('payment')
+        step.content.toLowerCase().includes('napa') ||
+        step.content.toLowerCase().includes('weather') ||
+        step.content.toLowerCase().includes('weekend')
       )).toBe(true);
     });
 
-    it('should have error rate scenario', () => {
+    it('should have japan trip scenario', () => {
       const run = getSampleRun('demo-report-002');
       expect(run?.trajectory.some(step =>
-        step.content.toLowerCase().includes('error') ||
-        step.content.toLowerCase().includes('cart')
+        step.content.toLowerCase().includes('japan') ||
+        step.content.toLowerCase().includes('cherry blossom') ||
+        step.content.toLowerCase().includes('flight')
       )).toBe(true);
     });
 
-    it('should have database connection pool scenario', () => {
+    it('should have budget trip scenario', () => {
       const run = getSampleRun('demo-report-003');
       expect(run?.trajectory.some(step =>
-        step.content.toLowerCase().includes('database') ||
-        step.content.toLowerCase().includes('pool') ||
-        step.content.toLowerCase().includes('connection')
+        step.content.toLowerCase().includes('budget') ||
+        step.content.toLowerCase().includes('cost') ||
+        step.content.toLowerCase().includes('southeast asia')
       )).toBe(true);
     });
 
-    it('should have cold start scenario', () => {
+    it('should have group retreat scenario', () => {
       const run = getSampleRun('demo-report-004');
       expect(run?.trajectory.some(step =>
-        step.content.toLowerCase().includes('cold') ||
-        step.content.toLowerCase().includes('startup') ||
-        step.content.toLowerCase().includes('model')
+        step.content.toLowerCase().includes('group') ||
+        step.content.toLowerCase().includes('team') ||
+        step.content.toLowerCase().includes('dietary')
       )).toBe(true);
     });
 
-    it('should have cascading failure scenario', () => {
+    it('should have last-minute deal scenario', () => {
       const run = getSampleRun('demo-report-005');
       expect(run?.trajectory.some(step =>
-        step.content.toLowerCase().includes('cascad') ||
-        step.content.toLowerCase().includes('failure') ||
-        step.content.toLowerCase().includes('circuit')
+        step.content.toLowerCase().includes('last-minute') ||
+        step.content.toLowerCase().includes('deal') ||
+        step.content.toLowerCase().includes('beach')
       )).toBe(true);
     });
   });

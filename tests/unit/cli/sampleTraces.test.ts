@@ -167,76 +167,106 @@ describe('Sample Traces', () => {
   });
 
   describe('Trace Scenarios', () => {
-    describe('Payment Service Latency (demo-trace-001)', () => {
-      it('should have payment-related spans', () => {
+    describe('Weekend Trip (demo-trace-001)', () => {
+      it('should have Travel Coordinator as root agent', () => {
         const spans = getSampleSpansByTraceId('demo-trace-001');
-        expect(spans.some((s) => s.name.includes('checkout'))).toBe(true);
-        expect(spans.some((s) => s.name.includes('payment') || s.attributes['service.name'] === 'payment-service')).toBe(true);
+        const rootSpan = spans.find((s) => !s.parentSpanId);
+        expect(rootSpan?.name).toContain('Travel Coordinator');
       });
 
-      it('should show stripe as external service', () => {
+      it('should have Weather Agent invocation', () => {
         const spans = getSampleSpansByTraceId('demo-trace-001');
-        const stripeSpan = spans.find((s) => s.name.includes('stripe'));
-        expect(stripeSpan).toBeDefined();
-        expect(stripeSpan?.duration).toBeGreaterThan(500); // Should be slow
+        expect(spans.some((s) => s.name.includes('Weather Agent'))).toBe(true);
+      });
+
+      it('should have weather forecast tool call', () => {
+        const spans = getSampleSpansByTraceId('demo-trace-001');
+        expect(spans.some((s) => s.name.includes('get_weather_forecast'))).toBe(true);
       });
     });
 
-    describe('Cart Error (demo-trace-002)', () => {
-      it('should have error status', () => {
+    describe('Japan Trip (demo-trace-002)', () => {
+      it('should have flight search tool', () => {
         const spans = getSampleSpansByTraceId('demo-trace-002');
-        const errorSpans = spans.filter((s) => s.status === 'ERROR');
-        expect(errorSpans.length).toBeGreaterThan(0);
+        expect(spans.some((s) => s.name.includes('search_flights'))).toBe(true);
       });
 
-      it('should have inventory service error', () => {
+      it('should have Events Agent with multi-city search', () => {
         const spans = getSampleSpansByTraceId('demo-trace-002');
-        const inventorySpan = spans.find((s) => s.name.includes('inventory'));
-        expect(inventorySpan?.status).toBe('ERROR');
+        const eventSpans = spans.filter((s) => s.name.includes('find_events'));
+        expect(eventSpans.length).toBeGreaterThanOrEqual(3); // Tokyo, Kyoto, Osaka
       });
     });
 
-    describe('Database Pool Exhaustion (demo-trace-003)', () => {
-      it('should have database span', () => {
+    describe('Budget Trip (demo-trace-003)', () => {
+      it('should have Budget Agent invocation', () => {
         const spans = getSampleSpansByTraceId('demo-trace-003');
-        const dbSpan = spans.find((s) => s.name.includes('postgresql'));
-        expect(dbSpan).toBeDefined();
-        expect(dbSpan?.attributes['db.system']).toBe('postgresql');
+        expect(spans.some((s) => s.name.includes('Budget Agent'))).toBe(true);
       });
 
-      it('should show pool exhaustion in attributes', () => {
+      it('should have destination cost comparison tool', () => {
         const spans = getSampleSpansByTraceId('demo-trace-003');
-        const dbSpan = spans.find((s) => s.name.includes('postgresql'));
-        expect(dbSpan?.attributes['db.pool.active_connections']).toBe(20);
-        expect(dbSpan?.attributes['db.pool.max_connections']).toBe(20);
+        expect(spans.some((s) => s.name.includes('compare_destination_costs'))).toBe(true);
       });
     });
 
-    describe('Cold Start (demo-trace-004)', () => {
-      it('should have cold_start attribute', () => {
+    describe('Group Retreat (demo-trace-004)', () => {
+      it('should have catering arrangement tool', () => {
         const spans = getSampleSpansByTraceId('demo-trace-004');
-        const rootSpan = spans.find((s) => s.attributes['cold_start'] === true);
-        expect(rootSpan).toBeDefined();
+        expect(spans.some((s) => s.name.includes('arrange_catering'))).toBe(true);
       });
 
-      it('should have model loading spans', () => {
+      it('should have availability check tool', () => {
         const spans = getSampleSpansByTraceId('demo-trace-004');
-        expect(spans.some((s) => s.name.includes('s3') || s.name.includes('model'))).toBe(true);
+        expect(spans.some((s) => s.name.includes('check_availability'))).toBe(true);
       });
     });
 
-    describe('Cascading Failure (demo-trace-005)', () => {
-      it('should have twilio error', () => {
+    describe('Last-Minute Deal (demo-trace-005)', () => {
+      it('should have last-minute deal search', () => {
         const spans = getSampleSpansByTraceId('demo-trace-005');
-        const twilioSpan = spans.find((s) => s.name.includes('twilio'));
-        expect(twilioSpan).toBeDefined();
-        expect(twilioSpan?.status).toBe('ERROR');
+        expect(spans.some((s) => s.name.includes('search_last_minute_deals'))).toBe(true);
       });
 
-      it('should show retry count', () => {
+      it('should have deal sold-out event', () => {
         const spans = getSampleSpansByTraceId('demo-trace-005');
-        const notifySpan = spans.find((s) => s.name.includes('notification'));
-        expect(notifySpan?.attributes['retry.count']).toBe(3);
+        const dealSpan = spans.find((s) => s.name.includes('search_last_minute_deals'));
+        expect(dealSpan?.events?.some((e) => e.name === 'deal_sold_out')).toBe(true);
+      });
+
+      it('should have Budget Agent for deal validation', () => {
+        const spans = getSampleSpansByTraceId('demo-trace-005');
+        expect(spans.some((s) => s.name.includes('Budget Agent'))).toBe(true);
+      });
+    });
+  });
+
+  describe('Gen-AI Semantic Conventions', () => {
+    it('should have gen_ai attributes on LLM spans', () => {
+      const spans = SAMPLE_TRACE_SPANS.filter((s) => s.name.startsWith('chat '));
+      expect(spans.length).toBeGreaterThan(0);
+      spans.forEach((span) => {
+        expect(span.attributes['gen_ai.system']).toBeDefined();
+        expect(span.attributes['gen_ai.operation.name']).toBe('chat');
+        expect(span.attributes['gen_ai.usage.input_tokens']).toBeDefined();
+        expect(span.attributes['gen_ai.usage.output_tokens']).toBeDefined();
+      });
+    });
+
+    it('should have gen_ai.tool.name on tool spans', () => {
+      const spans = SAMPLE_TRACE_SPANS.filter((s) => s.name.startsWith('tools/call '));
+      expect(spans.length).toBeGreaterThan(0);
+      spans.forEach((span) => {
+        expect(span.attributes['gen_ai.tool.name']).toBeDefined();
+      });
+    });
+
+    it('should have agent type attributes on agent spans', () => {
+      const spans = SAMPLE_TRACE_SPANS.filter((s) => s.name.startsWith('invoke_agent '));
+      expect(spans.length).toBeGreaterThan(0);
+      spans.forEach((span) => {
+        expect(span.attributes['gen_ai.agent.name']).toBeDefined();
+        expect(span.attributes['gen_ai.agent.type']).toBeDefined();
       });
     });
   });
