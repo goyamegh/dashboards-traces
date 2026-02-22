@@ -67,11 +67,65 @@ jest.mock('@/server/middleware/index', () => ({
 
 jest.mock('@/services/connectors/server', () => ({}));
 
+// Mock config migration (new in config consolidation)
+jest.mock('@/server/services/configMigration', () => ({
+  migrateYamlToJsonIfNeeded: jest.fn().mockResolvedValue(undefined),
+}));
+
+// Mock config resolution for storage backend detection
+jest.mock('@/server/services/configService', () => ({
+  getStorageConfigFromFile: jest.fn().mockReturnValue(null),
+  getConfigStatus: jest.fn(),
+  saveStorageConfig: jest.fn(),
+  saveObservabilityConfig: jest.fn(),
+  clearStorageConfig: jest.fn(),
+  clearObservabilityConfig: jest.fn(),
+  readConfigFromDisk: jest.fn().mockReturnValue(null),
+}));
+
+jest.mock('@/server/middleware/dataSourceConfig', () => ({
+  getStorageConfigFromEnv: jest.fn().mockReturnValue(null),
+  resolveStorageConfig: jest.fn(),
+  STORAGE_INDEXES: {
+    testCases: 'evals_test_cases',
+    benchmarks: 'evals_experiments',
+    runs: 'evals_runs',
+    analytics: 'evals_analytics',
+  },
+  DEFAULT_OTEL_INDEXES: {
+    traces: 'otel-v1-apm-span-*',
+    logs: 'otel-v1-apm-log-*',
+  },
+}));
+
+jest.mock('@/server/adapters/index', () => ({
+  setStorageModule: jest.fn(),
+  getStorageModule: jest.fn(),
+}));
+
+jest.mock('@/server/adapters/opensearch/StorageModule', () => ({
+  OpenSearchStorageModule: jest.fn(),
+}));
+
+jest.mock('@opensearch-project/opensearch', () => ({
+  Client: jest.fn().mockImplementation(() => ({
+    cluster: { health: jest.fn().mockRejectedValue(new Error('mock')) },
+    close: jest.fn().mockResolvedValue(undefined),
+  })),
+}));
+
 import { createApp } from '@/server/app';
 
 describe('createApp', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Suppress expected console.error from configService path resolution in Jest
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   it('should return a promise (async function)', () => {
