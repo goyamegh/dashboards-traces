@@ -1,0 +1,827 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * OpenSearch Storage Module
+ *
+ * Implements IStorageModule using an OpenSearch client.
+ * Thin wrapper: delegates to the OpenSearch client with the same query patterns
+ * used by the old route code.
+ *
+ * Index layout:
+ *   evals_test_cases   - doc ID: {id}-v{version}
+ *   evals_experiments   - doc ID: {id}   (benchmarks, name kept for data compat)
+ *   evals_runs          - doc ID: {id}
+ *   evals_analytics     - doc ID: analytics-{runId}
+ */
+
+import { Client } from '@opensearch-project/opensearch';
+import type {
+  TestCase,
+  Benchmark,
+  BenchmarkRun,
+  TestCaseRun,
+  RunAnnotation,
+  HealthStatus,
+} from '../../../types/index.js';
+import type {
+  IStorageModule,
+  ITestCaseOperations,
+  IBenchmarkOperations,
+  IRunOperations,
+  IAnalyticsOperations,
+  PaginationOptions,
+  TestCaseSearchFilters,
+  RunSearchFilters,
+} from '../types.js';
+import { STORAGE_INDEXES } from '../../middleware/dataSourceConfig.js';
+
+// ============================================================================
+// Helpers
+// ============================================================================
+
+function hitsToSources<T>(hits: any[]): T[] {
+  return hits.map((h: any) => h._source as T);
+}
+
+function generateId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+}
+
+// ============================================================================
+// Test Case Operations
+// ============================================================================
+
+class OpenSearchTestCaseOperations implements ITestCaseOperations {
+  constructor(private client: Client) {}
+
+  private get index() { return STORAGE_INDEXES.testCases; }
+
+  async getAll(options?: PaginationOptions): Promise<{ items: TestCase[]; total: number }> {
+    const size = options?.size ?? 10000;
+    const from = options?.from ?? 0;
+
+    // Fetch all docs, then group by ID to return latest version of each
+    const result = await this.client.search({
+      index: this.index,
+      body: {
+        size,
+        from,
+        sort: [{ createdAt: { order: 'desc' } }],
+        query: { match_all: {} },
+      },
+    });
+
+    const hits = result.body.hits?.hits || [];
+    const allDocs = hitsToSources<TestCase & { version?: number }>(hits);
+    const total = typeof result.body.hits?.total === 'object'
+      ? result.body.hits.total.value
+      : result.body.hits?.total ?? 0;
+
+    // Group by ID, keep latest version
+    const byId = new Map<string, TestCase>();
+    for (const doc of allDocs) {
+      const existing = byId.get(doc.id);
+      const docVer = (doc as any).version ?? (doc as any).currentVersion ?? 0;
+      const existVer = existing ? ((existing as any).version ?? (existing as any).currentVersion ?? 0) : -1;
+      if (!existing || docVer > existVer) {
+        byId.set(doc.id, doc);
+      }
+    }
+
+    const items = Array.from(byId.values()).sort(
+      (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+
+    return { items, total: items.length };
+  }
+
+  async getById(id: string): Promise<TestCase | null> {
+    // Search for latest version of this test case
+    try {
+      const result = await this.client.search({
+        index: this.index,
+        body: {
+          size: 1,
+          sort: [{ version: { order: 'desc' } }],
+          query: { term: { id } },
+        },
+      });
+
+      const hits = result.body.hits?.hits || [];
+      return hits.length > 0 ? hits[0]._source as TestCase : null;
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return null;
+      throw error;
+    }
+  }
+
+  async getVersions(id: string): Promise<TestCase[]> {
+    const result = await this.client.search({
+      index: this.index,
+      body: {
+        size: 100,
+        sort: [{ version: { order: 'desc' } }],
+        query: { term: { id } },
+      },
+    });
+
+    return hitsToSources<TestCase>(result.body.hits?.hits || []);
+  }
+
+  async getVersion(id: string, version: number): Promise<TestCase | null> {
+    const docId = `${id}-v${version}`;
+    try {
+      const result = await this.client.get({ index: this.index, id: docId });
+      return result.body.found ? result.body._source as TestCase : null;
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return null;
+      throw error;
+    }
+  }
+
+  async create(testCase: Partial<TestCase>): Promise<TestCase> {
+    const now = new Date().toISOString();
+    const id = testCase.id || generateId('tc');
+    const version = 1;
+    const docId = `${id}-v${version}`;
+
+    const doc: TestCase = {
+      ...testCase,
+      id,
+      version,
+      currentVersion: version,
+      createdAt: now,
+      updatedAt: now,
+    } as TestCase;
+
+    await this.client.index({
+      index: this.index,
+      id: docId,
+      body: doc,
+      refresh: 'wait_for',
+    });
+
+    return doc;
+  }
+
+  async update(id: string, updates: Partial<TestCase>): Promise<TestCase> {
+    const current = await this.getById(id);
+    const currentVer = current ? ((current as any).version ?? (current as any).currentVersion ?? 0) : 0;
+    const newVer = currentVer + 1;
+    const now = new Date().toISOString();
+    const docId = `${id}-v${newVer}`;
+
+    const doc: TestCase = {
+      ...current,
+      ...updates,
+      id,
+      version: newVer,
+      currentVersion: newVer,
+      createdAt: now,
+      updatedAt: now,
+    } as TestCase;
+
+    await this.client.index({
+      index: this.index,
+      id: docId,
+      body: doc,
+      refresh: 'wait_for',
+    });
+
+    return doc;
+  }
+
+  async delete(id: string): Promise<{ deleted: number }> {
+    const result = await this.client.deleteByQuery({
+      index: this.index,
+      body: { query: { term: { id } } },
+      refresh: true,
+    });
+
+    return { deleted: (result.body as any).deleted || 0 };
+  }
+
+  async search(filters: TestCaseSearchFilters, options?: PaginationOptions): Promise<{ items: TestCase[]; total: number }> {
+    const { items: all } = await this.getAll();
+    let filtered = all;
+
+    if (filters.labels?.length) {
+      filtered = filtered.filter(tc =>
+        filters.labels!.some(label => tc.labels?.includes(label))
+      );
+    }
+    if (filters.category) {
+      filtered = filtered.filter(tc => tc.category === filters.category);
+    }
+    if (filters.difficulty) {
+      filtered = filtered.filter(tc => tc.difficulty === filters.difficulty);
+    }
+    if (filters.isPromoted !== undefined) {
+      filtered = filtered.filter(tc => tc.isPromoted === filters.isPromoted);
+    }
+    if (filters.textSearch) {
+      const q = filters.textSearch.toLowerCase();
+      filtered = filtered.filter(tc =>
+        tc.name?.toLowerCase().includes(q) ||
+        tc.description?.toLowerCase().includes(q) ||
+        tc.initialPrompt?.toLowerCase().includes(q)
+      );
+    }
+
+    const total = filtered.length;
+    const from = options?.from ?? 0;
+    const size = options?.size ?? total;
+    return { items: filtered.slice(from, from + size), total };
+  }
+
+  async bulkCreate(testCases: Partial<TestCase>[]): Promise<{ created: number; errors: number }> {
+    let created = 0;
+    let errors = 0;
+    for (const tc of testCases) {
+      try {
+        await this.create(tc);
+        created++;
+      } catch {
+        errors++;
+      }
+    }
+    return { created, errors };
+  }
+}
+
+// ============================================================================
+// Benchmark Operations
+// ============================================================================
+
+class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
+  constructor(private client: Client) {}
+
+  private get index() { return STORAGE_INDEXES.benchmarks; }
+
+  async getAll(options?: PaginationOptions): Promise<{ items: Benchmark[]; total: number }> {
+    const size = options?.size ?? 1000;
+    const from = options?.from ?? 0;
+
+    const result = await this.client.search({
+      index: this.index,
+      body: {
+        size,
+        from,
+        sort: [{ createdAt: { order: 'desc' } }],
+        query: { match_all: {} },
+      },
+    });
+
+    const items = hitsToSources<Benchmark>(result.body.hits?.hits || []);
+    const total = typeof result.body.hits?.total === 'object'
+      ? result.body.hits.total.value
+      : result.body.hits?.total ?? 0;
+
+    return { items, total };
+  }
+
+  async getById(id: string): Promise<Benchmark | null> {
+    try {
+      const result = await this.client.get({ index: this.index, id });
+      return result.body.found ? result.body._source as Benchmark : null;
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return null;
+      throw error;
+    }
+  }
+
+  async create(benchmark: Partial<Benchmark>): Promise<Benchmark> {
+    const now = new Date().toISOString();
+    const id = benchmark.id || generateId('bench');
+
+    const doc: Benchmark = {
+      ...benchmark,
+      id,
+      runs: benchmark.runs || [],
+      createdAt: now,
+      updatedAt: now,
+    } as Benchmark;
+
+    await this.client.index({
+      index: this.index,
+      id,
+      body: doc,
+      refresh: 'wait_for',
+    });
+
+    return doc;
+  }
+
+  async update(id: string, updates: Partial<Benchmark>): Promise<Benchmark> {
+    const existing = await this.getById(id);
+    if (!existing) throw new Error(`Benchmark ${id} not found`);
+
+    const doc: Benchmark = {
+      ...existing,
+      ...updates,
+      id,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await this.client.index({
+      index: this.index,
+      id,
+      body: doc,
+      refresh: 'wait_for',
+    });
+
+    return doc;
+  }
+
+  async delete(id: string): Promise<{ deleted: boolean }> {
+    try {
+      await this.client.delete({ index: this.index, id, refresh: 'wait_for' });
+      return { deleted: true };
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return { deleted: false };
+      throw error;
+    }
+  }
+
+  async addRun(benchmarkId: string, run: BenchmarkRun): Promise<boolean> {
+    try {
+      await this.client.update({
+        index: this.index,
+        id: benchmarkId,
+        retry_on_conflict: 3,
+        body: {
+          script: {
+            source: `
+              if (ctx._source.runs == null) {
+                ctx._source.runs = [];
+              }
+              ctx._source.runs.add(params.run);
+              ctx._source.updatedAt = params.now;
+            `,
+            params: { run, now: new Date().toISOString() },
+          },
+        },
+        refresh: 'wait_for',
+      });
+      return true;
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return false;
+      throw error;
+    }
+  }
+
+  async updateRun(benchmarkId: string, runId: string, updates: Partial<BenchmarkRun>): Promise<boolean> {
+    try {
+      await this.client.update({
+        index: this.index,
+        id: benchmarkId,
+        retry_on_conflict: 3,
+        body: {
+          script: {
+            source: `
+              for (int i = 0; i < ctx._source.runs.size(); i++) {
+                if (ctx._source.runs[i].id == params.runId) {
+                  for (def entry : params.updates.entrySet()) {
+                    ctx._source.runs[i][entry.getKey()] = entry.getValue();
+                  }
+                  break;
+                }
+              }
+              ctx._source.updatedAt = params.now;
+            `,
+            params: { runId, updates, now: new Date().toISOString() },
+          },
+        },
+        refresh: 'wait_for',
+      });
+      return true;
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return false;
+      throw error;
+    }
+  }
+
+  async deleteRun(benchmarkId: string, runId: string): Promise<boolean> {
+    try {
+      await this.client.update({
+        index: this.index,
+        id: benchmarkId,
+        retry_on_conflict: 3,
+        body: {
+          script: {
+            source: `
+              ctx._source.runs.removeIf(r -> r.id == params.runId);
+              ctx._source.updatedAt = params.now;
+            `,
+            params: { runId, now: new Date().toISOString() },
+          },
+        },
+        refresh: 'wait_for',
+      });
+      return true;
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return false;
+      throw error;
+    }
+  }
+
+  async bulkCreate(benchmarks: Partial<Benchmark>[]): Promise<{ created: number; errors: number }> {
+    let created = 0;
+    let errors = 0;
+    for (const b of benchmarks) {
+      try {
+        await this.create(b);
+        created++;
+      } catch {
+        errors++;
+      }
+    }
+    return { created, errors };
+  }
+}
+
+// ============================================================================
+// Run (TestCaseRun) Operations
+// ============================================================================
+
+class OpenSearchRunOperations implements IRunOperations {
+  constructor(private client: Client) {}
+
+  private get index() { return STORAGE_INDEXES.runs; }
+
+  async getAll(options?: PaginationOptions): Promise<{ items: TestCaseRun[]; total: number }> {
+    const size = options?.size ?? 100;
+    const from = options?.from ?? 0;
+
+    const result = await this.client.search({
+      index: this.index,
+      body: {
+        size,
+        from,
+        sort: [{ createdAt: { order: 'desc' } }],
+        query: { match_all: {} },
+      },
+    });
+
+    const items = hitsToSources<TestCaseRun>(result.body.hits?.hits || []);
+    const total = typeof result.body.hits?.total === 'object'
+      ? result.body.hits.total.value
+      : result.body.hits?.total ?? 0;
+
+    return { items, total };
+  }
+
+  async getById(id: string): Promise<TestCaseRun | null> {
+    try {
+      const result = await this.client.get({ index: this.index, id });
+      return result.body.found ? result.body._source as TestCaseRun : null;
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return null;
+      throw error;
+    }
+  }
+
+  async create(run: Partial<TestCaseRun>): Promise<TestCaseRun> {
+    const now = new Date().toISOString();
+    const id = run.id || generateId('report');
+
+    const doc: TestCaseRun = {
+      ...run,
+      id,
+      timestamp: (run as any).timestamp || now,
+      createdAt: now,
+    } as TestCaseRun;
+
+    await this.client.index({
+      index: this.index,
+      id,
+      body: doc,
+      refresh: 'wait_for',
+    });
+
+    return doc;
+  }
+
+  async update(id: string, updates: Partial<TestCaseRun>): Promise<TestCaseRun> {
+    const existing = await this.getById(id);
+    if (!existing) throw new Error(`Run ${id} not found`);
+
+    const doc: TestCaseRun = { ...existing, ...updates, id } as TestCaseRun;
+
+    await this.client.index({
+      index: this.index,
+      id,
+      body: doc,
+      refresh: 'wait_for',
+    });
+
+    return doc;
+  }
+
+  async delete(id: string): Promise<{ deleted: boolean }> {
+    try {
+      await this.client.delete({ index: this.index, id, refresh: 'wait_for' });
+      return { deleted: true };
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return { deleted: false };
+      throw error;
+    }
+  }
+
+  async search(filters: RunSearchFilters, options?: PaginationOptions): Promise<{ items: TestCaseRun[]; total: number }> {
+    const must: any[] = [];
+
+    if (filters.experimentId) must.push({ term: { experimentId: filters.experimentId } });
+    if (filters.experimentRunId) must.push({ term: { experimentRunId: filters.experimentRunId } });
+    if (filters.testCaseId) must.push({ term: { testCaseId: filters.testCaseId } });
+    if (filters.agentId) must.push({ term: { agentId: filters.agentId } });
+    if (filters.modelId) must.push({ term: { modelId: filters.modelId } });
+    if (filters.status) must.push({ term: { status: filters.status } });
+    if (filters.passFailStatus) must.push({ term: { passFailStatus: filters.passFailStatus } });
+    if (filters.dateRange) {
+      must.push({
+        range: {
+          createdAt: {
+            gte: filters.dateRange.start,
+            lte: filters.dateRange.end,
+          },
+        },
+      });
+    }
+
+    const query = must.length > 0 ? { bool: { must } } : { match_all: {} };
+    const size = options?.size ?? 100;
+    const from = options?.from ?? 0;
+
+    const result = await this.client.search({
+      index: this.index,
+      body: {
+        size,
+        from,
+        sort: [{ createdAt: { order: 'desc' } }],
+        query,
+      },
+    });
+
+    const items = hitsToSources<TestCaseRun>(result.body.hits?.hits || []);
+    const total = typeof result.body.hits?.total === 'object'
+      ? result.body.hits.total.value
+      : result.body.hits?.total ?? 0;
+
+    return { items, total };
+  }
+
+  async getByTestCase(testCaseId: string, size?: number, from?: number): Promise<{ items: TestCaseRun[]; total: number }> {
+    return this.search({ testCaseId }, { size, from });
+  }
+
+  async getByExperiment(experimentId: string, size?: number): Promise<TestCaseRun[]> {
+    const { items } = await this.search({ experimentId }, { size });
+    return items;
+  }
+
+  async getByExperimentRun(experimentId: string, runId: string, size?: number): Promise<TestCaseRun[]> {
+    const { items } = await this.search({ experimentId, experimentRunId: runId }, { size });
+    return items;
+  }
+
+  async getIterations(experimentId: string, testCaseId: string, experimentRunId?: string): Promise<{
+    items: TestCaseRun[];
+    total: number;
+    maxIteration: number;
+  }> {
+    const filters: RunSearchFilters = { experimentId, testCaseId };
+    if (experimentRunId) filters.experimentRunId = experimentRunId;
+    const { items } = await this.search(filters, { size: 1000 });
+
+    const maxIteration = items.reduce((max, r) => Math.max(max, (r as any).iteration || 0), 0);
+    return { items, total: items.length, maxIteration };
+  }
+
+  async bulkCreate(runs: Partial<TestCaseRun>[]): Promise<{ created: number; errors: number }> {
+    let created = 0;
+    let errors = 0;
+    for (const r of runs) {
+      try {
+        await this.create(r);
+        created++;
+      } catch {
+        errors++;
+      }
+    }
+    return { created, errors };
+  }
+
+  async addAnnotation(runId: string, annotation: Partial<RunAnnotation>): Promise<RunAnnotation> {
+    const run = await this.getById(runId);
+    if (!run) throw new Error(`Run ${runId} not found`);
+
+    const now = new Date().toISOString();
+    const fullAnnotation: RunAnnotation = {
+      id: `ann-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      reportId: runId,
+      text: '',
+      ...annotation,
+      timestamp: now,
+    } as RunAnnotation;
+
+    const annotations = (run as any).annotations || [];
+    annotations.push(fullAnnotation);
+
+    await this.client.update({
+      index: this.index,
+      id: runId,
+      body: { doc: { annotations } },
+      refresh: 'wait_for',
+    });
+
+    return fullAnnotation;
+  }
+
+  async updateAnnotation(runId: string, annotationId: string, updates: Partial<RunAnnotation>): Promise<RunAnnotation> {
+    const run = await this.getById(runId);
+    if (!run) throw new Error(`Run ${runId} not found`);
+
+    const annotations = (run as any).annotations || [];
+    const idx = annotations.findIndex((a: any) => a.id === annotationId);
+    if (idx === -1) throw new Error(`Annotation ${annotationId} not found`);
+
+    annotations[idx] = {
+      ...annotations[idx],
+      ...updates,
+      timestamp: new Date().toISOString(),
+    };
+
+    await this.client.update({
+      index: this.index,
+      id: runId,
+      body: { doc: { annotations } },
+      refresh: 'wait_for',
+    });
+
+    return annotations[idx];
+  }
+
+  async deleteAnnotation(runId: string, annotationId: string): Promise<{ deleted: boolean }> {
+    const run = await this.getById(runId);
+    if (!run) return { deleted: false };
+
+    const annotations = (run as any).annotations || [];
+    const originalLength = annotations.length;
+    const filtered = annotations.filter((a: any) => a.id !== annotationId);
+
+    if (filtered.length === originalLength) return { deleted: false };
+
+    await this.client.update({
+      index: this.index,
+      id: runId,
+      body: { doc: { annotations: filtered } },
+      refresh: 'wait_for',
+    });
+
+    return { deleted: true };
+  }
+}
+
+// ============================================================================
+// Analytics Operations
+// ============================================================================
+
+class OpenSearchAnalyticsOperations implements IAnalyticsOperations {
+  constructor(private client: Client) {}
+
+  private get index() { return STORAGE_INDEXES.analytics; }
+
+  async query(filters: Record<string, unknown>, options?: PaginationOptions): Promise<{ items: Record<string, unknown>[]; total: number }> {
+    const must: any[] = [];
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && value !== null) {
+        must.push({ term: { [key]: value } });
+      }
+    }
+
+    const query = must.length > 0 ? { bool: { must } } : { match_all: {} };
+    const size = options?.size ?? 1000;
+    const from = options?.from ?? 0;
+
+    try {
+      const result = await this.client.search({
+        index: this.index,
+        body: { size, from, query },
+      });
+
+      const items = hitsToSources<Record<string, unknown>>(result.body.hits?.hits || []);
+      const total = typeof result.body.hits?.total === 'object'
+        ? result.body.hits.total.value
+        : result.body.hits?.total ?? 0;
+
+      return { items, total };
+    } catch (error: any) {
+      // Index may not exist yet
+      if (error.meta?.statusCode === 404) {
+        return { items: [], total: 0 };
+      }
+      throw error;
+    }
+  }
+
+  async aggregations(experimentId?: string, groupBy?: string): Promise<{ aggregations: Record<string, unknown>[]; groupBy: string }> {
+    const field = groupBy || 'agentId';
+    const must: any[] = [];
+    if (experimentId) must.push({ term: { experimentId } });
+
+    const query = must.length > 0 ? { bool: { must } } : { match_all: {} };
+
+    try {
+      const result = await this.client.search({
+        index: this.index,
+        body: {
+          size: 0,
+          query,
+          aggs: {
+            by_field: {
+              terms: { field: `${field}.keyword`, size: 100 },
+              aggs: {
+                avg_accuracy: { avg: { field: 'metric_accuracy' } },
+                pass_count: { filter: { term: { passFailStatus: 'passed' } } },
+                fail_count: { filter: { term: { passFailStatus: 'failed' } } },
+              },
+            },
+          },
+        },
+      });
+
+      const buckets = (result.body.aggregations?.by_field as any)?.buckets || [];
+      const aggregations = buckets.map((b: any) => ({
+        key: b.key,
+        metrics: { avgAccuracy: b.avg_accuracy?.value },
+        passCount: b.pass_count?.doc_count || 0,
+        failCount: b.fail_count?.doc_count || 0,
+        totalRuns: b.doc_count || 0,
+      }));
+
+      return { aggregations, groupBy: field };
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) {
+        return { aggregations: [], groupBy: field };
+      }
+      throw error;
+    }
+  }
+
+  async writeRecord(record: Record<string, unknown>): Promise<void> {
+    const id = (record.id as string) || `analytics-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    await this.client.index({
+      index: this.index,
+      id,
+      body: { ...record, id },
+      refresh: 'wait_for',
+    });
+  }
+
+  async backfill(): Promise<{ backfilled: number; errors: number; total: number }> {
+    // Backfill is handled at a higher level (admin route)
+    return { backfilled: 0, errors: 0, total: 0 };
+  }
+}
+
+// ============================================================================
+// OpenSearch Storage Module
+// ============================================================================
+
+export class OpenSearchStorageModule implements IStorageModule {
+  readonly testCases: ITestCaseOperations;
+  readonly benchmarks: IBenchmarkOperations;
+  readonly runs: IRunOperations;
+  readonly analytics: IAnalyticsOperations;
+
+  constructor(private client: Client) {
+    this.testCases = new OpenSearchTestCaseOperations(client);
+    this.benchmarks = new OpenSearchBenchmarkOperations(client);
+    this.runs = new OpenSearchRunOperations(client);
+    this.analytics = new OpenSearchAnalyticsOperations(client);
+  }
+
+  async health(): Promise<HealthStatus> {
+    try {
+      const result = await this.client.cluster.health({ timeout: '10s' });
+      return {
+        status: 'ok',
+        cluster: {
+          name: result.body.cluster_name,
+          status: result.body.status,
+        },
+      };
+    } catch (error: any) {
+      return { status: 'error', error: error.message };
+    }
+  }
+
+  isConfigured(): boolean {
+    // This module is only created when OpenSearch is available
+    return true;
+  }
+}
