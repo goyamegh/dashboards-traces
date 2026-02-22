@@ -5,27 +5,12 @@
 
 import { Request, Response } from 'express';
 import analyticsRoutes from '@/server/routes/storage/analytics';
+import { getStorageModule } from '@/server/adapters/index';
 
-// Mock client methods
-const mockSearch = jest.fn();
-
-// Create mock client
-const mockClient = {
-  search: mockSearch,
-};
-
-// Mock the storageClient middleware
-jest.mock('@/server/middleware/storageClient', () => ({
-  isStorageAvailable: jest.fn(),
-  requireStorageClient: jest.fn(),
-  INDEXES: { analytics: 'analytics-index' },
+// Mock the adapters module
+jest.mock('@/server/adapters/index', () => ({
+  getStorageModule: jest.fn(),
 }));
-
-// Import mocked functions
-import {
-  isStorageAvailable,
-  requireStorageClient,
-} from '@/server/middleware/storageClient';
 
 // Silence console output
 beforeAll(() => {
@@ -44,8 +29,6 @@ function createMocks(params: any = {}, body: any = {}, query: any = {}) {
     params,
     body,
     query,
-    storageClient: mockClient,
-    storageConfig: { endpoint: 'https://localhost:9200' },
   } as unknown as Request;
   const res = {
     json: jest.fn().mockReturnThis(),
@@ -67,25 +50,34 @@ function getRouteHandler(router: any, method: string, path: string) {
 }
 
 describe('Analytics Storage Routes', () => {
+  let mockStorage: {
+    isConfigured: jest.Mock;
+    analytics: {
+      query: jest.Mock;
+      aggregations: jest.Mock;
+    };
+  };
+
   beforeEach(() => {
     jest.clearAllMocks();
-    // Default: storage is available
-    (isStorageAvailable as jest.Mock).mockReturnValue(true);
-    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
+    mockStorage = {
+      isConfigured: jest.fn().mockReturnValue(true),
+      analytics: {
+        query: jest.fn(),
+        aggregations: jest.fn(),
+      },
+    };
+    (getStorageModule as jest.Mock).mockReturnValue(mockStorage);
   });
 
   describe('GET /api/storage/analytics', () => {
     it('should return records with no filters', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            hits: [
-              { _source: { id: 'analytics-1', experimentId: 'exp-1' } },
-              { _source: { id: 'analytics-2', experimentId: 'exp-2' } },
-            ],
-            total: { value: 2 },
-          },
-        },
+      mockStorage.analytics.query.mockResolvedValue({
+        items: [
+          { id: 'analytics-1', experimentId: 'exp-1' },
+          { id: 'analytics-2', experimentId: 'exp-2' },
+        ],
+        total: 2,
       });
 
       const { req, res } = createMocks({}, {}, {});
@@ -93,25 +85,20 @@ describe('Analytics Storage Routes', () => {
 
       await handler(req, res);
 
-      expect(mockSearch).toHaveBeenCalled();
-      const searchBody = mockSearch.mock.calls[0][0].body;
-      expect(searchBody.query).toEqual({ match_all: {} });
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          records: expect.any(Array),
-          total: 2,
-        })
-      );
+      expect(mockStorage.analytics.query).toHaveBeenCalledWith({}, { size: 1000, from: 0 });
+      expect(res.json).toHaveBeenCalledWith({
+        records: [
+          { id: 'analytics-1', experimentId: 'exp-1' },
+          { id: 'analytics-2', experimentId: 'exp-2' },
+        ],
+        total: 2,
+      });
     });
 
     it('should apply experimentId filter', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            hits: [{ _source: { id: 'analytics-1', experimentId: 'exp-1' } }],
-            total: { value: 1 },
-          },
-        },
+      mockStorage.analytics.query.mockResolvedValue({
+        items: [{ id: 'analytics-1', experimentId: 'exp-1' }],
+        total: 1,
       });
 
       const { req, res } = createMocks({}, {}, { experimentId: 'exp-1' });
@@ -119,18 +106,16 @@ describe('Analytics Storage Routes', () => {
 
       await handler(req, res);
 
-      const searchBody = mockSearch.mock.calls[0][0].body;
-      expect(searchBody.query.bool.must).toContainEqual({ term: { experimentId: 'exp-1' } });
+      expect(mockStorage.analytics.query).toHaveBeenCalledWith(
+        { experimentId: 'exp-1' },
+        { size: 1000, from: 0 }
+      );
     });
 
     it('should apply multiple filters', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            hits: [],
-            total: { value: 0 },
-          },
-        },
+      mockStorage.analytics.query.mockResolvedValue({
+        items: [],
+        total: 0,
       });
 
       const { req, res } = createMocks({}, {}, {
@@ -144,15 +129,22 @@ describe('Analytics Storage Routes', () => {
 
       await handler(req, res);
 
-      const searchBody = mockSearch.mock.calls[0][0].body;
-      expect(searchBody.query.bool.must).toHaveLength(5);
+      expect(mockStorage.analytics.query).toHaveBeenCalledWith(
+        {
+          experimentId: 'exp-1',
+          testCaseId: 'tc-1',
+          agentId: 'agent-1',
+          modelId: 'model-1',
+          passFailStatus: 'passed',
+        },
+        { size: 1000, from: 0 }
+      );
     });
 
     it('should respect pagination params', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: { hits: [], total: { value: 0 } },
-        },
+      mockStorage.analytics.query.mockResolvedValue({
+        items: [],
+        total: 0,
       });
 
       const { req, res } = createMocks({}, {}, { size: '50', from: '100' });
@@ -160,13 +152,23 @@ describe('Analytics Storage Routes', () => {
 
       await handler(req, res);
 
-      const searchBody = mockSearch.mock.calls[0][0].body;
-      expect(searchBody.size).toBe(50);
-      expect(searchBody.from).toBe(100);
+      expect(mockStorage.analytics.query).toHaveBeenCalledWith({}, { size: 50, from: 100 });
+    });
+
+    it('should return empty results when storage is not configured', async () => {
+      mockStorage.isConfigured.mockReturnValue(false);
+
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(analyticsRoutes, 'get', '/api/storage/analytics');
+
+      await handler(req, res);
+
+      expect(mockStorage.analytics.query).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({ records: [], total: 0 });
     });
 
     it('should handle errors', async () => {
-      mockSearch.mockRejectedValue(new Error('Connection refused'));
+      mockStorage.analytics.query.mockRejectedValue(new Error('Connection refused'));
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(analyticsRoutes, 'get', '/api/storage/analytics');
@@ -180,61 +182,36 @@ describe('Analytics Storage Routes', () => {
 
   describe('GET /api/storage/analytics/aggregations', () => {
     it('should return aggregations grouped by agentId by default', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          aggregations: {
-            groups: {
-              buckets: [
-                {
-                  key: 'agent-1',
-                  avg_accuracy: { value: 0.85 },
-                  avg_faithfulness: { value: 0.9 },
-                  avg_latency: { value: 0.75 },
-                  avg_trajectory: { value: 0.8 },
-                  pass_count: { doc_count: 10 },
-                  fail_count: { doc_count: 2 },
-                  total_runs: { value: 12 },
-                },
-              ],
+      const aggregationsResult = {
+        aggregations: [
+          {
+            key: 'agent-1',
+            metrics: {
+              avgAccuracy: 0.85,
+              avgFaithfulness: 0.9,
             },
+            passCount: 10,
+            failCount: 2,
+            totalRuns: 12,
           },
-        },
-      });
+        ],
+        groupBy: 'agentId',
+      };
+      mockStorage.analytics.aggregations.mockResolvedValue(aggregationsResult);
 
       const { req, res } = createMocks({}, {}, {});
       const handler = getRouteHandler(analyticsRoutes, 'get', '/api/storage/analytics/aggregations');
 
       await handler(req, res);
 
-      expect(mockSearch).toHaveBeenCalled();
-      const searchBody = mockSearch.mock.calls[0][0].body;
-      expect(searchBody.aggs.groups.terms.field).toBe('agentId');
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          aggregations: expect.arrayContaining([
-            expect.objectContaining({
-              key: 'agent-1',
-              metrics: expect.objectContaining({
-                avgAccuracy: 0.85,
-                avgFaithfulness: 0.9,
-              }),
-              passCount: 10,
-              failCount: 2,
-              totalRuns: 12,
-            }),
-          ]),
-          groupBy: 'agentId',
-        })
-      );
+      expect(mockStorage.analytics.aggregations).toHaveBeenCalledWith(undefined, 'agentId');
+      expect(res.json).toHaveBeenCalledWith(aggregationsResult);
     });
 
     it('should use custom groupBy', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          aggregations: {
-            groups: { buckets: [] },
-          },
-        },
+      mockStorage.analytics.aggregations.mockResolvedValue({
+        aggregations: [],
+        groupBy: 'modelId',
       });
 
       const { req, res } = createMocks({}, {}, { groupBy: 'modelId' });
@@ -242,17 +219,13 @@ describe('Analytics Storage Routes', () => {
 
       await handler(req, res);
 
-      const searchBody = mockSearch.mock.calls[0][0].body;
-      expect(searchBody.aggs.groups.terms.field).toBe('modelId');
+      expect(mockStorage.analytics.aggregations).toHaveBeenCalledWith(undefined, 'modelId');
     });
 
     it('should apply experimentId filter to aggregations', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          aggregations: {
-            groups: { buckets: [] },
-          },
-        },
+      mockStorage.analytics.aggregations.mockResolvedValue({
+        aggregations: [],
+        groupBy: 'agentId',
       });
 
       const { req, res } = createMocks({}, {}, { experimentId: 'exp-1' });
@@ -260,12 +233,23 @@ describe('Analytics Storage Routes', () => {
 
       await handler(req, res);
 
-      const searchBody = mockSearch.mock.calls[0][0].body;
-      expect(searchBody.query.bool.must).toContainEqual({ term: { experimentId: 'exp-1' } });
+      expect(mockStorage.analytics.aggregations).toHaveBeenCalledWith('exp-1', 'agentId');
+    });
+
+    it('should return empty results when storage is not configured', async () => {
+      mockStorage.isConfigured.mockReturnValue(false);
+
+      const { req, res } = createMocks({}, {}, { groupBy: 'modelId' });
+      const handler = getRouteHandler(analyticsRoutes, 'get', '/api/storage/analytics/aggregations');
+
+      await handler(req, res);
+
+      expect(mockStorage.analytics.aggregations).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({ aggregations: [], groupBy: 'modelId' });
     });
 
     it('should handle errors', async () => {
-      mockSearch.mockRejectedValue(new Error('Aggregation failed'));
+      mockStorage.analytics.aggregations.mockRejectedValue(new Error('Aggregation failed'));
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(analyticsRoutes, 'get', '/api/storage/analytics/aggregations');
@@ -278,14 +262,9 @@ describe('Analytics Storage Routes', () => {
 
   describe('POST /api/storage/analytics/search', () => {
     it('should search with custom filters', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            hits: [{ _source: { id: 'analytics-1' } }],
-            total: { value: 1 },
-          },
-          aggregations: {},
-        },
+      mockStorage.analytics.query.mockResolvedValue({
+        items: [{ id: 'analytics-1' }],
+        total: 1,
       });
 
       const { req, res } = createMocks({}, {
@@ -295,17 +274,21 @@ describe('Analytics Storage Routes', () => {
 
       await handler(req, res);
 
-      const searchBody = mockSearch.mock.calls[0][0].body;
-      expect(searchBody.query.bool.must).toContainEqual({ term: { experimentId: 'exp-1' } });
-      expect(searchBody.query.bool.must).toContainEqual({ term: { passFailStatus: 'passed' } });
+      expect(mockStorage.analytics.query).toHaveBeenCalledWith(
+        { experimentId: 'exp-1', passFailStatus: 'passed' },
+        { size: 1000, from: 0 }
+      );
+      expect(res.json).toHaveBeenCalledWith({
+        records: [{ id: 'analytics-1' }],
+        total: 1,
+        aggregations: {},
+      });
     });
 
-    it('should handle array filters with terms query', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: { hits: [], total: { value: 0 } },
-          aggregations: {},
-        },
+    it('should handle array filters', async () => {
+      mockStorage.analytics.query.mockResolvedValue({
+        items: [],
+        total: 0,
       });
 
       const { req, res } = createMocks({}, {
@@ -315,42 +298,34 @@ describe('Analytics Storage Routes', () => {
 
       await handler(req, res);
 
-      const searchBody = mockSearch.mock.calls[0][0].body;
-      expect(searchBody.query.bool.must).toContainEqual({
-        terms: { agentId: ['agent-1', 'agent-2'] },
-      });
+      expect(mockStorage.analytics.query).toHaveBeenCalledWith(
+        { agentId: ['agent-1', 'agent-2'] },
+        { size: 1000, from: 0 }
+      );
     });
 
-    it('should include custom aggregations', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: { hits: [], total: { value: 0 } },
-          aggregations: { custom_agg: { value: 10 } },
-        },
+    it('should respect pagination params from body', async () => {
+      mockStorage.analytics.query.mockResolvedValue({
+        items: [],
+        total: 0,
       });
 
       const { req, res } = createMocks({}, {
-        aggs: { custom_agg: { sum: { field: 'metric_accuracy' } } },
+        filters: {},
+        size: 50,
+        from: 100,
       });
       const handler = getRouteHandler(analyticsRoutes, 'post', '/api/storage/analytics/search');
 
       await handler(req, res);
 
-      const searchBody = mockSearch.mock.calls[0][0].body;
-      expect(searchBody.aggs).toBeDefined();
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          aggregations: expect.objectContaining({ custom_agg: { value: 10 } }),
-        })
-      );
+      expect(mockStorage.analytics.query).toHaveBeenCalledWith({}, { size: 50, from: 100 });
     });
 
-    it('should use match_all when no filters provided', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: { hits: [], total: { value: 0 } },
-          aggregations: {},
-        },
+    it('should use empty filters when no filters provided', async () => {
+      mockStorage.analytics.query.mockResolvedValue({
+        items: [],
+        total: 0,
       });
 
       const { req, res } = createMocks({}, {});
@@ -358,12 +333,28 @@ describe('Analytics Storage Routes', () => {
 
       await handler(req, res);
 
-      const searchBody = mockSearch.mock.calls[0][0].body;
-      expect(searchBody.query).toEqual({ match_all: {} });
+      expect(mockStorage.analytics.query).toHaveBeenCalledWith({}, { size: 1000, from: 0 });
+      expect(res.json).toHaveBeenCalledWith({
+        records: [],
+        total: 0,
+        aggregations: {},
+      });
+    });
+
+    it('should return empty results when storage is not configured', async () => {
+      mockStorage.isConfigured.mockReturnValue(false);
+
+      const { req, res } = createMocks({}, { filters: {} });
+      const handler = getRouteHandler(analyticsRoutes, 'post', '/api/storage/analytics/search');
+
+      await handler(req, res);
+
+      expect(mockStorage.analytics.query).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({ records: [], total: 0, aggregations: {} });
     });
 
     it('should handle errors', async () => {
-      mockSearch.mockRejectedValue(new Error('Search failed'));
+      mockStorage.analytics.query.mockRejectedValue(new Error('Search failed'));
 
       const { req, res } = createMocks({}, { filters: {} });
       const handler = getRouteHandler(analyticsRoutes, 'post', '/api/storage/analytics/search');
