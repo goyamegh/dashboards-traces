@@ -52,9 +52,9 @@ describe('Sample Test Cases', () => {
 
   describe('getSampleTestCase', () => {
     it('should return test case by ID', () => {
-      const tc = getSampleTestCase('demo-otel-001');
+      const tc = getSampleTestCase('demo-travel-001');
       expect(tc).toBeDefined();
-      expect(tc?.name).toBe('Payment Service Latency Spike');
+      expect(tc?.name).toBe('Weekend Getaway to Napa Valley');
     });
 
     it('should return undefined for unknown ID', () => {
@@ -90,20 +90,18 @@ describe('Sample Experiments', () => {
 
     it('should have correct experiment structure', () => {
       const exp = SAMPLE_EXPERIMENTS[0];
-      expect(exp.id).toBe('demo-exp-001');
-      expect(exp.name).toBe('RCA Agent Evaluation - Demo');
-      expect(exp.testCaseIds).toHaveLength(5);
+      expect(exp.id).toBe('demo-bench-basic');
+      expect(exp.name).toBe('Travel Planning Accuracy - Demo');
+      expect(exp.testCaseIds).toHaveLength(3);
       expect(exp.runs).toHaveLength(1);
     });
 
-    it('should have 5 test case IDs', () => {
+    it('should have 3 test case IDs in the basic benchmark', () => {
       const exp = SAMPLE_EXPERIMENTS[0];
       expect(exp.testCaseIds).toEqual([
-        'demo-otel-001',
-        'demo-otel-002',
-        'demo-otel-003',
-        'demo-otel-004',
-        'demo-otel-005',
+        'demo-travel-001',
+        'demo-travel-002',
+        'demo-travel-003',
       ]);
     });
 
@@ -118,7 +116,7 @@ describe('Sample Experiments', () => {
     it('should have results for all test cases in the run', () => {
       const exp = SAMPLE_EXPERIMENTS[0];
       const run = exp.runs[0];
-      expect(Object.keys(run.results)).toHaveLength(5);
+      expect(Object.keys(run.results)).toHaveLength(3);
 
       exp.testCaseIds.forEach((tcId) => {
         expect(run.results[tcId]).toBeDefined();
@@ -129,9 +127,9 @@ describe('Sample Experiments', () => {
 
   describe('getSampleBenchmark', () => {
     it('should return experiment by ID', () => {
-      const exp = getSampleBenchmark('demo-exp-001');
+      const exp = getSampleBenchmark('demo-bench-basic');
       expect(exp).toBeDefined();
-      expect(exp?.name).toBe('RCA Agent Evaluation - Demo');
+      expect(exp?.name).toBe('Travel Planning Accuracy - Demo');
     });
 
     it('should return undefined for unknown ID', () => {
@@ -156,6 +154,11 @@ describe('Sample Experiments', () => {
     it('should return true for demo-run- prefix', () => {
       expect(isSampleExperimentId('demo-run-001')).toBe(true);
       expect(isSampleExperimentId('demo-run-anything')).toBe(true);
+    });
+
+    it('should return true for demo-bench- prefix', () => {
+      expect(isSampleExperimentId('demo-bench-basic')).toBe(true);
+      expect(isSampleExperimentId('demo-bench-advanced')).toBe(true);
     });
 
     it('should return false for non-demo IDs', () => {

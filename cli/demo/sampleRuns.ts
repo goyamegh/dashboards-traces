@@ -6,8 +6,9 @@
 /**
  * Sample Runs for Demo Mode
  *
- * Pre-completed evaluation runs with realistic trajectories.
- * Always visible alongside real runs - IDs prefixed with 'demo-'.
+ * Pre-completed evaluation runs with realistic Travel Planner trajectories
+ * showing multi-agent orchestration. Always visible alongside real runs -
+ * IDs prefixed with 'demo-'.
  */
 
 import type { TestCaseRun, TrajectoryStep, ToolCallStatus } from '../../types/index.js';
@@ -33,13 +34,13 @@ function createStep(
 }
 
 export const SAMPLE_RUNS: TestCaseRun[] = [
-  // Demo Report 001 - Payment Service Latency Spike
+  // Demo Report 001 - Weekend Getaway to Napa Valley
   {
     id: 'demo-report-001',
     timestamp: '2024-01-15T10:05:00.000Z',
-    testCaseId: 'demo-otel-001',
+    testCaseId: 'demo-travel-001',
     testCaseVersion: 1,
-    experimentId: 'demo-benchmark-001',
+    experimentId: 'demo-bench-basic',
     experimentRunId: 'demo-run-001',
     agentName: 'ML Commons Agent',
     agentKey: 'ml-commons',
@@ -49,53 +50,53 @@ export const SAMPLE_RUNS: TestCaseRun[] = [
     passFailStatus: 'passed',
     runId: 'demo-agent-run-001',
     trajectory: [
-      createStep('thinking', 'The user is reporting a 5x latency increase in the payment service. P99 went from 200ms to 1000ms. I need to investigate the traces to identify the bottleneck.'),
-      createStep('action', 'Querying traces for payment-service to analyze latency distribution', {
-        toolName: 'QueryTraces',
-        toolArgs: { service: 'payment-service', timeRange: '1h', metric: 'latency' },
+      createStep('thinking', 'The user wants a weekend getaway to Napa Valley for two people. I need to coordinate multiple agents: Weather Agent for forecast, Events Agent for local activities, and Booking Agent for restaurant reservations. Let me start by checking the weather.'),
+      createStep('action', 'Invoking Weather Agent to check Napa Valley weekend forecast', {
+        toolName: 'invoke_weather_agent',
+        toolArgs: { location: 'Napa Valley, CA', dates: 'this Saturday-Sunday', detail: 'hourly' },
       }),
-      createStep('tool_result', 'Found 1,243 traces. Average latency: 950ms. P99: 1,050ms. Breakdown:\n- payment-service internal: 50ms (5%)\n- fraud-detection call: 120ms (12%)\n- stripe-gateway call: 780ms (82%)', {
+      createStep('tool_result', 'Weather Forecast for Napa Valley:\n- Saturday: Sunny, 72F/22C, light breeze 5mph, UV index 6\n- Sunday: Partly cloudy, 68F/20C, calm winds\n- No rain expected\n- Perfect conditions for outdoor wine tasting', {
         status: 'SUCCESS' as ToolCallStatus,
       }),
-      createStep('thinking', 'The trace data shows 82% of latency is coming from the Stripe gateway calls. Let me check if there were any recent deployments that might correlate with this.'),
-      createStep('action', 'Checking recent deployments for payment-service and related services', {
-        toolName: 'GetDeployments',
-        toolArgs: { services: ['payment-service', 'fraud-detection'], timeRange: '24h' },
+      createStep('thinking', 'Weather looks perfect for outdoor activities. Now let me find local events and wine tastings for the weekend.'),
+      createStep('action', 'Invoking Events Agent to find Napa Valley weekend activities', {
+        toolName: 'invoke_events_agent',
+        toolArgs: { location: 'Napa Valley, CA', dates: 'this Saturday-Sunday', categories: ['wine-tasting', 'food-festival', 'tours'] },
       }),
-      createStep('tool_result', 'Recent deployments:\n- payment-service v2.3.1: 3 hours ago (connection pool config change)\n- fraud-detection v1.8.0: 6 hours ago (new ML model)', {
+      createStep('tool_result', 'Local Events Found:\n1. Domaine Carneros - Saturday Wine & Cheese Pairing ($45/person, 11am-1pm)\n2. Oxbow Public Market - Saturday Artisan Food Market (free, 9am-5pm)\n3. Robert Mondavi Winery - Sunday Vineyard Tour & Tasting ($65/person, 10am)\n4. Napa Valley Wine Train - Saturday Sunset Dinner ($150/person, 5pm-8pm)\n5. Castello di Amorosa - Medieval Castle Winery Tour ($40/person, all day)', {
         status: 'SUCCESS' as ToolCallStatus,
       }),
-      createStep('thinking', 'The payment-service deployment 3 hours ago changed connection pool config. The latency spike timing correlates with this. However, the trace data shows the bottleneck is in external Stripe calls, not internal processing. Let me check Stripe status.'),
-      createStep('action', 'Checking external service status for payment gateway', {
-        toolName: 'CheckExternalStatus',
-        toolArgs: { service: 'stripe', component: 'payment-api' },
+      createStep('thinking', 'Great options available. Let me book a restaurant for Saturday dinner and check hotel availability.'),
+      createStep('action', 'Invoking Booking Agent to reserve restaurant and check hotels', {
+        toolName: 'invoke_booking_agent',
+        toolArgs: { action: 'reserve', type: 'restaurant', location: 'Napa Valley', date: 'Saturday', time: '7:30 PM', party_size: 2, preferences: 'fine dining, wine pairing' },
       }),
-      createStep('tool_result', 'Stripe Status Page: Degraded Performance\n- Payment API: Elevated latency since 2 hours ago\n- Estimated resolution: Under investigation', {
+      createStep('tool_result', 'Reservation Confirmed:\n- Restaurant: The French Laundry (alternative: Bottega Napa Valley)\n- Bottega Napa Valley: Saturday 7:30 PM, party of 2 - CONFIRMED\n- Confirmation #: BNV-2024-0892\n- Price: ~$120-150 for two (excluding wine)\n\nHotel Options:\n- Napa Valley Lodge: $289/night, pool, hot tub, vineyard views\n- Carneros Resort: $425/night, luxury cottages\n- Best Western Plus: $179/night, downtown Napa', {
         status: 'SUCCESS' as ToolCallStatus,
       }),
-      createStep('response', '## Root Cause Analysis\n\n**Root Cause:** External payment gateway (Stripe) experiencing degraded performance.\n\n**Evidence:**\n1. Trace analysis shows 82% of latency (780ms) in Stripe gateway calls\n2. Stripe status page confirms "Elevated latency" starting 2 hours ago\n3. Internal payment-service processing remains fast (50ms)\n\n**Recent Deployment Correlation:**\n- payment-service v2.3.1 (3 hours ago) is NOT the cause\n- Latency increase started 2 hours ago, matching Stripe\'s incident timeline\n\n**Recommendations:**\n1. **Immediate:** Increase timeout for Stripe calls to prevent cascading failures\n2. **Short-term:** Implement circuit breaker for payment gateway\n3. **Long-term:** Consider backup payment provider for redundancy\n\n**Monitoring:** Continue monitoring Stripe status page for resolution updates.'),
+      createStep('response', '## Napa Valley Weekend Getaway Itinerary\n\n**Weather:** Sunny Saturday (72F), Partly cloudy Sunday (68F) - perfect for wine country!\n\n### Saturday\n- **9:00 AM** - Arrive & explore Oxbow Public Market (free)\n- **11:00 AM** - Domaine Carneros Wine & Cheese Pairing ($45/person)\n- **1:30 PM** - Lunch at Oxbow Public Market\n- **3:00 PM** - Castello di Amorosa Castle Winery Tour ($40/person)\n- **7:30 PM** - Dinner at Bottega Napa Valley (Confirmed: BNV-2024-0892)\n\n### Sunday\n- **9:00 AM** - Leisurely breakfast at hotel\n- **10:00 AM** - Robert Mondavi Vineyard Tour & Tasting ($65/person)\n- **12:30 PM** - Lunch in Yountville\n- **2:00 PM** - Drive home\n\n**Accommodation:** Napa Valley Lodge ($289/night) - vineyard views, pool\n\n**Estimated Budget:**\n- Hotel (1 night): $289\n- Wine tastings/tours: $195 per person ($390 total)\n- Dinner: ~$150\n- Lunch/snacks: ~$60\n- **Total: ~$889** (slightly over $800 budget)\n\n**Tip:** Book Domaine Carneros and Robert Mondavi online in advance for guaranteed spots.'),
     ],
     metrics: {
-      accuracy: 92,
+      accuracy: 94,
     },
-    llmJudgeReasoning: 'The agent correctly identified the external payment gateway (Stripe) as the root cause of the latency spike. It systematically analyzed traces, checked deployments, and correlated timing with external service status. The recommendations are practical and address both immediate mitigation and long-term resilience.',
+    llmJudgeReasoning: 'The agent effectively coordinated all three specialist agents (Weather, Events, Booking) to produce a comprehensive weekend itinerary. Weather was checked first to ensure outdoor activities were viable. Restaurant reservation was confirmed with a booking reference. The budget was close to the $800 target with a clear breakdown.',
     improvementStrategies: [
       {
-        category: 'Tool Usage',
-        issue: 'Could check application metrics alongside traces',
-        recommendation: 'Query application metrics (error rates, throughput) to get a more complete picture',
+        category: 'Budget Optimization',
+        issue: 'Total slightly exceeds the $800 budget target',
+        recommendation: 'Could suggest the more affordable Best Western option or skip one wine tasting to stay within budget',
         priority: 'low',
       },
     ],
   },
 
-  // Demo Report 002 - Cart Service Error Rate Spike
+  // Demo Report 002 - Japan Cherry Blossom Season Trip
   {
     id: 'demo-report-002',
-    timestamp: '2024-01-15T10:08:00.000Z',
-    testCaseId: 'demo-otel-002',
+    timestamp: '2024-01-15T10:10:00.000Z',
+    testCaseId: 'demo-travel-002',
     testCaseVersion: 1,
-    experimentId: 'demo-benchmark-001',
+    experimentId: 'demo-bench-basic',
     experimentRunId: 'demo-run-001',
     agentName: 'ML Commons Agent',
     agentKey: 'ml-commons',
@@ -105,38 +106,62 @@ export const SAMPLE_RUNS: TestCaseRun[] = [
     passFailStatus: 'passed',
     runId: 'demo-agent-run-002',
     trajectory: [
-      createStep('thinking', 'Error rate jumped from 0.1% to 15% in the cart service. Users are reporting failed checkouts. I need to identify which dependency is failing.'),
-      createStep('action', 'Analyzing error traces for cart-service', {
-        toolName: 'QueryTraces',
-        toolArgs: { service: 'cart-service', status: 'error', timeRange: '30m' },
+      createStep('thinking', 'This is a complex 10-day international trip to Japan covering three cities during cherry blossom season. I need to coordinate flights, hotels, rail passes, cultural events, and weather forecasts across Tokyo, Kyoto, and Osaka. Let me start with flights and cherry blossom timing.'),
+      createStep('action', 'Invoking Booking Agent to search international flights', {
+        toolName: 'invoke_booking_agent',
+        toolArgs: { action: 'search_flights', origin: 'SFO', destinations: ['NRT', 'KIX'], dates: { depart: 'March 25', return: 'April 4' }, passengers: 2, class: 'economy' },
       }),
-      createStep('tool_result', 'Found 450 error traces. Error breakdown:\n- inventory-service: 420 errors (93%)\n- pricing-service: 20 errors (4%)\n- redis-cache: 10 errors (2%)\n\nCommon error: "Connection refused: inventory-service:8080"', {
+      createStep('tool_result', 'Flight Options:\n1. ANA NH7 SFO->NRT Mar 25 (dep 11:30, arr Mar 26 15:30) - $850/person\n   Return: ANA NH6 KIX->SFO Apr 4 (dep 17:00, arr Apr 4 10:30) - included\n2. JAL JL1 SFO->HND Mar 25 (dep 13:00, arr Mar 26 17:00) - $920/person\n3. United UA837 SFO->NRT Mar 25 (dep 14:15, arr Mar 26 18:15) - $780/person\n\nRecommended: ANA open-jaw (SFO->NRT, KIX->SFO) $850/person - no backtrack', {
         status: 'SUCCESS' as ToolCallStatus,
       }),
-      createStep('thinking', '93% of errors are from inventory-service. The error message "Connection refused" suggests the service is down or unreachable. Let me check recent deployments.'),
-      createStep('action', 'Getting deployment history for inventory-service', {
-        toolName: 'GetDeployments',
-        toolArgs: { services: ['inventory-service'], timeRange: '4h' },
+      createStep('action', 'Invoking Weather Agent for cherry blossom forecast across three cities', {
+        toolName: 'invoke_weather_agent',
+        toolArgs: { locations: ['Tokyo', 'Kyoto', 'Osaka'], dates: 'March 25 - April 4', forecast_type: 'cherry_blossom' },
       }),
-      createStep('tool_result', 'inventory-service v3.1.0 deployed 2 hours ago\nChanges: New inventory API, updated health check endpoint\nReplicas: 3/3 running (but 0/3 ready)', {
+      createStep('tool_result', 'Cherry Blossom Forecast 2024:\n- Tokyo: Full bloom March 26-31, petals falling April 1-5\n- Kyoto: Full bloom March 30 - April 4, peak April 1-2\n- Osaka: Full bloom March 29 - April 3\n\nWeather:\n- Tokyo (Mar 25-29): 58-64F, partly cloudy, 20% rain chance\n- Kyoto (Mar 30-Apr 1): 60-66F, sunny, ideal viewing\n- Osaka (Apr 2-4): 62-68F, partly cloudy\n\nRecommendation: Current itinerary timing is excellent for all three cities', {
         status: 'SUCCESS' as ToolCallStatus,
       }),
-      createStep('response', '## Root Cause Analysis\n\n**Root Cause:** inventory-service v3.1.0 deployment failure - pods running but not ready.\n\n**Evidence:**\n1. 93% of cart-service errors originate from inventory-service calls\n2. Error: "Connection refused: inventory-service:8080"\n3. inventory-service v3.1.0 deployed 2 hours ago\n4. Replicas show 3/3 running but 0/3 ready (health check failing)\n\n**Impact:**\n- Cart service error rate: 0.1% → 15%\n- Failed checkouts affecting user experience\n\n**Recommendations:**\n1. **Immediate:** Rollback inventory-service to v3.0.x\n2. **Investigation:** Check v3.1.0 health check endpoint changes\n3. **Prevention:** Add deployment validation gates for readiness'),
+      createStep('action', 'Invoking Events Agent to find cultural events and activities', {
+        toolName: 'invoke_events_agent',
+        toolArgs: { locations: ['Tokyo', 'Kyoto', 'Osaka'], dates: 'March 25 - April 4', categories: ['cherry-blossom', 'tea-ceremony', 'temple', 'cultural'] },
+      }),
+      createStep('tool_result', 'Cultural Events Found:\n\nTokyo (Mar 26-29):\n- Ueno Park Hanami Festival (free, all day, peak bloom)\n- Chidorigafuchi Night Cherry Blossoms (illuminated, 6-10pm, free)\n- Meiji Shrine Spring Grand Festival (Mar 28)\n- Yanaka District Walking Tour ($25/person, 3 hours)\n\nKyoto (Mar 30-Apr 1):\n- Philosopher\'s Path Sakura Walk (free, peak bloom)\n- Kiyomizu-dera Night Illumination ($4/person, 6-9pm)\n- Tea Ceremony at Camellia Garden ($55/person, 2pm, reservation needed)\n- Fushimi Inari Shrine (free, best at sunrise)\n\nOsaka (Apr 2-4):\n- Osaka Castle Cherry Blossom Festival (free grounds, castle $6)\n- Dotonbori Night Food Tour ($45/person, 6-9pm)\n- Sumiyoshi Taisha Spring Festival (Apr 3)', {
+        status: 'SUCCESS' as ToolCallStatus,
+      }),
+      createStep('action', 'Invoking Booking Agent for hotels including ryokan in Kyoto', {
+        toolName: 'invoke_booking_agent',
+        toolArgs: { action: 'book_hotels', itinerary: [
+          { city: 'Tokyo', checkin: 'Mar 26', checkout: 'Mar 30', guests: 2 },
+          { city: 'Kyoto', checkin: 'Mar 30', checkout: 'Apr 2', type: 'ryokan', guests: 2 },
+          { city: 'Osaka', checkin: 'Apr 2', checkout: 'Apr 4', guests: 2 },
+        ]},
+      }),
+      createStep('tool_result', 'Hotel Bookings:\n\n1. Tokyo - Hotel Gracery Shinjuku (4 nights)\n   - $145/night, Shinjuku location, Godzilla view!\n   - Confirmation: TKY-2024-3847\n\n2. Kyoto - Gion Hatanaka Ryokan (2 nights)\n   - $280/night, traditional kaiseki dinner included\n   - Onsen bath, yukata provided\n   - Confirmation: KYO-2024-1923\n\n3. Osaka - Cross Hotel Osaka (2 nights)\n   - $120/night, Shinsaibashi location\n   - Near Dotonbori food street\n   - Confirmation: OSA-2024-5561\n\nJapan Rail Pass: 7-day JR Pass $275/person (covers Tokyo-Kyoto-Osaka shinkansen)', {
+        status: 'SUCCESS' as ToolCallStatus,
+      }),
+      createStep('response', '## 10-Day Japan Cherry Blossom Trip Itinerary\n\n**Flights:** ANA open-jaw SFO->NRT, KIX->SFO ($850/person)\n**Rail:** 7-day JR Pass ($275/person) covers all shinkansen rides\n\n### Tokyo (Mar 26-29, 4 nights)\n- **Day 1 (Mar 26):** Arrive NRT 3:30pm, check into Hotel Gracery Shinjuku, explore Shinjuku\n- **Day 2 (Mar 27):** Ueno Park Hanami, Senso-ji Temple, Chidorigafuchi Night Sakura\n- **Day 3 (Mar 28):** Meiji Shrine Festival, Harajuku, Shibuya Crossing, Yanaka Walk\n- **Day 4 (Mar 29):** Tsukiji Outer Market, TeamLab Borderless, Akihabara\n\n### Kyoto (Mar 30 - Apr 1, 2 nights at Gion Hatanaka Ryokan)\n- **Day 5 (Mar 30):** Shinkansen to Kyoto (2h15m), Philosopher\'s Path, Kiyomizu-dera Night Illumination\n- **Day 6 (Mar 31):** Fushimi Inari (sunrise), Arashiyama Bamboo Grove, Tea Ceremony ($55/person)\n- **Day 7 (Apr 1):** Kinkaku-ji, Nijo Castle, Gion District evening stroll\n\n### Osaka (Apr 2-4, 2 nights)\n- **Day 8 (Apr 2):** Train to Osaka, Osaka Castle Cherry Blossoms, Shinsekai district\n- **Day 9 (Apr 3):** Sumiyoshi Taisha Festival, Dotonbori Food Tour ($45/person)\n- **Day 10 (Apr 4):** Morning at Kuromon Market, depart KIX 5pm\n\n**Budget per person:**\n- Flights: $850\n- Hotels: $1,090 (split: $545/person)\n- JR Pass: $275\n- Activities: ~$200\n- Food: ~$500 (10 days)\n- **Total: ~$2,370/person** (well within $5,000 budget)'),
     ],
     metrics: {
-      accuracy: 95,
+      accuracy: 91,
     },
-    llmJudgeReasoning: 'Excellent root cause identification. The agent correctly traced errors to inventory-service, identified the deployment correlation, and noticed the critical detail that pods were running but not ready. Rollback recommendation is appropriate.',
-    improvementStrategies: [],
+    llmJudgeReasoning: 'Excellent multi-agent coordination for a complex international trip. The agent correctly sequenced flights first, then cherry blossom timing, cultural events, and finally hotels. The open-jaw flight recommendation shows good logistics thinking. Ryokan booking in Kyoto as requested. Day-by-day itinerary is well-structured and the budget is clearly broken down.',
+    improvementStrategies: [
+      {
+        category: 'Completeness',
+        issue: 'Missing pocket WiFi / SIM card recommendation mentioned in context',
+        recommendation: 'Add a practical logistics section covering WiFi, IC cards (Suica/ICOCA), and useful apps',
+        priority: 'medium',
+      },
+    ],
   },
 
-  // Demo Report 003 - Database Connection Pool Exhaustion
+  // Demo Report 003 - Budget Southeast Asia Adventure
   {
     id: 'demo-report-003',
-    timestamp: '2024-01-15T10:12:00.000Z',
-    testCaseId: 'demo-otel-003',
+    timestamp: '2024-01-15T10:15:00.000Z',
+    testCaseId: 'demo-travel-003',
     testCaseVersion: 1,
-    experimentId: 'demo-benchmark-001',
+    experimentId: 'demo-bench-basic',
     experimentRunId: 'demo-run-001',
     agentName: 'ML Commons Agent',
     agentKey: 'ml-commons',
@@ -146,46 +171,100 @@ export const SAMPLE_RUNS: TestCaseRun[] = [
     passFailStatus: 'passed',
     runId: 'demo-agent-run-003',
     trajectory: [
-      createStep('thinking', 'Order-service is experiencing intermittent connection timeouts during a flash sale. This suggests resource exhaustion under load.'),
-      createStep('action', 'Querying database metrics for order-service', {
-        toolName: 'QueryMetrics',
-        toolArgs: { service: 'order-service', metrics: ['db.pool.active', 'db.pool.pending', 'db.query.duration'] },
+      createStep('thinking', 'Budget-constrained trip under $1500 to Southeast Asia. I need the Budget Agent to compare destinations first, then find cheap flights and accommodations. The key constraint is the total budget.'),
+      createStep('action', 'Invoking Budget Agent to compare Southeast Asia destinations', {
+        toolName: 'invoke_budget_agent',
+        toolArgs: { destinations: ['Bangkok, Thailand', 'Hanoi, Vietnam', 'Siem Reap, Cambodia'], duration: 5, budget: 1500, departure: 'LAX' },
       }),
-      createStep('tool_result', 'Database pool metrics:\n- Active connections: 20/20 (100% - maxed out)\n- Pending requests: 150+ (growing)\n- Avg query duration: 45ms (normal: 15ms)\n- Max query duration: 2,500ms', {
+      createStep('tool_result', 'Budget Comparison (5 days, from LAX):\n\n| Category | Thailand | Vietnam | Cambodia |\n|----------|----------|---------|----------|\n| Flights  | $520     | $580    | $640     |\n| Hotels   | $25/night| $18/night| $15/night|\n| Food     | $12/day  | $8/day  | $7/day   |\n| Activities| $150    | $120    | $100     |\n| **Total**| **$915** | **$878**| **$895** |\n\nRecommendation: Vietnam offers best value with rich cultural experiences.\nThailand is close second with better beaches.\n\nBest option for beaches + temples + street food: Thailand (Phuket + Bangkok split)', {
         status: 'SUCCESS' as ToolCallStatus,
       }),
-      createStep('thinking', 'Connection pool is exhausted. Queries are taking 3x longer than normal. Let me identify the slow queries.'),
-      createStep('action', 'Analyzing slow queries in database logs', {
-        toolName: 'QueryLogs',
-        toolArgs: { source: 'postgresql', filter: 'duration > 100ms', timeRange: '1h' },
+      createStep('thinking', 'Vietnam offers the best value, but Thailand better matches the beach + temple + street food criteria. Let me search for budget flights to Bangkok.'),
+      createStep('action', 'Invoking Booking Agent to search budget flights', {
+        toolName: 'invoke_booking_agent',
+        toolArgs: { action: 'search_flights', origin: 'LAX', destination: 'BKK', dates: { depart: 'flexible', return: 'flexible+5' }, passengers: 1, class: 'economy', max_price: 600 },
       }),
-      createStep('tool_result', 'Top slow queries:\n1. SELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC (avg: 450ms, count: 5,000)\n   - Missing index on (user_id, created_at)\n2. SELECT * FROM order_items WHERE order_id IN (...) (avg: 120ms, count: 3,000)', {
+      createStep('tool_result', 'Budget Flight Options LAX -> BKK:\n1. China Southern via CAN: $485 round-trip (1 stop, 22h total)\n2. EVA Air via TPE: $520 round-trip (1 stop, 18h total)\n3. Korean Air via ICN: $545 round-trip (1 stop, 19h total)\n\nNote: Domestic BKK->HKT (Phuket) one-way: $35 on AirAsia\n\nRecommended: China Southern $485 + AirAsia $35 = $520 total flights', {
         status: 'SUCCESS' as ToolCallStatus,
       }),
-      createStep('response', '## Root Cause Analysis\n\n**Root Cause:** Database connection pool exhaustion caused by slow queries during flash sale traffic spike.\n\n**Evidence:**\n1. Connection pool at 100% capacity (20/20 active)\n2. 150+ pending requests in queue\n3. Slow query identified: user order history lookup (450ms avg, missing index)\n4. Traffic: 100 req/s → 2000 req/s (20x increase)\n\n**Slow Query:**\n```sql\nSELECT * FROM orders WHERE user_id = ? ORDER BY created_at DESC\n```\nMissing composite index on (user_id, created_at)\n\n**Recommendations:**\n1. **Immediate:** Increase connection pool size to 50\n2. **Short-term:** Add index: CREATE INDEX idx_orders_user_created ON orders(user_id, created_at DESC)\n3. **Medium-term:** Implement read replicas for order history queries\n4. **Long-term:** Add query result caching for frequently accessed data'),
+      createStep('action', 'Invoking Events Agent to find free and cheap activities', {
+        toolName: 'invoke_events_agent',
+        toolArgs: { locations: ['Bangkok', 'Phuket'], dates: 'flexible 5 days', categories: ['temple', 'beach', 'market', 'street-food'], price_range: 'free-cheap' },
+      }),
+      createStep('tool_result', 'Free & Budget Activities:\n\nBangkok (Days 1-2):\n- Grand Palace & Wat Phra Kaew ($16 entrance)\n- Wat Pho / Reclining Buddha ($3.50)\n- Chatuchak Weekend Market (free)\n- Chinatown Yaowarat Street Food Walk (free, food ~$3-5/meal)\n- Khao San Road nightlife (free to walk)\n\nPhuket (Days 3-5):\n- Kata Beach / Karon Beach (free)\n- Big Buddha viewpoint (free, donation appreciated)\n- Old Phuket Town walking tour (free)\n- Phuket Night Market (free, food $2-4)\n- Phi Phi Island Day Trip ($45 including lunch)\n\nTotal Activities Budget: ~$75', {
+        status: 'SUCCESS' as ToolCallStatus,
+      }),
+      createStep('response', '## Budget Thailand Adventure - 5 Days Under $1,500\n\n### Flights ($520)\n- LAX -> BKK: China Southern via CAN ($485 round-trip)\n- BKK -> HKT: AirAsia domestic ($35 one-way)\n\n### Accommodation ($125)\n- Bangkok: NapPark Hostel, Khao San ($25/night x 2 = $50)\n- Phuket: Lub d Phuket Patong ($25/night x 3 = $75)\n\n### Itinerary\n**Day 1 - Bangkok:** Arrive, Khao San Road, Chinatown street food tour\n**Day 2 - Bangkok:** Grand Palace ($16), Wat Pho ($3.50), Chatuchak Market, night tuk-tuk ride\n**Day 3 - Phuket:** Fly BKK->HKT, afternoon at Kata Beach, Old Town sunset\n**Day 4 - Phuket:** Phi Phi Island Day Trip ($45), evening at Phuket Night Market\n**Day 5 - Phuket:** Big Buddha viewpoint, beach morning, fly HKT->BKK, depart\n\n### Budget Breakdown\n| Category | Cost |\n|----------|------|\n| Flights | $520 |\n| Accommodation | $125 |\n| Food (5 days @ $12/day) | $60 |\n| Activities | $75 |\n| Local transport | $40 |\n| Emergency buffer | $100 |\n| **Total** | **$920** |\n\n**$580 under budget!** Consider upgrading to a private room or adding a cooking class ($30).'),
     ],
     metrics: {
       accuracy: 88,
     },
-    llmJudgeReasoning: 'The agent correctly identified connection pool exhaustion and traced it to a slow query with a missing index. The multi-step recommendation from immediate to long-term shows good understanding of the problem layers.',
+    llmJudgeReasoning: 'The agent effectively used the Budget Agent for destination comparison and maintained strict budget discipline throughout. The itinerary includes the requested beaches, temples, and street food. Budget breakdown is clear and comes in well under the $1500 limit.',
     improvementStrategies: [
       {
         category: 'Analysis Depth',
-        issue: 'Could have checked if similar issues occurred in past flash sales',
-        recommendation: 'Query historical data to identify recurring patterns',
+        issue: 'Could have explored Vietnam as a potentially better cultural experience',
+        recommendation: 'Present top 2 destination options with pros/cons rather than deciding for the user',
         priority: 'medium',
       },
     ],
   },
 
-  // Demo Report 004 - Recommendation Service Cold Start
+  // Demo Report 003b - Budget Southeast Asia (for advanced benchmark)
+  {
+    id: 'demo-report-003b',
+    timestamp: '2024-01-15T11:05:00.000Z',
+    testCaseId: 'demo-travel-003',
+    testCaseVersion: 1,
+    experimentId: 'demo-bench-advanced',
+    experimentRunId: 'demo-run-002',
+    agentName: 'ML Commons Agent',
+    agentKey: 'ml-commons',
+    modelName: 'Claude 3.5 Sonnet',
+    modelId: 'anthropic.claude-3-5-sonnet-20241022-v2:0',
+    status: 'completed',
+    passFailStatus: 'passed',
+    runId: 'demo-agent-run-003b',
+    trajectory: [
+      createStep('thinking', 'Budget trip under $1500 to Southeast Asia. Need to invoke Budget Agent for cost comparison, then Booking Agent for flights, and Events Agent for activities.'),
+      createStep('action', 'Invoking Budget Agent for destination cost analysis', {
+        toolName: 'invoke_budget_agent',
+        toolArgs: { destinations: ['Thailand', 'Vietnam', 'Cambodia'], budget: 1500, duration: 5 },
+      }),
+      createStep('tool_result', 'Destination Analysis:\n- Thailand: $915 estimated (best beaches)\n- Vietnam: $878 estimated (best value)\n- Cambodia: $895 estimated (best temples)\n\nRecommendation: Vietnam for maximum budget savings with excellent culture', {
+        status: 'SUCCESS' as ToolCallStatus,
+      }),
+      createStep('action', 'Searching budget flights to Ho Chi Minh City', {
+        toolName: 'search_flights',
+        toolArgs: { origin: 'LAX', destination: 'SGN', budget_max: 600 },
+      }),
+      createStep('tool_result', 'Best flights:\n1. Vietnam Airlines via NRT: $545 round-trip\n2. Korean Air via ICN: $560 round-trip\n3. Cathay Pacific via HKG: $580 round-trip', {
+        status: 'SUCCESS' as ToolCallStatus,
+      }),
+      createStep('response', '## Vietnam Budget Adventure - 5 Days for $878\n\nOptimized itinerary covering Ho Chi Minh City and Mekong Delta.\nFlights: $545, Accommodation: $90, Food: $40, Activities: $120, Transport: $30, Buffer: $53\n**Total: $878 - saving $622 from budget!**'),
+    ],
+    metrics: {
+      accuracy: 85,
+    },
+    llmJudgeReasoning: 'The agent chose Vietnam for budget optimization. The cost analysis was thorough but the final itinerary was less detailed than expected. Missing beach component that was requested.',
+    improvementStrategies: [
+      {
+        category: 'Completeness',
+        issue: 'Beach activities not adequately covered for Vietnam selection',
+        recommendation: 'Include Da Nang or Phu Quoc for beach component, or reconsider Thailand',
+        priority: 'high',
+      },
+    ],
+  },
+
+  // Demo Report 004 - Team Building Retreat in Colorado
   {
     id: 'demo-report-004',
-    timestamp: '2024-01-15T10:16:00.000Z',
-    testCaseId: 'demo-otel-004',
+    timestamp: '2024-01-15T11:10:00.000Z',
+    testCaseId: 'demo-travel-004',
     testCaseVersion: 1,
-    experimentId: 'demo-benchmark-001',
-    experimentRunId: 'demo-run-001',
+    experimentId: 'demo-bench-advanced',
+    experimentRunId: 'demo-run-002',
     agentName: 'ML Commons Agent',
     agentKey: 'ml-commons',
     modelName: 'Claude 3.5 Sonnet',
@@ -194,46 +273,60 @@ export const SAMPLE_RUNS: TestCaseRun[] = [
     passFailStatus: 'passed',
     runId: 'demo-agent-run-004',
     trajectory: [
-      createStep('thinking', 'First requests after pod scaling take 30+ seconds, subsequent requests are fast. This is a classic cold start pattern, likely related to initialization.'),
-      createStep('action', 'Analyzing startup traces for recommendation-service', {
-        toolName: 'QueryTraces',
-        toolArgs: { service: 'recommendation-service', spanName: 'startup', timeRange: '2h' },
+      createStep('thinking', 'Complex group logistics: 12 people, dietary restrictions, mixed fitness levels, need meeting space. I should check weather first for outdoor activity safety, then find accommodation with meeting space, book activities, and arrange catering.'),
+      createStep('action', 'Invoking Weather Agent for Colorado mountain forecast', {
+        toolName: 'invoke_weather_agent',
+        toolArgs: { location: 'Estes Park, Colorado', dates: 'Thursday-Sunday this week', detail: 'outdoor_safety' },
       }),
-      createStep('tool_result', 'Startup trace breakdown:\n- Container start: 2s\n- Dependency injection: 1s\n- S3 model download: 8s\n- Model deserialization: 20s\n- Model warmup inference: 4s\n- Total cold start: 35s', {
+      createStep('tool_result', 'Colorado Mountain Forecast (Estes Park area):\n- Thursday PM: 55F, clear skies, wind 10mph\n- Friday: 52-62F, sunny, perfect hiking weather\n- Saturday: 48-58F, partly cloudy, 15% rain chance afternoon\n- Sunday AM: 45F, clear\n\nOutdoor Safety: Green flag for all activities\n- UV Index: 7-8 (high altitude, sunscreen essential)\n- River levels: Normal, rafting safe\n- Trail conditions: Dry, well-maintained', {
         status: 'SUCCESS' as ToolCallStatus,
       }),
-      createStep('thinking', 'The 2GB ML model loading takes 32 seconds (S3 download + deserialization + warmup). The readiness probe might be passing before the model is actually ready.'),
-      createStep('action', 'Checking Kubernetes readiness probe configuration', {
-        toolName: 'GetK8sConfig',
-        toolArgs: { deployment: 'recommendation-service', field: 'readinessProbe' },
+      createStep('action', 'Invoking Booking Agent for group lodge with meeting space', {
+        toolName: 'invoke_booking_agent',
+        toolArgs: { action: 'search_group_accommodation', location: 'Estes Park, CO', guests: 12, nights: 3, requirements: ['meeting_room', 'kitchen', 'wifi', 'parking'] },
       }),
-      createStep('tool_result', 'readinessProbe:\n  httpGet:\n    path: /health\n    port: 8080\n  initialDelaySeconds: 10\n  periodSeconds: 5\n  failureThreshold: 3\n\n/health endpoint: Returns 200 after HTTP server starts (before model loads)', {
+      createStep('tool_result', 'Group Accommodation Options:\n\n1. YMCA of the Rockies - Estes Park\n   - 3 adjacent cabins (4 beds each) - $180/cabin/night x 3 = $1,620 total\n   - Conference room included (seats 20, projector, whiteboard)\n   - Dining hall option: $35/person/meal\n   - WiFi throughout campus\n   - Activities on-site: hiking trails, horseback riding\n   - Confirmation available\n\n2. Rocky Mountain Lodge\n   - 12-person lodge - $650/night = $1,950 total\n   - Living room converts to meeting space\n   - Full kitchen\n   - Hot tub, fire pit, mountain views\n\n3. Della Terra Mountain Chateau\n   - 14-person capacity - $850/night = $2,550 total\n   - Dedicated conference room\n   - Chef available ($75/person/day for all meals)\n   - Premium location\n\nRecommended: Option 1 for budget, Option 2 for team bonding', {
         status: 'SUCCESS' as ToolCallStatus,
       }),
-      createStep('response', '## Root Cause Analysis\n\n**Root Cause:** Readiness probe misconfiguration - health endpoint returns ready before ML model is loaded.\n\n**Evidence:**\n1. Cold start takes 35 seconds (model loading dominates)\n2. Readiness probe initialDelaySeconds=10, but model needs 35s\n3. /health returns 200 when HTTP server starts, not when model is ready\n4. Kubernetes routes traffic to pod before model can serve requests\n\n**Startup Breakdown:**\n- S3 model download: 8s\n- Model deserialization: 20s\n- Model warmup: 4s\n- Total: 32s for model, 35s overall\n\n**Recommendations:**\n1. **Immediate:** Increase initialDelaySeconds to 40\n2. **Better:** Update /health to check model.isReady() status\n3. **Optimal:** Use init container for model download, reduce startup to ~25s\n4. **Scaling:** Pre-warm pods during low traffic to handle spikes'),
+      createStep('action', 'Invoking Events Agent for team building activities', {
+        toolName: 'invoke_events_agent',
+        toolArgs: { location: 'Estes Park, CO', group_size: 12, fitness_mixed: true, categories: ['hiking', 'rafting', 'team-building', 'evening'] },
+      }),
+      createStep('tool_result', 'Team Building Activities:\n\nFriday:\n- Morning: Guided Rocky Mountain Hike (2 difficulty levels)\n  - Group A (moderate): Bear Lake Trail, 3.5mi, $30/person\n  - Group B (easy): Sprague Lake Loop, 1mi, $20/person\n- Afternoon: Whitewater Rafting, Cache La Poudre River\n  - Class II-III rapids, beginner-friendly, $65/person\n  - All equipment provided, guide included\n\nSaturday:\n- Morning: Team Strategy Session (conference room)\n- Afternoon: Challenge Course & Zipline\n  - Aerial Adventure Park, $55/person\n  - Multiple difficulty levels available\n- Evening: Guided Stargazing Tour\n  - Dark Sky Preserve, $25/person\n  - Hot chocolate and blankets provided\n\nFire pit available nightly at lodge', {
+        status: 'SUCCESS' as ToolCallStatus,
+      }),
+      createStep('thinking', 'Now I need to handle the dietary restrictions for group dining. This is critical - 3 vegetarians, 1 vegan, 1 gluten-free, 1 nut allergy.'),
+      createStep('action', 'Invoking Booking Agent for group catering with dietary accommodations', {
+        toolName: 'invoke_booking_agent',
+        toolArgs: { action: 'arrange_catering', location: 'Estes Park, CO', group_size: 12, meals: 8, dietary: { vegetarian: 3, vegan: 1, gluten_free: 1, nut_allergy: 1 } },
+      }),
+      createStep('tool_result', 'Catering Arranged:\n\nProvider: Mountain Fresh Catering (Estes Park)\n- Specializes in group retreats with dietary accommodations\n- All meals labeled with allergen information\n- Separate prep area for allergen-free items\n\nMenu Plan:\n- Thursday dinner: BBQ with veggie burgers, GF buns, nut-free sides\n- Friday breakfast: Buffet with vegan options, GF pancakes\n- Friday lunch: Trail box lunches (dietary-specific labels)\n- Friday dinner: Build-your-own tacos (naturally accommodates all diets)\n- Saturday meals: Italian theme with GF pasta, vegan sauce options\n- Sunday breakfast: Continental + hot options\n\nCost: $40/person/meal x 8 meals = $3,840 total\nDietary confirmation #: MFC-2024-ESTES-0447', {
+        status: 'SUCCESS' as ToolCallStatus,
+      }),
+      createStep('response', '## Colorado Team Building Retreat - 12 People, 3 Days\n\n**Accommodation:** Rocky Mountain Lodge ($650/night x 3 = $1,950)\n- Sleeps 12, hot tub, fire pit, mountain views\n- Meeting space with WiFi\n\n### Schedule\n\n**Thursday:**\n- 3:00 PM - Arrive, settle in\n- 5:00 PM - Welcome gathering, lodge tour\n- 7:00 PM - BBQ dinner (dietary accommodations confirmed)\n- 9:00 PM - Campfire & team introductions\n\n**Friday:**\n- 8:00 AM - Breakfast buffet\n- 9:30 AM - Guided Hikes (two groups by fitness level)\n- 12:30 PM - Trail lunch\n- 2:00 PM - Whitewater Rafting ($65/person)\n- 6:30 PM - Taco dinner\n- 8:30 PM - Campfire & s\'mores\n\n**Saturday:**\n- 8:00 AM - Breakfast\n- 9:30 AM - Strategy Session (2 hours, meeting room)\n- 12:00 PM - Lunch\n- 1:30 PM - Aerial Adventure Park ($55/person)\n- 6:30 PM - Italian dinner\n- 8:30 PM - Guided Stargazing Tour ($25/person)\n\n**Sunday:**\n- 8:00 AM - Breakfast\n- 10:00 AM - Check out, depart\n\n### Budget per Person ($1,200 target)\n| Category | Per Person |\n|----------|------------|\n| Accommodation | $163 |\n| Flights AUS->DEN | $250 |\n| Ground transport | $50 |\n| Catering (8 meals) | $320 |\n| Activities | $175 |\n| Misc | $42 |\n| **Total** | **$1,000** |\n\n**Dietary Accommodations:** All meals labeled, allergen-free prep confirmed (MFC-2024-ESTES-0447)\n**$200 under budget per person ($2,400 total savings)**'),
     ],
     metrics: {
-      accuracy: 90,
+      accuracy: 92,
     },
-    llmJudgeReasoning: 'The agent correctly identified the readiness probe misconfiguration as the root cause. It provided a clear breakdown of the cold start time and offered multiple solutions from quick fix to optimal architecture.',
+    llmJudgeReasoning: 'Excellent handling of group logistics complexity. The agent addressed all requirements: weather safety check, mixed fitness levels with two hiking groups, dietary accommodations with specific caterer confirmation, meeting space, and evening activities. Budget came in under target with clear per-person breakdown.',
     improvementStrategies: [
       {
-        category: 'Completeness',
-        issue: 'Could suggest model caching strategies',
-        recommendation: 'Recommend persistent volume for model or model registry with caching',
-        priority: 'low',
+        category: 'Risk Planning',
+        issue: 'No contingency plan for bad weather on outdoor days',
+        recommendation: 'Include indoor backup activities in case of unexpected weather changes',
+        priority: 'medium',
       },
     ],
   },
 
-  // Demo Report 005 - Cascading Failure Investigation
+  // Demo Report 005 - Last-Minute Holiday Deal
   {
     id: 'demo-report-005',
-    timestamp: '2024-01-15T10:20:00.000Z',
-    testCaseId: 'demo-otel-005',
+    timestamp: '2024-01-15T11:15:00.000Z',
+    testCaseId: 'demo-travel-005',
     testCaseVersion: 1,
-    experimentId: 'demo-benchmark-001',
-    experimentRunId: 'demo-run-001',
+    experimentId: 'demo-bench-advanced',
+    experimentRunId: 'demo-run-002',
     agentName: 'ML Commons Agent',
     agentKey: 'ml-commons',
     modelName: 'Claude 3.5 Sonnet',
@@ -242,47 +335,50 @@ export const SAMPLE_RUNS: TestCaseRun[] = [
     passFailStatus: 'failed',
     runId: 'demo-agent-run-005',
     trajectory: [
-      createStep('thinking', 'Multiple services failing in sequence: notification → order → user. This looks like a cascading failure. I need to trace the failure propagation.'),
-      createStep('action', 'Getting timeline of service errors', {
-        toolName: 'QueryMetrics',
-        toolArgs: { metrics: ['error_rate'], services: ['notification-service', 'order-service', 'user-service'], timeRange: '30m' },
+      createStep('thinking', 'Time-pressured booking for next weekend. I need to quickly search last-minute deals, verify weather at candidate destinations, and check availability. Speed is critical since deals can sell out.'),
+      createStep('action', 'Invoking Booking Agent to search last-minute beach deals from MIA', {
+        toolName: 'invoke_booking_agent',
+        toolArgs: { action: 'search_last_minute', origin: 'MIA', dates: { depart: 'Friday PM', return: 'Sunday PM' }, type: 'beach_package', max_price: 1000 },
       }),
-      createStep('tool_result', 'Error timeline:\n- T+0: notification-service errors spike to 100%\n- T+5m: order-service error rate rises to 40%\n- T+10m: user-service error rate rises to 25%\n- Circuit breakers: Not triggering', {
+      createStep('tool_result', 'Last-Minute Deals from MIA (this weekend):\n\n1. Cancun, Mexico - All-Inclusive\n   - Flight + Hotel: $689/person\n   - Hyatt Ziva Cancun, ocean view\n   - All meals and drinks included\n   - Status: 3 rooms left!\n\n2. Nassau, Bahamas - Beach Resort\n   - Flight + Hotel: $725/person\n   - Atlantis Paradise Island\n   - Breakfast included\n   - Status: Available\n\n3. Key West, FL - Boutique Hotel\n   - No flight needed (drive 3.5h)\n   - Hotel: $420 for 2 nights\n   - The Marker Waterfront Inn\n   - Status: Last room!\n\n4. Turks & Caicos - Beach Villa\n   - Flight + Hotel: $950/person\n   - Grace Bay Club\n   - Status: SOLD OUT while searching', {
         status: 'SUCCESS' as ToolCallStatus,
       }),
-      createStep('thinking', 'notification-service failed first, then propagated to dependent services. Circuit breakers aren\'t working. Let me check the notification-service root cause.'),
-      createStep('action', 'Checking notification-service dependencies and errors', {
-        toolName: 'QueryTraces',
-        toolArgs: { service: 'notification-service', status: 'error', timeRange: '30m' },
+      createStep('thinking', 'Turks & Caicos already sold out - need to move fast. Let me verify weather at the remaining options and check the Cancun deal since it is the best value with all-inclusive.'),
+      createStep('action', 'Invoking Weather Agent to verify warm beach weather at candidates', {
+        toolName: 'invoke_weather_agent',
+        toolArgs: { locations: ['Cancun, Mexico', 'Nassau, Bahamas', 'Key West, FL'], dates: 'this Friday-Sunday' },
       }),
-      createStep('tool_result', 'notification-service errors:\n- 100% of errors from Twilio SMS API calls\n- Error: "Service Unavailable - Twilio experiencing outage"\n- Retry attempts: 3 per request (each timing out at 30s)', {
+      createStep('tool_result', 'Weekend Weather:\n- Cancun: 85F, sunny, 5% rain, water temp 79F - PERFECT\n- Nassau: 82F, partly cloudy, 20% rain Saturday PM, water temp 76F - GOOD\n- Key West: 80F, sunny, 10% rain, water temp 75F - GOOD\n\nAll destinations have warm beach weather suitable for the trip.', {
         status: 'SUCCESS' as ToolCallStatus,
       }),
-      createStep('thinking', 'Twilio outage is the root cause. The 30s timeout with 3 retries means each notification takes 90s, blocking threads. This explains why circuit breakers didn\'t help - they\'re probably not wrapping the async notification calls.'),
-      createStep('action', 'Checking circuit breaker configuration', {
-        toolName: 'GetConfig',
-        toolArgs: { service: 'notification-service', config: 'circuitBreaker' },
+      createStep('action', 'Invoking Budget Agent to validate deal pricing', {
+        toolName: 'invoke_budget_agent',
+        toolArgs: { deals: [
+          { destination: 'Cancun', price: 689, type: 'all-inclusive' },
+          { destination: 'Nassau', price: 725, type: 'breakfast-included' },
+          { destination: 'Key West', price: 420, type: 'hotel-only' },
+        ], validate: true },
       }),
-      createStep('tool_result', 'Circuit breaker config:\n- Enabled: true\n- Failure threshold: 50% in 10s\n- Applied to: sync HTTP calls only\n- Issue: Async notification calls NOT wrapped with circuit breaker', {
+      createStep('tool_result', 'Deal Validation:\n\n1. Cancun $689 all-inclusive: GENUINE DEAL\n   - Normal price: $1,100-1,400\n   - Savings: 38-50%\n   - Includes: flights, hotel, all meals, drinks, activities\n   - Cancellation: Free until 24h before\n\n2. Nassau $725 breakfast-only: FAIR DEAL\n   - Normal price: $900-1,100\n   - Savings: 18-34%\n   - Additional food costs: ~$100-150\n   - Total estimated: $875\n   - Cancellation: Non-refundable\n\n3. Key West $420 hotel-only: OK VALUE\n   - Normal price: $500-600\n   - Savings: 16-30%\n   - Additional costs: gas ($50), food ($150), activities ($100)\n   - Total estimated: $720\n   - Cancellation: Free until 48h before\n\nRecommendation: Cancun is the clear winner for value and convenience', {
         status: 'SUCCESS' as ToolCallStatus,
       }),
-      createStep('response', '## Root Cause Analysis\n\n**Root Cause:** Twilio SMS provider outage caused cascading failures due to misconfigured circuit breakers.\n\n**Failure Chain:**\n1. Twilio SMS API outage (external)\n2. notification-service: 90s timeout per request (30s × 3 retries)\n3. order-service: Blocked waiting for notifications\n4. user-service: Blocked waiting for order confirmations\n\n**Why Circuit Breakers Failed:**\n- Circuit breakers only wrap synchronous HTTP calls\n- Async notification calls bypass circuit breaker protection\n- Result: No automatic failure isolation\n\n**Recommendations:**\n1. **Immediate:** Disable SMS notifications temporarily\n2. **Short-term:** Wrap async calls with circuit breaker\n3. **Medium-term:** Make notifications fire-and-forget (don\'t block order flow)\n4. **Long-term:** Implement fallback notification channels (email, push)'),
+      createStep('response', '## Last-Minute Beach Deal - Book Now!\n\n### Top Recommendation: Cancun All-Inclusive ($689)\n- **Hotel:** Hyatt Ziva Cancun, ocean view room\n- **Includes:** Round-trip flights from MIA, all meals, drinks, pool, beach\n- **Weather:** 85F, sunny, perfect beach conditions\n- **Savings:** 38-50% off normal price\n- **Cancellation:** Free cancellation until 24 hours before departure\n- **HURRY: Only 3 rooms remaining!**\n\n### Backup Options\n1. Key West Drive Trip ($720 total) - Best cancellation policy\n2. Nassau Bahamas ($875 estimated total) - Good but non-refundable\n\n### Comparison\n| | Cancun | Key West | Nassau |\n|--|--------|----------|--------|\n| Total Cost | $689 | $720 | $875 |\n| All-Inclusive | Yes | No | Partial |\n| Beach Quality | Excellent | Good | Excellent |\n| Cancel Policy | Free 24h | Free 48h | Non-refund |\n| Weather | 85F sunny | 80F sunny | 82F clouds |\n\n**Action Required:** Book the Cancun deal immediately before remaining rooms sell out.'),
     ],
     metrics: {
-      accuracy: 75,
+      accuracy: 72,
     },
-    llmJudgeReasoning: 'The agent correctly identified the Twilio outage as the root cause and traced the cascade. However, it missed checking if there were any retry storms or thread pool exhaustion that might have accelerated the cascade. The circuit breaker misconfiguration insight was valuable.',
+    llmJudgeReasoning: 'The agent demonstrated urgency awareness and good deal comparison. However, it failed to actually complete the booking as instructed - the user said "need to book everything today" but the agent only presented options without confirming a reservation. The Turks & Caicos selling out mid-search was a good real-time handling but should have triggered faster action on remaining options. Missing travel insurance recommendation.',
     improvementStrategies: [
       {
-        category: 'Analysis Depth',
-        issue: 'Did not investigate thread pool metrics',
-        recommendation: 'Check thread pool utilization to understand blocking behavior better',
+        category: 'Task Completion',
+        issue: 'Did not actually complete the booking, only presented options',
+        recommendation: 'When user says "book everything today," proceed to confirm reservation rather than just recommending',
         priority: 'high',
       },
       {
-        category: 'Tool Usage',
-        issue: 'Could have checked for retry storms',
-        recommendation: 'Analyze retry patterns to see if exponential backoff was used',
+        category: 'Completeness',
+        issue: 'Missing travel insurance recommendation mentioned in context',
+        recommendation: 'Include travel insurance option especially for last-minute bookings with weather risk',
         priority: 'medium',
       },
     ],
