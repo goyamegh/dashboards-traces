@@ -6,7 +6,7 @@
 import { Request, Response } from 'express';
 import adminRoutes from '@/server/routes/storage/admin';
 
-// Mock client methods
+// Mock client methods (still needed for init-indexes and OpenSearch stats path)
 const mockClusterHealth = jest.fn();
 const mockIndicesExists = jest.fn();
 const mockIndicesCreate = jest.fn();
@@ -21,6 +21,23 @@ const mockClient = {
   count: mockCount,
   search: mockSearch,
   index: mockIndex,
+};
+
+// Mock storage module methods returned by getStorageModule()
+const mockTestCasesGetAll = jest.fn();
+const mockBenchmarksGetAll = jest.fn();
+const mockRunsGetAll = jest.fn();
+const mockAnalyticsBackfill = jest.fn();
+const mockStorageHealth = jest.fn();
+const mockStorageIsConfigured = jest.fn().mockReturnValue(true);
+
+const mockStorageModule = {
+  testCases: { getAll: mockTestCasesGetAll },
+  benchmarks: { getAll: mockBenchmarksGetAll },
+  runs: { getAll: mockRunsGetAll },
+  analytics: { backfill: mockAnalyticsBackfill },
+  health: mockStorageHealth,
+  isConfigured: mockStorageIsConfigured,
 };
 
 // Mock the storageClient middleware
@@ -40,9 +57,11 @@ jest.mock('@/server/middleware/dataSourceConfig', () => ({
   resolveStorageConfig: jest.fn(),
 }));
 
-// Mock adapters
+// Mock adapters - includes getStorageModule, testStorageConnection, and isFileStorage
 jest.mock('@/server/adapters/index', () => ({
+  getStorageModule: jest.fn(),
   testStorageConnection: jest.fn(),
+  isFileStorage: jest.fn().mockReturnValue(false),
 }));
 
 // Mock configService
@@ -55,7 +74,7 @@ jest.mock('@/server/services/configService', () => ({
 }));
 
 // Import mocked adapter functions
-import { testStorageConnection } from '@/server/adapters/index';
+import { getStorageModule, testStorageConnection, isFileStorage } from '@/server/adapters/index';
 
 // Import mocked configService functions
 import {
@@ -66,6 +85,10 @@ import {
   clearObservabilityConfig,
 } from '@/server/services/configService';
 
+const mockGetStorageModule = getStorageModule as jest.Mock;
+const mockTestStorageConnection = testStorageConnection as jest.Mock;
+const mockIsFileStorage = isFileStorage as jest.Mock;
+
 const mockGetConfigStatus = getConfigStatus as jest.Mock;
 const mockSaveStorageConfig = saveStorageConfig as jest.Mock;
 const mockSaveObservabilityConfig = saveObservabilityConfig as jest.Mock;
@@ -73,7 +96,6 @@ const mockClearStorageConfig = clearStorageConfig as jest.Mock;
 const mockClearObservabilityConfig = clearObservabilityConfig as jest.Mock;
 import { resolveStorageConfig } from '@/server/middleware/dataSourceConfig';
 
-const mockTestStorageConnection = testStorageConnection as jest.Mock;
 const mockResolveStorageConfig = resolveStorageConfig as jest.Mock;
 
 // Mock index mappings
@@ -154,15 +176,61 @@ async function callHandler(handler: any, req: Request, res: Response, jsonPromis
 describe('Admin Storage Routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    // Default: storage is available
+    // Default: storage is available (for OpenSearch path)
     (isStorageAvailable as jest.Mock).mockReturnValue(true);
     (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
     // Default: config resolved
     mockResolveStorageConfig.mockReturnValue({ endpoint: 'https://localhost:9200' });
+    // Default: not file storage (OpenSearch mode)
+    mockIsFileStorage.mockReturnValue(false);
+    // Default: getStorageModule returns the mock storage module
+    mockGetStorageModule.mockReturnValue(mockStorageModule);
   });
 
+  // ============================================================================
+  // Health Check Tests
+  // ============================================================================
+
   describe('GET /api/storage/health', () => {
-    it('should return ok status when cluster is healthy', async () => {
+    it('should return health from storage module when using OpenSearch backend', async () => {
+      mockStorageHealth.mockResolvedValue({
+        status: 'ok',
+        cluster: { status: 'green', name: 'test-cluster' },
+      });
+
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(adminRoutes, 'get', '/api/storage/health');
+
+      await handler(req, res);
+
+      expect(mockGetStorageModule).toHaveBeenCalled();
+      expect(mockStorageHealth).toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({
+        status: 'ok',
+        cluster: { status: 'green', name: 'test-cluster' },
+      });
+    });
+
+    it('should return file backend status when using file storage', async () => {
+      mockIsFileStorage.mockReturnValue(true);
+      mockStorageHealth.mockResolvedValue({ status: 'ok' });
+      mockResolveStorageConfig.mockReturnValue(null);
+
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(adminRoutes, 'get', '/api/storage/health');
+
+      await handler(req, res);
+
+      expect(res.json).toHaveBeenCalledWith({
+        status: 'ok',
+        backend: 'file',
+      });
+    });
+
+    it('should include OpenSearch connectivity when file storage is active but OpenSearch is configured', async () => {
+      mockIsFileStorage.mockReturnValue(true);
+      mockStorageHealth.mockResolvedValue({ status: 'ok' });
+      mockResolveStorageConfig.mockReturnValue({ endpoint: 'https://localhost:9200' });
       mockTestStorageConnection.mockResolvedValue({
         status: 'ok',
         clusterName: 'test-cluster',
@@ -174,35 +242,20 @@ describe('Admin Storage Routes', () => {
 
       await handler(req, res);
 
-      expect(mockTestStorageConnection).toHaveBeenCalled();
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          status: 'ok',
-          cluster: expect.objectContaining({ status: 'green' }),
-        })
-      );
-    });
-
-    it('should return not_configured when storage not configured', async () => {
-      mockResolveStorageConfig.mockReturnValue(null);
-
-      const { req, res } = createMocks();
-      req.storageClient = null;
-      const handler = getRouteHandler(adminRoutes, 'get', '/api/storage/health');
-
-      await handler(req, res);
-
+      expect(mockTestStorageConnection).toHaveBeenCalledWith({ endpoint: 'https://localhost:9200' });
       expect(res.json).toHaveBeenCalledWith({
-        status: 'not_configured',
-        message: 'Storage not configured',
+        status: 'ok',
+        backend: 'file',
+        opensearch: {
+          status: 'ok',
+          clusterName: 'test-cluster',
+          clusterStatus: 'green',
+        },
       });
     });
 
     it('should return error status on health check failure', async () => {
-      mockTestStorageConnection.mockResolvedValue({
-        status: 'error',
-        message: 'Connection refused',
-      });
+      mockStorageHealth.mockRejectedValue(new Error('Connection refused'));
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(adminRoutes, 'get', '/api/storage/health');
@@ -215,6 +268,10 @@ describe('Admin Storage Routes', () => {
       });
     });
   });
+
+  // ============================================================================
+  // Init Indexes Tests (still uses raw OpenSearch client)
+  // ============================================================================
 
   describe('POST /api/storage/init-indexes', () => {
     it('should create indexes that do not exist', async () => {
@@ -275,10 +332,29 @@ describe('Admin Storage Routes', () => {
         })
       );
     });
+
+    it('should return error when storage not available (file storage mode)', async () => {
+      (isStorageAvailable as jest.Mock).mockReturnValue(false);
+
+      const { req, res, jsonPromise } = createMocks();
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/init-indexes');
+
+      await callHandler(handler, req, res, jsonPromise);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'OpenSearch storage not configured. File storage does not require index initialization.',
+      });
+    });
   });
 
+  // ============================================================================
+  // Stats Tests
+  // ============================================================================
+
   describe('GET /api/storage/stats', () => {
-    it('should return document counts for all indexes', async () => {
+    it('should return document counts from OpenSearch when not file storage', async () => {
+      mockIsFileStorage.mockReturnValue(false);
       mockCount.mockResolvedValue({ body: { count: 100 } });
 
       const { req, res, jsonPromise } = createMocks();
@@ -296,7 +372,8 @@ describe('Admin Storage Routes', () => {
       );
     });
 
-    it('should handle count errors per index', async () => {
+    it('should handle count errors per index in OpenSearch mode', async () => {
+      mockIsFileStorage.mockReturnValue(false);
       mockCount.mockRejectedValue(new Error('Index not found'));
 
       const { req, res, jsonPromise } = createMocks();
@@ -312,44 +389,87 @@ describe('Admin Storage Routes', () => {
         })
       );
     });
+
+    it('should return file-based counts when using file storage', async () => {
+      mockIsFileStorage.mockReturnValue(true);
+      mockTestCasesGetAll.mockResolvedValue({ items: [], total: 5 });
+      mockBenchmarksGetAll.mockResolvedValue({ items: [], total: 3 });
+      mockRunsGetAll.mockResolvedValue({ items: [], total: 12 });
+
+      const { req, res, jsonPromise } = createMocks();
+      const handler = getRouteHandler(adminRoutes, 'get', '/api/storage/stats');
+
+      await callHandler(handler, req, res, jsonPromise);
+
+      expect(mockGetStorageModule).toHaveBeenCalled();
+      expect(mockTestCasesGetAll).toHaveBeenCalled();
+      expect(mockBenchmarksGetAll).toHaveBeenCalled();
+      expect(mockRunsGetAll).toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith({
+        stats: {
+          test_cases: { count: 5 },
+          benchmarks: { count: 3 },
+          runs: { count: 12 },
+          analytics: { count: 0 },
+        },
+        backend: 'file',
+      });
+    });
+
+    it('should handle file storage stats errors', async () => {
+      mockIsFileStorage.mockReturnValue(true);
+      mockTestCasesGetAll.mockRejectedValue(new Error('Disk read error'));
+
+      const { req, res, jsonPromise } = createMocks();
+      const handler = getRouteHandler(adminRoutes, 'get', '/api/storage/stats');
+
+      await callHandler(handler, req, res, jsonPromise);
+
+      expect(res.json).toHaveBeenCalledWith({
+        stats: {},
+        error: 'Disk read error',
+        backend: 'file',
+      });
+    });
+
+    it('should return unconfigured stats when OpenSearch storage not available', async () => {
+      mockIsFileStorage.mockReturnValue(false);
+      (isStorageAvailable as jest.Mock).mockReturnValue(false);
+
+      const { req, res, jsonPromise } = createMocks();
+      const handler = getRouteHandler(adminRoutes, 'get', '/api/storage/stats');
+
+      await callHandler(handler, req, res, jsonPromise);
+
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stats: expect.objectContaining({
+            'test-cases-index': { count: 0, error: 'Storage not configured' },
+          }),
+        })
+      );
+    });
   });
 
+  // ============================================================================
+  // Backfill Analytics Tests (now uses storage adapter)
+  // ============================================================================
+
   describe('POST /api/storage/backfill-analytics', () => {
-    it('should backfill analytics from runs', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            hits: [
-              {
-                _source: {
-                  id: 'run-1',
-                  experimentId: 'exp-1',
-                  testCaseId: 'tc-1',
-                  passFailStatus: 'passed',
-                  metrics: { accuracy: 0.9 },
-                },
-              },
-              {
-                _source: {
-                  id: 'run-2',
-                  experimentId: 'exp-1',
-                  testCaseId: 'tc-2',
-                  passFailStatus: 'failed',
-                },
-              },
-            ],
-          },
-        },
+    it('should backfill analytics via storage adapter', async () => {
+      mockAnalyticsBackfill.mockResolvedValue({
+        backfilled: 2,
+        errors: 0,
+        total: 2,
       });
-      mockIndex.mockResolvedValue({ body: { result: 'created' } });
 
       const { req, res, jsonPromise } = createMocks();
       const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/backfill-analytics');
 
       await callHandler(handler, req, res, jsonPromise);
 
-      expect(mockSearch).toHaveBeenCalled();
-      expect(mockIndex).toHaveBeenCalledTimes(2);
+      expect(mockGetStorageModule).toHaveBeenCalled();
+      expect(mockAnalyticsBackfill).toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith({
         backfilled: 2,
         errors: 0,
@@ -357,20 +477,12 @@ describe('Admin Storage Routes', () => {
       });
     });
 
-    it('should handle backfill errors for individual runs', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            hits: [
-              { _source: { id: 'run-1' } },
-              { _source: { id: 'run-2' } },
-            ],
-          },
-        },
+    it('should handle backfill errors', async () => {
+      mockAnalyticsBackfill.mockResolvedValue({
+        backfilled: 1,
+        errors: 1,
+        total: 2,
       });
-      mockIndex
-        .mockResolvedValueOnce({ body: { result: 'created' } })
-        .mockRejectedValueOnce(new Error('Index failed'));
 
       const { req, res, jsonPromise } = createMocks();
       const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/backfill-analytics');
@@ -382,33 +494,6 @@ describe('Admin Storage Routes', () => {
         errors: 1,
         total: 2,
       });
-    });
-
-    it('should flatten metrics with metric_ prefix', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            hits: [
-              {
-                _source: {
-                  id: 'run-1',
-                  metrics: { accuracy: 0.9, faithfulness: 0.85 },
-                },
-              },
-            ],
-          },
-        },
-      });
-      mockIndex.mockResolvedValue({ body: { result: 'created' } });
-
-      const { req, res, jsonPromise } = createMocks();
-      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/backfill-analytics');
-
-      await callHandler(handler, req, res, jsonPromise);
-
-      const indexCall = mockIndex.mock.calls[0][0];
-      expect(indexCall.body.metric_accuracy).toBe(0.9);
-      expect(indexCall.body.metric_faithfulness).toBe(0.85);
     });
   });
 

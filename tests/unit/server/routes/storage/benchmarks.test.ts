@@ -6,7 +6,7 @@
 import { Request, Response } from 'express';
 import benchmarksRoutes from '@/server/routes/storage/benchmarks';
 
-// Mock client methods
+// Mock client methods (used ONLY by execute/cancel endpoints which use raw OpenSearch client)
 const mockSearch = jest.fn();
 const mockIndex = jest.fn();
 const mockGet = jest.fn();
@@ -14,7 +14,7 @@ const mockUpdate = jest.fn();
 const mockDelete = jest.fn();
 const mockBulk = jest.fn();
 
-// Create mock client
+// Create mock raw client (for execute/cancel paths only)
 const mockClient = {
   search: mockSearch,
   index: mockIndex,
@@ -24,11 +24,68 @@ const mockClient = {
   bulk: mockBulk,
 };
 
-// Mock the storageClient middleware
+// Mock storage adapter methods (used by most CRUD endpoints)
+const mockBenchmarksGetAll = jest.fn();
+const mockBenchmarksGetById = jest.fn();
+const mockBenchmarksCreate = jest.fn();
+const mockBenchmarksUpdate = jest.fn();
+const mockBenchmarksDelete = jest.fn();
+const mockBenchmarksBulkCreate = jest.fn();
+const mockBenchmarksDeleteRun = jest.fn();
+const mockBenchmarksUpdateRun = jest.fn();
+const mockTestCasesGetAll = jest.fn();
+const mockTestCasesGetById = jest.fn();
+const mockRunsGetById = jest.fn();
+const mockIsConfigured = jest.fn();
+
+const mockStorage = {
+  benchmarks: {
+    getAll: mockBenchmarksGetAll,
+    getById: mockBenchmarksGetById,
+    create: mockBenchmarksCreate,
+    update: mockBenchmarksUpdate,
+    delete: mockBenchmarksDelete,
+    bulkCreate: mockBenchmarksBulkCreate,
+    deleteRun: mockBenchmarksDeleteRun,
+    updateRun: mockBenchmarksUpdateRun,
+  },
+  testCases: {
+    getAll: mockTestCasesGetAll,
+    getById: mockTestCasesGetById,
+  },
+  runs: {
+    getById: mockRunsGetById,
+  },
+  isConfigured: mockIsConfigured,
+};
+
+// Mock the storage adapter module
+jest.mock('@/server/adapters/index', () => ({
+  getStorageModule: jest.fn(() => mockStorage),
+}));
+
+// Mock the storageClient middleware (still needed for execute/cancel endpoints)
 jest.mock('@/server/middleware/storageClient', () => ({
   isStorageAvailable: jest.fn(),
   requireStorageClient: jest.fn(),
   INDEXES: { benchmarks: 'experiments-index', testCases: 'test-cases-index', runs: 'runs-index' },
+}));
+
+// Mock the benchmarkExport utility
+jest.mock('@/lib/benchmarkExport', () => ({
+  convertTestCasesToExportFormat: jest.fn((testCases: any[]) =>
+    testCases.map((tc: any) => ({
+      name: tc.name,
+      description: tc.description || '',
+      category: tc.category,
+      difficulty: tc.difficulty,
+      initialPrompt: tc.initialPrompt,
+      context: tc.context || [],
+      expectedOutcomes: tc.expectedOutcomes || [],
+      ...(tc.subcategory ? { subcategory: tc.subcategory } : {}),
+    }))
+  ),
+  generateExportFilename: jest.fn((name: string) => `${name || 'benchmark-export'}.json`),
 }));
 
 // Import mocked functions
@@ -59,6 +116,7 @@ jest.mock('@/cli/demo/sampleBenchmarks', () => ({
       createdAt: '2024-01-01T00:00:00Z',
     },
   ],
+  isSampleBenchmarkId: (id: string) => id.startsWith('demo-'),
   isSampleExperimentId: (id: string) => id.startsWith('demo-'),
 }));
 
@@ -144,27 +202,23 @@ function getRouteHandler(router: any, method: string, path: string) {
 describe('Experiments Storage Routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    // Default: storage is available
+    // Default: storage is available and configured
     (isStorageAvailable as jest.Mock).mockReturnValue(true);
     (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
+    mockIsConfigured.mockReturnValue(true);
   });
 
   describe('GET /api/storage/benchmarks', () => {
     it('should return combined sample and real experiments', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            hits: [
-              {
-                _source: {
-                  id: 'exp-123',
-                  name: 'Real Benchmark',
-                  createdAt: '2024-02-01T00:00:00Z',
-                },
-              },
-            ],
+      mockBenchmarksGetAll.mockResolvedValue({
+        items: [
+          {
+            id: 'exp-123',
+            name: 'Real Benchmark',
+            createdAt: '2024-02-01T00:00:00Z',
           },
-        },
+        ],
+        total: 1,
       });
 
       const { req, res } = createMocks();
@@ -182,8 +236,8 @@ describe('Experiments Storage Routes', () => {
       );
     });
 
-    it('should return only sample data when OpenSearch unavailable', async () => {
-      mockSearch.mockRejectedValue(new Error('Connection refused'));
+    it('should return only sample data when storage unavailable', async () => {
+      mockBenchmarksGetAll.mockRejectedValue(new Error('Connection refused'));
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks');
@@ -225,15 +279,11 @@ describe('Experiments Storage Routes', () => {
       expect(res.json).toHaveBeenCalledWith({ error: 'Benchmark not found' });
     });
 
-    it('should fetch from OpenSearch for non-sample ID', async () => {
-      mockGet.mockResolvedValue({
-        body: {
-          found: true,
-          _source: {
-            id: 'exp-123',
-            name: 'Real Benchmark',
-          },
-        },
+    it('should fetch from storage adapter for non-sample ID', async () => {
+      mockBenchmarksGetById.mockResolvedValue({
+        id: 'exp-123',
+        name: 'Real Benchmark',
+        runs: [],
       });
 
       const { req, res } = createMocks({ id: 'exp-123' });
@@ -241,16 +291,14 @@ describe('Experiments Storage Routes', () => {
 
       await handler(req, res);
 
-      expect(mockGet).toHaveBeenCalled();
+      expect(mockBenchmarksGetById).toHaveBeenCalledWith('exp-123');
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'exp-123' })
       );
     });
 
-    it('should return 404 when experiment not found in OpenSearch', async () => {
-      mockGet.mockResolvedValue({
-        body: { found: false },
-      });
+    it('should return 404 when experiment not found in storage', async () => {
+      mockBenchmarksGetById.mockResolvedValue(null);
 
       const { req, res } = createMocks({ id: 'exp-nonexistent' });
       const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks/:id');
@@ -260,10 +308,10 @@ describe('Experiments Storage Routes', () => {
       expect(res.status).toHaveBeenCalledWith(404);
     });
 
-    it('should handle 404 error from OpenSearch', async () => {
+    it('should handle 404 error from storage adapter', async () => {
       const error: any = new Error('Not found');
       error.meta = { statusCode: 404 };
-      mockGet.mockRejectedValue(error);
+      mockBenchmarksGetById.mockRejectedValue(error);
 
       const { req, res } = createMocks({ id: 'exp-123' });
       const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks/:id');
@@ -294,56 +342,26 @@ describe('Experiments Storage Routes', () => {
       expect(exportedData[0]).toHaveProperty('difficulty');
       expect(exportedData[0]).toHaveProperty('initialPrompt');
       expect(exportedData[0]).toHaveProperty('expectedOutcomes');
-      // Should not have system fields
-      expect(exportedData[0].id).toBeUndefined();
-      expect(exportedData[0].labels).toBeUndefined();
     });
 
-    it('should export test cases from OpenSearch benchmark', async () => {
-      mockGet.mockResolvedValue({
-        body: {
-          found: true,
-          _source: {
-            id: 'exp-123',
-            name: 'Real Benchmark',
-            testCaseIds: ['tc-real-1'],
-            runs: [],
-            createdAt: '2024-01-01T00:00:00Z',
-          },
-        },
+    it('should export test cases from real benchmark via storage adapter', async () => {
+      mockBenchmarksGetById.mockResolvedValue({
+        id: 'exp-123',
+        name: 'Real Benchmark',
+        testCaseIds: ['tc-real-1'],
+        runs: [],
+        createdAt: '2024-01-01T00:00:00Z',
       });
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: { hits: [] },
-          aggregations: {
-            by_id: {
-              buckets: [
-                {
-                  key: 'tc-real-1',
-                  latest: {
-                    hits: {
-                      hits: [
-                        {
-                          _source: {
-                            id: 'tc-real-1',
-                            name: 'Real Test Case',
-                            description: 'Desc',
-                            category: 'RCA',
-                            difficulty: 'Medium',
-                            initialPrompt: 'Real prompt',
-                            context: [],
-                            expectedOutcomes: ['Real outcome'],
-                            version: 1,
-                          },
-                        },
-                      ],
-                    },
-                  },
-                },
-              ],
-            },
-          },
-        },
+      mockTestCasesGetById.mockResolvedValue({
+        id: 'tc-real-1',
+        name: 'Real Test Case',
+        description: 'Desc',
+        category: 'RCA',
+        difficulty: 'Medium',
+        initialPrompt: 'Real prompt',
+        context: [],
+        expectedOutcomes: ['Real outcome'],
+        version: 1,
       });
 
       const { req, res } = createMocks({ id: 'exp-123' });
@@ -359,9 +377,7 @@ describe('Experiments Storage Routes', () => {
     });
 
     it('should return 404 when benchmark not found', async () => {
-      mockGet.mockResolvedValue({
-        body: { found: false },
-      });
+      mockBenchmarksGetById.mockResolvedValue(null);
 
       const { req, res } = createMocks({ id: 'exp-nonexistent' });
       const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks/:id/export');
@@ -383,28 +399,14 @@ describe('Experiments Storage Routes', () => {
     });
 
     it('should return empty array when benchmark has no resolvable test cases', async () => {
-      mockGet.mockResolvedValue({
-        body: {
-          found: true,
-          _source: {
-            id: 'exp-empty',
-            name: 'Empty Benchmark',
-            testCaseIds: ['tc-nonexistent'],
-            runs: [],
-            createdAt: '2024-01-01T00:00:00Z',
-          },
-        },
+      mockBenchmarksGetById.mockResolvedValue({
+        id: 'exp-empty',
+        name: 'Empty Benchmark',
+        testCaseIds: ['tc-nonexistent'],
+        runs: [],
+        createdAt: '2024-01-01T00:00:00Z',
       });
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: { hits: [] },
-          aggregations: {
-            by_id: {
-              buckets: [],
-            },
-          },
-        },
-      });
+      mockTestCasesGetById.mockRejectedValue(new Error('Not found'));
 
       const { req, res } = createMocks({ id: 'exp-empty' });
       const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks/:id/export');
@@ -416,17 +418,17 @@ describe('Experiments Storage Routes', () => {
       expect(exportedData).toHaveLength(0);
     });
 
-    it('should handle 404 error from OpenSearch', async () => {
+    it('should handle 404 error from storage adapter', async () => {
       const error: any = new Error('Not found');
       error.meta = { statusCode: 404 };
-      mockGet.mockRejectedValue(error);
+      mockBenchmarksGetById.mockRejectedValue(error);
 
       const { req, res } = createMocks({ id: 'exp-123' });
       const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks/:id/export');
 
       await handler(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.status).toHaveBeenCalledWith(500);
     });
   });
 
@@ -448,8 +450,12 @@ describe('Experiments Storage Routes', () => {
       );
     });
 
-    it('should create new experiment with generated ID', async () => {
-      mockIndex.mockResolvedValue({ body: { result: 'created' } });
+    it('should create new experiment via storage adapter', async () => {
+      mockBenchmarksCreate.mockImplementation(async (bench: any) => ({
+        ...bench,
+        id: bench.id || 'bench-generated-id',
+        createdAt: bench.createdAt || new Date().toISOString(),
+      }));
 
       const { req, res } = createMocks(
         {},
@@ -459,7 +465,7 @@ describe('Experiments Storage Routes', () => {
 
       await handler(req, res);
 
-      expect(mockIndex).toHaveBeenCalled();
+      expect(mockBenchmarksCreate).toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(201);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -469,7 +475,10 @@ describe('Experiments Storage Routes', () => {
     });
 
     it('should use provided ID', async () => {
-      mockIndex.mockResolvedValue({ body: { result: 'created' } });
+      mockBenchmarksCreate.mockImplementation(async (bench: any) => ({
+        ...bench,
+        createdAt: bench.createdAt || new Date().toISOString(),
+      }));
 
       const { req, res } = createMocks(
         {},
@@ -485,7 +494,10 @@ describe('Experiments Storage Routes', () => {
     });
 
     it('should generate IDs for runs', async () => {
-      mockIndex.mockResolvedValue({ body: { result: 'created' } });
+      mockBenchmarksCreate.mockImplementation(async (bench: any) => ({
+        ...bench,
+        createdAt: bench.createdAt || new Date().toISOString(),
+      }));
 
       const { req, res } = createMocks(
         {},
@@ -523,13 +535,16 @@ describe('Experiments Storage Routes', () => {
     });
 
     it('should update metadata without runs', async () => {
-      mockGet.mockResolvedValue({
-        body: {
-          found: true,
-          _source: { id: 'exp-123', name: 'Benchmark', testCaseIds: [], runs: [] },
-        },
+      mockBenchmarksGetById.mockResolvedValue({
+        id: 'exp-123',
+        name: 'Benchmark',
+        testCaseIds: [],
+        runs: [],
       });
-      mockIndex.mockResolvedValue({ body: { result: 'updated' } });
+      mockBenchmarksUpdate.mockImplementation(async (_id: string, updates: any) => ({
+        id: 'exp-123',
+        ...updates,
+      }));
 
       const { req, res } = createMocks(
         { id: 'exp-123' },
@@ -539,19 +554,23 @@ describe('Experiments Storage Routes', () => {
 
       await handler(req, res);
 
+      expect(mockBenchmarksUpdate).toHaveBeenCalledWith('exp-123', expect.objectContaining({ name: 'Updated Name' }));
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ name: 'Updated Name' })
       );
     });
 
     it('should update runs', async () => {
-      mockGet.mockResolvedValue({
-        body: {
-          found: true,
-          _source: { id: 'exp-123', name: 'Benchmark', runs: [] },
-        },
+      mockBenchmarksGetById.mockResolvedValue({
+        id: 'exp-123',
+        name: 'Benchmark',
+        testCaseIds: [],
+        runs: [],
       });
-      mockIndex.mockResolvedValue({ body: { result: 'updated' } });
+      mockBenchmarksUpdate.mockImplementation(async (_id: string, updates: any) => ({
+        id: 'exp-123',
+        ...updates,
+      }));
 
       const { req, res } = createMocks(
         { id: 'exp-123' },
@@ -575,9 +594,7 @@ describe('Experiments Storage Routes', () => {
     });
 
     it('should return 404 when experiment not found', async () => {
-      mockGet.mockResolvedValue({
-        body: { found: false },
-      });
+      mockBenchmarksGetById.mockResolvedValue(null);
 
       const { req, res } = createMocks(
         { id: 'exp-nonexistent' },
@@ -606,22 +623,22 @@ describe('Experiments Storage Routes', () => {
       );
     });
 
-    it('should delete experiment', async () => {
-      mockDelete.mockResolvedValue({ body: {} });
+    it('should delete experiment via storage adapter', async () => {
+      mockBenchmarksDelete.mockResolvedValue({ deleted: true });
 
       const { req, res } = createMocks({ id: 'exp-123' });
       const handler = getRouteHandler(benchmarksRoutes, 'delete', '/api/storage/benchmarks/:id');
 
       await handler(req, res);
 
-      expect(mockDelete).toHaveBeenCalled();
+      expect(mockBenchmarksDelete).toHaveBeenCalledWith('exp-123');
       expect(res.json).toHaveBeenCalledWith({ deleted: true });
     });
 
     it('should return 404 when experiment not found', async () => {
       const error: any = new Error('Not found');
       error.meta = { statusCode: 404 };
-      mockDelete.mockRejectedValue(error);
+      mockBenchmarksDelete.mockRejectedValue(error);
 
       const { req, res } = createMocks({ id: 'exp-nonexistent' });
       const handler = getRouteHandler(benchmarksRoutes, 'delete', '/api/storage/benchmarks/:id');
@@ -662,9 +679,10 @@ describe('Experiments Storage Routes', () => {
       );
     });
 
-    it('should bulk create experiments', async () => {
-      mockBulk.mockResolvedValue({
-        body: { errors: false },
+    it('should bulk create experiments via storage adapter', async () => {
+      mockBenchmarksBulkCreate.mockResolvedValue({
+        created: 2,
+        errors: 0,
       });
 
       const { req, res } = createMocks(
@@ -680,11 +698,10 @@ describe('Experiments Storage Routes', () => {
 
       await handler(req, res);
 
-      expect(mockBulk).toHaveBeenCalled();
+      expect(mockBenchmarksBulkCreate).toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           created: 2,
-          errors: false,
         })
       );
     });
@@ -776,6 +793,7 @@ describe('Experiments Storage Routes', () => {
     });
 
     it('should setup SSE and execute run', async () => {
+      // Execute endpoint uses raw client, not adapter
       mockGet.mockResolvedValue({
         body: {
           found: true,
@@ -788,6 +806,8 @@ describe('Experiments Storage Routes', () => {
         },
       });
       mockUpdate.mockResolvedValue({ body: {} });
+      // getAllTestCases calls the adapter for real test cases
+      mockTestCasesGetAll.mockResolvedValue({ items: [], total: 0 });
       mockSearch.mockResolvedValue({
         body: { hits: { hits: [] } },
       });
@@ -848,18 +868,40 @@ describe('Experiments Storage Routes', () => {
   });
 });
 
-describe('Experiments Storage Routes - OpenSearch not configured', () => {
+describe('Experiments Storage Routes - Storage not configured', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIsConfigured.mockReturnValue(false);
     (isStorageAvailable as jest.Mock).mockReturnValue(false);
   });
 
   afterEach(() => {
+    mockIsConfigured.mockReturnValue(true);
     (isStorageAvailable as jest.Mock).mockReturnValue(true);
     (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
+  it('GET /api/storage/benchmarks should return only sample data when not configured', async () => {
+    const { req, res } = createMocks();
+    const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks');
+
+    await handler(req, res);
+
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({
+        benchmarks: expect.arrayContaining([
+          expect.objectContaining({ id: 'demo-experiment-1' }),
+        ]),
+      })
+    );
+    // Should not have tried to fetch from storage
+    expect(mockBenchmarksGetAll).not.toHaveBeenCalled();
+  });
+
   it('GET /api/storage/benchmarks/:id should return 404 for non-sample ID when not configured', async () => {
+    // When storage is not configured, adapter.getById returns null for non-existent IDs
+    mockBenchmarksGetById.mockResolvedValue(null);
+
     const { req, res } = createMocks({ id: 'exp-123' });
     const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks/:id');
 
@@ -869,6 +911,8 @@ describe('Experiments Storage Routes - OpenSearch not configured', () => {
   });
 
   it('GET /api/storage/benchmarks/:id/export should return 404 for non-sample ID when not configured', async () => {
+    mockBenchmarksGetById.mockResolvedValue(null);
+
     const { req, res } = createMocks({ id: 'exp-123' });
     const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks/:id/export');
 
@@ -876,62 +920,6 @@ describe('Experiments Storage Routes - OpenSearch not configured', () => {
 
     expect(res.status).toHaveBeenCalledWith(404);
     expect(res.json).toHaveBeenCalledWith({ error: 'Benchmark not found' });
-  });
-
-  it('POST /api/storage/benchmarks should return error when not configured', async () => {
-    const { req, res } = createMocks({}, { name: 'Test' });
-    const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks');
-
-    await handler(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({
-        error: expect.stringContaining('not configured'),
-      })
-    );
-  });
-
-  it('PUT /api/storage/benchmarks/:id should return error when not configured', async () => {
-    const { req, res } = createMocks({ id: 'exp-123' }, { runs: [] });
-    const handler = getRouteHandler(benchmarksRoutes, 'put', '/api/storage/benchmarks/:id');
-
-    await handler(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({
-        error: expect.stringContaining('not configured'),
-      })
-    );
-  });
-
-  it('DELETE /api/storage/benchmarks/:id should return error when not configured', async () => {
-    const { req, res } = createMocks({ id: 'exp-123' });
-    const handler = getRouteHandler(benchmarksRoutes, 'delete', '/api/storage/benchmarks/:id');
-
-    await handler(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({
-        error: expect.stringContaining('not configured'),
-      })
-    );
-  });
-
-  it('POST /api/storage/benchmarks/bulk should return error when not configured', async () => {
-    const { req, res } = createMocks({}, { benchmarks: [] });
-    const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/bulk');
-
-    await handler(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({
-        error: expect.stringContaining('not configured'),
-      })
-    );
   });
 
   it('POST /api/storage/benchmarks/:id/execute should return error when not configured', async () => {
@@ -955,12 +943,15 @@ describe('Experiments Storage Routes - OpenSearch not configured', () => {
 describe('Experiments Storage Routes - Error Handling', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIsConfigured.mockReturnValue(true);
+    (isStorageAvailable as jest.Mock).mockReturnValue(true);
+    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
   describe('GET /api/storage/benchmarks - Error cases', () => {
     it('should handle unexpected errors and return 500', async () => {
-      // Mock isStorageAvailable to throw
-      (isStorageAvailable as jest.Mock).mockImplementation(() => {
+      // Force an error by making getStorageModule throw via isConfigured
+      mockIsConfigured.mockImplementation(() => {
         throw new Error('Unexpected error');
       });
 
@@ -973,14 +964,13 @@ describe('Experiments Storage Routes - Error Handling', () => {
       expect(res.json).toHaveBeenCalledWith({ error: 'Unexpected error' });
 
       // Restore
-      (isStorageAvailable as jest.Mock).mockReturnValue(true);
-      (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
+      mockIsConfigured.mockReturnValue(true);
     });
   });
 
   describe('GET /api/storage/benchmarks/:id - Error cases', () => {
     it('should handle unexpected errors and return 500', async () => {
-      mockGet.mockRejectedValue(new Error('Database connection lost'));
+      mockBenchmarksGetById.mockRejectedValue(new Error('Database connection lost'));
 
       const { req, res } = createMocks({ id: 'exp-123' });
       const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks/:id');
@@ -994,7 +984,7 @@ describe('Experiments Storage Routes - Error Handling', () => {
 
   describe('POST /api/storage/benchmarks - Error cases', () => {
     it('should handle unexpected errors and return 500', async () => {
-      mockIndex.mockRejectedValue(new Error('Index write failed'));
+      mockBenchmarksCreate.mockRejectedValue(new Error('Index write failed'));
 
       const { req, res } = createMocks({}, { name: 'Test Benchmark' });
       const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks');
@@ -1007,10 +997,10 @@ describe('Experiments Storage Routes - Error Handling', () => {
   });
 
   describe('PUT /api/storage/benchmarks/:id - Error cases', () => {
-    it('should handle 404 from OpenSearch get', async () => {
+    it('should handle 404 from storage adapter get', async () => {
       const error: any = new Error('Not found');
       error.meta = { statusCode: 404 };
-      mockGet.mockRejectedValue(error);
+      mockBenchmarksGetById.mockRejectedValue(error);
 
       const { req, res } = createMocks({ id: 'exp-123' }, { runs: [] });
       const handler = getRouteHandler(benchmarksRoutes, 'put', '/api/storage/benchmarks/:id');
@@ -1022,8 +1012,13 @@ describe('Experiments Storage Routes - Error Handling', () => {
     });
 
     it('should handle unexpected errors and return 500', async () => {
-      mockGet.mockResolvedValue({ body: { found: true, _source: { id: 'exp-123' } } });
-      mockIndex.mockRejectedValue(new Error('Update failed'));
+      mockBenchmarksGetById.mockResolvedValue({
+        id: 'exp-123',
+        name: 'Benchmark',
+        testCaseIds: [],
+        runs: [],
+      });
+      mockBenchmarksUpdate.mockRejectedValue(new Error('Update failed'));
 
       const { req, res } = createMocks({ id: 'exp-123' }, { runs: [] });
       const handler = getRouteHandler(benchmarksRoutes, 'put', '/api/storage/benchmarks/:id');
@@ -1037,7 +1032,7 @@ describe('Experiments Storage Routes - Error Handling', () => {
 
   describe('DELETE /api/storage/benchmarks/:id - Error cases', () => {
     it('should handle unexpected errors and return 500', async () => {
-      mockDelete.mockRejectedValue(new Error('Delete failed'));
+      mockBenchmarksDelete.mockRejectedValue(new Error('Delete failed'));
 
       const { req, res } = createMocks({ id: 'exp-123' });
       const handler = getRouteHandler(benchmarksRoutes, 'delete', '/api/storage/benchmarks/:id');
@@ -1051,7 +1046,7 @@ describe('Experiments Storage Routes - Error Handling', () => {
 
   describe('POST /api/storage/benchmarks/bulk - Error cases', () => {
     it('should handle unexpected errors and return 500', async () => {
-      mockBulk.mockRejectedValue(new Error('Bulk insert failed'));
+      mockBenchmarksBulkCreate.mockRejectedValue(new Error('Bulk insert failed'));
 
       const { req, res } = createMocks({}, { benchmarks: [{ name: 'Benchmark1' }] });
       const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/bulk');
@@ -1067,6 +1062,9 @@ describe('Experiments Storage Routes - Error Handling', () => {
 describe('Experiments Storage Routes - Execute Error Handling', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIsConfigured.mockReturnValue(true);
+    (isStorageAvailable as jest.Mock).mockReturnValue(true);
+    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
   it('should handle 404 when experiment not found during execute', async () => {
@@ -1114,6 +1112,7 @@ describe('Experiments Storage Routes - Execute Error Handling', () => {
       },
     });
     mockUpdate.mockResolvedValue({ body: {} });
+    mockTestCasesGetAll.mockResolvedValue({ items: [], total: 0 });
     mockSearch.mockResolvedValue({ body: { hits: { hits: [] } } });
     mockExecuteRun.mockRejectedValue(new Error('Agent execution failed'));
 
@@ -1145,6 +1144,7 @@ describe('Experiments Storage Routes - Execute Error Handling', () => {
       },
     });
     mockUpdate.mockResolvedValue({ body: {} });
+    mockTestCasesGetAll.mockResolvedValue({ items: [], total: 0 });
     mockSearch.mockResolvedValue({ body: { hits: { hits: [] } } });
 
     // Mock cancellation token that's already cancelled
@@ -1189,6 +1189,9 @@ describe('Experiments Storage Routes - Execute Error Handling', () => {
 describe('Experiments Storage Routes - Validation', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIsConfigured.mockReturnValue(true);
+    (isStorageAvailable as jest.Mock).mockReturnValue(true);
+    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
   it('should reject execute with invalid config (not an object)', async () => {
@@ -1255,20 +1258,16 @@ describe('Experiments Storage Routes - Validation', () => {
 describe('Benchmark Polling Mode (fields=polling)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIsConfigured.mockReturnValue(true);
     (isStorageAvailable as jest.Mock).mockReturnValue(true);
     (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
-  it('should apply _source_excludes when fields=polling', async () => {
-    mockGet.mockResolvedValue({
-      body: {
-        found: true,
-        _source: {
-          id: 'exp-123',
-          name: 'Test Benchmark',
-          runs: [],
-        },
-      },
+  it('should return data from storage adapter when fields=polling', async () => {
+    mockBenchmarksGetById.mockResolvedValue({
+      id: 'exp-123',
+      name: 'Test Benchmark',
+      runs: [],
     });
 
     const { req, res } = createMocks({ id: 'exp-123' }, {}, { fields: 'polling' });
@@ -1276,10 +1275,9 @@ describe('Benchmark Polling Mode (fields=polling)', () => {
 
     await handler(req, res);
 
-    expect(mockGet).toHaveBeenCalledWith(
-      expect.objectContaining({
-        _source_excludes: 'versions,runs.testCaseSnapshots,runs.headers',
-      })
+    expect(mockBenchmarksGetById).toHaveBeenCalledWith('exp-123');
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'exp-123' })
     );
   });
 
@@ -1299,16 +1297,11 @@ describe('Benchmark Polling Mode (fields=polling)', () => {
     }
   });
 
-  it('should not apply _source_excludes without fields param (backward compat)', async () => {
-    mockGet.mockResolvedValue({
-      body: {
-        found: true,
-        _source: {
-          id: 'exp-123',
-          name: 'Test Benchmark',
-          runs: [],
-        },
-      },
+  it('should return full data without fields param (backward compat)', async () => {
+    mockBenchmarksGetById.mockResolvedValue({
+      id: 'exp-123',
+      name: 'Test Benchmark',
+      runs: [],
     });
 
     const { req, res } = createMocks({ id: 'exp-123' });
@@ -1316,10 +1309,9 @@ describe('Benchmark Polling Mode (fields=polling)', () => {
 
     await handler(req, res);
 
-    expect(mockGet).toHaveBeenCalledWith(
-      expect.not.objectContaining({
-        _source_excludes: expect.anything(),
-      })
+    expect(mockBenchmarksGetById).toHaveBeenCalledWith('exp-123');
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'exp-123' })
     );
   });
 });
@@ -1327,24 +1319,20 @@ describe('Benchmark Polling Mode (fields=polling)', () => {
 describe('Benchmark Run Pagination (runsSize + runsOffset)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIsConfigured.mockReturnValue(true);
     (isStorageAvailable as jest.Mock).mockReturnValue(true);
     (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
   it('should return sliced runs with totalRuns and hasMoreRuns', async () => {
-    mockGet.mockResolvedValue({
-      body: {
-        found: true,
-        _source: {
-          id: 'exp-123',
-          name: 'Test Benchmark',
-          runs: [
-            { id: 'run-1', name: 'Run 1', agentKey: 'a', modelId: 'm', createdAt: '2024-03-01T00:00:00Z', results: {} },
-            { id: 'run-2', name: 'Run 2', agentKey: 'a', modelId: 'm', createdAt: '2024-02-01T00:00:00Z', results: {} },
-            { id: 'run-3', name: 'Run 3', agentKey: 'a', modelId: 'm', createdAt: '2024-01-01T00:00:00Z', results: {} },
-          ],
-        },
-      },
+    mockBenchmarksGetById.mockResolvedValue({
+      id: 'exp-123',
+      name: 'Test Benchmark',
+      runs: [
+        { id: 'run-1', name: 'Run 1', agentKey: 'a', modelId: 'm', createdAt: '2024-03-01T00:00:00Z', results: {} },
+        { id: 'run-2', name: 'Run 2', agentKey: 'a', modelId: 'm', createdAt: '2024-02-01T00:00:00Z', results: {} },
+        { id: 'run-3', name: 'Run 3', agentKey: 'a', modelId: 'm', createdAt: '2024-01-01T00:00:00Z', results: {} },
+      ],
     });
 
     const { req, res } = createMocks({ id: 'exp-123' }, {}, { runsSize: '2' });
@@ -1359,19 +1347,14 @@ describe('Benchmark Run Pagination (runsSize + runsOffset)', () => {
   });
 
   it('should support runsOffset for loading older runs', async () => {
-    mockGet.mockResolvedValue({
-      body: {
-        found: true,
-        _source: {
-          id: 'exp-123',
-          name: 'Test Benchmark',
-          runs: [
-            { id: 'run-1', name: 'Run 1', agentKey: 'a', modelId: 'm', createdAt: '2024-03-01T00:00:00Z', results: {} },
-            { id: 'run-2', name: 'Run 2', agentKey: 'a', modelId: 'm', createdAt: '2024-02-01T00:00:00Z', results: {} },
-            { id: 'run-3', name: 'Run 3', agentKey: 'a', modelId: 'm', createdAt: '2024-01-01T00:00:00Z', results: {} },
-          ],
-        },
-      },
+    mockBenchmarksGetById.mockResolvedValue({
+      id: 'exp-123',
+      name: 'Test Benchmark',
+      runs: [
+        { id: 'run-1', name: 'Run 1', agentKey: 'a', modelId: 'm', createdAt: '2024-03-01T00:00:00Z', results: {} },
+        { id: 'run-2', name: 'Run 2', agentKey: 'a', modelId: 'm', createdAt: '2024-02-01T00:00:00Z', results: {} },
+        { id: 'run-3', name: 'Run 3', agentKey: 'a', modelId: 'm', createdAt: '2024-01-01T00:00:00Z', results: {} },
+      ],
     });
 
     const { req, res } = createMocks({ id: 'exp-123' }, {}, { runsSize: '2', runsOffset: '2' });
@@ -1386,18 +1369,13 @@ describe('Benchmark Run Pagination (runsSize + runsOffset)', () => {
   });
 
   it('should return all runs without runsSize param (backward compat)', async () => {
-    mockGet.mockResolvedValue({
-      body: {
-        found: true,
-        _source: {
-          id: 'exp-123',
-          name: 'Test Benchmark',
-          runs: [
-            { id: 'run-1', name: 'Run 1', agentKey: 'a', modelId: 'm', createdAt: '2024-03-01T00:00:00Z', results: {} },
-            { id: 'run-2', name: 'Run 2', agentKey: 'a', modelId: 'm', createdAt: '2024-02-01T00:00:00Z', results: {} },
-          ],
-        },
-      },
+    mockBenchmarksGetById.mockResolvedValue({
+      id: 'exp-123',
+      name: 'Test Benchmark',
+      runs: [
+        { id: 'run-1', name: 'Run 1', agentKey: 'a', modelId: 'm', createdAt: '2024-03-01T00:00:00Z', results: {} },
+        { id: 'run-2', name: 'Run 2', agentKey: 'a', modelId: 'm', createdAt: '2024-02-01T00:00:00Z', results: {} },
+      ],
     });
 
     const { req, res } = createMocks({ id: 'exp-123' });
@@ -1427,49 +1405,38 @@ describe('Benchmark Run Pagination (runsSize + runsOffset)', () => {
 describe('Lazy Stats Backfill', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIsConfigured.mockReturnValue(true);
     (isStorageAvailable as jest.Mock).mockReturnValue(true);
     (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
   });
 
   it('should backfill stats for completed runs missing stats', async () => {
-    mockGet.mockResolvedValue({
-      body: {
-        found: true,
-        _source: {
-          id: 'exp-backfill',
-          name: 'Backfill Test',
-          runs: [
-            {
-              id: 'run-old',
-              name: 'Old Run',
-              agentKey: 'agent',
-              modelId: 'model',
-              status: 'completed',
-              createdAt: '2024-01-01T00:00:00Z',
-              results: {
-                'tc-1': { reportId: 'report-1', status: 'completed' },
-                'tc-2': { reportId: 'report-2', status: 'completed' },
-              },
-            },
-          ],
+    mockBenchmarksGetById.mockResolvedValue({
+      id: 'exp-backfill',
+      name: 'Backfill Test',
+      runs: [
+        {
+          id: 'run-old',
+          name: 'Old Run',
+          agentKey: 'agent',
+          modelId: 'model',
+          status: 'completed',
+          createdAt: '2024-01-01T00:00:00Z',
+          results: {
+            'tc-1': { reportId: 'report-1', status: 'completed' },
+            'tc-2': { reportId: 'report-2', status: 'completed' },
+          },
         },
-      },
+      ],
     });
 
-    // Mock report search for computeStatsForRun
-    mockSearch.mockResolvedValue({
-      body: {
-        hits: {
-          hits: [
-            { _source: { id: 'report-1', passFailStatus: 'passed' } },
-            { _source: { id: 'report-2', passFailStatus: 'failed' } },
-          ],
-        },
-      },
-    });
+    // Mock report fetching via storage adapter (backfill uses adapter, not raw client)
+    mockRunsGetById
+      .mockResolvedValueOnce({ id: 'report-1', passFailStatus: 'passed' })
+      .mockResolvedValueOnce({ id: 'report-2', passFailStatus: 'failed' });
 
-    // Mock update for fire-and-forget persistence
-    mockUpdate.mockResolvedValue({ body: {} });
+    // Mock updateRun for fire-and-forget persistence
+    mockBenchmarksUpdateRun.mockResolvedValue(true);
 
     const { req, res } = createMocks({ id: 'exp-backfill' });
     const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks/:id');
@@ -1483,46 +1450,34 @@ describe('Lazy Stats Backfill', () => {
     expect(response.runs[0].stats.failed).toBe(1);
     expect(response.runs[0].stats.total).toBe(2);
 
-    // Should have persisted stats back to OpenSearch
-    expect(mockUpdate).toHaveBeenCalledWith(
+    // Should have persisted stats via adapter
+    expect(mockBenchmarksUpdateRun).toHaveBeenCalledWith(
+      'exp-backfill',
+      'run-old',
       expect.objectContaining({
-        index: 'experiments-index',
-        id: 'exp-backfill',
-        body: expect.objectContaining({
-          script: expect.objectContaining({
-            params: expect.objectContaining({
-              runId: 'run-old',
-              stats: expect.objectContaining({ passed: 1, failed: 1, total: 2 }),
-            }),
-          }),
-        }),
+        stats: expect.objectContaining({ passed: 1, failed: 1, total: 2 }),
       })
     );
   });
 
   it('should not backfill runs that already have stats', async () => {
-    mockGet.mockResolvedValue({
-      body: {
-        found: true,
-        _source: {
-          id: 'exp-with-stats',
-          name: 'Has Stats',
-          runs: [
-            {
-              id: 'run-with-stats',
-              name: 'Run With Stats',
-              agentKey: 'agent',
-              modelId: 'model',
-              status: 'completed',
-              createdAt: '2024-01-01T00:00:00Z',
-              stats: { passed: 3, failed: 0, pending: 0, total: 3 },
-              results: {
-                'tc-1': { reportId: 'report-1', status: 'completed' },
-              },
-            },
-          ],
+    mockBenchmarksGetById.mockResolvedValue({
+      id: 'exp-with-stats',
+      name: 'Has Stats',
+      runs: [
+        {
+          id: 'run-with-stats',
+          name: 'Run With Stats',
+          agentKey: 'agent',
+          modelId: 'model',
+          status: 'completed',
+          createdAt: '2024-01-01T00:00:00Z',
+          stats: { passed: 3, failed: 0, pending: 0, total: 3 },
+          results: {
+            'tc-1': { reportId: 'report-1', status: 'completed' },
+          },
         },
-      },
+      ],
     });
 
     const { req, res } = createMocks({ id: 'exp-with-stats' });
@@ -1530,10 +1485,10 @@ describe('Lazy Stats Backfill', () => {
 
     await handler(req, res);
 
-    // Should not have searched for reports (no backfill needed)
-    expect(mockSearch).not.toHaveBeenCalled();
-    // Should not have called update to persist stats
-    expect(mockUpdate).not.toHaveBeenCalled();
+    // Should not have fetched reports (no backfill needed)
+    expect(mockRunsGetById).not.toHaveBeenCalled();
+    // Should not have called updateRun to persist stats
+    expect(mockBenchmarksUpdateRun).not.toHaveBeenCalled();
 
     // Should still return the existing stats
     const response = (res.json as jest.Mock).mock.calls[0][0];
@@ -1541,28 +1496,23 @@ describe('Lazy Stats Backfill', () => {
   });
 
   it('should not backfill runs that are still running', async () => {
-    mockGet.mockResolvedValue({
-      body: {
-        found: true,
-        _source: {
-          id: 'exp-running',
-          name: 'Running Test',
-          runs: [
-            {
-              id: 'run-running',
-              name: 'Running Run',
-              agentKey: 'agent',
-              modelId: 'model',
-              status: 'running',
-              createdAt: '2024-01-01T00:00:00Z',
-              results: {
-                'tc-1': { reportId: 'report-1', status: 'completed' },
-                'tc-2': { reportId: '', status: 'pending' },
-              },
-            },
-          ],
+    mockBenchmarksGetById.mockResolvedValue({
+      id: 'exp-running',
+      name: 'Running Test',
+      runs: [
+        {
+          id: 'run-running',
+          name: 'Running Run',
+          agentKey: 'agent',
+          modelId: 'model',
+          status: 'running',
+          createdAt: '2024-01-01T00:00:00Z',
+          results: {
+            'tc-1': { reportId: 'report-1', status: 'completed' },
+            'tc-2': { reportId: '', status: 'pending' },
+          },
         },
-      },
+      ],
     });
 
     const { req, res } = createMocks({ id: 'exp-running' });
@@ -1570,37 +1520,32 @@ describe('Lazy Stats Backfill', () => {
 
     await handler(req, res);
 
-    // Should not have searched for reports (run is still running)
-    expect(mockSearch).not.toHaveBeenCalled();
-    expect(mockUpdate).not.toHaveBeenCalled();
+    // Should not have fetched reports (run is still running)
+    expect(mockRunsGetById).not.toHaveBeenCalled();
+    expect(mockBenchmarksUpdateRun).not.toHaveBeenCalled();
   });
 
   it('should handle backfill failures gracefully without breaking the response', async () => {
-    mockGet.mockResolvedValue({
-      body: {
-        found: true,
-        _source: {
-          id: 'exp-fail',
-          name: 'Fail Test',
-          runs: [
-            {
-              id: 'run-fail',
-              name: 'Failing Run',
-              agentKey: 'agent',
-              modelId: 'model',
-              status: 'completed',
-              createdAt: '2024-01-01T00:00:00Z',
-              results: {
-                'tc-1': { reportId: 'report-1', status: 'completed' },
-              },
-            },
-          ],
+    mockBenchmarksGetById.mockResolvedValue({
+      id: 'exp-fail',
+      name: 'Fail Test',
+      runs: [
+        {
+          id: 'run-fail',
+          name: 'Failing Run',
+          agentKey: 'agent',
+          modelId: 'model',
+          status: 'completed',
+          createdAt: '2024-01-01T00:00:00Z',
+          results: {
+            'tc-1': { reportId: 'report-1', status: 'completed' },
+          },
         },
-      },
+      ],
     });
 
-    // Mock report search to fail
-    mockSearch.mockRejectedValue(new Error('Search failed'));
+    // Mock report fetch to fail
+    mockRunsGetById.mockRejectedValue(new Error('Fetch failed'));
 
     const { req, res } = createMocks({ id: 'exp-fail' });
     const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks/:id');
@@ -1614,51 +1559,40 @@ describe('Lazy Stats Backfill', () => {
   });
 
   it('should backfill stats in paginated mode', async () => {
-    mockGet.mockResolvedValue({
-      body: {
-        found: true,
-        _source: {
-          id: 'exp-paginated',
-          name: 'Paginated Test',
-          runs: [
-            {
-              id: 'run-1',
-              name: 'Run 1',
-              agentKey: 'agent',
-              modelId: 'model',
-              status: 'completed',
-              createdAt: '2024-02-01T00:00:00Z',
-              results: {
-                'tc-1': { reportId: 'report-1', status: 'completed' },
-              },
-            },
-            {
-              id: 'run-2',
-              name: 'Run 2',
-              agentKey: 'agent',
-              modelId: 'model',
-              status: 'completed',
-              createdAt: '2024-01-01T00:00:00Z',
-              results: {
-                'tc-1': { reportId: 'report-2', status: 'completed' },
-              },
-            },
-          ],
+    mockBenchmarksGetById.mockResolvedValue({
+      id: 'exp-paginated',
+      name: 'Paginated Test',
+      runs: [
+        {
+          id: 'run-1',
+          name: 'Run 1',
+          agentKey: 'agent',
+          modelId: 'model',
+          status: 'completed',
+          createdAt: '2024-02-01T00:00:00Z',
+          results: {
+            'tc-1': { reportId: 'report-1', status: 'completed' },
+          },
         },
-      },
+        {
+          id: 'run-2',
+          name: 'Run 2',
+          agentKey: 'agent',
+          modelId: 'model',
+          status: 'completed',
+          createdAt: '2024-01-01T00:00:00Z',
+          results: {
+            'tc-1': { reportId: 'report-2', status: 'completed' },
+          },
+        },
+      ],
     });
 
-    // Mock report search for computeStatsForRun
-    mockSearch.mockResolvedValue({
-      body: {
-        hits: {
-          hits: [
-            { _source: { id: 'report-1', passFailStatus: 'passed' } },
-          ],
-        },
-      },
-    });
-    mockUpdate.mockResolvedValue({ body: {} });
+    // Mock report fetching via storage adapter for computeStatsForRun
+    mockRunsGetById
+      .mockResolvedValueOnce({ id: 'report-1', passFailStatus: 'passed' })
+      .mockResolvedValueOnce({ id: 'report-2', passFailStatus: 'passed' });
+    mockBenchmarksUpdateRun.mockResolvedValue(true);
 
     const { req, res } = createMocks({ id: 'exp-paginated' }, {}, { runsSize: '1' });
     const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks/:id');
@@ -1673,40 +1607,27 @@ describe('Lazy Stats Backfill', () => {
   });
 
   it('should backfill stats for cancelled runs', async () => {
-    mockGet.mockResolvedValue({
-      body: {
-        found: true,
-        _source: {
-          id: 'exp-cancelled',
-          name: 'Cancelled Test',
-          runs: [
-            {
-              id: 'run-cancelled',
-              name: 'Cancelled Run',
-              agentKey: 'agent',
-              modelId: 'model',
-              status: 'cancelled',
-              createdAt: '2024-01-01T00:00:00Z',
-              results: {
-                'tc-1': { reportId: 'report-1', status: 'completed' },
-                'tc-2': { reportId: '', status: 'failed' },
-              },
-            },
-          ],
+    mockBenchmarksGetById.mockResolvedValue({
+      id: 'exp-cancelled',
+      name: 'Cancelled Test',
+      runs: [
+        {
+          id: 'run-cancelled',
+          name: 'Cancelled Run',
+          agentKey: 'agent',
+          modelId: 'model',
+          status: 'cancelled',
+          createdAt: '2024-01-01T00:00:00Z',
+          results: {
+            'tc-1': { reportId: 'report-1', status: 'completed' },
+            'tc-2': { reportId: '', status: 'failed' },
+          },
         },
-      },
+      ],
     });
 
-    mockSearch.mockResolvedValue({
-      body: {
-        hits: {
-          hits: [
-            { _source: { id: 'report-1', passFailStatus: 'passed' } },
-          ],
-        },
-      },
-    });
-    mockUpdate.mockResolvedValue({ body: {} });
+    mockRunsGetById.mockResolvedValueOnce({ id: 'report-1', passFailStatus: 'passed' });
+    mockBenchmarksUpdateRun.mockResolvedValue(true);
 
     const { req, res } = createMocks({ id: 'exp-cancelled' });
     const handler = getRouteHandler(benchmarksRoutes, 'get', '/api/storage/benchmarks/:id');

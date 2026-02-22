@@ -6,36 +6,54 @@
 import { Request, Response } from 'express';
 import runsRoutes from '@/server/routes/storage/runs';
 
-// Mock client methods
-const mockSearch = jest.fn();
-const mockIndex = jest.fn();
-const mockGet = jest.fn();
-const mockUpdate = jest.fn();
-const mockDelete = jest.fn();
-const mockBulk = jest.fn();
+// Mock storage module methods
+const mockRunsGetAll = jest.fn();
+const mockRunsGetById = jest.fn();
+const mockRunsCreate = jest.fn();
+const mockRunsUpdate = jest.fn();
+const mockRunsDelete = jest.fn();
+const mockRunsSearch = jest.fn();
+const mockRunsGetByTestCase = jest.fn();
+const mockRunsGetByExperiment = jest.fn();
+const mockRunsGetByExperimentRun = jest.fn();
+const mockRunsGetIterations = jest.fn();
+const mockRunsAddAnnotation = jest.fn();
+const mockRunsUpdateAnnotation = jest.fn();
+const mockRunsDeleteAnnotation = jest.fn();
+const mockRunsBulkCreate = jest.fn();
+const mockBenchmarksGetById = jest.fn();
+const mockBenchmarksUpdateRun = jest.fn();
+const mockIsConfigured = jest.fn();
 
-// Create mock client
-const mockClient = {
-  search: mockSearch,
-  index: mockIndex,
-  get: mockGet,
-  update: mockUpdate,
-  delete: mockDelete,
-  bulk: mockBulk,
+// Create mock storage module
+const mockStorageModule = {
+  runs: {
+    getAll: mockRunsGetAll,
+    getById: mockRunsGetById,
+    create: mockRunsCreate,
+    update: mockRunsUpdate,
+    delete: mockRunsDelete,
+    search: mockRunsSearch,
+    getByTestCase: mockRunsGetByTestCase,
+    getByExperiment: mockRunsGetByExperiment,
+    getByExperimentRun: mockRunsGetByExperimentRun,
+    getIterations: mockRunsGetIterations,
+    addAnnotation: mockRunsAddAnnotation,
+    updateAnnotation: mockRunsUpdateAnnotation,
+    deleteAnnotation: mockRunsDeleteAnnotation,
+    bulkCreate: mockRunsBulkCreate,
+  },
+  benchmarks: {
+    getById: mockBenchmarksGetById,
+    updateRun: mockBenchmarksUpdateRun,
+  },
+  isConfigured: mockIsConfigured,
 };
 
-// Mock the storageClient middleware
-jest.mock('@/server/middleware/storageClient', () => ({
-  isStorageAvailable: jest.fn(),
-  requireStorageClient: jest.fn(),
-  INDEXES: { runs: 'runs-index', analytics: 'analytics-index' },
+// Mock the storage adapter
+jest.mock('@/server/adapters/index', () => ({
+  getStorageModule: jest.fn(() => mockStorageModule),
 }));
-
-// Import mocked functions
-import {
-  isStorageAvailable,
-  requireStorageClient,
-} from '@/server/middleware/storageClient';
 
 // Mock sample runs
 jest.mock('@/cli/demo/sampleRuns', () => ({
@@ -76,15 +94,6 @@ jest.mock('@/cli/demo/sampleRuns', () => ({
     }
     return [];
   },
-  getSampleRunsByExperiment: (experimentId: string) => {
-    if (experimentId === 'demo-experiment-1') {
-      return [
-        { id: 'demo-run-1', experimentId: 'demo-experiment-1' },
-        { id: 'demo-run-2', experimentId: 'demo-experiment-1' },
-      ];
-    }
-    return [];
-  },
   getSampleRunsByBenchmark: (benchmarkId: string) => {
     if (benchmarkId === 'demo-experiment-1') {
       return [
@@ -105,17 +114,6 @@ jest.mock('@/cli/demo/sampleRuns', () => ({
   },
 }));
 
-// Mock storage service (using WithClient versions)
-const mockCreateRunWithClient = jest.fn();
-const mockGetRunByIdWithClient = jest.fn();
-const mockUpdateRunWithClient = jest.fn();
-
-jest.mock('@/server/services/storage/index', () => ({
-  createRunWithClient: (...args: any[]) => mockCreateRunWithClient(...args),
-  getRunByIdWithClient: (...args: any[]) => mockGetRunByIdWithClient(...args),
-  updateRunWithClient: (...args: any[]) => mockUpdateRunWithClient(...args),
-}));
-
 // Silence console output
 beforeAll(() => {
   jest.spyOn(console, 'log').mockImplementation(() => {});
@@ -133,8 +131,6 @@ function createMocks(params: any = {}, body: any = {}, query: any = {}) {
     params,
     body,
     query,
-    storageClient: mockClient,
-    storageConfig: { endpoint: 'https://localhost:9200' },
   } as unknown as Request;
   const res = {
     json: jest.fn().mockReturnThis(),
@@ -158,27 +154,20 @@ function getRouteHandler(router: any, method: string, path: string) {
 describe('Runs Storage Routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    // Default: storage is available
-    (isStorageAvailable as jest.Mock).mockReturnValue(true);
-    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
+    mockIsConfigured.mockReturnValue(true);
   });
 
   describe('GET /api/storage/runs', () => {
     it('should return combined sample and real runs', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            hits: [
-              {
-                _source: {
-                  id: 'run-123',
-                  testCaseId: 'tc-123',
-                  createdAt: '2024-02-01T00:00:00Z',
-                },
-              },
-            ],
+      mockRunsGetAll.mockResolvedValue({
+        items: [
+          {
+            id: 'run-123',
+            testCaseId: 'tc-123',
+            createdAt: '2024-02-01T00:00:00Z',
           },
-        },
+        ],
+        total: 1,
       });
 
       const { req, res } = createMocks({}, {}, { size: '50', from: '0' });
@@ -186,6 +175,7 @@ describe('Runs Storage Routes', () => {
 
       await handler(req, res);
 
+      expect(mockRunsGetAll).toHaveBeenCalledWith({ size: 50, from: 0 });
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           runs: expect.arrayContaining([
@@ -196,8 +186,8 @@ describe('Runs Storage Routes', () => {
       );
     });
 
-    it('should return only sample data when OpenSearch unavailable', async () => {
-      mockSearch.mockRejectedValue(new Error('Connection refused'));
+    it('should return only sample data when storage unavailable', async () => {
+      mockRunsGetAll.mockRejectedValue(new Error('Connection refused'));
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs');
@@ -239,8 +229,8 @@ describe('Runs Storage Routes', () => {
       expect(res.json).toHaveBeenCalledWith({ error: 'Run not found' });
     });
 
-    it('should fetch from OpenSearch for non-sample ID', async () => {
-      mockGetRunByIdWithClient.mockResolvedValue({
+    it('should fetch from storage for non-sample ID', async () => {
+      mockRunsGetById.mockResolvedValue({
         id: 'run-123',
         testCaseId: 'tc-123',
       });
@@ -250,14 +240,14 @@ describe('Runs Storage Routes', () => {
 
       await handler(req, res);
 
-      expect(mockGetRunByIdWithClient).toHaveBeenCalledWith(mockClient, 'run-123');
+      expect(mockRunsGetById).toHaveBeenCalledWith('run-123');
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'run-123' })
       );
     });
 
     it('should return 404 when run not found', async () => {
-      mockGetRunByIdWithClient.mockResolvedValue(null);
+      mockRunsGetById.mockResolvedValue(null);
 
       const { req, res } = createMocks({ id: 'run-nonexistent' });
       const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/:id');
@@ -285,14 +275,14 @@ describe('Runs Storage Routes', () => {
 
     it('should create new run', async () => {
       const newRun = { id: 'run-123', testCaseId: 'tc-123', status: 'pending' };
-      mockCreateRunWithClient.mockResolvedValue(newRun);
+      mockRunsCreate.mockResolvedValue(newRun);
 
       const { req, res } = createMocks({}, { testCaseId: 'tc-123' });
       const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
 
       await handler(req, res);
 
-      expect(mockCreateRunWithClient).toHaveBeenCalled();
+      expect(mockRunsCreate).toHaveBeenCalledWith(expect.objectContaining({ testCaseId: 'tc-123' }));
       expect(res.status).toHaveBeenCalledWith(201);
       expect(res.json).toHaveBeenCalledWith(newRun);
     });
@@ -325,21 +315,19 @@ describe('Runs Storage Routes', () => {
 
     it('should update run', async () => {
       const updatedRun = { id: 'run-123', status: 'completed' };
-      mockUpdateRunWithClient.mockResolvedValue(updatedRun);
+      mockRunsUpdate.mockResolvedValue(updatedRun);
 
       const { req, res } = createMocks({ id: 'run-123' }, { status: 'completed' });
       const handler = getRouteHandler(runsRoutes, 'patch', '/api/storage/runs/:id');
 
       await handler(req, res);
 
-      expect(mockUpdateRunWithClient).toHaveBeenCalledWith(mockClient, 'run-123', { status: 'completed' });
+      expect(mockRunsUpdate).toHaveBeenCalledWith('run-123', { status: 'completed' });
       expect(res.json).toHaveBeenCalledWith(updatedRun);
     });
 
     it('should return 404 when run not found', async () => {
-      const error: any = new Error('Not found');
-      error.meta = { statusCode: 404 };
-      mockUpdateRunWithClient.mockRejectedValue(error);
+      mockRunsUpdate.mockRejectedValue(new Error('Run not found'));
 
       const { req, res } = createMocks({ id: 'run-nonexistent' }, { status: 'completed' });
       const handler = getRouteHandler(runsRoutes, 'patch', '/api/storage/runs/:id');
@@ -347,6 +335,34 @@ describe('Runs Storage Routes', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
+    });
+
+    it('should trigger benchmark stats refresh on metricsStatus update', async () => {
+      const updatedRun = { id: 'run-123', status: 'completed', metricsStatus: 'completed' };
+      mockRunsGetById.mockResolvedValue({
+        id: 'run-123',
+        experimentId: 'bench-123',
+      });
+      mockRunsUpdate.mockResolvedValue(updatedRun);
+      mockBenchmarksGetById.mockResolvedValue({
+        id: 'bench-123',
+        runs: [{
+          id: 'run-1',
+          results: { 'tc-1': { reportId: 'run-123' } },
+        }],
+      });
+
+      const { req, res } = createMocks({ id: 'run-123' }, { metricsStatus: 'completed' });
+      const handler = getRouteHandler(runsRoutes, 'patch', '/api/storage/runs/:id');
+
+      await handler(req, res);
+
+      expect(res.json).toHaveBeenCalledWith(updatedRun);
+
+      // Allow fire-and-forget promise to resolve
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      expect(mockBenchmarksGetById).toHaveBeenCalledWith('bench-123');
     });
   });
 
@@ -366,21 +382,19 @@ describe('Runs Storage Routes', () => {
     });
 
     it('should delete run', async () => {
-      mockDelete.mockResolvedValue({ body: {} });
+      mockRunsDelete.mockResolvedValue({ deleted: true });
 
       const { req, res } = createMocks({ id: 'run-123' });
       const handler = getRouteHandler(runsRoutes, 'delete', '/api/storage/runs/:id');
 
       await handler(req, res);
 
-      expect(mockDelete).toHaveBeenCalled();
+      expect(mockRunsDelete).toHaveBeenCalledWith('run-123');
       expect(res.json).toHaveBeenCalledWith({ deleted: true });
     });
 
     it('should return 404 when run not found', async () => {
-      const error: any = new Error('Not found');
-      error.meta = { statusCode: 404 };
-      mockDelete.mockRejectedValue(error);
+      mockRunsDelete.mockResolvedValue({ deleted: false });
 
       const { req, res } = createMocks({ id: 'run-nonexistent' });
       const handler = getRouteHandler(runsRoutes, 'delete', '/api/storage/runs/:id');
@@ -393,18 +407,13 @@ describe('Runs Storage Routes', () => {
 
   describe('POST /api/storage/runs/search', () => {
     it('should search runs with filters', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            hits: [
-              { _source: { id: 'run-123', status: 'completed' } },
-            ],
-          },
-        },
+      mockRunsSearch.mockResolvedValue({
+        items: [{ id: 'run-123', status: 'completed' }],
+        total: 1,
       });
 
       const { req, res } = createMocks({}, {
-        benchmarkId: 'exp-123',
+        experimentId: 'exp-123',
         status: 'completed',
         passFailStatus: 'passed',
       });
@@ -412,7 +421,14 @@ describe('Runs Storage Routes', () => {
 
       await handler(req, res);
 
-      expect(mockSearch).toHaveBeenCalled();
+      expect(mockRunsSearch).toHaveBeenCalledWith(
+        expect.objectContaining({
+          experimentId: 'exp-123',
+          status: 'completed',
+          passFailStatus: 'passed',
+        }),
+        expect.objectContaining({ size: 100, from: 0 }),
+      );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           runs: expect.any(Array),
@@ -422,8 +438,9 @@ describe('Runs Storage Routes', () => {
     });
 
     it('should filter sample data', async () => {
-      mockSearch.mockResolvedValue({
-        body: { hits: { hits: [] } },
+      mockRunsSearch.mockResolvedValue({
+        items: [],
+        total: 0,
       });
 
       const { req, res } = createMocks({}, {
@@ -443,22 +460,20 @@ describe('Runs Storage Routes', () => {
       );
     });
 
-    it('should handle date range filter', async () => {
-      mockSearch.mockResolvedValue({
-        body: { hits: { hits: [] } },
-      });
+    it('should handle storage unavailability gracefully', async () => {
+      mockRunsSearch.mockRejectedValue(new Error('Connection refused'));
 
       const { req, res } = createMocks({}, {
-        dateRange: { start: '2024-01-01', end: '2024-02-01' },
+        experimentId: 'demo-experiment-1',
       });
       const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs/search');
 
       await handler(req, res);
 
-      const searchBody = mockSearch.mock.calls[0][0].body;
-      expect(searchBody.query.bool.must).toContainEqual(
+      // Should still return sample data even when storage fails
+      expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          range: expect.any(Object),
+          runs: expect.any(Array),
         })
       );
     });
@@ -466,15 +481,9 @@ describe('Runs Storage Routes', () => {
 
   describe('GET /api/storage/runs/by-test-case/:testCaseId', () => {
     it('should return runs for test case', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            total: { value: 1 },
-            hits: [
-              { _source: { id: 'run-123', testCaseId: 'tc-123' } },
-            ],
-          },
-        },
+      mockRunsGetByTestCase.mockResolvedValue({
+        items: [{ id: 'run-123', testCaseId: 'tc-123' }],
+        total: 1,
       });
 
       const { req, res } = createMocks({ testCaseId: 'tc-123' });
@@ -482,6 +491,7 @@ describe('Runs Storage Routes', () => {
 
       await handler(req, res);
 
+      expect(mockRunsGetByTestCase).toHaveBeenCalledWith('tc-123', 100, 0);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           runs: expect.any(Array),
@@ -493,7 +503,7 @@ describe('Runs Storage Routes', () => {
     });
 
     it('should return sample runs for demo test case', async () => {
-      mockSearch.mockRejectedValue(new Error('Connection refused'));
+      mockRunsGetByTestCase.mockRejectedValue(new Error('Connection refused'));
 
       const { req, res } = createMocks({ testCaseId: 'demo-test-case-1' });
       const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/by-test-case/:testCaseId');
@@ -509,16 +519,10 @@ describe('Runs Storage Routes', () => {
       );
     });
 
-    it('should pass from parameter to OpenSearch query', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            total: { value: 150 },
-            hits: [
-              { _source: { id: 'run-101', testCaseId: 'tc-123' } },
-            ],
-          },
-        },
+    it('should pass from parameter to storage query', async () => {
+      mockRunsGetByTestCase.mockResolvedValue({
+        items: [{ id: 'run-101', testCaseId: 'tc-123' }],
+        total: 150,
       });
 
       const { req, res } = createMocks({ testCaseId: 'tc-123' }, {}, { size: '100', from: '100' });
@@ -526,27 +530,14 @@ describe('Runs Storage Routes', () => {
 
       await handler(req, res);
 
-      // Verify from is passed to OpenSearch
-      expect(mockSearch).toHaveBeenCalledWith(
-        expect.objectContaining({
-          body: expect.objectContaining({
-            from: 100,
-            size: 100,
-          }),
-        })
-      );
+      // Verify from is passed to storage adapter
+      expect(mockRunsGetByTestCase).toHaveBeenCalledWith('tc-123', 100, 100);
     });
 
     it('should return real total reflecting all matching documents', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            total: { value: 236 },
-            hits: [
-              { _source: { id: 'run-1', testCaseId: 'demo-test-case-1' } },
-            ],
-          },
-        },
+      mockRunsGetByTestCase.mockResolvedValue({
+        items: [{ id: 'run-1', testCaseId: 'demo-test-case-1' }],
+        total: 236,
       });
 
       const { req, res } = createMocks({ testCaseId: 'demo-test-case-1' });
@@ -560,15 +551,9 @@ describe('Runs Storage Routes', () => {
     });
 
     it('should only include sample data on first page (from=0)', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            total: { value: 150 },
-            hits: [
-              { _source: { id: 'run-101', testCaseId: 'demo-test-case-1' } },
-            ],
-          },
-        },
+      mockRunsGetByTestCase.mockResolvedValue({
+        items: [{ id: 'run-101', testCaseId: 'demo-test-case-1' }],
+        total: 150,
       });
 
       const { req, res } = createMocks({ testCaseId: 'demo-test-case-1' }, {}, { from: '100' });
@@ -586,22 +571,17 @@ describe('Runs Storage Routes', () => {
   });
 
   describe('GET /api/storage/runs/by-benchmark/:benchmarkId', () => {
-    it('should return runs for experiment', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            hits: [
-              { _source: { id: 'run-123', benchmarkId: 'exp-123' } },
-            ],
-          },
-        },
-      });
+    it('should return runs for benchmark', async () => {
+      mockRunsGetByExperiment.mockResolvedValue([
+        { id: 'run-123', experimentId: 'exp-123' },
+      ]);
 
       const { req, res } = createMocks({ benchmarkId: 'exp-123' });
       const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/by-benchmark/:benchmarkId');
 
       await handler(req, res);
 
+      expect(mockRunsGetByExperiment).toHaveBeenCalledWith('exp-123', 1000);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           runs: expect.any(Array),
@@ -611,7 +591,7 @@ describe('Runs Storage Routes', () => {
     });
 
     it('should return sample runs for demo experiment', async () => {
-      mockSearch.mockRejectedValue(new Error('Connection refused'));
+      mockRunsGetByExperiment.mockRejectedValue(new Error('Connection refused'));
 
       const { req, res } = createMocks({ benchmarkId: 'demo-experiment-1' });
       const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/by-benchmark/:benchmarkId');
@@ -629,22 +609,17 @@ describe('Runs Storage Routes', () => {
   });
 
   describe('GET /api/storage/runs/by-benchmark-run/:benchmarkId/:runId', () => {
-    it('should return runs for experiment run', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            hits: [
-              { _source: { id: 'run-123', benchmarkId: 'exp-123', experimentRunId: 'run-1' } },
-            ],
-          },
-        },
-      });
+    it('should return runs for benchmark run', async () => {
+      mockRunsGetByExperimentRun.mockResolvedValue([
+        { id: 'run-123', experimentId: 'exp-123', experimentRunId: 'run-1' },
+      ]);
 
       const { req, res } = createMocks({ benchmarkId: 'exp-123', runId: 'run-1' });
       const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/by-benchmark-run/:benchmarkId/:runId');
 
       await handler(req, res);
 
+      expect(mockRunsGetByExperimentRun).toHaveBeenCalledWith('exp-123', 'run-1', 1000);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           runs: expect.any(Array),
@@ -656,15 +631,13 @@ describe('Runs Storage Routes', () => {
 
   describe('GET /api/storage/runs/iterations/:benchmarkId/:testCaseId', () => {
     it('should return iterations', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          hits: {
-            hits: [
-              { _source: { id: 'run-123', iteration: 1 } },
-              { _source: { id: 'run-124', iteration: 2 } },
-            ],
-          },
-        },
+      mockRunsGetIterations.mockResolvedValue({
+        items: [
+          { id: 'run-123', iteration: 1 },
+          { id: 'run-124', iteration: 2 },
+        ],
+        total: 2,
+        maxIteration: 2,
       });
 
       const { req, res } = createMocks(
@@ -676,6 +649,7 @@ describe('Runs Storage Routes', () => {
 
       await handler(req, res);
 
+      expect(mockRunsGetIterations).toHaveBeenCalledWith('exp-123', 'tc-123', undefined);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           runs: expect.any(Array),
@@ -685,9 +659,11 @@ describe('Runs Storage Routes', () => {
       );
     });
 
-    it('should filter by experimentRunId when provided', async () => {
-      mockSearch.mockResolvedValue({
-        body: { hits: { hits: [] } },
+    it('should filter by benchmarkRunId when provided', async () => {
+      mockRunsGetIterations.mockResolvedValue({
+        items: [],
+        total: 0,
+        maxIteration: 0,
       });
 
       const { req, res } = createMocks(
@@ -699,9 +675,7 @@ describe('Runs Storage Routes', () => {
 
       await handler(req, res);
 
-      const searchBody = mockSearch.mock.calls[0][0].body;
-      // Note: Query uses experimentRunId (legacy field name in OpenSearch) while API parameter is benchmarkRunId
-      expect(searchBody.query.bool.must).toContainEqual({ term: { experimentRunId: 'run-1' } });
+      expect(mockRunsGetIterations).toHaveBeenCalledWith('exp-123', 'tc-123', 'run-1');
     });
   });
 
@@ -721,14 +695,20 @@ describe('Runs Storage Routes', () => {
     });
 
     it('should add annotation', async () => {
-      mockUpdate.mockResolvedValue({ body: {} });
+      const annotation = {
+        id: 'ann-new',
+        text: 'Test annotation',
+        tags: ['bug'],
+        createdAt: '2024-01-01T00:00:00Z',
+      };
+      mockRunsAddAnnotation.mockResolvedValue(annotation);
 
       const { req, res } = createMocks({ id: 'run-123' }, { text: 'Test annotation', tags: ['bug'] });
       const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs/:id/annotations');
 
       await handler(req, res);
 
-      expect(mockUpdate).toHaveBeenCalled();
+      expect(mockRunsAddAnnotation).toHaveBeenCalledWith('run-123', { text: 'Test annotation', tags: ['bug'] });
       expect(res.status).toHaveBeenCalledWith(201);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -753,7 +733,12 @@ describe('Runs Storage Routes', () => {
     });
 
     it('should update annotation', async () => {
-      mockUpdate.mockResolvedValue({ body: {} });
+      const updatedAnnotation = {
+        id: 'ann-1',
+        text: 'Updated annotation',
+        updatedAt: '2024-01-02T00:00:00Z',
+      };
+      mockRunsUpdateAnnotation.mockResolvedValue(updatedAnnotation);
 
       const { req, res } = createMocks(
         { id: 'run-123', annotationId: 'ann-1' },
@@ -763,7 +748,7 @@ describe('Runs Storage Routes', () => {
 
       await handler(req, res);
 
-      expect(mockUpdate).toHaveBeenCalled();
+      expect(mockRunsUpdateAnnotation).toHaveBeenCalledWith('run-123', 'ann-1', { text: 'Updated annotation' });
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           id: 'ann-1',
@@ -784,14 +769,14 @@ describe('Runs Storage Routes', () => {
     });
 
     it('should delete annotation', async () => {
-      mockUpdate.mockResolvedValue({ body: {} });
+      mockRunsDeleteAnnotation.mockResolvedValue({ deleted: true });
 
       const { req, res } = createMocks({ id: 'run-123', annotationId: 'ann-1' });
       const handler = getRouteHandler(runsRoutes, 'delete', '/api/storage/runs/:id/annotations/:annotationId');
 
       await handler(req, res);
 
-      expect(mockUpdate).toHaveBeenCalled();
+      expect(mockRunsDeleteAnnotation).toHaveBeenCalledWith('run-123', 'ann-1');
       expect(res.json).toHaveBeenCalledWith({ deleted: true });
     });
   });
@@ -822,7 +807,7 @@ describe('Runs Storage Routes', () => {
     });
 
     it('should bulk create runs', async () => {
-      mockBulk.mockResolvedValue({ body: { errors: false } });
+      mockRunsBulkCreate.mockResolvedValue({ created: 2, errors: 0 });
 
       const { req, res } = createMocks({}, {
         runs: [
@@ -834,115 +819,28 @@ describe('Runs Storage Routes', () => {
 
       await handler(req, res);
 
-      expect(mockBulk).toHaveBeenCalled();
+      expect(mockRunsBulkCreate).toHaveBeenCalledWith([
+        { testCaseId: 'tc-1' },
+        { testCaseId: 'tc-2' },
+      ]);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           created: 2,
-          errors: false,
+          errors: 0,
         })
       );
     });
   });
 });
 
-describe('Runs Storage Routes - OpenSearch not configured', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    (isStorageAvailable as jest.Mock).mockReturnValue(false);
-  });
-
-  afterEach(() => {
-    (isStorageAvailable as jest.Mock).mockReturnValue(true);
-    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
-  });
-
-  it('GET /api/storage/runs/:id should return 404 for non-sample ID when not configured', async () => {
-    const { req, res } = createMocks({ id: 'run-123' });
-    const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/:id');
-
-    await handler(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(404);
-  });
-
-  it('POST /api/storage/runs should return error when not configured', async () => {
-    const { req, res } = createMocks({}, { testCaseId: 'tc-123' });
-    const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
-
-    await handler(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(400);
-    expect(res.json).toHaveBeenCalledWith(
-      expect.objectContaining({
-        error: expect.stringContaining('not configured'),
-      })
-    );
-  });
-
-  it('PATCH /api/storage/runs/:id should return error when not configured', async () => {
-    const { req, res } = createMocks({ id: 'run-123' }, { status: 'completed' });
-    const handler = getRouteHandler(runsRoutes, 'patch', '/api/storage/runs/:id');
-
-    await handler(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(400);
-  });
-
-  it('DELETE /api/storage/runs/:id should return error when not configured', async () => {
-    const { req, res } = createMocks({ id: 'run-123' });
-    const handler = getRouteHandler(runsRoutes, 'delete', '/api/storage/runs/:id');
-
-    await handler(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(400);
-  });
-
-  it('POST /api/storage/runs/:id/annotations should return error when not configured', async () => {
-    const { req, res } = createMocks({ id: 'run-123' }, { text: 'Test' });
-    const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs/:id/annotations');
-
-    await handler(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(400);
-  });
-
-  it('PUT /api/storage/runs/:id/annotations/:annotationId should return error when not configured', async () => {
-    const { req, res } = createMocks({ id: 'run-123', annotationId: 'ann-1' }, { text: 'Test' });
-    const handler = getRouteHandler(runsRoutes, 'put', '/api/storage/runs/:id/annotations/:annotationId');
-
-    await handler(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(400);
-  });
-
-  it('DELETE /api/storage/runs/:id/annotations/:annotationId should return error when not configured', async () => {
-    const { req, res } = createMocks({ id: 'run-123', annotationId: 'ann-1' });
-    const handler = getRouteHandler(runsRoutes, 'delete', '/api/storage/runs/:id/annotations/:annotationId');
-
-    await handler(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(400);
-  });
-
-  it('POST /api/storage/runs/bulk should return error when not configured', async () => {
-    const { req, res } = createMocks({}, { runs: [] });
-    const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs/bulk');
-
-    await handler(req, res);
-
-    expect(res.status).toHaveBeenCalledWith(400);
-  });
-});
-
 describe('Runs Storage Routes - Error Handling (500 errors)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    (isStorageAvailable as jest.Mock).mockReturnValue(true);
-    (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
+    mockIsConfigured.mockReturnValue(true);
   });
 
   it('GET /api/storage/runs/:id should handle errors', async () => {
-    mockGetRunByIdWithClient.mockRejectedValue(new Error('Database error'));
+    mockRunsGetById.mockRejectedValue(new Error('Database error'));
 
     const { req, res } = createMocks({ id: 'run-123' });
     const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/:id');
@@ -954,7 +852,7 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
   });
 
   it('POST /api/storage/runs should handle errors', async () => {
-    mockCreateRunWithClient.mockRejectedValue(new Error('Create failed'));
+    mockRunsCreate.mockRejectedValue(new Error('Create failed'));
 
     const { req, res } = createMocks({}, { testCaseId: 'tc-123' });
     const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
@@ -966,7 +864,7 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
   });
 
   it('PATCH /api/storage/runs/:id should handle non-404 errors', async () => {
-    mockUpdateRunWithClient.mockRejectedValue(new Error('Update failed'));
+    mockRunsUpdate.mockRejectedValue(new Error('Update failed'));
 
     const { req, res } = createMocks({ id: 'run-123' }, { status: 'completed' });
     const handler = getRouteHandler(runsRoutes, 'patch', '/api/storage/runs/:id');
@@ -978,7 +876,7 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
   });
 
   it('DELETE /api/storage/runs/:id should handle non-404 errors', async () => {
-    mockDelete.mockRejectedValue(new Error('Delete failed'));
+    mockRunsDelete.mockRejectedValue(new Error('Delete failed'));
 
     const { req, res } = createMocks({ id: 'run-123' });
     const handler = getRouteHandler(runsRoutes, 'delete', '/api/storage/runs/:id');
@@ -990,7 +888,7 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
   });
 
   it('POST /api/storage/runs/:id/annotations should handle errors', async () => {
-    mockUpdate.mockRejectedValue(new Error('Update failed'));
+    mockRunsAddAnnotation.mockRejectedValue(new Error('Annotation failed'));
 
     const { req, res } = createMocks({ id: 'run-123' }, { text: 'Test' });
     const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs/:id/annotations');
@@ -998,11 +896,11 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
     await handler(req, res);
 
     expect(res.status).toHaveBeenCalledWith(500);
-    expect(res.json).toHaveBeenCalledWith({ error: 'Update failed' });
+    expect(res.json).toHaveBeenCalledWith({ error: 'Annotation failed' });
   });
 
   it('PUT /api/storage/runs/:id/annotations/:annotationId should handle errors', async () => {
-    mockUpdate.mockRejectedValue(new Error('Update failed'));
+    mockRunsUpdateAnnotation.mockRejectedValue(new Error('Update failed'));
 
     const { req, res } = createMocks({ id: 'run-123', annotationId: 'ann-1' }, { text: 'Test' });
     const handler = getRouteHandler(runsRoutes, 'put', '/api/storage/runs/:id/annotations/:annotationId');
@@ -1014,7 +912,7 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
   });
 
   it('DELETE /api/storage/runs/:id/annotations/:annotationId should handle errors', async () => {
-    mockUpdate.mockRejectedValue(new Error('Delete failed'));
+    mockRunsDeleteAnnotation.mockRejectedValue(new Error('Delete failed'));
 
     const { req, res } = createMocks({ id: 'run-123', annotationId: 'ann-1' });
     const handler = getRouteHandler(runsRoutes, 'delete', '/api/storage/runs/:id/annotations/:annotationId');
@@ -1026,7 +924,7 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
   });
 
   it('POST /api/storage/runs/bulk should handle errors', async () => {
-    mockBulk.mockRejectedValue(new Error('Bulk failed'));
+    mockRunsBulkCreate.mockRejectedValue(new Error('Bulk failed'));
 
     const { req, res } = createMocks({}, { runs: [{ testCaseId: 'tc-1' }] });
     const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs/bulk');
@@ -1056,17 +954,18 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
     });
 
     it('should return merged sample and real counts', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          aggregations: {
-            by_test_case: {
-              buckets: [
-                { key: 'tc-real-1', doc_count: 5 },
-                { key: 'tc-real-2', doc_count: 3 },
-              ],
-            },
-          },
-        },
+      mockRunsGetAll.mockResolvedValue({
+        items: [
+          { id: 'run-1', testCaseId: 'tc-real-1' },
+          { id: 'run-2', testCaseId: 'tc-real-1' },
+          { id: 'run-3', testCaseId: 'tc-real-1' },
+          { id: 'run-4', testCaseId: 'tc-real-1' },
+          { id: 'run-5', testCaseId: 'tc-real-1' },
+          { id: 'run-6', testCaseId: 'tc-real-2' },
+          { id: 'run-7', testCaseId: 'tc-real-2' },
+          { id: 'run-8', testCaseId: 'tc-real-2' },
+        ],
+        total: 8,
       });
 
       const { req, res } = createMocks();
@@ -1083,24 +982,10 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
       // Real data
       expect(counts['tc-real-1']).toBe(5);
       expect(counts['tc-real-2']).toBe(3);
-
-      // Verify aggregation query was used (size: 0 means no documents)
-      expect(mockSearch).toHaveBeenCalledWith(
-        expect.objectContaining({
-          body: expect.objectContaining({
-            size: 0,
-            aggs: expect.objectContaining({
-              by_test_case: expect.objectContaining({
-                terms: expect.objectContaining({ field: 'testCaseId' }),
-              }),
-            }),
-          }),
-        })
-      );
     });
 
     it('should return only sample counts when storage is unavailable', async () => {
-      (isStorageAvailable as jest.Mock).mockReturnValue(false);
+      mockRunsGetAll.mockRejectedValue(new Error('Connection refused'));
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/counts-by-test-case');
@@ -1112,11 +997,10 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
 
       expect(counts['demo-test-case-1']).toBe(1);
       expect(counts['demo-test-case-2']).toBe(1);
-      expect(mockSearch).not.toHaveBeenCalled();
     });
 
-    it('should handle OpenSearch errors gracefully', async () => {
-      mockSearch.mockRejectedValue(new Error('Connection refused'));
+    it('should handle storage errors gracefully', async () => {
+      mockRunsGetAll.mockRejectedValue(new Error('Connection refused'));
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/counts-by-test-case');
@@ -1126,22 +1010,18 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
       const response = res.json as jest.Mock;
       const { counts } = response.mock.calls[0][0];
 
-      // Should still return sample counts even when OpenSearch fails
+      // Should still return sample counts even when storage fails
       expect(counts['demo-test-case-1']).toBe(1);
       expect(counts['demo-test-case-2']).toBe(1);
     });
 
     it('should merge counts when sample and real data share test case IDs', async () => {
-      mockSearch.mockResolvedValue({
-        body: {
-          aggregations: {
-            by_test_case: {
-              buckets: [
-                { key: 'demo-test-case-1', doc_count: 2 },
-              ],
-            },
-          },
-        },
+      mockRunsGetAll.mockResolvedValue({
+        items: [
+          { id: 'run-1', testCaseId: 'demo-test-case-1' },
+          { id: 'run-2', testCaseId: 'demo-test-case-1' },
+        ],
+        total: 2,
       });
 
       const { req, res } = createMocks();
@@ -1155,5 +1035,50 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
       // 1 from sample + 2 from real = 3
       expect(counts['demo-test-case-1']).toBe(3);
     });
+  });
+});
+
+describe('Runs Storage Routes - refreshBenchmarkRunStats', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockIsConfigured.mockReturnValue(true);
+  });
+
+  it('should recompute stats from reports when metricsStatus changes', async () => {
+    // Setup: report belongs to a benchmark
+    mockRunsGetById
+      .mockResolvedValueOnce({ id: 'run-123', experimentId: 'bench-1' }) // first call: fetch report for experimentId
+      .mockResolvedValueOnce({ id: 'run-123', passFailStatus: 'passed' }); // second call: in refreshBenchmarkRunStats
+    mockRunsUpdate.mockResolvedValue({ id: 'run-123', metricsStatus: 'completed' });
+    mockBenchmarksGetById.mockResolvedValue({
+      id: 'bench-1',
+      runs: [{
+        id: 'brun-1',
+        results: { 'tc-1': { reportId: 'run-123' } },
+      }],
+    });
+    mockBenchmarksUpdateRun.mockResolvedValue(true);
+
+    const { req, res } = createMocks({ id: 'run-123' }, { metricsStatus: 'completed' });
+    const handler = getRouteHandler(runsRoutes, 'patch', '/api/storage/runs/:id');
+
+    await handler(req, res);
+
+    // Allow fire-and-forget promise to resolve
+    await new Promise(resolve => setTimeout(resolve, 100));
+
+    expect(mockBenchmarksGetById).toHaveBeenCalledWith('bench-1');
+    expect(mockBenchmarksUpdateRun).toHaveBeenCalledWith(
+      'bench-1',
+      'brun-1',
+      expect.objectContaining({
+        stats: expect.objectContaining({
+          passed: expect.any(Number),
+          failed: expect.any(Number),
+          pending: expect.any(Number),
+          total: expect.any(Number),
+        }),
+      })
+    );
   });
 });
