@@ -1,9 +1,12 @@
 # Configuration Guide
 
-Agent Health uses a two-tier configuration system:
+Agent Health uses a unified configuration system with multiple tiers:
 
-1. **Environment Variables** - for quick setup (most users)
-2. **TypeScript Config File** - for power users (optional)
+1. **`agent-health.config.json`** - Unified JSON config file (primary, auto-created)
+2. **Environment Variables** - for quick overrides and secrets
+3. **TypeScript Config File** - for power users with custom agents/connectors (optional)
+
+Settings are consolidated into `agent-health.config.json`, which is created automatically on first startup. Priority: **file config > env vars > defaults**.
 
 ## Quick Start (Zero Config)
 
@@ -16,8 +19,46 @@ npx agent-health run -t demo-tc-1 -a claude-code
 
 This works because:
 - Claude Code uses your `AWS_PROFILE` automatically
-- Demo test cases are built-in
+- Travel Planner demo test cases are built-in
+- File-based storage is used by default (no OpenSearch needed)
 - Results shown in terminal
+
+## Unified Config File (`agent-health.config.json`)
+
+On first startup, Agent Health creates `agent-health.config.json` in your working directory. This file consolidates all settings that were previously scattered across environment variables and YAML files.
+
+```json
+{
+  "storage": {
+    "type": "file",
+    "dataDir": ".agent-health-data"
+  },
+  "server": {
+    "port": 4001
+  },
+  "debug": false
+}
+```
+
+Settings saved through the UI (e.g., from the Settings page) are persisted to this file automatically.
+
+### YAML to JSON Auto-Migration
+
+If you have an existing `agent-health.yaml` configuration file, it will be automatically migrated to `agent-health.config.json` on the first startup. The migration is handled by `configMigration.ts` and preserves all your existing settings. The original YAML file is left in place for reference but is no longer read.
+
+## File-Based Storage (Default)
+
+By default, Agent Health uses **file-based storage** that requires no external services. Data is stored as JSON files in a `.agent-health-data/` directory:
+
+```
+.agent-health-data/
+├── test-cases/       # Test case definitions
+├── benchmarks/       # Benchmark configurations
+├── runs/             # Evaluation run results
+└── analytics/        # Analytics data
+```
+
+This means you can start using Agent Health immediately without setting up OpenSearch. To switch to OpenSearch storage, configure the `OPENSEARCH_STORAGE_*` environment variables (see below).
 
 ## Environment Variables
 
@@ -37,7 +78,7 @@ Required for Claude Code agent and Bedrock judge.
 
 ### OpenSearch Storage (Optional)
 
-Save test results, benchmarks, and history. Without storage, results are shown in terminal only.
+Override the default file-based storage with an OpenSearch cluster for shared, production-grade persistence. Without these settings, file-based storage is used automatically.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
@@ -111,8 +152,9 @@ Create `agent-health.config.ts` for custom agents, models, or connectors.
 ### When NOT to Use a Config File
 
 - Just running Claude Code
-- Simple storage setup (use env vars)
-- Quick testing
+- Using default file-based storage (works out of the box)
+- Simple storage setup (use env vars for OpenSearch)
+- Quick testing with Travel Planner demo
 
 ### Example Config
 
@@ -185,7 +227,7 @@ These agents work out of the box:
 | Claude Code | `claude-code` | `claude-code` | Requires `claude` CLI installed |
 | Langgraph | `langgraph` | `agui-streaming` | AG-UI protocol |
 | ML-Commons | `mlcommons-local` | `agui-streaming` | Local OpenSearch |
-| HolmesGPT | `holmesgpt` | `agui-streaming` | AI RCA agent |
+| HolmesGPT | `holmesgpt` | `agui-streaming` | AI investigation agent |
 
 ## Built-in Connectors
 
@@ -204,10 +246,14 @@ Settings are loaded in this order (later overrides earlier):
 ```
 1. Built-in defaults (lib/constants.ts)
       ↓
-2. Environment variables
+2. Environment variables (.env file)
       ↓
-3. Config file (agent-health.config.ts) - OPTIONAL
+3. JSON config file (agent-health.config.json) - auto-created
+      ↓
+4. TypeScript config file (agent-health.config.ts) - OPTIONAL, for custom agents/connectors
 ```
+
+**Note:** `agent-health.config.json` is the primary config file for runtime settings (storage, server, debug). The TypeScript config file (`agent-health.config.ts`) is used for advanced customization like custom agents, connectors, and models.
 
 ## Validation
 

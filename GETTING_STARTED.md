@@ -1,6 +1,6 @@
 # Getting Started
 
-This guide walks you through using Agent Health to evaluate Root Cause Analysis (RCA) agents. The application includes sample data so you can explore all features without configuring external services.
+This guide walks you through using Agent Health to evaluate AI agents. The application includes a Travel Planner multi-agent demo so you can explore all features without configuring external services.
 
 ## Table of Contents
 
@@ -92,10 +92,11 @@ npm run server
 
 ## Demo Agent & Judge
 
-Agent Health includes built-in Demo Agent and Demo Judge for testing without external services. Select these in the UI when running evaluations:
+Agent Health includes a built-in Travel Planner multi-agent demo, along with a Demo Judge, for testing without external services. Select these in the UI when running evaluations:
 
-### Demo Agent
-- Simulates agent responses with realistic trajectories
+### Demo Agent (Travel Planner)
+- Simulates a multi-agent Travel Planner system with realistic trajectories
+- Agent types: Travel Coordinator, Weather Agent, Events Agent, Booking Agent, Budget Agent
 - No external endpoint required
 - Select "Demo Agent" in the agent dropdown
 
@@ -106,14 +107,14 @@ Agent Health includes built-in Demo Agent and Demo Judge for testing without ext
 
 ### Sample Data
 
-When OpenSearch storage is not configured, sample data is displayed:
+The Travel Planner demo includes pre-loaded sample data (used when file-based storage is empty or on first startup):
 
 | Data Type | Count | Description |
 |-----------|-------|-------------|
-| Test Cases | 5 | Pre-configured RCA scenarios |
-| Experiments | 1 | Demo experiment with completed run |
-| Runs | 5 | Completed evaluation results |
-| Traces | 5 | OpenTelemetry spans for visualization |
+| Test Cases | 5 | Travel Planner multi-agent scenarios |
+| Experiments | 2 | Demo experiments with completed runs |
+| Runs | 6 | Completed evaluation results across experiments |
+| Traces | 5 | OpenTelemetry trace trees for visualization |
 
 Sample data IDs start with `demo-` prefix and are read-only.
 
@@ -134,9 +135,17 @@ Options:
   -h, --help             Display help
 ```
 
+### Configuration File
+
+Settings are saved to `agent-health.config.json` in your working directory. This is the unified config file that consolidates all settings. Priority order: file config > environment variables > defaults.
+
+On first startup, a default config file is created automatically. If you have an existing `agent-health.yaml`, it will be auto-migrated to `agent-health.config.json`.
+
+By default, Agent Health uses **file-based storage** (no external services required). Data is stored locally in a `.agent-health-data/` directory.
+
 ### Environment File
 
-Create a `.env` file for persistent configuration:
+You can still use a `.env` file for environment-specific overrides:
 
 ```bash
 # Required for AWS Bedrock Judge (not needed for Demo Judge)
@@ -144,7 +153,7 @@ AWS_REGION=us-west-2
 AWS_ACCESS_KEY_ID=your_key
 AWS_SECRET_ACCESS_KEY=your_secret
 
-# Optional: OpenSearch Storage
+# Optional: OpenSearch Storage (overrides default file-based storage)
 OPENSEARCH_STORAGE_ENDPOINT=https://your-cluster.opensearch.amazonaws.com
 OPENSEARCH_STORAGE_USERNAME=admin
 OPENSEARCH_STORAGE_PASSWORD=your_password
@@ -175,28 +184,28 @@ The main dashboard displays:
 
 ### 2. Use Cases (Test Cases)
 
-Navigate to **Settings > Use Cases** to see sample RCA scenarios:
+Navigate to **Settings > Use Cases** to see sample Travel Planner scenarios:
 
-| Use Case | Description | Difficulty |
-|----------|-------------|------------|
-| Payment Service Latency Spike | 5x latency increase investigation | Medium |
-| Cart Service Error Rate Spike | Checkout failure debugging | Medium |
-| Database Connection Pool Exhaustion | Flash sale database issues | Hard |
-| Recommendation Service Cold Start | Pod scaling diagnosis | Medium |
-| Cascading Failure Investigation | Multi-service failure trace | Hard |
+| Use Case | Description | Agents Involved |
+|----------|-------------|-----------------|
+| Weekend City Break Planning | Plan a 3-day trip to a European city | Coordinator, Weather, Events, Booking |
+| Family Vacation Budget Optimization | Optimize a family trip within budget constraints | Coordinator, Booking, Budget |
+| Multi-City Business Trip | Coordinate flights and hotels across 3 cities | Coordinator, Booking, Weather |
+| Adventure Travel Itinerary | Plan an outdoor adventure trip with weather dependencies | Coordinator, Weather, Events |
+| Group Travel Coordination | Coordinate travel for a group of 8 with varied preferences | Coordinator, Events, Budget, Booking |
 
 Each use case includes:
-- **Initial Prompt** - The question asked to the agent
-- **Context** - Supporting data (metrics, logs, architecture)
-- **Expected Outcomes** - What the agent should discover
+- **Initial Prompt** - The travel planning request
+- **Context** - Supporting data (destinations, preferences, constraints)
+- **Expected Outcomes** - What the agent system should produce
 
 ### 3. Experiments
 
-Navigate to **Experiments** to see the demo experiment:
+Navigate to **Experiments** to see the demo experiments:
 
-- **RCA Agent Evaluation - Demo**
-  - 5 test cases included
-  - 1 completed baseline run
+- **Travel Planner Agent Evaluation**
+  - 5 test cases covering different travel scenarios
+  - Multiple completed runs across agent configurations
   - Results with trajectories and judge scores
 
 ### 4. Run Results
@@ -436,7 +445,7 @@ npx @opensearch-project/agent-health --port 8080
 
 ### "OpenSearch not configured" Messages
 
-This is expected when OpenSearch is not configured. Sample data is displayed instead.
+This is expected when OpenSearch is not configured. File-based storage is used by default, so test cases, experiments, and runs are persisted locally. Sample Travel Planner data is displayed on first startup.
 
 ### Agent Query Returns Empty Traces
 

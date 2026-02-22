@@ -235,3 +235,74 @@ const benchmarks = await api.listBenchmarks();
 - No credential exposure
 - Guaranteed consistent behavior
 - Easier testing and maintenance
+
+## Storage Adapter Pattern
+
+The storage layer uses an adapter pattern to support multiple backends without changing route or service code.
+
+### IStorageModule Interface
+
+All storage backends implement the `IStorageModule` interface, which exposes sub-modules for each entity type:
+
+```typescript
+interface IStorageModule {
+  testCases: ITestCaseStorage;
+  benchmarks: IBenchmarkStorage;
+  runs: IRunStorage;
+  isConfigured: boolean;
+}
+```
+
+Each sub-module (`ITestCaseStorage`, `IBenchmarkStorage`, `IRunStorage`) provides standard CRUD operations: `getAll()`, `getById()`, `create()`, `update()`, `delete()`.
+
+### Built-in Adapters
+
+| Adapter | Backend | Config Required | Use Case |
+|---------|---------|-----------------|----------|
+| `FileStorageModule` | Local filesystem (`.agent-health-data/`) | None (default) | Zero-config local development, demos |
+| `OpenSearchStorageModule` | OpenSearch cluster | `OPENSEARCH_STORAGE_*` env vars | Production, shared teams |
+
+**FileStorageModule** is the default adapter. It stores data as JSON files in a `.agent-health-data/` directory relative to the working directory. No external services are needed - the application works out of the box.
+
+**OpenSearchStorageModule** connects to an OpenSearch cluster for persistent, shared storage. It is activated when `OPENSEARCH_STORAGE_ENDPOINT` is configured.
+
+### Adapter Factory Singleton
+
+The active storage module is managed via a singleton factory:
+
+```typescript
+import { getStorageModule, setStorageModule } from '@/server/services/storage';
+
+// Get the current storage module (creates FileStorageModule by default)
+const storage = getStorageModule();
+
+// Override with a different adapter (e.g., during server startup)
+setStorageModule(new OpenSearchStorageModule(config));
+```
+
+### Usage in Routes
+
+Routes use the `getStorageModule()` singleton and never reference a specific backend directly:
+
+```typescript
+// In a route handler
+import { getStorageModule } from '@/server/services/storage';
+
+router.get('/api/storage/test-cases', async (req, res) => {
+  const storage = getStorageModule();
+  const testCases = await storage.testCases.getAll();
+  res.json(testCases);
+});
+
+router.get('/api/storage/benchmarks/:id', async (req, res) => {
+  const storage = getStorageModule();
+  const benchmark = await storage.benchmarks.getById(req.params.id);
+  if (!benchmark) return res.status(404).json({ error: 'Not found' });
+  res.json(benchmark);
+});
+```
+
+This pattern means:
+- **Routes are backend-agnostic** - the same route code works with file storage or OpenSearch
+- **Swapping backends is a one-line change** at startup via `setStorageModule()`
+- **Testing is simple** - inject a mock `IStorageModule` for unit tests
