@@ -15,8 +15,9 @@ test.describe('Benchmark Stats Refresh E2E', () => {
 
   test.beforeEach(async ({ page }) => {
     // Navigate to benchmarks page
+    // Use domcontentloaded instead of networkidle - the app polls continuously so networkidle never fires
     await page.goto('/');
-    await page.waitForLoadState('networkidle');
+    await page.waitForLoadState('domcontentloaded');
   });
 
   test.afterEach(async ({ page, baseURL }) => {
@@ -58,7 +59,14 @@ test.describe('Benchmark Stats Refresh E2E', () => {
       }
     }
 
-    // Save benchmark
+    // Move to Step 3 (Define Runs) - for new benchmarks step 2 shows "Next: Define Runs", not Save
+    const nextToRunsButton = page.locator('button:has-text("Next")').first();
+    if (await nextToRunsButton.isVisible().catch(() => false)) {
+      await nextToRunsButton.click();
+      await page.waitForTimeout(500);
+    }
+
+    // Save benchmark (Step 3: "Create & Run Benchmark" matches /save|create/i)
     await page.getByRole('button', { name: /save|create/i }).last().click();
     await page.waitForTimeout(1000);
 
@@ -137,7 +145,7 @@ test.describe('Benchmark Stats Refresh E2E', () => {
     const benchmarkLinks = await page.getByRole('link', { name: /runs/i }).all();
     if (benchmarkLinks.length > 0) {
       await benchmarkLinks[0].click({ timeout: 10000 });
-      await page.waitForLoadState('networkidle');
+      await page.waitForLoadState('domcontentloaded');
     } else {
       // Skip test if no benchmarks exist
       return;
@@ -187,7 +195,7 @@ test.describe('Benchmark Stats Refresh E2E', () => {
       await benchmarkLinks[0].waitFor({ state: 'visible' });
       await page.waitForTimeout(500);
       await benchmarkLinks[0].click({ force: true });
-      await page.waitForLoadState('networkidle');
+      await page.waitForLoadState('domcontentloaded');
     } else {
       return;
     }
@@ -249,36 +257,28 @@ test.describe('Benchmark Stats Refresh E2E', () => {
   });
 
   test('should handle benchmark with no runs gracefully', async ({ page }) => {
-    // Create a new empty benchmark using multi-step wizard
-    await page.getByRole('link', { name: /benchmarks/i }).click();
-    await page.waitForTimeout(1000);
-    await page.getByRole('button', { name: /new benchmark/i }).click();
-    await page.waitForTimeout(1000);
+    // The wizard requires at least 1 test case to proceed, so use the API directly
+    // to create a benchmark with no runs (the wizard can't create empty benchmarks)
+    const response = await page.request.post('/api/storage/benchmarks', {
+      data: {
+        name: 'Empty Benchmark Test',
+        description: 'Benchmark with no runs for graceful empty state test',
+        testCaseIds: [],
+        runs: [],
+      },
+    });
 
-    // Step 1: Name and Description
-    await page.getByLabel('Name').fill('Empty Benchmark Test');
-    await page.waitForTimeout(500);
-
-    // Move to Step 2 if needed
-    const nextButton = page.locator('button:has-text("Next"), button:has-text("Continue")').first();
-    if (await nextButton.isVisible().catch(() => false)) {
-      await nextButton.click();
-      await page.waitForTimeout(500);
+    if (!response.ok()) {
+      // Storage not configured (sample-only mode), skip test gracefully
+      return;
     }
 
-    // Step 2: Skip test case selection (create empty benchmark)
-    await page.getByRole('button', { name: /save|create/i }).last().click({ timeout: 10000 });
-    await page.waitForTimeout(1000);
+    const benchmark = await response.json();
+    createdBenchmarkIds.push(benchmark.id);
 
-    // Extract benchmark ID from URL for cleanup
-    const url = page.url();
-    const match = url.match(/\/benchmarks\/(bench-[^\/]+)/);
-    if (match) {
-      createdBenchmarkIds.push(match[1]);
-    }
-
-    // Navigate to runs page
-    await page.getByRole('link', { name: /runs/i }).first().click();
+    // Navigate directly to the benchmark's runs page
+    await page.goto(`/benchmarks/${benchmark.id}/runs`);
+    await page.waitForLoadState('domcontentloaded');
 
     // Should show empty state, not crash
     const emptyState = page.getByText(/no runs yet/i);
