@@ -676,11 +676,17 @@ export const BenchmarksPage: React.FC = () => {
 
                     {/* Actions */}
                     <div className="flex items-center gap-2">
+                      {/* TODO: Reinstate the BenchmarkResultsView trends/overview feature (aggregate stats, pass/fail charts, metrics over time) */}
                       {!isRunning && bench.runs && bench.runs.length > 0 && (
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => setViewingResultsFor(bench)}
+                          onClick={() => {
+                            const latestRun = getLatestRun(bench);
+                            if (latestRun) {
+                              navigate(`/benchmarks/${bench.id}/runs/${latestRun.id}`);
+                            }
+                          }}
                         >
                           <Eye size={14} className="mr-1" />
                           View Latest
