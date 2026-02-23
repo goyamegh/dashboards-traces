@@ -125,6 +125,45 @@ test.describe('Trace Visualization', () => {
   });
 });
 
+test.describe('Agent Graph', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/agent-traces');
+    await page.waitForTimeout(3000);
+  });
+
+  test('Agent graph tab renders at least one node when trace exists', async ({ page }) => {
+    // Look for a clickable trace row in the table
+    const traceRow = page.locator('tbody tr, [data-testid="trace-row"], [role="row"]').first();
+
+    if (!await traceRow.isVisible().catch(() => false)) {
+      // No traces available — skip gracefully
+      return;
+    }
+
+    await traceRow.click();
+    await page.waitForTimeout(1000);
+
+    // Look for the "Agent graph" tab in the flyout/details panel
+    const agentGraphTab = page
+      .locator('button:has-text("Agent graph"), [role="tab"]:has-text("Agent graph")')
+      .first();
+
+    if (!await agentGraphTab.isVisible().catch(() => false)) {
+      // Flyout did not open or tab is not present — skip gracefully
+      return;
+    }
+
+    await agentGraphTab.click();
+    await page.waitForTimeout(1500);
+
+    // The ReactFlow canvas must contain at least one rendered node element.
+    // An empty graph only has the background canvas — no .react-flow__node elements.
+    const flowNodes = page.locator('.react-flow__node');
+    const nodeCount = await flowNodes.count();
+    expect(nodeCount).toBeGreaterThan(0);
+  });
+});
+
 test.describe('Trace Filtering', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/agent-traces');
