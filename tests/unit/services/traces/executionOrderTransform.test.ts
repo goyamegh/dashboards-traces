@@ -229,7 +229,7 @@ describe('executionOrderTransform', () => {
       expect(result.map(s => s.spanId).sort()).toEqual(['1', '2']);
     });
 
-    it('returns empty array when container has no children', () => {
+    it('returns the root itself when container has no children (fallback to avoid empty graph)', () => {
       const root = createSpan({
         spanId: '1',
         name: 'agent.run',
@@ -240,7 +240,22 @@ describe('executionOrderTransform', () => {
       });
 
       const result = findMainFlowSpans([root]);
-      expect(result).toEqual([]);
+      expect(result).toEqual([root]);
+    });
+
+    it('returns root as fallback when container has empty children array', () => {
+      const root = createSpan({
+        spanId: '1',
+        name: 'agent.run',
+        category: 'AGENT',
+        startTime: '2024-01-01T00:00:00Z',
+        endTime: '2024-01-01T00:00:10Z',
+        children: [],
+      });
+
+      const result = findMainFlowSpans([root]);
+      expect(result).toHaveLength(1);
+      expect(result[0].spanId).toBe('1');
     });
   });
 
@@ -436,6 +451,20 @@ describe('executionOrderTransform', () => {
 
       expect(result.nodes[0].style?.width).toBe(300);
       expect(result.nodes[0].style?.height).toBe(100);
+    });
+
+    it('produces at least 1 node for container root with no children (never empty graph)', () => {
+      const containerRoot = createSpan({
+        spanId: '1',
+        name: 'agent.run',
+        category: 'AGENT',
+        startTime: '2024-01-01T00:00:00Z',
+        endTime: '2024-01-01T00:00:10Z',
+        children: undefined,
+      });
+
+      const result = spansToExecutionFlow([containerRoot], 10000);
+      expect(result.nodes.length).toBeGreaterThan(0);
     });
   });
 });

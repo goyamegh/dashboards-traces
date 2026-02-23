@@ -83,11 +83,21 @@ export const AgentMapView: React.FC<AgentMapViewProps> = ({
       return;
     }
 
-    const { nodes: flowNodes, edges: flowEdges } = spansToFlow(
+    let { nodes: flowNodes, edges: flowEdges } = spansToFlow(
       categorizedTree,
       timeRange.duration,
       { direction: 'TB' }
     );
+
+    // Defense-in-depth: if execution-order mode produced no nodes but we have spans,
+    // fall back to hierarchy mode so the graph is never empty
+    if (flowNodes.length === 0 && categorizedTree.length > 0) {
+      ({ nodes: flowNodes, edges: flowEdges } = spansToFlow(
+        categorizedTree,
+        timeRange.duration,
+        { direction: 'TB', mode: 'hierarchy' }
+      ));
+    }
 
     setNodes(flowNodes);
     setEdges(flowEdges);
