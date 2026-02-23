@@ -103,6 +103,20 @@ export const DEFAULT_CONFIG: AppConfig = {
       useTraces: true
     },
     {
+      key: "travel-planner",
+      name: "Travel Planner",
+      endpoint: ENV_CONFIG.travelPlannerEndpoint,
+      description: "Travel Planner REST agent",
+      connectorType: "rest",
+      models: [
+        "claude-sonnet-4.5",
+        "claude-sonnet-4",
+        "claude-haiku-3.5",
+      ],
+      headers: {},
+      useTraces: true,
+    },
+    {
       key: "claude-code",
       name: "Claude Code",
       endpoint: "claude",  // Command name, not URL
