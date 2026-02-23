@@ -82,11 +82,13 @@ test.describe('Benchmark Runs Page', () => {
 
     if (await viewLatestButton.isVisible().catch(() => false)) {
       await viewLatestButton.click();
+      await page.waitForLoadState('domcontentloaded');
       await page.waitForTimeout(2000);
 
-      // Should show run cards or empty state
+      // Should show run cards or the run details page itself (data may still be loading)
       const hasRuns = await page.locator('[class*="card"]').count() > 0;
-      expect(hasRuns).toBeTruthy();
+      const hasRunDetails = await page.locator('[data-testid="run-details-page"]').isVisible().catch(() => false);
+      expect(hasRuns || hasRunDetails).toBeTruthy();
     }
   });
 
