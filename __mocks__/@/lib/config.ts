@@ -25,6 +25,7 @@ export interface EnvConfig {
   langgraphEndpoint: string;
   mlcommonsEndpoint: string;
   holmesGptEndpoint: string;
+  travelPlannerEndpoint: string;
   mlcommonsHeaderOpenSearchUrl: string;
   mlcommonsHeaderAuthorization: string;
   mlcommonsHeaderAwsRegion: string;
@@ -58,6 +59,7 @@ export const ENV_CONFIG: EnvConfig = {
   langgraphEndpoint: 'http://localhost:3000',
   mlcommonsEndpoint: 'http://localhost:9200/_plugins/_ml/agents/{agent_id}/_execute/stream',
   holmesGptEndpoint: 'http://localhost:5050/api/agui/chat',
+  travelPlannerEndpoint: 'http://localhost:8003',
   mlcommonsHeaderOpenSearchUrl: '',
   mlcommonsHeaderAuthorization: '',
   mlcommonsHeaderAwsRegion: '',
