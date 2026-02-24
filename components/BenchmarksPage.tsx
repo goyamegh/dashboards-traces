@@ -516,8 +516,8 @@ export const BenchmarksPage: React.FC = () => {
       {deleteState.message && (
         <div className={`flex items-center gap-2 text-sm p-3 rounded-lg ${
           deleteState.status === 'success'
-            ? 'bg-green-500/10 text-green-400 border border-green-500/20'
-            : 'bg-red-500/10 text-red-400 border border-red-500/20'
+            ? 'bg-green-100 text-green-700 border border-green-300 dark:bg-green-500/10 dark:text-green-400 dark:border-green-500/20'
+            : 'bg-red-100 text-red-700 border border-red-300 dark:bg-red-500/10 dark:text-red-400 dark:border-red-500/20'
         }`}>
           {deleteState.status === 'success' ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
           <span>{deleteState.message}</span>
@@ -577,13 +577,13 @@ export const BenchmarksPage: React.FC = () => {
                       <div className="flex items-center gap-2 mb-1">
                         <h3 className="text-lg font-semibold truncate">{bench.name}</h3>
                         {isRunning && (
-                          <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30">
+                          <Badge variant="outline" className="text-xs bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/30">
                             <Loader2 size={10} className="mr-1 animate-spin" />
                             Running
                           </Badge>
                         )}
                         {!isRunning && isCancelled && (
-                          <Badge variant="outline" className="text-xs bg-orange-500/10 text-orange-400 border-orange-500/30">
+                          <Badge variant="outline" className="text-xs bg-orange-100 text-orange-700 border-orange-300 dark:bg-orange-500/10 dark:text-orange-400 dark:border-orange-500/30">
                             <Ban size={10} className="mr-1" />
                             Cancelled
                           </Badge>
@@ -641,11 +641,11 @@ export const BenchmarksPage: React.FC = () => {
                             {useCaseStatuses.map(uc => (
                               <div key={uc.id} className="flex items-center gap-2 text-xs">
                                 {uc.status === 'pending' && <Circle size={12} className="text-muted-foreground" />}
-                                {uc.status === 'running' && <Loader2 size={12} className="text-blue-400 animate-spin" />}
-                                {uc.status === 'completed' && <CheckCircle size={12} className="text-opensearch-blue" />}
-                                {uc.status === 'failed' && <XCircle size={12} className="text-red-400" />}
-                                {uc.status === 'cancelled' && <Ban size={12} className="text-orange-400" />}
-                                <span className={uc.status === 'running' ? 'text-blue-400' : uc.status === 'cancelled' ? 'text-orange-400' : 'text-muted-foreground'}>
+                                {uc.status === 'running' && <Loader2 size={12} className="text-blue-700 dark:text-blue-400 animate-spin" />}
+                                {uc.status === 'completed' && <CheckCircle size={12} className="text-green-700 dark:text-green-400" />}
+                                {uc.status === 'failed' && <XCircle size={12} className="text-red-700 dark:text-red-400" />}
+                                {uc.status === 'cancelled' && <Ban size={12} className="text-amber-700 dark:text-amber-400" />}
+                                <span className={uc.status === 'running' ? 'text-blue-700 dark:text-blue-400' : uc.status === 'cancelled' ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}>
                                   {uc.name}
                                 </span>
                               </div>
@@ -676,11 +676,17 @@ export const BenchmarksPage: React.FC = () => {
 
                     {/* Actions */}
                     <div className="flex items-center gap-2">
+                      {/* TODO: Reinstate the BenchmarkResultsView trends/overview feature (aggregate stats, pass/fail charts, metrics over time) */}
                       {!isRunning && bench.runs && bench.runs.length > 0 && (
                         <Button
                           variant="outline"
                           size="sm"
-                          onClick={() => setViewingResultsFor(bench)}
+                          onClick={() => {
+                            const latestRun = getLatestRun(bench);
+                            if (latestRun) {
+                              navigate(`/benchmarks/${bench.id}/runs/${latestRun.id}`);
+                            }
+                          }}
                         >
                           <Eye size={14} className="mr-1" />
                           View Latest

@@ -1,0 +1,530 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * TraceFlyoutContent - Redesigned trace detail flyout matching Figma specs
+ * 
+ * Features:
+ * - 65% width flyout panel
+ * - Left column: Trace Tree with collapsible spans
+ * - Right column: Tabbed detail view (Overview, Logs, Metadata, Raw Spans, Timeline)
+ * - Header with trace metadata and status badge
+ */
+
+import React, { useState, useMemo } from 'react';
+import { X, Copy, Check, Clock, ChevronDown, ChevronRight } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Badge } from '@/components/ui/badge';
+import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Span } from '@/types';
+import { processSpansIntoTree } from '@/services/traces';
+import { formatDuration } from '@/services/traces/utils';
+
+interface TraceTableRow {
+  traceId: string;
+  rootSpanName: string;
+  serviceName: string;
+  startTime: Date;
+  duration: number;
+  spanCount: number;
+  hasErrors: boolean;
+  spans: Span[];
+  sessionId?: string;
+  tokens?: number;
+  cost?: number;
+}
+
+interface TraceFlyoutContentProps {
+  trace: TraceTableRow;
+  onClose: () => void;
+}
+
+export const TraceFlyoutContent: React.FC<TraceFlyoutContentProps> = ({
+  trace,
+  onClose,
+}) => {
+  const [activeTab, setActiveTab] = useState('overview');
+  const [leftTab, setLeftTab] = useState('trace-tree');
+  const [selectedSpan, setSelectedSpan] = useState<Span | null>(null);
+  const [expandedSpans, setExpandedSpans] = useState<Set<string>>(new Set([trace.spans[0]?.spanId]));
+  const [copiedTraceId, setCopiedTraceId] = useState(false);
+  const [copiedSpanId, setCopiedSpanId] = useState(false);
+
+  const spanTree = useMemo(() => processSpansIntoTree(trace.spans), [trace.spans]);
+
+  // Select root span by default
+  React.useEffect(() => {
+    if (!selectedSpan && spanTree.length > 0) {
+      setSelectedSpan(spanTree[0]);
+    }
+  }, [spanTree, selectedSpan]);
+
+  const handleToggleExpand = (spanId: string) => {
+    setExpandedSpans(prev => {
+      const next = new Set(prev);
+      if (next.has(spanId)) {
+        next.delete(spanId);
+      } else {
+        next.add(spanId);
+      }
+      return next;
+    });
+  };
+
+  const handleCopyTraceId = async () => {
+    try {
+      await navigator.clipboard.writeText(trace.traceId);
+      setCopiedTraceId(true);
+      setTimeout(() => setCopiedTraceId(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
+
+  const handleCopySpanId = async (spanId: string) => {
+    try {
+      await navigator.clipboard.writeText(spanId);
+      setCopiedSpanId(true);
+      setTimeout(() => setCopiedSpanId(false), 2000);
+    } catch (err) {
+      console.error('Failed to copy:', err);
+    }
+  };
+
+  const renderSpanTree = (spans: Span[], depth = 0) => {
+    return spans.map(span => {
+      const isExpanded = expandedSpans.has(span.spanId);
+      const isSelected = selectedSpan?.spanId === span.spanId;
+      const hasChildren = span.children && span.children.length > 0;
+
+      return (
+        <div key={span.spanId} className="w-full">
+          <div
+            className={`
+              flex items-center justify-between px-2 py-2 cursor-pointer hover:bg-muted/50 rounded
+              ${isSelected ? 'bg-blue-50 border-l-3 border-blue-500' : ''}
+              ${depth > 0 ? 'ml-4' : ''}
+            `}
+            onClick={() => setSelectedSpan(span)}
+          >
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              {hasChildren && (
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleToggleExpand(span.spanId);
+                  }}
+                  className="shrink-0"
+                >
+                  {isExpanded ? (
+                    <ChevronDown size={14} className="text-muted-foreground" />
+                  ) : (
+                    <ChevronRight size={14} className="text-muted-foreground" />
+                  )}
+                </button>
+              )}
+              {!hasChildren && <div className="w-[14px]" />}
+              <span className="text-sm truncate font-medium">{span.name}</span>
+            </div>
+            <span className="text-xs text-muted-foreground shrink-0">
+              {formatDuration(span.duration)}
+            </span>
+          </div>
+          {isExpanded && hasChildren && (
+            <div className="ml-2">
+              {renderSpanTree(span.children!, depth + 1)}
+            </div>
+          )}
+        </div>
+      );
+    });
+  };
+
+  // Get selected span details
+  const spanDetails = selectedSpan || spanTree[0];
+  const spanInput = spanDetails?.attributes?.['gen_ai.prompt'] || 
+                    spanDetails?.attributes?.['input'] ||
+                    JSON.stringify(spanDetails?.attributes || {}, null, 2);
+  const spanOutput = spanDetails?.attributes?.['gen_ai.completion'] ||
+                     spanDetails?.attributes?.['output'] ||
+                     '';
+
+  return (
+    <div className="h-full flex flex-col bg-white">
+      {/* Header Section */}
+      <div className="border-b border-gray-200 flex flex-col gap-3 px-4 py-4 shrink-0">
+        {/* Title Row */}
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold text-gray-900">
+              {trace.rootSpanName}
+            </h2>
+            <Badge className="bg-green-100 text-green-800 hover:bg-green-100">
+              SUCCESS
+            </Badge>
+          </div>
+          <Button variant="ghost" size="icon" onClick={onClose}>
+            <X size={18} />
+          </Button>
+        </div>
+
+        {/* Metadata Grid */}
+        <div className="grid grid-cols-6 gap-4">
+          <div className="flex flex-col gap-1">
+            <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+              Trace ID
+            </div>
+            <div className="flex items-center gap-2">
+              <code className="text-sm text-gray-900">
+                {trace.traceId.slice(0, 12)}
+              </code>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-4 w-4 p-0"
+                onClick={handleCopyTraceId}
+              >
+                {copiedTraceId ? (
+                  <Check size={12} className="text-green-500" />
+                ) : (
+                  <Copy size={12} />
+                )}
+              </Button>
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+              Session
+            </div>
+            <Badge variant="secondary" className="bg-gray-100 text-gray-700 w-fit">
+              {trace.sessionId || 'sess_8x9y2z'}
+            </Badge>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+              Duration
+            </div>
+            <div className="text-sm font-semibold text-gray-900">
+              {formatDuration(trace.duration)}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+              Spans
+            </div>
+            <div className="text-sm font-semibold text-gray-900">
+              {trace.spanCount}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+              Tokens
+            </div>
+            <div className="text-sm font-semibold text-gray-900">
+              {trace.tokens?.toLocaleString() || '2,847'}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-1">
+            <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+              Cost
+            </div>
+            <div className="text-sm font-semibold text-gray-900">
+              ${trace.cost?.toFixed(4) || '0.0428'}
+            </div>
+          </div>
+        </div>
+
+        {/* Timestamp */}
+        <div className="flex items-center gap-1 text-xs text-gray-500">
+          <Clock size={12} />
+          <span>{trace.startTime.toLocaleString('en-US', { 
+            year: 'numeric',
+            month: '2-digit', 
+            day: '2-digit',
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            timeZoneName: 'short'
+          })}</span>
+        </div>
+      </div>
+
+      {/* Main Body - Two Column Layout */}
+      <div className="flex flex-1 min-h-0 overflow-hidden">
+        {/* Left Column - Trace Tree */}
+        <div className="w-[280px] border-r border-gray-200 flex flex-col shrink-0">
+          {/* Left Tabs */}
+          <Tabs value={leftTab} onValueChange={setLeftTab} className="flex flex-col h-full">
+            <div className="border-b border-gray-200">
+              <TabsList className="w-full justify-start rounded-none bg-transparent h-auto p-0">
+                <TabsTrigger
+                  value="trace-tree"
+                  className="rounded-none border-b-2 border-transparent data-[state=active]:border-blue-600 data-[state=active]:text-blue-600 px-3 py-2"
+                >
+                  Trace Tree
+                </TabsTrigger>
+                <TabsTrigger
+                  value="agent-graph"
+                  className="rounded-none border-b-2 border-transparent data-[state=active]:border-blue-600 data-[state=active]:text-blue-600 px-3 py-2"
+                >
+                  Agent Graph
+                </TabsTrigger>
+              </TabsList>
+            </div>
+
+            <TabsContent value="trace-tree" className="flex-1 mt-0 overflow-hidden">
+              <ScrollArea className="h-full">
+                <div className="p-4 space-y-1">
+                  {renderSpanTree(spanTree)}
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            <TabsContent value="agent-graph" className="flex-1 mt-0 overflow-hidden">
+              <div className="p-4 text-sm text-muted-foreground">
+                Agent graph view coming soon...
+              </div>
+            </TabsContent>
+          </Tabs>
+        </div>
+
+        {/* Right Column - Details */}
+        <div className="flex-1 flex flex-col min-w-0">
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="flex flex-col h-full">
+            {/* Tab Headers */}
+            <div className="border-b border-gray-200">
+              <TabsList className="w-full justify-start rounded-none bg-transparent h-auto p-0">
+                <TabsTrigger
+                  value="overview"
+                  className="rounded-none border-b-2 border-transparent data-[state=active]:border-blue-600 data-[state=active]:text-blue-600 px-3 py-2"
+                >
+                  Overview
+                </TabsTrigger>
+                <TabsTrigger
+                  value="logs"
+                  className="rounded-none border-b-2 border-transparent data-[state=active]:border-blue-600 data-[state=active]:text-blue-600 px-3 py-2"
+                >
+                  Logs
+                </TabsTrigger>
+                <TabsTrigger
+                  value="metadata"
+                  className="rounded-none border-b-2 border-transparent data-[state=active]:border-blue-600 data-[state=active]:text-blue-600 px-3 py-2"
+                >
+                  Metadata
+                </TabsTrigger>
+                <TabsTrigger
+                  value="raw-spans"
+                  className="rounded-none border-b-2 border-transparent data-[state=active]:border-blue-600 data-[state=active]:text-blue-600 px-3 py-2"
+                >
+                  Raw Spans
+                </TabsTrigger>
+                <TabsTrigger
+                  value="timeline"
+                  className="rounded-none border-b-2 border-transparent data-[state=active]:border-blue-600 data-[state=active]:text-blue-600 px-3 py-2"
+                >
+                  Timeline
+                </TabsTrigger>
+              </TabsList>
+            </div>
+
+            {/* Tab Content */}
+            <TabsContent value="overview" className="flex-1 mt-0 overflow-hidden">
+              <ScrollArea className="h-full">
+                <div className="p-4 space-y-6">
+                  {/* Two Column Grid */}
+                  <div className="grid grid-cols-2 gap-6">
+                    {/* Left Column */}
+                    <div className="space-y-4">
+                      <div className="space-y-1">
+                        <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+                          Service
+                        </div>
+                        <div className="text-sm font-medium text-black">
+                          {spanDetails?.serviceName || trace.serviceName}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+                          Span ID
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <code className="text-sm text-black">
+                            {spanDetails?.spanId.slice(0, 16)}
+                          </code>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-4 w-4 p-0"
+                            onClick={() => handleCopySpanId(spanDetails?.spanId || '')}
+                          >
+                            {copiedSpanId ? (
+                              <Check size={12} className="text-green-500" />
+                            ) : (
+                              <Copy size={12} />
+                            )}
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+                          Parent Span
+                        </div>
+                        <code className="text-sm text-blue-600">
+                          {spanDetails?.parentSpanId || 'None'}
+                        </code>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+                          Status
+                        </div>
+                        <div className="text-sm font-medium text-green-600">
+                          {spanDetails?.status || 'OK'}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+                          Start Time
+                        </div>
+                        <div className="text-sm text-black">
+                          {new Date(spanDetails?.startTime || trace.startTime).toLocaleString()}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right Column */}
+                    <div className="space-y-4">
+                      <div className="space-y-1">
+                        <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+                          Duration
+                        </div>
+                        <div className="text-sm font-medium text-black">
+                          {formatDuration(spanDetails?.duration || trace.duration)}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+                          Model
+                        </div>
+                        <div className="text-sm text-black">
+                          {spanDetails?.attributes?.['gen_ai.request.model'] || 'gpt-4-turbo-preview'}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+                          Tool Used
+                        </div>
+                        <div className="text-sm text-black">
+                          {spanDetails?.attributes?.['gen_ai.tool.name'] || 'inventory_checker'}
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+                          Tokens Used
+                        </div>
+                        <div className="text-sm font-medium text-black">
+                          {spanDetails?.attributes?.['gen_ai.usage.completion_tokens'] || '2,847'} tokens
+                        </div>
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="text-xs font-normal text-gray-500 uppercase tracking-wide">
+                          Cost
+                        </div>
+                        <div className="text-sm font-medium text-black">
+                          ${trace.cost?.toFixed(4) || '0.0428'}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Input Section */}
+                  <div className="border-t border-gray-200 pt-4 space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                        Input
+                      </div>
+                      <Button variant="ghost" size="icon" className="h-6 w-6">
+                        <Copy size={12} />
+                      </Button>
+                    </div>
+                    <div className="bg-gray-200 rounded p-3 max-h-48 overflow-auto">
+                      <pre className="text-xs font-mono text-black whitespace-pre-wrap">
+                        {spanInput}
+                      </pre>
+                    </div>
+                  </div>
+
+                  {/* Output Section */}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">
+                        Output
+                      </div>
+                      <Button variant="ghost" size="icon" className="h-6 w-6">
+                        <Copy size={12} />
+                      </Button>
+                    </div>
+                    <div className="bg-gray-200 rounded p-3 max-h-48 overflow-auto">
+                      <pre className="text-xs font-mono text-black whitespace-pre-wrap">
+                        {spanOutput || spanInput}
+                      </pre>
+                    </div>
+                  </div>
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            <TabsContent value="logs" className="flex-1 mt-0 overflow-hidden">
+              <div className="p-4 text-sm text-muted-foreground">
+                Logs view coming soon...
+              </div>
+            </TabsContent>
+
+            <TabsContent value="metadata" className="flex-1 mt-0 overflow-hidden">
+              <ScrollArea className="h-full">
+                <div className="p-4">
+                  <pre className="text-xs">
+                    {JSON.stringify(spanDetails?.attributes || {}, null, 2)}
+                  </pre>
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            <TabsContent value="raw-spans" className="flex-1 mt-0 overflow-hidden">
+              <ScrollArea className="h-full">
+                <div className="p-4">
+                  <pre className="text-xs">
+                    {JSON.stringify(trace.spans, null, 2)}
+                  </pre>
+                </div>
+              </ScrollArea>
+            </TabsContent>
+
+            <TabsContent value="timeline" className="flex-1 mt-0 overflow-hidden">
+              <div className="p-4 text-sm text-muted-foreground">
+                Timeline view coming soon...
+              </div>
+            </TabsContent>
+          </Tabs>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default TraceFlyoutContent;

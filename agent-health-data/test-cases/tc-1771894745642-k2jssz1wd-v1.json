@@ -1,0 +1,17 @@
+{
+  "name": "IntegTest: Error Rate Spike 1771894745624",
+  "description": "",
+  "category": "RCA",
+  "difficulty": "Medium",
+  "initialPrompt": "Error rate for payment-service jumped from 0.1% to 15%",
+  "context": [],
+  "expectedOutcomes": [
+    "Query error spans in payment-service",
+    "Find root cause of errors"
+  ],
+  "id": "tc-1771894745642-k2jssz1wd",
+  "version": 1,
+  "currentVersion": 1,
+  "createdAt": "2026-02-24T00:59:05.642Z",
+  "updatedAt": "2026-02-24T00:59:05.642Z"
+}

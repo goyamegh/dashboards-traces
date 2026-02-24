@@ -69,13 +69,13 @@ const FormattedMessages: React.FC<FormattedMessagesProps> = ({ messages }) => {
   const getRoleColor = (role?: string) => {
     switch (role?.toLowerCase()) {
       case 'user':
-        return 'text-blue-400 bg-blue-950/30';
+        return 'text-foreground bg-muted/50 dark:bg-blue-950/30 border-border dark:border-blue-800/50';
       case 'assistant':
-        return 'text-blue-400 bg-blue-950/30';
+        return 'text-foreground bg-muted/50 dark:bg-blue-950/30 border-border dark:border-blue-800/50';
       case 'system':
-        return 'text-purple-400 bg-purple-950/30';
+        return 'text-foreground dark:text-purple-300 bg-muted/50 dark:bg-purple-950/30 border-border dark:border-purple-800/50';
       default:
-        return 'text-muted-foreground bg-muted/30';
+        return 'text-foreground bg-muted/30 border-border';
     }
   };
 
@@ -157,7 +157,7 @@ const FormattedMessages: React.FC<FormattedMessagesProps> = ({ messages }) => {
 
       {/* Content */}
       {showRaw ? (
-        <pre className="max-h-96 overflow-auto rounded-md border bg-slate-900 p-2 text-[10px] font-mono text-slate-300 whitespace-pre-wrap break-words">
+        <pre className="max-h-96 overflow-auto rounded-md border border-border bg-muted/30 dark:bg-slate-900/50 p-3 text-[11px] font-mono text-foreground whitespace-pre-wrap break-words">
           {rawJson}
         </pre>
       ) : (

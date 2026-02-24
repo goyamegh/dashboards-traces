@@ -6,15 +6,15 @@
 /**
  * ViewToggle
  *
- * Toggle between Timeline and Intent view modes.
+ * Toggle between Info, Trace Tree, Agent Graph, and Timeline view modes.
  */
 
 import React from 'react';
-import { BarChart3, GitBranch } from 'lucide-react';
+import { Info, Network, GitBranch, List } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
-export type ViewMode = 'timeline' | 'flow';
+export type ViewMode = 'info' | 'timeline' | 'tree' | 'flow' | 'gantt' | 'agent-map' | 'stats';
 
 interface ViewToggleProps {
   viewMode: ViewMode;
@@ -34,24 +34,48 @@ const ViewToggle: React.FC<ViewToggleProps> = ({
         size="sm"
         className={cn(
           'h-7 px-2 text-xs gap-1.5',
-          viewMode === 'timeline' && 'bg-background shadow-sm'
+          viewMode === 'info' && 'bg-background shadow-sm'
         )}
-        onClick={() => onChange('timeline')}
+        onClick={() => onChange('info')}
       >
-        <BarChart3 size={14} />
-        Timeline
+        <Info size={14} />
+        Info
       </Button>
       <Button
         variant="ghost"
         size="sm"
         className={cn(
           'h-7 px-2 text-xs gap-1.5',
-          viewMode === 'flow' && 'bg-background shadow-sm'
+          viewMode === 'timeline' && 'bg-background shadow-sm'
         )}
-        onClick={() => onChange('flow')}
+        onClick={() => onChange('timeline')}
+      >
+        <Network size={14} />
+        Trace Tree
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className={cn(
+          'h-7 px-2 text-xs gap-1.5',
+          viewMode === 'agent-map' && 'bg-background shadow-sm'
+        )}
+        onClick={() => onChange('agent-map')}
       >
         <GitBranch size={14} />
-        Intent
+        Agent Map
+      </Button>
+      <Button
+        variant="ghost"
+        size="sm"
+        className={cn(
+          'h-7 px-2 text-xs gap-1.5',
+          viewMode === 'gantt' && 'bg-background shadow-sm'
+        )}
+        onClick={() => onChange('gantt')}
+      >
+        <List size={14} />
+        Timeline
       </Button>
     </div>
   );

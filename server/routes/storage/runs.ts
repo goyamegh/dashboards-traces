@@ -43,7 +43,7 @@ function getTimestampMs(run: { timestamp?: string; createdAt?: string }): number
 // GET /api/storage/runs - List all (paginated)
 router.get('/api/storage/runs', async (req: Request, res: Response) => {
   try {
-    const { size = '100', from = '0' } = req.query;
+    const { size = '100', from = '0', fields } = req.query;
     let realData: TestCaseRun[] = [];
 
     // Fetch from storage backend

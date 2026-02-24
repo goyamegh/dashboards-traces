@@ -1,0 +1,37 @@
+{
+  "name": "OTEL Demo: Payment Service Cascade Failure",
+  "description": "Investigate cascading failures from paymentservice affecting checkout flow",
+  "category": "RCA",
+  "difficulty": "Hard",
+  "initialPrompt": "Multiple services in the OTEL demo are showing errors. The error rate for paymentservice is 100%, checkoutservice is 85%, and frontend checkout requests are failing 40% of the time. This started 30 minutes ago. Analyze the distributed traces in OpenSearch to trace the failure cascade and identify the root cause.",
+  "context": [
+    {
+      "description": "OTEL Demo Payment Flow",
+      "value": "Checkout → Payment flow:\n- frontend → checkoutservice → paymentservice\n- paymentservice makes external calls (simulated payment gateway)\n- Timeout configuration: paymentservice 30s, checkoutservice 35s, frontend 60s\n- All spans recorded in otel-v1-apm-span-* with error details"
+    },
+    {
+      "description": "OpenSearch Investigation Guide",
+      "value": "Key fields for error analysis:\n- status.code: 0=OK, 1=CANCELLED, 2=ERROR\n- status.message: Error description\n- events: Contains exception details\n- duration: Time in microseconds\n- Filter: serviceName IN ['paymentservice', 'checkoutservice', 'frontend']"
+    },
+    {
+      "description": "Error Timeline from Traces",
+      "value": "Timeline reconstructed from traces:\n- T+0: paymentservice spans start showing timeout errors\n- T+5min: checkoutservice error rate increases\n- T+10min: frontend PlaceOrder operations failing\n- Trace patterns show requests waiting full timeout at each service hop"
+    },
+    {
+      "description": "Sample Error Trace",
+      "value": "Example failing trace from OpenSearch:\n- frontend.PlaceOrder: duration=62000000us, status.code=2\n  └─ checkoutservice.PlaceOrder: duration=38000000us, status.code=2\n      └─ paymentservice.Charge: duration=32000000us, status.code=2\n          └─ error: 'upstream request timeout'"
+    }
+  ],
+  "expectedOutcomes": [
+    "Query otel-v1-apm-span-* for error spans across paymentservice, checkoutservice, frontend",
+    "Reconstruct failure cascade from trace data: paymentservice → checkoutservice → frontend",
+    "Identify root cause as paymentservice external dependency timeout",
+    "Analyze why errors cascaded (timeout configuration, missing circuit breaker)",
+    "Recommend: shorter timeouts, circuit breaker pattern, fallback behavior"
+  ],
+  "id": "tc-1771894745654-zw294nydu",
+  "version": 1,
+  "currentVersion": 1,
+  "createdAt": "2026-02-24T00:59:05.654Z",
+  "updatedAt": "2026-02-24T00:59:05.654Z"
+}

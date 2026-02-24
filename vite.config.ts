@@ -42,6 +42,10 @@ export default defineConfig(({ mode }) => {
         '/api': {
           target: `http://localhost:${env.BACKEND_PORT || '4001'}`,
           changeOrigin: true
+        },
+        '/health': {
+          target: `http://localhost:${env.BACKEND_PORT || '4001'}`,
+          changeOrigin: true
         }
       }
     }

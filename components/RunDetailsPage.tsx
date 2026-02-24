@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { ArrowLeft, Calendar, CheckCircle2, XCircle, BarChart3, PanelLeftClose, PanelLeft, Clock, Loader2, StopCircle, Ban } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -145,8 +145,8 @@ const Sidebar = ({ context, selectedItem, onSelectItem, onToggleCollapse, isColl
                 <div className="flex items-start gap-3">
                   {/* Status Icon */}
                   <div className="mt-0.5">
-                    {isPassed && <CheckCircle2 size={18} className="text-opensearch-blue" />}
-                    {isFailed && <XCircle size={18} className="text-red-400" />}
+                    {isPassed && <CheckCircle2 size={18} className="text-green-700 dark:text-green-400" />}
+                    {isFailed && <XCircle size={18} className="text-red-700 dark:text-red-400" />}
                     {!isPassed && !isFailed && result.status === 'running' && (
                       <Loader2 size={18} className="text-blue-400 animate-spin" />
                     )}
@@ -210,6 +210,7 @@ export const RunDetailsPage: React.FC = () => {
   const routeExperimentId = benchmarkId || experimentId;
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
 
   // Main app sidebar control
   const { setOpen: setMainSidebarOpen } = useSidebar();
@@ -357,6 +358,11 @@ export const RunDetailsPage: React.FC = () => {
   const handleBack = () => {
     if (experimentContext) {
       navigate(`${basePath}/${experimentContext.experiment.id}/runs`);
+    } else if (location.state?.from) {
+      const nextState = location.state.parentFrom
+        ? { state: { from: location.state.parentFrom } }
+        : undefined;
+      navigate(location.state.from, nextState);
     } else if (report) {
       navigate(`/test-cases/${report.testCaseId}/runs`);
     } else {
@@ -547,7 +553,7 @@ export const RunDetailsPage: React.FC = () => {
                   {stats.pending}
                 </span>
               )}
-              <span className="flex items-center gap-1 text-opensearch-blue">
+              <span className="flex items-center gap-1 text-green-700 dark:text-green-400">
                 <CheckCircle2 size={16} />
                 {stats.passed}
               </span>

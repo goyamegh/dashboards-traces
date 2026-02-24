@@ -1,27 +1,43 @@
 # Agent Health
 
-[![CI](https://github.com/opensearch-project/dashboards-traces/actions/workflows/ci.yml/badge.svg)](https://github.com/opensearch-project/dashboards-traces/actions/workflows/ci.yml)
+[![CI](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml/badge.svg)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE.txt)
 [![npm version](https://img.shields.io/npm/v/@opensearch-project/agent-health.svg)](https://www.npmjs.com/package/@opensearch-project/agent-health)
+[![Documentation](https://img.shields.io/badge/View_Documentation-blue?logo=readthedocs&logoColor=white)](https://goyamegh.github.io/opensearch-agentops-website/)
 
-[![Unit Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/opensearch-project/dashboards-traces/badges/unit-tests.json)](https://github.com/opensearch-project/dashboards-traces/actions/workflows/ci.yml)
-[![Unit Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/opensearch-project/dashboards-traces/badges/unit-coverage.json)](https://github.com/opensearch-project/dashboards-traces/actions/workflows/ci.yml)
-[![Integration Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/opensearch-project/dashboards-traces/badges/integration-tests.json)](https://github.com/opensearch-project/dashboards-traces/actions/workflows/ci.yml)
-[![E2E Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/opensearch-project/dashboards-traces/badges/e2e-tests.json)](https://github.com/opensearch-project/dashboards-traces/actions/workflows/ci.yml)
+[![Unit Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/opensearch-project/agent-health/badges/unit-tests.json)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
+[![Unit Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/opensearch-project/agent-health/badges/unit-coverage.json)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
+[![Integration Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/opensearch-project/agent-health/badges/integration-tests.json)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
+[![E2E Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/opensearch-project/agent-health/badges/e2e-tests.json)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
 
-An evaluation and observability framework for AI agents. Features real-time trace visualization, "Golden Path" trajectory comparison, and LLM-based evaluation scoring.
+## What is Agent Health?
 
-Try It by running:
+Agent Health is an evaluation and observability framework for AI agents. It helps you measure agent performance through "Golden Path" trajectory comparison—where an LLM judge evaluates agent actions against expected outcomes.
+
+**Who uses Agent Health:**
+- AI teams building autonomous agents (RCA, customer support, data analysis)
+- QA engineers testing agent behavior across scenarios
+- Platform teams monitoring agent performance in production
+
+**Key capabilities:**
+- Real-time agent execution streaming and visualization
+- LLM-based evaluation with pass/fail scoring
+- Batch experiments comparing agents and models
+- OpenTelemetry trace integration for performance analysis
+- Pluggable connectors for different agent types (REST, SSE, CLI)
+
+## Quick Start
 
 ```bash
-npx @goyamegh/agent-health@latest
+# Start Agent Health with demo data (no configuration needed)
+npx @opensearch-project/agent-health
 ```
 
-Opens http://localhost:4001 for the web UI.
+Opens http://localhost:4001 with pre-loaded sample data for exploration.
 
-### Architecture
-
-![Agent Health Architecture](docs/diagrams/architecture.png)
+**Next steps:**
+- [Getting Started Guide](./GETTING_STARTED.md) - Step-by-step walkthrough
+- [Connect Your Agent](./CONFIGURATION.md) - Configure your own agent
 
 ## Features
 
@@ -33,9 +49,6 @@ Opens http://localhost:4001 for the web UI.
 - **Trace Views**: Timeline and Flow visualizations for debugging
 - **Reports**: Evaluation reports with LLM judge reasoning
 - **Connectors**: Pluggable protocol adapters for different agent types
-
-For a detailed walkthrough, see [Getting Started](./GETTING_STARTED.md).
-
 
 ### Supported Connectors
 
@@ -51,20 +64,17 @@ For creating custom connectors, see [docs/CONNECTORS.md](./docs/CONNECTORS.md).
 
 ---
 
+## Architecture
 
+![Agent Health Architecture](docs/diagrams/architecture.png)
+
+Agent Health uses a client-server architecture where all clients (UI, CLI) access OpenSearch through a unified HTTP API. The server handles agent communication via pluggable connectors and proxies LLM judge calls to AWS Bedrock.
+
+For detailed architecture documentation, see [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
 ---
 
-## Quick Start
-
-```bash
-# Start the web UI
-npx @opensearch-project/agent-health
-
-# Open http://localhost:4001
-```
-
-### CLI Commands
+## CLI Commands
 
 ```bash
 # Check configuration
@@ -86,62 +96,39 @@ For full CLI documentation, see [docs/CLI.md](./docs/CLI.md).
 
 
 
-## Authentication (Required)
+## Configuration
 
-AWS credentials are required for the Bedrock LLM Judge to score evaluations.
+Agent Health works out-of-the-box with demo data. Configure when you're ready to connect your own agent.
 
-Create a `.env` file:
+### Minimal Setup (Optional)
+
+**For LLM Judge evaluation** (uses AWS Bedrock):
 ```bash
+# Create .env file
 cp .env.example .env
-```
 
-Add your AWS credentials:
-```bash
+# Add AWS credentials
 AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=your_access_key
 AWS_SECRET_ACCESS_KEY=your_secret_key
-AWS_SESSION_TOKEN=your_session_token  # if using temporary credentials
 ```
 
----
-
-## Configuration (Optional)
-
-All optional settings have sensible defaults. Configure only what you need.
-
-### Agent Endpoints
-
-Agent endpoints default to localhost. Override if your agent runs elsewhere:
-
-```bash
-LANGGRAPH_ENDPOINT=http://localhost:3000
-HOLMESGPT_ENDPOINT=http://localhost:5050/api/agui/chat
-MLCOMMONS_ENDPOINT=http://localhost:9200/_plugins/_ml/agents/{agent_id}/_execute/stream
+**For your own agent** - create `agent-health.config.ts`:
+```typescript
+export default {
+  agents: [
+    {
+      key: "my-agent",
+      name: "My Agent",
+      endpoint: "http://localhost:8000/agent",
+      connectorType: "rest",  // or "agui-streaming", "subprocess"
+      models: ["claude-sonnet-4"],
+    }
+  ],
+};
 ```
 
-### Storage (Persistence)
-
-For persisting test cases, experiments, and runs. Features gracefully degrade if not configured.
-
-```bash
-OPENSEARCH_STORAGE_ENDPOINT=https://your-cluster.opensearch.amazonaws.com
-OPENSEARCH_STORAGE_USERNAME=admin
-OPENSEARCH_STORAGE_PASSWORD=your_password
-OPENSEARCH_STORAGE_TLS_SKIP_VERIFY=false  # Set to true for self-signed certificates
-```
-
-### Traces (Observability)
-
-For agent execution traces. Features gracefully degrade if not configured.
-
-```bash
-OPENSEARCH_LOGS_ENDPOINT=https://your-logs-cluster.opensearch.amazonaws.com
-OPENSEARCH_LOGS_USERNAME=admin
-OPENSEARCH_LOGS_PASSWORD=your_password
-OPENSEARCH_LOGS_TLS_SKIP_VERIFY=false  # Set to true for self-signed certificates
-```
-
-See `.env.example` for all available options.
+**Full configuration guide:** [CONFIGURATION.md](./CONFIGURATION.md)
 
 ---
 
@@ -357,7 +344,13 @@ All commits require DCO signoff and all PRs must pass CI checks (tests, coverage
 
 ## Documentation
 
-- [Getting Started](./GETTING_STARTED.md) - Installation, demo mode, and usage walkthrough
-- [ML-Commons Agent Setup](./docs/ML-COMMONS-SETUP.md) - Configure ML-Commons agent
-- [Development Guide](./CLAUDE.md) - Architecture and coding conventions
-- [AG-UI Protocol](https://docs.ag-ui.com/sdk/js/core/types#runagentinput)
+### User Guides
+- [Getting Started](./GETTING_STARTED.md) - Step-by-step walkthrough from install to first evaluation
+- [Configuration](./CONFIGURATION.md) - Connect your agent and configure the environment
+- [CLI Reference](./docs/CLI.md) - Command-line interface documentation
+
+### Developer Guides
+- [Development Guide](./CLAUDE.md) - Architecture, coding conventions, and contributing
+- [Connectors Guide](./docs/CONNECTORS.md) - Create custom connectors for your agent type
+- [ML-Commons Setup](./docs/ML-COMMONS-SETUP.md) - OpenSearch ML-Commons integration
+- [Architecture](./docs/ARCHITECTURE.md) - System design and patterns

@@ -1,0 +1,33 @@
+{
+  "name": "OTEL Demo: Product Catalog Latency Spike",
+  "description": "Investigate high latency in productcatalogservice affecting frontend performance",
+  "category": "RCA",
+  "difficulty": "Medium",
+  "initialPrompt": "The OTEL demo frontend is loading slowly. Users report the product listing page takes over 3 seconds to load. Use the traces in OpenSearch to identify the bottleneck in the request flow from frontend to productcatalogservice.",
+  "context": [
+    {
+      "description": "OTEL Demo Architecture",
+      "value": "Product listing flow:\n- frontend → productcatalogservice (ListProducts gRPC call)\n- frontend → recommendationservice → productcatalogservice (GetProduct calls)\n- frontend → adservice (GetAds call)\n- All traces available in otel-v1-apm-span-* index"
+    },
+    {
+      "description": "OpenSearch Query Hints",
+      "value": "Useful queries for investigation:\n- Filter by serviceName: 'productcatalogservice'\n- Look at span duration field for latency\n- Check operationName for specific operations\n- Use traceId to follow full request flow\n- Compare current p95 latency vs historical baseline"
+    },
+    {
+      "description": "Symptom Details",
+      "value": "Current observations:\n- frontend spans show 3000ms+ total duration\n- productcatalogservice.ListProducts showing 2500ms+ (normally 100ms)\n- Issue started approximately 2 hours ago\n- No recent deployments to productcatalogservice"
+    }
+  ],
+  "expectedOutcomes": [
+    "Query otel-v1-apm-span-* for productcatalogservice spans with high duration",
+    "Identify ListProducts operation as the bottleneck",
+    "Analyze trace waterfall to see time distribution across services",
+    "Find root cause in productcatalogservice (database query, resource contention)",
+    "Recommend specific fix based on trace evidence"
+  ],
+  "id": "tc-1771894745654-zt3bbpp3g",
+  "version": 1,
+  "currentVersion": 1,
+  "createdAt": "2026-02-24T00:59:05.654Z",
+  "updatedAt": "2026-02-24T00:59:05.654Z"
+}

@@ -109,6 +109,7 @@ function toTestCase(stored: StorageTestCase): TestCase {
     isPromoted: stored.tags?.includes('promoted') ?? false,
     createdAt: stored.createdAt,
     updatedAt: stored.updatedAt,
+    lastRunAt: stored.lastRunAt,
     initialPrompt: stored.initialPrompt,
     context: (stored.context || []) as AgentContextItem[],
     tools: stored.tools as AgentToolDefinition[] | undefined,
@@ -186,10 +187,13 @@ class AsyncTestCaseStorage {
       after: options?.after,
     });
     const testCases = result.testCases.map(toTestCase);
-    // Sort by updatedAt descending (most recent first)
-    const sorted = testCases.sort((a, b) =>
-      new Date(b.updatedAt || b.createdAt || 0).getTime() - new Date(a.updatedAt || a.createdAt || 0).getTime()
+    // Sort by lastActivity (max of lastRunAt, updatedAt, createdAt) descending
+    const lastActivity = (tc: TestCase) => Math.max(
+      tc.lastRunAt  ? new Date(tc.lastRunAt).getTime()  : 0,
+      tc.updatedAt  ? new Date(tc.updatedAt).getTime()  : 0,
+      tc.createdAt  ? new Date(tc.createdAt).getTime()  : 0,
     );
+    const sorted = testCases.sort((a, b) => lastActivity(b) - lastActivity(a));
 
     if (isPaginated) {
       return {

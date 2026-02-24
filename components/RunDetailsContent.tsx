@@ -85,7 +85,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
   const [tracesError, setTracesError] = useState<string | null>(null);
   const [tracesFetched, setTracesFetched] = useState(false);
   const [activeTab, setActiveTab] = useState('summary');
-  const [traceViewMode, setTraceViewMode] = useState<ViewMode>('timeline');
+  const [traceViewMode, setTraceViewMode] = useState<ViewMode>('info');
   const [traceFullscreenOpen, setTraceFullscreenOpen] = useState(false);
 
   // Live report state for auto-refresh when judge completes
@@ -161,6 +161,16 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
       {
         onTracesFound: async (spans, updatedReport) => {
           console.info(`[RunDetails] Traces found for report ${liveReport.id}: ${spans.length} spans`);
+
+          // Update trace visualization state so UI reflects traces immediately
+          setTraceSpans(spans);
+          const tree = processSpansIntoTree(spans);
+          setSpanTree(tree);
+          setTimeRange(calculateTimeRange(spans));
+          const rootIds = new Set(tree.map(s => s.spanId));
+          setExpandedSpans(rootIds);
+          setTracesError(null);
+          setTracesFetched(true);
 
           try {
             // Call the Bedrock judge with the trajectory and expectedOutcomes
@@ -287,7 +297,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
     } else {
       setTraceMetrics(null);
     }
-  }, [report.runId, isTraceMode]);
+  }, [report.runId, isTraceMode, liveReport.metricsStatus]);
 
   // Reset trace state when report changes (switching test cases)
   // If already on Traces tab, auto-fetch new traces
@@ -320,18 +330,30 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
     try {
       console.info('[RunDetails] Fetching traces for runId:', report.runId);
       const result = await fetchTracesByRunIds([report.runId]);
+      
+      console.info('[RunDetails] Trace fetch result:', {
+        spansCount: result.spans?.length || 0,
+        total: result.total,
+        warning: result.warning,
+        hasSpans: !!(result.spans && result.spans.length > 0)
+      });
 
       if (result.spans && result.spans.length > 0) {
         setTraceSpans(result.spans);
+        setTracesError(null);
         const tree = processSpansIntoTree(result.spans);
         setSpanTree(tree);
         setTimeRange(calculateTimeRange(result.spans));
         // Auto-expand root spans
         const rootIds = new Set(tree.map(s => s.spanId));
         setExpandedSpans(rootIds);
-        console.info('[RunDetails] Traces loaded:', result.spans.length, 'spans');
+        console.info('[RunDetails] Traces loaded successfully:', result.spans.length, 'spans');
       } else {
-        setTracesError('No traces found for this run');
+        const errorMsg = result.warning 
+          ? `No traces found: ${result.warning}`
+          : 'No traces found for this run. Traces may take ~5 minutes to propagate after the run completes.';
+        console.warn('[RunDetails] No traces found:', errorMsg);
+        setTracesError(errorMsg);
       }
     } catch (error) {
       console.error('[RunDetails] Failed to fetch traces:', error);
@@ -387,30 +409,39 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
     <div className={`flex flex-col h-full ${className}`}>
       {/* Header */}
       <div className="bg-card border-b p-4">
-        <div className="flex items-start justify-between">
-          <div>
-            <h2 className="text-xl font-semibold">{testCase?.name || 'Unknown Test Case'}</h2>
-            <p className="text-sm text-muted-foreground mt-1">
-              Report ID: <span className="font-mono">{report.id}</span>
-            </p>
-          </div>
+        <div className="flex items-start justify-between mb-3">
+          <h2 className="text-xl font-semibold">{testCase?.name || 'Unknown Test Case'}</h2>
+          <p className="text-xs text-muted-foreground">
+            Report ID: <span className="font-mono">{report.id}</span>
+          </p>
         </div>
 
-        {/* Trace Mode: Waiting for traces banner */}
+        {/* Trace Mode: Waiting for traces / running judge banner */}
         {!reportLoading && liveReport.metricsStatus === 'pending' && (
-          <Card className="bg-yellow-500/10 border-yellow-500/30 mt-4">
+          <Card className="bg-yellow-50 dark:bg-yellow-500/10 border-yellow-300 dark:border-yellow-500/30 mt-4">
             <CardContent className="p-3 flex items-center gap-3">
-              <Loader2 className="animate-spin text-yellow-400" size={18} />
+              <Loader2 className="animate-spin text-yellow-700 dark:text-yellow-400" size={18} />
               <div>
-                <div className="text-sm font-medium text-yellow-400">Waiting for traces to become available...</div>
-                <div className="text-xs text-muted-foreground">
-                  Traces take ~5 minutes to propagate after the run completes.
-                  {liveReport.traceFetchAttempts && (
-                    <span className="ml-2">
-                      (Attempt {liveReport.traceFetchAttempts}/20)
-                    </span>
-                  )}
-                </div>
+                {traceSpans.length > 0 ? (
+                  <>
+                    <div className="text-sm font-medium text-yellow-700 dark:text-yellow-400">Traces received. Running LLM judge evaluation...</div>
+                    <div className="text-xs text-muted-foreground">
+                      {traceSpans.length} spans captured. Evaluation results will appear shortly.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-sm font-medium text-yellow-700 dark:text-yellow-400">Waiting for traces to become available...</div>
+                    <div className="text-xs text-muted-foreground">
+                      Traces take ~5 minutes to propagate after the run completes.
+                      {liveReport.traceFetchAttempts && (
+                        <span className="ml-2">
+                          (Attempt {liveReport.traceFetchAttempts}/20)
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -418,11 +449,11 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
 
         {/* Trace Mode: Error state */}
         {liveReport.metricsStatus === 'error' && (
-          <Card className="bg-red-500/10 border-red-500/30 mt-4">
+          <Card className="bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 mt-4">
             <CardContent className="p-3 flex items-center gap-3">
-              <AlertCircle className="text-red-400" size={18} />
+              <AlertCircle className="text-red-700 dark:text-red-400" size={18} />
               <div>
-                <div className="text-sm font-medium text-red-400">Failed to fetch traces</div>
+                <div className="text-sm font-medium text-red-700 dark:text-red-400">Failed to fetch traces</div>
                 <div className="text-xs text-muted-foreground">
                   {liveReport.traceError || 'Unknown error'}
                 </div>
@@ -461,26 +492,29 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
           </Card>
         )}
 
-        {/* Metrics Row */}
-        <div className={`grid gap-3 mt-4 ${isTraceMode ? 'grid-cols-5' : 'grid-cols-4'}`}>
-          <Card className="bg-muted/50">
-            <CardContent className="p-3">
-              <div className="text-xs text-muted-foreground mb-1">Status</div>
+        {/* Metrics Row - Compact */}
+        <div className={`grid gap-2 ${isTraceMode ? 'grid-cols-10' : 'grid-cols-8'}`}>
+          <Card className="bg-muted/50 col-span-2">
+            <CardContent className="p-2">
+              <div className="text-[10px] text-muted-foreground mb-0.5">Status</div>
               {reportLoading ? (
-                <Loader2 className="animate-spin text-muted-foreground" size={14} />
+                <Loader2 className="animate-spin text-muted-foreground" size={12} />
               ) : liveReport.metricsStatus === 'pending' ? (
-                <div className="flex items-center gap-1.5 text-sm font-semibold text-yellow-400">
-                  <Clock size={14} />
-                  PENDING
+                <div className="flex items-center gap-1 text-xs font-semibold text-yellow-700 dark:text-yellow-400">
+                  {traceSpans.length > 0 ? (
+                    <><Loader2 className="animate-spin" size={12} /> JUDGING</>
+                  ) : (
+                    <><Clock size={12} /> PENDING</>
+                  )}
                 </div>
               ) : (
-                <div className={`flex items-center gap-1.5 text-sm font-semibold ${
-                  liveReport.passFailStatus === 'passed' ? 'text-opensearch-blue' : 'text-red-400'
+                <div className={`flex items-center gap-1 text-xs font-semibold ${
+                  liveReport.passFailStatus === 'passed' ? 'text-green-700 dark:text-green-400' : 'text-red-700 dark:text-red-400'
                 }`}>
                   {liveReport.passFailStatus === 'passed' ? (
-                    <CheckCircle2 size={14} />
+                    <CheckCircle2 size={12} />
                   ) : (
-                    <XCircle size={14} />
+                    <XCircle size={12} />
                   )}
                   {liveReport.passFailStatus?.toUpperCase() || liveReport.status.toUpperCase()}
                 </div>
@@ -488,26 +522,26 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
             </CardContent>
           </Card>
 
-          <Card className="bg-muted/50">
-            <CardContent className="p-3">
-              <div className="text-xs text-muted-foreground mb-1">Accuracy</div>
-              <div className="text-sm font-semibold text-opensearch-blue">{liveReport.metrics.accuracy}%</div>
+          <Card className="bg-muted/50 col-span-2">
+            <CardContent className="p-2">
+              <div className="text-[10px] text-muted-foreground mb-0.5">Accuracy</div>
+              <div className="text-xs font-semibold text-blue-700 dark:text-blue-400">{liveReport.metrics.accuracy}%</div>
             </CardContent>
           </Card>
 
           {/* Non-trace-mode: show Latency and Steps */}
           {!isTraceMode && (
             <>
-              <Card className="bg-muted/50">
-                <CardContent className="p-3">
-                  <div className="text-xs text-muted-foreground mb-1">Latency</div>
-                  <div className="text-sm font-semibold text-amber-400">{(totalLatencyMs / 1000).toFixed(2)}s</div>
+              <Card className="bg-muted/50 col-span-2">
+                <CardContent className="p-2">
+                  <div className="text-[10px] text-muted-foreground mb-0.5">Latency</div>
+                  <div className="text-xs font-semibold text-amber-700 dark:text-amber-400">{(totalLatencyMs / 1000).toFixed(2)}s</div>
                 </CardContent>
               </Card>
-              <Card className="bg-muted/50">
-                <CardContent className="p-3">
-                  <div className="text-xs text-muted-foreground mb-1">Steps</div>
-                  <div className="text-sm font-semibold text-blue-400">{trajectory.length}</div>
+              <Card className="bg-muted/50 col-span-2">
+                <CardContent className="p-2">
+                  <div className="text-[10px] text-muted-foreground mb-0.5">Steps</div>
+                  <div className="text-xs font-semibold text-blue-700 dark:text-blue-400">{trajectory.length}</div>
                 </CardContent>
               </Card>
             </>
@@ -516,39 +550,39 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
           {/* Trace-mode: Duration, Cost, Tool Calls in first row */}
           {isTraceMode && (
             <>
-              <Card className="bg-muted/50">
-                <CardContent className="p-3">
-                  <div className="text-xs text-muted-foreground mb-1">Duration</div>
+              <Card className="bg-muted/50 col-span-2">
+                <CardContent className="p-2">
+                  <div className="text-[10px] text-muted-foreground mb-0.5">Duration</div>
                   {traceMetricsLoading ? (
-                    <Loader2 className="animate-spin text-muted-foreground" size={14} />
+                    <Loader2 className="animate-spin text-muted-foreground" size={12} />
                   ) : (
-                    <div className="text-sm font-semibold text-purple-400">
+                    <div className="text-xs font-semibold text-purple-700 dark:text-purple-400">
                       {traceMetrics ? formatDuration(traceMetrics.durationMs) : '—'}
                     </div>
                   )}
                 </CardContent>
               </Card>
 
-              <Card className="bg-muted/50">
-                <CardContent className="p-3">
-                  <div className="text-xs text-muted-foreground mb-1">Cost</div>
+              <Card className="bg-muted/50 col-span-2">
+                <CardContent className="p-2">
+                  <div className="text-[10px] text-muted-foreground mb-0.5">Cost</div>
                   {traceMetricsLoading ? (
-                    <Loader2 className="animate-spin text-muted-foreground" size={14} />
+                    <Loader2 className="animate-spin text-muted-foreground" size={12} />
                   ) : (
-                    <div className="text-sm font-semibold text-amber-400">
+                    <div className="text-xs font-semibold text-amber-700 dark:text-amber-400">
                       {traceMetrics ? formatCost(traceMetrics.costUsd) : '—'}
                     </div>
                   )}
                 </CardContent>
               </Card>
 
-              <Card className="bg-muted/50">
-                <CardContent className="p-3">
-                  <div className="text-xs text-muted-foreground mb-1">Tool Calls</div>
+              <Card className="bg-muted/50 col-span-2">
+                <CardContent className="p-2">
+                  <div className="text-[10px] text-muted-foreground mb-0.5">Tool Calls</div>
                   {traceMetricsLoading ? (
-                    <Loader2 className="animate-spin text-muted-foreground" size={14} />
+                    <Loader2 className="animate-spin text-muted-foreground" size={12} />
                   ) : (
-                    <div className="text-sm font-semibold text-opensearch-blue">
+                    <div className="text-xs font-semibold text-blue-700 dark:text-blue-400">
                       {traceMetrics ? traceMetrics.toolCalls : '—'}
                     </div>
                   )}
@@ -558,68 +592,68 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
           )}
         </div>
 
-        {/* Trace Metrics Row 2 (for trace-mode agents) */}
+        {/* Trace Metrics Row 2 (for trace-mode agents) - Compact */}
         {isTraceMode && (
-          <div className="grid grid-cols-5 gap-3 mt-3">
-            <Card className="bg-muted/50">
-              <CardContent className="p-3">
-                <div className="text-xs text-muted-foreground mb-1">Input Tokens</div>
+          <div className="grid grid-cols-10 gap-2 mt-2">
+            <Card className="bg-muted/50 col-span-2">
+              <CardContent className="p-2">
+                <div className="text-[10px] text-muted-foreground mb-0.5">Input Tokens</div>
                 {traceMetricsLoading ? (
-                  <Loader2 className="animate-spin text-muted-foreground" size={14} />
+                  <Loader2 className="animate-spin text-muted-foreground" size={12} />
                 ) : (
-                  <div className="text-sm font-semibold text-cyan-400">
+                  <div className="text-xs font-semibold text-cyan-700 dark:text-cyan-400">
                     {traceMetrics ? formatTokens(traceMetrics.inputTokens) : '—'}
                   </div>
                 )}
               </CardContent>
             </Card>
 
-            <Card className="bg-muted/50">
-              <CardContent className="p-3">
-                <div className="text-xs text-muted-foreground mb-1">Output Tokens</div>
+            <Card className="bg-muted/50 col-span-2">
+              <CardContent className="p-2">
+                <div className="text-[10px] text-muted-foreground mb-0.5">Output Tokens</div>
                 {traceMetricsLoading ? (
-                  <Loader2 className="animate-spin text-muted-foreground" size={14} />
+                  <Loader2 className="animate-spin text-muted-foreground" size={12} />
                 ) : (
-                  <div className="text-sm font-semibold text-cyan-400">
+                  <div className="text-xs font-semibold text-cyan-700 dark:text-cyan-400">
                     {traceMetrics ? formatTokens(traceMetrics.outputTokens) : '—'}
                   </div>
                 )}
               </CardContent>
             </Card>
 
-            <Card className="bg-muted/50">
-              <CardContent className="p-3">
-                <div className="text-xs text-muted-foreground mb-1">Total Tokens</div>
+            <Card className="bg-muted/50 col-span-2">
+              <CardContent className="p-2">
+                <div className="text-[10px] text-muted-foreground mb-0.5">Total Tokens</div>
                 {traceMetricsLoading ? (
-                  <Loader2 className="animate-spin text-muted-foreground" size={14} />
+                  <Loader2 className="animate-spin text-muted-foreground" size={12} />
                 ) : (
-                  <div className="text-sm font-semibold text-cyan-400">
+                  <div className="text-xs font-semibold text-cyan-700 dark:text-cyan-400">
                     {traceMetrics ? formatTokens(traceMetrics.totalTokens) : '—'}
                   </div>
                 )}
               </CardContent>
             </Card>
 
-            <Card className="bg-muted/50">
-              <CardContent className="p-3">
-                <div className="text-xs text-muted-foreground mb-1">LLM Calls</div>
+            <Card className="bg-muted/50 col-span-2">
+              <CardContent className="p-2">
+                <div className="text-[10px] text-muted-foreground mb-0.5">LLM Calls</div>
                 {traceMetricsLoading ? (
-                  <Loader2 className="animate-spin text-muted-foreground" size={14} />
+                  <Loader2 className="animate-spin text-muted-foreground" size={12} />
                 ) : (
-                  <div className="text-sm font-semibold text-blue-400">
+                  <div className="text-xs font-semibold text-blue-700 dark:text-blue-400">
                     {traceMetrics ? traceMetrics.llmCalls : '—'}
                   </div>
                 )}
               </CardContent>
             </Card>
 
-            <Card className="bg-muted/50">
-              <CardContent className="p-3">
-                <div className="text-xs text-muted-foreground mb-1">Tools Used</div>
+            <Card className="bg-muted/50 col-span-2">
+              <CardContent className="p-2">
+                <div className="text-[10px] text-muted-foreground mb-0.5">Tools Used</div>
                 {traceMetricsLoading ? (
-                  <Loader2 className="animate-spin text-muted-foreground" size={14} />
+                  <Loader2 className="animate-spin text-muted-foreground" size={12} />
                 ) : (
-                  <div className="text-sm font-semibold text-indigo-500 truncate" title={traceMetrics?.toolsUsed?.join(', ')}>
+                  <div className="text-xs font-semibold text-indigo-700 dark:text-indigo-400 truncate" title={traceMetrics?.toolsUsed?.join(', ')}>
                     {traceMetrics?.toolsUsed?.length ? traceMetrics.toolsUsed.length : '—'}
                   </div>
                 )}
@@ -838,11 +872,11 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
             )}
           </TabsContent>
 
-          <TabsContent value="logs" className="p-6 mt-0">
+          <TabsContent value="logs" className="p-6 mt-0 flex-1 flex flex-col min-h-0">
             {isTraceMode ? (
               /* TRACE MODE: Show trace visualization */
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
+              <div className="space-y-4 flex-1 flex flex-col min-h-0">
+                <div className="flex items-center justify-between flex-shrink-0">
                   <h3 className="text-lg font-semibold">Traces</h3>
                   {spanTree.length > 0 && !tracesLoading && (
                     <div className="flex items-center gap-2">
@@ -868,8 +902,8 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                   </div>
                 )}
 
-                {/* Error state */}
-                {tracesError && !tracesLoading && (
+                {/* Error state - only show when NOT in pending polling state */}
+                {tracesError && !tracesLoading && liveReport.metricsStatus !== 'pending' && (
                   <Card className="bg-red-500/10 border-red-500/30">
                     <CardContent className="p-4 flex items-center gap-3">
                       <AlertCircle className="text-red-400" size={18} />
@@ -906,19 +940,10 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
 
                 {/* Trace visualization */}
                 {spanTree.length > 0 && !tracesLoading && (
-                  <div className="space-y-4">
-                    <Card>
-                      <CardContent className="p-4">
-                        <div className="mb-2 flex items-center justify-between">
-                          <span className="text-sm text-muted-foreground">
-                            {traceSpans.length} spans captured
-                          </span>
-                          <span className="text-xs text-muted-foreground font-mono">
-                            Run ID: {report.runId}
-                          </span>
-                        </div>
-
-                        <div className="h-[700px]">
+                  <div className="space-y-4 flex-1 flex flex-col min-h-0">
+                    <Card className="flex-1 flex flex-col min-h-0">
+                      <CardContent className="p-0 flex-1 flex flex-col min-h-0">
+                        <div className="flex-1 min-h-0">
                           <TraceVisualization
                             spanTree={spanTree}
                             timeRange={timeRange}
@@ -930,6 +955,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                             expandedSpans={expandedSpans}
                             onToggleExpand={handleToggleExpand}
                             showSpanDetailsPanel={true}
+                            runId={report.runId}
                           />
                         </div>
                       </CardContent>
@@ -1011,7 +1037,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
             <div>
               <h3 className="text-lg font-semibold mb-3">LLM Judge Reasoning</h3>
               <Card><CardContent className="p-4">
-                <div className="prose prose-invert max-w-none prose-headings:text-sm prose-p:text-sm prose-p:leading-relaxed prose-code:text-opensearch-blue prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-ul:text-sm prose-ol:text-sm">
+                <div className="prose dark:prose-invert max-w-none prose-headings:text-sm prose-p:text-sm prose-p:leading-relaxed prose-code:text-opensearch-blue prose-code:bg-muted prose-code:px-1.5 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-ul:text-sm prose-ol:text-sm">
                   <ReactMarkdown remarkPlugins={[remarkGfm]}>
                     {liveReport.llmJudgeReasoning}
                   </ReactMarkdown>
@@ -1029,35 +1055,40 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                 <div className="space-y-3">
                   {liveReport.improvementStrategies.map((strategy, index) => {
                     const priorityColors = {
-                      high: 'text-red-400 border-red-900 bg-red-950/20',
-                      medium: 'text-yellow-400 border-yellow-900 bg-yellow-950/20',
-                      low: 'text-blue-400 border-blue-900 bg-blue-950/20',
+                      high: 'text-red-700 dark:text-red-400 border-red-300 dark:border-red-900 bg-red-50 dark:bg-red-950/20',
+                      medium: 'text-yellow-700 dark:text-yellow-400 border-yellow-300 dark:border-yellow-900 bg-yellow-50 dark:bg-yellow-950/20',
+                      low: 'text-blue-700 dark:text-blue-400 border-blue-300 dark:border-blue-900 bg-blue-50 dark:bg-blue-950/20',
                     };
                     const priorityIcons = {
                       high: <AlertTriangle size={16} />,
                       medium: <AlertCircle size={16} />,
                       low: <Info size={16} />,
                     };
+                    const priorityTextColors = {
+                      high: 'text-red-700 dark:text-red-400',
+                      medium: 'text-yellow-700 dark:text-yellow-400',
+                      low: 'text-blue-700 dark:text-blue-400',
+                    };
                     return (
                       <div key={index} className={`p-4 rounded-lg border-l-4 ${priorityColors[strategy.priority]}`}>
                         <div className="flex items-start gap-3">
-                          <div className={`mt-0.5 ${priorityColors[strategy.priority].split(' ')[0]}`}>
+                          <div className={`mt-0.5 ${priorityTextColors[strategy.priority]}`}>
                             {priorityIcons[strategy.priority]}
                           </div>
                           <div className="flex-1">
                             <div className="flex items-center justify-between mb-2">
-                              <span className="text-sm font-semibold">
+                              <span className="text-sm font-semibold text-foreground">
                                 {strategy.category.replace(/_/g, ' ').toUpperCase()}
                               </span>
-                              <Badge variant="outline" className={priorityColors[strategy.priority].split(' ')[0]}>
+                              <Badge variant="outline" className={priorityTextColors[strategy.priority]}>
                                 {strategy.priority}
                               </Badge>
                             </div>
                             <div className="text-sm text-muted-foreground mb-2">
-                              <span className="font-medium">Issue:</span> {strategy.issue}
+                              <span className="font-medium text-foreground">Issue:</span> {strategy.issue}
                             </div>
                             <div className="text-sm text-muted-foreground">
-                              <span className="font-medium">Recommendation:</span> {strategy.recommendation}
+                              <span className="font-medium text-foreground">Recommendation:</span> {strategy.recommendation}
                             </div>
                           </div>
                         </div>

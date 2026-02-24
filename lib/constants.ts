@@ -69,6 +69,13 @@ export const DEFAULT_CONFIG: AppConfig = {
       context_window: 200000,
       max_output_tokens: 4096
     },
+    "gpt-4o": {
+      model_id: "gpt-4o",
+      display_name: "GPT-4o (via LiteLLM)",
+      provider: "litellm",
+      context_window: 128000,
+      max_output_tokens: 4096
+    },
   },
   defaults: {
     retry_attempts: 2,

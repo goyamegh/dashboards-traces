@@ -80,13 +80,13 @@ function getEventSummary(event: AGUIEvent): string {
  * Get color classes for event type badge
  */
 function getEventTypeColor(type: string | undefined): string {
-  if (!type) return 'text-gray-400 bg-gray-800';
-  if (type.includes('ERROR')) return 'text-red-400 bg-red-900/30';
-  if (type.includes('TOOL')) return 'text-blue-400 bg-blue-900/30';
-  if (type.includes('TEXT')) return 'text-opensearch-blue bg-blue-900/30';
-  if (type.includes('RUN')) return 'text-purple-400 bg-purple-900/30';
-  if (type.includes('ACTIVITY')) return 'text-amber-400 bg-amber-900/30';
-  return 'text-gray-400 bg-gray-800';
+  if (!type) return 'text-gray-700 bg-gray-100 dark:text-gray-400 dark:bg-gray-800';
+  if (type.includes('ERROR')) return 'text-red-700 bg-red-100 dark:text-red-400 dark:bg-red-500/10';
+  if (type.includes('TOOL')) return 'text-blue-700 bg-blue-100 dark:text-blue-400 dark:bg-blue-500/10';
+  if (type.includes('TEXT')) return 'text-blue-700 bg-blue-100 dark:text-blue-600 dark:bg-blue-500/10';
+  if (type.includes('RUN')) return 'text-purple-700 bg-purple-100 dark:text-purple-400 dark:bg-purple-500/10';
+  if (type.includes('ACTIVITY')) return 'text-amber-700 bg-amber-100 dark:text-amber-400 dark:bg-amber-500/10';
+  return 'text-gray-700 bg-gray-100 dark:text-gray-400 dark:bg-gray-800';
 }
 
 export const RawEventsPanel: React.FC<RawEventsPanelProps> = ({ events }) => {

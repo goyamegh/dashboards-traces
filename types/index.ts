@@ -12,7 +12,7 @@ export type Difficulty = 'Easy' | 'Medium' | 'Hard';
 export type DateFormatVariant = 'date' | 'datetime' | 'detailed';
 
 // Judge provider determines which backend service handles evaluation
-export type JudgeProvider = 'demo' | 'bedrock' | 'ollama' | 'openai';
+export type JudgeProvider = 'demo' | 'bedrock' | 'litellm';
 
 // Connector protocol for agent communication
 export type ConnectorProtocol = 'agui-streaming' | 'rest' | 'litellm' | 'subprocess' | 'claude-code' | 'mock';
@@ -255,6 +255,7 @@ export interface TestCase {
   isPromoted: boolean;              // Available for experiments
   createdAt: string;
   updatedAt: string;
+  lastRunAt?: string;               // Timestamp of the most recent evaluation run
 
   // Current version content (convenience accessors - mirrors latest version)
   initialPrompt: string;

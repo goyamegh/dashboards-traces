@@ -17,7 +17,7 @@ import { getStorageModule } from '../adapters/index.js';
 import { SAMPLE_TEST_CASES } from '../../cli/demo/sampleTestCases.js';
 import { runSingleUseCase } from '../../services/benchmarkRunner.js';
 import { loadConfigSync } from '../../lib/config/index.js';
-import { getCustomAgents } from '../services/customAgentStore.js';
+import { getCustomAgents } from '@/server/services/customAgentStore';
 import { debug } from '@/lib/debug';
 import type { BenchmarkRun, TestCase } from '../../types/index.js';
 

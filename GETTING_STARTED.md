@@ -1,48 +1,34 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
 # Getting Started
 
 This guide walks you through using Agent Health to evaluate AI agents. The application includes a Travel Planner multi-agent demo so you can explore all features without configuring external services.
 
-## Table of Contents
+## What You'll Learn
 
-1. [Quick Start](#quick-start)
-2. [Installation Methods](#installation-methods)
-3. [Demo Agent & Judge](#demo-agent--judge)
-4. [Configuration Options](#configuration-options)
-5. [Exploring the UI](#exploring-the-ui)
-6. [Screenshots Walkthrough](#screenshots-walkthrough)
-7. [API Reference](#api-reference)
-8. [Troubleshooting](#troubleshooting)
+By the end of this guide, you will:
+- ✓ Start Agent Health and explore the UI
+- ✓ Understand test cases, experiments, and evaluation runs
+- ✓ Run your first agent evaluation
+- ✓ View trajectory steps and LLM judge scores
+- ✓ Configure Agent Health for your own agent
 
 ---
 
-## Quick Start
+## Prerequisites
 
-### Using npx (Recommended - No Installation Required)
+**Required:**
+- **Node.js 18+** - [Download here](https://nodejs.org/)
+- **npm** (comes with Node.js)
 
-Run Agent Health instantly without cloning the repository:
+**Optional (for production use):**
+- AWS credentials (for Bedrock LLM Judge)
+- OpenSearch cluster (for persistence and traces)
 
-```bash
-# Start the server
-npx @opensearch-project/agent-health
-
-# With custom port
-npx @opensearch-project/agent-health --port 8080
-
-# With environment file
-npx @opensearch-project/agent-health --env-file .env
-```
-
-The application will:
-1. Download and start automatically
-2. Open your browser to `http://localhost:4001`
-3. Display pre-loaded sample data for exploration
-
-### Prerequisites
-
-- **Node.js 18+** - Required for running the application
-- **npm** - Comes with Node.js
-
-Check your versions:
+**Check your versions:**
 ```bash
 node --version  # Should be v18.0.0 or higher
 npm --version   # Should be v8.0.0 or higher
@@ -50,17 +36,19 @@ npm --version   # Should be v8.0.0 or higher
 
 ---
 
-## Installation Methods
+## Step 1: Install & Start
 
-### Method 1: npx (Zero Installation)
-
-Best for quick demos and evaluation:
+**Run Agent Health with npx** (no installation needed):
 
 ```bash
-npx @opensearch-project/agent-health
+npx @opensearch-project/agent-health@latest
 ```
 
-### Method 2: Global Installation
+**What happens:**
+1. Downloads Agent Health (if first run)
+2. Starts the server on port 4001
+3. Opens your browser to http://localhost:4001
+4. Loads sample data automatically
 
 For frequent use:
 
@@ -78,8 +66,8 @@ For development or customization:
 
 ```bash
 # Clone the repository
-git clone https://github.com/opensearch-project/dashboards-traces.git
-cd dashboards-traces
+git clone https://github.com/opensearch-project/agent-health.git
+cd agent-health
 
 # Install dependencies
 npm install
@@ -267,254 +255,334 @@ The main dashboard provides an overview of your agent evaluation status:
 
 ![Dashboard](./screenshots/dashboard.png)
 
-Key features shown:
-- **Quick Stats** - Experiments count, test cases, pass rates, costs
-- **Experiments List** - Recent experiments with status indicators
-- **Metrics Trend** - Cost and performance over time
+**Troubleshooting:**
+- **Port already in use?** Run with custom port: `npx @opensearch-project/agent-health --port 8080`
+- **Browser didn't open?** Manually visit: http://localhost:4001
 
 ---
 
-### Test Cases
+## Step 2: Explore Demo Data
 
-The Test Cases page lets you manage your evaluation scenarios:
+Agent Health comes with pre-loaded sample data so you can explore features immediately.
+
+### View Sample Test Cases
+
+1. Click **Settings** in the sidebar
+2. Navigate to **Use Cases** tab
+3. Browse the 5 sample test cases
+
+**What's a test case?**
+A test case (displayed as "Use Case" in UI) defines an evaluation scenario:
+- **Initial Prompt** - The question asked to the agent
+- **Context** - Supporting data (logs, metrics, architecture diagrams)
+- **Expected Outcomes** - What the agent should discover or accomplish
+- **Labels** - Categorization (e.g., `category:RCA`, `difficulty:Medium`)
+
+**✓ Verify:** You should see test cases like "Payment Service Latency Spike" and "Database Connection Pool Exhaustion".
 
 ![Test Cases](./screenshots/test-cases.png)
 
-Features:
-- **Search & Filter** - Find test cases by name, category, or difficulty
-- **Labels** - Visual tags for difficulty (Easy/Medium/Hard) and test type
-- **Quick Actions** - Run, edit, or delete test cases
+### Explore a Completed Experiment
 
-#### Creating a Test Case
+1. Click **Experiments** in the sidebar
+2. Click **"RCA Agent Evaluation - Demo"**
+3. View the completed baseline run
 
-Click "New Use Case" to create a new test case:
+**What's an experiment?**
+An experiment (displayed as "Benchmark" in code) is a batch of test cases evaluated together. It can have multiple runs with different agent/model configurations.
 
-![Create Test Case](./screenshots/create-test-case.png)
-
-The form includes:
-- **Name & Description** - Identify the scenario
-- **Initial Prompt** - The question for the agent
-- **Context** - Supporting data (metrics, logs, architecture)
-- **Expected Outcomes** - What the agent should discover
-- **Labels** - Categorization and difficulty level
-
----
-
-### Experiments
-
-View and manage batch evaluations:
-
-![Experiments](./screenshots/experiments.png)
-
-Each experiment card shows:
-- **Run Count** - How many evaluation runs have been performed
-- **Use Cases** - Number of test cases included
-- **Run History** - Names of previous runs
-- **Last Run Date** - When the experiment was last executed
-
----
-
-### Experiment Detail
-
-Click "View Latest" to see detailed results:
+**✓ Verify:** You should see:
+- Pass rate: 80% (4/5 passed)
+- Average accuracy: 88%
+- Individual results for each test case
 
 ![Experiment Detail](./screenshots/experiment-detail.png)
 
-The detail view includes:
-- **Pass Rate** - Percentage of test cases that passed (80% = 4/5 passed)
-- **Avg Accuracy** - Mean accuracy across all evaluations (88%)
-- **Charts** - Visual pass/fail and accuracy breakdowns by run
-- **Per Use Case Breakdown** - Individual results for each test case
+---
 
-#### Full Results View
+## Step 3: Run Your First Evaluation
 
-Scroll down to see all test case results:
+Let's run a single test case evaluation using the demo agent.
 
-![Experiment Detail Full](./screenshots/experiment-detail-full.png)
+### Option A: Run from UI
 
-Each test case shows:
-- **Status** - PASSED (green) or FAILED (red)
-- **Accuracy** - Judge's accuracy score (0-100%)
-- **Steps** - Number of trajectory steps taken by the agent
-- **Difficulty Labels** - Medium, Hard, etc.
+1. Click **Evals** in the sidebar
+2. Click **"New Evaluation"** button
+3. Configure the evaluation:
+   - **Agent:** Select "Demo Agent"
+   - **Model:** Select "Demo Model"
+   - **Test Case:** Select "Payment Service Latency Spike"
+4. Click **"Run Evaluation"**
+
+**What happens:**
+- Agent streams its execution in real-time
+- You'll see thinking steps, tool calls, and responses
+- LLM judge evaluates the trajectory against expected outcomes
+
+**✓ Verify:** You should see:
+- Real-time trajectory steps appearing
+- Final agent response
+- Judge evaluation with pass/fail status and accuracy score
+
+### Option B: Run from CLI
+
+```bash
+# List available test cases
+npx @opensearch-project/agent-health list test-cases
+
+# Run a specific test case
+npx @opensearch-project/agent-health run -t demo-otel-001 -a demo
+
+# View the results in the UI
+open http://localhost:4001/runs
+```
+
+**✓ Verify:** Terminal shows:
+```
+Running test case: demo-otel-001
+Agent: demo
+Status: completed
+Result: PASSED
+Accuracy: 92%
+```
 
 ---
 
-### Live Traces
+## Step 4: Understand Trajectory Steps
 
-The Traces page provides real-time monitoring of agent executions:
+Click on any evaluation result to view the detailed trajectory.
 
-<video src="./screenshots/traces-view.mov" controls width="100%">
-  Your browser does not support the video tag. <a href="./screenshots/traces-view.mov">Download the video</a>
-</video>
+**Trajectory step types:**
 
-Features shown:
-- **Live Tailing** - Auto-refresh with pause/resume controls
-- **Agent Filter** - Filter traces by specific agent
-- **Timeline/Flow Toggle** - Switch between visualization modes
-- **Span Details** - Click any span to see attributes
+| Step Type | Description | Example |
+|-----------|-------------|---------|
+| **thinking** | Agent's internal reasoning | "I need to check the logs for errors..." |
+| **action** | Tool invocation | `searchLogs({ query: "ERROR", timeRange: "1h" })` |
+| **tool_result** | Tool response | `{ found: 142 errors, topError: "Connection timeout" }` |
+| **response** | Final conclusion | "Root cause: Database connection pool exhausted during flash sale" |
 
----
+**✓ Verify:** You can expand/collapse each step and see:
+- Timestamp and duration
+- Tool arguments (for actions)
+- Full tool output (for tool_results)
+- Judge's evaluation reasoning
 
-### Full Screen View
-
-Click the maximize button on any trace to open full-screen mode:
-
-![Full Screen View](./screenshots/full-screen-view.png)
-
-Full screen mode provides:
-- **Expanded Visualization** - Larger area for complex traces
-- **Span Attributes Panel** - Detailed metadata for selected spans
-- **Collapsible Sections** - Focus on specific parts of the trace
-- **View Mode Toggle** - Switch between Timeline and Flow views
+![Trajectory View](./screenshots/experiment-detail-full.png)
 
 ---
 
-## API Reference
+## Step 5: Connect Your Agent
 
-### Debug API
+Now that you've explored demo data, let's connect your own agent.
+
+### Create Configuration File
+
+Run the init command to create a config file:
 
 ```bash
-# Get debug logging status
-GET /api/debug
-# Response: { "enabled": false }
-
-# Toggle debug logging
-POST /api/debug
-Content-Type: application/json
-{ "enabled": true }
-# Response: { "enabled": true }
+npx @opensearch-project/agent-health init
 ```
 
-### Storage APIs
+This creates `agent-health.config.ts` in your current directory.
 
-```bash
-# List test cases
-GET /api/storage/test-cases
+### Configure Your Agent
 
-# Get specific test case
-GET /api/storage/test-cases/:id
+Edit `agent-health.config.ts`:
 
-# List experiments
-GET /api/storage/experiments
-
-# List runs
-GET /api/storage/runs
-
-# Get runs by test case
-GET /api/storage/runs/by-test-case/:testCaseId
+```typescript
+export default {
+  agents: [
+    {
+      key: "my-agent",              // Unique identifier
+      name: "My Agent",             // Display name in UI
+      endpoint: "http://localhost:8000/agent",
+      connectorType: "rest",        // "rest" | "agui-streaming" | "subprocess"
+      models: ["claude-sonnet-4"],
+      useTraces: false,             // Set true if agent sends OTel traces
+    }
+  ],
+};
 ```
 
-### Traces API
+**Choose the right connector type:**
+
+| Connector | Use When | Endpoint Example |
+|-----------|----------|------------------|
+| `rest` | Synchronous JSON API | `http://localhost:8000/api/agent` |
+| `agui-streaming` | Server-Sent Events (SSE) | `http://localhost:9000/agent/stream` |
+| `subprocess` | CLI tool | `/usr/local/bin/my-agent` |
+
+**✓ Verify:** List agents to confirm configuration loaded:
 
 ```bash
-# Fetch trace by ID
-GET /api/traces?traceId=<trace-id>
-
-# Fetch traces by run IDs
-GET /api/traces?runIds=<id1>,<id2>
-
-# Health check
-GET /api/traces/health
+npx @opensearch-project/agent-health list agents
 ```
 
-### Judge API
+You should see your agent in the list.
+
+### Run Against Your Agent
 
 ```bash
-# Evaluate trajectory
-POST /api/judge
-Content-Type: application/json
+# CLI
+npx @opensearch-project/agent-health run -t your-test-case -a my-agent
 
-{
-  "trajectory": [...],
-  "expectedOutcomes": [...],
-  "modelId": "anthropic.claude-3-5-sonnet-..."
-}
+# Or use the UI: Select "My Agent" from agent dropdown
+```
+
+**✓ Verify:** You should see your agent's actual responses in the trajectory.
+
+---
+
+## Step 6: Create Custom Test Cases
+
+Now create test cases for your agent's domain.
+
+### From UI
+
+1. Go to **Settings > Use Cases**
+2. Click **"New Use Case"**
+3. Fill in the form:
+   - **Name:** "My Test Scenario"
+   - **Initial Prompt:** The question for your agent
+   - **Context:** Supporting data your agent needs
+   - **Expected Outcomes:** List what the agent should accomplish
+   - **Labels:** Add tags like `category:MyCategory`, `difficulty:Medium`
+4. Click **"Save"**
+
+![Create Test Case](./screenshots/create-test-case.png)
+
+**Tips for good test cases:**
+- Make prompts specific and unambiguous
+- Include all necessary context data
+- Define clear, measurable expected outcomes
+- Start with simple cases, add complexity gradually
+
+**✓ Verify:** Your test case appears in the list and can be selected for evaluation runs.
+
+---
+
+## Step 7: View Traces (Optional)
+
+If your agent emits OpenTelemetry traces, Agent Health can visualize them.
+
+### Enable Trace Collection
+
+1. Set `useTraces: true` in your agent config
+2. Configure OpenSearch traces endpoint in `.env`:
+
+```bash
+OPENSEARCH_LOGS_ENDPOINT=https://your-cluster.opensearch.amazonaws.com
+OPENSEARCH_LOGS_TRACES_INDEX=otel-v1-apm-span-*
+OPENSEARCH_LOGS_USERNAME=admin
+OPENSEARCH_LOGS_PASSWORD=your_password
+```
+
+### View Traces
+
+1. Run an evaluation with your agent
+2. Click **Traces** in the sidebar
+3. Select your agent from the filter
+4. Click on a trace to view details
+
+**View modes:**
+- **Timeline** - Hierarchical span tree with duration bars
+- **Flow** - DAG visualization of span relationships
+
+**✓ Verify:** You should see spans from your agent execution with timing data.
+
+![Traces View](./screenshots/traces-view.mov)
+
+---
+
+## Next Steps
+
+### Production Setup
+
+**For real LLM judge evaluation** (instead of Demo Judge):
+
+```bash
+# .env file
+AWS_REGION=us-west-2
+AWS_ACCESS_KEY_ID=your_key
+AWS_SECRET_ACCESS_KEY=your_secret
+```
+
+**For persistence** (save test cases and experiments):
+
+```bash
+# .env file
+OPENSEARCH_STORAGE_ENDPOINT=https://your-cluster.opensearch.amazonaws.com
+OPENSEARCH_STORAGE_USERNAME=admin
+OPENSEARCH_STORAGE_PASSWORD=your_password
+```
+
+See [CONFIGURATION.md](./CONFIGURATION.md) for full configuration reference.
+
+### Run Benchmarks
+
+Run your agent against multiple test cases:
+
+```bash
+npx @opensearch-project/agent-health benchmark -b my-benchmark -a my-agent
+```
+
+### Compare Agents
+
+Create experiments with multiple runs using different agents or models, then view side-by-side comparison in the UI.
+
+### Integrate CI/CD
+
+Add Agent Health to your CI pipeline:
+
+```bash
+# .github/workflows/test.yml
+- name: Run Agent Evaluation
+  run: |
+    npx @opensearch-project/agent-health run -t critical-tests -a ${{ matrix.agent }}
 ```
 
 ---
 
 ## Troubleshooting
 
-### "Port already in use"
+### Port Already in Use
 
-Change the port:
 ```bash
 npx @opensearch-project/agent-health --port 8080
 ```
 
-### "OpenSearch not configured" Messages
+### Agent Connection Failed
 
 This is expected when OpenSearch is not configured. File-based storage is used by default, so test cases, experiments, and runs are persisted locally. Sample Travel Planner data is displayed on first startup.
 
-### Agent Query Returns Empty Traces
+- Verify your agent endpoint is correct and running
+- Check network connectivity: `curl http://localhost:8000/agent`
+- Enable debug logging: `DEBUG=true npx @opensearch-project/agent-health`
 
-- Traces take ~2-5 minutes to propagate after agent execution
+### Traces Not Appearing
+
+- Traces take 2-5 minutes to propagate after execution
 - Use the refresh button to re-fetch
-- Check OTEL configuration if traces never appear
+- Verify `OPENSEARCH_LOGS_*` configuration in `.env`
 
 ### LLM Judge Timeouts
 
-When using Demo Judge, mock evaluations are instant. For AWS Bedrock Judge:
-- Verify AWS credentials in your `.env` file
-- Check Bedrock model access in your AWS account
+- Check AWS credentials: `aws sts get-caller-identity`
+- Verify Bedrock model access in your AWS account
+- Use Demo Judge for testing without AWS
 
-### Browser Not Opening
+### Need Help?
 
-If `--no-browser` wasn't specified but browser doesn't open:
-```bash
-# Manually open
-open http://localhost:4001  # macOS
-xdg-open http://localhost:4001  # Linux
-start http://localhost:4001  # Windows
-```
-
-### Enabling Debug Logging
-
-For detailed diagnostic output when troubleshooting:
-
-```bash
-# Start with debug logging enabled
-DEBUG=true npx @opensearch-project/agent-health
-
-# Or toggle at runtime from the Settings page "Verbose Logging" switch
-```
-
-Debug output appears in both the browser console and server terminal. You can also toggle via the API:
-
-```bash
-# Enable
-curl -X POST http://localhost:4001/api/debug -H 'Content-Type: application/json' -d '{"enabled":true}'
-
-# Check status
-curl http://localhost:4001/api/debug
-```
-
-### Module Not Found Errors
-
-Ensure you have Node.js 18+:
-```bash
-node --version
-```
-
-Clear npm cache if needed:
-```bash
-npm cache clean --force
-npx clear-npx-cache  # Clear npx cache
-```
+- Enable verbose logging: Settings > Verbose Logging toggle
+- Check server logs in the terminal
+- Review [CONFIGURATION.md](./CONFIGURATION.md) for detailed setup
+- Open an issue: https://github.com/opensearch-project/dashboards-traces/issues
 
 ---
 
-## Next Steps
+## Additional Resources
 
-1. **Explore Sample Data** - Familiarize yourself with the UI using demo data
-2. **Configure Real Services** - Connect OpenSearch and Bedrock for production use
-3. **Create Custom Use Cases** - Design test scenarios for your domain
-4. **Run Evaluations** - Execute experiments and analyze results
-5. **Integrate CI/CD** - Automate evaluations in your pipeline
-
-### Related Documentation
-
-- [CLAUDE.md](./CLAUDE.md) - Development guide and architecture
-- [ML-COMMONS-SETUP.md](./docs/ML-COMMONS-SETUP.md) - ML Commons agent configuration
-- [.env.example](./.env.example) - Environment variable reference
+- [Configuration Guide](./CONFIGURATION.md) - Detailed configuration options
+- [CLI Reference](./docs/CLI.md) - All CLI commands and options
+- [Connectors Guide](./docs/CONNECTORS.md) - Create custom connectors
+- [Development Guide](./CLAUDE.md) - Contributing and architecture

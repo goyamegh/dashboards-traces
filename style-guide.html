@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Agent Health - Style Guide</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            'opensearch-blue': '#005EB8',
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      font-family: 'Rubik', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+    .code-font {
+      font-family: 'Source Code Pro', 'Monaco', 'Courier New', monospace;
+    }
+  </style>
+</head>
+<body class="bg-white dark:bg-slate-950 text-slate-900 dark:text-slate-100 transition-colors">
+  <div class="max-w-7xl mx-auto p-8">
+    <!-- Theme Toggle -->
+    <div class="fixed top-4 right-4 z-50">
+      <button 
+        onclick="toggleTheme()" 
+        class="px-4 py-2 bg-slate-200 dark:bg-slate-800 rounded-lg border border-slate-300 dark:border-slate-700 hover:bg-slate-300 dark:hover:bg-slate-700 transition-colors"
+      >
+        <span class="dark:hidden">🌙 Dark Mode</span>
+        <span class="hidden dark:inline">☀️ Light Mode</span>
+      </button>
+    </div>
+
+    <!-- Header -->
+    <header class="mb-12">
+      <h1 class="text-4xl font-bold mb-2">Agent Health Style Guide</h1>
+      <p class="text-slate-600 dark:text-slate-400">Comprehensive color and component reference</p>
+    </header>
+
+    <!-- Badges Section -->
+    <section class="mb-12">
+      <h2 class="text-2xl font-bold mb-6 pb-2 border-b border-slate-200 dark:border-slate-800">Badges & Pills</h2>
+      
+      <div class="space-y-8">
+        <!-- Status Badges -->
+        <div>
+          <h3 class="text-lg font-semibold mb-4">Status Badges</h3>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">Built-in (Info Style)</p>
+              <span class="text-[10px] px-1.5 py-0.5 bg-blue-100 text-blue-700 border border-blue-300 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/30 rounded inline-block">built-in</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">Running</p>
+              <span class="text-xs px-2 py-1 bg-blue-100 text-blue-700 border border-blue-300 dark:bg-blue-500/20 dark:text-blue-400 dark:border-blue-500/30 rounded inline-block">Running</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">Latest</p>
+              <span class="text-xs px-2 py-1 bg-blue-100 text-blue-700 border border-blue-300 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/30 rounded inline-block">Latest</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">New</p>
+              <span class="text-xs px-2 py-1 bg-green-100 text-green-700 border border-green-300 dark:bg-green-500/20 dark:text-green-400 dark:border-green-500/30 rounded inline-block">new</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">Passed</p>
+              <span class="text-xs px-2 py-1 bg-green-100 text-green-700 border border-green-300 dark:bg-green-500/20 dark:text-green-400 dark:border-green-500/30 rounded inline-block">PASSED</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">Failed</p>
+              <span class="text-xs px-2 py-1 bg-red-100 text-red-700 border border-red-300 dark:bg-red-500/20 dark:text-red-400 dark:border-red-500/30 rounded inline-block">FAILED</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">Pending</p>
+              <span class="text-xs px-2 py-1 bg-amber-100 text-amber-700 border border-amber-300 dark:bg-amber-500/20 dark:text-amber-400 dark:border-amber-500/30 rounded inline-block">PENDING</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">Outdated</p>
+              <span class="text-xs px-2 py-1 bg-yellow-100 text-yellow-700 border border-yellow-300 dark:bg-yellow-500/10 dark:text-yellow-400 dark:border-yellow-500/30 rounded inline-block">v1.0</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Event Type Badges -->
+        <div>
+          <h3 class="text-lg font-semibold mb-4">Event Type Badges</h3>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">ERROR</p>
+              <span class="text-xs px-2 py-1 text-red-700 bg-red-100 dark:text-red-400 dark:bg-red-500/10 rounded inline-block">ERROR</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">TOOL</p>
+              <span class="text-xs px-2 py-1 text-blue-700 bg-blue-100 dark:text-blue-400 dark:bg-blue-500/10 rounded inline-block">TOOL</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">TEXT</p>
+              <span class="text-xs px-2 py-1 text-blue-700 bg-blue-100 dark:text-blue-600 dark:bg-blue-500/10 rounded inline-block">TEXT</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">RUN</p>
+              <span class="text-xs px-2 py-1 text-purple-700 bg-purple-100 dark:text-purple-400 dark:bg-purple-500/10 rounded inline-block">RUN</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">ACTIVITY</p>
+              <span class="text-xs px-2 py-1 text-amber-700 bg-amber-100 dark:text-amber-400 dark:bg-amber-500/10 rounded inline-block">ACTIVITY</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Span Category Pills -->
+        <div>
+          <h3 class="text-lg font-semibold mb-4">Span Category Pills</h3>
+          <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">LLM</p>
+              <span class="text-xs px-2 py-1 bg-purple-100 text-purple-700 border border-purple-300 dark:bg-purple-500/10 dark:text-purple-400 dark:border-purple-500/30 rounded inline-block">LLM</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">Agent</p>
+              <span class="text-xs px-2 py-1 bg-blue-100 text-blue-700 border border-blue-300 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/30 rounded inline-block">Agent</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">Tool Calls</p>
+              <span class="text-xs px-2 py-1 bg-amber-100 text-amber-700 border border-amber-300 dark:bg-amber-500/10 dark:text-amber-400 dark:border-amber-500/30 rounded inline-block">Tool Calls</span>
+            </div>
+            
+            <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+              <p class="text-xs text-slate-600 dark:text-slate-400 mb-2">Error(s)</p>
+              <span class="text-xs px-2 py-1 bg-red-100 text-red-700 border border-red-300 dark:bg-red-500/10 dark:text-red-400 dark:border-red-500/30 rounded inline-block">Error(s)</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Alert Banners Section -->
+    <section class="mb-12">
+      <h2 class="text-2xl font-bold mb-6 pb-2 border-b border-slate-200 dark:border-slate-800">Alert Banners</h2>
+      
+      <div class="space-y-4">
+        <div class="p-4 bg-yellow-50 dark:bg-yellow-500/10 border border-yellow-300 dark:border-yellow-500/30 rounded-lg">
+          <div class="flex items-center gap-3">
+            <span class="text-yellow-700 dark:text-yellow-400">⚠️</span>
+            <div>
+              <div class="text-sm font-medium text-yellow-700 dark:text-yellow-400">Warning Banner</div>
+              <div class="text-xs text-slate-600 dark:text-slate-400">This is a warning message</div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="p-4 bg-red-50 dark:bg-red-500/10 border border-red-300 dark:border-red-500/30 rounded-lg">
+          <div class="flex items-center gap-3">
+            <span class="text-red-700 dark:text-red-400">❌</span>
+            <div>
+              <div class="text-sm font-medium text-red-700 dark:text-red-400">Error Banner</div>
+              <div class="text-xs text-slate-600 dark:text-slate-400">This is an error message</div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="p-4 bg-green-500/10 border border-green-500/20 rounded-lg">
+          <div class="flex items-center gap-3 text-green-400">
+            <span>✓</span>
+            <div>
+              <div class="text-sm font-medium">Success Banner</div>
+              <div class="text-xs text-slate-600 dark:text-slate-400">This is a success message</div>
+            </div>
+          </div>
+        </div>
+        
+        <div class="p-4 bg-blue-500/10 border border-blue-500/20 rounded-lg">
+          <div class="flex items-center gap-3 text-blue-400">
+            <span>ℹ️</span>
+            <div>
+              <div class="text-sm font-medium">Info Banner</div>
+              <div class="text-xs text-slate-600 dark:text-slate-400">This is an info message</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Metric Cards Section -->
+    <section class="mb-12">
+      <h2 class="text-2xl font-bold mb-6 pb-2 border-b border-slate-200 dark:border-slate-800">Metric Cards</h2>
+      
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+          <div class="text-[10px] text-slate-600 dark:text-slate-400 mb-1">Accuracy</div>
+          <div class="text-xs font-semibold text-blue-700 dark:text-blue-400">95.2%</div>
+        </div>
+        
+        <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+          <div class="text-[10px] text-slate-600 dark:text-slate-400 mb-1">Latency</div>
+          <div class="text-xs font-semibold text-amber-700 dark:text-amber-400">1.2s</div>
+        </div>
+        
+        <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+          <div class="text-[10px] text-slate-600 dark:text-slate-400 mb-1">Duration</div>
+          <div class="text-xs font-semibold text-purple-700 dark:text-purple-400">4m 47s</div>
+        </div>
+        
+        <div class="p-4 bg-slate-50 dark:bg-slate-900 rounded-lg border border-slate-200 dark:border-slate-800">
+          <div class="text-[10px] text-slate-600 dark:text-slate-400 mb-1">Error Rate</div>
+          <div class="text-xs font-semibold text-red-700 dark:text-red-400">2.1%</div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    function toggleTheme() {
+      document.documentElement.classList.toggle('dark');
+    }
+    
+    // Check for saved theme preference or default to light mode
+    if (localStorage.theme === 'dark' || (!('theme' in localStorage) && window.matchMedia('(prefers-color-scheme: dark)').matches)) {
+      document.documentElement.classList.add('dark');
+    }
+    
+    // Save theme preference when toggled
+    const observer = new MutationObserver(() => {
+      localStorage.theme = document.documentElement.classList.contains('dark') ? 'dark' : 'light';
+    });
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+  </script>
+</body>
+</html>

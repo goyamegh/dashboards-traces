@@ -105,7 +105,12 @@ function findMainFlowSpans(spanTree: CategorizedSpan[]): CategorizedSpan[] {
 
   // Case 1: Single root that's a container → main flow is its children
   if (roots.length === 1 && isContainerSpan(roots[0])) {
-    return (roots[0].children as CategorizedSpan[]) || [];
+    const children = (roots[0].children as CategorizedSpan[]) || [];
+    if (children.length === 0) {
+      // Fallback: container has no children, show the root itself instead of empty graph
+      return roots;
+    }
+    return children;
   }
 
   // Case 2: Multiple roots OR single non-container root → roots are main flow

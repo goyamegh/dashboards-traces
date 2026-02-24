@@ -48,6 +48,10 @@ export interface EnvConfig {
   // Travel Planner multi-agent endpoint (OTel Demo in Docker)
   travelPlannerEndpoint: string;
 
+  // LiteLLM (optional - for OpenAI-compatible judge/agent endpoints)
+  litellmApiKey: string;
+  litellmEndpoint: string;
+
   // Claude Code Telemetry (optional - for OTEL traces from Claude Code)
   claudeCodeTelemetryEnabled: boolean;
   otelExporterEndpoint: string;
@@ -104,6 +108,10 @@ export const ENV_CONFIG: EnvConfig = {
 
   // Travel Planner multi-agent endpoint (OTel Demo in Docker)
   travelPlannerEndpoint: getEnvVar('TRAVEL_PLANNER_ENDPOINT', 'http://localhost:3000'),
+
+  // LiteLLM (optional - for OpenAI-compatible judge/agent endpoints)
+  litellmApiKey: getEnvVar('LITELLM_API_KEY', ''),
+  litellmEndpoint: getEnvVar('LITELLM_ENDPOINT', 'http://localhost:4000/v1/chat/completions'),
 
   // Claude Code Telemetry (optional - for OTEL traces from Claude Code)
   claudeCodeTelemetryEnabled: getEnvVar('CLAUDE_CODE_TELEMETRY_ENABLED', 'false') === 'true',

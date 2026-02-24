@@ -1,0 +1,500 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * AgentTracesPageOUI - Agent Traces with OpenSearch UI (OUI) Components
+ *
+ * This is an OUI-styled version of the Agent Traces page, using @opensearch-project/oui
+ * components for a consistent OpenSearch Dashboards look and feel.
+ */
+
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import {
+  OuiPage,
+  OuiPageBody,
+  OuiPageHeader,
+  OuiPageHeaderSection,
+  OuiTitle,
+  OuiButton,
+  OuiFlexGroup,
+  OuiFlexItem,
+  OuiPanel,
+  OuiText,
+  OuiSpacer,
+  OuiFieldSearch,
+  OuiBasicTable,
+  OuiHealth,
+  OuiBadge,
+  OuiFlyout,
+  OuiFlyoutHeader,
+  OuiFlyoutBody,
+  OuiTabbedContent,
+  OuiCodeBlock,
+  OuiStat,
+  OuiCallOut,
+  OuiSelect,
+  OuiFormRow,
+  OuiLoadingSpinner,
+  OuiEmptyPrompt,
+  OuiIcon,
+} from '@opensearch-project/oui';
+import { Span } from '@/types';
+import { DEFAULT_CONFIG } from '@/lib/constants';
+import {
+  fetchRecentTraces,
+  groupSpansByTrace,
+} from '@/services/traces';
+import { formatDuration } from '@/services/traces/utils';
+import { TraceFlyoutContent } from './TraceFlyoutContent';
+
+// ==================== Types ====================
+
+interface TraceTableRow {
+  traceId: string;
+  rootSpanName: string;
+  serviceName: string;
+  startTime: Date;
+  duration: number;
+  spanCount: number;
+  hasErrors: boolean;
+  spans: Span[];
+}
+
+// ==================== Main Component ====================
+
+export const AgentTracesPageOUI: React.FC = () => {
+  // Filter state
+  const [selectedAgent, setSelectedAgent] = useState<string>('all');
+  const [textSearch, setTextSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
+  const [timeRange, setTimeRange] = useState<string>('1440'); // Default to 1 day
+
+  // Loading state
+  const [isLoading, setIsLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [lastRefresh, setLastRefresh] = useState<Date | null>(null);
+
+  // Trace data
+  const [spans, setSpans] = useState<Span[]>([]);
+  const [traces, setTraces] = useState<TraceTableRow[]>([]);
+
+  // Flyout state
+  const [selectedTrace, setSelectedTrace] = useState<TraceTableRow | null>(null);
+
+  // Get unique service names from agents config
+  const agentOptions = useMemo(() => {
+    const agents = DEFAULT_CONFIG.agents
+      .filter(a => a.enabled !== false)
+      .map(a => ({ value: a.name, text: a.name }));
+    return [{ value: 'all', text: 'All Agents' }, ...agents];
+  }, []);
+
+  // Time range options
+  const timeRangeOptions = [
+    { value: '15', text: 'Last 15 minutes' },
+    { value: '60', text: 'Last hour' },
+    { value: '180', text: 'Last 3 hours' },
+    { value: '360', text: 'Last 6 hours' },
+    { value: '720', text: 'Last 12 hours' },
+    { value: '1440', text: 'Last 24 hours' },
+    { value: '4320', text: 'Last 3 days' },
+    { value: '10080', text: 'Last 7 days' },
+  ];
+
+  // Debounce text search
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(textSearch);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [textSearch]);
+
+  // Convert spans to trace table rows
+  const processSpansToTraces = useCallback((allSpans: Span[]): TraceTableRow[] => {
+    const traceGroups = groupSpansByTrace(allSpans);
+
+    return traceGroups.map(group => {
+      const rootSpan = group.spans.find(s => !s.parentSpanId) || group.spans[0];
+      const hasErrors = group.spans.some(s => s.status === 'ERROR');
+
+      // Calculate duration from time range
+      const times = group.spans.map(s => ({
+        start: new Date(s.startTime).getTime(),
+        end: new Date(s.endTime).getTime(),
+      }));
+      const minStart = Math.min(...times.map(t => t.start));
+      const maxEnd = Math.max(...times.map(t => t.end));
+
+      return {
+        traceId: group.traceId,
+        rootSpanName: rootSpan.name,
+        serviceName: rootSpan.attributes?.['service.name'] || 'unknown',
+        startTime: new Date(minStart),
+        duration: maxEnd - minStart,
+        spanCount: group.spans.length,
+        hasErrors,
+        spans: group.spans,
+      };
+    }).sort((a, b) => b.startTime.getTime() - a.startTime.getTime());
+  }, []);
+
+  // Fetch traces
+  const fetchTraces = useCallback(async () => {
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const result = await fetchRecentTraces({
+        minutesAgo: parseInt(timeRange),
+        serviceName: selectedAgent !== 'all' ? selectedAgent : undefined,
+        textSearch: debouncedSearch || undefined,
+        size: 1000,
+      });
+
+      setSpans(result.spans);
+      setTraces(processSpansToTraces(result.spans));
+      setLastRefresh(new Date());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to fetch traces');
+    } finally {
+      setIsLoading(false);
+    }
+  }, [selectedAgent, debouncedSearch, timeRange, processSpansToTraces]);
+
+  // Initial fetch and refetch on filter change
+  useEffect(() => {
+    fetchTraces();
+  }, [fetchTraces]);
+
+  // Calculate stats
+  const stats = useMemo(() => {
+    if (traces.length === 0) return { total: 0, errors: 0, avgDuration: 0 };
+
+    const errors = traces.filter(t => t.hasErrors).length;
+    const avgDuration = traces.reduce((sum, t) => sum + t.duration, 0) / traces.length;
+
+    return {
+      total: traces.length,
+      errors,
+      avgDuration,
+    };
+  }, [traces]);
+
+  // Table columns
+  const columns = [
+    {
+      field: 'traceId',
+      name: 'Trace ID',
+      width: '200px',
+      render: (traceId: string, item: TraceTableRow) => (
+        <OuiFlexGroup gutterSize="s" alignItems="center" responsive={false}>
+          <OuiFlexItem grow={false}>
+            {item.hasErrors ? (
+              <OuiHealth color="danger">Error</OuiHealth>
+            ) : (
+              <OuiHealth color="success">OK</OuiHealth>
+            )}
+          </OuiFlexItem>
+          <OuiFlexItem>
+            <OuiBadge color="hollow">{traceId.slice(0, 16)}...</OuiBadge>
+          </OuiFlexItem>
+        </OuiFlexGroup>
+      ),
+    },
+    {
+      field: 'rootSpanName',
+      name: 'Root Span',
+      truncateText: true,
+    },
+    {
+      field: 'serviceName',
+      name: 'Service',
+      width: '150px',
+      render: (serviceName: string) => <OuiBadge>{serviceName}</OuiBadge>,
+    },
+    {
+      field: 'startTime',
+      name: 'Start Time',
+      width: '180px',
+      render: (startTime: Date) => (
+        <OuiText size="s" color="subdued">
+          {startTime.toLocaleString()}
+        </OuiText>
+      ),
+    },
+    {
+      field: 'duration',
+      name: 'Duration',
+      width: '120px',
+      render: (duration: number) => (
+        <OuiText size="s" color={duration > 5000 ? 'warning' : 'default'}>
+          <code>{formatDuration(duration)}</code>
+        </OuiText>
+      ),
+    },
+    {
+      field: 'spanCount',
+      name: 'Spans',
+      width: '80px',
+      align: 'center' as const,
+      render: (spanCount: number) => <OuiBadge color="default">{spanCount}</OuiBadge>,
+    },
+  ];
+
+  // Flyout tabs
+  const flyoutTabs = selectedTrace ? [
+    {
+      id: 'details',
+      name: 'Details',
+      content: (
+        <>
+          <OuiSpacer />
+          <OuiText>
+            <dl>
+              <dt><strong>Trace ID</strong></dt>
+              <dd><code>{selectedTrace.traceId}</code></dd>
+              <OuiSpacer size="s" />
+              <dt><strong>Root Span</strong></dt>
+              <dd>{selectedTrace.rootSpanName}</dd>
+              <OuiSpacer size="s" />
+              <dt><strong>Service</strong></dt>
+              <dd>{selectedTrace.serviceName}</dd>
+              <OuiSpacer size="s" />
+              <dt><strong>Duration</strong></dt>
+              <dd><code>{formatDuration(selectedTrace.duration)}</code></dd>
+              <OuiSpacer size="s" />
+              <dt><strong>Span Count</strong></dt>
+              <dd>{selectedTrace.spanCount}</dd>
+              <OuiSpacer size="s" />
+              <dt><strong>Status</strong></dt>
+              <dd>
+                {selectedTrace.hasErrors ? (
+                  <OuiHealth color="danger">Error</OuiHealth>
+                ) : (
+                  <OuiHealth color="success">Success</OuiHealth>
+                )}
+              </dd>
+            </dl>
+          </OuiText>
+        </>
+      ),
+    },
+    {
+      id: 'spans',
+      name: 'Spans',
+      content: (
+        <>
+          <OuiSpacer />
+          <OuiCodeBlock language="json" paddingSize="m" isCopyable>
+            {JSON.stringify(selectedTrace.spans, null, 2)}
+          </OuiCodeBlock>
+        </>
+      ),
+    },
+  ] : [];
+
+  return (
+    <OuiPage paddingSize="l">
+      <OuiPageBody>
+        {/* Header */}
+        <OuiPageHeader>
+          <OuiPageHeaderSection>
+            <OuiTitle size="l">
+              <h1>Agent Traces</h1>
+            </OuiTitle>
+            <OuiText size="s" color="subdued">
+              <p>View and analyze agent execution traces from OTEL instrumentation</p>
+            </OuiText>
+          </OuiPageHeaderSection>
+          <OuiPageHeaderSection>
+            <OuiFlexGroup gutterSize="s" alignItems="center">
+              {lastRefresh && (
+                <OuiFlexItem grow={false}>
+                  <OuiText size="xs" color="subdued">
+                    Last updated: {lastRefresh.toLocaleTimeString()}
+                  </OuiText>
+                </OuiFlexItem>
+              )}
+              <OuiFlexItem grow={false}>
+                <OuiButton
+                  iconType="refresh"
+                  onClick={fetchTraces}
+                  isLoading={isLoading}
+                  size="s"
+                >
+                  Refresh
+                </OuiButton>
+              </OuiFlexItem>
+            </OuiFlexGroup>
+          </OuiPageHeaderSection>
+        </OuiPageHeader>
+
+        <OuiSpacer />
+
+        {/* Stats */}
+        <OuiFlexGroup gutterSize="l">
+          <OuiFlexItem>
+            <OuiPanel>
+              <OuiStat
+                title={stats.total.toString()}
+                description="Total Traces"
+                titleColor="primary"
+                titleSize="l"
+                isLoading={isLoading}
+              />
+            </OuiPanel>
+          </OuiFlexItem>
+          <OuiFlexItem>
+            <OuiPanel>
+              <OuiStat
+                title={stats.total > 0 ? `${((stats.errors / stats.total) * 100).toFixed(1)}%` : '0%'}
+                description="Error Rate"
+                titleColor="danger"
+                titleSize="l"
+                isLoading={isLoading}
+              />
+            </OuiPanel>
+          </OuiFlexItem>
+          <OuiFlexItem>
+            <OuiPanel>
+              <OuiStat
+                title={formatDuration(stats.avgDuration)}
+                description="Avg Duration"
+                titleColor="accent"
+                titleSize="l"
+                isLoading={isLoading}
+              />
+            </OuiPanel>
+          </OuiFlexItem>
+          <OuiFlexItem>
+            <OuiPanel>
+              <OuiStat
+                title={spans.length.toString()}
+                description="Total Spans"
+                titleColor="subdued"
+                titleSize="l"
+                isLoading={isLoading}
+              />
+            </OuiPanel>
+          </OuiFlexItem>
+        </OuiFlexGroup>
+
+        <OuiSpacer />
+
+        {/* Filters */}
+        <OuiPanel>
+          <OuiFlexGroup gutterSize="m">
+            <OuiFlexItem grow={2}>
+              <OuiFormRow label="Time Range" display="columnCompressed">
+                <OuiSelect
+                  options={timeRangeOptions}
+                  value={timeRange}
+                  onChange={(e) => setTimeRange(e.target.value)}
+                  compressed
+                />
+              </OuiFormRow>
+            </OuiFlexItem>
+            <OuiFlexItem grow={2}>
+              <OuiFormRow label="Agent" display="columnCompressed">
+                <OuiSelect
+                  options={agentOptions}
+                  value={selectedAgent}
+                  onChange={(e) => setSelectedAgent(e.target.value)}
+                  compressed
+                />
+              </OuiFormRow>
+            </OuiFlexItem>
+            <OuiFlexItem grow={6}>
+              <OuiFormRow label="Search" display="columnCompressed">
+                <OuiFieldSearch
+                  placeholder="Search trace IDs, span names, attributes..."
+                  value={textSearch}
+                  onChange={(e) => setTextSearch(e.target.value)}
+                  isClearable
+                  compressed
+                  fullWidth
+                />
+              </OuiFormRow>
+            </OuiFlexItem>
+          </OuiFlexGroup>
+        </OuiPanel>
+
+        <OuiSpacer />
+
+        {/* Error State */}
+        {error && (
+          <>
+            <OuiCallOut title="Error loading traces" color="danger" iconType="alert">
+              <p>{error}</p>
+            </OuiCallOut>
+            <OuiSpacer />
+          </>
+        )}
+
+        {/* Traces Table */}
+        <OuiPanel>
+          {isLoading && traces.length === 0 ? (
+            <OuiFlexGroup justifyContent="center" alignItems="center" style={{ minHeight: '200px' }}>
+              <OuiFlexItem grow={false}>
+                <OuiLoadingSpinner size="xl" />
+              </OuiFlexItem>
+            </OuiFlexGroup>
+          ) : traces.length === 0 ? (
+            <OuiEmptyPrompt
+              iconType="apmTrace"
+              title={<h3>No traces found</h3>}
+              body={
+                <p>
+                  {selectedAgent !== 'all' || textSearch
+                    ? 'Try adjusting your filters'
+                    : 'Traces will appear here as agents execute'}
+                </p>
+              }
+            />
+          ) : (
+            <OuiBasicTable
+              items={traces}
+              columns={columns}
+              rowProps={(item) => ({
+                onClick: () => setSelectedTrace(item),
+                style: { cursor: 'pointer' },
+              })}
+              loading={isLoading}
+            />
+          )}
+        </OuiPanel>
+
+        {/* Trace Detail Flyout */}
+        {selectedTrace && (
+          <OuiFlyout onClose={() => setSelectedTrace(null)} size="l">
+            <OuiFlyoutHeader hasBorder>
+              <OuiTitle size="m">
+                <h2>Trace Details</h2>
+              </OuiTitle>
+              <OuiSpacer size="s" />
+              <OuiFlexGroup gutterSize="s">
+                <OuiFlexItem grow={false}>
+                  <OuiBadge color="primary">{selectedTrace.serviceName}</OuiBadge>
+                </OuiFlexItem>
+                <OuiFlexItem grow={false}>
+                  {selectedTrace.hasErrors ? (
+                    <OuiBadge color="danger">Error</OuiBadge>
+                  ) : (
+                    <OuiBadge color="success">Success</OuiBadge>
+                  )}
+                </OuiFlexItem>
+              </OuiFlexGroup>
+            </OuiFlyoutHeader>
+            <OuiFlyoutBody>
+              <OuiTabbedContent tabs={flyoutTabs} initialSelectedTab={flyoutTabs[0]} />
+            </OuiFlyoutBody>
+          </OuiFlyout>
+        )}
+      </OuiPageBody>
+    </OuiPage>
+  );
+};
+
+export default AgentTracesPageOUI;

@@ -532,5 +532,199 @@ describe('AsyncBenchmarkStorage', () => {
 
       expect(result?.runs[0].results).toEqual({});
     });
+
+    it('preserves error field in results when present in storage', async () => {
+      const expWithErrorResults = {
+        ...createMockStorageExperiment(),
+        runs: [
+          {
+            id: 'run-1',
+            name: 'Run 1',
+            description: 'Run with error results',
+            agentId: 'agent-1',
+            modelId: 'model-1',
+            headers: {},
+            createdAt: '2024-01-01T00:00:00Z',
+            results: {
+              'tc-1': { reportId: 'report-1', status: 'failed', error: 'Agent timed out after 30s' },
+              'tc-2': { reportId: 'report-2', status: 'completed' },
+            },
+          },
+        ],
+      };
+      mockOsExperiments.getById.mockResolvedValue(expWithErrorResults);
+
+      const result = await asyncBenchmarkStorage.getById('exp-1');
+
+      expect(result?.runs[0].results['tc-1'].error).toBe('Agent timed out after 30s');
+      expect(result?.runs[0].results['tc-2'].error).toBeUndefined();
+    });
+
+    it('does not add error key to results when error is absent in storage', async () => {
+      const expWithNoErrors = {
+        ...createMockStorageExperiment(),
+        runs: [
+          {
+            id: 'run-1',
+            name: 'Run 1',
+            description: 'Run with clean results',
+            agentId: 'agent-1',
+            modelId: 'model-1',
+            headers: {},
+            createdAt: '2024-01-01T00:00:00Z',
+            results: {
+              'tc-1': { reportId: 'report-1', status: 'completed' },
+              'tc-2': { reportId: 'report-2', status: 'pending' },
+            },
+          },
+        ],
+      };
+      mockOsExperiments.getById.mockResolvedValue(expWithNoErrors);
+
+      const result = await asyncBenchmarkStorage.getById('exp-1');
+
+      // Verify no error key exists on any result (no undefined pollution)
+      expect(result?.runs[0].results['tc-1']).not.toHaveProperty('error');
+      expect(result?.runs[0].results['tc-2']).not.toHaveProperty('error');
+    });
+
+    it('preserves error field on the run itself when present', async () => {
+      const expWithRunError = {
+        ...createMockStorageExperiment(),
+        runs: [
+          {
+            id: 'run-1',
+            name: 'Run 1',
+            description: 'Failed run',
+            agentId: 'agent-1',
+            modelId: 'model-1',
+            headers: {},
+            createdAt: '2024-01-01T00:00:00Z',
+            status: 'failed',
+            error: 'Benchmark execution aborted: too many failures',
+            results: {
+              'tc-1': { reportId: 'report-1', status: 'failed', error: 'Connection refused' },
+            },
+          },
+        ],
+      };
+      mockOsExperiments.getById.mockResolvedValue(expWithRunError);
+
+      const result = await asyncBenchmarkStorage.getById('exp-1');
+
+      expect(result?.runs[0].error).toBe('Benchmark execution aborted: too many failures');
+      expect(result?.runs[0].status).toBe('failed');
+    });
+
+    it('sets run error to undefined when not present in storage', async () => {
+      const expWithNoRunError = {
+        ...createMockStorageExperiment(),
+        runs: [
+          {
+            id: 'run-1',
+            name: 'Run 1',
+            description: 'Successful run',
+            agentId: 'agent-1',
+            modelId: 'model-1',
+            headers: {},
+            createdAt: '2024-01-01T00:00:00Z',
+            status: 'completed',
+            results: {
+              'tc-1': { reportId: 'report-1', status: 'completed' },
+            },
+          },
+        ],
+      };
+      mockOsExperiments.getById.mockResolvedValue(expWithNoRunError);
+
+      const result = await asyncBenchmarkStorage.getById('exp-1');
+
+      expect(result?.runs[0].error).toBeUndefined();
+      expect(result?.runs[0].status).toBe('completed');
+    });
+
+    it('round-trips all fields including error through toBenchmarkRun', async () => {
+      const storedRun = {
+        id: 'run-full',
+        name: 'Full Run',
+        description: 'Complete run with all fields',
+        agentKey: 'my-agent',
+        modelId: 'claude-sonnet',
+        headers: { Authorization: 'Bearer token' },
+        createdAt: '2024-06-15T12:00:00Z',
+        status: 'failed',
+        error: 'Run-level error message',
+        benchmarkVersion: 3,
+        testCaseSnapshots: [{ id: 'tc-1', version: 2 }],
+        stats: { passed: 1, failed: 2, pending: 0, total: 3 },
+        results: {
+          'tc-1': { reportId: 'report-1', status: 'completed' },
+          'tc-2': { reportId: 'report-2', status: 'failed', error: 'Evaluation error: judge unavailable' },
+          'tc-3': { reportId: 'report-3', status: 'failed', error: 'Agent returned empty response' },
+        },
+      };
+      const expWithFullRun = {
+        ...createMockStorageExperiment(),
+        runs: [storedRun],
+      };
+      mockOsExperiments.getById.mockResolvedValue(expWithFullRun);
+
+      const result = await asyncBenchmarkStorage.getById('exp-1');
+      const run = result?.runs[0];
+
+      // Verify all top-level fields
+      expect(run?.id).toBe('run-full');
+      expect(run?.name).toBe('Full Run');
+      expect(run?.description).toBe('Complete run with all fields');
+      expect(run?.agentKey).toBe('my-agent');
+      expect(run?.modelId).toBe('claude-sonnet');
+      expect(run?.headers).toEqual({ Authorization: 'Bearer token' });
+      expect(run?.createdAt).toBe('2024-06-15T12:00:00Z');
+      expect(run?.status).toBe('failed');
+      expect(run?.error).toBe('Run-level error message');
+      expect(run?.benchmarkVersion).toBe(3);
+      expect(run?.testCaseSnapshots).toEqual([{ id: 'tc-1', version: 2 }]);
+      expect(run?.stats).toEqual({ passed: 1, failed: 2, pending: 0, total: 3 });
+
+      // Verify results with mixed error states
+      expect(run?.results['tc-1']).toEqual({ reportId: 'report-1', status: 'completed' });
+      expect(run?.results['tc-1']).not.toHaveProperty('error');
+      expect(run?.results['tc-2']).toEqual({
+        reportId: 'report-2',
+        status: 'failed',
+        error: 'Evaluation error: judge unavailable',
+      });
+      expect(run?.results['tc-3']).toEqual({
+        reportId: 'report-3',
+        status: 'failed',
+        error: 'Agent returned empty response',
+      });
+    });
+
+    it('does not spread empty string error into results', async () => {
+      const expWithEmptyError = {
+        ...createMockStorageExperiment(),
+        runs: [
+          {
+            id: 'run-1',
+            name: 'Run 1',
+            description: 'Run with empty error string',
+            agentId: 'agent-1',
+            modelId: 'model-1',
+            headers: {},
+            createdAt: '2024-01-01T00:00:00Z',
+            results: {
+              'tc-1': { reportId: 'report-1', status: 'failed', error: '' },
+            },
+          },
+        ],
+      };
+      mockOsExperiments.getById.mockResolvedValue(expWithEmptyError);
+
+      const result = await asyncBenchmarkStorage.getById('exp-1');
+
+      // Empty string is falsy, so the conditional spread should not include it
+      expect(result?.runs[0].results['tc-1']).not.toHaveProperty('error');
+    });
   });
 });

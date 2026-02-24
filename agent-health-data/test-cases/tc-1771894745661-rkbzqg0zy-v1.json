@@ -1,0 +1,14 @@
+{
+  "name": "ID Test 1771894745661",
+  "category": "RCA",
+  "difficulty": "Easy",
+  "initialPrompt": "Test prompt",
+  "expectedOutcomes": [
+    "Outcome"
+  ],
+  "id": "tc-1771894745661-rkbzqg0zy",
+  "version": 1,
+  "currentVersion": 1,
+  "createdAt": "2026-02-24T00:59:05.661Z",
+  "updatedAt": "2026-02-24T00:59:05.661Z"
+}

@@ -1,0 +1,33 @@
+{
+  "name": "OTEL Demo: Checkout Service Memory Issues",
+  "description": "Investigate checkoutservice pod restarts in the OTEL demo application",
+  "category": "RCA",
+  "difficulty": "Easy",
+  "initialPrompt": "The checkoutservice in our OTEL demo application keeps restarting. Users are experiencing intermittent checkout failures. Can you investigate the traces in the otel-v1-apm-span-* index to find what's causing the service to fail?",
+  "context": [
+    {
+      "description": "OTEL Demo Architecture",
+      "value": "OTEL Demo microservices:\n- frontend (Node.js) → cartservice (Go) → checkoutservice (Go)\n- checkoutservice calls: paymentservice, shippingservice, currencyservice, emailservice\n- All services instrumented with OpenTelemetry\n- Traces stored in OpenSearch index: otel-v1-apm-span-*\n- Service map in: otel-v1-apm-service-map"
+    },
+    {
+      "description": "OpenSearch Indices",
+      "value": "Available indices for investigation:\n- otel-v1-apm-span-*: Contains distributed traces with span data\n- otel-v1-apm-service-map: Service dependency information\n- Fields: traceId, spanId, serviceName, operationName, duration, status.code, resource.service.name"
+    },
+    {
+      "description": "Recent Observations",
+      "value": "Observations from monitoring:\n- checkoutservice: 8 restarts in the last hour\n- Error spans showing status.code = 2 (ERROR)\n- Some traces show checkoutservice spans terminating abruptly\n- Memory metrics show gradual increase before each restart"
+    }
+  ],
+  "expectedOutcomes": [
+    "Query otel-v1-apm-span-* index for checkoutservice error spans",
+    "Identify the pattern of failures from trace data",
+    "Find spans with status.code = 2 or error tags",
+    "Correlate timing of errors with service restarts",
+    "Recommend investigation of memory usage or resource limits"
+  ],
+  "id": "tc-1771894745653-fdh82radx",
+  "version": 1,
+  "currentVersion": 1,
+  "createdAt": "2026-02-24T00:59:05.653Z",
+  "updatedAt": "2026-02-24T00:59:05.653Z"
+}

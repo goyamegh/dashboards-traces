@@ -15,6 +15,7 @@
  */
 
 import { getOpenSearchClient, INDEXES, isStorageConfigured } from '../opensearchClient.js';
+import { computeStatsForRun } from './statsComputation.js';
 import type { Client } from '@opensearch-project/opensearch';
 
 // Re-export for convenience
@@ -253,6 +254,33 @@ export async function saveReport(
     throw new Error('Storage not configured');
   }
   return saveReportWithClient(client, report, options);
+}
+
+// ==================== Test Case Run Activity ====================
+
+/**
+ * Denormalize lastRunAt onto all versions of a test case document.
+ * Called fire-and-forget after every evaluation run completes.
+ * Uses a conditional Painless script so out-of-order calls are safe.
+ */
+export async function updateTestCaseLastRunAt(
+  client: Client,
+  testCaseId: string,
+  timestamp: string
+): Promise<void> {
+  await client.updateByQuery({
+    index: INDEXES.testCases,
+    refresh: false,
+    conflicts: 'proceed',
+    body: {
+      script: {
+        source: `if (ctx._source.lastRunAt == null || params.t.compareTo(ctx._source.lastRunAt.toString()) > 0) { ctx._source.lastRunAt = params.t }`,
+        lang: 'painless',
+        params: { t: timestamp },
+      },
+      query: { term: { id: testCaseId } },
+    },
+  });
 }
 
 // ==================== Helpers ====================

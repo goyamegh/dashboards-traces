@@ -145,10 +145,13 @@ router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
       realData = realData.map(toSummary);
     }
 
-    // Sort real data by createdAt descending (newest first)
-    const sortedRealData = realData.sort((a, b) =>
-      new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    // Sort real data by lastActivity (max of lastRunAt, updatedAt, createdAt) descending
+    const lastActivity = (tc: any): number => Math.max(
+      tc.lastRunAt ? new Date(tc.lastRunAt).getTime() : 0,
+      tc.updatedAt ? new Date(tc.updatedAt).getTime() : 0,
+      tc.createdAt ? new Date(tc.createdAt).getTime() : 0,
     );
+    const sortedRealData = realData.sort((a, b) => lastActivity(b) - lastActivity(a));
 
     // Get sample data (filtered by IDs if specified)
     let sampleData = getSampleTestCases();
@@ -160,10 +163,8 @@ router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
     if (isSummary) {
       sampleData = sampleData.map(toSummary);
     }
-    // Sort sample data by createdAt descending
-    sampleData = sampleData.sort((a, b) =>
-      new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
-    );
+    // Sort sample data by lastActivity descending
+    sampleData = sampleData.sort((a, b) => lastActivity(b) - lastActivity(a));
 
     // User data first, then sample data
     let allData = [...sortedRealData, ...sampleData];

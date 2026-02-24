@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, GitCompare, Calendar, CheckCircle2, XCircle, Play, Trash2, Plus, X, Loader2, Circle, Check, ChevronRight, Clock, StopCircle, Ban } from 'lucide-react';
+import { ArrowLeft, GitCompare, Calendar, CheckCircle2, XCircle, Play, Trash2, Plus, X, Loader2, Circle, Check, ChevronRight, ChevronDown, Clock, StopCircle, Ban } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -30,6 +30,7 @@ import {
   VersionData,
 } from '@/lib/benchmarkVersionUtils';
 import { RunConfigForExecution } from './BenchmarkEditor';
+import { TestCaseDetailPanel } from './TestCaseDetailPanel';
 
 // Track individual use case status during run
 interface UseCaseRunStatus {
@@ -121,6 +122,9 @@ export const BenchmarkRunsPage: React.FC = () => {
   // Version panel state
   const [testCaseVersion, setTestCaseVersion] = useState<number | null>(null); // null = latest
   const [runVersionFilter, setRunVersionFilter] = useState<number | 'all'>('all');
+
+  // Expanded test case card state
+  const [expandedTestCaseId, setExpandedTestCaseId] = useState<string | null>(null);
 
   // Cancellation hook
   const { isCancelling, handleCancelRun } = useBenchmarkCancellation();
@@ -615,10 +619,10 @@ export const BenchmarkRunsPage: React.FC = () => {
                   {(selectedVersionData.added.length > 0 || selectedVersionData.removed.length > 0) && (
                     <div className="flex items-center gap-2 text-xs">
                       {selectedVersionData.added.length > 0 && (
-                        <span className="text-green-400">+{selectedVersionData.added.length} added</span>
+                        <span className="text-green-700 dark:text-green-400">+{selectedVersionData.added.length} added</span>
                       )}
                       {selectedVersionData.removed.length > 0 && (
-                        <span className="text-red-400">-{selectedVersionData.removed.length} removed</span>
+                        <span className="text-red-700 dark:text-red-400">-{selectedVersionData.removed.length} removed</span>
                       )}
                       <span className="text-muted-foreground">from v{selectedVersionData.version - 1}</span>
                     </div>
@@ -639,8 +643,8 @@ export const BenchmarkRunsPage: React.FC = () => {
                       key={tc.id}
                       className={`cursor-pointer hover:border-primary/50 transition-colors ${
                         isAddedInThisVersion ? 'border-green-500/30 bg-green-500/5' : ''
-                      }`}
-                      onClick={() => navigate(`/test-cases/${tc.id}/runs`)}
+                      } ${expandedTestCaseId === tc.id ? 'border-primary/50' : ''}`}
+                      onClick={() => setExpandedTestCaseId(prev => prev === tc.id ? null : tc.id)}
                     >
                       <CardContent className="p-3">
                         <div className="flex items-center justify-between">
@@ -648,7 +652,7 @@ export const BenchmarkRunsPage: React.FC = () => {
                             <div className="flex items-center gap-2">
                               <p className="text-sm font-medium truncate">{tc.name}</p>
                               {isAddedInThisVersion && (
-                                <Badge className="text-xs bg-green-500/20 text-green-400 border-green-500/30">
+                                <Badge className="text-xs bg-green-100 text-green-700 border-green-300 dark:bg-green-500/20 dark:text-green-400 dark:border-green-500/30">
                                   new
                                 </Badge>
                               )}
@@ -666,8 +670,35 @@ export const BenchmarkRunsPage: React.FC = () => {
                               )}
                             </div>
                           </div>
-                          <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
+                          <ChevronDown
+                            size={16}
+                            className={`text-muted-foreground transition-transform flex-shrink-0 ${
+                              expandedTestCaseId === tc.id ? 'rotate-180' : ''
+                            }`}
+                          />
                         </div>
+
+                        {expandedTestCaseId === tc.id && (
+                          <div
+                            className="mt-3 pt-3 border-t border-border"
+                            onClick={e => e.stopPropagation()}
+                          >
+                            <TestCaseDetailPanel testCase={tc} />
+                            <Button
+                              variant="link"
+                              size="sm"
+                              className="mt-3 p-0 h-auto text-xs text-opensearch-blue hover:text-blue-400"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigate(`/test-cases/${tc.id}/runs`, {
+                                  state: { from: `/benchmarks/${benchmarkId}/runs` },
+                                });
+                              }}
+                            >
+                              View all runs for this test case →
+                            </Button>
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
                   );
@@ -732,11 +763,11 @@ export const BenchmarkRunsPage: React.FC = () => {
                     {useCaseStatuses.map(uc => (
                       <div key={uc.id} className="flex items-center gap-2 text-xs">
                         {uc.status === 'pending' && <Circle size={12} className="text-muted-foreground" />}
-                        {uc.status === 'running' && <Loader2 size={12} className="text-blue-400 animate-spin" />}
-                        {uc.status === 'completed' && <CheckCircle2 size={12} className="text-opensearch-blue" />}
-                        {uc.status === 'failed' && <XCircle size={12} className="text-red-400" />}
-                        {uc.status === 'cancelled' && <Ban size={12} className="text-orange-400" />}
-                        <span className={uc.status === 'running' ? 'text-blue-400' : uc.status === 'cancelled' ? 'text-orange-400' : 'text-muted-foreground'}>
+                        {uc.status === 'running' && <Loader2 size={12} className="text-blue-700 dark:text-blue-400 animate-spin" />}
+                        {uc.status === 'completed' && <CheckCircle2 size={12} className="text-green-700 dark:text-green-400" />}
+                        {uc.status === 'failed' && <XCircle size={12} className="text-red-700 dark:text-red-400" />}
+                        {uc.status === 'cancelled' && <Ban size={12} className="text-amber-700 dark:text-amber-400" />}
+                        <span className={uc.status === 'running' ? 'text-blue-700 dark:text-blue-400' : uc.status === 'cancelled' ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}>
                           {uc.name}
                         </span>
                       </div>
@@ -750,8 +781,8 @@ export const BenchmarkRunsPage: React.FC = () => {
             {deleteState.message && (
               <div className={`flex items-center gap-2 text-sm mb-4 p-3 rounded-lg ${
                 deleteState.status === 'success'
-                  ? 'bg-green-500/10 text-green-400 border border-green-500/20'
-                  : 'bg-red-500/10 text-red-400 border border-red-500/20'
+                  ? 'bg-green-100 text-green-700 border border-green-300 dark:bg-green-500/10 dark:text-green-400 dark:border-green-500/20'
+                  : 'bg-red-100 text-red-700 border border-red-300 dark:bg-red-500/10 dark:text-red-400 dark:border-red-500/20'
               }`}>
                 {deleteState.status === 'success' ? <CheckCircle2 size={16} /> : <XCircle size={16} />}
                 <span>{deleteState.message}</span>
@@ -817,19 +848,19 @@ export const BenchmarkRunsPage: React.FC = () => {
                               <div className="flex items-center gap-2 mb-1">
                                 <h3 className="font-semibold">{run.name}</h3>
                                 {getEffectiveRunStatus(run) === 'running' && (
-                                  <Badge className="text-xs bg-blue-500/20 text-blue-400 border-blue-500/30 animate-pulse">
+                                  <Badge className="text-xs bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-500/20 dark:text-blue-400 dark:border-blue-500/30 animate-pulse">
                                     <Loader2 size={12} className="mr-1 animate-spin" />
                                     Running
                                   </Badge>
                                 )}
                                 {getEffectiveRunStatus(run) === 'cancelled' && (
-                                  <Badge className="text-xs bg-gray-500/20 text-gray-400 border-gray-500/30">
+                                  <Badge className="text-xs bg-gray-100 text-gray-700 border-gray-300 dark:bg-gray-500/20 dark:text-gray-400 dark:border-gray-500/30">
                                     <XCircle size={12} className="mr-1" />
                                     Cancelled
                                   </Badge>
                                 )}
                                 {isLatestRun && (
-                                  <Badge variant="outline" className="text-xs bg-blue-500/10 text-blue-400 border-blue-500/30">
+                                  <Badge variant="outline" className="text-xs bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/30">
                                     Latest
                                   </Badge>
                                 )}
@@ -839,7 +870,7 @@ export const BenchmarkRunsPage: React.FC = () => {
                                     variant="outline"
                                     className={`text-xs ${
                                       run.benchmarkVersion < benchmark.currentVersion
-                                        ? 'bg-yellow-500/10 text-yellow-400 border-yellow-500/30'
+                                        ? 'bg-yellow-100 text-yellow-700 border-yellow-300 dark:bg-yellow-500/10 dark:text-yellow-400 dark:border-yellow-500/30'
                                         : 'text-muted-foreground'
                                     }`}
                                     title={run.benchmarkVersion < (benchmark.currentVersion || 1)
@@ -870,22 +901,22 @@ export const BenchmarkRunsPage: React.FC = () => {
                             {(stats.total > 0 || getEffectiveRunStatus(run) === 'running') && (
                               <div className="flex items-center gap-4 text-sm">
                                 {stats.running > 0 && (
-                                  <span className="flex items-center gap-1 text-blue-400" title="Running">
+                                  <span className="flex items-center gap-1 text-blue-700 dark:text-blue-400" title="Running">
                                     <Loader2 size={14} className="animate-spin" />
                                     {stats.running}
                                   </span>
                                 )}
                                 {stats.pending > 0 && (
-                                  <span className="flex items-center gap-1 text-yellow-400" title="Pending">
+                                  <span className="flex items-center gap-1 text-amber-700 dark:text-amber-400" title="Pending">
                                     <Clock size={14} />
                                     {stats.pending}
                                   </span>
                                 )}
-                                <span className="flex items-center gap-1 text-opensearch-blue">
+                                <span className="flex items-center gap-1 text-green-700 dark:text-green-400">
                                   <CheckCircle2 size={14} />
                                   {stats.passed}
                                 </span>
-                                <span className="flex items-center gap-1 text-red-400">
+                                <span className="flex items-center gap-1 text-red-700 dark:text-red-400">
                                   <XCircle size={14} />
                                   {stats.failed}
                                 </span>
@@ -904,7 +935,7 @@ export const BenchmarkRunsPage: React.FC = () => {
                                   if (!benchmarkId) return;
                                   handleCancelRun(benchmarkId, run.id, loadBenchmark);
                                 }}
-                                className="text-red-400 hover:text-red-300 hover:bg-red-500/10 border-red-500/30 disabled:opacity-50"
+                                className="text-red-700 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 hover:bg-red-500/10 border-red-500/30 disabled:opacity-50"
                               >
                                 {isCancelling(run.id) ? (
                                   <Loader2 size={14} className="mr-1 animate-spin" />
@@ -922,7 +953,7 @@ export const BenchmarkRunsPage: React.FC = () => {
                                 handleDeleteRun(run);
                               }}
                               disabled={deleteState.isDeleting && deleteState.deletingId === run.id}
-                              className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
+                              className="text-red-700 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 hover:bg-red-500/10"
                               title="Delete run"
                             >
                               {deleteState.isDeleting && deleteState.deletingId === run.id ? (

@@ -15,11 +15,15 @@ import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress } from '@/types';
 const mockGetAllTestCasesWithClient = jest.fn();
 const mockSaveReportWithClient = jest.fn();
 const mockUpdateRunWithClient = jest.fn();
+const mockUpdateBenchmarkRunStatsForReport = jest.fn();
+const mockUpdateTestCaseLastRunAt = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('@/server/services/storage', () => ({
   getAllTestCasesWithClient: (...args: any[]) => mockGetAllTestCasesWithClient(...args),
   saveReportWithClient: (...args: any[]) => mockSaveReportWithClient(...args),
   updateRunWithClient: (...args: any[]) => mockUpdateRunWithClient(...args),
+  updateBenchmarkRunStatsForReport: (...args: any[]) => mockUpdateBenchmarkRunStatsForReport(...args),
+  updateTestCaseLastRunAt: (...args: any[]) => mockUpdateTestCaseLastRunAt(...args),
 }));
 
 // Mock OpenSearch client

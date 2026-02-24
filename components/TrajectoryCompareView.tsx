@@ -34,19 +34,19 @@ export const TrajectoryCompareView: React.FC<TrajectoryCompareViewProps> = ({
 
   const getStepTypeColor = (type: TrajectoryStep['type']) => {
     switch (type) {
-      case 'assistant': return 'text-purple-400 bg-purple-500/10';
-      case 'action': return 'text-blue-400 bg-blue-500/10';
-      case 'tool_result': return 'text-amber-400 bg-amber-500/10';
-      case 'response': return 'text-opensearch-blue bg-opensearch-blue/10';
+      case 'assistant': return 'text-purple-700 bg-purple-100 dark:text-purple-400 dark:bg-purple-500/10';
+      case 'action': return 'text-blue-700 bg-blue-100 dark:text-blue-400 dark:bg-blue-500/10';
+      case 'tool_result': return 'text-amber-700 bg-amber-100 dark:text-amber-400 dark:bg-amber-500/10';
+      case 'response': return 'text-blue-700 bg-blue-100 dark:text-opensearch-blue dark:bg-opensearch-blue/10';
       default: return 'text-muted-foreground bg-muted';
     }
   };
 
   const getStatusIcon = (status?: ToolCallStatus) => {
     if (status === ToolCallStatus.SUCCESS) {
-      return <CheckCircle2 size={12} className="text-opensearch-blue" />;
+      return <CheckCircle2 size={12} className="text-green-700 dark:text-green-400" />;
     } else if (status === ToolCallStatus.FAILURE) {
-      return <XCircle size={12} className="text-red-400" />;
+      return <XCircle size={12} className="text-red-700 dark:text-red-400" />;
     }
     return null;
   };
@@ -129,9 +129,9 @@ export const TrajectoryCompareView: React.FC<TrajectoryCompareViewProps> = ({
                 <h3 className="font-semibold">{leftLabel}</h3>
                 <div className="flex items-center gap-2 mt-1">
                   {leftReport.passFailStatus === 'passed' ? (
-                    <Badge className="bg-opensearch-blue/20 text-opensearch-blue">PASSED</Badge>
+                    <Badge className="bg-green-100 text-green-700 border-green-300 dark:bg-green-500/20 dark:text-green-400 dark:border-green-500/30">PASSED</Badge>
                   ) : (
-                    <Badge className="bg-red-500/20 text-red-400">FAILED</Badge>
+                    <Badge className="bg-red-100 text-red-700 border-red-300 dark:bg-red-500/20 dark:text-red-400 dark:border-red-500/30">FAILED</Badge>
                   )}
                   <span className="text-xs text-muted-foreground">
                     {leftSteps.length} steps
@@ -144,9 +144,9 @@ export const TrajectoryCompareView: React.FC<TrajectoryCompareViewProps> = ({
                 <h3 className="font-semibold">{rightLabel}</h3>
                 <div className="flex items-center gap-2 mt-1">
                   {rightReport.passFailStatus === 'passed' ? (
-                    <Badge className="bg-opensearch-blue/20 text-opensearch-blue">PASSED</Badge>
+                    <Badge className="bg-green-100 text-green-700 border-green-300 dark:bg-green-500/20 dark:text-green-400 dark:border-green-500/30">PASSED</Badge>
                   ) : (
-                    <Badge className="bg-red-500/20 text-red-400">FAILED</Badge>
+                    <Badge className="bg-red-100 text-red-700 border-red-300 dark:bg-red-500/20 dark:text-red-400 dark:border-red-500/30">FAILED</Badge>
                   )}
                   <span className="text-xs text-muted-foreground">
                     {rightSteps.length} steps

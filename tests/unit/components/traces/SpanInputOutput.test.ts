@@ -19,6 +19,18 @@ interface SpanIOData {
   modelId?: string;
 }
 
+function getEventContent(span: Span, eventName: string): string | null {
+  if (!span.events) return null;
+  const event = span.events.find(e => e.name === eventName);
+  if (!event?.attributes) return null;
+  const value = event.attributes['content'] ||
+                event.attributes['body'] ||
+                event.attributes['gen_ai.content'] ||
+                event.attributes['message'];
+  if (!value) return null;
+  return typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
+}
+
 function extractSpanIO(span: Span): SpanIOData {
   const attrs = span.attributes || {};
   const name = span.name.toLowerCase();
@@ -37,16 +49,20 @@ function extractSpanIO(span: Span): SpanIOData {
   let input: string | null = null;
   let output: string | null = null;
 
-  // LLM spans
+  // LLM spans - check span events first (standard OTel), then attributes
   if (category === 'llm') {
-    input = attrs['gen_ai.prompt'] ||
+    input = getEventContent(span, 'gen_ai.content.prompt') ||
+            attrs['gen_ai.input.messages'] ||
+            attrs['gen_ai.prompt'] ||
             attrs['gen_ai.prompt.0.content'] ||
             attrs['llm.prompts'] ||
             attrs['llm.input_messages'] ||
             attrs['input.value'] ||
             null;
 
-    output = attrs['gen_ai.completion'] ||
+    output = getEventContent(span, 'gen_ai.content.completion') ||
+             attrs['gen_ai.output.messages'] ||
+             attrs['gen_ai.completion'] ||
              attrs['gen_ai.completion.0.content'] ||
              attrs['llm.completions'] ||
              attrs['llm.output_messages'] ||
@@ -54,30 +70,38 @@ function extractSpanIO(span: Span): SpanIOData {
              null;
   }
 
-  // Tool spans
+  // Tool spans - OTel standard: gen_ai.tool.call.arguments / gen_ai.tool.call.result
   if (category === 'tool') {
-    input = attrs['gen_ai.tool.input'] ||
+    input = attrs['gen_ai.tool.call.arguments'] ||
+            getEventContent(span, 'gen_ai.tool.input') ||
+            attrs['gen_ai.tool.input'] ||
             attrs['tool.input'] ||
             attrs['input.value'] ||
             attrs['tool.parameters'] ||
             null;
 
-    output = attrs['gen_ai.tool.output'] ||
+    output = attrs['gen_ai.tool.call.result'] ||
+             getEventContent(span, 'gen_ai.tool.output') ||
+             attrs['gen_ai.tool.output'] ||
              attrs['tool.output'] ||
              attrs['output.value'] ||
              attrs['tool.result'] ||
              null;
   }
 
-  // Agent spans
+  // Agent spans - check events then attributes
   if (category === 'agent') {
-    input = attrs['gen_ai.agent.input'] ||
+    input = getEventContent(span, 'gen_ai.content.prompt') ||
+            attrs['gen_ai.input.messages'] ||
+            attrs['gen_ai.agent.input'] ||
             attrs['agent.input'] ||
             attrs['input.value'] ||
             attrs['user.message'] ||
             null;
 
-    output = attrs['gen_ai.agent.output'] ||
+    output = getEventContent(span, 'gen_ai.content.completion') ||
+             attrs['gen_ai.output.messages'] ||
+             attrs['gen_ai.agent.output'] ||
              attrs['agent.output'] ||
              attrs['output.value'] ||
              attrs['assistant.message'] ||
@@ -498,5 +522,226 @@ describe('SpanInputOutput - category counts', () => {
     expect(categoryCounts.llm).toBe(2);
     expect(categoryCounts.tool).toBe(3);
     expect(categoryCounts.other).toBe(0);
+  });
+});
+
+describe('SpanInputOutput - OTel span event extraction', () => {
+  it('extracts LLM input/output from gen_ai.content.prompt/completion span events', () => {
+    const span = createSpan({
+      name: 'llm.call',
+      attributes: { 'gen_ai.system': 'openai' },
+      events: [
+        { name: 'gen_ai.content.prompt', time: '2024-01-01T00:00:00Z', attributes: { content: 'What is the weather?' } },
+        { name: 'gen_ai.content.completion', time: '2024-01-01T00:00:01Z', attributes: { content: 'The weather is sunny.' } },
+      ],
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBe('What is the weather?');
+    expect(result.output).toBe('The weather is sunny.');
+  });
+
+  it('prefers span events over attributes for LLM spans', () => {
+    const span = createSpan({
+      name: 'llm.call',
+      attributes: {
+        'gen_ai.system': 'openai',
+        'gen_ai.prompt': 'attribute prompt',
+      },
+      events: [
+        { name: 'gen_ai.content.prompt', time: '2024-01-01T00:00:00Z', attributes: { content: 'event prompt' } },
+      ],
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBe('event prompt');
+  });
+
+  it('extracts from event body attribute', () => {
+    const span = createSpan({
+      name: 'llm.call',
+      attributes: { 'gen_ai.system': 'aws_bedrock' },
+      events: [
+        { name: 'gen_ai.content.prompt', time: '2024-01-01T00:00:00Z', attributes: { body: 'prompt from body' } },
+      ],
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBe('prompt from body');
+  });
+
+  it('extracts tool input/output from span events', () => {
+    const span = createSpan({
+      name: 'tool.execute',
+      attributes: { 'gen_ai.tool.name': 'search' },
+      events: [
+        { name: 'gen_ai.tool.input', time: '2024-01-01T00:00:00Z', attributes: { content: '{"query": "errors"}' } },
+        { name: 'gen_ai.tool.output', time: '2024-01-01T00:00:01Z', attributes: { content: '{"count": 5}' } },
+      ],
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBe('{"query": "errors"}');
+    expect(result.output).toBe('{"count": 5}');
+  });
+
+  it('extracts agent input/output from gen_ai.content events', () => {
+    const span = createSpan({
+      name: 'agent.run',
+      attributes: { 'gen_ai.agent.name': 'rca-agent' },
+      events: [
+        { name: 'gen_ai.content.prompt', time: '2024-01-01T00:00:00Z', attributes: { content: 'Analyze this error' } },
+        { name: 'gen_ai.content.completion', time: '2024-01-01T00:00:01Z', attributes: { content: 'Root cause found' } },
+      ],
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBe('Analyze this error');
+    expect(result.output).toBe('Root cause found');
+  });
+
+  it('handles events with no matching attributes gracefully', () => {
+    const span = createSpan({
+      name: 'llm.call',
+      attributes: { 'gen_ai.system': 'openai' },
+      events: [
+        { name: 'gen_ai.content.prompt', time: '2024-01-01T00:00:00Z', attributes: { unrelated: 'value' } },
+      ],
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBeNull();
+  });
+
+  it('handles spans with empty events array', () => {
+    const span = createSpan({
+      name: 'llm.call',
+      attributes: { 'gen_ai.system': 'openai' },
+      events: [],
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBeNull();
+    expect(result.output).toBeNull();
+  });
+
+  it('serializes object content from events to JSON', () => {
+    const span = createSpan({
+      name: 'llm.call',
+      attributes: { 'gen_ai.system': 'openai' },
+      events: [
+        { name: 'gen_ai.content.prompt', time: '2024-01-01T00:00:00Z', attributes: { content: { role: 'user', text: 'Hello' } } },
+      ],
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBe(JSON.stringify({ role: 'user', text: 'Hello' }, null, 2));
+  });
+});
+
+describe('SpanInputOutput - gen_ai.input/output.messages attributes', () => {
+  it('extracts gen_ai.input.messages and gen_ai.output.messages for LLM spans', () => {
+    const span = createSpan({
+      name: 'llm.call',
+      attributes: {
+        'gen_ai.system': 'anthropic',
+        'gen_ai.input.messages': '[{"role":"user","content":"Hello"}]',
+        'gen_ai.output.messages': '[{"role":"assistant","content":"Hi there"}]',
+      },
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBe('[{"role":"user","content":"Hello"}]');
+    expect(result.output).toBe('[{"role":"assistant","content":"Hi there"}]');
+  });
+
+  it('extracts gen_ai.input.messages for agent spans', () => {
+    const span = createSpan({
+      name: 'agent.run',
+      attributes: {
+        'gen_ai.agent.name': 'my-agent',
+        'gen_ai.input.messages': 'User query here',
+        'gen_ai.output.messages': 'Agent response here',
+      },
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBe('User query here');
+    expect(result.output).toBe('Agent response here');
+  });
+
+  it('prefers span events over gen_ai.input.messages', () => {
+    const span = createSpan({
+      name: 'llm.call',
+      attributes: {
+        'gen_ai.system': 'openai',
+        'gen_ai.input.messages': 'attribute messages',
+      },
+      events: [
+        { name: 'gen_ai.content.prompt', time: '2024-01-01T00:00:00Z', attributes: { content: 'event content' } },
+      ],
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBe('event content');
+  });
+
+  it('prefers gen_ai.input.messages over legacy gen_ai.prompt', () => {
+    const span = createSpan({
+      name: 'llm.call',
+      attributes: {
+        'gen_ai.system': 'openai',
+        'gen_ai.input.messages': 'new style messages',
+        'gen_ai.prompt': 'legacy prompt',
+      },
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBe('new style messages');
+  });
+});
+
+describe('SpanInputOutput - OTel standard tool attributes', () => {
+  it('extracts gen_ai.tool.call.arguments and gen_ai.tool.call.result', () => {
+    const span = createSpan({
+      name: 'tool.execute',
+      attributes: {
+        'gen_ai.tool.name': 'search_logs',
+        'gen_ai.tool.call.arguments': '{"query": "error", "timeRange": "1h"}',
+        'gen_ai.tool.call.result': '{"matches": 42}',
+      },
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBe('{"query": "error", "timeRange": "1h"}');
+    expect(result.output).toBe('{"matches": 42}');
+  });
+
+  it('prefers gen_ai.tool.call.arguments over legacy gen_ai.tool.input', () => {
+    const span = createSpan({
+      name: 'tool.execute',
+      attributes: {
+        'gen_ai.tool.name': 'search',
+        'gen_ai.tool.call.arguments': 'standard args',
+        'gen_ai.tool.input': 'legacy input',
+      },
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.input).toBe('standard args');
+  });
+
+  it('prefers gen_ai.tool.call.result over legacy gen_ai.tool.output', () => {
+    const span = createSpan({
+      name: 'tool.execute',
+      attributes: {
+        'gen_ai.tool.name': 'search',
+        'gen_ai.tool.call.result': 'standard result',
+        'gen_ai.tool.output': 'legacy output',
+      },
+    });
+
+    const result = extractSpanIO(span);
+    expect(result.output).toBe('standard result');
   });
 });

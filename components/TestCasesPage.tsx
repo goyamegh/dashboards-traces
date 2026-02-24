@@ -53,6 +53,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Skeleton } from '@/components/ui/skeleton';
 import { getLabelColor, formatDate } from '@/lib/utils';
+import { getTheme } from '@/lib/theme';
 import { TestCaseEditor } from './TestCaseEditor';
 import { QuickRunModal } from './QuickRunModal';
 
@@ -67,15 +68,16 @@ const groupByCategory = (testCases: TestCase[]): Record<string, TestCase[]> => {
     }
     grouped[category].push(tc);
   });
-  // Sort categories alphabetically and sort test cases within each category by newest first
+  const lastActivity = (tc: TestCase): number => Math.max(
+    tc.lastRunAt ? new Date(tc.lastRunAt).getTime() : 0,
+    tc.updatedAt ? new Date(tc.updatedAt).getTime() : 0,
+    tc.createdAt ? new Date(tc.createdAt).getTime() : 0,
+  );
+  // Sort categories alphabetically and sort test cases within each category by lastActivity
   return Object.keys(grouped)
     .sort()
     .reduce((acc, key) => {
-      acc[key] = grouped[key].sort((a, b) => {
-        const dateA = new Date(a.createdAt).getTime();
-        const dateB = new Date(b.createdAt).getTime();
-        return dateB - dateA; // Newest first
-      });
+      acc[key] = grouped[key].sort((a, b) => lastActivity(b) - lastActivity(a));
       return acc;
     }, {} as Record<string, TestCase[]>);
 };
@@ -93,6 +95,8 @@ interface TestCaseCardProps {
 }
 
 const TestCaseCard = ({ testCase, runCount, onClick, onRun, onEdit, onDelete, isDeleting }: TestCaseCardProps) => {
+  const isDarkMode = getTheme() === 'dark';
+  
   // Show first 3 labels
   const displayLabels = (testCase.labels || []).slice(0, 3);
 
@@ -107,7 +111,11 @@ const TestCaseCard = ({ testCase, runCount, onClick, onRun, onEdit, onDelete, is
             <CardTitle className="text-base truncate">{testCase.name}</CardTitle>
             <CardDescription className="flex items-center gap-2 mt-1 flex-wrap">
               {displayLabels.map((label) => (
-                <Badge key={label} variant="outline" className={getLabelColor(label)}>
+                <Badge 
+                  key={label} 
+                  variant="outline" 
+                  className={getLabelColor(label)}
+                >
                   {label}
                 </Badge>
               ))}
