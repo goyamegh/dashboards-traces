@@ -161,7 +161,15 @@ describe('Debug Utility', () => {
       // @ts-ignore
       delete global.window;
       process.env.DEBUG = 'true';
+
+      // Mock fs.existsSync to return false so the env var path is reached
+      // (agent-health.yaml may exist in the project root)
       jest.resetModules();
+      const realFs = jest.requireActual('fs');
+      jest.mock('fs', () => ({
+        ...realFs,
+        existsSync: jest.fn().mockReturnValue(false),
+      }));
 
       const mod = require('@/lib/debug');
       expect(mod.isDebugEnabled()).toBe(true);
