@@ -57,11 +57,19 @@ jest.mock('@/server/middleware/dataSourceConfig', () => ({
   resolveStorageConfig: jest.fn(),
 }));
 
-// Mock adapters - includes getStorageModule, testStorageConnection, and isFileStorage
+// Mock @opensearch-project/opensearch Client constructor
+jest.mock('@opensearch-project/opensearch', () => ({
+  Client: jest.fn().mockImplementation(() => ({})),
+}));
+
+// Mock adapters - includes getStorageModule, testStorageConnection, isFileStorage, setStorageModule, and module constructors
 jest.mock('@/server/adapters/index', () => ({
   getStorageModule: jest.fn(),
   testStorageConnection: jest.fn(),
   isFileStorage: jest.fn().mockReturnValue(false),
+  setStorageModule: jest.fn(),
+  OpenSearchStorageModule: jest.fn().mockImplementation(() => ({ type: 'opensearch' })),
+  FileStorageModule: jest.fn().mockImplementation(() => ({ type: 'file' })),
 }));
 
 // Mock configService
@@ -74,7 +82,7 @@ jest.mock('@/server/services/configService', () => ({
 }));
 
 // Import mocked adapter functions
-import { getStorageModule, testStorageConnection, isFileStorage } from '@/server/adapters/index';
+import { getStorageModule, testStorageConnection, isFileStorage, setStorageModule, OpenSearchStorageModule, FileStorageModule } from '@/server/adapters/index';
 
 // Import mocked configService functions
 import {
@@ -88,6 +96,9 @@ import {
 const mockGetStorageModule = getStorageModule as jest.Mock;
 const mockTestStorageConnection = testStorageConnection as jest.Mock;
 const mockIsFileStorage = isFileStorage as jest.Mock;
+const mockSetStorageModule = setStorageModule as jest.Mock;
+const MockOpenSearchStorageModule = OpenSearchStorageModule as jest.Mock;
+const MockFileStorageModule = FileStorageModule as jest.Mock;
 
 const mockGetConfigStatus = getConfigStatus as jest.Mock;
 const mockSaveStorageConfig = saveStorageConfig as jest.Mock;
@@ -536,7 +547,7 @@ describe('Admin Storage Routes', () => {
   });
 
   describe('POST /api/storage/config/storage', () => {
-    it('should save storage config', async () => {
+    it('should save storage config and switch storage module', async () => {
       const { req, res } = createMocks({}, {
         endpoint: 'https://new-storage.com',
         username: 'user',
@@ -550,10 +561,14 @@ describe('Admin Storage Routes', () => {
         endpoint: 'https://new-storage.com',
         username: 'user',
         password: 'pass',
+        tlsSkipVerify: undefined,
       });
+      expect(MockOpenSearchStorageModule).toHaveBeenCalled();
+      expect(mockSetStorageModule).toHaveBeenCalledWith(expect.any(Object));
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         message: 'Storage configuration saved',
+        connected: true,
       });
     });
 
@@ -565,6 +580,7 @@ describe('Admin Storage Routes', () => {
 
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith({ error: 'Endpoint is required' });
+      expect(mockSetStorageModule).not.toHaveBeenCalled();
     });
   });
 
@@ -602,13 +618,15 @@ describe('Admin Storage Routes', () => {
   });
 
   describe('DELETE /api/storage/config/storage', () => {
-    it('should clear storage config', async () => {
+    it('should clear storage config and revert to file storage', async () => {
       const { req, res } = createMocks();
       const handler = getRouteHandler(adminRoutes, 'delete', '/api/storage/config/storage');
 
       await handler(req, res);
 
       expect(mockClearStorageConfig).toHaveBeenCalled();
+      expect(MockFileStorageModule).toHaveBeenCalled();
+      expect(mockSetStorageModule).toHaveBeenCalledWith(expect.any(Object));
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         message: 'Storage configuration cleared',
@@ -627,6 +645,7 @@ describe('Admin Storage Routes', () => {
 
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({ error: 'Clear failed' });
+      expect(mockSetStorageModule).not.toHaveBeenCalled();
     });
   });
 

@@ -14,7 +14,8 @@
 import { Router, Request, Response } from 'express';
 import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middleware/storageClient.js';
 import { INDEX_MAPPINGS } from '../../constants/indexMappings';
-import { getStorageModule, testStorageConnection, isFileStorage } from '../../adapters/index.js';
+import { getStorageModule, testStorageConnection, isFileStorage, setStorageModule, OpenSearchStorageModule, FileStorageModule } from '../../adapters/index.js';
+import { Client } from '@opensearch-project/opensearch';
 import { resolveStorageConfig } from '../../middleware/dataSourceConfig.js';
 import { debug } from '@/lib/debug';
 import {
@@ -228,7 +229,7 @@ router.get('/api/storage/config/status', (req: Request, res: Response) => {
  * Save storage configuration to file
  * Body: { endpoint, username?, password?, tlsSkipVerify? }
  */
-router.post('/api/storage/config/storage', (req: Request, res: Response) => {
+router.post('/api/storage/config/storage', async (req: Request, res: Response) => {
   try {
     const { endpoint, username, password, tlsSkipVerify } = req.body;
 
@@ -237,7 +238,18 @@ router.post('/api/storage/config/storage', (req: Request, res: Response) => {
     }
 
     saveStorageConfig({ endpoint, username, password, tlsSkipVerify });
-    res.json({ success: true, message: 'Storage configuration saved' });
+
+    const clientConfig: any = {
+      node: endpoint,
+      ssl: { rejectUnauthorized: !(tlsSkipVerify === true) },
+    };
+    if (username && password) {
+      clientConfig.auth = { username, password };
+    }
+    const client = new Client(clientConfig);
+    setStorageModule(new OpenSearchStorageModule(client));
+
+    res.json({ success: true, message: 'Storage configuration saved', connected: true });
   } catch (error: any) {
     console.error('[StorageAPI] Failed to save storage config:', error.message);
     res.status(500).json({ error: error.message });
@@ -272,6 +284,7 @@ router.post('/api/storage/config/observability', (req: Request, res: Response) =
 router.delete('/api/storage/config/storage', (req: Request, res: Response) => {
   try {
     clearStorageConfig();
+    setStorageModule(new FileStorageModule());
     res.json({ success: true, message: 'Storage configuration cleared' });
   } catch (error: any) {
     console.error('[StorageAPI] Failed to clear storage config:', error.message);

@@ -65,7 +65,8 @@ function readCustomAgentsFromDisk(): AgentConfig[] {
 /**
  * Persist the current store to disk.
  * Preserves any sibling top-level keys already in the file.
- * If the store is empty **and** there are no other keys, the file is deleted.
+ * Only writes the file when there is at least one remaining key — never deletes.
+ * File lifecycle (create / delete) is the responsibility of configService.ts.
  */
 function saveToDisk(): void {
   try {
@@ -74,20 +75,15 @@ function saveToDisk(): void {
     const existing = readConfigFromDisk();
 
     if (agents.length === 0) {
-      // Remove customAgents key
       delete existing.customAgents;
-      if (Object.keys(existing).length === 0) {
-        // No other keys — remove the file entirely
-        if (fs.existsSync(filePath)) {
-          fs.unlinkSync(filePath);
-        }
-        return;
-      }
     } else {
       existing.customAgents = agents;
     }
 
-    fs.writeFileSync(filePath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+    if (Object.keys(existing).length > 0) {
+      fs.writeFileSync(filePath, JSON.stringify(existing, null, 2) + '\n', 'utf-8');
+    }
+    // If nothing remains, leave the file as-is — file lifecycle is managed by configService.ts
   } catch (err) {
     console.error('[customAgentStore] Failed to write config file:', err);
   }
