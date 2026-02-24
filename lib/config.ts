@@ -45,6 +45,18 @@ export interface EnvConfig {
   openSearchLogsTracesIndex: string;
   openSearchLogsIndex: string;
 
+  // ML-Commons agent endpoint
+  mlcommonsEndpoint: string;
+
+  // ML-Commons agent headers (for agent to access data source)
+  mlcommonsHeaderOpenSearchUrl: string;
+  mlcommonsHeaderAuthorization: string;
+  mlcommonsHeaderAwsRegion: string;
+  mlcommonsHeaderAwsServiceName: string;
+  mlcommonsHeaderAwsAccessKeyId: string;
+  mlcommonsHeaderAwsSecretAccessKey: string;
+  mlcommonsHeaderAwsSessionToken: string;
+
   // Travel Planner multi-agent endpoint (OTel Demo in Docker)
   travelPlannerEndpoint: string;
 
@@ -106,6 +118,18 @@ export const ENV_CONFIG: EnvConfig = {
   openSearchLogsTracesIndex: getEnvVar('OPENSEARCH_LOGS_TRACES_INDEX', 'otel-v1-apm-span-*'),
   openSearchLogsIndex: getEnvVar('OPENSEARCH_LOGS_INDEX', 'ml-commons-logs-*'),
 
+  // ML-Commons agent endpoint
+  mlcommonsEndpoint: getEnvVar('MLCOMMONS_ENDPOINT', 'http://localhost:9200/_plugins/_ml/agents/{agent_id}/_execute/stream'),
+
+  // ML-Commons agent headers
+  mlcommonsHeaderOpenSearchUrl: getEnvVar('MLCOMMONS_HEADER_OPENSEARCH_URL', ''),
+  mlcommonsHeaderAuthorization: getEnvVar('MLCOMMONS_HEADER_AUTHORIZATION', ''),
+  mlcommonsHeaderAwsRegion: getEnvVar('MLCOMMONS_HEADER_AWS_REGION', ''),
+  mlcommonsHeaderAwsServiceName: getEnvVar('MLCOMMONS_HEADER_AWS_SERVICE_NAME', 'es'),
+  mlcommonsHeaderAwsAccessKeyId: getEnvVar('MLCOMMONS_HEADER_AWS_ACCESS_KEY_ID', ''),
+  mlcommonsHeaderAwsSecretAccessKey: getEnvVar('MLCOMMONS_HEADER_AWS_SECRET_ACCESS_KEY', ''),
+  mlcommonsHeaderAwsSessionToken: getEnvVar('MLCOMMONS_HEADER_AWS_SESSION_TOKEN', ''),
+
   // Travel Planner multi-agent endpoint (OTel Demo in Docker)
   travelPlannerEndpoint: getEnvVar('TRAVEL_PLANNER_ENDPOINT', 'http://localhost:3000'),
 
@@ -120,3 +144,39 @@ export const ENV_CONFIG: EnvConfig = {
   otelExporterProtocol: getEnvVar('OTEL_EXPORTER_OTLP_PROTOCOL', ''),
   otelExporterHeaders: getEnvVar('OTEL_EXPORTER_OTLP_HEADERS', ''),
 };
+
+/**
+ * Build ML-Commons request headers from environment variables.
+ * Supports both Basic Auth and AWS SigV4 authentication.
+ */
+export function buildMLCommonsHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {};
+
+  if (ENV_CONFIG.mlcommonsHeaderOpenSearchUrl) {
+    headers['opensearch-url'] = ENV_CONFIG.mlcommonsHeaderOpenSearchUrl;
+  }
+
+  if (ENV_CONFIG.mlcommonsHeaderAwsRegion) {
+    headers['aws-region'] = ENV_CONFIG.mlcommonsHeaderAwsRegion;
+  }
+
+  if (ENV_CONFIG.mlcommonsHeaderAuthorization) {
+    headers['Authorization'] = ENV_CONFIG.mlcommonsHeaderAuthorization;
+  } else {
+    // Fall back to SigV4 authentication
+    if (ENV_CONFIG.mlcommonsHeaderAwsServiceName) {
+      headers['aws-service-name'] = ENV_CONFIG.mlcommonsHeaderAwsServiceName;
+    }
+    if (ENV_CONFIG.mlcommonsHeaderAwsAccessKeyId) {
+      headers['aws-access-key-id'] = ENV_CONFIG.mlcommonsHeaderAwsAccessKeyId;
+    }
+    if (ENV_CONFIG.mlcommonsHeaderAwsSecretAccessKey) {
+      headers['aws-secret-access-key'] = ENV_CONFIG.mlcommonsHeaderAwsSecretAccessKey;
+    }
+    if (ENV_CONFIG.mlcommonsHeaderAwsSessionToken) {
+      headers['aws-session-token'] = ENV_CONFIG.mlcommonsHeaderAwsSessionToken;
+    }
+  }
+
+  return headers;
+}

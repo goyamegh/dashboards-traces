@@ -22,6 +22,14 @@ export interface EnvConfig {
   openSearchLogsPassword: string;
   openSearchLogsTracesIndex: string;
   openSearchLogsIndex: string;
+  mlcommonsEndpoint: string;
+  mlcommonsHeaderOpenSearchUrl: string;
+  mlcommonsHeaderAuthorization: string;
+  mlcommonsHeaderAwsRegion: string;
+  mlcommonsHeaderAwsServiceName: string;
+  mlcommonsHeaderAwsAccessKeyId: string;
+  mlcommonsHeaderAwsSecretAccessKey: string;
+  mlcommonsHeaderAwsSessionToken: string;
   travelPlannerEndpoint: string;
   claudeCodeTelemetryEnabled: boolean;
   otelExporterEndpoint: string;
@@ -46,6 +54,14 @@ export const ENV_CONFIG: EnvConfig = {
   openSearchLogsPassword: '',
   openSearchLogsTracesIndex: 'otel-v1-apm-span-*',
   openSearchLogsIndex: 'ml-commons-logs-*',
+  mlcommonsEndpoint: 'http://localhost:9200/_plugins/_ml/agents/{agent_id}/_execute/stream',
+  mlcommonsHeaderOpenSearchUrl: '',
+  mlcommonsHeaderAuthorization: '',
+  mlcommonsHeaderAwsRegion: '',
+  mlcommonsHeaderAwsServiceName: 'es',
+  mlcommonsHeaderAwsAccessKeyId: '',
+  mlcommonsHeaderAwsSecretAccessKey: '',
+  mlcommonsHeaderAwsSessionToken: '',
   travelPlannerEndpoint: 'http://localhost:3000',
   claudeCodeTelemetryEnabled: false,
   otelExporterEndpoint: '',
@@ -54,3 +70,6 @@ export const ENV_CONFIG: EnvConfig = {
   otelExporterHeaders: '',
 };
 
+export function buildMLCommonsHeaders(): Record<string, string> {
+  return {};
+}
