@@ -159,7 +159,7 @@ describe('customAgentStore', () => {
       expect(parsed.customAgents).toHaveLength(1);
     });
 
-    it('deletes the file when agents are empty and no other keys exist', () => {
+    it('does not delete or write the file when agents are empty and no other keys exist', () => {
       // First add an agent (this writes to "disk")
       addCustomAgent(makeAgent('z', 'Z', 'http://z'));
       jest.clearAllMocks();
@@ -172,7 +172,10 @@ describe('customAgentStore', () => {
 
       removeCustomAgent('z');
 
-      expect(mockUnlinkSync).toHaveBeenCalled();
+      // File lifecycle is managed by configService.ts — customAgentStore must not delete
+      expect(mockUnlinkSync).not.toHaveBeenCalled();
+      // Nothing left to write, so writeFileSync should not be called either
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
     });
 
     it('keeps the file (without customAgents) when other keys remain', () => {

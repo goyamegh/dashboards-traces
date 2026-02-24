@@ -11,7 +11,7 @@
 import 'dotenv/config';
 import config from './config/index.js';
 import { createApp } from './app.js';
-import { isStorageConfigured } from './services/opensearchClient.js';
+import { getStorageConfigFromFile } from './services/configService.js';
 
 // Register server-side connectors (subprocess, claude-code)
 // This import has side effects that register connectors with the registry
@@ -31,8 +31,10 @@ async function startServer() {
     console.log(`   Health check: http://localhost:${PORT}/health`);
     console.log(`   AWS Region: ${process.env.AWS_REGION || 'us-west-2'}`);
     console.log(`   Bedrock Model: ${process.env.BEDROCK_MODEL_ID || 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'}`);
-    if (isStorageConfigured()) {
-      console.log(`   OpenSearch Storage: ${process.env.OPENSEARCH_STORAGE_ENDPOINT}`);
+    const storageEndpoint = process.env.OPENSEARCH_STORAGE_ENDPOINT
+      || getStorageConfigFromFile()?.endpoint;
+    if (storageEndpoint) {
+      console.log(`   OpenSearch Storage: ${storageEndpoint}`);
     } else {
       console.log(`   OpenSearch Storage: NOT CONFIGURED`);
     }
