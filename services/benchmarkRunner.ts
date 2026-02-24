@@ -20,6 +20,7 @@ import {
   updateTestCaseLastRunAt,
 } from '@/server/services/storage';
 import type { Client } from '@opensearch-project/opensearch';
+import type { IStorageModule } from '@/server/adapters/types';
 import { runEvaluationWithConnector, callBedrockJudge } from './evaluation';
 import { connectorRegistry } from '@/services/connectors/server';
 import { loadConfigSync } from '@/lib/config/index';
@@ -287,12 +288,42 @@ export async function runBenchmark(
 }
 
 /**
- * Run a single use case with a single configuration (for quick testing)
+ * Save an evaluation report using the storage adapter (works with both file and OpenSearch backends).
+ */
+async function saveReportWithModule(storage: IStorageModule, report: any): Promise<any> {
+  const saved = await storage.runs.create({
+    experimentId: report.experimentId || '',
+    experimentRunId: report.experimentRunId || '',
+    testCaseId: report.testCaseId,
+    agentId: report.agentKey || report.agentName,
+    modelId: report.modelId || report.modelName,
+    status: report.status,
+    passFailStatus: report.passFailStatus,
+    traceId: report.runId,
+    llmJudgeReasoning: report.llmJudgeReasoning,
+    metrics: report.metrics,
+    trajectory: report.trajectory,
+    rawEvents: report.rawEvents || [],
+    logs: report.logs || report.openSearchLogs,
+    improvementStrategies: report.improvementStrategies,
+    metricsStatus: report.metricsStatus,
+    traceFetchAttempts: report.traceFetchAttempts,
+    lastTraceFetchAt: report.lastTraceFetchAt,
+    traceError: report.traceError,
+    spans: report.spans,
+    connectorProtocol: report.connectorProtocol,
+  } as any);
+  return { ...report, id: saved.id, timestamp: saved.timestamp };
+}
+
+/**
+ * Run a single use case with a single configuration (for quick testing).
+ * Uses the storage adapter — works with both file and OpenSearch backends.
  */
 export async function runSingleUseCase(
   run: BenchmarkRun,
   testCase: TestCase,
-  client: Client,
+  storage: IStorageModule,
   onStep?: (step: any) => void
 ): Promise<string> {
   const agentConfig = buildAgentConfigForRun(run);
@@ -307,27 +338,25 @@ export async function runSingleUseCase(
     { registry: connectorRegistry }
   );
 
-  const savedReport = await saveReportWithClient(client, report);
+  const savedReport = await saveReportWithModule(storage, report);
 
   // Denormalize lastRunAt onto the test case (fire-and-forget)
-  updateTestCaseLastRunAt(client, testCase.id, new Date().toISOString())
+  storage.testCases.update(testCase.id, { lastRunAt: new Date().toISOString() } as any)
     .catch(err => console.warn(`[BenchmarkRunner] Failed to update lastRunAt for ${testCase.id}:`, err.message));
 
   // Start trace polling for trace-mode runs
   if (savedReport.metricsStatus === 'pending' && savedReport.runId) {
-    startTracePollingForReport(savedReport, testCase, client);
+    startTracePollingForReportWithModule(savedReport, testCase, storage);
   }
 
   return savedReport.id;
 }
 
 /**
- * Start trace polling for a report that has metricsStatus: 'pending'
- *
- * When traces are found, calls the Bedrock judge with the trajectory
- * and test case's expectedOutcomes to get the final evaluation.
+ * Start trace polling for a report that has metricsStatus: 'pending'.
+ * Uses the storage adapter — works with both file and OpenSearch backends.
  */
-function startTracePollingForReport(report: EvaluationReport, testCase: TestCase, client: Client): void {
+function startTracePollingForReportWithModule(report: EvaluationReport, testCase: TestCase, storage: IStorageModule): void {
   if (!report.runId) {
     console.warn(`[BenchmarkRunner] No runId for report ${report.id}, cannot start trace polling`);
     return;
@@ -354,29 +383,29 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
           );
 
           // Update report with judge results
-          await updateRunWithClient(client, report.id, {
+          await storage.runs.update(report.id, {
             metricsStatus: 'ready',
             passFailStatus: judgment.passFailStatus,
             metrics: judgment.metrics,
             llmJudgeReasoning: judgment.llmJudgeReasoning,
             improvementStrategies: judgment.improvementStrategies,
-          });
+          } as any);
 
           // Update parent benchmark run stats now that this report is complete
           if (report.experimentId) {
-            await updateBenchmarkRunStatsForReport(client, report.experimentId, report.id);
+            await refreshBenchmarkRunStats(storage, report.experimentId, report.id);
           }
         } catch (error) {
           console.error(`[BenchmarkRunner] Failed to judge report ${report.id}:`, error instanceof Error ? error.message : error);
           // Still mark as error
-          await updateRunWithClient(client, report.id, {
+          await storage.runs.update(report.id, {
             metricsStatus: 'error',
             traceError: `Judge evaluation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          });
+          } as any);
 
           // Update parent benchmark run stats (error counts as failed)
           if (report.experimentId) {
-            await updateBenchmarkRunStatsForReport(client, report.experimentId, report.id);
+            await refreshBenchmarkRunStats(storage, report.experimentId, report.id);
           }
         }
       },
@@ -386,6 +415,108 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
       },
     }
   );
+}
+
+/**
+ * Start trace polling for the batch benchmark execution path (uses raw OpenSearch client).
+ */
+function startTracePollingForReport(report: EvaluationReport, testCase: TestCase, client: Client): void {
+  if (!report.runId) {
+    console.warn(`[BenchmarkRunner] No runId for report ${report.id}, cannot start trace polling`);
+    return;
+  }
+
+  tracePollingManager.startPolling(
+    report.id,
+    report.runId,
+    {
+      onTracesFound: async (spans, updatedReport) => {
+        try {
+          const judgeModelId = report.modelId ? getBedrockModelId(report.modelId) : undefined;
+          const judgment = await callBedrockJudge(
+            updatedReport.trajectory,
+            { expectedOutcomes: testCase.expectedOutcomes, expectedTrajectory: testCase.expectedTrajectory },
+            [],
+            () => {},
+            judgeModelId
+          );
+          await updateRunWithClient(client, report.id, {
+            metricsStatus: 'ready',
+            passFailStatus: judgment.passFailStatus,
+            metrics: judgment.metrics,
+            llmJudgeReasoning: judgment.llmJudgeReasoning,
+            improvementStrategies: judgment.improvementStrategies,
+          });
+          if (report.experimentId) {
+            await updateBenchmarkRunStatsForReport(client, report.experimentId, report.id);
+          }
+        } catch (error) {
+          console.error(`[BenchmarkRunner] Failed to judge report ${report.id}:`, error instanceof Error ? error.message : error);
+          await updateRunWithClient(client, report.id, {
+            metricsStatus: 'error',
+            traceError: `Judge evaluation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+          });
+          if (report.experimentId) {
+            await updateBenchmarkRunStatsForReport(client, report.experimentId, report.id);
+          }
+        }
+      },
+      onAttempt: () => {},
+      onError: (error) => {
+        console.error(`[BenchmarkRunner] Trace polling failed for report ${report.id}:`, error instanceof Error ? error.message : error);
+      },
+    }
+  );
+}
+
+/**
+ * Recompute pass/fail stats for a benchmark run after one of its reports changes.
+ * Adapter-agnostic — works with both file and OpenSearch storage.
+ */
+async function refreshBenchmarkRunStats(
+  storage: IStorageModule,
+  benchmarkId: string,
+  reportId: string,
+): Promise<void> {
+  try {
+    const benchmark = await storage.benchmarks.getById(benchmarkId);
+    if (!benchmark) return;
+
+    const targetRun = benchmark.runs?.find((run: any) =>
+      Object.values(run.results || {}).some((result: any) => result.reportId === reportId)
+    );
+    if (!targetRun) return;
+
+    const reportIds = Object.values(targetRun.results || {})
+      .map((r: any) => r.reportId)
+      .filter(Boolean) as string[];
+
+    let passed = 0, failed = 0, pending = 0;
+    const total = Object.keys(targetRun.results || {}).length;
+
+    for (const rid of reportIds) {
+      try {
+        const report = await storage.runs.getById(rid);
+        if (!report) { pending++; continue; }
+        if ((report as any).metricsStatus === 'pending' || (report as any).metricsStatus === 'calculating') {
+          pending++;
+        } else if (report.passFailStatus === 'passed') {
+          passed++;
+        } else {
+          failed++;
+        }
+      } catch {
+        pending++;
+      }
+    }
+    pending += total - reportIds.length;
+
+    await storage.benchmarks.updateRun(benchmarkId, targetRun.id, {
+      stats: { passed, failed, pending, total },
+    } as any);
+  } catch (err) {
+    console.warn(`[BenchmarkRunner] Failed to refresh stats for benchmark ${benchmarkId}:`, err instanceof Error ? err.message : err);
+  }
 }
 
 // Backwards compatibility aliases

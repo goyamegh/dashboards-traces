@@ -6,24 +6,17 @@
 /**
  * Test Cases Routes - Versioned CRUD operations
  *
+ * Storage-backend agnostic: uses IStorageModule adapter (file or OpenSearch).
  * Sample data (demo-*) is always included in responses.
- * Real data from OpenSearch is merged when configured.
  */
 
 import { Router, Request, Response } from 'express';
 import { debug } from '@/lib/debug';
-import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middleware/storageClient.js';
+import { getStorageModule } from '../../adapters/index.js';
 import { SAMPLE_TEST_CASES } from '../../../cli/demo/sampleTestCases.js';
 import type { TestCase, StorageMetadata } from '../../../types/index.js';
 
 const router = Router();
-const INDEX = INDEXES.testCases;
-
-/** Fields included in summary mode (list view) */
-const SUMMARY_SOURCE_INCLUDES = [
-  'id', 'name', 'labels', 'category', 'difficulty',
-  'createdAt', 'updatedAt', 'lastRunAt', 'initialPrompt', 'description', 'version', 'tags',
-];
 
 /**
  * Convert a full test case to a lightweight summary for list views.
@@ -39,10 +32,6 @@ function toSummary(doc: any): any {
     expectedOutcomes: [],
     versions: [],
   };
-}
-
-function generateId(): string {
-  return `tc-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
 /**
@@ -93,7 +82,7 @@ function getSampleTestCases(): TestCase[] {
 //   ids       - comma-separated IDs to filter by
 //   fields    - 'summary' for lightweight list-view payload
 //   size      - page size (default: all results)
-//   after     - cursor token for pagination (composite aggregation key)
+//   after     - cursor token for pagination (ID-based cursor)
 router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
   try {
     const { ids, fields, size: sizeParam, after } = req.query;
@@ -105,113 +94,49 @@ router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
     let realData: TestCase[] = [];
     const warnings: string[] = [];
     let storageReachable = false;
-    const storageConfigured = isStorageAvailable(req);
+    const storage = getStorageModule();
+    const storageConfigured = storage.isConfigured();
     let totalCount: number | null = null;
     let nextAfter: string | null = null;
 
-    // Build top_hits options (with optional _source filtering)
-    const topHitsOptions: any = {
-      size: 1,
-      sort: [{ version: { order: 'desc' } }],
-    };
-    if (isSummary) {
-      topHitsOptions._source = { includes: SUMMARY_SOURCE_INCLUDES };
-    }
-
-    // Fetch from OpenSearch if configured
+    // Fetch from storage backend
     if (storageConfigured) {
       try {
-        const client = requireStorageClient(req);
-
         if (filterIds) {
           // Filter by specific IDs - get latest version of each
           const nonSampleIds = filterIds.filter(id => !isSampleId(id));
-          if (nonSampleIds.length > 0) {
-            const result = await client.search({
-              index: INDEX,
-              body: {
-                size: 0,
-                aggs: {
-                  by_id: {
-                    terms: { field: 'id', size: nonSampleIds.length },
-                    aggs: {
-                      latest: { top_hits: topHitsOptions },
-                    },
-                  },
-                },
-                query: {
-                  terms: { id: nonSampleIds },
-                },
-              },
-            });
-
-            const buckets = (result.body.aggregations?.by_id as any)?.buckets || [];
-            realData = buckets.map((b: any) => b.latest.hits.hits[0]._source);
+          for (const id of nonSampleIds) {
+            const tc = await storage.testCases.getById(id);
+            if (tc) realData.push(tc);
           }
-        } else if (pageSize) {
-          // Paginated mode: use composite aggregation with cursor
-          const compositeAggs: any = {
-            size: pageSize,
-            sources: [{ id: { terms: { field: 'id' } } }],
-          };
-          if (afterCursor) {
-            compositeAggs.after = { id: afterCursor };
-          }
-
-          const aggs: any = {
-            by_id: {
-              composite: compositeAggs,
-              aggs: {
-                latest: { top_hits: topHitsOptions },
-              },
-            },
-          };
-
-          // Add cardinality aggregation for total count
-          aggs.total_count = {
-            cardinality: { field: 'id' },
-          };
-
-          const result = await client.search({
-            index: INDEX,
-            body: { size: 0, aggs },
-          });
-
-          const buckets = (result.body.aggregations?.by_id as any)?.buckets || [];
-          realData = buckets.map((b: any) => b.latest.hits.hits[0]._source);
-
-          // Extract next cursor from last bucket
-          const afterKey = (result.body.aggregations?.by_id as any)?.after_key;
-          if (afterKey && buckets.length === pageSize) {
-            nextAfter = afterKey.id;
-          }
-
-          // Get total unique test case count
-          totalCount = (result.body.aggregations?.total_count as any)?.value || 0;
         } else {
-          // Unpaginated mode: return all results (backward compat)
-          const result = await client.search({
-            index: INDEX,
-            body: {
-              size: 0,
-              aggs: {
-                by_id: {
-                  terms: { field: 'id', size: 10000 },
-                  aggs: {
-                    latest: { top_hits: topHitsOptions },
-                  },
-                },
-              },
-            },
-          });
+          // Get all test cases (adapter returns latest versions)
+          const result = await storage.testCases.getAll();
+          let allItems = result.items;
+          totalCount = result.total;
 
-          const buckets = (result.body.aggregations?.by_id as any)?.buckets || [];
-          realData = buckets.map((b: any) => b.latest.hits.hits[0]._source);
+          // Handle cursor-based pagination
+          if (pageSize) {
+            if (afterCursor && afterCursor !== '__sample__') {
+              const idx = allItems.findIndex(tc => tc.id === afterCursor);
+              if (idx >= 0) {
+                allItems = allItems.slice(idx + 1);
+              }
+            }
+            realData = allItems.slice(0, pageSize);
+
+            // Set next cursor if there are more results
+            if (realData.length === pageSize && realData.length < allItems.length) {
+              nextAfter = realData[realData.length - 1].id;
+            }
+          } else {
+            realData = allItems;
+          }
         }
         storageReachable = true;
       } catch (e: any) {
-        console.warn('[StorageAPI] OpenSearch unavailable, returning sample data only:', e.message);
-        warnings.push(`OpenSearch unavailable: ${e.message}`);
+        console.warn('[StorageAPI] Storage unavailable, returning sample data only:', e.message);
+        warnings.push(`Storage unavailable: ${e.message}`);
       }
     }
 
@@ -256,7 +181,7 @@ router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
       }
     } else if (pageSize && afterCursor) {
       // Subsequent pages: sample data already included in first page or not at all
-      // Just use real data from composite aggregation
+      // Just use real data from pagination
       allData = sortedRealData;
     }
 
@@ -302,22 +227,9 @@ router.get('/api/storage/test-cases/:id', async (req: Request, res: Response) =>
       return res.status(404).json({ error: 'Test case not found' });
     }
 
-    // Fetch from OpenSearch
-    if (!isStorageAvailable(req)) {
-      return res.status(404).json({ error: 'Test case not found' });
-    }
-
-    const client = requireStorageClient(req);
-    const result = await client.search({
-      index: INDEX,
-      body: {
-        size: 1,
-        sort: [{ version: { order: 'desc' } }],
-        query: { term: { id } },
-      },
-    });
-
-    const testCase = result.body.hits?.hits?.[0]?._source;
+    // Fetch from storage
+    const storage = getStorageModule();
+    const testCase = await storage.testCases.getById(id);
     if (!testCase) {
       return res.status(404).json({ error: 'Test case not found' });
     }
@@ -343,21 +255,11 @@ router.get('/api/storage/test-cases/:id/versions', async (req: Request, res: Res
       return res.status(404).json({ error: 'Test case not found' });
     }
 
-    if (!isStorageAvailable(req)) {
+    const storage = getStorageModule();
+    const versions = await storage.testCases.getVersions(id);
+    if (versions.length === 0) {
       return res.status(404).json({ error: 'Test case not found' });
     }
-
-    const client = requireStorageClient(req);
-    const result = await client.search({
-      index: INDEX,
-      body: {
-        size: 1000,
-        sort: [{ version: { order: 'desc' } }],
-        query: { term: { id } },
-      },
-    });
-
-    const versions = result.body.hits?.hits?.map((hit: any) => hit._source) || [];
     res.json({ versions, total: versions.length });
   } catch (error: any) {
     console.error('[StorageAPI] Get test case versions failed:', error.message);
@@ -381,24 +283,8 @@ router.get('/api/storage/test-cases/:id/versions/:version', async (req: Request,
       return res.status(404).json({ error: 'Test case version not found' });
     }
 
-    if (!isStorageAvailable(req)) {
-      return res.status(404).json({ error: 'Test case version not found' });
-    }
-
-    const client = requireStorageClient(req);
-    const result = await client.search({
-      index: INDEX,
-      body: {
-        size: 1,
-        query: {
-          bool: {
-            must: [{ term: { id } }, { term: { version: parseInt(version) } }],
-          },
-        },
-      },
-    });
-
-    const testCase = result.body.hits?.hits?.[0]?._source;
+    const storage = getStorageModule();
+    const testCase = await storage.testCases.getVersion(id, parseInt(version));
     if (!testCase) {
       return res.status(404).json({ error: 'Test case version not found' });
     }
@@ -419,23 +305,11 @@ router.post('/api/storage/test-cases', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Cannot create test case with demo- prefix (reserved for sample data)' });
     }
 
-    // Require OpenSearch for writes
-    if (!isStorageAvailable(req)) {
-      return res.status(400).json({ error: 'OpenSearch not configured. Cannot create new test cases in sample-only mode.' });
-    }
+    const storage = getStorageModule();
+    const created = await storage.testCases.create(testCase);
 
-    const client = requireStorageClient(req);
-
-    if (!testCase.id) testCase.id = generateId();
-    testCase.version = 1;
-    testCase.createdAt = new Date().toISOString();
-    testCase.updatedAt = testCase.createdAt;
-
-    const docId = `${testCase.id}-v${testCase.version}`;
-    await client.index({ index: INDEX, id: docId, body: testCase, refresh: true });
-
-    debug('StorageAPI', `Created test case: ${testCase.id} v${testCase.version}`);
-    res.status(201).json(testCase);
+    debug('StorageAPI', `Created test case: ${created.id} v1`);
+    res.status(201).json(created);
   } catch (error: any) {
     console.error('[StorageAPI] Create test case failed:', error.message);
     res.status(500).json({ error: error.message });
@@ -452,38 +326,11 @@ router.put('/api/storage/test-cases/:id', async (req: Request, res: Response) =>
       return res.status(400).json({ error: 'Cannot modify sample data. Sample test cases are read-only.' });
     }
 
-    // Require OpenSearch for writes
-    if (!isStorageAvailable(req)) {
-      return res.status(400).json({ error: 'OpenSearch not configured. Cannot update test cases in sample-only mode.' });
-    }
+    const storage = getStorageModule();
+    const updated = await storage.testCases.update(id, req.body);
 
-    const client = requireStorageClient(req);
-
-    // Get current latest version
-    const searchResult = await client.search({
-      index: INDEX,
-      body: {
-        size: 1,
-        sort: [{ version: { order: 'desc' } }],
-        query: { term: { id } },
-      },
-    });
-    const currentVersion = searchResult.body.hits?.hits?.[0]?._source?.version || 0;
-
-    // Create new version
-    const newTestCase = {
-      ...req.body,
-      id,
-      version: currentVersion + 1,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
-
-    const docId = `${id}-v${newTestCase.version}`;
-    await client.index({ index: INDEX, id: docId, body: newTestCase, refresh: true });
-
-    debug('StorageAPI', `Updated test case: ${id} → v${newTestCase.version}`);
-    res.json(newTestCase);
+    debug('StorageAPI', `Updated test case: ${id} → v${(updated as any).version || (updated as any).currentVersion}`);
+    res.json(updated);
   } catch (error: any) {
     console.error('[StorageAPI] Update test case failed:', error.message);
     res.status(500).json({ error: error.message });
@@ -500,22 +347,11 @@ router.delete('/api/storage/test-cases/:id', async (req: Request, res: Response)
       return res.status(400).json({ error: 'Cannot delete sample data. Sample test cases are read-only.' });
     }
 
-    // Require OpenSearch for writes
-    if (!isStorageAvailable(req)) {
-      return res.status(400).json({ error: 'OpenSearch not configured. Cannot delete test cases in sample-only mode.' });
-    }
+    const storage = getStorageModule();
+    const result = await storage.testCases.delete(id);
 
-    const client = requireStorageClient(req);
-
-    const result = await client.deleteByQuery({
-      index: INDEX,
-      body: { query: { term: { id } } },
-      refresh: true,
-    });
-
-    const deleted = (result.body as any).deleted || 0;
-    debug('StorageAPI', `Deleted test case: ${id} (${deleted} versions)`);
-    res.json({ deleted });
+    debug('StorageAPI', `Deleted test case: ${id} (${result.deleted} versions)`);
+    res.json(result);
   } catch (error: any) {
     console.error('[StorageAPI] Delete test case failed:', error.message);
     res.status(500).json({ error: error.message });
@@ -536,30 +372,11 @@ router.post('/api/storage/test-cases/bulk', async (req: Request, res: Response) 
       return res.status(400).json({ error: 'Cannot create test cases with demo- prefix (reserved for sample data)' });
     }
 
-    // Require OpenSearch for writes
-    if (!isStorageAvailable(req)) {
-      return res.status(400).json({ error: 'OpenSearch not configured. Cannot create test cases in sample-only mode.' });
-    }
+    const storage = getStorageModule();
+    const result = await storage.testCases.bulkCreate(testCases);
 
-    const client = requireStorageClient(req);
-    const now = new Date().toISOString();
-    const operations: any[] = [];
-
-    for (const tc of testCases) {
-      if (!tc.id) tc.id = generateId();
-      tc.version = tc.version || 1;
-      tc.createdAt = tc.createdAt || now;
-      tc.updatedAt = tc.updatedAt || now;
-
-      const docId = `${tc.id}-v${tc.version}`;
-      operations.push({ index: { _index: INDEX, _id: docId } });
-      operations.push(tc);
-    }
-
-    const result = await client.bulk({ body: operations, refresh: true });
-
-    debug('StorageAPI', `Bulk created ${testCases.length} test cases`);
-    res.json({ created: testCases.length, errors: result.body.errors, testCases });
+    debug('StorageAPI', `Bulk created ${result.created} test cases`);
+    res.json({ created: result.created, errors: result.errors, testCases: result.testCases });
   } catch (error: any) {
     console.error('[StorageAPI] Bulk create test cases failed:', error.message);
     res.status(500).json({ error: error.message });
