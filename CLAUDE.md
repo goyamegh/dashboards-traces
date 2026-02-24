@@ -847,6 +847,22 @@ npm test -- --watch                   # Watch mode
 - May use real services (OpenSearch, etc.)
 - Name files `*.integration.test.ts`
 - Longer timeout allowed (30s)
+- **Always clean up created data in `afterAll`** — delete every test case, benchmark, and run created during the test via the API. Integration tests that write to the file-based storage backend (`agent-health-data/`) will leave JSON files on disk if cleanup is skipped, polluting the working directory.
+
+```typescript
+// Pattern: track IDs and delete in afterAll
+const createdTestCaseIds: string[] = [];
+const createdBenchmarkIds: string[] = [];
+
+afterAll(async () => {
+  for (const id of createdTestCaseIds) {
+    await fetch(`${BASE_URL}/api/storage/test-cases/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+  }
+  for (const id of createdBenchmarkIds) {
+    await fetch(`${BASE_URL}/api/storage/benchmarks/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+  }
+});
+```
 
 ## CI/CD Workflows
 

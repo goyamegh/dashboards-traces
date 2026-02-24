@@ -48,3 +48,6 @@ tokens.json
 
 # Development artifacts
 *.local.json
+
+# File-based storage backend (runtime data, not source)
+agent-health-data/
