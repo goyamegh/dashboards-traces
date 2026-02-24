@@ -27,7 +27,11 @@ const BASE_URL = process.env.TEST_BACKEND_URL || 'http://localhost:4001';
 const checkBackend = async (): Promise<boolean> => {
   try {
     const response = await fetch(`${BASE_URL}/health`);
-    return response.ok;
+    if (!response.ok) return false;
+    // Also verify storage is configured — write operations require OpenSearch
+    const storageHealth = await fetch(`${BASE_URL}/api/storage/health`);
+    const storageData = await storageHealth.json();
+    return storageData.status === 'ok';
   } catch {
     return false;
   }

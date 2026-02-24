@@ -20,16 +20,17 @@ jest.mock('express', () => ({
 }));
 
 // Mock all route modules
-jest.mock('@/server/routes/health', () => ({ default: 'healthRoutes' }));
-jest.mock('@/server/routes/judge', () => ({ default: 'judgeRoutes' }));
-jest.mock('@/server/routes/agent', () => ({ default: 'agentRoutes' }));
-jest.mock('@/server/routes/traces', () => ({ default: 'tracesRoutes' }));
-jest.mock('@/server/routes/metrics', () => ({ default: 'metricsRoutes' }));
-jest.mock('@/server/routes/logs', () => ({ default: 'logsRoutes' }));
-jest.mock('@/server/routes/storage', () => ({ default: 'storageRoutes' }));
-jest.mock('@/server/routes/observability', () => ({ default: 'observabilityRoutes' }));
-jest.mock('@/server/routes/config', () => ({ default: 'configRoutes' }));
-jest.mock('@/server/routes/evaluation', () => ({ default: 'evaluationRoutes' }));
+jest.mock('@/server/routes/health', () => ({ __esModule: true, default: 'healthRoutes' }));
+jest.mock('@/server/routes/judge', () => ({ __esModule: true, default: 'judgeRoutes' }));
+jest.mock('@/server/routes/agent', () => ({ __esModule: true, default: 'agentRoutes' }));
+jest.mock('@/server/routes/traces', () => ({ __esModule: true, default: 'tracesRoutes' }));
+jest.mock('@/server/routes/metrics', () => ({ __esModule: true, default: 'metricsRoutes' }));
+jest.mock('@/server/routes/logs', () => ({ __esModule: true, default: 'logsRoutes' }));
+jest.mock('@/server/routes/storage', () => ({ __esModule: true, default: 'storageRoutes' }));
+jest.mock('@/server/routes/observability', () => ({ __esModule: true, default: 'observabilityRoutes' }));
+jest.mock('@/server/routes/config', () => ({ __esModule: true, default: 'configRoutes' }));
+jest.mock('@/server/routes/evaluation', () => ({ __esModule: true, default: 'evaluationRoutes' }));
+jest.mock('@/server/routes/debug', () => ({ __esModule: true, default: 'debugRoutes' }));
 
 describe('Routes Aggregator', () => {
   beforeEach(() => {

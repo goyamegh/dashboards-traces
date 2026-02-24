@@ -30,7 +30,7 @@ jest.mock('@/server/config', () => {
     get LITELLM_API_KEY() { return (global as any).__mockLiteLLMApiKey ?? 'sk-test-key'; },
     get LITELLM_ENDPOINT() { return 'http://localhost:4000/v1/chat/completions'; },
   };
-  return { default: obj };
+  return { __esModule: true, default: obj };
 });
 
 import { evaluateWithLiteLLM, parseLiteLLMError } from '@/server/services/litellmJudgeService';
