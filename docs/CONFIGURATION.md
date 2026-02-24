@@ -105,23 +105,9 @@ Override default agent endpoints.
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `LANGGRAPH_ENDPOINT` | Langgraph agent URL | `http://localhost:3000` |
-| `MLCOMMONS_ENDPOINT` | ML-Commons agent URL | `http://localhost:9200/...` |
-| `HOLMESGPT_ENDPOINT` | HolmesGPT agent URL | `http://localhost:5050/...` |
+| `TRAVEL_PLANNER_ENDPOINT` | Travel Planner demo agent URL (requires OTel Demo Docker) | `http://localhost:3000` |
 
-### ML-Commons Headers (Optional)
-
-Headers for ML-Commons agent to access data sources.
-
-| Variable | Description |
-|----------|-------------|
-| `MLCOMMONS_HEADER_OPENSEARCH_URL` | Data source OpenSearch URL |
-| `MLCOMMONS_HEADER_AUTHORIZATION` | Basic auth header |
-| `MLCOMMONS_HEADER_AWS_REGION` | AWS region for SigV4 |
-| `MLCOMMONS_HEADER_AWS_SERVICE_NAME` | AWS service name |
-| `MLCOMMONS_HEADER_AWS_ACCESS_KEY_ID` | Access key for SigV4 |
-| `MLCOMMONS_HEADER_AWS_SECRET_ACCESS_KEY` | Secret key for SigV4 |
-| `MLCOMMONS_HEADER_AWS_SESSION_TOKEN` | Session token for SigV4 |
+To configure additional agents (LangGraph, ML-Commons, HolmesGPT, LiteLLM, Claude Code, etc.), use `agent-health.config.ts`. See [TypeScript Config File](#typescript-config-file-optional) below.
 
 ### Debug Logging
 

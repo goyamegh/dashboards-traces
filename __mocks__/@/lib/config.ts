@@ -22,17 +22,7 @@ export interface EnvConfig {
   openSearchLogsPassword: string;
   openSearchLogsTracesIndex: string;
   openSearchLogsIndex: string;
-  langgraphEndpoint: string;
-  mlcommonsEndpoint: string;
-  holmesGptEndpoint: string;
-  litellmEndpoint: string;
-  mlcommonsHeaderOpenSearchUrl: string;
-  mlcommonsHeaderAuthorization: string;
-  mlcommonsHeaderAwsRegion: string;
-  mlcommonsHeaderAwsServiceName: string;
-  mlcommonsHeaderAwsAccessKeyId: string;
-  mlcommonsHeaderAwsSecretAccessKey: string;
-  mlcommonsHeaderAwsSessionToken: string;
+  travelPlannerEndpoint: string;
   claudeCodeTelemetryEnabled: boolean;
   otelExporterEndpoint: string;
   otelServiceName: string;
@@ -56,17 +46,7 @@ export const ENV_CONFIG: EnvConfig = {
   openSearchLogsPassword: '',
   openSearchLogsTracesIndex: 'otel-v1-apm-span-*',
   openSearchLogsIndex: 'ml-commons-logs-*',
-  langgraphEndpoint: 'http://localhost:3000',
-  mlcommonsEndpoint: 'http://localhost:9200/_plugins/_ml/agents/{agent_id}/_execute/stream',
-  holmesGptEndpoint: 'http://localhost:5050/api/agui/chat',
-  litellmEndpoint: 'http://localhost:4000/v1/chat/completions',
-  mlcommonsHeaderOpenSearchUrl: '',
-  mlcommonsHeaderAuthorization: '',
-  mlcommonsHeaderAwsRegion: '',
-  mlcommonsHeaderAwsServiceName: 'es',
-  mlcommonsHeaderAwsAccessKeyId: '',
-  mlcommonsHeaderAwsSecretAccessKey: '',
-  mlcommonsHeaderAwsSessionToken: '',
+  travelPlannerEndpoint: 'http://localhost:3000',
   claudeCodeTelemetryEnabled: false,
   otelExporterEndpoint: '',
   otelServiceName: 'claude-code-agent',
@@ -74,6 +54,3 @@ export const ENV_CONFIG: EnvConfig = {
   otelExporterHeaders: '',
 };
 
-export function buildMLCommonsHeaders(): Record<string, string> {
-  return {};
-}

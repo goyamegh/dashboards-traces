@@ -32,24 +32,8 @@ export default defineConfig(({ mode }) => {
       'import.meta.env.OPENSEARCH_INDEX_PREFIX': JSON.stringify(env.OPENSEARCH_INDEX_PREFIX),
       'import.meta.env.OPENSEARCH_TIME_RANGE_MINUTES': JSON.stringify(env.OPENSEARCH_TIME_RANGE_MINUTES),
       // Per-agent endpoints
-      'import.meta.env.LANGGRAPH_ENDPOINT': JSON.stringify(env.LANGGRAPH_ENDPOINT),
-      'import.meta.env.MLCOMMONS_ENDPOINT': JSON.stringify(env.MLCOMMONS_ENDPOINT),
+      'import.meta.env.TRAVEL_PLANNER_ENDPOINT': JSON.stringify(env.TRAVEL_PLANNER_ENDPOINT),
       'import.meta.env.OPENSEARCH_FETCH_DELAY_MS': JSON.stringify(env.OPENSEARCH_FETCH_DELAY_MS),
-      // ML-Commons agent headers (for agent to access data source)
-      'import.meta.env.MLCOMMONS_HEADER_OPENSEARCH_URL': JSON.stringify(env.MLCOMMONS_HEADER_OPENSEARCH_URL),
-      'import.meta.env.MLCOMMONS_HEADER_AUTHORIZATION': JSON.stringify(env.MLCOMMONS_HEADER_AUTHORIZATION),
-      'import.meta.env.MLCOMMONS_HEADER_AWS_REGION': JSON.stringify(env.MLCOMMONS_HEADER_AWS_REGION),
-      'import.meta.env.MLCOMMONS_HEADER_AWS_SERVICE_NAME': JSON.stringify(env.MLCOMMONS_HEADER_AWS_SERVICE_NAME),
-      'import.meta.env.MLCOMMONS_HEADER_AWS_ACCESS_KEY_ID': JSON.stringify(env.MLCOMMONS_HEADER_AWS_ACCESS_KEY_ID),
-      'import.meta.env.MLCOMMONS_HEADER_AWS_SECRET_ACCESS_KEY': JSON.stringify(env.MLCOMMONS_HEADER_AWS_SECRET_ACCESS_KEY),
-      'import.meta.env.MLCOMMONS_HEADER_AWS_SESSION_TOKEN': JSON.stringify(env.MLCOMMONS_HEADER_AWS_SESSION_TOKEN),
-      // Legacy: Agent endpoint headers (kept for backward compatibility)
-      'import.meta.env.AGENT_HEADER_OPENSEARCH_URL': JSON.stringify(env.AGENT_HEADER_OPENSEARCH_URL),
-      'import.meta.env.AGENT_HEADER_AWS_REGION': JSON.stringify(env.AGENT_HEADER_AWS_REGION),
-      'import.meta.env.AGENT_HEADER_AWS_SERVICE_NAME': JSON.stringify(env.AGENT_HEADER_AWS_SERVICE_NAME),
-      'import.meta.env.AGENT_HEADER_AWS_ACCESS_KEY_ID': JSON.stringify(env.AGENT_HEADER_AWS_ACCESS_KEY_ID),
-      'import.meta.env.AGENT_HEADER_AWS_SECRET_ACCESS_KEY': JSON.stringify(env.AGENT_HEADER_AWS_SECRET_ACCESS_KEY),
-      'import.meta.env.AGENT_HEADER_AWS_SESSION_TOKEN': JSON.stringify(env.AGENT_HEADER_AWS_SESSION_TOKEN),
     },
     server: {
       port: parseInt(env.VITE_PORT || '4000'),
