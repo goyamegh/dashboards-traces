@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { X, Play, Save, Star, CheckCircle2, XCircle, Loader2, ExternalLink, Clock } from 'lucide-react';
+import { X, Play, Save, Star, CheckCircle2, XCircle, Loader2, ExternalLink, Clock, RefreshCw, Info } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -50,9 +50,14 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
   const [report, setReport] = useState<ServerEvaluationReport | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  // LiteLLM dynamic model discovery
+  const [litellmModels, setLitellmModels] = useState<string[]>([]);
+  const [litellmDiscoveryState, setLitellmDiscoveryState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [litellmDiscoveryError, setLitellmDiscoveryError] = useState<string | null>(null);
+
   const selectedAgent = DEFAULT_CONFIG.agents.find(a => a.key === selectedAgentKey);
 
-  // Group models by provider for the dropdown
+  // Group models by provider for the dropdown (includes dynamically discovered LiteLLM models)
   const modelsByProvider = Object.entries(DEFAULT_CONFIG.models).reduce((acc, [key, model]) => {
     const provider = model.provider || 'bedrock';
     if (!acc[provider]) acc[provider] = [];
@@ -60,12 +65,43 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
     return acc;
   }, {} as Record<string, Array<{ key: string; display_name: string; provider: string }>>);
 
+  // Merge in discovered LiteLLM models (deduplicating against static config)
+  const staticLitellmKeys = new Set((modelsByProvider['litellm'] || []).map(m => m.key));
+  const discoveredLitellmModels = litellmModels
+    .filter(id => !staticLitellmKeys.has(id))
+    .map(id => ({ key: id, model_id: id, display_name: id, provider: 'litellm' }));
+  if (discoveredLitellmModels.length > 0) {
+    modelsByProvider['litellm'] = [...(modelsByProvider['litellm'] || []), ...discoveredLitellmModels];
+  }
+
   const providerLabels: Record<string, string> = {
     demo: 'Demo',
     bedrock: 'AWS Bedrock',
-    ollama: 'Ollama',
-    openai: 'OpenAI',
+    litellm: 'LiteLLM / OpenAI-compatible',
   };
+
+  const fetchLitellmModels = useCallback(async () => {
+    setLitellmDiscoveryState('loading');
+    setLitellmDiscoveryError(null);
+    try {
+      const response = await fetch('/api/judge/litellm-models');
+      const data = await response.json();
+      if (!response.ok) {
+        setLitellmDiscoveryState('error');
+        setLitellmDiscoveryError(data.error || 'Failed to fetch models');
+      } else {
+        setLitellmModels(data.models || []);
+        setLitellmDiscoveryState('done');
+      }
+    } catch (err: any) {
+      setLitellmDiscoveryState('error');
+      setLitellmDiscoveryError('Cannot reach server');
+    }
+  }, []);
+
+  const selectedModelConfig = DEFAULT_CONFIG.models[selectedModelId] ||
+    discoveredLitellmModels.find(m => m.key === selectedModelId) as any;
+  const selectedModelProvider = selectedModelConfig?.provider || 'bedrock';
 
   // Lock body scroll when modal is open
   useEffect(() => {
@@ -248,24 +284,57 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
 
               {/* Model Selection (grouped by provider) */}
               <div className="space-y-1">
-                <Label className="text-xs">Judge Model</Label>
-                <Select value={selectedModelId} onValueChange={setSelectedModelId}>
-                  <SelectTrigger className="w-48 h-8">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {Object.entries(modelsByProvider).map(([provider, models]) => (
-                      <SelectGroup key={provider}>
-                        <SelectLabel>{providerLabels[provider] || provider}</SelectLabel>
-                        {models.map(model => (
-                          <SelectItem key={model.key} value={model.key}>
-                            {model.display_name}
-                          </SelectItem>
-                        ))}
-                      </SelectGroup>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <div className="flex items-center gap-1">
+                  <Label className="text-xs">Judge Model</Label>
+                  {selectedModelProvider === 'litellm' && (
+                    <span className="text-xs text-blue-600 dark:text-blue-400" title="Uses LiteLLM/OpenAI-compatible endpoint. Set LITELLM_ENDPOINT and LITELLM_API_KEY in .env">
+                      <Info size={11} className="inline" />
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1">
+                  <Select value={selectedModelId} onValueChange={setSelectedModelId}>
+                    <SelectTrigger className="w-44 h-8">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {Object.entries(modelsByProvider).map(([provider, models]) => (
+                        <SelectGroup key={provider}>
+                          <SelectLabel>{providerLabels[provider] || provider}</SelectLabel>
+                          {models.map(model => (
+                            <SelectItem key={model.key} value={model.key}>
+                              {model.display_name}
+                            </SelectItem>
+                          ))}
+                        </SelectGroup>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <button
+                    type="button"
+                    title="Discover models from LiteLLM endpoint"
+                    onClick={fetchLitellmModels}
+                    disabled={litellmDiscoveryState === 'loading'}
+                    className="h-8 w-8 flex items-center justify-center rounded border border-input bg-background text-muted-foreground hover:text-foreground hover:bg-accent disabled:opacity-50"
+                  >
+                    <RefreshCw size={12} className={litellmDiscoveryState === 'loading' ? 'animate-spin' : ''} />
+                  </button>
+                </div>
+                {selectedModelProvider === 'litellm' && (
+                  <p className="text-xs text-muted-foreground">
+                    Via LiteLLM proxy. Set <code className="bg-muted px-0.5 rounded">LITELLM_ENDPOINT</code> in .env.
+                  </p>
+                )}
+                {litellmDiscoveryState === 'done' && litellmModels.length > 0 && (
+                  <p className="text-xs text-green-600 dark:text-green-400">
+                    {litellmModels.length} model{litellmModels.length !== 1 ? 's' : ''} discovered
+                  </p>
+                )}
+                {litellmDiscoveryState === 'error' && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400" title={litellmDiscoveryError || undefined}>
+                    LiteLLM endpoint unreachable
+                  </p>
+                )}
               </div>
 
               {/* Run Button */}

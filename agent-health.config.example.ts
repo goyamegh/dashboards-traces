@@ -82,7 +82,7 @@ export default {
   //     key: "my-model",
   //     model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0",
   //     display_name: "My Model",
-  //     provider: "bedrock",       // "bedrock" | "ollama" | "openai" | "demo"
+  //     provider: "bedrock",       // "bedrock" | "litellm" | "demo"
   //     context_window: 200000,
   //     max_output_tokens: 4096,
   //   },

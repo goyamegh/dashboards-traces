@@ -162,6 +162,16 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
         onTracesFound: async (spans, updatedReport) => {
           console.info(`[RunDetails] Traces found for report ${liveReport.id}: ${spans.length} spans`);
 
+          // Update trace visualization state so UI reflects traces immediately
+          setTraceSpans(spans);
+          const tree = processSpansIntoTree(spans);
+          setSpanTree(tree);
+          setTimeRange(calculateTimeRange(spans));
+          const rootIds = new Set(tree.map(s => s.spanId));
+          setExpandedSpans(rootIds);
+          setTracesError(null);
+          setTracesFetched(true);
+
           try {
             // Call the Bedrock judge with the trajectory and expectedOutcomes
             // Resolve model key to full Bedrock model ID
@@ -287,7 +297,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
     } else {
       setTraceMetrics(null);
     }
-  }, [report.runId, isTraceMode]);
+  }, [report.runId, isTraceMode, liveReport.metricsStatus]);
 
   // Reset trace state when report changes (switching test cases)
   // If already on Traces tab, auto-fetch new traces
@@ -330,6 +340,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
 
       if (result.spans && result.spans.length > 0) {
         setTraceSpans(result.spans);
+        setTracesError(null);
         const tree = processSpansIntoTree(result.spans);
         setSpanTree(tree);
         setTimeRange(calculateTimeRange(result.spans));
@@ -405,21 +416,32 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
           </p>
         </div>
 
-        {/* Trace Mode: Waiting for traces banner */}
+        {/* Trace Mode: Waiting for traces / running judge banner */}
         {!reportLoading && liveReport.metricsStatus === 'pending' && (
           <Card className="bg-yellow-50 dark:bg-yellow-500/10 border-yellow-300 dark:border-yellow-500/30 mt-4">
             <CardContent className="p-3 flex items-center gap-3">
               <Loader2 className="animate-spin text-yellow-700 dark:text-yellow-400" size={18} />
               <div>
-                <div className="text-sm font-medium text-yellow-700 dark:text-yellow-400">Waiting for traces to become available...</div>
-                <div className="text-xs text-muted-foreground">
-                  Traces take ~5 minutes to propagate after the run completes.
-                  {liveReport.traceFetchAttempts && (
-                    <span className="ml-2">
-                      (Attempt {liveReport.traceFetchAttempts}/20)
-                    </span>
-                  )}
-                </div>
+                {traceSpans.length > 0 ? (
+                  <>
+                    <div className="text-sm font-medium text-yellow-700 dark:text-yellow-400">Traces received. Running LLM judge evaluation...</div>
+                    <div className="text-xs text-muted-foreground">
+                      {traceSpans.length} spans captured. Evaluation results will appear shortly.
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-sm font-medium text-yellow-700 dark:text-yellow-400">Waiting for traces to become available...</div>
+                    <div className="text-xs text-muted-foreground">
+                      Traces take ~5 minutes to propagate after the run completes.
+                      {liveReport.traceFetchAttempts && (
+                        <span className="ml-2">
+                          (Attempt {liveReport.traceFetchAttempts}/20)
+                        </span>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
             </CardContent>
           </Card>
@@ -479,8 +501,11 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                 <Loader2 className="animate-spin text-muted-foreground" size={12} />
               ) : liveReport.metricsStatus === 'pending' ? (
                 <div className="flex items-center gap-1 text-xs font-semibold text-yellow-700 dark:text-yellow-400">
-                  <Clock size={12} />
-                  PENDING
+                  {traceSpans.length > 0 ? (
+                    <><Loader2 className="animate-spin" size={12} /> JUDGING</>
+                  ) : (
+                    <><Clock size={12} /> PENDING</>
+                  )}
                 </div>
               ) : (
                 <div className={`flex items-center gap-1 text-xs font-semibold ${
@@ -866,8 +891,8 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                   </div>
                 )}
 
-                {/* Error state */}
-                {tracesError && !tracesLoading && (
+                {/* Error state - only show when NOT in pending polling state */}
+                {tracesError && !tracesLoading && liveReport.metricsStatus !== 'pending' && (
                   <Card className="bg-red-500/10 border-red-500/30">
                     <CardContent className="p-4 flex items-center gap-3">
                       <AlertCircle className="text-red-400" size={18} />

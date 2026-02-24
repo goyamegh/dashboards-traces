@@ -164,7 +164,21 @@ class TracePollingManager {
         // Stop polling and notify success
         state.running = false;
 
-        await callbacks?.onTracesFound(result.spans, report);
+        try {
+          await callbacks?.onTracesFound(result.spans, report);
+        } catch (callbackErr) {
+          // onTracesFound failed (e.g., judge + error recovery both failed).
+          // Write error status so the report doesn't stay stuck in 'pending'.
+          console.error(`[TracePoller] onTracesFound callback failed for report ${reportId}:`, callbackErr);
+          try {
+            await asyncRunStorage.updateReport(reportId, {
+              metricsStatus: 'error',
+              traceError: `Callback failed after traces found: ${callbackErr instanceof Error ? callbackErr.message : 'Unknown error'}`,
+            });
+          } catch (updateErr) {
+            console.error(`[TracePoller] CRITICAL: Failed to update report ${reportId} error status after callback failure.`, updateErr);
+          }
+        }
         this.callbacks.delete(reportId);
         this.polls.delete(reportId);
       } else {

@@ -12,7 +12,7 @@ export type Difficulty = 'Easy' | 'Medium' | 'Hard';
 export type DateFormatVariant = 'date' | 'datetime' | 'detailed';
 
 // Judge provider determines which backend service handles evaluation
-export type JudgeProvider = 'demo' | 'bedrock' | 'ollama' | 'openai';
+export type JudgeProvider = 'demo' | 'bedrock' | 'litellm';
 
 // Connector protocol for agent communication
 export type ConnectorProtocol = 'agui-streaming' | 'rest' | 'subprocess' | 'claude-code' | 'mock';

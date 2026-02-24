@@ -62,6 +62,10 @@ export interface EnvConfig {
   mlcommonsHeaderAwsSecretAccessKey: string;
   mlcommonsHeaderAwsSessionToken: string;
 
+  // LiteLLM (optional - for OpenAI-compatible judge/agent endpoints)
+  litellmApiKey: string;
+  litellmEndpoint: string;
+
   // Claude Code Telemetry (optional - for OTEL traces from Claude Code)
   claudeCodeTelemetryEnabled: boolean;
   otelExporterEndpoint: string;
@@ -130,6 +134,10 @@ export const ENV_CONFIG: EnvConfig = {
   mlcommonsHeaderAwsAccessKeyId: getEnvVar('MLCOMMONS_HEADER_AWS_ACCESS_KEY_ID', ''),
   mlcommonsHeaderAwsSecretAccessKey: getEnvVar('MLCOMMONS_HEADER_AWS_SECRET_ACCESS_KEY', ''),
   mlcommonsHeaderAwsSessionToken: getEnvVar('MLCOMMONS_HEADER_AWS_SESSION_TOKEN', ''),
+
+  // LiteLLM (optional - for OpenAI-compatible judge/agent endpoints)
+  litellmApiKey: getEnvVar('LITELLM_API_KEY', ''),
+  litellmEndpoint: getEnvVar('LITELLM_ENDPOINT', 'http://localhost:4000/v1/chat/completions'),
 
   // Claude Code Telemetry (optional - for OTEL traces from Claude Code)
   claudeCodeTelemetryEnabled: getEnvVar('CLAUDE_CODE_TELEMETRY_ENABLED', 'false') === 'true',
