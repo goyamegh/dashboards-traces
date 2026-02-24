@@ -413,6 +413,130 @@ describe('TracePollingManager', () => {
       expect(tracePollingManager.getState('report-mem-max')).toBeUndefined();
     });
 
+    it('writes error status when onTracesFound callback throws', async () => {
+      const mockSpans: Span[] = [
+        {
+          traceId: 'trace-cb-err',
+          spanId: 'span-cb-err',
+          name: 'test-span',
+          startTime: '2024-01-01T00:00:00Z',
+          endTime: '2024-01-01T00:00:01Z',
+          duration: 1000,
+          status: 'OK',
+          attributes: {},
+        },
+      ];
+
+      const mockReport: EvaluationReport = {
+        id: 'report-cb-err',
+        timestamp: '2024-01-01T00:00:00Z',
+        testCaseId: 'test-1',
+        status: 'completed',
+        passFailStatus: 'passed',
+        agentName: 'Test Agent',
+        agentKey: 'test-agent',
+        modelName: 'Test Model',
+        modelId: 'test-model',
+        trajectory: [],
+        metrics: { accuracy: 0.95 },
+        llmJudgeReasoning: 'Test reasoning',
+      };
+
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+      const onTracesFound = jest.fn().mockRejectedValue(new Error('Judge failed'));
+      const onError = jest.fn();
+      const callbacks: PollCallbacks = {
+        onTracesFound,
+        onError,
+      };
+
+      mockFetchTracesByRunIds.mockResolvedValueOnce({ spans: mockSpans, total: mockSpans.length });
+      mockUpdateReport.mockResolvedValue(undefined);
+      mockGetReportById.mockResolvedValueOnce(mockReport);
+
+      tracePollingManager.startPolling('report-cb-err', 'run-cb-err', callbacks);
+
+      await jest.runAllTimersAsync();
+
+      // onTracesFound was called and threw
+      expect(onTracesFound).toHaveBeenCalledWith(mockSpans, mockReport);
+
+      // Should write error status to prevent stuck pending
+      expect(mockUpdateReport).toHaveBeenCalledWith(
+        'report-cb-err',
+        expect.objectContaining({
+          metricsStatus: 'error',
+          traceError: expect.stringContaining('Judge failed'),
+        })
+      );
+
+      // Should clean up polling state
+      expect(tracePollingManager.getState('report-cb-err')).toBeUndefined();
+
+      consoleErrorSpy.mockRestore();
+    });
+
+    it('handles both onTracesFound and error status update failing', async () => {
+      const mockSpans: Span[] = [
+        {
+          traceId: 'trace-double-err',
+          spanId: 'span-double-err',
+          name: 'test-span',
+          startTime: '2024-01-01T00:00:00Z',
+          endTime: '2024-01-01T00:00:01Z',
+          duration: 1000,
+          status: 'OK',
+          attributes: {},
+        },
+      ];
+
+      const mockReport: EvaluationReport = {
+        id: 'report-double-err',
+        timestamp: '2024-01-01T00:00:00Z',
+        testCaseId: 'test-1',
+        status: 'completed',
+        passFailStatus: 'passed',
+        agentName: 'Test Agent',
+        agentKey: 'test-agent',
+        modelName: 'Test Model',
+        modelId: 'test-model',
+        trajectory: [],
+        metrics: { accuracy: 0.95 },
+        llmJudgeReasoning: 'Test reasoning',
+      };
+
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+      const onTracesFound = jest.fn().mockRejectedValue(new Error('Judge failed'));
+      const callbacks: PollCallbacks = {
+        onTracesFound,
+        onError: jest.fn(),
+      };
+
+      mockFetchTracesByRunIds.mockResolvedValueOnce({ spans: mockSpans, total: mockSpans.length });
+      mockGetReportById.mockResolvedValueOnce(mockReport);
+      // First updateReport call (attempt count) succeeds, second (error status) fails
+      mockUpdateReport
+        .mockResolvedValueOnce(undefined)
+        .mockRejectedValueOnce(new Error('Storage down'));
+
+      tracePollingManager.startPolling('report-double-err', 'run-double-err', callbacks);
+
+      await jest.runAllTimersAsync();
+
+      // Should still clean up polling state even when both fail
+      expect(tracePollingManager.getState('report-double-err')).toBeUndefined();
+
+      // Should log critical error
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('CRITICAL'),
+        expect.any(Error)
+      );
+
+      consoleErrorSpy.mockRestore();
+    });
+
     it('cleans up memory when error occurs at max attempts', async () => {
       const callbacks: PollCallbacks = {
         onTracesFound: jest.fn(),

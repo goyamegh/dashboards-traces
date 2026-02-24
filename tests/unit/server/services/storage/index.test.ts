@@ -11,6 +11,7 @@ import {
   updateRun,
   saveReport,
   isStorageConfigured,
+  updateTestCaseLastRunAt,
 } from '@/server/services/storage';
 
 // Mock the opensearchClient module
@@ -37,6 +38,7 @@ describe('Storage Service', () => {
       index: jest.fn(),
       get: jest.fn(),
       update: jest.fn(),
+      updateByQuery: jest.fn(),
     };
     (getOpenSearchClient as jest.Mock).mockReturnValue(mockClient);
     consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
@@ -509,6 +511,61 @@ describe('Storage Service', () => {
           }),
         })
       );
+    });
+  });
+
+  describe('updateTestCaseLastRunAt', () => {
+    it('should send updateByQuery with type-safe Painless script', async () => {
+      mockClient.updateByQuery.mockResolvedValue({ body: { updated: 1 } });
+
+      await updateTestCaseLastRunAt(mockClient, 'tc-123', '2024-06-15T10:00:00.000Z');
+
+      expect(mockClient.updateByQuery).toHaveBeenCalledWith({
+        index: INDEXES.testCases,
+        refresh: false,
+        conflicts: 'proceed',
+        body: {
+          script: {
+            source: expect.stringContaining('compareTo'),
+            lang: 'painless',
+            params: { t: '2024-06-15T10:00:00.000Z' },
+          },
+          query: { term: { id: 'tc-123' } },
+        },
+      });
+    });
+
+    it('should use toString() for type-safe date comparison', async () => {
+      mockClient.updateByQuery.mockResolvedValue({ body: { updated: 1 } });
+
+      await updateTestCaseLastRunAt(mockClient, 'tc-456', '2024-06-15T10:00:00.000Z');
+
+      const callArgs = mockClient.updateByQuery.mock.calls[0][0];
+      const scriptSource = callArgs.body.script.source;
+
+      // Verify the script uses toString() to handle date-typed fields
+      expect(scriptSource).toContain('.toString()');
+      // Verify the script uses compareTo for type-safe comparison
+      expect(scriptSource).toContain('.compareTo(');
+      // Verify it still handles null case
+      expect(scriptSource).toContain('== null');
+    });
+
+    it('should set conflicts to proceed for graceful version conflict handling', async () => {
+      mockClient.updateByQuery.mockResolvedValue({ body: { updated: 1 } });
+
+      await updateTestCaseLastRunAt(mockClient, 'tc-789', '2024-06-15T10:00:00.000Z');
+
+      const callArgs = mockClient.updateByQuery.mock.calls[0][0];
+      expect(callArgs.conflicts).toBe('proceed');
+    });
+
+    it('should propagate errors from OpenSearch', async () => {
+      mockClient.updateByQuery.mockRejectedValue(new Error('script_exception'));
+
+      await expect(
+        updateTestCaseLastRunAt(mockClient, 'tc-err', '2024-06-15T10:00:00.000Z')
+      ).rejects.toThrow('script_exception');
     });
   });
 });
