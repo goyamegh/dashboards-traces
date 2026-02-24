@@ -154,7 +154,7 @@ describe('Sample Traces', () => {
   describe('getSampleTraceIds', () => {
     it('should return unique trace IDs', () => {
       const traceIds = getSampleTraceIds();
-      expect(traceIds.length).toBe(5);
+      expect(traceIds.length).toBe(6);
       expect(new Set(traceIds).size).toBe(traceIds.length);
     });
 
