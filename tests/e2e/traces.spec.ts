@@ -165,7 +165,7 @@ test.describe('Agent Graph', () => {
 });
 
 test.describe('Trace Fetch Size', () => {
-  test('Agent Traces page should request size=500 from the API', async ({ page }) => {
+  test('Agent Traces page should request size=100 from the API', async ({ page }) => {
     // Intercept API calls to /api/traces and capture the request body
     let capturedBody: any = null;
     await page.route('**/api/traces', async (route) => {
@@ -186,12 +186,12 @@ test.describe('Trace Fetch Size', () => {
     await page.goto('/agent-traces');
     await page.waitForTimeout(3000);
 
-    // Verify the API was called with size=500
+    // Verify the API was called with size=100
     expect(capturedBody).not.toBeNull();
-    expect(capturedBody.size).toBe(500);
+    expect(capturedBody.size).toBe(100);
   });
 
-  test('Live Traces page should request size=500 from the API', async ({ page }) => {
+  test('Live Traces page should request size=100 from the API', async ({ page }) => {
     let capturedBody: any = null;
     await page.route('**/api/traces', async (route) => {
       const request = route.request();
@@ -211,7 +211,7 @@ test.describe('Trace Fetch Size', () => {
     await page.waitForTimeout(3000);
 
     expect(capturedBody).not.toBeNull();
-    expect(capturedBody.size).toBe(500);
+    expect(capturedBody.size).toBe(100);
   });
 });
 
