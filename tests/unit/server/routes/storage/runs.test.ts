@@ -21,6 +21,7 @@ const mockRunsAddAnnotation = jest.fn();
 const mockRunsUpdateAnnotation = jest.fn();
 const mockRunsDeleteAnnotation = jest.fn();
 const mockRunsBulkCreate = jest.fn();
+const mockRunsCountsByTestCase = jest.fn();
 const mockBenchmarksGetById = jest.fn();
 const mockBenchmarksUpdateRun = jest.fn();
 const mockIsConfigured = jest.fn();
@@ -42,6 +43,7 @@ const mockStorageModule = {
     updateAnnotation: mockRunsUpdateAnnotation,
     deleteAnnotation: mockRunsDeleteAnnotation,
     bulkCreate: mockRunsBulkCreate,
+    countsByTestCase: mockRunsCountsByTestCase,
   },
   benchmarks: {
     getById: mockBenchmarksGetById,
@@ -954,18 +956,9 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
     });
 
     it('should return merged sample and real counts', async () => {
-      mockRunsGetAll.mockResolvedValue({
-        items: [
-          { id: 'run-1', testCaseId: 'tc-real-1' },
-          { id: 'run-2', testCaseId: 'tc-real-1' },
-          { id: 'run-3', testCaseId: 'tc-real-1' },
-          { id: 'run-4', testCaseId: 'tc-real-1' },
-          { id: 'run-5', testCaseId: 'tc-real-1' },
-          { id: 'run-6', testCaseId: 'tc-real-2' },
-          { id: 'run-7', testCaseId: 'tc-real-2' },
-          { id: 'run-8', testCaseId: 'tc-real-2' },
-        ],
-        total: 8,
+      mockRunsCountsByTestCase.mockResolvedValue({
+        'tc-real-1': 5,
+        'tc-real-2': 3,
       });
 
       const { req, res } = createMocks();
@@ -985,7 +978,7 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
     });
 
     it('should return only sample counts when storage is unavailable', async () => {
-      mockRunsGetAll.mockRejectedValue(new Error('Connection refused'));
+      mockRunsCountsByTestCase.mockRejectedValue(new Error('Connection refused'));
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/counts-by-test-case');
@@ -1000,7 +993,7 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
     });
 
     it('should handle storage errors gracefully', async () => {
-      mockRunsGetAll.mockRejectedValue(new Error('Connection refused'));
+      mockRunsCountsByTestCase.mockRejectedValue(new Error('Connection refused'));
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs/counts-by-test-case');
@@ -1016,12 +1009,8 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
     });
 
     it('should merge counts when sample and real data share test case IDs', async () => {
-      mockRunsGetAll.mockResolvedValue({
-        items: [
-          { id: 'run-1', testCaseId: 'demo-test-case-1' },
-          { id: 'run-2', testCaseId: 'demo-test-case-1' },
-        ],
-        total: 2,
+      mockRunsCountsByTestCase.mockResolvedValue({
+        'demo-test-case-1': 2,
       });
 
       const { req, res } = createMocks();

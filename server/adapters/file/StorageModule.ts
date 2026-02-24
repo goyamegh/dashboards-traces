@@ -536,6 +536,16 @@ class FileRunOperations implements IRunOperations {
     writeJsonFile(this.docPath(runId), run);
     return { deleted: true };
   }
+
+  async countsByTestCase(): Promise<Record<string, number>> {
+    const counts: Record<string, number> = {};
+    for (const run of readAllFromDir<TestCaseRun>(this.dir)) {
+      if (run.testCaseId) {
+        counts[run.testCaseId] = (counts[run.testCaseId] || 0) + 1;
+      }
+    }
+    return counts;
+  }
 }
 
 // ============================================================================

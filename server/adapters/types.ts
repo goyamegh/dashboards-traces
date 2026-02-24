@@ -134,6 +134,7 @@ export interface IRunOperations {
     maxIteration: number;
   }>;
   bulkCreate(runs: Partial<TestCaseRun>[]): Promise<{ created: number; errors: number }>;
+  countsByTestCase(): Promise<Record<string, number>>;
   // Annotations
   addAnnotation(runId: string, annotation: Partial<RunAnnotation>): Promise<RunAnnotation>;
   updateAnnotation(runId: string, annotationId: string, updates: Partial<RunAnnotation>): Promise<RunAnnotation>;
