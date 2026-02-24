@@ -33,6 +33,8 @@ export interface EnvConfig {
   mlcommonsHeaderAwsAccessKeyId: string;
   mlcommonsHeaderAwsSecretAccessKey: string;
   mlcommonsHeaderAwsSessionToken: string;
+  litellmApiKey: string;
+  litellmEndpoint: string;
   claudeCodeTelemetryEnabled: boolean;
   otelExporterEndpoint: string;
   otelServiceName: string;
@@ -67,6 +69,8 @@ export const ENV_CONFIG: EnvConfig = {
   mlcommonsHeaderAwsAccessKeyId: '',
   mlcommonsHeaderAwsSecretAccessKey: '',
   mlcommonsHeaderAwsSessionToken: '',
+  litellmApiKey: '',
+  litellmEndpoint: 'http://localhost:4000/v1/chat/completions',
   claudeCodeTelemetryEnabled: false,
   otelExporterEndpoint: '',
   otelServiceName: 'claude-code-agent',

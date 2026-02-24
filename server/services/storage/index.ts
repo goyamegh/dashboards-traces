@@ -271,9 +271,11 @@ export async function updateTestCaseLastRunAt(
   await client.updateByQuery({
     index: INDEXES.testCases,
     refresh: false,
+    conflicts: 'proceed',
     body: {
       script: {
-        source: `if (ctx._source.lastRunAt == null || params.t > ctx._source.lastRunAt) { ctx._source.lastRunAt = params.t }`,
+        source: `if (ctx._source.lastRunAt == null || params.t.compareTo(ctx._source.lastRunAt.toString()) > 0) { ctx._source.lastRunAt = params.t }`,
+        lang: 'painless',
         params: { t: timestamp },
       },
       query: { term: { id: testCaseId } },

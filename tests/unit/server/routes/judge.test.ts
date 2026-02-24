@@ -6,6 +6,7 @@
 import { Request, Response } from 'express';
 import judgeRoutes from '@/server/routes/judge';
 import { evaluateTrajectory, parseBedrockError } from '@/server/services/bedrockService';
+import { evaluateWithLiteLLM, parseLiteLLMError } from '@/server/services/litellmJudgeService';
 
 // Mock the bedrock service
 jest.mock('@/server/services/bedrockService', () => ({
@@ -13,8 +14,16 @@ jest.mock('@/server/services/bedrockService', () => ({
   parseBedrockError: jest.fn(),
 }));
 
+// Mock the litellm judge service
+jest.mock('@/server/services/litellmJudgeService', () => ({
+  evaluateWithLiteLLM: jest.fn(),
+  parseLiteLLMError: jest.fn(),
+}));
+
 const mockEvaluateTrajectory = evaluateTrajectory as jest.MockedFunction<typeof evaluateTrajectory>;
 const mockParseBedrockError = parseBedrockError as jest.MockedFunction<typeof parseBedrockError>;
+const mockEvaluateWithLiteLLM = evaluateWithLiteLLM as jest.MockedFunction<typeof evaluateWithLiteLLM>;
+const mockParseLiteLLMError = parseLiteLLMError as jest.MockedFunction<typeof parseLiteLLMError>;
 
 // Helper to create mock request/response
 function createMocks(body: any = {}) {
@@ -154,7 +163,7 @@ describe('Judge Routes', () => {
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
-          error: expect.stringContaining('Bedrock Judge evaluation failed'),
+          error: expect.stringContaining('Judge evaluation failed'),
         })
       );
     });
@@ -203,6 +212,82 @@ describe('Judge Routes', () => {
 
       // Should fall through to bedrock provider (default)
       expect(mockEvaluateTrajectory).toHaveBeenCalled();
+    });
+
+    it('routes to evaluateWithLiteLLM when provider is litellm', async () => {
+      mockEvaluateWithLiteLLM.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 0.9 },
+        llmJudgeReasoning: 'LiteLLM evaluation',
+        improvementStrategies: [],
+        duration: 120,
+      });
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'search' }],
+        expectedOutcomes: ['Identify issue'],
+        modelId: 'gpt-4o', // Uses provider: 'litellm' in DEFAULT_CONFIG
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(mockEvaluateWithLiteLLM).toHaveBeenCalledWith(
+        expect.objectContaining({
+          trajectory: expect.any(Array),
+          expectedOutcomes: expect.any(Array),
+        }),
+        expect.any(String) // Resolved model ID
+      );
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          passFailStatus: 'passed',
+          metrics: expect.objectContaining({ accuracy: 0.9 }),
+        })
+      );
+    });
+
+    it('does NOT call evaluateTrajectory (Bedrock) when provider is litellm', async () => {
+      mockEvaluateWithLiteLLM.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 0.9 },
+        llmJudgeReasoning: 'LiteLLM evaluation',
+        improvementStrategies: [],
+        duration: 120,
+      });
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'search' }],
+        expectedOutcomes: ['Identify issue'],
+        modelId: 'gpt-4o',
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(mockEvaluateTrajectory).not.toHaveBeenCalled();
+    });
+
+    it('returns 500 with LiteLLM error message on LiteLLM failure', async () => {
+      const error = new Error('LiteLLM responded 401: Unauthorized');
+      mockEvaluateWithLiteLLM.mockRejectedValue(error);
+      mockParseLiteLLMError.mockReturnValue('LiteLLM authentication failed. Check your LITELLM_API_KEY.');
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action' }],
+        expectedOutcomes: ['Test'],
+        modelId: 'gpt-4o',
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: expect.stringContaining('Judge evaluation failed'),
+        })
+      );
     });
   });
 });

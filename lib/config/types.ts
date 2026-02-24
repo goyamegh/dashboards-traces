@@ -36,7 +36,7 @@ export interface UserModelConfig {
   key: string;
   model_id: string;
   display_name: string;
-  provider?: 'bedrock' | 'demo' | 'ollama' | 'openai';
+  provider?: 'bedrock' | 'demo' | 'litellm';
   context_window?: number;
   max_output_tokens?: number;
 }
@@ -54,7 +54,7 @@ export type ReporterConfig =
  * Judge configuration
  */
 export interface JudgeConfig {
-  provider?: 'bedrock' | 'demo' | 'ollama' | 'openai';
+  provider?: 'bedrock' | 'demo' | 'litellm';
   model?: string;
   region?: string;
 }
