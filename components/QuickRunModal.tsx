@@ -48,6 +48,7 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
   const [currentSteps, setCurrentSteps] = useState<TrajectoryStep[]>([]);
   const [reportId, setReportId] = useState<string | null>(null);
   const [report, setReport] = useState<ServerEvaluationReport | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const selectedAgent = DEFAULT_CONFIG.agents.find(a => a.key === selectedAgentKey);
 
@@ -85,6 +86,7 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
     setCurrentSteps([]);
     setReport(null);
     setReportId(null);
+    setErrorMessage(null);
 
     try {
       // Build the request — use testCaseId for stored test cases, inline object for ad-hoc
@@ -126,6 +128,7 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
       setReport(result.report);
     } catch (error) {
       console.error('Evaluation error:', error);
+      setErrorMessage(error instanceof Error ? error.message : 'Evaluation failed');
     } finally {
       setIsRunning(false);
     }
@@ -287,6 +290,11 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
 
             {/* Results Area */}
             <div className="flex-1 min-h-0 overflow-y-auto p-4">
+              {errorMessage && (
+                <div className="mb-4 p-3 text-sm text-red-600 bg-red-50 rounded border border-red-200">
+                  {errorMessage}
+                </div>
+              )}
               {currentSteps.length > 0 || report ? (
                 <div className="space-y-4">
                   {/* Status Badge */}
