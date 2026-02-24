@@ -11,8 +11,6 @@
  * See: vite.config.ts and https://vitejs.dev/guide/env-and-mode.html
  */
 
-import { debug } from '@/lib/debug';
-
 // =============================================================================
 // Backend URL Configuration (single source of truth)
 // =============================================================================
@@ -47,11 +45,8 @@ export interface EnvConfig {
   openSearchLogsTracesIndex: string;
   openSearchLogsIndex: string;
 
-  // Per-agent endpoints
-  langgraphEndpoint: string;
+  // ML-Commons agent endpoint
   mlcommonsEndpoint: string;
-  holmesGptEndpoint: string;
-  travelPlannerEndpoint: string;
 
   // ML-Commons agent headers (for agent to access data source)
   mlcommonsHeaderOpenSearchUrl: string;
@@ -61,6 +56,9 @@ export interface EnvConfig {
   mlcommonsHeaderAwsAccessKeyId: string;
   mlcommonsHeaderAwsSecretAccessKey: string;
   mlcommonsHeaderAwsSessionToken: string;
+
+  // Travel Planner multi-agent endpoint (OTel Demo in Docker)
+  travelPlannerEndpoint: string;
 
   // LiteLLM (optional - for OpenAI-compatible judge/agent endpoints)
   litellmApiKey: string;
@@ -120,11 +118,8 @@ export const ENV_CONFIG: EnvConfig = {
   openSearchLogsTracesIndex: getEnvVar('OPENSEARCH_LOGS_TRACES_INDEX', 'otel-v1-apm-span-*'),
   openSearchLogsIndex: getEnvVar('OPENSEARCH_LOGS_INDEX', 'ml-commons-logs-*'),
 
-  // Per-agent endpoints
-  langgraphEndpoint: getEnvVar('LANGGRAPH_ENDPOINT', 'http://localhost:3000'),
+  // ML-Commons agent endpoint
   mlcommonsEndpoint: getEnvVar('MLCOMMONS_ENDPOINT', 'http://localhost:9200/_plugins/_ml/agents/{agent_id}/_execute/stream'),
-  holmesGptEndpoint: getEnvVar('HOLMESGPT_ENDPOINT', 'http://localhost:5050/api/agui/chat'),
-  travelPlannerEndpoint: getEnvVar('TRAVEL_PLANNER_ENDPOINT', 'http://localhost:8003'),
 
   // ML-Commons agent headers
   mlcommonsHeaderOpenSearchUrl: getEnvVar('MLCOMMONS_HEADER_OPENSEARCH_URL', ''),
@@ -134,6 +129,9 @@ export const ENV_CONFIG: EnvConfig = {
   mlcommonsHeaderAwsAccessKeyId: getEnvVar('MLCOMMONS_HEADER_AWS_ACCESS_KEY_ID', ''),
   mlcommonsHeaderAwsSecretAccessKey: getEnvVar('MLCOMMONS_HEADER_AWS_SECRET_ACCESS_KEY', ''),
   mlcommonsHeaderAwsSessionToken: getEnvVar('MLCOMMONS_HEADER_AWS_SESSION_TOKEN', ''),
+
+  // Travel Planner multi-agent endpoint (OTel Demo in Docker)
+  travelPlannerEndpoint: getEnvVar('TRAVEL_PLANNER_ENDPOINT', 'http://localhost:3000'),
 
   // LiteLLM (optional - for OpenAI-compatible judge/agent endpoints)
   litellmApiKey: getEnvVar('LITELLM_API_KEY', ''),
@@ -148,26 +146,20 @@ export const ENV_CONFIG: EnvConfig = {
 };
 
 /**
- * Build headers for ML-Commons agent from env config
- * Supports two authentication methods:
- * 1. Basic Auth: MLCOMMONS_HEADER_AUTHORIZATION (takes priority)
- * 2. SigV4: AWS credentials (fallback)
- * Region is always included as it may be needed for both auth methods
+ * Build ML-Commons request headers from environment variables.
+ * Supports both Basic Auth and AWS SigV4 authentication.
  */
 export function buildMLCommonsHeaders(): Record<string, string> {
-  debug('Config', 'Building ML-Commons headers');
   const headers: Record<string, string> = {};
 
   if (ENV_CONFIG.mlcommonsHeaderOpenSearchUrl) {
     headers['opensearch-url'] = ENV_CONFIG.mlcommonsHeaderOpenSearchUrl;
   }
 
-  // Always include region if provided (needed for both auth methods)
   if (ENV_CONFIG.mlcommonsHeaderAwsRegion) {
     headers['aws-region'] = ENV_CONFIG.mlcommonsHeaderAwsRegion;
   }
 
-  // Use Basic Auth if Authorization header is provided
   if (ENV_CONFIG.mlcommonsHeaderAuthorization) {
     headers['Authorization'] = ENV_CONFIG.mlcommonsHeaderAuthorization;
   } else {
@@ -186,6 +178,5 @@ export function buildMLCommonsHeaders(): Record<string, string> {
     }
   }
 
-  debug('Config', 'ML-Commons headers built, keys:', Object.keys(headers));
   return headers;
 }
