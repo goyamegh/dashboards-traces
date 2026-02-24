@@ -91,10 +91,8 @@ export function getDateCutoff(timeRange: TimeRange): Date | null {
  */
 export function getAgentDisplayName(agentKey: string): string {
   const agentNames: Record<string, string> = {
-    'mlcommons-local': 'ML-Commons',
-    'langgraph': 'LangGraph',
-    'holmesgpt': 'HolmesGPT',
     'demo': 'Demo Agent',
+    'travel-planner': 'Travel Planner',
   };
   return agentNames[agentKey] || agentKey;
 }
@@ -351,10 +349,8 @@ export function getUniqueAgents(benchmarks: Benchmark[]): Array<{ key: string; n
  * Color palette for agents (matches existing chart patterns)
  */
 export const AGENT_COLORS: Record<string, string> = {
-  'mlcommons-local': '#015aa3', // opensearch-blue
-  'langgraph': '#3b82f6',       // blue-500
-  'holmesgpt': '#8b5cf6',       // purple-500
   'demo': '#6b7280',            // gray-500
+  'travel-planner': '#10b981',  // emerald-500 (teal)
 };
 
 /**

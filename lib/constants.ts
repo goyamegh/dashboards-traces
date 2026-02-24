@@ -4,38 +4,7 @@
  */
 
 import { AppConfig, ModelConfig } from '@/types';
-import { ENV_CONFIG, buildMLCommonsHeaders } from '@/lib/config';
-
-/**
- * Get Claude Code connector environment variables at runtime.
- * This ensures environment variables are evaluated when needed,
- * not at module load time.
- */
-function getClaudeCodeConnectorEnv(): Record<string, string> {
-  const env: Record<string, string> = {
-    AWS_PROFILE: process.env.AWS_PROFILE || "Bedrock",
-    CLAUDE_CODE_USE_BEDROCK: "1",
-    AWS_REGION: process.env.AWS_REGION || "us-west-2",
-    DISABLE_PROMPT_CACHING: "1",
-    DISABLE_ERROR_REPORTING: "1",
-  };
-
-  if (ENV_CONFIG.claudeCodeTelemetryEnabled && ENV_CONFIG.otelExporterEndpoint) {
-    env.CLAUDE_CODE_ENABLE_TELEMETRY = '1';
-    env.OTEL_EXPORTER_OTLP_ENDPOINT = ENV_CONFIG.otelExporterEndpoint;
-    env.OTEL_SERVICE_NAME = ENV_CONFIG.otelServiceName;
-    if (ENV_CONFIG.otelExporterProtocol) {
-      env.OTEL_EXPORTER_OTLP_PROTOCOL = ENV_CONFIG.otelExporterProtocol;
-    }
-    if (ENV_CONFIG.otelExporterHeaders) {
-      env.OTEL_EXPORTER_OTLP_HEADERS = ENV_CONFIG.otelExporterHeaders;
-    }
-  } else {
-    env.DISABLE_TELEMETRY = '1';
-  }
-
-  return env;
-}
+import { ENV_CONFIG } from '@/lib/config';
 
 // Model pricing per 1M tokens (USD)
 export const MODEL_PRICING: Record<string, { input: number; output: number }> = {
@@ -61,77 +30,14 @@ export const DEFAULT_CONFIG: AppConfig = {
       useTraces: false,
     },
     {
-      key: "langgraph",
-      name: "Langgraph",
-      endpoint: ENV_CONFIG.langgraphEndpoint,
-      description: "Langgraph AG-UI agent server",
+      key: "travel-planner",
+      name: "Travel Planner",
+      endpoint: ENV_CONFIG.travelPlannerEndpoint,
+      description: "Multi-agent Travel Planner demo (requires OTel Demo running via Docker)",
       connectorType: "agui-streaming",
-      models: [
-        "claude-sonnet-4.5",
-        "claude-sonnet-4",
-        "claude-haiku-3.5",
-      ],
+      models: ["claude-sonnet-4.5", "claude-sonnet-4", "claude-haiku-3.5"],
       headers: {},
       useTraces: true,
-    },
-    {
-      key: "mlcommons-local",
-      name: "ML-Commons (Localhost)",
-      endpoint: ENV_CONFIG.mlcommonsEndpoint,
-      description: "Local OpenSearch ML-Commons conversational agent",
-      connectorType: "agui-streaming",
-      models: [
-        "claude-sonnet-4.5",
-        "claude-sonnet-4",
-        "claude-haiku-3.5",
-      ],
-      headers: buildMLCommonsHeaders(),
-      useTraces: true,
-    },
-    {
-      key: "holmesgpt",
-      name: "HolmesGPT",
-      endpoint: ENV_CONFIG.holmesGptEndpoint,
-      description: "HolmesGPT AI-powered RCA agent (AG-UI)",
-      connectorType: "agui-streaming",
-      models: [
-        "claude-sonnet-4.5",
-        "claude-sonnet-4",
-        "claude-haiku-3.5",
-      ],
-      headers: {},
-      useTraces: true
-    },
-    {
-      key: "claude-code",
-      name: "Claude Code",
-      endpoint: "claude",  // Command name, not URL
-      description: "Claude Code CLI agent (requires claude command installed)",
-      connectorType: "claude-code",
-      models: ["claude-sonnet-4"],
-      headers: {},
-      get useTraces(): boolean {
-        return !!(ENV_CONFIG.claudeCodeTelemetryEnabled && ENV_CONFIG.otelExporterEndpoint);
-      },
-      // connectorConfig env vars are evaluated at runtime by getClaudeCodeConnectorEnv()
-      get connectorConfig() {
-        return {
-          env: getClaudeCodeConnectorEnv(),
-        };
-      },
-    },
-    {
-      key: "litellm",
-      name: "LiteLLM Proxy",
-      endpoint: ENV_CONFIG.litellmEndpoint,
-      description: "OpenAI-compatible proxy (LiteLLM, vLLM, Ollama, etc.)",
-      connectorType: "litellm",
-      models: [
-        "claude-sonnet-4",
-        "gpt-4o",
-      ],
-      headers: {},
-      useTraces: false,
     },
   ],
   models: {
