@@ -12,7 +12,6 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { isStorageAvailable, requireStorageClient } from '../middleware/storageClient.js';
 import { getStorageModule } from '../adapters/index.js';
 import { SAMPLE_TEST_CASES } from '../../cli/demo/sampleTestCases.js';
 import { runSingleUseCase } from '../../services/benchmarkRunner.js';
@@ -184,15 +183,7 @@ router.post('/api/evaluate', async (req: Request, res: Response) => {
     results: {},
   };
 
-  // Check if storage is available for saving results
-  if (!isStorageAvailable(req)) {
-    return res.status(400).json({
-      error: 'OpenSearch storage not configured. Cannot run evaluations without storage.',
-      hint: 'Set OPENSEARCH_STORAGE_* environment variables to enable storage.',
-    });
-  }
-
-  const client = requireStorageClient(req);
+  const storage = getStorageModule();
 
   try {
     // Set up SSE streaming for progress updates
@@ -209,7 +200,7 @@ router.post('/api/evaluate', async (req: Request, res: Response) => {
     const reportId = await runSingleUseCase(
       runConfig,
       testCase,
-      client,
+      storage,
       (step) => {
         stepCount++;
         // Send full step content for UI rendering
@@ -230,7 +221,6 @@ router.post('/api/evaluate', async (req: Request, res: Response) => {
     );
 
     // Fetch the completed report via adapter
-    const storage = getStorageModule();
     const report = await storage.runs.getById(reportId);
 
     if (!report) {

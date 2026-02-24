@@ -376,7 +376,7 @@ router.post('/api/storage/test-cases/bulk', async (req: Request, res: Response) 
     const result = await storage.testCases.bulkCreate(testCases);
 
     debug('StorageAPI', `Bulk created ${result.created} test cases`);
-    res.json({ created: result.created, errors: result.errors, testCases });
+    res.json({ created: result.created, errors: result.errors, testCases: result.testCases });
   } catch (error: any) {
     console.error('[StorageAPI] Bulk create test cases failed:', error.message);
     res.status(500).json({ error: error.message });

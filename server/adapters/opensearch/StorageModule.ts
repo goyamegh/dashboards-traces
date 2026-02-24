@@ -237,18 +237,20 @@ class OpenSearchTestCaseOperations implements ITestCaseOperations {
     return { items: filtered.slice(from, from + size), total };
   }
 
-  async bulkCreate(testCases: Partial<TestCase>[]): Promise<{ created: number; errors: number }> {
+  async bulkCreate(testCases: Partial<TestCase>[]): Promise<{ created: number; errors: number; testCases: TestCase[] }> {
     let created = 0;
     let errors = 0;
+    const createdTestCases: TestCase[] = [];
     for (const tc of testCases) {
       try {
-        await this.create(tc);
+        const result = await this.create(tc);
+        createdTestCases.push(result);
         created++;
       } catch {
         errors++;
       }
     }
-    return { created, errors };
+    return { created, errors, testCases: createdTestCases };
   }
 }
 

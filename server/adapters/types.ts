@@ -93,7 +93,7 @@ export interface ITestCaseOperations {
   update(id: string, updates: Partial<TestCase>): Promise<TestCase>;
   delete(id: string): Promise<{ deleted: number }>;
   search(filters: TestCaseSearchFilters, options?: PaginationOptions): Promise<{ items: TestCase[]; total: number }>;
-  bulkCreate(testCases: Partial<TestCase>[]): Promise<{ created: number; errors: number }>;
+  bulkCreate(testCases: Partial<TestCase>[]): Promise<{ created: number; errors: number; testCases: TestCase[] }>;
 }
 
 /**
