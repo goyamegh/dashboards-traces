@@ -42,6 +42,7 @@ describe('Benchmark File Mode Integration', () => {
   let client: ApiClient;
   let tempDir: string;
   const createdBenchmarkIds: string[] = [];
+  const createdTestCaseIds: string[] = [];
 
   beforeAll(async () => {
     backendAvailable = await checkBackend();
@@ -61,11 +62,23 @@ describe('Benchmark File Mode Integration', () => {
       // Ignore
     }
 
-    // Clean up created benchmarks (test cases are left for cleanup by the server)
     if (!backendAvailable) return;
+
+    // Clean up created benchmarks
     for (const id of createdBenchmarkIds) {
       try {
         await fetch(`${BASE_URL}/api/storage/benchmarks/${encodeURIComponent(id)}`, {
+          method: 'DELETE',
+        });
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+
+    // Clean up created test cases so no files accumulate in agent-health-data/
+    for (const id of createdTestCaseIds) {
+      try {
+        await fetch(`${BASE_URL}/api/storage/test-cases/${encodeURIComponent(id)}`, {
           method: 'DELETE',
         });
       } catch {
@@ -191,6 +204,7 @@ describe('Benchmark File Mode Integration', () => {
       expect(bulkResult.testCases).toHaveLength(2);
       expect(bulkResult.testCases[0].id).toBeTruthy();
       expect(bulkResult.testCases[1].id).toBeTruthy();
+      createdTestCaseIds.push(...bulkResult.testCases.map(tc => tc.id));
 
       // 3. Create benchmark from returned IDs
       try {
@@ -229,6 +243,7 @@ describe('Benchmark File Mode Integration', () => {
       const bulkResult = await client.bulkCreateTestCases(validation.data!);
       expect(bulkResult.created).toBe(3);
       expect(bulkResult.testCases).toHaveLength(3);
+      createdTestCaseIds.push(...bulkResult.testCases.map(tc => tc.id));
 
       // Create benchmark
       try {
@@ -264,6 +279,7 @@ describe('Benchmark File Mode Integration', () => {
       ];
 
       const bulkResult = await client.bulkCreateTestCases(testCases);
+      createdTestCaseIds.push(...bulkResult.testCases.map(tc => tc.id));
 
       // Verify server assigned an ID (the test case didn't have one)
       expect(bulkResult.testCases[0].id).toBeTruthy();

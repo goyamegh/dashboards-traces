@@ -226,6 +226,32 @@ CI enforces minimum coverage thresholds configured in `jest.config.cjs`:
 - **Functions**: 80%
 - **Branches**: 80%
 
+### Integration Test Cleanup
+
+**Always delete data created during integration tests.** Integration tests that call the storage API write JSON files to `agent-health-data/` on disk (the file-based storage backend). If tests don't clean up, these files accumulate in the working directory and appear as untracked files in git.
+
+Track every created ID and delete it in `afterAll`:
+
+```typescript
+const createdTestCaseIds: string[] = [];
+const createdBenchmarkIds: string[] = [];
+
+afterAll(async () => {
+  for (const id of createdTestCaseIds) {
+    await fetch(`${BASE_URL}/api/storage/test-cases/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+  }
+  for (const id of createdBenchmarkIds) {
+    await fetch(`${BASE_URL}/api/storage/benchmarks/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+  }
+});
+
+// In each test, push created IDs immediately after creation:
+const result = await client.bulkCreateTestCases(testCases);
+createdTestCaseIds.push(...result.testCases.map(tc => tc.id));
+```
+
+The `agent-health-data/` directory is gitignored for this reason — it is runtime state, not source code.
+
 ## CI/CD
 
 GitHub Actions workflows are configured in `.github/workflows/`:
