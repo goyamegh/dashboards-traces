@@ -686,6 +686,27 @@ class OpenSearchRunOperations implements IRunOperations {
 
     return { deleted: true };
   }
+
+  async countsByTestCase(): Promise<Record<string, number>> {
+    const result = await this.client.search({
+      index: this.index,
+      body: {
+        size: 0,
+        aggs: {
+          by_test_case: {
+            terms: { field: 'testCaseId', size: 10000 },
+          },
+        },
+      },
+    });
+    const buckets: Array<{ key: string; doc_count: number }> =
+      (result.body.aggregations as any)?.by_test_case?.buckets ?? [];
+    const counts: Record<string, number> = {};
+    for (const bucket of buckets) {
+      if (bucket.key) counts[bucket.key] = bucket.doc_count;
+    }
+    return counts;
+  }
 }
 
 // ============================================================================

@@ -90,12 +90,7 @@ router.get('/api/storage/runs/counts-by-test-case', async (req: Request, res: Re
     // Count runs from storage backend
     const storage = getStorageModule();
     try {
-      const result = await storage.runs.getAll({ size: 10000 });
-      for (const run of result.items) {
-        if (run.testCaseId) {
-          realCounts[run.testCaseId] = (realCounts[run.testCaseId] || 0) + 1;
-        }
-      }
+      realCounts = await storage.runs.countsByTestCase();
     } catch (e: any) {
       console.warn('[StorageAPI] Storage unavailable for count aggregation:', e.message);
     }
