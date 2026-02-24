@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { ArrowLeft, Play, Calendar, CheckCircle2, XCircle, Trash2, FileText, Pencil, Loader2, X } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -13,9 +13,10 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
 import { TestCase, EvaluationReport } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
-import { getLabelColor, formatDate, formatRelativeTime } from '@/lib/utils';
+import { formatDate, formatRelativeTime } from '@/lib/utils';
 import { QuickRunModal } from './QuickRunModal';
 import { TestCaseEditor } from './TestCaseEditor';
+import { TestCaseDetailPanel } from './TestCaseDetailPanel';
 
 // ==================== Sub-Components ====================
 
@@ -142,6 +143,7 @@ const EmptyState = ({ onRun }: { onRun: () => void }) => (
 export const TestCaseRunsPage: React.FC = () => {
   const { testCaseId } = useParams<{ testCaseId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
 
   const [testCase, setTestCase] = useState<TestCase | null>(null);
   const [runs, setRuns] = useState<EvaluationReport[]>([]);
@@ -195,7 +197,12 @@ export const TestCaseRunsPage: React.FC = () => {
   }, [loadData]);
 
   const handleRunClick = (run: EvaluationReport) => {
-    navigate(`/runs/${run.id}`);
+    navigate(`/runs/${run.id}`, {
+      state: {
+        from: `/test-cases/${testCaseId}/runs`,
+        ...(location.state?.from && { parentFrom: location.state.from }),
+      },
+    });
   };
 
   const handleDeleteRun = async (run: EvaluationReport) => {
@@ -263,7 +270,7 @@ export const TestCaseRunsPage: React.FC = () => {
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={() => navigate('/test-cases')} data-testid="back-button">
+          <Button variant="ghost" size="icon" onClick={() => navigate(location.state?.from ?? '/test-cases')} data-testid="back-button">
             <ArrowLeft size={18} />
           </Button>
           <div>
@@ -292,108 +299,8 @@ export const TestCaseRunsPage: React.FC = () => {
       {/* Main Content - Side by Side Layout */}
       <div className="flex gap-4 flex-1 overflow-hidden">
         {/* Left Panel - Test Case Details (30%) */}
-        <div className="w-[30%] flex-shrink-0 overflow-y-auto border-r border-border pr-4 space-y-4">
-          {/* Labels */}
-          {(testCase.labels || []).length > 0 && (
-            <div className="space-y-1">
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Labels</h4>
-              <div className="flex items-center gap-2 flex-wrap">
-                {testCase.labels.map((label) => (
-                  <Badge key={label} variant="outline" className={getLabelColor(label)}>
-                    {label}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Metadata */}
-          <div className="space-y-1 text-xs text-muted-foreground">
-            <div className="flex items-center gap-2">
-              <Calendar size={12} />
-              <span>Created {formatDate(testCase.createdAt)}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <Play size={12} />
-              <span>{totalRuns} run{totalRuns !== 1 ? 's' : ''}</span>
-            </div>
-          </div>
-
-          {/* Description */}
-          {testCase.description && (
-            <div className="space-y-1">
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Description</h4>
-              <p className="text-sm text-muted-foreground">{testCase.description}</p>
-            </div>
-          )}
-
-          {/* Initial Prompt */}
-          <div className="space-y-1">
-            <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Prompt</h4>
-            <Card className="bg-muted/30">
-              <CardContent className="p-3">
-                <p className="text-sm whitespace-pre-wrap">{testCase.initialPrompt}</p>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Expected Outcomes */}
-          {testCase.expectedOutcomes && testCase.expectedOutcomes.length > 0 && (
-            <div className="space-y-1">
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Expected Outcomes</h4>
-              <ul className="space-y-1">
-                {testCase.expectedOutcomes.map((outcome, i) => (
-                  <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
-                    <span className="text-opensearch-blue mt-0.5">•</span>
-                    <span>{outcome}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          )}
-
-          {/* Context */}
-          {testCase.context && testCase.context.length > 0 && (
-            <div className="space-y-1">
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Context ({testCase.context.length})</h4>
-              <div className="space-y-2">
-                {testCase.context.map((ctx, i) => (
-                  <Card key={i} className="bg-muted/30">
-                    <CardContent className="p-2">
-                      <p className="text-xs font-medium text-muted-foreground mb-1">{ctx.description}</p>
-                      <pre className="text-xs overflow-x-auto max-h-20 overflow-y-auto">{ctx.value.slice(0, 200)}{ctx.value.length > 200 ? '...' : ''}</pre>
-                    </CardContent>
-                  </Card>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Tools */}
-          {testCase.tools && testCase.tools.length > 0 && (
-            <div className="space-y-1">
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tools ({testCase.tools.length})</h4>
-              <div className="flex flex-wrap gap-1">
-                {testCase.tools.map((tool, i) => (
-                  <Badge key={i} variant="secondary" className="text-xs">
-                    {tool.name}
-                  </Badge>
-                ))}
-              </div>
-            </div>
-          )}
-
-          {/* Expected PPL */}
-          {testCase.expectedPPL && (
-            <div className="space-y-1">
-              <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide">Expected PPL</h4>
-              <Card className="bg-muted/30">
-                <CardContent className="p-2">
-                  <pre className="text-xs overflow-x-auto">{testCase.expectedPPL}</pre>
-                </CardContent>
-              </Card>
-            </div>
-          )}
+        <div className="w-[30%] flex-shrink-0 overflow-y-auto border-r border-border pr-4">
+          <TestCaseDetailPanel testCase={testCase} totalRuns={totalRuns} />
         </div>
 
         {/* Right Panel - Runs (70%) */}

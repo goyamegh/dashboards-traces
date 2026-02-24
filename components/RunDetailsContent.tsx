@@ -879,7 +879,18 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                 <div className="flex items-center justify-between flex-shrink-0">
                   <h3 className="text-lg font-semibold">Traces</h3>
                   {spanTree.length > 0 && !tracesLoading && (
-                    <ViewToggle viewMode={traceViewMode} onChange={setTraceViewMode} />
+                    <div className="flex items-center gap-2">
+                      <ViewToggle viewMode={traceViewMode} onChange={setTraceViewMode} />
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => setTraceFullscreenOpen(true)}
+                        className="gap-1.5"
+                      >
+                        <Maximize2 size={14} />
+                        Fullscreen
+                      </Button>
+                    </div>
                   )}
                 </div>
 
