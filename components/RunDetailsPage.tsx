@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
 import { ArrowLeft, Calendar, CheckCircle2, XCircle, BarChart3, PanelLeftClose, PanelLeft, Clock, Loader2, StopCircle, Ban } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -210,6 +210,7 @@ export const RunDetailsPage: React.FC = () => {
   const routeExperimentId = benchmarkId || experimentId;
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const location = useLocation();
 
   // Main app sidebar control
   const { setOpen: setMainSidebarOpen } = useSidebar();
@@ -357,6 +358,11 @@ export const RunDetailsPage: React.FC = () => {
   const handleBack = () => {
     if (experimentContext) {
       navigate(`${basePath}/${experimentContext.experiment.id}/runs`);
+    } else if (location.state?.from) {
+      const nextState = location.state.parentFrom
+        ? { state: { from: location.state.parentFrom } }
+        : undefined;
+      navigate(location.state.from, nextState);
     } else if (report) {
       navigate(`/test-cases/${report.testCaseId}/runs`);
     } else {

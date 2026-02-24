@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, GitCompare, Calendar, CheckCircle2, XCircle, Play, Trash2, Plus, X, Loader2, Circle, Check, ChevronRight, Clock, StopCircle, Ban } from 'lucide-react';
+import { ArrowLeft, GitCompare, Calendar, CheckCircle2, XCircle, Play, Trash2, Plus, X, Loader2, Circle, Check, ChevronRight, ChevronDown, Clock, StopCircle, Ban } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -30,6 +30,7 @@ import {
   VersionData,
 } from '@/lib/benchmarkVersionUtils';
 import { RunConfigForExecution } from './BenchmarkEditor';
+import { TestCaseDetailPanel } from './TestCaseDetailPanel';
 
 // Track individual use case status during run
 interface UseCaseRunStatus {
@@ -121,6 +122,9 @@ export const BenchmarkRunsPage: React.FC = () => {
   // Version panel state
   const [testCaseVersion, setTestCaseVersion] = useState<number | null>(null); // null = latest
   const [runVersionFilter, setRunVersionFilter] = useState<number | 'all'>('all');
+
+  // Expanded test case card state
+  const [expandedTestCaseId, setExpandedTestCaseId] = useState<string | null>(null);
 
   // Cancellation hook
   const { isCancelling, handleCancelRun } = useBenchmarkCancellation();
@@ -639,8 +643,8 @@ export const BenchmarkRunsPage: React.FC = () => {
                       key={tc.id}
                       className={`cursor-pointer hover:border-primary/50 transition-colors ${
                         isAddedInThisVersion ? 'border-green-500/30 bg-green-500/5' : ''
-                      }`}
-                      onClick={() => navigate(`/test-cases/${tc.id}/runs`)}
+                      } ${expandedTestCaseId === tc.id ? 'border-primary/50' : ''}`}
+                      onClick={() => setExpandedTestCaseId(prev => prev === tc.id ? null : tc.id)}
                     >
                       <CardContent className="p-3">
                         <div className="flex items-center justify-between">
@@ -666,8 +670,35 @@ export const BenchmarkRunsPage: React.FC = () => {
                               )}
                             </div>
                           </div>
-                          <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
+                          <ChevronDown
+                            size={16}
+                            className={`text-muted-foreground transition-transform flex-shrink-0 ${
+                              expandedTestCaseId === tc.id ? 'rotate-180' : ''
+                            }`}
+                          />
                         </div>
+
+                        {expandedTestCaseId === tc.id && (
+                          <div
+                            className="mt-3 pt-3 border-t border-border"
+                            onClick={e => e.stopPropagation()}
+                          >
+                            <TestCaseDetailPanel testCase={tc} />
+                            <Button
+                              variant="link"
+                              size="sm"
+                              className="mt-3 p-0 h-auto text-xs text-opensearch-blue hover:text-blue-400"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                navigate(`/test-cases/${tc.id}/runs`, {
+                                  state: { from: `/benchmarks/${benchmarkId}/runs` },
+                                });
+                              }}
+                            >
+                              View all runs for this test case →
+                            </Button>
+                          </div>
+                        )}
                       </CardContent>
                     </Card>
                   );
