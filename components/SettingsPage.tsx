@@ -480,7 +480,18 @@ export const SettingsPage: React.FC = () => {
         }),
       });
 
-      const result = await response.json();
+      if (!response.ok && response.status === 0) {
+        setStorageTestStatus('error');
+        setStorageTestMessage('Could not reach the backend server. Make sure it is running.');
+        return;
+      }
+
+      const result = await response.json().catch(() => null);
+      if (!result) {
+        setStorageTestStatus('error');
+        setStorageTestMessage(`Backend returned an invalid response (HTTP ${response.status}). Make sure the server is running.`);
+        return;
+      }
       if (result.status === 'ok') {
         setStorageTestStatus('success');
         setStorageTestMessage(`Connected to ${result.clusterName || 'cluster'} (${result.clusterStatus})`);
@@ -565,7 +576,18 @@ export const SettingsPage: React.FC = () => {
         }),
       });
 
-      const result = await response.json();
+      if (!response.ok && response.status === 0) {
+        setObservabilityTestStatus('error');
+        setObservabilityTestMessage('Could not reach the backend server. Make sure it is running.');
+        return;
+      }
+
+      const result = await response.json().catch(() => null);
+      if (!result) {
+        setObservabilityTestStatus('error');
+        setObservabilityTestMessage(`Backend returned an invalid response (HTTP ${response.status}). Make sure the server is running.`);
+        return;
+      }
       if (result.status === 'ok') {
         setObservabilityTestStatus('success');
         const msg = result.message
