@@ -255,6 +255,7 @@ export interface TestCase {
   isPromoted: boolean;              // Available for experiments
   createdAt: string;
   updatedAt: string;
+  lastRunAt?: string;               // Timestamp of the most recent evaluation run
 
   // Current version content (convenience accessors - mirrors latest version)
   initialPrompt: string;

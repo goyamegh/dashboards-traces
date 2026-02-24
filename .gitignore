@@ -35,3 +35,16 @@ agent-health.config.json
 /playwright-report/
 /playwright/.cache/
 /test-results/
+
+/plans
+
+tokens.json
+
+# Local auth tokens
+.auth/
+
+# Claude Code working files
+.claude/
+
+# Development artifacts
+*.local.json

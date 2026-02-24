@@ -17,6 +17,7 @@ import {
   saveReportWithClient,
   updateRunWithClient,
   updateBenchmarkRunStatsForReport,
+  updateTestCaseLastRunAt,
 } from '@/server/services/storage';
 import type { Client } from '@opensearch-project/opensearch';
 import { runEvaluationWithConnector, callBedrockJudge } from './evaluation';
@@ -194,6 +195,10 @@ export async function executeRun(
           experimentRunId: run.id,
         });
 
+        // Denormalize lastRunAt onto the test case (fire-and-forget)
+        updateTestCaseLastRunAt(client, testCaseId, new Date().toISOString())
+          .catch(err => console.warn(`[BenchmarkRunner] Failed to update lastRunAt for ${testCaseId}:`, err.message));
+
         // Start trace polling for trace-mode runs (metricsStatus: 'pending')
         if (savedReport.metricsStatus === 'pending' && savedReport.runId) {
           startTracePollingForReport(savedReport, testCase, client);
@@ -303,6 +308,10 @@ export async function runSingleUseCase(
   );
 
   const savedReport = await saveReportWithClient(client, report);
+
+  // Denormalize lastRunAt onto the test case (fire-and-forget)
+  updateTestCaseLastRunAt(client, testCase.id, new Date().toISOString())
+    .catch(err => console.warn(`[BenchmarkRunner] Failed to update lastRunAt for ${testCase.id}:`, err.message));
 
   // Start trace polling for trace-mode runs
   if (savedReport.metricsStatus === 'pending' && savedReport.runId) {
