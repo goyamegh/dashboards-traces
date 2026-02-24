@@ -1433,12 +1433,224 @@ function generateLastMinuteSpans(): Span[] {
 }
 
 /**
+ * Generate spans for Budget Southeast Asia - Vietnam Route (demo-report-003b)
+ *
+ * Same use-case as demo-trace-003 but evaluated in the Advanced Benchmark run.
+ * The agent picks Vietnam over Thailand for better cost savings, producing a
+ * slightly shorter trace with fewer tool calls.
+ */
+function generateBudgetTripVietnamSpans(): Span[] {
+  const traceId = 'demo-trace-003b';
+  const baseTime = BASE_TIME + 3600000; // 60 minutes after first trace
+
+  return [
+    // Root span: Travel Coordinator
+    {
+      traceId,
+      spanId: 'span-003b-root',
+      name: 'invoke_agent Travel Coordinator',
+      startTime: new Date(baseTime).toISOString(),
+      endTime: new Date(baseTime + 9500).toISOString(),
+      duration: 9500,
+      status: 'OK',
+      attributes: {
+        'service.name': 'travel-planner',
+        'gen_ai.system': 'openai',
+        'gen_ai.agent.name': 'Travel Coordinator',
+        'gen_ai.agent.type': 'orchestrator',
+        'gen_ai.request.model': 'claude-sonnet-4-20250514',
+        'user.query': 'Plan a budget-friendly 5-day trip to Southeast Asia for under $1500 total',
+        'run.id': 'demo-agent-run-003b',
+      },
+    },
+    // Initial LLM reasoning
+    {
+      traceId,
+      spanId: 'span-003b-llm1',
+      parentSpanId: 'span-003b-root',
+      name: 'chat claude-sonnet-4',
+      startTime: new Date(baseTime + 50).toISOString(),
+      endTime: new Date(baseTime + 900).toISOString(),
+      duration: 850,
+      status: 'OK',
+      attributes: {
+        'service.name': 'travel-planner',
+        'gen_ai.system': 'openai',
+        'gen_ai.operation.name': 'chat',
+        'gen_ai.request.model': 'claude-sonnet-4-20250514',
+        'gen_ai.usage.input_tokens': 280,
+        'gen_ai.usage.output_tokens': 195,
+        'gen_ai.usage.total_tokens': 475,
+        'gen_ai.response.finish_reason': 'tool_calls',
+      },
+    },
+    // Budget Agent: destination comparison
+    {
+      traceId,
+      spanId: 'span-003b-budget',
+      parentSpanId: 'span-003b-root',
+      name: 'invoke_agent Budget Agent',
+      startTime: new Date(baseTime + 950).toISOString(),
+      endTime: new Date(baseTime + 3800).toISOString(),
+      duration: 2850,
+      status: 'OK',
+      attributes: {
+        'service.name': 'travel-planner',
+        'gen_ai.system': 'openai',
+        'gen_ai.agent.name': 'Budget Agent',
+        'gen_ai.agent.type': 'specialist',
+        'gen_ai.request.model': 'claude-sonnet-4-20250514',
+      },
+    },
+    // Budget Agent LLM
+    {
+      traceId,
+      spanId: 'span-003b-budget-llm',
+      parentSpanId: 'span-003b-budget',
+      name: 'chat claude-sonnet-4',
+      startTime: new Date(baseTime + 1000).toISOString(),
+      endTime: new Date(baseTime + 1700).toISOString(),
+      duration: 700,
+      status: 'OK',
+      attributes: {
+        'service.name': 'travel-planner',
+        'gen_ai.system': 'openai',
+        'gen_ai.operation.name': 'chat',
+        'gen_ai.request.model': 'claude-sonnet-4-20250514',
+        'gen_ai.usage.input_tokens': 195,
+        'gen_ai.usage.output_tokens': 145,
+        'gen_ai.usage.total_tokens': 340,
+        'gen_ai.response.finish_reason': 'tool_calls',
+      },
+    },
+    // Destination cost comparison tool
+    {
+      traceId,
+      spanId: 'span-003b-budget-tool',
+      parentSpanId: 'span-003b-budget',
+      name: 'tools/call compare_destination_costs',
+      startTime: new Date(baseTime + 1750).toISOString(),
+      endTime: new Date(baseTime + 3700).toISOString(),
+      duration: 1950,
+      status: 'OK',
+      attributes: {
+        'service.name': 'travel-planner',
+        'gen_ai.tool.name': 'compare_destination_costs',
+        'gen_ai.tool.args': '{"destinations":["Thailand","Vietnam","Cambodia"],"budget":1500,"duration":5}',
+        'http.method': 'GET',
+        'http.status_code': 200,
+        'comparison.winner': 'Vietnam',
+      },
+    },
+    // Booking Agent: budget flights to Vietnam
+    {
+      traceId,
+      spanId: 'span-003b-booking',
+      parentSpanId: 'span-003b-root',
+      name: 'invoke_agent Booking Agent',
+      startTime: new Date(baseTime + 3900).toISOString(),
+      endTime: new Date(baseTime + 6800).toISOString(),
+      duration: 2900,
+      status: 'OK',
+      attributes: {
+        'service.name': 'travel-planner',
+        'gen_ai.system': 'openai',
+        'gen_ai.agent.name': 'Booking Agent',
+        'gen_ai.agent.type': 'specialist',
+        'gen_ai.request.model': 'claude-sonnet-4-20250514',
+      },
+    },
+    // Booking LLM
+    {
+      traceId,
+      spanId: 'span-003b-booking-llm',
+      parentSpanId: 'span-003b-booking',
+      name: 'chat claude-sonnet-4',
+      startTime: new Date(baseTime + 3950).toISOString(),
+      endTime: new Date(baseTime + 4600).toISOString(),
+      duration: 650,
+      status: 'OK',
+      attributes: {
+        'service.name': 'travel-planner',
+        'gen_ai.system': 'openai',
+        'gen_ai.operation.name': 'chat',
+        'gen_ai.request.model': 'claude-sonnet-4-20250514',
+        'gen_ai.usage.input_tokens': 175,
+        'gen_ai.usage.output_tokens': 120,
+        'gen_ai.usage.total_tokens': 295,
+        'gen_ai.response.finish_reason': 'tool_calls',
+      },
+    },
+    // Flight search tool: LAX -> SGN (Ho Chi Minh City)
+    {
+      traceId,
+      spanId: 'span-003b-flight',
+      parentSpanId: 'span-003b-booking',
+      name: 'tools/call search_flights',
+      startTime: new Date(baseTime + 4650).toISOString(),
+      endTime: new Date(baseTime + 6100).toISOString(),
+      duration: 1450,
+      status: 'OK',
+      attributes: {
+        'service.name': 'travel-planner',
+        'gen_ai.tool.name': 'search_flights',
+        'gen_ai.tool.args': '{"origin":"LAX","destination":"SGN","max_price":600,"class":"economy"}',
+        'http.method': 'GET',
+        'http.status_code': 200,
+        'flights.results_count': 3,
+      },
+    },
+    // Budget hotel search: Ho Chi Minh City
+    {
+      traceId,
+      spanId: 'span-003b-hotel',
+      parentSpanId: 'span-003b-booking',
+      name: 'tools/call search_hotels',
+      startTime: new Date(baseTime + 6150).toISOString(),
+      endTime: new Date(baseTime + 6750).toISOString(),
+      duration: 600,
+      status: 'OK',
+      attributes: {
+        'service.name': 'travel-planner',
+        'gen_ai.tool.name': 'search_hotels',
+        'gen_ai.tool.args': '{"location":"Ho Chi Minh City+Da Nang","max_price_per_night":18,"type":"guesthouse"}',
+        'http.method': 'GET',
+        'http.status_code': 200,
+        'hotels.results_count': 4,
+      },
+    },
+    // Final LLM: assemble Vietnam itinerary
+    {
+      traceId,
+      spanId: 'span-003b-llm-final',
+      parentSpanId: 'span-003b-root',
+      name: 'chat claude-sonnet-4',
+      startTime: new Date(baseTime + 6900).toISOString(),
+      endTime: new Date(baseTime + 9400).toISOString(),
+      duration: 2500,
+      status: 'OK',
+      attributes: {
+        'service.name': 'travel-planner',
+        'gen_ai.system': 'openai',
+        'gen_ai.operation.name': 'chat',
+        'gen_ai.request.model': 'claude-sonnet-4-20250514',
+        'gen_ai.usage.input_tokens': 920,
+        'gen_ai.usage.output_tokens': 760,
+        'gen_ai.usage.total_tokens': 1680,
+        'gen_ai.response.finish_reason': 'stop',
+      },
+    },
+  ];
+}
+
+/**
  * All sample trace spans
  */
 export const SAMPLE_TRACE_SPANS: Span[] = [
   ...generateWeekendTripSpans(),
   ...generateJapanTripSpans(),
   ...generateBudgetTripSpans(),
+  ...generateBudgetTripVietnamSpans(),
   ...generateGroupRetreatSpans(),
   ...generateLastMinuteSpans(),
 ];
@@ -1451,11 +1663,23 @@ export function getSampleSpansForRunId(runId: string): Span[] {
 }
 
 /**
- * Get sample spans for multiple run IDs
+ * Get sample spans for multiple run IDs.
+ *
+ * Finds the traceIds of all spans matching the given run IDs, then returns
+ * the full set of spans for those traces (not just the root span).
+ * Only the root span of each trace carries the `run.id` attribute, so a
+ * two-step lookup is needed to recover all child spans.
  */
 export function getSampleSpansForRunIds(runIds: string[]): Span[] {
   if (!runIds || runIds.length === 0) return [];
-  return SAMPLE_TRACE_SPANS.filter(span => runIds.includes(span.attributes['run.id']));
+  // Step 1: collect traceIds whose root span matches a requested runId
+  const matchingTraceIds = new Set(
+    SAMPLE_TRACE_SPANS
+      .filter(span => span.attributes?.['run.id'] && runIds.includes(span.attributes['run.id']))
+      .map(span => span.traceId)
+  );
+  // Step 2: return every span that belongs to those traces
+  return SAMPLE_TRACE_SPANS.filter(span => matchingTraceIds.has(span.traceId));
 }
 
 /**
