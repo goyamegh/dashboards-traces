@@ -516,7 +516,7 @@ OPENSEARCH_STORAGE_USERNAME=admin
 OPENSEARCH_STORAGE_PASSWORD=your_password
 ```
 
-See [CONFIGURATION.md](./CONFIGURATION.md) for full configuration reference.
+See [CONFIGURATION.md](docs/CONFIGURATION.md) for full configuration reference.
 
 ### Run Benchmarks
 
@@ -575,14 +575,14 @@ This is expected when OpenSearch is not configured. File-based storage is used b
 
 - Enable verbose logging: Settings > Verbose Logging toggle
 - Check server logs in the terminal
-- Review [CONFIGURATION.md](./CONFIGURATION.md) for detailed setup
+- Review [CONFIGURATION.md](./docs/CONFIGURATION.md) for detailed setup
 - Open an issue: https://github.com/opensearch-project/dashboards-traces/issues
 
 ---
 
 ## Additional Resources
 
-- [Configuration Guide](./CONFIGURATION.md) - Detailed configuration options
+- [Configuration Guide](./docs/CONFIGURATION.md) - Detailed configuration options
 - [CLI Reference](./docs/CLI.md) - All CLI commands and options
 - [Connectors Guide](./docs/CONNECTORS.md) - Create custom connectors
 - [Development Guide](./CLAUDE.md) - Contributing and architecture

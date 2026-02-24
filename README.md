@@ -37,7 +37,7 @@ Opens http://localhost:4001 with pre-loaded sample data for exploration.
 
 **Next steps:**
 - [Getting Started Guide](./GETTING_STARTED.md) - Step-by-step walkthrough
-- [Connect Your Agent](./CONFIGURATION.md) - Configure your own agent
+- [Connect Your Agent](./docs/CONFIGURATION.md) - Configure your own agent
 
 ## Features
 
@@ -128,7 +128,7 @@ export default {
 };
 ```
 
-**Full configuration guide:** [CONFIGURATION.md](./CONFIGURATION.md)
+**Full configuration guide:** [CONFIGURATION.md](./docs/CONFIGURATION.md)
 
 ---
 
@@ -346,7 +346,7 @@ All commits require DCO signoff and all PRs must pass CI checks (tests, coverage
 
 ### User Guides
 - [Getting Started](./GETTING_STARTED.md) - Step-by-step walkthrough from install to first evaluation
-- [Configuration](./CONFIGURATION.md) - Connect your agent and configure the environment
+- [Configuration](./docs/CONFIGURATION.md) - Connect your agent and configure the environment
 - [CLI Reference](./docs/CLI.md) - Command-line interface documentation
 
 ### Developer Guides
