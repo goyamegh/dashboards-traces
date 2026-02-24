@@ -22,6 +22,7 @@ import {
   CancellationToken,
 } from '../../../services/benchmarkRunner.js';
 import { convertTestCasesToExportFormat, generateExportFilename } from '../../../lib/benchmarkExport.js';
+import { computeStatsForRun } from '../../services/storage/statsComputation.js';
 
 /**
  * Normalize benchmark data for legacy documents without version fields.
@@ -124,114 +125,15 @@ async function backfillRunStats(
             params: { runId: run.id, stats },
           },
         },
-      }).catch((e: any) => {
-        console.warn('[StorageAPI] Failed to persist backfilled stats for run', run.id, ':', e.message);
       }).then(() => {
         debug('StorageAPI', `[Backfill] Successfully persisted stats for run ${run.id}`);
+      }).catch((e: any) => {
+        console.warn('[StorageAPI] Failed to persist backfilled stats for run', run.id, ':', e.message);
       });
     } catch (e: any) {
       console.warn('[StorageAPI] Failed to compute stats for run:', run.id, e.message);
     }
   }));
-}
-
-/**
- * Compute stats for a benchmark run by fetching its reports
- */
-async function computeStatsForRun(
-  client: any,
-  run: BenchmarkRun
-): Promise<RunStats> {
-  // Collect report IDs from run results
-  const reportIds = Object.values(run.results || {})
-    .map(r => r.reportId)
-    .filter(Boolean);
-
-  let passed = 0;
-  let failed = 0;
-  let pending = 0;
-  const total = Object.keys(run.results || {}).length;
-
-  // Fetch reports to get passFailStatus
-  if (reportIds.length > 0) {
-    try {
-      const reportsResult = await client.search({
-        index: INDEXES.runs,
-        body: {
-          size: reportIds.length,
-          query: {
-            terms: { 'id': reportIds },
-          },
-          _source: ['id', 'passFailStatus', 'metricsStatus', 'status'],
-        },
-      });
-
-      const reportsMap = new Map<string, any>();
-      (reportsResult.body.hits?.hits || []).forEach((hit: any) => {
-        reportsMap.set(hit._source.id, hit._source);
-      });
-
-      // Count stats based on result status and report passFailStatus
-      Object.values(run.results || {}).forEach((result) => {
-        if (result.status === 'pending' || result.status === 'running') {
-          pending++;
-          return;
-        }
-
-        if (result.status === 'failed' || result.status === 'cancelled') {
-          failed++;
-          return;
-        }
-
-        // For completed results, check the report
-        if (result.status === 'completed' && result.reportId) {
-          const report = reportsMap.get(result.reportId);
-          if (!report) {
-            pending++;
-            return;
-          }
-
-          // Check if evaluation is still pending (trace mode)
-          if (report.metricsStatus === 'pending' || report.metricsStatus === 'calculating') {
-            pending++;
-            return;
-          }
-
-          if (report.passFailStatus === 'passed') {
-            passed++;
-          } else {
-            failed++;
-          }
-        } else {
-          pending++;
-        }
-      });
-    } catch (e: any) {
-      console.warn('[StorageAPI] Failed to fetch reports for stats computation:', e.message);
-      // Fall back to counting by result status only
-      Object.values(run.results || {}).forEach((result) => {
-        if (result.status === 'completed') {
-          // Can't determine pass/fail without reports, count as pending
-          pending++;
-        } else if (result.status === 'failed' || result.status === 'cancelled') {
-          failed++;
-        } else {
-          pending++;
-        }
-      });
-    }
-  } else {
-    // No reports yet, count by result status
-    Object.values(run.results || {}).forEach((result) => {
-      if (result.status === 'failed' || result.status === 'cancelled') {
-        failed++;
-      } else {
-        pending++;
-      }
-    });
-  }
-
-  return { passed, failed, pending, total };
 }
 
 /**

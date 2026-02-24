@@ -71,7 +71,7 @@ export async function fetchRecentTraces(options: {
   size?: number;
   cursor?: string;
 }): Promise<TraceSearchResult> {
-  const { minutesAgo = 5, serviceName, textSearch, size = 100, cursor } = options;
+  const { minutesAgo = 5, serviceName, textSearch, size = 500, cursor } = options;
   const now = Date.now();
   const startTime = now - (minutesAgo * 60 * 1000);
 

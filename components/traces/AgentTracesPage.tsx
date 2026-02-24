@@ -216,7 +216,7 @@ export const AgentTracesPage: React.FC = () => {
         minutesAgo: parseInt(timeRange),
         serviceName: selectedAgent !== 'all' ? selectedAgent : undefined,
         textSearch: debouncedSearch || undefined,
-        size: 100, // Reduced from 1000 to 100 for better performance
+        size: 500,
       });
       endMeasure('AgentTracesPage.apiCall');
 

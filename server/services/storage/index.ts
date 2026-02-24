@@ -15,6 +15,7 @@
  */
 
 import { getOpenSearchClient, INDEXES, isStorageConfigured } from '../opensearchClient.js';
+import { computeStatsForRun } from './statsComputation.js';
 import type { Client } from '@opensearch-project/opensearch';
 
 // Re-export for convenience
@@ -381,7 +382,7 @@ export async function updateBenchmarkRunStatsForReport(
     }
 
     // Recompute stats for this run
-    const updatedStats = await computeStatsForRunWithClient(client, targetRun);
+    const updatedStats = await computeStatsForRun(client, targetRun);
 
     // Update the benchmark document with new stats using Painless script
     await client.update({
@@ -409,97 +410,5 @@ export async function updateBenchmarkRunStatsForReport(
   }
 }
 
-/**
- * Compute stats for a benchmark run by fetching and analyzing its reports.
- * This is the same logic as in server/routes/storage/benchmarks.ts but
- * extracted for reuse.
- */
-async function computeStatsForRunWithClient(
-  client: Client,
-  run: any
-): Promise<{ passed: number; failed: number; pending: number; total: number }> {
-  // Collect report IDs from run results
-  const reportIds = Object.values(run.results || {})
-    .map((r: any) => r.reportId)
-    .filter(Boolean);
-
-  let passed = 0;
-  let failed = 0;
-  let pending = 0;
-  const total = Object.keys(run.results || {}).length;
-
-  // Fetch reports to get passFailStatus
-  if (reportIds.length > 0) {
-    try {
-      const reportsResult = await client.search({
-        index: INDEXES.runs,
-        body: {
-          size: reportIds.length,
-          query: {
-            terms: { id: reportIds },
-          },
-          _source: ['id', 'passFailStatus', 'metricsStatus', 'status'],
-        },
-      });
-
-      const reportsMap = new Map<string, any>();
-      (reportsResult.body.hits?.hits || []).forEach((hit: any) => {
-        reportsMap.set(hit._source.id, hit._source);
-      });
-
-      // Count stats based on result status and report passFailStatus
-      Object.values(run.results || {}).forEach((result: any) => {
-        if (result.status === 'pending' || result.status === 'running') {
-          pending++;
-          return;
-        }
-
-        if (result.status === 'failed' || result.status === 'cancelled') {
-          failed++;
-          return;
-        }
-
-        // For completed results, check the report
-        if (result.status === 'completed' && result.reportId) {
-          const report = reportsMap.get(result.reportId);
-          if (!report) {
-            pending++;
-            return;
-          }
-
-          // Check if evaluation is still pending (trace mode)
-          if (report.metricsStatus === 'pending' || report.metricsStatus === 'calculating') {
-            pending++;
-            return;
-          }
-
-          if (report.passFailStatus === 'passed') {
-            passed++;
-          } else {
-            failed++;
-          }
-        } else {
-          pending++;
-        }
-      });
-    } catch (e: any) {
-      console.warn('[StorageService] Failed to fetch reports for stats computation:', e.message);
-      // Fall back to counting by result status only
-      Object.values(run.results || {}).forEach((result: any) => {
-        if (result.status === 'completed') {
-          // Can't determine pass/fail without reports, count as pending
-          pending++;
-        } else if (result.status === 'failed' || result.status === 'cancelled') {
-          failed++;
-        } else {
-          pending++;
-        }
-      });
-    }
-  } else {
-    // No reports yet - all results are pending
-    pending = total;
-  }
-
-  return { passed, failed, pending, total };
-}
+// Re-export shared stats computation for external consumers
+export { computeStatsForRun } from './statsComputation.js';

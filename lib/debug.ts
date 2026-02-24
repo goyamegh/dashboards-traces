@@ -12,10 +12,6 @@
  * Browser: Uses localStorage cache (synced via Settings page API calls)
  */
 
-import fs from 'fs';
-import path from 'path';
-import yaml from 'yaml';
-
 const isBrowser = typeof window !== 'undefined';
 
 // Server-side: persist debug state in agent-health.yaml
@@ -24,6 +20,9 @@ let serverDebugEnabled = false;
 // Initialize server debug state from agent-health.yaml or env var
 if (!isBrowser) {
   try {
+    const fs = require('fs');
+    const path = require('path');
+    const yaml = require('yaml');
     const configPath = path.join(process.cwd(), 'agent-health.yaml');
 
     if (fs.existsSync(configPath)) {
@@ -76,6 +75,9 @@ export function setDebugEnabled(enabled: boolean): void {
   serverDebugEnabled = enabled;
 
   try {
+    const fs = require('fs');
+    const path = require('path');
+    const yaml = require('yaml');
     const configPath = path.join(process.cwd(), 'agent-health.yaml');
 
     let config: any = {};

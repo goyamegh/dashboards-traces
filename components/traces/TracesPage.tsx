@@ -109,7 +109,7 @@ export const TracesPage: React.FC = () => {
         minutesAgo: 5,
         serviceName: selectedAgent !== 'all' ? selectedAgent : undefined,
         textSearch: debouncedSearch || undefined,
-        size: 100, // Reduced from 500 to 100 for pagination
+        size: 500,
         cursor: loadMore ? cursor || undefined : undefined,
       });
       endMeasure('TracesPage.apiCall');

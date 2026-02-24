@@ -164,6 +164,57 @@ test.describe('Agent Graph', () => {
   });
 });
 
+test.describe('Trace Fetch Size', () => {
+  test('Agent Traces page should request size=500 from the API', async ({ page }) => {
+    // Intercept API calls to /api/traces and capture the request body
+    let capturedBody: any = null;
+    await page.route('**/api/traces', async (route) => {
+      const request = route.request();
+      try {
+        capturedBody = JSON.parse(request.postData() || '{}');
+      } catch {
+        capturedBody = {};
+      }
+      // Return empty result to avoid depending on backend state
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ spans: [], total: 0 }),
+      });
+    });
+
+    await page.goto('/agent-traces');
+    await page.waitForTimeout(3000);
+
+    // Verify the API was called with size=500
+    expect(capturedBody).not.toBeNull();
+    expect(capturedBody.size).toBe(500);
+  });
+
+  test('Live Traces page should request size=500 from the API', async ({ page }) => {
+    let capturedBody: any = null;
+    await page.route('**/api/traces', async (route) => {
+      const request = route.request();
+      try {
+        capturedBody = JSON.parse(request.postData() || '{}');
+      } catch {
+        capturedBody = {};
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({ spans: [], total: 0 }),
+      });
+    });
+
+    await page.goto('/live-traces');
+    await page.waitForTimeout(3000);
+
+    expect(capturedBody).not.toBeNull();
+    expect(capturedBody.size).toBe(500);
+  });
+});
+
 test.describe('Trace Filtering', () => {
   test.beforeEach(async ({ page }) => {
     await page.goto('/agent-traces');
