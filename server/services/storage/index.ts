@@ -255,6 +255,31 @@ export async function saveReport(
   return saveReportWithClient(client, report, options);
 }
 
+// ==================== Test Case Run Activity ====================
+
+/**
+ * Denormalize lastRunAt onto all versions of a test case document.
+ * Called fire-and-forget after every evaluation run completes.
+ * Uses a conditional Painless script so out-of-order calls are safe.
+ */
+export async function updateTestCaseLastRunAt(
+  client: Client,
+  testCaseId: string,
+  timestamp: string
+): Promise<void> {
+  await client.updateByQuery({
+    index: INDEXES.testCases,
+    refresh: false,
+    body: {
+      script: {
+        source: `if (ctx._source.lastRunAt == null || params.t > ctx._source.lastRunAt) { ctx._source.lastRunAt = params.t }`,
+        params: { t: timestamp },
+      },
+      query: { term: { id: testCaseId } },
+    },
+  });
+}
+
 // ==================== Helpers ====================
 
 function generateId(prefix: string): string {

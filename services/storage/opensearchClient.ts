@@ -69,6 +69,7 @@ export interface StorageTestCase {
   author?: string;
   createdAt: string;
   updatedAt: string;
+  lastRunAt?: string;
 }
 
 export interface StorageBenchmarkRunConfig {
