@@ -20,12 +20,12 @@ jest.mock('express', () => ({
 }));
 
 // Mock all storage route modules
-jest.mock('@/server/routes/storage/admin', () => ({ default: 'adminRoutes' }));
-jest.mock('@/server/routes/storage/testCases', () => ({ default: 'testCasesRoutes' }));
-jest.mock('@/server/routes/storage/benchmarks', () => ({ default: 'benchmarksRoutes' }));
-jest.mock('@/server/routes/storage/runs', () => ({ default: 'runsRoutes' }));
-jest.mock('@/server/routes/storage/analytics', () => ({ default: 'analyticsRoutes' }));
-jest.mock('@/server/routes/storage/reports', () => ({ default: 'reportsRoutes' }));
+jest.mock('@/server/routes/storage/admin', () => ({ __esModule: true, default: 'adminRoutes' }));
+jest.mock('@/server/routes/storage/testCases', () => ({ __esModule: true, default: 'testCasesRoutes' }));
+jest.mock('@/server/routes/storage/benchmarks', () => ({ __esModule: true, default: 'benchmarksRoutes' }));
+jest.mock('@/server/routes/storage/runs', () => ({ __esModule: true, default: 'runsRoutes' }));
+jest.mock('@/server/routes/storage/analytics', () => ({ __esModule: true, default: 'analyticsRoutes' }));
+jest.mock('@/server/routes/storage/reports', () => ({ __esModule: true, default: 'reportsRoutes' }));
 
 describe('Storage Routes Aggregator', () => {
   beforeEach(() => {
