@@ -443,13 +443,13 @@ describe('OpenSearchStorageModule', () => {
           { name: 'TC2' },
         ]);
 
-        expect(result).toEqual({ created: 1, errors: 1 });
+        expect(result).toEqual(expect.objectContaining({ created: 1, errors: 1 }));
       });
 
       it('should handle empty array', async () => {
         const result = await mod.testCases.bulkCreate([]);
 
-        expect(result).toEqual({ created: 0, errors: 0 });
+        expect(result).toEqual(expect.objectContaining({ created: 0, errors: 0 }));
       });
     });
   });

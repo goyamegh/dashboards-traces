@@ -26,8 +26,16 @@ jest.mock('@/server/services/storage', () => ({
   updateTestCaseLastRunAt: (...args: any[]) => mockUpdateTestCaseLastRunAt(...args),
 }));
 
-// Mock OpenSearch client
+// Mock OpenSearch client (used for executeRun / runBenchmark paths)
 const mockClient = {} as any;
+
+// Mock storage module (used for runSingleUseCase path)
+const mockRunsCreate = jest.fn();
+const mockTestCasesUpdate = jest.fn().mockResolvedValue(undefined);
+const mockStorageModule = {
+  runs: { create: mockRunsCreate },
+  testCases: { update: mockTestCasesUpdate },
+} as any;
 
 const mockRunEvaluationWithConnector = jest.fn();
 const mockCallBedrockJudge = jest.fn();
@@ -162,6 +170,8 @@ describe('Experiment Runner', () => {
     mockSaveReportWithClient.mockReset();
     mockUpdateRunWithClient.mockReset();
     mockGetCustomAgents.mockReturnValue([]);
+    mockRunsCreate.mockReset();
+    mockTestCasesUpdate.mockResolvedValue(undefined);
   });
 
   describe('createCancellationToken', () => {
@@ -537,10 +547,10 @@ describe('Experiment Runner', () => {
         trajectory: [{ type: 'response', content: 'Test' }],
         metrics: { accuracy: 0.95 },
       });
-      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
 
       const onStep = jest.fn();
-      const reportId = await runSingleUseCase(run, testCase, mockClient, onStep);
+      const reportId = await runSingleUseCase(run, testCase, mockStorageModule, onStep);
 
       expect(reportId).toBe('saved-report-1');
       expect(mockRunEvaluationWithConnector).toHaveBeenCalledWith(
@@ -561,9 +571,9 @@ describe('Experiment Runner', () => {
         trajectory: [],
         metrics: {},
       });
-      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
 
-      const reportId = await runSingleUseCase(run, testCase, mockClient);
+      const reportId = await runSingleUseCase(run, testCase, mockStorageModule);
 
       expect(reportId).toBe('saved-report-1');
       // The callback should be a no-op function
@@ -575,14 +585,10 @@ describe('Experiment Runner', () => {
       const testCase = createTestCase('tc-1');
       const run = createBenchmarkRun('run-1');
 
-      mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [], metrics: {} });
-      mockSaveReportWithClient.mockResolvedValue({
-        id: 'saved-report-1',
-        runId: 'trace-run-id',
-        metricsStatus: 'pending',
-      });
+      mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [], metrics: {}, runId: 'trace-run-id', metricsStatus: 'pending' });
+      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1' });
 
-      await runSingleUseCase(run, testCase, mockClient);
+      await runSingleUseCase(run, testCase, mockStorageModule);
 
       expect(mockStartPolling).toHaveBeenCalled();
     });
@@ -595,9 +601,9 @@ describe('Experiment Runner', () => {
       };
 
       mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [], metrics: {} });
-      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
 
-      await runSingleUseCase(run, testCase, mockClient);
+      await runSingleUseCase(run, testCase, mockStorageModule);
 
       expect(mockRunEvaluationWithConnector).toHaveBeenCalledWith(
         expect.any(Object),
@@ -625,9 +631,9 @@ describe('Experiment Runner', () => {
         trajectory: [],
         metrics: {},
       });
-      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
 
-      await runSingleUseCase(run, testCase, mockClient);
+      await runSingleUseCase(run, testCase, mockStorageModule);
 
       // Verify the agent config passed to runEvaluationWithConnector includes hooks
       const agentConfigArg = mockRunEvaluationWithConnector.mock.calls[0][0];
@@ -654,9 +660,9 @@ describe('Experiment Runner', () => {
       };
 
       mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [], metrics: {} });
-      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
 
-      const reportId = await runSingleUseCase(run, testCase, mockClient);
+      const reportId = await runSingleUseCase(run, testCase, mockStorageModule);
 
       expect(reportId).toBe('saved-report-1');
       const agentConfigArg = mockRunEvaluationWithConnector.mock.calls[0][0];
@@ -682,9 +688,9 @@ describe('Experiment Runner', () => {
       };
 
       mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [], metrics: {} });
-      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
 
-      await runSingleUseCase(run, testCase, mockClient);
+      await runSingleUseCase(run, testCase, mockStorageModule);
 
       const agentConfigArg = mockRunEvaluationWithConnector.mock.calls[0][0];
       expect(agentConfigArg.endpoint).toBe('http://override.example.com');
@@ -698,9 +704,9 @@ describe('Experiment Runner', () => {
       };
 
       mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [], metrics: {} });
-      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
 
-      await runSingleUseCase(run, testCase, mockClient);
+      await runSingleUseCase(run, testCase, mockStorageModule);
 
       expect(mockRunEvaluationWithConnector).toHaveBeenCalledWith(
         expect.any(Object),
@@ -796,14 +802,10 @@ describe('Experiment Runner', () => {
       const testCase = createTestCase('tc-1');
       const run = createBenchmarkRun('run-1');
 
-      mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [] });
-      mockSaveReportWithClient.mockResolvedValue({
-        id: 'saved-report-1',
-        metricsStatus: 'pending',
-        // runId is missing
-      });
+      mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [], metricsStatus: 'pending' });
+      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1' });
 
-      await runSingleUseCase(run, testCase, mockClient);
+      await runSingleUseCase(run, testCase, mockStorageModule);
 
       expect(mockStartPolling).not.toHaveBeenCalled();
     });
