@@ -1697,6 +1697,69 @@ export function getAllSampleTraceSpans(): Span[] {
 }
 
 /**
+ * Get all sample trace spans with timestamps shifted to recent times.
+ *
+ * Groups spans by traceId and shifts each group so that traces are spread
+ * across the last 2 hours (~20 min apart). Relative ordering and durations
+ * within each trace are preserved.
+ */
+export function getAllSampleTraceSpansWithRecentTimestamps(): Span[] {
+  // Group spans by traceId
+  const groups = new Map<string, Span[]>();
+  for (const span of SAMPLE_TRACE_SPANS) {
+    const group = groups.get(span.traceId);
+    if (group) {
+      group.push(span);
+    } else {
+      groups.set(span.traceId, [span]);
+    }
+  }
+
+  const now = Date.now();
+  const TWO_HOURS_MS = 2 * 60 * 60 * 1000;
+  const traceIds = [...groups.keys()];
+  const groupCount = traceIds.length;
+  // Spread groups evenly across the last 2 hours
+  const intervalMs = groupCount > 1 ? TWO_HOURS_MS / (groupCount - 1) : 0;
+
+  const result: Span[] = [];
+
+  for (let i = 0; i < traceIds.length; i++) {
+    const spans = groups.get(traceIds[i])!;
+
+    // Find earliest start time in this group
+    const earliestStart = Math.min(
+      ...spans.map(s => new Date(s.startTime).getTime())
+    );
+
+    // Target start: spread from (now - 2h) to now
+    const targetStart = now - TWO_HOURS_MS + i * intervalMs;
+    const offset = targetStart - earliestStart;
+
+    for (const span of spans) {
+      const newStartTime = new Date(new Date(span.startTime).getTime() + offset).toISOString();
+      const newEndTime = new Date(new Date(span.endTime).getTime() + offset).toISOString();
+
+      const shifted: Span = {
+        ...span,
+        startTime: newStartTime,
+        endTime: newEndTime,
+        // Shift event timestamps too
+        ...(span.events && {
+          events: span.events.map(e => ({
+            ...e,
+            time: new Date(new Date(e.time).getTime() + offset).toISOString(),
+          })),
+        }),
+      };
+      result.push(shifted);
+    }
+  }
+
+  return result;
+}
+
+/**
  * Check if a trace ID is a sample trace
  */
 export function isSampleTraceId(traceId: string): boolean {

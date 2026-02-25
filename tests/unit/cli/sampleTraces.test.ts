@@ -13,6 +13,7 @@ import {
   getSampleSpansForRunIds,
   getSampleSpansByTraceId,
   getAllSampleTraceSpans,
+  getAllSampleTraceSpansWithRecentTimestamps,
   isSampleTraceId,
   getSampleTraceIds,
 } from '@/cli/demo/sampleTraces';
@@ -268,6 +269,87 @@ describe('Sample Traces', () => {
         expect(span.attributes['gen_ai.agent.name']).toBeDefined();
         expect(span.attributes['gen_ai.agent.type']).toBeDefined();
       });
+    });
+  });
+
+  describe('getAllSampleTraceSpansWithRecentTimestamps', () => {
+    it('should return the same number of spans as getAllSampleTraceSpans', () => {
+      const original = getAllSampleTraceSpans();
+      const shifted = getAllSampleTraceSpansWithRecentTimestamps();
+      expect(shifted.length).toBe(original.length);
+    });
+
+    it('should have all timestamps within the last 3 hours', () => {
+      const shifted = getAllSampleTraceSpansWithRecentTimestamps();
+      const threeHoursAgo = Date.now() - 3 * 60 * 60 * 1000;
+
+      shifted.forEach((span) => {
+        const start = new Date(span.startTime).getTime();
+        const end = new Date(span.endTime).getTime();
+        expect(start).toBeGreaterThan(threeHoursAgo);
+        expect(end).toBeGreaterThan(threeHoursAgo);
+        expect(end).toBeLessThanOrEqual(Date.now() + 60000); // allow 1 min tolerance
+      });
+    });
+
+    it('should preserve relative ordering within each trace', () => {
+      const shifted = getAllSampleTraceSpansWithRecentTimestamps();
+
+      // Group by traceId
+      const groups = new Map<string, typeof shifted>();
+      shifted.forEach((span) => {
+        const group = groups.get(span.traceId) || [];
+        group.push(span);
+        groups.set(span.traceId, group);
+      });
+
+      // For each group, verify startTime ordering matches original
+      const original = getAllSampleTraceSpans();
+      const origGroups = new Map<string, typeof original>();
+      original.forEach((span) => {
+        const group = origGroups.get(span.traceId) || [];
+        group.push(span);
+        origGroups.set(span.traceId, group);
+      });
+
+      for (const [traceId, shiftedSpans] of groups) {
+        const origSpans = origGroups.get(traceId)!;
+        expect(shiftedSpans.length).toBe(origSpans.length);
+
+        // spanIds should be in the same order
+        const shiftedIds = shiftedSpans.map((s) => s.spanId);
+        const origIds = origSpans.map((s) => s.spanId);
+        expect(shiftedIds).toEqual(origIds);
+      });
+    });
+
+    it('should preserve span durations', () => {
+      const original = getAllSampleTraceSpans();
+      const shifted = getAllSampleTraceSpansWithRecentTimestamps();
+
+      for (let i = 0; i < original.length; i++) {
+        expect(shifted[i].duration).toBe(original[i].duration);
+      }
+    });
+
+    it('should shift event timestamps within spans', () => {
+      const shifted = getAllSampleTraceSpansWithRecentTimestamps();
+      const spansWithEvents = shifted.filter((s) => s.events && s.events.length > 0);
+      expect(spansWithEvents.length).toBeGreaterThan(0);
+
+      const threeHoursAgo = Date.now() - 3 * 60 * 60 * 1000;
+      spansWithEvents.forEach((span) => {
+        span.events!.forEach((event) => {
+          const eventTime = new Date(event.time).getTime();
+          expect(eventTime).toBeGreaterThan(threeHoursAgo);
+        });
+      });
+    });
+
+    it('should not modify the original SAMPLE_TRACE_SPANS', () => {
+      const originalFirst = SAMPLE_TRACE_SPANS[0].startTime;
+      getAllSampleTraceSpansWithRecentTimestamps();
+      expect(SAMPLE_TRACE_SPANS[0].startTime).toBe(originalFirst);
     });
   });
 

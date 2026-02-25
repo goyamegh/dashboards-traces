@@ -10,6 +10,7 @@ import {
   getSampleSpansForRunIds,
   getSampleSpansByTraceId,
   getAllSampleTraceSpans,
+  getAllSampleTraceSpansWithRecentTimestamps,
   isSampleTraceId,
 } from '@/cli/demo/sampleTraces';
 
@@ -24,6 +25,7 @@ jest.mock('@/cli/demo/sampleTraces', () => ({
   getSampleSpansForRunIds: jest.fn().mockReturnValue([]),
   getSampleSpansByTraceId: jest.fn().mockReturnValue([]),
   getAllSampleTraceSpans: jest.fn().mockReturnValue([]),
+  getAllSampleTraceSpansWithRecentTimestamps: jest.fn().mockReturnValue([]),
   isSampleTraceId: jest.fn().mockReturnValue(false),
 }));
 
@@ -32,6 +34,7 @@ const mockCheckTracesHealth = checkTracesHealth as jest.MockedFunction<typeof ch
 const mockGetSampleSpansForRunIds = getSampleSpansForRunIds as jest.MockedFunction<typeof getSampleSpansForRunIds>;
 const mockGetSampleSpansByTraceId = getSampleSpansByTraceId as jest.MockedFunction<typeof getSampleSpansByTraceId>;
 const mockGetAllSampleTraceSpans = getAllSampleTraceSpans as jest.MockedFunction<typeof getAllSampleTraceSpans>;
+const mockGetAllSampleTraceSpansWithRecentTimestamps = getAllSampleTraceSpansWithRecentTimestamps as jest.MockedFunction<typeof getAllSampleTraceSpansWithRecentTimestamps>;
 const mockIsSampleTraceId = isSampleTraceId as jest.MockedFunction<typeof isSampleTraceId>;
 
 // Helper to create mock request/response
@@ -74,6 +77,7 @@ describe('Traces Routes', () => {
     mockGetSampleSpansForRunIds.mockReturnValue([]);
     mockGetSampleSpansByTraceId.mockReturnValue([]);
     mockGetAllSampleTraceSpans.mockReturnValue([]);
+    mockGetAllSampleTraceSpansWithRecentTimestamps.mockReturnValue([]);
     mockIsSampleTraceId.mockReturnValue(false);
   });
 
@@ -289,8 +293,13 @@ describe('Traces Routes', () => {
       });
     });
 
-    it('should return warning when observability config is missing', async () => {
+    it('should return demo spans with warning when observability config is missing for time-range query', async () => {
       process.env.OPENSEARCH_LOGS_ENDPOINT = '';
+      const demoSpans = [
+        { traceId: 'demo-trace-001', spanId: 'ds1', name: 'demo-span', startTime: '2024-01-01', endTime: '2024-01-01', duration: 100, status: 'OK' as const, attributes: { 'service.name': 'travel-planner' } },
+        { traceId: 'demo-trace-002', spanId: 'ds2', name: 'demo-span-2', startTime: '2024-01-01', endTime: '2024-01-01', duration: 200, status: 'OK' as const, attributes: { 'service.name': 'other-service' } },
+      ];
+      mockGetAllSampleTraceSpansWithRecentTimestamps.mockReturnValue(demoSpans as any);
 
       const { req, res } = createMocks({
         startTime: 1704067200000,
@@ -301,16 +310,69 @@ describe('Traces Routes', () => {
       await handler(req, res);
 
       expect(mockFetchTraces).not.toHaveBeenCalled();
+      expect(mockGetAllSampleTraceSpansWithRecentTimestamps).toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith({
-        spans: [],
-        total: 0,
+        spans: demoSpans,
+        total: 2,
         nextCursor: null,
         hasMore: false,
         warning: 'Observability data source not configured',
       });
     });
 
-    it('should not return sample traces for time-range-only queries', async () => {
+    it('should filter demo spans by serviceName when no config', async () => {
+      process.env.OPENSEARCH_LOGS_ENDPOINT = '';
+      const demoSpans = [
+        { traceId: 'demo-trace-001', spanId: 'ds1', name: 'span-a', startTime: '2024-01-01', endTime: '2024-01-01', duration: 100, status: 'OK' as const, attributes: { 'service.name': 'travel-planner' } },
+        { traceId: 'demo-trace-002', spanId: 'ds2', name: 'span-b', startTime: '2024-01-01', endTime: '2024-01-01', duration: 200, status: 'OK' as const, attributes: { 'service.name': 'other-service' } },
+      ];
+      mockGetAllSampleTraceSpansWithRecentTimestamps.mockReturnValue(demoSpans as any);
+
+      const { req, res } = createMocks({
+        startTime: 1704067200000,
+        endTime: 1704153600000,
+        serviceName: 'travel-planner',
+      });
+      const handler = getRouteHandler(tracesRoutes, 'post', '/api/traces');
+
+      await handler(req, res);
+
+      expect(res.json).toHaveBeenCalledWith({
+        spans: [demoSpans[0]],
+        total: 1,
+        nextCursor: null,
+        hasMore: false,
+        warning: 'Observability data source not configured',
+      });
+    });
+
+    it('should filter demo spans by textSearch when no config', async () => {
+      process.env.OPENSEARCH_LOGS_ENDPOINT = '';
+      const demoSpans = [
+        { traceId: 'demo-trace-001', spanId: 'ds1', name: 'invoke_agent Weather Agent', startTime: '2024-01-01', endTime: '2024-01-01', duration: 100, status: 'OK' as const, attributes: { 'service.name': 'travel-planner' } },
+        { traceId: 'demo-trace-002', spanId: 'ds2', name: 'chat claude-sonnet-4', startTime: '2024-01-01', endTime: '2024-01-01', duration: 200, status: 'OK' as const, attributes: { 'service.name': 'travel-planner' } },
+      ];
+      mockGetAllSampleTraceSpansWithRecentTimestamps.mockReturnValue(demoSpans as any);
+
+      const { req, res } = createMocks({
+        startTime: 1704067200000,
+        endTime: 1704153600000,
+        textSearch: 'weather',
+      });
+      const handler = getRouteHandler(tracesRoutes, 'post', '/api/traces');
+
+      await handler(req, res);
+
+      expect(res.json).toHaveBeenCalledWith({
+        spans: [demoSpans[0]],
+        total: 1,
+        nextCursor: null,
+        hasMore: false,
+        warning: 'Observability data source not configured',
+      });
+    });
+
+    it('should NOT return demo spans for time-range query when config exists', async () => {
       mockFetchTraces.mockResolvedValue({ spans: [], total: 0 });
 
       const { req, res } = createMocks({
@@ -323,6 +385,7 @@ describe('Traces Routes', () => {
 
       expect(mockGetSampleSpansForRunIds).not.toHaveBeenCalled();
       expect(mockGetSampleSpansByTraceId).not.toHaveBeenCalled();
+      expect(mockGetAllSampleTraceSpansWithRecentTimestamps).not.toHaveBeenCalled();
       expect(res.json).toHaveBeenCalledWith({
         spans: [],
         total: 0,

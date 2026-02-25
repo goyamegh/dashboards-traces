@@ -16,6 +16,7 @@ import {
   getSampleSpansForRunIds,
   getSampleSpansByTraceId,
   getAllSampleTraceSpans,
+  getAllSampleTraceSpansWithRecentTimestamps,
   isSampleTraceId,
 } from '../../cli/demo/sampleTraces.js';
 import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
@@ -79,6 +80,26 @@ router.post('/api/traces', async (req: Request, res: Response) => {
         warning = e.message;
       }
     } else if (!config) {
+      // No observability cluster configured
+      if (hasTimeRange && !hasIdFilter) {
+        // Time-range browse query: show demo traces as fallback
+        sampleSpans = getAllSampleTraceSpansWithRecentTimestamps();
+
+        if (serviceName) {
+          sampleSpans = sampleSpans.filter(
+            s => s.attributes['service.name'] === serviceName
+          );
+        }
+        if (textSearch) {
+          const searchLower = textSearch.toLowerCase();
+          sampleSpans = sampleSpans.filter(s => {
+            if (s.name.toLowerCase().includes(searchLower)) return true;
+            return Object.values(s.attributes).some(
+              v => typeof v === 'string' && v.toLowerCase().includes(searchLower)
+            );
+          });
+        }
+      }
       warning = 'Observability data source not configured';
     }
 
