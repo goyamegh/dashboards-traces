@@ -8,11 +8,12 @@ This document contains a list of maintainers in this repo. See [opensearch-proje
 
 ## Current Maintainers
 
-| Maintainer        | GitHub ID                                               | Affiliation |
-| ----------------- | ------------------------------------------------------- | ----------- |
-| Adam Tackett      | [TackAdam](https://github.com/TackAdam)                 | Amazon      |
-| Megha Goyal       | [goyamegh](https://github.com/goyamegh)                 | Amazon      |
-| Shenoy Pratik     | [ps48](https://github.com/ps48)                        | Amazon      |
+| Maintainer             | GitHub ID                                               | Affiliation |
+| ---------------------- | ------------------------------------------------------- | ----------- |
+| Adam Tackett           | [TackAdam](https://github.com/TackAdam)                 | Amazon      |
+| Jason Le-Hoang Nguyen  | [jasonlhamazon](https://github.com/jasonlhamazon)       | Amazon      |
+| Megha Goyal            | [goyamegh](https://github.com/goyamegh)                 | Amazon      |
+| Shenoy Pratik          | [ps48](https://github.com/ps48)                         | Amazon      |
 
 ## Emeritus
 
