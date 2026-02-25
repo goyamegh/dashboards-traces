@@ -9,7 +9,8 @@
  * Ported from NovaLanggraphApplication/scripts/experiment/metrics.ts
  */
 
-import { MetricsResult, AggregateMetrics, OpenSearchConfig } from '@/types';
+import { MetricsResult, AggregateMetrics, OpenSearchConfig, Span } from '@/types';
+import { getSampleSpansForRunIds } from '../../cli/demo/sampleTraces.js';
 
 // ============================================================================
 // Model Pricing
@@ -81,6 +82,81 @@ interface OpenSearchResponse {
     hits?: Array<{
       _source: OpenSearchSpanSource;
     }>;
+  };
+}
+
+/**
+ * Compute metrics from sample/demo trace spans for a run
+ *
+ * Used when the run ID matches demo data (demo-agent-run-*).
+ * Computes the same metrics as computeMetrics but from in-memory sample spans.
+ */
+export function computeMetricsFromSampleSpans(runId: string): MetricsResult | null {
+  const spans = getSampleSpansForRunIds([runId]);
+  if (spans.length === 0) return null;
+
+  // Find root span (the one with run.id attribute)
+  const rootSpan = spans.find(s => s.attributes?.['run.id'] === runId);
+
+  let inputTokens = 0;
+  let outputTokens = 0;
+  let llmCalls = 0;
+  const toolsUsed = new Set<string>();
+  let modelId = 'default';
+
+  for (const span of spans) {
+    const attrs = span.attributes || {};
+
+    // Extract token usage from LLM spans
+    const inTokens = (attrs['gen_ai.usage.input_tokens'] as number) || 0;
+    const outTokens = (attrs['gen_ai.usage.output_tokens'] as number) || 0;
+    inputTokens += inTokens;
+    outputTokens += outTokens;
+
+    // Count LLM calls (spans with gen_ai.operation.name = 'chat')
+    if (attrs['gen_ai.operation.name'] === 'chat') {
+      llmCalls++;
+      if (attrs['gen_ai.request.model']) {
+        modelId = attrs['gen_ai.request.model'] as string;
+      }
+    }
+
+    // Count tool executions (spans with tools/call in name)
+    if (span.name.startsWith('tools/call')) {
+      const toolName = (attrs['gen_ai.tool.name'] as string) || span.name;
+      toolsUsed.add(toolName);
+    }
+  }
+
+  // Calculate cost
+  const pricing = getPricing(modelId);
+  const costUsd = (inputTokens / 1e6) * pricing.input + (outputTokens / 1e6) * pricing.output;
+
+  // Calculate duration from root span
+  let durationMs = 0;
+  if (rootSpan?.duration) {
+    durationMs = rootSpan.duration;
+  } else if (rootSpan) {
+    const startTime = new Date(rootSpan.startTime).getTime();
+    const endTime = new Date(rootSpan.endTime).getTime();
+    durationMs = endTime - startTime;
+  }
+
+  // Determine traceId from root span
+  const traceId = rootSpan?.traceId || spans[0]?.traceId || null;
+
+  return {
+    runId,
+    traceId,
+    inputTokens,
+    outputTokens,
+    totalTokens: inputTokens + outputTokens,
+    costUsd,
+    durationMs,
+    llmCalls,
+    toolCalls: toolsUsed.size,
+    toolsUsed: Array.from(toolsUsed),
+    status: 'success',
   };
 }
 

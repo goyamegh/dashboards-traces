@@ -102,7 +102,7 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
       tags: ann.tags,
       author: ann.author,
     })),
-    runId: stored.traceId,
+    runId: stored.traceId || (stored as any).runId,
     rawEvents: stored.rawEvents as any[] | undefined,
     logs: (stored.logs || []) as OpenSearchLog[],
     improvementStrategies: stored.improvementStrategies as any[] | undefined,

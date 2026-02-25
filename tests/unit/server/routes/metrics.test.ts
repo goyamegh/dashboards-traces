@@ -10,6 +10,7 @@ import { computeMetrics, computeAggregateMetrics } from '@/server/services/metri
 // Mock the metrics service
 jest.mock('@/server/services/metricsService', () => ({
   computeMetrics: jest.fn(),
+  computeMetricsFromSampleSpans: jest.fn().mockReturnValue(null),
   computeAggregateMetrics: jest.fn(),
 }));
 
@@ -193,18 +194,36 @@ describe('Metrics Routes', () => {
       });
     });
 
-    it('should return 503 when observability not configured', async () => {
+    it('should return individual error results when observability not configured', async () => {
       process.env.OPENSEARCH_LOGS_ENDPOINT = '';
+
+      mockComputeAggregateMetrics.mockReturnValue({
+        totalRuns: 0,
+        successRate: 0,
+        totalCostUsd: 0,
+        avgCostUsd: 0,
+        avgDurationMs: 0,
+        p50DurationMs: 0,
+        p95DurationMs: 0,
+        avgTokens: 0,
+        totalInputTokens: 0,
+        totalOutputTokens: 0,
+        avgLlmCalls: 0,
+        avgToolCalls: 0,
+      });
 
       const { req, res } = createMocks({}, { runIds: ['run-1'] });
       const handler = getRouteHandler(metricsRoutes, 'post', '/api/metrics/batch');
 
       await handler(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(503);
-      expect(res.json).toHaveBeenCalledWith({
-        error: 'Observability data source not configured',
-      });
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({
+        metrics: [expect.objectContaining({
+          runId: 'run-1',
+          error: 'Observability data source not configured',
+          status: 'error',
+        })],
+      }));
     });
 
     it('should handle partial failures', async () => {

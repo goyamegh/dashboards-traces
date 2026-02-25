@@ -9,7 +9,7 @@
 
 import { Request, Response, Router } from 'express';
 import { debug } from '@/lib/debug';
-import { computeMetrics, computeAggregateMetrics } from '../services/metricsService';
+import { computeMetrics, computeMetricsFromSampleSpans, computeAggregateMetrics } from '../services/metricsService';
 import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
 import { MetricsResult } from '@/types';
 
@@ -21,6 +21,15 @@ const router = Router();
 router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
   try {
     const { runId } = req.params;
+
+    // Check for sample/demo data first (no OpenSearch needed)
+    if (runId.startsWith('demo-')) {
+      const sampleMetrics = computeMetricsFromSampleSpans(runId);
+      if (sampleMetrics) {
+        debug('MetricsAPI', 'Returning sample metrics for demo runId:', runId);
+        return res.json(sampleMetrics);
+      }
+    }
 
     // Get observability configuration from headers or env vars
     const config = resolveObservabilityConfig(req);
@@ -89,37 +98,57 @@ router.post('/api/metrics/batch', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'runIds must be an array' });
     }
 
-    // Get observability configuration from headers or env vars
-    const config = resolveObservabilityConfig(req);
-
-    if (!config) {
-      return res.status(503).json({
-        error: 'Observability data source not configured'
-      });
-    }
-
-    const indexPattern = config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces;
-
     debug('MetricsAPI', 'Computing batch metrics for', runIds.length, 'runs');
 
-    const osConfig = {
-      endpoint: config.endpoint,
-      username: config.username,
-      password: config.password,
-      indexPattern
-    };
+    // Separate demo vs real run IDs
+    const demoRunIds = runIds.filter((id: string) => id.startsWith('demo-'));
+    const realRunIds = runIds.filter((id: string) => !id.startsWith('demo-'));
 
-    // Process metrics in batches of 10 to avoid overwhelming OpenSearch
-    const BATCH_SIZE = 10;
-    const results = await processBatches(
-      runIds,
-      BATCH_SIZE,
-      (runId) => computeMetrics(runId, osConfig).catch(e => ({
-        runId,
-        error: e.message,
-        status: 'error'
-      }))
-    );
+    // Compute demo metrics from sample spans (no OpenSearch needed)
+    const demoResults: (MetricsResult | { runId: string; error: string; status: string })[] =
+      demoRunIds.map((runId: string) => {
+        const metrics = computeMetricsFromSampleSpans(runId);
+        return metrics || { runId, error: 'No sample data found', status: 'error' };
+      });
+
+    // Compute real metrics from OpenSearch (if any real run IDs)
+    let realResults: (MetricsResult | { runId: string; error: string; status: string })[] = [];
+
+    if (realRunIds.length > 0) {
+      const config = resolveObservabilityConfig(req);
+
+      if (!config) {
+        realResults = realRunIds.map((runId: string) => ({
+          runId,
+          error: 'Observability data source not configured',
+          status: 'error'
+        }));
+      } else {
+        const indexPattern = config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces;
+        const osConfig = {
+          endpoint: config.endpoint,
+          username: config.username,
+          password: config.password,
+          indexPattern
+        };
+
+        const BATCH_SIZE = 10;
+        realResults = await processBatches(
+          realRunIds,
+          BATCH_SIZE,
+          (runId) => computeMetrics(runId, osConfig).catch(e => ({
+            runId,
+            error: e.message,
+            status: 'error'
+          }))
+        );
+      }
+    }
+
+    // Combine results preserving original order
+    const resultsMap = new Map<string, any>();
+    [...demoResults, ...realResults].forEach(r => resultsMap.set(r.runId, r));
+    const results = runIds.map((id: string) => resultsMap.get(id));
 
     // Also compute aggregate metrics (filter out errors with type guard)
     const successfulMetrics = results.filter((r): r is MetricsResult => !('error' in r));
