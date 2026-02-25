@@ -1,14 +1,8 @@
 # Agent Health
 
-[![CI](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml/badge.svg)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE.txt)
 [![npm version](https://img.shields.io/npm/v/@opensearch-project/agent-health.svg)](https://www.npmjs.com/package/@opensearch-project/agent-health)
 [![Documentation](https://img.shields.io/badge/View_Documentation-blue?logo=readthedocs&logoColor=white)](https://goyamegh.github.io/opensearch-agentops-website/)
-
-[![Unit Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/opensearch-project/agent-health/badges/unit-tests.json)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
-[![Unit Coverage](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/opensearch-project/agent-health/badges/unit-coverage.json)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
-[![Integration Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/opensearch-project/agent-health/badges/integration-tests.json)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
-[![E2E Tests](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/opensearch-project/agent-health/badges/e2e-tests.json)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
 
 ## What is Agent Health?
 
