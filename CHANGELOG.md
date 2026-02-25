@@ -12,8 +12,13 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ### Fixed
 - Update `RunSummaryTable` unit tests to match dark-mode-aware color classes (`text-green-700 dark:text-green-400`) introduced in a previous PR ([#51](https://github.com/opensearch-project/agent-health/pull/51))
 - Replace ambiguous `text=Import Failed` Playwright locator (matched 2 elements, causing strict mode rejection) with `getByRole('alertdialog')` in benchmark import e2e test ([#51](https://github.com/opensearch-project/agent-health/pull/51))
+- Update version to 0.1.1 and remove CI badges from README ([#58](https://github.com/opensearch-project/agent-health/pull/58))
+- Update agent-health CLI references to use opensearch-project ([#58](https://github.com/opensearch-project/agent-health/pull/58))
 
 ### Added
+- Support for demo metrics and improved batch processing logic ([#58](https://github.com/opensearch-project/agent-health/pull/58))
+- Function to retrieve sample trace spans with recent timestamps and updated routes/tests ([#58](https://github.com/opensearch-project/agent-health/pull/58))
+- Jason Le-Hoang Nguyen to maintainers list ([#58](https://github.com/opensearch-project/agent-health/pull/58))
 - Minimap toggle control for trace visualization with persistent state ([#44](https://github.com/opensearch-project/agent-health/pull/44))
 - Resizable flyout panels with drag-to-resize functionality and responsive layout ([#44](https://github.com/opensearch-project/agent-health/pull/44))
 - Add release trusted publisher to agent-health repository and rename dashboards-traces ([#45](https://github.com/opensearch-project/agent-health/pull/45))

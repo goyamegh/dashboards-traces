@@ -320,7 +320,7 @@ describe('Sample Traces', () => {
         const shiftedIds = shiftedSpans.map((s) => s.spanId);
         const origIds = origSpans.map((s) => s.spanId);
         expect(shiftedIds).toEqual(origIds);
-      });
+      }
     });
 
     it('should preserve span durations', () => {
