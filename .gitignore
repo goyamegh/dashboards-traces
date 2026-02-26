@@ -49,3 +49,6 @@ tokens.json
 
 # File-based storage backend (runtime data, not source)
 agent-health-data/
+
+# AI-agent generated specification files
+.kiro/
