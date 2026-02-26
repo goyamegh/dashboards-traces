@@ -148,13 +148,13 @@ const Sidebar = ({ context, selectedItem, onSelectItem, onToggleCollapse, isColl
                     {isPassed && <CheckCircle2 size={18} className="text-green-700 dark:text-green-400" />}
                     {isFailed && <XCircle size={18} className="text-red-700 dark:text-red-400" />}
                     {!isPassed && !isFailed && result.status === 'running' && (
-                      <Loader2 size={18} className="text-blue-400 animate-spin" />
+                      <Loader2 size={18} className="text-blue-700 dark:text-blue-400 animate-spin" />
                     )}
                     {!isPassed && !isFailed && result.status === 'pending' && (
-                      <Clock size={18} className="text-yellow-400" />
+                      <Clock size={18} className="text-yellow-700 dark:text-yellow-400" />
                     )}
                     {!isPassed && !isFailed && result.status === 'cancelled' && (
-                      <Ban size={18} className="text-orange-400" />
+                      <Ban size={18} className="text-orange-700 dark:text-orange-400" />
                     )}
                     {!isPassed && !isFailed && result.status !== 'running' && result.status !== 'pending' && result.status !== 'cancelled' && (
                       <div className="w-[18px] h-[18px] rounded-full border-2 border-muted-foreground/30" />
@@ -186,7 +186,7 @@ const Sidebar = ({ context, selectedItem, onSelectItem, onToggleCollapse, isColl
                     </div>
 
                     {result.status === 'failed' && (
-                      <p className="text-xs text-red-400 mt-1">
+                      <p className="text-xs text-red-700 dark:text-red-400 mt-1">
                         Execution failed
                       </p>
                     )}
@@ -542,13 +542,13 @@ export const RunDetailsPage: React.FC = () => {
           {stats && (
             <div className="flex items-center gap-2 text-sm">
               {stats.running > 0 && (
-                <span className="flex items-center gap-1 text-blue-400" title="Running">
+                <span className="flex items-center gap-1 text-blue-700 dark:text-blue-400" title="Running">
                   <Loader2 size={14} className="animate-spin" />
                   {stats.running}
                 </span>
               )}
               {stats.pending > 0 && (
-                <span className="flex items-center gap-1 text-yellow-400" title="Pending">
+                <span className="flex items-center gap-1 text-yellow-700 dark:text-yellow-400" title="Pending">
                   <Clock size={14} />
                   {stats.pending}
                 </span>
@@ -557,7 +557,7 @@ export const RunDetailsPage: React.FC = () => {
                 <CheckCircle2 size={16} />
                 {stats.passed}
               </span>
-              <span className="flex items-center gap-1 text-red-400">
+              <span className="flex items-center gap-1 text-red-700 dark:text-red-400">
                 <XCircle size={16} />
                 {stats.failed}
               </span>
@@ -582,7 +582,7 @@ export const RunDetailsPage: React.FC = () => {
                   setIsCancelling(false);
                 }
               }}
-              className="text-red-400 hover:text-red-300 hover:bg-red-500/10 border-red-500/30"
+              className="text-red-700 dark:text-red-400 hover:text-red-800 dark:hover:text-red-300 hover:bg-red-500/10 border-red-500/30"
             >
               <StopCircle size={14} className="mr-1" />
               {isCancelling ? 'Cancelling...' : 'Cancel'}
@@ -640,13 +640,13 @@ export const RunDetailsPage: React.FC = () => {
                       <div className="text-center">
                         {isRunning ? (
                           <>
-                            <Loader2 size={48} className="mx-auto mb-4 text-blue-400 animate-spin" />
+                            <Loader2 size={48} className="mx-auto mb-4 text-blue-700 dark:text-blue-400 animate-spin" />
                             <p className="text-lg font-medium">Test case running</p>
                             <p className="text-sm mt-1">Executing test case...</p>
                           </>
                         ) : isPending ? (
                           <>
-                            <Clock size={48} className="mx-auto mb-4 text-yellow-400 animate-pulse" />
+                            <Clock size={48} className="mx-auto mb-4 text-yellow-700 dark:text-yellow-400 animate-pulse" />
                             <p className="text-lg font-medium">Test case pending</p>
                             <p className="text-sm mt-1">Waiting for execution...</p>
                           </>
@@ -687,13 +687,13 @@ export const RunDetailsPage: React.FC = () => {
                   <div className="text-center">
                     {isRunning ? (
                       <>
-                        <Loader2 size={48} className="mx-auto mb-4 text-blue-400 animate-spin" />
+                        <Loader2 size={48} className="mx-auto mb-4 text-blue-700 dark:text-blue-400 animate-spin" />
                         <p className="text-lg font-medium">Test case running</p>
                         <p className="text-sm mt-1">Executing test case...</p>
                       </>
                     ) : isPending ? (
                       <>
-                        <Clock size={48} className="mx-auto mb-4 text-yellow-400 animate-pulse" />
+                        <Clock size={48} className="mx-auto mb-4 text-yellow-700 dark:text-yellow-400 animate-pulse" />
                         <p className="text-lg font-medium">Test case pending</p>
                         <p className="text-sm mt-1">Waiting for execution...</p>
                       </>

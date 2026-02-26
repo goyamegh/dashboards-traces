@@ -93,6 +93,12 @@ export interface ITestCaseOperations {
   update(id: string, updates: Partial<TestCase>): Promise<TestCase>;
   delete(id: string): Promise<{ deleted: number }>;
   search(filters: TestCaseSearchFilters, options?: PaginationOptions): Promise<{ items: TestCase[]; total: number }>;
+  /**
+   * Bulk create test cases.
+   * NOTE: Returns the created TestCase entities (unlike Benchmark/Run bulkCreate)
+   * because callers need the server-generated IDs immediately to build benchmark references.
+   * See cli/commands/benchmark.ts for usage.
+   */
   bulkCreate(testCases: Partial<TestCase>[]): Promise<{ created: number; errors: number; testCases: TestCase[] }>;
 }
 

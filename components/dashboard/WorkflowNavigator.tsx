@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { Activity, Gauge, TrendingUp, ArrowRight } from 'lucide-react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -16,12 +16,9 @@ const WORKFLOW_CARD_HIDDEN_KEY = 'agent-health-workflow-card-hidden';
  * Presents the continuous improvement loop: Trace → Evaluate → Improve
  */
 export const WorkflowNavigator: React.FC = () => {
-  const [isHidden, setIsHidden] = useState(false);
-
-  useEffect(() => {
-    const hidden = localStorage.getItem(WORKFLOW_CARD_HIDDEN_KEY) === 'true';
-    setIsHidden(hidden);
-  }, []);
+  const [isHidden, setIsHidden] = useState(
+    () => localStorage.getItem(WORKFLOW_CARD_HIDDEN_KEY) === 'true'
+  );
 
   const handleDontShowAgain = () => {
     localStorage.setItem(WORKFLOW_CARD_HIDDEN_KEY, 'true');

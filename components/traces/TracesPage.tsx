@@ -33,7 +33,7 @@ const REFRESH_INTERVAL_MS = 30000; // 30 seconds - reduces API calls by 67%
 
 export const TracesPage: React.FC = () => {
   // View mode state
-  const [viewMode, setViewMode] = useState<ViewMode>('flow');
+  const [viewMode, setViewMode] = useState<ViewMode>('agent-map');
 
   // Filter state
   const [selectedAgent, setSelectedAgent] = useState<string>('all');

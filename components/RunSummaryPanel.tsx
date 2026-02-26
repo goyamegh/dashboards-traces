@@ -147,8 +147,8 @@ export const RunSummaryPanel: React.FC<RunSummaryPanelProps> = ({
                       <span className="text-green-700 dark:text-green-400 font-medium">{stats.passed} passed</span>
                     </div>
                     <div className="flex items-center gap-2">
-                      <XCircle size={16} className="text-red-400" />
-                      <span className="text-red-400 font-medium">{stats.failed} failed</span>
+                      <XCircle size={16} className="text-red-700 dark:text-red-400" />
+                      <span className="text-red-700 dark:text-red-400 font-medium">{stats.failed} failed</span>
                     </div>
                     <span className="text-sm text-muted-foreground">{stats.total} total test cases</span>
                   </div>

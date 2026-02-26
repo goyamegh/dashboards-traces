@@ -43,7 +43,7 @@ import TraceVisualization from './TraceVisualization';
 import ViewToggle, { ViewMode } from './ViewToggle';
 import { TraceFlyoutContent } from './TraceFlyoutContent';
 import MetricsOverview from './MetricsOverview';
-import { useSidebarCollapse } from '../Layout';
+import { useSidebarCollapse } from '@/components/Layout';
 
 // ==================== Types ====================
 
@@ -307,6 +307,16 @@ export const AgentTracesPage: React.FC = () => {
     setFlyoutOpen(false);
     setSelectedTrace(null);
   };
+
+  // Dismiss flyout on Escape key
+  useEffect(() => {
+    if (!flyoutOpen) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') handleCloseFlyout();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [flyoutOpen]);
 
   // Calculate latency distribution for histogram
   const latencyDistribution = useMemo(() => {
@@ -616,12 +626,13 @@ export const AgentTracesPage: React.FC = () => {
       {flyoutOpen && selectedTrace && (
         <div className="fixed inset-0 z-50 pointer-events-none">
           <ResizablePanelGroup direction="horizontal" className="h-full pointer-events-none">
-            {/* Left invisible panel - allows content below to be interactive */}
-            <ResizablePanel 
+            {/* Left backdrop panel - click to close flyout */}
+            <ResizablePanel
               defaultSize={40}
               minSize={10}
               maxSize={70}
-              className="pointer-events-none"
+              className="pointer-events-auto cursor-default"
+              onClick={handleCloseFlyout}
             />
             
             <ResizableHandle withHandle className="pointer-events-auto" />

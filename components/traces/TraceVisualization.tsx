@@ -17,7 +17,6 @@ import { Button } from '@/components/ui/button';
 import ViewToggle, { ViewMode } from './ViewToggle';
 import TraceTimelineChart from './TraceTimelineChart';
 import TraceTreeTable from './TraceTreeTable';
-import TraceFlowView from './TraceFlowView';
 import AgentMapView from './AgentMapView';
 import SpanDetailsPanel from './SpanDetailsPanel';
 import TraceInfoView from './TraceInfoView';
@@ -197,15 +196,6 @@ const TraceVisualization: React.FC<TraceVisualizationProps> = ({
           /* Stats view - summary statistics only (left panel from TraceFlowView) */
           <div className="h-full w-full overflow-auto">
             <TraceStatsView spanTree={spanTree} timeRange={timeRange} />
-          </div>
-        ) : viewMode === 'flow' ? (
-          <div className="h-full w-full">
-            <TraceFlowView
-              spanTree={spanTree}
-              timeRange={timeRange}
-              selectedSpan={selectedSpan}
-              onSelectSpan={setSelectedSpan}
-            />
           </div>
         ) : viewMode === 'tree' || viewMode === 'gantt' ? (
           /* Gantt chart timeline view - shown for 'tree' (Timeline button) and 'gantt' modes */

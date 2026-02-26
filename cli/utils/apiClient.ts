@@ -83,7 +83,7 @@ export interface EvaluationResult {
  */
 export interface BulkCreateTestCasesResponse {
   created: number;
-  errors: boolean;
+  errors: number;
   testCases: Array<{ id: string; name: string }>;
 }
 
