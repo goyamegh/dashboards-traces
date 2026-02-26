@@ -190,10 +190,20 @@ describe('Config Endpoints Integration Tests', () => {
       endpoint: 'http://integration-test.example.com:9999',
     };
 
+    const createdKeys: string[] = [];
+
     // Clean up after tests regardless of pass/fail
     afterAll(async () => {
       if (!backendAvailable) return;
-      // Best-effort cleanup: list agents and remove any with our test name
+      // Best-effort cleanup: delete all agents created during this suite
+      for (const key of createdKeys) {
+        try {
+          await fetch(`${config.backendUrl}/api/agents/custom/${key}`, { method: 'DELETE' });
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+      // Also delete by name in case key tracking missed one
       try {
         const response = await fetch(`${config.backendUrl}/api/agents`);
         const data = await response.json();
@@ -228,6 +238,7 @@ describe('Config Endpoints Integration Tests', () => {
         expect(created.name).toBe(TEST_AGENT.name);
         expect(created.endpoint).toBe(TEST_AGENT.endpoint);
         expect(created.isCustom).toBe(true);
+        createdKeys.push(created.key);
 
         // 2. Verify it appears in the agents list
         const listResponse = await fetch(`${config.backendUrl}/api/agents`);
@@ -252,6 +263,89 @@ describe('Config Endpoints Integration Tests', () => {
           (a: { key: string }) => a.key === created.key,
         );
         expect(notFound).toBeUndefined();
+      },
+      TEST_TIMEOUT,
+    );
+
+    it(
+      'should persist connectorType and useTraces fields',
+      async () => {
+        if (!backendAvailable) return;
+
+        const createResponse = await fetch(`${config.backendUrl}/api/agents/custom`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Traced REST Agent (integration)',
+            endpoint: 'http://integration-traced.example.com:9999',
+            connectorType: 'rest',
+            useTraces: true,
+          }),
+        });
+        expect(createResponse.status).toBe(201);
+        const createData = await createResponse.json();
+        const created = createData.agent;
+        expect(created.connectorType).toBe('rest');
+        expect(created.useTraces).toBe(true);
+        createdKeys.push(created.key);
+
+        // Verify the fields are returned in the agents list
+        const listResponse = await fetch(`${config.backendUrl}/api/agents`);
+        const listData = await listResponse.json();
+        const found = listData.agents.find((a: { key: string }) => a.key === created.key);
+        expect(found).toBeDefined();
+        expect(found.connectorType).toBe('rest');
+        expect(found.useTraces).toBe(true);
+
+        // Cleanup
+        await fetch(`${config.backendUrl}/api/agents/custom/${created.key}`, { method: 'DELETE' });
+      },
+      TEST_TIMEOUT,
+    );
+
+    it(
+      'should default connectorType to agui-streaming and useTraces to false',
+      async () => {
+        if (!backendAvailable) return;
+
+        const createResponse = await fetch(`${config.backendUrl}/api/agents/custom`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Default Connector Agent (integration)',
+            endpoint: 'http://integration-default.example.com:9999',
+          }),
+        });
+        expect(createResponse.status).toBe(201);
+        const createData = await createResponse.json();
+        const created = createData.agent;
+        expect(created.connectorType).toBe('agui-streaming');
+        expect(created.useTraces).toBe(false);
+        createdKeys.push(created.key);
+
+        // Cleanup
+        await fetch(`${config.backendUrl}/api/agents/custom/${created.key}`, { method: 'DELETE' });
+      },
+      TEST_TIMEOUT,
+    );
+
+    it(
+      'should return 400 for an invalid connectorType',
+      async () => {
+        if (!backendAvailable) return;
+
+        const createResponse = await fetch(`${config.backendUrl}/api/agents/custom`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: 'Bad Connector Agent',
+            endpoint: 'http://integration-bad.example.com:9999',
+            connectorType: 'not-a-real-connector',
+          }),
+        });
+        expect(createResponse.status).toBe(400);
+        const data = await createResponse.json();
+        expect(data.error).toMatch(/connectorType must be one of/);
       },
       TEST_TIMEOUT,
     );

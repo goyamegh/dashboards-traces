@@ -13,7 +13,7 @@
 
 import { Router, Request, Response } from 'express';
 import { loadConfigSync } from '@/lib/config/index';
-import type { AgentConfig, ModelConfig } from '@/types/index.js';
+import type { AgentConfig, ModelConfig, ConnectorProtocol } from '@/types/index.js';
 import { addCustomAgent, removeCustomAgent, getCustomAgents } from '@/server/services/customAgentStore';
 
 const router = Router();
@@ -59,15 +59,24 @@ router.get('/api/agents', (req: Request, res: Response) => {
   }
 });
 
+const VALID_CONNECTOR_TYPES: ConnectorProtocol[] = [
+  'agui-streaming',
+  'rest',
+  'litellm',
+  'subprocess',
+  'claude-code',
+  'mock',
+];
+
 /**
  * POST /api/agents/custom - Add a custom agent endpoint
  *
- * Body: { name: string, endpoint: string }
+ * Body: { name: string, endpoint: string, connectorType?: ConnectorProtocol, useTraces?: boolean }
  * Returns 201 with the created AgentConfig.
  */
 router.post('/api/agents/custom', (req: Request, res: Response) => {
   try {
-    const { name, endpoint } = req.body || {};
+    const { name, endpoint, connectorType, useTraces } = req.body || {};
 
     if (!name || typeof name !== 'string' || !name.trim()) {
       res.status(400).json({ error: 'name is required' });
@@ -85,13 +94,19 @@ router.post('/api/agents/custom', (req: Request, res: Response) => {
       return;
     }
 
+    if (connectorType !== undefined && !VALID_CONNECTOR_TYPES.includes(connectorType)) {
+      res.status(400).json({ error: `connectorType must be one of: ${VALID_CONNECTOR_TYPES.join(', ')}` });
+      return;
+    }
+
     const key = `custom-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     const agent: AgentConfig = {
       key,
       name: name.trim(),
       endpoint: endpoint.trim(),
       isCustom: true,
-      connectorType: 'agui-streaming',
+      connectorType: connectorType ?? 'agui-streaming',
+      useTraces: useTraces === true,
       models: [],
       headers: {},
     };

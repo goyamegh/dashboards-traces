@@ -237,6 +237,92 @@ describe('Config Routes', () => {
       expect(addedAgent.name).toBe('My Agent');
       expect(addedAgent.endpoint).toBe('http://localhost:9000');
     });
+
+    it('defaults connectorType to agui-streaming and useTraces to false when omitted', () => {
+      const { req, res } = createMocks({ name: 'Test Agent', endpoint: 'http://localhost:9000' });
+      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
+      handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
+      expect(addedAgent.connectorType).toBe('agui-streaming');
+      expect(addedAgent.useTraces).toBe(false);
+    });
+
+    it('persists provided connectorType', () => {
+      const { req, res } = createMocks({
+        name: 'Rest Agent',
+        endpoint: 'http://localhost:9000',
+        connectorType: 'rest',
+      });
+      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
+      handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
+      expect(addedAgent.connectorType).toBe('rest');
+    });
+
+    it('persists useTraces: true when provided', () => {
+      const { req, res } = createMocks({
+        name: 'Traced Agent',
+        endpoint: 'http://localhost:9000',
+        useTraces: true,
+      });
+      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
+      handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
+      expect(addedAgent.useTraces).toBe(true);
+    });
+
+    it('returns 400 for an invalid connectorType', () => {
+      const { req, res } = createMocks({
+        name: 'Agent',
+        endpoint: 'http://localhost:9000',
+        connectorType: 'invalid-connector',
+      });
+      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
+      handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect((res.json as jest.Mock).mock.calls[0][0].error).toMatch(/connectorType must be one of/);
+      expect(mockAddCustomAgent).not.toHaveBeenCalled();
+    });
+
+    it('accepts all valid connectorType values', () => {
+      const validTypes = ['agui-streaming', 'rest', 'litellm', 'subprocess', 'claude-code', 'mock'] as const;
+      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
+
+      for (const connectorType of validTypes) {
+        jest.clearAllMocks();
+        const { req, res } = createMocks({
+          name: 'Agent',
+          endpoint: 'http://localhost:9000',
+          connectorType,
+        });
+        handler(req, res);
+        expect(res.status).toHaveBeenCalledWith(201);
+        const addedAgent = mockAddCustomAgent.mock.calls[0][0];
+        expect(addedAgent.connectorType).toBe(connectorType);
+      }
+    });
+
+    it('coerces non-boolean useTraces to false (truthy non-true values)', () => {
+      const { req, res } = createMocks({
+        name: 'Agent',
+        endpoint: 'http://localhost:9000',
+        useTraces: 'yes',
+      });
+      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
+      handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
+      // Only strict true is accepted; 'yes' should be coerced to false
+      expect(addedAgent.useTraces).toBe(false);
+    });
   });
 
   describe('DELETE /api/agents/custom/:id', () => {

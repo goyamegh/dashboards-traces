@@ -12,6 +12,8 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import type { ConnectorProtocol } from '@/types';
 import { storageAdmin } from '@/services/storage/opensearchClient';
 import {
   hasLocalStorageData,
@@ -44,6 +46,8 @@ interface AgentEndpoint {
   id: string;
   name: string;
   endpoint: string;
+  connectorType?: ConnectorProtocol;
+  useTraces?: boolean;
 }
 
 const LEGACY_STORAGE_KEY = 'agenteval_custom_endpoints';
@@ -54,7 +58,13 @@ const LEGACY_STORAGE_KEY = 'agenteval_custom_endpoints';
 function getCustomEndpointsFromConfig(): AgentEndpoint[] {
   return DEFAULT_CONFIG.agents
     .filter(a => a.isCustom)
-    .map(a => ({ id: a.key, name: a.name, endpoint: a.endpoint }));
+    .map(a => ({
+      id: a.key,
+      name: a.name,
+      endpoint: a.endpoint,
+      connectorType: a.connectorType,
+      useTraces: a.useTraces,
+    }));
 }
 
 export const SettingsPage: React.FC = () => {
@@ -77,6 +87,8 @@ export const SettingsPage: React.FC = () => {
   const [editingEndpointId, setEditingEndpointId] = useState<string | null>(null);
   const [newEndpointName, setNewEndpointName] = useState('');
   const [newEndpointUrl, setNewEndpointUrl] = useState('');
+  const [newConnectorType, setNewConnectorType] = useState<ConnectorProtocol>('agui-streaming');
+  const [newUseTraces, setNewUseTraces] = useState(false);
   const [endpointUrlError, setEndpointUrlError] = useState<string | null>(null);
 
   // Data source configuration state (form inputs - not stored values)
@@ -261,7 +273,12 @@ export const SettingsPage: React.FC = () => {
       const response = await fetch(`${ENV_CONFIG.backendUrl}/api/agents/custom`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newEndpointName.trim(), endpoint: newEndpointUrl.trim() }),
+        body: JSON.stringify({
+          name: newEndpointName.trim(),
+          endpoint: newEndpointUrl.trim(),
+          connectorType: newConnectorType,
+          useTraces: newUseTraces,
+        }),
       });
       if (!response.ok) {
         const err = await response.json();
@@ -277,6 +294,8 @@ export const SettingsPage: React.FC = () => {
 
     setNewEndpointName('');
     setNewEndpointUrl('');
+    setNewConnectorType('agui-streaming');
+    setNewUseTraces(false);
     setEndpointUrlError(null);
     setIsAddingEndpoint(false);
   };
@@ -296,7 +315,12 @@ export const SettingsPage: React.FC = () => {
       const response = await fetch(`${ENV_CONFIG.backendUrl}/api/agents/custom`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newEndpointName.trim(), endpoint: newEndpointUrl.trim() }),
+        body: JSON.stringify({
+          name: newEndpointName.trim(),
+          endpoint: newEndpointUrl.trim(),
+          connectorType: newConnectorType,
+          useTraces: newUseTraces,
+        }),
       });
       if (!response.ok) {
         const err = await response.json();
@@ -313,6 +337,8 @@ export const SettingsPage: React.FC = () => {
     setEditingEndpointId(null);
     setNewEndpointName('');
     setNewEndpointUrl('');
+    setNewConnectorType('agui-streaming');
+    setNewUseTraces(false);
     setEndpointUrlError(null);
   };
 
@@ -332,6 +358,8 @@ export const SettingsPage: React.FC = () => {
     setEditingEndpointId(endpoint.id);
     setNewEndpointName(endpoint.name);
     setNewEndpointUrl(endpoint.endpoint);
+    setNewConnectorType(endpoint.connectorType ?? 'agui-streaming');
+    setNewUseTraces(endpoint.useTraces ?? false);
   };
 
   const cancelEdit = () => {
@@ -339,6 +367,8 @@ export const SettingsPage: React.FC = () => {
     setIsAddingEndpoint(false);
     setNewEndpointName('');
     setNewEndpointUrl('');
+    setNewConnectorType('agui-streaming');
+    setNewUseTraces(false);
     setEndpointUrlError(null);
   };
 
@@ -845,6 +875,30 @@ export const SettingsPage: React.FC = () => {
                   <p className="text-xs text-red-500">{endpointUrlError}</p>
                 )}
               </div>
+              <div className="space-y-1.5">
+                <Label className="text-xs">Connector Type</Label>
+                <Select value={newConnectorType} onValueChange={(v) => setNewConnectorType(v as ConnectorProtocol)}>
+                  <SelectTrigger className="h-8 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="agui-streaming">agui-streaming (default)</SelectItem>
+                    <SelectItem value="rest">rest</SelectItem>
+                    <SelectItem value="litellm">litellm</SelectItem>
+                    <SelectItem value="subprocess">subprocess</SelectItem>
+                    <SelectItem value="claude-code">claude-code</SelectItem>
+                    <SelectItem value="mock">mock</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="new-use-traces"
+                  checked={newUseTraces}
+                  onCheckedChange={setNewUseTraces}
+                />
+                <Label htmlFor="new-use-traces" className="text-xs">Enable Traces</Label>
+              </div>
               <div className="flex gap-2">
                 <Button size="sm" onClick={handleAddEndpoint} disabled={!newEndpointName.trim() || !newEndpointUrl.trim()}>
                   <Save size={14} className="mr-1" />
@@ -889,6 +943,30 @@ export const SettingsPage: React.FC = () => {
                           <p className="text-xs text-red-500">{endpointUrlError}</p>
                         )}
                       </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-xs">Connector Type</Label>
+                        <Select value={newConnectorType} onValueChange={(v) => setNewConnectorType(v as ConnectorProtocol)}>
+                          <SelectTrigger className="h-8 text-xs">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="agui-streaming">agui-streaming (default)</SelectItem>
+                            <SelectItem value="rest">rest</SelectItem>
+                            <SelectItem value="litellm">litellm</SelectItem>
+                            <SelectItem value="subprocess">subprocess</SelectItem>
+                            <SelectItem value="claude-code">claude-code</SelectItem>
+                            <SelectItem value="mock">mock</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Switch
+                          id={`edit-use-traces-${ep.id}`}
+                          checked={newUseTraces}
+                          onCheckedChange={setNewUseTraces}
+                        />
+                        <Label htmlFor={`edit-use-traces-${ep.id}`} className="text-xs">Enable Traces</Label>
+                      </div>
                       <div className="flex gap-2">
                         <Button size="sm" onClick={() => handleUpdateEndpoint(ep.id)}>
                           <Save size={14} className="mr-1" />
@@ -907,6 +985,10 @@ export const SettingsPage: React.FC = () => {
                         <div className="text-xs text-muted-foreground truncate flex items-center gap-1 mt-1">
                           <ExternalLink size={10} />
                           {ep.endpoint}
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-1 flex items-center gap-2">
+                          <span>{ep.connectorType ?? 'agui-streaming'}</span>
+                          {ep.useTraces && <span className="px-1.5 py-0.5 rounded bg-green-100 text-green-900 border border-green-300 dark:bg-green-950/50 dark:text-green-300 dark:border-green-700/50">traces</span>}
                         </div>
                       </div>
                       <div className="flex items-center gap-1">

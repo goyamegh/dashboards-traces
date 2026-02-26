@@ -149,6 +149,75 @@ test.describe('Agent Endpoints Section', () => {
   });
 });
 
+test.describe('Custom Endpoint Form Fields', () => {
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/settings');
+    await page.waitForSelector('[data-testid="settings-page"]', { timeout: 30000 });
+  });
+
+  test('should show Connector Type dropdown in add form', async ({ page }) => {
+    const addButton = page.locator('button:has-text("Add")').first();
+    await addButton.click();
+    await page.waitForTimeout(500);
+
+    // The Select trigger for connector type should be visible
+    await expect(page.locator('label:has-text("Connector Type")').first()).toBeVisible();
+  });
+
+  test('should show Enable Traces toggle in add form', async ({ page }) => {
+    const addButton = page.locator('button:has-text("Add")').first();
+    await addButton.click();
+    await page.waitForTimeout(500);
+
+    await expect(page.locator('label:has-text("Enable Traces")').first()).toBeVisible();
+  });
+
+  test('should default Connector Type to agui-streaming in add form', async ({ page }) => {
+    const addButton = page.locator('button:has-text("Add")').first();
+    await addButton.click();
+    await page.waitForTimeout(500);
+
+    // The SelectTrigger should display the default value
+    await expect(page.locator('text=agui-streaming (default)').first()).toBeVisible();
+  });
+
+  test('should allow selecting a different connector type', async ({ page }) => {
+    const addButton = page.locator('button:has-text("Add")').first();
+    await addButton.click();
+    await page.waitForTimeout(500);
+
+    // Click the Select trigger
+    const selectTrigger = page.locator('button[role="combobox"]').first();
+    await selectTrigger.click();
+    await page.waitForTimeout(300);
+
+    // Select 'rest'
+    await page.locator('[role="option"]:has-text("rest")').first().click();
+    await page.waitForTimeout(300);
+
+    // Verify the selection changed
+    await expect(selectTrigger).toContainText('rest');
+  });
+
+  test('should cancel and reset connector type and useTraces', async ({ page }) => {
+    const addButton = page.locator('button:has-text("Add")').first();
+    await addButton.click();
+    await page.waitForTimeout(500);
+
+    // Click cancel
+    const cancelButton = page.locator('button:has-text("Cancel")').first();
+    await cancelButton.click();
+    await page.waitForTimeout(300);
+
+    // Re-open the form
+    await addButton.click();
+    await page.waitForTimeout(500);
+
+    // Should be back to defaults
+    await expect(page.locator('text=agui-streaming (default)').first()).toBeVisible();
+  });
+});
+
 test.describe('Custom Endpoint Persistence', () => {
   const AGENT_NAME = 'E2E Persistence Test Agent';
   const AGENT_URL = 'http://e2e-test.example.com:7777';
@@ -214,6 +283,70 @@ test.describe('Custom Endpoint Persistence', () => {
 
     // 6. Verify it's gone
     await expect(page.locator(`text=${AGENT_NAME}`)).not.toBeVisible();
+  });
+
+  test('should persist connectorType and useTraces across page reload', async ({ page }) => {
+    const TRACED_AGENT_NAME = 'E2E Traced REST Agent';
+    const TRACED_AGENT_URL = 'http://e2e-traced.example.com:7778';
+
+    // Accept confirm dialogs for delete
+    page.on('dialog', dialog => dialog.accept());
+
+    // Cleanup before
+    let deleteBtn = page.locator(`button[aria-label="Remove ${TRACED_AGENT_NAME}"]`).first();
+    while (await deleteBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await deleteBtn.click();
+      await page.waitForTimeout(500);
+      deleteBtn = page.locator(`button[aria-label="Remove ${TRACED_AGENT_NAME}"]`).first();
+    }
+
+    // 1. Open add form
+    const addButton = page.locator('button:has-text("Add")').first();
+    await addButton.click();
+    await page.waitForTimeout(500);
+
+    // 2. Fill name and URL
+    await page.locator('input#new-endpoint-name').fill(TRACED_AGENT_NAME);
+    await page.locator('input#new-endpoint-url').fill(TRACED_AGENT_URL);
+
+    // 3. Select 'rest' connector type
+    const selectTrigger = page.locator('button[role="combobox"]').first();
+    await selectTrigger.click();
+    await page.waitForTimeout(300);
+    await page.locator('[role="option"]:has-text("rest")').first().click();
+    await page.waitForTimeout(300);
+
+    // 4. Enable traces
+    const tracesSwitch = page.locator('label:has-text("Enable Traces")').locator('..').locator('button[role="switch"]');
+    const isChecked = await tracesSwitch.getAttribute('data-state');
+    if (isChecked !== 'checked') {
+      await tracesSwitch.click();
+      await page.waitForTimeout(300);
+    }
+
+    // 5. Save
+    const saveButton = page.locator('button:has-text("Save")').first();
+    await saveButton.click();
+    await page.waitForTimeout(1000);
+
+    // 6. Verify agent appears with connector type and traces badge
+    await expect(page.locator(`text=${TRACED_AGENT_NAME}`).first()).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('text=rest').first()).toBeVisible();
+    await expect(page.locator('text=traces').first()).toBeVisible();
+
+    // 7. Reload and verify persistence
+    await page.reload();
+    await page.waitForSelector('[data-testid="settings-page"]', { timeout: 30000 });
+    await expect(page.locator(`text=${TRACED_AGENT_NAME}`).first()).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('text=rest').first()).toBeVisible();
+    await expect(page.locator('text=traces').first()).toBeVisible();
+
+    // 8. Cleanup
+    deleteBtn = page.locator(`button[aria-label="Remove ${TRACED_AGENT_NAME}"]`).first();
+    if (await deleteBtn.isVisible({ timeout: 3000 }).catch(() => false)) {
+      await deleteBtn.click();
+      await page.waitForTimeout(1000);
+    }
   });
 });
 
