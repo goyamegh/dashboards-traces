@@ -30,18 +30,23 @@ const API_BASE = ENV_CONFIG.backendUrl;
 
 /**
  * Configuration status returned by the backend
- * Never includes credentials - only source and endpoint info
+ * Credentials are never returned in full — username is safe to show;
+ * password existence is indicated via hasPassword so the UI can show placeholder dots.
  */
 export interface ConfigStatus {
   storage: {
     configured: boolean;
     source: 'file' | 'environment' | 'none';
     endpoint?: string;
+    username?: string;
+    hasPassword?: boolean;
   };
   observability: {
     configured: boolean;
     source: 'file' | 'environment' | 'none';
     endpoint?: string;
+    username?: string;
+    hasPassword?: boolean;
     indexes?: {
       traces?: string;
       logs?: string;

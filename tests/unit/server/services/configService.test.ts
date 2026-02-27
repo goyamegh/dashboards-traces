@@ -140,11 +140,15 @@ describe('configService', () => {
           configured: true,
           source: 'file',
           endpoint: 'https://storage.com',
+          username: 'admin',
+          hasPassword: true,
         },
         observability: {
           configured: true,
           source: 'environment',
           endpoint: 'https://obs.com',
+          username: 'obs-user',
+          hasPassword: false,
         },
       });
 
@@ -153,9 +157,13 @@ describe('configService', () => {
       expect(status.storage.source).toBe('file');
       expect(status.storage.configured).toBe(true);
       expect(status.storage.endpoint).toBe('https://storage.com');
+      expect(status.storage.username).toBe('admin');
+      expect(status.storage.hasPassword).toBe(true);
       expect(status.observability.source).toBe('environment');
       expect(status.observability.configured).toBe(true);
       expect(status.observability.endpoint).toBe('https://obs.com');
+      expect(status.observability.username).toBe('obs-user');
+      expect(status.observability.hasPassword).toBe(false);
     });
   });
 

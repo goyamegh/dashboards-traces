@@ -43,17 +43,22 @@ interface ConfigFileDataSources {
   };
 }
 
-// Config status returned to frontend (no credentials)
+// Config status returned to frontend (no raw credentials — username is safe to expose,
+// password is indicated only as a boolean so the UI can show placeholder dots)
 export interface ConfigStatus {
   storage: {
     configured: boolean;
     source: 'file' | 'environment' | 'none';
-    endpoint?: string;  // Show endpoint for verification, never credentials
+    endpoint?: string;
+    username?: string;    // Safe to return; lets the form pre-fill the username
+    hasPassword?: boolean; // True when a password is stored; never return the value itself
   };
   observability: {
     configured: boolean;
     source: 'file' | 'environment' | 'none';
     endpoint?: string;
+    username?: string;
+    hasPassword?: boolean;
     indexes?: {
       traces?: string;
       logs?: string;
@@ -132,11 +137,18 @@ export function getStorageConfigFromFile(): StorageClusterConfig | null {
  */
 export function saveStorageConfig(storageConfig: StorageClusterConfig): void {
   const existing = readConfigFromDisk();
+  const existingStorage = (existing.storage as any) || {};
+
+  // Use ?? so that an absent/undefined field in the incoming payload falls back
+  // to whatever is already stored.  The form never pre-fills passwords, so
+  // storageConfig.password is undefined on a "change endpoint only" save.
+  const resolvedUsername = storageConfig.username ?? existingStorage.username;
+  const resolvedPassword = storageConfig.password ?? existingStorage.password;
 
   existing.storage = {
     endpoint: storageConfig.endpoint,
-    ...(storageConfig.username && { username: storageConfig.username }),
-    ...(storageConfig.password && { password: storageConfig.password }),
+    ...(resolvedUsername && { username: resolvedUsername }),
+    ...(resolvedPassword && { password: resolvedPassword }),
     ...(storageConfig.tlsSkipVerify !== undefined && { tlsSkipVerify: storageConfig.tlsSkipVerify }),
   };
 
@@ -191,11 +203,17 @@ export function getObservabilityConfigFromFile(): ObservabilityClusterConfig | n
  */
 export function saveObservabilityConfig(obsConfig: ObservabilityClusterConfig): void {
   const existing = readConfigFromDisk();
+  const existingObs = (existing.observability as any) || {};
+
+  // Use ?? so that an absent/undefined field in the incoming payload falls back
+  // to whatever is already stored.
+  const resolvedUsername = obsConfig.username ?? existingObs.username;
+  const resolvedPassword = obsConfig.password ?? existingObs.password;
 
   existing.observability = {
     endpoint: obsConfig.endpoint,
-    ...(obsConfig.username && { username: obsConfig.username }),
-    ...(obsConfig.password && { password: obsConfig.password }),
+    ...(resolvedUsername && { username: resolvedUsername }),
+    ...(resolvedPassword && { password: resolvedPassword }),
     ...(obsConfig.tlsSkipVerify !== undefined && { tlsSkipVerify: obsConfig.tlsSkipVerify }),
     ...(obsConfig.indexes && Object.keys(obsConfig.indexes).length > 0 && {
       indexes: obsConfig.indexes,
@@ -270,11 +288,23 @@ export function getConfigStatus(): ConfigStatus {
       configured: storageSource !== 'none',
       source: storageSource,
       endpoint: storageEndpoint,
+      username: storageSource === 'file'
+        ? config?.storage?.username
+        : process.env.OPENSEARCH_STORAGE_USERNAME,
+      hasPassword: storageSource === 'file'
+        ? Boolean(config?.storage?.password)
+        : Boolean(process.env.OPENSEARCH_STORAGE_PASSWORD),
     },
     observability: {
       configured: obsSource !== 'none',
       source: obsSource,
       endpoint: obsEndpoint,
+      username: obsSource === 'file'
+        ? config?.observability?.username
+        : process.env.OPENSEARCH_LOGS_USERNAME,
+      hasPassword: obsSource === 'file'
+        ? Boolean(config?.observability?.password)
+        : Boolean(process.env.OPENSEARCH_LOGS_PASSWORD),
       indexes: obsIndexes,
     },
   };

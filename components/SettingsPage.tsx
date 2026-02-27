@@ -144,22 +144,31 @@ export const SettingsPage: React.FC = () => {
     }
   }, []);
 
+  // Sentinel value used in the password field to mean "a password is stored on
+  // the server; the user has not changed it yet."  It is never sent to the server —
+  // we convert it back to undefined so the server-side ?? merge keeps the stored value.
+  const PASSWORD_STORED_SENTINEL = '__STORED__';
+
   // Load config status from server
   const loadConfigStatus = useCallback(async () => {
     try {
       const status = await getConfigStatus();
       setConfigStatus(status);
-      // Pre-fill form with current endpoint (but never passwords)
+      // Pre-fill form with endpoint + username; use sentinel for password when stored.
       if (status.storage.endpoint) {
         setStorageConfigState(prev => ({
           ...prev,
           endpoint: status.storage.endpoint || '',
+          username: status.storage.username || '',
+          password: status.storage.hasPassword ? PASSWORD_STORED_SENTINEL : '',
         }));
       }
       if (status.observability.endpoint) {
         setObservabilityConfigState(prev => ({
           ...prev,
           endpoint: status.observability.endpoint || '',
+          username: status.observability.username || '',
+          password: status.observability.hasPassword ? PASSWORD_STORED_SENTINEL : '',
           tracesIndex: status.observability.indexes?.traces || '',
           logsIndex: status.observability.indexes?.logs || '',
           metricsIndex: status.observability.indexes?.metrics || '',
@@ -505,7 +514,10 @@ export const SettingsPage: React.FC = () => {
         body: JSON.stringify({
           endpoint: storageConfig.endpoint,
           username: storageConfig.username || undefined,
-          password: storageConfig.password || undefined,
+          // Strip sentinel — server will use its stored password for the test
+          password: storageConfig.password === PASSWORD_STORED_SENTINEL
+            ? undefined
+            : (storageConfig.password || undefined),
           tlsSkipVerify: storageConfig.tlsSkipVerify || undefined,
         }),
       });
@@ -542,19 +554,24 @@ export const SettingsPage: React.FC = () => {
     }
 
     try {
+      // Strip sentinel — an unchanged sentinel means "keep whatever is stored";
+      // the server-side ?? merge will preserve it.
+      const storagePasswordToSend = storageConfig.password === PASSWORD_STORED_SENTINEL
+        ? undefined
+        : (storageConfig.password || undefined);
+
       await saveStorageConfig({
         endpoint: storageConfig.endpoint,
         username: storageConfig.username || undefined,
-        password: storageConfig.password || undefined,
+        password: storagePasswordToSend,
         tlsSkipVerify: storageConfig.tlsSkipVerify,
       });
       setStorageTestStatus('idle');
       setStorageTestMessage('Configuration saved to server');
-      // Clear password field after save (never keep passwords in form state)
-      setStorageConfigState(prev => ({ ...prev, password: '' }));
-      setTimeout(() => setStorageTestMessage(''), 3000);
+      // Reload to re-apply sentinel state for any stored credentials
       loadStorageStats();
       loadConfigStatus();
+      setTimeout(() => setStorageTestMessage(''), 3000);
     } catch (error) {
       setStorageTestStatus('error');
       setStorageTestMessage(error instanceof Error ? error.message : 'Failed to save configuration');
@@ -596,7 +613,10 @@ export const SettingsPage: React.FC = () => {
         body: JSON.stringify({
           endpoint: observabilityConfig.endpoint,
           username: observabilityConfig.username || undefined,
-          password: observabilityConfig.password || undefined,
+          // Strip sentinel — server will use its stored password for the test
+          password: observabilityConfig.password === PASSWORD_STORED_SENTINEL
+            ? undefined
+            : (observabilityConfig.password || undefined),
           tlsSkipVerify: observabilityConfig.tlsSkipVerify || undefined,
           indexes: {
             traces: observabilityConfig.tracesIndex || undefined,
@@ -641,10 +661,15 @@ export const SettingsPage: React.FC = () => {
     }
 
     try {
+      // Strip sentinel — same logic as storage save above.
+      const obsPasswordToSend = observabilityConfig.password === PASSWORD_STORED_SENTINEL
+        ? undefined
+        : (observabilityConfig.password || undefined);
+
       await saveObservabilityConfig({
         endpoint: observabilityConfig.endpoint,
         username: observabilityConfig.username || undefined,
-        password: observabilityConfig.password || undefined,
+        password: obsPasswordToSend,
         tlsSkipVerify: observabilityConfig.tlsSkipVerify,
         indexes: {
           traces: observabilityConfig.tracesIndex || undefined,
@@ -654,10 +679,9 @@ export const SettingsPage: React.FC = () => {
       });
       setObservabilityTestStatus('idle');
       setObservabilityTestMessage('Configuration saved to server');
-      // Clear password field after save (never keep passwords in form state)
-      setObservabilityConfigState(prev => ({ ...prev, password: '' }));
-      setTimeout(() => setObservabilityTestMessage(''), 3000);
+      // Reload to re-apply sentinel state for any stored credentials
       loadConfigStatus();
+      setTimeout(() => setObservabilityTestMessage(''), 3000);
     } catch (error) {
       setObservabilityTestStatus('error');
       setObservabilityTestMessage(error instanceof Error ? error.message : 'Failed to save configuration');
@@ -1075,8 +1099,8 @@ export const SettingsPage: React.FC = () => {
                   <Input
                     id="storage-password"
                     type={showStoragePassword ? 'text' : 'password'}
-                    placeholder="Leave blank to use env var"
-                    value={storageConfig.password}
+                    placeholder={storageConfig.password === PASSWORD_STORED_SENTINEL ? '••••••••' : 'Leave blank to use env var'}
+                    value={storageConfig.password === PASSWORD_STORED_SENTINEL ? '' : storageConfig.password}
                     onChange={(e) => setStorageConfigState({ ...storageConfig, password: e.target.value })}
                     className="pr-10"
                   />
@@ -1088,6 +1112,9 @@ export const SettingsPage: React.FC = () => {
                     {showStoragePassword ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
                 </div>
+                {storageConfig.password === PASSWORD_STORED_SENTINEL && (
+                  <p className="text-xs text-muted-foreground">Password stored — leave blank to keep it, or type a new one to replace it</p>
+                )}
               </div>
             </div>
 
@@ -1285,8 +1312,8 @@ export const SettingsPage: React.FC = () => {
                   <Input
                     id="obs-password"
                     type={showObservabilityPassword ? 'text' : 'password'}
-                    placeholder="Leave blank to use env var"
-                    value={observabilityConfig.password}
+                    placeholder={observabilityConfig.password === PASSWORD_STORED_SENTINEL ? '••••••••' : 'Leave blank to use env var'}
+                    value={observabilityConfig.password === PASSWORD_STORED_SENTINEL ? '' : observabilityConfig.password}
                     onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, password: e.target.value })}
                     className="pr-10"
                   />
@@ -1298,6 +1325,9 @@ export const SettingsPage: React.FC = () => {
                     {showObservabilityPassword ? <EyeOff size={16} /> : <Eye size={16} />}
                   </button>
                 </div>
+                {observabilityConfig.password === PASSWORD_STORED_SENTINEL && (
+                  <p className="text-xs text-muted-foreground">Password stored — leave blank to keep it, or type a new one to replace it</p>
+                )}
               </div>
             </div>
 

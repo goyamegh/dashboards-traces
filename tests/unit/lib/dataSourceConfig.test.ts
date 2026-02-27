@@ -32,8 +32,8 @@ describe('dataSourceConfig', () => {
   describe('getConfigStatus', () => {
     it('should return configuration status from API', async () => {
       const mockStatus = {
-        hasStorageConfig: true,
-        hasObservabilityConfig: false,
+        storage: { configured: true, source: 'file', endpoint: 'https://store.com' },
+        observability: { configured: false, source: 'none' },
       };
 
       (global.fetch as jest.Mock).mockResolvedValue({
@@ -45,6 +45,37 @@ describe('dataSourceConfig', () => {
 
       expect(status).toEqual(mockStatus);
       expect(global.fetch).toHaveBeenCalled();
+    });
+
+    it('should pass through username and hasPassword fields', async () => {
+      const mockStatus = {
+        storage: {
+          configured: true,
+          source: 'file',
+          endpoint: 'https://store.com',
+          username: 'admin',
+          hasPassword: true,
+        },
+        observability: {
+          configured: true,
+          source: 'file',
+          endpoint: 'https://obs.com',
+          username: 'obs-user',
+          hasPassword: false,
+        },
+      };
+
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve(mockStatus),
+      });
+
+      const status = await getConfigStatus();
+
+      expect(status.storage.username).toBe('admin');
+      expect(status.storage.hasPassword).toBe(true);
+      expect(status.observability.username).toBe('obs-user');
+      expect(status.observability.hasPassword).toBe(false);
     });
 
     it('should throw error when API fails', async () => {
