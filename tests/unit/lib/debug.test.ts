@@ -140,6 +140,21 @@ describe('Debug Utility', () => {
   describe('Node.js environment (no window)', () => {
     const originalWindow = global.window;
 
+    /**
+     * Helper: mock fs so the debug module does NOT read/write the real
+     * agent-health.config.json. Without this, a previous interrupted
+     * test run can leave the file with `debug: true`, causing flaky failures.
+     */
+    function mockFsNoConfigFile() {
+      const realFs = jest.requireActual('fs');
+      jest.mock('fs', () => ({
+        ...realFs,
+        existsSync: jest.fn().mockReturnValue(false),
+        readFileSync: realFs.readFileSync,
+        writeFileSync: jest.fn(),
+      }));
+    }
+
     afterEach(() => {
       Object.defineProperty(global, 'window', {
         value: originalWindow,
@@ -152,6 +167,7 @@ describe('Debug Utility', () => {
       // @ts-ignore - removing window to simulate Node.js
       delete global.window;
       jest.resetModules();
+      mockFsNoConfigFile();
 
       const mod = require('@/lib/debug');
       expect(mod.isDebugEnabled()).toBe(false);
@@ -162,14 +178,8 @@ describe('Debug Utility', () => {
       delete global.window;
       process.env.DEBUG = 'true';
 
-      // Mock fs.existsSync to return false so the env var path is reached
-      // (agent-health.yaml may exist in the project root)
       jest.resetModules();
-      const realFs = jest.requireActual('fs');
-      jest.mock('fs', () => ({
-        ...realFs,
-        existsSync: jest.fn().mockReturnValue(false),
-      }));
+      mockFsNoConfigFile();
 
       const mod = require('@/lib/debug');
       expect(mod.isDebugEnabled()).toBe(true);
@@ -179,6 +189,7 @@ describe('Debug Utility', () => {
       // @ts-ignore
       delete global.window;
       jest.resetModules();
+      mockFsNoConfigFile();
 
       const mod = require('@/lib/debug');
       expect(mod.isDebugEnabled()).toBe(false);
@@ -194,6 +205,7 @@ describe('Debug Utility', () => {
       // @ts-ignore
       delete global.window;
       jest.resetModules();
+      mockFsNoConfigFile();
 
       const mod = require('@/lib/debug');
       mod.setDebugEnabled(true);
@@ -206,6 +218,7 @@ describe('Debug Utility', () => {
       // @ts-ignore
       delete global.window;
       jest.resetModules();
+      mockFsNoConfigFile();
 
       const mod = require('@/lib/debug');
       mod.setDebugEnabled(false);
