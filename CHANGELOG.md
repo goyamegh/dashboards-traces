@@ -10,6 +10,7 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ## [Unreleased]
 
 ### Added
+- Jason Hoang Nguyen (@jasonlhamazon) as maintainer and code owner ([#69](https://github.com/opensearch-project/agent-health/pull/69))
 - Ollama models (`deepseek-r1:8b`, `gemma3:12b`) to built-in model presets for LiteLLM provider ([#68](https://github.com/opensearch-project/agent-health/pull/68))
 - Add `afterResponse` and `buildTrajectory` hook for PER agent support ([#70](https://github.com/opensearch-project/agent-health/pull/70))
 
