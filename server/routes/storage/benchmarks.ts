@@ -977,6 +977,19 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
           cancellationToken,
           client,
           onTestCaseComplete: async (testCaseId, result) => {
+            // Stream per-test-case result to the client
+            const tc = testCaseMap.get(testCaseId);
+            const completedCount = Object.values(run.results).filter(
+              r => r.status === 'completed' || r.status === 'failed'
+            ).length;
+            res.write(`data: ${JSON.stringify({
+              type: 'progress',
+              currentTestCaseIndex: completedCount - 1,
+              totalTestCases: benchmark.testCaseIds.length,
+              currentTestCase: { id: testCaseId, name: tc?.name || testCaseId },
+              result: { status: result.status, error: result.error },
+            })}\n\n`);
+
             // Persist intermediate progress to OpenSearch for real-time polling
             try {
               await updateTestCaseResult(client, id, run.id, testCaseId, result);

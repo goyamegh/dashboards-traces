@@ -13,6 +13,17 @@
 import type { Benchmark, BenchmarkRun, BenchmarkProgress, RunConfigInput, TestCaseRun, StorageMetadata, AgentConfig, ModelConfig, TestCase } from '@/types/index.js';
 
 /**
+ * Error thrown when the server sends an explicit error event via SSE.
+ * Distinguished from network/stream disconnects so the CLI can handle them differently.
+ */
+export class ServerError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'ServerError';
+  }
+}
+
+/**
  * Health check response from server
  */
 export interface HealthResponse {
@@ -223,7 +234,7 @@ export class ApiClient {
               } else if (event.type === 'completed' || event.type === 'cancelled') {
                 finalRun = event.run;
               } else if (event.type === 'error') {
-                throw new Error(event.error);
+                throw new ServerError(event.error);
               }
             } catch (e) {
               // Skip non-JSON lines (incomplete chunks)
@@ -234,6 +245,11 @@ export class ApiClient {
         }
       }
     } catch (streamError) {
+      // Server-sent error events are explicit failures - don't attempt recovery
+      if (streamError instanceof ServerError) {
+        throw streamError;
+      }
+
       // Stream disconnected - check if we can recover by polling
       if (runId) {
         console.warn(`[ApiClient] SSE stream disconnected: ${streamError instanceof Error ? streamError.message : streamError}`);
@@ -583,7 +599,7 @@ export class ApiClient {
               if (event.type === 'completed') {
                 result = event.report;
               } else if (event.type === 'error') {
-                throw new Error(event.error);
+                throw new ServerError(event.error);
               }
             } catch (e) {
               // Skip non-JSON lines (incomplete chunks)

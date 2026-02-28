@@ -254,7 +254,19 @@ export function createRunCommand(): Command {
             const report = await runForAgent(client, testCase.id, agent, modelId, options.verbose || false);
             results.push({ agent, report });
           } catch (error) {
-            console.error(chalk.red(`  Error running ${agent.name}: ${error instanceof Error ? error.message : error}`));
+            const errorMsg = error instanceof Error ? error.message : String(error);
+            console.error(chalk.red(`  Error running ${agent.name}: ${errorMsg}`));
+
+            // Print helpful hints based on the error
+            const lowerError = errorMsg.toLowerCase();
+            if (lowerError.includes('401') || lowerError.includes('403') || lowerError.includes('unauthorized') || lowerError.includes('forbidden') || lowerError.includes('token') || lowerError.includes('auth')) {
+              console.log(chalk.gray(`  Hint: Authentication issue. Check agent-health.config.ts (headers, hooks.beforeRequest, or credentials).`));
+            } else if (lowerError.includes('econnrefused') || lowerError.includes('enotfound') || lowerError.includes('connect')) {
+              console.log(chalk.gray(`  Hint: Cannot reach agent endpoint. Run: npx @opensearch-project/agent-health doctor`));
+            } else if (lowerError.includes('hook') || lowerError.includes('beforerequest')) {
+              console.log(chalk.gray(`  Hint: The beforeRequest hook in agent-health.config.ts threw an error.`));
+            }
+
             results.push({ agent, report: null });
           }
         }
