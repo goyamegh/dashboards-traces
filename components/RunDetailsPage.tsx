@@ -303,7 +303,8 @@ export const RunDetailsPage: React.FC = () => {
           // Collapse main sidebar when loading with a test case selected
           setMainSidebarOpen(false);
         } else if (testCaseIds.length === 1) {
-          // Auto-select the only test case if there's just one
+          // Auto-select the only test case when there's just one
+          // (full-width layout has no sidebar/summary view)
           setSelectedItem(testCaseIds[0]);
           setMainSidebarOpen(false);
         } else {
