@@ -47,7 +47,7 @@ function getConfig() {
  */
 export type OnTestCaseCompleteCallback = (
   testCaseId: string,
-  result: { reportId: string; status: RunResultStatus }
+  result: { reportId: string; status: RunResultStatus; error?: string }
 ) => Promise<void>;
 
 /**
