@@ -71,21 +71,35 @@ For detailed architecture documentation, see [docs/ARCHITECTURE.md](./docs/ARCHI
 ## CLI Commands
 
 ```bash
-# Check configuration
+# Start server (default action)
+npx @opensearch-project/agent-health
+
+# Initialize a new project (creates agent-health.config.ts and .env.example)
+npx @opensearch-project/agent-health init
+
+# Check configuration and connectivity
 npx @opensearch-project/agent-health doctor
 
-# List available agents and connectors
+# List resources (agents, connectors, models, test-cases, benchmarks)
 npx @opensearch-project/agent-health list agents
 npx @opensearch-project/agent-health list connectors
 
-# Run a test case against an agent
+# Run a single test case against an agent
 npx @opensearch-project/agent-health run -t demo-otel-001 -a demo
 
-# Import test cases from JSON and run a benchmark
+# Run a benchmark (batch of test cases)
 npx @opensearch-project/agent-health benchmark -f ./test-cases.json -a my-agent
+npx @opensearch-project/agent-health benchmark -n "My Benchmark" -a my-agent --export results.json
 
-# Initialize a new project
-npx @opensearch-project/agent-health init
+# Export benchmark test cases as JSON
+npx @opensearch-project/agent-health export -b "My Benchmark" -o test-cases.json
+
+# Generate reports (HTML, PDF, JSON)
+npx @opensearch-project/agent-health report -b "My Benchmark"
+npx @opensearch-project/agent-health report -b "My Benchmark" -f pdf -o report.pdf
+
+# One-time migration for existing benchmark runs
+npx @opensearch-project/agent-health migrate --dry-run
 ```
 
 For full CLI documentation, see [docs/CLI.md](./docs/CLI.md).
@@ -97,7 +111,38 @@ For full CLI documentation, see [docs/CLI.md](./docs/CLI.md).
 
 Agent Health works out-of-the-box with demo data. Configure when you're ready to connect your own agent.
 
-### Minimal Setup (Optional)
+### Config File: `agent-health.config.ts`
+
+This is the primary way to configure custom agents, models, and hooks. Create it in your working directory (the directory you run `npx` or `agent-health` from):
+
+```bash
+# Generate a config file with examples
+npx @opensearch-project/agent-health init
+```
+
+Or create it manually:
+
+```typescript
+// agent-health.config.ts
+export default {
+  agents: [
+    {
+      key: "my-agent",
+      name: "My Agent",
+      endpoint: "http://localhost:8000/agent",
+      connectorType: "rest",  // or "agui-streaming", "subprocess"
+      models: ["claude-sonnet-4"],
+      useTraces: true,        // Enable OpenTelemetry trace collection
+    }
+  ],
+};
+```
+
+The config file is auto-detected from the current working directory. Supported file names (in priority order): `agent-health.config.ts`, `agent-health.config.js`, `agent-health.config.mjs`. See [`agent-health.config.example.ts`](./agent-health.config.example.ts) for all available options including authentication hooks.
+
+> **Tip:** Run `npx @opensearch-project/agent-health doctor` to verify your configuration is loaded correctly.
+
+### Environment Variables (Optional)
 
 **For LLM Judge evaluation** (uses AWS Bedrock):
 ```bash
@@ -108,21 +153,6 @@ cp .env.example .env
 AWS_REGION=us-east-1
 AWS_ACCESS_KEY_ID=your_access_key
 AWS_SECRET_ACCESS_KEY=your_secret_key
-```
-
-**For your own agent** - create `agent-health.config.ts`:
-```typescript
-export default {
-  agents: [
-    {
-      key: "my-agent",
-      name: "My Agent",
-      endpoint: "http://localhost:8000/agent",
-      connectorType: "rest",  // or "agui-streaming", "subprocess"
-      models: ["claude-sonnet-4"],
-    }
-  ],
-};
 ```
 
 **Full configuration guide:** [CONFIGURATION.md](./docs/CONFIGURATION.md)

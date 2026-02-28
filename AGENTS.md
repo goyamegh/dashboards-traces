@@ -33,9 +33,36 @@ npm test              # Run all tests - must pass before pushing
 
 Update `CHANGELOG.md` under `## [Unreleased]` with your changes:
 - `### Added` - New features
-- `### Changed` - Changes to existing functionality  
+- `### Changed` - Changes to existing functionality
 - `### Fixed` - Bug fixes
 - `### Security` - Security fixes
+
+## Before Raising a PR
+
+All PRs are validated by CI. Fix these locally before pushing to avoid failed checks:
+
+```bash
+# 1. Build and test
+npm run build:all && npm run test:all
+
+# 2. Security scan - no high/critical vulnerabilities
+npm audit --audit-level=high
+
+# 3. Verify DCO signoff on all commits
+git log origin/main..HEAD | grep "Signed-off-by"
+# If missing, fix with: git rebase origin/main --signoff
+
+# 4. Verify changelog is updated
+grep -A5 "## \[Unreleased\]" CHANGELOG.md
+```
+
+**Pre-PR Checklist:**
+- [ ] All commits have DCO signoff (`git commit -s`)
+- [ ] `CHANGELOG.md` updated under `## [Unreleased]` with PR link
+- [ ] `npm run build:all` succeeds
+- [ ] `npm run test:all` passes
+- [ ] `npm audit --audit-level=high` reports no vulnerabilities
+- [ ] New source files have SPDX license headers
 
 ### CLI: Import Test Cases from JSON
 
