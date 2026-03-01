@@ -143,6 +143,7 @@ class OpenSearchTestCaseOperations implements ITestCaseOperations {
   }
 
   async create(testCase: Partial<TestCase>): Promise<TestCase> {
+    if (!testCase.name) throw new Error('Test case name is required');
     const now = new Date().toISOString();
     const id = testCase.id || generateId('tc');
     const version = 1;
@@ -169,7 +170,8 @@ class OpenSearchTestCaseOperations implements ITestCaseOperations {
 
   async update(id: string, updates: Partial<TestCase>): Promise<TestCase> {
     const current = await this.getById(id);
-    const currentVer = current ? ((current as any).version ?? (current as any).currentVersion ?? 0) : 0;
+    if (!current) throw new Error(`Test case ${id} not found`);
+    const currentVer = (current as any).version ?? (current as any).currentVersion ?? 0;
     const newVer = currentVer + 1;
     const now = new Date().toISOString();
     const docId = `${id}-v${newVer}`;

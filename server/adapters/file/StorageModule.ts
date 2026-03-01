@@ -140,6 +140,7 @@ class FileTestCaseOperations implements ITestCaseOperations {
   }
 
   async create(testCase: Partial<TestCase>): Promise<TestCase> {
+    if (!testCase.name) throw new Error('Test case name is required');
     const now = new Date().toISOString();
     const id = testCase.id || `tc-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
     const doc = {
@@ -157,7 +158,8 @@ class FileTestCaseOperations implements ITestCaseOperations {
 
   async update(id: string, updates: Partial<TestCase>): Promise<TestCase> {
     const current = await this.getById(id);
-    const currentVer = current ? this.ver(current) : 0;
+    if (!current) throw new Error(`Test case ${id} not found`);
+    const currentVer = this.ver(current);
     const newVer = currentVer + 1;
     const now = new Date().toISOString();
 

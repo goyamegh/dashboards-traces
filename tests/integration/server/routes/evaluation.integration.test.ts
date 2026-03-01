@@ -129,6 +129,7 @@ describe('Evaluate Route Integration Tests', () => {
   let storageAvailable = false;
   let config: ReturnType<typeof getTestConfig>;
   const createdReportIds: string[] = [];
+  const createdTestCaseIds: string[] = [];
 
   beforeAll(async () => {
     config = getTestConfig();
@@ -153,6 +154,14 @@ describe('Evaluate Route Integration Tests', () => {
     for (const id of createdReportIds) {
       try {
         await fetch(`${config.backendUrl}/api/storage/runs/${id}`, { method: 'DELETE' });
+      } catch {
+        // Ignore cleanup errors
+      }
+    }
+    // Clean up any test cases created as a side effect of evaluation
+    for (const id of createdTestCaseIds) {
+      try {
+        await fetch(`${config.backendUrl}/api/storage/test-cases/${encodeURIComponent(id)}`, { method: 'DELETE' });
       } catch {
         // Ignore cleanup errors
       }
@@ -204,6 +213,7 @@ describe('Evaluate Route Integration Tests', () => {
         if (!backendAvailable) return;
 
         const testCaseId = `tc-eval-integ-${Date.now()}`;
+        createdTestCaseIds.push(testCaseId);
         const testCase = buildInlineTestCase(testCaseId);
 
         const response = await fetch(`${config.backendUrl}/api/evaluate`, {
@@ -235,6 +245,7 @@ describe('Evaluate Route Integration Tests', () => {
         if (!backendAvailable || !storageAvailable) return;
 
         const testCaseId = `tc-eval-integ-${Date.now()}`;
+        createdTestCaseIds.push(testCaseId);
         const testCase = buildInlineTestCase(testCaseId);
 
         const response = await fetch(`${config.backendUrl}/api/evaluate`, {
@@ -276,6 +287,7 @@ describe('Evaluate Route Integration Tests', () => {
         if (!backendAvailable || !storageAvailable) return;
 
         const testCaseId = `tc-eval-integ-${Date.now()}`;
+        createdTestCaseIds.push(testCaseId);
         const testCase = buildInlineTestCase(testCaseId);
 
         // 1. Run the evaluation
@@ -321,6 +333,7 @@ describe('Evaluate Route Integration Tests', () => {
         if (!backendAvailable || !storageAvailable) return;
 
         const testCaseId = `tc-eval-integ-${Date.now()}`;
+        createdTestCaseIds.push(testCaseId);
         const testCase = buildInlineTestCase(testCaseId);
 
         const evalResponse = await fetch(`${config.backendUrl}/api/evaluate`, {
@@ -359,6 +372,7 @@ describe('Evaluate Route Integration Tests', () => {
         if (!backendAvailable || !storageAvailable) return;
 
         const testCaseId = `tc-eval-integ-${Date.now()}`;
+        createdTestCaseIds.push(testCaseId);
         const testCase = buildInlineTestCase(testCaseId);
 
         // Trigger a pre-SSE 400 error

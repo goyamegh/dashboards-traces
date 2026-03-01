@@ -537,7 +537,7 @@ export class ApiClient {
     // Fall back to name match
     const response = await this.listTestCasesWithMeta();
     return response.data.find(tc =>
-      tc.name.toLowerCase() === identifier.toLowerCase()
+      tc.name?.toLowerCase() === identifier.toLowerCase()
     ) || null;
   }
 

@@ -315,6 +315,10 @@ describe('OpenSearchStorageModule', () => {
           expect.objectContaining({ id: 'my-tc-v1' })
         );
       });
+
+      it('should throw when name is missing', async () => {
+        await expect(mod.testCases.create({ initialPrompt: 'test' })).rejects.toThrow('Test case name is required');
+      });
     });
 
     describe('update', () => {
@@ -333,13 +337,10 @@ describe('OpenSearchStorageModule', () => {
         );
       });
 
-      it('should create version 1 when no existing version found', async () => {
+      it('should throw when test case not found', async () => {
         mockClient.search.mockResolvedValue(makeSearchResponse([]));
-        mockClient.index.mockResolvedValue({});
 
-        const result = await mod.testCases.update('tc-new', { name: 'New' });
-
-        expect(result.version).toBe(1);
+        await expect(mod.testCases.update('tc-new', { name: 'New' })).rejects.toThrow('Test case tc-new not found');
       });
     });
 

@@ -340,8 +340,13 @@ export async function runSingleUseCase(
 
   const savedReport = await saveReportWithModule(storage, report);
 
-  // Denormalize lastRunAt onto the test case (fire-and-forget)
-  storage.testCases.update(testCase.id, { lastRunAt: new Date().toISOString() } as any)
+  // Denormalize lastRunAt onto the test case (only for persisted test cases)
+  storage.testCases.getById(testCase.id)
+    .then(existing => {
+      if (existing) {
+        return storage.testCases.update(testCase.id, { lastRunAt: new Date().toISOString() } as any);
+      }
+    })
     .catch(err => console.warn(`[BenchmarkRunner] Failed to update lastRunAt for ${testCase.id}:`, err.message));
 
   // Start trace polling for trace-mode runs

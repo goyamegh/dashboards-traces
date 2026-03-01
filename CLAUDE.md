@@ -446,6 +446,12 @@ Test cases are managed via the UI (Settings > Use Cases) and stored in OpenSearc
 - **Versions**: Immutable history - each edit creates a new version
 - **expectedOutcomes**: Text descriptions of expected agent behavior (used by judge)
 
+### Storage Adapter Validation
+
+Both the file and OpenSearch storage adapters enforce these invariants:
+- **`testCases.create()`** requires a `name` field — throws `'Test case name is required'` if missing.
+- **`testCases.update()`** throws `'Test case {id} not found'` if the entity doesn't already exist (consistent with `benchmarks.update()` and `runs.update()`). This prevents ghost documents from being silently created via update-as-upsert.
+
 ### Adding New Models
 
 Update `lib/constants.ts` → `DEFAULT_CONFIG.models`:

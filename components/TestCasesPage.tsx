@@ -108,7 +108,7 @@ const TestCaseCard = ({ testCase, runCount, onClick, onRun, onEdit, onDelete, is
       <CardHeader className="pb-2">
         <div className="flex items-start justify-between">
           <div className="flex-1 min-w-0">
-            <CardTitle className="text-base truncate">{testCase.name}</CardTitle>
+            <CardTitle className="text-base truncate">{testCase.name || '(Unnamed)'}</CardTitle>
             <CardDescription className="flex items-center gap-2 mt-1 flex-wrap">
               {displayLabels.map((label) => (
                 <Badge 
@@ -165,7 +165,7 @@ const TestCaseCard = ({ testCase, runCount, onClick, onRun, onEdit, onDelete, is
       </CardHeader>
       <CardContent className="pt-0">
         <p className="text-sm text-muted-foreground line-clamp-2">
-          {testCase.initialPrompt}
+          {testCase.initialPrompt || '(No prompt)'}
         </p>
       </CardContent>
     </Card>

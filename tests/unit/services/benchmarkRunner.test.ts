@@ -32,9 +32,10 @@ const mockClient = {} as any;
 // Mock storage module (used for runSingleUseCase path)
 const mockRunsCreate = jest.fn();
 const mockTestCasesUpdate = jest.fn().mockResolvedValue(undefined);
+const mockTestCasesGetById = jest.fn().mockResolvedValue({ id: 'tc-1', name: 'Test' });
 const mockStorageModule = {
   runs: { create: mockRunsCreate },
-  testCases: { update: mockTestCasesUpdate },
+  testCases: { update: mockTestCasesUpdate, getById: mockTestCasesGetById },
 } as any;
 
 const mockRunEvaluationWithConnector = jest.fn();
@@ -172,6 +173,7 @@ describe('Experiment Runner', () => {
     mockGetCustomAgents.mockReturnValue([]);
     mockRunsCreate.mockReset();
     mockTestCasesUpdate.mockResolvedValue(undefined);
+    mockTestCasesGetById.mockResolvedValue({ id: 'tc-1', name: 'Test' });
   });
 
   describe('createCancellationToken', () => {
@@ -698,6 +700,27 @@ describe('Experiment Runner', () => {
 
       const agentConfigArg = mockRunEvaluationWithConnector.mock.calls[0][0];
       expect(agentConfigArg.endpoint).toBe('http://override.example.com');
+    });
+
+    it('should not call update when test case is not persisted', async () => {
+      mockTestCasesGetById.mockResolvedValue(null); // not in storage
+      const testCase = createTestCase('tc-inline');
+      const run = createBenchmarkRun('run-1');
+
+      mockRunEvaluationWithConnector.mockResolvedValue({
+        id: 'report-1',
+        trajectory: [],
+        metrics: {},
+      });
+      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      await runSingleUseCase(run, testCase, mockStorageModule);
+
+      // Wait for the fire-and-forget promise chain to settle
+      await new Promise(resolve => setTimeout(resolve, 50));
+
+      expect(mockTestCasesGetById).toHaveBeenCalledWith('tc-inline');
+      expect(mockTestCasesUpdate).not.toHaveBeenCalled();
     });
 
     it('should use raw model key if not found in config', async () => {
