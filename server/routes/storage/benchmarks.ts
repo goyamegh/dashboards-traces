@@ -297,6 +297,12 @@ function validateRunConfig(config: any): string | null {
   if (!config.modelId || typeof config.modelId !== 'string') {
     return 'modelId is required and must be a string';
   }
+  if (config.concurrency !== undefined) {
+    const c = Number(config.concurrency);
+    if (!Number.isInteger(c) || c < 1 || c > 20) {
+      return 'concurrency must be an integer between 1 and 20';
+    }
+  }
   return null;
 }
 

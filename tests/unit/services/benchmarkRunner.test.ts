@@ -494,6 +494,162 @@ describe('Experiment Runner', () => {
     });
   });
 
+  describe('executeRun with concurrency', () => {
+    it('should default to sequential execution when concurrency is not set', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const testCase2 = createTestCase('tc-2');
+      const testCase3 = createTestCase('tc-3');
+      const experiment = createExperiment(['tc-1', 'tc-2', 'tc-3']);
+      const run = createBenchmarkRun('run-1');
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1, testCase2, testCase3]);
+
+      // Track call order to verify sequential execution
+      const callOrder: string[] = [];
+      mockRunEvaluationWithConnector.mockImplementation(async (_agent: any, _model: any, tc: any) => {
+        callOrder.push(`start-${tc.id}`);
+        await new Promise(r => setTimeout(r, 10));
+        callOrder.push(`end-${tc.id}`);
+        return { id: `report-${tc.id}`, trajectory: [], metrics: {} };
+      });
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      await executeRun(experiment, run, jest.fn(), { client: mockClient });
+
+      // With concurrency 1 (default), each test case should start after the previous one ends
+      expect(callOrder).toEqual([
+        'start-tc-1', 'end-tc-1',
+        'start-tc-2', 'end-tc-2',
+        'start-tc-3', 'end-tc-3',
+      ]);
+    });
+
+    it('should run test cases in parallel when concurrency > 1', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const testCase2 = createTestCase('tc-2');
+      const testCase3 = createTestCase('tc-3');
+      const experiment = createExperiment(['tc-1', 'tc-2', 'tc-3']);
+      const run: BenchmarkRun = {
+        ...createBenchmarkRun('run-1'),
+        concurrency: 2,
+      };
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1, testCase2, testCase3]);
+
+      // Track maximum concurrent executions
+      let currentConcurrent = 0;
+      let maxConcurrent = 0;
+      mockRunEvaluationWithConnector.mockImplementation(async (_agent: any, _model: any, tc: any) => {
+        currentConcurrent++;
+        maxConcurrent = Math.max(maxConcurrent, currentConcurrent);
+        await new Promise(r => setTimeout(r, 50));
+        currentConcurrent--;
+        return { id: `report-${tc.id}`, trajectory: [], metrics: {} };
+      });
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      const result = await executeRun(experiment, run, jest.fn(), { client: mockClient });
+
+      // Should have run at most 2 concurrently
+      expect(maxConcurrent).toBe(2);
+      // All should complete
+      expect(result.results['tc-1'].status).toBe('completed');
+      expect(result.results['tc-2'].status).toBe('completed');
+      expect(result.results['tc-3'].status).toBe('completed');
+    });
+
+    it('should stop starting new tasks when cancelled during parallel execution', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const testCase2 = createTestCase('tc-2');
+      const testCase3 = createTestCase('tc-3');
+      const experiment = createExperiment(['tc-1', 'tc-2', 'tc-3']);
+      const run: BenchmarkRun = {
+        ...createBenchmarkRun('run-1'),
+        concurrency: 2,
+      };
+      const cancellationToken = createCancellationToken();
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1, testCase2, testCase3]);
+
+      let evaluationCount = 0;
+      mockRunEvaluationWithConnector.mockImplementation(async () => {
+        evaluationCount++;
+        if (evaluationCount === 1) {
+          // Cancel after first evaluation starts
+          cancellationToken.cancel();
+        }
+        await new Promise(r => setTimeout(r, 10));
+        return { id: 'report-1', trajectory: [], metrics: {} };
+      });
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      const progressUpdates: BenchmarkProgress[] = [];
+      await executeRun(experiment, run, (p) => progressUpdates.push(p), {
+        cancellationToken,
+        client: mockClient,
+      });
+
+      // Should not have run all 3 test cases
+      expect(evaluationCount).toBeLessThanOrEqual(2);
+
+      // Should have a cancelled progress event
+      const cancelledProgress = progressUpdates.find(p => p.status === 'cancelled');
+      expect(cancelledProgress).toBeDefined();
+    });
+
+    it('should include completedCount in progress events', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const testCase2 = createTestCase('tc-2');
+      const experiment = createExperiment(['tc-1', 'tc-2']);
+      const run: BenchmarkRun = {
+        ...createBenchmarkRun('run-1'),
+        concurrency: 1,
+      };
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1, testCase2]);
+      mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [], metrics: {} });
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      const progressUpdates: BenchmarkProgress[] = [];
+      await executeRun(experiment, run, (p) => progressUpdates.push(p), { client: mockClient });
+
+      // Each progress event should have completedCount
+      for (const p of progressUpdates) {
+        expect(p.completedCount).toBeDefined();
+        expect(typeof p.completedCount).toBe('number');
+      }
+
+      // Final progress should have completedCount = 2
+      const finalProgress = progressUpdates[progressUpdates.length - 1];
+      expect(finalProgress.completedCount).toBe(2);
+    });
+
+    it('should add throttle delay on rate limit errors during parallel execution', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const testCase2 = createTestCase('tc-2');
+      const experiment = createExperiment(['tc-1', 'tc-2']);
+      const run: BenchmarkRun = {
+        ...createBenchmarkRun('run-1'),
+        concurrency: 2,
+      };
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1, testCase2]);
+
+      // First call throws throttling error, second succeeds
+      mockRunEvaluationWithConnector
+        .mockRejectedValueOnce(new Error('ThrottlingException: Rate exceeded'))
+        .mockResolvedValueOnce({ id: 'report-2', trajectory: [], metrics: {} });
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-2', metricsStatus: 'ready' });
+
+      const result = await executeRun(experiment, run, jest.fn(), { client: mockClient });
+
+      // Both should have results (first failed, second completed)
+      expect(result.results['tc-1'].status).toBe('failed');
+      expect(result.results['tc-1'].error).toContain('ThrottlingException');
+      expect(result.results['tc-2'].status).toBe('completed');
+    });
+  });
+
   describe('runBenchmark', () => {
     it('should create and execute a new run', async () => {
       const testCase1 = createTestCase('tc-1');

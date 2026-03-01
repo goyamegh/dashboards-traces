@@ -32,6 +32,7 @@ interface BenchmarkOptions {
   format: string;
   stopServer?: boolean;
   file?: string;
+  concurrency: string;
 }
 
 interface AgentResults {
@@ -122,7 +123,8 @@ async function runBenchmarkForAgent(
   agent: AgentConfig,
   modelId: string,
   benchmark: Benchmark,
-  verbose: boolean
+  verbose: boolean,
+  concurrency?: number
 ): Promise<AgentResults> {
   const results: AgentResults = {
     agent,
@@ -144,6 +146,7 @@ async function runBenchmarkForAgent(
         name: `CLI Run - ${agent.name}`,
         agentKey: agent.key,
         modelId: modelId,
+        ...(concurrency && concurrency > 1 ? { concurrency } : {}),
       },
       (event: BenchmarkExecutionEvent) => {
         if (event.type === 'started') {
@@ -408,6 +411,7 @@ export function createBenchmarkCommand(): Command {
     .option('-o, --output <format>', 'Output format: table, json', 'table')
     .option('--export <path>', 'Export results to file')
     .option('--format <type>', 'Report format for --export: json (default), html, pdf', 'json')
+    .option('-c, --concurrency <n>', 'Number of test cases to run in parallel (default: 1)', '1')
     .option('-v, --verbose', 'Show detailed output')
     .option('--stop-server', 'Stop the server after benchmark completes (default: keep running)')
     .action(async (options: BenchmarkOptions & { name?: string }) => {
@@ -590,6 +594,12 @@ export function createBenchmarkCommand(): Command {
 
         console.log('');
 
+        // Parse concurrency option
+        const concurrency = Math.max(1, Math.min(20, parseInt(options.concurrency, 10) || 1));
+        if (concurrency > 1) {
+          console.log(chalk.gray(`  Concurrency: ${concurrency}`));
+        }
+
         // Run benchmark for each agent
         const allResults: AgentResults[] = [];
 
@@ -600,7 +610,8 @@ export function createBenchmarkCommand(): Command {
             agent,
             modelId,
             benchmark,
-            options.verbose || false
+            options.verbose || false,
+            concurrency
           );
           allResults.push(results);
         }

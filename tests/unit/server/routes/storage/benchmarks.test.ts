@@ -776,6 +776,77 @@ describe('Experiments Storage Routes', () => {
       );
     });
 
+    it('should validate run configuration - concurrency below 1', async () => {
+      const { req, res } = createMocks(
+        { id: 'exp-123' },
+        { name: 'Run', agentKey: 'agent', modelId: 'model', concurrency: 0 }
+      );
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/:id/execute');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: expect.stringContaining('concurrency must be an integer between 1 and 20'),
+        })
+      );
+    });
+
+    it('should validate run configuration - concurrency above 20', async () => {
+      const { req, res } = createMocks(
+        { id: 'exp-123' },
+        { name: 'Run', agentKey: 'agent', modelId: 'model', concurrency: 21 }
+      );
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/:id/execute');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: expect.stringContaining('concurrency must be an integer between 1 and 20'),
+        })
+      );
+    });
+
+    it('should validate run configuration - non-integer concurrency', async () => {
+      const { req, res } = createMocks(
+        { id: 'exp-123' },
+        { name: 'Run', agentKey: 'agent', modelId: 'model', concurrency: 2.5 }
+      );
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/:id/execute');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: expect.stringContaining('concurrency must be an integer between 1 and 20'),
+        })
+      );
+    });
+
+    it('should accept valid concurrency values', async () => {
+      (isStorageAvailable as jest.Mock).mockReturnValue(false);
+
+      const { req, res } = createMocks(
+        { id: 'exp-123' },
+        { name: 'Run', agentKey: 'agent', modelId: 'model', concurrency: 5 }
+      );
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/:id/execute');
+
+      await handler(req, res);
+
+      // Should pass validation and reach storage check
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: expect.stringContaining('OpenSearch not configured'),
+        })
+      );
+    });
+
     it('should return 404 when experiment not found', async () => {
       const error: any = new Error('Not found');
       error.meta = { statusCode: 404 };

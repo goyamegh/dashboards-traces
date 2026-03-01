@@ -612,6 +612,7 @@ export interface BenchmarkRun {
   agentEndpoint?: string;          // Override agent endpoint (optional)
   modelId: string;                 // Model to use (also determines judge provider)
   headers?: Record<string, string>; // Custom headers
+  concurrency?: number;              // Parallel test case execution limit (1 = sequential, default)
 
   // Version tracking (for reproducibility)
   benchmarkVersion?: number;       // Which benchmark version was executed (undefined = legacy data)
@@ -648,7 +649,8 @@ export interface Benchmark {
 
 // Progress callback for benchmark runner
 export interface BenchmarkProgress {
-  currentTestCaseIndex: number;
+  currentTestCaseIndex: number;  // Kept for backward compat (= completedCount - 1)
+  completedCount?: number;       // Actual count of finished test cases
   totalTestCases: number;
   currentRunId: string;
   currentTestCaseId: string;
@@ -736,7 +738,7 @@ export interface TestCaseComparisonRow {
 
 // Derived type for creating new benchmark runs - stays in sync with BenchmarkRun
 export type RunConfigInput = Pick<BenchmarkRun,
-  'name' | 'description' | 'agentKey' | 'modelId' | 'agentEndpoint' | 'headers'
+  'name' | 'description' | 'agentKey' | 'modelId' | 'agentEndpoint' | 'headers' | 'concurrency'
 >;
 
 // ============ Server/API Types ============
