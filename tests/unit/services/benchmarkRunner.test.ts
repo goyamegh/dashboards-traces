@@ -901,6 +901,164 @@ describe('Experiment Runner', () => {
     });
   });
 
+  describe('performance metrics', () => {
+    it('should populate run-level performanceMetrics after completion', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const testCase2 = createTestCase('tc-2');
+      const experiment = createExperiment(['tc-1', 'tc-2']);
+      const run = createBenchmarkRun('run-1');
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1, testCase2]);
+      mockRunEvaluationWithConnector.mockResolvedValue({
+        id: 'report-1',
+        trajectory: [],
+        metrics: { accuracy: 0.9 },
+        performanceMetrics: {
+          durationMs: 1000,
+          agentDurationMs: 800,
+          judgeDurationMs: 150,
+          judgeAttempts: 1,
+        },
+      });
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      const result = await executeRun(experiment, run, jest.fn(), { client: mockClient });
+
+      expect(result.performanceMetrics).toBeDefined();
+      expect(result.performanceMetrics!.durationMs).toBeGreaterThanOrEqual(0);
+      expect(result.performanceMetrics!.concurrency).toBe(1);
+      expect(result.performanceMetrics!.avgTestCaseDurationMs).toBe(1000);
+      expect(result.performanceMetrics!.maxTestCaseDurationMs).toBe(1000);
+      expect(result.performanceMetrics!.minTestCaseDurationMs).toBe(1000);
+    });
+
+    it('should include per-test-case performanceMetrics in results', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run = createBenchmarkRun('run-1');
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1]);
+      mockRunEvaluationWithConnector.mockResolvedValue({
+        id: 'report-1',
+        trajectory: [],
+        metrics: { accuracy: 0.9 },
+        performanceMetrics: {
+          durationMs: 500,
+          agentDurationMs: 400,
+          judgeDurationMs: 80,
+          judgeAttempts: 1,
+        },
+      });
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      const result = await executeRun(experiment, run, jest.fn(), { client: mockClient });
+
+      expect(result.results['tc-1'].performanceMetrics).toBeDefined();
+      expect(result.results['tc-1'].performanceMetrics!.durationMs).toBe(500);
+      expect(result.results['tc-1'].performanceMetrics!.agentDurationMs).toBe(400);
+      expect(result.results['tc-1'].performanceMetrics!.judgeDurationMs).toBe(80);
+      expect(result.results['tc-1'].performanceMetrics!.judgeAttempts).toBe(1);
+    });
+
+    it('should compute correct aggregate with varying durations', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const testCase2 = createTestCase('tc-2');
+      const testCase3 = createTestCase('tc-3');
+      const experiment = createExperiment(['tc-1', 'tc-2', 'tc-3']);
+      const run = createBenchmarkRun('run-1');
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1, testCase2, testCase3]);
+
+      let callCount = 0;
+      mockRunEvaluationWithConnector.mockImplementation(async () => {
+        callCount++;
+        const durations = [1000, 2000, 3000];
+        return {
+          id: `report-${callCount}`,
+          trajectory: [],
+          metrics: { accuracy: 0.9 },
+          performanceMetrics: {
+            durationMs: durations[callCount - 1],
+            agentDurationMs: durations[callCount - 1] - 200,
+          },
+        };
+      });
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      const result = await executeRun(experiment, run, jest.fn(), { client: mockClient });
+
+      expect(result.performanceMetrics!.avgTestCaseDurationMs).toBe(2000);
+      expect(result.performanceMetrics!.minTestCaseDurationMs).toBe(1000);
+      expect(result.performanceMetrics!.maxTestCaseDurationMs).toBe(3000);
+    });
+
+    it('should record concurrency in performanceMetrics', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run: BenchmarkRun = {
+        ...createBenchmarkRun('run-1'),
+        concurrency: 3,
+      };
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1]);
+      mockRunEvaluationWithConnector.mockResolvedValue({
+        id: 'report-1',
+        trajectory: [],
+        metrics: {},
+        performanceMetrics: { durationMs: 500, agentDurationMs: 400 },
+      });
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      const result = await executeRun(experiment, run, jest.fn(), { client: mockClient });
+
+      expect(result.performanceMetrics!.concurrency).toBe(3);
+    });
+
+    it('should handle mixed success/failure results in aggregate', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const testCase2 = createTestCase('tc-2');
+      const experiment = createExperiment(['tc-1', 'tc-2']);
+      const run = createBenchmarkRun('run-1');
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1, testCase2]);
+
+      // First succeeds with metrics, second fails (no metrics)
+      mockRunEvaluationWithConnector
+        .mockResolvedValueOnce({
+          id: 'report-1',
+          trajectory: [],
+          metrics: { accuracy: 0.9 },
+          performanceMetrics: { durationMs: 1500, agentDurationMs: 1200 },
+        })
+        .mockRejectedValueOnce(new Error('Agent failed'));
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      const result = await executeRun(experiment, run, jest.fn(), { client: mockClient });
+
+      // Aggregate should only include successful test case durations
+      expect(result.performanceMetrics!.avgTestCaseDurationMs).toBe(1500);
+      expect(result.performanceMetrics!.minTestCaseDurationMs).toBe(1500);
+      expect(result.performanceMetrics!.maxTestCaseDurationMs).toBe(1500);
+      // Failed test case should not have performanceMetrics
+      expect(result.results['tc-2'].performanceMetrics).toBeUndefined();
+    });
+
+    it('should set zero aggregates when no test cases have metrics', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run = createBenchmarkRun('run-1');
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1]);
+      mockRunEvaluationWithConnector.mockRejectedValue(new Error('All failed'));
+
+      const result = await executeRun(experiment, run, jest.fn(), { client: mockClient });
+
+      expect(result.performanceMetrics!.avgTestCaseDurationMs).toBe(0);
+      expect(result.performanceMetrics!.minTestCaseDurationMs).toBe(0);
+      expect(result.performanceMetrics!.maxTestCaseDurationMs).toBe(0);
+    });
+  });
+
   describe('trace polling callbacks', () => {
     it('should call Bedrock judge when traces are found', async () => {
       const testCase = createTestCase('tc-1');

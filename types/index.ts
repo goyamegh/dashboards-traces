@@ -199,6 +199,9 @@ export interface TestCaseRun {
   rawEvents?: any[]; // Raw AG UI events for debugging
   connectorProtocol?: ConnectorProtocol; // Protocol used to execute this run (for trajectory parsing)
 
+  // Server-side performance metrics (timing data from evaluation execution)
+  performanceMetrics?: TestCasePerformanceMetrics;
+
   // Trace mode fields (for agents with useTraces: true)
   metricsStatus?: MetricsStatus; // Status of deferred metrics/judge calculation
   traceFetchAttempts?: number; // Number of polling attempts for traces
@@ -561,6 +564,25 @@ export interface ListResponse<T> {
   meta: StorageMetadata;
 }
 
+// ============ Server Performance Metrics ============
+
+/** Server-side performance metrics for a single test case evaluation */
+export interface TestCasePerformanceMetrics {
+  durationMs: number;                    // Total wall-clock time
+  agentDurationMs: number;               // Time in connector.execute()
+  judgeDurationMs?: number;              // Time in callBedrockJudge() (absent in trace mode)
+  judgeAttempts?: number;               // Number of judge retry attempts
+}
+
+/** Server-side performance metrics for an entire benchmark run */
+export interface RunPerformanceMetrics {
+  durationMs: number;                    // Total wall-clock time for the run
+  concurrency: number;                   // Effective concurrency used
+  avgTestCaseDurationMs: number;         // Mean per-test-case duration
+  maxTestCaseDurationMs: number;         // Slowest test case
+  minTestCaseDurationMs: number;         // Fastest test case
+}
+
 // ============ Benchmark Types ============
 
 // Denormalized stats for a benchmark run (computed from reports, stored on run for fast access)
@@ -623,11 +645,15 @@ export interface BenchmarkRun {
     reportId: string;              // References EvaluationReport.id
     status: RunResultStatus;
     error?: string;                // Error message if status is 'failed'
+    performanceMetrics?: TestCasePerformanceMetrics;  // Per-test-case timing data
   }>;
 
   // Denormalized stats (computed from reports, stored for fast list display)
   // Optional during migration period - will be populated by migration CLI or on next run completion
   stats?: RunStats;
+
+  // Server-side performance metrics (populated after run completes)
+  performanceMetrics?: RunPerformanceMetrics;
 }
 
 // Parent entity - persisted to localStorage['benchmarks']

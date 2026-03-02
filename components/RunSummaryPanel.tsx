@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { CheckCircle2, XCircle, Clock, Target, BarChart3, Coins, Timer, Hash } from 'lucide-react';
+import { CheckCircle2, XCircle, Clock, Target, BarChart3, Coins, Timer, Hash, Zap } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -211,6 +211,51 @@ export const RunSummaryPanel: React.FC<RunSummaryPanelProps> = ({
                 </CardContent>
               </Card>
             </div>
+          </div>
+        )}
+
+        {/* Performance Metrics (if available) */}
+        {run.performanceMetrics && (
+          <div>
+            <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+              <Zap size={18} />
+              Performance
+            </h3>
+            <div className="grid grid-cols-3 gap-3">
+              <Card>
+                <CardContent className="p-4 text-center">
+                  <Timer size={16} className="mx-auto text-blue-400 mb-2" />
+                  <div className="text-xs text-muted-foreground mb-1">Run Duration</div>
+                  <div className="text-lg font-bold text-blue-400">
+                    {formatDuration(run.performanceMetrics.durationMs)}
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="p-4 text-center">
+                  <Hash size={16} className="mx-auto text-green-400 mb-2" />
+                  <div className="text-xs text-muted-foreground mb-1">Concurrency</div>
+                  <div className="text-lg font-bold text-green-400">
+                    {run.performanceMetrics.concurrency}
+                  </div>
+                </CardContent>
+              </Card>
+              <Card>
+                <CardContent className="p-4 text-center">
+                  <Timer size={16} className="mx-auto text-purple-700 dark:text-purple-400 mb-2" />
+                  <div className="text-xs text-muted-foreground mb-1">Avg / Case</div>
+                  <div className="text-lg font-bold text-purple-700 dark:text-purple-400">
+                    {formatDuration(run.performanceMetrics.avgTestCaseDurationMs)}
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+            {(run.performanceMetrics.minTestCaseDurationMs > 0 || run.performanceMetrics.maxTestCaseDurationMs > 0) && (
+              <div className="flex items-center gap-4 mt-2 text-xs text-muted-foreground">
+                <span>Fastest: {formatDuration(run.performanceMetrics.minTestCaseDurationMs)}</span>
+                <span>Slowest: {formatDuration(run.performanceMetrics.maxTestCaseDurationMs)}</span>
+              </div>
+            )}
           </div>
         )}
 

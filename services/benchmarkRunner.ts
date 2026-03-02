@@ -11,6 +11,7 @@ import {
   TestCase,
   EvaluationReport,
   RunConfigInput,
+  RunPerformanceMetrics,
 } from '@/types';
 import {
   getAllTestCasesWithClient,
@@ -48,7 +49,7 @@ function getConfig() {
  */
 export type OnTestCaseCompleteCallback = (
   testCaseId: string,
-  result: { reportId: string; status: RunResultStatus; error?: string }
+  result: { reportId: string; status: RunResultStatus; error?: string; performanceMetrics?: import('@/types').TestCasePerformanceMetrics }
 ) => Promise<void>;
 
 /**
@@ -247,6 +248,7 @@ export async function executeRun(
           run.results[testCaseId] = {
             reportId: savedReport.id,
             status: 'completed',
+            performanceMetrics: report.performanceMetrics,
           };
 
           completedCount++;
@@ -305,6 +307,20 @@ export async function executeRun(
 
     const totalDuration = Date.now() - runStartTime;
     console.log(`[BenchmarkRunner] Run ${run.id} completed: ${completedCount}/${totalTestCases} test cases in ${totalDuration}ms`);
+
+    // Compute run-level performance metrics
+    const testCaseDurations = Object.values(run.results)
+      .map(r => r.performanceMetrics?.durationMs)
+      .filter((d): d is number => d !== undefined);
+
+    run.performanceMetrics = {
+      durationMs: totalDuration,
+      concurrency,
+      avgTestCaseDurationMs: testCaseDurations.length > 0
+        ? testCaseDurations.reduce((a, b) => a + b, 0) / testCaseDurations.length : 0,
+      maxTestCaseDurationMs: testCaseDurations.length > 0 ? Math.max(...testCaseDurations) : 0,
+      minTestCaseDurationMs: testCaseDurations.length > 0 ? Math.min(...testCaseDurations) : 0,
+    };
 
     return run;
   } catch (error) {

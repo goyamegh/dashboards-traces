@@ -200,6 +200,50 @@ describe('bedrockJudge', () => {
       expect(result.passFailStatus).toBe('passed');
     }, 15000);
 
+    it('should include judgeDurationMs and judgeAttempts on success', async () => {
+      const mockResponse = {
+        passFailStatus: 'passed',
+        metrics: { accuracy: 92 },
+        llmJudgeReasoning: 'Good performance.',
+        improvementStrategies: [],
+      };
+
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve(mockResponse),
+      });
+
+      const result = await callBedrockJudge(mockTrajectory, mockExpectedBehavior);
+
+      expect(result.judgeDurationMs).toBeDefined();
+      expect(typeof result.judgeDurationMs).toBe('number');
+      expect(result.judgeDurationMs).toBeGreaterThanOrEqual(0);
+      expect(result.judgeAttempts).toBe(1);
+    });
+
+    it('should reflect retry count in judgeAttempts after transient failure', async () => {
+      // First attempt fails
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        json: () => Promise.resolve({ error: 'Transient error' }),
+      });
+      // Second attempt succeeds
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          passFailStatus: 'passed',
+          metrics: { accuracy: 90 },
+          llmJudgeReasoning: 'Recovered',
+          improvementStrategies: [],
+        }),
+      });
+
+      const result = await callBedrockJudge(mockTrajectory, mockExpectedBehavior);
+
+      expect(result.judgeAttempts).toBe(2);
+      expect(result.judgeDurationMs).toBeGreaterThanOrEqual(0);
+    }, 15000);
+
     it('should include both expectedOutcomes and expectedTrajectory in request', async () => {
       const mockResponse = {
         passFailStatus: 'passed',

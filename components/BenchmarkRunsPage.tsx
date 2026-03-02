@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, GitCompare, Calendar, CheckCircle2, XCircle, Play, Trash2, Plus, X, Loader2, Circle, Check, ChevronRight, ChevronDown, Clock, StopCircle, Ban } from 'lucide-react';
+import { ArrowLeft, GitCompare, Calendar, CheckCircle2, XCircle, Play, Trash2, Plus, X, Loader2, Circle, Check, ChevronRight, ChevronDown, Clock, StopCircle, Ban, Timer } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -22,6 +22,7 @@ import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
 import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, RunStats } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { getLabelColor, formatDate, getModelName } from '@/lib/utils';
+import { formatDuration } from '@/services/metrics';
 import {
   computeVersionData,
   getSelectedVersionData,
@@ -894,6 +895,12 @@ export const BenchmarkRunsPage: React.FC = () => {
                                 </span>
                                 <span>Agent: {DEFAULT_CONFIG.agents.find(a => a.key === run.agentKey)?.name || run.agentKey}</span>
                                 <span>Model: {getModelName(run.modelId)}</span>
+                                {run.performanceMetrics?.durationMs != null && (
+                                  <span className="flex items-center gap-1">
+                                    <Timer size={12} />
+                                    {formatDuration(run.performanceMetrics.durationMs)}
+                                  </span>
+                                )}
                               </div>
                             </div>
                           </div>
