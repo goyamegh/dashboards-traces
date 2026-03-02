@@ -226,5 +226,34 @@ describe('Debug Utility', () => {
 
       expect(consoleDebugSpy).not.toHaveBeenCalled();
     });
+
+    it('should skip file write when existing config has non-object content (clobber prevention)', () => {
+      // @ts-ignore
+      delete global.window;
+      jest.resetModules();
+
+      const consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const realFs = jest.requireActual('fs');
+      const mockWriteFileSync = jest.fn();
+      jest.mock('fs', () => ({
+        ...realFs,
+        existsSync: jest.fn().mockReturnValue(true),
+        readFileSync: jest.fn().mockReturnValue('["an", "array"]'),
+        writeFileSync: mockWriteFileSync,
+      }));
+
+      const mod = require('@/lib/debug');
+      mod.setDebugEnabled(true);
+
+      // The in-memory flag should still be updated
+      expect(mod.isDebugEnabled()).toBe(true);
+      // But the file should NOT be written
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      expect(consoleWarnSpy).toHaveBeenCalledWith(
+        expect.stringContaining('non-object content'),
+      );
+
+      consoleWarnSpy.mockRestore();
+    });
   });
 });

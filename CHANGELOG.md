@@ -11,10 +11,21 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ### Added
 - Jason Hoang Nguyen (@jasonlhamazon) as maintainer and code owner ([#69](https://github.com/opensearch-project/agent-health/pull/69))
+- Parallel execution with configurable concurrency for benchmark runs
+- Performance metrics tracking (duration, concurrency, judge attempts) for benchmark runs and evaluations
+- Pagination for trace loading with `loadMoreTraces` support
+- Auto-select single test case in RunDetailsPage when only one is available
+- Admin routes for index mapping updates and reindexing with error handling
+- Unit tests for file-based storage modules
 - Ollama models (`deepseek-r1:8b`, `gemma3:12b`) to built-in model presets for LiteLLM provider ([#68](https://github.com/opensearch-project/agent-health/pull/68))
 - Add `afterResponse` and `buildTrajectory` hook for PER agent support ([#70](https://github.com/opensearch-project/agent-health/pull/70))
 
 ### Fixed
+- Preserve cluster credentials on Save and pre-fill username in Settings
+- Password handling in SettingsPage using sentinel value for stored passwords
+- Error handling in CLI run and benchmark commands with streaming progress updates
+- Debug logging cleanup: replace console logs with structured debug statements across SettingsPage and API services
+- Enforce test case name requirement on creation and update with improved error handling
 - Dark mode color contrast for status icons (running, pending, cancelled, failed) across RunDetailsPage, RunSummaryPanel, and WorkflowNavigator ([#67](https://github.com/opensearch-project/agent-health/pull/67))
 - Type mismatch in `BulkCreateTestCasesResponse.errors` field from `boolean` to `number` ([#67](https://github.com/opensearch-project/agent-health/pull/67))
 - Remove unused minimap toggle from TraceVisualization component ([#67](https://github.com/opensearch-project/agent-health/pull/67))
@@ -22,6 +33,11 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - `process is not defined` error in env config when running in browser context ([#68](https://github.com/opensearch-project/agent-health/pull/68))
 - QuickRunModal closing during evaluation causing run visibility lag ([#68](https://github.com/opensearch-project/agent-health/pull/68))
 - Broken documentation links: raw GitHub URL for `AGENT_HEALTH.md` and old repo name in `GETTING_STARTED.md` ([#68](https://github.com/opensearch-project/agent-health/pull/68))
+
+### Security
+- Update `minimatch` override to `^10.2.4` to fix ReDoS vulnerabilities (GHSA-7r86-cg39-jmmj, GHSA-23c5-xmqv-rm74)
+- Add `fast-xml-parser` override `5.4.1` to fix DoS vulnerability
+- Bump `@aws-sdk/client-bedrock-runtime` and `@aws-sdk/credential-providers` from `^3.936.0` to `^3.999.0`
 
 ### Removed
 - Stale Kiro spec files and sample test case data from `agent-health-data/` ([#67](https://github.com/opensearch-project/agent-health/pull/67))

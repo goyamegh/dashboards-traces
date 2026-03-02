@@ -70,6 +70,49 @@ describe('configService (real implementation)', () => {
   });
 
   // ==========================================================================
+  // readConfigFromDisk — clobber prevention
+  // ==========================================================================
+
+  describe('clobber prevention', () => {
+    it('saveStorageConfig throws when existing config file is unreadable (corrupt JSON)', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('NOT VALID JSON {{{');
+
+      expect(() => saveStorageConfig({ endpoint: 'https://new.com' }))
+        .toThrow('existing config file is unreadable or corrupt');
+      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+    });
+
+    it('saveObservabilityConfig throws when existing config file is unreadable (corrupt JSON)', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('NOT VALID JSON {{{');
+
+      expect(() => saveObservabilityConfig({ endpoint: 'https://obs.com' }))
+        .toThrow('existing config file is unreadable or corrupt');
+      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+    });
+
+    it('saveStorageConfig throws when config file contains a JSON array', () => {
+      mockedFs.existsSync.mockReturnValue(true);
+      mockedFs.readFileSync.mockReturnValue('["not", "an", "object"]');
+
+      expect(() => saveStorageConfig({ endpoint: 'https://new.com' }))
+        .toThrow('existing config file is unreadable or corrupt');
+      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
+    });
+
+    it('saveStorageConfig succeeds when config file does not exist (new file)', () => {
+      mockedFs.existsSync.mockReturnValue(false);
+      const getWritten = captureWrite();
+
+      saveStorageConfig({ endpoint: 'https://new.com' });
+
+      const result = getWritten();
+      expect((result.storage as any).endpoint).toBe('https://new.com');
+    });
+  });
+
+  // ==========================================================================
   // saveStorageConfig — Bug-2: credential preservation
   // ==========================================================================
 

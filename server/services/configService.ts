@@ -78,19 +78,23 @@ function getConfigFilePath(): string {
 
 /**
  * Read the full JSON config from disk.
- * Same pattern as customAgentStore.ts — returns empty object on any error.
+ * Returns `{}` when file doesn't exist (safe to create new).
+ * Returns `null` when file exists but read/parse fails (unsafe to write — would clobber).
  */
-function readConfigFromDisk(): Record<string, unknown> {
+function readConfigFromDisk(): Record<string, unknown> | null {
   try {
     const filePath = getConfigFilePath();
     if (!fs.existsSync(filePath)) return {};
     const raw = fs.readFileSync(filePath, 'utf-8');
     const parsed = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      console.error('[ConfigService] Config file contains non-object content, refusing to overwrite');
+      return null;
+    }
     return parsed as Record<string, unknown>;
   } catch (err) {
     console.error('[ConfigService] Failed to read config file:', err);
-    return {};
+    return null;
   }
 }
 
@@ -118,7 +122,7 @@ function writeConfigToDisk(config: Record<string, unknown>): void {
  * Returns null if not configured in file
  */
 export function getStorageConfigFromFile(): StorageClusterConfig | null {
-  const config = readConfigFromDisk() as ConfigFileDataSources;
+  const config = readConfigFromDisk() as ConfigFileDataSources | null;
 
   if (!config?.storage?.endpoint) {
     return null;
@@ -137,6 +141,9 @@ export function getStorageConfigFromFile(): StorageClusterConfig | null {
  */
 export function saveStorageConfig(storageConfig: StorageClusterConfig): void {
   const existing = readConfigFromDisk();
+  if (existing === null) {
+    throw new Error('Cannot save storage config: existing config file is unreadable or corrupt');
+  }
   const existingStorage = (existing.storage as any) || {};
 
   // Use ?? so that an absent/undefined field in the incoming payload falls back
@@ -160,6 +167,9 @@ export function saveStorageConfig(storageConfig: StorageClusterConfig): void {
  */
 export function clearStorageConfig(): void {
   const existing = readConfigFromDisk();
+  if (existing === null) {
+    throw new Error('Cannot clear storage config: existing config file is unreadable or corrupt');
+  }
   delete existing.storage;
 
   // If config is now empty, delete the file
@@ -183,7 +193,7 @@ export function clearStorageConfig(): void {
  * Returns null if not configured in file
  */
 export function getObservabilityConfigFromFile(): ObservabilityClusterConfig | null {
-  const config = readConfigFromDisk() as ConfigFileDataSources;
+  const config = readConfigFromDisk() as ConfigFileDataSources | null;
 
   if (!config?.observability?.endpoint) {
     return null;
@@ -203,6 +213,9 @@ export function getObservabilityConfigFromFile(): ObservabilityClusterConfig | n
  */
 export function saveObservabilityConfig(obsConfig: ObservabilityClusterConfig): void {
   const existing = readConfigFromDisk();
+  if (existing === null) {
+    throw new Error('Cannot save observability config: existing config file is unreadable or corrupt');
+  }
   const existingObs = (existing.observability as any) || {};
 
   // Use ?? so that an absent/undefined field in the incoming payload falls back
@@ -228,6 +241,9 @@ export function saveObservabilityConfig(obsConfig: ObservabilityClusterConfig): 
  */
 export function clearObservabilityConfig(): void {
   const existing = readConfigFromDisk();
+  if (existing === null) {
+    throw new Error('Cannot clear observability config: existing config file is unreadable or corrupt');
+  }
   delete existing.observability;
 
   // If config is now empty, delete the file
@@ -251,7 +267,7 @@ export function clearObservabilityConfig(): void {
  * Never exposes credentials - only shows source and endpoint
  */
 export function getConfigStatus(): ConfigStatus {
-  const config = readConfigFromDisk() as ConfigFileDataSources;
+  const config = readConfigFromDisk() as ConfigFileDataSources | null;
 
   // Determine storage config source
   let storageSource: 'file' | 'environment' | 'none' = 'none';

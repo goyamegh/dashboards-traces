@@ -33,19 +33,23 @@ function getConfigFilePath(): string {
 
 /**
  * Read the full JSON config from disk.
- * Returns an empty object on any error (missing file, bad JSON, …).
+ * Returns `{}` when file doesn't exist (safe to create new).
+ * Returns `null` when file exists but read/parse fails (unsafe to write — would clobber).
  */
-function readConfigFromDisk(): Record<string, unknown> {
+function readConfigFromDisk(): Record<string, unknown> | null {
   try {
     const filePath = getConfigFilePath();
     if (!fs.existsSync(filePath)) return {};
     const raw = fs.readFileSync(filePath, 'utf-8');
     const parsed = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      console.error('[customAgentStore] Config file contains non-object content, refusing to overwrite');
+      return null;
+    }
     return parsed as Record<string, unknown>;
   } catch (err) {
     console.error('[customAgentStore] Failed to read config file:', err);
-    return {};
+    return null;
   }
 }
 
@@ -55,6 +59,7 @@ function readConfigFromDisk(): Record<string, unknown> {
  */
 function readCustomAgentsFromDisk(): AgentConfig[] {
   const config = readConfigFromDisk();
+  if (config === null) return [];
   const agents = config.customAgents;
   if (!Array.isArray(agents)) return [];
   return agents.filter(
@@ -73,6 +78,11 @@ function saveToDisk(): void {
     const filePath = getConfigFilePath();
     const agents = Array.from(store.values());
     const existing = readConfigFromDisk();
+
+    if (existing === null) {
+      console.error('[customAgentStore] Config file is unreadable or corrupt, skipping write to avoid clobber');
+      return;
+    }
 
     if (agents.length === 0) {
       delete existing.customAgents;

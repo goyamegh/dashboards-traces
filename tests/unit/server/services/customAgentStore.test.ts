@@ -203,6 +203,34 @@ describe('customAgentStore', () => {
       expect(parsed.customAgents).toBeUndefined();
     });
 
+    it('skips write when existing config file is unreadable (corrupt JSON)', () => {
+      // First add an agent to the in-memory store
+      addCustomAgent(makeAgent('mem-agent', 'Memory Agent', 'http://mem'));
+      jest.clearAllMocks();
+
+      // Now simulate a corrupt config file for the next saveToDisk call
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue('NOT VALID JSON {{{');
+
+      // Adding another agent triggers saveToDisk, which should skip the write
+      addCustomAgent(makeAgent('another', 'Another', 'http://another'));
+
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      // Agent is still in memory despite the write being skipped
+      expect(getCustomAgents().find((a) => a.key === 'another')).toBeDefined();
+    });
+
+    it('skips write when existing config file contains a JSON array', () => {
+      mockExistsSync.mockReturnValue(true);
+      mockReadFileSync.mockReturnValue('["not", "an", "object"]');
+
+      addCustomAgent(makeAgent('arr-test', 'Array Test', 'http://arr'));
+
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+      // Agent is still in memory
+      expect(getCustomAgents().find((a) => a.key === 'arr-test')).toBeDefined();
+    });
+
     it('logs error but does not throw on write failure', () => {
       mockWriteFileSync.mockImplementation(() => {
         throw new Error('EACCES: permission denied');

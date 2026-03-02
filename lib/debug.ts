@@ -82,7 +82,12 @@ export function setDebugEnabled(enabled: boolean): void {
     let config: any = {};
     if (fs.existsSync(configPath)) {
       const content = fs.readFileSync(configPath, 'utf-8');
-      config = JSON.parse(content) || {};
+      const parsed = JSON.parse(content);
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        console.warn(`[Debug] Config file contains non-object content, skipping write to avoid clobber`);
+        return;
+      }
+      config = parsed;
     }
 
     config.debug = enabled;
