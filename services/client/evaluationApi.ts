@@ -137,10 +137,12 @@ function parseSSEEvent(
         const data = JSON.parse(line.slice(6));
 
         if (data.type === 'step' && onStep) {
-          debug('ClientAPI', 'Received trajectory step:', data.step.type);
+          const step = data.step;
+          const detail = step.toolName ? ` — ${step.toolName}${step.status ? ` (${step.status})` : ''}` : '';
+          debug('ClientAPI', `Step: ${step.type}${detail}`);
           onStep(data.step as TrajectoryStep);
         } else if (data.type === 'completed') {
-          console.info('[ClientAPI] Evaluation job completed on server');
+          debug('ClientAPI', `Evaluation completed — pass/fail: ${data.report?.passFailStatus ?? 'unknown'}, accuracy: ${data.report?.metrics?.accuracy ?? 'N/A'}`);
           return {
             reportId: data.reportId,
             report: data.report as ServerEvaluationReport,

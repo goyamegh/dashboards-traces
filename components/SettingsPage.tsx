@@ -68,7 +68,7 @@ function getCustomEndpointsFromConfig(): AgentEndpoint[] {
 }
 
 export const SettingsPage: React.FC = () => {
-  console.log('SettingsPage loaded - built-in badge should be BLUE');
+
   const [debugMode, setDebugMode] = useState(false);
   const [currentTheme, setCurrentTheme] = useState<Theme>('dark');
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
@@ -801,7 +801,7 @@ export const SettingsPage: React.FC = () => {
             <Label className="text-xs text-muted-foreground uppercase tracking-wide">Built-in Agents</Label>
 
             {DEFAULT_CONFIG.agents.filter(a => !a.isCustom).map((agent) => {
-              console.log('Rendering built-in agent:', agent.name, 'isCustom:', agent.isCustom);
+
               return (
                 <div
                   key={agent.key}

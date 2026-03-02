@@ -72,10 +72,20 @@ export async function executeBenchmarkRun(
           try {
             const data = JSON.parse(line.slice(6));
             if (data.type === 'started') {
+              debug('ClientAPI', `Run ${data.runId} started — ${data.testCases?.length ?? 0} test cases`);
               onStarted?.({ runId: data.runId, testCases: data.testCases || [] });
             } else if (data.type === 'progress') {
+              if (data.currentTestCase) {
+                const status = data.result?.status ?? data.status ?? 'running';
+                debug('ClientAPI', `[${data.currentTestCaseIndex + 1}/${data.totalTestCases}] ${data.currentTestCase.name} — ${status}${data.result?.error ? ': ' + data.result.error : ''}`);
+              }
               onProgress(data as BenchmarkProgress);
             } else if (data.type === 'completed' || data.type === 'cancelled') {
+              const results = data.run?.results ?? {};
+              const total = Object.keys(results).length;
+              const passed = Object.values(results).filter((r: any) => r.status === 'completed').length;
+              const failed = total - passed;
+              debug('ClientAPI', `Run ${data.type}: ${passed} passed, ${failed} failed out of ${total} test cases`);
               completedRun = data.run;
             } else if (data.type === 'error') {
               throw new Error(data.error);
