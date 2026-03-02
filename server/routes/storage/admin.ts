@@ -105,6 +105,56 @@ router.post('/api/storage/test-connection', async (req: Request, res: Response) 
 // Initialize Indexes (OpenSearch-specific)
 // ============================================================================
 
+/**
+ * Update settings and mappings on an existing index.
+ * Both operations are best-effort — failures are returned as warnings.
+ */
+async function updateExistingIndex(
+  client: any,
+  indexName: string,
+  mapping: { settings?: Record<string, any>; mappings?: Record<string, any> }
+): Promise<{ settingsUpdated?: boolean; mappingsUpdated?: boolean; warnings?: string[] }> {
+  const warnings: string[] = [];
+  let settingsUpdated = false;
+  let mappingsUpdated = false;
+
+  // Update settings (e.g., field limit)
+  if (mapping.settings) {
+    try {
+      const dynamicSettings: Record<string, any> = {};
+      if (mapping.settings['index.mapping.total_fields.limit'] != null) {
+        dynamicSettings['mapping.total_fields.limit'] = mapping.settings['index.mapping.total_fields.limit'];
+      }
+      if (Object.keys(dynamicSettings).length > 0) {
+        await client.indices.putSettings({ index: indexName, body: { index: dynamicSettings } });
+        settingsUpdated = true;
+        debug('StorageAPI', `Updated settings for index: ${indexName}`);
+      }
+    } catch (error: any) {
+      warnings.push(`Failed to update settings: ${error.message}`);
+      debug('StorageAPI', `Failed to update settings for ${indexName}: ${error.message}`);
+    }
+  }
+
+  // Update mappings (add new field definitions)
+  if (mapping.mappings) {
+    try {
+      await client.indices.putMapping({ index: indexName, body: mapping.mappings });
+      mappingsUpdated = true;
+      debug('StorageAPI', `Updated mappings for index: ${indexName}`);
+    } catch (error: any) {
+      warnings.push(`Failed to update mappings: ${error.message}`);
+      debug('StorageAPI', `Failed to update mappings for ${indexName}: ${error.message}`);
+    }
+  }
+
+  return {
+    ...(settingsUpdated ? { settingsUpdated } : {}),
+    ...(mappingsUpdated ? { mappingsUpdated } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
+  };
+}
+
 router.post(
   '/api/storage/init-indexes',
   asyncHandler(async (req: Request, res: Response) => {
@@ -120,7 +170,8 @@ router.post(
         // Check if index exists
         const exists = await client.indices.exists({ index: indexName });
         if (exists.body) {
-          results[indexName] = { status: 'exists' };
+          const updateResult = await updateExistingIndex(client, indexName, mapping);
+          results[indexName] = { status: 'exists', ...updateResult };
           continue;
         }
 
@@ -134,6 +185,136 @@ router.post(
     }
 
     res.json({ success: true, results });
+  })
+);
+
+// ============================================================================
+// Reindex (migrate existing index to correct mappings)
+// ============================================================================
+
+/**
+ * POST /api/storage/reindex
+ * Reindex an existing index to apply correct mappings.
+ * Creates a temp index with correct mappings, reindexes data, deletes old, recreates, reindexes back.
+ * Body: { index: string } — the index name to reindex (must be in INDEX_MAPPINGS)
+ */
+router.post(
+  '/api/storage/reindex',
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!isStorageAvailable(req)) {
+      return res.status(400).json({ error: 'OpenSearch storage not configured.' });
+    }
+
+    const { index: indexName } = req.body;
+    if (!indexName || typeof indexName !== 'string') {
+      return res.status(400).json({ error: 'index is required in request body' });
+    }
+
+    const mapping = INDEX_MAPPINGS[indexName];
+    if (!mapping) {
+      return res.status(400).json({ error: `Unknown index: ${indexName}. Must be one of: ${Object.keys(INDEX_MAPPINGS).join(', ')}` });
+    }
+
+    const client = requireStorageClient(req);
+    const tempIndex = `${indexName}_reindex_temp`;
+
+    try {
+      // 1. Check source index exists
+      const exists = await client.indices.exists({ index: indexName });
+      if (!exists.body) {
+        return res.status(404).json({ error: `Index ${indexName} does not exist` });
+      }
+
+      // 2. Read existing index settings to preserve shard/replica configuration
+      const existingSettings = await client.indices.getSettings({ index: indexName });
+      const indexSettings = existingSettings.body?.[indexName]?.settings?.index ?? {};
+      const preservedSettings: Record<string, any> = {};
+      if (indexSettings.number_of_shards) {
+        preservedSettings.number_of_shards = Number(indexSettings.number_of_shards);
+      }
+      if (indexSettings.number_of_replicas) {
+        preservedSettings.number_of_replicas = Number(indexSettings.number_of_replicas);
+      }
+
+      // Merge: preserved cluster settings + our field limit + our mappings
+      const reindexMapping = {
+        settings: {
+          ...preservedSettings,
+          ...(mapping.settings?.['index.mapping.total_fields.limit'] != null
+            ? { 'index.mapping.total_fields.limit': mapping.settings['index.mapping.total_fields.limit'] }
+            : {}),
+        },
+        mappings: mapping.mappings,
+      };
+
+      // 3. Delete temp index if it exists from a previous failed attempt
+      const tempExists = await client.indices.exists({ index: tempIndex });
+      if (tempExists.body) {
+        await client.indices.delete({ index: tempIndex });
+        debug('StorageAPI', `Deleted stale temp index: ${tempIndex}`);
+      }
+
+      // 4. Create temp index with correct mappings and preserved settings
+      await client.indices.create({ index: tempIndex, body: reindexMapping as any });
+      debug('StorageAPI', `Created temp index: ${tempIndex}`);
+
+      // 4. Reindex data from source to temp
+      const reindexToTemp = await client.reindex({
+        body: {
+          source: { index: indexName },
+          dest: { index: tempIndex },
+        },
+        wait_for_completion: true,
+        timeout: '5m',
+      });
+      const docsMovedToTemp = (reindexToTemp.body as any)?.total ?? 0;
+      debug('StorageAPI', `Reindexed ${docsMovedToTemp} docs from ${indexName} to ${tempIndex}`);
+
+      // 5. Delete the original index
+      await client.indices.delete({ index: indexName });
+      debug('StorageAPI', `Deleted original index: ${indexName}`);
+
+      // 7. Recreate original index with correct mappings and preserved settings
+      await client.indices.create({ index: indexName, body: reindexMapping as any });
+      debug('StorageAPI', `Recreated index: ${indexName}`);
+
+      // 7. Reindex data back from temp to original
+      const reindexBack = await client.reindex({
+        body: {
+          source: { index: tempIndex },
+          dest: { index: indexName },
+        },
+        wait_for_completion: true,
+        timeout: '5m',
+      });
+      const docsMovedBack = (reindexBack.body as any)?.total ?? 0;
+      debug('StorageAPI', `Reindexed ${docsMovedBack} docs from ${tempIndex} to ${indexName}`);
+
+      // 8. Delete temp index
+      await client.indices.delete({ index: tempIndex });
+      debug('StorageAPI', `Deleted temp index: ${tempIndex}`);
+
+      res.json({
+        success: true,
+        index: indexName,
+        documentsReindexed: docsMovedBack,
+      });
+    } catch (error: any) {
+      console.error(`[StorageAPI] Reindex failed for ${indexName}:`, error.message);
+
+      // Check if temp index still exists for manual cleanup
+      let tempStillExists = false;
+      try {
+        const check = await client.indices.exists({ index: tempIndex });
+        tempStillExists = check.body;
+      } catch { /* ignore */ }
+
+      res.status(500).json({
+        error: `Reindex failed: ${error.message}`,
+        tempIndex: tempStillExists ? tempIndex : undefined,
+        hint: tempStillExists ? `Temp index ${tempIndex} still exists with your data. Do NOT delete it manually until the original index is recovered.` : undefined,
+      });
+    }
   })
 );
 

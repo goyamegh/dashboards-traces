@@ -115,6 +115,35 @@ describe('indexMappings', () => {
       expect(runsMapping.properties.agentId.type).toBe('keyword');
       expect(runsMapping.properties.modelId.type).toBe('keyword');
     });
+
+    it('should have disabled object mappings for results, testCaseSnapshots, and stats', () => {
+      const mappings = getIndexMappings();
+      const key = Object.keys(mappings).find((k) => k.includes('experiments'))!;
+      const runsProps = mappings[key].mappings.properties.runs.properties;
+
+      expect(runsProps.results).toEqual({ type: 'object', enabled: false });
+      expect(runsProps.testCaseSnapshots).toEqual({ type: 'object', enabled: false });
+      expect(runsProps.stats).toEqual({ type: 'object', enabled: false });
+    });
+
+    it('should have explicit scalar field types in runs mapping', () => {
+      const mappings = getIndexMappings();
+      const key = Object.keys(mappings).find((k) => k.includes('experiments'))!;
+      const runsProps = mappings[key].mappings.properties.runs.properties;
+
+      expect(runsProps.status.type).toBe('keyword');
+      expect(runsProps.error.type).toBe('text');
+      expect(runsProps.agentEndpoint.type).toBe('keyword');
+      expect(runsProps.concurrency.type).toBe('long');
+      expect(runsProps.benchmarkVersion.type).toBe('integer');
+    });
+
+    it('should have increased field limit setting', () => {
+      const mappings = getIndexMappings();
+      const key = Object.keys(mappings).find((k) => k.includes('experiments'))!;
+
+      expect(mappings[key].settings?.['index.mapping.total_fields.limit']).toBe(5000);
+    });
   });
 
   describe('Runs Index Schema', () => {

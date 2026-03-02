@@ -27,6 +27,7 @@ import { loadConfigSync } from '@/lib/config/index';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { tracePollingManager } from './traces/tracePoller';
 import { getCustomAgents } from '@/server/services/customAgentStore';
+import { debug } from '@/lib/debug';
 import { RunResultStatus } from '@/types';
 
 /**
@@ -154,6 +155,9 @@ export async function executeRun(
   const totalTestCases = benchmark.testCaseIds.length;
   const { cancellationToken, client, onTestCaseComplete } = options;
   const concurrency = run.concurrency ?? 1;
+  const runStartTime = Date.now();
+
+  console.log(`[BenchmarkRunner] Starting run ${run.id} with concurrency=${concurrency} for ${totalTestCases} test cases`);
 
   // Initialize results if empty
   if (!run.results) {
@@ -204,6 +208,9 @@ export async function executeRun(
           status: 'running',
         });
 
+        debug('BenchmarkRunner', `[${testCaseId}] Starting evaluation (${completedCount}/${totalTestCases} completed)`);
+        const testCaseStartTime = Date.now();
+
         // Set status to running
         run.results[testCaseId] = { reportId: '', status: 'running' };
 
@@ -243,6 +250,8 @@ export async function executeRun(
           };
 
           completedCount++;
+          const testCaseDuration = Date.now() - testCaseStartTime;
+          debug('BenchmarkRunner', `[${testCaseId}] Completed in ${testCaseDuration}ms (${completedCount}/${totalTestCases} completed)`);
 
           // Persist progress to OpenSearch (fire-and-forget with logging)
           if (onTestCaseComplete) {
@@ -251,7 +260,8 @@ export async function executeRun(
           }
         } catch (error) {
           const errorMsg = error instanceof Error ? error.message : String(error);
-          console.error(`[BenchmarkRunner] Error in test case ${testCaseId}:`, errorMsg);
+          const testCaseDuration = Date.now() - testCaseStartTime;
+          debug('BenchmarkRunner', `[${testCaseId}] Failed in ${testCaseDuration}ms: ${errorMsg}`);
           run.results[testCaseId] = { reportId: '', status: 'failed', error: errorMsg };
 
           completedCount++;
@@ -292,6 +302,9 @@ export async function executeRun(
       currentTestCaseId: benchmark.testCaseIds[totalTestCases - 1],
       status: 'completed',
     });
+
+    const totalDuration = Date.now() - runStartTime;
+    console.log(`[BenchmarkRunner] Run ${run.id} completed: ${completedCount}/${totalTestCases} test cases in ${totalDuration}ms`);
 
     return run;
   } catch (error) {
