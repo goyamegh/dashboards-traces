@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
-import { ArrowLeft, Calendar, CheckCircle2, XCircle, BarChart3, PanelLeftClose, PanelLeft, Clock, Loader2, StopCircle, Ban } from 'lucide-react';
+import { ArrowLeft, Calendar, CheckCircle2, XCircle, BarChart3, PanelLeftClose, PanelLeft, Clock, Loader2, StopCircle, Ban, Timer } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -18,6 +18,7 @@ import { cancelExperimentRun } from '@/services/client';
 import { Experiment, ExperimentRun, EvaluationReport, TestCase } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { getDifficultyColor, formatDate, getModelName } from '@/lib/utils';
+import { formatDuration } from '@/services/metrics';
 import { RunDetailsContent } from './RunDetailsContent';
 import { RunSummaryPanel } from './RunSummaryPanel';
 
@@ -545,6 +546,22 @@ export const RunDetailsPage: React.FC = () => {
               </span>
               <span className="text-muted-foreground/50">·</span>
               <span>Model: {getModelName(report?.modelName || experimentContext.experimentRun.modelId)}</span>
+              {experimentContext.experimentRun.performanceMetrics?.durationMs != null && (
+                <>
+                  <span className="text-muted-foreground/50">·</span>
+                  <span className="flex items-center gap-1">
+                    <Timer size={12} />
+                    {formatDuration(experimentContext.experimentRun.performanceMetrics.durationMs)}
+                  </span>
+                </>
+              )}
+              {experimentContext.experimentRun.performanceMetrics?.concurrency != null &&
+               experimentContext.experimentRun.performanceMetrics.concurrency > 1 && (
+                <>
+                  <span className="text-muted-foreground/50">·</span>
+                  <span>Concurrency: {experimentContext.experimentRun.performanceMetrics.concurrency}</span>
+                </>
+              )}
             </div>
           </div>
         </div>

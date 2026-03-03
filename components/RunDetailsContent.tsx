@@ -661,6 +661,48 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
             </Card>
           </div>
         )}
+
+        {/* Server Performance Metrics Row (per-test-case) */}
+        {report.performanceMetrics && (
+          <div className="grid grid-cols-8 gap-2 mt-2">
+            <Card className="bg-muted/50 col-span-2">
+              <CardContent className="p-2">
+                <div className="text-[10px] text-muted-foreground mb-0.5">Eval Duration</div>
+                <div className="text-xs font-semibold text-purple-700 dark:text-purple-400">
+                  {formatDuration(report.performanceMetrics.durationMs)}
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="bg-muted/50 col-span-2">
+              <CardContent className="p-2">
+                <div className="text-[10px] text-muted-foreground mb-0.5">Agent Time</div>
+                <div className="text-xs font-semibold text-blue-700 dark:text-blue-400">
+                  {formatDuration(report.performanceMetrics.agentDurationMs)}
+                </div>
+              </CardContent>
+            </Card>
+            {report.performanceMetrics.judgeDurationMs != null && (
+              <Card className="bg-muted/50 col-span-2">
+                <CardContent className="p-2">
+                  <div className="text-[10px] text-muted-foreground mb-0.5">Judge Time</div>
+                  <div className="text-xs font-semibold text-amber-700 dark:text-amber-400">
+                    {formatDuration(report.performanceMetrics.judgeDurationMs)}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+            {report.performanceMetrics.judgeAttempts != null && report.performanceMetrics.judgeAttempts > 1 && (
+              <Card className="bg-muted/50 col-span-2">
+                <CardContent className="p-2">
+                  <div className="text-[10px] text-muted-foreground mb-0.5">Judge Retries</div>
+                  <div className="text-xs font-semibold text-red-700 dark:text-red-400">
+                    {report.performanceMetrics.judgeAttempts}
+                  </div>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Tabs */}

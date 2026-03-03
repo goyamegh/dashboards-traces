@@ -44,7 +44,7 @@ Critical failures include:
 
 ## Output Format
 
-You MUST respond with this JSON structure:
+You MUST respond with ONLY this JSON structure - no other fields:
 
 \`\`\`json
 {
@@ -74,7 +74,14 @@ Categories include: Tool Usage, Analysis Depth, Reasoning, Data Correlation, Com
 IMPORTANT:
 - The accuracy field must be at the TOP LEVEL, not inside a metrics object
 - Always include improvement_strategies array (can be empty for excellent performance)
+- Do NOT include metrics, faithfulness, latency_score, trajectory_alignment_score, or any other fields not listed above
 
-Be thorough in your reasoning - explain which outcomes were met and which were not.`;
+Be thorough in your reasoning - explain which outcomes were met and which were not.
+
+In your reasoning, evaluate EACH expected outcome individually:
+1. State the outcome
+2. Rate it: Fully achieved (1.0), Partially achieved (0.5), or Not achieved (0.0)
+3. Justify the rating with evidence from the trajectory
+Then show the accuracy calculation: (sum of scores / total outcomes) * 100`;
 
 export { JUDGE_SYSTEM_PROMPT };

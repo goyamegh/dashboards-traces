@@ -406,4 +406,98 @@ describe('RunDetailsContent', () => {
       expect(screen.queryByText(/Running LLM judge evaluation/i)).toBeNull();
     });
   });
+
+  describe('per-test-case performance metrics', () => {
+    it('should show Eval Duration and Agent Time when performanceMetrics is present', async () => {
+      const report = createReport({
+        performanceMetrics: {
+          durationMs: 12500,
+          agentDurationMs: 8000,
+        },
+      });
+      mockGetReportById.mockResolvedValue(report);
+
+      await renderAndWait(report);
+
+      expect(screen.getByText('Eval Duration')).toBeTruthy();
+      expect(screen.getByText('12500ms')).toBeTruthy();
+      expect(screen.getByText('Agent Time')).toBeTruthy();
+      expect(screen.getByText('8000ms')).toBeTruthy();
+    });
+
+    it('should show Judge Time when judgeDurationMs is present', async () => {
+      const report = createReport({
+        performanceMetrics: {
+          durationMs: 15000,
+          agentDurationMs: 8000,
+          judgeDurationMs: 6000,
+        },
+      });
+      mockGetReportById.mockResolvedValue(report);
+
+      await renderAndWait(report);
+
+      expect(screen.getByText('Judge Time')).toBeTruthy();
+      expect(screen.getByText('6000ms')).toBeTruthy();
+    });
+
+    it('should not show Judge Time when judgeDurationMs is undefined', async () => {
+      const report = createReport({
+        performanceMetrics: {
+          durationMs: 12500,
+          agentDurationMs: 8000,
+        },
+      });
+      mockGetReportById.mockResolvedValue(report);
+
+      await renderAndWait(report);
+
+      expect(screen.queryByText('Judge Time')).toBeNull();
+    });
+
+    it('should show Judge Retries when judgeAttempts is greater than 1', async () => {
+      const report = createReport({
+        performanceMetrics: {
+          durationMs: 20000,
+          agentDurationMs: 8000,
+          judgeDurationMs: 11000,
+          judgeAttempts: 3,
+        },
+      });
+      mockGetReportById.mockResolvedValue(report);
+
+      await renderAndWait(report);
+
+      expect(screen.getByText('Judge Retries')).toBeTruthy();
+      expect(screen.getByText('3')).toBeTruthy();
+    });
+
+    it('should not show Judge Retries when judgeAttempts is 1', async () => {
+      const report = createReport({
+        performanceMetrics: {
+          durationMs: 15000,
+          agentDurationMs: 8000,
+          judgeDurationMs: 6000,
+          judgeAttempts: 1,
+        },
+      });
+      mockGetReportById.mockResolvedValue(report);
+
+      await renderAndWait(report);
+
+      expect(screen.queryByText('Judge Retries')).toBeNull();
+    });
+
+    it('should not show performance metrics row when performanceMetrics is absent', async () => {
+      const report = createReport();
+      mockGetReportById.mockResolvedValue(report);
+
+      await renderAndWait(report);
+
+      expect(screen.queryByText('Eval Duration')).toBeNull();
+      expect(screen.queryByText('Agent Time')).toBeNull();
+      expect(screen.queryByText('Judge Time')).toBeNull();
+      expect(screen.queryByText('Judge Retries')).toBeNull();
+    });
+  });
 });

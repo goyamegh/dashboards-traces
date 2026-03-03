@@ -65,5 +65,23 @@ describe('judgePrompt', () => {
       expect(JUDGE_SYSTEM_PROMPT).toContain('RCA');
       expect(JUDGE_SYSTEM_PROMPT).toContain('observability');
     });
+
+    it('should enforce strict output format with ONLY keyword', () => {
+      expect(JUDGE_SYSTEM_PROMPT).toContain(
+        'You MUST respond with ONLY this JSON structure - no other fields'
+      );
+    });
+
+    it('should prohibit known ghost fields', () => {
+      expect(JUDGE_SYSTEM_PROMPT).toContain('Do NOT include metrics, faithfulness, latency_score, trajectory_alignment_score');
+    });
+
+    it('should require per-outcome evaluation in reasoning', () => {
+      expect(JUDGE_SYSTEM_PROMPT).toContain('evaluate EACH expected outcome individually');
+      expect(JUDGE_SYSTEM_PROMPT).toContain('Fully achieved (1.0)');
+      expect(JUDGE_SYSTEM_PROMPT).toContain('Partially achieved (0.5)');
+      expect(JUDGE_SYSTEM_PROMPT).toContain('Not achieved (0.0)');
+      expect(JUDGE_SYSTEM_PROMPT).toContain('(sum of scores / total outcomes) * 100');
+    });
   });
 });
