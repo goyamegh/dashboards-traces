@@ -118,6 +118,7 @@ program.action(async (options) => {
 
     const url = `http://localhost:${port}`;
     console.log(chalk.green(`  Server running at ${chalk.bold(url)}\n`));
+    console.log(chalk.green(`  Demo data loaded`));
 
     if (options.browser !== false) {
       console.log(chalk.gray('  Opening browser...'));
