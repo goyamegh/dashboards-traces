@@ -5,11 +5,17 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
-import { ArrowLeft, Calendar, CheckCircle2, XCircle, BarChart3, PanelLeftClose, PanelLeft, Clock, Loader2, StopCircle, Ban, Timer } from 'lucide-react';
+import { ArrowLeft, Calendar, CheckCircle2, XCircle, BarChart3, PanelLeftClose, PanelLeft, Clock, Loader2, StopCircle, Ban, Timer, Download, GitCompare } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  DropdownMenu,
+  DropdownMenuTrigger,
+  DropdownMenuContent,
+  DropdownMenuItem,
+} from '@/components/ui/dropdown-menu';
 import { Skeleton } from '@/components/ui/skeleton';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { useSidebar } from '@/components/ui/sidebar';
@@ -19,6 +25,7 @@ import { Experiment, ExperimentRun, EvaluationReport, TestCase } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { getDifficultyColor, formatDate, getModelName } from '@/lib/utils';
 import { formatDuration } from '@/services/metrics';
+import { ENV_CONFIG } from '@/lib/config';
 import { RunDetailsContent } from './RunDetailsContent';
 import { RunSummaryPanel } from './RunSummaryPanel';
 
@@ -441,6 +448,41 @@ export const RunDetailsPage: React.FC = () => {
     return { passed, failed, pending, running, total };
   };
 
+  // Download report in specified format (JSON/HTML/PDF) via server API
+  const downloadReport = async (format: string) => {
+    if (!routeExperimentId) return;
+
+    const params = new URLSearchParams({ format });
+    params.set('runIds', runId!);
+    const url = `${ENV_CONFIG.backendUrl}/api/storage/benchmarks/${encodeURIComponent(routeExperimentId)}/report?${params.toString()}`;
+
+    try {
+      const response = await fetch(url);
+      if (!response.ok) {
+        const errorBody = await response.json().catch(() => ({ error: response.statusText }));
+        alert(`Report download failed: ${errorBody.error || response.statusText}`);
+        return;
+      }
+
+      const contentDisposition = response.headers.get('content-disposition') || '';
+      const filenameMatch = contentDisposition.match(/filename="([^"]+)"/);
+      const safeName = (experimentContext?.experimentRun.name || 'report').replace(/[^a-zA-Z0-9_-]/g, '_');
+      const filename = filenameMatch?.[1] || `${safeName}_report.${format}`;
+
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch (error) {
+      console.error('Report download failed:', error);
+    }
+  };
+
   // Determine if we should show the sidebar
   const hasSidebar = experimentContext && Object.keys(experimentContext.experimentRun.results || {}).length > 1;
 
@@ -549,9 +591,9 @@ export const RunDetailsPage: React.FC = () => {
               {experimentContext.experimentRun.performanceMetrics?.durationMs != null && (
                 <>
                   <span className="text-muted-foreground/50">·</span>
-                  <span className="flex items-center gap-1">
+                  <span className="flex items-center gap-1" title="Total wall-clock time for the complete benchmark run">
                     <Timer size={12} />
-                    {formatDuration(experimentContext.experimentRun.performanceMetrics.durationMs)}
+                    Run duration: {formatDuration(experimentContext.experimentRun.performanceMetrics.durationMs)}
                   </span>
                 </>
               )}
@@ -592,6 +634,36 @@ export const RunDetailsPage: React.FC = () => {
               </span>
               <span className="text-muted-foreground">/ {stats.total}</span>
             </div>
+          )}
+
+          {/* Compare Runs button */}
+          {routeExperimentId && experimentContext && (experimentContext.experiment.runs?.length ?? 0) > 1 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate(`/compare/${routeExperimentId}?runs=${runId}`)}
+              data-testid="compare-runs-button"
+            >
+              <GitCompare size={14} className="mr-1" />
+              Compare Runs
+            </Button>
+          )}
+
+          {/* Download Report dropdown */}
+          {routeExperimentId && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="sm" data-testid="download-report-button">
+                  <Download size={14} className="mr-1" />
+                  Download Report
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent>
+                <DropdownMenuItem onClick={() => downloadReport('json')} data-testid="download-json">JSON</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => downloadReport('html')} data-testid="download-html">HTML</DropdownMenuItem>
+                <DropdownMenuItem onClick={() => downloadReport('pdf')} data-testid="download-pdf">PDF</DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
 
           {/* Cancel button for running runs */}
@@ -656,6 +728,7 @@ export const RunDetailsPage: React.FC = () => {
                   report={displayReport}
                   showViewAllReports={true}
                   onViewAllReports={handleViewAllReports}
+                  performanceMetrics={experimentContext!.experimentRun.results?.[selectedItem]?.performanceMetrics}
                 />
               ) : (
                 // Show pending/running state based on result status
@@ -702,6 +775,7 @@ export const RunDetailsPage: React.FC = () => {
               report={displayReport}
               showViewAllReports={true}
               onViewAllReports={handleViewAllReports}
+              performanceMetrics={experimentContext.experimentRun.results?.[selectedItem]?.performanceMetrics}
             />
           ) : (
             // Show pending/running state when no report available

@@ -65,6 +65,11 @@ export interface ConnectorRequest {
    * This ensures that any modifications made by beforeRequest hooks are preserved.
    */
   payload?: any;
+  /**
+   * Connector-specific configuration from agent config.
+   * Threaded from agent.connectorConfig at evaluation time.
+   */
+  connectorConfig?: Record<string, any>;
 }
 
 /**

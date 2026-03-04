@@ -8,13 +8,15 @@
  */
 
 /**
- * Unit tests for RunDetailsPage header performance metrics display.
+ * Unit tests for RunDetailsPage header performance metrics display
+ * and download report functionality.
  *
  * Covers:
  * - Run duration display in header subtitle
  * - Concurrency display when > 1
  * - Hiding concurrency when sequential (concurrency = 1)
  * - No metrics display when performanceMetrics is absent
+ * - Download report button rendering and fetch behavior
  */
 
 import * as React from 'react';
@@ -32,8 +34,10 @@ const mockSetSidebarOpen = jest.fn();
 
 // ── Dependency mocks ──────────────────────────────────────────────────────────
 
+const mockUseParams = jest.fn().mockReturnValue({ benchmarkId: 'bench-1', runId: 'run-1' });
+
 jest.mock('react-router-dom', () => ({
-  useParams: () => ({ benchmarkId: 'bench-1', runId: 'run-1' }),
+  useParams: () => mockUseParams(),
   useNavigate: () => mockNavigate,
   useSearchParams: () => [mockSearchParams, mockSetSearchParams],
   useLocation: () => ({ state: null }),
@@ -49,6 +53,7 @@ jest.mock('@/services/storage', () => ({
   },
   asyncRunStorage: {
     getByExperimentRun: jest.fn().mockResolvedValue([]),
+    getReportById: jest.fn().mockResolvedValue(null),
   },
   asyncTestCaseStorage: {
     getAll: jest.fn().mockResolvedValue([]),
@@ -114,6 +119,13 @@ jest.mock('@/components/ui/resizable', () => ({
   ResizableHandle: () => null,
 }));
 
+jest.mock('@/components/ui/dropdown-menu', () => ({
+  DropdownMenu: ({ children }: any) => React.createElement('div', null, children),
+  DropdownMenuTrigger: ({ children }: any) => React.createElement('div', null, children),
+  DropdownMenuContent: ({ children }: any) => React.createElement('div', null, children),
+  DropdownMenuItem: ({ children, onClick, ...props }: any) => React.createElement('button', { onClick, ...props }, children),
+}));
+
 // ── Imports for mock control ──────────────────────────────────────────────────
 
 import { asyncExperimentStorage, asyncRunStorage, asyncTestCaseStorage } from '@/services/storage';
@@ -122,6 +134,7 @@ import { RunDetailsPage } from '@/components/RunDetailsPage';
 const mockGetExperiment = asyncExperimentStorage.getById as jest.MockedFunction<typeof asyncExperimentStorage.getById>;
 const mockGetByExperimentRun = asyncRunStorage.getByExperimentRun as jest.MockedFunction<typeof asyncRunStorage.getByExperimentRun>;
 const mockGetAllTestCases = asyncTestCaseStorage.getAll as jest.MockedFunction<typeof asyncTestCaseStorage.getAll>;
+const mockGetReportById = asyncRunStorage.getReportById as jest.MockedFunction<typeof asyncRunStorage.getReportById>;
 
 // ── Test data ─────────────────────────────────────────────────────────────────
 
@@ -221,7 +234,7 @@ describe('RunDetailsPage', () => {
       await renderAndWait();
 
       await waitFor(() => {
-        expect(screen.getByText('45000ms')).toBeTruthy();
+        expect(screen.getByText(/Run duration: 45000ms/)).toBeTruthy();
       });
     });
 
@@ -267,7 +280,7 @@ describe('RunDetailsPage', () => {
       await renderAndWait();
 
       await waitFor(() => {
-        expect(screen.getByText('45000ms')).toBeTruthy();
+        expect(screen.getByText(/Run duration: 45000ms/)).toBeTruthy();
       });
 
       expect(screen.queryByText(/Concurrency/)).toBeNull();
@@ -288,6 +301,88 @@ describe('RunDetailsPage', () => {
       });
 
       expect(screen.queryByText(/Concurrency/)).toBeNull();
+    });
+  });
+
+  describe('download report button', () => {
+    it('should render download report button for benchmark runs', async () => {
+      const run = createExperimentRun();
+      const experiment = createExperiment(run);
+      const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
+
+      mockGetExperiment.mockResolvedValue(experiment);
+      mockGetByExperimentRun.mockResolvedValue(reports);
+
+      await renderAndWait();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('download-report-button')).toBeTruthy();
+      });
+
+      // Verify format options are rendered
+      expect(screen.getByTestId('download-json')).toBeTruthy();
+      expect(screen.getByTestId('download-html')).toBeTruthy();
+      expect(screen.getByTestId('download-pdf')).toBeTruthy();
+    });
+
+    it('should not render download report button for standalone runs', async () => {
+      // Override useParams to simulate standalone run (no benchmarkId)
+      mockUseParams.mockReturnValue({ runId: 'report-1' });
+      mockGetExperiment.mockResolvedValue(null);
+
+      const standaloneReport = createReport('report-1', 'tc-1');
+      mockGetReportById.mockResolvedValue(standaloneReport);
+
+      await renderAndWait();
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('skeleton')).toBeNull();
+      });
+
+      expect(screen.queryByTestId('download-report-button')).toBeNull();
+
+      // Restore default useParams
+      mockUseParams.mockReturnValue({ benchmarkId: 'bench-1', runId: 'run-1' });
+    });
+
+    it('should call fetch with correct URL when downloading JSON report', async () => {
+      const mockBlob = new Blob(['{}'], { type: 'application/json' });
+      const mockFetch = jest.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers({ 'content-disposition': 'attachment; filename="Test_Run_report.json"' }),
+        blob: () => Promise.resolve(mockBlob),
+      });
+      global.fetch = mockFetch;
+
+      // Mock URL.createObjectURL and URL.revokeObjectURL
+      const mockCreateObjectURL = jest.fn().mockReturnValue('blob:test');
+      const mockRevokeObjectURL = jest.fn();
+      global.URL.createObjectURL = mockCreateObjectURL;
+      global.URL.revokeObjectURL = mockRevokeObjectURL;
+
+      const run = createExperimentRun();
+      const experiment = createExperiment(run);
+      const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
+
+      mockGetExperiment.mockResolvedValue(experiment);
+      mockGetByExperimentRun.mockResolvedValue(reports);
+
+      await renderAndWait();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('download-json')).toBeTruthy();
+      });
+
+      // Click the JSON download option
+      await act(async () => {
+        screen.getByTestId('download-json').click();
+      });
+
+      await waitFor(() => {
+        expect(mockFetch).toHaveBeenCalledWith(
+          expect.stringContaining('/api/storage/benchmarks/bench-1/report?format=json&runIds=run-1')
+        );
+      });
     });
   });
 });

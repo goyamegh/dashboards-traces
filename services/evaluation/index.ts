@@ -147,6 +147,7 @@ export async function runEvaluationWithConnector(
     let request: ConnectorRequest = {
       testCase,
       modelId,
+      connectorConfig: agentWithConnector.connectorConfig as Record<string, any>,
     };
 
     // Build auth from agent config

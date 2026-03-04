@@ -19,6 +19,34 @@ import type {
 } from '@/services/connectors/types';
 
 /**
+ * MCP server definition for Claude Code --mcp-config flag
+ */
+export interface ClaudeCodeMCPServer {
+  command: string;
+  args?: string[];
+  env?: Record<string, string>;
+}
+
+/**
+ * Configuration options for Claude Code connector
+ * Passed via agent.connectorConfig in agent-health.config.ts
+ */
+export interface ClaudeCodeConnectorConfig {
+  env?: Record<string, string>;
+  dangerouslySkipPermissions?: boolean;
+  allowedTools?: string[];
+  disallowedTools?: string[];
+  appendSystemPrompt?: string;
+  systemPrompt?: string;
+  mcpServers?: Record<string, ClaudeCodeMCPServer>;
+  strictMcpConfig?: boolean;
+  usePromptArg?: boolean;
+  workingDir?: string;
+  timeout?: number;
+  additionalArgs?: string[];
+}
+
+/**
  * Default Claude Code configuration
  *
  * Telemetry: Set OTEL_EXPORTER_OTLP_ENDPOINT in your environment to enable
@@ -205,7 +233,46 @@ export class ClaudeCodeConnector extends SubprocessConnector {
   }
 
   /**
-   * Override execute to reset state
+   * Build CLI args from ClaudeCodeConnectorConfig
+   */
+  private buildConfigArgs(config: ClaudeCodeConnectorConfig): string[] {
+    const args: string[] = [];
+
+    if (config.dangerouslySkipPermissions) {
+      args.push('--dangerously-skip-permissions');
+    }
+
+    if (config.systemPrompt) {
+      args.push('--system-prompt', config.systemPrompt);
+    } else if (config.appendSystemPrompt) {
+      args.push('--append-system-prompt', config.appendSystemPrompt);
+    }
+
+    if (config.allowedTools?.length) {
+      args.push('--allowed-tools', ...config.allowedTools);
+    }
+
+    if (config.disallowedTools?.length) {
+      args.push('--disallowed-tools', ...config.disallowedTools);
+    }
+
+    if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
+      args.push('--mcp-config', JSON.stringify({ mcpServers: config.mcpServers }));
+    }
+
+    if (config.strictMcpConfig) {
+      args.push('--strict-mcp-config');
+    }
+
+    if (config.additionalArgs) {
+      args.push(...config.additionalArgs);
+    }
+
+    return args;
+  }
+
+  /**
+   * Override execute to reset state and apply connectorConfig
    */
   override async execute(
     endpoint: string,
@@ -219,11 +286,77 @@ export class ClaudeCodeConnector extends SubprocessConnector {
     this.debug('Test case:', request.testCase.name);
     this.debug('Config:', this['config']);
     this.resetState();
-    this.debug('State reset, calling super.execute()...');
-    const result = await super.execute(endpoint, request, auth, onProgress, onRawEvent);
-    this.debug('super.execute() returned with', result.trajectory.length, 'steps');
-    this.debug('========== execute() COMPLETED ==========');
-    return result;
+
+    // Save original config for restoration after execution
+    const originalEnv = this.config.env ? { ...this.config.env } : {};
+    const originalArgs = this.config.args ? [...this.config.args] : [];
+    const originalInputMode = this.config.inputMode;
+    const originalTimeout = this.config.timeout;
+    const originalWorkingDir = this.config.workingDir;
+
+    // Apply connectorConfig if provided
+    const ccConfig = request.connectorConfig as ClaudeCodeConnectorConfig | undefined;
+    if (ccConfig) {
+      this.debug('Applying connectorConfig:', Object.keys(ccConfig));
+
+      // Merge environment variables
+      if (ccConfig.env) {
+        this.config.env = { ...this.config.env, ...ccConfig.env };
+      }
+
+      // Switch input mode if requested
+      if (ccConfig.usePromptArg) {
+        this.config.inputMode = 'arg';
+      }
+
+      // Override timeout if specified
+      if (ccConfig.timeout !== undefined) {
+        this.config.timeout = ccConfig.timeout;
+      }
+
+      // Override working directory if specified
+      if (ccConfig.workingDir) {
+        this.config.workingDir = ccConfig.workingDir;
+      }
+    }
+
+    // When using Bedrock, clear any Anthropic API key to prevent
+    // login-managed key from taking precedence and triggering a credit
+    // balance check instead of routing through Bedrock.
+    if (this.config.env?.CLAUDE_CODE_USE_BEDROCK === '1') {
+      this.config.env = { ...this.config.env, ANTHROPIC_API_KEY: '' };
+      this.debug('Bedrock mode: cleared ANTHROPIC_API_KEY to bypass credit check');
+    }
+
+    // Pass --model flag so Claude Code uses the requested model
+    if (request.modelId) {
+      this.config.args = [...this.config.args || [], '--model', request.modelId];
+      this.debug('Model flag added:', request.modelId);
+    }
+
+    // Append config-driven args
+    if (ccConfig) {
+      const configArgs = this.buildConfigArgs(ccConfig);
+      if (configArgs.length > 0) {
+        this.config.args = [...(this.config.args || []), ...configArgs];
+        this.debug('Config args added:', configArgs);
+      }
+    }
+
+    try {
+      this.debug('State reset, calling super.execute()...');
+      const result = await super.execute(endpoint, request, auth, onProgress, onRawEvent);
+      this.debug('super.execute() returned with', result.trajectory.length, 'steps');
+      this.debug('========== execute() COMPLETED ==========');
+      return result;
+    } finally {
+      // Restore original config for next execution
+      this.config.env = originalEnv;
+      this.config.args = originalArgs;
+      this.config.inputMode = originalInputMode;
+      this.config.timeout = originalTimeout;
+      this.config.workingDir = originalWorkingDir;
+    }
   }
 
   /**
@@ -241,6 +374,7 @@ export function createBedrockClaudeCodeConnector(): ClaudeCodeConnector {
   const env: Record<string, string> = {
     AWS_PROFILE: process.env.AWS_PROFILE || 'Bedrock',
     CLAUDE_CODE_USE_BEDROCK: '1',
+    ANTHROPIC_API_KEY: '', // Prevent login-managed key from overriding Bedrock
     AWS_REGION: process.env.AWS_REGION || 'us-west-2',
     DISABLE_PROMPT_CACHING: '1',
     DISABLE_ERROR_REPORTING: '1',
@@ -251,6 +385,9 @@ export function createBedrockClaudeCodeConnector(): ClaudeCodeConnector {
   if (telemetryEnabled && otelEndpoint) {
     env.CLAUDE_CODE_ENABLE_TELEMETRY = '1';
     env.OTEL_EXPORTER_OTLP_ENDPOINT = otelEndpoint;
+    env.OTEL_TRACES_EXPORTER = 'otlp';
+    env.OTEL_METRICS_EXPORTER = 'otlp';
+    env.OTEL_LOGS_EXPORTER = 'otlp';
     if (process.env.OTEL_SERVICE_NAME) env.OTEL_SERVICE_NAME = process.env.OTEL_SERVICE_NAME;
     if (process.env.OTEL_EXPORTER_OTLP_PROTOCOL) env.OTEL_EXPORTER_OTLP_PROTOCOL = process.env.OTEL_EXPORTER_OTLP_PROTOCOL;
     if (process.env.OTEL_EXPORTER_OTLP_HEADERS) env.OTEL_EXPORTER_OTLP_HEADERS = process.env.OTEL_EXPORTER_OTLP_HEADERS;

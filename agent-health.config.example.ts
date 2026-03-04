@@ -74,6 +74,30 @@ export default {
     //     },
     //   },
     // },
+
+    // Example 5: Claude Code with MCP servers (competitive evaluation)
+    // {
+    //   key: "claude-code-eval",
+    //   name: "Claude Code (Eval)",
+    //   endpoint: "claude",
+    //   connectorType: "claude-code",
+    //   models: ["claude-sonnet-4"],
+    //   useTraces: true,
+    //   connectorConfig: {
+    //     dangerouslySkipPermissions: true,
+    //     appendSystemPrompt: "You are an observability agent...",
+    //     allowedTools: ["mcp__aws-prometheus__*", "mcp__aws-cloudwatch__*", "Bash"],
+    //     mcpServers: {
+    //       "aws-prometheus": {
+    //         command: "python3",
+    //         args: ["/path/to/prometheus-mcp-server/server.py"],
+    //         env: { AWS_REGION: "us-east-1", AWS_PROFILE: "np-power-user" },
+    //       },
+    //     },
+    //     strictMcpConfig: true,
+    //     env: { CLAUDE_CODE_USE_BEDROCK: "1", AWS_PROFILE: "Bedrock" },
+    //   },
+    // },
   ],
 
   // Custom models (merged with built-in models by default)

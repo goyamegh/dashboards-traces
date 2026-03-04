@@ -91,6 +91,13 @@ jest.mock('react-markdown', () => {
 
 jest.mock('remark-gfm', () => () => {});
 
+jest.mock('@/components/ui/tooltip', () => ({
+  TooltipProvider: ({ children }: any) => React.createElement(React.Fragment, null, children),
+  Tooltip: ({ children }: any) => React.createElement(React.Fragment, null, children),
+  TooltipTrigger: ({ children }: any) => React.createElement('span', null, children),
+  TooltipContent: ({ children }: any) => React.createElement('span', null, children),
+}));
+
 jest.mock('@/components/TrajectoryView', () => ({
   TrajectoryView: () => React.createElement('div', { 'data-testid': 'trajectory-view' }),
 }));
@@ -172,9 +179,9 @@ const mockSpanTree = [
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-async function renderAndWait(report: EvaluationReport) {
+async function renderAndWait(report: EvaluationReport, extraProps: Record<string, any> = {}) {
   await act(async () => {
-    render(React.createElement(RunDetailsContent, { report }));
+    render(React.createElement(RunDetailsContent, { report, ...extraProps }));
   });
   // Let initial useEffects settle
   await act(async () => {
@@ -408,7 +415,7 @@ describe('RunDetailsContent', () => {
   });
 
   describe('per-test-case performance metrics', () => {
-    it('should show Eval Duration and Agent Time when performanceMetrics is present', async () => {
+    it('should show Eval Duration and agent time in Duration card when performanceMetrics is present', async () => {
       const report = createReport({
         performanceMetrics: {
           durationMs: 12500,
@@ -421,8 +428,8 @@ describe('RunDetailsContent', () => {
 
       expect(screen.getByText('Eval Duration')).toBeTruthy();
       expect(screen.getByText('12500ms')).toBeTruthy();
-      expect(screen.getByText('Agent Time')).toBeTruthy();
-      expect(screen.getByText('8000ms')).toBeTruthy();
+      // Agent time shown in parentheses next to Duration
+      expect(screen.getByText(/agent 8000ms/)).toBeTruthy();
     });
 
     it('should show Judge Time when judgeDurationMs is present', async () => {
@@ -498,6 +505,24 @@ describe('RunDetailsContent', () => {
       expect(screen.queryByText('Agent Time')).toBeNull();
       expect(screen.queryByText('Judge Time')).toBeNull();
       expect(screen.queryByText('Judge Retries')).toBeNull();
+    });
+
+    it('should show metrics from performanceMetrics prop when report lacks them', async () => {
+      // Simulates benchmark runs where metrics live on the run results, not the report
+      const report = createReport(); // no performanceMetrics on report
+      mockGetReportById.mockResolvedValue(report);
+
+      await renderAndWait(report, {
+        performanceMetrics: {
+          durationMs: 49556,
+          agentDurationMs: 49154,
+        },
+      });
+
+      expect(screen.getByText('Eval Duration')).toBeTruthy();
+      expect(screen.getByText('49556ms')).toBeTruthy();
+      // Agent time shown in parentheses next to Duration
+      expect(screen.getByText(/agent 49154ms/)).toBeTruthy();
     });
   });
 });

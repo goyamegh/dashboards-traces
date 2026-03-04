@@ -31,7 +31,7 @@ import {
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { EvaluationReport, RunAnnotation, TestCase, Span, TimeRange, TraceMetrics } from '@/types';
+import { EvaluationReport, RunAnnotation, TestCase, TestCasePerformanceMetrics, Span, TimeRange, TraceMetrics } from '@/types';
 import { fetchRunMetrics, formatCost, formatDuration, formatTokens } from '@/services/metrics';
 import { TrajectoryView } from './TrajectoryView';
 import { RawEventsPanel } from './RawEventsPanel';
@@ -46,6 +46,7 @@ import { asyncRunStorage, asyncTestCaseStorage } from '@/services/storage';
 import { callBedrockJudge } from '@/services/evaluation';
 import { tracePollingManager } from '@/services/traces/tracePoller';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -59,6 +60,7 @@ interface RunDetailsContentProps {
   showViewAllReports?: boolean;
   onViewAllReports?: () => void;
   onEditTestCase?: (testCase: TestCase) => void;
+  performanceMetrics?: TestCasePerformanceMetrics;
 }
 
 export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
@@ -67,6 +69,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
   showViewAllReports = false,
   onViewAllReports,
   onEditTestCase,
+  performanceMetrics: performanceMetricsProp,
 }) => {
   const [annotations, setAnnotations] = useState<RunAnnotation[]>([]);
   const [newAnnotation, setNewAnnotation] = useState('');
@@ -558,6 +561,11 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                   ) : (
                     <div className="text-xs font-semibold text-purple-700 dark:text-purple-400">
                       {traceMetrics ? formatDuration(traceMetrics.durationMs) : '—'}
+                      {(performanceMetricsProp || report.performanceMetrics)?.agentDurationMs != null && (
+                        <span className="text-[10px] font-normal text-muted-foreground ml-1">
+                          (agent {formatDuration((performanceMetricsProp || report.performanceMetrics)!.agentDurationMs)})
+                        </span>
+                      )}
                     </div>
                   )}
                 </CardContent>
@@ -663,46 +671,53 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
         )}
 
         {/* Server Performance Metrics Row (per-test-case) */}
-        {report.performanceMetrics && (
+        {(performanceMetricsProp || report.performanceMetrics) && (() => {
+          const perfMetrics = performanceMetricsProp || report.performanceMetrics!;
+          return (
           <div className="grid grid-cols-8 gap-2 mt-2">
             <Card className="bg-muted/50 col-span-2">
               <CardContent className="p-2">
-                <div className="text-[10px] text-muted-foreground mb-0.5">Eval Duration</div>
+                <div className="text-[10px] text-muted-foreground mb-0.5 flex items-center gap-1">
+                  Eval Duration
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Info size={10} className="text-muted-foreground/60 cursor-help" />
+                      </TooltipTrigger>
+                      <TooltipContent side="top" className="max-w-[200px] text-xs">
+                        Total server-side wall-clock time: agent call + judge evaluation + overhead
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </div>
                 <div className="text-xs font-semibold text-purple-700 dark:text-purple-400">
-                  {formatDuration(report.performanceMetrics.durationMs)}
+                  {formatDuration(perfMetrics.durationMs)}
                 </div>
               </CardContent>
             </Card>
-            <Card className="bg-muted/50 col-span-2">
-              <CardContent className="p-2">
-                <div className="text-[10px] text-muted-foreground mb-0.5">Agent Time</div>
-                <div className="text-xs font-semibold text-blue-700 dark:text-blue-400">
-                  {formatDuration(report.performanceMetrics.agentDurationMs)}
-                </div>
-              </CardContent>
-            </Card>
-            {report.performanceMetrics.judgeDurationMs != null && (
+            {perfMetrics.judgeDurationMs != null && (
               <Card className="bg-muted/50 col-span-2">
                 <CardContent className="p-2">
                   <div className="text-[10px] text-muted-foreground mb-0.5">Judge Time</div>
                   <div className="text-xs font-semibold text-amber-700 dark:text-amber-400">
-                    {formatDuration(report.performanceMetrics.judgeDurationMs)}
+                    {formatDuration(perfMetrics.judgeDurationMs)}
                   </div>
                 </CardContent>
               </Card>
             )}
-            {report.performanceMetrics.judgeAttempts != null && report.performanceMetrics.judgeAttempts > 1 && (
+            {perfMetrics.judgeAttempts != null && perfMetrics.judgeAttempts > 1 && (
               <Card className="bg-muted/50 col-span-2">
                 <CardContent className="p-2">
                   <div className="text-[10px] text-muted-foreground mb-0.5">Judge Retries</div>
                   <div className="text-xs font-semibold text-red-700 dark:text-red-400">
-                    {report.performanceMetrics.judgeAttempts}
+                    {perfMetrics.judgeAttempts}
                   </div>
                 </CardContent>
               </Card>
             )}
           </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* Tabs */}

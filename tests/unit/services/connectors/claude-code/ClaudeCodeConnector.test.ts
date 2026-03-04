@@ -4,6 +4,7 @@
  */
 
 import { ClaudeCodeConnector, claudeCodeConnector, createBedrockClaudeCodeConnector } from '@/services/connectors/claude-code/ClaudeCodeConnector';
+import type { ClaudeCodeConnectorConfig } from '@/services/connectors/claude-code/ClaudeCodeConnector';
 import type { ConnectorRequest, ConnectorAuth } from '@/services/connectors/types';
 import type { TestCase, TrajectoryStep } from '@/types';
 import { spawn } from 'child_process';
@@ -445,6 +446,278 @@ describe('ClaudeCodeConnector', () => {
   describe('default instance', () => {
     it('should export a default instance', () => {
       expect(claudeCodeConnector).toBeInstanceOf(ClaudeCodeConnector);
+    });
+  });
+
+  describe('connectorConfig', () => {
+    beforeEach(() => {
+      (spawn as jest.Mock).mockClear();
+    });
+
+    function createMockProcess() {
+      const proc: any = new EventEmitter();
+      proc.stdout = new EventEmitter();
+      proc.stderr = new EventEmitter();
+      proc.stdin = { write: jest.fn(), end: jest.fn() };
+      proc.pid = 99999;
+      proc.kill = jest.fn();
+      return proc;
+    }
+
+    it('should add --dangerously-skip-permissions flag', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {
+          dangerouslySkipPermissions: true,
+        } as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+
+      await connector.execute('claude', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      expect(spawnArgs).toContain('--dangerously-skip-permissions');
+    });
+
+    it('should add --allowed-tools with tool patterns', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {
+          allowedTools: ['mcp__aws-prometheus__*', 'mcp__aws-cloudwatch__*', 'Bash'],
+        } as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+
+      await connector.execute('claude', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      const toolsIdx = spawnArgs.indexOf('--allowed-tools');
+      expect(toolsIdx).toBeGreaterThan(-1);
+      expect(spawnArgs[toolsIdx + 1]).toBe('mcp__aws-prometheus__*');
+      expect(spawnArgs[toolsIdx + 2]).toBe('mcp__aws-cloudwatch__*');
+      expect(spawnArgs[toolsIdx + 3]).toBe('Bash');
+    });
+
+    it('should add --disallowed-tools with tool patterns', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {
+          disallowedTools: ['Write', 'Edit'],
+        } as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+
+      await connector.execute('claude', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      const idx = spawnArgs.indexOf('--disallowed-tools');
+      expect(idx).toBeGreaterThan(-1);
+      expect(spawnArgs[idx + 1]).toBe('Write');
+      expect(spawnArgs[idx + 2]).toBe('Edit');
+    });
+
+    it('should add --append-system-prompt with prompt string', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {
+          appendSystemPrompt: 'You are an observability agent.',
+        } as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+
+      await connector.execute('claude', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      const idx = spawnArgs.indexOf('--append-system-prompt');
+      expect(idx).toBeGreaterThan(-1);
+      expect(spawnArgs[idx + 1]).toBe('You are an observability agent.');
+    });
+
+    it('should use --system-prompt over --append-system-prompt when both set', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {
+          systemPrompt: 'Full system prompt.',
+          appendSystemPrompt: 'Appended prompt.',
+        } as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+
+      await connector.execute('claude', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      expect(spawnArgs).toContain('--system-prompt');
+      expect(spawnArgs).not.toContain('--append-system-prompt');
+      const idx = spawnArgs.indexOf('--system-prompt');
+      expect(spawnArgs[idx + 1]).toBe('Full system prompt.');
+    });
+
+    it('should add --mcp-config with inline JSON', async () => {
+      const mcpServers = {
+        'aws-prometheus': {
+          command: 'python3',
+          args: ['/path/to/server.py'],
+          env: { AWS_REGION: 'us-east-1' },
+        },
+      };
+
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {
+          mcpServers,
+        } as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+
+      await connector.execute('claude', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      const idx = spawnArgs.indexOf('--mcp-config');
+      expect(idx).toBeGreaterThan(-1);
+      const parsed = JSON.parse(spawnArgs[idx + 1]);
+      expect(parsed.mcpServers['aws-prometheus'].command).toBe('python3');
+    });
+
+    it('should add --strict-mcp-config flag', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {
+          strictMcpConfig: true,
+        } as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+
+      await connector.execute('claude', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      expect(spawnArgs).toContain('--strict-mcp-config');
+    });
+
+    it('should add no extra flags for empty connectorConfig', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {} as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+
+      await connector.execute('claude', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      // Should only have base args + model flag, no config flags
+      expect(spawnArgs).not.toContain('--dangerously-skip-permissions');
+      expect(spawnArgs).not.toContain('--allowed-tools');
+      expect(spawnArgs).not.toContain('--append-system-prompt');
+      expect(spawnArgs).not.toContain('--mcp-config');
+      expect(spawnArgs).not.toContain('--strict-mcp-config');
+    });
+
+    it('should restore config after execution (session scoping)', async () => {
+      // First call with connectorConfig
+      const request1: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {
+          dangerouslySkipPermissions: true,
+          allowedTools: ['Bash'],
+          env: { CUSTOM_VAR: 'custom-value' },
+        } as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+      await connector.execute('claude', request1, mockAuth);
+
+      // Second call without connectorConfig
+      const mockProcess2 = createMockProcess();
+      (spawn as jest.Mock).mockReturnValue(mockProcess2);
+
+      const request2: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+      };
+
+      setTimeout(() => mockProcess2.emit('close', 0, null), 10);
+      await connector.execute('claude', request2, mockAuth);
+
+      // Second call should NOT have config flags from first call
+      const spawnArgs2 = (spawn as jest.Mock).mock.calls[1][1] as string[];
+      expect(spawnArgs2).not.toContain('--dangerously-skip-permissions');
+      expect(spawnArgs2).not.toContain('--allowed-tools');
+
+      // Env from second call should not contain CUSTOM_VAR
+      const spawnOpts2 = (spawn as jest.Mock).mock.calls[1][2] as { env: Record<string, string> };
+      expect(spawnOpts2.env.CUSTOM_VAR).toBeUndefined();
+    });
+
+    it('should switch to arg input mode when usePromptArg is true', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {
+          usePromptArg: true,
+        } as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+
+      await connector.execute('claude', request, mockAuth);
+
+      // When inputMode is 'arg', the prompt is appended to args and stdin is NOT used
+      expect(mockProcess.stdin.write).not.toHaveBeenCalled();
+    });
+
+    it('should merge connectorConfig.env with default env', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {
+          env: { MY_CUSTOM_VAR: 'my-value', CLAUDE_CODE_USE_BEDROCK: '1' },
+        } as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+
+      await connector.execute('claude', request, mockAuth);
+
+      const spawnOpts = (spawn as jest.Mock).mock.calls[0][2] as { env: Record<string, string> };
+      expect(spawnOpts.env.MY_CUSTOM_VAR).toBe('my-value');
+      expect(spawnOpts.env.CLAUDE_CODE_USE_BEDROCK).toBe('1');
+      // Bedrock mode should also clear ANTHROPIC_API_KEY
+      expect(spawnOpts.env.ANTHROPIC_API_KEY).toBe('');
+    });
+
+    it('should pass additionalArgs through to CLI', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {
+          additionalArgs: ['--max-turns', '50', '--no-cache'],
+        } as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+
+      await connector.execute('claude', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      expect(spawnArgs).toContain('--max-turns');
+      expect(spawnArgs).toContain('50');
+      expect(spawnArgs).toContain('--no-cache');
     });
   });
 });

@@ -54,13 +54,14 @@ function toBenchmark(stored: StorageBenchmark): Benchmark {
  */
 function toBenchmarkRun(stored: StorageBenchmarkRunConfig): BenchmarkRun {
   // Convert results with proper typing for status field
-  const results: Record<string, { reportId: string; status: RunResultStatus; error?: string }> = {};
+  const results: Record<string, { reportId: string; status: RunResultStatus; error?: string; performanceMetrics?: any }> = {};
   if (stored.results) {
     Object.entries(stored.results).forEach(([key, value]) => {
       results[key] = {
         reportId: value.reportId,
         status: value.status as RunResultStatus,
         ...(value.error && { error: value.error }),
+        ...((value as any).performanceMetrics && { performanceMetrics: (value as any).performanceMetrics }),
       };
     });
   }
@@ -80,6 +81,7 @@ function toBenchmarkRun(stored: StorageBenchmarkRunConfig): BenchmarkRun {
     error: stored.error,
     stats: stored.stats as RunStats | undefined,
     results,
+    performanceMetrics: (stored as any).performanceMetrics,
   };
 }
 
@@ -118,6 +120,7 @@ function toStorageFormat(benchmark: Partial<Benchmark>): Record<string, any> {
       benchmarkVersion: run.benchmarkVersion,
       testCaseSnapshots: run.testCaseSnapshots,
       results: run.results,
+      ...(run.performanceMetrics && { performanceMetrics: run.performanceMetrics }),
     }));
   }
 
