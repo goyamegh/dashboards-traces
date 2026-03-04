@@ -38,6 +38,9 @@ export interface ClaudeCodeConnectorConfig {
   disallowedTools?: string[];
   appendSystemPrompt?: string;
   systemPrompt?: string;
+  /** Path to a standard MCP config JSON file (passed to --mcp-config) */
+  mcpConfigPath?: string;
+  /** Inline MCP server definitions (used when mcpConfigPath is not set) */
   mcpServers?: Record<string, ClaudeCodeMCPServer>;
   strictMcpConfig?: boolean;
   usePromptArg?: boolean;
@@ -256,7 +259,9 @@ export class ClaudeCodeConnector extends SubprocessConnector {
       args.push('--disallowed-tools', ...config.disallowedTools);
     }
 
-    if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
+    if (config.mcpConfigPath) {
+      args.push('--mcp-config', config.mcpConfigPath);
+    } else if (config.mcpServers && Object.keys(config.mcpServers).length > 0) {
       args.push('--mcp-config', JSON.stringify({ mcpServers: config.mcpServers }));
     }
 

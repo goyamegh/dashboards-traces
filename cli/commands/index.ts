@@ -16,3 +16,4 @@ export { createReportCommand } from './report.js';
 export { createDoctorCommand } from './doctor.js';
 export { createInitCommand } from './init.js';
 export { createMigrateCommand } from './migrate.js';
+export { createCompareServicesCommand } from './compare-services.js';

@@ -76,6 +76,7 @@ export default {
     // },
 
     // Example 5: Claude Code with MCP servers (competitive evaluation)
+    // Uses a standard MCP config JSON file (same format as ~/.claude.json mcpServers)
     // {
     //   key: "claude-code-eval",
     //   name: "Claude Code (Eval)",
@@ -87,13 +88,7 @@ export default {
     //     dangerouslySkipPermissions: true,
     //     appendSystemPrompt: "You are an observability agent...",
     //     allowedTools: ["mcp__aws-prometheus__*", "mcp__aws-cloudwatch__*", "Bash"],
-    //     mcpServers: {
-    //       "aws-prometheus": {
-    //         command: "python3",
-    //         args: ["/path/to/prometheus-mcp-server/server.py"],
-    //         env: { AWS_REGION: "us-east-1", AWS_PROFILE: "np-power-user" },
-    //       },
-    //     },
+    //     mcpConfigPath: "./mcp-config.json",  // standard MCP config file
     //     strictMcpConfig: true,
     //     env: { CLAUDE_CODE_USE_BEDROCK: "1", AWS_PROFILE: "Bedrock" },
     //   },

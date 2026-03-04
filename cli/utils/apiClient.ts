@@ -664,4 +664,43 @@ export class ApiClient {
 
     return res.json();
   }
+
+  /**
+   * Fetch traces from OpenSearch with optional filters
+   */
+  async fetchTraces(params: {
+    traceId?: string;
+    runIds?: string[];
+    serviceName?: string;
+    startTime?: string;
+    endTime?: string;
+    textSearch?: string;
+    cursor?: string;
+    size?: number;
+  }): Promise<{
+    spans: any[];
+    total: number;
+    nextCursor?: string;
+    hasMore: boolean;
+  }> {
+    const res = await fetch(`${this.baseUrl}/api/traces`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+
+    if (!res.ok) {
+      const errorBody = await res.text();
+      let errorMessage: string;
+      try {
+        const parsed = JSON.parse(errorBody);
+        errorMessage = parsed.error || errorBody;
+      } catch {
+        errorMessage = errorBody;
+      }
+      throw new Error(`Failed to fetch traces: ${errorMessage}`);
+    }
+
+    return res.json();
+  }
 }

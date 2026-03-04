@@ -27,6 +27,7 @@ import {
   createDoctorCommand,
   createInitCommand,
   createMigrateCommand,
+  createCompareServicesCommand,
 } from './commands/index.js';
 
 // Get package.json for version
@@ -141,6 +142,7 @@ program.addCommand(createReportCommand());
 program.addCommand(createDoctorCommand());
 program.addCommand(createInitCommand());
 program.addCommand(createMigrateCommand());
+program.addCommand(createCompareServicesCommand());
 
 // Add serve command as an alias for the default action
 program

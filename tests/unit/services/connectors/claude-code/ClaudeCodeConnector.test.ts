@@ -607,6 +607,49 @@ describe('ClaudeCodeConnector', () => {
       expect(spawnArgs).toContain('--strict-mcp-config');
     });
 
+    it('should use --mcp-config with file path when mcpConfigPath is set', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {
+          mcpConfigPath: './mcp-config.json',
+        } as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+
+      await connector.execute('claude', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      const idx = spawnArgs.indexOf('--mcp-config');
+      expect(idx).toBeGreaterThan(-1);
+      expect(spawnArgs[idx + 1]).toBe('./mcp-config.json');
+    });
+
+    it('should prefer mcpConfigPath over inline mcpServers', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        connectorConfig: {
+          mcpConfigPath: '/path/to/config.json',
+          mcpServers: {
+            'some-server': { command: 'node', args: ['server.js'] },
+          },
+        } as ClaudeCodeConnectorConfig,
+      };
+
+      setTimeout(() => mockProcess.emit('close', 0, null), 10);
+
+      await connector.execute('claude', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      const idx = spawnArgs.indexOf('--mcp-config');
+      expect(idx).toBeGreaterThan(-1);
+      // Should use file path, not inline JSON
+      expect(spawnArgs[idx + 1]).toBe('/path/to/config.json');
+      expect(spawnArgs[idx + 1]).not.toContain('mcpServers');
+    });
+
     it('should add no extra flags for empty connectorConfig', async () => {
       const request: ConnectorRequest = {
         testCase: mockTestCase,
