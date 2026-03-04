@@ -22,6 +22,7 @@ import {
   createListCommand,
   createRunCommand,
   createBenchmarkCommand,
+  createImportCommand,
   createExportCommand,
   createReportCommand,
   createDoctorCommand,
@@ -138,6 +139,7 @@ program.action(async (options) => {
 program.addCommand(createListCommand());
 program.addCommand(createRunCommand());
 program.addCommand(createBenchmarkCommand());
+program.addCommand(createImportCommand());
 program.addCommand(createExportCommand());
 program.addCommand(createReportCommand());
 program.addCommand(createDoctorCommand());

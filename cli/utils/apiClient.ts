@@ -99,6 +99,16 @@ export interface BulkCreateTestCasesResponse {
 }
 
 /**
+ * Response from importing test cases with dedup
+ */
+export interface ImportTestCasesResponse {
+  created: number;
+  reused: number;
+  updated: number;
+  testCases: Array<{ id: string; name: string; status: 'created' | 'reused' | 'updated' }>;
+}
+
+/**
  * API Client for Agent Health server
  */
 export class ApiClient {
@@ -460,6 +470,31 @@ export class ApiClient {
         errorMessage = errorBody;
       }
       throw new Error(`Failed to bulk create test cases: ${errorMessage}`);
+    }
+
+    return res.json();
+  }
+
+  /**
+   * Import test cases with name-based dedup
+   */
+  async importTestCases(testCases: object[]): Promise<ImportTestCasesResponse> {
+    const res = await fetch(`${this.baseUrl}/api/storage/test-cases/import`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ testCases }),
+    });
+
+    if (!res.ok) {
+      const errorBody = await res.text();
+      let errorMessage: string;
+      try {
+        const parsed = JSON.parse(errorBody);
+        errorMessage = parsed.error || errorBody;
+      } catch {
+        errorMessage = errorBody;
+      }
+      throw new Error(`Failed to import test cases: ${errorMessage}`);
     }
 
     return res.json();

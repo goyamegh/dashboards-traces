@@ -15,11 +15,11 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import Table from 'cli-table3';
-import { readFileSync, writeFileSync } from 'fs';
+import { writeFileSync } from 'fs';
 import { loadConfig, DEFAULT_SERVER_CONFIG, type ResolvedConfig } from '@/lib/config/index.js';
 import { ensureServer, createServerCleanup, isServerRunning, type EnsureServerResult } from '@/cli/utils/serverLifecycle.js';
 import { ApiClient, ServerError, type BenchmarkExecutionEvent } from '@/cli/utils/apiClient.js';
-import { validateTestCasesArrayJson, type ValidatedTestCaseInput } from '@/lib/testCaseValidation.js';
+import { isFilePath, loadAndValidateTestCasesFile } from '@/cli/utils/testCaseFile.js';
 import { calculateRunStats, getReportIdsFromRun } from '@/lib/runStats.js';
 import type { AgentConfig, Benchmark, BenchmarkRun, TestCaseRun, EvaluationReport } from '@/types/index.js';
 
@@ -60,39 +60,8 @@ function getDefaultModel(agent: AgentConfig): string {
   return agent.models[0] || 'claude-sonnet';
 }
 
-/**
- * Check if a string looks like a file path (ends with .json)
- */
-export function isFilePath(value: string): boolean {
-  return value.toLowerCase().endsWith('.json');
-}
-
-/**
- * Load and validate test cases from a JSON file
- */
-export function loadAndValidateTestCasesFile(filePath: string): ValidatedTestCaseInput[] {
-  let raw: string;
-  try {
-    raw = readFileSync(filePath, 'utf-8');
-  } catch (err) {
-    throw new Error(`Cannot read file: ${filePath} (${err instanceof Error ? err.message : err})`);
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(raw);
-  } catch {
-    throw new Error(`Invalid JSON in file: ${filePath}`);
-  }
-
-  const result = validateTestCasesArrayJson(parsed);
-  if (!result.valid || !result.data) {
-    const msgs = result.errors.map(e => e.path ? `${e.path}: ${e.message}` : e.message).join('\n  ');
-    throw new Error(`Validation failed for ${filePath}:\n  ${msgs}`);
-  }
-
-  return result.data;
-}
+// Re-export shared utilities for backward compatibility
+export { isFilePath, loadAndValidateTestCasesFile } from '@/cli/utils/testCaseFile.js';
 
 /**
  * Fetch reports for a run using the same approach as the UI.
@@ -486,10 +455,16 @@ export function createBenchmarkCommand(): Command {
             const validatedTestCases = loadAndValidateTestCasesFile(filePath!);
             importSpinner.succeed(`Validated ${validatedTestCases.length} test cases from file`);
 
-            // Bulk create via server
+            // Import with dedup via server
             const uploadSpinner = ora('Importing test cases to server...').start();
-            const bulkResult = await api.bulkCreateTestCases(validatedTestCases);
-            uploadSpinner.succeed(`Imported ${bulkResult.created} test cases`);
+            const importResult = await api.importTestCases(validatedTestCases);
+            const summary: string[] = [];
+            if (importResult.created > 0) summary.push(`${importResult.created} created`);
+            if (importResult.reused > 0) summary.push(`${importResult.reused} reused`);
+            if (importResult.updated > 0) summary.push(`${importResult.updated} updated`);
+            uploadSpinner.succeed(
+              `Imported ${importResult.testCases.length} test cases (${summary.join(', ')})`
+            );
 
             // Create benchmark from imported test case IDs
             const benchmarkName = (options.file && options.name) ? options.name : `file-${Date.now()}`;
@@ -497,7 +472,7 @@ export function createBenchmarkCommand(): Command {
             benchmark = await api.createBenchmark({
               name: benchmarkName,
               description: `Imported from ${filePath}`,
-              testCaseIds: bulkResult.testCases.map(tc => tc.id),
+              testCaseIds: importResult.testCases.map(tc => tc.id),
             });
             createSpinner.succeed(`Created benchmark: ${benchmark.name}`);
           } catch (error) {

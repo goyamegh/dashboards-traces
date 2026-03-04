@@ -1,0 +1,131 @@
+[
+  {
+    "name": "OTEL Demo Multi-Turn: Checkout Timeout Investigation",
+    "description": "Multi-turn investigation of checkout timeouts in the OTEL demo application. The simulated SRE starts broad and drills into the payment service cascade failure.",
+    "category": "RCA",
+    "difficulty": "Medium",
+    "initialPrompt": "We're seeing checkout failures in the OTEL demo app. About 30% of PlaceOrder requests are timing out. Can you look at the traces in otel-v1-apm-span-* to figure out what's going on?",
+    "context": [
+      {
+        "description": "OTEL Demo Architecture",
+        "value": "OTEL Demo microservices:\n- frontend (Node.js) → checkoutservice (Go) → paymentservice, shippingservice, currencyservice, emailservice\n- All services instrumented with OpenTelemetry\n- Traces stored in OpenSearch index: otel-v1-apm-span-*\n- Service map in: otel-v1-apm-service-map\n- Key fields: traceId, spanId, serviceName, operationName, duration, status.code, resource.service.name"
+      },
+      {
+        "description": "Current Symptoms",
+        "value": "- 30% of PlaceOrder requests return HTTP 504\n- Issue started ~45 minutes ago\n- No deployments in the last 2 hours\n- paymentservice pod CPU is at 95%\n- checkoutservice logs show 'context deadline exceeded' errors"
+      }
+    ],
+    "expectedOutcomes": [
+      "Query otel-v1-apm-span-* for error spans in the checkout flow",
+      "Identify paymentservice as the bottleneck causing timeouts",
+      "Trace the cascade: paymentservice timeout → checkoutservice deadline exceeded → frontend 504",
+      "Recommend investigation of paymentservice CPU spike or external dependency"
+    ],
+    "multiTurnScenario": {
+      "userMotivation": "I'm an on-call SRE investigating customer-reported checkout failures. I need the agent to help me find the root cause quickly so I can mitigate the issue. I'll start broad, then drill into specific services based on what the agent finds.",
+      "acceptanceCriteria": [
+        "Agent identified paymentservice as the root cause of the timeout cascade",
+        "Agent showed evidence from trace data (error spans, high durations)",
+        "Agent explained the cascade path: paymentservice → checkoutservice → frontend",
+        "Agent provided an actionable remediation suggestion"
+      ],
+      "idealAnswer": "The checkout timeouts are caused by paymentservice CPU saturation (95%). Traces show paymentservice.Charge spans taking 30s+ (normally <500ms), which causes checkoutservice to hit its context deadline (35s), returning errors to the frontend. The cascade: paymentservice timeout → checkoutservice 'context deadline exceeded' → frontend HTTP 504. Immediate remediation: scale paymentservice horizontally or investigate the CPU spike root cause (possible external payment gateway issue).",
+      "criticalComponents": {
+        "rootCause": "paymentservice CPU saturation causing Charge operation timeouts",
+        "remediation": "Scale paymentservice or investigate CPU spike; add circuit breaker to prevent cascade"
+      },
+      "turnLimit": 5,
+      "referenceTurns": [
+        {
+          "turn": 1,
+          "user": "We're seeing checkout failures in the OTEL demo app. About 30% of PlaceOrder requests are timing out. Can you look at the traces in otel-v1-apm-span-* to figure out what's going on?",
+          "expectedTopics": ["error spans", "checkout flow", "trace query"],
+          "groundTruth": "Error spans in otel-v1-apm-span-* show status.code=2 on checkoutservice and paymentservice spans. The majority of errors originate from paymentservice.Charge with durations over 30 seconds."
+        },
+        {
+          "turn": 2,
+          "user": "Interesting — so the errors are concentrated in paymentservice. Can you show me the span durations for paymentservice.Charge over the last hour? I want to see when the latency spiked.",
+          "expectedTopics": ["paymentservice duration", "latency spike", "timeline"],
+          "groundTruth": "paymentservice.Charge p50 went from 200ms to 30s+ starting 45 minutes ago. The spike correlates exactly with the checkout failure reports."
+        },
+        {
+          "turn": 3,
+          "user": "That confirms paymentservice is the bottleneck. Can you trace through a single failing request end-to-end to show me how the timeout cascades from paymentservice up to the frontend?",
+          "expectedTopics": ["cascade", "trace waterfall", "timeout propagation"],
+          "groundTruth": "A sample failing trace shows: frontend.PlaceOrder (62s, ERROR) → checkoutservice.PlaceOrder (38s, ERROR: context deadline exceeded) → paymentservice.Charge (32s, ERROR: upstream timeout). The timeout propagates upward through the service chain."
+        },
+        {
+          "turn": 4,
+          "user": "Got it. What do you recommend we do right now to stop the bleeding, and what should we investigate as the underlying cause?",
+          "expectedTopics": ["remediation", "scaling", "circuit breaker", "root cause"],
+          "groundTruth": "Immediate: scale paymentservice replicas or restart pods to relieve CPU pressure. Add a circuit breaker on checkoutservice→paymentservice to fail fast instead of waiting 30s. Investigate: check if an external payment gateway is slow or if there's a resource leak in paymentservice causing CPU saturation."
+        }
+      ]
+    }
+  },
+  {
+    "name": "OTEL Demo Multi-Turn: Frontend Latency Regression",
+    "description": "Multi-turn investigation of a frontend latency regression in the OTEL demo. The SRE notices slow page loads and works with the agent to isolate which backend service is responsible.",
+    "category": "RCA",
+    "difficulty": "Medium",
+    "initialPrompt": "Users are complaining that the OTEL demo product listing page is extremely slow — taking 5-8 seconds to load when it normally loads in under 1 second. Can you check the traces in otel-v1-apm-span-* to find what's causing the slowdown?",
+    "context": [
+      {
+        "description": "OTEL Demo Product Listing Flow",
+        "value": "Product listing request flow:\n- frontend → productcatalogservice.ListProducts (gRPC)\n- frontend → recommendationservice.ListRecommendations → productcatalogservice.GetProduct (multiple calls)\n- frontend → adservice.GetAds\n- All traces in otel-v1-apm-span-*\n- Key fields: serviceName, operationName, duration, parentSpanId"
+      },
+      {
+        "description": "Current Observations",
+        "value": "- frontend /products page p95 latency: 6.2s (baseline: 800ms)\n- Issue started ~2 hours ago\n- No code changes or deployments in the last 24 hours\n- All pods are running and healthy (no restarts)\n- recommendationservice logs show elevated query times"
+      }
+    ],
+    "expectedOutcomes": [
+      "Query traces for frontend product listing spans with high duration",
+      "Break down latency by child service to isolate the bottleneck",
+      "Identify recommendationservice as the source of the latency regression",
+      "Find that recommendationservice is making excessive GetProduct calls to productcatalogservice",
+      "Recommend caching or reducing the number of recommendation calls"
+    ],
+    "multiTurnScenario": {
+      "userMotivation": "I'm an SRE investigating a user-reported performance regression on the product listing page. I need the agent to systematically break down the trace data to find which service or operation is causing the slow page loads, and give me an actionable fix.",
+      "acceptanceCriteria": [
+        "Agent identified recommendationservice as the primary latency contributor",
+        "Agent showed that recommendationservice makes many sequential GetProduct calls to productcatalogservice",
+        "Agent provided evidence from trace spans (durations, fan-out pattern)",
+        "Agent suggested a concrete fix (caching, batching, or reducing calls)"
+      ],
+      "idealAnswer": "The frontend latency regression is caused by recommendationservice.ListRecommendations taking 5s+ (normally 300ms). Trace analysis shows it makes 15-20 sequential GetProduct calls to productcatalogservice per request (fan-out pattern). Each call takes ~300ms, and they execute serially, causing the total duration to stack up. This started after a feature flag change that increased the number of recommendations from 5 to 20. Fix: batch the GetProduct calls into a single ListProducts request, add response caching, or revert the recommendation count back to 5.",
+      "criticalComponents": {
+        "rootCause": "recommendationservice making excessive sequential GetProduct calls due to increased recommendation count",
+        "remediation": "Batch GetProduct calls, add caching, or reduce recommendation count"
+      },
+      "turnLimit": 5,
+      "referenceTurns": [
+        {
+          "turn": 1,
+          "user": "Users are complaining that the OTEL demo product listing page is extremely slow — taking 5-8 seconds to load when it normally loads in under 1 second. Can you check the traces in otel-v1-apm-span-* to find what's causing the slowdown?",
+          "expectedTopics": ["frontend spans", "high duration", "child services"],
+          "groundTruth": "Frontend /products traces show total duration of 5-8 seconds. The trace waterfall shows three main child spans: productcatalogservice.ListProducts (200ms — normal), recommendationservice.ListRecommendations (5.2s — abnormal), and adservice.GetAds (150ms — normal)."
+        },
+        {
+          "turn": 2,
+          "user": "So recommendationservice is the culprit. Can you dig into the recommendationservice spans and show me what's happening inside those 5-second calls?",
+          "expectedTopics": ["recommendationservice internals", "GetProduct calls", "fan-out"],
+          "groundTruth": "Inside recommendationservice.ListRecommendations, there are 18 sequential child spans calling productcatalogservice.GetProduct. Each takes 250-350ms and they run serially, totaling ~5.2s. The number of GetProduct calls increased from 5 to 18 about 2 hours ago."
+        },
+        {
+          "turn": 3,
+          "user": "18 sequential calls — that explains it. Can you compare the traces from before the regression to confirm the call count changed?",
+          "expectedTopics": ["before vs after", "call count comparison", "timeline"],
+          "groundTruth": "Traces from 3 hours ago show recommendationservice.ListRecommendations with only 5 GetProduct child spans (total: 1.2s). Traces from the last 2 hours show 15-20 GetProduct child spans (total: 4-6s). The change correlates with a configuration or feature flag update."
+        },
+        {
+          "turn": 4,
+          "user": "Clear root cause. What's your recommendation to fix this?",
+          "expectedTopics": ["batching", "caching", "parallel calls", "revert"],
+          "groundTruth": "Immediate fix: revert the recommendation count back to 5 to restore baseline performance. Long-term: replace sequential GetProduct calls with a single batched ListProducts call filtered by IDs, or run calls in parallel. Also add a response cache with TTL for product data since it changes infrequently."
+        }
+      ]
+    }
+  }
+]

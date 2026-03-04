@@ -358,6 +358,82 @@ router.delete('/api/storage/test-cases/:id', async (req: Request, res: Response)
   }
 });
 
+// POST /api/storage/test-cases/import - Import with name-based dedup
+router.post('/api/storage/test-cases/import', async (req: Request, res: Response) => {
+  try {
+    const { testCases } = req.body;
+    if (!Array.isArray(testCases)) {
+      return res.status(400).json({ error: 'testCases must be an array' });
+    }
+
+    if (testCases.length === 0) {
+      return res.json({ created: 0, reused: 0, updated: 0, testCases: [] });
+    }
+
+    // Check for demo- prefixes
+    const hasDemoIds = testCases.some(tc => tc.id && isSampleId(tc.id));
+    if (hasDemoIds) {
+      return res.status(400).json({ error: 'Cannot import test cases with demo- prefix (reserved for sample data)' });
+    }
+
+    const storage = getStorageModule();
+
+    // Fetch all existing test cases for name matching
+    const { items: existing } = await storage.testCases.getAll();
+
+    // Build case-insensitive name → test case map
+    const nameMap = new Map<string, TestCase>();
+    for (const tc of existing) {
+      nameMap.set(tc.name.toLowerCase(), tc);
+    }
+
+    const results: Array<{ id: string; name: string; status: 'created' | 'reused' | 'updated' }> = [];
+    let created = 0;
+    let reused = 0;
+    let updated = 0;
+
+    for (const incoming of testCases) {
+      const name = incoming.name || '';
+      const match = nameMap.get(name.toLowerCase());
+
+      if (!match) {
+        // No name match → create new
+        const newTc = await storage.testCases.create(incoming);
+        results.push({ id: newTc.id, name: newTc.name, status: 'created' });
+        // Add to map so subsequent duplicates within the same batch are caught
+        nameMap.set(newTc.name.toLowerCase(), newTc);
+        created++;
+      } else if (isContentEqual(match, incoming)) {
+        // Same name + same content → reuse existing
+        results.push({ id: match.id, name: match.name, status: 'reused' });
+        reused++;
+      } else {
+        // Same name + different content → update (new version)
+        const updatedTc = await storage.testCases.update(match.id, incoming);
+        results.push({ id: match.id, name: updatedTc.name || match.name, status: 'updated' });
+        updated++;
+      }
+    }
+
+    debug('StorageAPI', `Imported ${results.length} test cases: ${created} created, ${reused} reused, ${updated} updated`);
+    res.json({ created, reused, updated, testCases: results });
+  } catch (error: any) {
+    console.error('[StorageAPI] Import test cases failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * Compare content fields that matter for dedup.
+ * Returns true if incoming test case has the same content as the existing one.
+ */
+function isContentEqual(existing: TestCase, incoming: Partial<TestCase>): boolean {
+  if (existing.initialPrompt !== incoming.initialPrompt) return false;
+  const existingOutcomes = [...(existing.expectedOutcomes || [])].sort();
+  const incomingOutcomes = [...(incoming.expectedOutcomes || [])].sort();
+  return JSON.stringify(existingOutcomes) === JSON.stringify(incomingOutcomes);
+}
+
 // POST /api/storage/test-cases/bulk - Bulk create
 router.post('/api/storage/test-cases/bulk', async (req: Request, res: Response) => {
   try {
