@@ -53,7 +53,37 @@ export default {
     //   useTraces: false,
     // },
 
-    // Example 4: Agent with authentication hook
+    // Example 4: Claude Code connector with environment passthrough
+    // The `connectorConfig.env` field is a generic passthrough — every key-value
+    // pair is injected into the Claude Code subprocess environment. The framework
+    // does not interpret these; it just delivers them. Claude Code honors its own
+    // env vars (Bedrock routing, telemetry, feature flags, etc.).
+    //
+    // `models` is a reporting label only — it does NOT control which LLM Claude
+    // Code uses. The actual model is determined by the CLI's own configuration.
+    // {
+    //   key: "claude-code-bedrock",
+    //   name: "Claude Code (Bedrock)",
+    //   endpoint: "claude",
+    //   connectorType: "claude-code",
+    //   models: ["claude-sonnet-4"],       // label for reports, not model selection
+    //   useTraces: true,
+    //   connectorConfig: {
+    //     env: {
+    //       // All env vars below are passed through to the Claude Code process.
+    //       // See Claude Code docs for the full list of supported variables.
+    //       CLAUDE_CODE_USE_BEDROCK: "1",
+    //       AWS_PROFILE: "Bedrock",
+    //       AWS_REGION: "us-west-2",
+    //       // Telemetry (OTEL) — optional, enable to export metrics/logs
+    //       // CLAUDE_CODE_ENABLE_TELEMETRY: "1",
+    //       // OTEL_EXPORTER_OTLP_ENDPOINT: "https://your-otel-endpoint.example.com",
+    //       // OTEL_EXPORTER_OTLP_PROTOCOL: "http/protobuf",
+    //     },
+    //   },
+    // },
+
+    // Example 5: Agent with authentication hook
     // {
     //   key: "authenticated-agent",
     //   name: "Authenticated Agent",

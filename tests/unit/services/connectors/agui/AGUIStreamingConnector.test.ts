@@ -18,6 +18,7 @@ jest.mock('@/services/agent/aguiConverter', () => ({
     processEvent: jest.fn().mockReturnValue([]),
     getRunId: jest.fn().mockReturnValue('test-run-id'),
     getThreadId: jest.fn().mockReturnValue('test-thread-id'),
+    getRunFinishedResult: jest.fn().mockReturnValue(null),
   })),
   computeTrajectoryFromRawEvents: jest.fn().mockReturnValue([]),
 }));
@@ -25,14 +26,25 @@ jest.mock('@/services/agent/aguiConverter', () => ({
 // Mock the payload builder
 jest.mock('@/services/agent/payloadBuilder', () => ({
   buildAgentPayload: jest.fn().mockReturnValue({
+    threadId: 'thread-1',
+    runId: 'run-1',
     messages: [{ content: 'test' }],
     model: 'test-model',
+  }),
+  buildMultiTurnPayload: jest.fn().mockReturnValue({
+    threadId: 'thread-1',
+    runId: 'run-2',
+    messages: [],
+    tools: [],
+    context: [],
+    state: {},
+    forwardedProps: {},
   }),
 }));
 
 import { consumeSSEStream } from '@/services/agent/sseStream';
 import { AGUIToTrajectoryConverter, computeTrajectoryFromRawEvents } from '@/services/agent/aguiConverter';
-import { buildAgentPayload } from '@/services/agent/payloadBuilder';
+import { buildAgentPayload, buildMultiTurnPayload } from '@/services/agent/payloadBuilder';
 
 describe('AGUIStreamingConnector', () => {
   let connector: AGUIStreamingConnector;
@@ -267,6 +279,200 @@ describe('AGUIStreamingConnector', () => {
   describe('default instance', () => {
     it('should export a default instance', () => {
       expect(aguiStreamingConnector).toBeInstanceOf(AGUIStreamingConnector);
+    });
+  });
+
+  describe('interrupt handling (multiTurnOptions)', () => {
+    it('should execute single pass when multiTurnOptions not enabled', async () => {
+      (consumeSSEStream as jest.Mock).mockResolvedValue(undefined);
+
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+      };
+
+      const response = await connector.execute(
+        'http://localhost:8080/stream',
+        request,
+        mockAuth
+      );
+
+      expect(consumeSSEStream).toHaveBeenCalledTimes(1);
+      expect(response.runId).toBe('test-run-id');
+    });
+
+    it('should execute single pass when multiTurnOptions.enabled is false', async () => {
+      (consumeSSEStream as jest.Mock).mockResolvedValue(undefined);
+
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        multiTurnOptions: { enabled: false },
+      };
+
+      const response = await connector.execute(
+        'http://localhost:8080/stream',
+        request,
+        mockAuth
+      );
+
+      expect(consumeSSEStream).toHaveBeenCalledTimes(1);
+    });
+
+    it('should handle interrupt with auto-approve and make second call', async () => {
+      let callCount = 0;
+
+      // Mock converter that returns interrupt on first call, no interrupt on second
+      (AGUIToTrajectoryConverter as jest.Mock).mockImplementation(() => {
+        callCount++;
+        const currentCall = callCount;
+        return {
+          processEvent: jest.fn().mockReturnValue([
+            { id: `step-${currentCall}`, timestamp: Date.now(), type: 'response', content: `Response ${currentCall}` },
+          ]),
+          getRunId: jest.fn().mockReturnValue(`run-${currentCall}`),
+          getThreadId: jest.fn().mockReturnValue('thread-1'),
+          getRunFinishedResult: jest.fn().mockReturnValue(
+            currentCall === 1 ? { outcome: 'interrupt', reason: 'Tool approval needed' } : null
+          ),
+        };
+      });
+
+      // consumeSSEStream must invoke the callback to trigger processEvent
+      (consumeSSEStream as jest.Mock).mockImplementation(
+        async (_endpoint: string, _payload: any, callback: (event: any) => void) => {
+          callback({ type: 'TEXT_MESSAGE_CONTENT' });
+        }
+      );
+
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        multiTurnOptions: { enabled: true, maxTurns: 5, interruptPolicy: 'auto-approve' },
+      };
+
+      const response = await connector.execute(
+        'http://localhost:8080/stream',
+        request,
+        mockAuth
+      );
+
+      // Should have been called twice: initial + after interrupt
+      expect(consumeSSEStream).toHaveBeenCalledTimes(2);
+      // Trajectory should have steps from both calls
+      expect(response.trajectory.length).toBe(2);
+      expect(response.metadata?.interruptCount).toBe(1);
+      expect(response.metadata?.threadId).toBe('thread-1');
+    });
+
+    it('should stop when interrupt policy is skip', async () => {
+      (AGUIToTrajectoryConverter as jest.Mock).mockImplementation(() => ({
+        processEvent: jest.fn().mockReturnValue([
+          { id: 'step-1', timestamp: Date.now(), type: 'response', content: 'Response' },
+        ]),
+        getRunId: jest.fn().mockReturnValue('run-1'),
+        getThreadId: jest.fn().mockReturnValue('thread-1'),
+        getRunFinishedResult: jest.fn().mockReturnValue({ outcome: 'interrupt', reason: 'Needs approval' }),
+      }));
+
+      (consumeSSEStream as jest.Mock).mockImplementation(
+        async (_endpoint: string, _payload: any, callback: (event: any) => void) => {
+          callback({ type: 'TEXT_MESSAGE_CONTENT' });
+        }
+      );
+
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        multiTurnOptions: { enabled: true, maxTurns: 5, interruptPolicy: 'skip' },
+      };
+
+      const response = await connector.execute(
+        'http://localhost:8080/stream',
+        request,
+        mockAuth
+      );
+
+      // Should only call once since skip policy stops the loop
+      expect(consumeSSEStream).toHaveBeenCalledTimes(1);
+      expect(response.trajectory.length).toBe(1);
+    });
+
+    it('should respect maxTurns limit for interrupts', async () => {
+      // Always return interrupt
+      (AGUIToTrajectoryConverter as jest.Mock).mockImplementation(() => ({
+        processEvent: jest.fn().mockReturnValue([]),
+        getRunId: jest.fn().mockReturnValue('run-1'),
+        getThreadId: jest.fn().mockReturnValue('thread-1'),
+        getRunFinishedResult: jest.fn().mockReturnValue({ outcome: 'interrupt', reason: 'Needs approval' }),
+      }));
+
+      (consumeSSEStream as jest.Mock).mockImplementation(
+        async (_endpoint: string, _payload: any, callback: (event: any) => void) => {
+          callback({ type: 'TEXT_MESSAGE_CONTENT' });
+        }
+      );
+
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        multiTurnOptions: { enabled: true, maxTurns: 3, interruptPolicy: 'auto-approve' },
+      };
+
+      const response = await connector.execute(
+        'http://localhost:8080/stream',
+        request,
+        mockAuth
+      );
+
+      // Should stop at maxTurns
+      expect(consumeSSEStream).toHaveBeenCalledTimes(3);
+    });
+
+    it('should preserve threadId across interrupt sub-turns', async () => {
+      let callCount = 0;
+      (AGUIToTrajectoryConverter as jest.Mock).mockImplementation(() => {
+        callCount++;
+        const currentCall = callCount;
+        return {
+          processEvent: jest.fn().mockReturnValue([
+            { id: `s${currentCall}`, timestamp: Date.now(), type: 'response', content: `R${currentCall}` },
+          ]),
+          getRunId: jest.fn().mockReturnValue(`run-${currentCall}`),
+          getThreadId: jest.fn().mockReturnValue('preserved-thread'),
+          getRunFinishedResult: jest.fn().mockReturnValue(
+            currentCall === 1 ? { outcome: 'interrupt', reason: 'approve' } : null
+          ),
+        };
+      });
+
+      (consumeSSEStream as jest.Mock).mockImplementation(
+        async (_endpoint: string, _payload: any, callback: (event: any) => void) => {
+          callback({ type: 'TEXT_MESSAGE_CONTENT' });
+        }
+      );
+
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'test-model',
+        multiTurnOptions: { enabled: true, interruptPolicy: 'auto-approve' },
+      };
+
+      const response = await connector.execute(
+        'http://localhost:8080/stream',
+        request,
+        mockAuth
+      );
+
+      expect(response.metadata?.threadId).toBe('preserved-thread');
+      // buildMultiTurnPayload should have been called with the preserved threadId
+      expect(buildMultiTurnPayload).toHaveBeenCalledWith(
+        expect.any(Array),
+        'preserved-thread',
+        undefined,
+        expect.any(Array),
+        undefined
+      );
     });
   });
 });

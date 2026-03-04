@@ -78,6 +78,11 @@ export interface AgentConfig {
   connectorConfig?: Record<string, any>; // Connector-specific configuration
   hooks?: AgentHooks; // Lifecycle hooks for custom setup/transform logic
   isCustom?: boolean; // True for user-added custom endpoints (not from config file)
+  multiTurnOptions?: {
+    enabled?: boolean;
+    maxTurns?: number;
+    interruptPolicy?: 'auto-approve' | 'auto-reject' | 'skip';
+  };
 }
 
 /**
@@ -118,6 +123,60 @@ export interface TrajectoryStep {
   toolOutput?: any;
   status?: ToolCallStatus;
   latencyMs?: number;
+}
+
+// ============ Multi-Turn Evaluation Types ============
+
+/** Scenario definition for multi-turn evaluation with LLM-simulated user */
+export interface MultiTurnScenario {
+  /** What the simulated user is trying to achieve */
+  userMotivation: string;
+  /** Conditions that signal the conversation is complete */
+  acceptanceCriteria: string[];
+  /** The correct answer with critical components */
+  idealAnswer: string;
+  /** Critical components the answer must include */
+  criticalComponents?: {
+    rootCause: string;
+    remediation: string;
+  };
+  /** Max turns before stopping (default: 10) */
+  turnLimit?: number;
+  /** Optional scoring weight overrides (must sum to 100) */
+  scoringWeights?: {
+    rootCause?: number;      // default: 40
+    remediation?: number;    // default: 30
+    contextRetention?: number; // default: 20
+    conciseness?: number;    // default: 10
+  };
+  /** Reference turns used as directional guidance for the LLM user simulator */
+  referenceTurns?: Array<{
+    turn: number;
+    user: string;
+    expectedTopics: string[];
+    groundTruth: string;
+  }>;
+}
+
+/** Record of a single turn in a multi-turn conversation */
+export interface ConversationTurnRecord {
+  turn: number;
+  userMessage: string;
+  agentResponse: string;
+  trajectory: TrajectoryStep[];
+}
+
+/** Result of a multi-turn evaluation */
+export interface MultiTurnResult {
+  turns: ConversationTurnRecord[];
+  totalTurns: number;
+  acceptanceCriteriaMet: boolean;
+  /** Holistic scores (0-100) */
+  rootCauseScore: number;
+  remediationScore: number;
+  contextRetentionScore: number;
+  concisenessScore: number;
+  reasoning: string;
 }
 
 export interface EvaluationMetrics {
@@ -202,6 +261,9 @@ export interface TestCaseRun {
   // Server-side performance metrics (timing data from evaluation execution)
   performanceMetrics?: TestCasePerformanceMetrics;
 
+  // Multi-turn evaluation results
+  multiTurnResult?: MultiTurnResult;
+
   // Trace mode fields (for agents with useTraces: true)
   metricsStatus?: MetricsStatus; // Status of deferred metrics/judge calculation
   traceFetchAttempts?: number; // Number of polling attempts for traces
@@ -257,6 +319,7 @@ export interface TestCaseVersion {
     question: string;
     businessValue: string;
   }[];
+  multiTurnScenario?: MultiTurnScenario;
 }
 
 // TestCase is referred to as "Use Case" in the UI
@@ -303,6 +366,7 @@ export interface TestCase {
     question: string;
     businessValue: string;
   }[];
+  multiTurnScenario?: MultiTurnScenario;
 }
 
 export interface OpenSearchLog {

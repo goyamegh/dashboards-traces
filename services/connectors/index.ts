@@ -36,6 +36,20 @@ export {
 // ============ Base Class Export ============
 export { BaseConnector } from './base/BaseConnector';
 
+// ============ Interrupt Handler Exports ============
+export type {
+  InterruptPolicy,
+  InterruptInfo,
+  MultiTurnOptions,
+} from './agui/interruptHandlers';
+
+export {
+  defaultDetectInterrupt,
+  defaultBuildApprovalResponse,
+  resolveMultiTurnOptions,
+  DEFAULT_MULTI_TURN_OPTIONS,
+} from './agui/interruptHandlers';
+
 // ============ Browser-safe Connector Exports ============
 // These connectors work in browser environments (no Node.js dependencies)
 export { AGUIStreamingConnector, aguiStreamingConnector } from './agui/AGUIStreamingConnector';

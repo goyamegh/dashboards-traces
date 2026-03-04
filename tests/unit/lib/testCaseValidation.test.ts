@@ -406,4 +406,123 @@ describe('testCaseValidation', () => {
       expect(result.valid).toBe(false);
     });
   });
+
+  describe('multiTurnScenario validation', () => {
+    const baseTestCase = {
+      name: 'Multi-turn test',
+      category: 'RCA',
+      difficulty: 'Medium' as const,
+      initialPrompt: 'What is wrong?',
+      expectedOutcomes: ['Find root cause'],
+    };
+
+    it('should accept test case without multiTurnScenario', () => {
+      const result = testCaseSchema.safeParse(baseTestCase);
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept test case with valid multiTurnScenario', () => {
+      const testCase = {
+        ...baseTestCase,
+        multiTurnScenario: {
+          userMotivation: 'Investigating cart failure',
+          acceptanceCriteria: ['Root cause found', 'Remediation provided'],
+          idealAnswer: 'Redis connection failure',
+          turnLimit: 5,
+          referenceTurns: [
+            { turn: 1, user: 'What is wrong?', expectedTopics: ['error'], groundTruth: 'Redis down' },
+          ],
+        },
+      };
+
+      const result = testCaseSchema.safeParse(testCase);
+      expect(result.success).toBe(true);
+    });
+
+    it('should accept multiTurnScenario with criticalComponents', () => {
+      const testCase = {
+        ...baseTestCase,
+        multiTurnScenario: {
+          userMotivation: 'Investigating',
+          acceptanceCriteria: ['Root cause found'],
+          idealAnswer: 'Redis failure',
+          criticalComponents: {
+            rootCause: 'Redis connection timeout',
+            remediation: 'Restart Redis pod',
+          },
+        },
+      };
+
+      const result = testCaseSchema.safeParse(testCase);
+      expect(result.success).toBe(true);
+    });
+
+    it('should reject multiTurnScenario with empty userMotivation', () => {
+      const testCase = {
+        ...baseTestCase,
+        multiTurnScenario: {
+          userMotivation: '',
+          acceptanceCriteria: ['Root cause found'],
+          idealAnswer: 'Redis failure',
+        },
+      };
+
+      const result = testCaseSchema.safeParse(testCase);
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject multiTurnScenario with empty acceptanceCriteria', () => {
+      const testCase = {
+        ...baseTestCase,
+        multiTurnScenario: {
+          userMotivation: 'Investigating',
+          acceptanceCriteria: [],
+          idealAnswer: 'Redis failure',
+        },
+      };
+
+      const result = testCaseSchema.safeParse(testCase);
+      expect(result.success).toBe(false);
+    });
+
+    it('should reject scoringWeights that do not sum to 100', () => {
+      const testCase = {
+        ...baseTestCase,
+        multiTurnScenario: {
+          userMotivation: 'Investigating',
+          acceptanceCriteria: ['Root cause found'],
+          idealAnswer: 'Redis failure',
+          scoringWeights: {
+            rootCause: 50,
+            remediation: 50,
+            contextRetention: 50,
+            conciseness: 50,
+          },
+        },
+      };
+
+      const result = testCaseSchema.safeParse(testCase);
+      expect(result.success).toBe(false);
+    });
+
+    it('should accept scoringWeights that sum to 100 with defaults', () => {
+      const testCase = {
+        ...baseTestCase,
+        multiTurnScenario: {
+          userMotivation: 'Investigating',
+          acceptanceCriteria: ['Root cause found'],
+          idealAnswer: 'Redis failure',
+          scoringWeights: {
+            rootCause: 40,
+            remediation: 30,
+            contextRetention: 20,
+            conciseness: 10,
+          },
+        },
+      };
+
+      const result = testCaseSchema.safeParse(testCase);
+      expect(result.success).toBe(true);
+    });
+  });
 });

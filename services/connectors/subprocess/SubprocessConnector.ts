@@ -50,6 +50,23 @@ export class SubprocessConnector extends BaseConnector {
   }
 
   /**
+   * Create a new connector instance with merged config.
+   * Used by the registry to apply per-agent connectorConfig.
+   *
+   * - Top-level config fields are shallow-merged (overrides win)
+   * - `env` is deep-merged (connector defaults + agent overrides)
+   * - `args` is replaced wholesale when provided (not concatenated)
+   */
+  withConfig(overrides: Partial<SubprocessConfig>): SubprocessConnector {
+    return new (this.constructor as new (config?: Partial<SubprocessConfig>) => SubprocessConnector)({
+      ...this.config,
+      ...overrides,
+      env: { ...this.config.env, ...overrides.env },
+      args: overrides.args ?? this.config.args,
+    });
+  }
+
+  /**
    * Build input for the subprocess
    */
   buildPayload(request: ConnectorRequest): string {

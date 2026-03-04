@@ -70,6 +70,12 @@ export interface ConnectorRequest {
    * Threaded from agent.connectorConfig at evaluation time.
    */
   connectorConfig?: Record<string, any>;
+  /** Multi-turn options for interrupt handling within the connector */
+  multiTurnOptions?: {
+    enabled?: boolean;
+    maxTurns?: number;
+    interruptPolicy?: 'auto-approve' | 'auto-reject' | 'skip';
+  };
 }
 
 /**
@@ -192,6 +198,15 @@ export interface AgentConfigWithConnector {
 
   /** Lifecycle hooks for custom setup/transform logic */
   hooks?: AgentHooks;
+
+  /** Multi-turn options for interrupt handling */
+  multiTurnOptions?: {
+    enabled?: boolean;
+    maxTurns?: number;
+    interruptPolicy?: 'auto-approve' | 'auto-reject' | 'skip';
+    detectInterrupt?: (result: any) => any;
+    buildResponse?: (interrupt: any, policy: string) => any;
+  };
 }
 
 // ============ Registry Types ============

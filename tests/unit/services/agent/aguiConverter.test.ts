@@ -669,6 +669,75 @@ describe('AGUIToTrajectoryConverter', () => {
       expect(steps).toEqual([]);
     });
   });
+
+  describe('getRunFinishedResult', () => {
+    it('should return null by default when no events have been processed', () => {
+      expect(converter.getRunFinishedResult()).toBeNull();
+    });
+
+    it('should capture result from RUN_FINISHED event', () => {
+      const result = { status: 'success', output: 'Analysis complete' };
+
+      converter.processEvent({
+        type: AGUIEventType.RUN_STARTED,
+        runId: 'run-1',
+        threadId: 'thread-1',
+        timestamp: Date.now(),
+      });
+
+      converter.processEvent({
+        type: AGUIEventType.RUN_FINISHED,
+        result,
+        timestamp: Date.now(),
+      });
+
+      expect(converter.getRunFinishedResult()).toEqual(result);
+    });
+
+    it('should return null when RUN_FINISHED has no result', () => {
+      converter.processEvent({
+        type: AGUIEventType.RUN_STARTED,
+        runId: 'run-1',
+        threadId: 'thread-1',
+        timestamp: Date.now(),
+      });
+
+      converter.processEvent({
+        type: AGUIEventType.RUN_FINISHED,
+        timestamp: Date.now(),
+      });
+
+      expect(converter.getRunFinishedResult()).toBeNull();
+    });
+
+    it('should reset to null on RUN_STARTED', () => {
+      // First run with a result
+      converter.processEvent({
+        type: AGUIEventType.RUN_STARTED,
+        runId: 'run-1',
+        threadId: 'thread-1',
+        timestamp: Date.now(),
+      });
+
+      converter.processEvent({
+        type: AGUIEventType.RUN_FINISHED,
+        result: { output: 'first run result' },
+        timestamp: Date.now(),
+      });
+
+      expect(converter.getRunFinishedResult()).toEqual({ output: 'first run result' });
+
+      // Starting a new run should reset the result
+      converter.processEvent({
+        type: AGUIEventType.RUN_STARTED,
+        runId: 'run-2',
+        threadId: 'thread-2',
+        timestamp: Date.now(),
+      });
+
+      expect(converter.getRunFinishedResult()).toBeNull();
+    });
+  });
 });
 
 describe('computeTrajectoryFromRawEvents', () => {

@@ -93,6 +93,11 @@ class ConnectorRegistryImpl implements ConnectorRegistry {
       return defaultConnector;
     }
 
+    // If agent has connectorConfig and connector supports withConfig, create merged instance
+    if (agent.connectorConfig && 'withConfig' in connector) {
+      return (connector as any).withConfig(agent.connectorConfig);
+    }
+
     return connector;
   }
 

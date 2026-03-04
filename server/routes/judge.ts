@@ -8,11 +8,14 @@
  */
 
 import { Request, Response, Router } from 'express';
+import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
 import { evaluateTrajectory, parseBedrockError } from '../services/bedrockService';
 import { evaluateWithLiteLLM, parseLiteLLMError } from '../services/litellmJudgeService';
 import { loadConfigSync } from '../../lib/config/index';
 import serverConfig from '../config';
 import { debug } from '@/lib/debug';
+import { buildMultiTurnJudgeSystemPrompt, computeWeightedScore } from '../prompts/multiTurnJudgePrompt';
+import type { MultiTurnJudgeOutput } from '../prompts/multiTurnJudgePrompt';
 
 const router = Router();
 
@@ -199,6 +202,124 @@ router.post('/api/judge', async (req: Request, res: Response) => {
     res.status(500).json({
       error: `Judge evaluation failed: ${errorMessage}`,
       details: error.message
+    });
+  }
+});
+
+/**
+ * POST /api/judge/multi-turn - Evaluate multi-turn agent conversation holistically
+ */
+router.post('/api/judge/multi-turn', async (req: Request, res: Response) => {
+  try {
+    const { multiTurnConversation, modelId } = req.body;
+
+    if (!multiTurnConversation) {
+      return res.status(400).json({ error: 'Missing required field: multiTurnConversation' });
+    }
+
+    const { turns, idealAnswer, criticalComponents, scoringWeights } = multiTurnConversation;
+
+    if (!turns?.length) {
+      return res.status(400).json({ error: 'Missing required field: multiTurnConversation.turns' });
+    }
+    if (!idealAnswer) {
+      return res.status(400).json({ error: 'Missing required field: multiTurnConversation.idealAnswer' });
+    }
+
+    // Resolve model
+    const resolvedConfig = loadConfigSync();
+    let modelConfig = resolvedConfig.models[modelId];
+    if (!modelConfig) {
+      modelConfig = Object.values(resolvedConfig.models).find(m => m.model_id === modelId);
+    }
+    const resolvedModelId = modelConfig?.model_id || modelId || serverConfig.BEDROCK_MODEL_ID;
+
+    debug('JudgeAPI', 'Multi-turn evaluation with model:', resolvedModelId, 'turns:', turns.length);
+
+    // Build holistic prompt
+    const systemPrompt = buildMultiTurnJudgeSystemPrompt({
+      turns,
+      idealAnswer,
+      criticalComponents,
+      scoringWeights,
+    });
+
+    // Call Bedrock
+    const bedrockClient = new BedrockRuntimeClient({ region: serverConfig.AWS_REGION });
+    const command = new ConverseCommand({
+      modelId: resolvedModelId,
+      messages: [
+        {
+          role: 'user',
+          content: [{ text: 'Please evaluate the multi-turn conversation described in the system prompt.' }],
+        },
+      ],
+      system: [{ text: systemPrompt }],
+      inferenceConfig: {
+        maxTokens: 4096,
+        temperature: 0.1,
+      },
+    });
+
+    const startTime = Date.now();
+    const response = await bedrockClient.send(command);
+    const duration = Date.now() - startTime;
+
+    // Extract response text
+    let responseText = '';
+    if (response.output?.message?.content) {
+      for (const content of response.output.message.content) {
+        if ('text' in content && content.text) {
+          responseText += content.text;
+        }
+      }
+    }
+
+    debug('JudgeAPI', 'Multi-turn judge response in', duration, 'ms');
+
+    // Parse JSON from response
+    let jsonText = responseText.trim();
+    const jsonMatch = jsonText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+    if (jsonMatch) {
+      jsonText = jsonMatch[1];
+    } else {
+      const startIdx = jsonText.indexOf('{');
+      const endIdx = jsonText.lastIndexOf('}');
+      if (startIdx !== -1 && endIdx !== -1) {
+        jsonText = jsonText.slice(startIdx, endIdx + 1);
+      }
+    }
+
+    const result: MultiTurnJudgeOutput = JSON.parse(jsonText);
+
+    // Compute weighted score
+    const weightedScore = computeWeightedScore(
+      {
+        rootCauseScore: result.root_cause_score,
+        remediationScore: result.remediation_score,
+        contextRetentionScore: result.context_retention_score,
+        concisenessScore: result.conciseness_score,
+      },
+      scoringWeights
+    );
+
+    return res.json({
+      rootCauseScore: result.root_cause_score,
+      remediationScore: result.remediation_score,
+      contextRetentionScore: result.context_retention_score,
+      concisenessScore: result.conciseness_score,
+      weightedScore: Math.round(weightedScore),
+      passFailStatus: result.pass_fail_status || (weightedScore >= 70 ? 'passed' : 'failed'),
+      reasoning: result.reasoning,
+      improvementStrategies: result.improvement_strategies || [],
+      duration,
+    });
+  } catch (error: any) {
+    console.error('[JudgeAPI] Multi-turn evaluation error:', error);
+    const errorMessage = parseBedrockError(error);
+    return res.status(500).json({
+      error: `Multi-turn judge evaluation failed: ${errorMessage}`,
+      details: error.message,
     });
   }
 });

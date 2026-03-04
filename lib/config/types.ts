@@ -27,6 +27,13 @@ export interface UserAgentConfig {
   connectorType?: ConnectorProtocol;
   connectorConfig?: Record<string, any>;
   hooks?: AgentHooks;
+  multiTurnOptions?: {
+    enabled?: boolean;
+    maxTurns?: number;
+    interruptPolicy?: 'auto-approve' | 'auto-reject' | 'skip';
+    detectInterrupt?: (result: any) => any;
+    buildResponse?: (interrupt: any, policy: string) => any;
+  };
 }
 
 /**

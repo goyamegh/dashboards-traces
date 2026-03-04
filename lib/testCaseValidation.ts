@@ -18,6 +18,44 @@ const contextItemSchema = z
 
 const difficultySchema = z.enum(['Easy', 'Medium', 'Hard']);
 
+const referenceTurnSchema = z.object({
+  turn: z.number(),
+  user: z.string(),
+  expectedTopics: z.array(z.string()),
+  groundTruth: z.string(),
+});
+
+const scoringWeightsSchema = z.object({
+  rootCause: z.number().min(0).max(100).optional(),
+  remediation: z.number().min(0).max(100).optional(),
+  contextRetention: z.number().min(0).max(100).optional(),
+  conciseness: z.number().min(0).max(100).optional(),
+}).refine(
+  (weights) => {
+    const values = [
+      weights.rootCause ?? 40,
+      weights.remediation ?? 30,
+      weights.contextRetention ?? 20,
+      weights.conciseness ?? 10,
+    ];
+    return values.reduce((a, b) => a + b, 0) === 100;
+  },
+  'Scoring weights must sum to 100'
+).optional();
+
+const multiTurnScenarioSchema = z.object({
+  userMotivation: z.string().min(1, 'User motivation is required'),
+  acceptanceCriteria: z.array(z.string()).min(1, 'At least one acceptance criterion is required'),
+  idealAnswer: z.string().min(1, 'Ideal answer is required'),
+  criticalComponents: z.object({
+    rootCause: z.string(),
+    remediation: z.string(),
+  }).optional(),
+  turnLimit: z.number().min(1).max(50).optional(),
+  scoringWeights: scoringWeightsSchema,
+  referenceTurns: z.array(referenceTurnSchema).optional(),
+}).optional();
+
 /**
  * Zod schema for validating test case JSON input.
  * This validates a subset of CreateTestCaseInput fields that are relevant for the JSON editor.
@@ -37,6 +75,7 @@ export const testCaseSchema = z.object({
       (outcomes) => outcomes.some((o) => o.trim().length > 0),
       'At least one non-empty expected outcome is required'
     ),
+  multiTurnScenario: multiTurnScenarioSchema,
 });
 
 export const testCasesArraySchema = z.array(testCaseSchema).min(1, 'Array cannot be empty');

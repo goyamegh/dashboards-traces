@@ -74,6 +74,11 @@ function toAgentConfig(userAgent: UserAgentConfig): AgentConfig {
     connectorType: userAgent.connectorType,
     connectorConfig: userAgent.connectorConfig,
     hooks: userAgent.hooks,
+    multiTurnOptions: userAgent.multiTurnOptions ? {
+      enabled: userAgent.multiTurnOptions.enabled,
+      maxTurns: userAgent.multiTurnOptions.maxTurns,
+      interruptPolicy: userAgent.multiTurnOptions.interruptPolicy,
+    } : undefined,
   };
 }
 

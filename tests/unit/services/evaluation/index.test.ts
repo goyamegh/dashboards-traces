@@ -715,5 +715,46 @@ describe('Evaluation Service Index', () => {
         undefined
       );
     });
+
+    it('should thread multiTurnOptions from agent config into connector request', async () => {
+      const agentWithMultiTurn = {
+        ...mockAgent,
+        multiTurnOptions: {
+          enabled: true,
+          maxTurns: 5,
+          interruptPolicy: 'auto-approve' as const,
+        },
+      };
+
+      const mockConnector = {
+        type: 'mock',
+        execute: jest.fn().mockResolvedValue({
+          trajectory: [{ type: 'response', content: 'Done', timestamp: Date.now() }],
+          runId: 'multi-turn-run',
+          rawEvents: [],
+        }),
+      };
+
+      const mockRegistry = {
+        getForAgent: jest.fn().mockReturnValue(mockConnector),
+      };
+
+      await runEvaluationWithConnector(
+        agentWithMultiTurn,
+        'claude-3-sonnet',
+        mockTestCase,
+        jest.fn(),
+        { registry: mockRegistry }
+      );
+
+      // Verify multiTurnOptions was passed in the request
+      const executeCall = mockConnector.execute.mock.calls[0];
+      const requestArg = executeCall[1];
+      expect(requestArg.multiTurnOptions).toEqual({
+        enabled: true,
+        maxTurns: 5,
+        interruptPolicy: 'auto-approve',
+      });
+    });
   });
 });

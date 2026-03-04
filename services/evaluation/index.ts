@@ -9,12 +9,14 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { AgentConfig, EvaluationReport, TestCase, TrajectoryStep, OpenSearchLog, LLMJudgeResponse, ConnectorProtocol, BeforeRequestContext, AfterResponseContext, TestCasePerformanceMetrics } from '@/types';
+import { AgentConfig, EvaluationReport, TestCase, TrajectoryStep, OpenSearchLog, LLMJudgeResponse, ConnectorProtocol, BeforeRequestContext, AfterResponseContext, TestCasePerformanceMetrics, ConversationTurnRecord, MultiTurnResult } from '@/types';
 import { executeBeforeRequestHook, executeAfterResponseHook } from '@/lib/hooks';
 import { AGUIToTrajectoryConverter, consumeSSEStream, buildAgentPayload } from '@/services/agent';
+import { buildMultiTurnPayload, AgentMessage } from '@/services/agent/payloadBuilder';
 import { AGUIEvent } from '@/types/agui';
 import { generateMockTrajectory } from './mockTrajectory';
 import { callBedrockJudge } from './bedrockJudge';
+import { generateFollowUp } from './userSimulator';
 
 // Re-export for use by experimentRunner when calling judge after trace polling
 export { callBedrockJudge };
@@ -48,6 +50,7 @@ const getModels = () => {
 import type {
   ConnectorAuth,
   ConnectorRequest,
+  AgentConnector,
   AgentConfigWithConnector,
   ConnectorRegistry,
 } from '@/services/connectors';
@@ -178,6 +181,21 @@ export async function runEvaluationWithConnector(
       if (hookResult.headers) {
         auth.headers = { ...auth.headers, ...hookResult.headers };
       }
+    }
+
+    // Thread multiTurnOptions from agent config into connector request
+    if (agent.multiTurnOptions) {
+      request = {
+        ...request,
+        multiTurnOptions: agent.multiTurnOptions,
+      };
+    }
+
+    // Multi-turn dispatch: if test case has multiTurnScenario, delegate
+    if (testCase.multiTurnScenario) {
+      return runMultiTurnEvaluation(
+        agent, modelId, testCase, connector, effectiveEndpoint, request, auth, onStep, options
+      );
     }
 
     // Execute via connector (with timing)
@@ -365,6 +383,264 @@ export async function runEvaluationWithConnector(
       connectorProtocol: connectorType,
     };
   }
+}
+
+/**
+ * Run multi-turn evaluation with LLM-simulated user.
+ * Sends the initial prompt, then loops: simulator generates follow-up → agent responds.
+ * After the conversation, calls the holistic multi-turn judge.
+ */
+async function runMultiTurnEvaluation(
+  agent: AgentConfig,
+  modelId: string,
+  testCase: TestCase,
+  connector: AgentConnector,
+  endpoint: string,
+  request: ConnectorRequest,
+  auth: ConnectorAuth,
+  onStep: (step: TrajectoryStep) => void,
+  options: RunEvaluationWithConnectorOptions
+): Promise<EvaluationReport> {
+  const reportId = uuidv4();
+  const scenario = testCase.multiTurnScenario!;
+  const turnLimit = scenario.turnLimit || 10;
+  const turns: ConversationTurnRecord[] = [];
+  const allTrajectory: TrajectoryStep[] = [];
+  const allRawEvents: any[] = [];
+  const conversationHistory: AgentMessage[] = [];
+  let agentRunId: string | null = null;
+
+  debug('Eval', 'Starting multi-turn evaluation. Turn limit:', turnLimit);
+
+  try {
+    // Turn 1: send initial prompt
+    const turn1Result = await connector.execute(
+      endpoint,
+      request,
+      auth,
+      onStep,
+      options.onRawEvent
+    );
+
+    agentRunId = turn1Result.runId;
+    const threadId = turn1Result.metadata?.threadId;
+    allTrajectory.push(...turn1Result.trajectory);
+    allRawEvents.push(...(turn1Result.rawEvents || []));
+
+    // Extract agent response text from the last response/assistant step
+    const agentResponseText = extractAgentResponse(turn1Result.trajectory);
+
+    // Record turn 1
+    turns.push({
+      turn: 1,
+      userMessage: testCase.initialPrompt,
+      agentResponse: agentResponseText,
+      trajectory: turn1Result.trajectory,
+    });
+
+    // Build conversation history for simulator
+    conversationHistory.push({
+      id: `msg-turn1-user`,
+      role: 'user',
+      content: testCase.initialPrompt,
+    });
+    conversationHistory.push({
+      id: `msg-turn1-agent`,
+      role: 'assistant',
+      content: agentResponseText,
+    });
+
+    // Subsequent turns
+    for (let turnIdx = 1; turnIdx < turnLimit; turnIdx++) {
+      // Generate follow-up from simulator
+      const followUp = await generateFollowUp(
+        scenario,
+        conversationHistory,
+        turnIdx, // 0-based reference turn index (turn 1 used index 0 for initial)
+        modelId
+      );
+
+      if (followUp.done) {
+        debug('Eval', `Simulator signaled done at turn ${turnIdx + 1}`);
+        break;
+      }
+
+      // Add user message to conversation
+      const userMsg: AgentMessage = {
+        id: `msg-turn${turnIdx + 1}-user`,
+        role: 'user',
+        content: followUp.message,
+      };
+      conversationHistory.push(userMsg);
+
+      // Build multi-turn payload with full conversation
+      const turnPayload = buildMultiTurnPayload(
+        conversationHistory,
+        threadId || undefined,
+        undefined, // new runId per turn
+        testCase.context || [],
+        testCase.tools
+      );
+
+      // Execute turn
+      const turnRequest: ConnectorRequest = {
+        ...request,
+        payload: turnPayload,
+      };
+
+      const turnResult = await connector.execute(
+        endpoint,
+        turnRequest,
+        auth,
+        onStep,
+        options.onRawEvent
+      );
+
+      agentRunId = turnResult.runId || agentRunId;
+      allTrajectory.push(...turnResult.trajectory);
+      allRawEvents.push(...(turnResult.rawEvents || []));
+
+      const turnAgentResponse = extractAgentResponse(turnResult.trajectory);
+
+      // Record turn
+      turns.push({
+        turn: turnIdx + 1,
+        userMessage: followUp.message,
+        agentResponse: turnAgentResponse,
+        trajectory: turnResult.trajectory,
+      });
+
+      conversationHistory.push({
+        id: `msg-turn${turnIdx + 1}-agent`,
+        role: 'assistant',
+        content: turnAgentResponse,
+      });
+    }
+
+    debug('Eval', `Multi-turn conversation completed. Total turns: ${turns.length}`);
+
+    // Call holistic multi-turn judge
+    const models = getModels();
+    const modelConfig = models[modelId];
+    const judgeModelId = modelConfig?.model_id || modelId;
+    const judgeApiUrl = ENV_CONFIG.judgeApiUrl || 'http://localhost:4001/api/judge';
+
+    const judgeStartTime = Date.now();
+    const judgeResponse = await fetch(`${judgeApiUrl}/multi-turn`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        multiTurnConversation: {
+          turns,
+          idealAnswer: scenario.idealAnswer,
+          criticalComponents: scenario.criticalComponents,
+          scoringWeights: scenario.scoringWeights,
+        },
+        modelId: judgeModelId,
+      }),
+    });
+
+    if (!judgeResponse.ok) {
+      const errorData = await judgeResponse.json().catch(() => ({ error: 'Unknown error' }));
+      throw new Error(errorData.error || `Judge API returned ${judgeResponse.status}`);
+    }
+
+    const judgeResult = await judgeResponse.json();
+    const judgeLatencyMs = Date.now() - judgeStartTime;
+
+    const multiTurnResult: MultiTurnResult = {
+      turns,
+      totalTurns: turns.length,
+      acceptanceCriteriaMet: judgeResult.passFailStatus === 'passed',
+      rootCauseScore: judgeResult.rootCauseScore,
+      remediationScore: judgeResult.remediationScore,
+      contextRetentionScore: judgeResult.contextRetentionScore,
+      concisenessScore: judgeResult.concisenessScore,
+      reasoning: judgeResult.reasoning,
+    };
+
+    const llmJudgeResponse: LLMJudgeResponse = {
+      modelId: judgeModelId,
+      timestamp: new Date().toISOString(),
+      promptTokens: 0,
+      completionTokens: 0,
+      latencyMs: judgeLatencyMs,
+      rawResponse: judgeResult.reasoning,
+      parsedMetrics: {
+        accuracy: judgeResult.weightedScore,
+        faithfulness: 0,
+        latency_score: 0,
+        trajectory_alignment_score: 0,
+      },
+      improvementStrategies: judgeResult.improvementStrategies,
+    };
+
+    return {
+      id: reportId,
+      timestamp: new Date().toISOString(),
+      agentName: agent.name,
+      agentKey: agent.key,
+      modelName: modelId,
+      modelId,
+      testCaseId: testCase.id,
+      testCaseVersion: testCase.currentVersion ?? 1,
+      status: 'completed',
+      passFailStatus: judgeResult.passFailStatus,
+      trajectory: allTrajectory,
+      metrics: { accuracy: judgeResult.weightedScore },
+      llmJudgeReasoning: judgeResult.reasoning,
+      improvementStrategies: judgeResult.improvementStrategies || [],
+      llmJudgeResponse,
+      multiTurnResult,
+      runId: agentRunId || undefined,
+      rawEvents: allRawEvents,
+      connectorProtocol: connector.type as ConnectorProtocol,
+    };
+  } catch (error) {
+    console.error('[Eval] Multi-turn evaluation error:', error instanceof Error ? error.message : error);
+
+    // If we have partial results, evaluate what we have
+    const partialMultiTurnResult: MultiTurnResult | undefined = turns.length > 0 ? {
+      turns,
+      totalTurns: turns.length,
+      acceptanceCriteriaMet: false,
+      rootCauseScore: 0,
+      remediationScore: 0,
+      contextRetentionScore: 0,
+      concisenessScore: 0,
+      reasoning: `Evaluation failed after ${turns.length} turns: ${error instanceof Error ? error.message : 'Unknown error'}`,
+    } : undefined;
+
+    return {
+      id: reportId,
+      timestamp: new Date().toISOString(),
+      agentName: agent.name,
+      agentKey: agent.key,
+      modelName: modelId,
+      modelId,
+      testCaseId: testCase.id,
+      testCaseVersion: testCase.currentVersion ?? 1,
+      status: 'failed',
+      trajectory: allTrajectory,
+      metrics: { accuracy: 0 },
+      llmJudgeReasoning: `Multi-turn evaluation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      improvementStrategies: [],
+      multiTurnResult: partialMultiTurnResult,
+      rawEvents: allRawEvents,
+      connectorProtocol: connector.type as ConnectorProtocol,
+    };
+  }
+}
+
+/**
+ * Extract the agent's response text from a trajectory.
+ * Looks for the last 'response' or 'assistant' step.
+ */
+function extractAgentResponse(trajectory: TrajectoryStep[]): string {
+  const responseStep = [...trajectory].reverse().find(
+    s => s.type === 'response' || s.type === 'assistant'
+  );
+  return responseStep?.content || '';
 }
 
 /**

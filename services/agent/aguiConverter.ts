@@ -52,6 +52,7 @@ export class AGUIToTrajectoryConverter {
   private activeTools: Map<string, ToolState> = new Map();
   private hasEmittedAction = false;
   private runFinished = false;
+  private runFinishedResult: any = null;
   private pendingTextIsResponse = false;
   private runId: string | null = null;
   private threadId: string | null = null;
@@ -161,6 +162,7 @@ export class AGUIToTrajectoryConverter {
     this.activeTools.clear();
     this.hasEmittedAction = false;
     this.runFinished = false;
+    this.runFinishedResult = null;
     this.pendingTextIsResponse = false;
     this.isThinking = false;
     this.currentThinkingMessage = null;
@@ -177,10 +179,15 @@ export class AGUIToTrajectoryConverter {
 
   private handleRunFinished(event: any): TrajectoryStep[] {
     this.runFinished = true;
+    this.runFinishedResult = event.result ?? null;
     if (this.currentTextMessage) {
       this.pendingTextIsResponse = true;
     }
     return [];
+  }
+
+  getRunFinishedResult(): any {
+    return this.runFinishedResult;
   }
 
   private handleRunError(event: any): TrajectoryStep[] {

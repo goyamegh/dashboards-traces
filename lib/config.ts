@@ -29,6 +29,7 @@ export interface EnvConfig {
 
   // API endpoints (derived from backend URL)
   judgeApiUrl: string;
+  simulatorApiUrl: string;
   storageApiUrl: string;
   agentProxyUrl: string;
   openSearchProxyUrl: string;
@@ -102,6 +103,7 @@ export const ENV_CONFIG: EnvConfig = {
 
   // API endpoints (derived from backend URL)
   judgeApiUrl: `${BACKEND_URL}/api/judge`,
+  simulatorApiUrl: `${BACKEND_URL}/api/simulate-followup`,
   storageApiUrl: `${BACKEND_URL}/api/storage`,
   agentProxyUrl: `${BACKEND_URL}/api/agent`,
   openSearchProxyUrl: `${BACKEND_URL}/api/opensearch/logs`,
