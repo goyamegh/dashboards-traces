@@ -18,6 +18,7 @@ import { getStorageConfigFromFile } from './services/configService.js';
 import { getStorageConfigFromEnv } from './middleware/dataSourceConfig.js';
 import { setStorageModule } from './adapters/index.js';
 import { OpenSearchStorageModule } from './adapters/opensearch/StorageModule.js';
+import { ensureIndexes } from './services/indexInitializer.js';
 
 // Register server-side connectors (subprocess, claude-code)
 // This import has side effects that register connectors with the registry
@@ -56,6 +57,14 @@ async function initializeStorageBackend(): Promise<void> {
   try {
     // Verify connectivity before swapping the storage module
     await client.cluster.health({ timeout: '5s' });
+
+    // Auto-create indexes if missing, update mappings on existing ones
+    const indexResults = await ensureIndexes(client);
+    const created = Object.entries(indexResults).filter(([, r]) => r.status === 'created').map(([n]) => n);
+    const errors = Object.entries(indexResults).filter(([, r]) => r.status === 'error').map(([n]) => n);
+    if (created.length > 0) console.log(`[app] Created indexes: ${created.join(', ')}`);
+    if (errors.length > 0) console.warn(`[app] Failed to create indexes: ${errors.join(', ')}`);
+
     const osModule = new OpenSearchStorageModule(client);
     setStorageModule(osModule);
     console.log('[app] OpenSearch storage module activated');

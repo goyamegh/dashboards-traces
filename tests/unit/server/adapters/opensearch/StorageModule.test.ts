@@ -65,6 +65,16 @@ function make404Error() {
   return err;
 }
 
+// Helper to build index_not_found_exception error (different from a doc-level 404)
+function makeIndexNotFoundError() {
+  const err = new Error('index_not_found_exception') as any;
+  err.meta = {
+    statusCode: 404,
+    body: { error: { type: 'index_not_found_exception', reason: 'no such index [evals_test_cases]' } },
+  };
+  return err;
+}
+
 describe('OpenSearchStorageModule', () => {
   let mockClient: ReturnType<typeof createMockClient>;
   let mod: any; // OpenSearchStorageModule instance
@@ -179,6 +189,20 @@ describe('OpenSearchStorageModule', () => {
 
         expect(result.items).toHaveLength(0);
       });
+
+      it('should return empty results on index_not_found', async () => {
+        mockClient.search.mockRejectedValue(makeIndexNotFoundError());
+
+        const result = await mod.testCases.getAll();
+
+        expect(result).toEqual({ items: [], total: 0 });
+      });
+
+      it('should throw non-index-not-found errors', async () => {
+        mockClient.search.mockRejectedValue(new Error('Cluster down'));
+
+        await expect(mod.testCases.getAll()).rejects.toThrow('Cluster down');
+      });
     });
 
     describe('getById', () => {
@@ -245,6 +269,14 @@ describe('OpenSearchStorageModule', () => {
             }),
           })
         );
+      });
+
+      it('should return empty array on index_not_found', async () => {
+        mockClient.search.mockRejectedValue(makeIndexNotFoundError());
+
+        const result = await mod.testCases.getVersions('tc-1');
+
+        expect(result).toEqual([]);
       });
     });
 
@@ -475,6 +507,14 @@ describe('OpenSearchStorageModule', () => {
             body: expect.objectContaining({ size: 1000, from: 0 }),
           })
         );
+      });
+
+      it('should return empty results on index_not_found', async () => {
+        mockClient.search.mockRejectedValue(makeIndexNotFoundError());
+
+        const result = await mod.benchmarks.getAll();
+
+        expect(result).toEqual({ items: [], total: 0 });
       });
     });
 
@@ -709,6 +749,14 @@ describe('OpenSearchStorageModule', () => {
           })
         );
       });
+
+      it('should return empty results on index_not_found', async () => {
+        mockClient.search.mockRejectedValue(makeIndexNotFoundError());
+
+        const result = await mod.runs.getAll();
+
+        expect(result).toEqual({ items: [], total: 0 });
+      });
     });
 
     describe('getById', () => {
@@ -835,6 +883,14 @@ describe('OpenSearchStorageModule', () => {
 
         const callBody = mockClient.search.mock.calls[0][0].body;
         expect(callBody.query).toEqual({ match_all: {} });
+      });
+
+      it('should return empty results on index_not_found', async () => {
+        mockClient.search.mockRejectedValue(makeIndexNotFoundError());
+
+        const result = await mod.runs.search({ experimentId: 'bench-1' });
+
+        expect(result).toEqual({ items: [], total: 0 });
       });
     });
 
@@ -1016,6 +1072,41 @@ describe('OpenSearchStorageModule', () => {
         const result = await mod.runs.deleteAnnotation('report-1', 'ann-nonexistent');
 
         expect(result).toEqual({ deleted: false });
+      });
+    });
+
+    describe('countsByTestCase', () => {
+      it('should return counts from aggregation buckets', async () => {
+        mockClient.search.mockResolvedValue({
+          body: {
+            aggregations: {
+              by_test_case: {
+                buckets: [
+                  { key: 'tc-1', doc_count: 5 },
+                  { key: 'tc-2', doc_count: 3 },
+                ],
+              },
+            },
+          },
+        });
+
+        const result = await mod.runs.countsByTestCase();
+
+        expect(result).toEqual({ 'tc-1': 5, 'tc-2': 3 });
+      });
+
+      it('should return empty object on index_not_found', async () => {
+        mockClient.search.mockRejectedValue(makeIndexNotFoundError());
+
+        const result = await mod.runs.countsByTestCase();
+
+        expect(result).toEqual({});
+      });
+
+      it('should throw non-index-not-found errors', async () => {
+        mockClient.search.mockRejectedValue(new Error('Cluster down'));
+
+        await expect(mod.runs.countsByTestCase()).rejects.toThrow('Cluster down');
       });
     });
   });

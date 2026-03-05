@@ -50,6 +50,16 @@ function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
+/**
+ * Detect index-not-found errors from OpenSearch.
+ * Returns true if the error indicates the index doesn't exist yet,
+ * allowing callers to return empty results instead of throwing.
+ */
+function isIndexNotFound(error: any): boolean {
+  return error.meta?.statusCode === 404 ||
+    error.meta?.body?.error?.type === 'index_not_found_exception';
+}
+
 // ============================================================================
 // Test Case Operations
 // ============================================================================
@@ -63,16 +73,22 @@ class OpenSearchTestCaseOperations implements ITestCaseOperations {
     const size = options?.size ?? 10000;
     const from = options?.from ?? 0;
 
-    // Fetch all docs, then group by ID to return latest version of each
-    const result = await this.client.search({
-      index: this.index,
-      body: {
-        size,
-        from,
-        sort: [{ createdAt: { order: 'desc' } }],
-        query: { match_all: {} },
-      },
-    });
+    let result;
+    try {
+      // Fetch all docs, then group by ID to return latest version of each
+      result = await this.client.search({
+        index: this.index,
+        body: {
+          size,
+          from,
+          sort: [{ createdAt: { order: 'desc' } }],
+          query: { match_all: {} },
+        },
+      });
+    } catch (error: any) {
+      if (isIndexNotFound(error)) return { items: [], total: 0 };
+      throw error;
+    }
 
     const hits = result.body.hits?.hits || [];
     const allDocs = hitsToSources<TestCase & { version?: number }>(hits);
@@ -119,16 +135,21 @@ class OpenSearchTestCaseOperations implements ITestCaseOperations {
   }
 
   async getVersions(id: string): Promise<TestCase[]> {
-    const result = await this.client.search({
-      index: this.index,
-      body: {
-        size: 100,
-        sort: [{ version: { order: 'desc' } }],
-        query: { term: { id } },
-      },
-    });
+    try {
+      const result = await this.client.search({
+        index: this.index,
+        body: {
+          size: 100,
+          sort: [{ version: { order: 'desc' } }],
+          query: { term: { id } },
+        },
+      });
 
-    return hitsToSources<TestCase>(result.body.hits?.hits || []);
+      return hitsToSources<TestCase>(result.body.hits?.hits || []);
+    } catch (error: any) {
+      if (isIndexNotFound(error)) return [];
+      throw error;
+    }
   }
 
   async getVersion(id: string, version: number): Promise<TestCase | null> {
@@ -269,22 +290,27 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
     const size = options?.size ?? 1000;
     const from = options?.from ?? 0;
 
-    const result = await this.client.search({
-      index: this.index,
-      body: {
-        size,
-        from,
-        sort: [{ createdAt: { order: 'desc' } }],
-        query: { match_all: {} },
-      },
-    });
+    try {
+      const result = await this.client.search({
+        index: this.index,
+        body: {
+          size,
+          from,
+          sort: [{ createdAt: { order: 'desc' } }],
+          query: { match_all: {} },
+        },
+      });
 
-    const items = hitsToSources<Benchmark>(result.body.hits?.hits || []);
-    const total = typeof result.body.hits?.total === 'object'
-      ? result.body.hits.total.value
-      : result.body.hits?.total ?? 0;
+      const items = hitsToSources<Benchmark>(result.body.hits?.hits || []);
+      const total = typeof result.body.hits?.total === 'object'
+        ? result.body.hits.total.value
+        : result.body.hits?.total ?? 0;
 
-    return { items, total };
+      return { items, total };
+    } catch (error: any) {
+      if (isIndexNotFound(error)) return { items: [], total: 0 };
+      throw error;
+    }
   }
 
   async getById(id: string): Promise<Benchmark | null> {
@@ -460,22 +486,27 @@ class OpenSearchRunOperations implements IRunOperations {
     const size = options?.size ?? 100;
     const from = options?.from ?? 0;
 
-    const result = await this.client.search({
-      index: this.index,
-      body: {
-        size,
-        from,
-        sort: [{ createdAt: { order: 'desc' } }],
-        query: { match_all: {} },
-      },
-    });
+    try {
+      const result = await this.client.search({
+        index: this.index,
+        body: {
+          size,
+          from,
+          sort: [{ createdAt: { order: 'desc' } }],
+          query: { match_all: {} },
+        },
+      });
 
-    const items = hitsToSources<TestCaseRun>(result.body.hits?.hits || []);
-    const total = typeof result.body.hits?.total === 'object'
-      ? result.body.hits.total.value
-      : result.body.hits?.total ?? 0;
+      const items = hitsToSources<TestCaseRun>(result.body.hits?.hits || []);
+      const total = typeof result.body.hits?.total === 'object'
+        ? result.body.hits.total.value
+        : result.body.hits?.total ?? 0;
 
-    return { items, total };
+      return { items, total };
+    } catch (error: any) {
+      if (isIndexNotFound(error)) return { items: [], total: 0 };
+      throw error;
+    }
   }
 
   async getById(id: string): Promise<TestCaseRun | null> {
@@ -560,22 +591,27 @@ class OpenSearchRunOperations implements IRunOperations {
     const size = options?.size ?? 100;
     const from = options?.from ?? 0;
 
-    const result = await this.client.search({
-      index: this.index,
-      body: {
-        size,
-        from,
-        sort: [{ createdAt: { order: 'desc' } }],
-        query,
-      },
-    });
+    try {
+      const result = await this.client.search({
+        index: this.index,
+        body: {
+          size,
+          from,
+          sort: [{ createdAt: { order: 'desc' } }],
+          query,
+        },
+      });
 
-    const items = hitsToSources<TestCaseRun>(result.body.hits?.hits || []);
-    const total = typeof result.body.hits?.total === 'object'
-      ? result.body.hits.total.value
-      : result.body.hits?.total ?? 0;
+      const items = hitsToSources<TestCaseRun>(result.body.hits?.hits || []);
+      const total = typeof result.body.hits?.total === 'object'
+        ? result.body.hits.total.value
+        : result.body.hits?.total ?? 0;
 
-    return { items, total };
+      return { items, total };
+    } catch (error: any) {
+      if (isIndexNotFound(error)) return { items: [], total: 0 };
+      throw error;
+    }
   }
 
   async getByTestCase(testCaseId: string, size?: number, from?: number): Promise<{ items: TestCaseRun[]; total: number }> {
@@ -690,24 +726,29 @@ class OpenSearchRunOperations implements IRunOperations {
   }
 
   async countsByTestCase(): Promise<Record<string, number>> {
-    const result = await this.client.search({
-      index: this.index,
-      body: {
-        size: 0,
-        aggs: {
-          by_test_case: {
-            terms: { field: 'testCaseId', size: 10000 },
+    try {
+      const result = await this.client.search({
+        index: this.index,
+        body: {
+          size: 0,
+          aggs: {
+            by_test_case: {
+              terms: { field: 'testCaseId', size: 10000 },
+            },
           },
         },
-      },
-    });
-    const buckets: Array<{ key: string; doc_count: number }> =
-      (result.body.aggregations as any)?.by_test_case?.buckets ?? [];
-    const counts: Record<string, number> = {};
-    for (const bucket of buckets) {
-      if (bucket.key) counts[bucket.key] = bucket.doc_count;
+      });
+      const buckets: Array<{ key: string; doc_count: number }> =
+        (result.body.aggregations as any)?.by_test_case?.buckets ?? [];
+      const counts: Record<string, number> = {};
+      for (const bucket of buckets) {
+        if (bucket.key) counts[bucket.key] = bucket.doc_count;
+      }
+      return counts;
+    } catch (error: any) {
+      if (isIndexNotFound(error)) return {};
+      throw error;
     }
-    return counts;
   }
 }
 

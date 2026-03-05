@@ -85,6 +85,11 @@ jest.mock('@/server/adapters/index', () => ({
   FileStorageModule: jest.fn().mockImplementation(() => ({ type: 'file' })),
 }));
 
+// Mock indexInitializer
+jest.mock('@/server/services/indexInitializer', () => ({
+  ensureIndexes: jest.fn(),
+}));
+
 // Mock configService
 jest.mock('@/server/services/configService', () => ({
   getConfigStatus: jest.fn(),
@@ -96,6 +101,10 @@ jest.mock('@/server/services/configService', () => ({
 
 // Import mocked adapter functions
 import { getStorageModule, testStorageConnection, isFileStorage, setStorageModule, OpenSearchStorageModule, FileStorageModule } from '@/server/adapters/index';
+
+// Import mocked indexInitializer
+import { ensureIndexes } from '@/server/services/indexInitializer';
+const mockEnsureIndexes = ensureIndexes as jest.Mock;
 
 // Import mocked configService functions
 import {
@@ -215,6 +224,13 @@ describe('Admin Storage Routes', () => {
     mockIsFileStorage.mockReturnValue(false);
     // Default: getStorageModule returns the mock storage module
     mockGetStorageModule.mockReturnValue(mockStorageModule);
+    // Default: ensureIndexes returns success for all indexes
+    mockEnsureIndexes.mockResolvedValue({
+      'test-cases-index': { status: 'created' },
+      'experiments-index': { status: 'created' },
+      'runs-index': { status: 'created' },
+      'analytics-index': { status: 'created' },
+    });
     // Default: getSettings returns typical index settings
     mockIndicesGetSettings.mockResolvedValue({
       body: { 'experiments-index': { settings: { index: { number_of_shards: '1', number_of_replicas: '1' } } } },
@@ -308,111 +324,29 @@ describe('Admin Storage Routes', () => {
   // ============================================================================
 
   describe('POST /api/storage/init-indexes', () => {
-    it('should create indexes that do not exist', async () => {
-      mockIndicesExists.mockResolvedValue({ body: false });
-      mockIndicesCreate.mockResolvedValue({ body: { acknowledged: true } });
+    it('should delegate to ensureIndexes and return results', async () => {
+      mockEnsureIndexes.mockResolvedValue({
+        'test-cases-index': { status: 'created' },
+        'experiments-index': { status: 'exists', settingsUpdated: true, mappingsUpdated: true },
+        'runs-index': { status: 'created' },
+        'analytics-index': { status: 'error', error: 'Cluster read-only' },
+      });
 
       const { req, res, jsonPromise } = createMocks();
       const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/init-indexes');
 
       await callHandler(handler, req, res, jsonPromise);
 
-      expect(mockIndicesExists).toHaveBeenCalled();
-      expect(mockIndicesCreate).toHaveBeenCalled();
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          success: true,
-          results: expect.objectContaining({
-            'test-cases-index': { status: 'created' },
-          }),
-        })
-      );
-    });
-
-    it('should update settings and mappings for indexes that already exist', async () => {
-      mockIndicesExists.mockResolvedValue({ body: true });
-      mockIndicesPutSettings.mockResolvedValue({ body: { acknowledged: true } });
-      mockIndicesPutMapping.mockResolvedValue({ body: { acknowledged: true } });
-
-      const { req, res, jsonPromise } = createMocks();
-      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/init-indexes');
-
-      await callHandler(handler, req, res, jsonPromise);
-
-      expect(mockIndicesCreate).not.toHaveBeenCalled();
-      // experiments-index has settings, so putSettings should be called
-      expect(mockIndicesPutSettings).toHaveBeenCalled();
-      expect(mockIndicesPutMapping).toHaveBeenCalled();
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          success: true,
-          results: expect.objectContaining({
-            'experiments-index': expect.objectContaining({
-              status: 'exists',
-              settingsUpdated: true,
-              mappingsUpdated: true,
-            }),
-          }),
-        })
-      );
-    });
-
-    it('should handle settings update failure gracefully with warnings', async () => {
-      mockIndicesExists.mockResolvedValue({ body: true });
-      mockIndicesPutSettings.mockRejectedValue(new Error('Settings update blocked'));
-      mockIndicesPutMapping.mockResolvedValue({ body: { acknowledged: true } });
-
-      const { req, res, jsonPromise } = createMocks();
-      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/init-indexes');
-
-      await callHandler(handler, req, res, jsonPromise);
-
-      const response = (res.json as jest.Mock).mock.calls[0][0];
-      // experiments-index has settings that fail — should have warning
-      expect(response.results['experiments-index'].status).toBe('exists');
-      expect(response.results['experiments-index'].warnings).toEqual(
-        expect.arrayContaining([expect.stringContaining('Failed to update settings')])
-      );
-      // mappings should still succeed
-      expect(response.results['experiments-index'].mappingsUpdated).toBe(true);
-    });
-
-    it('should handle mappings update failure gracefully with warnings', async () => {
-      mockIndicesExists.mockResolvedValue({ body: true });
-      mockIndicesPutSettings.mockResolvedValue({ body: { acknowledged: true } });
-      mockIndicesPutMapping.mockRejectedValue(new Error('Mapping conflict'));
-
-      const { req, res, jsonPromise } = createMocks();
-      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/init-indexes');
-
-      await callHandler(handler, req, res, jsonPromise);
-
-      const response = (res.json as jest.Mock).mock.calls[0][0];
-      // experiments-index has settings that succeed but mappings fail
-      expect(response.results['experiments-index'].status).toBe('exists');
-      expect(response.results['experiments-index'].settingsUpdated).toBe(true);
-      expect(response.results['experiments-index'].warnings).toEqual(
-        expect.arrayContaining([expect.stringContaining('Failed to update mappings')])
-      );
-    });
-
-    it('should handle index creation errors', async () => {
-      mockIndicesExists.mockResolvedValue({ body: false });
-      mockIndicesCreate.mockRejectedValue(new Error('Index creation failed'));
-
-      const { req, res, jsonPromise } = createMocks();
-      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/init-indexes');
-
-      await callHandler(handler, req, res, jsonPromise);
-
-      expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({
-          success: true,
-          results: expect.objectContaining({
-            'test-cases-index': { status: 'error', error: 'Index creation failed' },
-          }),
-        })
-      );
+      expect(mockEnsureIndexes).toHaveBeenCalledWith(mockClient);
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        results: {
+          'test-cases-index': { status: 'created' },
+          'experiments-index': { status: 'exists', settingsUpdated: true, mappingsUpdated: true },
+          'runs-index': { status: 'created' },
+          'analytics-index': { status: 'error', error: 'Cluster read-only' },
+        },
+      });
     });
 
     it('should return error when storage not available (file storage mode)', async () => {
@@ -427,6 +361,7 @@ describe('Admin Storage Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         error: 'OpenSearch storage not configured. File storage does not require index initialization.',
       });
+      expect(mockEnsureIndexes).not.toHaveBeenCalled();
     });
   });
 
@@ -742,7 +677,13 @@ describe('Admin Storage Routes', () => {
   });
 
   describe('POST /api/storage/config/storage', () => {
-    it('should save storage config and switch storage module', async () => {
+    it('should save storage config, auto-create indexes, and switch storage module', async () => {
+      const indexResults = {
+        'test-cases-index': { status: 'created' },
+        'experiments-index': { status: 'created' },
+      };
+      mockEnsureIndexes.mockResolvedValue(indexResults);
+
       const { req, res } = createMocks({}, {
         endpoint: 'https://new-storage.com',
         username: 'user',
@@ -758,12 +699,14 @@ describe('Admin Storage Routes', () => {
         password: 'pass',
         tlsSkipVerify: undefined,
       });
+      expect(mockEnsureIndexes).toHaveBeenCalled();
       expect(MockOpenSearchStorageModule).toHaveBeenCalled();
       expect(mockSetStorageModule).toHaveBeenCalledWith(expect.any(Object));
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         message: 'Storage configuration saved',
         connected: true,
+        indexResults,
       });
     });
 

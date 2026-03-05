@@ -8,7 +8,7 @@
  * Handles health checks, index initialization, stats, and backfill operations.
  *
  * Uses the storage adapter for health checks and analytics backfill.
- * OpenSearch-specific operations (init-indexes) still use raw client when available.
+ * Index initialization is delegated to the indexInitializer service.
  */
 
 import { Router, Request, Response } from 'express';
@@ -18,6 +18,7 @@ import { getStorageModule, testStorageConnection, isFileStorage, setStorageModul
 import { Client } from '@opensearch-project/opensearch';
 import { resolveStorageConfig } from '../../middleware/dataSourceConfig.js';
 import { debug } from '@/lib/debug';
+import { ensureIndexes } from '../../services/indexInitializer.js';
 import {
   getConfigStatus,
   saveStorageConfig,
@@ -105,56 +106,6 @@ router.post('/api/storage/test-connection', async (req: Request, res: Response) 
 // Initialize Indexes (OpenSearch-specific)
 // ============================================================================
 
-/**
- * Update settings and mappings on an existing index.
- * Both operations are best-effort — failures are returned as warnings.
- */
-async function updateExistingIndex(
-  client: any,
-  indexName: string,
-  mapping: { settings?: Record<string, any>; mappings?: Record<string, any> }
-): Promise<{ settingsUpdated?: boolean; mappingsUpdated?: boolean; warnings?: string[] }> {
-  const warnings: string[] = [];
-  let settingsUpdated = false;
-  let mappingsUpdated = false;
-
-  // Update settings (e.g., field limit)
-  if (mapping.settings) {
-    try {
-      const dynamicSettings: Record<string, any> = {};
-      if (mapping.settings['index.mapping.total_fields.limit'] != null) {
-        dynamicSettings['mapping.total_fields.limit'] = mapping.settings['index.mapping.total_fields.limit'];
-      }
-      if (Object.keys(dynamicSettings).length > 0) {
-        await client.indices.putSettings({ index: indexName, body: { index: dynamicSettings } });
-        settingsUpdated = true;
-        debug('StorageAPI', `Updated settings for index: ${indexName}`);
-      }
-    } catch (error: any) {
-      warnings.push(`Failed to update settings: ${error.message}`);
-      debug('StorageAPI', `Failed to update settings for ${indexName}: ${error.message}`);
-    }
-  }
-
-  // Update mappings (add new field definitions)
-  if (mapping.mappings) {
-    try {
-      await client.indices.putMapping({ index: indexName, body: mapping.mappings });
-      mappingsUpdated = true;
-      debug('StorageAPI', `Updated mappings for index: ${indexName}`);
-    } catch (error: any) {
-      warnings.push(`Failed to update mappings: ${error.message}`);
-      debug('StorageAPI', `Failed to update mappings for ${indexName}: ${error.message}`);
-    }
-  }
-
-  return {
-    ...(settingsUpdated ? { settingsUpdated } : {}),
-    ...(mappingsUpdated ? { mappingsUpdated } : {}),
-    ...(warnings.length > 0 ? { warnings } : {}),
-  };
-}
-
 router.post(
   '/api/storage/init-indexes',
   asyncHandler(async (req: Request, res: Response) => {
@@ -163,26 +114,7 @@ router.post(
     }
 
     const client = requireStorageClient(req);
-    const results: Record<string, any> = {};
-
-    for (const [indexName, mapping] of Object.entries(INDEX_MAPPINGS)) {
-      try {
-        // Check if index exists
-        const exists = await client.indices.exists({ index: indexName });
-        if (exists.body) {
-          const updateResult = await updateExistingIndex(client, indexName, mapping);
-          results[indexName] = { status: 'exists', ...updateResult };
-          continue;
-        }
-
-        await client.indices.create({ index: indexName, body: mapping as any });
-        results[indexName] = { status: 'created' };
-        debug('StorageAPI', `Created index: ${indexName}`);
-      } catch (error: any) {
-        results[indexName] = { status: 'error', error: error.message };
-        console.error(`[StorageAPI] Failed to create index ${indexName}:`, error.message);
-      }
-    }
+    const results = await ensureIndexes(client);
 
     res.json({ success: true, results });
   })
@@ -428,9 +360,13 @@ router.post('/api/storage/config/storage', async (req: Request, res: Response) =
       clientConfig.auth = { username, password };
     }
     const client = new Client(clientConfig);
+
+    // Auto-create indexes on the newly attached cluster
+    const indexResults = await ensureIndexes(client);
+
     setStorageModule(new OpenSearchStorageModule(client));
 
-    res.json({ success: true, message: 'Storage configuration saved', connected: true });
+    res.json({ success: true, message: 'Storage configuration saved', connected: true, indexResults });
   } catch (error: any) {
     console.error('[StorageAPI] Failed to save storage config:', error.message);
     res.status(500).json({ error: error.message });
