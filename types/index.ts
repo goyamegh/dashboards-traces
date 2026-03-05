@@ -675,7 +675,8 @@ export interface Benchmark {
 
 // Progress callback for benchmark runner
 export interface BenchmarkProgress {
-  currentTestCaseIndex: number;  // Kept for backward compat (= completedCount - 1)
+  currentTestCaseIndex: number;  // Kept for backward compat
+  startedCount?: number;         // Number of test cases that have begun execution
   completedCount?: number;       // Actual count of finished test cases
   totalTestCases: number;
   currentRunId: string;

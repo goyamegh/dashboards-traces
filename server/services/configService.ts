@@ -147,8 +147,10 @@ export function saveStorageConfig(storageConfig: StorageClusterConfig): void {
   const existingStorage = (existing.storage as any) || {};
 
   // Use ?? so that an absent/undefined field in the incoming payload falls back
-  // to whatever is already stored.  The form never pre-fills passwords, so
-  // storageConfig.password is undefined on a "change endpoint only" save.
+  // to whatever is already stored. The form converts sentinel and empty values
+  // to undefined before sending. Note: if called directly with password: "",
+  // the empty string passes through ?? but is omitted by the falsy spread
+  // below, effectively clearing the stored credential. This is intentional.
   const resolvedUsername = storageConfig.username ?? existingStorage.username;
   const resolvedPassword = storageConfig.password ?? existingStorage.password;
 

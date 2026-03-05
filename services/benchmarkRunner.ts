@@ -169,9 +169,18 @@ export async function executeRun(
   const allTestCases = await getAllTestCasesWithClient(client);
   const testCaseMap = new Map(allTestCases.map((tc: any) => [tc.id, tc]));
 
-  // Mutable counter for completed test cases (safe — JS is single-threaded,
-  // increments happen at await boundaries between microtasks)
+  // Mutable counters for tracking progress across concurrent tasks.
+  // JS is single-threaded so ++ is atomic within a microtask. With concurrency > 1,
+  // multiple tasks may read the same completedCount in progress events before any
+  // has incremented it — intermediate progress may show duplicate values but the
+  // final tally is always correct. startedCount is incremented synchronously before
+  // each task's first await, providing a unique index per task.
   let completedCount = 0;
+  let startedCount = 0;
+
+  // Shared throttle signal: when any task hits a rate-limit error,
+  // subsequent task starts wait until this timestamp expires.
+  let throttleUntil = 0;
 
   try {
     // Process each test case with bounded concurrency
@@ -182,6 +191,12 @@ export async function executeRun(
         // Check for cancellation before starting
         if (cancellationToken?.isCancelled) {
           return;
+        }
+
+        // Wait if a sibling task recently hit a rate-limit error
+        const now = Date.now();
+        if (now < throttleUntil) {
+          await new Promise(r => setTimeout(r, throttleUntil - now));
         }
 
         const testCase = testCaseMap.get(testCaseId);
@@ -200,8 +215,10 @@ export async function executeRun(
         }
 
         // Report progress — this test case is starting
+        startedCount++;
         onProgress({
-          currentTestCaseIndex: completedCount,
+          currentTestCaseIndex: startedCount - 1,
+          startedCount,
           completedCount,
           totalTestCases,
           currentRunId: run.id,
@@ -268,9 +285,10 @@ export async function executeRun(
 
           completedCount++;
 
-          // Add a brief delay on throttling errors to prevent rapid-fire replacement requests
+          // Signal sibling tasks to back off, then wait ourselves
           if (errorMsg.includes('ThrottlingException') || errorMsg.includes('rate limit') || errorMsg.includes('429')) {
-            await new Promise(r => setTimeout(r, 2000));
+            throttleUntil = Date.now() + 5000;
+            await new Promise(r => setTimeout(r, 5000));
           }
 
           // Persist failure progress to OpenSearch (fire-and-forget with logging)

@@ -100,6 +100,7 @@ export function getIndexMappings(): IndexMappings {
               results: { type: 'object', enabled: false },
               testCaseSnapshots: { type: 'object', enabled: false },
               stats: { type: 'object', enabled: false },
+              performanceMetrics: { type: 'object', enabled: false },
             },
           },
         },

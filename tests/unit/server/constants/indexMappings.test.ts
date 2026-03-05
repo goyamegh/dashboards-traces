@@ -124,6 +124,7 @@ describe('indexMappings', () => {
       expect(runsProps.results).toEqual({ type: 'object', enabled: false });
       expect(runsProps.testCaseSnapshots).toEqual({ type: 'object', enabled: false });
       expect(runsProps.stats).toEqual({ type: 'object', enabled: false });
+      expect(runsProps.performanceMetrics).toEqual({ type: 'object', enabled: false });
     });
 
     it('should have explicit scalar field types in runs mapping', () => {

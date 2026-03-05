@@ -597,7 +597,7 @@ describe('Experiment Runner', () => {
       expect(cancelledProgress).toBeDefined();
     });
 
-    it('should include completedCount in progress events', async () => {
+    it('should include completedCount and startedCount in progress events', async () => {
       const testCase1 = createTestCase('tc-1');
       const testCase2 = createTestCase('tc-2');
       const experiment = createExperiment(['tc-1', 'tc-2']);
@@ -613,16 +613,77 @@ describe('Experiment Runner', () => {
       const progressUpdates: BenchmarkProgress[] = [];
       await executeRun(experiment, run, (p) => progressUpdates.push(p), { client: mockClient });
 
-      // Each progress event should have completedCount
-      for (const p of progressUpdates) {
+      // Each running progress event should have startedCount and completedCount
+      const runningUpdates = progressUpdates.filter(p => p.status === 'running');
+      for (const p of runningUpdates) {
         expect(p.completedCount).toBeDefined();
         expect(typeof p.completedCount).toBe('number');
+        expect(p.startedCount).toBeDefined();
+        expect(typeof p.startedCount).toBe('number');
       }
 
       // Final progress should have completedCount = 2
       const finalProgress = progressUpdates[progressUpdates.length - 1];
       expect(finalProgress.completedCount).toBe(2);
     });
+
+    it('should assign unique currentTestCaseIndex values under concurrency > 1', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const testCase2 = createTestCase('tc-2');
+      const testCase3 = createTestCase('tc-3');
+      const experiment = createExperiment(['tc-1', 'tc-2', 'tc-3']);
+      const run: BenchmarkRun = {
+        ...createBenchmarkRun('run-1'),
+        concurrency: 3,
+      };
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1, testCase2, testCase3]);
+      mockRunEvaluationWithConnector.mockImplementation(async () => {
+        await new Promise(r => setTimeout(r, 20));
+        return { id: 'report-1', trajectory: [], metrics: {} };
+      });
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      const progressUpdates: BenchmarkProgress[] = [];
+      await executeRun(experiment, run, (p) => progressUpdates.push(p), { client: mockClient });
+
+      // Extract the running progress events (one per test case start)
+      const runningUpdates = progressUpdates.filter(p => p.status === 'running');
+      const indexes = runningUpdates.map(p => p.currentTestCaseIndex);
+
+      // Each started task should get a unique index
+      expect(new Set(indexes).size).toBe(indexes.length);
+    });
+
+    it('should propagate shared throttle delay to concurrent tasks', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const testCase2 = createTestCase('tc-2');
+      const testCase3 = createTestCase('tc-3');
+      const experiment = createExperiment(['tc-1', 'tc-2', 'tc-3']);
+      const run: BenchmarkRun = {
+        ...createBenchmarkRun('run-1'),
+        concurrency: 1,
+      };
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1, testCase2, testCase3]);
+
+      // First call hits throttle, rest succeed
+      mockRunEvaluationWithConnector
+        .mockRejectedValueOnce(new Error('ThrottlingException: Rate exceeded'))
+        .mockResolvedValueOnce({ id: 'report-2', trajectory: [], metrics: {} })
+        .mockResolvedValueOnce({ id: 'report-3', trajectory: [], metrics: {} });
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      const startTime = Date.now();
+      await executeRun(experiment, run, jest.fn(), { client: mockClient });
+      const elapsed = Date.now() - startTime;
+
+      // The throttle delay should have added at least 5s
+      expect(elapsed).toBeGreaterThanOrEqual(4900);
+
+      // All test cases should have results
+      expect(mockRunEvaluationWithConnector).toHaveBeenCalledTimes(3);
+    }, 15000);
 
     it('should add throttle delay on rate limit errors during parallel execution', async () => {
       const testCase1 = createTestCase('tc-1');
