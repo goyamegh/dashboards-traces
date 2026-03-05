@@ -101,7 +101,11 @@ function isContainerSpan(span: CategorizedSpan): boolean {
  * Adapts to different agent span structures.
  */
 function findMainFlowSpans(spanTree: CategorizedSpan[]): CategorizedSpan[] {
-  const roots = spanTree.filter(s => !s.parentSpanId);
+  // spanTree contains top-level spans from processSpansIntoTree().
+  // These are tree roots even if they have a parentSpanId pointing to a span
+  // outside the fetched data (e.g., a parent in a different service/trace context).
+  // Use all top-level spans as roots instead of filtering by !parentSpanId.
+  const roots = spanTree;
 
   // Case 1: Single root that's a container → main flow is its children
   if (roots.length === 1 && isContainerSpan(roots[0])) {

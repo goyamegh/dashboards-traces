@@ -287,12 +287,12 @@ const FlowPanel: React.FC<{
   onSelectSpan: (span: CategorizedSpan | null) => void;
 }> = ({ spanTree, timeRange, runName, spanCount, selectedSpan, onSelectSpan }) => {
   return (
-    <div className="flex-1 flex flex-col border-r last:border-r-0">
-      <div className="px-3 py-2 bg-muted/50 border-b text-xs font-medium text-center">
+    <div className="flex-1 flex flex-col min-h-0 border-r last:border-r-0">
+      <div className="px-3 py-2 bg-muted/50 border-b text-xs font-medium text-center shrink-0">
         {runName}
         <span className="text-muted-foreground ml-2">({spanCount} spans)</span>
       </div>
-      <div className="flex-1 relative">
+      <div className="flex-1 min-h-0 relative">
         <ReactFlowProvider>
           <FlowPanelInner
             spanTree={spanTree}
