@@ -11,7 +11,7 @@
  */
 
 import { testCaseStorage as opensearchTestCases, StorageTestCase } from './opensearchClient';
-import type { TestCase, TestCaseVersion, AgentContextItem, AgentToolDefinition, Difficulty } from '@/types';
+import type { TestCase, TestCaseVersion, AgentContextItem, AgentToolDefinition, Difficulty, MultiTurnScenario } from '@/types';
 import { buildLabels, parseLabels } from '@/lib/labels';
 
 // Input type for creating a test case
@@ -42,6 +42,7 @@ export interface CreateTestCaseInput {
     question: string;
     businessValue: string;
   }[];
+  multiTurnScenario?: MultiTurnScenario;
   tags?: string[];
   author?: string;
   isPromoted?: boolean;
@@ -73,6 +74,7 @@ export interface UpdateTestCaseInput {
     question: string;
     businessValue: string;
   }[];
+  multiTurnScenario?: MultiTurnScenario;
   tags?: string[];
   isPromoted?: boolean;
 }
@@ -116,6 +118,7 @@ function toTestCase(stored: StorageTestCase): TestCase {
     expectedPPL: stored.expectedPPL,
     expectedOutcomes: stored.expectedOutcomes,
     expectedTrajectory: (stored.expectedTrajectory || []) as TestCase['expectedTrajectory'],
+    multiTurnScenario: stored.multiTurnScenario as TestCase['multiTurnScenario'],
   };
 }
 
@@ -150,6 +153,7 @@ function toStorageFormat(testCase: CreateTestCaseInput | UpdateTestCaseInput): P
     expectedPPL: testCase.expectedPPL,
     expectedOutcomes: testCase.expectedOutcomes,
     expectedTrajectory: testCase.expectedTrajectory,
+    multiTurnScenario: testCase.multiTurnScenario,
     labels,
     // Legacy fields - kept for backward compatibility
     category: testCase.category,
@@ -317,6 +321,7 @@ class AsyncTestCaseStorage {
       expectedPPL: s.expectedPPL,
       expectedOutcomes: s.expectedOutcomes,  // NEW
       expectedTrajectory: (s.expectedTrajectory || []) as TestCaseVersion['expectedTrajectory'],
+      multiTurnScenario: s.multiTurnScenario as TestCaseVersion['multiTurnScenario'],
     }));
   }
 
@@ -336,6 +341,7 @@ class AsyncTestCaseStorage {
       expectedPPL: stored.expectedPPL,
       expectedOutcomes: stored.expectedOutcomes,  // NEW
       expectedTrajectory: (stored.expectedTrajectory || []) as TestCaseVersion['expectedTrajectory'],
+      multiTurnScenario: stored.multiTurnScenario as TestCaseVersion['multiTurnScenario'],
     };
   }
 

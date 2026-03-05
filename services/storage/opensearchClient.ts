@@ -61,6 +61,7 @@ export interface StorageTestCase {
   expectedPPL?: string;  // Expected PPL query
   expectedOutcomes?: string[];  // NEW: Simple text descriptions of expected behavior
   expectedTrajectory?: unknown[];  // Legacy: step-by-step trajectory
+  multiTurnScenario?: unknown;  // Multi-turn evaluation scenario
   labels?: string[];  // Unified labels system (replaces category/subcategory/difficulty)
   category?: string;  // Legacy - kept for backward compatibility
   subcategory?: string;  // Legacy - kept for backward compatibility

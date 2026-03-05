@@ -89,7 +89,7 @@ export const testCasesArraySchema = z.array(testCaseSchema).min(1, 'Array cannot
  */
 export type ValidatedTestCaseInput = Pick<
   CreateTestCaseInput,
-  'name' | 'description' | 'category' | 'subcategory' | 'difficulty' | 'initialPrompt' | 'context' | 'expectedOutcomes'
+  'name' | 'description' | 'category' | 'subcategory' | 'difficulty' | 'initialPrompt' | 'context' | 'expectedOutcomes' | 'multiTurnScenario'
 >;
 
 // Form state for the TestCaseEditor component
