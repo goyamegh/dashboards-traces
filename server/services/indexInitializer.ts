@@ -13,6 +13,8 @@
 import { Client } from '@opensearch-project/opensearch';
 import { INDEX_MAPPINGS } from '../constants/indexMappings';
 import { debug } from '@/lib/debug';
+import { validateIndexMappings, type ValidationResult } from './mappingValidator';
+import { fixIndexMappings, type FixProgress } from './mappingFixer';
 
 export interface IndexInitResult {
   status: 'created' | 'exists' | 'error';
@@ -99,4 +101,62 @@ export async function ensureIndexes(client: Client): Promise<Record<string, Inde
   }
 
   return results;
+}
+
+// ============================================================================
+// Enhanced Initialization with Validation + Auto-Fix
+// ============================================================================
+
+export interface IndexSetupResult {
+  indexResults: Record<string, IndexInitResult>;
+  validationResults: ValidationResult[];
+  fixResults?: FixProgress[];
+}
+
+/**
+ * Ensure indexes exist, validate mappings, and auto-fix incompatibilities.
+ *
+ * Flow:
+ * 1. Call ensureIndexes() — creates missing indexes, adds new fields to existing ones
+ * 2. Call validateIndexMappings() — check for incompatible field types (e.g. text vs keyword)
+ * 3. If any index has incompatible mappings, reindex to fix them
+ *
+ * The onFixProgress callback is called with per-index progress during the fix phase,
+ * enabling SSE streaming to the UI or console logging on startup.
+ */
+export async function ensureIndexesWithValidation(
+  client: Client,
+  onFixProgress?: (progress: FixProgress[]) => void
+): Promise<IndexSetupResult> {
+  // Step 1: Create missing indexes, update settings/mappings on existing
+  const indexResults = await ensureIndexes(client);
+
+  // Step 2: Validate actual mappings against expected types
+  const validationResults = await validateIndexMappings(client);
+
+  // Step 3: Fix incompatible mappings if needed
+  const indexesNeedingFix = validationResults.filter((r) => r.status === 'needs_reindex');
+
+  if (indexesNeedingFix.length === 0) {
+    debug('IndexInitializer', 'All index mappings are compatible');
+    return { indexResults, validationResults };
+  }
+
+  const fieldSummary = indexesNeedingFix
+    .map((v) => `${v.indexName} (fields: ${v.issues.map((i) => i.field).join(', ')})`)
+    .join('; ');
+  console.log(`[IndexInitializer] Incompatible mappings detected for: ${fieldSummary}. Auto-fixing...`);
+
+  const fixResults = await fixIndexMappings(client, indexesNeedingFix, onFixProgress);
+
+  const failed = fixResults.filter((r) => r.status === 'failed');
+  if (failed.length > 0) {
+    console.error(
+      `[IndexInitializer] Failed to fix ${failed.length} index(es): ${failed.map((f) => f.indexName).join(', ')}`
+    );
+  } else {
+    console.log('[IndexInitializer] All indexes fixed successfully');
+  }
+
+  return { indexResults, validationResults, fixResults };
 }

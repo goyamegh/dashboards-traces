@@ -37,6 +37,7 @@ import type {
   RunSearchFilters,
 } from '../types.js';
 import { STORAGE_INDEXES } from '../../middleware/dataSourceConfig.js';
+import { assertNotMigrating } from '../../services/migrationLock.js';
 
 // ============================================================================
 // Helpers
@@ -164,6 +165,7 @@ class OpenSearchTestCaseOperations implements ITestCaseOperations {
   }
 
   async create(testCase: Partial<TestCase>): Promise<TestCase> {
+    assertNotMigrating(this.index);
     if (!testCase.name) throw new Error('Test case name is required');
     const now = new Date().toISOString();
     const id = testCase.id || generateId('tc');
@@ -190,6 +192,7 @@ class OpenSearchTestCaseOperations implements ITestCaseOperations {
   }
 
   async update(id: string, updates: Partial<TestCase>): Promise<TestCase> {
+    assertNotMigrating(this.index);
     const current = await this.getById(id);
     if (!current) throw new Error(`Test case ${id} not found`);
     const currentVer = (current as any).version ?? (current as any).currentVersion ?? 0;
@@ -218,6 +221,7 @@ class OpenSearchTestCaseOperations implements ITestCaseOperations {
   }
 
   async delete(id: string): Promise<{ deleted: number }> {
+    assertNotMigrating(this.index);
     const result = await this.client.deleteByQuery({
       index: this.index,
       body: { query: { term: { id } } },
@@ -324,6 +328,7 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
   }
 
   async create(benchmark: Partial<Benchmark>): Promise<Benchmark> {
+    assertNotMigrating(this.index);
     const now = new Date().toISOString();
     const id = benchmark.id || generateId('bench');
 
@@ -346,6 +351,7 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
   }
 
   async update(id: string, updates: Partial<Benchmark>): Promise<Benchmark> {
+    assertNotMigrating(this.index);
     const existing = await this.getById(id);
     if (!existing) throw new Error(`Benchmark ${id} not found`);
 
@@ -367,6 +373,7 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
   }
 
   async delete(id: string): Promise<{ deleted: boolean }> {
+    assertNotMigrating(this.index);
     try {
       await this.client.delete({ index: this.index, id, refresh: 'wait_for' });
       return { deleted: true };
@@ -377,6 +384,7 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
   }
 
   async addRun(benchmarkId: string, run: BenchmarkRun): Promise<boolean> {
+    assertNotMigrating(this.index);
     try {
       await this.client.update({
         index: this.index,
@@ -404,6 +412,7 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
   }
 
   async updateRun(benchmarkId: string, runId: string, updates: Partial<BenchmarkRun>): Promise<boolean> {
+    assertNotMigrating(this.index);
     try {
       await this.client.update({
         index: this.index,
@@ -435,6 +444,7 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
   }
 
   async deleteRun(benchmarkId: string, runId: string): Promise<boolean> {
+    assertNotMigrating(this.index);
     try {
       await this.client.update({
         index: this.index,
@@ -520,6 +530,7 @@ class OpenSearchRunOperations implements IRunOperations {
   }
 
   async create(run: Partial<TestCaseRun>): Promise<TestCaseRun> {
+    assertNotMigrating(this.index);
     const now = new Date().toISOString();
     const id = run.id || generateId('report');
 
@@ -541,6 +552,7 @@ class OpenSearchRunOperations implements IRunOperations {
   }
 
   async update(id: string, updates: Partial<TestCaseRun>): Promise<TestCaseRun> {
+    assertNotMigrating(this.index);
     const existing = await this.getById(id);
     if (!existing) throw new Error(`Run ${id} not found`);
 
@@ -557,6 +569,7 @@ class OpenSearchRunOperations implements IRunOperations {
   }
 
   async delete(id: string): Promise<{ deleted: boolean }> {
+    assertNotMigrating(this.index);
     try {
       await this.client.delete({ index: this.index, id, refresh: 'wait_for' });
       return { deleted: true };
@@ -656,6 +669,7 @@ class OpenSearchRunOperations implements IRunOperations {
   }
 
   async addAnnotation(runId: string, annotation: Partial<RunAnnotation>): Promise<RunAnnotation> {
+    assertNotMigrating(this.index);
     const run = await this.getById(runId);
     if (!run) throw new Error(`Run ${runId} not found`);
 
@@ -682,6 +696,7 @@ class OpenSearchRunOperations implements IRunOperations {
   }
 
   async updateAnnotation(runId: string, annotationId: string, updates: Partial<RunAnnotation>): Promise<RunAnnotation> {
+    assertNotMigrating(this.index);
     const run = await this.getById(runId);
     if (!run) throw new Error(`Run ${runId} not found`);
 
@@ -706,6 +721,7 @@ class OpenSearchRunOperations implements IRunOperations {
   }
 
   async deleteAnnotation(runId: string, annotationId: string): Promise<{ deleted: boolean }> {
+    assertNotMigrating(this.index);
     const run = await this.getById(runId);
     if (!run) return { deleted: false };
 
@@ -839,6 +855,7 @@ class OpenSearchAnalyticsOperations implements IAnalyticsOperations {
   }
 
   async writeRecord(record: Record<string, unknown>): Promise<void> {
+    assertNotMigrating(this.index);
     const id = (record.id as string) || `analytics-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     await this.client.index({
       index: this.index,
