@@ -336,11 +336,11 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
         <CardContent className="flex-1 overflow-hidden p-0">
           {/* Form Mode */}
           {editorMode === 'form' && (
-          <ScrollArea className="h-[60vh] p-6">
-            <div className="space-y-6">
-              {/* Basic Info */}
-              <div className="space-y-4">
-                <div className="space-y-2">
+          <ScrollArea className="h-[60vh] px-6 py-4">
+            <div className="space-y-4">
+              {/* Required Fields */}
+              <div className="space-y-3">
+                <div className="space-y-1">
                   <Label htmlFor="name">Name *</Label>
                   <Input
                     id="name"
@@ -350,7 +350,56 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                   />
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-1">
+                  <Label htmlFor="prompt">Initial Prompt *</Label>
+                  <Textarea
+                    id="prompt"
+                    value={initialPrompt}
+                    onChange={e => setInitialPrompt(e.target.value)}
+                    placeholder="The user query to send to the agent..."
+                    rows={2}
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <Label>Expected Outcomes *</Label>
+                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={handleAddOutcome}>
+                      <Plus size={12} className="mr-1" />
+                      Add
+                    </Button>
+                  </div>
+                  <div className="space-y-1.5">
+                    {expectedOutcomes.map((outcome, index) => (
+                      <div key={index} className="flex gap-1.5 items-start">
+                        <Textarea
+                          value={outcome}
+                          onChange={e => handleUpdateOutcome(index, e.target.value)}
+                          placeholder="e.g., Should query CloudWatch alarms and identify the root cause"
+                          rows={1}
+                          className="flex-1"
+                        />
+                        {expectedOutcomes.length > 1 && (
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 shrink-0"
+                            onClick={() => handleRemoveOutcome(index)}
+                          >
+                            <Trash2 size={12} />
+                          </Button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              {/* Optional Fields */}
+              <div className="border-t pt-4 space-y-3">
+                <p className="text-xs text-muted-foreground font-medium uppercase tracking-wide">Optional</p>
+
+                <div className="space-y-1">
                   <Label htmlFor="description">Description</Label>
                   <Textarea
                     id="description"
@@ -361,11 +410,8 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                   />
                 </div>
 
-                <div className="space-y-2">
+                <div className="space-y-1">
                   <Label>Labels</Label>
-                  <p className="text-xs text-muted-foreground mb-2">
-                    Add labels to categorize this test case (e.g., difficulty, category, tags)
-                  </p>
                   <LabelPicker
                     value={labels}
                     onChange={setLabels}
@@ -373,103 +419,49 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                     placeholder="Add labels..."
                   />
                 </div>
-              </div>
 
-              {/* Initial Prompt */}
-              <div className="space-y-2">
-                <Label htmlFor="prompt">Initial Prompt *</Label>
-                <Textarea
-                  id="prompt"
-                  value={initialPrompt}
-                  onChange={e => setInitialPrompt(e.target.value)}
-                  placeholder="The user query to send to the agent..."
-                  rows={3}
-                />
-              </div>
-
-              {/* Context */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label>Context (optional)</Label>
-                  <Button variant="outline" size="sm" onClick={handleAddContext}>
-                    <Plus size={14} className="mr-1" />
-                    Add Context
-                  </Button>
-                </div>
-                {context.length > 0 ? (
-                  <div className="space-y-2">
-                    {context.map((item, index) => (
-                      <Card key={index} className="bg-muted/30">
-                        <CardContent className="p-3 space-y-2">
-                          <div className="flex items-center justify-between">
-                            <span className="text-xs text-muted-foreground">Context {index + 1}</span>
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6"
-                              onClick={() => handleRemoveContext(index)}
-                            >
-                              <Trash2 size={12} />
-                            </Button>
-                          </div>
-                          <Input
-                            value={item.description}
-                            onChange={e => handleUpdateContext(index, 'description', e.target.value)}
-                            placeholder="Description (e.g., Current cluster state)"
-                          />
-                          <Textarea
-                            value={item.value}
-                            onChange={e => handleUpdateContext(index, 'value', e.target.value)}
-                            placeholder="Value (JSON stringified data)"
-                            rows={2}
-                          />
-                        </CardContent>
-                      </Card>
-                    ))}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <Label>Context</Label>
+                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={handleAddContext}>
+                      <Plus size={12} className="mr-1" />
+                      Add
+                    </Button>
                   </div>
-                ) : (
-                  <p className="text-sm text-muted-foreground">No context items added</p>
-                )}
-              </div>
-
-              {/* Expected Outcomes */}
-              <div className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <Label>Expected Outcomes *</Label>
-                  <Button variant="outline" size="sm" onClick={handleAddOutcome}>
-                    <Plus size={14} className="mr-1" />
-                    Add Outcome
-                  </Button>
-                </div>
-                <p className="text-xs text-muted-foreground">
-                  Define what the agent should accomplish. At least one outcome is required.
-                </p>
-                <div className="space-y-2">
-                  {expectedOutcomes.map((outcome, index) => (
-                    <Card key={index} className="bg-muted/30">
-                      <CardContent className="p-3 space-y-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs text-muted-foreground">Outcome {index + 1}</span>
-                          {expectedOutcomes.length > 1 && (
-                            <Button
-                              variant="ghost"
-                              size="icon"
-                              className="h-6 w-6"
-                              onClick={() => handleRemoveOutcome(index)}
-                            >
-                              <Trash2 size={12} />
-                            </Button>
-                          )}
-                        </div>
-                        <Textarea
-                          value={outcome}
-                          onChange={e => handleUpdateOutcome(index, e.target.value)}
-                          placeholder="e.g., Should query CloudWatch alarms and identify the root cause"
-                          rows={2}
-                        />
-                      </CardContent>
-                    </Card>
-                  ))}
+                  {context.length > 0 ? (
+                    <div className="space-y-2">
+                      {context.map((item, index) => (
+                        <Card key={index} className="bg-muted/30">
+                          <CardContent className="p-3 space-y-2">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs text-muted-foreground">Context {index + 1}</span>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-6 w-6"
+                                onClick={() => handleRemoveContext(index)}
+                              >
+                                <Trash2 size={12} />
+                              </Button>
+                            </div>
+                            <Input
+                              value={item.description}
+                              onChange={e => handleUpdateContext(index, 'description', e.target.value)}
+                              placeholder="Description (e.g., Current cluster state)"
+                            />
+                            <Textarea
+                              value={item.value}
+                              onChange={e => handleUpdateContext(index, 'value', e.target.value)}
+                              placeholder="Value (JSON stringified data)"
+                              rows={2}
+                            />
+                          </CardContent>
+                        </Card>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-muted-foreground">No context items added</p>
+                  )}
                 </div>
               </div>
             </div>
