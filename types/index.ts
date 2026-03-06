@@ -881,10 +881,11 @@ export interface MetricsResult {
 
 /**
  * Authentication type for OpenSearch clusters
+ * - 'none': No authentication (e.g. local development clusters)
  * - 'basic': Username/password authentication (default, backwards compatible)
  * - 'sigv4': AWS SigV4 request signing for managed OpenSearch / Serverless
  */
-export type ClusterAuthType = 'basic' | 'sigv4';
+export type ClusterAuthType = 'none' | 'basic' | 'sigv4';
 
 /**
  * Base cluster configuration (endpoint + credentials)

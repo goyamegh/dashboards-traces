@@ -22,12 +22,20 @@ import type { ClusterConfig } from '../../types/index.js';
 /**
  * Create an OpenSearch Client from a ClusterConfig.
  *
+ * - When `authType` is 'none': connects without any authentication
  * - When `authType` is 'basic' or absent: uses username/password (backwards compatible)
  * - When `authType` is 'sigv4': uses AwsSigv4Signer with the AWS credential chain
  *
  * @throws Error if SigV4 is requested but `awsRegion` is missing
  */
 export function createOpenSearchClient(config: ClusterConfig): Client {
+  if (config.authType === 'none') {
+    return new Client({
+      node: config.endpoint,
+      ssl: { rejectUnauthorized: !config.tlsSkipVerify },
+    });
+  }
+
   if (config.authType === 'sigv4') {
     if (!config.awsRegion) {
       throw new Error('awsRegion is required when authType is "sigv4"');
@@ -72,6 +80,9 @@ export function createOpenSearchClient(config: ClusterConfig): Client {
  * Used for client pool keying to avoid creating new clients per request.
  */
 export function configToCacheKey(config: ClusterConfig): string {
+  if (config.authType === 'none') {
+    return `none|${config.endpoint}`;
+  }
   if (config.authType === 'sigv4') {
     return `sigv4|${config.endpoint}|${config.awsRegion || ''}|${config.awsProfile || ''}|${config.awsService || 'es'}`;
   }

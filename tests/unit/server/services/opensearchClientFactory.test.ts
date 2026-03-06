@@ -156,6 +156,24 @@ describe('opensearchClientFactory', () => {
       );
     });
 
+    it('should create a client with no auth when authType is none', () => {
+      const config: ClusterConfig = {
+        endpoint: 'https://localhost:9200',
+        authType: 'none',
+      };
+
+      createOpenSearchClient(config);
+
+      expect(mockAwsSigv4Signer).not.toHaveBeenCalled();
+      expect(mockClientConstructor).toHaveBeenCalledWith({
+        node: 'https://localhost:9200',
+        ssl: { rejectUnauthorized: true },
+      });
+      // No auth property should be set
+      const callArg = mockClientConstructor.mock.calls[0][0];
+      expect(callArg.auth).toBeUndefined();
+    });
+
     it('should default to basic auth when authType is not specified', () => {
       const config: ClusterConfig = {
         endpoint: 'https://localhost:9200',
@@ -213,6 +231,15 @@ describe('opensearchClientFactory', () => {
       });
 
       expect(key).toBe('sigv4|https://collection.aoss.amazonaws.com|us-west-2||aoss');
+    });
+
+    it('should generate none auth cache key', () => {
+      const key = configToCacheKey({
+        endpoint: 'https://localhost:9200',
+        authType: 'none',
+      });
+
+      expect(key).toBe('none|https://localhost:9200');
     });
 
     it('should produce different keys for different configs', () => {

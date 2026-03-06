@@ -1152,13 +1152,21 @@ export const SettingsPage: React.FC = () => {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="none">No Auth</SelectItem>
                   <SelectItem value="basic">Basic Auth (username/password)</SelectItem>
                   <SelectItem value="sigv4">AWS SigV4</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
-            {storageConfig.authType === 'basic' ? (
+            {storageConfig.authType === 'none' ? (
+              /* No Auth - no credentials needed */
+              <div className="space-y-3 p-3 border rounded-lg bg-muted/10">
+                <p className="text-xs text-muted-foreground">
+                  No authentication — connects directly without credentials. Suitable for local development clusters.
+                </p>
+              </div>
+            ) : storageConfig.authType === 'basic' ? (
               /* Basic Auth fields */
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
@@ -1428,13 +1436,21 @@ export const SettingsPage: React.FC = () => {
                   <SelectValue />
                 </SelectTrigger>
                 <SelectContent>
+                  <SelectItem value="none">No Auth</SelectItem>
                   <SelectItem value="basic">Basic Auth (username/password)</SelectItem>
                   <SelectItem value="sigv4">AWS SigV4</SelectItem>
                 </SelectContent>
               </Select>
             </div>
 
-            {observabilityConfig.authType === 'basic' ? (
+            {observabilityConfig.authType === 'none' ? (
+              /* No Auth - no credentials needed */
+              <div className="space-y-3 p-3 border rounded-lg bg-muted/10">
+                <p className="text-xs text-muted-foreground">
+                  No authentication — connects directly without credentials. Suitable for local development clusters.
+                </p>
+              </div>
+            ) : observabilityConfig.authType === 'basic' ? (
               /* Basic Auth fields */
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
