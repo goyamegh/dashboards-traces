@@ -31,6 +31,7 @@ const mockIndicesExists = jest.fn();
 const mockIndicesCreate = jest.fn();
 const mockIndicesDelete = jest.fn();
 const mockIndicesGetSettings = jest.fn();
+const mockIndicesRefresh = jest.fn().mockResolvedValue({});
 const mockReindex = jest.fn();
 
 const mockClient = {
@@ -39,6 +40,7 @@ const mockClient = {
     create: mockIndicesCreate,
     delete: mockIndicesDelete,
     getSettings: mockIndicesGetSettings,
+    refresh: mockIndicesRefresh,
   },
   reindex: mockReindex,
 } as any;

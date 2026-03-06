@@ -101,6 +101,9 @@ export async function reindexSingleIndex(
   const docsMovedToTemp = (reindexToTemp.body as any)?.total ?? 0;
   debug('MappingFixer', `Reindexed ${docsMovedToTemp} docs from ${indexName} to ${tempIndex}`);
 
+  // Refresh temp index so docs are visible to the scroll query in the next reindex
+  await client.indices.refresh({ index: tempIndex });
+
   // Delete the original index
   await client.indices.delete({ index: indexName });
   debug('MappingFixer', `Deleted original index: ${indexName}`);
