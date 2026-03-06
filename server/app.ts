@@ -9,7 +9,6 @@
  */
 
 import express, { Express } from 'express';
-import { Client } from '@opensearch-project/opensearch';
 import routes from './routes/index.js';
 import { setupMiddleware, setupSpaFallback } from './middleware/index.js';
 import { loadConfig } from '@/lib/config/index';
@@ -18,7 +17,8 @@ import { getStorageConfigFromFile } from './services/configService.js';
 import { getStorageConfigFromEnv } from './middleware/dataSourceConfig.js';
 import { setStorageModule } from './adapters/index.js';
 import { OpenSearchStorageModule } from './adapters/opensearch/StorageModule.js';
-import { ensureIndexes } from './services/indexInitializer.js';
+import { ensureIndexesWithValidation } from './services/indexInitializer.js';
+import { createOpenSearchClient } from './services/opensearchClientFactory.js';
 
 // Register server-side connectors (subprocess, claude-code)
 // This import has side effects that register connectors with the registry
@@ -40,26 +40,21 @@ async function initializeStorageBackend(): Promise<void> {
   const config = resolveStorageConfigAtStartup();
   if (!config) return;
 
-  const clientConfig: any = {
-    node: config.endpoint,
-    ssl: { rejectUnauthorized: !config.tlsSkipVerify },
-  };
-
-  if (config.username && config.password) {
-    clientConfig.auth = {
-      username: config.username,
-      password: config.password,
-    };
-  }
-
-  const client = new Client(clientConfig);
+  const client = createOpenSearchClient(config);
 
   try {
     // Verify connectivity before swapping the storage module
     await client.cluster.health({ timeout: '5s' });
 
-    // Auto-create indexes if missing, update mappings on existing ones
-    const indexResults = await ensureIndexes(client);
+    // Auto-create indexes, validate mappings, and fix incompatibilities
+    const setupResult = await ensureIndexesWithValidation(client, (progress) => {
+      for (const p of progress) {
+        if (p.status === 'reindexing') console.log(`[app] Reindexing ${p.indexName}...`);
+        if (p.status === 'completed') console.log(`[app] Reindexed ${p.indexName} (${p.documentCount} docs)`);
+        if (p.status === 'failed') console.error(`[app] Failed to reindex ${p.indexName}: ${p.error}`);
+      }
+    });
+    const { indexResults } = setupResult;
     const created = Object.entries(indexResults).filter(([, r]) => r.status === 'created').map(([n]) => n);
     const errors = Object.entries(indexResults).filter(([, r]) => r.status === 'error').map(([n]) => n);
     if (created.length > 0) console.log(`[app] Created indexes: ${created.join(', ')}`);

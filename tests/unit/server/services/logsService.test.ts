@@ -7,13 +7,22 @@ import {
   fetchLogs,
   fetchLogsLegacy,
   LogsQueryOptions,
-  OpenSearchLogsConfig,
   LegacyLogsQueryOptions,
 } from '@/server/services/logsService';
 
-// Mock fetch globally
+// Mock fetch globally (still needed for fetchLogsLegacy)
 const mockFetch = jest.fn();
 global.fetch = mockFetch as any;
+
+// Create a mock OpenSearch SDK Client
+function createMockClient(searchResult?: any) {
+  return {
+    search: jest.fn().mockResolvedValue({
+      body: searchResult || { hits: { hits: [], total: { value: 0 } } },
+    }),
+    close: jest.fn().mockResolvedValue(undefined),
+  } as any;
+}
 
 describe('LogsService', () => {
   beforeEach(() => {
@@ -21,20 +30,6 @@ describe('LogsService', () => {
   });
 
   describe('fetchLogs', () => {
-    const defaultConfig: OpenSearchLogsConfig = {
-      endpoint: 'http://localhost:9200',
-      username: 'admin',
-      password: 'admin',
-      indexPattern: 'ml-commons-logs-*',
-    };
-
-    it('should throw error when endpoint is not configured', async () => {
-      const options: LogsQueryOptions = { runId: 'test-run' };
-      const config: OpenSearchLogsConfig = { endpoint: '' };
-
-      await expect(fetchLogs(options, config)).rejects.toThrow('OpenSearch Logs not configured');
-    });
-
     it('should fetch logs by runId', async () => {
       const mockResponse = {
         hits: {
@@ -52,27 +47,22 @@ describe('LogsService', () => {
           total: { value: 1 },
         },
       };
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve(mockResponse),
-      });
+      const client = createMockClient(mockResponse);
 
       const options: LogsQueryOptions = { runId: 'test-run', size: 50 };
-      const result = await fetchLogs(options, defaultConfig);
+      const result = await fetchLogs(options, client, 'ml-commons-logs-*');
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        'http://localhost:9200/ml-commons-logs-*/_search',
+      expect(client.search).toHaveBeenCalledWith(
         expect.objectContaining({
-          method: 'POST',
-          headers: expect.objectContaining({
-            'Content-Type': 'application/json',
-            'Authorization': expect.stringContaining('Basic'),
+          index: 'ml-commons-logs-*',
+          body: expect.objectContaining({
+            size: 50,
           }),
         })
       );
 
-      const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(requestBody.query.bool.must).toContainEqual({
+      const searchBody = client.search.mock.calls[0][0].body;
+      expect(searchBody.query.bool.must).toContainEqual({
         match: { message: 'test-run' },
       });
 
@@ -82,48 +72,39 @@ describe('LogsService', () => {
     });
 
     it('should add time range filter when no runId is provided', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ hits: { hits: [], total: { value: 0 } } }),
-      });
+      const client = createMockClient();
 
       const options: LogsQueryOptions = { query: 'error' };
-      await fetchLogs(options, defaultConfig);
+      await fetchLogs(options, client);
 
-      const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-      const timeRangeFilter = requestBody.query.bool.must.find(
+      const searchBody = client.search.mock.calls[0][0].body;
+      const timeRangeFilter = searchBody.query.bool.must.find(
         (f: any) => f.range && f.range['@timestamp']
       );
       expect(timeRangeFilter).toBeDefined();
     });
 
     it('should not add time range filter when runId is provided', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ hits: { hits: [], total: { value: 0 } } }),
-      });
+      const client = createMockClient();
 
       const options: LogsQueryOptions = { runId: 'test-run' };
-      await fetchLogs(options, defaultConfig);
+      await fetchLogs(options, client);
 
-      const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-      const timeRangeFilter = requestBody.query.bool.must.find(
+      const searchBody = client.search.mock.calls[0][0].body;
+      const timeRangeFilter = searchBody.query.bool.must.find(
         (f: any) => f.range && f.range['@timestamp']
       );
       expect(timeRangeFilter).toBeUndefined();
     });
 
     it('should filter by custom query', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ hits: { hits: [], total: { value: 0 } } }),
-      });
+      const client = createMockClient();
 
       const options: LogsQueryOptions = { query: 'exception' };
-      await fetchLogs(options, defaultConfig);
+      await fetchLogs(options, client);
 
-      const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(requestBody.query.bool.must).toContainEqual({
+      const searchBody = client.search.mock.calls[0][0].body;
+      expect(searchBody.query.bool.must).toContainEqual({
         match: { message: 'exception' },
       });
     });
@@ -146,13 +127,10 @@ describe('LogsService', () => {
           total: { value: 1 },
         },
       };
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve(mockResponse),
-      });
+      const client = createMockClient(mockResponse);
 
       const options: LogsQueryOptions = { runId: 'test' };
-      const result = await fetchLogs(options, defaultConfig);
+      const result = await fetchLogs(options, client);
 
       expect(result.logs[0]).toMatchObject({
         timestamp: '2024-01-01T12:00:00Z',
@@ -178,45 +156,37 @@ describe('LogsService', () => {
           total: { value: 1 },
         },
       };
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve(mockResponse),
-      });
+      const client = createMockClient(mockResponse);
 
       const options: LogsQueryOptions = { runId: 'test' };
-      const result = await fetchLogs(options, defaultConfig);
+      const result = await fetchLogs(options, client);
 
       expect(result.logs[0].level).toBe('info');
       expect(result.logs[0].source).toBe('unknown');
     });
 
-    it('should throw error on non-OK response', async () => {
-      mockFetch.mockResolvedValue({
-        ok: false,
-        status: 400,
-        text: () => Promise.resolve('Bad request'),
-      });
+    it('should use default index pattern when not provided', async () => {
+      const client = createMockClient();
 
-      const options: LogsQueryOptions = { runId: 'test' };
+      await fetchLogs({ runId: 'test' }, client);
 
-      await expect(fetchLogs(options, defaultConfig)).rejects.toThrow('Bad request');
+      expect(client.search).toHaveBeenCalledWith(
+        expect.objectContaining({
+          index: 'ml-commons-logs-*',
+        })
+      );
     });
 
-    it('should work without auth credentials', async () => {
-      mockFetch.mockResolvedValue({
-        ok: true,
-        json: () => Promise.resolve({ hits: { hits: [], total: { value: 0 } } }),
-      });
+    it('should use custom index pattern', async () => {
+      const client = createMockClient();
 
-      const configNoAuth: OpenSearchLogsConfig = {
-        endpoint: 'http://localhost:9200',
-        indexPattern: 'logs-*',
-      };
+      await fetchLogs({ runId: 'test' }, client, 'custom-logs-*');
 
-      await fetchLogs({ runId: 'test' }, configNoAuth);
-
-      const requestHeaders = mockFetch.mock.calls[0][1].headers;
-      expect(requestHeaders['Authorization']).toBeUndefined();
+      expect(client.search).toHaveBeenCalledWith(
+        expect.objectContaining({
+          index: 'custom-logs-*',
+        })
+      );
     });
   });
 

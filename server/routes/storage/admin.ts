@@ -15,10 +15,11 @@ import { Router, Request, Response } from 'express';
 import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middleware/storageClient.js';
 import { INDEX_MAPPINGS } from '../../constants/indexMappings';
 import { getStorageModule, testStorageConnection, isFileStorage, setStorageModule, OpenSearchStorageModule, FileStorageModule } from '../../adapters/index.js';
-import { Client } from '@opensearch-project/opensearch';
 import { resolveStorageConfig } from '../../middleware/dataSourceConfig.js';
+import { createOpenSearchClient } from '../../services/opensearchClientFactory.js';
 import { debug } from '@/lib/debug';
-import { ensureIndexes } from '../../services/indexInitializer.js';
+import { ensureIndexes, ensureIndexesWithValidation } from '../../services/indexInitializer.js';
+import { reindexSingleIndex } from '../../services/mappingFixer.js';
 import {
   getConfigStatus,
   saveStorageConfig,
@@ -83,7 +84,7 @@ router.get('/api/storage/health', async (req: Request, res: Response) => {
  */
 router.post('/api/storage/test-connection', async (req: Request, res: Response) => {
   try {
-    const { endpoint, username, password, tlsSkipVerify } = req.body;
+    const { endpoint, username, password, tlsSkipVerify, authType, awsProfile, awsRegion, awsService } = req.body;
 
     if (!endpoint) {
       return res.status(400).json({ status: 'error', message: 'Endpoint is required' });
@@ -91,8 +92,12 @@ router.post('/api/storage/test-connection', async (req: Request, res: Response) 
 
     const result = await testStorageConnection({
       endpoint,
+      authType: authType ?? process.env.OPENSEARCH_STORAGE_AUTH_TYPE,
       username: username ?? process.env.OPENSEARCH_STORAGE_USERNAME,
       password: password ?? process.env.OPENSEARCH_STORAGE_PASSWORD,
+      awsProfile: awsProfile ?? process.env.OPENSEARCH_STORAGE_AWS_PROFILE,
+      awsRegion: awsRegion ?? process.env.OPENSEARCH_STORAGE_AWS_REGION,
+      awsService: awsService ?? process.env.OPENSEARCH_STORAGE_AWS_SERVICE,
       tlsSkipVerify: tlsSkipVerify ?? (process.env.OPENSEARCH_STORAGE_TLS_SKIP_VERIFY === 'true'),
     });
     res.json(result);
@@ -127,7 +132,7 @@ router.post(
 /**
  * POST /api/storage/reindex
  * Reindex an existing index to apply correct mappings.
- * Creates a temp index with correct mappings, reindexes data, deletes old, recreates, reindexes back.
+ * Delegates to reindexSingleIndex() in mappingFixer service.
  * Body: { index: string } — the index name to reindex (must be in INDEX_MAPPINGS)
  */
 router.post(
@@ -151,85 +156,18 @@ router.post(
     const tempIndex = `${indexName}_reindex_temp`;
 
     try {
-      // 1. Check source index exists
+      // Check source index exists
       const exists = await client.indices.exists({ index: indexName });
       if (!exists.body) {
         return res.status(404).json({ error: `Index ${indexName} does not exist` });
       }
 
-      // 2. Read existing index settings to preserve shard/replica configuration
-      const existingSettings = await client.indices.getSettings({ index: indexName });
-      const indexSettings = existingSettings.body?.[indexName]?.settings?.index ?? {};
-      const preservedSettings: Record<string, any> = {};
-      if (indexSettings.number_of_shards) {
-        preservedSettings.number_of_shards = Number(indexSettings.number_of_shards);
-      }
-      if (indexSettings.number_of_replicas) {
-        preservedSettings.number_of_replicas = Number(indexSettings.number_of_replicas);
-      }
-
-      // Merge: preserved cluster settings + our field limit + our mappings
-      const reindexMapping = {
-        settings: {
-          ...preservedSettings,
-          ...(mapping.settings?.['index.mapping.total_fields.limit'] != null
-            ? { 'index.mapping.total_fields.limit': mapping.settings['index.mapping.total_fields.limit'] }
-            : {}),
-        },
-        mappings: mapping.mappings,
-      };
-
-      // 3. Delete temp index if it exists from a previous failed attempt
-      const tempExists = await client.indices.exists({ index: tempIndex });
-      if (tempExists.body) {
-        await client.indices.delete({ index: tempIndex });
-        debug('StorageAPI', `Deleted stale temp index: ${tempIndex}`);
-      }
-
-      // 4. Create temp index with correct mappings and preserved settings
-      await client.indices.create({ index: tempIndex, body: reindexMapping as any });
-      debug('StorageAPI', `Created temp index: ${tempIndex}`);
-
-      // 4. Reindex data from source to temp
-      const reindexToTemp = await client.reindex({
-        body: {
-          source: { index: indexName },
-          dest: { index: tempIndex },
-        },
-        wait_for_completion: true,
-        timeout: '5m',
-      });
-      const docsMovedToTemp = (reindexToTemp.body as any)?.total ?? 0;
-      debug('StorageAPI', `Reindexed ${docsMovedToTemp} docs from ${indexName} to ${tempIndex}`);
-
-      // 5. Delete the original index
-      await client.indices.delete({ index: indexName });
-      debug('StorageAPI', `Deleted original index: ${indexName}`);
-
-      // 7. Recreate original index with correct mappings and preserved settings
-      await client.indices.create({ index: indexName, body: reindexMapping as any });
-      debug('StorageAPI', `Recreated index: ${indexName}`);
-
-      // 7. Reindex data back from temp to original
-      const reindexBack = await client.reindex({
-        body: {
-          source: { index: tempIndex },
-          dest: { index: indexName },
-        },
-        wait_for_completion: true,
-        timeout: '5m',
-      });
-      const docsMovedBack = (reindexBack.body as any)?.total ?? 0;
-      debug('StorageAPI', `Reindexed ${docsMovedBack} docs from ${tempIndex} to ${indexName}`);
-
-      // 8. Delete temp index
-      await client.indices.delete({ index: tempIndex });
-      debug('StorageAPI', `Deleted temp index: ${tempIndex}`);
+      const result = await reindexSingleIndex(client, indexName);
 
       res.json({
         success: true,
         index: indexName,
-        documentsReindexed: docsMovedBack,
+        documentsReindexed: result.documentsReindexed,
       });
     } catch (error: any) {
       console.error(`[StorageAPI] Reindex failed for ${indexName}:`, error.message);
@@ -339,39 +277,102 @@ router.get('/api/storage/config/status', (req: Request, res: Response) => {
 
 /**
  * POST /api/storage/config/storage
- * Save storage configuration to file
+ * Save storage configuration to file and validate index mappings.
+ * Returns needsReindex: true if incompatible mappings are detected.
  * Body: { endpoint, username?, password?, tlsSkipVerify? }
  */
 router.post('/api/storage/config/storage', async (req: Request, res: Response) => {
   try {
-    const { endpoint, username, password, tlsSkipVerify } = req.body;
+    const { endpoint, username, password, tlsSkipVerify, authType, awsProfile, awsRegion, awsService } = req.body;
 
     if (!endpoint) {
       return res.status(400).json({ error: 'Endpoint is required' });
     }
 
-    saveStorageConfig({ endpoint, username, password, tlsSkipVerify });
+    saveStorageConfig({ endpoint, username, password, tlsSkipVerify, authType, awsProfile, awsRegion, awsService });
 
-    const clientConfig: any = {
-      node: endpoint,
-      ssl: { rejectUnauthorized: !(tlsSkipVerify === true) },
-    };
-    if (username && password) {
-      clientConfig.auth = { username, password };
-    }
-    const client = new Client(clientConfig);
+    const client = createOpenSearchClient({
+      endpoint,
+      authType,
+      username,
+      password,
+      awsProfile,
+      awsRegion,
+      awsService,
+      tlsSkipVerify: tlsSkipVerify === true,
+    });
 
-    // Auto-create indexes on the newly attached cluster
-    const indexResults = await ensureIndexes(client);
+    // Auto-create indexes, validate mappings, and auto-fix if needed
+    const setupResult = await ensureIndexesWithValidation(client);
 
     setStorageModule(new OpenSearchStorageModule(client));
 
-    res.json({ success: true, message: 'Storage configuration saved', connected: true, indexResults });
+    const needsReindex = setupResult.validationResults.some((r) => r.status === 'needs_reindex');
+    res.json({
+      success: true,
+      message: 'Storage configuration saved',
+      connected: true,
+      indexResults: setupResult.indexResults,
+      validationResults: setupResult.validationResults,
+      fixResults: setupResult.fixResults,
+      needsReindex,
+    });
   } catch (error: any) {
     console.error('[StorageAPI] Failed to save storage config:', error.message);
     res.status(500).json({ error: error.message });
   }
 });
+
+/**
+ * POST /api/storage/setup-indexes
+ * SSE endpoint for index setup with real-time progress.
+ * Validates and fixes index mappings, streaming per-index progress events.
+ */
+router.post(
+  '/api/storage/setup-indexes',
+  asyncHandler(async (req: Request, res: Response) => {
+    if (!isStorageAvailable(req)) {
+      return res.status(400).json({ error: 'OpenSearch storage not configured.' });
+    }
+
+    const client = requireStorageClient(req);
+
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+
+    const sendEvent = (data: any) => {
+      res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    try {
+      sendEvent({ type: 'started', indexes: Object.keys(INDEX_MAPPINGS) });
+
+      const setupResult = await ensureIndexesWithValidation(client, (progress) => {
+        sendEvent({ type: 'fix_progress', progress });
+      });
+
+      sendEvent({
+        type: 'validation',
+        results: setupResult.validationResults,
+      });
+
+      sendEvent({
+        type: 'completed',
+        indexResults: setupResult.indexResults,
+        validationResults: setupResult.validationResults,
+        fixResults: setupResult.fixResults,
+      });
+    } catch (error: any) {
+      console.error('[StorageAPI] Setup indexes failed:', error.message);
+      sendEvent({ type: 'error', error: error.message });
+    } finally {
+      res.end();
+    }
+  })
+);
 
 /**
  * POST /api/storage/config/observability
@@ -380,13 +381,13 @@ router.post('/api/storage/config/storage', async (req: Request, res: Response) =
  */
 router.post('/api/storage/config/observability', (req: Request, res: Response) => {
   try {
-    const { endpoint, username, password, tlsSkipVerify, indexes } = req.body;
+    const { endpoint, username, password, tlsSkipVerify, indexes, authType, awsProfile, awsRegion, awsService } = req.body;
 
     if (!endpoint) {
       return res.status(400).json({ error: 'Endpoint is required' });
     }
 
-    saveObservabilityConfig({ endpoint, username, password, tlsSkipVerify, indexes });
+    saveObservabilityConfig({ endpoint, username, password, tlsSkipVerify, indexes, authType, awsProfile, awsRegion, awsService });
     res.json({ success: true, message: 'Observability configuration saved' });
   } catch (error: any) {
     console.error('[StorageAPI] Failed to save observability config:', error.message);

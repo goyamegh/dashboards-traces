@@ -20,6 +20,11 @@ jest.mock('@/server/services/tracesService', () => ({
   checkTracesHealth: jest.fn(),
 }));
 
+// Mock the client factory
+jest.mock('@/server/services/opensearchClientFactory', () => ({
+  createOpenSearchClient: jest.fn().mockReturnValue({ close: jest.fn().mockResolvedValue(undefined) }),
+}));
+
 // Mock the sample traces
 jest.mock('@/cli/demo/sampleTraces', () => ({
   getSampleSpansForRunIds: jest.fn().mockReturnValue([]),
@@ -108,7 +113,8 @@ describe('Traces Routes', () => {
 
       expect(mockFetchTraces).toHaveBeenCalledWith(
         expect.objectContaining({ traceId: 'trace-123' }),
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(String)
       );
       expect(res.json).toHaveBeenCalledWith({ spans: [], total: 0, nextCursor: null, hasMore: false, warning: undefined });
     });
@@ -126,7 +132,8 @@ describe('Traces Routes', () => {
 
       expect(mockFetchTraces).toHaveBeenCalledWith(
         expect.objectContaining({ runIds: ['run-1', 'run-2'] }),
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(String)
       );
     });
 
@@ -146,7 +153,8 @@ describe('Traces Routes', () => {
           startTime: '2024-01-01T00:00:00Z',
           endTime: '2024-01-02T00:00:00Z',
         }),
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(String)
       );
     });
 
@@ -194,7 +202,7 @@ describe('Traces Routes', () => {
       });
     });
 
-    it('should use default size of 500', async () => {
+    it('should use default size of 100', async () => {
       mockFetchTraces.mockResolvedValue({ spans: [], total: 0 });
 
       const { req, res } = createMocks({ traceId: 'trace-123' });
@@ -203,8 +211,9 @@ describe('Traces Routes', () => {
       await handler(req, res);
 
       expect(mockFetchTraces).toHaveBeenCalledWith(
-        expect.objectContaining({ size: 100 }), // Changed default from 500 to 100 for pagination
-        expect.any(Object)
+        expect.objectContaining({ size: 100 }),
+        expect.any(Object),
+        expect.any(String)
       );
     });
 
@@ -263,7 +272,8 @@ describe('Traces Routes', () => {
 
       expect(mockFetchTraces).toHaveBeenCalledWith(
         expect.objectContaining({ startTime: 1704067200000, endTime: 1704153600000 }),
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(String)
       );
       expect(mockGetSampleSpansForRunIds).not.toHaveBeenCalled();
       expect(mockGetSampleSpansByTraceId).not.toHaveBeenCalled();
@@ -442,12 +452,10 @@ describe('Traces Routes', () => {
 
       await handler(req, res);
 
-      expect(mockCheckTracesHealth).toHaveBeenCalledWith({
-        endpoint: 'http://localhost:9200',
-        username: 'admin',
-        password: 'admin',
-        indexPattern: 'otel-traces-*',
-      });
+      expect(mockCheckTracesHealth).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.any(String)
+      );
       expect(res.json).toHaveBeenCalledWith(healthResult);
     });
 

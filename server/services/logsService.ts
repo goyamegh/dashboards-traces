@@ -5,8 +5,12 @@
 
 /**
  * Logs Service - Fetch agent execution logs from OpenSearch
+ *
+ * Uses the OpenSearch SDK Client (instead of raw HTTP) so that
+ * authentication (basic auth or AWS SigV4) is handled transparently.
  */
 
+import { Client } from '@opensearch-project/opensearch';
 import { debug } from '@/lib/debug';
 
 // ============================================================================
@@ -39,13 +43,6 @@ export interface LogsResponse {
   total: number;
 }
 
-export interface OpenSearchLogsConfig {
-  endpoint: string;
-  username?: string;
-  password?: string;
-  indexPattern?: string;
-}
-
 export interface LegacyLogsQueryOptions {
   endpoint: string;
   indexPattern: string;
@@ -58,19 +55,15 @@ export interface LegacyLogsQueryOptions {
 // ============================================================================
 
 /**
- * Fetch agent execution logs from OpenSearch
- * Uses server-side credentials to avoid CORS issues
+ * Fetch agent execution logs from OpenSearch via SDK client.
+ * Authentication (basic / SigV4) is handled automatically by the client.
  */
 export async function fetchLogs(
   options: LogsQueryOptions,
-  config: OpenSearchLogsConfig
+  client: Client,
+  indexPattern: string = 'ml-commons-logs-*'
 ): Promise<LogsResponse> {
   const { runId, query, startTime, endTime, size = 100 } = options;
-  const { endpoint, username, password, indexPattern = 'ml-commons-logs-*' } = config;
-
-  if (!endpoint) {
-    throw new Error('OpenSearch Logs not configured. Please set OPENSEARCH_LOGS_ENDPOINT');
-  }
 
   debug('LogsService', 'Fetching logs:', { runId, query, size });
 
@@ -114,31 +107,14 @@ export async function fetchLogs(
     });
   }
 
-  // Build headers
-  const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
-  };
-  if (username && password) {
-    headers['Authorization'] = `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`;
-  }
-
-  const url = `${endpoint}/${indexPattern}/_search`;
-  debug('LogsService', 'Request URL:', url);
-
-  const response = await fetch(url, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify(searchBody),
+  const response = await client.search({
+    index: indexPattern,
+    body: searchBody,
   });
 
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('[LogsService] Query failed:', response.status, errorText);
-    throw new Error(`OpenSearch query failed: ${errorText}`);
-  }
-
-  const data = await response.json();
-  const hitCount = data.hits?.total?.value || data.hits?.hits?.length || 0;
+  const data = response.body;
+  const rawTotal = data.hits?.total;
+  const hitCount = (typeof rawTotal === 'object' ? rawTotal?.value : rawTotal) || data.hits?.hits?.length || 0;
   debug('LogsService', 'Found', hitCount, 'logs');
 
   // Transform hits to log format

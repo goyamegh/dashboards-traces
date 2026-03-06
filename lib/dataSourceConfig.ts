@@ -16,6 +16,7 @@ import { ENV_CONFIG } from '@/lib/config';
 import type {
   StorageClusterConfig,
   ObservabilityClusterConfig,
+  ClusterAuthType,
 } from '@/types';
 
 // Default OTEL index patterns (kept for UI defaults)
@@ -38,15 +39,23 @@ export interface ConfigStatus {
     configured: boolean;
     source: 'file' | 'environment' | 'none';
     endpoint?: string;
+    authType?: ClusterAuthType;
     username?: string;
     hasPassword?: boolean;
+    awsProfile?: string;
+    awsRegion?: string;
+    awsService?: 'es' | 'aoss';
   };
   observability: {
     configured: boolean;
     source: 'file' | 'environment' | 'none';
     endpoint?: string;
+    authType?: ClusterAuthType;
     username?: string;
     hasPassword?: boolean;
+    awsProfile?: string;
+    awsRegion?: string;
+    awsService?: 'es' | 'aoss';
     indexes?: {
       traces?: string;
       logs?: string;
@@ -80,14 +89,31 @@ export async function getConfigStatus(): Promise<ConfigStatus> {
 /**
  * Save storage configuration to server (agent-health.config.json)
  */
-export async function saveStorageConfig(config: StorageClusterConfig): Promise<void> {
+export interface SaveStorageConfigResult {
+  success: boolean;
+  message: string;
+  connected: boolean;
+  needsReindex: boolean;
+  fixResults?: Array<{
+    indexName: string;
+    status: 'pending' | 'reindexing' | 'completed' | 'failed';
+    documentCount?: number;
+    error?: string;
+  }>;
+}
+
+export async function saveStorageConfig(config: StorageClusterConfig): Promise<SaveStorageConfigResult> {
   const response = await fetch(`${API_BASE}/api/storage/config/storage`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       endpoint: config.endpoint,
+      authType: config.authType || undefined,
       username: config.username || undefined,
       password: config.password || undefined,
+      awsProfile: config.awsProfile || undefined,
+      awsRegion: config.awsRegion || undefined,
+      awsService: config.awsService || undefined,
       tlsSkipVerify: config.tlsSkipVerify,
     }),
   });
@@ -96,6 +122,8 @@ export async function saveStorageConfig(config: StorageClusterConfig): Promise<v
     const error = await response.json().catch(() => ({ error: 'Unknown error' }));
     throw new Error(error.error || 'Failed to save storage configuration');
   }
+
+  return response.json();
 }
 
 /**
@@ -125,8 +153,12 @@ export async function saveObservabilityConfig(config: ObservabilityClusterConfig
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
       endpoint: config.endpoint,
+      authType: config.authType || undefined,
       username: config.username || undefined,
       password: config.password || undefined,
+      awsProfile: config.awsProfile || undefined,
+      awsRegion: config.awsRegion || undefined,
+      awsService: config.awsService || undefined,
       tlsSkipVerify: config.tlsSkipVerify,
       indexes: config.indexes,
     }),

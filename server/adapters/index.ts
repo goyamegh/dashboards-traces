@@ -22,31 +22,9 @@ import type {
   HealthStatus,
 } from '../../types/index.js';
 import { STORAGE_INDEXES, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
+import { createOpenSearchClient } from '../services/opensearchClientFactory.js';
 import type { IStorageModule } from './types.js';
 import { FileStorageModule } from './file/StorageModule.js';
-
-// ============================================================================
-// OpenSearch Client Helpers
-// ============================================================================
-
-/**
- * Create a temporary OpenSearch client for testing connections
- */
-function createClient(config: StorageClusterConfig | ObservabilityClusterConfig): Client {
-  const clientConfig: any = {
-    node: config.endpoint,
-    ssl: { rejectUnauthorized: !config.tlsSkipVerify },
-  };
-
-  if (config.username && config.password) {
-    clientConfig.auth = {
-      username: config.username,
-      password: config.password,
-    };
-  }
-
-  return new Client(clientConfig);
-}
 
 // ============================================================================
 // Test Connection Functions
@@ -72,7 +50,7 @@ export async function testStorageConnection(config: StorageClusterConfig): Promi
   let client: Client | null = null;
 
   try {
-    client = createClient(config);
+    client = createOpenSearchClient(config);
 
     // Test cluster health
     const result = await client.cluster.health({ timeout: '10s' });
@@ -110,7 +88,7 @@ export async function testObservabilityConnection(config: ObservabilityClusterCo
   let client: Client | null = null;
 
   try {
-    client = createClient(config);
+    client = createOpenSearchClient(config);
 
     // Test cluster health
     const healthResult = await client.cluster.health({ timeout: '10s' });

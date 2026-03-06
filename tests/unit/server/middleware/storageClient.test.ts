@@ -29,6 +29,18 @@ jest.mock('@opensearch-project/opensearch', () => ({
   })),
 }));
 
+// Mock the client factory - return a new mock client each call so cache tests work
+let mockClientCallCount = 0;
+jest.mock('@/server/services/opensearchClientFactory', () => ({
+  createOpenSearchClient: jest.fn().mockImplementation(() => ({
+    close: mockClientClose,
+    _id: ++mockClientCallCount,
+  })),
+  configToCacheKey: jest.fn().mockImplementation((config: any) =>
+    `${config.authType || 'basic'}|${config.endpoint}|${config.username || ''}|${config.password || ''}`
+  ),
+}));
+
 // Import after mocks are set up
 import {
   storageClientMiddleware,

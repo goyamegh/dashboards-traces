@@ -20,6 +20,7 @@ import {
   isSampleTraceId,
 } from '../../cli/demo/sampleTraces.js';
 import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
+import { createOpenSearchClient } from '../services/opensearchClientFactory.js';
 import type { Span } from '../../types/index.js';
 
 const router = Router();
@@ -58,18 +59,15 @@ router.post('/api/traces', async (req: Request, res: Response) => {
     const config = resolveObservabilityConfig(req);
 
     if (config && (traceId || (runIds && runIds.length > 0) || startTime || endTime)) {
+      let client;
       try {
+        client = createOpenSearchClient(config);
         const indexPattern = config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces;
 
         const result = await fetchTraces(
           { traceId, runIds, startTime, endTime, size, serviceName, textSearch, cursor },
-          {
-            endpoint: config.endpoint,
-            username: config.username,
-            password: config.password,
-            indexPattern,
-            tlsSkipVerify: config.tlsSkipVerify
-          }
+          client,
+          indexPattern
         );
 
         realSpans = (result.spans || []) as Span[];
@@ -78,6 +76,10 @@ router.post('/api/traces', async (req: Request, res: Response) => {
       } catch (e: any) {
         console.warn('[TracesAPI] OpenSearch query failed:', e.message);
         warning = e.message;
+      } finally {
+        if (client) {
+          await client.close().catch(() => {});
+        }
       }
     } else if (!config) {
       // No observability cluster configured
@@ -137,17 +139,19 @@ router.get('/api/traces/health', async (req: Request, res: Response) => {
       });
     }
 
-    const indexPattern = config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces;
+    let client;
+    try {
+      client = createOpenSearchClient(config);
+      const indexPattern = config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces;
 
-    // Call traces service to check health
-    const result = await checkTracesHealth({
-      endpoint: config.endpoint,
-      username: config.username,
-      password: config.password,
-      indexPattern
-    });
-
-    res.json(result);
+      // Call traces service to check health
+      const result = await checkTracesHealth(client, indexPattern);
+      res.json(result);
+    } finally {
+      if (client) {
+        await client.close().catch(() => {});
+      }
+    }
   } catch (error: any) {
     res.json({ status: 'error', error: error.message });
   }

@@ -17,7 +17,7 @@
 import fs from 'fs';
 import path from 'path';
 import { debug } from '../../lib/debug.js';
-import type { StorageClusterConfig, ObservabilityClusterConfig } from '../../types/index.js';
+import type { StorageClusterConfig, ObservabilityClusterConfig, ClusterAuthType } from '../../types/index.js';
 
 // Same filename used by customAgentStore.ts
 const CONFIG_FILENAME = 'agent-health.config.json';
@@ -26,14 +26,22 @@ const CONFIG_FILENAME = 'agent-health.config.json';
 interface ConfigFileDataSources {
   storage?: {
     endpoint: string;
+    authType?: ClusterAuthType;
     username?: string;
     password?: string;
+    awsProfile?: string;
+    awsRegion?: string;
+    awsService?: 'es' | 'aoss';
     tlsSkipVerify?: boolean;
   };
   observability?: {
     endpoint: string;
+    authType?: ClusterAuthType;
     username?: string;
     password?: string;
+    awsProfile?: string;
+    awsRegion?: string;
+    awsService?: 'es' | 'aoss';
     tlsSkipVerify?: boolean;
     indexes?: {
       traces?: string;
@@ -50,15 +58,23 @@ export interface ConfigStatus {
     configured: boolean;
     source: 'file' | 'environment' | 'none';
     endpoint?: string;
+    authType?: ClusterAuthType;
     username?: string;    // Safe to return; lets the form pre-fill the username
     hasPassword?: boolean; // True when a password is stored; never return the value itself
+    awsProfile?: string;
+    awsRegion?: string;
+    awsService?: 'es' | 'aoss';
   };
   observability: {
     configured: boolean;
     source: 'file' | 'environment' | 'none';
     endpoint?: string;
+    authType?: ClusterAuthType;
     username?: string;
     hasPassword?: boolean;
+    awsProfile?: string;
+    awsRegion?: string;
+    awsService?: 'es' | 'aoss';
     indexes?: {
       traces?: string;
       logs?: string;
@@ -130,8 +146,12 @@ export function getStorageConfigFromFile(): StorageClusterConfig | null {
 
   return {
     endpoint: config.storage.endpoint,
+    authType: config.storage.authType,
     username: config.storage.username,
     password: config.storage.password,
+    awsProfile: config.storage.awsProfile,
+    awsRegion: config.storage.awsRegion,
+    awsService: config.storage.awsService,
     tlsSkipVerify: config.storage.tlsSkipVerify,
   };
 }
@@ -156,8 +176,12 @@ export function saveStorageConfig(storageConfig: StorageClusterConfig): void {
 
   existing.storage = {
     endpoint: storageConfig.endpoint,
+    ...(storageConfig.authType && { authType: storageConfig.authType }),
     ...(resolvedUsername && { username: resolvedUsername }),
     ...(resolvedPassword && { password: resolvedPassword }),
+    ...(storageConfig.awsProfile && { awsProfile: storageConfig.awsProfile }),
+    ...(storageConfig.awsRegion && { awsRegion: storageConfig.awsRegion }),
+    ...(storageConfig.awsService && { awsService: storageConfig.awsService }),
     ...(storageConfig.tlsSkipVerify !== undefined && { tlsSkipVerify: storageConfig.tlsSkipVerify }),
   };
 
@@ -203,8 +227,12 @@ export function getObservabilityConfigFromFile(): ObservabilityClusterConfig | n
 
   return {
     endpoint: config.observability.endpoint,
+    authType: config.observability.authType,
     username: config.observability.username,
     password: config.observability.password,
+    awsProfile: config.observability.awsProfile,
+    awsRegion: config.observability.awsRegion,
+    awsService: config.observability.awsService,
     tlsSkipVerify: config.observability.tlsSkipVerify,
     indexes: config.observability.indexes,
   };
@@ -227,8 +255,12 @@ export function saveObservabilityConfig(obsConfig: ObservabilityClusterConfig): 
 
   existing.observability = {
     endpoint: obsConfig.endpoint,
+    ...(obsConfig.authType && { authType: obsConfig.authType }),
     ...(resolvedUsername && { username: resolvedUsername }),
     ...(resolvedPassword && { password: resolvedPassword }),
+    ...(obsConfig.awsProfile && { awsProfile: obsConfig.awsProfile }),
+    ...(obsConfig.awsRegion && { awsRegion: obsConfig.awsRegion }),
+    ...(obsConfig.awsService && { awsService: obsConfig.awsService }),
     ...(obsConfig.tlsSkipVerify !== undefined && { tlsSkipVerify: obsConfig.tlsSkipVerify }),
     ...(obsConfig.indexes && Object.keys(obsConfig.indexes).length > 0 && {
       indexes: obsConfig.indexes,
@@ -301,28 +333,63 @@ export function getConfigStatus(): ConfigStatus {
     };
   }
 
+  // Resolve SigV4 fields
+  const storageAuthType: ClusterAuthType | undefined = storageSource === 'file'
+    ? config?.storage?.authType
+    : (process.env.OPENSEARCH_STORAGE_AUTH_TYPE as ClusterAuthType) || undefined;
+  const storageAwsProfile = storageSource === 'file'
+    ? config?.storage?.awsProfile
+    : process.env.OPENSEARCH_STORAGE_AWS_PROFILE;
+  const storageAwsRegion = storageSource === 'file'
+    ? config?.storage?.awsRegion
+    : process.env.OPENSEARCH_STORAGE_AWS_REGION;
+  const storageAwsService = storageSource === 'file'
+    ? config?.storage?.awsService
+    : (process.env.OPENSEARCH_STORAGE_AWS_SERVICE as 'es' | 'aoss') || undefined;
+
+  const obsAuthType: ClusterAuthType | undefined = obsSource === 'file'
+    ? config?.observability?.authType
+    : (process.env.OPENSEARCH_LOGS_AUTH_TYPE as ClusterAuthType) || undefined;
+  const obsAwsProfile = obsSource === 'file'
+    ? config?.observability?.awsProfile
+    : process.env.OPENSEARCH_LOGS_AWS_PROFILE;
+  const obsAwsRegion = obsSource === 'file'
+    ? config?.observability?.awsRegion
+    : process.env.OPENSEARCH_LOGS_AWS_REGION;
+  const obsAwsService = obsSource === 'file'
+    ? config?.observability?.awsService
+    : (process.env.OPENSEARCH_LOGS_AWS_SERVICE as 'es' | 'aoss') || undefined;
+
   return {
     storage: {
       configured: storageSource !== 'none',
       source: storageSource,
       endpoint: storageEndpoint,
+      authType: storageAuthType,
       username: storageSource === 'file'
         ? config?.storage?.username
         : process.env.OPENSEARCH_STORAGE_USERNAME,
       hasPassword: storageSource === 'file'
         ? Boolean(config?.storage?.password)
         : Boolean(process.env.OPENSEARCH_STORAGE_PASSWORD),
+      awsProfile: storageAwsProfile,
+      awsRegion: storageAwsRegion,
+      awsService: storageAwsService,
     },
     observability: {
       configured: obsSource !== 'none',
       source: obsSource,
       endpoint: obsEndpoint,
+      authType: obsAuthType,
       username: obsSource === 'file'
         ? config?.observability?.username
         : process.env.OPENSEARCH_LOGS_USERNAME,
       hasPassword: obsSource === 'file'
         ? Boolean(config?.observability?.password)
         : Boolean(process.env.OPENSEARCH_LOGS_PASSWORD),
+      awsProfile: obsAwsProfile,
+      awsRegion: obsAwsRegion,
+      awsService: obsAwsService,
       indexes: obsIndexes,
     },
   };

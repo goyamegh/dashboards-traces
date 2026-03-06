@@ -23,6 +23,8 @@
  */
 
 import { Client } from '@opensearch-project/opensearch';
+import { createOpenSearchClient } from './opensearchClientFactory.js';
+import type { ClusterAuthType } from '../../types/index.js';
 
 let client: Client | null = null;
 let clientInitialized = false;
@@ -60,20 +62,18 @@ export function getOpenSearchClient(): Client | null {
       return null;
     }
 
-    const username = process.env.OPENSEARCH_STORAGE_USERNAME;
-    const password = process.env.OPENSEARCH_STORAGE_PASSWORD;
+    const authType = (process.env.OPENSEARCH_STORAGE_AUTH_TYPE as ClusterAuthType) || 'basic';
 
-    const config: any = {
-      node: endpoint,
-      ssl: { rejectUnauthorized: false },
-    };
-
-    // Add auth only if credentials provided
-    if (username && password) {
-      config.auth = { username, password };
-    }
-
-    client = new Client(config);
+    client = createOpenSearchClient({
+      endpoint,
+      authType,
+      username: process.env.OPENSEARCH_STORAGE_USERNAME,
+      password: process.env.OPENSEARCH_STORAGE_PASSWORD,
+      awsProfile: process.env.OPENSEARCH_STORAGE_AWS_PROFILE,
+      awsRegion: process.env.OPENSEARCH_STORAGE_AWS_REGION,
+      awsService: (process.env.OPENSEARCH_STORAGE_AWS_SERVICE as 'es' | 'aoss') || undefined,
+      tlsSkipVerify: process.env.OPENSEARCH_STORAGE_TLS_SKIP_VERIFY === 'true',
+    });
   }
   return client;
 }
