@@ -386,6 +386,35 @@ export async function runEvaluationWithConnector(
 }
 
 /**
+ * Retry wrapper for connector.execute() calls.
+ * Handles transient 409 "Run already in progress" errors caused by race conditions
+ * where the previous turn's cleanup hasn't completed before the next turn starts.
+ */
+async function executeWithRetry<T>(
+  fn: () => Promise<T>,
+  opts: { maxRetries: number; initialDelayMs: number; retryOn409: boolean }
+): Promise<T> {
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      const is409 = opts.retryOn409 && (
+        err.message?.includes('409') ||
+        err.message?.includes('already in progress') ||
+        err.status === 409
+      );
+      if (!is409 || attempt === opts.maxRetries) throw err;
+      const delay = opts.initialDelayMs * Math.pow(2, attempt);
+      debug('Eval', `409 on turn, retrying in ${delay}ms (attempt ${attempt + 1}/${opts.maxRetries})`);
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  throw lastError!;
+}
+
+/**
  * Run multi-turn evaluation with LLM-simulated user.
  * Sends the initial prompt, then loops: simulator generates follow-up → agent responds.
  * After the conversation, calls the holistic multi-turn judge.
@@ -488,12 +517,11 @@ async function runMultiTurnEvaluation(
         payload: turnPayload,
       };
 
-      const turnResult = await connector.execute(
-        endpoint,
-        turnRequest,
-        auth,
-        onStep,
-        options.onRawEvent
+      // Retry on 409 "Run already in progress" — the previous turn's cleanup
+      // may not have completed before this request arrives at the agent backend.
+      const turnResult = await executeWithRetry(
+        () => connector.execute(endpoint, turnRequest, auth, onStep, options.onRawEvent),
+        { maxRetries: 3, initialDelayMs: 1000, retryOn409: true }
       );
 
       agentRunId = turnResult.runId || agentRunId;

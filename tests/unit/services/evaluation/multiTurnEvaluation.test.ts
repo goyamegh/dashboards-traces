@@ -554,6 +554,73 @@ describe('Multi-Turn Evaluation', () => {
       );
     });
 
+    it('multi-turn retries on 409 "Run already in progress" and succeeds', async () => {
+      const { generateFollowUp } = require('@/services/evaluation/userSimulator');
+
+      // Simulator generates one follow-up, then signals done
+      generateFollowUp
+        .mockResolvedValueOnce({ done: false, message: 'Is it Redis?' })
+        .mockResolvedValueOnce({ done: true, message: 'Thanks.' });
+
+      // Turn 1 succeeds, Turn 2 first attempt gets 409, second attempt succeeds
+      let executeCallCount = 0;
+      const mockConnector = createMockConnector({
+        execute: jest.fn().mockImplementation(async () => {
+          executeCallCount++;
+          if (executeCallCount === 2) {
+            // First attempt at Turn 2: simulate 409 race condition
+            const error: any = new Error('HTTP 409: Conflict - Run already in progress');
+            error.status = 409;
+            throw error;
+          }
+          return {
+            trajectory: [
+              { id: `step-${executeCallCount}`, timestamp: Date.now(), type: 'response', content: `Response ${executeCallCount}` },
+            ],
+            runId: `run-${executeCallCount}`,
+            rawEvents: [],
+            metadata: { threadId: 'thread-1' },
+          };
+        }),
+      });
+      const mockRegistry = createMockRegistry(mockConnector);
+
+      // Mock the multi-turn judge API response
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          passFailStatus: 'passed',
+          weightedScore: 85,
+          rootCauseScore: 90,
+          remediationScore: 80,
+          contextRetentionScore: 85,
+          concisenessScore: 90,
+          reasoning: 'Agent recovered after retry and completed investigation.',
+          improvementStrategies: [],
+        }),
+      });
+
+      const onStepMock = jest.fn();
+
+      const result = await runEvaluationWithConnector(
+        mockAgent,
+        'test-model',
+        mockMultiTurnTestCase,
+        onStepMock,
+        { registry: mockRegistry }
+      );
+
+      // connector.execute called 3 times: Turn 1 (success), Turn 2 attempt 1 (409), Turn 2 attempt 2 (success)
+      expect(mockConnector.execute).toHaveBeenCalledTimes(3);
+
+      // Evaluation should complete successfully despite the 409
+      expect(result.status).toBe('completed');
+      expect(result.passFailStatus).toBe('passed');
+      expect(result.multiTurnResult).toBeDefined();
+      expect(result.multiTurnResult.totalTurns).toBe(2);
+      expect(result.multiTurnResult.turns).toHaveLength(2);
+    });
+
     it('multi-turn sends judge request with correct payload shape', async () => {
       const { generateFollowUp } = require('@/services/evaluation/userSimulator');
 
