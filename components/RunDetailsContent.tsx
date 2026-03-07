@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
   X,
   FileText,
@@ -87,7 +88,9 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
   const [tracesLoading, setTracesLoading] = useState(false);
   const [tracesError, setTracesError] = useState<string | null>(null);
   const [tracesFetched, setTracesFetched] = useState(false);
-  const [activeTab, setActiveTab] = useState('summary');
+  const [searchParams] = useSearchParams();
+  const initialTab = searchParams.get('tab') || 'summary';
+  const [activeTab, setActiveTab] = useState(initialTab);
   const [traceViewMode, setTraceViewMode] = useState<ViewMode>('info');
   const [traceFullscreenOpen, setTraceFullscreenOpen] = useState(false);
 

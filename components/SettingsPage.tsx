@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
 import { AlertTriangle, Trash2, Database, CheckCircle2, XCircle, Upload, Download, Loader2, Server, Plus, Edit2, X, Save, ExternalLink, Eye, EyeOff, ChevronDown, ChevronRight, RefreshCw, Palette, Circle } from 'lucide-react';
 import { getTheme, setTheme, type Theme } from '@/lib/theme';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -204,6 +205,24 @@ export const SettingsPage: React.FC = () => {
       console.error('Failed to load config status:', error);
     }
   }, []);
+
+  // Scroll to section if URL hash is present (e.g., /settings#storage)
+  const location = useLocation();
+  const hasScrolled = useRef(false);
+  useEffect(() => {
+    if (location.hash && !hasScrolled.current) {
+      const id = location.hash.replace('#', '');
+      // Delay to allow the page to render before scrolling
+      const timer = setTimeout(() => {
+        const el = document.getElementById(id);
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          hasScrolled.current = true;
+        }
+      }, 300);
+      return () => clearTimeout(timer);
+    }
+  }, [location.hash, isLoading]);
 
   useEffect(() => {
     // Load debug state from server API (single source of truth: agent-health.config.json)
@@ -1115,7 +1134,7 @@ export const SettingsPage: React.FC = () => {
       </Card>
 
       {/* Evaluation Storage Configuration */}
-      <Card className="mb-6">
+      <Card id="storage" className="mb-6">
         <CardHeader>
           <CardTitle className="flex items-center gap-2">
             <Database size={18} />

@@ -30,8 +30,8 @@ export const FirstRunExperience: React.FC = () => {
       
       // Navigate to dashboard (which will now show data)
       // The page will reload and show the standard dashboard with sample data
-      navigate('/');
-      
+      navigate('/agent-traces');
+
       // Force a page reload to ensure data state is re-evaluated
       window.location.reload();
     } catch (error) {
@@ -77,7 +77,7 @@ export const FirstRunExperience: React.FC = () => {
               asChild
               className="bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 text-white"
             >
-              <Link to="/settings/clusters">
+              <Link to="/settings#storage">
                 Configure Your Cluster
               </Link>
             </Button>
@@ -158,35 +158,35 @@ export const FirstRunExperience: React.FC = () => {
 
             {/* Workflow Details */}
             <div className="space-y-5">
-              <div className="flex items-start gap-3">
+              <Link to="/agent-traces" className="flex items-start gap-3 group hover:bg-accent/50 rounded-lg p-2 -m-2 transition-colors">
                 <Activity className="h-5 w-5 text-blue-500 mt-0.5 flex-shrink-0" />
                 <div className="space-y-1">
-                  <h3 className="text-sm font-semibold">Trace</h3>
+                  <h3 className="text-sm font-semibold group-hover:text-primary">Trace</h3>
                   <p className="text-sm text-muted-foreground">
                     See exactly what your agent did.
                   </p>
                 </div>
-              </div>
+              </Link>
 
-              <div className="flex items-start gap-3">
+              <Link to="/benchmarks" className="flex items-start gap-3 group hover:bg-accent/50 rounded-lg p-2 -m-2 transition-colors">
                 <Gauge className="h-5 w-5 text-purple-500 mt-0.5 flex-shrink-0" />
                 <div className="space-y-1">
-                  <h3 className="text-sm font-semibold">Evaluate</h3>
+                  <h3 className="text-sm font-semibold group-hover:text-primary">Evaluate</h3>
                   <p className="text-sm text-muted-foreground">
                     Benchmark and measure quality before production.
                   </p>
                 </div>
-              </div>
+              </Link>
 
-              <div className="flex items-start gap-3">
+              <Link to="/runs/demo-report-001?tab=judge" className="flex items-start gap-3 group hover:bg-accent/50 rounded-lg p-2 -m-2 transition-colors">
                 <TrendingUp className="h-5 w-5 text-violet-500 mt-0.5 flex-shrink-0" />
                 <div className="space-y-1">
-                  <h3 className="text-sm font-semibold">Improve</h3>
+                  <h3 className="text-sm font-semibold group-hover:text-primary">Improve</h3>
                   <p className="text-sm text-muted-foreground">
                     Make informed decisions with recorded history.
                   </p>
                 </div>
-              </div>
+              </Link>
             </div>
           </CardContent>
         </Card>
@@ -238,8 +238,8 @@ export const FirstRunExperience: React.FC = () => {
             <div className="pt-6 border-t">
               <p className="text-sm text-muted-foreground text-center">
                 Ready to connect your own data?{' '}
-                <Link 
-                  to="/settings/clusters" 
+                <Link
+                  to="/settings#storage"
                   className="text-primary hover:underline font-medium"
                 >
                   Configure your cluster
