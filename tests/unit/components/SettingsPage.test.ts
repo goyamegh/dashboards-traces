@@ -71,6 +71,10 @@ jest.mock('@/lib/theme', () => ({
   setTheme: jest.fn(),
 }));
 
+jest.mock('react-router-dom', () => ({
+  useLocation: () => ({ pathname: '/settings', hash: '', search: '', state: null }),
+}));
+
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 /** A fetch mock that returns a response whose .json() throws SyntaxError (empty body). */

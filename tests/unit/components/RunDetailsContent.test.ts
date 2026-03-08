@@ -98,6 +98,10 @@ jest.mock('@/components/ui/tooltip', () => ({
   TooltipContent: ({ children }: any) => React.createElement('span', null, children),
 }));
 
+jest.mock('react-router-dom', () => ({
+  useSearchParams: () => [new URLSearchParams(), jest.fn()],
+}));
+
 jest.mock('@/components/TrajectoryView', () => ({
   TrajectoryView: () => React.createElement('div', { 'data-testid': 'trajectory-view' }),
 }));
