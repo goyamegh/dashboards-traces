@@ -125,9 +125,9 @@ router.post('/api/judge', async (req: Request, res: Response) => {
     const { trajectory, expectedOutcomes, expectedTrajectory, logs, modelId } = req.body;
 
     // Validate required fields
-    if (!trajectory) {
+    if (!trajectory || !Array.isArray(trajectory) || trajectory.length === 0) {
       return res.status(400).json({
-        error: 'Missing required field: trajectory'
+        error: 'Trajectory is required and must be a non-empty array'
       });
     }
 

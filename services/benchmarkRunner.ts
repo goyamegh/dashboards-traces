@@ -170,17 +170,22 @@ export async function executeRun(
   const testCaseMap = new Map(allTestCases.map((tc: any) => [tc.id, tc]));
 
   // Mutable counters for tracking progress across concurrent tasks.
-  // JS is single-threaded so ++ is atomic within a microtask. With concurrency > 1,
-  // multiple tasks may read the same completedCount in progress events before any
-  // has incremented it — intermediate progress may show duplicate values but the
-  // final tally is always correct. startedCount is incremented synchronously before
-  // each task's first await, providing a unique index per task.
+  // SAFETY: JavaScript is single-threaded — the ++ operator and variable reads
+  // are atomic within each synchronous block (between await points). With
+  // concurrency > 1, tasks interleave at await boundaries, so:
+  // - completedCount++ is always accurate (runs in a synchronous block after await)
+  // - Progress events may report the same completedCount if two tasks complete
+  //   between the same pair of progress emissions — this is cosmetic only
+  // - startedCount is incremented before each task's first await, giving unique indices
+  // The final completedCount always equals the number of completed tasks.
   let completedCount = 0;
   let startedCount = 0;
 
   // Shared throttle signal: when any task hits a rate-limit error,
   // subsequent task starts wait until this timestamp expires.
+  // Uses exponential backoff: consecutive throttle errors increase the delay.
   let throttleUntil = 0;
+  let consecutiveThrottles = 0;
 
   try {
     // Process each test case with bounded concurrency
@@ -269,6 +274,7 @@ export async function executeRun(
           };
 
           completedCount++;
+          consecutiveThrottles = Math.max(0, consecutiveThrottles - 1);
           const testCaseDuration = Date.now() - testCaseStartTime;
           debug('BenchmarkRunner', `[${testCaseId}] Completed in ${testCaseDuration}ms (${completedCount}/${totalTestCases} completed)`);
 
@@ -285,10 +291,12 @@ export async function executeRun(
 
           completedCount++;
 
-          // Signal sibling tasks to back off, then wait ourselves
+          // Signal sibling tasks to back off with exponential backoff
           if (errorMsg.includes('ThrottlingException') || errorMsg.includes('rate limit') || errorMsg.includes('429')) {
-            throttleUntil = Date.now() + 5000;
-            await new Promise(r => setTimeout(r, 5000));
+            consecutiveThrottles++;
+            const backoffMs = Math.min(5000 * Math.pow(2, consecutiveThrottles - 1), 30000);
+            throttleUntil = Math.max(throttleUntil, Date.now() + backoffMs);
+            await new Promise(r => setTimeout(r, backoffMs));
           }
 
           // Persist failure progress to OpenSearch (fire-and-forget with logging)
@@ -303,12 +311,13 @@ export async function executeRun(
 
     // If cancelled, send cancellation progress
     if (cancellationToken?.isCancelled) {
+      const lastIndex = Math.max(0, Math.min(completedCount - 1, totalTestCases - 1));
       onProgress({
-        currentTestCaseIndex: completedCount,
+        currentTestCaseIndex: lastIndex,
         completedCount,
         totalTestCases,
         currentRunId: run.id,
-        currentTestCaseId: benchmark.testCaseIds[Math.min(completedCount, totalTestCases - 1)],
+        currentTestCaseId: benchmark.testCaseIds[lastIndex],
         status: 'cancelled',
       });
     }

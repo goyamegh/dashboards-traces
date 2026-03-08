@@ -14,6 +14,7 @@
  *   const client = createOpenSearchClient(config);
  */
 
+import { createHash } from 'crypto';
 import { Client } from '@opensearch-project/opensearch';
 import { AwsSigv4Signer } from '@opensearch-project/opensearch/aws-v3';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
@@ -86,5 +87,9 @@ export function configToCacheKey(config: ClusterConfig): string {
   if (config.authType === 'sigv4') {
     return `sigv4|${config.endpoint}|${config.awsRegion || ''}|${config.awsProfile || ''}|${config.awsService || 'es'}`;
   }
-  return `basic|${config.endpoint}|${config.username || ''}|${config.password || ''}`;
+  const credentialHash = createHash('sha256')
+    .update(`${config.username || ''}:${config.password || ''}`)
+    .digest('hex')
+    .substring(0, 16);
+  return `basic|${config.endpoint}|${credentialHash}`;
 }

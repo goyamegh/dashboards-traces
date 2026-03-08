@@ -187,8 +187,10 @@ class TracePollingManager {
           return;
         }
 
-        // Trajectory is ready - proceed
-        report.trajectory = trajectory;
+        // Trajectory is ready - only overwrite if the hook produced steps
+        if (trajectory.length > 0) {
+          report.trajectory = trajectory;
+        }
 
         // Stop polling and notify success
         state.running = false;

@@ -740,10 +740,44 @@ describe('Admin Storage Routes', () => {
 
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
+          needsReindex: false,
+          fixResults: setupResult.fixResults,
+        })
+      );
+    });
+
+    it('should return needsReindex true when fix failed', async () => {
+      const setupResult = {
+        indexResults: { 'runs-index': { status: 'exists' } },
+        validationResults: [
+          {
+            indexName: 'runs-index',
+            status: 'needs_reindex',
+            issues: [{ field: 'id', expectedType: 'keyword', actualType: 'text' }],
+            documentCount: 42,
+          },
+        ],
+        fixResults: [
+          { indexName: 'runs-index', status: 'failed', error: 'Reindex timeout' },
+        ],
+      };
+      mockEnsureIndexesWithValidation.mockResolvedValue(setupResult);
+
+      const { req, res } = createMocks({}, {
+        endpoint: 'https://new-storage.com',
+      });
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/config/storage');
+
+      await handler(req, res);
+
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
           needsReindex: true,
           fixResults: setupResult.fixResults,
         })
       );
+      // Storage module should still be set despite fix failure
+      expect(mockSetStorageModule).toHaveBeenCalled();
     });
 
     it('should require endpoint', async () => {

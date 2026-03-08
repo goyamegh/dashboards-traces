@@ -307,7 +307,13 @@ router.post('/api/storage/config/storage', async (req: Request, res: Response) =
 
     setStorageModule(new OpenSearchStorageModule(client));
 
-    const needsReindex = setupResult.validationResults.some((r) => r.status === 'needs_reindex');
+    const hasFixFailures = setupResult.fixResults?.some((f) => f.status === 'failed') ?? false;
+    const hadIssues = setupResult.validationResults.some((r) => r.status === 'needs_reindex');
+    const needsReindex = hadIssues && (hasFixFailures || !setupResult.fixResults);
+    if (hasFixFailures) {
+      const failedNames = setupResult.fixResults!.filter((f) => f.status === 'failed').map((f) => f.indexName);
+      console.warn(`[StorageAPI] Index fix failures: ${failedNames.join(', ')}`);
+    }
     res.json({
       success: true,
       message: 'Storage configuration saved',

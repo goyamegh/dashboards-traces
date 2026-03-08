@@ -748,8 +748,77 @@ describe('TracePollingManager', () => {
       expect(mockExecuteBuildTrajectoryHook).not.toHaveBeenCalled();
       expect(onTracesFound).toHaveBeenCalledWith(
         mockSpans,
-        expect.objectContaining({ trajectory: [] })
+        expect.objectContaining({ trajectory: [{ type: 'original', content: 'From SSE' }] })
       );
+    });
+
+    it('preserves existing trajectory when buildTrajectory hook throws', async () => {
+      const mockSpans: Span[] = [
+        {
+          traceId: 'trace-hook-err',
+          spanId: 'span-hook-err',
+          name: 'test-span',
+          startTime: '2024-01-01T00:00:00Z',
+          endTime: '2024-01-01T00:00:01Z',
+          duration: 1000,
+          status: 'OK',
+          attributes: {},
+        },
+      ];
+
+      const mockReport: EvaluationReport = {
+        id: 'report-hook-err',
+        timestamp: '2024-01-01T00:00:00Z',
+        testCaseId: 'test-1',
+        status: 'completed',
+        passFailStatus: 'passed',
+        agentName: 'Test Agent',
+        agentKey: 'test-agent',
+        modelName: 'Test Model',
+        modelId: 'test-model',
+        trajectory: [{ type: 'original', content: 'SSE trajectory' }],
+        metrics: { accuracy: 0.95, faithfulness: 0.9, latency_score: 0.85, trajectory_alignment_score: 0.88 },
+        llmJudgeReasoning: 'Test reasoning',
+      };
+
+      const agentConfig = {
+        key: 'test-agent',
+        name: 'Test Agent',
+        endpoint: 'http://test.com',
+        hooks: {
+          buildTrajectory: {
+            enabled: true,
+            script: 'test-script.js'
+          }
+        }
+      };
+
+      const onTracesFound = jest.fn();
+      const callbacks: PollCallbacks = {
+        onTracesFound,
+        onError: jest.fn(),
+      };
+
+      mockFetchTracesByRunIds.mockResolvedValue({ spans: mockSpans, total: 1 });
+      mockExecuteBuildTrajectoryHook.mockRejectedValue(new Error('Hook script failed'));
+      mockUpdateReport.mockResolvedValue(undefined);
+      mockGetReportById.mockResolvedValue(mockReport);
+
+      const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
+
+      tracePollingManager.startPolling('report-hook-err', 'run-hook-err', callbacks, {
+        agentConfig,
+      });
+
+      await jest.runAllTimersAsync();
+
+      // Hook failed, but the empty trajectory from error path should NOT overwrite existing
+      expect(onTracesFound).toHaveBeenCalledWith(
+        mockSpans,
+        expect.objectContaining({ trajectory: [{ type: 'original', content: 'SSE trajectory' }] })
+      );
+
+      consoleErrorSpy.mockRestore();
     });
   });
 });

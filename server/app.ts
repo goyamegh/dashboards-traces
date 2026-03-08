@@ -56,9 +56,16 @@ async function initializeStorageBackend(): Promise<void> {
     });
     const { indexResults } = setupResult;
     const created = Object.entries(indexResults).filter(([, r]) => r.status === 'created').map(([n]) => n);
-    const errors = Object.entries(indexResults).filter(([, r]) => r.status === 'error').map(([n]) => n);
+    const failedIndexes = Object.entries(indexResults)
+      .filter(([, r]) => r.status === 'error')
+      .map(([name, r]) => `${name}: ${r.error}`);
     if (created.length > 0) console.log(`[app] Created indexes: ${created.join(', ')}`);
-    if (errors.length > 0) console.warn(`[app] Failed to create indexes: ${errors.join(', ')}`);
+    if (failedIndexes.length > 0) {
+      console.warn(`[app] WARNING: ${failedIndexes.length} index(es) failed to initialize:\n  ${failedIndexes.join('\n  ')}`);
+      console.warn('[app] Some features may not work correctly. Check OpenSearch connectivity.');
+    } else {
+      console.log('[app] All indexes initialized successfully');
+    }
 
     const osModule = new OpenSearchStorageModule(client);
     setStorageModule(osModule);

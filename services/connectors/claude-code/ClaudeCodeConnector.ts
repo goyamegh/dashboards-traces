@@ -292,8 +292,10 @@ export class ClaudeCodeConnector extends SubprocessConnector {
     this.debug('Config:', this['config']);
     this.resetState();
 
-    // Save original config for restoration after execution
-    const originalEnv = this.config.env ? { ...this.config.env } : {};
+    // Save original config for restoration after execution.
+    // Uses structured clone for env to prevent leaking nested mutations
+    // between consecutive executions in a benchmark run.
+    const originalEnv = this.config.env ? structuredClone(this.config.env) : {};
     const originalArgs = this.config.args ? [...this.config.args] : [];
     const originalInputMode = this.config.inputMode;
     const originalTimeout = this.config.timeout;
@@ -355,7 +357,8 @@ export class ClaudeCodeConnector extends SubprocessConnector {
       this.debug('========== execute() COMPLETED ==========');
       return result;
     } finally {
-      // Restore original config for next execution
+      // Restore config to pre-execution state. Uses deep copies to prevent
+      // config pollution between consecutive executions in a benchmark run.
       this.config.env = originalEnv;
       this.config.args = originalArgs;
       this.config.inputMode = originalInputMode;

@@ -193,14 +193,17 @@ describe('opensearchClientFactory', () => {
   });
 
   describe('configToCacheKey', () => {
-    it('should generate basic auth cache key', () => {
+    it('should generate basic auth cache key with hashed credentials', () => {
       const key = configToCacheKey({
         endpoint: 'https://localhost:9200',
         username: 'admin',
         password: 'pass',
       });
 
-      expect(key).toBe('basic|https://localhost:9200|admin|pass');
+      expect(key).toMatch(/^basic\|https:\/\/localhost:9200\|[a-f0-9]{16}$/);
+      // Password should NOT appear in the key
+      expect(key).not.toContain('pass');
+      expect(key).not.toContain('admin');
     });
 
     it('should generate basic auth cache key without credentials', () => {
@@ -208,7 +211,7 @@ describe('opensearchClientFactory', () => {
         endpoint: 'https://localhost:9200',
       });
 
-      expect(key).toBe('basic|https://localhost:9200||');
+      expect(key).toMatch(/^basic\|https:\/\/localhost:9200\|[a-f0-9]{16}$/);
     });
 
     it('should generate sigv4 cache key', () => {
@@ -247,7 +250,18 @@ describe('opensearchClientFactory', () => {
       const key2 = configToCacheKey({ endpoint: 'https://b.com', username: 'u1', password: 'p1' });
       const key3 = configToCacheKey({ endpoint: 'https://a.com', authType: 'sigv4', awsRegion: 'us-east-1' });
 
-      expect(key1).not.toBe(key2);
+      expect(key1).not.toBe(key2); // different endpoints
+      expect(key1).not.toBe(key3); // different auth types
+      // Verify no plaintext password in basic key
+      expect(key1).not.toContain('p1');
+    });
+
+    it('should produce same hash for same credentials, different hash for different credentials', () => {
+      const key1 = configToCacheKey({ endpoint: 'https://a.com', username: 'user', password: 'pass1' });
+      const key2 = configToCacheKey({ endpoint: 'https://a.com', username: 'user', password: 'pass1' });
+      const key3 = configToCacheKey({ endpoint: 'https://a.com', username: 'user', password: 'pass2' });
+
+      expect(key1).toBe(key2);
       expect(key1).not.toBe(key3);
     });
   });

@@ -142,6 +142,32 @@ describe('reindexSingleIndex', () => {
     // The error is thrown before the temp delete step
     expect(mockIndicesDelete).toHaveBeenCalledTimes(1);
   });
+
+  it('should throw CRITICAL error with temp index name when recreate fails after delete', async () => {
+    mockIndicesExists.mockResolvedValueOnce({ body: false }); // no stale temp
+    mockIndicesCreate
+      .mockResolvedValueOnce({ body: { acknowledged: true } }) // temp create succeeds
+      .mockRejectedValueOnce(new Error('Cluster read-only'));   // original recreate fails
+    mockIndicesDelete.mockResolvedValue({ body: { acknowledged: true } });
+    mockReindex.mockResolvedValueOnce({ body: { total: 7 } }); // to temp succeeds
+
+    await expect(reindexSingleIndex(mockClient, 'evals_runs')).rejects.toThrow(
+      /CRITICAL.*7 docs.*evals_runs_reindex_temp/
+    );
+  });
+
+  it('should throw CRITICAL error with temp index name when reindex-back fails after delete', async () => {
+    mockIndicesExists.mockResolvedValueOnce({ body: false }); // no stale temp
+    mockIndicesCreate.mockResolvedValue({ body: { acknowledged: true } });
+    mockIndicesDelete.mockResolvedValue({ body: { acknowledged: true } });
+    mockReindex
+      .mockResolvedValueOnce({ body: { total: 12 } })          // to temp succeeds
+      .mockRejectedValueOnce(new Error('Reindex timeout'));     // back from temp fails
+
+    await expect(reindexSingleIndex(mockClient, 'evals_runs')).rejects.toThrow(
+      /CRITICAL.*12 docs.*evals_runs_reindex_temp/
+    );
+  });
 });
 
 describe('fixIndexMappings', () => {

@@ -69,7 +69,37 @@ describe('Judge Routes', () => {
 
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith({
-        error: 'Missing required field: trajectory',
+        error: 'Trajectory is required and must be a non-empty array',
+      });
+    });
+
+    it('returns 400 when trajectory is an empty array', async () => {
+      const { req, res } = createMocks({
+        trajectory: [],
+        expectedOutcomes: ['Test outcome'],
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Trajectory is required and must be a non-empty array',
+      });
+    });
+
+    it('returns 400 when trajectory is not an array', async () => {
+      const { req, res } = createMocks({
+        trajectory: 'not-an-array',
+        expectedOutcomes: ['Test outcome'],
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Trajectory is required and must be a non-empty array',
       });
     });
 

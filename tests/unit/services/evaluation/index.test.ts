@@ -715,5 +715,49 @@ describe('Evaluation Service Index', () => {
         undefined
       );
     });
+
+    it('should continue with pre-hook result when afterResponse hook throws', async () => {
+      const agentWithAfterHook = {
+        ...mockAgent,
+        hooks: {
+          afterResponse: jest.fn().mockRejectedValue(new Error('Hook exploded')),
+        },
+      };
+
+      const originalTrajectory = [
+        { type: 'response', content: 'Original from connector', timestamp: new Date().toISOString() },
+      ];
+
+      const mockConnector = {
+        type: 'mock',
+        execute: jest.fn().mockResolvedValue({
+          trajectory: originalTrajectory,
+          runId: 'hook-err-run',
+          rawEvents: [{ type: 'test' }],
+        }),
+      };
+
+      const mockRegistry = {
+        getForAgent: jest.fn().mockReturnValue(mockConnector),
+      };
+
+      const onStepMock = jest.fn();
+      const result = await runEvaluationWithConnector(
+        agentWithAfterHook,
+        'claude-3-sonnet',
+        mockTestCase,
+        onStepMock,
+        { registry: mockRegistry }
+      );
+
+      // Should succeed with original trajectory, not fail
+      expect(result.status).toBe('completed');
+      expect(result.trajectory).toEqual(originalTrajectory);
+      // Should have logged the hook error
+      expect(consoleErrorSpy).toHaveBeenCalledWith(
+        expect.stringContaining('afterResponse hook failed'),
+        expect.stringContaining('Hook exploded')
+      );
+    });
   });
 });

@@ -709,6 +709,70 @@ describe('Experiment Runner', () => {
       expect(result.results['tc-1'].error).toContain('ThrottlingException');
       expect(result.results['tc-2'].status).toBe('completed');
     });
+
+    it('should increase backoff duration on consecutive throttle errors', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const testCase2 = createTestCase('tc-2');
+      const testCase3 = createTestCase('tc-3');
+      const experiment = createExperiment(['tc-1', 'tc-2', 'tc-3']);
+      const run: BenchmarkRun = {
+        ...createBenchmarkRun('run-1'),
+        concurrency: 1,
+      };
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1, testCase2, testCase3]);
+
+      // All calls throw throttle errors
+      mockRunEvaluationWithConnector
+        .mockRejectedValueOnce(new Error('ThrottlingException: Rate exceeded'))
+        .mockRejectedValueOnce(new Error('ThrottlingException: Rate exceeded'))
+        .mockResolvedValueOnce({ id: 'report-3', trajectory: [], metrics: {} });
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      const startTime = Date.now();
+      await executeRun(experiment, run, jest.fn(), { client: mockClient });
+      const elapsed = Date.now() - startTime;
+
+      // First throttle: 5s, second throttle: 10s (exponential) = 15s total minimum
+      expect(elapsed).toBeGreaterThanOrEqual(14000);
+
+      // All test cases should have results
+      expect(Object.keys(run.results)).toHaveLength(3);
+    }, 30000);
+
+    it('should reduce throttle counter after successful completion', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const testCase2 = createTestCase('tc-2');
+      const testCase3 = createTestCase('tc-3');
+      const experiment = createExperiment(['tc-1', 'tc-2', 'tc-3']);
+      const run: BenchmarkRun = {
+        ...createBenchmarkRun('run-1'),
+        concurrency: 1,
+      };
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1, testCase2, testCase3]);
+
+      // First throttle, second succeeds, third throttle (should use reduced backoff)
+      mockRunEvaluationWithConnector
+        .mockRejectedValueOnce(new Error('ThrottlingException: Rate exceeded'))
+        .mockResolvedValueOnce({ id: 'report-2', trajectory: [], metrics: {} })
+        .mockRejectedValueOnce(new Error('ThrottlingException: Rate exceeded'));
+      mockSaveReportWithClient.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'ready' });
+
+      const startTime = Date.now();
+      await executeRun(experiment, run, jest.fn(), { client: mockClient });
+      const elapsed = Date.now() - startTime;
+
+      // First throttle: 5s, success reduces counter, third throttle: 5s (reset, not 10s)
+      // Total ~10s, not 15s
+      expect(elapsed).toBeGreaterThanOrEqual(9000);
+      expect(elapsed).toBeLessThan(14000);
+
+      // All test cases should have results
+      expect(run.results['tc-1'].status).toBe('failed');
+      expect(run.results['tc-2'].status).toBe('completed');
+      expect(run.results['tc-3'].status).toBe('failed');
+    }, 20000);
   });
 
   describe('runBenchmark', () => {

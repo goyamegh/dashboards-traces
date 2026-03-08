@@ -6,6 +6,18 @@
 /**
  * Migration Lock Service
  *
+ * In-memory migration lock for preventing concurrent index operations.
+ *
+ * IMPORTANT: This lock is process-local and only protects against concurrent
+ * operations within a single Node.js process. It does NOT provide distributed
+ * locking. If multiple server instances are running against the same OpenSearch
+ * cluster, they could perform conflicting migrations simultaneously.
+ *
+ * This is acceptable because Agent Health is designed as a single-process
+ * application (see CLAUDE.md architecture). If multi-instance support is
+ * needed in the future, replace this with a distributed lock (e.g., OpenSearch
+ * document-based locking or an external coordination service).
+ *
  * Per-index write lock that prevents concurrent writes while an index is being
  * reindexed to fix incompatible mappings. During reindex the original index is
  * deleted and recreated — concurrent writes would either fail with 404 or

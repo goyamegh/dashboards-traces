@@ -193,24 +193,30 @@ export async function runEvaluationWithConnector(
 
     // Execute afterResponse hook if defined
     if (agent.hooks?.afterResponse) {
-      const hookContext: AfterResponseContext = {
-        response: result.rawEvents?.[0] || {},
-        trajectory: result.trajectory,
-        runId: result.runId || undefined,
-      };
-      const hookResult = await executeAfterResponseHook(agent.hooks, hookContext, agent.key);
+      try {
+        const hookContext: AfterResponseContext = {
+          response: result.rawEvents?.[0] || {},
+          trajectory: result.trajectory,
+          runId: result.runId || undefined,
+        };
+        const hookResult = await executeAfterResponseHook(agent.hooks, hookContext, agent.key);
 
-      // Apply hook modifications
-      result = {
-        ...result,
-        trajectory: hookResult.trajectory,
-        runId: hookResult.runId || result.runId,
-      };
+        // Apply hook modifications
+        result = {
+          ...result,
+          trajectory: hookResult.trajectory,
+          runId: hookResult.runId || result.runId,
+        };
 
-      debug('Eval', 'afterResponse hook applied:', {
-        trajectorySteps: hookResult.trajectory.length,
-        runId: hookResult.runId
-      });
+        debug('Eval', 'afterResponse hook applied:', {
+          trajectorySteps: hookResult.trajectory.length,
+          runId: hookResult.runId
+        });
+      } catch (hookError: any) {
+        console.error(`[Eval] afterResponse hook failed for agent ${agent.key}:`, hookError.message);
+        debug('Eval', `afterResponse hook error, using pre-hook result`);
+        // Continue with pre-hook result — don't let hook failure kill the evaluation
+      }
     }
 
     fullTrajectory = result.trajectory;

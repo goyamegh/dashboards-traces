@@ -108,21 +108,31 @@ export async function reindexSingleIndex(
   await client.indices.delete({ index: indexName });
   debug('MappingFixer', `Deleted original index: ${indexName}`);
 
-  // Recreate original index with correct mappings and preserved settings
-  await client.indices.create({ index: indexName, body: reindexMapping as any });
-  debug('MappingFixer', `Recreated index: ${indexName}`);
+  // Recreate and reindex back — if this fails, the temp index still holds the data
+  let docsMovedBack = 0;
+  try {
+    // Recreate original index with correct mappings and preserved settings
+    await client.indices.create({ index: indexName, body: reindexMapping as any });
+    debug('MappingFixer', `Recreated index: ${indexName}`);
 
-  // Reindex data back from temp to original
-  const reindexBack = await client.reindex({
-    body: {
-      source: { index: tempIndex },
-      dest: { index: indexName },
-    },
-    wait_for_completion: true,
-    timeout: '5m',
-  });
-  const docsMovedBack = (reindexBack.body as any)?.total ?? 0;
-  debug('MappingFixer', `Reindexed ${docsMovedBack} docs from ${tempIndex} to ${indexName}`);
+    // Reindex data back from temp to original
+    const reindexBack = await client.reindex({
+      body: {
+        source: { index: tempIndex },
+        dest: { index: indexName },
+      },
+      wait_for_completion: true,
+      timeout: '5m',
+    });
+    docsMovedBack = (reindexBack.body as any)?.total ?? 0;
+    debug('MappingFixer', `Reindexed ${docsMovedBack} docs from ${tempIndex} to ${indexName}`);
+  } catch (recoveryError: any) {
+    throw new Error(
+      `CRITICAL: Original index ${indexName} was deleted but recovery failed: ${recoveryError.message}. ` +
+      `Your data (${docsMovedToTemp} docs) is preserved in temp index ${tempIndex}. ` +
+      `DO NOT delete ${tempIndex}. Manual recovery required.`
+    );
+  }
 
   // Validate document counts match — detect data loss before deleting temp
   if (docsMovedBack !== docsMovedToTemp) {
