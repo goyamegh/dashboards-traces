@@ -77,13 +77,16 @@ function transformDataForChart(
   const dates = [...new Set(data.map(d => d.date))].sort();
   const agents = [...new Set(data.map(d => d.agentKey))];
 
+  // Pre-index data for O(1) lookups instead of O(n) find() per date×agent
+  const dataIndex = new Map(data.map(d => [`${d.date}|${d.agentKey}`, d]));
+
   // Create chart data with one entry per date
   const chartData: ChartDataPoint[] = dates.map(date => {
     const point: ChartDataPoint = { date };
 
     // Add value for each agent on this date
     for (const agent of agents) {
-      const dataPoint = data.find(d => d.date === date && d.agentKey === agent);
+      const dataPoint = dataIndex.get(`${date}|${agent}`);
       point[agent] = dataPoint ? (dataPoint[dataKey] as number) : 0;
     }
 

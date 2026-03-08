@@ -203,38 +203,26 @@ export const Dashboard: React.FC = () => {
     setIsWorkflowCardHidden(false);
   };
 
+  // Phase 1: Load benchmarks and reports (skip when FRE will be shown)
   useEffect(() => {
+    if (isCheckingData || !dataState.hasData) return;
+
     const loadDashboardData = async () => {
       setIsLoading(true);
       try {
-        // Load benchmarks
-        const allBenchmarks = await asyncExperimentStorage.getAll();
+        // Load benchmarks and reports in parallel
+        const [allBenchmarks, allReports] = await Promise.all([
+          asyncExperimentStorage.getAll(),
+          asyncRunStorage.getAllReports({
+            sortBy: 'timestamp',
+            order: 'desc',
+            limit: 500,
+            fields: ['id', 'runId', 'experimentId', 'experimentRunId', 'testCaseId',
+                     'passFailStatus', 'accuracy', 'timestamp', 'agentConfig'],
+          }),
+        ]);
         setBenchmarks(allBenchmarks);
-
-        // Load all reports
-        const allReports = await asyncRunStorage.getAllReports({ sortBy: 'timestamp', order: 'desc' });
         setReports(allReports);
-
-        // Fetch metrics for all reports with runIds
-        const runIds = allReports.filter(r => r.runId).map(r => r.runId!);
-        if (runIds.length > 0) {
-          try {
-            const { metrics } = await fetchBatchMetrics(runIds);
-            const newMetricsMap = new Map<string, { costUsd: number; durationMs: number; tokens: number }>();
-
-            for (const m of metrics) {
-              newMetricsMap.set(m.runId, {
-                costUsd: m.costUsd,
-                durationMs: m.durationMs,
-                tokens: m.totalTokens,
-              });
-            }
-
-            setMetricsMap(newMetricsMap);
-          } catch (error) {
-            console.warn('[Dashboard] Failed to fetch metrics:', error);
-          }
-        }
       } catch (error) {
         console.error('Failed to load dashboard data:', error);
       } finally {
@@ -243,7 +231,27 @@ export const Dashboard: React.FC = () => {
     };
 
     loadDashboardData();
-  }, []);
+  }, [isCheckingData, dataState.hasData]);
+
+  // Phase 2: Deferred metrics loading (non-blocking, after reports are available)
+  useEffect(() => {
+    const runIds = reports.filter(r => r.runId).map(r => r.runId!);
+    if (runIds.length === 0) return;
+
+    fetchBatchMetrics(runIds)
+      .then(({ metrics }) => {
+        const newMetricsMap = new Map<string, { costUsd: number; durationMs: number; tokens: number }>();
+        for (const m of metrics) {
+          newMetricsMap.set(m.runId, {
+            costUsd: m.costUsd,
+            durationMs: m.durationMs,
+            tokens: m.totalTokens,
+          });
+        }
+        setMetricsMap(newMetricsMap);
+      })
+      .catch(err => console.warn('[Dashboard] Metrics load failed:', err));
+  }, [reports]);
 
   // Compute aggregated data
   const trendData = useMemo<TrendDataPoint[]>(() => {
