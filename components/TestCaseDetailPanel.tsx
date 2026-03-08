@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React from 'react';
-import { Calendar, Play } from 'lucide-react';
+import React, { useState } from 'react';
+import { Calendar, Play, Repeat, ChevronDown, ChevronRight, MessageCircle, Zap } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { TestCase } from '@/types';
@@ -16,6 +16,7 @@ interface TestCaseDetailPanelProps {
 }
 
 export const TestCaseDetailPanel: React.FC<TestCaseDetailPanelProps> = ({ testCase, totalRuns }) => {
+  const [idealAnswerExpanded, setIdealAnswerExpanded] = useState(false);
   return (
     <div className="space-y-4">
       {/* Labels */}
@@ -119,6 +120,129 @@ export const TestCaseDetailPanel: React.FC<TestCaseDetailPanelProps> = ({ testCa
               <pre className="text-xs overflow-x-auto">{testCase.expectedPPL}</pre>
             </CardContent>
           </Card>
+        </div>
+      )}
+
+      {/* Multi-Turn Scenario */}
+      {testCase.multiTurnScenario && (
+        <div className="space-y-2">
+          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+            <Repeat size={12} /> Multi-Turn Scenario
+          </h4>
+
+          {/* User Motivation */}
+          <div className="space-y-1">
+            <span className="text-xs text-muted-foreground">User Motivation</span>
+            <p className="text-sm">{testCase.multiTurnScenario.userMotivation}</p>
+          </div>
+
+          {/* Acceptance Criteria */}
+          {testCase.multiTurnScenario.acceptanceCriteria.length > 0 && (
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">Acceptance Criteria</span>
+              <ul className="space-y-1">
+                {testCase.multiTurnScenario.acceptanceCriteria.map((criterion, i) => (
+                  <li key={i} className="text-sm text-muted-foreground flex items-start gap-2">
+                    <span className="text-opensearch-blue mt-0.5">•</span>
+                    <span>{criterion}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          {/* Ideal Answer (collapsible) */}
+          <div className="space-y-1">
+            <button
+              className="text-xs text-muted-foreground flex items-center gap-1 hover:text-foreground transition-colors"
+              onClick={() => setIdealAnswerExpanded(!idealAnswerExpanded)}
+            >
+              {idealAnswerExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
+              Ideal Answer
+            </button>
+            {idealAnswerExpanded && (
+              <Card className="bg-muted/30">
+                <CardContent className="p-2">
+                  <p className="text-xs whitespace-pre-wrap">{testCase.multiTurnScenario.idealAnswer}</p>
+                </CardContent>
+              </Card>
+            )}
+          </div>
+
+          {/* Critical Components */}
+          {testCase.multiTurnScenario.criticalComponents && (
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">Critical Components</span>
+              <div className="text-xs space-y-1">
+                <div className="flex items-start gap-2 pl-2 border-l-2 border-red-500/30">
+                  <span className="text-red-400 font-medium">Root Cause:</span>
+                  <span className="text-muted-foreground">{testCase.multiTurnScenario.criticalComponents.rootCause}</span>
+                </div>
+                <div className="flex items-start gap-2 pl-2 border-l-2 border-emerald-500/30">
+                  <span className="text-emerald-400 font-medium">Remediation:</span>
+                  <span className="text-muted-foreground">{testCase.multiTurnScenario.criticalComponents.remediation}</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Turn Limit */}
+          {testCase.multiTurnScenario.turnLimit && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">Turn Limit:</span>
+              <Badge variant="secondary" className="text-[10px]">{testCase.multiTurnScenario.turnLimit}</Badge>
+            </div>
+          )}
+
+          {/* Reference Turns */}
+          {testCase.multiTurnScenario.referenceTurns && testCase.multiTurnScenario.referenceTurns.length > 0 && (
+            <div className="space-y-1">
+              <span className="text-xs text-muted-foreground">Reference Turns ({testCase.multiTurnScenario.referenceTurns.length})</span>
+              <div className="space-y-2">
+                {testCase.multiTurnScenario.referenceTurns.map((rt, i) => (
+                  <Card key={i} className="bg-muted/30">
+                    <CardContent className="p-2 space-y-1">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="text-[10px]">Turn {rt.turn}</Badge>
+                        <span className="text-xs truncate">{rt.user}</span>
+                      </div>
+                      <div className="flex gap-1 flex-wrap">
+                        {rt.expectedTopics.map((topic, j) => (
+                          <Badge key={j} variant="secondary" className="text-[10px]">{topic}</Badge>
+                        ))}
+                      </div>
+                      <p className="text-xs text-muted-foreground line-clamp-2">{rt.groundTruth}</p>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Follow-Up Questions */}
+      {testCase.followUpQuestions && testCase.followUpQuestions.length > 0 && (
+        <div className="space-y-1">
+          <h4 className="text-xs font-semibold text-muted-foreground uppercase tracking-wide flex items-center gap-1">
+            <MessageCircle size={12} /> Follow-Up Questions
+          </h4>
+          <div className="space-y-2">
+            {testCase.followUpQuestions.map((fq, i) => (
+              <Card key={i} className="bg-muted/30">
+                <CardContent className="p-2 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-[10px]">
+                      <Zap size={8} className="mr-0.5" />
+                      {fq.trigger}
+                    </Badge>
+                  </div>
+                  <p className="text-sm">{fq.question}</p>
+                  <p className="text-xs text-muted-foreground">{fq.businessValue}</p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
         </div>
       )}
     </div>

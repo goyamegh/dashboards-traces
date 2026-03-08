@@ -73,9 +73,14 @@ const groupByCategory = (testCases: TestCase[]): Record<string, TestCase[]> => {
     tc.updatedAt ? new Date(tc.updatedAt).getTime() : 0,
     tc.createdAt ? new Date(tc.createdAt).getTime() : 0,
   );
-  // Sort categories alphabetically and sort test cases within each category by lastActivity
+  // Sort categories by most-recent activity (so newly imported tests float to the top)
+  // and sort test cases within each category by lastActivity
   return Object.keys(grouped)
-    .sort()
+    .sort((a, b) => {
+      const maxA = Math.max(...grouped[a].map(lastActivity));
+      const maxB = Math.max(...grouped[b].map(lastActivity));
+      return maxB - maxA;
+    })
     .reduce((acc, key) => {
       acc[key] = grouped[key].sort((a, b) => lastActivity(b) - lastActivity(a));
       return acc;
@@ -108,7 +113,7 @@ const TestCaseCard = ({ testCase, runCount, onClick, onRun, onEdit, onDelete, is
       <CardHeader className="pb-2">
         <div className="flex items-start justify-between">
           <div className="flex-1 min-w-0">
-            <CardTitle className="text-base truncate">{testCase.name || '(Unnamed)'}</CardTitle>
+            <CardTitle className="text-base truncate">{testCase.name || <span className="italic text-muted-foreground">Untitled Test Case</span>}</CardTitle>
             <CardDescription className="flex items-center gap-2 mt-1 flex-wrap">
               {displayLabels.map((label) => (
                 <Badge 

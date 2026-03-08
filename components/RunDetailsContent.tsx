@@ -28,6 +28,9 @@ import {
   Target,
   Hash,
   Maximize2,
+  User,
+  Bot,
+  Repeat,
 } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
@@ -87,7 +90,8 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
   const [tracesLoading, setTracesLoading] = useState(false);
   const [tracesError, setTracesError] = useState<string | null>(null);
   const [tracesFetched, setTracesFetched] = useState(false);
-  const [activeTab, setActiveTab] = useState('summary');
+  const [activeTab, setActiveTab] = useState('judge');
+  const [currentTurn, setCurrentTurn] = useState('turn-0');
   const [traceViewMode, setTraceViewMode] = useState<ViewMode>('info');
   const [traceFullscreenOpen, setTraceFullscreenOpen] = useState(false);
 
@@ -790,6 +794,54 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
               )}
             </div>
 
+            {/* Multi-Turn Scores */}
+            {liveReport.multiTurnResult && (
+              <div>
+                <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
+                  <Repeat size={18} />
+                  Multi-Turn Results
+                  <Badge variant={liveReport.multiTurnResult.acceptanceCriteriaMet ? 'default' : 'destructive'} className="ml-1">
+                    {liveReport.multiTurnResult.acceptanceCriteriaMet ? (
+                      <><CheckCircle2 size={12} className="mr-1" /> Criteria Met</>
+                    ) : (
+                      <><XCircle size={12} className="mr-1" /> Criteria Not Met</>
+                    )}
+                  </Badge>
+                </h3>
+                <div className="grid grid-cols-4 gap-3 mb-4">
+                  <Card><CardContent className="p-3 text-center">
+                    <div className="text-xs text-muted-foreground mb-1">Root Cause</div>
+                    <div className="text-lg font-semibold text-opensearch-blue">{liveReport.multiTurnResult.rootCauseScore}%</div>
+                  </CardContent></Card>
+                  <Card><CardContent className="p-3 text-center">
+                    <div className="text-xs text-muted-foreground mb-1">Remediation</div>
+                    <div className="text-lg font-semibold text-blue-400">{liveReport.multiTurnResult.remediationScore}%</div>
+                  </CardContent></Card>
+                  <Card><CardContent className="p-3 text-center">
+                    <div className="text-xs text-muted-foreground mb-1">Context Retention</div>
+                    <div className="text-lg font-semibold text-emerald-400">{liveReport.multiTurnResult.contextRetentionScore}%</div>
+                  </CardContent></Card>
+                  <Card><CardContent className="p-3 text-center">
+                    <div className="text-xs text-muted-foreground mb-1">Conciseness</div>
+                    <div className="text-lg font-semibold text-amber-400">{liveReport.multiTurnResult.concisenessScore}%</div>
+                  </CardContent></Card>
+                </div>
+                <div className="text-xs text-muted-foreground mb-2">
+                  {liveReport.multiTurnResult.totalTurns} turn{liveReport.multiTurnResult.totalTurns !== 1 ? 's' : ''} completed
+                </div>
+                {liveReport.multiTurnResult.reasoning && (
+                  <Card className="bg-muted/30"><CardContent className="p-4">
+                    <div className="text-xs text-muted-foreground mb-2">Judge Reasoning</div>
+                    <div className="text-sm prose prose-sm dark:prose-invert max-w-none">
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {liveReport.multiTurnResult.reasoning}
+                      </ReactMarkdown>
+                    </div>
+                  </CardContent></Card>
+                )}
+              </div>
+            )}
+
             {/* Test Case Info */}
             {testCase && (
               <div>
@@ -888,43 +940,116 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
           <TabsContent value="trajectory" className="p-6 mt-0">
             {/* Header with Toggle */}
             <div className="flex items-center justify-between mb-4">
-              <h3 className="text-lg font-semibold">Conversation History</h3>
-              <div className="flex items-center gap-1 bg-muted rounded-lg p-1">
-                <button
-                  onClick={() => setTrajectoryViewMode('processed')}
-                  className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                    trajectoryViewMode === 'processed'
-                      ? 'bg-opensearch-blue text-white'
-                      : 'text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  Processed
-                </button>
-                <button
-                  onClick={() => setTrajectoryViewMode('raw')}
-                  className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                    trajectoryViewMode === 'raw'
-                      ? 'bg-opensearch-blue text-white'
-                      : 'text-muted-foreground hover:text-foreground'
-                  }`}
-                >
-                  Raw Events
-                </button>
-              </div>
+              <h3 className="text-lg font-semibold">
+                Conversation History
+                {liveReport.multiTurnResult && (
+                  <Badge variant="secondary" className="ml-2 text-xs">{liveReport.multiTurnResult.totalTurns} turns</Badge>
+                )}
+              </h3>
+              {!liveReport.multiTurnResult && (
+                <div className="flex items-center gap-1 bg-muted rounded-lg p-1">
+                  <button
+                    onClick={() => setTrajectoryViewMode('processed')}
+                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                      trajectoryViewMode === 'processed'
+                        ? 'bg-opensearch-blue text-white'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    Processed
+                  </button>
+                  <button
+                    onClick={() => setTrajectoryViewMode('raw')}
+                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
+                      trajectoryViewMode === 'raw'
+                        ? 'bg-opensearch-blue text-white'
+                        : 'text-muted-foreground hover:text-foreground'
+                    }`}
+                  >
+                    Raw Events
+                  </button>
+                </div>
+              )}
             </div>
 
-            {/* Conditional View */}
-            {trajectoryViewMode === 'processed' ? (
-              <TrajectoryView steps={trajectory} loading={false} />
+            {/* Multi-turn: sub-tabs for each turn with chat format */}
+            {liveReport.multiTurnResult ? (
+              <Tabs value={currentTurn} onValueChange={setCurrentTurn}>
+                <TabsList className="w-full justify-start bg-muted/50 rounded-lg p-1 flex-wrap h-auto gap-1">
+                  {liveReport.multiTurnResult.turns.map((turn, i) => (
+                    <TabsTrigger key={i} value={`turn-${i}`} className="text-xs data-[state=active]:bg-opensearch-blue data-[state=active]:text-white">
+                      Turn {turn.turn}
+                    </TabsTrigger>
+                  ))}
+                </TabsList>
+                {liveReport.multiTurnResult.turns.map((turn, i) => {
+                  const referenceTurn = testCase?.multiTurnScenario?.referenceTurns?.find(
+                    rt => rt.turn === turn.turn
+                  );
+                  return (
+                    <TabsContent key={i} value={`turn-${i}`} className="space-y-4 mt-4">
+                      {/* User message - blue-tinted card */}
+                      <Card className="bg-blue-500/5 border-blue-500/20">
+                        <CardContent className="p-4">
+                          <div className="text-xs font-semibold text-blue-400 mb-2 flex items-center gap-1">
+                            <User size={12} /> User
+                          </div>
+                          <p className="text-sm whitespace-pre-wrap">{turn.userMessage}</p>
+                        </CardContent>
+                      </Card>
+
+                      {/* Agent response - neutral card with markdown */}
+                      <Card className="bg-muted/30">
+                        <CardContent className="p-4">
+                          <div className="text-xs font-semibold text-muted-foreground mb-2 flex items-center gap-1">
+                            <Bot size={12} /> Agent
+                          </div>
+                          <div className="text-sm prose prose-sm dark:prose-invert max-w-none">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {turn.agentResponse}
+                            </ReactMarkdown>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      {/* Reference turn annotation (if exists) */}
+                      {referenceTurn && (
+                        <div className="bg-muted/30 border-l-2 border-amber-500/30 p-3 rounded-r text-xs space-y-1">
+                          <div className="font-semibold text-amber-400">Expected (Reference Turn {turn.turn})</div>
+                          {referenceTurn.expectedTopics.length > 0 && (
+                            <div className="flex gap-1 flex-wrap items-center">
+                              <span className="text-muted-foreground">Topics:</span>
+                              {referenceTurn.expectedTopics.map(t => (
+                                <Badge key={t} variant="secondary" className="text-[10px]">{t}</Badge>
+                              ))}
+                            </div>
+                          )}
+                          <div className="text-muted-foreground">{referenceTurn.groundTruth}</div>
+                        </div>
+                      )}
+
+                      {/* Trajectory - reuse existing component */}
+                      {turn.trajectory && turn.trajectory.length > 0 && (
+                        <TrajectoryView steps={turn.trajectory} loading={false} />
+                      )}
+                    </TabsContent>
+                  );
+                })}
+              </Tabs>
             ) : (
-              report.rawEvents && report.rawEvents.length > 0 ? (
-                <RawEventsPanel events={report.rawEvents} />
+              /* Single-turn: existing trajectory/raw events view */
+              trajectoryViewMode === 'processed' ? (
+                <TrajectoryView steps={trajectory} loading={false} />
               ) : (
-                <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
-                  <Terminal size={48} className="mb-4 opacity-20" />
-                  <p>No raw events captured for this run</p>
-                  <p className="text-sm mt-1">Raw events are only available for new runs</p>
-                </div>
+                report.rawEvents && report.rawEvents.length > 0 ? (
+                  <RawEventsPanel events={report.rawEvents} />
+                ) : (
+                  <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
+                    <Terminal size={48} className="mb-4 opacity-20" />
+                    <p>No raw events captured for this run</p>
+                    <p className="text-sm mt-1">Raw events are only available for new runs</p>
+                  </div>
+                )
               )
             )}
           </TabsContent>

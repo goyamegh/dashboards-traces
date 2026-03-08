@@ -305,6 +305,11 @@ router.post('/api/storage/test-cases', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Cannot create test case with demo- prefix (reserved for sample data)' });
     }
 
+    // Validate required fields (defense-in-depth — adapter also validates)
+    if (!testCase.name?.trim()) {
+      return res.status(400).json({ error: 'Test case name is required' });
+    }
+
     const storage = getStorageModule();
     const created = await storage.testCases.create(testCase);
 
@@ -368,6 +373,12 @@ router.post('/api/storage/test-cases/import', async (req: Request, res: Response
 
     if (testCases.length === 0) {
       return res.json({ created: 0, reused: 0, updated: 0, testCases: [] });
+    }
+
+    // Validate all test cases have names (defense-in-depth — adapter also validates)
+    const nameless = testCases.filter(tc => !tc.name?.trim());
+    if (nameless.length > 0) {
+      return res.status(400).json({ error: `${nameless.length} test case(s) missing required name field` });
     }
 
     // Check for demo- prefixes
