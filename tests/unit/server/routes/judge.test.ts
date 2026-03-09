@@ -8,6 +8,19 @@ import judgeRoutes from '@/server/routes/judge';
 import { evaluateTrajectory, parseBedrockError } from '@/server/services/bedrockService';
 import { evaluateWithLiteLLM, parseLiteLLMError } from '@/server/services/litellmJudgeService';
 
+// Mock the AWS Bedrock client
+const mockSend = jest.fn();
+jest.mock('@aws-sdk/client-bedrock', () => ({
+  BedrockClient: jest.fn().mockImplementation(() => ({
+    send: mockSend,
+  })),
+  ListInferenceProfilesCommand: jest.fn().mockImplementation((input) => input),
+}));
+
+jest.mock('@aws-sdk/credential-providers', () => ({
+  fromNodeProviderChain: jest.fn().mockReturnValue({}),
+}));
+
 // Mock the bedrock service
 jest.mock('@/server/services/bedrockService', () => ({
   evaluateTrajectory: jest.fn(),
@@ -58,6 +71,81 @@ describe('Judge Routes', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
+  });
+
+  describe('GET /api/judge/bedrock-models', () => {
+    it('returns discovered Anthropic models from Bedrock', async () => {
+      mockSend.mockResolvedValue({
+        inferenceProfileSummaries: [
+          { inferenceProfileId: 'us.anthropic.claude-sonnet-4-20250514-v1:0', inferenceProfileName: 'Claude Sonnet 4' },
+          { inferenceProfileId: 'us.anthropic.claude-opus-4-6-v1', inferenceProfileName: 'Claude Opus 4.6' },
+          { inferenceProfileId: 'us.meta.llama3-8b-instruct-v1:0', inferenceProfileName: 'Llama 3 8B' },
+        ],
+      });
+
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(judgeRoutes, 'get', '/api/judge/bedrock-models');
+      await handler(req, res);
+
+      expect(res.json).toHaveBeenCalledWith({
+        models: [
+          { id: 'us.anthropic.claude-sonnet-4-20250514-v1:0', name: 'Claude Sonnet 4' },
+          { id: 'us.anthropic.claude-opus-4-6-v1', name: 'Claude Opus 4.6' },
+        ],
+        region: expect.any(String),
+        configured: true,
+      });
+    });
+
+    it('filters out non-Anthropic models', async () => {
+      mockSend.mockResolvedValue({
+        inferenceProfileSummaries: [
+          { inferenceProfileId: 'us.meta.llama3-8b-instruct-v1:0', inferenceProfileName: 'Llama 3 8B' },
+          { inferenceProfileId: 'us.amazon.titan-text-express-v1', inferenceProfileName: 'Titan Text' },
+        ],
+      });
+
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(judgeRoutes, 'get', '/api/judge/bedrock-models');
+      await handler(req, res);
+
+      expect(res.json).toHaveBeenCalledWith({
+        models: [],
+        region: expect.any(String),
+        configured: true,
+      });
+    });
+
+    it('returns 503 when Bedrock credentials are missing or API fails', async () => {
+      mockSend.mockRejectedValue(new Error('Could not load credentials'));
+
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(judgeRoutes, 'get', '/api/judge/bedrock-models');
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith({
+        error: expect.stringContaining('Cannot discover Bedrock models'),
+        region: expect.any(String),
+        configured: false,
+      });
+    });
+
+    it('handles empty inference profiles response', async () => {
+      mockSend.mockResolvedValue({
+        inferenceProfileSummaries: [],
+      });
+
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(judgeRoutes, 'get', '/api/judge/bedrock-models');
+      await handler(req, res);
+
+      expect(res.json).toHaveBeenCalledWith({
+        models: [],
+        region: expect.any(String),
+        configured: true,
+      });
+    });
   });
 
   describe('POST /api/judge', () => {
