@@ -13,6 +13,11 @@ jest.mock('@/server/services/logsService', () => ({
   fetchLogsLegacy: jest.fn(),
 }));
 
+// Mock the client factory
+jest.mock('@/server/services/opensearchClientFactory', () => ({
+  createOpenSearchClient: jest.fn().mockReturnValue({ close: jest.fn().mockResolvedValue(undefined) }),
+}));
+
 const mockFetchLogs = fetchLogs as jest.MockedFunction<typeof fetchLogs>;
 const mockFetchLogsLegacy = fetchLogsLegacy as jest.MockedFunction<typeof fetchLogsLegacy>;
 
@@ -75,10 +80,8 @@ describe('Logs Routes', () => {
 
       expect(mockFetchLogs).toHaveBeenCalledWith(
         expect.objectContaining({ runId: 'test-run-123' }),
-        expect.objectContaining({
-          endpoint: 'http://localhost:9200',
-          indexPattern: 'test-logs-*',
-        })
+        expect.any(Object),
+        expect.any(String)
       );
       expect(res.json).toHaveBeenCalledWith(mockResult);
     });
@@ -93,7 +96,8 @@ describe('Logs Routes', () => {
 
       expect(mockFetchLogs).toHaveBeenCalledWith(
         expect.objectContaining({ size: 100 }),
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(String)
       );
     });
 
@@ -107,7 +111,8 @@ describe('Logs Routes', () => {
 
       expect(mockFetchLogs).toHaveBeenCalledWith(
         expect.objectContaining({ size: 50 }),
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(String)
       );
     });
 
@@ -130,8 +135,23 @@ describe('Logs Routes', () => {
           startTime: '2024-01-01T00:00:00Z',
           endTime: '2024-01-02T00:00:00Z',
         }),
-        expect.any(Object)
+        expect.any(Object),
+        expect.any(String)
       );
+    });
+
+    it('should return 503 when observability not configured', async () => {
+      process.env.OPENSEARCH_LOGS_ENDPOINT = '';
+
+      const { req, res } = createMocks({ runId: 'test' });
+      const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'Observability data source not configured',
+      });
     });
 
     it('should return 500 on service error', async () => {

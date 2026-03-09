@@ -75,6 +75,11 @@ jest.mock('@opensearch-project/opensearch', () => ({
   Client: jest.fn().mockImplementation(() => ({})),
 }));
 
+// Mock opensearchClientFactory
+jest.mock('@/server/services/opensearchClientFactory', () => ({
+  createOpenSearchClient: jest.fn().mockReturnValue({ close: jest.fn() }),
+}));
+
 // Mock adapters - includes getStorageModule, testStorageConnection, isFileStorage, setStorageModule, and module constructors
 jest.mock('@/server/adapters/index', () => ({
   getStorageModule: jest.fn(),
@@ -88,6 +93,12 @@ jest.mock('@/server/adapters/index', () => ({
 // Mock indexInitializer
 jest.mock('@/server/services/indexInitializer', () => ({
   ensureIndexes: jest.fn(),
+  ensureIndexesWithValidation: jest.fn(),
+}));
+
+// Mock mappingFixer
+jest.mock('@/server/services/mappingFixer', () => ({
+  reindexSingleIndex: jest.fn(),
 }));
 
 // Mock configService
@@ -103,8 +114,13 @@ jest.mock('@/server/services/configService', () => ({
 import { getStorageModule, testStorageConnection, isFileStorage, setStorageModule, OpenSearchStorageModule, FileStorageModule } from '@/server/adapters/index';
 
 // Import mocked indexInitializer
-import { ensureIndexes } from '@/server/services/indexInitializer';
+import { ensureIndexes, ensureIndexesWithValidation } from '@/server/services/indexInitializer';
 const mockEnsureIndexes = ensureIndexes as jest.Mock;
+const mockEnsureIndexesWithValidation = ensureIndexesWithValidation as jest.Mock;
+
+// Import mocked mappingFixer
+import { reindexSingleIndex } from '@/server/services/mappingFixer';
+const mockReindexSingleIndex = reindexSingleIndex as jest.Mock;
 
 // Import mocked configService functions
 import {
@@ -231,6 +247,18 @@ describe('Admin Storage Routes', () => {
       'runs-index': { status: 'created' },
       'analytics-index': { status: 'created' },
     });
+    // Default: ensureIndexesWithValidation returns success with no fixes needed
+    mockEnsureIndexesWithValidation.mockResolvedValue({
+      indexResults: {
+        'test-cases-index': { status: 'created' },
+        'experiments-index': { status: 'created' },
+        'runs-index': { status: 'created' },
+        'analytics-index': { status: 'created' },
+      },
+      validationResults: [],
+    });
+    // Default: reindexSingleIndex returns success
+    mockReindexSingleIndex.mockResolvedValue({ documentsReindexed: 5 });
     // Default: getSettings returns typical index settings
     mockIndicesGetSettings.mockResolvedValue({
       body: { 'experiments-index': { settings: { index: { number_of_shards: '1', number_of_replicas: '1' } } } },
@@ -370,29 +398,21 @@ describe('Admin Storage Routes', () => {
   // ============================================================================
 
   describe('POST /api/storage/reindex', () => {
-    it('should reindex an existing index successfully', async () => {
-      // First call: source exists, second: temp doesn't exist, then creates go through
-      mockIndicesExists
-        .mockResolvedValueOnce({ body: true })   // source exists
-        .mockResolvedValueOnce({ body: false });  // temp doesn't exist
-      mockIndicesCreate.mockResolvedValue({ body: { acknowledged: true } });
-      mockReindex.mockResolvedValue({ body: { total: 5 } });
-      mockIndicesDelete.mockResolvedValue({ body: { acknowledged: true } });
+    it('should reindex an existing index successfully using reindexSingleIndex service', async () => {
+      mockIndicesExists.mockResolvedValueOnce({ body: true }); // source exists
+      mockReindexSingleIndex.mockResolvedValue({ documentsReindexed: 5 });
 
       const { req, res, jsonPromise } = createMocks({}, { index: 'experiments-index' });
       const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/reindex');
 
       await callHandler(handler, req, res, jsonPromise);
 
+      expect(mockReindexSingleIndex).toHaveBeenCalledWith(mockClient, 'experiments-index');
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         index: 'experiments-index',
         documentsReindexed: 5,
       });
-      // Should have created temp, reindexed twice, deleted temp + original
-      expect(mockIndicesCreate).toHaveBeenCalledTimes(2);
-      expect(mockReindex).toHaveBeenCalledTimes(2);
-      expect(mockIndicesDelete).toHaveBeenCalledTimes(2);
     });
 
     it('should return 400 when index is not provided', async () => {
@@ -434,10 +454,8 @@ describe('Admin Storage Routes', () => {
     it('should handle reindex failure and report temp index status', async () => {
       mockIndicesExists
         .mockResolvedValueOnce({ body: true })   // source exists
-        .mockResolvedValueOnce({ body: false })   // temp doesn't exist
         .mockResolvedValueOnce({ body: true });   // temp still exists after failure
-      mockIndicesCreate.mockResolvedValue({ body: { acknowledged: true } });
-      mockReindex.mockRejectedValue(new Error('Reindex timeout'));
+      mockReindexSingleIndex.mockRejectedValue(new Error('Reindex timeout'));
 
       const { req, res, jsonPromise } = createMocks({}, { index: 'experiments-index' });
       const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/reindex');
@@ -452,28 +470,6 @@ describe('Admin Storage Routes', () => {
           hint: expect.stringContaining('still exists'),
         })
       );
-    });
-
-    it('should clean up stale temp index from previous failed attempt', async () => {
-      mockIndicesExists
-        .mockResolvedValueOnce({ body: true })   // source exists
-        .mockResolvedValueOnce({ body: true });   // temp already exists (stale)
-      mockIndicesDelete.mockResolvedValue({ body: { acknowledged: true } });
-      mockIndicesCreate.mockResolvedValue({ body: { acknowledged: true } });
-      mockReindex.mockResolvedValue({ body: { total: 3 } });
-
-      const { req, res, jsonPromise } = createMocks({}, { index: 'experiments-index' });
-      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/reindex');
-
-      await callHandler(handler, req, res, jsonPromise);
-
-      // First delete is stale temp, second is original, third is final temp cleanup
-      expect(mockIndicesDelete).toHaveBeenCalledTimes(3);
-      expect(res.json).toHaveBeenCalledWith({
-        success: true,
-        index: 'experiments-index',
-        documentsReindexed: 3,
-      });
     });
 
     it('should return error when storage not available', async () => {
@@ -677,12 +673,17 @@ describe('Admin Storage Routes', () => {
   });
 
   describe('POST /api/storage/config/storage', () => {
-    it('should save storage config, auto-create indexes, and switch storage module', async () => {
-      const indexResults = {
-        'test-cases-index': { status: 'created' },
-        'experiments-index': { status: 'created' },
+    it('should save storage config, validate mappings, and switch storage module', async () => {
+      const setupResult = {
+        indexResults: {
+          'test-cases-index': { status: 'created' },
+          'experiments-index': { status: 'created' },
+        },
+        validationResults: [
+          { indexName: 'test-cases-index', status: 'ok', issues: [], documentCount: 0 },
+        ],
       };
-      mockEnsureIndexes.mockResolvedValue(indexResults);
+      mockEnsureIndexesWithValidation.mockResolvedValue(setupResult);
 
       const { req, res } = createMocks({}, {
         endpoint: 'https://new-storage.com',
@@ -699,15 +700,50 @@ describe('Admin Storage Routes', () => {
         password: 'pass',
         tlsSkipVerify: undefined,
       });
-      expect(mockEnsureIndexes).toHaveBeenCalled();
+      expect(mockEnsureIndexesWithValidation).toHaveBeenCalled();
       expect(MockOpenSearchStorageModule).toHaveBeenCalled();
       expect(mockSetStorageModule).toHaveBeenCalledWith(expect.any(Object));
       expect(res.json).toHaveBeenCalledWith({
         success: true,
         message: 'Storage configuration saved',
         connected: true,
-        indexResults,
+        indexResults: setupResult.indexResults,
+        validationResults: setupResult.validationResults,
+        fixResults: undefined,
+        needsReindex: false,
       });
+    });
+
+    it('should return needsReindex true when validation finds issues', async () => {
+      const setupResult = {
+        indexResults: { 'runs-index': { status: 'exists' } },
+        validationResults: [
+          {
+            indexName: 'runs-index',
+            status: 'needs_reindex',
+            issues: [{ field: 'id', expectedType: 'keyword', actualType: 'text' }],
+            documentCount: 42,
+          },
+        ],
+        fixResults: [
+          { indexName: 'runs-index', status: 'completed', documentCount: 42 },
+        ],
+      };
+      mockEnsureIndexesWithValidation.mockResolvedValue(setupResult);
+
+      const { req, res } = createMocks({}, {
+        endpoint: 'https://new-storage.com',
+      });
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/config/storage');
+
+      await handler(req, res);
+
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          needsReindex: true,
+          fixResults: setupResult.fixResults,
+        })
+      );
     });
 
     it('should require endpoint', async () => {

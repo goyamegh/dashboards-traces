@@ -10,6 +10,13 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ## [Unreleased]
 
 ### Added
+- AWS SigV4 authentication support for OpenSearch clusters with `ClusterAuthType` (`none` | `basic` | `sigv4`) ([#85](https://github.com/opensearch-project/agent-health/pull/85))
+- OpenSearch client factory (`opensearchClientFactory.ts`) for centralized client creation with basic, none, or SigV4 auth ([#85](https://github.com/opensearch-project/agent-health/pull/85))
+- Mapping validation service to detect incompatible field types in OpenSearch indexes ([#85](https://github.com/opensearch-project/agent-health/pull/85))
+- Mapping fixer service with reindex pipeline to auto-fix incompatible index mappings ([#85](https://github.com/opensearch-project/agent-health/pull/85))
+- Migration lock service for per-index write locks during reindex operations ([#85](https://github.com/opensearch-project/agent-health/pull/85))
+- Auth type selector in Settings UI for storage and observability clusters with contextual form fields ([#85](https://github.com/opensearch-project/agent-health/pull/85))
+- Unit tests for client factory, mapping validator, mapping fixer, and migration lock ([#85](https://github.com/opensearch-project/agent-health/pull/85))
 - Jason Hoang Nguyen (@jasonlhamazon) as maintainer and code owner ([#69](https://github.com/opensearch-project/agent-health/pull/69))
 - Parallel execution with configurable concurrency for benchmark runs ([#77](https://github.com/opensearch-project/agent-health/pull/77))
 - Performance metrics tracking (duration, concurrency, judge attempts) for benchmark runs and evaluations ([#77](https://github.com/opensearch-project/agent-health/pull/77))

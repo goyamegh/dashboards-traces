@@ -16,12 +16,19 @@ jest.mock('@opensearch-project/opensearch', () => ({
   Client: MockClient,
 }));
 
+// Mock the client factory to use our MockClient
+const mockCreateOpenSearchClient = jest.fn().mockImplementation(() => mockClientInstance);
+jest.mock('@/server/services/opensearchClientFactory', () => ({
+  createOpenSearchClient: mockCreateOpenSearchClient,
+}));
+
 describe('OpenSearch Client Service', () => {
   const originalEnv = process.env;
 
   beforeEach(() => {
     // Clear mock call history
     MockClient.mockClear();
+    mockCreateOpenSearchClient.mockClear();
     // Reset modules to clear the singleton state
     jest.resetModules();
     // Reset environment
@@ -80,10 +87,11 @@ describe('OpenSearch Client Service', () => {
       const client = getOpenSearchClient();
 
       expect(client).not.toBeNull();
-      expect(MockClient).toHaveBeenCalledWith({
-        node: 'https://localhost:9200',
-        ssl: { rejectUnauthorized: false },
-      });
+      expect(mockCreateOpenSearchClient).toHaveBeenCalledWith(
+        expect.objectContaining({
+          endpoint: 'https://localhost:9200',
+        })
+      );
     });
 
     it('should create client with auth when credentials are provided', () => {
@@ -96,11 +104,13 @@ describe('OpenSearch Client Service', () => {
       const client = getOpenSearchClient();
 
       expect(client).not.toBeNull();
-      expect(MockClient).toHaveBeenCalledWith({
-        node: 'https://localhost:9200',
-        ssl: { rejectUnauthorized: false },
-        auth: { username: 'admin', password: 'admin123' },
-      });
+      expect(mockCreateOpenSearchClient).toHaveBeenCalledWith(
+        expect.objectContaining({
+          endpoint: 'https://localhost:9200',
+          username: 'admin',
+          password: 'admin123',
+        })
+      );
     });
 
     it('should return same client instance on subsequent calls (singleton)', () => {
@@ -112,8 +122,8 @@ describe('OpenSearch Client Service', () => {
       const client2 = getOpenSearchClient();
 
       expect(client1).toBe(client2);
-      // Client constructor should only be called once
-      expect(MockClient).toHaveBeenCalledTimes(1);
+      // Client factory should only be called once (singleton)
+      expect(mockCreateOpenSearchClient).toHaveBeenCalledTimes(1);
     });
 
     it('should return null on subsequent calls when not configured', () => {

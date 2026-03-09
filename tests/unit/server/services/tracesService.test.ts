@@ -3,69 +3,26 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// Create mock function that will be hoisted
-const mockRequest = jest.fn();
-
-// Mock http and https modules
-jest.mock('http', () => {
-  return {
-    __esModule: true,
-    default: { request: mockRequest },
-    request: mockRequest,
-  };
-});
-
-jest.mock('https', () => {
-  return {
-    __esModule: true,
-    default: { request: mockRequest },
-    request: mockRequest,
-  };
-});
-
 import {
   transformSpan,
   fetchTraces,
   checkTracesHealth,
   OpenSearchSpanSource,
-  OpenSearchConfig,
 } from '@/server/services/tracesService';
 
-// Helper to simulate http response
-function setupMockResponse(statusCode: number, body: any) {
-  mockRequest.mockImplementation((options: any, callback: any) => {
-    const res = {
-      statusCode,
-      on: (event: string, handler: any) => {
-        if (event === 'data') {
-          handler(JSON.stringify(body));
-        } else if (event === 'end') {
-          handler();
-        }
-      },
-    };
-    callback(res);
-    return {
-      on: jest.fn().mockReturnThis(),
-      write: jest.fn(),
-      end: jest.fn(),
-    };
-  });
-}
-
-function setupMockError(error: Error) {
-  mockRequest.mockImplementation(() => {
-    return {
-      on: jest.fn((event: string, handler: any) => {
-        if (event === 'error') {
-          setImmediate(() => handler(error));
-        }
-        return { on: jest.fn().mockReturnThis(), write: jest.fn(), end: jest.fn() };
-      }),
-      write: jest.fn(),
-      end: jest.fn(),
-    };
-  });
+// Create a mock OpenSearch SDK Client
+function createMockClient(overrides: any = {}) {
+  return {
+    search: jest.fn().mockResolvedValue({
+      body: { hits: { hits: [], total: { value: 0 } } },
+      statusCode: 200,
+    }),
+    cat: {
+      indices: jest.fn().mockResolvedValue({ statusCode: 200, body: [] }),
+    },
+    close: jest.fn().mockResolvedValue(undefined),
+    ...overrides,
+  } as any;
 }
 
 // Silence console.log/error in tests
@@ -196,156 +153,158 @@ describe('tracesService', () => {
   });
 
   describe('fetchTraces', () => {
-    const defaultConfig: OpenSearchConfig = {
-      endpoint: 'http://localhost:9200',
-      username: 'admin',
-      password: 'admin',
-      indexPattern: 'otel-v1-apm-span-*',
-    };
-
     it('should throw error when no filter provided', async () => {
-      await expect(fetchTraces({}, defaultConfig)).rejects.toThrow(
+      const client = createMockClient();
+      await expect(fetchTraces({}, client)).rejects.toThrow(
         'Either traceId, runIds, or time range is required'
       );
     });
 
     it('should fetch traces by traceId', async () => {
-      setupMockResponse(200, {
-        hits: {
-          hits: [
-            {
-              _source: {
-                traceId: 'trace-123',
-                spanId: 'span-1',
-                name: 'test-span',
-                status: { code: 1 },
-              },
+      const client = createMockClient({
+        search: jest.fn().mockResolvedValue({
+          body: {
+            hits: {
+              hits: [
+                {
+                  _source: {
+                    traceId: 'trace-123',
+                    spanId: 'span-1',
+                    name: 'test-span',
+                    status: { code: 1 },
+                  },
+                },
+              ],
+              total: { value: 1 },
             },
-          ],
-          total: { value: 1 },
-        },
+          },
+        }),
       });
 
-      const result = await fetchTraces({ traceId: 'trace-123' }, defaultConfig);
+      const result = await fetchTraces({ traceId: 'trace-123' }, client);
 
-      expect(mockRequest).toHaveBeenCalled();
+      expect(client.search).toHaveBeenCalledWith(
+        expect.objectContaining({
+          index: 'otel-v1-apm-span-*',
+        })
+      );
       expect(result.spans).toHaveLength(1);
       expect(result.spans[0].traceId).toBe('trace-123');
       expect(result.total).toBe(1);
     });
 
     it('should fetch traces by runIds', async () => {
-      setupMockResponse(200, {
-        hits: {
-          hits: [
-            { _source: { traceId: 't1', spanId: 's1' } },
-            { _source: { traceId: 't2', spanId: 's2' } },
-          ],
-          total: { value: 2 },
-        },
+      const client = createMockClient({
+        search: jest.fn().mockResolvedValue({
+          body: {
+            hits: {
+              hits: [
+                { _source: { traceId: 't1', spanId: 's1' } },
+                { _source: { traceId: 't2', spanId: 's2' } },
+              ],
+              total: { value: 2 },
+            },
+          },
+        }),
       });
 
-      const result = await fetchTraces(
-        { runIds: ['run-1', 'run-2'] },
-        defaultConfig
-      );
+      const result = await fetchTraces({ runIds: ['run-1', 'run-2'] }, client);
 
       expect(result.spans).toHaveLength(2);
     });
 
     it('should fetch traces by time range', async () => {
-      setupMockResponse(200, {
-        hits: { hits: [], total: { value: 0 } },
-      });
-
+      const client = createMockClient();
       const startTime = new Date('2024-01-01T00:00:00Z').getTime();
       const endTime = new Date('2024-01-02T00:00:00Z').getTime();
 
-      await fetchTraces({ startTime, endTime }, defaultConfig);
+      await fetchTraces({ startTime, endTime }, client);
 
-      expect(mockRequest).toHaveBeenCalled();
+      expect(client.search).toHaveBeenCalled();
     });
 
     it('should filter by serviceName', async () => {
-      setupMockResponse(200, {
-        hits: { hits: [], total: { value: 0 } },
-      });
+      const client = createMockClient();
 
       await fetchTraces(
         { traceId: 'trace-123', serviceName: 'my-service' },
-        defaultConfig
+        client
       );
 
-      expect(mockRequest).toHaveBeenCalled();
+      expect(client.search).toHaveBeenCalled();
     });
 
     it('should apply text search filter', async () => {
-      setupMockResponse(200, {
-        hits: { hits: [], total: { value: 0 } },
-      });
+      const client = createMockClient();
 
       await fetchTraces(
         { traceId: 'trace-123', textSearch: 'error' },
-        defaultConfig
+        client
       );
 
-      expect(mockRequest).toHaveBeenCalled();
+      expect(client.search).toHaveBeenCalled();
     });
 
     it('should use custom size', async () => {
-      setupMockResponse(200, {
-        hits: { hits: [], total: { value: 0 } },
-      });
+      const client = createMockClient();
 
-      await fetchTraces({ traceId: 'trace-123', size: 100 }, defaultConfig);
+      await fetchTraces({ traceId: 'trace-123', size: 100 }, client);
 
-      expect(mockRequest).toHaveBeenCalled();
+      expect(client.search).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({ size: 100 }),
+        })
+      );
     });
 
-    it('should throw error on non-OK response', async () => {
-      setupMockResponse(500, { error: 'Internal server error' });
+    it('should use custom index pattern', async () => {
+      const client = createMockClient();
 
-      await expect(
-        fetchTraces({ traceId: 'trace-123' }, defaultConfig)
-      ).rejects.toThrow('OpenSearch error');
+      await fetchTraces({ traceId: 'trace-123' }, client, 'custom-traces-*');
+
+      expect(client.search).toHaveBeenCalledWith(
+        expect.objectContaining({
+          index: 'custom-traces-*',
+        })
+      );
     });
 
     it('should use default index pattern when not provided', async () => {
-      setupMockResponse(200, {
-        hits: { hits: [], total: { value: 0 } },
-      });
+      const client = createMockClient();
 
-      const configNoIndex: OpenSearchConfig = {
-        endpoint: 'http://localhost:9200',
-        username: 'admin',
-        password: 'admin',
-      };
+      await fetchTraces({ traceId: 'trace-123' }, client);
 
-      await fetchTraces({ traceId: 'trace-123' }, configNoIndex);
-
-      expect(mockRequest).toHaveBeenCalled();
+      expect(client.search).toHaveBeenCalledWith(
+        expect.objectContaining({
+          index: 'otel-v1-apm-span-*',
+        })
+      );
     });
 
     it('should transform spans correctly', async () => {
-      setupMockResponse(200, {
-        hits: {
-          hits: [
-            {
-              _source: {
-                traceId: 'trace-123',
-                spanId: 'span-1',
-                name: 'test-span',
-                durationInNanos: 500000000, // 500ms
-                status: { code: 1 },
-                attributes: { 'gen_ai.request.id': 'run-123' },
-              },
+      const client = createMockClient({
+        search: jest.fn().mockResolvedValue({
+          body: {
+            hits: {
+              hits: [
+                {
+                  _source: {
+                    traceId: 'trace-123',
+                    spanId: 'span-1',
+                    name: 'test-span',
+                    durationInNanos: 500000000, // 500ms
+                    status: { code: 1 },
+                    attributes: { 'gen_ai.request.id': 'run-123' },
+                  },
+                },
+              ],
+              total: { value: 1 },
             },
-          ],
-          total: { value: 1 },
-        },
+          },
+        }),
       });
 
-      const result = await fetchTraces({ traceId: 'trace-123' }, defaultConfig);
+      const result = await fetchTraces({ traceId: 'trace-123' }, client);
 
       expect(result.spans[0].duration).toBe(500);
       expect(result.spans[0].status).toBe('OK');
@@ -354,85 +313,56 @@ describe('tracesService', () => {
   });
 
   describe('checkTracesHealth', () => {
-    const defaultConfig: OpenSearchConfig = {
-      endpoint: 'http://localhost:9200',
-      username: 'admin',
-      password: 'admin',
-      indexPattern: 'otel-v1-apm-span-*',
-    };
-
-    it('should return error when endpoint not configured', async () => {
-      const result = await checkTracesHealth({
-        endpoint: '',
-        username: 'admin',
-        password: 'admin',
-      });
-
-      expect(result.status).toBe('error');
-      expect(result.error).toBe('OpenSearch not configured');
-    });
-
-    it('should return error when username not configured', async () => {
-      const result = await checkTracesHealth({
-        endpoint: 'http://localhost:9200',
-        username: '',
-        password: 'admin',
-      });
-
-      expect(result.status).toBe('error');
-      expect(result.error).toBe('OpenSearch not configured');
-    });
-
-    it('should return error when password not configured', async () => {
-      const result = await checkTracesHealth({
-        endpoint: 'http://localhost:9200',
-        username: 'admin',
-        password: '',
-      });
-
-      expect(result.status).toBe('error');
-      expect(result.error).toBe('OpenSearch not configured');
-    });
-
     it('should return ok status on successful health check', async () => {
-      setupMockResponse(200, []);
+      const client = createMockClient({
+        cat: {
+          indices: jest.fn().mockResolvedValue({ statusCode: 200, body: [] }),
+        },
+      });
 
-      const result = await checkTracesHealth(defaultConfig);
+      const result = await checkTracesHealth(client, 'otel-v1-apm-span-*');
 
       expect(result.status).toBe('ok');
       expect(result.index).toBe('otel-v1-apm-span-*');
     });
 
     it('should return error status on non-OK response', async () => {
-      setupMockResponse(404, { error: 'Not found' });
+      const client = createMockClient({
+        cat: {
+          indices: jest.fn().mockResolvedValue({ statusCode: 404, body: [] }),
+        },
+      });
 
-      const result = await checkTracesHealth(defaultConfig);
+      const result = await checkTracesHealth(client, 'otel-v1-apm-span-*');
 
       expect(result.status).toBe('error');
       expect(result.index).toBe('otel-v1-apm-span-*');
     });
 
-    it('should return error on fetch exception', async () => {
-      setupMockError(new Error('Connection refused'));
+    it('should return error on exception', async () => {
+      const client = createMockClient({
+        cat: {
+          indices: jest.fn().mockRejectedValue(new Error('Connection refused')),
+        },
+      });
 
-      const result = await checkTracesHealth(defaultConfig);
+      const result = await checkTracesHealth(client);
 
       expect(result.status).toBe('error');
       expect(result.error).toBe('Connection refused');
     });
 
     it('should use default index pattern when not provided', async () => {
-      setupMockResponse(200, []);
+      const client = createMockClient();
 
-      const configNoIndex: OpenSearchConfig = {
-        endpoint: 'http://localhost:9200',
-        username: 'admin',
-        password: 'admin',
-      };
+      await checkTracesHealth(client);
 
-      await checkTracesHealth(configNoIndex);
-
-      expect(mockRequest).toHaveBeenCalled();
+      expect(client.cat.indices).toHaveBeenCalledWith(
+        expect.objectContaining({
+          index: 'otel-v1-apm-span-*',
+          format: 'json',
+        })
+      );
     });
   });
 });

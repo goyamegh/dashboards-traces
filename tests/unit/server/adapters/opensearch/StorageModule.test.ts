@@ -15,6 +15,15 @@ jest.mock('@/server/middleware/dataSourceConfig', () => ({
   },
 }));
 
+// Mock migration lock — default: no migration in progress
+const mockAssertNotMigrating = jest.fn();
+jest.mock('@/server/services/migrationLock', () => ({
+  assertNotMigrating: (...args: any[]) => mockAssertNotMigrating(...args),
+  MigrationInProgressError: class MigrationInProgressError extends Error {
+    constructor(message: string) { super(message); this.name = 'MigrationInProgressError'; }
+  },
+}));
+
 // ============================================================================
 // Mock Client Factory
 // ============================================================================
@@ -1266,6 +1275,65 @@ describe('OpenSearchStorageModule', () => {
 
         expect(result).toEqual({ backfilled: 0, errors: 0, total: 0 });
       });
+    });
+  });
+
+  // ==========================================================================
+  // Migration lock enforcement
+  // ==========================================================================
+
+  describe('migration lock enforcement', () => {
+    it('should check migration lock on testCases.create', async () => {
+      mockClient.index.mockResolvedValue({});
+      await mod.testCases.create({ name: 'test' });
+      expect(mockAssertNotMigrating).toHaveBeenCalledWith('evals_test_cases');
+    });
+
+    it('should check migration lock on testCases.update', async () => {
+      mockClient.search.mockResolvedValue(
+        makeSearchResponse([{ id: 'tc-1', version: 1, name: 'old' }])
+      );
+      mockClient.index.mockResolvedValue({});
+      await mod.testCases.update('tc-1', { name: 'new' });
+      expect(mockAssertNotMigrating).toHaveBeenCalledWith('evals_test_cases');
+    });
+
+    it('should check migration lock on testCases.delete', async () => {
+      mockClient.deleteByQuery.mockResolvedValue({ body: { deleted: 1 } });
+      await mod.testCases.delete('tc-1');
+      expect(mockAssertNotMigrating).toHaveBeenCalledWith('evals_test_cases');
+    });
+
+    it('should check migration lock on benchmarks.create', async () => {
+      mockClient.index.mockResolvedValue({});
+      await mod.benchmarks.create({ name: 'bench' });
+      expect(mockAssertNotMigrating).toHaveBeenCalledWith('evals_experiments');
+    });
+
+    it('should check migration lock on runs.create', async () => {
+      mockClient.index.mockResolvedValue({});
+      await mod.runs.create({ name: 'run' });
+      expect(mockAssertNotMigrating).toHaveBeenCalledWith('evals_runs');
+    });
+
+    it('should check migration lock on analytics.writeRecord', async () => {
+      mockClient.index.mockResolvedValue({});
+      await mod.analytics.writeRecord({ id: 'a1', metric: 1 });
+      expect(mockAssertNotMigrating).toHaveBeenCalledWith('evals_analytics');
+    });
+
+    it('should throw MigrationInProgressError when index is locked', async () => {
+      const { MigrationInProgressError } = await import('@/server/services/migrationLock');
+      mockAssertNotMigrating.mockImplementation(() => {
+        throw new MigrationInProgressError('Index evals_test_cases is being migrated.');
+      });
+
+      await expect(mod.testCases.create({ name: 'test' })).rejects.toThrow(
+        'Index evals_test_cases is being migrated.'
+      );
+
+      // client.index should NOT have been called
+      expect(mockClient.index).not.toHaveBeenCalled();
     });
   });
 });

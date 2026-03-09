@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { AlertTriangle, Trash2, Database, CheckCircle2, XCircle, Upload, Download, Loader2, Server, Plus, Edit2, X, Save, ExternalLink, Eye, EyeOff, ChevronDown, ChevronRight, RefreshCw, Palette } from 'lucide-react';
+import { AlertTriangle, Trash2, Database, CheckCircle2, XCircle, Upload, Download, Loader2, Server, Plus, Edit2, X, Save, ExternalLink, Eye, EyeOff, ChevronDown, ChevronRight, RefreshCw, Palette, Circle } from 'lucide-react';
 import { getTheme, setTheme, type Theme } from '@/lib/theme';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
@@ -13,7 +13,8 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import type { ConnectorProtocol } from '@/types';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
+import type { ConnectorProtocol, ClusterAuthType } from '@/types';
 import { storageAdmin } from '@/services/storage/opensearchClient';
 import {
   hasLocalStorageData,
@@ -30,6 +31,7 @@ import {
   clearStorageConfig,
   clearObservabilityConfig,
   type ConfigStatus,
+  type SaveStorageConfigResult,
 } from '@/lib/dataSourceConfig';
 import { DEFAULT_CONFIG, refreshConfig } from '@/lib/constants';
 import { ENV_CONFIG } from '@/lib/config';
@@ -94,14 +96,22 @@ export const SettingsPage: React.FC = () => {
   // Data source configuration state (form inputs - not stored values)
   const [storageConfig, setStorageConfigState] = useState({
     endpoint: '',
+    authType: 'basic' as ClusterAuthType,
     username: '',
     password: '',
+    awsProfile: '',
+    awsRegion: '',
+    awsService: 'es' as 'es' | 'aoss',
     tlsSkipVerify: false,
   });
   const [observabilityConfig, setObservabilityConfigState] = useState({
     endpoint: '',
+    authType: 'basic' as ClusterAuthType,
     username: '',
     password: '',
+    awsProfile: '',
+    awsRegion: '',
+    awsService: 'es' as 'es' | 'aoss',
     tlsSkipVerify: false,
     tracesIndex: '',
     logsIndex: '',
@@ -116,6 +126,14 @@ export const SettingsPage: React.FC = () => {
   const [storageTestMessage, setStorageTestMessage] = useState('');
   const [observabilityTestStatus, setObservabilityTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [observabilityTestMessage, setObservabilityTestMessage] = useState('');
+
+  // Index fix modal state
+  const [indexFixState, setIndexFixState] = useState<{
+    visible: boolean;
+    progress: Array<{ indexName: string; status: string; documentCount?: number; error?: string }>;
+    done: boolean;
+    error?: string;
+  }>({ visible: false, progress: [], done: false });
 
   const loadStorageStats = useCallback(async () => {
     setIsLoading(true);
@@ -159,16 +177,24 @@ export const SettingsPage: React.FC = () => {
         setStorageConfigState(prev => ({
           ...prev,
           endpoint: status.storage.endpoint || '',
+          authType: status.storage.authType || 'basic',
           username: status.storage.username || '',
           password: status.storage.hasPassword ? PASSWORD_STORED_SENTINEL : '',
+          awsProfile: status.storage.awsProfile || '',
+          awsRegion: status.storage.awsRegion || '',
+          awsService: status.storage.awsService || 'es',
         }));
       }
       if (status.observability.endpoint) {
         setObservabilityConfigState(prev => ({
           ...prev,
           endpoint: status.observability.endpoint || '',
+          authType: status.observability.authType || 'basic',
           username: status.observability.username || '',
           password: status.observability.hasPassword ? PASSWORD_STORED_SENTINEL : '',
+          awsProfile: status.observability.awsProfile || '',
+          awsRegion: status.observability.awsRegion || '',
+          awsService: status.observability.awsService || 'es',
           tracesIndex: status.observability.indexes?.traces || '',
           logsIndex: status.observability.indexes?.logs || '',
           metricsIndex: status.observability.indexes?.metrics || '',
@@ -513,11 +539,15 @@ export const SettingsPage: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           endpoint: storageConfig.endpoint,
+          authType: storageConfig.authType !== 'basic' ? storageConfig.authType : undefined,
           username: storageConfig.username || undefined,
           // Strip sentinel — server will use its stored password for the test
           password: storageConfig.password === PASSWORD_STORED_SENTINEL
             ? undefined
             : (storageConfig.password || undefined),
+          awsProfile: storageConfig.awsProfile || undefined,
+          awsRegion: storageConfig.awsRegion || undefined,
+          awsService: storageConfig.awsService !== 'es' ? storageConfig.awsService : undefined,
           tlsSkipVerify: storageConfig.tlsSkipVerify || undefined,
         }),
       });
@@ -560,12 +590,26 @@ export const SettingsPage: React.FC = () => {
         ? undefined
         : (storageConfig.password || undefined);
 
-      await saveStorageConfig({
+      const result = await saveStorageConfig({
         endpoint: storageConfig.endpoint,
+        authType: storageConfig.authType !== 'basic' ? storageConfig.authType : undefined,
         username: storageConfig.username || undefined,
         password: storagePasswordToSend,
+        awsProfile: storageConfig.awsProfile || undefined,
+        awsRegion: storageConfig.awsRegion || undefined,
+        awsService: storageConfig.awsService !== 'es' ? storageConfig.awsService : undefined,
         tlsSkipVerify: storageConfig.tlsSkipVerify,
       });
+
+      // Show fix results in modal if reindexing was performed
+      if (result.fixResults && result.fixResults.length > 0) {
+        setIndexFixState({
+          visible: true,
+          progress: result.fixResults,
+          done: true,
+        });
+      }
+
       setStorageTestStatus('idle');
       setStorageTestMessage('Configuration saved to server');
       // Reload to re-apply sentinel state for any stored credentials
@@ -584,7 +628,7 @@ export const SettingsPage: React.FC = () => {
     }
     try {
       await clearStorageConfig();
-      setStorageConfigState({ endpoint: '', username: '', password: '', tlsSkipVerify: false });
+      setStorageConfigState({ endpoint: '', authType: 'basic', username: '', password: '', awsProfile: '', awsRegion: '', awsService: 'es', tlsSkipVerify: false });
       setStorageTestStatus('idle');
       setStorageTestMessage('Configuration cleared - using environment variables');
       setTimeout(() => setStorageTestMessage(''), 3000);
@@ -612,11 +656,15 @@ export const SettingsPage: React.FC = () => {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           endpoint: observabilityConfig.endpoint,
+          authType: observabilityConfig.authType !== 'basic' ? observabilityConfig.authType : undefined,
           username: observabilityConfig.username || undefined,
           // Strip sentinel — server will use its stored password for the test
           password: observabilityConfig.password === PASSWORD_STORED_SENTINEL
             ? undefined
             : (observabilityConfig.password || undefined),
+          awsProfile: observabilityConfig.awsProfile || undefined,
+          awsRegion: observabilityConfig.awsRegion || undefined,
+          awsService: observabilityConfig.awsService !== 'es' ? observabilityConfig.awsService : undefined,
           tlsSkipVerify: observabilityConfig.tlsSkipVerify || undefined,
           indexes: {
             traces: observabilityConfig.tracesIndex || undefined,
@@ -668,8 +716,12 @@ export const SettingsPage: React.FC = () => {
 
       await saveObservabilityConfig({
         endpoint: observabilityConfig.endpoint,
+        authType: observabilityConfig.authType !== 'basic' ? observabilityConfig.authType : undefined,
         username: observabilityConfig.username || undefined,
         password: obsPasswordToSend,
+        awsProfile: observabilityConfig.awsProfile || undefined,
+        awsRegion: observabilityConfig.awsRegion || undefined,
+        awsService: observabilityConfig.awsService !== 'es' ? observabilityConfig.awsService : undefined,
         tlsSkipVerify: observabilityConfig.tlsSkipVerify,
         indexes: {
           traces: observabilityConfig.tracesIndex || undefined,
@@ -696,8 +748,12 @@ export const SettingsPage: React.FC = () => {
       await clearObservabilityConfig();
       setObservabilityConfigState({
         endpoint: '',
+        authType: 'basic',
         username: '',
         password: '',
+        awsProfile: '',
+        awsRegion: '',
+        awsService: 'es',
         tlsSkipVerify: false,
         tracesIndex: '',
         logsIndex: '',
@@ -714,6 +770,7 @@ export const SettingsPage: React.FC = () => {
   };
 
   return (
+    <>
     <div className="p-6 max-w-4xl mx-auto" data-testid="settings-page">
       <h2 className="text-2xl font-bold mb-6" data-testid="settings-title">Settings</h2>
 
@@ -1083,40 +1140,111 @@ export const SettingsPage: React.FC = () => {
                 onChange={(e) => setStorageConfigState({ ...storageConfig, endpoint: e.target.value })}
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="storage-username" className="text-xs">Username (optional)</Label>
-                <Input
-                  id="storage-username"
-                  placeholder="Leave blank to use env var"
-                  value={storageConfig.username}
-                  onChange={(e) => setStorageConfigState({ ...storageConfig, username: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="storage-password" className="text-xs">Password (optional)</Label>
-                <div className="relative">
-                  <Input
-                    id="storage-password"
-                    type={showStoragePassword ? 'text' : 'password'}
-                    placeholder={storageConfig.password === PASSWORD_STORED_SENTINEL ? '••••••••' : 'Leave blank to use env var'}
-                    value={storageConfig.password === PASSWORD_STORED_SENTINEL ? '' : storageConfig.password}
-                    onChange={(e) => setStorageConfigState({ ...storageConfig, password: e.target.value })}
-                    className="pr-10"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowStoragePassword(!showStoragePassword)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  >
-                    {showStoragePassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-                {storageConfig.password === PASSWORD_STORED_SENTINEL && (
-                  <p className="text-xs text-muted-foreground">Password stored — leave blank to keep it, or type a new one to replace it</p>
-                )}
-              </div>
+
+            {/* Authentication Type */}
+            <div className="space-y-1.5">
+              <Label className="text-xs">Authentication Type</Label>
+              <Select
+                value={storageConfig.authType}
+                onValueChange={(v) => setStorageConfigState({ ...storageConfig, authType: v as ClusterAuthType })}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No Auth</SelectItem>
+                  <SelectItem value="basic">Basic Auth (username/password)</SelectItem>
+                  <SelectItem value="sigv4">AWS SigV4</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
+
+            {storageConfig.authType === 'none' ? (
+              /* No Auth - no credentials needed */
+              <div className="space-y-3 p-3 border rounded-lg bg-muted/10">
+                <p className="text-xs text-muted-foreground">
+                  No authentication — connects directly without credentials. Suitable for local development clusters.
+                </p>
+              </div>
+            ) : storageConfig.authType === 'basic' ? (
+              /* Basic Auth fields */
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="storage-username" className="text-xs">Username (optional)</Label>
+                  <Input
+                    id="storage-username"
+                    placeholder="Leave blank to use env var"
+                    value={storageConfig.username}
+                    onChange={(e) => setStorageConfigState({ ...storageConfig, username: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="storage-password" className="text-xs">Password (optional)</Label>
+                  <div className="relative">
+                    <Input
+                      id="storage-password"
+                      type={showStoragePassword ? 'text' : 'password'}
+                      placeholder={storageConfig.password === PASSWORD_STORED_SENTINEL ? '••••••••' : 'Leave blank to use env var'}
+                      value={storageConfig.password === PASSWORD_STORED_SENTINEL ? '' : storageConfig.password}
+                      onChange={(e) => setStorageConfigState({ ...storageConfig, password: e.target.value })}
+                      className="pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowStoragePassword(!showStoragePassword)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    >
+                      {showStoragePassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                  {storageConfig.password === PASSWORD_STORED_SENTINEL && (
+                    <p className="text-xs text-muted-foreground">Password stored — leave blank to keep it, or type a new one to replace it</p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* AWS SigV4 fields */
+              <div className="space-y-3 p-3 border rounded-lg bg-muted/10">
+                <p className="text-xs text-muted-foreground">
+                  Uses the AWS credential chain (env vars, ~/.aws/credentials, IAM role, etc.)
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="storage-aws-region" className="text-xs">AWS Region (required)</Label>
+                    <Input
+                      id="storage-aws-region"
+                      placeholder="us-east-1"
+                      value={storageConfig.awsRegion}
+                      onChange={(e) => setStorageConfigState({ ...storageConfig, awsRegion: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="storage-aws-profile" className="text-xs">AWS Profile (optional)</Label>
+                    <Input
+                      id="storage-aws-profile"
+                      placeholder="default"
+                      value={storageConfig.awsProfile}
+                      onChange={(e) => setStorageConfigState({ ...storageConfig, awsProfile: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">AWS Service</Label>
+                  <Select
+                    value={storageConfig.awsService}
+                    onValueChange={(v) => setStorageConfigState({ ...storageConfig, awsService: v as 'es' | 'aoss' })}
+                  >
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="es">es (Managed OpenSearch)</SelectItem>
+                      <SelectItem value="aoss">aoss (Serverless)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            )}
 
             {/* TLS Verification Toggle */}
             <div className="flex items-center justify-between">
@@ -1296,40 +1424,111 @@ export const SettingsPage: React.FC = () => {
                 onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, endpoint: e.target.value })}
               />
             </div>
-            <div className="grid grid-cols-2 gap-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="obs-username" className="text-xs">Username (optional)</Label>
-                <Input
-                  id="obs-username"
-                  placeholder="Leave blank to use env var"
-                  value={observabilityConfig.username}
-                  onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, username: e.target.value })}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="obs-password" className="text-xs">Password (optional)</Label>
-                <div className="relative">
-                  <Input
-                    id="obs-password"
-                    type={showObservabilityPassword ? 'text' : 'password'}
-                    placeholder={observabilityConfig.password === PASSWORD_STORED_SENTINEL ? '••••••••' : 'Leave blank to use env var'}
-                    value={observabilityConfig.password === PASSWORD_STORED_SENTINEL ? '' : observabilityConfig.password}
-                    onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, password: e.target.value })}
-                    className="pr-10"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowObservabilityPassword(!showObservabilityPassword)}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                  >
-                    {showObservabilityPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                  </button>
-                </div>
-                {observabilityConfig.password === PASSWORD_STORED_SENTINEL && (
-                  <p className="text-xs text-muted-foreground">Password stored — leave blank to keep it, or type a new one to replace it</p>
-                )}
-              </div>
+
+            {/* Authentication Type */}
+            <div className="space-y-1.5">
+              <Label className="text-xs">Authentication Type</Label>
+              <Select
+                value={observabilityConfig.authType}
+                onValueChange={(v) => setObservabilityConfigState({ ...observabilityConfig, authType: v as ClusterAuthType })}
+              >
+                <SelectTrigger className="h-8 text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="none">No Auth</SelectItem>
+                  <SelectItem value="basic">Basic Auth (username/password)</SelectItem>
+                  <SelectItem value="sigv4">AWS SigV4</SelectItem>
+                </SelectContent>
+              </Select>
             </div>
+
+            {observabilityConfig.authType === 'none' ? (
+              /* No Auth - no credentials needed */
+              <div className="space-y-3 p-3 border rounded-lg bg-muted/10">
+                <p className="text-xs text-muted-foreground">
+                  No authentication — connects directly without credentials. Suitable for local development clusters.
+                </p>
+              </div>
+            ) : observabilityConfig.authType === 'basic' ? (
+              /* Basic Auth fields */
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label htmlFor="obs-username" className="text-xs">Username (optional)</Label>
+                  <Input
+                    id="obs-username"
+                    placeholder="Leave blank to use env var"
+                    value={observabilityConfig.username}
+                    onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, username: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="obs-password" className="text-xs">Password (optional)</Label>
+                  <div className="relative">
+                    <Input
+                      id="obs-password"
+                      type={showObservabilityPassword ? 'text' : 'password'}
+                      placeholder={observabilityConfig.password === PASSWORD_STORED_SENTINEL ? '••••••••' : 'Leave blank to use env var'}
+                      value={observabilityConfig.password === PASSWORD_STORED_SENTINEL ? '' : observabilityConfig.password}
+                      onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, password: e.target.value })}
+                      className="pr-10"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowObservabilityPassword(!showObservabilityPassword)}
+                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+                    >
+                      {showObservabilityPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+                    </button>
+                  </div>
+                  {observabilityConfig.password === PASSWORD_STORED_SENTINEL && (
+                    <p className="text-xs text-muted-foreground">Password stored — leave blank to keep it, or type a new one to replace it</p>
+                  )}
+                </div>
+              </div>
+            ) : (
+              /* AWS SigV4 fields */
+              <div className="space-y-3 p-3 border rounded-lg bg-muted/10">
+                <p className="text-xs text-muted-foreground">
+                  Uses the AWS credential chain (env vars, ~/.aws/credentials, IAM role, etc.)
+                </p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div className="space-y-1.5">
+                    <Label htmlFor="obs-aws-region" className="text-xs">AWS Region (required)</Label>
+                    <Input
+                      id="obs-aws-region"
+                      placeholder="us-east-1"
+                      value={observabilityConfig.awsRegion}
+                      onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, awsRegion: e.target.value })}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label htmlFor="obs-aws-profile" className="text-xs">AWS Profile (optional)</Label>
+                    <Input
+                      id="obs-aws-profile"
+                      placeholder="default"
+                      value={observabilityConfig.awsProfile}
+                      onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, awsProfile: e.target.value })}
+                    />
+                  </div>
+                </div>
+                <div className="space-y-1.5">
+                  <Label className="text-xs">AWS Service</Label>
+                  <Select
+                    value={observabilityConfig.awsService}
+                    onValueChange={(v) => setObservabilityConfigState({ ...observabilityConfig, awsService: v as 'es' | 'aoss' })}
+                  >
+                    <SelectTrigger className="h-8 text-xs">
+                      <SelectValue />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="es">es (Managed OpenSearch)</SelectItem>
+                      <SelectItem value="aoss">aoss (Serverless)</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+            )}
 
             {/* TLS Verification Toggle */}
             <div className="flex items-center justify-between">
@@ -1568,5 +1767,72 @@ export const SettingsPage: React.FC = () => {
         </Card>
       )}
     </div>
+
+    {/* Index Fix Progress Modal */}
+    <Dialog open={indexFixState.visible} onOpenChange={(open) => {
+      if (!open && indexFixState.done) {
+        setIndexFixState({ visible: false, progress: [], done: false });
+      }
+    }}>
+      <DialogContent className="sm:max-w-md" onPointerDownOutside={(e) => {
+        if (!indexFixState.done) e.preventDefault();
+      }}>
+        <DialogHeader>
+          <DialogTitle>
+            {indexFixState.done ? 'Index Mappings Fixed' : 'Fixing Index Mappings'}
+          </DialogTitle>
+          <DialogDescription>
+            {indexFixState.done
+              ? 'Incompatible index mappings have been automatically fixed.'
+              : 'Reindexing to fix incompatible field types. Please wait...'}
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3 mt-2">
+          {indexFixState.progress.map((item) => (
+            <div key={item.indexName} className="flex items-center gap-3 text-sm">
+              {item.status === 'pending' && (
+                <Circle size={16} className="text-muted-foreground" />
+              )}
+              {item.status === 'reindexing' && (
+                <Loader2 size={16} className="animate-spin text-blue-400" />
+              )}
+              {item.status === 'completed' && (
+                <CheckCircle2 size={16} className="text-green-400" />
+              )}
+              {item.status === 'failed' && (
+                <XCircle size={16} className="text-red-400" />
+              )}
+              <div className="flex-1">
+                <span className="font-mono text-xs">{item.indexName}</span>
+                {item.status === 'reindexing' && item.documentCount != null && (
+                  <span className="text-muted-foreground ml-2">
+                    ({item.documentCount} documents)
+                  </span>
+                )}
+                {item.status === 'completed' && item.documentCount != null && (
+                  <span className="text-muted-foreground ml-2">
+                    {item.documentCount} docs reindexed
+                  </span>
+                )}
+                {item.status === 'failed' && item.error && (
+                  <span className="text-red-400 ml-2">{item.error}</span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+        {indexFixState.done && (
+          <div className="mt-4 flex justify-end">
+            <Button
+              size="sm"
+              onClick={() => setIndexFixState({ visible: false, progress: [], done: false })}
+            >
+              Close
+            </Button>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+    </>
   );
 };

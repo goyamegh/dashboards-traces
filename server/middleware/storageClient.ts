@@ -16,6 +16,7 @@
 import { Request, Response, NextFunction } from 'express';
 import { Client } from '@opensearch-project/opensearch';
 import { resolveStorageConfig } from './dataSourceConfig.js';
+import { createOpenSearchClient, configToCacheKey } from '../services/opensearchClientFactory.js';
 import type { StorageClusterConfig } from '../../types/index.js';
 
 // Client cache keyed by endpoint+credentials (avoids creating new clients per request)
@@ -28,17 +29,10 @@ const clientCache = new Map<string, CachedClient>();
 const CLIENT_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
- * Generate a cache key from storage configuration
- */
-function configToKey(config: StorageClusterConfig): string {
-  return `${config.endpoint}|${config.username || ''}|${config.password || ''}`;
-}
-
-/**
  * Get an existing client from cache or create a new one
  */
 function getOrCreateClient(config: StorageClusterConfig): Client {
-  const key = configToKey(config);
+  const key = configToCacheKey(config);
   const cached = clientCache.get(key);
 
   if (cached) {
@@ -46,20 +40,7 @@ function getOrCreateClient(config: StorageClusterConfig): Client {
     return cached.client;
   }
 
-  const clientConfig: any = {
-    node: config.endpoint,
-    ssl: { rejectUnauthorized: false },
-  };
-
-  // Add auth only if credentials provided
-  if (config.username && config.password) {
-    clientConfig.auth = {
-      username: config.username,
-      password: config.password,
-    };
-  }
-
-  const client = new Client(clientConfig);
+  const client = createOpenSearchClient(config);
   clientCache.set(key, { client, lastUsed: Date.now() });
 
   return client;

@@ -945,14 +945,28 @@ export interface MetricsResult {
 // ============ Data Source Configuration Types ============
 
 /**
+ * Authentication type for OpenSearch clusters
+ * - 'none': No authentication (e.g. local development clusters)
+ * - 'basic': Username/password authentication (default, backwards compatible)
+ * - 'sigv4': AWS SigV4 request signing for managed OpenSearch / Serverless
+ */
+export type ClusterAuthType = 'none' | 'basic' | 'sigv4';
+
+/**
  * Base cluster configuration (endpoint + credentials)
  * Used for connecting to OpenSearch or other data sources
  */
 export interface ClusterConfig {
   endpoint: string;
+  authType?: ClusterAuthType;       // default: 'basic' (backwards compatible)
+  // Basic auth
   username?: string;
   password?: string;
-  tlsSkipVerify?: boolean; // default: false (verify certs)
+  // SigV4 auth
+  awsProfile?: string;              // AWS profile name; uses default chain if omitted
+  awsRegion?: string;               // required when authType is 'sigv4'
+  awsService?: 'es' | 'aoss';      // 'es' for managed, 'aoss' for serverless; default 'es'
+  tlsSkipVerify?: boolean;          // default: false (verify certs)
 }
 
 /**

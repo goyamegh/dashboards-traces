@@ -3,7 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { ensureIndexes } from '@/server/services/indexInitializer';
+import { ensureIndexes, ensureIndexesWithValidation } from '@/server/services/indexInitializer';
+import { validateIndexMappings } from '@/server/services/mappingValidator';
+import { fixIndexMappings } from '@/server/services/mappingFixer';
 
 // Mock index mappings
 jest.mock('@/server/constants/indexMappings', () => ({
@@ -20,6 +22,18 @@ jest.mock('@/server/constants/indexMappings', () => ({
     'evals_analytics': { mappings: { properties: { analyticsId: { type: 'keyword' } } } },
   },
 }));
+
+// Mock mapping validator and fixer
+jest.mock('@/server/services/mappingValidator', () => ({
+  validateIndexMappings: jest.fn(),
+}));
+
+jest.mock('@/server/services/mappingFixer', () => ({
+  fixIndexMappings: jest.fn(),
+}));
+
+const mockValidateIndexMappings = validateIndexMappings as jest.Mock;
+const mockFixIndexMappings = fixIndexMappings as jest.Mock;
 
 const mockIndicesExists = jest.fn();
 const mockIndicesCreate = jest.fn();
@@ -147,5 +161,91 @@ describe('ensureIndexes', () => {
     const statuses = Object.values(results).map(r => r.status);
     expect(statuses.filter(s => s === 'exists')).toHaveLength(2);
     expect(statuses.filter(s => s === 'created')).toHaveLength(2);
+  });
+});
+
+describe('ensureIndexesWithValidation', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // Default: all indexes created fresh (no existing data)
+    mockIndicesExists.mockResolvedValue({ body: false });
+    mockIndicesCreate.mockResolvedValue({ body: { acknowledged: true } });
+  });
+
+  it('should call ensureIndexes then validateIndexMappings', async () => {
+    mockValidateIndexMappings.mockResolvedValue([
+      { indexName: 'evals_test_cases', status: 'ok', issues: [], documentCount: 0 },
+    ]);
+
+    const result = await ensureIndexesWithValidation(mockClient);
+
+    expect(mockIndicesExists).toHaveBeenCalled(); // ensureIndexes called
+    expect(mockValidateIndexMappings).toHaveBeenCalledWith(mockClient);
+    expect(result.indexResults).toBeDefined();
+    expect(result.validationResults).toHaveLength(1);
+    expect(result.fixResults).toBeUndefined(); // No fix needed
+  });
+
+  it('should not call fixIndexMappings when all mappings are ok', async () => {
+    mockValidateIndexMappings.mockResolvedValue([
+      { indexName: 'evals_test_cases', status: 'ok', issues: [], documentCount: 5 },
+      { indexName: 'evals_runs', status: 'ok', issues: [], documentCount: 10 },
+    ]);
+
+    const result = await ensureIndexesWithValidation(mockClient);
+
+    expect(mockFixIndexMappings).not.toHaveBeenCalled();
+    expect(result.fixResults).toBeUndefined();
+  });
+
+  it('should call fixIndexMappings when validation finds issues', async () => {
+    const validationResults = [
+      { indexName: 'evals_test_cases', status: 'ok' as const, issues: [], documentCount: 5 },
+      {
+        indexName: 'evals_runs',
+        status: 'needs_reindex' as const,
+        issues: [{ indexName: 'evals_runs', field: 'id', expectedType: 'keyword', actualType: 'text', hasKeywordSubfield: false, fixable: true }],
+        documentCount: 42,
+      },
+    ];
+    mockValidateIndexMappings.mockResolvedValue(validationResults);
+    mockFixIndexMappings.mockResolvedValue([
+      { indexName: 'evals_runs', status: 'completed', documentCount: 42 },
+    ]);
+
+    const result = await ensureIndexesWithValidation(mockClient);
+
+    // Should only pass the indexes needing fix
+    expect(mockFixIndexMappings).toHaveBeenCalledWith(
+      mockClient,
+      [validationResults[1]], // Only evals_runs
+      undefined, // No onProgress callback passed
+    );
+    expect(result.fixResults).toHaveLength(1);
+    expect(result.fixResults![0].status).toBe('completed');
+  });
+
+  it('should pass onFixProgress callback to fixIndexMappings', async () => {
+    mockValidateIndexMappings.mockResolvedValue([
+      {
+        indexName: 'evals_runs',
+        status: 'needs_reindex',
+        issues: [{ indexName: 'evals_runs', field: 'id', expectedType: 'keyword', actualType: 'text', hasKeywordSubfield: false, fixable: true }],
+        documentCount: 10,
+      },
+    ]);
+    mockFixIndexMappings.mockResolvedValue([
+      { indexName: 'evals_runs', status: 'completed', documentCount: 10 },
+    ]);
+
+    const onProgress = jest.fn();
+    await ensureIndexesWithValidation(mockClient, onProgress);
+
+    // fixIndexMappings should receive the progress callback
+    expect(mockFixIndexMappings).toHaveBeenCalledWith(
+      mockClient,
+      expect.any(Array),
+      onProgress,
+    );
   });
 });

@@ -9,7 +9,8 @@
 
 import { Request, Response, Router } from 'express';
 import { fetchLogs, fetchLogsLegacy } from '../services/logsService';
-import { resolveObservabilityConfig } from '../middleware/dataSourceConfig.js';
+import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
+import { createOpenSearchClient } from '../services/opensearchClientFactory.js';
 
 const router = Router();
 
@@ -30,18 +31,24 @@ router.post('/api/logs', async (req: Request, res: Response) => {
       });
     }
 
-    // Call logs service to fetch logs
-    const result = await fetchLogs(
-      { runId, query, startTime, endTime, size },
-      {
-        endpoint: config.endpoint,
-        username: config.username,
-        password: config.password,
-        indexPattern: config.indexes?.logs || 'ml-commons-logs-*'
-      }
-    );
+    let client;
+    try {
+      client = createOpenSearchClient(config);
+      const indexPattern = config.indexes?.logs || DEFAULT_OTEL_INDEXES.logs;
 
-    res.json(result);
+      // Call logs service to fetch logs
+      const result = await fetchLogs(
+        { runId, query, startTime, endTime, size },
+        client,
+        indexPattern
+      );
+
+      res.json(result);
+    } finally {
+      if (client) {
+        await client.close().catch(() => {});
+      }
+    }
 
   } catch (error: any) {
     console.error('[LogsAPI] Error:', error);
