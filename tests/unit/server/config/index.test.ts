@@ -18,8 +18,6 @@ describe('server/config', () => {
   describe('PORT', () => {
     it('should default to 4001', async () => {
       delete process.env.PORT;
-      delete process.env.BACKEND_PORT;
-      delete process.env.VITE_BACKEND_PORT;
       const config = await import('@/server/config');
       expect(config.PORT).toBe(4001);
     });
@@ -28,13 +26,6 @@ describe('server/config', () => {
       process.env.PORT = '8080';
       const config = await import('@/server/config');
       expect(config.PORT).toBe(8080);
-    });
-
-    it('should use BACKEND_PORT when PORT is not set', async () => {
-      delete process.env.PORT;
-      process.env.BACKEND_PORT = '9000';
-      const config = await import('@/server/config');
-      expect(config.PORT).toBe(9000);
     });
   });
 

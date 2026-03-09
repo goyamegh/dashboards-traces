@@ -40,11 +40,11 @@ export default defineConfig(({ mode }) => {
       host: true,
       proxy: {
         '/api': {
-          target: `http://localhost:${env.BACKEND_PORT || '4001'}`,
+          target: `http://localhost:${env.PORT || '4001'}`,
           changeOrigin: true
         },
         '/health': {
-          target: `http://localhost:${env.BACKEND_PORT || '4001'}`,
+          target: `http://localhost:${env.PORT || '4001'}`,
           changeOrigin: true
         }
       }
