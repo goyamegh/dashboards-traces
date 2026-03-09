@@ -8,6 +8,8 @@
  */
 
 import { Request, Response, Router } from 'express';
+import { BedrockClient, ListInferenceProfilesCommand } from '@aws-sdk/client-bedrock';
+import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { evaluateTrajectory, parseBedrockError } from '../services/bedrockService';
 import { evaluateWithLiteLLM, parseLiteLLMError } from '../services/litellmJudgeService';
 import { loadConfigSync } from '../../lib/config/index';
@@ -113,6 +115,48 @@ router.get('/api/judge/litellm-models', async (_req: Request, res: Response) => 
       error: `Cannot reach LiteLLM endpoint: ${err.message}`,
       endpoint: modelsUrl,
       configured: !!serverConfig.LITELLM_API_KEY,
+    });
+  }
+});
+
+/**
+ * GET /api/judge/bedrock-models
+ * Discover available Anthropic models from AWS Bedrock via ListInferenceProfiles.
+ * Returns { models: Array<{id, name}>, region: string, configured: boolean }
+ */
+router.get('/api/judge/bedrock-models', async (_req: Request, res: Response) => {
+  const region = serverConfig.AWS_REGION;
+  debug('JudgeAPI', 'Fetching Bedrock inference profiles from region:', region);
+
+  try {
+    const client = new BedrockClient({
+      region,
+      credentials: fromNodeProviderChain(),
+    });
+
+    const command = new ListInferenceProfilesCommand({});
+    const response = await client.send(command);
+
+    const profiles = response.inferenceProfileSummaries || [];
+    const anthropicModels = profiles
+      .filter(p => (p.inferenceProfileId || '').includes('anthropic'))
+      .map(p => ({
+        id: p.inferenceProfileId,
+        name: p.inferenceProfileName || p.inferenceProfileId,
+      }));
+
+    debug('JudgeAPI', 'Discovered', anthropicModels.length, 'Anthropic Bedrock models');
+    return res.json({
+      models: anthropicModels,
+      region,
+      configured: true,
+    });
+  } catch (err: any) {
+    debug('JudgeAPI', 'Bedrock discovery failed:', err.message);
+    return res.status(503).json({
+      error: `Cannot discover Bedrock models: ${err.message}`,
+      region,
+      configured: false,
     });
   }
 });

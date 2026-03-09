@@ -38,10 +38,17 @@ function getClaudeCodeConnectorEnv(): Record<string, string> {
 
 // Model pricing per 1M tokens (USD)
 export const MODEL_PRICING: Record<string, { input: number; output: number }> = {
-  // Claude 4.x models (with inference profile prefix)
+  // Claude Opus models
+  'us.anthropic.claude-opus-4-6-v1': { input: 5.0, output: 25.0 },
+  'us.anthropic.claude-opus-4-5-20251101-v1:0': { input: 5.0, output: 25.0 },
+  'us.anthropic.claude-opus-4-1-20250805-v1:0': { input: 15.0, output: 75.0 },
+  'us.anthropic.claude-opus-4-20250514-v1:0': { input: 15.0, output: 75.0 },
+  // Claude Sonnet models
+  'us.anthropic.claude-sonnet-4-6': { input: 3.0, output: 15.0 },
   'us.anthropic.claude-sonnet-4-20250514-v1:0': { input: 3.0, output: 15.0 },
   'us.anthropic.claude-sonnet-4-5-20250929-v1:0': { input: 3.0, output: 15.0 },
-  // Claude 3.x models
+  // Claude Haiku models
+  'us.anthropic.claude-haiku-4-5-20251001-v1:0': { input: 1.0, output: 5.0 },
   'us.anthropic.claude-3-5-haiku-20241022-v1:0': { input: 0.80, output: 4.0 },
   // Default fallback
   'default': { input: 3.0, output: 15.0 },
@@ -98,6 +105,48 @@ export const DEFAULT_CONFIG: AppConfig = {
       provider: "demo",
       context_window: 200000,
       max_output_tokens: 4096
+    },
+    "claude-opus-4.6": {
+      model_id: "us.anthropic.claude-opus-4-6-v1",
+      display_name: "Claude Opus 4.6",
+      provider: "bedrock",
+      context_window: 200000,
+      max_output_tokens: 128000
+    },
+    "claude-sonnet-4.6": {
+      model_id: "us.anthropic.claude-sonnet-4-6",
+      display_name: "Claude Sonnet 4.6",
+      provider: "bedrock",
+      context_window: 200000,
+      max_output_tokens: 64000
+    },
+    "claude-haiku-4.5": {
+      model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      display_name: "Claude Haiku 4.5",
+      provider: "bedrock",
+      context_window: 200000,
+      max_output_tokens: 64000
+    },
+    "claude-opus-4.5": {
+      model_id: "us.anthropic.claude-opus-4-5-20251101-v1:0",
+      display_name: "Claude Opus 4.5",
+      provider: "bedrock",
+      context_window: 200000,
+      max_output_tokens: 64000
+    },
+    "claude-opus-4.1": {
+      model_id: "us.anthropic.claude-opus-4-1-20250805-v1:0",
+      display_name: "Claude Opus 4.1",
+      provider: "bedrock",
+      context_window: 200000,
+      max_output_tokens: 32000
+    },
+    "claude-opus-4": {
+      model_id: "us.anthropic.claude-opus-4-20250514-v1:0",
+      display_name: "Claude Opus 4",
+      provider: "bedrock",
+      context_window: 200000,
+      max_output_tokens: 32000
     },
     "claude-sonnet-4.5": {
       model_id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",

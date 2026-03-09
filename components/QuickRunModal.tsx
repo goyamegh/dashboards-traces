@@ -55,6 +55,11 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
   const [litellmDiscoveryState, setLitellmDiscoveryState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [litellmDiscoveryError, setLitellmDiscoveryError] = useState<string | null>(null);
 
+  // Bedrock dynamic model discovery
+  const [bedrockModels, setBedrockModels] = useState<Array<{ id: string; name: string }>>([]);
+  const [bedrockDiscoveryState, setBedrockDiscoveryState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [bedrockDiscoveryError, setBedrockDiscoveryError] = useState<string | null>(null);
+
   const selectedAgent = DEFAULT_CONFIG.agents.find(a => a.key === selectedAgentKey);
 
   // Group models by provider for the dropdown (includes dynamically discovered LiteLLM models)
@@ -72,6 +77,17 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
     .map(id => ({ key: id, model_id: id, display_name: id, provider: 'litellm' }));
   if (discoveredLitellmModels.length > 0) {
     modelsByProvider['litellm'] = [...(modelsByProvider['litellm'] || []), ...discoveredLitellmModels];
+  }
+
+  // Merge in discovered Bedrock models (deduplicating against static config by model_id)
+  const staticBedrockModelIds = new Set(
+    (modelsByProvider['bedrock'] || []).map((m: any) => m.model_id || DEFAULT_CONFIG.models[m.key]?.model_id)
+  );
+  const discoveredBedrockModels = bedrockModels
+    .filter(m => !staticBedrockModelIds.has(m.id))
+    .map(m => ({ key: m.id, model_id: m.id, display_name: m.name, provider: 'bedrock' }));
+  if (discoveredBedrockModels.length > 0) {
+    modelsByProvider['bedrock'] = [...(modelsByProvider['bedrock'] || []), ...discoveredBedrockModels];
   }
 
   const providerLabels: Record<string, string> = {
@@ -99,8 +115,28 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
     }
   }, []);
 
+  const fetchBedrockModels = useCallback(async () => {
+    setBedrockDiscoveryState('loading');
+    setBedrockDiscoveryError(null);
+    try {
+      const response = await fetch('/api/judge/bedrock-models');
+      const data = await response.json();
+      if (!response.ok) {
+        setBedrockDiscoveryState('error');
+        setBedrockDiscoveryError(data.error || 'Failed to fetch models');
+      } else {
+        setBedrockModels(data.models || []);
+        setBedrockDiscoveryState('done');
+      }
+    } catch (err: any) {
+      setBedrockDiscoveryState('error');
+      setBedrockDiscoveryError('Cannot reach server');
+    }
+  }, []);
+
   const selectedModelConfig = DEFAULT_CONFIG.models[selectedModelId] ||
-    discoveredLitellmModels.find(m => m.key === selectedModelId) as any;
+    discoveredLitellmModels.find(m => m.key === selectedModelId) ||
+    discoveredBedrockModels.find(m => m.key === selectedModelId) as any;
   const selectedModelProvider = selectedModelConfig?.provider || 'bedrock';
 
   // Lock body scroll when modal is open
@@ -315,6 +351,27 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                       ))}
                     </SelectContent>
                   </Select>
+                  <button
+                    type="button"
+                    title={
+                      bedrockDiscoveryState === 'done'
+                        ? `${bedrockModels.length} model${bedrockModels.length !== 1 ? 's' : ''} discovered from Bedrock`
+                        : bedrockDiscoveryState === 'error'
+                        ? `Bedrock discovery failed: ${bedrockDiscoveryError}`
+                        : 'Discover models from AWS Bedrock'
+                    }
+                    onClick={fetchBedrockModels}
+                    disabled={bedrockDiscoveryState === 'loading'}
+                    className={`h-8 w-8 flex items-center justify-center rounded border bg-background disabled:opacity-50 ${
+                      bedrockDiscoveryState === 'done'
+                        ? 'border-green-400 text-green-600 dark:text-green-400'
+                        : bedrockDiscoveryState === 'error'
+                        ? 'border-amber-400 text-amber-600 dark:text-amber-400'
+                        : 'border-input text-muted-foreground hover:text-foreground hover:bg-accent'
+                    }`}
+                  >
+                    <RefreshCw size={12} className={bedrockDiscoveryState === 'loading' ? 'animate-spin' : ''} />
+                  </button>
                   <button
                     type="button"
                     title={
