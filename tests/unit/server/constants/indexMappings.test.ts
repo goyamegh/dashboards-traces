@@ -158,6 +158,22 @@ describe('indexMappings', () => {
       expect(metricsProps.latency_score.type).toBe('float');
     });
 
+    it('should have multiTurnResult as disabled object', () => {
+      const mappings = getIndexMappings();
+      const key = Object.keys(mappings).find((k) => k.includes('runs'))!;
+      const props = mappings[key].mappings.properties;
+
+      expect(props.multiTurnResult).toEqual({ type: 'object', enabled: false });
+    });
+
+    it('should have turnRunIds as keyword', () => {
+      const mappings = getIndexMappings();
+      const key = Object.keys(mappings).find((k) => k.includes('runs'))!;
+      const props = mappings[key].mappings.properties;
+
+      expect(props.turnRunIds).toEqual({ type: 'keyword' });
+    });
+
     it('should have nested annotations', () => {
       const mappings = getIndexMappings();
       const key = Object.keys(mappings).find((k) => k.includes('runs'))!;

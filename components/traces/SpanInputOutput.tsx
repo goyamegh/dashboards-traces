@@ -61,7 +61,12 @@ function getEventContent(span: Span, eventName: string): string | null {
   const value = event.attributes['content'] ||
                 event.attributes['body'] ||
                 event.attributes['gen_ai.content'] ||
-                event.attributes['message'];
+                event.attributes['message'] ||
+                event.attributes['llm.prompt'] ||
+                event.attributes['llm.completion'] ||
+                event.attributes['llm.system_prompt'] ||
+                event.attributes['tool.parameters'] ||
+                event.attributes['tool.result'];
   if (!value) return null;
   return typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value);
 }
@@ -97,6 +102,7 @@ function extractSpanIO(span: Span): SpanIOData {
   // LLM spans - check span events first (standard OTel), then attributes
   if (category === 'llm') {
     input = getEventContent(span, 'gen_ai.content.prompt') ||
+            getEventContent(span, 'llm.request') ||
             attrs['gen_ai.input.messages'] ||
             attrs['gen_ai.prompt'] ||
             attrs['gen_ai.prompt.0.content'] ||
@@ -106,6 +112,7 @@ function extractSpanIO(span: Span): SpanIOData {
             null;
 
     output = getEventContent(span, 'gen_ai.content.completion') ||
+             getEventContent(span, 'llm.response') ||
              attrs['gen_ai.output.messages'] ||
              attrs['gen_ai.completion'] ||
              attrs['gen_ai.completion.0.content'] ||
@@ -119,6 +126,7 @@ function extractSpanIO(span: Span): SpanIOData {
   if (category === 'tool') {
     input = attrs['gen_ai.tool.call.arguments'] ||
             getEventContent(span, 'gen_ai.tool.input') ||
+            getEventContent(span, 'tool.input') ||
             attrs['gen_ai.tool.input'] ||
             attrs['tool.input'] ||
             attrs['input.value'] ||
@@ -127,6 +135,7 @@ function extractSpanIO(span: Span): SpanIOData {
 
     output = attrs['gen_ai.tool.call.result'] ||
              getEventContent(span, 'gen_ai.tool.output') ||
+             getEventContent(span, 'tool.output') ||
              attrs['gen_ai.tool.output'] ||
              attrs['tool.output'] ||
              attrs['output.value'] ||

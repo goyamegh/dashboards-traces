@@ -319,7 +319,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
     setTracesFetched(false);
 
     // Auto-fetch if already on traces tab
-    if (activeTab === 'logs' && isTraceMode && report.runId) {
+    if (activeTab === 'logs' && isTraceMode && (report.runId || report.turnRunIds?.length)) {
       // Use setTimeout to ensure state is reset before fetching
       setTimeout(() => {
         fetchTracesForReport();
@@ -329,14 +329,17 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
 
   // Core trace fetching logic
   const fetchTracesForReport = async () => {
-    if (!report.runId) return;
+    const runIdsToFetch = report.turnRunIds?.length
+      ? report.turnRunIds
+      : report.runId ? [report.runId] : [];
+    if (runIdsToFetch.length === 0) return;
 
     setTracesLoading(true);
     setTracesError(null);
 
     try {
-      console.info('[RunDetails] Fetching traces for runId:', report.runId);
-      const result = await fetchTracesByRunIds([report.runId]);
+      console.info('[RunDetails] Fetching traces for runIds:', runIdsToFetch);
+      const result = await fetchTracesByRunIds(runIdsToFetch, 1000);
       
       console.info('[RunDetails] Trace fetch result:', {
         spansCount: result.spans?.length || 0,

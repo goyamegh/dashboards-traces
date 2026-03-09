@@ -254,6 +254,7 @@ export interface TestCaseRun {
   openSearchLogs?: OpenSearchLog[]; // Storage: Persisted logs (alternative to logs)
   annotations?: RunAnnotation[]; // Storage: User notes on this run
   runId?: string; // Agent's run ID from AG UI events (for log correlation)
+  turnRunIds?: string[]; // All per-turn runIds for multi-turn evaluations (trace fetching)
   logs?: OpenSearchLog[]; // OpenSearch logs for the run (master version)
   rawEvents?: any[]; // Raw AG UI events for debugging
   connectorProtocol?: ConnectorProtocol; // Protocol used to execute this run (for trajectory parsing)

@@ -25,6 +25,7 @@ import type {
   ImprovementStrategy,
   OpenSearchLog,
   ConnectorProtocol,
+  MultiTurnResult,
 } from '@/types';
 
 // Re-export search types for convenience
@@ -113,6 +114,8 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     traceError: storedAny.traceError,
     spans: storedAny.spans as any[] | undefined,
     connectorProtocol: storedAny.connectorProtocol as ConnectorProtocol | undefined,
+    multiTurnResult: stored.multiTurnResult as MultiTurnResult | undefined,
+    turnRunIds: stored.turnRunIds,
   };
 }
 
@@ -153,6 +156,8 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
   if (report.traceError !== undefined) base.traceError = report.traceError;
   if (report.spans !== undefined) base.spans = report.spans;
   if (report.connectorProtocol !== undefined) base.connectorProtocol = report.connectorProtocol;
+  if (report.multiTurnResult !== undefined) base.multiTurnResult = report.multiTurnResult;
+  if (report.turnRunIds !== undefined) base.turnRunIds = report.turnRunIds;
 
   return base;
 }
@@ -272,6 +277,8 @@ class AsyncRunStorage {
     if (updates.lastTraceFetchAt !== undefined) storageUpdates.lastTraceFetchAt = updates.lastTraceFetchAt;
     if (updates.traceError !== undefined) storageUpdates.traceError = updates.traceError;
     if (updates.spans !== undefined) storageUpdates.spans = updates.spans;
+    if (updates.multiTurnResult !== undefined) storageUpdates.multiTurnResult = updates.multiTurnResult;
+    if (updates.turnRunIds !== undefined) storageUpdates.turnRunIds = updates.turnRunIds;
 
     const updated = await opensearchRuns.partialUpdate(reportId, storageUpdates);
     return toTestCaseRun(updated);

@@ -386,32 +386,67 @@ export async function runEvaluationWithConnector(
 }
 
 /**
+ * Metrics emitted when a 409 retry succeeds (or is exhausted).
+ */
+interface RetryMetrics {
+  /** Total wall-clock time spent retrying (ms) */
+  totalWaitMs: number;
+  /** Number of 409 retries before success (0 = first attempt worked) */
+  retryCount: number;
+}
+
+/**
  * Retry wrapper for connector.execute() calls.
  * Handles transient 409 "Run already in progress" errors caused by race conditions
  * where the previous turn's cleanup hasn't completed before the next turn starts.
+ *
+ * Uses exponential backoff with no retry limit — keeps retrying until the 409 clears
+ * or the total timeout is exceeded. Individual delays are capped at maxDelayMs.
  */
 async function executeWithRetry<T>(
   fn: () => Promise<T>,
-  opts: { maxRetries: number; initialDelayMs: number; retryOn409: boolean }
-): Promise<T> {
-  let lastError: Error | undefined;
-  for (let attempt = 0; attempt <= opts.maxRetries; attempt++) {
+  opts: {
+    initialDelayMs: number;
+    maxDelayMs: number;
+    timeoutMs: number;
+    retryOn409: boolean;
+  }
+): Promise<T & { _retryMetrics?: RetryMetrics }> {
+  const startTime = Date.now();
+  let attempt = 0;
+
+  while (true) {
     try {
-      return await fn();
+      const result = await fn();
+      // Attach retry metrics to the result if retries occurred
+      if (attempt > 0) {
+        const totalWaitMs = Date.now() - startTime;
+        debug('Eval', `409 cleared after ${attempt} retries, ${totalWaitMs}ms total wait`);
+        (result as any)._retryMetrics = { totalWaitMs, retryCount: attempt };
+      }
+      return result;
     } catch (err: any) {
-      lastError = err;
       const is409 = opts.retryOn409 && (
         err.message?.includes('409') ||
         err.message?.includes('already in progress') ||
         err.status === 409
       );
-      if (!is409 || attempt === opts.maxRetries) throw err;
-      const delay = opts.initialDelayMs * Math.pow(2, attempt);
-      debug('Eval', `409 on turn, retrying in ${delay}ms (attempt ${attempt + 1}/${opts.maxRetries})`);
-      await new Promise(resolve => setTimeout(resolve, delay));
+      if (!is409) throw err;
+
+      const elapsed = Date.now() - startTime;
+      if (elapsed >= opts.timeoutMs) {
+        debug('Eval', `409 retry timeout after ${attempt} attempts, ${elapsed}ms elapsed`);
+        throw err;
+      }
+
+      const delay = Math.min(opts.initialDelayMs * Math.pow(2, attempt), opts.maxDelayMs);
+      const remaining = opts.timeoutMs - elapsed;
+      const actualDelay = Math.min(delay, remaining);
+      attempt++;
+      debug('Eval', `409 on turn (attempt ${attempt}, ${elapsed}ms elapsed), retrying in ${actualDelay}ms`);
+      await new Promise(resolve => setTimeout(resolve, actualDelay));
     }
   }
-  throw lastError!;
 }
 
 /**
@@ -437,6 +472,7 @@ async function runMultiTurnEvaluation(
   const allTrajectory: TrajectoryStep[] = [];
   const allRawEvents: any[] = [];
   const conversationHistory: AgentMessage[] = [];
+  const allTurnRunIds: string[] = [];
   let agentRunId: string | null = null;
 
   debug('Eval', 'Starting multi-turn evaluation. Turn limit:', turnLimit);
@@ -452,6 +488,7 @@ async function runMultiTurnEvaluation(
     );
 
     agentRunId = turn1Result.runId;
+    if (turn1Result.runId) allTurnRunIds.push(turn1Result.runId);
     const threadId = turn1Result.metadata?.threadId;
     allTrajectory.push(...turn1Result.trajectory);
     allRawEvents.push(...(turn1Result.rawEvents || []));
@@ -519,12 +556,18 @@ async function runMultiTurnEvaluation(
 
       // Retry on 409 "Run already in progress" — the previous turn's cleanup
       // may not have completed before this request arrives at the agent backend.
+      // Uses infinite exponential backoff (2s→4s→...→30s cap) with 5-minute timeout.
       const turnResult = await executeWithRetry(
         () => connector.execute(endpoint, turnRequest, auth, onStep, options.onRawEvent),
-        { maxRetries: 3, initialDelayMs: 1000, retryOn409: true }
+        { initialDelayMs: 2000, maxDelayMs: 30000, timeoutMs: 300000, retryOn409: true }
       );
+      if ((turnResult as any)._retryMetrics) {
+        const m = (turnResult as any)._retryMetrics as RetryMetrics;
+        debug('Eval', `Turn ${turnIdx + 1} retry metrics: ${m.retryCount} retries, ${m.totalWaitMs}ms wait`);
+      }
 
       agentRunId = turnResult.runId || agentRunId;
+      if (turnResult.runId) allTurnRunIds.push(turnResult.runId);
       allTrajectory.push(...turnResult.trajectory);
       allRawEvents.push(...(turnResult.rawEvents || []));
 
@@ -621,6 +664,7 @@ async function runMultiTurnEvaluation(
       llmJudgeResponse,
       multiTurnResult,
       runId: agentRunId || undefined,
+      turnRunIds: allTurnRunIds.length > 0 ? allTurnRunIds : undefined,
       rawEvents: allRawEvents,
       connectorProtocol: connector.type as ConnectorProtocol,
     };
@@ -654,6 +698,7 @@ async function runMultiTurnEvaluation(
       llmJudgeReasoning: `Multi-turn evaluation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
       improvementStrategies: [],
       multiTurnResult: partialMultiTurnResult,
+      turnRunIds: allTurnRunIds.length > 0 ? allTurnRunIds : undefined,
       rawEvents: allRawEvents,
       connectorProtocol: connector.type as ConnectorProtocol,
     };

@@ -57,8 +57,8 @@ export async function fetchTraceById(traceId: string): Promise<TraceSearchResult
 /**
  * Fetch traces by run IDs
  */
-export async function fetchTracesByRunIds(runIds: string[]): Promise<TraceSearchResult> {
-  return fetchTraces({ runIds });
+export async function fetchTracesByRunIds(runIds: string[], size?: number): Promise<TraceSearchResult> {
+  return fetchTraces({ runIds, size });
 }
 
 /**

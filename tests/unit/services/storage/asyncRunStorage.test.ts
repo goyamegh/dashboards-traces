@@ -256,6 +256,32 @@ describe('AsyncRunStorage', () => {
       }));
     });
 
+    it('updates multiTurnResult and turnRunIds', async () => {
+      const mockUpdated = createMockStorageRun('run-1');
+      mockOsRuns.partialUpdate.mockResolvedValue(mockUpdated);
+
+      const multiTurnResult = {
+        turns: [],
+        totalTurns: 3,
+        acceptanceCriteriaMet: true,
+        rootCauseScore: 90,
+        remediationScore: 85,
+        contextRetentionScore: 80,
+        concisenessScore: 95,
+        reasoning: 'Good',
+      };
+
+      await asyncRunStorage.updateReport('run-1', {
+        multiTurnResult,
+        turnRunIds: ['id-1', 'id-2'],
+      });
+
+      expect(mockOsRuns.partialUpdate).toHaveBeenCalledWith('run-1', expect.objectContaining({
+        multiTurnResult,
+        turnRunIds: ['id-1', 'id-2'],
+      }));
+    });
+
     it('maps metrics correctly', async () => {
       const mockUpdated = createMockStorageRun('run-1');
       mockOsRuns.partialUpdate.mockResolvedValue(mockUpdated);
@@ -336,6 +362,30 @@ describe('AsyncRunStorage', () => {
         lastTraceFetchAt: '2024-01-01T12:00:00Z',
         spans: [{ spanId: 'span-1' }],
       });
+    });
+
+    it('handles multiTurnResult in conversion', async () => {
+      const mockMultiTurnResult = {
+        turns: [{ turn: 1, userMessage: 'Hello', agentResponse: 'Hi', trajectory: [] }],
+        totalTurns: 1,
+        acceptanceCriteriaMet: true,
+        rootCauseScore: 90,
+        remediationScore: 85,
+        contextRetentionScore: 80,
+        concisenessScore: 95,
+        reasoning: 'Good performance',
+      };
+      const mockStorageRun = {
+        ...createMockStorageRun('run-1'),
+        multiTurnResult: mockMultiTurnResult,
+        turnRunIds: ['run-id-1', 'run-id-2'],
+      };
+      mockOsRuns.getById.mockResolvedValue(mockStorageRun);
+
+      const result = await asyncRunStorage.getReportById('run-1');
+
+      expect(result?.multiTurnResult).toEqual(mockMultiTurnResult);
+      expect(result?.turnRunIds).toEqual(['run-id-1', 'run-id-2']);
     });
   });
 
@@ -721,6 +771,49 @@ describe('AsyncRunStorage', () => {
           logs: [{ message: 'test log' }],
         })
       );
+    });
+
+    it('persists multiTurnResult and turnRunIds', async () => {
+      const mockStorageRun = createMockStorageRun('run-1');
+      mockOsRuns.create.mockResolvedValue(mockStorageRun);
+
+      const multiTurnResult = {
+        turns: [{ turn: 1, userMessage: 'Hello', agentResponse: 'Hi', trajectory: [] }],
+        totalTurns: 1,
+        acceptanceCriteriaMet: true,
+        rootCauseScore: 90,
+        remediationScore: 85,
+        contextRetentionScore: 80,
+        concisenessScore: 95,
+        reasoning: 'Good',
+      };
+
+      const report: EvaluationReport = {
+        ...createMockReport('report-mt'),
+        multiTurnResult,
+        turnRunIds: ['run-t1', 'run-t2', 'run-t3'],
+      };
+
+      await asyncRunStorage.saveReport(report);
+
+      expect(mockOsRuns.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          multiTurnResult,
+          turnRunIds: ['run-t1', 'run-t2', 'run-t3'],
+        })
+      );
+    });
+
+    it('does not include multiTurnResult when undefined', async () => {
+      const mockStorageRun = createMockStorageRun('run-1');
+      mockOsRuns.create.mockResolvedValue(mockStorageRun);
+
+      const report = createMockReport('report-single');
+      await asyncRunStorage.saveReport(report);
+
+      const createCallArg = mockOsRuns.create.mock.calls[0][0];
+      expect(createCallArg).not.toHaveProperty('multiTurnResult');
+      expect(createCallArg).not.toHaveProperty('turnRunIds');
     });
   });
 });

@@ -157,6 +157,8 @@ export function getIndexMappings(): IndexMappings {
           logs: { type: 'object', enabled: false },
           rawEvents: { type: 'object', enabled: false },
           improvementStrategies: { type: 'object', enabled: false },
+          multiTurnResult: { type: 'object', enabled: false },
+          turnRunIds: { type: 'keyword' },
           spans: { type: 'object', enabled: false },
           metricsStatus: { type: 'keyword' },
           traceFetchAttempts: { type: 'integer' },

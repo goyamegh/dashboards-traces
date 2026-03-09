@@ -501,6 +501,58 @@ describe('Multi-Turn Evaluation', () => {
       expect(result.rawEvents[1].type).toBe('event-2');
     });
 
+    it('multi-turn collects turnRunIds from all turns', async () => {
+      const { generateFollowUp } = require('@/services/evaluation/userSimulator');
+
+      generateFollowUp
+        .mockResolvedValueOnce({ done: false, message: 'Follow-up 1' })
+        .mockResolvedValueOnce({ done: true, message: 'Done' });
+
+      let callCount = 0;
+      const mockConnector = createMockConnector({
+        execute: jest.fn().mockImplementation(async () => {
+          callCount++;
+          return {
+            trajectory: [
+              { id: `step-${callCount}`, timestamp: Date.now(), type: 'response', content: `Response ${callCount}` },
+            ],
+            runId: `run-turn-${callCount}`,
+            rawEvents: [],
+            metadata: { threadId: 'thread-1' },
+          };
+        }),
+      });
+      const mockRegistry = createMockRegistry(mockConnector);
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue({
+          passFailStatus: 'passed',
+          weightedScore: 80,
+          rootCauseScore: 80,
+          remediationScore: 80,
+          contextRetentionScore: 80,
+          concisenessScore: 80,
+          reasoning: 'Good',
+          improvementStrategies: [],
+        }),
+      });
+
+      const onStepMock = jest.fn();
+
+      const result = await runEvaluationWithConnector(
+        mockAgent,
+        'test-model',
+        mockMultiTurnTestCase,
+        onStepMock,
+        { registry: mockRegistry }
+      );
+
+      // turnRunIds should contain runIds from both turns
+      expect(result.turnRunIds).toBeDefined();
+      expect(result.turnRunIds).toEqual(['run-turn-1', 'run-turn-2']);
+    });
+
     it('multi-turn passes conversation history to buildMultiTurnPayload', async () => {
       const { generateFollowUp } = require('@/services/evaluation/userSimulator');
       const { buildMultiTurnPayload } = require('@/services/agent/payloadBuilder');

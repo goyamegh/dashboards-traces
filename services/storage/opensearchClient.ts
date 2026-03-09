@@ -151,6 +151,8 @@ export interface StorageRun {
     priority: 'high' | 'medium' | 'low';
   }[];
   connectorProtocol?: string;
+  multiTurnResult?: unknown;
+  turnRunIds?: string[];
 }
 
 export interface StorageAnalyticsRecord {

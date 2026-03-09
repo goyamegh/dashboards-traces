@@ -494,6 +494,38 @@ describe('Storage Service', () => {
       );
     });
 
+    it('should include multiTurnResult and turnRunIds when present', async () => {
+      mockClient.index.mockResolvedValue({ body: { result: 'created' } });
+
+      const multiTurnResult = {
+        turns: [{ turn: 1, userMessage: 'Q', agentResponse: 'A', trajectory: [] }],
+        totalTurns: 1,
+        acceptanceCriteriaMet: true,
+        rootCauseScore: 90,
+        remediationScore: 85,
+        contextRetentionScore: 80,
+        concisenessScore: 95,
+        reasoning: 'Good multi-turn performance',
+      };
+
+      const report = {
+        testCaseId: 'tc-1',
+        multiTurnResult,
+        turnRunIds: ['run-t1', 'run-t2'],
+      };
+
+      await saveReport(report);
+
+      expect(mockClient.index).toHaveBeenCalledWith(
+        expect.objectContaining({
+          body: expect.objectContaining({
+            multiTurnResult,
+            turnRunIds: ['run-t1', 'run-t2'],
+          }),
+        })
+      );
+    });
+
     it('should use openSearchLogs as fallback for logs', async () => {
       mockClient.index.mockResolvedValue({ body: { result: 'created' } });
 

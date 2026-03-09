@@ -227,6 +227,8 @@ export async function saveReportWithClient(
   if (report.traceError !== undefined) storageData.traceError = report.traceError;
   if (report.spans !== undefined) storageData.spans = report.spans;
   if (report.connectorProtocol !== undefined) storageData.connectorProtocol = report.connectorProtocol;
+  if (report.multiTurnResult !== undefined) storageData.multiTurnResult = report.multiTurnResult;
+  if (report.turnRunIds !== undefined) storageData.turnRunIds = report.turnRunIds;
 
   const created = await createRunWithClient(client, storageData);
 
