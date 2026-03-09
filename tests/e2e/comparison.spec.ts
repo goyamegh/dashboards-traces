@@ -163,7 +163,17 @@ test.describe('Comparison Page - Metrics', () => {
         }
 
         await compareButton.click();
-        await page.waitForTimeout(2000);
+
+        // Wait for comparison page to fully load
+        const comparisonPage = page.locator('[data-testid="comparison-page"]');
+        await comparisonPage.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+
+        // Select a second run (comparison page requires at least 2 runs selected)
+        const secondRunLabel = page.locator('label:has-text("Run 15")');
+        if (await secondRunLabel.isVisible().catch(() => false)) {
+          await secondRunLabel.click();
+          await page.waitForTimeout(2000);
+        }
 
         // Should show run summary cards with metrics
         const hasSummary = await page.locator('text=/Pass Rate|Accuracy|Avg/').first().isVisible().catch(() => false);
@@ -188,7 +198,17 @@ test.describe('Comparison Page - Metrics', () => {
         }
 
         await compareButton.click();
-        await page.waitForTimeout(2000);
+
+        // Wait for comparison page to fully load
+        const comparisonPage = page.locator('[data-testid="comparison-page"]');
+        await comparisonPage.waitFor({ state: 'visible', timeout: 15000 }).catch(() => {});
+
+        // Select a second run (comparison page requires at least 2 runs selected)
+        const secondRunLabel = page.locator('label:has-text("Run 15")');
+        if (await secondRunLabel.isVisible().catch(() => false)) {
+          await secondRunLabel.click();
+          await page.waitForTimeout(2000);
+        }
 
         // Should show use case comparison table or similar
         const hasTable = await page.locator('text=/Use Case|Test Case|Status/').first().isVisible().catch(() => false);
