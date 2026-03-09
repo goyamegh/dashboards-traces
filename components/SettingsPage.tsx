@@ -4,9 +4,8 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { AlertTriangle, Trash2, Database, CheckCircle2, XCircle, Upload, Download, Loader2, Server, Plus, Edit2, X, Save, ExternalLink, Eye, EyeOff, ChevronDown, ChevronRight, RefreshCw, Palette, Circle } from 'lucide-react';
+import { AlertTriangle, Trash2, Database, CheckCircle2, XCircle, Upload, Download, Loader2, Server, Plus, Edit2, X, Save, ExternalLink, Eye, EyeOff, ChevronDown, ChevronRight, RefreshCw, Palette, Circle, Bug } from 'lucide-react';
 import { getTheme, setTheme, type Theme } from '@/lib/theme';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
@@ -68,6 +67,184 @@ function getCustomEndpointsFromConfig(): AgentEndpoint[] {
       useTraces: a.useTraces,
     }));
 }
+
+/** Reusable section wrapper */
+const Section: React.FC<{
+  icon: React.ReactNode;
+  title: string;
+  subtitle?: string;
+  last?: boolean;
+  children: React.ReactNode;
+}> = ({ icon, title, subtitle, last, children }) => (
+  <section className={last ? '' : 'pb-6 mb-6 border-b border-border/50'}>
+    <div className="flex items-baseline gap-2 mb-4">
+      <span className="text-muted-foreground">{icon}</span>
+      <h3 className="text-sm font-semibold uppercase tracking-wide text-muted-foreground">{title}</h3>
+      {subtitle && <span className="text-xs text-muted-foreground/70 ml-1">- {subtitle}</span>}
+    </div>
+    {children}
+  </section>
+);
+
+/** Reusable config source badge */
+const ConfigSourceBadge: React.FC<{ source?: string }> = ({ source }) => {
+  if (!source) return null;
+  const style = source === 'file'
+    ? 'bg-green-100 text-green-900 border-green-300 dark:bg-green-950/50 dark:text-green-300 dark:border-green-700/50'
+    : source === 'environment'
+    ? 'bg-blue-100 text-blue-900 border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50'
+    : 'bg-gray-100 text-gray-900 border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700/50';
+  const label = source === 'file' ? 'Config file' : source === 'environment' ? 'Env vars' : 'Not configured';
+  return (
+    <span className={`text-xs px-2 py-0.5 rounded border ${style}`}>{label}</span>
+  );
+};
+
+/** Reusable connection test status */
+const TestStatus: React.FC<{ status: string; message: string }> = ({ status, message }) => {
+  if (!message) return null;
+  return (
+    <div className={`flex items-center gap-2 text-sm ${
+      status === 'success' ? 'text-green-400' :
+      status === 'error' ? 'text-red-400' :
+      status === 'testing' ? 'text-blue-400' : 'text-muted-foreground'
+    }`}>
+      {status === 'testing' && <Loader2 size={14} className="animate-spin" />}
+      {status === 'success' && <CheckCircle2 size={14} />}
+      {status === 'error' && <XCircle size={14} />}
+      {message}
+    </div>
+  );
+};
+
+/** Auth fields for OpenSearch cluster config */
+const AuthFields: React.FC<{
+  prefix: string;
+  config: {
+    authType: ClusterAuthType;
+    username: string;
+    password: string;
+    awsProfile: string;
+    awsRegion: string;
+    awsService: 'es' | 'aoss';
+    tlsSkipVerify: boolean;
+  };
+  showPassword: boolean;
+  onTogglePassword: () => void;
+  onChange: (patch: Record<string, any>) => void;
+  passwordSentinel: string;
+}> = ({ prefix, config, showPassword, onTogglePassword, onChange, passwordSentinel }) => (
+  <div className="space-y-3">
+    <div className="space-y-1.5">
+      <Label className="text-xs">Authentication</Label>
+      <Select value={config.authType} onValueChange={(v) => onChange({ authType: v })}>
+        <SelectTrigger className="h-8 text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="none">No Auth</SelectItem>
+          <SelectItem value="basic">Basic Auth</SelectItem>
+          <SelectItem value="sigv4">AWS SigV4</SelectItem>
+        </SelectContent>
+      </Select>
+    </div>
+
+    {config.authType === 'none' && (
+      <p className="text-xs text-muted-foreground pl-1">
+        Connects without credentials. Suitable for local dev clusters.
+      </p>
+    )}
+
+    {config.authType === 'basic' && (
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label htmlFor={`${prefix}-username`} className="text-xs">Username</Label>
+          <Input
+            id={`${prefix}-username`}
+            placeholder="Leave blank for env var"
+            value={config.username}
+            onChange={(e) => onChange({ username: e.target.value })}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label htmlFor={`${prefix}-password`} className="text-xs">Password</Label>
+          <div className="relative">
+            <Input
+              id={`${prefix}-password`}
+              type={showPassword ? 'text' : 'password'}
+              placeholder={config.password === passwordSentinel ? '••••••••' : 'Leave blank for env var'}
+              value={config.password === passwordSentinel ? '' : config.password}
+              onChange={(e) => onChange({ password: e.target.value })}
+              className="pr-10"
+            />
+            <button
+              type="button"
+              onClick={onTogglePassword}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+            </button>
+          </div>
+          {config.password === passwordSentinel && (
+            <p className="text-xs text-muted-foreground">Stored on server - type to replace</p>
+          )}
+        </div>
+      </div>
+    )}
+
+    {config.authType === 'sigv4' && (
+      <div className="space-y-3 p-3 border rounded-lg bg-muted/10">
+        <p className="text-xs text-muted-foreground">
+          Uses AWS credential chain (env vars, ~/.aws/credentials, IAM role)
+        </p>
+        <div className="grid grid-cols-2 gap-3">
+          <div className="space-y-1.5">
+            <Label htmlFor={`${prefix}-aws-region`} className="text-xs">AWS Region</Label>
+            <Input
+              id={`${prefix}-aws-region`}
+              placeholder="us-east-1"
+              value={config.awsRegion}
+              onChange={(e) => onChange({ awsRegion: e.target.value })}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor={`${prefix}-aws-profile`} className="text-xs">AWS Profile</Label>
+            <Input
+              id={`${prefix}-aws-profile`}
+              placeholder="default"
+              value={config.awsProfile}
+              onChange={(e) => onChange({ awsProfile: e.target.value })}
+            />
+          </div>
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">AWS Service</Label>
+          <Select value={config.awsService} onValueChange={(v) => onChange({ awsService: v })}>
+            <SelectTrigger className="h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="es">es (Managed OpenSearch)</SelectItem>
+              <SelectItem value="aoss">aoss (Serverless)</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+    )}
+
+    <div className="flex items-center justify-between">
+      <div className="space-y-0.5">
+        <Label htmlFor={`${prefix}-tls-skip`} className="text-xs">Skip TLS Verification</Label>
+        <p className="text-xs text-muted-foreground">For self-signed certificates</p>
+      </div>
+      <Switch
+        id={`${prefix}-tls-skip`}
+        checked={config.tlsSkipVerify}
+        onCheckedChange={(checked) => onChange({ tlsSkipVerify: checked })}
+      />
+    </div>
+  </div>
+);
 
 export const SettingsPage: React.FC = () => {
 
@@ -769,59 +946,443 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
+  /** Endpoint form (shared between add and edit) */
+  const renderEndpointForm = (onSave: () => void, saveLabel: string) => (
+    <div className="p-4 border rounded-lg bg-muted/20 space-y-3">
+      <div className="grid grid-cols-2 gap-3">
+        <div className="space-y-1.5">
+          <Label htmlFor="new-endpoint-name" className="text-xs">Name</Label>
+          <Input
+            id="new-endpoint-name"
+            placeholder="My Agent"
+            value={newEndpointName}
+            onChange={(e) => setNewEndpointName(e.target.value)}
+          />
+        </div>
+        <div className="space-y-1.5">
+          <Label className="text-xs">Connector</Label>
+          <Select value={newConnectorType} onValueChange={(v) => setNewConnectorType(v as ConnectorProtocol)}>
+            <SelectTrigger className="h-9 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="agui-streaming">agui-streaming (default)</SelectItem>
+              <SelectItem value="rest">rest</SelectItem>
+              <SelectItem value="litellm">litellm</SelectItem>
+              <SelectItem value="subprocess">subprocess</SelectItem>
+              <SelectItem value="claude-code">claude-code</SelectItem>
+              <SelectItem value="mock">mock</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      </div>
+      <div className="space-y-1.5">
+        <Label htmlFor="new-endpoint-url" className="text-xs">Endpoint URL</Label>
+        <Input
+          id="new-endpoint-url"
+          placeholder="http://localhost:3000/api/agent"
+          value={newEndpointUrl}
+          onChange={(e) => {
+            setNewEndpointUrl(e.target.value);
+            setEndpointUrlError(null);
+          }}
+          className={endpointUrlError ? 'border-red-500' : ''}
+        />
+        {endpointUrlError && (
+          <p className="text-xs text-red-500">{endpointUrlError}</p>
+        )}
+      </div>
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <Switch
+            id="new-use-traces"
+            checked={newUseTraces}
+            onCheckedChange={setNewUseTraces}
+          />
+          <Label htmlFor="new-use-traces" className="text-xs">Enable Traces</Label>
+        </div>
+        <div className="flex gap-2">
+          <Button size="sm" onClick={onSave} disabled={!newEndpointName.trim() || !newEndpointUrl.trim()}>
+            <Save size={14} className="mr-1" />
+            {saveLabel}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={cancelEdit}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+
+  /** Action buttons for data source config (test/save/clear) */
+  const renderDataSourceActions = (
+    endpoint: string,
+    testStatus: string,
+    onTest: () => void,
+    onSave: () => void,
+    onClear: () => void,
+  ) => (
+    <div className="flex flex-wrap gap-2">
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onTest}
+        disabled={!endpoint || testStatus === 'testing'}
+      >
+        {testStatus === 'testing' ? (
+          <><Loader2 size={14} className="mr-1 animate-spin" />Testing...</>
+        ) : (
+          'Test Connection'
+        )}
+      </Button>
+      <Button
+        size="sm"
+        onClick={onSave}
+        disabled={!endpoint}
+        className="bg-opensearch-blue hover:bg-blue-600"
+      >
+        <Save size={14} className="mr-1" />
+        Save
+      </Button>
+      <Button
+        variant="outline"
+        size="sm"
+        onClick={onClear}
+        disabled={!endpoint}
+      >
+        <Trash2 size={14} className="mr-1" />
+        Clear
+      </Button>
+    </div>
+  );
+
   return (
     <>
-    <div className="p-6 max-w-4xl mx-auto" data-testid="settings-page">
-      <h2 className="text-2xl font-bold mb-6" data-testid="settings-title">Settings</h2>
+    <div className="p-6 max-w-5xl mx-auto" data-testid="settings-page">
+      <h2 className="text-2xl font-bold mb-8" data-testid="settings-title">Settings</h2>
 
-      {/* Preferences */}
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Palette size={18} />
-            Preferences
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="space-y-3">
-            <Label className="text-sm font-medium">Theme</Label>
-            <div className="flex gap-3">
-              <Button
-                variant={currentTheme === 'light' ? 'default' : 'outline'}
-                onClick={() => handleThemeChange('light')}
-                className="flex-1"
+      {/* ── Agent Endpoints ── */}
+      <Section icon={<Server size={16} />} title="Agent Endpoints">
+        {/* Built-in */}
+        <div className="space-y-2 mb-4">
+          <Label className="text-xs text-muted-foreground uppercase tracking-wide">Built-in</Label>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            {DEFAULT_CONFIG.agents.filter(a => !a.isCustom).map((agent) => (
+              <div
+                key={agent.key}
+                className="p-3 border rounded-lg bg-muted/5"
               >
-                Light Mode
-              </Button>
-              <Button
-                variant={currentTheme === 'dark' ? 'default' : 'outline'}
-                onClick={() => handleThemeChange('dark')}
-                className="flex-1"
-              >
-                Dark Mode
-              </Button>
-            </div>
-            <p className="text-xs text-muted-foreground">
-              Choose your preferred color theme for the interface
-            </p>
+                <div className="font-medium text-sm flex items-center gap-2">
+                  {agent.name}
+                  <span className="text-xs px-1.5 py-0.5 rounded bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50">
+                    built-in
+                  </span>
+                </div>
+                <div className="text-xs text-muted-foreground truncate flex items-center gap-1 mt-1">
+                  <ExternalLink size={10} />
+                  {agent.endpoint || <span className="italic">Not configured</span>}
+                </div>
+                {agent.description && (
+                  <div className="text-xs text-muted-foreground mt-1">{agent.description}</div>
+                )}
+              </div>
+            ))}
           </div>
-        </CardContent>
-      </Card>
+        </div>
 
-      {/* Debug Settings */}
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle>Debug Settings</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
+        {/* Custom */}
+        <div className="border-t pt-4">
+          <div className="flex items-center justify-between mb-3">
+            <Label className="text-xs text-muted-foreground uppercase tracking-wide">Custom Endpoints</Label>
+            {!isAddingEndpoint && (
+              <Button variant="outline" size="sm" onClick={() => setIsAddingEndpoint(true)}>
+                <Plus size={14} className="mr-1" />
+                Add
+              </Button>
+            )}
+          </div>
+
+          {isAddingEndpoint && renderEndpointForm(handleAddEndpoint, 'Save')}
+
+          {customEndpoints.length > 0 ? (
+            <div className="space-y-2">
+              {customEndpoints.map((ep) => (
+                <div
+                  key={ep.id}
+                  className="p-3 border rounded-lg bg-muted/10 flex items-start justify-between gap-3"
+                >
+                  {editingEndpointId === ep.id ? (
+                    <div className="flex-1">
+                      {renderEndpointForm(() => handleUpdateEndpoint(ep.id), 'Save')}
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-sm">{ep.name}</div>
+                        <div className="text-xs text-muted-foreground truncate flex items-center gap-1 mt-1">
+                          <ExternalLink size={10} />
+                          {ep.endpoint}
+                        </div>
+                        <div className="text-xs text-muted-foreground mt-1 flex items-center gap-2">
+                          <span>{ep.connectorType ?? 'agui-streaming'}</span>
+                          {ep.useTraces && <span className="px-1.5 py-0.5 rounded bg-green-100 text-green-900 border border-green-300 dark:bg-green-950/50 dark:text-green-300 dark:border-green-700/50">traces</span>}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <Button variant="ghost" size="sm" onClick={() => startEditEndpoint(ep)}>
+                          <Edit2 size={14} />
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleDeleteEndpoint(ep.id)}
+                          className="text-red-400 hover:text-red-300"
+                          aria-label={`Remove ${ep.name}`}
+                        >
+                          <Trash2 size={14} />
+                        </Button>
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          ) : (
+            !isAddingEndpoint && (
+              <p className="text-center py-4 text-muted-foreground text-sm">
+                No custom endpoints configured.
+              </p>
+            )
+          )}
+        </div>
+      </Section>
+
+      {/* ── Evaluation Storage ── */}
+      <Section
+        icon={<Database size={16} />}
+        title="Evaluation Storage"
+        subtitle="test cases, benchmarks, runs"
+      >
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="storage-endpoint" className="text-xs">Endpoint URL</Label>
+            <Input
+              id="storage-endpoint"
+              placeholder="https://opensearch.example.com:9200"
+              value={storageConfig.endpoint}
+              onChange={(e) => setStorageConfigState({ ...storageConfig, endpoint: e.target.value })}
+            />
+          </div>
+
+          <AuthFields
+            prefix="storage"
+            config={storageConfig}
+            showPassword={showStoragePassword}
+            onTogglePassword={() => setShowStoragePassword(!showStoragePassword)}
+            onChange={(patch) => setStorageConfigState(prev => ({ ...prev, ...patch }))}
+            passwordSentinel={PASSWORD_STORED_SENTINEL}
+          />
+
+          {configStatus?.storage && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">Source:</span>
+              <ConfigSourceBadge source={configStatus.storage.source} />
+            </div>
+          )}
+
+          <TestStatus status={storageTestStatus} message={storageTestMessage} />
+
+          {renderDataSourceActions(
+            storageConfig.endpoint,
+            storageTestStatus,
+            handleTestStorageConnection,
+            handleSaveStorageConfig,
+            handleClearStorageConfig,
+          )}
+
+          {/* Connection Status & Stats */}
+          {storageStats && (
+            <div className="border-t pt-4 mt-2">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2">
+                  {storageStats.isConnected ? (
+                    <>
+                      <CheckCircle2 size={14} className="text-opensearch-blue" />
+                      <span className="text-sm text-opensearch-blue">Connected</span>
+                    </>
+                  ) : (
+                    <>
+                      <XCircle size={14} className="text-red-400" />
+                      <span className="text-sm text-red-400">Not connected</span>
+                    </>
+                  )}
+                </div>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => loadStorageStats()}
+                  disabled={isLoading}
+                  className="text-xs"
+                >
+                  <RefreshCw size={12} className={`mr-1 ${isLoading ? 'animate-spin' : ''}`} />
+                  Refresh
+                </Button>
+              </div>
+              {storageStats.isConnected && (
+                <div className="grid grid-cols-4 gap-3 text-sm">
+                  {[
+                    ['Test Cases', storageStats.testCases],
+                    ['Benchmarks', storageStats.experiments],
+                    ['Runs', storageStats.runs],
+                    ['Analytics', storageStats.analytics],
+                  ].map(([label, count]) => (
+                    <div key={label as string} className="p-2 bg-muted/30 rounded-lg text-center">
+                      <div className="text-muted-foreground text-xs mb-0.5">{label}</div>
+                      <div className="text-lg font-semibold">{count as number}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {isLoading && (
+            <p className="text-sm text-muted-foreground">Loading storage stats...</p>
+          )}
+
+          {!storageStats?.isConnected && !isLoading && (
+            <Alert className="bg-amber-900/20 border-amber-700/30">
+              <AlertTriangle className="h-4 w-4 text-amber-400" />
+              <AlertDescription className="text-amber-400">
+                Cannot connect to OpenSearch backend. Make sure the server is running.
+              </AlertDescription>
+            </Alert>
+          )}
+        </div>
+      </Section>
+
+      {/* ── Observability Data Source ── */}
+      <Section
+        icon={<Server size={16} />}
+        title="Observability Data Source"
+        subtitle="OTEL traces, logs, metrics"
+      >
+        <div className="space-y-4">
+          <div className="space-y-1.5">
+            <Label htmlFor="obs-endpoint" className="text-xs">Endpoint URL</Label>
+            <Input
+              id="obs-endpoint"
+              placeholder="https://opensearch.example.com:9200"
+              value={observabilityConfig.endpoint}
+              onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, endpoint: e.target.value })}
+            />
+          </div>
+
+          <AuthFields
+            prefix="obs"
+            config={observabilityConfig}
+            showPassword={showObservabilityPassword}
+            onTogglePassword={() => setShowObservabilityPassword(!showObservabilityPassword)}
+            onChange={(patch) => setObservabilityConfigState(prev => ({ ...prev, ...patch }))}
+            passwordSentinel={PASSWORD_STORED_SENTINEL}
+          />
+
+          {/* Advanced: Index Patterns */}
+          <div className="border-t pt-3">
+            <button
+              type="button"
+              onClick={() => setShowAdvancedIndexes(!showAdvancedIndexes)}
+              className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+            >
+              {showAdvancedIndexes ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              Advanced: Index Patterns
+            </button>
+            {showAdvancedIndexes && (
+              <div className="mt-3 space-y-3 pl-4 border-l-2 border-muted">
+                <div className="space-y-1.5">
+                  <Label htmlFor="obs-traces-index" className="text-xs">Traces Index</Label>
+                  <Input
+                    id="obs-traces-index"
+                    placeholder="otel-v1-apm-span-* (default)"
+                    value={observabilityConfig.tracesIndex}
+                    onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, tracesIndex: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="obs-logs-index" className="text-xs">Logs Index</Label>
+                  <Input
+                    id="obs-logs-index"
+                    placeholder="ml-commons-logs-* (default)"
+                    value={observabilityConfig.logsIndex}
+                    onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, logsIndex: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1.5">
+                  <Label htmlFor="obs-metrics-index" className="text-xs">Metrics Index</Label>
+                  <Input
+                    id="obs-metrics-index"
+                    placeholder="otel-v1-apm-service-map* (default)"
+                    value={observabilityConfig.metricsIndex}
+                    onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, metricsIndex: e.target.value })}
+                  />
+                </div>
+              </div>
+            )}
+          </div>
+
+          {configStatus?.observability && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">Source:</span>
+              <ConfigSourceBadge source={configStatus.observability.source} />
+            </div>
+          )}
+
+          <TestStatus status={observabilityTestStatus} message={observabilityTestMessage} />
+
+          {renderDataSourceActions(
+            observabilityConfig.endpoint,
+            observabilityTestStatus,
+            handleTestObservabilityConnection,
+            handleSaveObservabilityConfig,
+            handleClearObservabilityConfig,
+          )}
+        </div>
+      </Section>
+
+      {/* ── Preferences ── */}
+      <Section icon={<Palette size={16} />} title="Preferences">
+        <div className="flex items-center justify-between">
+          <div className="space-y-0.5">
+            <Label className="text-sm font-medium">Theme</Label>
+            <p className="text-xs text-muted-foreground">Color theme for the interface</p>
+          </div>
+          <div className="flex gap-2">
+            <Button
+              variant={currentTheme === 'light' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => handleThemeChange('light')}
+            >
+              Light
+            </Button>
+            <Button
+              variant={currentTheme === 'dark' ? 'default' : 'outline'}
+              size="sm"
+              onClick={() => handleThemeChange('dark')}
+            >
+              Dark
+            </Button>
+          </div>
+        </div>
+      </Section>
+
+      {/* ── Debug ── */}
+      <Section icon={<Bug size={16} />} title="Debug" last={!hasLocalData}>
+        <div className="space-y-3">
           <div className="flex items-center justify-between">
-            <div className="space-y-1">
-              <Label htmlFor="debug-mode" className="text-sm font-medium">
-                Debug Mode
-              </Label>
+            <div className="space-y-0.5">
+              <Label htmlFor="debug-mode" className="text-sm font-medium">Debug Mode</Label>
               <p className="text-xs text-muted-foreground">
-                Enable verbose logging (console.debug) AND real-time performance metrics overlay.
-                Useful for debugging evaluation flow, SSE events, and performance issues.
+                Verbose logging and real-time performance metrics overlay
               </p>
             </div>
             <Switch
@@ -845,11 +1406,11 @@ export const SettingsPage: React.FC = () => {
                   <div className="text-xs opacity-80">
                     <strong>Note:</strong> Browser debug logs use console.debug() which may be hidden by default.
                     <br />
-                    • <strong>Chrome:</strong> Console settings (⚙️) → Check "Verbose"
+                    &bull; <strong>Chrome:</strong> Console settings &gt; Check &quot;Verbose&quot;
                     <br />
-                    • <strong>Firefox:</strong> Console settings → Enable all log levels
+                    &bull; <strong>Firefox:</strong> Console settings &gt; Enable all log levels
                     <br />
-                    • <strong>Safari:</strong> Develop → Show JavaScript Console → All levels
+                    &bull; <strong>Safari:</strong> Develop &gt; Show JavaScript Console &gt; All levels
                   </div>
 
                   {/* Performance Monitoring Info */}
@@ -857,7 +1418,7 @@ export const SettingsPage: React.FC = () => {
                     <strong>Performance Monitoring:</strong> A metrics overlay will appear in the bottom-right corner on instrumented pages (Agent Traces, etc.).
                   </div>
                   <div className="text-xs opacity-80">
-                    <strong>Color coding:</strong> 🟢 Fast (&lt; 50ms) · 🟡 OK (&lt; 200ms) · 🔴 Slow (&gt; 200ms)
+                    <strong>Color coding:</strong> green: Fast (&lt; 50ms) · yellow: OK (&lt; 200ms) · red: Slow (&gt; 200ms)
                     <br />
                     <strong>Tracked:</strong> API calls, tree processing, render performance
                   </div>
@@ -865,906 +1426,92 @@ export const SettingsPage: React.FC = () => {
               </AlertDescription>
             </Alert>
           )}
-        </CardContent>
-      </Card>
+        </div>
+      </Section>
 
-      {/* Agent Endpoints */}
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Server size={18} />
-            Agent Endpoints
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          {/* Built-in Agents */}
-          <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground uppercase tracking-wide">Built-in Agents</Label>
+      {/* ── Data Migration (conditional) ── */}
+      {hasLocalData && (
+        <Section icon={<Upload size={16} />} title="Data Migration" last>
+          <p className="text-sm text-muted-foreground mb-4">
+            Found data in browser localStorage. Migrate to OpenSearch for persistent storage.
+          </p>
 
-            {DEFAULT_CONFIG.agents.filter(a => !a.isCustom).map((agent) => {
-
-              return (
-                <div
-                  key={agent.key}
-                  className="p-3 border rounded-lg bg-muted/5 flex items-start justify-between gap-3"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium text-sm flex items-center gap-2">
-                      {agent.name}
-                      <span className="text-xs px-2 py-1 rounded inline-block bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50">
-                        built-in
-                      </span>
-                    </div>
-                    <div className="text-xs text-muted-foreground truncate flex items-center gap-1 mt-1">
-                      <ExternalLink size={10} />
-                      {agent.endpoint || <span className="italic">Not configured</span>}
-                    </div>
-                    {agent.description && (
-                      <div className="text-xs text-muted-foreground mt-1">{agent.description}</div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-
-          {/* Custom Endpoints Section */}
-          <div className="border-t pt-4 mt-4">
-            <div className="flex items-center justify-between mb-3">
-              <Label className="text-xs text-muted-foreground uppercase tracking-wide">Custom Endpoints</Label>
-              {!isAddingEndpoint && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsAddingEndpoint(true)}
-                >
-                  <Plus size={14} className="mr-1" />
-                  Add
-                </Button>
-              )}
-            </div>
-            <p className="text-xs text-muted-foreground mb-3">
-              Add custom agent endpoints. These are persisted to agent-health.config.json in your project directory.
-            </p>
-          </div>
-
-          {/* Add new endpoint form */}
-          {isAddingEndpoint && (
-            <div className="p-4 border rounded-lg bg-muted/20 space-y-3">
-              <div className="space-y-1.5">
-                <Label htmlFor="new-endpoint-name" className="text-xs">Name</Label>
-                <Input
-                  id="new-endpoint-name"
-                  placeholder="My Agent"
-                  value={newEndpointName}
-                  onChange={(e) => setNewEndpointName(e.target.value)}
-                />
-              </div>
-              <div className="space-y-1.5">
-                <Label htmlFor="new-endpoint-url" className="text-xs">Endpoint URL</Label>
-                <Input
-                  id="new-endpoint-url"
-                  placeholder="http://localhost:3000/api/agent"
-                  value={newEndpointUrl}
-                  onChange={(e) => {
-                    setNewEndpointUrl(e.target.value);
-                    setEndpointUrlError(null);
-                  }}
-                  className={endpointUrlError ? 'border-red-500' : ''}
-                />
-                {endpointUrlError && (
-                  <p className="text-xs text-red-500">{endpointUrlError}</p>
-                )}
-              </div>
-              <div className="space-y-1.5">
-                <Label className="text-xs">Connector Type</Label>
-                <Select value={newConnectorType} onValueChange={(v) => setNewConnectorType(v as ConnectorProtocol)}>
-                  <SelectTrigger className="h-8 text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="agui-streaming">agui-streaming (default)</SelectItem>
-                    <SelectItem value="rest">rest</SelectItem>
-                    <SelectItem value="litellm">litellm</SelectItem>
-                    <SelectItem value="subprocess">subprocess</SelectItem>
-                    <SelectItem value="claude-code">claude-code</SelectItem>
-                    <SelectItem value="mock">mock</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex items-center gap-2">
-                <Switch
-                  id="new-use-traces"
-                  checked={newUseTraces}
-                  onCheckedChange={setNewUseTraces}
-                />
-                <Label htmlFor="new-use-traces" className="text-xs">Enable Traces</Label>
-              </div>
-              <div className="flex gap-2">
-                <Button size="sm" onClick={handleAddEndpoint} disabled={!newEndpointName.trim() || !newEndpointUrl.trim()}>
-                  <Save size={14} className="mr-1" />
-                  Save
-                </Button>
-                <Button size="sm" variant="ghost" onClick={cancelEdit}>
-                  <X size={14} className="mr-1" />
-                  Cancel
-                </Button>
-              </div>
-            </div>
-          )}
-
-          {/* List of custom endpoints */}
-          {customEndpoints.length > 0 ? (
-            <div className="space-y-2">
-              {customEndpoints.map((ep) => (
-                <div
-                  key={ep.id}
-                  className="p-3 border rounded-lg bg-muted/10 flex items-start justify-between gap-3"
-                >
-                  {editingEndpointId === ep.id ? (
-                    <div className="flex-1 space-y-3">
-                      <div className="space-y-1.5">
-                        <Label className="text-xs">Name</Label>
-                        <Input
-                          value={newEndpointName}
-                          onChange={(e) => setNewEndpointName(e.target.value)}
-                        />
-                      </div>
-                      <div className="space-y-1.5">
-                        <Label className="text-xs">Endpoint URL</Label>
-                        <Input
-                          value={newEndpointUrl}
-                          onChange={(e) => {
-                            setNewEndpointUrl(e.target.value);
-                            setEndpointUrlError(null);
-                          }}
-                          className={endpointUrlError ? 'border-red-500' : ''}
-                        />
-                        {endpointUrlError && (
-                          <p className="text-xs text-red-500">{endpointUrlError}</p>
-                        )}
-                      </div>
-                      <div className="space-y-1.5">
-                        <Label className="text-xs">Connector Type</Label>
-                        <Select value={newConnectorType} onValueChange={(v) => setNewConnectorType(v as ConnectorProtocol)}>
-                          <SelectTrigger className="h-8 text-xs">
-                            <SelectValue />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="agui-streaming">agui-streaming (default)</SelectItem>
-                            <SelectItem value="rest">rest</SelectItem>
-                            <SelectItem value="litellm">litellm</SelectItem>
-                            <SelectItem value="subprocess">subprocess</SelectItem>
-                            <SelectItem value="claude-code">claude-code</SelectItem>
-                            <SelectItem value="mock">mock</SelectItem>
-                          </SelectContent>
-                        </Select>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <Switch
-                          id={`edit-use-traces-${ep.id}`}
-                          checked={newUseTraces}
-                          onCheckedChange={setNewUseTraces}
-                        />
-                        <Label htmlFor={`edit-use-traces-${ep.id}`} className="text-xs">Enable Traces</Label>
-                      </div>
-                      <div className="flex gap-2">
-                        <Button size="sm" onClick={() => handleUpdateEndpoint(ep.id)}>
-                          <Save size={14} className="mr-1" />
-                          Save
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={cancelEdit}>
-                          <X size={14} className="mr-1" />
-                          Cancel
-                        </Button>
-                      </div>
-                    </div>
-                  ) : (
-                    <>
-                      <div className="flex-1 min-w-0">
-                        <div className="font-medium text-sm">{ep.name}</div>
-                        <div className="text-xs text-muted-foreground truncate flex items-center gap-1 mt-1">
-                          <ExternalLink size={10} />
-                          {ep.endpoint}
-                        </div>
-                        <div className="text-xs text-muted-foreground mt-1 flex items-center gap-2">
-                          <span>{ep.connectorType ?? 'agui-streaming'}</span>
-                          {ep.useTraces && <span className="px-1.5 py-0.5 rounded bg-green-100 text-green-900 border border-green-300 dark:bg-green-950/50 dark:text-green-300 dark:border-green-700/50">traces</span>}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => startEditEndpoint(ep)}
-                        >
-                          <Edit2 size={14} />
-                        </Button>
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleDeleteEndpoint(ep.id)}
-                          className="text-red-400 hover:text-red-300"
-                          aria-label={`Remove ${ep.name}`}
-                        >
-                          <Trash2 size={14} />
-                        </Button>
-                      </div>
-                    </>
-                  )}
+          {localCounts && (
+            <div className="grid grid-cols-3 gap-3 text-sm mb-4">
+              {[
+                ['Test Cases', localCounts.testCases],
+                ['Experiments', localCounts.experiments],
+                ['Reports', localCounts.reports],
+              ].map(([label, count]) => (
+                <div key={label as string} className="p-2 bg-muted/30 rounded-lg text-center">
+                  <div className="text-muted-foreground text-xs mb-0.5">{label}</div>
+                  <div className="text-lg font-semibold">{count as number}</div>
                 </div>
               ))}
             </div>
-          ) : (
-            !isAddingEndpoint && (
-              <div className="text-center py-6 text-muted-foreground text-sm">
-                No custom endpoints configured.
-                <br />
-                <span className="text-xs">Click "Add Endpoint" to configure a new agent endpoint.</span>
-              </div>
-            )
           )}
 
-          <Alert className="bg-blue-900/10 border-blue-700/20">
-            <AlertDescription className="text-xs text-blue-300">
-              Custom endpoints will appear in the agent selector during evaluations.
-              For authentication, use environment variables in the server configuration.
-            </AlertDescription>
-          </Alert>
-        </CardContent>
-      </Card>
-
-      {/* Evaluation Storage Configuration */}
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Database size={18} />
-            Evaluation Storage
-          </CardTitle>
-          <p className="text-sm text-muted-foreground">
-            Test cases, experiments, and run results
-          </p>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-xs text-muted-foreground">
-            Configure the OpenSearch cluster for storing evaluation data. Credentials are stored securely on the server (in agent-health.config.json), not in your browser.
-          </p>
-
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="storage-endpoint" className="text-xs">Endpoint URL</Label>
-              <Input
-                id="storage-endpoint"
-                placeholder="https://opensearch.example.com:9200"
-                value={storageConfig.endpoint}
-                onChange={(e) => setStorageConfigState({ ...storageConfig, endpoint: e.target.value })}
-              />
-            </div>
-
-            {/* Authentication Type */}
-            <div className="space-y-1.5">
-              <Label className="text-xs">Authentication Type</Label>
-              <Select
-                value={storageConfig.authType}
-                onValueChange={(v) => setStorageConfigState({ ...storageConfig, authType: v as ClusterAuthType })}
-              >
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No Auth</SelectItem>
-                  <SelectItem value="basic">Basic Auth (username/password)</SelectItem>
-                  <SelectItem value="sigv4">AWS SigV4</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {storageConfig.authType === 'none' ? (
-              /* No Auth - no credentials needed */
-              <div className="space-y-3 p-3 border rounded-lg bg-muted/10">
-                <p className="text-xs text-muted-foreground">
-                  No authentication — connects directly without credentials. Suitable for local development clusters.
-                </p>
-              </div>
-            ) : storageConfig.authType === 'basic' ? (
-              /* Basic Auth fields */
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label htmlFor="storage-username" className="text-xs">Username (optional)</Label>
-                  <Input
-                    id="storage-username"
-                    placeholder="Leave blank to use env var"
-                    value={storageConfig.username}
-                    onChange={(e) => setStorageConfigState({ ...storageConfig, username: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="storage-password" className="text-xs">Password (optional)</Label>
-                  <div className="relative">
-                    <Input
-                      id="storage-password"
-                      type={showStoragePassword ? 'text' : 'password'}
-                      placeholder={storageConfig.password === PASSWORD_STORED_SENTINEL ? '••••••••' : 'Leave blank to use env var'}
-                      value={storageConfig.password === PASSWORD_STORED_SENTINEL ? '' : storageConfig.password}
-                      onChange={(e) => setStorageConfigState({ ...storageConfig, password: e.target.value })}
-                      className="pr-10"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowStoragePassword(!showStoragePassword)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    >
-                      {showStoragePassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
-                  </div>
-                  {storageConfig.password === PASSWORD_STORED_SENTINEL && (
-                    <p className="text-xs text-muted-foreground">Password stored — leave blank to keep it, or type a new one to replace it</p>
-                  )}
-                </div>
-              </div>
-            ) : (
-              /* AWS SigV4 fields */
-              <div className="space-y-3 p-3 border rounded-lg bg-muted/10">
-                <p className="text-xs text-muted-foreground">
-                  Uses the AWS credential chain (env vars, ~/.aws/credentials, IAM role, etc.)
-                </p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="storage-aws-region" className="text-xs">AWS Region (required)</Label>
-                    <Input
-                      id="storage-aws-region"
-                      placeholder="us-east-1"
-                      value={storageConfig.awsRegion}
-                      onChange={(e) => setStorageConfigState({ ...storageConfig, awsRegion: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="storage-aws-profile" className="text-xs">AWS Profile (optional)</Label>
-                    <Input
-                      id="storage-aws-profile"
-                      placeholder="default"
-                      value={storageConfig.awsProfile}
-                      onChange={(e) => setStorageConfigState({ ...storageConfig, awsProfile: e.target.value })}
-                    />
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">AWS Service</Label>
-                  <Select
-                    value={storageConfig.awsService}
-                    onValueChange={(v) => setStorageConfigState({ ...storageConfig, awsService: v as 'es' | 'aoss' })}
-                  >
-                    <SelectTrigger className="h-8 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="es">es (Managed OpenSearch)</SelectItem>
-                      <SelectItem value="aoss">aoss (Serverless)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            )}
-
-            {/* TLS Verification Toggle */}
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label htmlFor="storage-tls-skip" className="text-xs">Skip TLS Verification</Label>
-                <p className="text-xs text-muted-foreground">Enable for self-signed certificates</p>
-              </div>
-              <Switch
-                id="storage-tls-skip"
-                checked={storageConfig.tlsSkipVerify}
-                onCheckedChange={(checked) => setStorageConfigState({ ...storageConfig, tlsSkipVerify: checked })}
-              />
-            </div>
-          </div>
-
-          {/* Config source indicator */}
-          {configStatus?.storage && (
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-muted-foreground">Currently configured via:</span>
-              <span className={`px-2 py-0.5 rounded ${
-                configStatus.storage.source === 'file' 
-                  ? 'bg-green-100 text-green-900 border border-green-300 dark:bg-green-950/50 dark:text-green-300 dark:border-green-700/50'
-                  : configStatus.storage.source === 'environment' 
-                  ? 'bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50'
-                  : 'bg-gray-100 text-gray-900 border border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700/50'
-              }`}>
-                {configStatus.storage.source === 'file' ? 'Config file (agent-health.config.json)' :
-                 configStatus.storage.source === 'environment' ? 'Environment variables' :
-                 'Not configured'}
-              </span>
-            </div>
+          {migrationStatus && (
+            <Alert className={`mb-4 ${migrationStatus.includes('failed') ? 'bg-red-900/20 border-red-700/30' : 'bg-blue-900/20 border-blue-700/30'}`}>
+              {isMigrating && <Loader2 className="h-4 w-4 text-blue-400 animate-spin" />}
+              <AlertDescription className={migrationStatus.includes('failed') ? 'text-red-400' : 'text-blue-400'}>
+                {migrationStatus}
+              </AlertDescription>
+            </Alert>
           )}
 
-          {/* Test connection status */}
-          {storageTestMessage && (
-            <div className={`flex items-center gap-2 text-sm ${
-              storageTestStatus === 'success' ? 'text-green-400' :
-              storageTestStatus === 'error' ? 'text-red-400' :
-              storageTestStatus === 'testing' ? 'text-blue-400' : 'text-muted-foreground'
-            }`}>
-              {storageTestStatus === 'testing' && <Loader2 size={14} className="animate-spin" />}
-              {storageTestStatus === 'success' && <CheckCircle2 size={14} />}
-              {storageTestStatus === 'error' && <XCircle size={14} />}
-              {storageTestMessage}
-            </div>
-          )}
-
-          <div className="flex flex-wrap gap-2 pt-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleTestStorageConnection}
-              disabled={!storageConfig.endpoint || storageTestStatus === 'testing'}
-            >
-              {storageTestStatus === 'testing' ? (
-                <>
-                  <Loader2 size={14} className="mr-1 animate-spin" />
-                  Testing...
-                </>
-              ) : (
-                'Test Connection'
+          {migrationResult && (
+            <div className="p-3 bg-muted/30 rounded-lg text-sm space-y-1 mb-4">
+              <div className="font-medium mb-2">Migration Results:</div>
+              <div>Test Cases: {migrationResult.testCases.migrated} migrated, {migrationResult.testCases.skipped} skipped</div>
+              <div>Experiments: {migrationResult.experiments.migrated} migrated, {migrationResult.experiments.skipped} skipped</div>
+              <div>Reports: {migrationResult.reports.migrated} migrated, {migrationResult.reports.skipped} skipped</div>
+              {(migrationResult.testCases.errors.length > 0 ||
+                migrationResult.experiments.errors.length > 0 ||
+                migrationResult.reports.errors.length > 0) && (
+                <div className="text-amber-400 mt-2">
+                  {migrationResult.testCases.errors.length + migrationResult.experiments.errors.length + migrationResult.reports.errors.length} errors occurred
+                </div>
               )}
-            </Button>
+            </div>
+          )}
+
+          <div className="flex flex-wrap gap-2">
             <Button
+              variant="default"
               size="sm"
-              onClick={handleSaveStorageConfig}
-              disabled={!storageConfig.endpoint}
+              onClick={handleMigrate}
+              disabled={isMigrating || !storageStats?.isConnected}
               className="bg-opensearch-blue hover:bg-blue-600"
             >
-              <Save size={14} className="mr-1" />
-              Save
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleClearStorageConfig}
-              disabled={!storageConfig.endpoint}
-            >
-              <Trash2 size={14} className="mr-1" />
-              Clear
-            </Button>
-          </div>
-
-          {/* Connection Status and Stats */}
-          <div className="border-t pt-4 mt-4">
-            {storageStats && (
-              <div className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-2">
-                    {storageStats.isConnected ? (
-                      <>
-                        <CheckCircle2 size={16} className="text-opensearch-blue" />
-                        <span className="text-sm text-opensearch-blue">Connected to OpenSearch</span>
-                      </>
-                    ) : (
-                      <>
-                        <XCircle size={16} className="text-red-400" />
-                        <span className="text-sm text-red-400">Not connected - start backend with `npm run dev:server`</span>
-                      </>
-                    )}
-                  </div>
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => loadStorageStats()}
-                    disabled={isLoading}
-                    className="text-xs"
-                  >
-                    <RefreshCw size={12} className={`mr-1 ${isLoading ? 'animate-spin' : ''}`} />
-                    Refresh
-                  </Button>
-                </div>
-
-                {/* Index Stats */}
-                {storageStats.isConnected && (
-                  <div className="grid grid-cols-2 gap-3 text-sm">
-                    <div className="p-3 bg-muted/30 rounded-lg">
-                      <div className="text-muted-foreground text-xs uppercase mb-1">Test Cases</div>
-                      <div className="text-lg font-semibold">{storageStats.testCases}</div>
-                    </div>
-                    <div className="p-3 bg-muted/30 rounded-lg">
-                      <div className="text-muted-foreground text-xs uppercase mb-1">Experiments</div>
-                      <div className="text-lg font-semibold">{storageStats.experiments}</div>
-                    </div>
-                    <div className="p-3 bg-muted/30 rounded-lg">
-                      <div className="text-muted-foreground text-xs uppercase mb-1">Runs</div>
-                      <div className="text-lg font-semibold">{storageStats.runs}</div>
-                    </div>
-                    <div className="p-3 bg-muted/30 rounded-lg">
-                      <div className="text-muted-foreground text-xs uppercase mb-1">Analytics Records</div>
-                      <div className="text-lg font-semibold">{storageStats.analytics}</div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            )}
-
-            {isLoading && (
-              <p className="text-sm text-muted-foreground">Loading storage stats...</p>
-            )}
-
-            {!storageStats?.isConnected && !isLoading && (
-              <Alert className="bg-amber-900/20 border-amber-700/30">
-                <AlertTriangle className="h-4 w-4 text-amber-400" />
-                <AlertDescription className="text-amber-400">
-                  Cannot connect to OpenSearch backend. Make sure the server is running.
-                </AlertDescription>
-              </Alert>
-            )}
-          </div>
-        </CardContent>
-      </Card>
-
-      {/* Observability Data Source Configuration */}
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2">
-            <Server size={18} />
-            Observability Data Source
-          </CardTitle>
-          <p className="text-sm text-muted-foreground">
-            OTEL instrumentation for traces, logs, and metrics
-          </p>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-xs text-muted-foreground">
-            Configure the OpenSearch cluster for observability data. Credentials are stored securely on the server (in agent-health.config.json), not in your browser.
-          </p>
-
-          <div className="space-y-3">
-            <div className="space-y-1.5">
-              <Label htmlFor="obs-endpoint" className="text-xs">Endpoint URL</Label>
-              <Input
-                id="obs-endpoint"
-                placeholder="https://opensearch.example.com:9200"
-                value={observabilityConfig.endpoint}
-                onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, endpoint: e.target.value })}
-              />
-            </div>
-
-            {/* Authentication Type */}
-            <div className="space-y-1.5">
-              <Label className="text-xs">Authentication Type</Label>
-              <Select
-                value={observabilityConfig.authType}
-                onValueChange={(v) => setObservabilityConfigState({ ...observabilityConfig, authType: v as ClusterAuthType })}
-              >
-                <SelectTrigger className="h-8 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="none">No Auth</SelectItem>
-                  <SelectItem value="basic">Basic Auth (username/password)</SelectItem>
-                  <SelectItem value="sigv4">AWS SigV4</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            {observabilityConfig.authType === 'none' ? (
-              /* No Auth - no credentials needed */
-              <div className="space-y-3 p-3 border rounded-lg bg-muted/10">
-                <p className="text-xs text-muted-foreground">
-                  No authentication — connects directly without credentials. Suitable for local development clusters.
-                </p>
-              </div>
-            ) : observabilityConfig.authType === 'basic' ? (
-              /* Basic Auth fields */
-              <div className="grid grid-cols-2 gap-3">
-                <div className="space-y-1.5">
-                  <Label htmlFor="obs-username" className="text-xs">Username (optional)</Label>
-                  <Input
-                    id="obs-username"
-                    placeholder="Leave blank to use env var"
-                    value={observabilityConfig.username}
-                    onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, username: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-1.5">
-                  <Label htmlFor="obs-password" className="text-xs">Password (optional)</Label>
-                  <div className="relative">
-                    <Input
-                      id="obs-password"
-                      type={showObservabilityPassword ? 'text' : 'password'}
-                      placeholder={observabilityConfig.password === PASSWORD_STORED_SENTINEL ? '••••••••' : 'Leave blank to use env var'}
-                      value={observabilityConfig.password === PASSWORD_STORED_SENTINEL ? '' : observabilityConfig.password}
-                      onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, password: e.target.value })}
-                      className="pr-10"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowObservabilityPassword(!showObservabilityPassword)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    >
-                      {showObservabilityPassword ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
-                  </div>
-                  {observabilityConfig.password === PASSWORD_STORED_SENTINEL && (
-                    <p className="text-xs text-muted-foreground">Password stored — leave blank to keep it, or type a new one to replace it</p>
-                  )}
-                </div>
-              </div>
-            ) : (
-              /* AWS SigV4 fields */
-              <div className="space-y-3 p-3 border rounded-lg bg-muted/10">
-                <p className="text-xs text-muted-foreground">
-                  Uses the AWS credential chain (env vars, ~/.aws/credentials, IAM role, etc.)
-                </p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="obs-aws-region" className="text-xs">AWS Region (required)</Label>
-                    <Input
-                      id="obs-aws-region"
-                      placeholder="us-east-1"
-                      value={observabilityConfig.awsRegion}
-                      onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, awsRegion: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="obs-aws-profile" className="text-xs">AWS Profile (optional)</Label>
-                    <Input
-                      id="obs-aws-profile"
-                      placeholder="default"
-                      value={observabilityConfig.awsProfile}
-                      onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, awsProfile: e.target.value })}
-                    />
-                  </div>
-                </div>
-                <div className="space-y-1.5">
-                  <Label className="text-xs">AWS Service</Label>
-                  <Select
-                    value={observabilityConfig.awsService}
-                    onValueChange={(v) => setObservabilityConfigState({ ...observabilityConfig, awsService: v as 'es' | 'aoss' })}
-                  >
-                    <SelectTrigger className="h-8 text-xs">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="es">es (Managed OpenSearch)</SelectItem>
-                      <SelectItem value="aoss">aoss (Serverless)</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-              </div>
-            )}
-
-            {/* TLS Verification Toggle */}
-            <div className="flex items-center justify-between">
-              <div className="space-y-0.5">
-                <Label htmlFor="obs-tls-skip" className="text-xs">Skip TLS Verification</Label>
-                <p className="text-xs text-muted-foreground">Enable for self-signed certificates</p>
-              </div>
-              <Switch
-                id="obs-tls-skip"
-                checked={observabilityConfig.tlsSkipVerify}
-                onCheckedChange={(checked) => setObservabilityConfigState({ ...observabilityConfig, tlsSkipVerify: checked })}
-              />
-            </div>
-
-            {/* Advanced: Index Patterns */}
-            <div className="border-t pt-3 mt-3">
-              <button
-                type="button"
-                onClick={() => setShowAdvancedIndexes(!showAdvancedIndexes)}
-                className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
-              >
-                {showAdvancedIndexes ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-                Advanced: Index Patterns
-              </button>
-              {showAdvancedIndexes && (
-                <div className="mt-3 space-y-3 pl-4 border-l-2 border-muted">
-                  <div className="space-y-1.5">
-                    <Label htmlFor="obs-traces-index" className="text-xs">Traces Index</Label>
-                    <Input
-                      id="obs-traces-index"
-                      placeholder="otel-v1-apm-span-* (default)"
-                      value={observabilityConfig.tracesIndex}
-                      onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, tracesIndex: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="obs-logs-index" className="text-xs">Logs Index</Label>
-                    <Input
-                      id="obs-logs-index"
-                      placeholder="ml-commons-logs-* (default)"
-                      value={observabilityConfig.logsIndex}
-                      onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, logsIndex: e.target.value })}
-                    />
-                  </div>
-                  <div className="space-y-1.5">
-                    <Label htmlFor="obs-metrics-index" className="text-xs">Metrics Index</Label>
-                    <Input
-                      id="obs-metrics-index"
-                      placeholder="otel-v1-apm-service-map* (default)"
-                      value={observabilityConfig.metricsIndex}
-                      onChange={(e) => setObservabilityConfigState({ ...observabilityConfig, metricsIndex: e.target.value })}
-                    />
-                  </div>
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* Config source indicator */}
-          {configStatus?.observability && (
-            <div className="flex items-center gap-2 text-xs">
-              <span className="text-muted-foreground">Currently configured via:</span>
-              <span className={`px-2 py-0.5 rounded ${
-                configStatus.observability.source === 'file' 
-                  ? 'bg-green-100 text-green-900 border border-green-300 dark:bg-green-950/50 dark:text-green-300 dark:border-green-700/50'
-                  : configStatus.observability.source === 'environment' 
-                  ? 'bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50'
-                  : 'bg-gray-100 text-gray-900 border border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700/50'
-              }`}>
-                {configStatus.observability.source === 'file' ? 'Config file (agent-health.config.json)' :
-                 configStatus.observability.source === 'environment' ? 'Environment variables' :
-                 'Not configured'}
-              </span>
-            </div>
-          )}
-
-          {/* Test connection status */}
-          {observabilityTestMessage && (
-            <div className={`flex items-center gap-2 text-sm ${
-              observabilityTestStatus === 'success' ? 'text-green-400' :
-              observabilityTestStatus === 'error' ? 'text-red-400' :
-              observabilityTestStatus === 'testing' ? 'text-blue-400' : 'text-muted-foreground'
-            }`}>
-              {observabilityTestStatus === 'testing' && <Loader2 size={14} className="animate-spin" />}
-              {observabilityTestStatus === 'success' && <CheckCircle2 size={14} />}
-              {observabilityTestStatus === 'error' && <XCircle size={14} />}
-              {observabilityTestMessage}
-            </div>
-          )}
-
-          <div className="flex flex-wrap gap-2 pt-2">
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={handleTestObservabilityConnection}
-              disabled={!observabilityConfig.endpoint || observabilityTestStatus === 'testing'}
-            >
-              {observabilityTestStatus === 'testing' ? (
-                <>
-                  <Loader2 size={14} className="mr-1 animate-spin" />
-                  Testing...
-                </>
+              {isMigrating ? (
+                <><Loader2 size={14} className="mr-1 animate-spin" />Migrating...</>
               ) : (
-                'Test Connection'
+                <><Upload size={14} className="mr-1" />Migrate to OpenSearch</>
               )}
             </Button>
-            <Button
-              size="sm"
-              onClick={handleSaveObservabilityConfig}
-              disabled={!observabilityConfig.endpoint}
-              className="bg-opensearch-blue hover:bg-blue-600"
-            >
-              <Save size={14} className="mr-1" />
-              Save
+            <Button variant="outline" size="sm" onClick={handleExportLocalData} disabled={isMigrating}>
+              <Download size={14} className="mr-1" />
+              Export as JSON
             </Button>
             <Button
               variant="outline"
               size="sm"
-              onClick={handleClearObservabilityConfig}
-              disabled={!observabilityConfig.endpoint}
+              onClick={handleClearLocalData}
+              disabled={isMigrating}
+              className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
             >
               <Trash2 size={14} className="mr-1" />
-              Clear
+              Clear localStorage
             </Button>
           </div>
-        </CardContent>
-      </Card>
 
-      {/* Data Migration */}
-      {hasLocalData && (
-        <Card className="mt-6">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Upload size={18} />
-              Data Migration
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <p className="text-sm text-muted-foreground">
-              Found existing data in browser localStorage. Migrate it to OpenSearch for persistent storage.
+          {!storageStats?.isConnected && (
+            <p className="text-xs text-amber-400 mt-2">
+              Connect to OpenSearch backend first before migrating.
             </p>
-
-            {/* Local Data Stats */}
-            {localCounts && (
-              <div className="grid grid-cols-3 gap-4 text-sm">
-                <div className="p-3 bg-muted/30 rounded-lg">
-                  <div className="text-muted-foreground text-xs uppercase mb-1">Test Cases</div>
-                  <div className="text-lg font-semibold">{localCounts.testCases}</div>
-                </div>
-                <div className="p-3 bg-muted/30 rounded-lg">
-                  <div className="text-muted-foreground text-xs uppercase mb-1">Experiments</div>
-                  <div className="text-lg font-semibold">{localCounts.experiments}</div>
-                </div>
-                <div className="p-3 bg-muted/30 rounded-lg">
-                  <div className="text-muted-foreground text-xs uppercase mb-1">Reports</div>
-                  <div className="text-lg font-semibold">{localCounts.reports}</div>
-                </div>
-              </div>
-            )}
-
-            {/* Migration Status */}
-            {migrationStatus && (
-              <Alert className={migrationStatus.includes('failed') ? 'bg-red-900/20 border-red-700/30' : 'bg-blue-900/20 border-blue-700/30'}>
-                {isMigrating && <Loader2 className="h-4 w-4 text-blue-400 animate-spin" />}
-                <AlertDescription className={migrationStatus.includes('failed') ? 'text-red-400' : 'text-blue-400'}>
-                  {migrationStatus}
-                </AlertDescription>
-              </Alert>
-            )}
-
-            {/* Migration Results */}
-            {migrationResult && (
-              <div className="p-3 bg-muted/30 rounded-lg text-sm space-y-1">
-                <div className="font-medium mb-2">Migration Results:</div>
-                <div>Test Cases: {migrationResult.testCases.migrated} migrated, {migrationResult.testCases.skipped} skipped</div>
-                <div>Experiments: {migrationResult.experiments.migrated} migrated, {migrationResult.experiments.skipped} skipped</div>
-                <div>Reports: {migrationResult.reports.migrated} migrated, {migrationResult.reports.skipped} skipped</div>
-                {(migrationResult.testCases.errors.length > 0 ||
-                  migrationResult.experiments.errors.length > 0 ||
-                  migrationResult.reports.errors.length > 0) && (
-                  <div className="text-amber-400 mt-2">
-                    {migrationResult.testCases.errors.length + migrationResult.experiments.errors.length + migrationResult.reports.errors.length} errors occurred
-                  </div>
-                )}
-              </div>
-            )}
-
-            {/* Actions */}
-            <div className="flex flex-wrap gap-2 pt-2">
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleMigrate}
-                disabled={isMigrating || !storageStats?.isConnected}
-                className="bg-opensearch-blue hover:bg-blue-600"
-              >
-                {isMigrating ? (
-                  <>
-                    <Loader2 size={14} className="mr-1 animate-spin" />
-                    Migrating...
-                  </>
-                ) : (
-                  <>
-                    <Upload size={14} className="mr-1" />
-                    Migrate to OpenSearch
-                  </>
-                )}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleExportLocalData}
-                disabled={isMigrating}
-              >
-                <Download size={14} className="mr-1" />
-                Export as JSON
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={handleClearLocalData}
-                disabled={isMigrating}
-                className="text-red-400 hover:text-red-300 hover:bg-red-500/10"
-              >
-                <Trash2 size={14} className="mr-1" />
-                Clear localStorage
-              </Button>
-            </div>
-
-            {!storageStats?.isConnected && (
-              <p className="text-xs text-amber-400">
-                Connect to OpenSearch backend first before migrating.
-              </p>
-            )}
-          </CardContent>
-        </Card>
+          )}
+        </Section>
       )}
     </div>
 

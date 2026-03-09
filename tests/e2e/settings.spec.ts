@@ -15,8 +15,8 @@ test.describe('Settings Page', () => {
     await expect(page.locator('[data-testid="settings-title"]')).toHaveText('Settings');
   });
 
-  test('should show Debug Settings section', async ({ page }) => {
-    await expect(page.locator('text=Debug Settings')).toBeVisible();
+  test('should show Debug section', async ({ page }) => {
+    await expect(page.locator('text=Debug').first()).toBeVisible();
   });
 
   test('should show Verbose Logging toggle', async ({ page }) => {
@@ -24,7 +24,7 @@ test.describe('Settings Page', () => {
   });
 
   test('should toggle debug mode', async ({ page }) => {
-    const toggle = page.locator('button[role="switch"]').first();
+    const toggle = page.locator('#debug-mode');
     await expect(toggle).toBeVisible();
 
     // Get initial state
@@ -40,7 +40,7 @@ test.describe('Settings Page', () => {
   });
 
   test('should show warning when debug mode is enabled', async ({ page }) => {
-    const toggle = page.locator('button[role="switch"]').first();
+    const toggle = page.locator('#debug-mode');
 
     // Get current state
     let state = await toggle.getAttribute('data-state');
@@ -84,7 +84,7 @@ test.describe('Agent Endpoints Section', () => {
   });
 
   test('should display built-in agents', async ({ page }) => {
-    await expect(page.locator('text=Built-in Agents')).toBeVisible();
+    await expect(page.locator('text=Built-in').first()).toBeVisible();
 
     // Should show at least one built-in agent
     const builtInBadge = page.locator('text=built-in').first();
@@ -161,7 +161,7 @@ test.describe('Custom Endpoint Form Fields', () => {
     await page.waitForTimeout(500);
 
     // The Select trigger for connector type should be visible
-    await expect(page.locator('label:has-text("Connector Type")').first()).toBeVisible();
+    await expect(page.locator('label:has-text("Connector")').first()).toBeVisible();
   });
 
   test('should show Enable Traces toggle in add form', async ({ page }) => {
@@ -409,19 +409,19 @@ test.describe('Evaluation Storage Section', () => {
     await page.waitForTimeout(2000);
 
     // Should show either Connected or Not connected
-    const statusText = page.locator('text=Connected to OpenSearch').or(page.locator('text=Not connected')).first();
+    const statusText = page.locator('text=Connected').or(page.locator('text=Not connected')).first();
     await expect(statusText).toBeVisible();
   });
 
   test('should show storage stats when connected', async ({ page }) => {
     await page.waitForTimeout(2000);
 
-    const isConnected = await page.locator('text=Connected to OpenSearch').isVisible().catch(() => false);
+    const isConnected = await page.locator('text=Connected').first().isVisible().catch(() => false);
 
     if (isConnected) {
       // Should show stats
       await expect(page.locator('text=Test Cases').first()).toBeVisible();
-      await expect(page.locator('text=Experiments').first()).toBeVisible();
+      await expect(page.locator('text=Benchmarks').first()).toBeVisible();
       await expect(page.locator('text=Runs').first()).toBeVisible();
     }
   });

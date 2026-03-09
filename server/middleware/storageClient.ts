@@ -49,7 +49,7 @@ function getOrCreateClient(config: StorageClusterConfig): Client {
 /**
  * Cleanup expired clients every minute
  */
-setInterval(() => {
+const cleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [key, entry] of clientCache.entries()) {
     if (now - entry.lastUsed > CLIENT_TTL_MS) {
@@ -60,6 +60,8 @@ setInterval(() => {
     }
   }
 }, 60 * 1000);
+// Allow the process to exit even if the interval is still active (e.g., Ctrl+C)
+cleanupInterval.unref();
 
 /**
  * Storage client middleware
