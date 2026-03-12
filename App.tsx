@@ -20,6 +20,7 @@ import { ComparisonPage } from './components/comparison/ComparisonPage';
 import { TracesPage } from './components/traces/TracesPage';
 import { AgentTracesPage } from './components/traces/AgentTracesPage';
 import { PerformanceOverlay } from './components/PerformanceOverlay';
+import { AssistantChat } from './components/assistant-ui/AssistantChat';
 
 function ExperimentRunsRedirect() {
   const { experimentId } = useParams();
@@ -111,6 +112,9 @@ function App() {
 
             {/* Agent Traces - Table View */}
             <Route path="/agent-traces" element={<AgentTracesPage />} />
+
+            {/* AI Assistant */}
+            <Route path="/assistant" element={<AssistantChat />} />
 
             {/* Redirects for deprecated routes */}
             <Route path="/evals" element={<Navigate to="/test-cases" replace />} />

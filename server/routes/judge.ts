@@ -12,6 +12,7 @@ import { BedrockClient, ListInferenceProfilesCommand } from '@aws-sdk/client-bed
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import { evaluateTrajectory, parseBedrockError } from '../services/bedrockService';
 import { evaluateWithOpenAICompatible, parseOpenAICompatibleError } from '../services/judgeService';
+import { evaluateWithClaudeCode, parseClaudeCodeError } from '../services/claudeCodeJudgeService';
 import { loadConfigSync } from '../../lib/config/index';
 import serverConfig from '../config';
 import { debug } from '@/lib/debug';
@@ -202,6 +203,14 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       return res.json(mockResult);
     }
 
+    if (provider === 'claude-code') {
+      debug('JudgeAPI', 'Claude Code provider - spawning claude CLI');
+      const result = await evaluateWithClaudeCode(
+        { trajectory, expectedOutcomes, expectedTrajectory, logs }
+      );
+      return res.json(result);
+    }
+
     if (provider === 'openai-compatible') {
       debug('JudgeAPI', 'OpenAI-compatible provider - calling endpoint');
       const result = await evaluateWithOpenAICompatible(
@@ -236,9 +245,11 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       }
     })();
 
-    const errorMessage = provider === 'openai-compatible'
-      ? parseOpenAICompatibleError(error)
-      : parseBedrockError(error);
+    const errorMessage = provider === 'claude-code'
+      ? parseClaudeCodeError(error)
+      : provider === 'openai-compatible'
+        ? parseOpenAICompatibleError(error)
+        : parseBedrockError(error);
 
     res.status(500).json({
       error: `Judge evaluation failed: ${errorMessage}`,
