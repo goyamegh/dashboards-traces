@@ -23,3 +23,9 @@ export {
   type ServerEvaluationReport,
   type ServerEvaluationResult,
 } from './evaluationApi';
+
+export {
+  streamAssistantChat,
+  clearAssistantSession,
+  checkAssistantHealth,
+} from './assistantApi';

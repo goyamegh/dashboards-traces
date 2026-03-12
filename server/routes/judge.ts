@@ -10,6 +10,7 @@
 import { Request, Response, Router } from 'express';
 import { evaluateTrajectory, parseBedrockError } from '../services/bedrockService';
 import { evaluateWithLiteLLM, parseLiteLLMError } from '../services/litellmJudgeService';
+import { evaluateWithClaudeCode, parseClaudeCodeError } from '../services/claudeCodeJudgeService';
 import { loadConfigSync } from '../../lib/config/index';
 import serverConfig from '../config';
 import { debug } from '@/lib/debug';
@@ -158,6 +159,14 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       return res.json(mockResult);
     }
 
+    if (provider === 'claude-code') {
+      debug('JudgeAPI', 'Claude Code provider - spawning claude CLI');
+      const result = await evaluateWithClaudeCode(
+        { trajectory, expectedOutcomes, expectedTrajectory, logs }
+      );
+      return res.json(result);
+    }
+
     if (provider === 'litellm') {
       debug('JudgeAPI', 'LiteLLM provider - calling OpenAI-compatible endpoint');
       const result = await evaluateWithLiteLLM(
@@ -192,9 +201,11 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       }
     })();
 
-    const errorMessage = provider === 'litellm'
-      ? parseLiteLLMError(error)
-      : parseBedrockError(error);
+    const errorMessage = provider === 'claude-code'
+      ? parseClaudeCodeError(error)
+      : provider === 'litellm'
+        ? parseLiteLLMError(error)
+        : parseBedrockError(error);
 
     res.status(500).json({
       error: `Judge evaluation failed: ${errorMessage}`,

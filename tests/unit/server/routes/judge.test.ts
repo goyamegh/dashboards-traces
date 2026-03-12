@@ -7,6 +7,7 @@ import { Request, Response } from 'express';
 import judgeRoutes from '@/server/routes/judge';
 import { evaluateTrajectory, parseBedrockError } from '@/server/services/bedrockService';
 import { evaluateWithLiteLLM, parseLiteLLMError } from '@/server/services/litellmJudgeService';
+import { evaluateWithClaudeCode, parseClaudeCodeError } from '@/server/services/claudeCodeJudgeService';
 
 // Mock the bedrock service
 jest.mock('@/server/services/bedrockService', () => ({
@@ -20,10 +21,18 @@ jest.mock('@/server/services/litellmJudgeService', () => ({
   parseLiteLLMError: jest.fn(),
 }));
 
+// Mock the claude code judge service
+jest.mock('@/server/services/claudeCodeJudgeService', () => ({
+  evaluateWithClaudeCode: jest.fn(),
+  parseClaudeCodeError: jest.fn(),
+}));
+
 const mockEvaluateTrajectory = evaluateTrajectory as jest.MockedFunction<typeof evaluateTrajectory>;
 const mockParseBedrockError = parseBedrockError as jest.MockedFunction<typeof parseBedrockError>;
 const mockEvaluateWithLiteLLM = evaluateWithLiteLLM as jest.MockedFunction<typeof evaluateWithLiteLLM>;
 const mockParseLiteLLMError = parseLiteLLMError as jest.MockedFunction<typeof parseLiteLLMError>;
+const mockEvaluateWithClaudeCode = evaluateWithClaudeCode as jest.MockedFunction<typeof evaluateWithClaudeCode>;
+const mockParseClaudeCodeError = parseClaudeCodeError as jest.MockedFunction<typeof parseClaudeCodeError>;
 
 // Helper to create mock request/response
 function createMocks(body: any = {}) {
@@ -313,6 +322,83 @@ describe('Judge Routes', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: expect.stringContaining('Judge evaluation failed'),
+        })
+      );
+    });
+
+    it('routes to evaluateWithClaudeCode when provider is claude-code', async () => {
+      mockEvaluateWithClaudeCode.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 92 },
+        llmJudgeReasoning: 'Claude Code evaluation',
+        improvementStrategies: [],
+        duration: 5000,
+      });
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'search' }],
+        expectedOutcomes: ['Identify issue'],
+        modelId: 'claude-code-judge',
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(mockEvaluateWithClaudeCode).toHaveBeenCalledWith(
+        expect.objectContaining({
+          trajectory: expect.any(Array),
+          expectedOutcomes: expect.any(Array),
+        })
+      );
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          passFailStatus: 'passed',
+          metrics: expect.objectContaining({ accuracy: 92 }),
+        })
+      );
+    });
+
+    it('does NOT call evaluateTrajectory or evaluateWithLiteLLM when provider is claude-code', async () => {
+      mockEvaluateWithClaudeCode.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 88 },
+        llmJudgeReasoning: 'Good',
+        improvementStrategies: [],
+        duration: 3000,
+      });
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'test' }],
+        expectedOutcomes: ['Test outcome'],
+        modelId: 'claude-code-judge',
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(mockEvaluateTrajectory).not.toHaveBeenCalled();
+      expect(mockEvaluateWithLiteLLM).not.toHaveBeenCalled();
+    });
+
+    it('returns 500 with Claude Code error message on claude-code failure', async () => {
+      const error = new Error('Claude CLI not found');
+      mockEvaluateWithClaudeCode.mockRejectedValue(error);
+      mockParseClaudeCodeError.mockReturnValue('Claude CLI not found. Install it with: npm install -g @anthropic-ai/claude-code');
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action' }],
+        expectedOutcomes: ['Test'],
+        modelId: 'claude-code-judge',
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(mockParseClaudeCodeError).toHaveBeenCalledWith(error);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           error: expect.stringContaining('Judge evaluation failed'),

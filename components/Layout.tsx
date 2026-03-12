@@ -11,6 +11,7 @@ import {
   Gauge,
   Activity,
   Search,
+  MessageSquare,
 } from "lucide-react";
 import OpenSearchLogoDark from "@/assets/opensearch-logo.svg";
 import OpenSearchLogoLight from "@/assets/opensearch-logo-light.svg";
@@ -38,6 +39,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import { AssistantProvider } from "@/components/assistant-ui/AssistantProvider";
+import { AssistantModal } from "@/components/assistant-ui/AssistantModal";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -62,6 +65,7 @@ export const useSidebarCollapse = () => {
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Overview", tooltip: "Dashboard and quick stats", testId: "nav-overview" },
   { to: "/agent-traces", icon: Activity, label: "Agent Traces", tooltip: "View and debug agent executions", testId: "nav-agent-traces" },
+  { to: "/assistant", icon: MessageSquare, label: "Assistant", tooltip: "AI assistant for help and analysis", testId: "nav-assistant" },
 ];
 
 const testingSubItems = [
@@ -331,7 +335,12 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         </SidebarFooter>
       </Sidebar>
 
-      <SidebarInset className="overflow-y-auto">{children}</SidebarInset>
+      <SidebarInset className="overflow-y-auto">
+        <AssistantProvider>
+          {children}
+          <AssistantModal />
+        </AssistantProvider>
+      </SidebarInset>
       </SidebarProvider>
     </SidebarCollapseContext.Provider>
   );
