@@ -11,7 +11,9 @@
  * Ensure server is running: npm run dev:server
  */
 
-const BASE_URL = process.env.TEST_SERVER_URL || 'http://localhost:4001';
+import { getTestBackendUrl } from '@/tests/integration/testConfig';
+
+const BASE_URL = getTestBackendUrl();
 
 // Skip if server is not running
 async function isServerRunning(): Promise<boolean> {
