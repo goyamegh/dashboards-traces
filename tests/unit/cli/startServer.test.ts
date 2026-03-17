@@ -8,7 +8,7 @@
  *
  * The startServer module:
  * - Finds the package root directory
- * - Sets VITE_BACKEND_PORT environment variable
+ * - Sets AGENT_HEALTH_PORT environment variable
  * - Dynamically imports the server app and starts it
  */
 
@@ -25,7 +25,7 @@ describe('startServer module', () => {
     });
 
     it('should accept a port option', () => {
-      // startServer({ port: 4001 }) sets VITE_BACKEND_PORT and starts server
+      // startServer({ port: 4001 }) sets AGENT_HEALTH_PORT and starts server
       const expectedOptions = { port: 4001 };
       expect(expectedOptions).toHaveProperty('port');
       expect(typeof expectedOptions.port).toBe('number');
@@ -42,9 +42,9 @@ describe('startServer module', () => {
   });
 
   describe('environment variable setup', () => {
-    it('should set VITE_BACKEND_PORT from options', () => {
+    it('should set AGENT_HEALTH_PORT from options', () => {
       // When startServer is called, it sets:
-      // process.env.VITE_BACKEND_PORT = String(options.port)
+      // process.env.AGENT_HEALTH_PORT = String(options.port)
       const port = 5000;
       const expectedEnvValue = String(port);
       expect(expectedEnvValue).toBe('5000');

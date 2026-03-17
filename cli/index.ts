@@ -151,7 +151,7 @@ ${chalk.cyan.bold('Examples:')}
 
 // CLI options for default action (when no subcommand is specified)
 program
-  .option('-p, --port <number>', 'Server port', '4001')
+  .option('-p, --port <number>', 'Server port (or set AGENT_HEALTH_PORT env var)', process.env.AGENT_HEALTH_PORT || '4001')
   .option('-e, --env-file <path>', 'Load environment variables from file (e.g., .env)')
   .option('--no-browser', 'Do not open browser automatically');
 
@@ -215,7 +215,7 @@ program.addCommand(createCompareServicesCommand());
 program
   .command('serve')
   .description('Start the Agent Health server (same as default action)')
-  .option('-p, --port <number>', 'Server port', '4001')
+  .option('-p, --port <number>', 'Server port (or set AGENT_HEALTH_PORT env var)', process.env.AGENT_HEALTH_PORT || '4001')
   .option('--no-browser', 'Do not open browser automatically')
   .action(async (options) => {
     console.log(chalk.cyan.bold(`\n  Agent Health v${version} - AI Agent Evaluation Framework\n`));

@@ -14,13 +14,13 @@ export { groupSpansByTrace, getSpansForTrace } from './traceGrouping';
 
 /**
  * Get API base URL dynamically
- * Server-side (Node.js): Use localhost with PORT env var
+ * Server-side (Node.js): Use localhost with AGENT_HEALTH_PORT env var
  * Client-side (browser): Use relative URLs
  */
 function getApiBaseUrl(): string {
   const isServerSide = typeof window === 'undefined';
   if (isServerSide) {
-    const port = process.env?.PORT || '4001';
+    const port = process.env?.AGENT_HEALTH_PORT || '4001';
     return `http://localhost:${port}`;
   }
   return ''; // Relative URLs in browser
