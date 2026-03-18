@@ -51,13 +51,11 @@ describe('lib/constants', () => {
         expect(DEFAULT_CONFIG.agents.length).toBeGreaterThan(0);
       });
 
-      it('should have travel-planner agent', () => {
-        const travelPlanner = DEFAULT_CONFIG.agents.find(a => a.key === 'travel-planner');
-        expect(travelPlanner).toBeDefined();
-        expect(travelPlanner?.name).toBe('Travel Planner');
-        expect(travelPlanner?.endpoint).toContain('localhost:3000');
-        expect(travelPlanner?.useTraces).toBe(true);
-        expect(travelPlanner?.connectorType).toBe('agui-streaming');
+      it('should have claude-code agent', () => {
+        const claudeCode = DEFAULT_CONFIG.agents.find(a => a.key === 'claude-code');
+        expect(claudeCode).toBeDefined();
+        expect(claudeCode?.name).toBe('Claude Code');
+        expect(claudeCode?.connectorType).toBe('claude-code');
       });
 
       it('should have valid agent structure', () => {

@@ -4,7 +4,7 @@
  */
 
 import { AppConfig, ModelConfig } from '@/types';
-import { ENV_CONFIG, buildMLCommonsHeaders } from '@/lib/config';
+import { ENV_CONFIG } from '@/lib/config';
 
 /**
  * Get Claude Code connector environment variables at runtime.
@@ -57,24 +57,6 @@ export const DEFAULT_CONFIG: AppConfig = {
       connectorType: "mock",
       headers: {},
       useTraces: false,
-    },
-    {
-      key: "mlcommons-local",
-      name: "ML-Commons (Localhost)",
-      endpoint: ENV_CONFIG.mlcommonsEndpoint,
-      description: "Local OpenSearch ML-Commons conversational agent",
-      connectorType: "agui-streaming",
-      headers: buildMLCommonsHeaders(),
-      useTraces: true,
-    },
-    {
-      key: "travel-planner",
-      name: "Travel Planner",
-      endpoint: ENV_CONFIG.travelPlannerEndpoint,
-      description: "Multi-agent Travel Planner demo (requires OTel Demo running via Docker)",
-      connectorType: "agui-streaming",
-      headers: {},
-      useTraces: true,
     },
     {
       key: "claude-code",
