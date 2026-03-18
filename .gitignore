@@ -10,6 +10,8 @@ build
 .env.*
 .env.backup*
 !.env.example
+!.env.docker
+docker-compose/.env
 judge.log
 
 # Configuration files (may contain credentials)

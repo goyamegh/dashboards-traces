@@ -1,0 +1,127 @@
+# Agent Health - Local Development Stack
+# Provides OpenSearch + OTEL pipeline for trace ingestion and storage
+# WARNING: This configuration is for development/testing only - not production-ready
+#
+# Usage:
+#   docker compose up -d        # Start all services
+#   docker compose down          # Stop all services
+#   docker compose down -v       # Stop and remove volumes (fresh start)
+#
+# Prerequisites:
+#   - Docker Desktop with 4G+ memory allocated
+#   - Copy docker-compose/.env.example to docker-compose/.env (if customizing)
+
+x-default-logging: &logging
+  driver: "json-file"
+  options:
+    max-size: "5m"
+    max-file: "2"
+    tag: "{{.Name}}"
+
+networks:
+  agent-health-network:
+    name: agent-health-network
+    driver: bridge
+
+volumes:
+  opensearch-data:
+    driver: local
+
+services:
+  # OpenSearch - Stores traces, logs, test cases, and benchmarks
+  opensearch:
+    image: opensearchproject/opensearch:${OPENSEARCH_VERSION:-3.5.0}
+    container_name: opensearch
+    environment:
+      - cluster.name=agent-health-cluster
+      - node.name=agent-health-node
+      - discovery.type=single-node
+      - bootstrap.memory_lock=true
+      - OPENSEARCH_JAVA_OPTS=${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
+      - "OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_PASSWORD:-My_password_123!@#}"
+      - plugins.query.datasources.encryption.masterkey=BTqK4Ytdz67La1kShIKV3Pu9
+    volumes:
+      - opensearch-data:/usr/share/opensearch/data
+    ports:
+      - "${OPENSEARCH_PORT:-9200}:9200"
+      - "9600:9600"
+    networks:
+      - agent-health-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: ${OPENSEARCH_MEMORY_LIMIT:-1536M}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    healthcheck:
+      test: curl -s -k -u '${OPENSEARCH_USER:-admin}':'${OPENSEARCH_PASSWORD:-My_password_123!@#}' https://localhost:9200/_cluster/health | grep -E '"status":"(green|yellow)"'
+      start_period: 120s
+      interval: 5s
+      timeout: 10s
+      retries: 30
+    logging: *logging
+
+  # OpenTelemetry Collector - Receives telemetry data via OTLP protocol
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:${OTEL_COLLECTOR_VERSION:-0.146.1}
+    container_name: otel-collector
+    command: ["--config=/etc/otelcol-config.yml"]
+    volumes:
+      - ./docker-compose/otel-collector/config.yaml:/etc/otelcol-config.yml
+    ports:
+      # OTLP gRPC receiver
+      - "${OTEL_COLLECTOR_PORT_GRPC:-4317}:4317"
+      # OTLP HTTP receiver
+      - "${OTEL_COLLECTOR_PORT_HTTP:-4318}:4318"
+    networks:
+      - agent-health-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: ${OTEL_COLLECTOR_MEMORY_LIMIT:-300M}
+    environment:
+      - GOMEMLIMIT=160MiB
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    logging: *logging
+
+  # Data Prepper - Transforms and enriches traces/logs before OpenSearch ingestion
+  data-prepper:
+    image: opensearchproject/opensearch-data-prepper:${DATA_PREPPER_VERSION:-2.14.1}
+    container_name: data-prepper
+    platform: linux/amd64
+    command: >
+      /bin/bash -c "
+      cp /tmp/pipelines.template.yaml /tmp/pipelines.yaml &&
+      chmod +w /tmp/pipelines.yaml &&
+      sed -i 's|OPENSEARCH_USER|${OPENSEARCH_USER:-admin}|g' /tmp/pipelines.yaml &&
+      sed -i 's|OPENSEARCH_PASSWORD|${OPENSEARCH_PASSWORD:-My_password_123!@#}|g' /tmp/pipelines.yaml &&
+      mv /tmp/pipelines.yaml /usr/share/data-prepper/pipelines/pipelines.yaml &&
+      exec /usr/share/data-prepper/bin/data-prepper"
+    volumes:
+      - ./docker-compose/data-prepper/pipelines.template.yaml:/tmp/pipelines.template.yaml
+      - ./docker-compose/data-prepper/data-prepper-config.yaml:/usr/share/data-prepper/config/data-prepper-config.yaml
+    ports:
+      # OTLP gRPC receiver from OpenTelemetry Collector
+      - "${DATA_PREPPER_OTLP_PORT:-21890}:21890"
+      # OTLP HTTP receiver
+      - "${DATA_PREPPER_HTTP_PORT:-21892}:21892"
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    networks:
+      - agent-health-network
+    restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: ${DATA_PREPPER_MEMORY_LIMIT:-768M}
+    logging: *logging

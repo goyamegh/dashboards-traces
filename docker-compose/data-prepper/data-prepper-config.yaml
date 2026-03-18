@@ -1,0 +1,11 @@
+# Data Prepper Server Configuration
+# Controls Data Prepper's runtime behavior
+
+# SSL/TLS - disabled for development
+ssl: false
+
+# Enable APM plugins (no prometheus sink needed)
+experimental:
+  enabled_plugins:
+    processor:
+      - otel_apm_service_map

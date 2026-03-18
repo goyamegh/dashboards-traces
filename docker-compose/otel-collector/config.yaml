@@ -1,0 +1,90 @@
+# OpenTelemetry Collector Configuration
+# Receives traces and logs via OTLP and routes to Data Prepper
+# (No metrics pipeline - Agent Health computes metrics from trace spans directly)
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+        cors:
+          allowed_origins:
+            - "http://*"
+            - "https://*"
+
+processors:
+  memory_limiter:
+    check_interval: 5s
+    limit_percentage: 80
+    spike_limit_percentage: 25
+
+  batch:
+    timeout: 10s
+    send_batch_size: 1024
+
+  resourcedetection:
+    detectors: [env, system]
+
+  transform:
+    error_mode: ignore
+    trace_statements:
+      - context: span
+        statements:
+          - replace_pattern(name, "\\?.*", "")
+          # Workaround for https://github.com/opensearch-project/data-prepper/issues/5616
+          # Flatten nested dotted attribute keys to prevent OpenSearch mapping conflicts
+          - set(attributes["db_system_name"], attributes["db.system.name"]) where attributes["db.system.name"] != nil
+          - delete_key(attributes, "db.system.name")
+          - set(attributes["code_function_name"], attributes["code.function.name"]) where attributes["code.function.name"] != nil
+          - delete_key(attributes, "code.function.name")
+          - set(attributes["user_agent_original"], attributes["user_agent.original"]) where attributes["user_agent.original"] != nil
+          - delete_key(attributes, "user_agent.original")
+          - set(attributes["upstream_cluster_name"], attributes["upstream_cluster.name"]) where attributes["upstream_cluster.name"] != nil
+          - delete_key(attributes, "upstream_cluster.name")
+          - set(attributes["error_type"], attributes["error.type"]) where attributes["error.type"] != nil
+          - delete_key(attributes, "error.type")
+          - set(attributes["rpc_system"], attributes["rpc.system"]) where attributes["rpc.system"] != nil
+          - delete_key(attributes, "rpc.system")
+      - context: spanevent
+        statements:
+          # De-dot gRPC message.* event attributes to prevent mapping conflict with
+          # GenAI event attributes where "message" is a plain string value.
+          - set(attributes["message_type"], attributes["message.type"]) where attributes["message.type"] != nil
+          - delete_key(attributes, "message.type")
+          - set(attributes["message_id"], attributes["message.id"]) where attributes["message.id"] != nil
+          - delete_key(attributes, "message.id")
+          - set(attributes["message_uncompressed_size"], attributes["message.uncompressed_size"]) where attributes["message.uncompressed_size"] != nil
+          - delete_key(attributes, "message.uncompressed_size")
+    log_statements:
+      - context: log
+        statements:
+          - flatten(body) where IsMap(body)
+          - set(body, ToKeyValueString(body)) where IsMap(body)
+
+exporters:
+  debug:
+    verbosity: detailed
+
+  otlp/opensearch:
+    endpoint: "data-prepper:21890"
+    tls:
+      insecure: true
+      insecure_skip_verify: true
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [resourcedetection, memory_limiter, transform, batch]
+      exporters: [otlp/opensearch, debug]
+
+    logs:
+      receivers: [otlp]
+      processors: [resourcedetection, memory_limiter, transform, batch]
+      exporters: [otlp/opensearch, debug]
+
+  telemetry:
+    logs:
+      level: info
