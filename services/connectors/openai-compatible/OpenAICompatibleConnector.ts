@@ -4,16 +4,15 @@
  */
 
 /**
- * LiteLLM Connector
+ * OpenAI-compatible Connector
  *
- * OpenAI-compatible connector for LiteLLM proxy and any OpenAI-compatible API.
+ * Connector for any OpenAI-compatible API endpoint.
  * Formats requests as OpenAI Chat Completions and parses the response.
  *
  * Works with:
- * - LiteLLM proxy (https://litellm.ai)
  * - OpenAI API directly
  * - Azure OpenAI
- * - Any OpenAI-compatible endpoint (vLLM, Ollama, etc.)
+ * - Any OpenAI-compatible endpoint (vLLM, Ollama, LiteLLM proxy, etc.)
  */
 
 import type { TrajectoryStep, ToolCallStatus } from '@/types';
@@ -67,11 +66,11 @@ interface ChatCompletionResponse {
 }
 
 /**
- * LiteLLM / OpenAI-compatible connector
+ * OpenAI-compatible connector
  */
-export class LiteLLMConnector extends BaseConnector {
-  readonly type = 'litellm' as const;
-  readonly name = 'LiteLLM / OpenAI-compatible';
+export class OpenAICompatibleConnector extends BaseConnector {
+  readonly type = 'openai-compatible' as const;
+  readonly name = 'OpenAI-compatible';
   readonly supportsStreaming = false;
 
   /**
@@ -130,7 +129,7 @@ export class LiteLLMConnector extends BaseConnector {
     const payload = request.payload || this.buildPayload(request);
     const headers = this.buildAuthHeaders(auth);
 
-    this.debug('Executing LiteLLM request');
+    this.debug('Executing OpenAI-compatible request');
     this.debug('Endpoint:', endpoint);
     this.debug('Model:', payload.model);
 
@@ -145,7 +144,7 @@ export class LiteLLMConnector extends BaseConnector {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`LiteLLM request failed: ${response.status} - ${errorText}`);
+      throw new Error(`OpenAI-compatible request failed: ${response.status} - ${errorText}`);
     }
 
     const data: ChatCompletionResponse = await response.json();
@@ -214,4 +213,4 @@ export class LiteLLMConnector extends BaseConnector {
 /**
  * Default instance for convenience
  */
-export const litellmConnector = new LiteLLMConnector();
+export const openaiCompatibleConnector = new OpenAICompatibleConnector();

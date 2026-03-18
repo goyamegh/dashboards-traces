@@ -107,7 +107,7 @@ Override default agent endpoints.
 |----------|-------------|---------|
 | `TRAVEL_PLANNER_ENDPOINT` | Travel Planner demo agent URL (requires OTel Demo Docker) | `http://localhost:3000` |
 
-To configure additional agents (LangGraph, ML-Commons, HolmesGPT, LiteLLM, Claude Code, etc.), use `agent-health.config.ts`. See [TypeScript Config File](#typescript-config-file-optional) below.
+To configure additional agents (LangGraph, ML-Commons, HolmesGPT, Claude Code, etc.), use `agent-health.config.ts`. See [TypeScript Config File](#typescript-config-file-optional) below.
 
 ### Debug Logging
 

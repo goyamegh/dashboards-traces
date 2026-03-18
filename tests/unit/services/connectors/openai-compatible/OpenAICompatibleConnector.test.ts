@@ -4,10 +4,10 @@
  */
 
 /**
- * Tests for LiteLLM / OpenAI-compatible Connector
+ * Tests for OpenAI-compatible Connector
  *
  * Run tests:
- *   npm test -- --testPathPattern=LiteLLMConnector
+ *   npm test -- --testPathPattern=OpenAICompatibleConnector
  */
 
 import type { ConnectorRequest, ConnectorAuth } from '@/services/connectors/types';
@@ -20,7 +20,7 @@ jest.mock('@/lib/debug', () => ({
   setDebugEnabled: jest.fn(),
 }));
 
-import { LiteLLMConnector, litellmConnector } from '@/services/connectors/litellm/LiteLLMConnector';
+import { OpenAICompatibleConnector, openaiCompatibleConnector } from '@/services/connectors/openai-compatible/OpenAICompatibleConnector';
 
 // Mock fetch globally
 const mockFetch = jest.fn();
@@ -110,23 +110,23 @@ const noAuth: ConnectorAuth = { type: 'none' };
 
 // ============ Tests ============
 
-describe('LiteLLMConnector', () => {
-  let connector: LiteLLMConnector;
+describe('OpenAICompatibleConnector', () => {
+  let connector: OpenAICompatibleConnector;
 
   beforeEach(() => {
-    connector = new LiteLLMConnector();
+    connector = new OpenAICompatibleConnector();
     mockFetch.mockClear();
   });
 
   // ============ Static Properties ============
 
   describe('properties', () => {
-    it('should have type "litellm"', () => {
-      expect(connector.type).toBe('litellm');
+    it('should have type "openai-compatible"', () => {
+      expect(connector.type).toBe('openai-compatible');
     });
 
     it('should have the correct display name', () => {
-      expect(connector.name).toBe('LiteLLM / OpenAI-compatible');
+      expect(connector.name).toBe('OpenAI-compatible');
     });
 
     it('should not support streaming', () => {
@@ -135,9 +135,9 @@ describe('LiteLLMConnector', () => {
   });
 
   describe('default instance', () => {
-    it('should export a default litellmConnector instance', () => {
-      expect(litellmConnector).toBeInstanceOf(LiteLLMConnector);
-      expect(litellmConnector.type).toBe('litellm');
+    it('should export a default openaiCompatibleConnector instance', () => {
+      expect(openaiCompatibleConnector).toBeInstanceOf(OpenAICompatibleConnector);
+      expect(openaiCompatibleConnector.type).toBe('openai-compatible');
     });
   });
 
@@ -511,7 +511,7 @@ describe('LiteLLMConnector', () => {
 
       await expect(
         connector.execute(endpoint, makeRequest(), noAuth)
-      ).rejects.toThrow('LiteLLM request failed: 429 - Rate limit exceeded');
+      ).rejects.toThrow('OpenAI-compatible request failed: 429 - Rate limit exceeded');
     });
 
     it('should throw on 500 server error', async () => {
@@ -523,7 +523,7 @@ describe('LiteLLMConnector', () => {
 
       await expect(
         connector.execute(endpoint, makeRequest(), noAuth)
-      ).rejects.toThrow('LiteLLM request failed: 500 - Internal Server Error');
+      ).rejects.toThrow('OpenAI-compatible request failed: 500 - Internal Server Error');
     });
 
     it('should use request.payload if present instead of building payload', async () => {
