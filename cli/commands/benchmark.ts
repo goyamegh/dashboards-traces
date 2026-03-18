@@ -54,10 +54,10 @@ function findAgent(identifier: string, config: ResolvedConfig): AgentConfig | un
 }
 
 /**
- * Get default model for an agent
+ * Get default model key from config
  */
-function getDefaultModel(agent: AgentConfig): string {
-  return agent.models[0] || 'claude-sonnet';
+function getDefaultModel(config: ResolvedConfig): string {
+  return Object.keys(config.models)[0] || 'claude-sonnet';
 }
 
 /**
@@ -604,7 +604,7 @@ export function createBenchmarkCommand(): Command {
         const allResults: AgentResults[] = [];
 
         for (const agent of agents) {
-          const modelId = options.model || getDefaultModel(agent);
+          const modelId = options.model || getDefaultModel(config);
           const results = await runBenchmarkForAgent(
             api,
             agent,

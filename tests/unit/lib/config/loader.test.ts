@@ -115,7 +115,6 @@ describe('defineConfig', () => {
         key: 'test',
         name: 'Test',
         endpoint: 'http://localhost:3000',
-        models: ['claude-sonnet-4.5'],
         hooks: { beforeRequest: hookFn },
       }],
     };

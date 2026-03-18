@@ -70,7 +70,6 @@ export interface AgentConfig {
   endpoint: string;
   description?: string;
   enabled?: boolean;
-  models: string[]; // Keys referring to ModelConfig
   headers?: Record<string, string>; // Custom headers for agent endpoint (e.g., AWS credentials)
   auth?: ConnectorAuthConfig; // Explicit auth config (preferred over headers inference)
   useTraces?: boolean; // When true, fetch traces instead of logs for evaluation

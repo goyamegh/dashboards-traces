@@ -41,10 +41,10 @@ function findAgent(identifier: string, config: ResolvedConfig): AgentConfig | un
 }
 
 /**
- * Get default model for an agent
+ * Get default model key from config
  */
-function getDefaultModel(agent: AgentConfig): string {
-  return agent.models[0] || 'claude-sonnet';
+function getDefaultModel(config: ResolvedConfig): string {
+  return Object.keys(config.models)[0] || 'claude-sonnet';
 }
 
 /**
@@ -240,7 +240,7 @@ export function createRunCommand(): Command {
         const results: Array<{ agent: AgentConfig; report: EvaluationResult | null }> = [];
 
         for (const agent of agents) {
-          const modelId = options.model || getDefaultModel(agent);
+          const modelId = options.model || getDefaultModel(config);
 
           // Validate agent requirements before running
           const validationError = await validateAgentRequirements(agent);

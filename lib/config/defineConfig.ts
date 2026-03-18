@@ -25,7 +25,6 @@ import type { UserConfig } from './types';
  *       name: 'My Agent',
  *       endpoint: 'https://api.example.com/chat',
  *       connectorType: 'rest',
- *       models: ['claude-sonnet-4'],
  *     },
  *   ],
  * });

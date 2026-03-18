@@ -103,7 +103,6 @@ describe('ConnectorRegistry', () => {
         key: 'demo',
         name: 'Demo',
         endpoint: 'mock://demo',
-        models: ['test-model'],
       };
 
       const connector = connectorRegistry.getForAgent(agent);
@@ -115,7 +114,6 @@ describe('ConnectorRegistry', () => {
         key: 'test',
         name: 'Test',
         endpoint: 'http://localhost:8080',
-        models: ['test-model'],
         connectorType: 'rest',
       };
 
@@ -128,7 +126,6 @@ describe('ConnectorRegistry', () => {
         key: 'test',
         name: 'Test',
         endpoint: 'http://localhost:8080',
-        models: ['test-model'],
       };
 
       const connector = connectorRegistry.getForAgent(agent);
@@ -141,7 +138,6 @@ describe('ConnectorRegistry', () => {
         key: 'test',
         name: 'Test',
         endpoint: 'http://localhost:8080',
-        models: ['test-model'],
         connectorType: 'subprocess',
       };
 
@@ -157,7 +153,6 @@ describe('ConnectorRegistry', () => {
         key: 'test',
         name: 'Test',
         endpoint: 'http://localhost:8080',
-        models: ['test-model'],
       };
 
       expect(() => connectorRegistry.getForAgent(agent)).toThrow(
@@ -201,7 +196,6 @@ describe('ConnectorRegistry', () => {
         key: 'demo',
         name: 'Demo',
         endpoint: 'mock://demo',
-        models: ['test-model'],
       };
 
       const connector = getConnectorForAgent(agent);

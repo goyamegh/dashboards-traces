@@ -43,7 +43,6 @@ const makeAgent = (key: string, name: string, endpoint: string): AgentConfig => 
   key,
   name,
   endpoint,
-  models: [],
   headers: {},
   connectorType: 'agui-streaming',
 });

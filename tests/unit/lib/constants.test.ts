@@ -65,8 +65,6 @@ describe('lib/constants', () => {
           expect(agent.key).toBeDefined();
           expect(agent.name).toBeDefined();
           expect(agent.endpoint).toBeDefined();
-          expect(agent.models).toBeInstanceOf(Array);
-          expect(agent.models.length).toBeGreaterThan(0);
           expect(typeof agent.useTraces).toBe('boolean');
         });
       });

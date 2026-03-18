@@ -33,7 +33,6 @@ export default defineConfig({
         username: process.env.OPENSEARCH_USER || 'admin',
         password: process.env.OPENSEARCH_PASS || 'admin',
       },
-      models: ['claude-sonnet'],
     },
 
     // Claude Code CLI agent (optional)
@@ -50,7 +49,6 @@ export default defineConfig({
         },
       }),
       endpoint: 'claude', // Command name
-      models: ['claude-sonnet-4'],
     },
     */
   ],

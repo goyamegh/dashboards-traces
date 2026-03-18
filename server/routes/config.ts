@@ -107,7 +107,6 @@ router.post('/api/agents/custom', (req: Request, res: Response) => {
       isCustom: true,
       connectorType: connectorType ?? 'agui-streaming',
       useTraces: useTraces === true,
-      models: [],
       headers: {},
     };
 
