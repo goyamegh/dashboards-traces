@@ -148,20 +148,22 @@ test.describe('Comparison Page - Metrics', () => {
   });
 
   test('should display run summary cards', async ({ page }) => {
-    const viewLatestButton = page.locator('button:has-text("View Latest")').first();
+    // Navigate to the benchmark runs listing page (not run detail) by clicking the card name
+    const benchmarkCard = page.locator('[data-testid="benchmarks-page"] h3').first();
 
-    if (await viewLatestButton.isVisible().catch(() => false)) {
-      await viewLatestButton.click();
+    if (await benchmarkCard.isVisible().catch(() => false)) {
+      await benchmarkCard.click();
       await page.waitForTimeout(2000);
+
+      // Now on the runs listing page where Select All and Compare buttons exist
+      const selectAllButton = page.locator('button:has-text("Select All")');
+      if (await selectAllButton.isVisible().catch(() => false)) {
+        await selectAllButton.click();
+        await page.waitForTimeout(500);
+      }
 
       const compareButton = page.locator('button:has-text("Compare")');
       if (await compareButton.isVisible().catch(() => false)) {
-        const selectAllButton = page.locator('button:has-text("Select All")');
-        if (await selectAllButton.isVisible().catch(() => false)) {
-          await selectAllButton.click();
-          await page.waitForTimeout(500);
-        }
-
         await compareButton.click();
         await page.waitForTimeout(2000);
 
@@ -173,20 +175,21 @@ test.describe('Comparison Page - Metrics', () => {
   });
 
   test('should display comparison table', async ({ page }) => {
-    const viewLatestButton = page.locator('button:has-text("View Latest")').first();
+    // Navigate to the benchmark runs listing page by clicking the card name
+    const benchmarkCard = page.locator('[data-testid="benchmarks-page"] h3').first();
 
-    if (await viewLatestButton.isVisible().catch(() => false)) {
-      await viewLatestButton.click();
+    if (await benchmarkCard.isVisible().catch(() => false)) {
+      await benchmarkCard.click();
       await page.waitForTimeout(2000);
+
+      const selectAllButton = page.locator('button:has-text("Select All")');
+      if (await selectAllButton.isVisible().catch(() => false)) {
+        await selectAllButton.click();
+        await page.waitForTimeout(500);
+      }
 
       const compareButton = page.locator('button:has-text("Compare")');
       if (await compareButton.isVisible().catch(() => false)) {
-        const selectAllButton = page.locator('button:has-text("Select All")');
-        if (await selectAllButton.isVisible().catch(() => false)) {
-          await selectAllButton.click();
-          await page.waitForTimeout(500);
-        }
-
         await compareButton.click();
         await page.waitForTimeout(2000);
 

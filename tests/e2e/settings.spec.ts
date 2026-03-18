@@ -6,6 +6,9 @@
 import { test, expect } from '@playwright/test';
 
 test.describe('Settings Page', () => {
+  // Debug mode tests share server-side state, so run sequentially to avoid interference
+  test.describe.configure({ mode: 'serial' });
+
   test.beforeEach(async ({ page }) => {
     await page.goto('/settings');
     await page.waitForSelector('[data-testid="settings-page"]', { timeout: 30000 });
@@ -24,7 +27,8 @@ test.describe('Settings Page', () => {
   });
 
   test('should toggle debug mode', async ({ page }) => {
-    const toggle = page.locator('button[role="switch"]').first();
+    const toggle = page.locator('#debug-mode');
+    await toggle.scrollIntoViewIfNeeded();
     await expect(toggle).toBeVisible();
 
     // Get initial state
@@ -40,7 +44,9 @@ test.describe('Settings Page', () => {
   });
 
   test('should show warning when debug mode is enabled', async ({ page }) => {
-    const toggle = page.locator('button[role="switch"]').first();
+    // Use specific debug-mode toggle (there are multiple switches on the page)
+    const toggle = page.locator('#debug-mode');
+    await toggle.scrollIntoViewIfNeeded();
 
     // Get current state
     let state = await toggle.getAttribute('data-state');
@@ -63,8 +69,12 @@ test.describe('Settings Page', () => {
       }
     }
 
+    // Scroll to debug section after reload
+    const debugToggle = page.locator('#debug-mode');
+    await debugToggle.scrollIntoViewIfNeeded();
+
     // Check if warning is visible - if not, the feature might not be available
-    const warningVisible = await page.locator('text=Debug mode enabled').isVisible({ timeout: 5000 }).catch(() => false);
+    const warningVisible = await page.locator('text=Enabled:').isVisible({ timeout: 5000 }).catch(() => false);
 
     // Only assert if we successfully enabled debug mode
     if (state === 'checked') {
@@ -84,7 +94,13 @@ test.describe('Agent Endpoints Section', () => {
   });
 
   test('should display built-in agents', async ({ page }) => {
-    await expect(page.locator('text=Built-in Agents')).toBeVisible();
+    // Built-in agents section is collapsible - the toggle button is visible
+    const builtInToggle = page.locator('button:has-text("Built-in Agents")');
+    await expect(builtInToggle).toBeVisible();
+
+    // Expand the section to see built-in badges
+    await builtInToggle.click();
+    await page.waitForTimeout(500);
 
     // Should show at least one built-in agent
     const builtInBadge = page.locator('text=built-in').first();
@@ -267,8 +283,15 @@ test.describe('Custom Endpoint Persistence', () => {
     // 2. Verify endpoint appears
     await expect(page.locator(`text=${AGENT_NAME}`).first()).toBeVisible({ timeout: 10000 });
 
-    // 3. Reload the page (tests server-side persistence)
-    await page.reload();
+    // 3. Navigate away and back to test server-side persistence.
+    // A plain reload can race: the component's one-shot useEffect fires
+    // refreshConfig() before the Vite proxy reconnects to the backend,
+    // causing it to silently fail and show no custom endpoints.
+    // Navigate to another page first, wait for server connectivity, then
+    // go back to /settings so the mount-time fetch succeeds.
+    await page.goto('/');
+    await expect(page.locator('text=Server Online')).toBeVisible({ timeout: 30000 });
+    await page.goto('/settings');
     await page.waitForSelector('[data-testid="settings-page"]', { timeout: 30000 });
 
     // 4. Verify endpoint still appears after reload
@@ -334,8 +357,10 @@ test.describe('Custom Endpoint Persistence', () => {
     await expect(page.locator('text=rest').first()).toBeVisible();
     await expect(page.locator('text=traces').first()).toBeVisible();
 
-    // 7. Reload and verify persistence
-    await page.reload();
+    // 7. Navigate away and back to verify persistence (avoid reload race — see first test)
+    await page.goto('/');
+    await expect(page.locator('text=Server Online')).toBeVisible({ timeout: 30000 });
+    await page.goto('/settings');
     await page.waitForSelector('[data-testid="settings-page"]', { timeout: 30000 });
     await expect(page.locator(`text=${TRACED_AGENT_NAME}`).first()).toBeVisible({ timeout: 10000 });
     await expect(page.locator('text=rest').first()).toBeVisible();
