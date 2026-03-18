@@ -984,7 +984,7 @@ export const SettingsPage: React.FC = () => {
                   <SelectContent>
                     <SelectItem value="agui-streaming">agui-streaming (default)</SelectItem>
                     <SelectItem value="rest">rest</SelectItem>
-                    <SelectItem value="litellm">litellm</SelectItem>
+                    <SelectItem value="openai-compatible">openai-compatible</SelectItem>
                     <SelectItem value="subprocess">subprocess</SelectItem>
                     <SelectItem value="claude-code">claude-code</SelectItem>
                     <SelectItem value="mock">mock</SelectItem>
@@ -1052,7 +1052,7 @@ export const SettingsPage: React.FC = () => {
                           <SelectContent>
                             <SelectItem value="agui-streaming">agui-streaming (default)</SelectItem>
                             <SelectItem value="rest">rest</SelectItem>
-                            <SelectItem value="litellm">litellm</SelectItem>
+                            <SelectItem value="openai-compatible">openai-compatible</SelectItem>
                             <SelectItem value="subprocess">subprocess</SelectItem>
                             <SelectItem value="claude-code">claude-code</SelectItem>
                             <SelectItem value="mock">mock</SelectItem>

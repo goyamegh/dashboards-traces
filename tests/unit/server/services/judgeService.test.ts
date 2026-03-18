@@ -5,7 +5,7 @@
 
 // ---- All jest.mock calls must be before imports (Jest hoists them) ----
 
-// Mock bedrockService helpers reused by litellmJudgeService
+// Mock bedrockService helpers reused by judgeService
 jest.mock('@/server/services/bedrockService', () => ({
   buildEvaluationPrompt: jest.fn().mockReturnValue('mock evaluation prompt'),
 }));
@@ -21,19 +21,19 @@ jest.mock('@/lib/debug', () => ({
 }));
 
 // Server config mock — uses a global flag so individual tests can
-// temporarily clear LITELLM_API_KEY without module re-loading.
+// temporarily clear OPENAI_COMPATIBLE_API_KEY without module re-loading.
 jest.mock('@/server/config', () => {
   // Return a proxy-like object that reads from the outer mutable variable.
   // jest.mock is hoisted, but since we use a factory function the outer
   // variable will be in scope at runtime (not at hoist time).
   const obj = {
-    get LITELLM_API_KEY() { return (global as any).__mockLiteLLMApiKey ?? 'sk-test-key'; },
-    get LITELLM_ENDPOINT() { return 'http://localhost:4000/v1/chat/completions'; },
+    get OPENAI_COMPATIBLE_API_KEY() { return (global as any).__mockOpenAICompatibleApiKey ?? 'sk-test-key'; },
+    get OPENAI_COMPATIBLE_ENDPOINT() { return 'http://localhost:4000/v1/chat/completions'; },
   };
   return { __esModule: true, default: obj };
 });
 
-import { evaluateWithLiteLLM, parseLiteLLMError } from '@/server/services/litellmJudgeService';
+import { evaluateWithOpenAICompatible, parseOpenAICompatibleError } from '@/server/services/judgeService';
 import { TrajectoryStep } from '@/types';
 
 // Mock global fetch
@@ -72,9 +72,9 @@ const baseRequest = {
   expectedOutcomes: ['Agent identifies root cause'],
 };
 
-describe('evaluateWithLiteLLM', () => {
+describe('evaluateWithOpenAICompatible', () => {
   beforeEach(() => {
-    (global as any).__mockLiteLLMApiKey = 'sk-test-key';
+    (global as any).__mockOpenAICompatibleApiKey = 'sk-test-key';
     jest.clearAllMocks();
     jest.spyOn(console, 'log').mockImplementation(() => {});
     jest.spyOn(console, 'error').mockImplementation(() => {});
@@ -82,13 +82,13 @@ describe('evaluateWithLiteLLM', () => {
 
   afterEach(() => {
     jest.restoreAllMocks();
-    delete (global as any).__mockLiteLLMApiKey;
+    delete (global as any).__mockOpenAICompatibleApiKey;
   });
 
-  it('sends POST to litellmEndpoint with correct model, messages, temperature, and max_tokens', async () => {
+  it('sends POST to endpoint with correct model, messages, temperature, and max_tokens', async () => {
     mockFetch.mockResolvedValue(makeFetchSuccess(mockJudgeResult));
 
-    await evaluateWithLiteLLM(baseRequest, 'gpt-4o');
+    await evaluateWithOpenAICompatible(baseRequest, 'gpt-4o');
 
     expect(mockFetch).toHaveBeenCalledWith(
       'http://localhost:4000/v1/chat/completions',
@@ -105,21 +105,21 @@ describe('evaluateWithLiteLLM', () => {
     expect(callBody.max_tokens).toBe(4096);
   });
 
-  it('sets Authorization: Bearer header when litellmApiKey is set', async () => {
+  it('sets Authorization: Bearer header when API key is set', async () => {
     mockFetch.mockResolvedValue(makeFetchSuccess(mockJudgeResult));
 
-    await evaluateWithLiteLLM(baseRequest, 'gpt-4o');
+    await evaluateWithOpenAICompatible(baseRequest, 'gpt-4o');
 
     const callHeaders = mockFetch.mock.calls[0][1].headers;
     expect(callHeaders['Authorization']).toBe('Bearer sk-test-key');
     expect(callHeaders['Content-Type']).toBe('application/json');
   });
 
-  it('omits Authorization header when litellmApiKey is empty', async () => {
-    (global as any).__mockLiteLLMApiKey = '';
+  it('omits Authorization header when API key is empty', async () => {
+    (global as any).__mockOpenAICompatibleApiKey = '';
     mockFetch.mockResolvedValue(makeFetchSuccess(mockJudgeResult));
 
-    await evaluateWithLiteLLM(baseRequest, 'gpt-4o');
+    await evaluateWithOpenAICompatible(baseRequest, 'gpt-4o');
 
     const callHeaders = mockFetch.mock.calls[0][1].headers;
     expect(callHeaders['Authorization']).toBeUndefined();
@@ -128,7 +128,7 @@ describe('evaluateWithLiteLLM', () => {
   it('parses clean JSON response and returns correct JudgeResponse shape', async () => {
     mockFetch.mockResolvedValue(makeFetchSuccess(mockJudgeResult));
 
-    const result = await evaluateWithLiteLLM(baseRequest, 'gpt-4o');
+    const result = await evaluateWithOpenAICompatible(baseRequest, 'gpt-4o');
 
     expect(result.passFailStatus).toBe('passed');
     expect(result.metrics.accuracy).toBe(85);
@@ -149,7 +149,7 @@ describe('evaluateWithLiteLLM', () => {
       text: jest.fn().mockResolvedValue(''),
     });
 
-    const result = await evaluateWithLiteLLM(baseRequest, 'gpt-4o');
+    const result = await evaluateWithOpenAICompatible(baseRequest, 'gpt-4o');
 
     expect(result.passFailStatus).toBe('passed');
     expect(result.metrics.accuracy).toBe(85);
@@ -166,7 +166,7 @@ describe('evaluateWithLiteLLM', () => {
       text: jest.fn().mockResolvedValue(''),
     });
 
-    const result = await evaluateWithLiteLLM(baseRequest, 'gpt-4o');
+    const result = await evaluateWithOpenAICompatible(baseRequest, 'gpt-4o');
 
     expect(result.passFailStatus).toBe('passed');
     expect(result.metrics.accuracy).toBe(85);
@@ -175,16 +175,16 @@ describe('evaluateWithLiteLLM', () => {
   it('throws when HTTP response is not ok (401)', async () => {
     mockFetch.mockResolvedValue(makeFetchError(401, 'Unauthorized'));
 
-    await expect(evaluateWithLiteLLM(baseRequest, 'gpt-4o')).rejects.toThrow(
-      'LiteLLM responded 401: Unauthorized'
+    await expect(evaluateWithOpenAICompatible(baseRequest, 'gpt-4o')).rejects.toThrow(
+      'OpenAI-compatible endpoint responded 401: Unauthorized'
     );
   });
 
   it('throws when HTTP response is not ok (500)', async () => {
     mockFetch.mockResolvedValue(makeFetchError(500, 'Internal Server Error'));
 
-    await expect(evaluateWithLiteLLM(baseRequest, 'gpt-4o')).rejects.toThrow(
-      'LiteLLM responded 500: Internal Server Error'
+    await expect(evaluateWithOpenAICompatible(baseRequest, 'gpt-4o')).rejects.toThrow(
+      'OpenAI-compatible endpoint responded 500: Internal Server Error'
     );
   });
 
@@ -197,7 +197,7 @@ describe('evaluateWithLiteLLM', () => {
     };
     mockFetch.mockResolvedValue(makeFetchSuccess(resultWithStrategies));
 
-    const result = await evaluateWithLiteLLM(baseRequest, 'gpt-4o');
+    const result = await evaluateWithOpenAICompatible(baseRequest, 'gpt-4o');
 
     expect(result.improvementStrategies).toHaveLength(1);
     expect(result.improvementStrategies[0].category).toBe('Tool Usage');
@@ -212,7 +212,7 @@ describe('evaluateWithLiteLLM', () => {
     };
     mockFetch.mockResolvedValue(makeFetchSuccess(legacyResult));
 
-    const result = await evaluateWithLiteLLM(baseRequest, 'gpt-4o');
+    const result = await evaluateWithOpenAICompatible(baseRequest, 'gpt-4o');
 
     expect(result.passFailStatus).toBe('failed');
     expect(result.metrics.accuracy).toBe(42);
@@ -220,49 +220,49 @@ describe('evaluateWithLiteLLM', () => {
   });
 });
 
-describe('parseLiteLLMError', () => {
+describe('parseOpenAICompatibleError', () => {
   it('maps 401 error to credential message', () => {
-    const msg = parseLiteLLMError(new Error('LiteLLM responded 401: Unauthorized'));
-    expect(msg).toContain('LITELLM_API_KEY');
+    const msg = parseOpenAICompatibleError(new Error('OpenAI-compatible endpoint responded 401: Unauthorized'));
+    expect(msg).toContain('OPENAI_COMPATIBLE_API_KEY');
   });
 
   it('maps "unauthorized" keyword to credential message', () => {
-    const msg = parseLiteLLMError(new Error('unauthorized access'));
-    expect(msg).toContain('LITELLM_API_KEY');
+    const msg = parseOpenAICompatibleError(new Error('unauthorized access'));
+    expect(msg).toContain('OPENAI_COMPATIBLE_API_KEY');
   });
 
   it('maps "authentication" keyword to credential message', () => {
-    const msg = parseLiteLLMError(new Error('Authentication failed'));
-    expect(msg).toContain('LITELLM_API_KEY');
+    const msg = parseOpenAICompatibleError(new Error('Authentication failed'));
+    expect(msg).toContain('OPENAI_COMPATIBLE_API_KEY');
   });
 
   it('maps 429 error to rate limit message', () => {
-    const msg = parseLiteLLMError(new Error('LiteLLM responded 429: Too Many Requests'));
+    const msg = parseOpenAICompatibleError(new Error('OpenAI-compatible endpoint responded 429: Too Many Requests'));
     expect(msg).toContain('rate limit');
   });
 
   it('maps "rate limit" keyword to rate limit message', () => {
-    const msg = parseLiteLLMError(new Error('Rate limit exceeded'));
+    const msg = parseOpenAICompatibleError(new Error('Rate limit exceeded'));
     expect(msg).toContain('rate limit');
   });
 
   it('maps JSON parse failure to parse error message', () => {
-    const msg = parseLiteLLMError(new Error('Failed to parse JSON response'));
+    const msg = parseOpenAICompatibleError(new Error('Failed to parse JSON response'));
     expect(msg).toContain('parse');
   });
 
   it('maps ECONNREFUSED to connection error message', () => {
-    const msg = parseLiteLLMError(new Error('connect ECONNREFUSED 127.0.0.1:4000'));
+    const msg = parseOpenAICompatibleError(new Error('connect ECONNREFUSED 127.0.0.1:4000'));
     expect(msg).toContain('connect');
   });
 
   it('maps ENOTFOUND to connection error message', () => {
-    const msg = parseLiteLLMError(new Error('getaddrinfo ENOTFOUND api.openai.com'));
+    const msg = parseOpenAICompatibleError(new Error('getaddrinfo ENOTFOUND api.openai.com'));
     expect(msg).toContain('connect');
   });
 
   it('returns raw message for unknown errors', () => {
-    const msg = parseLiteLLMError(new Error('Something completely unexpected'));
+    const msg = parseOpenAICompatibleError(new Error('Something completely unexpected'));
     expect(msg).toBe('Something completely unexpected');
   });
 });

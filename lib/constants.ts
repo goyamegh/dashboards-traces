@@ -171,22 +171,22 @@ export const DEFAULT_CONFIG: AppConfig = {
     },
     "gpt-4o": {
       model_id: "gpt-4o",
-      display_name: "GPT-4o (via LiteLLM)",
-      provider: "litellm",
+      display_name: "GPT-4o",
+      provider: "openai-compatible",
       context_window: 128000,
       max_output_tokens: 4096
     },
     "deepseek-r1:8b": {
       model_id: "deepseek-r1:8b",
       display_name: "DeepSeek R1 8B (Ollama)",
-      provider: "litellm",
+      provider: "openai-compatible",
       context_window: 128000,
       max_output_tokens: 8192
     },
     "gemma3:12b": {
       model_id: "gemma3:12b",
       display_name: "Gemma 3 12B (Ollama)",
-      provider: "litellm",
+      provider: "openai-compatible",
       context_window: 128000,
       max_output_tokens: 8192
     },

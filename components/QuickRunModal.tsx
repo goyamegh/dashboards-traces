@@ -50,10 +50,10 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
   const [report, setReport] = useState<ServerEvaluationReport | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // LiteLLM dynamic model discovery
-  const [litellmModels, setLitellmModels] = useState<string[]>([]);
-  const [litellmDiscoveryState, setLitellmDiscoveryState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
-  const [litellmDiscoveryError, setLitellmDiscoveryError] = useState<string | null>(null);
+  // OpenAI-compatible dynamic model discovery
+  const [openaiCompatModels, setOpenaiCompatModels] = useState<string[]>([]);
+  const [openaiCompatDiscoveryState, setOpenaiCompatDiscoveryState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [openaiCompatDiscoveryError, setOpenaiCompatDiscoveryError] = useState<string | null>(null);
 
   // Bedrock dynamic model discovery
   const [bedrockModels, setBedrockModels] = useState<Array<{ id: string; name: string }>>([]);
@@ -62,7 +62,7 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
 
   const selectedAgent = DEFAULT_CONFIG.agents.find(a => a.key === selectedAgentKey);
 
-  // Group models by provider for the dropdown (includes dynamically discovered LiteLLM models)
+  // Group models by provider for the dropdown (includes dynamically discovered OpenAI-compatible models)
   const modelsByProvider = Object.entries(DEFAULT_CONFIG.models).reduce((acc, [key, model]) => {
     const provider = model.provider || 'bedrock';
     if (!acc[provider]) acc[provider] = [];
@@ -70,13 +70,13 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
     return acc;
   }, {} as Record<string, Array<{ key: string; display_name: string; provider: string }>>);
 
-  // Merge in discovered LiteLLM models (deduplicating against static config)
-  const staticLitellmKeys = new Set((modelsByProvider['litellm'] || []).map(m => m.key));
-  const discoveredLitellmModels = litellmModels
-    .filter(id => !staticLitellmKeys.has(id))
-    .map(id => ({ key: id, model_id: id, display_name: id, provider: 'litellm' }));
-  if (discoveredLitellmModels.length > 0) {
-    modelsByProvider['litellm'] = [...(modelsByProvider['litellm'] || []), ...discoveredLitellmModels];
+  // Merge in discovered OpenAI-compatible models (deduplicating against static config)
+  const staticOpenaiCompatKeys = new Set((modelsByProvider['openai-compatible'] || []).map(m => m.key));
+  const discoveredOpenaiCompatModels = openaiCompatModels
+    .filter(id => !staticOpenaiCompatKeys.has(id))
+    .map(id => ({ key: id, model_id: id, display_name: id, provider: 'openai-compatible' }));
+  if (discoveredOpenaiCompatModels.length > 0) {
+    modelsByProvider['openai-compatible'] = [...(modelsByProvider['openai-compatible'] || []), ...discoveredOpenaiCompatModels];
   }
 
   // Merge in discovered Bedrock models (deduplicating against static config by model_id)
@@ -93,25 +93,25 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
   const providerLabels: Record<string, string> = {
     demo: 'Demo',
     bedrock: 'AWS Bedrock',
-    litellm: 'LiteLLM / OpenAI-compatible',
+    'openai-compatible': 'OpenAI-compatible',
   };
 
-  const fetchLitellmModels = useCallback(async () => {
-    setLitellmDiscoveryState('loading');
-    setLitellmDiscoveryError(null);
+  const fetchOpenaiCompatModels = useCallback(async () => {
+    setOpenaiCompatDiscoveryState('loading');
+    setOpenaiCompatDiscoveryError(null);
     try {
-      const response = await fetch('/api/judge/litellm-models');
+      const response = await fetch('/api/judge/openai-compatible-models');
       const data = await response.json();
       if (!response.ok) {
-        setLitellmDiscoveryState('error');
-        setLitellmDiscoveryError(data.error || 'Failed to fetch models');
+        setOpenaiCompatDiscoveryState('error');
+        setOpenaiCompatDiscoveryError(data.error || 'Failed to fetch models');
       } else {
-        setLitellmModels(data.models || []);
-        setLitellmDiscoveryState('done');
+        setOpenaiCompatModels(data.models || []);
+        setOpenaiCompatDiscoveryState('done');
       }
     } catch (err: any) {
-      setLitellmDiscoveryState('error');
-      setLitellmDiscoveryError('Cannot reach server');
+      setOpenaiCompatDiscoveryState('error');
+      setOpenaiCompatDiscoveryError('Cannot reach server');
     }
   }, []);
 
@@ -135,7 +135,7 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
   }, []);
 
   const selectedModelConfig = DEFAULT_CONFIG.models[selectedModelId] ||
-    discoveredLitellmModels.find(m => m.key === selectedModelId) ||
+    discoveredOpenaiCompatModels.find(m => m.key === selectedModelId) ||
     discoveredBedrockModels.find(m => m.key === selectedModelId) as any;
   const selectedModelProvider = selectedModelConfig?.provider || 'bedrock';
 
@@ -323,10 +323,10 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                 <div className="flex items-center gap-1">
                   <Label className="text-xs">Judge Model</Label>
                   <span
-                    className={`text-muted-foreground cursor-default ${selectedModelProvider === 'litellm' ? 'text-blue-500 dark:text-blue-400' : ''}`}
+                    className={`text-muted-foreground cursor-default ${selectedModelProvider === 'openai-compatible' ? 'text-blue-500 dark:text-blue-400' : ''}`}
                     title={
-                      selectedModelProvider === 'litellm'
-                        ? 'LiteLLM / OpenAI-compatible — set LITELLM_ENDPOINT and LITELLM_API_KEY in .env. Click ↻ to discover available models.'
+                      selectedModelProvider === 'openai-compatible'
+                        ? 'OpenAI-compatible — set OPENAI_COMPATIBLE_ENDPOINT and OPENAI_COMPATIBLE_API_KEY in .env. Click ↻ to discover available models.'
                         : 'Select the LLM used to judge agent trajectories'
                     }
                   >
@@ -375,23 +375,23 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                   <button
                     type="button"
                     title={
-                      litellmDiscoveryState === 'done'
-                        ? `${litellmModels.length} model${litellmModels.length !== 1 ? 's' : ''} discovered from LiteLLM endpoint`
-                        : litellmDiscoveryState === 'error'
-                        ? `LiteLLM endpoint unreachable: ${litellmDiscoveryError}`
-                        : 'Discover models from LiteLLM / Ollama endpoint'
+                      openaiCompatDiscoveryState === 'done'
+                        ? `${openaiCompatModels.length} model${openaiCompatModels.length !== 1 ? 's' : ''} discovered from OpenAI-compatible endpoint`
+                        : openaiCompatDiscoveryState === 'error'
+                        ? `OpenAI-compatible endpoint unreachable: ${openaiCompatDiscoveryError}`
+                        : 'Discover models from OpenAI-compatible endpoint'
                     }
-                    onClick={fetchLitellmModels}
-                    disabled={litellmDiscoveryState === 'loading'}
+                    onClick={fetchOpenaiCompatModels}
+                    disabled={openaiCompatDiscoveryState === 'loading'}
                     className={`h-8 w-8 flex items-center justify-center rounded border bg-background disabled:opacity-50 ${
-                      litellmDiscoveryState === 'done'
+                      openaiCompatDiscoveryState === 'done'
                         ? 'border-green-400 text-green-600 dark:text-green-400'
-                        : litellmDiscoveryState === 'error'
+                        : openaiCompatDiscoveryState === 'error'
                         ? 'border-amber-400 text-amber-600 dark:text-amber-400'
                         : 'border-input text-muted-foreground hover:text-foreground hover:bg-accent'
                     }`}
                   >
-                    <RefreshCw size={12} className={litellmDiscoveryState === 'loading' ? 'animate-spin' : ''} />
+                    <RefreshCw size={12} className={openaiCompatDiscoveryState === 'loading' ? 'animate-spin' : ''} />
                   </button>
                 </div>
               </div>
