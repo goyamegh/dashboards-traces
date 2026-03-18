@@ -52,28 +52,31 @@ test.describe('Settings Page', () => {
     let state = await toggle.getAttribute('data-state');
 
     if (state !== 'checked') {
-      // Enable debug mode
+      // Enable debug mode — wait for the server POST to complete before navigating away
+      const debugPostPromise = page.waitForResponse(
+        resp => resp.url().includes('/api/debug') && resp.request().method() === 'POST',
+        { timeout: 10000 },
+      );
       await toggle.click();
-
-      // Wait for toggle state to update
-      await page.waitForTimeout(2000);
+      await debugPostPromise;
 
       // Verify toggle changed
       state = await toggle.getAttribute('data-state');
 
-      // Reload page to ensure UI reflects the change
+      // Navigate away and back to ensure UI reflects server-persisted state
       if (state === 'checked') {
-        await page.reload();
+        await page.goto('/');
+        await expect(page.locator('text=Server Online')).toBeVisible({ timeout: 30000 });
+        await page.goto('/settings');
         await page.waitForSelector('[data-testid="settings-page"]', { timeout: 30000 });
-        await page.waitForTimeout(1000);
       }
     }
 
-    // Scroll to debug section after reload
+    // Scroll to debug section after navigation
     const debugToggle = page.locator('#debug-mode');
     await debugToggle.scrollIntoViewIfNeeded();
 
-    // Check if warning is visible - if not, the feature might not be available
+    // Check if warning is visible
     const warningVisible = await page.locator('text=Enabled:').isVisible({ timeout: 5000 }).catch(() => false);
 
     // Only assert if we successfully enabled debug mode
