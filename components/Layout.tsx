@@ -207,7 +207,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                   </SidebarMenuItem>
                 ))}
 
-                {/* Testing collapsible section - only show when expanded */}
+                {/* Evals collapsible section - only show when expanded */}
                 {!isCollapsed && (
                   <Collapsible
                     open={testingOpen}
@@ -216,12 +216,12 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                     <SidebarMenuItem>
                       <CollapsibleTrigger asChild>
                         <SidebarMenuButton
-                          tooltip="Testing"
+                          tooltip="Evals"
                           isActive={isTestingPath}
                           className="h-9 w-full"
                         >
                           <Gauge className="h-4 w-4" />
-                          <span className="text-sm">Testing</span>
+                          <span className="text-sm">Evals</span>
                           <ChevronDown 
                             className={`ml-auto h-4 w-4 transition-transform duration-200 ${
                               testingOpen ? 'rotate-180' : ''
@@ -249,13 +249,13 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                   </Collapsible>
                 )}
                 
-                {/* Testing icon only when collapsed */}
+                {/* Evals icon only when collapsed */}
                 {isCollapsed && (
                   <SidebarMenuItem>
                     <SidebarMenuButton
                       asChild
                       isActive={isTestingPath}
-                      tooltip="Testing"
+                      tooltip="Evals"
                       data-testid="nav-testing"
                       className="h-9"
                     >
