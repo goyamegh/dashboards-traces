@@ -31,6 +31,8 @@ import {
   saveObservabilityConfig,
   clearStorageConfig,
   clearObservabilityConfig,
+  retryStorageConnection,
+  useFileStorage,
   type ConfigStatus,
   type SaveStorageConfigResult,
 } from '@/lib/dataSourceConfig';
@@ -1230,15 +1232,105 @@ export const SettingsPage: React.FC = () => {
             <div className="flex items-center gap-2 text-xs">
               <span className="text-muted-foreground">Currently configured via:</span>
               <span className={`px-2 py-0.5 rounded ${
-                configStatus.storage.source === 'file' 
+                configStatus.storage.source === 'file'
                   ? 'bg-green-100 text-green-900 border border-green-300 dark:bg-green-950/50 dark:text-green-300 dark:border-green-700/50'
-                  : configStatus.storage.source === 'environment' 
+                  : configStatus.storage.source === 'environment'
                   ? 'bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50'
                   : 'bg-gray-100 text-gray-900 border border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700/50'
               }`}>
                 {configStatus.storage.source === 'file' ? 'Config file (agent-health.config.json)' :
                  configStatus.storage.source === 'environment' ? 'Environment variables' :
                  'Not configured'}
+              </span>
+            </div>
+          )}
+
+          {/* Runtime storage state */}
+          {configStatus?.runtime?.storage.backend === 'error' && (
+            <Alert variant="destructive" className="py-2">
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription className="flex items-center justify-between">
+                <span className="text-sm">
+                  Storage configured but unreachable: {configStatus.runtime.storage.error}
+                </span>
+                <span className="flex gap-2 ml-4 shrink-0">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        await retryStorageConnection();
+                        const status = await getConfigStatus();
+                        setConfigStatus(status);
+                      } catch (e: any) {
+                        console.error('Retry failed:', e.message);
+                      }
+                    }}
+                  >
+                    <RefreshCw size={14} className="mr-1" />
+                    Retry
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={async () => {
+                      try {
+                        await useFileStorage();
+                        const status = await getConfigStatus();
+                        setConfigStatus(status);
+                      } catch (e: any) {
+                        console.error('Use file storage failed:', e.message);
+                      }
+                    }}
+                  >
+                    <Database size={14} className="mr-1" />
+                    Use File Storage
+                  </Button>
+                </span>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {configStatus?.runtime?.storage.drifted && configStatus.runtime.storage.backend !== 'error' && (
+            <Alert className="py-2 border-yellow-500/50 bg-yellow-50 dark:bg-yellow-950/20">
+              <AlertTriangle className="h-4 w-4 text-yellow-600 dark:text-yellow-400" />
+              <AlertDescription className="flex items-center justify-between">
+                <span className="text-sm text-yellow-800 dark:text-yellow-300">
+                  Config file changed. Runtime storage may be out of date.
+                </span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="ml-4 shrink-0"
+                  onClick={async () => {
+                    try {
+                      await retryStorageConnection();
+                      const status = await getConfigStatus();
+                      setConfigStatus(status);
+                    } catch (e: any) {
+                      console.error('Apply failed:', e.message);
+                    }
+                  }}
+                >
+                  <RefreshCw size={14} className="mr-1" />
+                  Apply Now
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
+
+          {configStatus?.runtime?.storage && !configStatus.runtime.storage.drifted && configStatus.runtime.storage.backend !== 'error' && (
+            <div className="flex items-center gap-2 text-xs">
+              <span className="text-muted-foreground">Runtime:</span>
+              <span className={`flex items-center gap-1 px-2 py-0.5 rounded ${
+                configStatus.runtime.storage.backend === 'opensearch'
+                  ? 'bg-green-100 text-green-900 border border-green-300 dark:bg-green-950/50 dark:text-green-300 dark:border-green-700/50'
+                  : 'bg-gray-100 text-gray-900 border border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700/50'
+              }`}>
+                {configStatus.runtime.storage.backend === 'opensearch' && <CheckCircle2 size={12} />}
+                {configStatus.runtime.storage.backend === 'opensearch'
+                  ? `OpenSearch (${configStatus.runtime.storage.configuredEndpoint})`
+                  : 'File Storage'}
               </span>
             </div>
           )}

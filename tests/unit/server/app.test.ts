@@ -98,20 +98,13 @@ jest.mock('@/server/middleware/dataSourceConfig', () => ({
   },
 }));
 
-jest.mock('@/server/adapters/index', () => ({
-  setStorageModule: jest.fn(),
-  getStorageModule: jest.fn(),
-}));
-
-jest.mock('@/server/adapters/opensearch/StorageModule', () => ({
-  OpenSearchStorageModule: jest.fn(),
-}));
-
-jest.mock('@opensearch-project/opensearch', () => ({
-  Client: jest.fn().mockImplementation(() => ({
-    cluster: { health: jest.fn().mockRejectedValue(new Error('mock')) },
-    close: jest.fn().mockResolvedValue(undefined),
-  })),
+jest.mock('@/server/services/storageInitializer', () => ({
+  initializeStorageFromConfig: jest.fn().mockResolvedValue({
+    backend: 'file',
+    configKey: null,
+    error: null,
+    configuredEndpoint: null,
+  }),
 }));
 
 import { createApp } from '@/server/app';

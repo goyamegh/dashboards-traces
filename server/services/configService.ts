@@ -17,6 +17,8 @@
 import fs from 'fs';
 import path from 'path';
 import { debug } from '../../lib/debug.js';
+import { getStorageState, type StorageBackend } from '../adapters/index.js';
+import { configToCacheKey } from './opensearchClientFactory.js';
 import type { StorageClusterConfig, ObservabilityClusterConfig, ClusterAuthType } from '../../types/index.js';
 
 // Same filename used by customAgentStore.ts
@@ -79,6 +81,14 @@ export interface ConfigStatus {
       traces?: string;
       logs?: string;
       metrics?: string;
+    };
+  };
+  runtime?: {
+    storage: {
+      backend: StorageBackend;
+      error: string | null;
+      configuredEndpoint: string | null;
+      drifted: boolean;
     };
   };
 }
@@ -360,6 +370,14 @@ export function getConfigStatus(): ConfigStatus {
     ? config?.observability?.awsService
     : (process.env.OPENSEARCH_LOGS_AWS_SERVICE as 'es' | 'aoss') || undefined;
 
+  // Compute runtime storage state
+  const storageState = getStorageState();
+  const resolvedStorageConfig = getStorageConfigFromFile() ??
+    (process.env.OPENSEARCH_STORAGE_ENDPOINT ? { endpoint: process.env.OPENSEARCH_STORAGE_ENDPOINT } as StorageClusterConfig : null);
+  const fileConfigKey = resolvedStorageConfig ? configToCacheKey(resolvedStorageConfig) : null;
+  const drifted = fileConfigKey !== storageState.configKey &&
+    storageState.configKey !== '__file_override__';
+
   return {
     storage: {
       configured: storageSource !== 'none',
@@ -391,6 +409,14 @@ export function getConfigStatus(): ConfigStatus {
       awsRegion: obsAwsRegion,
       awsService: obsAwsService,
       indexes: obsIndexes,
+    },
+    runtime: {
+      storage: {
+        backend: storageState.backend,
+        error: storageState.error,
+        configuredEndpoint: storageState.configuredEndpoint,
+        drifted,
+      },
     },
   };
 }
