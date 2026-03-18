@@ -10,6 +10,17 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ## [Unreleased]
 
 ### Added
+- Docker configuration files for local development stack with OpenSearch and OTEL pipeline
+- Collapsible section for built-in agents and debug settings to SettingsPage
+
+### Changed
+- Enhanced CLI help output with grouped sections and examples
+- Rename 'Testing' to 'Evals' in collapsible section and tooltips
+
+### Removed
+- `models` property from agent configurations and related functions
+
+### Added
 - AWS SigV4 authentication support for OpenSearch clusters with `ClusterAuthType` (`none` | `basic` | `sigv4`) ([#85](https://github.com/opensearch-project/agent-health/pull/85))
 - OpenSearch client factory (`opensearchClientFactory.ts`) for centralized client creation with basic, none, or SigV4 auth ([#85](https://github.com/opensearch-project/agent-health/pull/85))
 - Mapping validation service to detect incompatible field types in OpenSearch indexes ([#85](https://github.com/opensearch-project/agent-health/pull/85))

@@ -357,7 +357,7 @@ Agents and models can be configured via `agent-health.config.ts` in the working 
 export default {
   agents: [
     { key: "my-agent", name: "My Agent", endpoint: "http://localhost:3000/agent",
-      connectorType: "agui-streaming", models: ["claude-sonnet-4"] }
+      connectorType: "agui-streaming" }
   ],
   // extends: false,  // Set to use ONLY your agents/models (no built-in defaults)
 };
@@ -464,7 +464,7 @@ Update `lib/constants.ts` → `DEFAULT_CONFIG.models`:
 }
 ```
 
-Then add the model key to the agent's `models` array in the agents config.
+Models are configured globally in `config.models`, not per-agent.
 
 ### Trajectory Step Types
 

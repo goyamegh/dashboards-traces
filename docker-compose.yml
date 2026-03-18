@@ -39,7 +39,7 @@ services:
       - bootstrap.memory_lock=true
       - OPENSEARCH_JAVA_OPTS=${OPENSEARCH_JAVA_OPTS:--Xms512m -Xmx512m}
       - "OPENSEARCH_INITIAL_ADMIN_PASSWORD=${OPENSEARCH_PASSWORD:-My_password_123!@#}"
-      - plugins.query.datasources.encryption.masterkey=BTqK4Ytdz67La1kShIKV3Pu9
+      - plugins.query.datasources.encryption.masterkey=${OPENSEARCH_ENCRYPTION_MASTERKEY:-BTqK4Ytdz67La1kShIKV3Pu9}
     volumes:
       - opensearch-data:/usr/share/opensearch/data
     ports:

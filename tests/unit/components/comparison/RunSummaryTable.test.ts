@@ -11,7 +11,7 @@ jest.mock('@/lib/constants', () => ({
   DEFAULT_CONFIG: {
     agents: [
       { key: 'pulsar', name: 'Pulsar' },
-      { key: 'travel-planner', name: 'Travel Planner' },
+      { key: 'demo', name: 'Demo Agent' },
     ],
     models: {},
   },
@@ -326,7 +326,7 @@ describe('RunSummaryTable', () => {
     it('returns null when runs have different values', () => {
       const runs = [
         createMockRun({ runId: 'run-1', agentKey: 'pulsar' }),
-        createMockRun({ runId: 'run-2', agentKey: 'travel-planner' }),
+        createMockRun({ runId: 'run-2', agentKey: 'demo' }),
       ];
 
       const result = getUniformValue(runs, r => r.agentKey);

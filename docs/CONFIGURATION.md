@@ -212,7 +212,6 @@ These agents work out of the box:
 | Demo Agent | `demo` | `mock` | Simulated responses for testing |
 | Claude Code | `claude-code` | `claude-code` | Requires `claude` CLI installed |
 | Langgraph | `langgraph` | `agui-streaming` | AG-UI protocol |
-| ML-Commons | `mlcommons-local` | `agui-streaming` | Local OpenSearch |
 | HolmesGPT | `holmesgpt` | `agui-streaming` | AI investigation agent |
 
 ## Built-in Connectors
