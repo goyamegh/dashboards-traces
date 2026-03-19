@@ -53,13 +53,12 @@ async function listAgents(format: OutputFormat, config: ResolvedConfig): Promise
       return;
     }
 
-    const headers = ['Key', 'Name', 'Connector', 'Models', 'Endpoint'];
+    const headers = ['Key', 'Name', 'Connector', 'Endpoint'];
     const rows = agents.map(agent => [
       agent.key,
       agent.name,
       agent.connectorType || 'agui-streaming',
-      agent.models.slice(0, 3).join(', ') + (agent.models.length > 3 ? '...' : ''),
-      agent.endpoint.substring(0, 37) + (agent.endpoint.length > 37 ? '...' : ''),
+      agent.endpoint.substring(0, 47) + (agent.endpoint.length > 47 ? '...' : ''),
     ]);
 
     if (format === 'markdown') {
@@ -69,7 +68,7 @@ async function listAgents(format: OutputFormat, config: ResolvedConfig): Promise
 
     const table = new Table({
       head: headers.map(h => chalk.cyan(h)),
-      colWidths: [15, 20, 15, 25, 40],
+      colWidths: [15, 20, 15, 50],
       wordWrap: true,
     });
     for (const row of rows) {
