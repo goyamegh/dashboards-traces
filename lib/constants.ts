@@ -3,8 +3,59 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { AppConfig, ModelConfig } from '@/types';
+import { AppConfig, ConnectorProtocol, ModelConfig } from '@/types';
 import { ENV_CONFIG } from '@/lib/config';
+
+/**
+ * Single source of truth for connector type metadata.
+ * Used by Settings UI (dropdown + descriptions), server validation, and browser-safety checks.
+ */
+export interface ConnectorTypeInfo {
+  label: string;
+  description: string;
+  serverOnly: boolean;
+}
+
+export const CONNECTOR_TYPE_INFO: Record<ConnectorProtocol, ConnectorTypeInfo> = {
+  'agui-streaming': {
+    label: 'AG-UI Streaming',
+    description: 'AG-UI protocol over SSE. Use for ML-Commons and AG-UI compatible agents.',
+    serverOnly: false,
+  },
+  'rest': {
+    label: 'REST',
+    description: 'Standard HTTP POST. Agent receives JSON, returns JSON. No streaming.',
+    serverOnly: false,
+  },
+  'openai-compatible': {
+    label: 'OpenAI Compatible',
+    description: 'OpenAI chat completions format (POST /v1/chat/completions). Works with LiteLLM, Ollama, vLLM.',
+    serverOnly: false,
+  },
+  'subprocess': {
+    label: 'Subprocess',
+    description: 'Runs a CLI command as a child process. Server-only — use the CLI or benchmark runner.',
+    serverOnly: true,
+  },
+  'claude-code': {
+    label: 'Claude Code',
+    description: 'Invokes the Claude Code CLI. Server-only — use the CLI or benchmark runner.',
+    serverOnly: true,
+  },
+  'mock': {
+    label: 'Mock',
+    description: 'Built-in demo agent for testing. No real endpoint needed.',
+    serverOnly: false,
+  },
+};
+
+/** All valid connector protocol types, derived from CONNECTOR_TYPE_INFO. */
+export const VALID_CONNECTOR_TYPES = Object.keys(CONNECTOR_TYPE_INFO) as ConnectorProtocol[];
+
+/** Connector types that work in the browser (non-serverOnly). */
+export const BROWSER_SAFE_CONNECTORS = (Object.entries(CONNECTOR_TYPE_INFO) as [ConnectorProtocol, ConnectorTypeInfo][])
+  .filter(([, info]) => !info.serverOnly)
+  .map(([type]) => type);
 
 /**
  * Get Claude Code connector environment variables at runtime.

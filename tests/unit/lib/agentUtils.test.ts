@@ -40,6 +40,13 @@ describe('agentUtils', () => {
       connectorType: 'claude-code',
     },
     {
+      key: 'openai-agent',
+      name: 'OpenAI Compatible Agent',
+      endpoint: 'http://localhost:11434',
+      connectorType: 'openai-compatible',
+      models: ['gpt-4o'],
+    },
+    {
       key: 'default-agent',
       name: 'Default Agent (no connector type)',
       endpoint: 'http://localhost:5000',
@@ -60,6 +67,11 @@ describe('agentUtils', () => {
 
     it('should return true for mock connector', () => {
       const agent = mockAgents.find(a => a.key === 'mock-agent')!;
+      expect(isBrowserCompatible(agent)).toBe(true);
+    });
+
+    it('should return true for openai-compatible connector', () => {
+      const agent = mockAgents.find(a => a.key === 'openai-agent')!;
       expect(isBrowserCompatible(agent)).toBe(true);
     });
 
