@@ -88,9 +88,13 @@ test.describe('Debug API E2E', () => {
     await toggle.scrollIntoViewIfNeeded();
     await expect(toggle).toBeVisible();
 
-    // Click toggle to change state
+    // Click toggle and wait for POST to complete
+    const postPromise = page.waitForResponse(
+      resp => resp.url().includes('/api/debug') && resp.request().method() === 'POST',
+      { timeout: 10000 },
+    );
     await toggle.click();
-    await page.waitForTimeout(1000);
+    await postPromise;
 
     // Verify server state changed
     const afterResponse = await request.get('/api/debug');

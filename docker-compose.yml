@@ -95,7 +95,7 @@ services:
 
   # Data Prepper - Transforms and enriches traces/logs before OpenSearch ingestion
   data-prepper:
-    image: opensearchproject/opensearch-data-prepper:${DATA_PREPPER_VERSION:-2.14.1}
+    image: opensearchproject/data-prepper:${DATA_PREPPER_VERSION:-2.14.1}
     container_name: data-prepper
     platform: linux/amd64
     command: >

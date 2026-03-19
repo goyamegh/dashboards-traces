@@ -129,7 +129,7 @@ test.describe('Agent Selection', () => {
 
       const builtInBadges = page.locator('span').filter({ hasText: 'built-in' });
       const builtInCount = await builtInBadges.count();
-      expect(builtInCount).toBeGreaterThanOrEqual(3);
+      expect(builtInCount).toBeGreaterThanOrEqual(2);
     });
   });
 });

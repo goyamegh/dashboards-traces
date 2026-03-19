@@ -354,44 +354,30 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                   <button
                     type="button"
                     title={
-                      bedrockDiscoveryState === 'done'
-                        ? `${bedrockModels.length} model${bedrockModels.length !== 1 ? 's' : ''} discovered from Bedrock`
+                      bedrockDiscoveryState === 'done' || openaiCompatDiscoveryState === 'done'
+                        ? [
+                            bedrockDiscoveryState === 'done' ? `${bedrockModels.length} Bedrock model${bedrockModels.length !== 1 ? 's' : ''}` : null,
+                            openaiCompatDiscoveryState === 'done' ? `${openaiCompatModels.length} OpenAI-compatible model${openaiCompatModels.length !== 1 ? 's' : ''}` : null,
+                          ].filter(Boolean).join(', ') + ' discovered'
+                        : bedrockDiscoveryState === 'error' && openaiCompatDiscoveryState === 'error'
+                        ? `Bedrock: ${bedrockDiscoveryError}; OpenAI: ${openaiCompatDiscoveryError}`
                         : bedrockDiscoveryState === 'error'
                         ? `Bedrock discovery failed: ${bedrockDiscoveryError}`
-                        : 'Discover models from AWS Bedrock'
+                        : openaiCompatDiscoveryState === 'error'
+                        ? `OpenAI-compatible discovery failed: ${openaiCompatDiscoveryError}`
+                        : 'Discover models from Bedrock and OpenAI-compatible endpoints'
                     }
-                    onClick={fetchBedrockModels}
-                    disabled={bedrockDiscoveryState === 'loading'}
+                    onClick={() => { fetchBedrockModels(); fetchOpenaiCompatModels(); }}
+                    disabled={bedrockDiscoveryState === 'loading' || openaiCompatDiscoveryState === 'loading'}
                     className={`h-8 w-8 flex items-center justify-center rounded border bg-background disabled:opacity-50 ${
-                      bedrockDiscoveryState === 'done'
+                      bedrockDiscoveryState === 'done' || openaiCompatDiscoveryState === 'done'
                         ? 'border-green-400 text-green-600 dark:text-green-400'
-                        : bedrockDiscoveryState === 'error'
+                        : bedrockDiscoveryState === 'error' || openaiCompatDiscoveryState === 'error'
                         ? 'border-amber-400 text-amber-600 dark:text-amber-400'
                         : 'border-input text-muted-foreground hover:text-foreground hover:bg-accent'
                     }`}
                   >
-                    <RefreshCw size={12} className={bedrockDiscoveryState === 'loading' ? 'animate-spin' : ''} />
-                  </button>
-                  <button
-                    type="button"
-                    title={
-                      openaiCompatDiscoveryState === 'done'
-                        ? `${openaiCompatModels.length} model${openaiCompatModels.length !== 1 ? 's' : ''} discovered from OpenAI-compatible endpoint`
-                        : openaiCompatDiscoveryState === 'error'
-                        ? `OpenAI-compatible endpoint unreachable: ${openaiCompatDiscoveryError}`
-                        : 'Discover models from OpenAI-compatible endpoint'
-                    }
-                    onClick={fetchOpenaiCompatModels}
-                    disabled={openaiCompatDiscoveryState === 'loading'}
-                    className={`h-8 w-8 flex items-center justify-center rounded border bg-background disabled:opacity-50 ${
-                      openaiCompatDiscoveryState === 'done'
-                        ? 'border-green-400 text-green-600 dark:text-green-400'
-                        : openaiCompatDiscoveryState === 'error'
-                        ? 'border-amber-400 text-amber-600 dark:text-amber-400'
-                        : 'border-input text-muted-foreground hover:text-foreground hover:bg-accent'
-                    }`}
-                  >
-                    <RefreshCw size={12} className={openaiCompatDiscoveryState === 'loading' ? 'animate-spin' : ''} />
+                    <RefreshCw size={12} className={bedrockDiscoveryState === 'loading' || openaiCompatDiscoveryState === 'loading' ? 'animate-spin' : ''} />
                   </button>
                 </div>
               </div>
