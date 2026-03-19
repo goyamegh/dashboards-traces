@@ -16,6 +16,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
 import type { ConnectorProtocol, ClusterAuthType } from '@/types';
+import { CONNECTOR_TYPE_INFO } from '@/lib/constants';
 import { storageAdmin } from '@/services/storage/opensearchClient';
 import {
   hasLocalStorageData,
@@ -984,14 +985,17 @@ export const SettingsPage: React.FC = () => {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="agui-streaming">agui-streaming (default)</SelectItem>
-                    <SelectItem value="rest">rest</SelectItem>
-                    <SelectItem value="openai-compatible">openai-compatible</SelectItem>
-                    <SelectItem value="subprocess">subprocess</SelectItem>
-                    <SelectItem value="claude-code">claude-code</SelectItem>
-                    <SelectItem value="mock">mock</SelectItem>
+                    {(Object.entries(CONNECTOR_TYPE_INFO) as [ConnectorProtocol, typeof CONNECTOR_TYPE_INFO[ConnectorProtocol]][]).map(([type, info]) => (
+                      <SelectItem key={type} value={type}>
+                        {type === 'agui-streaming' ? `${type} (default)` : type}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground">{CONNECTOR_TYPE_INFO[newConnectorType].description}</p>
+                {CONNECTOR_TYPE_INFO[newConnectorType].serverOnly && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">Server-only — runs via CLI or benchmark runner, not from the browser UI.</p>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <Switch
@@ -1052,14 +1056,17 @@ export const SettingsPage: React.FC = () => {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="agui-streaming">agui-streaming (default)</SelectItem>
-                            <SelectItem value="rest">rest</SelectItem>
-                            <SelectItem value="openai-compatible">openai-compatible</SelectItem>
-                            <SelectItem value="subprocess">subprocess</SelectItem>
-                            <SelectItem value="claude-code">claude-code</SelectItem>
-                            <SelectItem value="mock">mock</SelectItem>
+                            {(Object.entries(CONNECTOR_TYPE_INFO) as [ConnectorProtocol, typeof CONNECTOR_TYPE_INFO[ConnectorProtocol]][]).map(([type, info]) => (
+                              <SelectItem key={type} value={type}>
+                                {type === 'agui-streaming' ? `${type} (default)` : type}
+                              </SelectItem>
+                            ))}
                           </SelectContent>
                         </Select>
+                        <p className="text-xs text-muted-foreground">{CONNECTOR_TYPE_INFO[newConnectorType].description}</p>
+                        {CONNECTOR_TYPE_INFO[newConnectorType].serverOnly && (
+                          <p className="text-xs text-amber-600 dark:text-amber-400">Server-only — runs via CLI or benchmark runner, not from the browser UI.</p>
+                        )}
                       </div>
                       <div className="flex items-center gap-2">
                         <Switch
