@@ -352,13 +352,21 @@ If your agent already sends OTel traces to an OpenSearch cluster, just point Age
 
 **Configure the Observability Storage connection** (pick one):
 
-* **Via Settings UI** — Go to **Settings** and fill in the **Observability Storage** section with your OpenSearch cluster URL, username, and password.
-* **Via config file** — Add the connection details to your `.env` file:
+* **Via Settings UI** — Go to **Settings** and fill in the **Observability Storage** section with your OpenSearch cluster URL and credentials. Choose "Basic Auth" for username/password or "AWS SigV4" for AWS-managed clusters.
+* **Via environment variables** — Add the connection details to your `.env` file:
 
 ```bash
+# Option A: Basic Auth (username/password)
 OPENSEARCH_LOGS_ENDPOINT=https://your-opensearch-cluster:9200
 OPENSEARCH_LOGS_USERNAME=admin
 OPENSEARCH_LOGS_PASSWORD=admin
+
+# Option B: AWS SigV4 (for AWS-managed OpenSearch or Serverless)
+OPENSEARCH_LOGS_ENDPOINT=https://your-cluster.us-east-1.es.amazonaws.com
+OPENSEARCH_LOGS_AUTH_TYPE=sigv4
+OPENSEARCH_LOGS_AWS_REGION=us-east-1
+OPENSEARCH_LOGS_AWS_SERVICE=es        # 'es' for managed, 'aoss' for Serverless
+# OPENSEARCH_LOGS_AWS_PROFILE=MyProfile  # optional, uses default credential chain
 ```
 
 Then enable traces for your agent in `agent-health.config.ts`:

@@ -505,7 +505,11 @@ Express server on port 4001 provides:
 - `DEBUG`: Enable verbose debug logging on server startup (`true`/`false`, default: `false`)
 - `LANGGRAPH_ENDPOINT` / `HOLMESGPT_ENDPOINT` / `MLCOMMONS_ENDPOINT`: Agent endpoints
 - `OPENSEARCH_STORAGE_*`: Storage cluster for test cases/benchmarks (features degrade if missing)
+  - Basic auth: `OPENSEARCH_STORAGE_ENDPOINT`, `OPENSEARCH_STORAGE_USERNAME`, `OPENSEARCH_STORAGE_PASSWORD`
+  - AWS SigV4: `OPENSEARCH_STORAGE_AUTH_TYPE=sigv4`, `OPENSEARCH_STORAGE_AWS_REGION`, `OPENSEARCH_STORAGE_AWS_PROFILE` (optional), `OPENSEARCH_STORAGE_AWS_SERVICE` (`es` or `aoss`)
 - `OPENSEARCH_LOGS_*`: Logs cluster for agent execution logs (features degrade if missing)
+  - Basic auth: `OPENSEARCH_LOGS_ENDPOINT`, `OPENSEARCH_LOGS_USERNAME`, `OPENSEARCH_LOGS_PASSWORD`
+  - AWS SigV4: `OPENSEARCH_LOGS_AUTH_TYPE=sigv4`, `OPENSEARCH_LOGS_AWS_REGION`, `OPENSEARCH_LOGS_AWS_PROFILE` (optional), `OPENSEARCH_LOGS_AWS_SERVICE` (`es` or `aoss`)
 - `MLCOMMONS_HEADER_*`: Headers for ML-Commons agent data source access (see [docs/ML-COMMONS-SETUP.md](docs/ML-COMMONS-SETUP.md))
 
 ### Data Model

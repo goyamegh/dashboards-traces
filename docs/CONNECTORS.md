@@ -229,7 +229,22 @@ Builds environment variables for subprocess connectors.
 | `basic` | HTTP Basic Auth | `username`, `password` or `token` |
 | `bearer` | Bearer token | `token` |
 | `api-key` | API key header | `token`, `headerName` |
-| `aws-sigv4` | AWS Signature V4 | Uses environment credentials |
+| `aws-sigv4` | AWS Signature V4 | `awsRegion`, `awsService`, `awsAccessKeyId`, `awsSecretAccessKey`, `awsSessionToken` |
+
+### AWS SigV4 Authentication
+
+AWS SigV4 is used in two contexts:
+
+1. **OpenSearch cluster connections** (storage and observability) — handled by the `opensearchClientFactory.ts` using `@opensearch-project/opensearch/aws-v3` and the AWS credential provider chain. Configure via environment variables (`OPENSEARCH_STORAGE_AUTH_TYPE=sigv4`) or the Settings UI.
+
+2. **Connector-level auth** (agent endpoints) — handled by `BaseConnector.buildAuthHeaders()` and `buildAuthEnv()`. When `auth.type` is `aws-sigv4`, the connector passes AWS credentials as environment variables for subprocess connectors or headers for HTTP connectors.
+
+For OpenSearch clusters, SigV4 supports the full AWS credential chain:
+- AWS profile (`awsProfile` / `OPENSEARCH_STORAGE_AWS_PROFILE`)
+- Environment variables (`AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN`)
+- IAM roles (EC2 instance profile, ECS task role, etc.)
+
+Set `awsService` to `es` for managed OpenSearch domains or `aoss` for OpenSearch Serverless collections.
 
 ## Streaming Support
 
