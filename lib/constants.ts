@@ -66,7 +66,6 @@ export const DEFAULT_CONFIG: AppConfig = {
       useTraces: false,
     },
     {
-    {
       key: "observio-agent",
       name: "Observio Agent (ReAct)",
       endpoint: ENV_CONFIG.observioAgentEndpoint,
