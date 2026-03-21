@@ -58,7 +58,7 @@ export function useAssistantRuntime() {
         const queue: string[] = [];
         let done = false;
         let streamError: Error | null = null;
-        let resolve: (() => void) | null = null;
+        let resolve: () => void = () => {};
 
         const waitForChunk = () =>
           new Promise<void>((r) => {
@@ -71,17 +71,17 @@ export function useAssistantRuntime() {
           context,
           (chunk) => {
             queue.push(chunk);
-            resolve?.();
+            resolve();
           }
         )
           .then(() => {
             done = true;
-            resolve?.();
+            resolve();
           })
           .catch((e) => {
             streamError = e instanceof Error ? e : new Error(String(e));
             done = true;
-            resolve?.();
+            resolve();
           });
 
         let fullText = '';

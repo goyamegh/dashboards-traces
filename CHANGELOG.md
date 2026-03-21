@@ -12,15 +12,15 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ### Added
 - Docker configuration files for local development stack with OpenSearch and OTEL pipeline
 - Collapsible section for built-in agents and debug settings to SettingsPage
-- Claude Code as agent evaluator: new `'claude-code'` judge provider that spawns `claude` CLI to evaluate trajectories with full tool access and AGENT_HEALTH.md skill context
-- AI Assistant floating popup: `AssistantModalPrimitive`-based "?" button on every page with streaming chat powered by Claude Code CLI
-- AI Assistant full chat page at `/assistant` route with welcome screen, suggested prompts, and `ThreadPrimitive`-based conversation interface
-- Assistant backend service with in-memory session management, 30-min TTL, NDJSON stream parsing, and Bedrock/LiteLLM fallback
-- SSE streaming endpoints: `POST /api/assistant/chat`, `DELETE /api/assistant/session/:sessionId`, `GET /api/assistant/health`
-- Client-side assistant API (`assistantApi.ts`) with SSE stream consumption and chunk buffering
-- `useAssistantRuntime` hook implementing `ChatModelAdapter` with queue-based async generator for real-time streaming
-- `AssistantProvider` component wrapping app in `AssistantRuntimeProvider` for shared runtime context
-- Unit, integration, and Playwright E2E tests for all new assistant and Claude Code judge components
+- Claude Code as agent evaluator: new `'claude-code'` judge provider that spawns `claude` CLI to evaluate trajectories with full tool access and AGENT_HEALTH.md skill context ([#107](https://github.com/opensearch-project/agent-health/pull/107))
+- AI Assistant floating popup: `AssistantModalPrimitive`-based "?" button on every page with streaming chat powered by Claude Code CLI ([#107](https://github.com/opensearch-project/agent-health/pull/107))
+- AI Assistant full chat page at `/assistant` route with welcome screen, suggested prompts, and `ThreadPrimitive`-based conversation interface ([#107](https://github.com/opensearch-project/agent-health/pull/107))
+- Assistant backend service with in-memory session management, 30-min TTL, NDJSON stream parsing, and Bedrock/OpenAI-compatible fallback ([#107](https://github.com/opensearch-project/agent-health/pull/107))
+- SSE streaming endpoints: `POST /api/assistant/chat`, `DELETE /api/assistant/session/:sessionId`, `GET /api/assistant/health` ([#107](https://github.com/opensearch-project/agent-health/pull/107))
+- Client-side assistant API (`assistantApi.ts`) with SSE stream consumption and chunk buffering ([#107](https://github.com/opensearch-project/agent-health/pull/107))
+- `useAssistantRuntime` hook implementing `ChatModelAdapter` with queue-based async generator for real-time streaming ([#107](https://github.com/opensearch-project/agent-health/pull/107))
+- `AssistantProvider` component wrapping app in `AssistantRuntimeProvider` for shared runtime context ([#107](https://github.com/opensearch-project/agent-health/pull/107))
+- Unit, integration, and Playwright E2E tests for all new assistant and Claude Code judge components ([#107](https://github.com/opensearch-project/agent-health/pull/107))
 
 ### Changed
 - Enhanced CLI help output with grouped sections and examples

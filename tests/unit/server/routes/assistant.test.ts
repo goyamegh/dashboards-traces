@@ -7,7 +7,7 @@ import { Request, Response } from 'express';
 
 // Mock assistant service
 jest.mock('@/server/services/assistantService', () => ({
-  streamAssistantResponse: jest.fn(),
+  streamAssistantResponse: jest.fn().mockReturnValue({ abort: jest.fn() }),
   clearSession: jest.fn(),
   isClaudeAvailable: jest.fn().mockReturnValue(true),
   getSessionMessages: jest.fn().mockReturnValue([]),
@@ -117,12 +117,14 @@ describe('Assistant Routes', () => {
       mockStreamAssistantResponse.mockImplementation(
         (_sid, _msg, _ctx, _onDelta, onDone) => {
           onDone('Response');
+          return { abort: jest.fn() };
         }
       );
 
       const req = {
         body: { sessionId: 'test', message: 'Hello', context: {} },
-      } as Request;
+        on: jest.fn(),
+      } as unknown as Request;
       const res = createMockRes();
       const handler = getRouteHandler(assistantRoutes, 'post', '/api/assistant/chat');
 
@@ -140,12 +142,14 @@ describe('Assistant Routes', () => {
           onDelta('Hello');
           onDelta(' world');
           onDone('Hello world');
+          return { abort: jest.fn() };
         }
       );
 
       const req = {
         body: { sessionId: 'test', message: 'Hi', context: {} },
-      } as Request;
+        on: jest.fn(),
+      } as unknown as Request;
       const res = createMockRes();
       const handler = getRouteHandler(assistantRoutes, 'post', '/api/assistant/chat');
 
@@ -163,12 +167,14 @@ describe('Assistant Routes', () => {
       mockStreamAssistantResponse.mockImplementation(
         (_sid, _msg, _ctx, _onDelta, _onDone, onError) => {
           onError('Something went wrong');
+          return { abort: jest.fn() };
         }
       );
 
       const req = {
         body: { sessionId: 'test', message: 'Hi', context: {} },
-      } as Request;
+        on: jest.fn(),
+      } as unknown as Request;
       const res = createMockRes();
       const handler = getRouteHandler(assistantRoutes, 'post', '/api/assistant/chat');
 
@@ -183,13 +189,15 @@ describe('Assistant Routes', () => {
       mockStreamAssistantResponse.mockImplementation(
         (_sid, _msg, _ctx, _onDelta, onDone) => {
           onDone('ok');
+          return { abort: jest.fn() };
         }
       );
 
       const context = { currentUrl: '/benchmarks/bench-1', benchmarkId: 'bench-1' };
       const req = {
         body: { sessionId: 'test', message: 'Hi', context },
-      } as Request;
+        on: jest.fn(),
+      } as unknown as Request;
       const res = createMockRes();
       const handler = getRouteHandler(assistantRoutes, 'post', '/api/assistant/chat');
 
@@ -220,7 +228,7 @@ describe('Assistant Routes', () => {
   });
 
   describe('GET /api/assistant/health', () => {
-    it('returns available with claude-cli provider when claude is available', () => {
+    it('returns available with claude-code provider when claude is available', () => {
       mockIsClaudeAvailable.mockReturnValue(true);
 
       const req = {} as Request;
@@ -232,7 +240,7 @@ describe('Assistant Routes', () => {
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           available: true,
-          provider: 'claude-cli',
+          provider: 'claude-code',
         })
       );
     });
