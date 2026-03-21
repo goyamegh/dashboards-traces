@@ -50,6 +50,7 @@ function createMockProcess() {
     stdin: {
       write: jest.fn(),
       end: jest.fn(),
+      on: jest.fn(),
     },
     on: jest.fn(),
   };

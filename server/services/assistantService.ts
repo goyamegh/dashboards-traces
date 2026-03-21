@@ -11,7 +11,7 @@
  * Fallback: uses configured LLM judge provider (Bedrock or OpenAI-compatible).
  */
 
-import { spawn, execSync } from 'child_process';
+import { spawn, execSync, type ChildProcess } from 'child_process';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { loadConfigSync } from '@/lib/config/index';
@@ -190,7 +190,7 @@ function streamFromClaude(
   onDelta: (content: string) => void,
   onDone: (fullResponse: string) => void,
   onError: (error: string) => void
-): void {
+): ChildProcess {
   const args = [
     '--print',
     '--verbose',
@@ -275,7 +275,7 @@ function streamFromClaude(
     }
   });
 
-  child.on('close', (code: number | null) => {
+  child.on('close', (code: number | null, signal: string | null) => {
     // Process any remaining buffer
     if (buffer.trim()) {
       try {
@@ -292,8 +292,10 @@ function streamFromClaude(
       }
     }
 
-    if (code !== 0 && !fullResponse) {
-      const errorMsg = stderr.trim() || `Claude CLI exited with code ${code}`;
+    if (code !== 0) {
+      const errorMsg = signal === 'SIGTERM'
+        ? `Claude CLI timed out after ${CLAUDE_TIMEOUT_MS / 1000}s`
+        : stderr.trim() || `Claude CLI exited with code ${code}`;
       onError(errorMsg);
       return;
     }
@@ -302,9 +304,12 @@ function streamFromClaude(
   });
 
   // Write conversation prompt to stdin and close
+  child.stdin.on('error', () => { /* handled by 'close' event */ });
   const prompt = buildConversationPrompt(messages);
   child.stdin.write(prompt);
   child.stdin.end();
+
+  return child;
 }
 
 // ============================================================================
@@ -462,7 +467,7 @@ export function streamAssistantResponse(
   onDelta: (content: string) => void,
   onDone: (fullResponse: string) => void,
   onError: (error: string) => void
-): void {
+): { abort: () => void } {
   const session = getSession(sessionId);
 
   // Add user message to history
@@ -486,24 +491,34 @@ export function streamAssistantResponse(
     onDone(fullResponse);
   };
 
+  // Wrap onError to remove the user message from history on failure
+  const handleError = (error: string) => {
+    const idx = session.messages.indexOf(userMessage);
+    if (idx !== -1) session.messages.splice(idx, 1);
+    onError(error);
+  };
+
+  let childProcess: ChildProcess | null = null;
+
   // Primary: try claude CLI
   if (isClaudeAvailable()) {
     debug('Assistant', 'Using claude CLI for session:', sessionId);
-    streamFromClaude(session.messages, systemPrompt, onDelta, handleDone, onError);
-    return;
+    childProcess = streamFromClaude(session.messages, systemPrompt, onDelta, handleDone, handleError);
+    return { abort: () => childProcess?.kill() };
   }
 
   // Fallback: use configured judge provider
   const appConfig = loadConfigSync();
   const provider = appConfig.judge?.provider || 'bedrock';
-  debug('Assistant', 'Claude CLI unavailable, falling back to:', provider);
+  debug('Assistant', 'Claude CLI unavailable, falling back to Bedrock (provider:', provider, ')');
 
   if (provider === 'openai-compatible') {
-    streamFromOpenAICompatible(session.messages, systemPrompt, onDelta, handleDone, onError);
+    streamFromOpenAICompatible(session.messages, systemPrompt, onDelta, handleDone, handleError);
   } else {
-    // Default to Bedrock
-    streamFromBedrock(session.messages, systemPrompt, onDelta, handleDone, onError);
+    streamFromBedrock(session.messages, systemPrompt, onDelta, handleDone, handleError);
   }
+
+  return { abort: () => {} };
 }
 
 /**
