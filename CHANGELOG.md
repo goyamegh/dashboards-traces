@@ -186,3 +186,4 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ### Removed
 - Stale Kiro spec files and sample test case data from `agent-health-data/` ([#67](https://github.com/opensearch-project/agent-health/pull/67))
+
