@@ -49,3 +49,14 @@ tokens.json
 
 # File-based storage backend (runtime data, not source)
 agent-health-data/
+
+# OSD Agent build artifacts and runtime data
+osd-agent/node_modules
+osd-agent/dist
+osd-agent/build
+osd-agent/logs
+osd-agent/audit-logs
+osd-agent/metrics
+osd-agent/coverage
+osd-agent/.env
+osd-agent/configuration/mcp_config.json

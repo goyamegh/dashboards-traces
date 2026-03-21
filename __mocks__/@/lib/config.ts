@@ -31,6 +31,7 @@ export interface EnvConfig {
   mlcommonsHeaderAwsSecretAccessKey: string;
   mlcommonsHeaderAwsSessionToken: string;
   travelPlannerEndpoint: string;
+  osdAgentEndpoint: string;
   claudeCodeTelemetryEnabled: boolean;
   otelExporterEndpoint: string;
   otelServiceName: string;
@@ -63,6 +64,7 @@ export const ENV_CONFIG: EnvConfig = {
   mlcommonsHeaderAwsSecretAccessKey: '',
   mlcommonsHeaderAwsSessionToken: '',
   travelPlannerEndpoint: 'http://localhost:3000',
+  osdAgentEndpoint: 'http://localhost:3001',
   claudeCodeTelemetryEnabled: false,
   otelExporterEndpoint: '',
   otelServiceName: 'claude-code-agent',
