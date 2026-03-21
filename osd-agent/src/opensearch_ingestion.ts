@@ -267,7 +267,7 @@ class OpenSearchIngestor {
     // Extract timestamp from filename like "ai-agent-2025-09-16-15.log"
     const match = filename.match(/(\d{4})-(\d{2})-(\d{2})-(\d{2})/);
     if (match) {
-      const [_, year, month, day, hour] = match;
+      const [, year, month, day, hour] = match;
       return `${year}-${month}-${day}T${hour}:00:00.000Z`;
     }
     return null;
