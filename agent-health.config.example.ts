@@ -43,12 +43,12 @@ export default {
       useTraces: false,
     },
 
-    // Example 3: OSD Agent (ReAct LangGraph with MCP)
-    // Included in osd-agent/ directory. Start with:
-    //   cd osd-agent && npm install && npm run start:ag-ui
+    // Example 3: Observio Agent (ReAct LangGraph with MCP)
+    // Included in observio-agent/ directory. Start with:
+    //   cd observio-agent && npm install && npm run start:ag-ui
     // {
-    //   key: "osd-agent",
-    //   name: "OSD Agent (ReAct)",
+    //   key: "observio-agent",
+    //   name: "Observio Agent (ReAct)",
     //   endpoint: "http://localhost:3001",
     //   connectorType: "agui-streaming",
     //   models: ["claude-sonnet-4.5", "claude-sonnet-4"],

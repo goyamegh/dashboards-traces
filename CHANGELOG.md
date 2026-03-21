@@ -10,8 +10,8 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ## [Unreleased]
 
 ### Added
-- OSD Agent: AG-UI compliant ReAct LangGraph agent with MCP tool integration as an independent server in `osd-agent/` directory
-- Registered OSD Agent as a built-in agent configuration with `agui-streaming` connector type
+- Observio Agent: AG-UI compliant ReAct LangGraph agent with MCP tool integration as an independent server in `observio-agent/` directory
+- Registered Observio Agent as a built-in agent configuration with `agui-streaming` connector type
 
 ### Fixed
 - Update `RunSummaryTable` unit tests to match dark-mode-aware color classes (`text-green-700 dark:text-green-400`) introduced in a previous PR ([#51](https://github.com/opensearch-project/agent-health/pull/51))
