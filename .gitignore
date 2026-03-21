@@ -54,3 +54,14 @@ agent-health-data/
 
 # AI-agent generated specification files
 .kiro/
+
+# Observio Agent build artifacts and runtime data
+observio-agent/node_modules
+observio-agent/dist
+observio-agent/build
+observio-agent/logs
+observio-agent/audit-logs
+observio-agent/metrics
+observio-agent/coverage
+observio-agent/.env
+observio-agent/configuration/mcp_config.json

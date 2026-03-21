@@ -41,6 +41,18 @@ export default {
       useTraces: false,
     },
 
+    // Example 3: Observio Agent (ReAct LangGraph with MCP)
+    // Included in observio-agent/ directory. Start with:
+    //   cd observio-agent && npm install && npm run start:ag-ui
+    // {
+    //   key: "observio-agent",
+    //   name: "Observio Agent (ReAct)",
+    //   endpoint: "http://localhost:3001",
+    //   connectorType: "agui-streaming",
+    //   models: ["claude-sonnet-4.5", "claude-sonnet-4"],
+    //   useTraces: false,
+    // },
+
     // Example 3: CLI tool connector
     // {
     //   key: "my-cli-agent",

@@ -66,6 +66,15 @@ export const DEFAULT_CONFIG: AppConfig = {
       useTraces: false,
     },
     {
+      key: "observio-agent",
+      name: "Observio Agent (ReAct)",
+      endpoint: ENV_CONFIG.observioAgentEndpoint,
+      description: "AG-UI compliant ReAct LangGraph agent with MCP tool integration (see observio-agent/)",
+      connectorType: "agui-streaming",
+      headers: {},
+      useTraces: false,
+    },
+    {
       key: "claude-code",
       name: "Claude Code",
       endpoint: "claude",

@@ -35,6 +35,7 @@
   ],
   "exclude": [
     "node_modules",
+    "observio-agent",
     "tests/**/*",
     "**/*.test.ts",
     "**/*.test.tsx",

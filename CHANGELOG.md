@@ -12,6 +12,8 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ### Added
 - Docker configuration files for local development stack with OpenSearch and OTEL pipeline
 - Collapsible section for built-in agents and debug settings to SettingsPage
+- Observio Agent: AG-UI compliant ReAct LangGraph agent with MCP tool integration as an independent server in `observio-agent/` directory
+- Registered Observio Agent as a built-in agent configuration with `agui-streaming` connector type
 
 ### Changed
 - Enhanced CLI help output with grouped sections and examples
@@ -184,3 +186,4 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ### Removed
 - Stale Kiro spec files and sample test case data from `agent-health-data/` ([#67](https://github.com/opensearch-project/agent-health/pull/67))
+
