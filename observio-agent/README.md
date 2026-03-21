@@ -65,10 +65,10 @@ npm run start:ag-ui react
 
 Add this alias to your `~/.zshrc` file:
 ```bash
-alias osd-agent="export AWS_PROFILE=default && export AWS_REGION=us-west-2 && npm run start:ag-ui"
+alias observio-agent="export AWS_PROFILE=default && export AWS_REGION=us-west-2 && npm run start:ag-ui"
 ```
 
-Reload your shell: `source ~/.zshrc`, then run `osd-agent`.
+Reload your shell: `source ~/.zshrc`, then run `observio-agent`.
 
 ## Available Scripts
 

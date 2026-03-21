@@ -57,8 +57,8 @@ export interface EnvConfig {
   mlcommonsHeaderAwsSecretAccessKey: string;
   mlcommonsHeaderAwsSessionToken: string;
 
-  // OSD Agent endpoint (ReAct LangGraph agent with MCP integration)
-  osdAgentEndpoint: string;
+  // Observio Agent endpoint (ReAct LangGraph agent with MCP integration)
+  observioAgentEndpoint: string;
 
   // Travel Planner multi-agent endpoint (OTel Demo in Docker)
   travelPlannerEndpoint: string;
@@ -133,8 +133,8 @@ export const ENV_CONFIG: EnvConfig = {
   mlcommonsHeaderAwsSecretAccessKey: getEnvVar('MLCOMMONS_HEADER_AWS_SECRET_ACCESS_KEY', ''),
   mlcommonsHeaderAwsSessionToken: getEnvVar('MLCOMMONS_HEADER_AWS_SESSION_TOKEN', ''),
 
-  // OSD Agent endpoint (ReAct LangGraph agent with MCP integration)
-  osdAgentEndpoint: getEnvVar('OSD_AGENT_ENDPOINT', 'http://localhost:3001'),
+  // Observio Agent endpoint (ReAct LangGraph agent with MCP integration)
+  observioAgentEndpoint: getEnvVar('OBSERVIO_AGENT_ENDPOINT', 'http://localhost:3001'),
 
   // Travel Planner multi-agent endpoint (OTel Demo in Docker)
   travelPlannerEndpoint: getEnvVar('TRAVEL_PLANNER_ENDPOINT', 'http://localhost:3000'),

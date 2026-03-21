@@ -35,7 +35,7 @@
   ],
   "exclude": [
     "node_modules",
-    "osd-agent",
+    "observio-agent",
     "tests/**/*",
     "**/*.test.ts",
     "**/*.test.tsx",

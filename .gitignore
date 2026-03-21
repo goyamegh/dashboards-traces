@@ -55,13 +55,13 @@ agent-health-data/
 # AI-agent generated specification files
 .kiro/
 
-# OSD Agent build artifacts and runtime data
-osd-agent/node_modules
-osd-agent/dist
-osd-agent/build
-osd-agent/logs
-osd-agent/audit-logs
-osd-agent/metrics
-osd-agent/coverage
-osd-agent/.env
-osd-agent/configuration/mcp_config.json
+# Observio Agent build artifacts and runtime data
+observio-agent/node_modules
+observio-agent/dist
+observio-agent/build
+observio-agent/logs
+observio-agent/audit-logs
+observio-agent/metrics
+observio-agent/coverage
+observio-agent/.env
+observio-agent/configuration/mcp_config.json

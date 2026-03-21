@@ -67,10 +67,10 @@ export const DEFAULT_CONFIG: AppConfig = {
     },
     {
     {
-      key: "osd-agent",
-      name: "OSD Agent (ReAct)",
-      endpoint: ENV_CONFIG.osdAgentEndpoint,
-      description: "AG-UI compliant ReAct LangGraph agent with MCP tool integration (see osd-agent/)",
+      key: "observio-agent",
+      name: "Observio Agent (ReAct)",
+      endpoint: ENV_CONFIG.observioAgentEndpoint,
+      description: "AG-UI compliant ReAct LangGraph agent with MCP tool integration (see observio-agent/)",
       connectorType: "agui-streaming",
       headers: {},
       useTraces: false,

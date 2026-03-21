@@ -33,7 +33,7 @@ export interface EnvConfig {
   travelPlannerEndpoint: string;
   openaiCompatibleApiKey: string;
   openaiCompatibleEndpoint: string;
-  osdAgentEndpoint: string;
+  observioAgentEndpoint: string;
   claudeCodeTelemetryEnabled: boolean;
   otelExporterEndpoint: string;
   otelServiceName: string;
@@ -68,7 +68,7 @@ export const ENV_CONFIG: EnvConfig = {
   travelPlannerEndpoint: 'http://localhost:3000',
   openaiCompatibleApiKey: '',
   openaiCompatibleEndpoint: 'http://localhost:4000/v1/chat/completions',
-  osdAgentEndpoint: 'http://localhost:3001',
+  observioAgentEndpoint: 'http://localhost:3001',
   claudeCodeTelemetryEnabled: false,
   otelExporterEndpoint: '',
   otelServiceName: 'claude-code-agent',
