@@ -83,25 +83,37 @@ router.post('/api/assistant/chat', (req: Request, res: Response) => {
   res.setHeader('Connection', 'keep-alive');
   res.flushHeaders();
 
-  streamAssistantResponse(
+  let ended = false;
+
+  const handle = streamAssistantResponse(
     sessionId,
     message,
     context,
     // onDelta
     (content: string) => {
-      res.write(`data: ${JSON.stringify({ type: 'delta', content })}\n\n`);
+      if (!ended) res.write(`data: ${JSON.stringify({ type: 'delta', content })}\n\n`);
     },
     // onDone
     (fullResponse: string) => {
-      res.write(`data: ${JSON.stringify({ type: 'done', fullResponse })}\n\n`);
-      res.end();
+      if (!ended) {
+        res.write(`data: ${JSON.stringify({ type: 'done', fullResponse })}\n\n`);
+        res.end();
+      }
     },
     // onError
     (error: string) => {
-      res.write(`data: ${JSON.stringify({ type: 'error', error })}\n\n`);
-      res.end();
+      if (!ended) {
+        res.write(`data: ${JSON.stringify({ type: 'error', error })}\n\n`);
+        res.end();
+      }
     }
   );
+
+  // Kill the subprocess if the client disconnects
+  req.on('close', () => {
+    ended = true;
+    handle.abort();
+  });
 });
 
 /**
@@ -123,7 +135,7 @@ router.get('/api/assistant/health', (_req: Request, res: Response) => {
   let provider: string;
 
   if (claudeAvailable) {
-    provider = 'claude-cli';
+    provider = 'claude-code';
   } else {
     try {
       const { loadConfigSync } = require('@/lib/config/index');

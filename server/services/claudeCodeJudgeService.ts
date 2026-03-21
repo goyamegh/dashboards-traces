@@ -13,8 +13,8 @@
 import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import { resolve } from 'path';
-import { buildEvaluationPrompt, JudgeRequest, JudgeResponse } from './bedrockService';
-import { JUDGE_SYSTEM_PROMPT } from '../prompts/judgePrompt';
+import { buildEvaluationPrompt, JudgeRequest, JudgeResponse } from '@/server/services/bedrockService';
+import { JUDGE_SYSTEM_PROMPT } from '@/server/prompts/judgePrompt';
 import { debug } from '@/lib/debug';
 
 // ============================================================================
@@ -223,6 +223,7 @@ function spawnClaude(prompt: string, systemPrompt: string): Promise<string> {
     });
 
     // Write prompt to stdin and close
+    child.stdin.on('error', () => { /* handled by 'close' event */ });
     child.stdin.write(prompt);
     child.stdin.end();
   });
