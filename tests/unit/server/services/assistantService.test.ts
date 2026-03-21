@@ -50,7 +50,7 @@ jest.mock('@/lib/debug', () => ({
 
 function createMockProcess() {
   const proc = new EventEmitter() as any;
-  proc.stdin = { write: jest.fn(), end: jest.fn() };
+  proc.stdin = { write: jest.fn(), end: jest.fn(), on: jest.fn() };
   proc.stdout = new EventEmitter();
   proc.stderr = new EventEmitter();
   proc.kill = jest.fn();
