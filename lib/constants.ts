@@ -66,6 +66,16 @@ export const DEFAULT_CONFIG: AppConfig = {
       useTraces: false,
     },
     {
+    {
+      key: "osd-agent",
+      name: "OSD Agent (ReAct)",
+      endpoint: ENV_CONFIG.osdAgentEndpoint,
+      description: "AG-UI compliant ReAct LangGraph agent with MCP tool integration (see osd-agent/)",
+      connectorType: "agui-streaming",
+      headers: {},
+      useTraces: false,
+    },
+    {
       key: "claude-code",
       name: "Claude Code",
       endpoint: "claude",

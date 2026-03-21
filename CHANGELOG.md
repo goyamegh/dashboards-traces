@@ -12,6 +12,8 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ### Added
 - Docker configuration files for local development stack with OpenSearch and OTEL pipeline
 - Collapsible section for built-in agents and debug settings to SettingsPage
+- OSD Agent: AG-UI compliant ReAct LangGraph agent with MCP tool integration as an independent server in `osd-agent/` directory
+- Registered OSD Agent as a built-in agent configuration with `agui-streaming` connector type
 
 ### Changed
 - Enhanced CLI help output with grouped sections and examples
