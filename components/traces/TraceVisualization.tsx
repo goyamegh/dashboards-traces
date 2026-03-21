@@ -227,7 +227,7 @@ const TraceVisualization: React.FC<TraceVisualizationProps> = ({
                 />
               </div>
               {!detailsCollapsed && selectedSpan ? (
-                <div className="w-[400px] border-l shrink-0 overflow-auto">
+                <div className="flex-1 min-w-0 border-l overflow-auto">
                   <SpanDetailsPanel
                     span={selectedSpan}
                     onClose={() => setSelectedSpan(null)}

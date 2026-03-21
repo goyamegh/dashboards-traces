@@ -10,6 +10,7 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ## [Unreleased]
 
 ### Fixed
+- Fix extra space in Agent Traces Timeline view by making the span details panel fill remaining width instead of using a fixed 400px width ([#73](https://github.com/opensearch-project/agent-health/issues/73))
 - Update `RunSummaryTable` unit tests to match dark-mode-aware color classes (`text-green-700 dark:text-green-400`) introduced in a previous PR ([#51](https://github.com/opensearch-project/agent-health/pull/51))
 - Replace ambiguous `text=Import Failed` Playwright locator (matched 2 elements, causing strict mode rejection) with `getByRole('alertdialog')` in benchmark import e2e test ([#51](https://github.com/opensearch-project/agent-health/pull/51))
 - Update version to 0.1.1 and remove CI badges from README ([#58](https://github.com/opensearch-project/agent-health/pull/58))
