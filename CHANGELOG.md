@@ -10,15 +10,30 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ## [Unreleased]
 
 ### Added
-- Docker configuration files for local development stack with OpenSearch and OTEL pipeline
-- Collapsible section for built-in agents and debug settings to SettingsPage
+- Docker configuration files for local development stack with OpenSearch and OTEL pipeline ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- Collapsible section for built-in agents and debug settings to SettingsPage ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- AWS Bedrock model discovery endpoint and updated model pricing ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- LiteLLM / OpenAI-compatible connector for LiteLLM, Ollama, vLLM integration ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- Storage drift detection with runtime state surfaced in Settings UI ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- Markdown output format for CLI commands ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- Documentation for SigV4 auth for OpenSearch ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- Getting-started blog and introductory blog ([#115](https://github.com/opensearch-project/agent-health/pull/115))
 
 ### Changed
-- Enhanced CLI help output with grouped sections and examples
-- Rename 'Testing' to 'Evals' in collapsible section and tooltips
+- Enhanced CLI help output with grouped sections and examples ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- Centralized connector type metadata into single source of truth (`CONNECTOR_TYPE_INFO`) ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- Rename 'Testing' to 'Evals' in collapsible section and tooltips ([#115](https://github.com/opensearch-project/agent-health/pull/115))
 
 ### Removed
-- `models` property from agent configurations and related functions
+- `models` property from agent configurations and related functions ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+
+### Fixed
+- Storage adapter for test case lookup in benchmark runner ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- Flaky E2E tests: replaced `waitForTimeout` with proper element waits in comparison tests ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- Debug mode E2E test race condition ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- E2E test data cleanup in test-cases and benchmarks specs ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- `fast-xml-parser` override to 5.5.6 for CVE-2026-26278 ([#115](https://github.com/opensearch-project/agent-health/pull/115))
+- Resolved high/critical npm audit vulnerabilities (path-to-regexp, picomatch) ([#115](https://github.com/opensearch-project/agent-health/pull/115))
 
 ### Added
 - AWS SigV4 authentication support for OpenSearch clusters with `ClusterAuthType` (`none` | `basic` | `sigv4`) ([#85](https://github.com/opensearch-project/agent-health/pull/85))
