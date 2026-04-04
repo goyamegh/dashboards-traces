@@ -937,9 +937,15 @@ export const SettingsPage: React.FC = () => {
                     ))}
                   </SelectContent>
                 </Select>
-                <p className="text-xs text-muted-foreground">{CONNECTOR_TYPE_INFO[newConnectorType].description}</p>
-                {CONNECTOR_TYPE_INFO[newConnectorType].serverOnly && (
-                  <p className="text-xs text-amber-600 dark:text-amber-400">Server-only — runs via CLI or benchmark runner, not from the browser UI.</p>
+                {CONNECTOR_TYPE_INFO[newConnectorType] ? (
+                  <>
+                    <p className="text-xs text-muted-foreground">{CONNECTOR_TYPE_INFO[newConnectorType].description}</p>
+                    {CONNECTOR_TYPE_INFO[newConnectorType].serverOnly && (
+                      <p className="text-xs text-amber-600 dark:text-amber-400">Server-only — runs via CLI or benchmark runner, not from the browser UI.</p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">Unknown connector type: {newConnectorType}. Please select a supported connector type.</p>
                 )}
               </div>
               <div className="flex items-center gap-2">
@@ -1008,9 +1014,15 @@ export const SettingsPage: React.FC = () => {
                             ))}
                           </SelectContent>
                         </Select>
-                        <p className="text-xs text-muted-foreground">{CONNECTOR_TYPE_INFO[newConnectorType].description}</p>
-                        {CONNECTOR_TYPE_INFO[newConnectorType].serverOnly && (
-                          <p className="text-xs text-amber-600 dark:text-amber-400">Server-only — runs via CLI or benchmark runner, not from the browser UI.</p>
+                        {CONNECTOR_TYPE_INFO[newConnectorType] ? (
+                          <>
+                            <p className="text-xs text-muted-foreground">{CONNECTOR_TYPE_INFO[newConnectorType].description}</p>
+                            {CONNECTOR_TYPE_INFO[newConnectorType].serverOnly && (
+                              <p className="text-xs text-amber-600 dark:text-amber-400">Server-only — runs via CLI or benchmark runner, not from the browser UI.</p>
+                            )}
+                          </>
+                        ) : (
+                          <p className="text-xs text-amber-600 dark:text-amber-400">Unknown connector type: {newConnectorType}. Please select a supported connector type.</p>
                         )}
                       </div>
                       <div className="flex items-center gap-2">

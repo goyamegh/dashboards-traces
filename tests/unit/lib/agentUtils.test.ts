@@ -44,7 +44,6 @@ describe('agentUtils', () => {
       name: 'OpenAI Compatible Agent',
       endpoint: 'http://localhost:11434',
       connectorType: 'openai-compatible',
-      models: ['gpt-4o'],
     },
     {
       key: 'default-agent',

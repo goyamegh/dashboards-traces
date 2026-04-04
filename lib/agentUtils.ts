@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { AgentConfig, ConnectorProtocol } from '@/types';
+import { AgentConfig } from '@/types';
 import { BROWSER_SAFE_CONNECTORS } from '@/lib/constants';
 
 /**
