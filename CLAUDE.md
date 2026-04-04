@@ -55,6 +55,8 @@ npm test -- path/to/file.test.ts  # Single test file
 
 **IMPORTANT:** After making code changes, always run `npm run build:all && npm run test:all` to verify the build succeeds and all tests pass. A pre-push hook enforces this automatically.
 
+**NEVER use `git push --no-verify` or `git commit --no-verify`.** The pre-push and pre-commit hooks exist to catch build failures, test regressions, and other issues before they reach CI. If a hook fails, fix the underlying issue instead of bypassing the check. Skipping hooks leads to broken CI pipelines and wasted review cycles.
+
 ### CLI / NPX Package
 ```bash
 npm run build:cli           # Build CLI only
