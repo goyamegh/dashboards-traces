@@ -1,7 +1,7 @@
 {
-  "name": "ai-agent-scripts",
+  "name": "observio-sample-agent",
   "version": "1.0.0",
-  "description": "AI Agent with MCP/AG UI integration",
+  "description": "Observio: A sample ReAct agent for practicing agent health improvements",
   "main": "src/main.ts",
   "scripts": {
     "start": "ts-node src/main.ts",

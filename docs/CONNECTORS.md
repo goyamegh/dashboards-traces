@@ -453,6 +453,10 @@ This pattern allows you to pass arbitrary agent-specific fields through the stan
 
 ## Examples
 
+### Observio Sample Agent
+
+The repository includes **Observio**, a reference ReAct agent in `observio-sample-agent/` that uses the `agui-streaming` connector. It's a great way to test connector integration end-to-end. See the [Observio README](../observio-sample-agent/README.md) for setup.
+
 ### REST API Connector
 
 See `services/connectors/rest/RESTConnector.ts` for a complete example of a non-streaming HTTP connector.

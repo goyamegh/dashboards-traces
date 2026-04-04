@@ -317,9 +317,24 @@ Agent Health supports multiple agent types:
 
 | Agent | Endpoint Variable | Setup |
 |-------|-------------------|-------|
+| **Observio** (sample) | `localhost:3000` | Included — see [observio-sample-agent/](./observio-sample-agent/) |
 | Langgraph | `LANGGRAPH_ENDPOINT` | Simple localhost agent |
 | HolmesGPT | `HOLMESGPT_ENDPOINT` | AG-UI compatible RCA agent |
 | ML-Commons | `MLCOMMONS_ENDPOINT` | See [ML-Commons Setup](./docs/ML-COMMONS-SETUP.md) |
+
+### Observio Sample Agent
+
+Agent Health includes **Observio**, a reference ReAct agent you can use as a practice target for evaluating and improving agent performance. It's a great starting point if you don't have your own agent yet.
+
+```bash
+# Start Observio
+cd observio-sample-agent && npm install && npm run start:ag-ui
+
+# Evaluate it with Agent Health
+npx @opensearch-project/agent-health run -t demo-otel-001 -a observio
+```
+
+See the [Observio README](./observio-sample-agent/README.md) for setup details and improvement areas.
 
 
 ---
@@ -375,6 +390,7 @@ All commits require DCO signoff and all PRs must pass CI checks (tests, coverage
 - [Getting Started](./GETTING_STARTED.md) - Step-by-step walkthrough from install to first evaluation
 - [Configuration](./docs/CONFIGURATION.md) - Connect your agent and configure the environment
 - [CLI Reference](./docs/CLI.md) - Command-line interface documentation
+- [Observio Sample Agent](./observio-sample-agent/) - Reference agent for practicing agent health improvements
 
 ### Developer Guides
 - [Development Guide](./CLAUDE.md) - Architecture, coding conventions, and contributing
