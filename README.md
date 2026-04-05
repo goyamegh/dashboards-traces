@@ -317,7 +317,7 @@ Agent Health supports multiple agent types:
 
 | Agent | Endpoint Variable | Setup |
 |-------|-------------------|-------|
-| **Observio** (sample) | `localhost:3000` | Included — see [observio-sample-agent/](./observio-sample-agent/) |
+| **Observio** (sample) | `localhost:3001` | Included — see [observio-sample-agent/](./observio-sample-agent/) |
 | Langgraph | `LANGGRAPH_ENDPOINT` | Simple localhost agent |
 | HolmesGPT | `HOLMESGPT_ENDPOINT` | AG-UI compatible RCA agent |
 | ML-Commons | `MLCOMMONS_ENDPOINT` | See [ML-Commons Setup](./docs/ML-COMMONS-SETUP.md) |

@@ -6,7 +6,7 @@
 /* eslint-disable no-console */
 
 import { appendFileSync, mkdirSync } from 'fs';
-import { join } from 'path';
+import { dirname } from 'path';
 
 /**
  * Base logger with common file operations and directory management
@@ -37,8 +37,7 @@ export abstract class BaseLogger {
    * Ensure directory exists for a file path
    */
   protected ensureDirectoryExists(filePath: string): void {
-    const dir = join(filePath, '..');
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dirname(filePath), { recursive: true });
   }
 
   /**

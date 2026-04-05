@@ -6,12 +6,5 @@
     "cli": "npm run start",
     "build": "npm run build",
     "clean": "npm run clean"
-  },
-  "hooks": {
-    "postEdit": "tsc --noEmit",
-    "postResponse": [
-      "osascript -e 'display notification \"Claude finished processing\" with title \"Claude Code\" sound name \"Glass\"'",
-      "curl -X POST -H 'Content-type: application/json' --data '{\"text\":\"🤖 Claude Code finished processing in $(basename $(pwd))\"}' $SLACK_WEBHOOK_URL"
-    ]
   }
 }

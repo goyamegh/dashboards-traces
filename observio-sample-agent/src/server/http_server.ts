@@ -84,7 +84,7 @@ export class HTTPServer {
         version: '1.0.0',
         protocol: 'ag-ui',
         capabilities: {
-          streaming: false, // HTTP-only, no WebSocket streaming
+          streaming: true, // SSE streaming for AG-UI events
           tools: true,
           conversations: true,
           contextWindow: 200000,
@@ -182,7 +182,7 @@ export class HTTPServer {
     });
 
     // Run agent endpoint (SSE streaming)
-    this.app.post('/', async (req, res) => {
+    this.app.post('/run-agent', async (req, res) => {
       // Check if server is shutting down
       if (this.isShuttingDown) {
         res.status(503).json({ error: 'Server is shutting down' });

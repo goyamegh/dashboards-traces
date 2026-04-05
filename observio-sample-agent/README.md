@@ -67,7 +67,7 @@ export default {
     {
       key: "observio",
       name: "Observio Sample Agent",
-      endpoint: "http://localhost:3000/run-agent",
+      endpoint: "http://localhost:3001/run-agent",
       connectorType: "agui-streaming",
     }
   ],

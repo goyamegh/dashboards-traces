@@ -13,7 +13,7 @@ export interface ModelConfig {
 
 export class ModelConfigManager {
   private static logger = new Logger();
-  private static configPath = join(__dirname, '../../configuration/default-model.json');
+  private static configPath = join(__dirname, '../../configuration/default_model.json');
   private static defaultModelId = 'us.anthropic.claude-sonnet-4-20250514-v1:0';
 
   static getDefaultModel(): ModelConfig {
