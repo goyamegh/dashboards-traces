@@ -25,7 +25,7 @@ export class LocalMCPClient extends BaseMCPClient {
     const transport = new StdioClientTransport({
       command: this.config.command,
       args: this.config.args || [],
-      env: { ...process.env, ...this.config.env },
+      env: { ...process.env, ...this.config.env } as Record<string, string>,
     });
 
     this.client = new Client(
@@ -34,7 +34,7 @@ export class LocalMCPClient extends BaseMCPClient {
         version: '1.0.0',
       },
       {
-        capabilities: { tools: {}, sampling: {} },
+        capabilities: { sampling: {} },
       }
     );
 
