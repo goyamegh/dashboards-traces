@@ -363,12 +363,26 @@ export async function computeBatchMetrics(
     });
 
     if (!response.ok) {
+      const responseBody = await response.text();
+      console.warn(
+        `OpenSearch metrics query failed for chunk (${chunk.length} run IDs): ` +
+        `${response.status} ${response.statusText}. Response body: ${responseBody}`
+      );
       // On failure, return pending results for all IDs in this chunk
       return chunk.map(runId => computeMetricsFromSpans(runId, []));
     }
 
     const data: OpenSearchResponse = await response.json();
     const allSpans = data.hits?.hits?.map(h => h._source) || [];
+
+    // Warn if results were truncated (more spans exist than size limit)
+    const totalHits = (data.hits as any)?.total?.value ?? allSpans.length;
+    if (totalHits > 10000) {
+      console.warn(
+        `OpenSearch batch metrics query returned ${allSpans.length} of ${totalHits} spans ` +
+        `for chunk of ${chunk.length} run IDs. Metrics may be incomplete.`
+      );
+    }
 
     // Group spans by run ID
     const spansByRunId = new Map<string, OpenSearchSpanSource[]>();

@@ -149,7 +149,7 @@ export function startTestCaseSpan(
     parentCtx
   );
 
-  const ctx = require('@opentelemetry/api').trace.setSpan(parentCtx, span);
+  const ctx = trace.setSpan(parentCtx, span);
   return { span, context: ctx };
 }
 
@@ -197,7 +197,7 @@ export function addEvaluationResultEvents(span: Span, report: TestCaseRun): void
 /**
  * Finalize a test case span with evaluation results and end it.
  */
-export function finalizeTestCaseSpan(span: Span, report: TestCaseRun): void {
+export function finalizeTestCaseSpan(span: Span, report: TestCaseRun, endTime?: Date): void {
   if (!isEvalTelemetryEnabled()) return;
 
   // Set result status
@@ -234,7 +234,7 @@ export function finalizeTestCaseSpan(span: Span, report: TestCaseRun): void {
     span.setStatus({ code: SpanStatusCode.ERROR, message: 'Evaluation failed' });
   }
 
-  span.end();
+  span.end(endTime);
 }
 
 /**
@@ -295,5 +295,5 @@ export function emitDeferredTestCaseSpan(
   });
 
   addEvaluationResultEvents(span, report);
-  finalizeTestCaseSpan(span, report);
+  finalizeTestCaseSpan(span, report, endTime);
 }

@@ -31,7 +31,6 @@ import { getCustomAgents } from '@/server/services/customAgentStore';
 import { debug } from '@/lib/debug';
 import { RunResultStatus } from '@/types';
 import {
-  isEvalTelemetryEnabled,
   startTestSuiteRunSpan,
   startTestCaseSpan,
   addEvaluationResultEvents,

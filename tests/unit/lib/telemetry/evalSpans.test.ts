@@ -425,5 +425,23 @@ describe('Evaluation Span Helpers', () => {
       expect(mockSpan.addEvent).toHaveBeenCalled();
       expect(mockSpan.end).toHaveBeenCalled();
     });
+
+    it('should pass endTime to span.end()', () => {
+      const testCase = createTestCase({ id: 'tc-deferred-end' });
+      const report = createTestReport({ metrics: { accuracy: 90 } });
+      const startTime = new Date('2024-01-01T10:00:00Z');
+      const endTime = new Date('2024-01-01T10:05:00Z');
+
+      emitDeferredTestCaseSpan(
+        testCase,
+        report,
+        { name: 'Deferred Benchmark' },
+        'run-deferred',
+        startTime,
+        endTime
+      );
+
+      expect(mockSpan.end).toHaveBeenCalledWith(endTime);
+    });
   });
 });

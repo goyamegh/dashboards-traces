@@ -60,7 +60,7 @@ export async function createApp(): Promise<Express> {
 
   // Initialize evaluation telemetry (OTel span emission) if configured
   initEvalTracerProvider(resolveEvalTelemetryConfig(config.telemetry));
-  process.on('SIGTERM', () => { shutdownEvalTracer(); });
+  process.once('SIGTERM', async () => { await shutdownEvalTracer(); });
 
   // Swap to OpenSearch storage when configured and reachable
   await initializeStorageBackend();
