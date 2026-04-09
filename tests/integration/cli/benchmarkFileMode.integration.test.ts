@@ -85,6 +85,32 @@ describe('Benchmark File Mode Integration', () => {
         // Ignore cleanup errors
       }
     }
+
+    // Fallback: clean up leftovers from previous failed runs by name prefix
+    try {
+      const resp = await fetch(`${BASE_URL}/api/storage/test-cases`);
+      if (resp.ok) {
+        const data = await resp.json();
+        const allTestCases = data.testCases ?? [];
+        for (const tc of allTestCases) {
+          if (tc.name?.startsWith('IntegTest:') || tc.name?.startsWith('ID Test ') || tc.name?.startsWith('OTEL Demo:')) {
+            await fetch(`${BASE_URL}/api/storage/test-cases/${encodeURIComponent(tc.id)}`, { method: 'DELETE' }).catch(() => {});
+          }
+        }
+      }
+      const benchResp = await fetch(`${BASE_URL}/api/storage/benchmarks`);
+      if (benchResp.ok) {
+        const benchData = await benchResp.json();
+        const allBenchmarks = benchData.benchmarks ?? benchData ?? [];
+        for (const b of allBenchmarks) {
+          if (b.name?.startsWith('File Mode IntegTest') || b.name?.startsWith('OTEL Demo IntegTest')) {
+            await fetch(`${BASE_URL}/api/storage/benchmarks/${encodeURIComponent(b.id)}`, { method: 'DELETE' }).catch(() => {});
+          }
+        }
+      }
+    } catch {
+      // Ignore cleanup errors
+    }
   }, TEST_TIMEOUT);
 
   // --- File loading and validation (no backend needed) ---

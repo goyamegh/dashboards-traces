@@ -16,6 +16,7 @@ import { migrateYamlToJsonIfNeeded } from './services/configMigration.js';
 import { getStorageConfigFromFile } from './services/configService.js';
 import { getStorageConfigFromEnv } from './middleware/dataSourceConfig.js';
 import { initializeStorageFromConfig } from './services/storageInitializer.js';
+import { initEvalTracerProvider, resolveEvalTelemetryConfig, shutdownEvalTracer } from '@/lib/telemetry';
 
 // Register server-side connectors (subprocess, claude-code)
 // This import has side effects that register connectors with the registry
@@ -55,7 +56,11 @@ export async function createApp(): Promise<Express> {
   // Migrate agent-health.yaml → agent-health.config.json if needed (one-time)
   await migrateYamlToJsonIfNeeded();
 
-  await loadConfig();
+  const config = await loadConfig();
+
+  // Initialize evaluation telemetry (OTel span emission) if configured
+  initEvalTracerProvider(resolveEvalTelemetryConfig(config.telemetry));
+  process.on('SIGTERM', () => { shutdownEvalTracer(); });
 
   // Swap to OpenSearch storage when configured and reachable
   await initializeStorageBackend();
