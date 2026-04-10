@@ -9,6 +9,7 @@
  */
 
 import { spawn, ChildProcess } from 'child_process';
+import { ToolCallStatus } from '@/types';
 import type { TrajectoryStep } from '@/types';
 import { BaseConnector } from '@/services/connectors/base/BaseConnector';
 import type {
@@ -175,6 +176,23 @@ export class SubprocessConnector extends BaseConnector {
           this.error('stderr:', stderr);
         }
 
+        // Flush subclass buffers before finalizing streaming trajectory
+        if (this.config.outputParser === 'streaming') {
+          this.onBeforeStreamEnd(trajectory, onProgress);
+
+          // Surface error when streaming produced no steps
+          if (code !== 0 && trajectory.length === 0) {
+            const errorContent = stderr.trim()
+              ? `Error: Process exited with code ${code}. ${stderr.trim()}`
+              : `Error: Process exited with code ${code}`;
+            const errorStep = this.createStep('tool_result', errorContent, {
+              status: ToolCallStatus.FAILURE,
+            });
+            trajectory.push(errorStep);
+            onProgress?.(errorStep);
+          }
+        }
+
         // Parse final output
         const finalTrajectory = this.config.outputParser === 'streaming'
           ? trajectory
@@ -223,6 +241,17 @@ export class SubprocessConnector extends BaseConnector {
       });
     });
     this.debug('========== execute() COMPLETED ==========');
+  }
+
+  /**
+   * Hook called before returning the streaming trajectory on process close.
+   * Subclasses can override to flush internal buffers.
+   */
+  protected onBeforeStreamEnd(
+    _trajectory: TrajectoryStep[],
+    _onProgress?: ConnectorProgressCallback
+  ): void {
+    // No-op by default
   }
 
   /**
