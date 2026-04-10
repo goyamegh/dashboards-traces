@@ -202,7 +202,7 @@ const TraceVisualization: React.FC<TraceVisualizationProps> = ({
           showSpanDetailsPanel ? (
             <div className="flex h-full w-full min-w-0 overflow-hidden">
               <div 
-                className="overflow-auto p-4 min-w-0"
+                className="overflow-auto min-w-0"
                 style={{ 
                   width: detailsCollapsed ? '100%' : '60%'
                 }}
@@ -240,7 +240,7 @@ const TraceVisualization: React.FC<TraceVisualizationProps> = ({
               ) : null}
             </div>
           ) : (
-            <div className="p-4 h-full w-full overflow-auto">
+            <div className="h-full w-full overflow-auto">
               <TraceTimelineChart
                 spanTree={spanTree}
                 timeRange={timeRange}
