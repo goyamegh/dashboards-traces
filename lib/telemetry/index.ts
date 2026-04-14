@@ -14,6 +14,7 @@ export {
   initEvalTracerProvider,
   getEvalTracer,
   isEvalTelemetryEnabled,
+  flushEvalTracer,
   shutdownEvalTracer,
   resolveEvalTelemetryConfig,
   type EvalTelemetryConfig,
@@ -29,3 +30,8 @@ export {
 } from './evalSpans.js';
 
 export * from './constants.js';
+
+export {
+  OpenSearchSpanExporter,
+  type OpenSearchExporterConfig,
+} from './opensearchExporter.js';

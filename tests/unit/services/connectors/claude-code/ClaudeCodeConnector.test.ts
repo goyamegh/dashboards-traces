@@ -541,8 +541,8 @@ describe('ClaudeCodeConnector', () => {
     });
   });
 
-  describe('duplicate response prevention', () => {
-    it('should not create duplicate steps from text_delta and result events', async () => {
+  describe('text buffer consolidation', () => {
+    it('should emit consolidated assistant step from text_delta buffer and response from result', async () => {
       const request: ConnectorRequest = {
         testCase: mockTestCase,
         modelId: 'test-model',
@@ -560,17 +560,18 @@ describe('ClaudeCodeConnector', () => {
 
       const result = await connector.execute('claude', request, mockAuth);
 
-      // Should have exactly one response step, no assistant steps for delta text
-      const responseSteps = result.trajectory.filter(s => s.type === 'response');
+      // Should have one consolidated assistant step from buffer and one response from result
       const assistantTextSteps = result.trajectory.filter(
         s => s.type === 'assistant' && s.content.includes('Hello')
       );
+      const responseSteps = result.trajectory.filter(s => s.type === 'response');
+      expect(assistantTextSteps.length).toBe(1);
+      expect(assistantTextSteps[0].content).toBe('Hello world');
       expect(responseSteps.length).toBe(1);
       expect(responseSteps[0].content).toBe('Hello world');
-      expect(assistantTextSteps.length).toBe(0);
     });
 
-    it('should still emit thinking steps alongside response', async () => {
+    it('should emit thinking, assistant, and response steps from full stream', async () => {
       const request: ConnectorRequest = {
         testCase: mockTestCase,
         modelId: 'test-model',
@@ -590,9 +591,12 @@ describe('ClaudeCodeConnector', () => {
       const result = await connector.execute('claude', request, mockAuth);
 
       const thinkingSteps = result.trajectory.filter(s => s.type === 'thinking');
+      const assistantSteps = result.trajectory.filter(s => s.type === 'assistant');
       const responseSteps = result.trajectory.filter(s => s.type === 'response');
       expect(thinkingSteps.length).toBe(1);
       expect(thinkingSteps[0].content).toBe('Let me think');
+      expect(assistantSteps.length).toBe(1);
+      expect(assistantSteps[0].content).toBe('Answer');
       expect(responseSteps.length).toBe(1);
       expect(responseSteps[0].content).toBe('Answer');
     });

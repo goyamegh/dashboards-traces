@@ -84,6 +84,9 @@ export class SubprocessConnector extends BaseConnector {
     // Use pre-built payload from hook if available, otherwise build fresh
     const input = request.payload || this.buildPayload(request);
 
+    // Generate runId before spawning so the subprocess can include it in OTel spans
+    const runId = `subprocess-${Date.now()}`;
+
     this.debug('Command:', command);
     this.debug('Args:', args);
     this.debug('Input mode:', this.config.inputMode);
@@ -91,12 +94,16 @@ export class SubprocessConnector extends BaseConnector {
     this.debug('Timeout:', this.config.timeout);
     this.debug('Input (first 500 chars):', input.substring(0, 500));
     this.debug('Working dir:', this.config.workingDir || process.cwd());
+    this.debug('Run ID:', runId);
 
-    // Merge environment variables
+    // Merge environment variables.
+    // AGENT_EVAL_RUN_ID is passed so the subprocess can set gen_ai.request.id
+    // in its OTel spans, enabling trace correlation in the traces view.
     const env = {
       ...process.env,
       ...this.buildAuthEnv(auth),
       ...this.config.env,
+      AGENT_EVAL_RUN_ID: runId,
     };
 
     return new Promise((resolve, reject) => {
@@ -206,7 +213,7 @@ export class SubprocessConnector extends BaseConnector {
         this.debug('Resolving with trajectory of', finalTrajectory.length, 'steps');
         resolve({
           trajectory: finalTrajectory,
-          runId: `subprocess-${Date.now()}`,
+          runId,
           rawEvents: rawOutput,
           metadata: {
             command,

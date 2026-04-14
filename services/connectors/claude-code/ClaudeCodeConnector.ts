@@ -182,8 +182,11 @@ export class ClaudeCodeConnector extends SubprocessConnector {
         steps.push(this.createStep('thinking', this.thinkingBuffer));
         this.thinkingBuffer = '';
       }
-      // Clear text buffer — content will arrive via 'result' event
-      this.textBuffer = '';
+      // Flush text buffer when block ends (consolidated assistant step)
+      if (this.textBuffer) {
+        steps.push(this.createStep('assistant', this.textBuffer));
+        this.textBuffer = '';
+      }
     } else if (event.type === 'result' && event.result) {
       // Final result message
       steps.push(this.createStep('response',

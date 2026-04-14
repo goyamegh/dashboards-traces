@@ -18,13 +18,15 @@
 import {
   context,
   trace,
+  TraceFlags,
   type Context,
   type Span,
+  type SpanContext,
   SpanKind,
   SpanStatusCode,
   type Link,
 } from '@opentelemetry/api';
-import { getEvalTracer, isEvalTelemetryEnabled } from './provider.js';
+import { getEvalTracer, isEvalTelemetryEnabled, flushEvalTracer } from './provider.js';
 import {
   // In-spec attributes
   ATTR_TEST_SUITE_NAME,
@@ -57,6 +59,7 @@ import {
   ATTR_AGENT_HEALTH_JUDGE_ATTEMPTS,
   ATTR_AGENT_HEALTH_AGENT_DURATION_MS,
   ATTR_AGENT_HEALTH_CONNECTOR_PROTOCOL,
+  ATTR_AGENT_HEALTH_AGENT_RUN_ID,
 
   // Constants
   GEN_AI_OPERATION_NAME_VALUE_EVALUATION,
@@ -106,6 +109,7 @@ export function startTestSuiteRunSpan(
   const ctx = context.active();
   const spanContext = trace.setSpan(ctx, span);
 
+  console.log(`[Telemetry] Started test_suite_run span for "${benchmark.name}" (runId=${run.id})`);
   return { span, context: spanContext };
 }
 
@@ -116,6 +120,7 @@ export function startTestSuiteRunSpan(
  * @param testCase - The test case being evaluated
  * @param benchmark - Parent benchmark (for name duplication)
  * @param run - Parent benchmark run (for run ID duplication)
+ * @param agentRunId - Optional agent execution run ID (links eval span to agent traces)
  * @param links - Optional span links (e.g., to agent execution trace)
  */
 export function startTestCaseSpan(
@@ -123,33 +128,42 @@ export function startTestCaseSpan(
   testCase: TestCase,
   benchmark: Benchmark,
   run: BenchmarkRun,
+  agentRunId?: string,
   links?: Link[]
 ): { span: Span; context: Context } | null {
   if (!isEvalTelemetryEnabled()) return null;
 
   const tracer = getEvalTracer();
+  const attributes: Record<string, string> = {
+    [ATTR_TEST_SUITE_NAME]: benchmark.name,
+    [ATTR_TEST_SUITE_RUN_ID]: run.id,
+    [ATTR_TEST_CASE_ID]: testCase.id,
+    [ATTR_TEST_CASE_NAME]: testCase.name,
+    [ATTR_GEN_AI_OPERATION_NAME]: GEN_AI_OPERATION_NAME_VALUE_EVALUATION,
+  };
+  if (agentRunId) {
+    attributes[ATTR_AGENT_HEALTH_AGENT_RUN_ID] = agentRunId;
+  }
+  const input = truncate(testCase.initialPrompt, MAX_ATTRIBUTE_LENGTH);
+  if (input) attributes[ATTR_TEST_CASE_INPUT] = input;
+  const expected = truncate(
+    testCase.expectedOutcomes ? JSON.stringify(testCase.expectedOutcomes) : undefined,
+    MAX_ATTRIBUTE_LENGTH
+  );
+  if (expected) attributes[ATTR_TEST_CASE_EXPECTED] = expected;
+
   const span = tracer.startSpan(
     'test_case',
     {
       kind: SpanKind.INTERNAL,
-      attributes: {
-        [ATTR_TEST_SUITE_NAME]: benchmark.name,
-        [ATTR_TEST_SUITE_RUN_ID]: run.id,
-        [ATTR_TEST_CASE_ID]: testCase.id,
-        [ATTR_TEST_CASE_NAME]: testCase.name,
-        [ATTR_GEN_AI_OPERATION_NAME]: GEN_AI_OPERATION_NAME_VALUE_EVALUATION,
-        [ATTR_TEST_CASE_INPUT]: truncate(testCase.initialPrompt, MAX_ATTRIBUTE_LENGTH),
-        [ATTR_TEST_CASE_EXPECTED]: truncate(
-          testCase.expectedOutcomes ? JSON.stringify(testCase.expectedOutcomes) : undefined,
-          MAX_ATTRIBUTE_LENGTH
-        ),
-      },
+      attributes,
       links,
     },
     parentCtx
   );
 
   const ctx = trace.setSpan(parentCtx, span);
+  console.log(`[Telemetry] Started test_case span for "${testCase.name}" (agentRunId=${agentRunId || 'none'})`);
   return { span, context: ctx };
 }
 
@@ -235,6 +249,7 @@ export function finalizeTestCaseSpan(span: Span, report: TestCaseRun, endTime?: 
   }
 
   span.end(endTime);
+  console.log(`[Telemetry] Finalized test_case span (status=${status}, passFailStatus=${report.passFailStatus})`);
 }
 
 /**
@@ -258,6 +273,8 @@ export function finalizeTestSuiteRunSpan(span: Span, run: BenchmarkRun): void {
   }
 
   span.end();
+  console.log(`[Telemetry] Finalized test_suite_run span (status=${status}), flushing...`);
+  flushEvalTracer().catch(() => {});
 }
 
 /**
@@ -271,29 +288,56 @@ export function emitDeferredTestCaseSpan(
   report: TestCaseRun,
   benchmark: { name: string },
   runId: string,
+  agentRunId?: string,
   startTime?: Date,
-  endTime?: Date
+  endTime?: Date,
+  agentTraceId?: string
 ): void {
   if (!isEvalTelemetryEnabled()) return;
 
   const tracer = getEvalTracer();
+  const attributes: Record<string, string> = {
+    [ATTR_TEST_SUITE_NAME]: benchmark.name,
+    [ATTR_TEST_SUITE_RUN_ID]: runId,
+    [ATTR_TEST_CASE_ID]: testCase.id,
+    [ATTR_TEST_CASE_NAME]: testCase.name,
+    [ATTR_GEN_AI_OPERATION_NAME]: GEN_AI_OPERATION_NAME_VALUE_EVALUATION,
+  };
+  if (agentRunId) {
+    attributes[ATTR_AGENT_HEALTH_AGENT_RUN_ID] = agentRunId;
+  }
+  const input = truncate(testCase.initialPrompt, MAX_ATTRIBUTE_LENGTH);
+  if (input) attributes[ATTR_TEST_CASE_INPUT] = input;
+  const expected = truncate(
+    testCase.expectedOutcomes ? JSON.stringify(testCase.expectedOutcomes) : undefined,
+    MAX_ATTRIBUTE_LENGTH
+  );
+  if (expected) attributes[ATTR_TEST_CASE_EXPECTED] = expected;
+
+  // If an agent traceId is provided, create the span within the same trace
+  // so it appears as a sibling of the agent's root span in the trace tree.
+  let parentCtx: Context | undefined;
+  if (agentTraceId) {
+    const remoteSpanContext: SpanContext = {
+      traceId: agentTraceId,
+      // Use a synthetic spanId — this is a "remote" context that only carries
+      // the traceId forward. The eval span becomes a root span in the trace
+      // (no parentSpanId) but shares the same traceId as the agent spans.
+      spanId: '0000000000000000',
+      traceFlags: TraceFlags.SAMPLED,
+      isRemote: true,
+    };
+    parentCtx = trace.setSpanContext(context.active(), remoteSpanContext);
+  }
+
   const span = tracer.startSpan('test_case', {
     kind: SpanKind.INTERNAL,
     startTime,
-    attributes: {
-      [ATTR_TEST_SUITE_NAME]: benchmark.name,
-      [ATTR_TEST_SUITE_RUN_ID]: runId,
-      [ATTR_TEST_CASE_ID]: testCase.id,
-      [ATTR_TEST_CASE_NAME]: testCase.name,
-      [ATTR_GEN_AI_OPERATION_NAME]: GEN_AI_OPERATION_NAME_VALUE_EVALUATION,
-      [ATTR_TEST_CASE_INPUT]: truncate(testCase.initialPrompt, MAX_ATTRIBUTE_LENGTH),
-      [ATTR_TEST_CASE_EXPECTED]: truncate(
-        testCase.expectedOutcomes ? JSON.stringify(testCase.expectedOutcomes) : undefined,
-        MAX_ATTRIBUTE_LENGTH
-      ),
-    },
-  });
+    attributes,
+  }, parentCtx);
 
   addEvaluationResultEvents(span, report);
   finalizeTestCaseSpan(span, report, endTime);
+  console.log(`[Telemetry] Emitted deferred test_case span for "${testCase.name}" (agentRunId=${agentRunId || 'none'}, traceId=${agentTraceId || 'new'}), flushing...`);
+  flushEvalTracer().catch(() => {});
 }

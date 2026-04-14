@@ -81,6 +81,9 @@ export const ATTR_AGENT_HEALTH_AGENT_DURATION_MS = 'agent_health.agent.duration_
 /** Connector protocol used for agent communication */
 export const ATTR_AGENT_HEALTH_CONNECTOR_PROTOCOL = 'agent_health.connector.protocol' as const;
 
+/** Agent run ID — links eval spans to the agent execution trace */
+export const ATTR_AGENT_HEALTH_AGENT_RUN_ID = 'gen_ai.request.id' as const;
+
 // =============================================================================
 // Constants
 // =============================================================================

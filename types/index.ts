@@ -406,7 +406,7 @@ export interface TraceSummary {
  * Span category based on OTel GenAI semantic conventions
  * @see https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/
  */
-export type SpanCategory = 'AGENT' | 'LLM' | 'TOOL' | 'ERROR' | 'OTHER';
+export type SpanCategory = 'AGENT' | 'LLM' | 'TOOL' | 'EVAL' | 'ERROR' | 'OTHER';
 
 /**
  * Extended span with category metadata for tree visualization

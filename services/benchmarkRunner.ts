@@ -258,11 +258,8 @@ export async function executeRun(
         debug('BenchmarkRunner', `[${testCaseId}] Starting evaluation (${completedCount}/${totalTestCases} completed)`);
         const testCaseStartTime = Date.now();
 
-        // Start OTel case span (if telemetry enabled and suite context available)
-        const caseSpanResult = suiteContext
-          ? startTestCaseSpan(suiteContext, testCase, benchmark, run)
-          : null;
-        const caseSpan = caseSpanResult?.span;
+        // OTel case span will be started after evaluation (when we know the agentRunId)
+        let caseSpan: import('@opentelemetry/api').Span | undefined;
 
         // Set status to running
         run.results[testCaseId] = { reportId: '', status: 'running' };
@@ -296,12 +293,18 @@ export async function executeRun(
             startTracePollingForReport(savedReport, testCase, client, benchmark, run);
           }
 
-          // Emit OTel evaluation events for non-deferred runs
-          if (caseSpan && savedReport.metricsStatus !== 'pending') {
-            addEvaluationResultEvents(caseSpan, savedReport);
-            finalizeTestCaseSpan(caseSpan, savedReport);
-          } else if (caseSpan) {
-            caseSpan.end();
+          // Start and finalize OTel case span (now that we know the agentRunId)
+          if (suiteContext) {
+            const caseSpanResult = startTestCaseSpan(
+              suiteContext, testCase, benchmark, run, savedReport.runId
+            );
+            caseSpan = caseSpanResult?.span;
+            if (caseSpan && savedReport.metricsStatus !== 'pending') {
+              addEvaluationResultEvents(caseSpan, savedReport);
+              finalizeTestCaseSpan(caseSpan, savedReport);
+            } else if (caseSpan) {
+              caseSpan.end();
+            }
           }
 
           // Update result with success - use the actual stored ID
@@ -491,6 +494,7 @@ export async function runSingleUseCase(
 ): Promise<string> {
   const agentConfig = buildAgentConfigForRun(run);
   const bedrockModelId = getBedrockModelId(run.modelId);
+  const startTime = new Date();
 
   // Run the evaluation using connector
   const report = await runEvaluationWithConnector(
@@ -515,6 +519,19 @@ export async function runSingleUseCase(
   // Start trace polling for trace-mode runs
   if (savedReport.metricsStatus === 'pending' && savedReport.runId) {
     startTracePollingForReportWithModule(savedReport, testCase, storage);
+  }
+
+  // Emit OTel eval span for this standalone test run (if telemetry enabled and not pending judge)
+  if (savedReport.metricsStatus !== 'pending') {
+    emitDeferredTestCaseSpan(
+      testCase,
+      savedReport,
+      { name: `standalone:${agentConfig.name || agentConfig.key}` },
+      run.id,
+      savedReport.runId,
+      startTime,
+      new Date()
+    );
   }
 
   return savedReport.id;
@@ -565,6 +582,25 @@ function startTracePollingForReportWithModule(report: EvaluationReport, testCase
             llmJudgeReasoning: judgment.llmJudgeReasoning,
             improvementStrategies: judgment.improvementStrategies,
           } as any);
+
+          // Emit deferred OTel eval span now that judge is complete
+          const completedReport = {
+            ...report,
+            passFailStatus: judgment.passFailStatus,
+            metrics: judgment.metrics,
+            llmJudgeReasoning: judgment.llmJudgeReasoning,
+          } as EvaluationReport;
+          const agentTraceId = spans[0]?.traceId;
+          emitDeferredTestCaseSpan(
+            testCase,
+            completedReport,
+            { name: report.experimentId ? `benchmark:${report.experimentId}` : `standalone:${report.agentKey}` },
+            report.experimentRunId || report.id,
+            report.runId,
+            undefined, // startTime
+            undefined, // endTime
+            agentTraceId
+          );
 
           // Update parent benchmark run stats now that this report is complete
           if (report.experimentId) {
@@ -644,7 +680,8 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
               metrics: judgment.metrics,
               llmJudgeReasoning: judgment.llmJudgeReasoning,
             } as EvaluationReport;
-            emitDeferredTestCaseSpan(testCase, completedReport, benchmark, run.id);
+            const agentTraceId = spans[0]?.traceId;
+            emitDeferredTestCaseSpan(testCase, completedReport, benchmark, run.id, report.runId, undefined, undefined, agentTraceId);
           }
         } catch (error) {
           console.error(`[BenchmarkRunner] Failed to judge report ${report.id}:`, error instanceof Error ? error.message : error);

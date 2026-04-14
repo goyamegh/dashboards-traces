@@ -51,7 +51,7 @@ describe('Telemetry Provider', () => {
     it('should return defaults when no config or env vars provided', () => {
       delete process.env.OTEL_EVAL_ENABLED;
       delete process.env.OTEL_EVAL_EXPORTER_ENDPOINT;
-      delete process.env.OTEL_SERVICE_NAME;
+      delete process.env.OTEL_EVAL_SERVICE_NAME;
 
       const config = resolveEvalTelemetryConfig();
 
@@ -77,8 +77,8 @@ describe('Telemetry Provider', () => {
       expect(config.exporterEndpoint).toBe('http://custom:4318/v1/traces');
     });
 
-    it('should respect OTEL_SERVICE_NAME env var', () => {
-      process.env.OTEL_SERVICE_NAME = 'my-service';
+    it('should respect OTEL_EVAL_SERVICE_NAME env var', () => {
+      process.env.OTEL_EVAL_SERVICE_NAME = 'my-service';
 
       const config = resolveEvalTelemetryConfig();
 

@@ -14,6 +14,7 @@ const mockGetTracer = jest.fn();
 jest.mock('@/lib/telemetry/provider', () => ({
   isEvalTelemetryEnabled: () => mockIsEnabled(),
   getEvalTracer: () => mockGetTracer(),
+  flushEvalTracer: () => Promise.resolve(),
 }));
 
 import {
@@ -405,10 +406,11 @@ describe('Evaluation Span Helpers', () => {
         report,
         { name: 'Deferred Benchmark' },
         'run-deferred',
+        undefined,
         new Date('2024-01-01T10:00:00Z')
       );
 
-      // Should create span
+      // Should create span (no agentTraceId → parentCtx is undefined)
       expect(mockTracer.startSpan).toHaveBeenCalledWith(
         'test_case',
         expect.objectContaining({
@@ -418,11 +420,42 @@ describe('Evaluation Span Helpers', () => {
             'test.suite.name': 'Deferred Benchmark',
             'test.suite.run.id': 'run-deferred',
           }),
-        })
+        }),
+        undefined
       );
 
       // Should add evaluation events and end span
       expect(mockSpan.addEvent).toHaveBeenCalled();
+      expect(mockSpan.end).toHaveBeenCalled();
+    });
+
+    it('should create span within agent trace when agentTraceId is provided', () => {
+      const testCase = createTestCase({ id: 'tc-linked' });
+      const report = createTestReport({ metrics: { accuracy: 85 } });
+
+      emitDeferredTestCaseSpan(
+        testCase,
+        report,
+        { name: 'Linked Benchmark' },
+        'run-linked',
+        'agent-run-id',
+        new Date('2024-01-01T10:00:00Z'),
+        new Date('2024-01-01T10:05:00Z'),
+        'abc123def456abc123def456abc12345' // 32-char hex agentTraceId
+      );
+
+      // Should create span with a parent context (3rd arg to startSpan)
+      expect(mockTracer.startSpan).toHaveBeenCalledWith(
+        'test_case',
+        expect.objectContaining({
+          attributes: expect.objectContaining({
+            'test.case.id': 'tc-linked',
+            'gen_ai.request.id': 'agent-run-id',
+          }),
+        }),
+        expect.anything() // parent context carrying agentTraceId
+      );
+
       expect(mockSpan.end).toHaveBeenCalled();
     });
 
@@ -437,6 +470,7 @@ describe('Evaluation Span Helpers', () => {
         report,
         { name: 'Deferred Benchmark' },
         'run-deferred',
+        undefined,
         startTime,
         endTime
       );
