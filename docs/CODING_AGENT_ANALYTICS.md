@@ -126,6 +126,15 @@ All endpoints support optional `from` and `to` query parameters for date range f
 | `GET /api/coding-agents/failure-patterns` | Recurring tool failure patterns |
 | `GET /api/coding-agents/export` | Export all data as JSON or CSV (`format=json|csv`) |
 
+### Remote Server Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/remote-servers` | List configured remote servers (API keys masked) |
+| `POST /api/remote-servers` | Add a remote server (`{ name, url, apiKey? }`) |
+| `DELETE /api/remote-servers/:name` | Remove a remote server |
+| `POST /api/remote-servers/:name/test` | Test connectivity to a remote server |
+
 ### Workspace Endpoints
 
 | Endpoint | Description |
@@ -193,6 +202,74 @@ private readers: CodingAgentReader[] = [
 const AGENT_COLORS = { ..., 'my-agent': '#your-color' };
 const AGENT_LABELS = { ..., 'my-agent': 'My Agent' };
 ```
+
+## Remote Build Server Monitoring
+
+Monitor coding agents running on remote EC2 instances, build servers, or cloud dev environments from a single local dashboard.
+
+### How It Works
+
+Each remote machine runs `agent-health` in **headless mode** (API only, no frontend). Your local dashboard aggregates data from all remotes transparently — the frontend code is unchanged, always talking to its own local server.
+
+```
+[Remote EC2-A]  agent-health serve --headless --api-key sk-abc  → :4001
+[Remote EC2-B]  agent-health serve --headless --api-key sk-xyz  → :4001
+
+[Local machine]
+  Browser → localhost:4001 → Local server merges local + remote data
+```
+
+### Setup
+
+**On each remote machine:**
+
+```bash
+npx @opensearch-project/agent-health serve --headless --api-key sk-my-secret
+```
+
+**On your local machine:**
+
+```bash
+# Add remote servers
+agent-health remote add --name ec2-build-1 --url http://10.0.1.50:4001 --api-key sk-my-secret
+agent-health remote add --name ec2-build-2 --url http://10.0.1.51:4001 --api-key sk-other
+
+# Test connectivity
+agent-health remote test
+
+# Start the dashboard — automatically aggregates from all servers
+agent-health
+```
+
+Or use the **Settings UI** — go to Settings > Remote Servers to add, test, and remove servers from the browser.
+
+Or configure via `agent-health.config.json`:
+
+```json
+{
+  "remoteServers": [
+    { "name": "ec2-build-1", "url": "http://10.0.1.50:4001", "apiKey": "sk-my-secret" },
+    { "name": "ec2-build-2", "url": "http://10.0.1.51:4001", "apiKey": "sk-other" }
+  ]
+}
+```
+
+### CLI Commands
+
+| Command | Description |
+|---------|-------------|
+| `agent-health remote add --name <n> --url <u> [--api-key <k>]` | Add a remote server |
+| `agent-health remote remove <name>` | Remove a remote server |
+| `agent-health remote list` | List configured remotes |
+| `agent-health remote test` | Test connectivity to all remotes |
+
+### Key Behaviors
+
+- **Graceful degradation**: If a remote is unreachable, the dashboard still shows data from available sources
+- **30-second cache**: Remote session data is cached locally to avoid excessive network calls
+- **10-second timeout**: Slow remotes don't block the entire dashboard
+- **Server badges**: Sessions from remote servers show a colored badge with the server name
+- **Transparent aggregation**: All analytics (stats, costs, activity, tools, etc.) automatically include remote data
 
 ## Feature Toggle
 

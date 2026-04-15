@@ -9,6 +9,9 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Fixed
+- Extra spacing in Timeline view by removing container padding ([#73](https://github.com/opensearch-project/agent-health/issues/73))
+
 ### Added
 - GitHub Actions workflow for AI-powered PR code diff analysis and review via AWS Bedrock
 - Kiro CLI SQLite reader with progressive warmup, non-blocking cache, and phase-aware loading UX
@@ -24,6 +27,10 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Graceful shutdown handler (SIGTERM/SIGINT) for stopping background timers and draining connections
 - Health endpoint now returns feature flags for frontend conditional rendering
 - RFC 001 documenting Coding Agent Analytics design
+- Remote server aggregation for multi-machine coding agent monitoring
+- Settings UI for remote server management with connectivity testing
+- CLI commands for remote server configuration (`agent-health remote add|remove|list|test`)
+- API key authentication middleware for headless remote mode
 
 ## [0.2.0]
 

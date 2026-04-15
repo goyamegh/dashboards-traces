@@ -1,14 +1,62 @@
-# Agent Health
+<h1 align="center" style="border-bottom: none">
+    <div>
+        <a href="https://opensearch.org">
+            <img alt="OpenSearch Agent Health" src="assets/opensearch-logo.svg" width="200" />
+        </a>
+        <br>
+        Agent Health
+    </div>
+</h1>
+
+<h2 align="center" style="border-bottom: none">Open-source AI Agent Evaluation & Observability</h2>
+
+<p align="center">
+Agent Health helps you evaluate, monitor, and optimize AI agents. From autonomous RCA agents to coding assistants, it provides real-time execution streaming, LLM-based evaluation with trajectory comparison, batch experiments, and deep observability through OpenTelemetry traces — all backed by OpenSearch.
+</p>
+
+<div align="center">
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE.txt)
 [![npm version](https://img.shields.io/npm/v/@opensearch-project/agent-health.svg)](https://www.npmjs.com/package/@opensearch-project/agent-health)
-[![Documentation](https://img.shields.io/badge/View_Documentation-blue?logo=readthedocs&logoColor=white)](https://observability.opensearch.org/docs/agent-health/)
+[![Build](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml/badge.svg)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
 
+</div>
+
+<p align="center">
+    <a href="https://opensearch.org"><b>Website</b></a> &bull;
+    <a href="https://opensearch.org/slack.html"><b>Slack</b></a> &bull;
+    <a href="https://x.com/OpenSearchProj"><b>Twitter/X</b></a> &bull;
+    <a href="https://www.youtube.com/watch?v=MU3tTv4lKtc"><b>Demo Video</b></a> &bull;
+    <a href="https://observability.opensearch.org/docs/agent-health/"><b>Documentation</b></a> &bull;
+    <a href="CHANGELOG.md"><b>Changelog</b></a>
+</p>
+
+<div align="center" style="margin-top: 1em; margin-bottom: 1em;">
+<a href="#what-is-agent-health">What is Agent Health?</a> &bull;
+<a href="#installation">Installation</a> &bull;
+<a href="#features">Features</a> &bull;
+<a href="#quick-configuration">Configuration</a> &bull;
+<a href="#contributing">Contributing</a>
+</div>
+
+<br>
+
+<p align="center">
+    <a href="screenshots/Comparison.png">
+        <img alt="Agent Health — Run Comparison Dashboard" src="screenshots/Comparison.png" />
+    </a>
+</p>
+
+<p align="center">
+    <i>Side-by-side comparison of agent evaluation runs with pass rate, accuracy, cost, and performance metrics over time.</i>
+</p>
+
+---
+
+<a id="what-is-agent-health"></a>
 ## What is Agent Health?
 
-Agent Health is an evaluation and observability framework for AI agents. It helps you measure agent performance through "Golden Path" trajectory comparison — where an LLM judge evaluates agent actions against expected outcomes — and provides deep observability into agent execution via OpenTelemetry traces.
-
-It also includes a **Coding Agent Analytics** dashboard for monitoring Claude Code, Kiro, and Codex CLI usage on your local machine.
+Agent Health is an evaluation and observability framework for AI agents, built on [OpenSearch](https://opensearch.org). It helps you measure agent performance through **"Golden Path" trajectory comparison** — where an LLM judge evaluates agent actions against expected outcomes — and provides deep observability into agent execution via OpenTelemetry traces.
 
 **Who uses Agent Health:**
 - AI teams building autonomous agents (RCA, customer support, data analysis)
@@ -16,15 +64,16 @@ It also includes a **Coding Agent Analytics** dashboard for monitoring Claude Co
 - Platform teams monitoring agent performance in production
 - Developers using AI coding agents who want visibility into usage, costs, and productivity
 
-**Key capabilities:**
-- Real-time agent execution streaming and visualization
-- LLM-based evaluation with pass/fail scoring
-- Batch experiments comparing agents and models
-- OpenTelemetry trace integration for performance analysis
-- Pluggable connectors for different agent types (REST, SSE, CLI)
-- Coding agent analytics with cost estimation, tool usage, and session drill-downs
+> **See it in action:** Watch the [demo video on YouTube](https://www.youtube.com/watch?v=MU3tTv4lKtc)
 
-## Quick Start
+---
+
+<a id="installation"></a>
+## Installation
+
+Get Agent Health running in minutes. Choose the option that best suits your needs:
+
+### Option 1: NPX (Fastest — No Setup)
 
 ```bash
 # Start Agent Health with demo data (no configuration needed)
@@ -33,34 +82,67 @@ npx @opensearch-project/agent-health
 
 Opens http://localhost:4001 with pre-loaded sample data for exploration.
 
-**Next steps:**
-- [Getting Started Guide](./GETTING_STARTED.md) - Step-by-step walkthrough
-- [Connect Your Agent](./docs/CONFIGURATION.md) - Configure your own agent
+### Option 2: Docker Compose (with OpenSearch Observability Stack)
 
+For the full observability stack with OpenSearch, OpenTelemetry Collector, and Data Prepper for trace ingestion:
+
+```bash
+# Clone the repository
+git clone https://github.com/opensearch-project/agent-health.git
+cd agent-health
+
+# Start the OpenSearch observability stack
+docker compose up -d
+
+# Copy Docker environment configuration
+cp .env.docker .env
+
+# Start Agent Health (connects to local OpenSearch automatically)
+npx @opensearch-project/agent-health
+```
+
+This brings up:
+- **OpenSearch** — Stores traces, test cases, benchmarks, and evaluation results
+- **OpenTelemetry Collector** — Receives telemetry data via OTLP (ports 4317/4318)
+- **Data Prepper** — Transforms and enriches traces before OpenSearch ingestion
+
+> **Prerequisites:** Docker Desktop with 4GB+ memory allocated. See [docker-compose.yml](./docker-compose.yml) for configuration options.
+
+### Next Steps
+
+- [Getting Started Guide](./GETTING_STARTED.md) — Step-by-step walkthrough from install to first evaluation
+- [Configuration Guide](./docs/CONFIGURATION.md) — Connect your own agent and configure the environment
+- [CLI Reference](./docs/CLI.md) — Full command-line documentation
+
+---
+
+<a id="features"></a>
 ## Features
 
 ### Agent Evaluation & Observability
 
-- **Evals**: Real-time agent evaluation with trajectory streaming
-- **Experiments**: Batch evaluation runs with configurable parameters
-- **Compare**: Side-by-side trace comparison with aligned and merged views
-- **Agent Traces**: Table-based trace view with latency histogram, filtering, and detailed flyout with input/output display
-- **Live Traces**: Real-time trace monitoring with auto-refresh and filtering
-- **Trace Views**: Timeline and Flow visualizations for debugging
-- **Reports**: Evaluation reports with LLM judge reasoning
-- **Connectors**: Pluggable protocol adapters for different agent types
+| Feature | Description |
+|---------|-------------|
+| **Evals** | Real-time agent evaluation with trajectory streaming |
+| **Experiments** | Batch evaluation runs with configurable parameters |
+| **Compare** | Side-by-side trace comparison with aligned and merged views |
+| **Agent Traces** | Table-based trace view with latency histogram, filtering, and detailed flyout |
+| **Live Traces** | Real-time trace monitoring with auto-refresh and filtering |
+| **Trace Views** | Timeline and Flow visualizations for debugging |
+| **Reports** | Evaluation reports with LLM judge reasoning |
+| **Connectors** | Pluggable protocol adapters (AG-UI SSE, REST, CLI, Claude Code) |
 
 ### Coding Agent Analytics
 
 A unified dashboard for monitoring AI coding agent usage across **Claude Code**, **Kiro**, and **Codex CLI**. Zero configuration — just run `agent-health` and it auto-detects installed agents.
 
-- **Multi-agent dashboard**: Session history, cost estimation, tool usage, activity patterns, and efficiency metrics across all three agents
+- **Multi-agent dashboard**: Session history, cost estimation, tool usage, activity patterns, and efficiency metrics
 - **9 analytics tabs**: Overview, Sessions, Projects, Costs, Activity, Efficiency, Tools, Advanced, and Workspace management
 - **Interactive drill-downs**: Click any chart, card, or metric to drill into filtered session views
 - **Workspace management**: View and edit Claude Code memory files, plans, tasks; browse Kiro MCP servers, agents, and extensions
 - **Privacy-first**: All data stays local — reads directly from `~/.claude/`, `~/.kiro/`, `~/.codex/`
 
-[Full documentation](./docs/CODING_AGENT_ANALYTICS.md)
+[Full Coding Agent Analytics documentation](./docs/CODING_AGENT_ANALYTICS.md)
 
 ### Supported Connectors
 
@@ -74,11 +156,25 @@ A unified dashboard for monitoring AI coding agent usage across **Claude Code**,
 
 For creating custom connectors, see [docs/CONNECTORS.md](./docs/CONNECTORS.md).
 
+### Observio Sample Agent
+
+Agent Health includes **Observio**, a reference ReAct agent you can use as a practice target for evaluating and improving agent performance:
+
+```bash
+cd observio-sample-agent && npm install && npm run start:ag-ui
+npx @opensearch-project/agent-health run -t demo-otel-001 -a observio
+```
+
+See the [Observio README](./observio-sample-agent/README.md) for details.
+
 ---
 
+<a id="architecture"></a>
 ## Architecture
 
-![Agent Health Architecture](docs/diagrams/architecture.png)
+<p align="center">
+    <img alt="Agent Health Architecture" src="docs/diagrams/architecture.png" />
+</p>
 
 Agent Health uses a client-server architecture where all clients (UI, CLI) access OpenSearch through a unified HTTP API. The server handles agent communication via pluggable connectors and proxies LLM judge calls to AWS Bedrock.
 
@@ -86,59 +182,15 @@ For detailed architecture documentation, see [docs/ARCHITECTURE.md](./docs/ARCHI
 
 ---
 
-## CLI Commands
+<a id="quick-configuration"></a>
+## Quick Configuration
 
-```bash
-# Start server (default action)
-npx @opensearch-project/agent-health
-
-# Initialize a new project (creates agent-health.config.ts and .env.example)
-npx @opensearch-project/agent-health init
-
-# Check configuration and connectivity
-npx @opensearch-project/agent-health doctor
-
-# List resources (agents, connectors, models, test-cases, benchmarks)
-npx @opensearch-project/agent-health list agents
-npx @opensearch-project/agent-health list connectors
-
-# Run a single test case against an agent
-npx @opensearch-project/agent-health run -t demo-otel-001 -a demo
-
-# Run a benchmark (batch of test cases)
-npx @opensearch-project/agent-health benchmark -f ./test-cases.json -a my-agent
-npx @opensearch-project/agent-health benchmark -n "My Benchmark" -a my-agent --export results.json
-
-# Export benchmark test cases as JSON
-npx @opensearch-project/agent-health export -b "My Benchmark" -o test-cases.json
-
-# Generate reports (HTML, PDF, JSON)
-npx @opensearch-project/agent-health report -b "My Benchmark"
-npx @opensearch-project/agent-health report -b "My Benchmark" -f pdf -o report.pdf
-
-# One-time migration for existing benchmark runs
-npx @opensearch-project/agent-health migrate --dry-run
-```
-
-For full CLI documentation, see [docs/CLI.md](./docs/CLI.md).
-
-
-
-
-## Configuration
-
-Agent Health works out-of-the-box with demo data. Configure when you're ready to connect your own agent.
-
-### Config File: `agent-health.config.ts`
-
-This is the primary way to configure custom agents, models, and hooks. Create it in your working directory (the directory you run `npx` or `agent-health` from):
+Agent Health works out-of-the-box with demo data. Configure when you're ready to connect your own agent:
 
 ```bash
 # Generate a config file with examples
 npx @opensearch-project/agent-health init
 ```
-
-Or create it manually:
 
 ```typescript
 // agent-health.config.ts
@@ -156,262 +208,63 @@ export default {
 };
 ```
 
-The config file is auto-detected from the current working directory. Supported file names (in priority order): `agent-health.config.ts`, `agent-health.config.js`, `agent-health.config.mjs`. See [`agent-health.config.example.ts`](./agent-health.config.example.ts) for all available options including authentication hooks.
-
 > **Tip:** Run `npx @opensearch-project/agent-health doctor` to verify your configuration is loaded correctly.
 
-### Environment Variables (Optional)
-
-**For LLM Judge evaluation** (uses AWS Bedrock):
-```bash
-# Create .env file
-cp .env.example .env
-
-# Add AWS credentials
-AWS_REGION=us-east-1
-AWS_ACCESS_KEY_ID=your_access_key
-AWS_SECRET_ACCESS_KEY=your_secret_key
-```
-
-**Full configuration guide:** [CONFIGURATION.md](./docs/CONFIGURATION.md)
+For full configuration options including authentication hooks and environment variables, see [CONFIGURATION.md](./docs/CONFIGURATION.md).
 
 ---
 
-## Development Commands
+<a id="star-history"></a>
+## Star History
 
-| Command | Description |
-|---------|-------------|
-| `npm install` | Install dependencies |
-| `npm run dev` | Start frontend dev server (port 4000) |
-| `npm run dev:server` | Start backend server (port 4001) |
-| `npm run build` | TypeScript compile + Vite production build |
-| `npm test` | Run all tests |
-| `npm run test:unit` | Run unit tests only |
-| `npm run test:integration` | Run integration tests only |
-| `npm run test:e2e` | Run E2E tests with Playwright |
-| `npm run test:e2e:ui` | Run E2E tests with Playwright UI |
-| `npm run test:all` | Run all tests (unit + integration + e2e) |
-| `npm test -- --coverage` | Run tests with coverage report |
-| `npm run build:all` | Build UI + server + CLI |
-| `npm run build:cli` | Build CLI only |
+If you find Agent Health useful, please consider giving us a star! Your support helps us grow our community and continue improving the project.
 
-### Production Mode
-
-```bash
-npm run server  # Build UI + start single server on port 4001
-```
-
-Open http://localhost:4001
-
-### NPX Usage
-
-After publishing, run directly with npx:
-
-```bash
-npx @opensearch-project/agent-health           # Start server on port 4001
-npx @opensearch-project/agent-health --port 8080
-npx @opensearch-project/agent-health --env-file .env
-```
-
-### Ports Summary
-
-| Mode | Command | Port(s) |
-|------|---------|---------|
-| **Dev (frontend)** | `npm run dev` | 4000 |
-| **Dev (backend)** | `npm run dev:server` | 4001 |
-| **Production** | `npm run server` | 4001 |
-| **NPX** | `npx @opensearch-project/agent-health` | 4001 (default) |
-
-In development, the Vite dev server (4000) proxies `/api` requests to the backend (4001).
+[![Star History Chart](https://api.star-history.com/svg?repos=opensearch-project/agent-health&type=Date)](https://github.com/opensearch-project/agent-health)
 
 ---
 
-## Testing
-
-AgentEval uses a comprehensive test suite with three layers:
-
-### Test Types
-
-| Type | Location | Command | Description |
-|------|----------|---------|-------------|
-| **Unit** | `tests/unit/` | `npm run test:unit` | Fast, isolated function tests |
-| **Integration** | `tests/integration/` | `npm run test:integration` | Tests with real backend server |
-| **E2E** | `tests/e2e/` | `npm run test:e2e` | Browser-based UI tests with Playwright |
-
-### Running Tests
-
-```bash
-# All tests
-npm test                        # Unit + integration
-npm run test:all                # Unit + integration + E2E
-
-# By type
-npm run test:unit               # Unit tests only
-npm run test:integration        # Integration tests (starts server)
-npm run test:e2e                # E2E tests (starts servers)
-npm run test:e2e:ui             # E2E with Playwright UI for debugging
-
-# With coverage
-npm run test:unit -- --coverage
-
-# Specific file
-npm test -- path/to/file.test.ts
-npx playwright test tests/e2e/dashboard.spec.ts
-```
-
-### E2E Testing with Playwright
-
-E2E tests use [Playwright](https://playwright.dev/) to test the UI in a real browser.
-
-```bash
-# First time: install browsers
-npx playwright install
-
-# Run all E2E tests
-npm run test:e2e
-
-# Interactive UI mode (recommended for debugging)
-npm run test:e2e:ui
-
-# View test report
-npm run test:e2e:report
-```
-
-**Writing E2E Tests:**
-- Place tests in `tests/e2e/*.spec.ts`
-- Use `data-testid` attributes for reliable selectors
-- Handle empty states gracefully (check if data exists before asserting)
-- See existing tests for patterns
-
-### CI Pipeline
-
-All PRs must pass these CI checks:
-
-| Job | What it checks |
-|-----|----------------|
-| `build-and-test` | Build + unit tests + 90% coverage |
-| `lint-and-typecheck` | TypeScript compilation |
-| `license-check` | SPDX headers on all source files |
-| `integration-tests` | Backend integration tests with coverage |
-| `e2e-tests` | Playwright browser tests with pass/fail tracking |
-| `security-scan` | npm audit for vulnerabilities |
-| `test-summary` | Consolidated test results summary |
-
-### Coverage Thresholds
-
-| Test Type | Metric | Threshold |
-|-----------|--------|-----------|
-| Unit | Lines | ≥ 90% |
-| Unit | Branches | ≥ 80% |
-| Unit | Functions | ≥ 80% |
-| Unit | Statements | ≥ 90% |
-| Integration | Lines | Informational (no threshold) |
-| E2E | Pass Rate | 100% |
-
-### CI Artifacts
-
-Each CI run produces these artifacts (downloadable from Actions tab):
-
-| Artifact | Contents |
-|----------|----------|
-| `coverage-report` | Unit test coverage (HTML, LCOV) |
-| `integration-coverage-report` | Integration test coverage |
-| `playwright-report` | E2E test report with screenshots/traces |
-| `test-badges` | Badge data JSON for coverage visualization |
-
-### Full Evaluation Flow E2E Tests
-
-The E2E test suite includes tests for the complete evaluation flow using mock modes:
-- **Demo Agent** (`mock://demo`) - Simulated AG-UI streaming responses
-- **Demo Model** (`provider: "demo"`) - Simulated LLM judge evaluation
-
-This allows testing the full Create Test Case → Create Benchmark → Run Evaluation → View Results flow without requiring AWS credentials or a live agent in CI.
-
----
-
-## Agent Setup
-
-Agent Health supports multiple agent types:
-
-| Agent | Endpoint Variable | Setup |
-|-------|-------------------|-------|
-| **Observio** (sample) | `localhost:3001` | Included — see [observio-sample-agent/](./observio-sample-agent/) |
-| Langgraph | `LANGGRAPH_ENDPOINT` | Simple localhost agent |
-| HolmesGPT | `HOLMESGPT_ENDPOINT` | AG-UI compatible RCA agent |
-| ML-Commons | `MLCOMMONS_ENDPOINT` | See [ML-Commons Setup](./docs/ML-COMMONS-SETUP.md) |
-
-### Observio Sample Agent
-
-Agent Health includes **Observio**, a reference ReAct agent you can use as a practice target for evaluating and improving agent performance. It's a great starting point if you don't have your own agent yet.
-
-```bash
-# Start Observio
-cd observio-sample-agent && npm install && npm run start:ag-ui
-
-# Evaluate it with Agent Health
-npx @opensearch-project/agent-health run -t demo-otel-001 -a observio
-```
-
-See the [Observio README](./observio-sample-agent/README.md) for setup details and improvement areas.
-
-
----
-
-## Debugging
-
-Enable verbose debug logging to diagnose issues:
-
-```bash
-# Via environment variable
-DEBUG=true npx @opensearch-project/agent-health
-
-# Or toggle at runtime via API
-curl -X POST http://localhost:4001/api/debug -H 'Content-Type: application/json' -d '{"enabled":true}'
-```
-
-Debug logging can also be toggled from the **Settings** page using the "Verbose Logging" switch, which syncs to both the browser console and server terminal.
-
----
-
-## Troubleshooting
-
-| Issue | Solution |
-|-------|----------|
-| Cannot connect to backend | Run `npm run dev:server`, check `curl http://localhost:4001/health` |
-| AWS credentials expired | Refresh credentials in `.env` |
-| Storage/Traces not working | Check OpenSearch endpoint and credentials in `.env` |
-| Need verbose logs | Set `DEBUG=true` in `.env` or toggle in Settings page |
-
----
-
+<a id="contributing"></a>
 ## Contributing
 
-We welcome contributions! See [CONTRIBUTING.md](./CONTRIBUTING.md) for guidelines.
+We welcome contributions! There are many ways to get involved:
 
-### Development Workflow
+- [Report a Bug](https://github.com/opensearch-project/agent-health/issues/new/choose) — Found something broken? Let us know
+- [Request a Feature](https://github.com/opensearch-project/agent-health/issues/new/choose) — Have an idea? We'd love to hear it
+- [Submit a Pull Request](https://github.com/opensearch-project/agent-health/pulls) — Code contributions are always welcome
+- [Join the Discussion](https://opensearch.org/slack.html) — Chat with us on the OpenSearch Slack
 
-1. Fork and clone the repository
-2. Install dependencies: `npm install`
-3. Create a feature branch: `git checkout -b feature/your-feature`
-4. Make changes and add tests
-5. Run tests: `npm test`
-6. Commit with DCO signoff: `git commit -s -m "feat: your message"`
-7. Push and create a Pull Request
+### Development Quick Start
 
-All commits require DCO signoff and all PRs must pass CI checks (tests, coverage, linting).
+```bash
+git clone https://github.com/opensearch-project/agent-health.git
+cd agent-health
+npm install
+npm run dev          # Frontend on port 4000
+npm run dev:server   # Backend on port 4001
+```
+
+All commits require DCO signoff (`git commit -s`) and all PRs must pass CI checks.
+
+For detailed development setup, testing, CI pipeline, debugging, and troubleshooting, see the [Developer Guide](./DEVELOPER_GUIDE.md). For full contribution guidelines, see [CONTRIBUTING.md](./CONTRIBUTING.md).
 
 ---
 
 ## Documentation
 
-### User Guides
-- [Getting Started](./GETTING_STARTED.md) - Step-by-step walkthrough from install to first evaluation
-- [Configuration](./docs/CONFIGURATION.md) - Connect your agent and configure the environment
-- [CLI Reference](./docs/CLI.md) - Command-line interface documentation
-- [Observio Sample Agent](./observio-sample-agent/) - Reference agent for practicing agent health improvements
+| Guide | Description |
+|-------|-------------|
+| [Getting Started](./GETTING_STARTED.md) | Step-by-step walkthrough from install to first evaluation |
+| [Configuration](./docs/CONFIGURATION.md) | Connect your agent and configure the environment |
+| [CLI Reference](./docs/CLI.md) | Command-line interface documentation |
+| [Coding Agent Analytics](./docs/CODING_AGENT_ANALYTICS.md) | Multi-agent dashboard and remote server monitoring |
+| [Observio Sample Agent](./observio-sample-agent/) | Reference agent for practicing evaluations |
+| [Developer Guide](./DEVELOPER_GUIDE.md) | Development setup, testing, CI, debugging |
+| [Connectors Guide](./docs/CONNECTORS.md) | Create custom connectors for your agent type |
+| [Architecture](./docs/ARCHITECTURE.md) | System design and patterns |
+| [ML-Commons Setup](./docs/ML-COMMONS-SETUP.md) | OpenSearch ML-Commons integration |
 
-### Developer Guides
-- [Development Guide](./CLAUDE.md) - Architecture, coding conventions, and contributing
-- [Connectors Guide](./docs/CONNECTORS.md) - Create custom connectors for your agent type
-- [ML-Commons Setup](./docs/ML-COMMONS-SETUP.md) - OpenSearch ML-Commons integration
-- [Architecture](./docs/ARCHITECTURE.md) - System design and patterns
+---
+
+<p align="center">
+    Made with care by the <a href="https://opensearch.org">OpenSearch</a> community
+</p>
