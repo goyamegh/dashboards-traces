@@ -26,6 +26,10 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Graceful shutdown handler (SIGTERM/SIGINT) for stopping background timers and draining connections
 - Health endpoint now returns feature flags for frontend conditional rendering
 - RFC 001 documenting Coding Agent Analytics design
+- Remote server aggregation for multi-machine coding agent monitoring
+- Settings UI for remote server management with connectivity testing
+- CLI commands for remote server configuration (`agent-health remote add|remove|list|test`)
+- API key authentication middleware for headless remote mode
 
 ## [0.2.0]
 

@@ -11,6 +11,7 @@
 | **Author**   | Anirudha Jadhav                            |
 | **Created**  | 2026-04-06                                 |
 | **PR**       | anirudha/agent-health#1                    |
+| **See also** | [RFC 003](003-remote-aggregation.md) (remote aggregation), RFC 002 (enterprise leaderboard, future) |
 
 ## Summary
 
@@ -358,7 +359,12 @@ export default {
 
 ## Scope Boundary
 
-This RFC covers **local, single-machine analytics only**. Remote aggregation and enterprise features may be added in future RFCs.
+This RFC covers **local, single-machine analytics only**. Related capabilities are covered by separate RFCs:
+
+- **[RFC 003: Remote Aggregation](003-remote-aggregation.md)** — Multi-machine monitoring via headless remote servers, API key authentication, and session merging
+- **RFC 002: Enterprise Leaderboard** (future) — OpenSearch-backed team analytics, rankings, badges, and recommendations
+
+Each RFC is independently shippable. Merge order: RFC 001 → RFC 003 → RFC 002.
 
 ## References
 
