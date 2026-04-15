@@ -80,7 +80,9 @@ function truncate(value: string | undefined, maxLength: number): string | undefi
  * Extract the agent's final response from a trajectory
  */
 function extractAgentResponse(report: TestCaseRun): string | undefined {
-  const responseStep = [...report.trajectory].reverse().find(s => s.type === 'response');
+  const responseStep = [...report.trajectory].reverse().find(
+    s => s.type === 'response' || s.type === 'assistant'
+  );
   return responseStep?.content;
 }
 
@@ -144,8 +146,7 @@ export function startTestCaseSpan(
   if (agentRunId) {
     attributes[ATTR_AGENT_HEALTH_AGENT_RUN_ID] = agentRunId;
   }
-  const input = truncate(testCase.initialPrompt, MAX_ATTRIBUTE_LENGTH);
-  if (input) attributes[ATTR_TEST_CASE_INPUT] = input;
+  attributes[ATTR_TEST_CASE_INPUT] = truncate(testCase.initialPrompt || '', MAX_ATTRIBUTE_LENGTH)!;
   const expected = truncate(
     testCase.expectedOutcomes ? JSON.stringify(testCase.expectedOutcomes) : undefined,
     MAX_ATTRIBUTE_LENGTH
@@ -220,11 +221,9 @@ export function finalizeTestCaseSpan(span: Span, report: TestCaseRun, endTime?: 
     : TEST_CASE_RESULT_STATUS_VALUE_FAIL;
   span.setAttribute(ATTR_TEST_CASE_RESULT_STATUS, status);
 
-  // Set output (agent's final response)
-  const output = extractAgentResponse(report);
-  if (output) {
-    span.setAttribute(ATTR_TEST_CASE_OUTPUT, truncate(output, MAX_ATTRIBUTE_LENGTH)!);
-  }
+  // Set output (agent's final response) — always set so UI can distinguish missing vs empty
+  const output = extractAgentResponse(report) || '';
+  span.setAttribute(ATTR_TEST_CASE_OUTPUT, truncate(output, MAX_ATTRIBUTE_LENGTH)!);
 
   // Set Agent Health extension attributes
   if (report.connectorProtocol) {
@@ -306,8 +305,7 @@ export function emitDeferredTestCaseSpan(
   if (agentRunId) {
     attributes[ATTR_AGENT_HEALTH_AGENT_RUN_ID] = agentRunId;
   }
-  const input = truncate(testCase.initialPrompt, MAX_ATTRIBUTE_LENGTH);
-  if (input) attributes[ATTR_TEST_CASE_INPUT] = input;
+  attributes[ATTR_TEST_CASE_INPUT] = truncate(testCase.initialPrompt || '', MAX_ATTRIBUTE_LENGTH)!;
   const expected = truncate(
     testCase.expectedOutcomes ? JSON.stringify(testCase.expectedOutcomes) : undefined,
     MAX_ATTRIBUTE_LENGTH

@@ -397,6 +397,7 @@ export interface TraceSummary {
   startTime: string;
   duration: number;
   hasErrors: boolean;
+  hasEvalSpans?: boolean;
   spans: Span[];
 }
 
