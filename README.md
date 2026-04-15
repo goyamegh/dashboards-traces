@@ -18,7 +18,7 @@ Agent Health helps you evaluate, monitor, and optimize AI agents. From autonomou
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE.txt)
 [![npm version](https://img.shields.io/npm/v/@opensearch-project/agent-health.svg)](https://www.npmjs.com/package/@opensearch-project/agent-health)
-[![Build](https://github.com/opensearch-project/dashboards-traces/actions/workflows/ci.yml/badge.svg)](https://github.com/opensearch-project/dashboards-traces/actions/workflows/ci.yml)
+[![Build](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml/badge.svg)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
 
 </div>
 
@@ -32,11 +32,11 @@ Agent Health helps you evaluate, monitor, and optimize AI agents. From autonomou
 </p>
 
 <div align="center" style="margin-top: 1em; margin-bottom: 1em;">
-<a href="#-what-is-agent-health">What is Agent Health?</a> &bull;
-<a href="#%EF%B8%8F-installation">Installation</a> &bull;
-<a href="#-features">Features</a> &bull;
-<a href="#-quick-configuration">Configuration</a> &bull;
-<a href="#-contributing">Contributing</a>
+<a href="#what-is-agent-health">What is Agent Health?</a> &bull;
+<a href="#installation">Installation</a> &bull;
+<a href="#features">Features</a> &bull;
+<a href="#quick-configuration">Configuration</a> &bull;
+<a href="#contributing">Contributing</a>
 </div>
 
 <br>
@@ -53,7 +53,7 @@ Agent Health helps you evaluate, monitor, and optimize AI agents. From autonomou
 
 ---
 
-<a id="-what-is-agent-health"></a>
+<a id="what-is-agent-health"></a>
 ## What is Agent Health?
 
 Agent Health is an evaluation and observability framework for AI agents, built on [OpenSearch](https://opensearch.org). It helps you measure agent performance through **"Golden Path" trajectory comparison** — where an LLM judge evaluates agent actions against expected outcomes — and provides deep observability into agent execution via OpenTelemetry traces.
@@ -68,7 +68,7 @@ Agent Health is an evaluation and observability framework for AI agents, built o
 
 ---
 
-<a id="%EF%B8%8F-installation"></a>
+<a id="installation"></a>
 ## Installation
 
 Get Agent Health running in minutes. Choose the option that best suits your needs:
@@ -88,11 +88,14 @@ For the full observability stack with OpenSearch, OpenTelemetry Collector, and D
 
 ```bash
 # Clone the repository
-git clone https://github.com/opensearch-project/dashboards-traces.git
-cd dashboards-traces
+git clone https://github.com/opensearch-project/agent-health.git
+cd agent-health
 
 # Start the OpenSearch observability stack
 docker compose up -d
+
+# Copy Docker environment configuration
+cp .env.docker .env
 
 # Start Agent Health (connects to local OpenSearch automatically)
 npx @opensearch-project/agent-health
@@ -113,7 +116,7 @@ This brings up:
 
 ---
 
-<a id="-features"></a>
+<a id="features"></a>
 ## Features
 
 ### Agent Evaluation & Observability
@@ -166,7 +169,7 @@ See the [Observio README](./observio-sample-agent/README.md) for details.
 
 ---
 
-<a id="-architecture"></a>
+<a id="architecture"></a>
 ## Architecture
 
 <p align="center">
@@ -179,7 +182,7 @@ For detailed architecture documentation, see [docs/ARCHITECTURE.md](./docs/ARCHI
 
 ---
 
-<a id="-quick-configuration"></a>
+<a id="quick-configuration"></a>
 ## Quick Configuration
 
 Agent Health works out-of-the-box with demo data. Configure when you're ready to connect your own agent:
@@ -211,30 +214,30 @@ For full configuration options including authentication hooks and environment va
 
 ---
 
-<a id="-star-history"></a>
+<a id="star-history"></a>
 ## Star History
 
 If you find Agent Health useful, please consider giving us a star! Your support helps us grow our community and continue improving the project.
 
-[![Star History Chart](https://api.star-history.com/svg?repos=opensearch-project/dashboards-traces&type=Date)](https://github.com/opensearch-project/dashboards-traces)
+[![Star History Chart](https://api.star-history.com/svg?repos=opensearch-project/agent-health&type=Date)](https://github.com/opensearch-project/agent-health)
 
 ---
 
-<a id="-contributing"></a>
+<a id="contributing"></a>
 ## Contributing
 
 We welcome contributions! There are many ways to get involved:
 
-- [Report a Bug](https://github.com/opensearch-project/dashboards-traces/issues/new?labels=bug&template=bug_report.md) — Found something broken? Let us know
-- [Request a Feature](https://github.com/opensearch-project/dashboards-traces/issues/new?labels=enhancement&template=feature_request.md) — Have an idea? We'd love to hear it
-- [Submit a Pull Request](https://github.com/opensearch-project/dashboards-traces/pulls) — Code contributions are always welcome
+- [Report a Bug](https://github.com/opensearch-project/agent-health/issues/new/choose) — Found something broken? Let us know
+- [Request a Feature](https://github.com/opensearch-project/agent-health/issues/new/choose) — Have an idea? We'd love to hear it
+- [Submit a Pull Request](https://github.com/opensearch-project/agent-health/pulls) — Code contributions are always welcome
 - [Join the Discussion](https://opensearch.org/slack.html) — Chat with us on the OpenSearch Slack
 
 ### Development Quick Start
 
 ```bash
-git clone https://github.com/opensearch-project/dashboards-traces.git
-cd dashboards-traces
+git clone https://github.com/opensearch-project/agent-health.git
+cd agent-health
 npm install
 npm run dev          # Frontend on port 4000
 npm run dev:server   # Backend on port 4001

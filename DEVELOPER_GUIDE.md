@@ -145,8 +145,8 @@ AWS_SECRET_ACCESS_KEY=your_secret_key
 
 Agent Health supports multiple agent types:
 
-| Agent | Endpoint Variable | Setup |
-|-------|-------------------|-------|
+| Agent | Endpoint / Env Variable | Setup |
+|-------|-------------------------|-------|
 | **Observio** (sample) | `localhost:3001` | Included — see [observio-sample-agent/](./observio-sample-agent/) |
 | Langgraph | `LANGGRAPH_ENDPOINT` | Simple localhost agent |
 | HolmesGPT | `HOLMESGPT_ENDPOINT` | AG-UI compatible RCA agent |
