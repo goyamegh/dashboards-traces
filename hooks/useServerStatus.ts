@@ -5,18 +5,26 @@
 
 import { useState, useEffect, useRef } from 'react';
 
+export interface FeatureFlags {
+  codingAgentAnalytics: boolean;
+}
+
 interface ServerStatus {
   status: 'online' | 'offline';
   version: string | null;
   loading: boolean;
+  features: FeatureFlags;
 }
 
 const POLL_INTERVAL_MS = 10000;
+
+const DEFAULT_FEATURES: FeatureFlags = { codingAgentAnalytics: true };
 
 export function useServerStatus(): ServerStatus {
   const [status, setStatus] = useState<'online' | 'offline'>('offline');
   const [version, setVersion] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [features, setFeatures] = useState<FeatureFlags>(DEFAULT_FEATURES);
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
@@ -27,13 +35,18 @@ export function useServerStatus(): ServerStatus {
           const data = await response.json();
           setStatus('online');
           setVersion(data.version || null);
+          if (data.features) {
+            setFeatures(data.features);
+          }
         } else {
           setStatus('offline');
           setVersion(null);
+          setFeatures(DEFAULT_FEATURES);
         }
       } catch {
         setStatus('offline');
         setVersion(null);
+        setFeatures(DEFAULT_FEATURES);
       } finally {
         setLoading(false);
       }
@@ -52,5 +65,5 @@ export function useServerStatus(): ServerStatus {
     };
   }, []);
 
-  return { status, version, loading };
+  return { status, version, loading, features };
 }
