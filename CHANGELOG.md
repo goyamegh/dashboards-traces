@@ -13,6 +13,7 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Extra spacing in Timeline view by removing container padding ([#73](https://github.com/opensearch-project/agent-health/issues/73))
 
 ### Added
+- GitHub Actions workflow for AI-powered PR code diff analysis and review via AWS Bedrock
 - Kiro CLI SQLite reader with progressive warmup, non-blocking cache, and phase-aware loading UX
 - Coding Agent Analytics: unified dashboard for Claude Code, Kiro, and Codex CLI usage data
 - Plugin-based reader system for ingesting local session data from ~/.claude/, ~/.kiro/, and ~/.codex/
