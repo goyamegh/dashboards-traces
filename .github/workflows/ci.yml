@@ -92,7 +92,7 @@ jobs:
 
       - name: Upload unit test coverage to Codecov
         if: matrix.node-version == '20'
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           files: coverage/lcov.info
           flags: unit
@@ -287,7 +287,7 @@ jobs:
 
       - name: Upload integration coverage to Codecov
         if: always()
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           directory: coverage-integration/
           flags: integration
@@ -354,7 +354,7 @@ jobs:
 
       - name: Upload E2E coverage to Codecov
         if: always()
-        uses: codecov/codecov-action@v4
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
         with:
           directory: coverage-e2e/
           flags: e2e
