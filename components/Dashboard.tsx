@@ -245,9 +245,6 @@ export const Dashboard: React.FC = () => {
         ]);
         setBenchmarks(allBenchmarks);
         setReports(allReports);
-
-        // Fetch test case count
-        asyncTestCaseStorage.getAll().then(tc => setTestCaseCount(tc.length)).catch(() => {});
       } catch (error) {
         console.error('Failed to load dashboard data:', error);
       } finally {
