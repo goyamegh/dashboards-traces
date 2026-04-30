@@ -1,0 +1,257 @@
+# Copyright OpenSearch Contributors
+# SPDX-License-Identifier: Apache-2.0
+#
+# Agent Health — CloudFormation template for managed observability infrastructure.
+# Deploys an Amazon OpenSearch Service domain and OpenSearch Ingestion (OSIS) pipeline
+# for collecting OpenTelemetry traces from AI agents.
+#
+# Launch Stack URL pattern (replace REGION):
+#   https://console.aws.amazon.com/cloudformation/home?region=REGION#/stacks/create/template?stackName=AgentHealthObservability&templateURL=https://agent-health-cfn-REGION.s3.REGION.amazonaws.com/agent-health-observability.yaml
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  Agent Health Observability Stack — Amazon OpenSearch Service domain with
+  OpenSearch Ingestion (OSIS) pipeline for OTLP trace collection from AI agents.
+
+# =============================================================================
+# Parameters
+# =============================================================================
+Parameters:
+  DomainName:
+    Type: String
+    Default: agent-health-traces
+    Description: Name for the OpenSearch Service domain
+    AllowedPattern: '[a-z][a-z0-9\-]+'
+    MinLength: 3
+    MaxLength: 28
+
+  InstanceType:
+    Type: String
+    Default: r6g.large.search
+    Description: OpenSearch instance type
+    AllowedValues:
+      - t3.small.search
+      - t3.medium.search
+      - r6g.large.search
+      - r6g.xlarge.search
+      - r6g.2xlarge.search
+
+  VolumeSize:
+    Type: Number
+    Default: 100
+    Description: EBS volume size in GB per data node
+    MinValue: 10
+    MaxValue: 1000
+
+  PipelineMinUnits:
+    Type: Number
+    Default: 1
+    Description: Minimum OSIS pipeline capacity units
+    MinValue: 1
+    MaxValue: 96
+
+  PipelineMaxUnits:
+    Type: Number
+    Default: 4
+    Description: Maximum OSIS pipeline capacity units
+    MinValue: 1
+    MaxValue: 96
+
+# =============================================================================
+# Resources
+# =============================================================================
+Resources:
+
+  # ---------------------------------------------------------------------------
+  # OpenSearch Service Domain
+  # ---------------------------------------------------------------------------
+  OpenSearchDomain:
+    Type: AWS::OpenSearchService::Domain
+    Properties:
+      DomainName: !Ref DomainName
+      EngineVersion: OpenSearch_2.19
+      ClusterConfig:
+        InstanceType: !Ref InstanceType
+        InstanceCount: 1
+        DedicatedMasterEnabled: false
+        ZoneAwarenessEnabled: false
+      EBSOptions:
+        EBSEnabled: true
+        VolumeType: gp3
+        VolumeSize: !Ref VolumeSize
+      EncryptionAtRestOptions:
+        Enabled: true
+      NodeToNodeEncryptionOptions:
+        Enabled: true
+      DomainEndpointOptions:
+        EnforceHTTPS: true
+        TLSSecurityPolicy: Policy-Min-TLS-1-2-PFS-2023-10
+      AdvancedSecurityOptions:
+        Enabled: true
+        InternalUserDatabaseEnabled: false
+        MasterUserOptions:
+          MasterUserARN: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+      AccessPolicies:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !GetAtt OSISPipelineRole.Arn
+            Action: 'es:ESHttp*'
+            Resource: !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${DomainName}/*'
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'es:ESHttp*'
+            Resource: !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${DomainName}/*'
+      Tags:
+        - Key: agent-health
+          Value: observability
+        - Key: ManagedBy
+          Value: AgentHealthCFN
+
+  # ---------------------------------------------------------------------------
+  # IAM Role — OSIS Pipeline Execution
+  # ---------------------------------------------------------------------------
+  OSISPipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${DomainName}-osis-pipeline-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: osis-pipelines.amazonaws.com
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: OSISToOpenSearch
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'es:DescribeDomain'
+                  - 'es:ESHttp*'
+                Resource:
+                  - !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${DomainName}'
+                  - !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${DomainName}/*'
+
+  # ---------------------------------------------------------------------------
+  # IAM Role — Ingestion (for agents pushing telemetry via SigV4)
+  # ---------------------------------------------------------------------------
+  IngestionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${DomainName}-ingestion-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: 'sts:AssumeRole'
+      Policies:
+        - PolicyName: OSISIngest
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'osis:Ingest'
+                Resource:
+                  - !Sub 'arn:aws:osis:${AWS::Region}:${AWS::AccountId}:pipeline/${DomainName}-otlp'
+
+  # ---------------------------------------------------------------------------
+  # OpenSearch Ingestion (OSIS) Pipeline — OTLP → OpenSearch
+  # ---------------------------------------------------------------------------
+  OSISPipeline:
+    Type: AWS::OSIS::Pipeline
+    DependsOn: OpenSearchDomain
+    Properties:
+      PipelineName: !Sub '${DomainName}-otlp'
+      MinUnits: !Ref PipelineMinUnits
+      MaxUnits: !Ref PipelineMaxUnits
+      PipelineConfigurationBody: !Sub |
+        version: "2"
+        otel-traces-pipeline:
+          source:
+            otel_trace_source:
+              path: "/v1/traces"
+          processor:
+            - otel_traces:
+                service_map:
+                  enabled: true
+          sink:
+            - opensearch:
+                hosts:
+                  - "https://${OpenSearchDomain.DomainEndpoint}"
+                index_type: trace-analytics-raw
+                aws:
+                  sts_role_arn: "${OSISPipelineRole.Arn}"
+                  region: "${AWS::Region}"
+        otel-service-map-pipeline:
+          source:
+            pipeline:
+              name: "otel-traces-pipeline"
+          processor:
+            - otel_apm_service_map:
+                window_duration: "10s"
+          sink:
+            - opensearch:
+                hosts:
+                  - "https://${OpenSearchDomain.DomainEndpoint}"
+                index_type: trace-analytics-service-map
+                aws:
+                  sts_role_arn: "${OSISPipelineRole.Arn}"
+                  region: "${AWS::Region}"
+        otel-logs-pipeline:
+          source:
+            otel_logs_source:
+              path: "/v1/logs"
+          sink:
+            - opensearch:
+                hosts:
+                  - "https://${OpenSearchDomain.DomainEndpoint}"
+                index: "otel-logs-%{yyyy.MM.dd}"
+                aws:
+                  sts_role_arn: "${OSISPipelineRole.Arn}"
+                  region: "${AWS::Region}"
+      Tags:
+        - Key: agent-health
+          Value: observability
+
+# =============================================================================
+# Outputs
+# =============================================================================
+Outputs:
+  OpenSearchEndpoint:
+    Description: OpenSearch domain endpoint URL
+    Value: !Sub 'https://${OpenSearchDomain.DomainEndpoint}'
+
+  OSISIngestEndpoint:
+    Description: OSIS OTLP ingest endpoint (configure as OTEL_EXPORTER_OTLP_ENDPOINT in your agent)
+    Value: !Sub 'https://${OSISPipeline.IngestEndpointUrls[0]}'
+
+  Region:
+    Description: AWS Region where the stack was deployed
+    Value: !Ref 'AWS::Region'
+
+  IngestionRoleArn:
+    Description: IAM role ARN for agents to assume when pushing telemetry via SigV4
+    Value: !GetAtt IngestionRole.Arn
+
+  AgentHealthConfigJSON:
+    Description: >-
+      Copy this JSON block into your agent-health.config.json file,
+      or run: npx @opensearch-project/agent-health configure --from-stack AgentHealthObservability
+    Value: !Sub |
+      {
+        "observability": {
+          "endpoint": "https://${OpenSearchDomain.DomainEndpoint}",
+          "authType": "sigv4",
+          "awsRegion": "${AWS::Region}",
+          "awsService": "es",
+          "tlsSkipVerify": false
+        }
+      }

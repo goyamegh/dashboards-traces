@@ -65,7 +65,8 @@
     "build:cli": "esbuild cli/index.ts --bundle --platform=node --format=esm --outdir=cli/dist --packages=external --external:inquirer",
     "build:lib": "esbuild lib/index.ts lib/config/index.ts --bundle --platform=node --format=esm --outdir=lib/dist --packages=external",
     "build:all": "npm run build && npm run build:server && npm run build:cli && npm run build:lib",
-    "start:observio": "cd observio-sample-agent && npm install --silent && npm run start:ag-ui",
+    "start:observio": "cd observio-sample-agent && npm install --legacy-peer-deps --silent && npm run start:ag-ui",
+    "dev:all": "npm run start:observio & npm run dev:server",
     "demo": "npm run build:all && node cli/dist/index.js",
     "prepublishOnly": "npm run build:all"
   },

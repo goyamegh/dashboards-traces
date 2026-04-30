@@ -18,3 +18,5 @@ export { createInitCommand } from './init.js';
 export { createMigrateCommand } from './migrate.js';
 export { createCompareServicesCommand } from './compare-services.js';
 export { createRemoteCommand } from './remote.js';
+export { createConfigureCommand } from './configure.js';
+export { createKillCommand } from './kill.js';

@@ -9,9 +9,11 @@
  */
 
 import 'dotenv/config';
+import { ChildProcess } from 'child_process';
 import config from './config/index.js';
 import { createApp } from './app.js';
 import { getStorageConfigFromFile } from './services/configService.js';
+import { findObservioRoot, isPortFree, spawnObservioAgent, OBSERVIO_PORT } from './services/observioAgent.js';
 
 // Register server-side connectors (subprocess, claude-code)
 // This import has side effects that register connectors with the registry
@@ -22,6 +24,41 @@ export { createApp } from './app.js';
 
 const PORT = config.PORT;
 const MAX_PORT_ATTEMPTS = 10;
+
+// Track the observio child process for cleanup on shutdown
+let observioChild: ChildProcess | null = null;
+
+/**
+ * Try to auto-start the observio sample agent if available.
+ * Fails silently — never blocks the main server.
+ */
+async function tryStartObservioAgent(): Promise<void> {
+  try {
+    const root = findObservioRoot();
+    if (!root) {
+      console.log('  Observio sample agent: not found (skipped)');
+      return;
+    }
+
+    const free = await isPortFree(OBSERVIO_PORT);
+    if (!free) {
+      console.log(`  Observio sample agent: port ${OBSERVIO_PORT} already in use (skipped)`);
+      return;
+    }
+
+    observioChild = spawnObservioAgent(root);
+    console.log(`  Observio sample agent: starting on port ${OBSERVIO_PORT}...`);
+
+    observioChild.on('exit', (code, signal) => {
+      if (code !== null && code !== 0) {
+        console.log(`  [observio] Exited with code ${code}`);
+      }
+      observioChild = null;
+    });
+  } catch (err) {
+    console.log(`  Observio sample agent: failed to start (${err instanceof Error ? err.message : err})`);
+  }
+}
 
 async function startServer() {
   const app = await createApp();
@@ -52,9 +89,15 @@ async function startServer() {
         }
         console.log('');
 
-        // Graceful shutdown — stop background timers and drain connections
+        // Graceful shutdown — stop background timers, kill child processes, drain connections
         const shutdown = (signal: string) => {
           console.log(`\n  Received ${signal}, shutting down gracefully...`);
+          // Stop the observio sample agent if we spawned it
+          if (observioChild && !observioChild.killed) {
+            console.log('  Stopping observio sample agent...');
+            observioChild.kill('SIGTERM');
+            observioChild = null;
+          }
           try {
             const { codingAgentRegistry } = require('./services/codingAgents');
             if (codingAgentRegistry) {
@@ -69,6 +112,9 @@ async function startServer() {
         };
         process.on('SIGTERM', () => shutdown('SIGTERM'));
         process.on('SIGINT', () => shutdown('SIGINT'));
+
+        // Auto-start the observio sample agent (non-blocking)
+        tryStartObservioAgent();
 
         resolve();
       });

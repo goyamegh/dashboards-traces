@@ -29,6 +29,8 @@ import {
   createMigrateCommand,
   createCompareServicesCommand,
   createRemoteCommand,
+  createConfigureCommand,
+  createKillCommand,
 } from './commands/index.js';
 
 // Get package.json for version
@@ -142,6 +144,9 @@ ${chalk.cyan.bold('Remote Servers:')}
   ${chalk.yellow('agent-health remote list')}             List configured remote servers
   ${chalk.yellow('agent-health remote test')}             Test connectivity to all remotes
 
+${chalk.cyan.bold('Infrastructure:')}
+  ${chalk.yellow('agent-health configure')} ${chalk.gray('--from-stack <name>')}  Import config from a CloudFormation stack
+
 ${chalk.cyan.bold('Maintenance:')}
   ${chalk.yellow('agent-health migrate')}                Migrate legacy benchmark data to current format
   ${chalk.yellow('agent-health serve')}                  Start the server (same as default, explicit command)
@@ -230,6 +235,8 @@ program.addCommand(createInitCommand());
 program.addCommand(createMigrateCommand());
 program.addCommand(createCompareServicesCommand());
 program.addCommand(createRemoteCommand());
+program.addCommand(createConfigureCommand());
+program.addCommand(createKillCommand());
 
 // Add serve command as an alias for the default action
 program
