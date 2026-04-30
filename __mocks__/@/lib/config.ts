@@ -31,6 +31,7 @@ export interface EnvConfig {
   mlcommonsHeaderAwsSecretAccessKey: string;
   mlcommonsHeaderAwsSessionToken: string;
   travelPlannerEndpoint: string;
+  observioEndpoint: string;
   openaiCompatibleApiKey: string;
   openaiCompatibleEndpoint: string;
   claudeCodeTelemetryEnabled: boolean;
@@ -65,6 +66,7 @@ export const ENV_CONFIG: EnvConfig = {
   mlcommonsHeaderAwsSecretAccessKey: '',
   mlcommonsHeaderAwsSessionToken: '',
   travelPlannerEndpoint: 'http://localhost:3000',
+  observioEndpoint: 'http://localhost:3001/run-agent',
   openaiCompatibleApiKey: '',
   openaiCompatibleEndpoint: 'http://localhost:4000/v1/chat/completions',
   claudeCodeTelemetryEnabled: false,

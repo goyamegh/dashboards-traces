@@ -64,6 +64,9 @@ export interface EnvConfig {
   openaiCompatibleApiKey: string;
   openaiCompatibleEndpoint: string;
 
+  // Observio Sample Agent endpoint
+  observioEndpoint: string;
+
   // Claude Code Telemetry (optional - for OTEL traces from Claude Code)
   claudeCodeTelemetryEnabled: boolean;
   otelExporterEndpoint: string;
@@ -136,6 +139,9 @@ export const ENV_CONFIG: EnvConfig = {
   // OpenAI-compatible (optional - for OpenAI-compatible judge/agent endpoints)
   openaiCompatibleApiKey: getEnvVar('OPENAI_COMPATIBLE_API_KEY', ''),
   openaiCompatibleEndpoint: getEnvVar('OPENAI_COMPATIBLE_ENDPOINT', 'http://localhost:4000/v1/chat/completions'),
+
+  // Observio Sample Agent endpoint
+  observioEndpoint: getEnvVar('OBSERVIO_ENDPOINT', 'http://localhost:3001/run-agent'),
 
   // Claude Code Telemetry (optional - for OTEL traces from Claude Code)
   claudeCodeTelemetryEnabled: getEnvVar('CLAUDE_CODE_TELEMETRY_ENABLED', 'false') === 'true',

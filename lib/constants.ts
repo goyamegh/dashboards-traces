@@ -117,6 +117,15 @@ export const DEFAULT_CONFIG: AppConfig = {
       useTraces: false,
     },
     {
+      key: "observio",
+      name: "Observio Sample Agent",
+      endpoint: ENV_CONFIG.observioEndpoint || "http://localhost:3001/run-agent",
+      description: "Observio sample agent — ReAct pattern with LangGraph and Bedrock. Start with: cd observio-sample-agent && npm run start:ag-ui",
+      connectorType: "agui-streaming",
+      headers: {},
+      useTraces: true,
+    },
+    {
       key: "claude-code",
       name: "Claude Code",
       endpoint: "claude",
