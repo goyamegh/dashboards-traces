@@ -276,6 +276,59 @@ describe('evaluateWithClaudeCode', () => {
     expect(result.passFailStatus).toBe('passed');
   });
 
+  it('should handle NDJSON array format from --output-format json', async () => {
+    const { proc, handlers } = createMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const promise = evaluateWithClaudeCode(baseRequest);
+
+    // Real Claude CLI --output-format json returns an array with system, assistant, and result objects
+    const ndjsonOutput = JSON.stringify([
+      { type: 'system', subtype: 'init', session_id: 'test-session' },
+      {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: JSON.stringify(mockJudgeResult) }],
+        },
+      },
+      {
+        type: 'result',
+        subtype: 'success',
+        result: JSON.stringify(mockJudgeResult),
+        duration_ms: 5000,
+      },
+    ]);
+    proc.stdout.emit('data', Buffer.from(ndjsonOutput));
+    handlers.close(0);
+
+    const result = await promise;
+    expect(result.passFailStatus).toBe('passed');
+    expect(result.metrics.accuracy).toBe(85);
+  });
+
+  it('should fall back to assistant message when result object has no result field', async () => {
+    const { proc, handlers } = createMockProcess();
+    mockSpawn.mockReturnValue(proc);
+
+    const promise = evaluateWithClaudeCode(baseRequest);
+
+    const ndjsonOutput = JSON.stringify([
+      { type: 'system', subtype: 'init' },
+      {
+        type: 'assistant',
+        message: {
+          content: [{ type: 'text', text: JSON.stringify(mockJudgeResult) }],
+        },
+      },
+      { type: 'result', subtype: 'success' },
+    ]);
+    proc.stdout.emit('data', Buffer.from(ndjsonOutput));
+    handlers.close(0);
+
+    const result = await promise;
+    expect(result.passFailStatus).toBe('passed');
+  });
+
   it('should handle accuracy in metrics sub-object (legacy format)', async () => {
     const { proc, handlers } = createMockProcess();
     mockSpawn.mockReturnValue(proc);

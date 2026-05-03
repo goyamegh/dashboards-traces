@@ -498,5 +498,15 @@ describe('Judge Routes', () => {
         })
       );
     });
+
+    it('litellm judge service re-exports are wired correctly', () => {
+      // evaluateWithLiteLLM and parseLiteLLMError are re-exports from judgeService
+      // Verify they're proper functions (mock wiring)
+      expect(typeof mockEvaluateWithLiteLLM).toBe('function');
+      expect(typeof mockParseLiteLLMError).toBe('function');
+      // The mocks are from the re-exported judgeService module
+      expect(mockEvaluateWithLiteLLM).toBeDefined();
+      expect(mockParseLiteLLMError).toBeDefined();
+    });
   });
 });

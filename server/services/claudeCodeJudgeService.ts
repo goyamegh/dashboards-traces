@@ -206,12 +206,29 @@ function spawnClaude(prompt: string, systemPrompt: string): Promise<string> {
         if (jsonResponse.result) {
           resolvePromise(typeof jsonResponse.result === 'string' ? jsonResponse.result : JSON.stringify(jsonResponse.result));
         } else if (Array.isArray(jsonResponse) && jsonResponse.length > 0) {
-          // Array of content blocks
-          const text = jsonResponse
-            .filter((block: any) => block.type === 'text')
-            .map((block: any) => block.text)
-            .join('');
-          resolvePromise(text || stdout);
+          // NDJSON array from --output-format json: [{type:"system",...}, {type:"assistant",...}, {type:"result",...}]
+          // First try to find the result object
+          const resultObj = jsonResponse.find((block: any) => block.type === 'result');
+          if (resultObj?.result) {
+            resolvePromise(typeof resultObj.result === 'string' ? resultObj.result : JSON.stringify(resultObj.result));
+          } else {
+            // Fallback: try assistant message content blocks
+            const assistantObj = jsonResponse.find((block: any) => block.type === 'assistant');
+            const textContent = assistantObj?.message?.content
+              ?.filter((block: any) => block.type === 'text')
+              ?.map((block: any) => block.text)
+              ?.join('');
+            if (textContent) {
+              resolvePromise(textContent);
+            } else {
+              // Legacy: array of plain text blocks [{type:'text', text:'...'}]
+              const plainText = jsonResponse
+                .filter((block: any) => block.type === 'text')
+                .map((block: any) => block.text)
+                .join('');
+              resolvePromise(plainText || stdout);
+            }
+          }
         } else {
           // Might be bare JSON response
           resolvePromise(stdout);

@@ -403,7 +403,7 @@ async function streamFromLiteLLM(
     const appConfig = loadConfigSync();
     const modelId = appConfig.judge?.model || 'gpt-4o';
 
-    debug('Assistant', 'Using LiteLLM model:', modelId, 'endpoint:', serverConfig.LITELLM_ENDPOINT);
+    debug('Assistant', 'Using LiteLLM model:', modelId, 'endpoint:', serverConfig.OPENAI_COMPATIBLE_ENDPOINT);
 
     const litellmMessages = [
       { role: 'system', content: systemPrompt },
@@ -414,11 +414,11 @@ async function streamFromLiteLLM(
     ];
 
     const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-    if (serverConfig.LITELLM_API_KEY) {
-      headers['Authorization'] = `Bearer ${serverConfig.LITELLM_API_KEY}`;
+    if (serverConfig.OPENAI_COMPATIBLE_API_KEY) {
+      headers['Authorization'] = `Bearer ${serverConfig.OPENAI_COMPATIBLE_API_KEY}`;
     }
 
-    const res = await fetch(serverConfig.LITELLM_ENDPOINT, {
+    const res = await fetch(serverConfig.OPENAI_COMPATIBLE_ENDPOINT, {
       method: 'POST',
       headers,
       body: JSON.stringify({
@@ -443,7 +443,7 @@ async function streamFromLiteLLM(
   } catch (error: any) {
     const msg = error.message || 'Unknown LiteLLM error';
     if (msg.includes('ECONNREFUSED') || msg.includes('ENOTFOUND')) {
-      onError(`Cannot connect to LiteLLM endpoint (${serverConfig.LITELLM_ENDPOINT}). Ensure the server is running.`);
+      onError(`Cannot connect to LiteLLM endpoint (${serverConfig.OPENAI_COMPATIBLE_ENDPOINT}). Ensure the server is running.`);
     } else {
       onError(msg);
     }
@@ -512,7 +512,7 @@ export function streamAssistantResponse(
   const provider = appConfig.judge?.provider || 'bedrock';
   debug('Assistant', 'Claude CLI unavailable, falling back to Bedrock (provider:', provider, ')');
 
-  if (provider === 'litellm') {
+  if (provider === 'litellm' || provider === 'openai-compatible') {
     streamFromLiteLLM(session.messages, systemPrompt, onDelta, handleDone, handleError);
   } else {
     streamFromBedrock(session.messages, systemPrompt, onDelta, handleDone, handleError);
