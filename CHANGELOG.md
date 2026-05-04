@@ -647,6 +647,8 @@ Release-pipeline retry of `0.5.0`. The `0.5.0` git tag was cut on [`be9f7cb5`](h
 - Responsive UX pass for the AI Dev Tools page (`/coding-agents`): responsive page shell + `xl`/`2xl` breakpoint scaling on per-agent and chart grids, shared primitives (`SectionHeader`, `FilterBar`, `DataTable`, `CompactBadge`, `EmptyState`), sticky tab bar, keyboard focus rings on clickable stat cards, a11y landmarks (skip link, `<main>`, `aria-sort`, `aria-label`, table captions)
 - Amazon Strands connector for Bedrock Agent Runtime integration (`services/connectors/strands/`)
 - LangGraph REST connector for non-AG-UI LangGraph instances (`services/connectors/langgraph/`)
+- CLI `import` command for importing test cases from external evaluation frameworks (HolmesGPT)
+- HolmesGPT YAML-to-Agent Health converter with GitHub and local source support
 - Dashboard homepage gradient background, stats summary bar, and chart area gradient fills ([#153](https://github.com/opensearch-project/agent-health/pull/153))
 - Pluggable evaluator architecture with 5 built-in system evaluators (RCA Default, Factuality, Tool Usage Efficiency, Reasoning Depth, Safety)
 - Evaluator management UI: create, edit, duplicate, and delete custom evaluators with versioning support
