@@ -16,6 +16,7 @@ import type {
   BenchmarkRun,
   TestCaseRun,
   RunAnnotation,
+  SessionMetadata,
   OpenSearchLog,
   Span,
   HealthStatus,
@@ -195,6 +196,15 @@ export interface IMetricsOperations {
   // Future: Add metrics query operations
 }
 
+/**
+ * @experimental Session metadata operations (generic sidecar for coding agent sessions)
+ */
+export interface ISessionMetadataOperations {
+  get(agentKind: string, sessionId: string): Promise<SessionMetadata | null>;
+  put(agentKind: string, sessionId: string, data: Record<string, unknown>): Promise<SessionMetadata>;
+  list(options?: PaginationOptions): Promise<{ items: SessionMetadata[]; total: number }>;
+}
+
 // ============================================================================
 // Storage Module Interface
 // ============================================================================
@@ -208,6 +218,7 @@ export interface IStorageModule {
   runs: IRunOperations;
   analytics: IAnalyticsOperations;
   evaluators: IEvaluatorOperations;
+  sessionMetadata: ISessionMetadataOperations;
   health(): Promise<HealthStatus>;
   isConfigured(): boolean;
 }

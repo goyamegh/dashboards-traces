@@ -24,6 +24,7 @@ import type {
   BenchmarkRun,
   TestCaseRun,
   RunAnnotation,
+  SessionMetadata,
   HealthStatus,
   Evaluator,
 } from '../../../types/index.js';
@@ -34,6 +35,7 @@ import type {
   IRunOperations,
   IAnalyticsOperations,
   IEvaluatorOperations,
+  ISessionMetadataOperations,
   PaginationOptions,
   TestCaseSearchFilters,
   RunSearchFilters,
@@ -734,6 +736,50 @@ class FileEvaluatorOperations implements IEvaluatorOperations {
 }
 
 // ============================================================================
+// Session Metadata Operations
+// ============================================================================
+
+export class FileSessionMetadataOperations implements ISessionMetadataOperations {
+  private baseDir: string;
+
+  constructor(baseDir?: string) {
+    this.baseDir = baseDir || path.join(process.cwd(), 'agent-health-data');
+  }
+
+  private get dir() { return path.join(this.baseDir, 'session-metadata'); }
+
+  private docPath(agentKind: string, sessionId: string): string {
+    return path.join(this.dir, `${agentKind}--${sessionId}.json`);
+  }
+
+  async get(agentKind: string, sessionId: string): Promise<SessionMetadata | null> {
+    return readJsonFile<SessionMetadata>(this.docPath(agentKind, sessionId));
+  }
+
+  async put(agentKind: string, sessionId: string, data: Record<string, unknown>): Promise<SessionMetadata> {
+    const existing = readJsonFile<SessionMetadata>(this.docPath(agentKind, sessionId));
+    const doc: SessionMetadata = {
+      ...existing,
+      ...data,
+      agentKind,
+      sessionId,
+      updatedAt: new Date().toISOString(),
+    };
+    if (!existing) {
+      (doc as any).createdAt = doc.updatedAt;
+    }
+    writeJsonFile(this.docPath(agentKind, sessionId), doc);
+    return doc;
+  }
+
+  async list(options?: PaginationOptions): Promise<{ items: SessionMetadata[]; total: number }> {
+    const all = readAllFromDir<SessionMetadata>(this.dir);
+    return paginate(all, options);
+  }
+  }
+}
+
+// ============================================================================
 // File Storage Module
 // ============================================================================
 
@@ -745,6 +791,7 @@ export class FileStorageModule implements IStorageModule {
   readonly runs: IRunOperations;
   readonly analytics: IAnalyticsOperations;
   readonly evaluators: IEvaluatorOperations;
+  readonly sessionMetadata: ISessionMetadataOperations;
 
   private readonly baseDir: string;
 
@@ -757,6 +804,7 @@ export class FileStorageModule implements IStorageModule {
     this.runs = new FileRunOperations(this.baseDir);
     this.analytics = new FileAnalyticsOperations(this.baseDir);
     this.evaluators = new FileEvaluatorOperations(this.baseDir);
+    this.sessionMetadata = new FileSessionMetadataOperations(this.baseDir);
   }
 
   async health(): Promise<HealthStatus> {

@@ -34,6 +34,7 @@ import type {
   IRunOperations,
   IAnalyticsOperations,
   IEvaluatorOperations,
+  ISessionMetadataOperations,
   PaginationOptions,
   TestCaseSearchFilters,
   RunSearchFilters,
@@ -1104,13 +1105,15 @@ export class OpenSearchStorageModule implements IStorageModule {
   readonly runs: IRunOperations;
   readonly analytics: IAnalyticsOperations;
   readonly evaluators: IEvaluatorOperations;
+  readonly sessionMetadata: ISessionMetadataOperations;
 
-  constructor(private client: Client) {
+  constructor(private client: Client, sessionMetadata: ISessionMetadataOperations) {
     this.testCases = new OpenSearchTestCaseOperations(client);
     this.benchmarks = new OpenSearchBenchmarkOperations(client);
     this.runs = new OpenSearchRunOperations(client);
     this.analytics = new OpenSearchAnalyticsOperations(client);
     this.evaluators = new OpenSearchEvaluatorOperations(client);
+    this.sessionMetadata = sessionMetadata;
   }
 
   async health(): Promise<HealthStatus> {

@@ -240,6 +240,19 @@ export interface RunAnnotation {
   author?: string;
 }
 
+/**
+ * @experimental Generic sidecar metadata for coding agent sessions.
+ * One document per session — stores annotations, status, tags, or any
+ * user-defined fields. The shape is intentionally open so callers can
+ * store whatever debug/analysis data they need.
+ */
+export interface SessionMetadata {
+  agentKind: string;
+  sessionId: string;
+  /** Open-ended — callers define the schema. */
+  [key: string]: unknown;
+}
+
 // Metrics status for trace-mode runs (traces take ~5 min to propagate)
 export type MetricsStatus = 'pending' | 'calculating' | 'ready' | 'error';
 
