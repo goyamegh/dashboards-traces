@@ -762,7 +762,7 @@ export class FileSessionMetadataOperations implements ISessionMetadataOperations
   async put(agentKind: string, sessionId: string, data: Record<string, unknown>): Promise<SessionMetadata> {
     const existing = readJsonFile<SessionMetadata>(this.docPath(agentKind, sessionId));
     const doc: SessionMetadata = {
-      ...existing,
+      ...(existing ?? {}),
       ...data,
       agentKind,
       sessionId,

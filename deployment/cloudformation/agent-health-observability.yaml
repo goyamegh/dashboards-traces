@@ -656,6 +656,13 @@ Resources:
       - RoleMappingFunction
     Properties:
       ServiceToken: !GetAtt RoleMappingFunction.Arn
+      # Include role ARNs so CFN re-triggers on changes
+      OSISRoleArn: !GetAtt OSISPipelineRole.Arn
+      LambdaRoleArn: !GetAtt OTLPIngestLambdaRole.Arn
+      AdminRoleArn: !If
+        - HasAdminRoleARN
+        - !Ref AdminRoleARN
+        - !Sub 'arn:aws:iam::${AWS::AccountId}:root'
 
   OTLPIngestApi:
     Type: AWS::ApiGatewayV2::Api

@@ -178,7 +178,7 @@ export default function SessionAnnotationsTab({ agentKind, sessionId, onLinkedMe
                     <Badge key={tag} variant="secondary" className="text-[10px] px-1.5 py-0">{tag}</Badge>
                   ))}
                 </div>
-                <button onClick={() => handleDelete(ann.id)} className="text-muted-foreground hover:text-red-500 text-xs shrink-0">&times;</button>
+                <button onClick={() => handleDelete(ann.id)} aria-label="Delete annotation" title="Delete annotation" className="text-muted-foreground hover:text-red-500 text-xs shrink-0">&times;</button>
               </div>
               <p className="whitespace-pre-wrap text-xs">{ann.text}</p>
               <div className="flex items-center gap-2 text-[10px] text-muted-foreground">

@@ -50,7 +50,7 @@ router.use(debugRoutes);         // /api/debug
 if (codingAnalyticsEnabled) {
   router.use(codingAgentsRoutes);  // /api/coding-agents/*
   router.use(claudeCodeWorkspaceRoutes);  // /api/coding-agents/claude-code/*
-  router.use(sessionAnnotationsRoutes);  // /api/coding-agents/sessions/:agent/:sessionId/annotations
+  router.use(sessionAnnotationsRoutes);  // /api/coding-agents/sessions/*/metadata
 }
 
 export default router;
