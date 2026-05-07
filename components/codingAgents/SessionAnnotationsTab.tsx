@@ -57,8 +57,8 @@ export default function SessionAnnotationsTab({ agentKind, sessionId, onLinkedMe
 
   useEffect(() => { refresh(); }, [refresh]);
 
-  const annotations: Annotation[] = (meta?.annotations as Annotation[]) || [];
-  const status = (meta?.status as string) || 'normal';
+  const annotations: Annotation[] = Array.isArray(meta?.annotations) ? meta.annotations as Annotation[] : [];
+  const status = (typeof meta?.status === 'string' ? meta.status : 'normal');
 
   const save = async (updates: Record<string, unknown>) => {
     setSaving(true);

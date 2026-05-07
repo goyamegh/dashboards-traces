@@ -33,8 +33,8 @@ def main():
     parser.add_argument('endpoint', help='OpenSearch domain endpoint (https://...)')
     parser.add_argument('region', help='AWS region')
     parser.add_argument('--profile', default=None, help='AWS profile')
-    parser.add_argument('--role-arns', nargs='+', default=['arn:aws:iam::651304888251:role/test-role'],
-                        help='Role ARNs to map')
+    parser.add_argument('--role-arns', nargs='+', default=['arn:aws:iam::123456789012:role/test-role'],
+                        help='Role ARNs to map (replace placeholder account ID)')
     parser.add_argument('--dry-run', action='store_true', help='Only GET current mapping, do not PUT')
     args = parser.parse_args()
 

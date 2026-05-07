@@ -42,6 +42,9 @@ router.put('/api/coding-agents/sessions/:agent/:sessionId/metadata', async (req:
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
       return res.status(400).json({ error: 'Body must be a JSON object' });
     }
+    if ('agentKind' in data || 'sessionId' in data) {
+      return res.status(400).json({ error: 'agentKind and sessionId cannot be set in body' });
+    }
 
     const storage = getStorageModule();
     const doc = await storage.sessionMetadata.put(agent, sessionId, data);

@@ -749,7 +749,10 @@ export class FileSessionMetadataOperations implements ISessionMetadataOperations
   private get dir() { return path.join(this.baseDir, 'session-metadata'); }
 
   private docPath(agentKind: string, sessionId: string): string {
-    return path.join(this.dir, `${agentKind}--${sessionId}.json`);
+    // Sanitize to prevent path traversal
+    const safeAgent = agentKind.replace(/[^a-zA-Z0-9_-]/g, '_');
+    const safeSession = sessionId.replace(/[^a-zA-Z0-9_\-\.]/g, '_');
+    return path.join(this.dir, `${safeAgent}--${safeSession}.json`);
   }
 
   async get(agentKind: string, sessionId: string): Promise<SessionMetadata | null> {
