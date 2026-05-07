@@ -33,6 +33,7 @@ Agent Health helps you evaluate, monitor, and optimize AI agents. From autonomou
 
 <div align="center" style="margin-top: 1em; margin-bottom: 1em;">
 <a href="#what-is-agent-health">What is Agent Health?</a> &bull;
+<a href="#ai-skills">AI Skills</a> &bull;
 <a href="#installation">Installation</a> &bull;
 <a href="#features">Features</a> &bull;
 <a href="#quick-configuration">Configuration</a> &bull;
@@ -65,6 +66,24 @@ Agent Health is an evaluation and observability framework for AI agents, built o
 - Developers using AI coding agents who want visibility into usage, costs, and productivity
 
 > **See it in action:** Watch the [demo video on YouTube](https://www.youtube.com/watch?v=MU3tTv4lKtc)
+
+---
+
+<a id="ai-skills"></a>
+## AI Agent Skills
+
+Agent Health ships with built-in skill files for *Claude Code* and *Kiro* that teach your AI coding agent how to work with this project effectively. Copy the relevant directory into your workspace to unlock project-aware assistance:
+
+| Skill | Claude Code | Kiro | What it does |
+|-------|-------------|------|--------------|
+| **Add Connector** | [`.claude/skills/add-connector/SKILL.md`](./.claude/skills/add-connector/SKILL.md) | [`.kiro/steering/add-connector.md`](./.kiro/steering/add-connector.md) | Guides creation of custom agent connectors |
+| **Write Test** | [`.claude/skills/write-test/SKILL.md`](./.claude/skills/write-test/SKILL.md) | [`.kiro/steering/write-test.md`](./.kiro/steering/write-test.md) | Project test conventions, mocking patterns, coverage thresholds |
+| **Create PR** | [`.claude/skills/create-pr/SKILL.md`](./.claude/skills/create-pr/SKILL.md) | [`.kiro/steering/create-pr.md`](./.kiro/steering/create-pr.md) | PR workflow with DCO signoff and CI compliance |
+| **Config & Auth** | [`.claude/skills/config-auth/SKILL.md`](./.claude/skills/config-auth/SKILL.md) | — | Config loading, AWS auth, multi-profile setup |
+
+**To use these skills:**
+- *Claude Code* — Skills in `.claude/skills/` are auto-discovered when the directory exists in your workspace root. No extra setup needed.
+- *Kiro* — Copy `.kiro/steering/` to your workspace root. Kiro loads steering files automatically.
 
 ---
 

@@ -114,6 +114,11 @@ Resources:
                   - 'logs:CreateLogStream'
                   - 'logs:PutLogEvents'
                 Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+      Tags:
+        - Key: agent-health
+          Value: observability
+        - Key: ManagedBy
+          Value: AgentHealthCFN
 
   # ---------------------------------------------------------------------------
   # OpenSearch Service Domain
@@ -192,6 +197,11 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${DomainName}'
                   - !Sub 'arn:aws:es:${AWS::Region}:${AWS::AccountId}:domain/${DomainName}/*'
+      Tags:
+        - Key: agent-health
+          Value: observability
+        - Key: ManagedBy
+          Value: AgentHealthCFN
 
   # ---------------------------------------------------------------------------
   # IAM Role — Ingestion (for agents pushing telemetry via SigV4)
@@ -218,6 +228,11 @@ Resources:
                 Resource:
                   - !Sub 'arn:aws:osis:${AWS::Region}:${AWS::AccountId}:pipeline/${DomainName}-traces'
                   - !Sub 'arn:aws:osis:${AWS::Region}:${AWS::AccountId}:pipeline/${DomainName}-logs'
+      Tags:
+        - Key: agent-health
+          Value: observability
+        - Key: ManagedBy
+          Value: AgentHealthCFN
 
   # ---------------------------------------------------------------------------
   # OpenSearch Ingestion (OSIS) Pipeline — OTLP Traces → OpenSearch
@@ -272,6 +287,8 @@ Resources:
       Tags:
         - Key: agent-health
           Value: observability
+        - Key: ManagedBy
+          Value: AgentHealthCFN
 
   # ---------------------------------------------------------------------------
   # OpenSearch Ingestion (OSIS) Pipeline — OTLP Logs → OpenSearch
@@ -300,6 +317,8 @@ Resources:
       Tags:
         - Key: agent-health
           Value: observability
+        - Key: ManagedBy
+          Value: AgentHealthCFN
 
   # ---------------------------------------------------------------------------
   # OTLP Ingestion — API Gateway + Lambda → OpenSearch (direct)
@@ -348,6 +367,11 @@ Resources:
                   - 'logs:CreateLogStream'
                   - 'logs:PutLogEvents'
                 Resource: !Sub 'arn:aws:logs:${AWS::Region}:${AWS::AccountId}:*'
+      Tags:
+        - Key: agent-health
+          Value: observability
+        - Key: ManagedBy
+          Value: AgentHealthCFN
 
   OTLPIngestFunction:
     Type: AWS::Lambda::Function
@@ -514,6 +538,8 @@ Resources:
       Tags:
         - Key: agent-health
           Value: observability
+        - Key: ManagedBy
+          Value: AgentHealthCFN
 
   # ---------------------------------------------------------------------------
   # Custom Resource — Map IAM Roles to OpenSearch FGAC Backend Roles
@@ -618,6 +644,8 @@ Resources:
       Tags:
         - Key: agent-health
           Value: observability
+        - Key: ManagedBy
+          Value: AgentHealthCFN
 
   RoleMappingCustomResource:
     Type: Custom::OpenSearchRoleMapping
@@ -641,6 +669,9 @@ Resources:
           - POST
         AllowHeaders:
           - content-type
+      Tags:
+        agent-health: observability
+        ManagedBy: AgentHealthCFN
 
   OTLPIngestApiIntegration:
     Type: AWS::ApiGatewayV2::Integration
