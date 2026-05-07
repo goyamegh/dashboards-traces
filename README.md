@@ -101,7 +101,7 @@ npx @opensearch-project/agent-health
 
 Opens http://localhost:4001 with pre-loaded sample data for exploration. If port 4001 is already in use, the server automatically tries the next available port (4002, 4003, etc., up to 10 attempts).
 
-### Option 2: Docker Compose (with OpenSearch Observability Stack)
+### Option 2: Docker Compose
 
 For the full observability stack with OpenSearch, OpenTelemetry Collector, and Data Prepper for trace ingestion:
 
