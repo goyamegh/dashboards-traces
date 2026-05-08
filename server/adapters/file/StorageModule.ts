@@ -779,7 +779,6 @@ export class FileSessionMetadataOperations implements ISessionMetadataOperations
     const all = readAllFromDir<SessionMetadata>(this.dir);
     return paginate(all, options);
   }
-  }
 }
 
 // ============================================================================
