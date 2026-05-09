@@ -9,6 +9,11 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Added
+- Observio sample agent: port auto-increment when default port 3001 is in use (up to 10 attempts)
+- Observio sample agent: configurable `REACT_MAX_ITERATIONS` via environment variable (default: 100)
+- Parent server dynamically detects observio agent's actual bound port and patches `/api/agents` endpoint
+
 ## [0.4.0] - 2025-05-05
 
 ### Fixed

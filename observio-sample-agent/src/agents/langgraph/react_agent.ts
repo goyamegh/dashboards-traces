@@ -20,7 +20,7 @@ import { ToolExecutor } from './tool_executor';
 import { ReactGraphNodes } from './react_graph_nodes';
 
 // Configuration constants — configurable via REACT_MAX_ITERATIONS env var (useful in dev mode)
-const REACT_MAX_ITERATIONS = parseInt(process.env.REACT_MAX_ITERATIONS || '100', 10);
+const REACT_MAX_ITERATIONS = Math.max(1, parseInt(process.env.REACT_MAX_ITERATIONS || '100', 10) || 100);
 
 // StateGraph state interface
 export interface ReactAgentState {

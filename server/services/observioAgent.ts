@@ -75,8 +75,8 @@ export function isPortFree(port: number): Promise<boolean> {
 /**
  * Spawn the observio sample agent as a child process.
  * Skips if dependencies are not installed — run `npm install` manually first.
- * Returns a promise that resolves with the actual port once the agent is listening,
- * or null if it failed to start.
+ * Returns the ChildProcess handle, or null if dependencies are missing.
+ * The actual bound port is detected asynchronously from stdout and available via getObservioPort().
  */
 export function spawnObservioAgent(cwd: string): ChildProcess | null {
   // Only start if dependencies are already installed (avoid blocking event loop)
@@ -150,6 +150,7 @@ export async function killObservioAgent(port: number = getObservioPort()): Promi
         observioChild.kill('SIGKILL');
       }
       observioChild = null;
+      observioActualPort = null;
     } catch { /* process already exited */ }
 
     // Verify port is free

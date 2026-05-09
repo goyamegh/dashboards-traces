@@ -51,9 +51,10 @@ router.get('/api/agents', (req: Request, res: Response) => {
     // Strip hooks (functions can't be serialized to JSON)
     const configAgents = config.agents.map(({ hooks, ...rest }) => {
       // Patch observio endpoint with actual port (may have auto-incremented)
-      if (rest.key === 'observio') {
+      // Only patch when using the default localhost endpoint — respect explicit overrides
+      if (rest.key === 'observio' && rest.endpoint?.includes('localhost')) {
         const actualPort = getObservioPort();
-        rest = { ...rest, endpoint: `http://localhost:${actualPort}/run-agent` };
+        return { ...rest, endpoint: `http://localhost:${actualPort}/run-agent` };
       }
       return rest;
     });
