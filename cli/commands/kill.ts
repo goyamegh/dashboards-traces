@@ -10,7 +10,7 @@
 
 import { Command } from 'commander';
 import chalk from 'chalk';
-import { killObservioAgent, isPortFree, OBSERVIO_PORT } from '@/server/services/observioAgent.js';
+import { killObservioAgent, isPortFree, getObservioPort } from '@/server/services/observioAgent.js';
 
 export function createKillCommand(): Command {
   const command = new Command('kill')
@@ -19,9 +19,10 @@ export function createKillCommand(): Command {
     .action(async (target: string) => {
       switch (target) {
         case 'sample-agent': {
-          const free = await isPortFree(OBSERVIO_PORT);
+          const port = getObservioPort();
+          const free = await isPortFree(port);
           if (free) {
-            console.log(chalk.yellow(`  No process found on port ${OBSERVIO_PORT}`));
+            console.log(chalk.yellow(`  No process found on port ${port}`));
             return;
           }
           const killed = await killObservioAgent();

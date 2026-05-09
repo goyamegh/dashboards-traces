@@ -19,8 +19,8 @@ import { ReactGraphBuilder } from './react_graph_builder';
 import { ToolExecutor } from './tool_executor';
 import { ReactGraphNodes } from './react_graph_nodes';
 
-// Configuration constants
-const REACT_MAX_ITERATIONS = 100; // Maximum tool execution cycles before forcing final response
+// Configuration constants — configurable via REACT_MAX_ITERATIONS env var (useful in dev mode)
+const REACT_MAX_ITERATIONS = parseInt(process.env.REACT_MAX_ITERATIONS || '100', 10);
 
 // StateGraph state interface
 export interface ReactAgentState {

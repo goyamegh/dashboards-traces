@@ -19,10 +19,18 @@ import net from 'net';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-export const OBSERVIO_PORT = 3001;
+export const OBSERVIO_DEFAULT_PORT = 3001;
 
 /** Track the spawned child process for graceful shutdown */
 let observioChild: ChildProcess | null = null;
+
+/** The actual port observio bound to (may differ from default if auto-incremented) */
+let observioActualPort: number | null = null;
+
+/** Get the port the observio agent is actually running on */
+export function getObservioPort(): number {
+  return observioActualPort ?? OBSERVIO_DEFAULT_PORT;
+}
 
 /**
  * Find the observio-sample-agent directory relative to the package root.
@@ -67,6 +75,8 @@ export function isPortFree(port: number): Promise<boolean> {
 /**
  * Spawn the observio sample agent as a child process.
  * Skips if dependencies are not installed — run `npm install` manually first.
+ * Returns a promise that resolves with the actual port once the agent is listening,
+ * or null if it failed to start.
  */
 export function spawnObservioAgent(cwd: string): ChildProcess | null {
   // Only start if dependencies are already installed (avoid blocking event loop)
@@ -86,15 +96,24 @@ export function spawnObservioAgent(cwd: string): ChildProcess | null {
 
   // Clean up reference when process exits
   child.once('exit', () => {
-    if (observioChild === child) observioChild = null;
+    if (observioChild === child) {
+      observioChild = null;
+      observioActualPort = null;
+    }
   });
 
-  // Forward observio output with prefix
+  // Forward observio output with prefix — detect the actual bound port
   child.stdout?.on('data', (data: Buffer) => {
     const lines = data.toString().trim().split('\n');
     for (const line of lines) {
       if (line.trim()) {
         console.log(`  [observio] ${line}`);
+        // Detect: "AI Agent AG UI Server running at http://localhost:3002"
+        const portMatch = line.match(/Server running at http:\/\/[^:]+:(\d+)/);
+        if (portMatch) {
+          observioActualPort = parseInt(portMatch[1], 10);
+          console.log(`  [observio] Detected port: ${observioActualPort}`);
+        }
       }
     }
   });
@@ -116,7 +135,7 @@ export function spawnObservioAgent(cwd: string): ChildProcess | null {
  * Prefers killing the tracked child process; falls back to port-based lookup.
  * Attempts graceful SIGTERM first, then SIGKILL after timeout.
  */
-export async function killObservioAgent(port: number = OBSERVIO_PORT): Promise<boolean> {
+export async function killObservioAgent(port: number = getObservioPort()): Promise<boolean> {
   // First, try to kill the tracked child process
   if (observioChild && !observioChild.killed) {
     try {

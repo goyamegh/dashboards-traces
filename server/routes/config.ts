@@ -16,6 +16,7 @@ import { loadConfigSync } from '@/lib/config/index';
 import type { AgentConfig, ModelConfig, ConnectorProtocol } from '@/types/index.js';
 import { addCustomAgent, removeCustomAgent, getCustomAgents } from '@/server/services/customAgentStore';
 import { getRemoteServers } from '@/server/services/codingAgents/remoteConfig';
+import { getObservioPort } from '@/server/services/observioAgent';
 import fs from 'fs';
 import path from 'path';
 
@@ -48,7 +49,14 @@ router.get('/api/agents', (req: Request, res: Response) => {
   try {
     const config = loadConfigSync();
     // Strip hooks (functions can't be serialized to JSON)
-    const configAgents = config.agents.map(({ hooks, ...rest }) => rest);
+    const configAgents = config.agents.map(({ hooks, ...rest }) => {
+      // Patch observio endpoint with actual port (may have auto-incremented)
+      if (rest.key === 'observio') {
+        const actualPort = getObservioPort();
+        rest = { ...rest, endpoint: `http://localhost:${actualPort}/run-agent` };
+      }
+      return rest;
+    });
     const customAgents = getCustomAgents();
     const agents = [...configAgents, ...customAgents];
     res.json({

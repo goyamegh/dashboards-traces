@@ -9,7 +9,9 @@
  * All functions are jest.fn() so tests can configure return values.
  */
 
-export const OBSERVIO_PORT = 3001;
+export const OBSERVIO_DEFAULT_PORT = 3001;
+
+export const getObservioPort = jest.fn().mockReturnValue(3001);
 
 export const findObservioRoot = jest.fn().mockReturnValue(null);
 

@@ -12,7 +12,8 @@
  */
 
 import {
-  OBSERVIO_PORT,
+  OBSERVIO_DEFAULT_PORT,
+  getObservioPort,
   findObservioRoot,
   isPortFree,
   spawnObservioAgent,
@@ -24,9 +25,15 @@ describe('observioAgent', () => {
     jest.clearAllMocks();
   });
 
-  describe('OBSERVIO_PORT', () => {
+  describe('OBSERVIO_DEFAULT_PORT', () => {
     it('exports the default port constant', () => {
-      expect(OBSERVIO_PORT).toBe(3001);
+      expect(OBSERVIO_DEFAULT_PORT).toBe(3001);
+    });
+  });
+
+  describe('getObservioPort', () => {
+    it('returns the default port when no agent has started', () => {
+      expect(getObservioPort()).toBe(3001);
     });
   });
 

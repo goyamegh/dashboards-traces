@@ -13,7 +13,7 @@ import { ChildProcess } from 'child_process';
 import config from './config/index.js';
 import { createApp } from './app.js';
 import { getStorageConfigFromFile } from './services/configService.js';
-import { findObservioRoot, isPortFree, spawnObservioAgent, OBSERVIO_PORT } from './services/observioAgent.js';
+import { findObservioRoot, spawnObservioAgent, OBSERVIO_DEFAULT_PORT } from './services/observioAgent.js';
 
 // Register server-side connectors (subprocess, claude-code)
 // This import has side effects that register connectors with the registry
@@ -40,17 +40,11 @@ async function tryStartObservioAgent(): Promise<void> {
       return;
     }
 
-    const free = await isPortFree(OBSERVIO_PORT);
-    if (!free) {
-      console.log(`  Observio sample agent: port ${OBSERVIO_PORT} already in use (skipped)`);
-      return;
-    }
-
     observioChild = spawnObservioAgent(root);
     if (!observioChild) {
       return; // Dependencies not installed — message already logged
     }
-    console.log(`  Observio sample agent: starting on port ${OBSERVIO_PORT}...`);
+    console.log(`  Observio sample agent: starting (port ${OBSERVIO_DEFAULT_PORT}, will auto-increment if busy)...`);
 
     observioChild.on('exit', (code) => {
       if (code !== null && code !== 0) {
