@@ -14,6 +14,9 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Observio sample agent: configurable `REACT_MAX_ITERATIONS` via environment variable (default: 100)
 - Parent server dynamically detects observio agent's actual bound port and patches `/api/agents` endpoint
 
+### Fixed
+- Connector type drift: use single source of truth (`CONNECTOR_TYPE_INFO`) in server validation and Settings UI instead of hardcoded arrays ([#176](https://github.com/opensearch-project/agent-health/pull/176))
+
 ## [0.4.0] - 2025-05-05
 
 ### Fixed
@@ -85,7 +88,7 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Bump version to 0.2.0
 
 ### Added
-- Observio sample agent — a reference ReAct agent for practicing agent health improvements (based on [osd-agents](https://github.com/opensearch-project/OpenSearch-Dashboards/tree/main/packages/osd-agents))
+- Observio sample agent — a reference ReAct agent for practicing agent health improvements, based on [osd-agents](https://github.com/opensearch-project/OpenSearch-Dashboards/tree/main/packages/osd-agents)
 - Docker configuration files for local development stack with OpenSearch and OTEL pipeline ([#115](https://github.com/opensearch-project/agent-health/pull/115))
 - Collapsible section for built-in agents and debug settings to SettingsPage ([#115](https://github.com/opensearch-project/agent-health/pull/115))
 - AWS Bedrock model discovery endpoint and updated model pricing ([#115](https://github.com/opensearch-project/agent-health/pull/115))
