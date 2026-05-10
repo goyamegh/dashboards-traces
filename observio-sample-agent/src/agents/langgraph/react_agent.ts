@@ -209,10 +209,9 @@ export class ReactAgent implements BaseAgent {
             additionalInputs?.runId || Date.now()
           }`,
         },
-        // Set recursion limit to 250 to accommodate max iterations of 100
         // Each iteration involves multiple graph steps (processInput -> callModel -> executeTools)
         // so we need ~2.5x the max iterations
-        recursionLimit: 250,
+        recursionLimit: Math.ceil(REACT_MAX_ITERATIONS * 2.5),
       };
       await this.compiledGraph.invoke(initialState, config);
     } catch (error) {

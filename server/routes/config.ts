@@ -17,7 +17,7 @@ import type { AgentConfig, ModelConfig } from '@/types/index.js';
 import { VALID_CONNECTOR_TYPES } from '@/lib/constants';
 import { addCustomAgent, removeCustomAgent, getCustomAgents } from '@/server/services/customAgentStore';
 import { getRemoteServers } from '@/server/services/codingAgents/remoteConfig';
-import { getObservioPort } from '@/server/services/observioAgent';
+import { getObservioPort, waitForObservioReady } from '@/server/services/observioAgent';
 import fs from 'fs';
 import path from 'path';
 
@@ -46,16 +46,24 @@ function validateEndpointUrl(url: string): string | null {
  * with any custom agents added via the UI.
  * Used by CLI `list agents` command and frontend refreshConfig().
  */
-router.get('/api/agents', (req: Request, res: Response) => {
+router.get('/api/agents', async (req: Request, res: Response) => {
   try {
     const config = loadConfigSync();
+    // Wait for observio to report its port (non-blocking if already known, 10s timeout)
+    await waitForObservioReady();
     // Strip hooks (functions can't be serialized to JSON)
     const configAgents = config.agents.map(({ hooks, ...rest }) => {
       // Patch observio endpoint with actual port (may have auto-incremented)
-      // Only patch when using the default localhost endpoint — respect explicit overrides
-      if (rest.key === 'observio' && rest.endpoint?.includes('localhost')) {
-        const actualPort = getObservioPort();
-        return { ...rest, endpoint: `http://localhost:${actualPort}/run-agent` };
+      // Only patch when endpoint points to localhost — respect explicit remote overrides
+      if (rest.key === 'observio' && rest.endpoint) {
+        try {
+          const url = new URL(rest.endpoint);
+          if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
+            const actualPort = getObservioPort();
+            url.port = String(actualPort);
+            return { ...rest, endpoint: url.toString() };
+          }
+        } catch { /* invalid URL — leave endpoint unchanged */ }
       }
       return rest;
     });

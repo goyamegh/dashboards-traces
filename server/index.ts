@@ -13,7 +13,7 @@ import { ChildProcess } from 'child_process';
 import config from './config/index.js';
 import { createApp } from './app.js';
 import { getStorageConfigFromFile, getObservabilityConfigFromFile } from './services/configService.js';
-import { findObservioRoot, spawnObservioAgent, OBSERVIO_DEFAULT_PORT } from './services/observioAgent.js';
+import { findObservioRoot, spawnObservioAgent, OBSERVIO_DEFAULT_PORT, resetObservioPort } from './services/observioAgent.js';
 import { validateAwsCredentials } from './services/tracesService.js';
 
 // Register server-side connectors (subprocess, claude-code)
@@ -107,6 +107,7 @@ async function startServer() {
             console.log('  Stopping observio sample agent...');
             observioChild.kill('SIGTERM');
             observioChild = null;
+            resetObservioPort();
           }
           try {
             const { codingAgentRegistry } = require('./services/codingAgents');

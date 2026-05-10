@@ -13,6 +13,10 @@ export const OBSERVIO_DEFAULT_PORT = 3001;
 
 export const getObservioPort = jest.fn().mockReturnValue(3001);
 
+export const waitForObservioReady = jest.fn().mockResolvedValue(3001);
+
+export const resetObservioPort = jest.fn();
+
 export const findObservioRoot = jest.fn().mockReturnValue(null);
 
 export const isPortFree = jest.fn().mockResolvedValue(true);

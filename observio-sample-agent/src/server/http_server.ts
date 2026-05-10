@@ -318,7 +318,8 @@ export class HTTPServer {
         if (err.code === 'EADDRINUSE' && attempt < maxAttempts - 1) {
           this.logger.info(`Port ${port} is in use, trying ${port + 1}...`);
           console.log(`  Port ${port} is in use, trying ${port + 1}...`);
-          // Close the failed server and create a fresh instance for the next attempt
+          // Remove any remaining listeners and create a fresh instance for the next attempt
+          this.server.removeAllListeners();
           this.server.close();
           this.server = http.createServer(this.app);
         } else {

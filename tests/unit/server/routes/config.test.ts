@@ -57,7 +57,7 @@ describe('Config Routes', () => {
   });
 
   describe('GET /api/agents', () => {
-    it('returns agents from config', () => {
+    it('returns agents from config', async () => {
       mockLoadConfigSync.mockReturnValue({
         agents: [
           { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
@@ -67,7 +67,7 @@ describe('Config Routes', () => {
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      handler(req, res);
+      await handler(req, res);
 
       expect(res.json).toHaveBeenCalledWith({
         agents: [{ key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' }],
@@ -76,7 +76,7 @@ describe('Config Routes', () => {
       });
     });
 
-    it('strips hooks from serialized agent configs', () => {
+    it('strips hooks from serialized agent configs', async () => {
       const mockHook = jest.fn();
       mockLoadConfigSync.mockReturnValue({
         agents: [
@@ -93,7 +93,7 @@ describe('Config Routes', () => {
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      handler(req, res);
+      await handler(req, res);
 
       const response = (res.json as jest.Mock).mock.calls[0][0];
       expect(response.agents).toHaveLength(1);
@@ -102,7 +102,7 @@ describe('Config Routes', () => {
       expect(response.agents[0].name).toBe('Pulsar');
     });
 
-    it('handles agents without hooks gracefully', () => {
+    it('handles agents without hooks gracefully', async () => {
       mockLoadConfigSync.mockReturnValue({
         agents: [
           { key: 'basic', name: 'Basic Agent', endpoint: 'http://localhost:3000' },
@@ -113,7 +113,7 @@ describe('Config Routes', () => {
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      handler(req, res);
+      await handler(req, res);
 
       const response = (res.json as jest.Mock).mock.calls[0][0];
       expect(response.agents).toHaveLength(2);
@@ -121,7 +121,7 @@ describe('Config Routes', () => {
       expect(response.agents[1]).not.toHaveProperty('hooks');
     });
 
-    it('returns 500 when config loading fails', () => {
+    it('returns 500 when config loading fails', async () => {
       mockLoadConfigSync.mockImplementation(() => {
         throw new Error('Config load error');
       });
@@ -130,13 +130,13 @@ describe('Config Routes', () => {
       const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
 
       jest.spyOn(console, 'error').mockImplementation(() => {});
-      handler(req, res);
+      await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({ error: 'Config load error' });
     });
 
-    it('returns merged built-in and custom agents', () => {
+    it('returns merged built-in and custom agents', async () => {
       mockLoadConfigSync.mockReturnValue({
         agents: [
           { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
@@ -150,7 +150,7 @@ describe('Config Routes', () => {
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      handler(req, res);
+      await handler(req, res);
 
       const response = (res.json as jest.Mock).mock.calls[0][0];
       expect(response.agents).toHaveLength(2);

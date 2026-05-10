@@ -27,9 +27,36 @@ let observioChild: ChildProcess | null = null;
 /** The actual port observio bound to (may differ from default if auto-incremented) */
 let observioActualPort: number | null = null;
 
+/** Promise that resolves once the observio port has been detected from stdout */
+let portReadyResolve: ((port: number) => void) | null = null;
+let portReadyPromise: Promise<number> | null = null;
+
 /** Get the port the observio agent is actually running on */
 export function getObservioPort(): number {
   return observioActualPort ?? OBSERVIO_DEFAULT_PORT;
+}
+
+/**
+ * Wait for the observio agent to report its actual port (up to timeout).
+ * Returns the detected port, or the default if detection times out.
+ */
+export function waitForObservioReady(timeoutMs: number = 10000): Promise<number> {
+  if (observioActualPort !== null) return Promise.resolve(observioActualPort);
+  if (!portReadyPromise) return Promise.resolve(OBSERVIO_DEFAULT_PORT);
+
+  return Promise.race([
+    portReadyPromise,
+    new Promise<number>((resolve) =>
+      setTimeout(() => resolve(OBSERVIO_DEFAULT_PORT), timeoutMs)
+    ),
+  ]);
+}
+
+/** Reset port state (used during shutdown/kill) */
+export function resetObservioPort(): void {
+  observioActualPort = null;
+  portReadyResolve = null;
+  portReadyPromise = null;
 }
 
 /**
@@ -94,11 +121,16 @@ export function spawnObservioAgent(cwd: string): ChildProcess | null {
 
   observioChild = child;
 
+  // Create a promise that resolves when the port is detected
+  portReadyPromise = new Promise<number>((resolve) => {
+    portReadyResolve = resolve;
+  });
+
   // Clean up reference when process exits
   child.once('exit', () => {
     if (observioChild === child) {
       observioChild = null;
-      observioActualPort = null;
+      resetObservioPort();
     }
   });
 
@@ -113,6 +145,11 @@ export function spawnObservioAgent(cwd: string): ChildProcess | null {
         if (portMatch) {
           observioActualPort = parseInt(portMatch[1], 10);
           console.log(`  [observio] Detected port: ${observioActualPort}`);
+          // Resolve the ready promise
+          if (portReadyResolve) {
+            portReadyResolve(observioActualPort);
+            portReadyResolve = null;
+          }
         }
       }
     }
@@ -150,7 +187,7 @@ export async function killObservioAgent(port: number = getObservioPort()): Promi
         observioChild.kill('SIGKILL');
       }
       observioChild = null;
-      observioActualPort = null;
+      resetObservioPort();
     } catch { /* process already exited */ }
 
     // Verify port is free
