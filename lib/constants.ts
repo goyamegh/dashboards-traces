@@ -42,6 +42,11 @@ export const CONNECTOR_TYPE_INFO: Record<ConnectorProtocol, ConnectorTypeInfo> =
     description: 'Invokes the Claude Code CLI. Server-only — use the CLI or benchmark runner.',
     serverOnly: true,
   },
+  'pi': {
+    label: 'Pi (pi.dev)',
+    description: 'Invokes the pi.dev coding agent CLI. Server-only — use the CLI or benchmark runner.',
+    serverOnly: true,
+  },
   'strands': {
     label: 'Amazon Strands',
     description: 'Amazon Strands agent framework via Bedrock Agent Runtime API. Server-only — requires AWS SDK.',
@@ -159,6 +164,19 @@ export const DEFAULT_CONFIG: AppConfig = {
       connectorConfig: {
         agentAliasId: "${STRANDS_ALIAS_ID:-TSTALIASID}",
         region: "${AWS_REGION:-us-east-1}",
+      },
+      enabled: false,
+    },
+    {
+      key: "pi",
+      name: "Pi (pi.dev)",
+      endpoint: "pi",
+      description: "Pi.dev coding agent with Agent Health package (requires pi CLI installed)",
+      connectorType: "pi",
+      headers: {},
+      useTraces: false,
+      connectorConfig: {
+        packagePath: './observio-sample-agent/pi-package',
       },
       enabled: false,
     },
