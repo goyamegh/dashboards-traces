@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import { useNavigate } from 'react-router-dom';
 import { X, Play, Save, Star, CheckCircle2, XCircle, Loader2, ExternalLink, Clock, RefreshCw, Info, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -34,12 +35,12 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
 }) => {
   const navigate = useNavigate();
 
-  // Agent/Model selection - all agents are available since evaluation runs server-side
-  const [selectedAgentKey, setSelectedAgentKey] = useState(
-    () => DEFAULT_CONFIG.agents[0]?.key
+  // Agent/Model selection - persisted across sessions
+  const [selectedAgentKey, setSelectedAgentKey] = usePersistedState(
+    'quick-run:agentKey', DEFAULT_CONFIG.agents[0]?.key || ''
   );
-  const [selectedModelId, setSelectedModelId] = useState('claude-sonnet-4.5');
-  const [selectedEvaluatorId, setSelectedEvaluatorId] = useState<string | undefined>();
+  const [selectedModelId, setSelectedModelId] = usePersistedState('quick-run:modelId', 'claude-sonnet-4.5');
+  const [selectedEvaluatorId, setSelectedEvaluatorId] = usePersistedState<string | undefined>('quick-run:evaluatorId', undefined);
   const [evaluators, setEvaluators] = useState<Evaluator[]>([]);
 
   // Ad-hoc run fields (when no testCase)

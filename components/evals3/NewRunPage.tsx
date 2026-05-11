@@ -15,6 +15,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import { useNavigate } from 'react-router-dom';
 import {
   Loader2, Plus, X, FileText, FolderOpen, Tag, Database, ArrowRight, ArrowLeft,
@@ -58,10 +59,10 @@ export const NewRunPage: React.FC = () => {
   const [labelInput, setLabelInput] = useState('');
   const [labels, setLabels] = useState<string[]>([]);
 
-  // Configuration (Step 2)
-  const [agentKey, setAgentKey] = useState(DEFAULT_CONFIG.agents.find(a => a.enabled !== false)?.key || '');
-  const [modelId, setModelId] = useState(Object.keys(DEFAULT_CONFIG.models)[0] || '');
-  const [concurrency, setConcurrency] = useState(1);
+  // Configuration (Step 2) - persisted across sessions
+  const [agentKey, setAgentKey] = usePersistedState('new-run:agentKey', DEFAULT_CONFIG.agents.find(a => a.enabled !== false)?.key || '');
+  const [modelId, setModelId] = usePersistedState('new-run:modelId', Object.keys(DEFAULT_CONFIG.models)[0] || '');
+  const [concurrency, setConcurrency] = usePersistedState('new-run:concurrency', 1);
   const [runName, setRunName] = useState('');
   const [benchmarkAssociation, setBenchmarkAssociation] = useState('none');
 

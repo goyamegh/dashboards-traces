@@ -15,6 +15,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import { useNavigate } from 'react-router-dom';
 import {
   Play, CheckCircle2, XCircle, Loader2, Clock, Search, X, RefreshCw,
@@ -147,8 +148,8 @@ export const BenchmarksPage4: React.FC = () => {
   const [testCases, setTestCases] = useState<TestCase[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [timeRange, setTimeRange] = useState<TimeRange>('all');
-  const [selectedAgent, setSelectedAgent] = useState<string>(() => DEFAULT_CONFIG.agents.find(a => a.enabled !== false)?.key || 'all');
+  const [timeRange, setTimeRange] = usePersistedState<TimeRange>('benchmarks:timeRange', 'all');
+  const [selectedAgent, setSelectedAgent] = usePersistedState<string>('benchmarks:selectedAgent', DEFAULT_CONFIG.agents.find(a => a.enabled !== false)?.key || 'all');
   const [isScrolled, setIsScrolled] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -159,7 +160,7 @@ export const BenchmarksPage4: React.FC = () => {
   const [showSampleData, setShowSampleData] = useState<boolean | undefined>(undefined);
 
   // Sort state for Benchmarks tab
-  const [bmSort, setBmSort] = useState<{ field: BmSortField; dir: SortDir }>({ field: 'runs', dir: 'desc' });
+  const [bmSort, setBmSort] = usePersistedState<{ field: BmSortField; dir: SortDir }>('benchmarks:sort', { field: 'runs', dir: 'desc' });
 
   const loadData = useCallback(async () => {
     try {
