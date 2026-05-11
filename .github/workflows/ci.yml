@@ -359,7 +359,7 @@ jobs:
           directory: coverage-e2e/
           flags: e2e
           name: e2e-tests
-          fail_ci_if_error: false
+          fail_ci_if_error: true
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
