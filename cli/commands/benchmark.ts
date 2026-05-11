@@ -22,7 +22,8 @@ import { ApiClient, ServerError, type BenchmarkExecutionEvent } from '@/cli/util
 import { validateTestCasesArrayJson, type ValidatedTestCaseInput } from '@/lib/testCaseValidation.js';
 import { calculateRunStats, getReportIdsFromRun } from '@/lib/runStats.js';
 import { formatJson, formatMarkdownTable, parseOutputFormat, OUTPUT_FORMAT_DESCRIPTION, type OutputFormat } from '@/cli/utils/formatOutput.js';
-import type { AgentConfig, Benchmark, BenchmarkRun, TestCaseRun, EvaluationReport } from '@/types/index.js';
+import type { AgentConfig, Benchmark, BenchmarkRun, TestCaseRun, EvaluationReport, TestCaseSource } from '@/types/index.js';
+import { existsSync, statSync } from 'fs';
 
 interface BenchmarkOptions {
   agent: string[];
@@ -33,7 +34,10 @@ interface BenchmarkOptions {
   export?: string;
   format: string;
   stopServer?: boolean;
-  file?: string;
+  file?: string | string[];
+  dir?: string[];
+  testCase?: string[];
+  label?: string[];
   concurrency: string;
 }
 
@@ -422,15 +426,249 @@ async function exportResults(
 /**
  * Create the benchmark command
  */
+/**
+ * Unified evaluation-run mode: uses the new /api/storage/evaluation-runs endpoint.
+ * Triggered when new source flags are used (-d, -t, --label, or multiple -f).
+ */
+async function runUnifiedMode(
+  options: BenchmarkOptions & { name?: string },
+  config: ResolvedConfig,
+  serverConfig: any,
+  isCI: boolean,
+  fileArray: string[]
+): Promise<void> {
+  // Build sources from flags
+  const sources: TestCaseSource[] = [];
+
+  if (options.name && !isFilePath(options.name)) {
+    // -n flag: will be resolved server-side
+    const api = new ApiClient(`http://localhost:${serverConfig.port}`);
+    const benchmark = await api.findBenchmark(options.name);
+    if (!benchmark) {
+      console.error(chalk.red(`  Error: Benchmark not found: "${options.name}"`));
+      process.exit(1);
+    }
+    sources.push({ type: 'benchmark', benchmarkId: benchmark.id });
+  }
+
+  if (fileArray.length > 0) {
+    for (const f of fileArray) {
+      if (!existsSync(f)) {
+        console.error(chalk.red(`  Error: File not found: ${f}`));
+        process.exit(1);
+      }
+    }
+    sources.push({ type: 'file-import', filenames: fileArray, testCaseIds: [] });
+  }
+
+  if (options.dir && options.dir.length > 0) {
+    for (const d of options.dir) {
+      if (!existsSync(d) || !statSync(d).isDirectory()) {
+        console.error(chalk.red(`  Error: Directory not found: ${d}`));
+        process.exit(1);
+      }
+    }
+    sources.push({ type: 'directory-import', dirPaths: options.dir, testCaseIds: [] });
+  }
+
+  if (options.testCase && options.testCase.length > 0) {
+    sources.push({ type: 'test-case-ids', ids: options.testCase });
+  }
+
+  if (options.label && options.label.length > 0) {
+    sources.push({ type: 'label-filter', labels: options.label });
+  }
+
+  if (sources.length === 0) {
+    console.error(chalk.red('  Error: No test case sources specified.'));
+    console.log(chalk.gray('  Use -n, -f, -d, -t, or --label to specify sources.'));
+    process.exit(1);
+  }
+
+  // Ensure server is running
+  const connectSpinner = ora('Connecting to server...').start();
+  let serverResult: EnsureServerResult;
+  let cleanup: () => void;
+  const shouldStopServer = isCI || options.stopServer;
+
+  try {
+    serverResult = await ensureServer(serverConfig);
+    cleanup = createServerCleanup(serverResult, shouldStopServer);
+    connectSpinner.succeed(serverResult.wasStarted
+      ? `Started server on port ${serverConfig.port}`
+      : `Connected to existing server on port ${serverConfig.port}`);
+  } catch (error) {
+    connectSpinner.fail(`Failed to connect: ${error instanceof Error ? error.message : error}`);
+    process.exit(1);
+  }
+
+  const api = new ApiClient(serverResult.baseUrl);
+
+  // Find agent
+  let agentKey: string;
+  if (options.agent.length === 0) {
+    const enabledAgent = config.agents.find(a => a.enabled !== false);
+    if (!enabledAgent) {
+      console.error(chalk.red('  Error: No enabled agents found.'));
+      process.exit(1);
+    }
+    agentKey = enabledAgent.key;
+    console.log(chalk.gray(`  Agent: ${enabledAgent.name} (default)`));
+  } else {
+    agentKey = options.agent[0];
+    console.log(chalk.gray(`  Agent: ${agentKey}`));
+  }
+
+  const modelId = options.model || getDefaultModel(config);
+  const concurrency = Math.max(1, Math.min(20, parseInt(options.concurrency, 10) || 1));
+
+  // Determine benchmark association
+  let benchmarkId: string | undefined;
+  if (options.name && !isFilePath(options.name)) {
+    const benchmark = await api.findBenchmark(options.name);
+    benchmarkId = benchmark?.id;
+  }
+
+  console.log(chalk.gray(`  Sources: ${sources.length} source(s)`));
+  console.log(chalk.gray(`  Model: ${modelId}`));
+  if (concurrency > 1) console.log(chalk.gray(`  Concurrency: ${concurrency}`));
+  if (benchmarkId) console.log(chalk.gray(`  Benchmark: ${options.name}`));
+  else console.log(chalk.gray(`  Mode: Ad-hoc (no benchmark association)`));
+  console.log('');
+
+  // Execute via evaluation-runs API (SSE)
+  const spinner = ora('Starting evaluation run...').start();
+
+  try {
+    const response = await fetch(`${serverResult.baseUrl}/api/storage/evaluation-runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: `CLI Run - ${agentKey} - ${new Date().toISOString()}`,
+        sources,
+        agentKey,
+        modelId,
+        evaluatorId: options.evaluator,
+        concurrency,
+        benchmarkId,
+        trigger: 'cli',
+      }),
+    });
+
+    if (!response.ok || !response.body) {
+      const errText = await response.text();
+      spinner.fail(`Evaluation run failed: ${errText}`);
+      process.exit(1);
+    }
+
+    // Parse SSE stream
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let totalTestCases = 0;
+    let completedCount = 0;
+    let runId = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.startsWith('event: ')) {
+          const eventType = line.slice(7);
+          continue;
+        }
+        if (line.startsWith('data: ')) {
+          try {
+            const data = JSON.parse(line.slice(6));
+
+            if (data.runId && data.testCases) {
+              // Started event
+              runId = data.runId;
+              totalTestCases = data.testCases.length;
+              spinner.text = `Running evaluation (0/${totalTestCases})`;
+            } else if (data.completedCount !== undefined) {
+              // Progress event
+              completedCount = data.completedCount;
+              spinner.text = `Running evaluation (${completedCount}/${totalTestCases})`;
+            } else if (data.status === 'completed' || data.status === 'cancelled') {
+              // Completed event
+              break;
+            } else if (data.error) {
+              spinner.fail(`Run failed: ${data.error}`);
+              process.exit(1);
+            }
+          } catch {
+            // Skip malformed SSE data
+          }
+        }
+      }
+    }
+
+    spinner.succeed(`Evaluation run completed (${completedCount}/${totalTestCases} test cases)`);
+
+    // Fetch final run state
+    const finalRun = await fetch(`${serverResult.baseUrl}/api/storage/evaluation-runs/${runId}`);
+    if (finalRun.ok) {
+      const run = await finalRun.json();
+      const passed = Object.values(run.results || {}).filter((r: any) => r.status === 'completed').length;
+      const failed = Object.values(run.results || {}).filter((r: any) => r.status === 'failed').length;
+
+      console.log('');
+      console.log(chalk.bold('  Results:'));
+      console.log(`    ${chalk.green('✓ Passed:')} ${passed}`);
+      console.log(`    ${chalk.red('✗ Failed:')} ${failed}`);
+      console.log(`    ${chalk.gray('Total:')} ${totalTestCases}`);
+      if (!benchmarkId) {
+        console.log('');
+        console.log(chalk.gray(`  This was an ad-hoc run (ID: ${runId}).`));
+        console.log(chalk.gray('  Promote to benchmark with: -n "Benchmark Name"'));
+      }
+    }
+  } catch (error) {
+    spinner.fail(`Evaluation run error: ${error instanceof Error ? error.message : error}`);
+    process.exit(1);
+  }
+
+  cleanup!();
+}
+
 export function createBenchmarkCommand(): Command {
   const command = new Command('benchmark')
     .description('Run a benchmark against one or more agents')
-    .option('-n, --name <name>', 'Benchmark name or ID (optional in quick mode)')
-    .option('-f, --file <path>', 'JSON file of test cases to import and benchmark')
+    .option('-n, --name <name>', 'Benchmark name or ID (also associates run with benchmark)')
+    .option(
+      '-f, --file <path>',
+      'JSON file(s) of test cases (repeatable)',
+      (val: string, arr: string[]) => [...arr, val],
+      []
+    )
+    .option(
+      '-d, --dir <path>',
+      'Directory of test case JSON files (repeatable)',
+      (val: string, arr: string[]) => [...arr, val],
+      []
+    )
+    .option(
+      '-t, --test-case <id>',
+      'Specific test case ID (repeatable)',
+      (val: string, arr: string[]) => [...arr, val],
+      []
+    )
+    .option(
+      '--label <label>',
+      'Filter by label (repeatable, AND logic)',
+      (val: string, arr: string[]) => [...arr, val],
+      []
+    )
     .option(
       '-a, --agent <key>',
       'Agent key (can be specified multiple times)',
-      (val, arr: string[]) => [...arr, val],
+      (val: string, arr: string[]) => [...arr, val],
       []
     )
     .option('-m, --model <id>', 'Model ID (uses agent default if not specified)')
@@ -449,11 +687,24 @@ export function createBenchmarkCommand(): Command {
       const serverConfig = { ...DEFAULT_SERVER_CONFIG, ...config.server };
       const isCI = !!process.env.CI;
 
+      // Detect "unified mode" — new flags that use the evaluation-runs API
+      const fileArray = Array.isArray(options.file) ? options.file : (options.file ? [options.file] : []);
+      const hasNewFlags = (options.dir && options.dir.length > 0) ||
+        (options.testCase && options.testCase.length > 0) ||
+        (options.label && options.label.length > 0) ||
+        fileArray.length > 1;
+
+      if (hasNewFlags || (fileArray.length > 0 && (options.dir?.length || options.testCase?.length || options.label?.length))) {
+        // Unified evaluation-run mode — delegate to new API
+        await runUnifiedMode(options, config, serverConfig, isCI, fileArray);
+        return;
+      }
+
       // Check if server is already running (for smart defaults)
       const serverWasRunning = await isServerRunning(serverConfig.port);
 
-      // Determine file path: explicit -f flag, or -n value that looks like a file
-      const filePath = options.file || (options.name && isFilePath(options.name) ? options.name : undefined);
+      // Determine file path: explicit -f flag, or -n value that looks like a file (legacy single-file mode)
+      const filePath = fileArray[0] || (options.name && isFilePath(options.name) ? options.name : undefined);
       const fileMode = !!filePath;
 
       // Determine mode: quick mode if no server running, no benchmark name, and no file
