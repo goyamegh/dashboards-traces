@@ -139,7 +139,7 @@ export const TestCasesPage4: React.FC = () => {
   // Reverse map: tcId → benchmarks
   const tcBenchmarkMap = useMemo(() => {
     const map = new Map<string, { id: string; name: string }[]>();
-    for (const bm of benchmarks) for (const tcId of bm.testCaseIds) {
+    for (const bm of benchmarks) for (const tcId of (bm.testCaseIds || [])) {
       if (!map.has(tcId)) map.set(tcId, []);
       map.get(tcId)!.push({ id: bm.id, name: bm.name });
     }
@@ -157,7 +157,7 @@ export const TestCasesPage4: React.FC = () => {
     if (selectedBenchmark !== 'all') {
       const bm = benchmarks.find(b => b.id === selectedBenchmark);
       if (bm) {
-        const bmTcIds = new Set(bm.testCaseIds);
+        const bmTcIds = new Set(bm.testCaseIds || []);
         list = list.filter(tc => bmTcIds.has(tc.id));
       }
     }
@@ -220,7 +220,7 @@ export const TestCasesPage4: React.FC = () => {
     const assignedTcIds = new Set<string>();
     const groups: { id: string; name: string; testCases: TestCase[] }[] = [];
     for (const bm of benchmarks) {
-      const tcs = bm.testCaseIds.map(id => filteredTcs.find(tc => tc.id === id)).filter((tc): tc is TestCase => !!tc);
+      const tcs = (bm.testCaseIds || []).map(id => filteredTcs.find(tc => tc.id === id)).filter((tc): tc is TestCase => !!tc);
       if (tcs.length > 0) {
         groups.push({ id: bm.id, name: bm.name, testCases: sortTcsWithinGroup(tcs) });
         tcs.forEach(tc => assignedTcIds.add(tc.id));

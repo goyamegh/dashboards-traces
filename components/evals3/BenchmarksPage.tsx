@@ -244,7 +244,7 @@ export const BenchmarksPage4: React.FC = () => {
       const sb = benchmarkStats.get(b.id);
       switch (bmSort.field) {
         case 'name': return dir * a.name.localeCompare(b.name);
-        case 'tcs': return dir * (a.testCaseIds.length - b.testCaseIds.length);
+        case 'tcs': return dir * ((a.testCaseIds || []).length - (b.testCaseIds || []).length);
         case 'runs': return dir * ((sa?.runCount || 0) - (sb?.runCount || 0));
         case 'score': return dir * ((sa?.latestScore ?? -1) - (sb?.latestScore ?? -1));
         case 'best': return dir * ((sa?.bestScore ?? -1) - (sb?.bestScore ?? -1));
@@ -411,7 +411,7 @@ export const BenchmarksPage4: React.FC = () => {
                           <div className="text-xs font-medium truncate max-w-[220px]">{bm.name}</div>
                           {bm.description && <div className="text-[9px] text-muted-foreground truncate max-w-[220px]">{bm.description}</div>}
                         </td>
-                        <td className="px-2 py-1.5 align-middle text-center text-[11px]">{bm.testCaseIds.length}</td>
+                        <td className="px-2 py-1.5 align-middle text-center text-[11px]">{(bm.testCaseIds || []).length}</td>
                         <td className="px-2 py-1.5 align-middle text-center text-[11px]">{stats?.runCount || 0}</td>
                         <td className="px-2 py-1.5 align-middle">
                           {lr ? (

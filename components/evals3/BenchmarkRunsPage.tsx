@@ -144,7 +144,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
       if (!isPolling) {
         try {
-          const benchmarkTcs = await asyncTestCaseStorage.getByIds(exp.testCaseIds);
+          const benchmarkTcs = await asyncTestCaseStorage.getByIds(exp.testCaseIds || []);
           setTestCases(benchmarkTcs);
         } catch (error) {
           console.error('Failed to load test cases:', error);
@@ -188,7 +188,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
   // ─── Derived Data ────────────────────────────────────────────────────────
 
   const benchmarkTestCases = useMemo(() =>
-    testCases.filter(tc => benchmark?.testCaseIds.includes(tc.id)),
+    testCases.filter(tc => (benchmark?.testCaseIds || []).includes(tc.id)),
     [testCases, benchmark]
   );
 
@@ -280,7 +280,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
   const handleStartRun = async () => {
     if (!benchmark) return;
     setIsRunConfigOpen(false);
-    const initialStatuses: UseCaseRunStatus[] = benchmark.testCaseIds.map(id => {
+    const initialStatuses: UseCaseRunStatus[] = (benchmark.testCaseIds || []).map(id => {
       const testCase = testCases.find(tc => tc.id === id);
       return { id, name: testCase?.name || id, status: 'pending' as const };
     });
