@@ -40,9 +40,8 @@ coverage:
 
       # E2E / UI tests coverage target
       e2e:
-        target: 50%
+        target: 70%
         threshold: 5%
-        informational: true  # Don't block PRs on E2E coverage
         flags:
           - e2e
 
