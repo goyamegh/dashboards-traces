@@ -13,10 +13,14 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Observio sample agent: port auto-increment when default port 3001 is in use (up to 10 attempts)
 - Observio sample agent: configurable `REACT_MAX_ITERATIONS` via environment variable (default: 100)
 - Parent server dynamically detects observio agent's actual bound port and patches `/api/agents` endpoint
+- Agentic judge provider: evaluate trajectories using an agent with tool access (Claude Code or custom endpoint)
+- Shared `JudgeModelSelect` component: groups judge models by provider (Bedrock, Agentic, Claude Code, OpenAI-compatible, LiteLLM, Demo)
+- Informational banner in "Create Test Case" flow explaining required fields
 
 ### Changed
 - Hide sample data by default when customer has real evaluation data; add "Show sample data" toggle
 - Collapse built-in agents when custom agents exist; group agent dropdowns (Your Agents / Built-in)
+- Default agent filter to "All Agents" on benchmarks and runs pages instead of first enabled agent
 
 ### Fixed
 - Connector type drift: use single source of truth (`CONNECTOR_TYPE_INFO`) in server validation and Settings UI instead of hardcoded arrays ([#176](https://github.com/opensearch-project/agent-health/pull/176))
