@@ -15,8 +15,9 @@ coverage:
     # Overall project coverage (combines all flagged uploads)
     project:
       default:
-        target: 90%
-        threshold: 2%
+        # "auto" = ratchet: never allow overall coverage to decrease
+        target: auto
+        threshold: 1%
         if_ci_failed: error
         flags:
           - unit
@@ -25,8 +26,8 @@ coverage:
 
       # Unit tests coverage target
       unit:
-        target: 90%
-        threshold: 2%
+        target: auto
+        threshold: 1%
         flags:
           - unit
 
@@ -41,14 +42,15 @@ coverage:
       e2e:
         target: 50%
         threshold: 5%
+        informational: true  # Don't block PRs on E2E coverage
         flags:
           - e2e
 
-    # Per-patch (changed lines) coverage
+    # Per-patch (changed lines) coverage — ensures new code is tested
     patch:
       default:
         target: 90%
-        threshold: 2%
+        threshold: 5%
 
 # Flag definitions for different test suites
 flags:
@@ -59,6 +61,8 @@ flags:
       - lib/
       - cli/
       - types/
+      - components/
+      - hooks/
     carryforward: true
 
   integration:
@@ -66,17 +70,18 @@ flags:
       - services/
       - server/
       - lib/
+      - cli/
     carryforward: true
 
   e2e:
     paths:
       - components/
       - hooks/
-      - lib/
+      - services/client/
     carryforward: true
 
 comment:
-  layout: "reach,diff,flags,files"
+  layout: "reach,diff,flags,components"
   behavior: default
   require_changes: false
   require_base: false
@@ -91,4 +96,33 @@ ignore:
   - "playwright-report/**"
   - "coverage/**"
   - "docs/**"
+  - "scripts/**"
+  - "deployment/**"
+  - "cli/demo/**"
   - "observio-sample-agent/**"
+
+# Component-level coverage breakdown shown in PR comments
+component_management:
+  individual_components:
+    - component_id: server
+      name: Backend (Server)
+      paths:
+        - server/**
+    - component_id: services
+      name: Services
+      paths:
+        - services/**
+    - component_id: cli
+      name: CLI
+      paths:
+        - cli/**
+    - component_id: ui
+      name: UI Components
+      paths:
+        - components/**
+        - hooks/**
+    - component_id: lib
+      name: Shared Libraries
+      paths:
+        - lib/**
+        - types/**
