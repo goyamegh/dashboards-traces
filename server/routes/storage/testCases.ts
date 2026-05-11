@@ -145,6 +145,14 @@ router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
       realData = realData.map(toSummary);
     }
 
+    // Determine whether to include sample data
+    // Use totalCount (overall storage count) rather than realData.length (current page)
+    const includeSampleParam = req.query.includeSample as string | undefined;
+    const hasRealData = totalCount != null ? totalCount > 0 : realData.length > 0;
+    const shouldIncludeSample = includeSampleParam === 'true' ? true
+      : includeSampleParam === 'false' ? false
+      : !hasRealData;
+
     // Sort real data by lastActivity (max of lastRunAt, updatedAt, createdAt) descending
     const lastActivity = (tc: any): number => Math.max(
       tc.lastRunAt ? new Date(tc.lastRunAt).getTime() : 0,
@@ -153,18 +161,21 @@ router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
     );
     const sortedRealData = realData.sort((a, b) => lastActivity(b) - lastActivity(a));
 
-    // Get sample data (filtered by IDs if specified)
-    let sampleData = getSampleTestCases();
-    if (filterIds) {
-      const sampleIds = filterIds.filter(id => isSampleId(id));
-      sampleData = sampleData.filter(tc => sampleIds.includes(tc.id));
+    // Get sample data (filtered by IDs if specified), conditionally included
+    let sampleData: TestCase[] = [];
+    if (shouldIncludeSample) {
+      sampleData = getSampleTestCases();
+      if (filterIds) {
+        const sampleIds = filterIds.filter(id => isSampleId(id));
+        sampleData = sampleData.filter(tc => sampleIds.includes(tc.id));
+      }
+      // Apply summary transformation to sample data
+      if (isSummary) {
+        sampleData = sampleData.map(toSummary);
+      }
+      // Sort sample data by lastActivity descending
+      sampleData = sampleData.sort((a, b) => lastActivity(b) - lastActivity(a));
     }
-    // Apply summary transformation to sample data
-    if (isSummary) {
-      sampleData = sampleData.map(toSummary);
-    }
-    // Sort sample data by lastActivity descending
-    sampleData = sampleData.sort((a, b) => lastActivity(b) - lastActivity(a));
 
     // User data first, then sample data
     let allData = [...sortedRealData, ...sampleData];
@@ -191,6 +202,7 @@ router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
       storageReachable,
       realDataCount: realData.length,
       sampleDataCount: sampleData.length,
+      sampleDataIncluded: shouldIncludeSample,
       ...(warnings.length > 0 && { warnings }),
     };
 

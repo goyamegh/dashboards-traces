@@ -14,7 +14,7 @@
 import { Router, Request, Response } from 'express';
 import { loadConfigSync } from '@/lib/config/index';
 import type { AgentConfig, ModelConfig } from '@/types/index.js';
-import { VALID_CONNECTOR_TYPES } from '@/lib/constants';
+import { VALID_CONNECTOR_TYPES, BUILT_IN_AGENT_KEYS } from '@/lib/constants';
 import { addCustomAgent, removeCustomAgent, getCustomAgents } from '@/server/services/customAgentStore';
 import { getRemoteServers } from '@/server/services/codingAgents/remoteConfig';
 import { getObservioPort, waitForObservioReady } from '@/server/services/observioAgent';
@@ -51,7 +51,7 @@ router.get('/api/agents', async (req: Request, res: Response) => {
     const config = loadConfigSync();
     // Wait for observio to report its port (non-blocking if already known, 10s timeout)
     await waitForObservioReady();
-    // Strip hooks (functions can't be serialized to JSON)
+    // Strip hooks (functions can't be serialized to JSON) and mark builtIn
     const configAgents = config.agents.map(({ hooks, ...rest }) => {
       // Patch observio endpoint with actual port (may have auto-incremented)
       // Only patch when endpoint points to localhost — respect explicit remote overrides
@@ -61,18 +61,39 @@ router.get('/api/agents', async (req: Request, res: Response) => {
           if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
             const actualPort = getObservioPort();
             url.port = String(actualPort);
-            return { ...rest, endpoint: url.toString() };
+            return { ...rest, endpoint: url.toString(), builtIn: BUILT_IN_AGENT_KEYS.has(rest.key) && !rest.isCustom };
           }
         } catch { /* invalid URL — leave endpoint unchanged */ }
       }
-      return rest;
+      return { ...rest, builtIn: BUILT_IN_AGENT_KEYS.has(rest.key) && !rest.isCustom };
     });
-    const customAgents = getCustomAgents();
-    const agents = [...configAgents, ...customAgents];
+    const customAgents = getCustomAgents().map(agent => ({
+      ...agent,
+      builtIn: false,
+    }));
+
+    let agents = [...configAgents, ...customAgents];
+
+    // Support optional ?filter=custom|builtin query param
+    const filter = req.query?.filter as string | undefined;
+    if (filter === 'custom') {
+      agents = agents.filter(a => !a.builtIn);
+    } else if (filter === 'builtin') {
+      agents = agents.filter(a => a.builtIn);
+    }
+
+    const allAgents = [...configAgents, ...customAgents];
+    const builtInCount = allAgents.filter(a => a.builtIn).length;
+    const customCount = allAgents.filter(a => !a.builtIn).length;
     res.json({
       agents,
       total: agents.length,
-      meta: { source: 'config' },
+      meta: {
+        source: 'config',
+        hasCustomAgents: customCount > 0,
+        customCount,
+        builtInCount,
+      },
     });
   } catch (error: any) {
     console.error('[ConfigAPI] List agents failed:', error.message);
