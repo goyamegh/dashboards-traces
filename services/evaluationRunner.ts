@@ -11,14 +11,16 @@ import {
   RunStats,
   AgentConfig,
   RunPerformanceMetrics,
+  EvaluationReport,
 } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
-import { runEvaluationWithConnector } from '@/services/evaluation';
+import { runEvaluationWithConnector, callBedrockJudge } from '@/services/evaluation';
 import { connectorRegistry } from '@/services/connectors/server';
 import { loadConfigSync } from '@/lib/config/index';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { getCustomAgents } from '@/server/services/customAgentStore';
 import { debug } from '@/lib/debug';
+import { tracePollingManager } from './traces/tracePoller';
 import { CancellationToken, createCancellationToken } from './benchmarkRunner';
 
 export type { CancellationToken } from './benchmarkRunner';
@@ -179,6 +181,12 @@ export async function executeEvaluationRun(
           // Save the report via storage module
           const savedReport = await storageModule.runs.create(report as any);
 
+          // If trace mode (metricsStatus: 'pending'), poll for traces and run judge inline
+          if (savedReport.metricsStatus === 'pending' && savedReport.runId) {
+            debug('EvaluationRunner', `[${testCaseId}] Trace mode: polling for traces (runId=${savedReport.runId})`);
+            await waitForTracesAndJudge(savedReport, testCase, storageModule, agentConfig);
+          }
+
           // Update result with success
           const status: RunResultStatus = 'completed';
           run.results[testCaseId] = {
@@ -310,4 +318,73 @@ export async function executeEvaluationRun(
 
     throw error;
   }
+}
+
+/**
+ * Wait for traces to become available and invoke the LLM judge inline.
+ * Wraps tracePollingManager.startPolling in a promise so the caller can await it.
+ */
+async function waitForTracesAndJudge(
+  report: EvaluationReport,
+  testCase: TestCase,
+  storage: IStorageModule,
+  agentConfig: AgentConfig
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    tracePollingManager.startPolling(
+      report.id,
+      report.runId!,
+      {
+        onTracesFound: async (_spans, updatedReport) => {
+          try {
+            const finalTrajectory = agentConfig?.hooks?.buildTrajectory
+              ? updatedReport.trajectory
+              : report.trajectory;
+
+            const config = getConfig();
+            const modelConfig = config.models[report.modelId || ''];
+            const judgeModelId = modelConfig?.model_id || report.modelId;
+
+            const judgment = await callBedrockJudge(
+              finalTrajectory,
+              {
+                expectedOutcomes: testCase.expectedOutcomes,
+                expectedTrajectory: testCase.expectedTrajectory,
+              },
+              [],
+              () => {},
+              judgeModelId
+            );
+
+            await storage.runs.update(report.id, {
+              trajectory: finalTrajectory,
+              metricsStatus: 'ready',
+              passFailStatus: judgment.passFailStatus,
+              metrics: judgment.metrics,
+              llmJudgeReasoning: judgment.llmJudgeReasoning,
+              improvementStrategies: judgment.improvementStrategies,
+            } as any);
+
+            debug('EvaluationRunner', `[${testCase.id}] Trace judge complete: ${judgment.passFailStatus}`);
+            resolve();
+          } catch (error) {
+            console.error(`[EvaluationRunner] Failed to judge report ${report.id}:`, error instanceof Error ? error.message : error);
+            await storage.runs.update(report.id, {
+              metricsStatus: 'error',
+              traceError: `Judge evaluation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+            } as any).catch(() => {});
+            resolve(); // Don't fail the whole run, just mark metrics as error
+          }
+        },
+        onAttempt: (attempt, max) => {
+          debug('EvaluationRunner', `[${testCase.id}] Trace poll attempt ${attempt}/${max}`);
+        },
+        onError: (error) => {
+          console.error(`[EvaluationRunner] Trace polling failed for report ${report.id}:`, error.message);
+          resolve(); // Don't fail the whole run — report already has error status from tracePoller
+        },
+      },
+      { agentConfig }
+    );
+  });
 }

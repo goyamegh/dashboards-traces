@@ -63,7 +63,7 @@ export const NewRunPage: React.FC = () => {
   const [modelId, setModelId] = useState(Object.keys(DEFAULT_CONFIG.models)[0] || '');
   const [concurrency, setConcurrency] = useState(1);
   const [runName, setRunName] = useState('');
-  const [benchmarkAssociation, setBenchmarkAssociation] = useState('');
+  const [benchmarkAssociation, setBenchmarkAssociation] = useState('none');
 
   // Execution state
   const [executing, setExecuting] = useState(false);
@@ -156,7 +156,7 @@ export const NewRunPage: React.FC = () => {
           agentKey,
           modelId,
           concurrency,
-          benchmarkId: benchmarkAssociation || undefined,
+          benchmarkId: benchmarkAssociation !== 'none' ? benchmarkAssociation : undefined,
           trigger: 'ui',
         },
         () => {}, // progress handled on detail page
@@ -379,7 +379,7 @@ export const NewRunPage: React.FC = () => {
                     <SelectValue placeholder="None (ad-hoc run)" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="">None (ad-hoc run)</SelectItem>
+                    <SelectItem value="none">None (ad-hoc run)</SelectItem>
                     {benchmarks.map(bm => (
                       <SelectItem key={bm.id} value={bm.id}>{bm.name}</SelectItem>
                     ))}
