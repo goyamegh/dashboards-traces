@@ -19,8 +19,8 @@ test.describe('Navigation', () => {
     // Check all main navigation links are present
     await expect(page.locator('[data-testid="nav-overview"]')).toBeVisible();
     await expect(page.locator('[data-testid="nav-agent-traces"]')).toBeVisible();
-    await expect(page.locator('[data-testid="nav-test-cases"]')).toBeVisible();
-    await expect(page.locator('[data-testid="nav-benchmarks"]')).toBeVisible();
+    await expect(page.locator('[data-testid="nav-evals3-test-cases"]')).toBeVisible();
+    await expect(page.locator('[data-testid="nav-evals3-benchmarks"]')).toBeVisible();
     await expect(page.locator('[data-testid="nav-settings"]')).toBeVisible();
   });
 
@@ -31,13 +31,13 @@ test.describe('Navigation', () => {
   });
 
   test('should navigate to Test Cases page', async ({ page }) => {
-    await page.click('[data-testid="nav-test-cases"]');
+    await page.click('[data-testid="nav-evals3-test-cases"]');
     await expect(page.locator('[data-testid="test-cases-page"]')).toBeVisible();
     await expect(page.locator('[data-testid="test-cases-title"]')).toHaveText('Test Cases');
   });
 
   test('should navigate to Benchmarks page', async ({ page }) => {
-    await page.click('[data-testid="nav-benchmarks"]');
+    await page.click('[data-testid="nav-evals3-benchmarks"]');
     await expect(page.locator('[data-testid="benchmarks-page"]')).toBeVisible();
     await expect(page.locator('[data-testid="benchmarks-title"]')).toHaveText('Benchmarks');
   });

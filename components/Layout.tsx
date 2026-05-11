@@ -74,11 +74,6 @@ const navItemsAfterEvaluation = [
   { to: "/assistant", icon: MessageSquare, label: "Assistant", tooltip: "AI assistant for help and analysis", testId: "nav-assistant" },
 ];
 
-const testingSubItems = [
-  { to: "/benchmarks", label: "Benchmarks", tooltip: "Define success criteria and scoring", testId: "nav-benchmarks" },
-  { to: "/test-cases", label: "Test Cases", tooltip: "Create and manage test inputs", testId: "nav-test-cases" },
-  { to: "/evaluators", label: "Evaluators", tooltip: "Manage evaluation criteria and scoring methods", testId: "nav-evaluators" },
-];
 
 export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
