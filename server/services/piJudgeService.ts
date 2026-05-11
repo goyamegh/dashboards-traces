@@ -100,9 +100,10 @@ function spawnPi(prompt: string, systemPrompt: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
     const args = [
       '--print',
-      '--output-format', 'json',
+      '--mode', 'json',
       '--system-prompt', systemPrompt,
-      '--package', PI_PACKAGE_PATH,
+      '--skill', `${PI_PACKAGE_PATH}/skills/*`,
+      '--extension', `${PI_PACKAGE_PATH}/extensions/agent-health.ts`,
     ];
 
     const env: Record<string, string> = {

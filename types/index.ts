@@ -835,6 +835,74 @@ export type ExperimentProgress = BenchmarkProgress;
 /** @deprecated Use BenchmarkStartedEvent instead */
 export type ExperimentStartedEvent = BenchmarkStartedEvent;
 
+// ============ Evaluation Run Types (Unified Run Architecture) ============
+
+/**
+ * Discriminator for documents in evals_benchmarks index.
+ * Legacy docs without this field default to 'benchmark' via normalization.
+ */
+export type EvalDocType = 'benchmark' | 'evaluation-run';
+
+/**
+ * Describes where test cases came from for an evaluation run.
+ * Multiple sources can be combined (union, deduplicated by test case ID).
+ */
+export type TestCaseSource =
+  | { type: 'benchmark'; benchmarkId: string; benchmarkVersion?: number }
+  | { type: 'test-case-ids'; ids: string[] }
+  | { type: 'file-import'; filenames: string[]; testCaseIds: string[] }
+  | { type: 'directory-import'; dirPaths: string[]; testCaseIds: string[] }
+  | { type: 'label-filter'; labels: string[] };
+
+/**
+ * EvaluationRun — first-class execution record.
+ * Stored as top-level doc in evals_benchmarks index with docType: 'evaluation-run'.
+ * Replaces embedded BenchmarkRun as primary execution entity.
+ */
+export interface EvaluationRun {
+  id: string;
+  docType: 'evaluation-run';
+  name: string;
+  description?: string;
+  createdAt: string;
+  completedAt?: string;
+  status: BenchmarkRunStatus;
+  error?: string;
+
+  // Execution config
+  agentKey: string;
+  agentEndpoint?: string;
+  modelId: string;
+  evaluatorId?: string;
+  headers?: Record<string, string>;
+  concurrency?: number;
+
+  // Provenance — where did the test cases come from?
+  sources: TestCaseSource[];
+  trigger: 'ui' | 'cli' | 'api' | 'schedule';
+
+  // Resolved test cases (snapshotted at execution time for reproducibility)
+  testCaseSnapshots: TestCaseSnapshot[];
+
+  // Results (testCaseId → individual result)
+  results: Record<string, {
+    reportId: string;
+    status: RunResultStatus;
+    error?: string;
+    performanceMetrics?: TestCasePerformanceMetrics;
+  }>;
+
+  // Denormalized stats
+  stats?: RunStats;
+
+  // Performance metrics
+  performanceMetrics?: RunPerformanceMetrics;
+
+  // Benchmark association (undefined for ad-hoc runs, set for benchmark runs)
+  benchmarkId?: string;
+  benchmarkVersion?: number;
+}
+
 // ============ Comparison Types ============
 
 // Test case version reference for detecting changes between runs in comparisons

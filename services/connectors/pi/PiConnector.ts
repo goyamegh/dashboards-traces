@@ -44,7 +44,7 @@ export interface PiConnectorConfig {
  */
 const PI_DEFAULT_CONFIG: Partial<SubprocessConfig> = {
   command: 'pi',
-  args: ['--print', '--output-format', 'json'],
+  args: ['--print', '--mode', 'json'],
   env: {},
   inputMode: 'stdin',
   outputParser: 'streaming',
@@ -128,48 +128,58 @@ export class PiConnector extends SubprocessConnector {
   }
 
   /**
-   * Parse a single JSON event from Pi output
+   * Parse a single JSON event from Pi output.
+   *
+   * Pi's --mode json NDJSON format uses these event types:
+   *  - session, agent_start, agent_end — lifecycle (ignored)
+   *  - turn_start, turn_end — turn boundaries
+   *  - message_start / message_end — full message with content blocks
+   *  - message_update — streaming deltas with assistantMessageEvent
    */
   private parsePiEvent(event: any): TrajectoryStep[] {
     const steps: TrajectoryStep[] = [];
 
-    if (event.type === 'assistant' && event.message?.content) {
-      for (const block of event.message.content) {
-        if (block.type === 'thinking' && block.thinking) {
-          steps.push(this.createStep('thinking', block.thinking));
-        } else if (block.type === 'text' && block.text) {
-          steps.push(this.createStep('assistant', block.text));
-        } else if (block.type === 'tool_use') {
-          steps.push(this.createStep('action', JSON.stringify(block.input || {}), {
-            toolName: block.name,
-            toolArgs: block.input,
-          }));
+    // message_end contains the full final message with all content blocks
+    if (event.type === 'message_end' && event.message?.role === 'assistant') {
+      const content = event.message.content;
+      if (Array.isArray(content)) {
+        for (const block of content) {
+          if (block.type === 'thinking' && block.thinking) {
+            steps.push(this.createStep('thinking', block.thinking));
+          } else if (block.type === 'text' && block.text) {
+            steps.push(this.createStep('assistant', block.text));
+          } else if (block.type === 'tool_use') {
+            steps.push(this.createStep('action', JSON.stringify(block.input || {}), {
+              toolName: block.name,
+              toolArgs: block.input,
+            }));
+          }
         }
       }
-    } else if (event.type === 'content_block_delta') {
-      if (event.delta?.type === 'thinking_delta' && event.delta.thinking) {
-        this.piThinkingBuffer += event.delta.thinking;
-      } else if (event.delta?.type === 'text_delta' && event.delta.text) {
-        this.piTextBuffer += event.delta.text;
+    } else if (event.type === 'message_update') {
+      // Streaming deltas — accumulate into buffers
+      const assistantEvent = event.assistantMessageEvent;
+      if (assistantEvent?.type === 'text_delta' && assistantEvent.delta) {
+        this.piTextBuffer += assistantEvent.delta;
+      } else if (assistantEvent?.type === 'thinking_delta' && assistantEvent.delta) {
+        this.piThinkingBuffer += assistantEvent.delta;
       }
-    } else if (event.type === 'content_block_stop') {
+    } else if (event.type === 'tool_result') {
+      const content = event.content || event.output || JSON.stringify(event);
+      steps.push(this.createStep('tool_result',
+        typeof content === 'string' ? content : JSON.stringify(content),
+        { status: event.is_error ? ToolCallStatus.FAILURE : ToolCallStatus.SUCCESS }
+      ));
+    } else if (event.type === 'agent_end') {
+      // Flush any remaining buffers on agent_end
       if (this.piThinkingBuffer) {
         steps.push(this.createStep('thinking', this.piThinkingBuffer));
         this.piThinkingBuffer = '';
       }
       if (this.piTextBuffer) {
-        steps.push(this.createStep('assistant', this.piTextBuffer));
+        steps.push(this.createStep('response', this.piTextBuffer));
         this.piTextBuffer = '';
       }
-    } else if (event.type === 'result' && event.result) {
-      steps.push(this.createStep('response',
-        typeof event.result === 'string' ? event.result : JSON.stringify(event.result)
-      ));
-    } else if (event.type === 'tool_result') {
-      steps.push(this.createStep('tool_result',
-        typeof event.content === 'string' ? event.content : JSON.stringify(event.content),
-        { status: event.is_error ? ToolCallStatus.FAILURE : ToolCallStatus.SUCCESS }
-      ));
     }
 
     return steps;
@@ -269,7 +279,10 @@ export class PiConnector extends SubprocessConnector {
       // Build additional args from config
       const extraArgs: string[] = [];
       if (piConfig.packagePath) {
-        extraArgs.push('--package', piConfig.packagePath);
+        // Pi uses --skill and --extension to load package components
+        extraArgs.push('--skill', `${piConfig.packagePath}/skills/*`);
+        extraArgs.push('--extension', `${piConfig.packagePath}/extensions/agent-health.ts`);
+        extraArgs.push('--append-system-prompt', `${piConfig.packagePath}/prompts/agent-health.md`);
       }
       if (piConfig.model) {
         extraArgs.push('--model', piConfig.model);

@@ -14,6 +14,7 @@ import type {
   TestCase,
   Benchmark,
   BenchmarkRun,
+  EvaluationRun,
   TestCaseRun,
   RunAnnotation,
   SessionMetadata,
@@ -25,6 +26,7 @@ import type {
   StorageClusterConfig,
   ObservabilityClusterConfig,
   Evaluator,
+  RunResultStatus,
 } from '../../types/index.js';
 
 // ============================================================================
@@ -118,6 +120,30 @@ export interface IBenchmarkOperations {
   updateRun(benchmarkId: string, runId: string, updates: Partial<BenchmarkRun>): Promise<boolean>;
   deleteRun(benchmarkId: string, runId: string): Promise<boolean>;
   bulkCreate(benchmarks: Partial<Benchmark>[]): Promise<{ created: number; errors: number }>;
+}
+
+/**
+ * Evaluation Run operations (stored in same index as benchmarks with docType discriminator)
+ */
+export interface IEvaluationRunOperations {
+  create(run: EvaluationRun): Promise<EvaluationRun>;
+  getById(id: string): Promise<EvaluationRun | null>;
+  update(id: string, updates: Partial<EvaluationRun>): Promise<EvaluationRun>;
+  delete(id: string): Promise<{ deleted: boolean }>;
+  list(options?: PaginationOptions & {
+    benchmarkId?: string;
+    agentKey?: string;
+    status?: string;
+    testCaseId?: string;
+    trigger?: string;
+    sort?: 'createdAt' | 'completedAt';
+    order?: 'asc' | 'desc';
+  }): Promise<{ items: EvaluationRun[]; total: number }>;
+  updateResult(runId: string, testCaseId: string, result: {
+    reportId: string;
+    status: RunResultStatus;
+    error?: string;
+  }): Promise<boolean>;
 }
 
 // Backwards compatibility alias
@@ -215,6 +241,7 @@ export interface ISessionMetadataOperations {
 export interface IStorageModule {
   testCases: ITestCaseOperations;
   benchmarks: IBenchmarkOperations;
+  evaluationRuns: IEvaluationRunOperations;
   runs: IRunOperations;
   analytics: IAnalyticsOperations;
   evaluators: IEvaluatorOperations;
