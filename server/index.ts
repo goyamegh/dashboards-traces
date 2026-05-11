@@ -13,7 +13,7 @@ import { ChildProcess } from 'child_process';
 import config from './config/index.js';
 import { createApp } from './app.js';
 import { getStorageConfigFromFile, getObservabilityConfigFromFile } from './services/configService.js';
-import { findObservioRoot, spawnObservioAgent, OBSERVIO_DEFAULT_PORT, resetObservioPort } from './services/observioAgent.js';
+import { findObservioRoot, spawnObservioAgent, OBSERVIO_DEFAULT_PORT, resetObservioPort, isPortFree, setObservioPort, waitForObservioReady } from './services/observioAgent.js';
 import { validateAwsCredentials } from './services/tracesService.js';
 
 // Register server-side connectors (subprocess, claude-code)
@@ -31,7 +31,8 @@ let observioChild: ChildProcess | null = null;
 
 /**
  * Try to auto-start the observio sample agent if available.
- * Fails silently — never blocks the main server.
+ * Checks if an instance is already running before spawning.
+ * Awaits port detection so the server knows the correct endpoint at boot time.
  */
 async function tryStartObservioAgent(): Promise<void> {
   try {
@@ -41,11 +42,19 @@ async function tryStartObservioAgent(): Promise<void> {
       return;
     }
 
+    // Check if observio is already running on the default port
+    const portFree = await isPortFree(OBSERVIO_DEFAULT_PORT);
+    if (!portFree) {
+      console.log(`  Observio sample agent: already running on port ${OBSERVIO_DEFAULT_PORT}`);
+      setObservioPort(OBSERVIO_DEFAULT_PORT);
+      return;
+    }
+
     observioChild = spawnObservioAgent(root);
     if (!observioChild) {
       return; // Dependencies not installed — message already logged
     }
-    console.log(`  Observio sample agent: starting (port ${OBSERVIO_DEFAULT_PORT}, will auto-increment if busy)...`);
+    console.log(`  Observio sample agent: starting (port ${OBSERVIO_DEFAULT_PORT})...`);
 
     observioChild.on('exit', (code) => {
       if (code !== null && code !== 0) {
@@ -53,6 +62,9 @@ async function tryStartObservioAgent(): Promise<void> {
       }
       observioChild = null;
     });
+
+    // Wait for observio to report its actual port before continuing
+    await waitForObservioReady();
   } catch (err) {
     console.log(`  Observio sample agent: failed to start (${err instanceof Error ? err.message : err})`);
   }
@@ -60,6 +72,9 @@ async function tryStartObservioAgent(): Promise<void> {
 
 async function startServer() {
   const app = await createApp();
+
+  // Start observio FIRST so we know its port before serving requests
+  await tryStartObservioAgent();
 
   // Wait for coding agent fast pass so first requests have data
   try {
@@ -123,9 +138,6 @@ async function startServer() {
         };
         process.on('SIGTERM', () => shutdown('SIGTERM'));
         process.on('SIGINT', () => shutdown('SIGINT'));
-
-        // Auto-start the observio sample agent (non-blocking)
-        tryStartObservioAgent();
 
         resolve();
       });

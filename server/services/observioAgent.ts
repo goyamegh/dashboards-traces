@@ -25,7 +25,7 @@ export const OBSERVIO_DEFAULT_PORT = 3001;
 let observioChild: ChildProcess | null = null;
 
 /** The actual port observio bound to (may differ from default if auto-incremented) */
-let observioActualPort: number | null = null;
+export let observioActualPort: number | null = null;
 
 /** Promise that resolves once the observio port has been detected from stdout */
 let portReadyResolve: ((port: number) => void) | null = null;
@@ -57,6 +57,11 @@ export function resetObservioPort(): void {
   observioActualPort = null;
   portReadyResolve = null;
   portReadyPromise = null;
+}
+
+/** Set the actual port (used when detecting an already-running instance) */
+export function setObservioPort(port: number): void {
+  observioActualPort = port;
 }
 
 /**
