@@ -64,6 +64,34 @@ test.describe('Navigation', () => {
     // Check for the OpenSearch branding text
     await expect(page.locator('text=OpenSearch AgentHealth')).toBeVisible();
   });
+
+  test('should display navigation items in correct order', async ({ page }) => {
+    // Get all sidebar menu button labels in order
+    const sidebar = page.locator('[data-testid="sidebar"]');
+    const menuItems = sidebar.locator('[data-testid^="nav-"]');
+
+    // Expected order: Overview, Agent Traces, Evaluations, AI Dev Tools, Assistant, Settings
+    const expectedOrder = [
+      'nav-overview',
+      'nav-agent-traces',
+      'nav-evals3-benchmarks',
+      'nav-evals3-test-cases',
+      'nav-evals3-runs',
+      'nav-evaluators',
+      'nav-coding-agents',
+      'nav-assistant',
+      'nav-settings',
+    ];
+
+    const actualTestIds: string[] = [];
+    const count = await menuItems.count();
+    for (let i = 0; i < count; i++) {
+      const testId = await menuItems.nth(i).getAttribute('data-testid');
+      if (testId) actualTestIds.push(testId);
+    }
+
+    expect(actualTestIds).toEqual(expectedOrder);
+  });
 });
 
 test.describe('URL-based Navigation', () => {
