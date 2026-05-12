@@ -24,9 +24,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { loadSampleData } from '@/config/sampleData';
-import { CodingAgentsBanner } from './CodingAgentsBanner';
 import { cn } from '@/lib/utils';
-
 /**
  * First Run Experience (Overview landing page when no data is configured).
  *
@@ -38,6 +36,7 @@ import { cn } from '@/lib/utils';
  *  4. Scale moment — subtle path to self-hosted / managed deployment.
  */
 interface FirstRunExperienceProps {
+  /** Conditionally render the "Also available: AI Dev Tools" footer strip. */
   showCodingAgentsBanner?: boolean;
 }
 
@@ -228,6 +227,20 @@ export const FirstRunExperience: React.FC<FirstRunExperienceProps> = ({
           </Button>
         </div>
 
+        <button
+          type="button"
+          onClick={() => {
+            document
+              .getElementById('docker-install')
+              ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }}
+          className="group inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
+        >
+          <Terminal className="h-3.5 w-3.5" />
+          <span>or deploy with Docker</span>
+          <ArrowRight className="h-3 w-3 opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" />
+        </button>
+
         {sampleDataError && (
           <p
             role="alert"
@@ -246,11 +259,26 @@ export const FirstRunExperience: React.FC<FirstRunExperienceProps> = ({
         </p>
       </section>
 
-      {/* Optional coding agents banner — never displaces or outranks the hero. */}
+      {/* ================================================================== */}
+      {/* ALSO AVAILABLE                                                      */}
+      {/* ================================================================== */}
       {showCodingAgentsBanner && (
-        <div className="max-w-3xl mx-auto -mt-4">
-          <CodingAgentsBanner />
-        </div>
+        <Link
+          to="/coding-agents"
+          className="group flex items-center justify-between gap-3 rounded-xl border border-border/60 bg-background/40 px-5 py-3 text-sm hover:border-purple-500/40 hover:bg-background/60 transition-colors"
+        >
+          <div className="flex items-center gap-3 min-w-0">
+            <Terminal className="h-4 w-4 text-muted-foreground shrink-0" />
+            <span className="text-muted-foreground truncate">
+              <span className="font-medium text-foreground">Also available:</span>{' '}
+              AI Dev Tools analytics for Claude Code, Kiro, and Codex.
+            </span>
+          </div>
+          <span className="inline-flex items-center gap-1 text-xs text-purple-400 group-hover:text-purple-300 shrink-0">
+            View analytics
+            <ArrowRight className="h-3.5 w-3.5 group-hover:translate-x-0.5 transition-transform" />
+          </span>
+        </Link>
       )}
 
       {/* ================================================================== */}
@@ -357,7 +385,10 @@ export const FirstRunExperience: React.FC<FirstRunExperienceProps> = ({
 
         <div className="mt-5 grid gap-4 md:grid-cols-2">
           {/* Self-hosted */}
-          <div className="rounded-xl border border-border/60 bg-background/40 p-4 space-y-3">
+          <div
+            id="docker-install"
+            className="rounded-xl border border-border/60 bg-background/40 p-4 space-y-3 scroll-mt-24"
+          >
             <div className="flex items-center gap-2">
               <Terminal className="h-4 w-4 text-muted-foreground" />
               <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
