@@ -205,7 +205,7 @@ export const FirstRunExperience: React.FC<FirstRunExperienceProps> = ({
           Know if your agent is actually working.
         </h1>
         <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-          Agents are non-deterministic. See, measure, and improve them — before your users do.
+          Agents are non-deterministic. See, measure, and improve them locally in under a minute — no setup required.
         </p>
 
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3 pt-2">
@@ -231,13 +231,13 @@ export const FirstRunExperience: React.FC<FirstRunExperienceProps> = ({
           type="button"
           onClick={() => {
             document
-              .getElementById('docker-install')
-              ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+              .getElementById('self-host')
+              ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
           }}
           className="group inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground transition-colors"
         >
           <Terminal className="h-3.5 w-3.5" />
-          <span>or deploy with Docker</span>
+          <span>When ready — self-host with Docker or manage in AWS</span>
           <ArrowRight className="h-3 w-3 opacity-0 group-hover:opacity-100 group-hover:translate-x-0.5 transition-all" />
         </button>
 
@@ -249,14 +249,6 @@ export const FirstRunExperience: React.FC<FirstRunExperienceProps> = ({
             {sampleDataError}
           </p>
         )}
-
-        <p className="text-sm text-muted-foreground pt-1">
-          No setup required
-          <span className="mx-2 opacity-50">·</span>
-          Runs locally
-          <span className="mx-2 opacity-50">·</span>
-          Try in under a minute
-        </p>
       </section>
 
       {/* ================================================================== */}
@@ -370,8 +362,9 @@ export const FirstRunExperience: React.FC<FirstRunExperienceProps> = ({
       {/* SCALE MOMENT                                                        */}
       {/* ================================================================== */}
       <section
+        id="self-host"
         aria-labelledby="scale-heading"
-        className="relative rounded-2xl border border-border p-6 sm:p-8 overflow-hidden bg-gradient-to-br from-purple-500/[0.06] via-transparent to-blue-500/[0.04]"
+        className="relative rounded-2xl border border-border p-6 sm:p-8 overflow-hidden bg-gradient-to-br from-purple-500/[0.06] via-transparent to-blue-500/[0.04] scroll-mt-24"
       >
         <h2 id="scale-heading" className="text-xl font-semibold tracking-tight mb-2">
           When your agent graduates from prototype.
@@ -385,10 +378,7 @@ export const FirstRunExperience: React.FC<FirstRunExperienceProps> = ({
 
         <div className="mt-5 grid gap-4 md:grid-cols-2">
           {/* Self-hosted */}
-          <div
-            id="docker-install"
-            className="rounded-xl border border-border/60 bg-background/40 p-4 space-y-3 scroll-mt-24"
-          >
+          <div className="rounded-xl border border-border/60 bg-background/40 p-4 space-y-3">
             <div className="flex items-center gap-2">
               <Terminal className="h-4 w-4 text-muted-foreground" />
               <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
