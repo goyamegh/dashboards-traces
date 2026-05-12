@@ -35,3 +35,16 @@ export {
   clearAssistantSession,
   checkAssistantHealth,
 } from './assistantApi';
+
+export {
+  executeEvaluationRun,
+  listEvaluationRuns,
+  getEvaluationRun,
+  cancelEvaluationRun,
+  deleteEvaluationRun,
+  promoteEvaluationRun,
+  updateEvaluationRun,
+  type CreateEvaluationRunRequest,
+  type EvaluationRunProgress,
+  type EvaluationRunStartedEvent,
+} from './evaluationRunsApi';

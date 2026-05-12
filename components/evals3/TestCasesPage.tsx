@@ -14,6 +14,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import { useNavigate } from 'react-router-dom';
 import {
   ChevronRight, ChevronDown, CheckCircle2, XCircle,
@@ -96,11 +97,11 @@ export const TestCasesPage4: React.FC = () => {
   const [runCounts, setRunCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [viewMode, setViewMode] = useState<'flat' | 'grouped'>('flat');
+  const [viewMode, setViewMode] = usePersistedState<'flat' | 'grouped'>('test-cases:viewMode', 'flat');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const [timeRange, setTimeRange] = useState<TimeRange>('7d');
+  const [timeRange, setTimeRange] = usePersistedState<TimeRange>('test-cases:timeRange', '7d');
   const [openPopoverId, setOpenPopoverId] = useState<string | null>(null);
-  const [selectedBenchmark, setSelectedBenchmark] = useState<string>('all');
+  const [selectedBenchmark, setSelectedBenchmark] = usePersistedState<string>('test-cases:selectedBenchmark', 'all');
   const [isScrolled, setIsScrolled] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -113,7 +114,7 @@ export const TestCasesPage4: React.FC = () => {
   const [showSampleData, setShowSampleData] = useState<boolean | undefined>(undefined);
 
   // Sort
-  const [sort, setSort] = useState<{ field: SortField; dir: SortDir }>({ field: 'created', dir: 'desc' });
+  const [sort, setSort] = usePersistedState<{ field: SortField; dir: SortDir }>('test-cases:sort', { field: 'created', dir: 'desc' });
 
   const loadDefinitions = useCallback(async () => {
     try {
@@ -139,7 +140,7 @@ export const TestCasesPage4: React.FC = () => {
   // Reverse map: tcId → benchmarks
   const tcBenchmarkMap = useMemo(() => {
     const map = new Map<string, { id: string; name: string }[]>();
-    for (const bm of benchmarks) for (const tcId of bm.testCaseIds) {
+    for (const bm of benchmarks) for (const tcId of (bm.testCaseIds || [])) {
       if (!map.has(tcId)) map.set(tcId, []);
       map.get(tcId)!.push({ id: bm.id, name: bm.name });
     }
@@ -157,7 +158,7 @@ export const TestCasesPage4: React.FC = () => {
     if (selectedBenchmark !== 'all') {
       const bm = benchmarks.find(b => b.id === selectedBenchmark);
       if (bm) {
-        const bmTcIds = new Set(bm.testCaseIds);
+        const bmTcIds = new Set(bm.testCaseIds || []);
         list = list.filter(tc => bmTcIds.has(tc.id));
       }
     }
@@ -220,7 +221,7 @@ export const TestCasesPage4: React.FC = () => {
     const assignedTcIds = new Set<string>();
     const groups: { id: string; name: string; testCases: TestCase[] }[] = [];
     for (const bm of benchmarks) {
-      const tcs = bm.testCaseIds.map(id => filteredTcs.find(tc => tc.id === id)).filter((tc): tc is TestCase => !!tc);
+      const tcs = (bm.testCaseIds || []).map(id => filteredTcs.find(tc => tc.id === id)).filter((tc): tc is TestCase => !!tc);
       if (tcs.length > 0) {
         groups.push({ id: bm.id, name: bm.name, testCases: sortTcsWithinGroup(tcs) });
         tcs.forEach(tc => assignedTcIds.add(tc.id));

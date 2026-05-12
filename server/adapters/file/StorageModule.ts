@@ -22,16 +22,19 @@ import type {
   TestCase,
   Benchmark,
   BenchmarkRun,
+  EvaluationRun,
   TestCaseRun,
   RunAnnotation,
   SessionMetadata,
   HealthStatus,
   Evaluator,
+  RunResultStatus,
 } from '../../../types/index.js';
 import type {
   IStorageModule,
   ITestCaseOperations,
   IBenchmarkOperations,
+  IEvaluationRunOperations,
   IRunOperations,
   IAnalyticsOperations,
   IEvaluatorOperations,
@@ -782,6 +785,105 @@ export class FileSessionMetadataOperations implements ISessionMetadataOperations
 }
 
 // ============================================================================
+// File Evaluation Run Operations (stored in benchmarks dir with docType discriminator)
+// ============================================================================
+
+class FileEvaluationRunOperations implements IEvaluationRunOperations {
+  private readonly dir: string;
+
+  constructor(baseDir: string) {
+    // Stored in same directory as benchmarks (same "index" concept)
+    this.dir = path.join(baseDir, 'benchmarks');
+    ensureDir(this.dir);
+  }
+
+  async create(run: EvaluationRun): Promise<EvaluationRun> {
+    const id = run.id || `evalrun-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+    const doc: EvaluationRun = {
+      ...run,
+      id,
+      docType: 'evaluation-run',
+      createdAt: run.createdAt || new Date().toISOString(),
+      status: run.status || 'pending',
+      results: run.results || {},
+      sources: run.sources || [],
+      testCaseSnapshots: run.testCaseSnapshots || [],
+    };
+    writeJsonFile(path.join(this.dir, `${id}.json`), doc);
+    return doc;
+  }
+
+  async getById(id: string): Promise<EvaluationRun | null> {
+    const doc = readJsonFile<any>(path.join(this.dir, `${id}.json`));
+    if (!doc || doc.docType !== 'evaluation-run') return null;
+    return doc as EvaluationRun;
+  }
+
+  async update(id: string, updates: Partial<EvaluationRun>): Promise<EvaluationRun> {
+    const existing = await this.getById(id);
+    if (!existing) throw new Error(`Evaluation run ${id} not found`);
+    const updated = { ...existing, ...updates } as EvaluationRun;
+    writeJsonFile(path.join(this.dir, `${id}.json`), updated);
+    return updated;
+  }
+
+  async delete(id: string): Promise<{ deleted: boolean }> {
+    const filePath = path.join(this.dir, `${id}.json`);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      return { deleted: true };
+    }
+    return { deleted: false };
+  }
+
+  async list(options?: PaginationOptions & {
+    benchmarkId?: string;
+    agentKey?: string;
+    status?: string;
+    testCaseId?: string;
+    trigger?: string;
+    sort?: 'createdAt' | 'completedAt';
+    order?: 'asc' | 'desc';
+  }): Promise<{ items: EvaluationRun[]; total: number }> {
+    const all = readAllFromDir<any>(this.dir)
+      .filter((doc: any) => doc.docType === 'evaluation-run') as EvaluationRun[];
+
+    let filtered = all;
+    if (options?.benchmarkId) filtered = filtered.filter(r => r.benchmarkId === options.benchmarkId);
+    if (options?.agentKey) filtered = filtered.filter(r => r.agentKey === options.agentKey);
+    if (options?.status) filtered = filtered.filter(r => r.status === options.status);
+    if (options?.trigger) filtered = filtered.filter(r => r.trigger === options.trigger);
+    if (options?.testCaseId) {
+      filtered = filtered.filter(r =>
+        r.testCaseSnapshots?.some(s => s.id === options.testCaseId)
+      );
+    }
+
+    const sortField = options?.sort || 'createdAt';
+    const order = options?.order || 'desc';
+    filtered.sort((a, b) => {
+      const aVal = new Date(a[sortField] || a.createdAt).getTime();
+      const bVal = new Date(b[sortField] || b.createdAt).getTime();
+      return order === 'desc' ? bVal - aVal : aVal - bVal;
+    });
+
+    return paginate(filtered, options);
+  }
+
+  async updateResult(runId: string, testCaseId: string, result: {
+    reportId: string;
+    status: RunResultStatus;
+    error?: string;
+  }): Promise<boolean> {
+    const existing = await this.getById(runId);
+    if (!existing) return false;
+    existing.results[testCaseId] = result;
+    writeJsonFile(path.join(this.dir, `${runId}.json`), existing);
+    return true;
+  }
+}
+
+// ============================================================================
 // File Storage Module
 // ============================================================================
 
@@ -790,6 +892,7 @@ const DEFAULT_DATA_DIR = 'agent-health-data';
 export class FileStorageModule implements IStorageModule {
   readonly testCases: ITestCaseOperations;
   readonly benchmarks: IBenchmarkOperations;
+  readonly evaluationRuns: IEvaluationRunOperations;
   readonly runs: IRunOperations;
   readonly analytics: IAnalyticsOperations;
   readonly evaluators: IEvaluatorOperations;
@@ -803,6 +906,7 @@ export class FileStorageModule implements IStorageModule {
 
     this.testCases = new FileTestCaseOperations(this.baseDir);
     this.benchmarks = new FileBenchmarkOperations(this.baseDir);
+    this.evaluationRuns = new FileEvaluationRunOperations(this.baseDir);
     this.runs = new FileRunOperations(this.baseDir);
     this.analytics = new FileAnalyticsOperations(this.baseDir);
     this.evaluators = new FileEvaluatorOperations(this.baseDir);

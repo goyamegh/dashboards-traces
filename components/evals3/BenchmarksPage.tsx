@@ -15,6 +15,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import { useNavigate } from 'react-router-dom';
 import {
   Play, CheckCircle2, XCircle, Loader2, Clock, Search, X, RefreshCw,
@@ -147,8 +148,8 @@ export const BenchmarksPage4: React.FC = () => {
   const [testCases, setTestCases] = useState<TestCase[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [timeRange, setTimeRange] = useState<TimeRange>('all');
-  const [selectedAgent, setSelectedAgent] = useState<string>('all');
+  const [timeRange, setTimeRange] = usePersistedState<TimeRange>('benchmarks:timeRange', 'all');
+  const [selectedAgent, setSelectedAgent] = usePersistedState<string>('benchmarks:selectedAgent', DEFAULT_CONFIG.agents.find(a => a.enabled !== false)?.key || 'all');
   const [isScrolled, setIsScrolled] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -159,7 +160,7 @@ export const BenchmarksPage4: React.FC = () => {
   const [showSampleData, setShowSampleData] = useState<boolean | undefined>(undefined);
 
   // Sort state for Benchmarks tab
-  const [bmSort, setBmSort] = useState<{ field: BmSortField; dir: SortDir }>({ field: 'runs', dir: 'desc' });
+  const [bmSort, setBmSort] = usePersistedState<{ field: BmSortField; dir: SortDir }>('benchmarks:sort', { field: 'runs', dir: 'desc' });
 
   const loadData = useCallback(async () => {
     try {
@@ -244,7 +245,7 @@ export const BenchmarksPage4: React.FC = () => {
       const sb = benchmarkStats.get(b.id);
       switch (bmSort.field) {
         case 'name': return dir * a.name.localeCompare(b.name);
-        case 'tcs': return dir * (a.testCaseIds.length - b.testCaseIds.length);
+        case 'tcs': return dir * ((a.testCaseIds || []).length - (b.testCaseIds || []).length);
         case 'runs': return dir * ((sa?.runCount || 0) - (sb?.runCount || 0));
         case 'score': return dir * ((sa?.latestScore ?? -1) - (sb?.latestScore ?? -1));
         case 'best': return dir * ((sa?.bestScore ?? -1) - (sb?.bestScore ?? -1));
@@ -411,7 +412,7 @@ export const BenchmarksPage4: React.FC = () => {
                           <div className="text-xs font-medium truncate max-w-[220px]">{bm.name}</div>
                           {bm.description && <div className="text-[9px] text-muted-foreground truncate max-w-[220px]">{bm.description}</div>}
                         </td>
-                        <td className="px-2 py-1.5 align-middle text-center text-[11px]">{bm.testCaseIds.length}</td>
+                        <td className="px-2 py-1.5 align-middle text-center text-[11px]">{(bm.testCaseIds || []).length}</td>
                         <td className="px-2 py-1.5 align-middle text-center text-[11px]">{stats?.runCount || 0}</td>
                         <td className="px-2 py-1.5 align-middle">
                           {lr ? (

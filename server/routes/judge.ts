@@ -15,6 +15,7 @@ import { evaluateWithOpenAICompatible, parseOpenAICompatibleError } from '@/serv
 import { evaluateWithLiteLLM, parseLiteLLMError } from '@/server/services/litellmJudgeService';
 import { evaluateWithClaudeCode, parseClaudeCodeError } from '@/server/services/claudeCodeJudgeService';
 import { evaluateWithAgenticJudge, parseAgenticJudgeError } from '@/server/services/agenticJudgeService';
+import { evaluateWithPi, parsePiError } from '@/server/services/piJudgeService';
 import { loadConfigSync } from '@/lib/config/index';
 import serverConfig from '@/server/config';
 import { debug } from '@/lib/debug';
@@ -258,6 +259,14 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       return res.json(result);
     }
 
+    if (provider === 'pi') {
+      debug('JudgeAPI', 'Pi provider - spawning pi CLI');
+      const result = await evaluateWithPi(
+        { trajectory, expectedOutcomes, expectedTrajectory, logs }
+      );
+      return res.json(result);
+    }
+
     if (provider === 'openai-compatible') {
       debug('JudgeAPI', 'OpenAI-compatible provider - calling endpoint');
       const result = await evaluateWithOpenAICompatible(
@@ -307,11 +316,13 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       ? parseAgenticJudgeError(error)
       : provider === 'claude-code'
         ? parseClaudeCodeError(error)
-        : provider === 'litellm'
-          ? parseLiteLLMError(error)
-          : provider === 'openai-compatible'
-            ? parseOpenAICompatibleError(error)
-            : parseBedrockError(error);
+        : provider === 'pi'
+          ? parsePiError(error)
+          : provider === 'litellm'
+            ? parseLiteLLMError(error)
+            : provider === 'openai-compatible'
+              ? parseOpenAICompatibleError(error)
+              : parseBedrockError(error);
 
     res.status(500).json({
       error: `Judge evaluation failed: ${errorMessage}`,

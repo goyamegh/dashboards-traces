@@ -28,6 +28,8 @@ module.exports = {
     // Mock data files to avoid JSON import issues in tests
     '^@/data/testCases$': '<rootDir>/__mocks__/@/data/testCases.ts',
     '^@/data/mockComparisonData$': '<rootDir>/__mocks__/@/data/mockComparisonData.ts',
+    // Handle .js extension in @/ imports (ESM compatibility for CLI commands)
+    '^@/(.*)\\.js$': '<rootDir>/$1',
     '^@/(.*)$': '<rootDir>/$1',
     // Mock browser-only modules
     '^dagre$': '<rootDir>/__mocks__/dagre.ts',

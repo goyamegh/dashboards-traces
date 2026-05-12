@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import { X, ChevronRight, ChevronLeft, Plus, Trash2, Check, Loader2, AlertTriangle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -118,11 +119,20 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
 
   function createDefaultRun(): RunConfig {
     const defaultAgent = DEFAULT_CONFIG.agents[1] || DEFAULT_CONFIG.agents[0];
+    // Read last-used preferences from localStorage (shared with QuickRunModal/NewRunPage)
+    let agentKey = defaultAgent.key;
+    let modelId = Object.keys(DEFAULT_CONFIG.models)[0] || 'claude-sonnet-4.5';
+    try {
+      const storedAgent = localStorage.getItem('agent-health:quick-run:agentKey');
+      const storedModel = localStorage.getItem('agent-health:quick-run:modelId');
+      if (storedAgent) agentKey = JSON.parse(storedAgent);
+      if (storedModel) modelId = JSON.parse(storedModel);
+    } catch { /* use defaults */ }
     return {
       id: asyncBenchmarkStorage.generateRunId(),
       name: 'Baseline',
-      agentKey: defaultAgent.key,
-      modelId: Object.keys(DEFAULT_CONFIG.models)[0] || 'claude-sonnet-4.5',
+      agentKey,
+      modelId,
     };
   }
 

@@ -10,7 +10,7 @@
  * Follows the server-mediated architecture pattern.
  */
 
-import type { Benchmark, BenchmarkRun, BenchmarkProgress, RunConfigInput, TestCaseRun, StorageMetadata, AgentConfig, ModelConfig, TestCase, Evaluator } from '@/types/index.js';
+import type { Benchmark, BenchmarkRun, BenchmarkProgress, RunConfigInput, TestCaseRun, StorageMetadata, AgentConfig, ModelConfig, TestCase, Evaluator, EvaluationRun, TestCaseSource } from '@/types/index.js';
 
 /**
  * Error thrown when the server sends an explicit error event via SSE.
@@ -744,6 +744,115 @@ export class ApiClient {
         errorMessage = errorBody;
       }
       throw new Error(`Failed to fetch traces: ${errorMessage}`);
+    }
+
+    return res.json();
+  }
+
+  // ─── Evaluation Runs ────────────────────────────────────────────────────────
+
+  /**
+   * Create and execute an evaluation run with SSE streaming.
+   */
+  async createEvaluationRun(
+    params: {
+      name?: string;
+      sources: TestCaseSource[];
+      agentKey: string;
+      modelId: string;
+      evaluatorId?: string;
+      concurrency?: number;
+      benchmarkId?: string;
+      trigger?: string;
+    },
+    onEvent: (event: { type: string; data: any }) => void
+  ): Promise<EvaluationRun | null> {
+    const res = await fetch(`${this.baseUrl}/api/storage/evaluation-runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+
+    if (!res.ok) {
+      const errorBody = await res.text();
+      let errorMessage: string;
+      try {
+        const parsed = JSON.parse(errorBody);
+        errorMessage = parsed.error || errorBody;
+      } catch {
+        errorMessage = errorBody;
+      }
+      throw new ServerError(`Failed to create evaluation run: ${errorMessage}`);
+    }
+
+    if (!res.body) {
+      throw new Error('No response body for SSE stream');
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let completedRun: EvaluationRun | null = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || '';
+
+      for (const event of events) {
+        const lines = event.split('\n');
+        let eventType = '';
+        let eventData = '';
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) eventType = line.slice(7);
+          else if (line.startsWith('data: ')) eventData = line.slice(6);
+        }
+
+        if (!eventData) continue;
+
+        try {
+          const data = JSON.parse(eventData);
+          onEvent({ type: eventType, data });
+
+          if (eventType === 'completed') {
+            completedRun = data;
+          } else if (eventType === 'error') {
+            throw new ServerError(data.error || 'Evaluation run failed');
+          }
+        } catch (e) {
+          if (e instanceof ServerError) throw e;
+          // Ignore JSON parse errors from incomplete chunks
+        }
+      }
+    }
+
+    return completedRun;
+  }
+
+  /**
+   * Promote an ad-hoc evaluation run to a benchmark.
+   */
+  async promoteEvaluationRun(runId: string, benchmarkName: string): Promise<{ benchmark: Benchmark; run: EvaluationRun }> {
+    const res = await fetch(`${this.baseUrl}/api/storage/evaluation-runs/${runId}/promote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ benchmarkName }),
+    });
+
+    if (!res.ok) {
+      const errorBody = await res.text();
+      let errorMessage: string;
+      try {
+        const parsed = JSON.parse(errorBody);
+        errorMessage = parsed.error || errorBody;
+      } catch {
+        errorMessage = errorBody;
+      }
+      throw new Error(`Failed to promote run: ${errorMessage}`);
     }
 
     return res.json();

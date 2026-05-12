@@ -15,6 +15,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import { useNavigate } from 'react-router-dom';
 import {
   CheckCircle2, XCircle, Loader2, Clock, Search, RefreshCw,
@@ -106,19 +107,19 @@ export const EvalRunsPage: React.FC = () => {
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Filters
+  // Filters (persisted)
   const [search, setSearch] = useState('');
-  const [timeRange, setTimeRange] = useState<TimeRange>('30d');
-  const [selectedAgent, setSelectedAgent] = useState('all');
+  const [timeRange, setTimeRange] = usePersistedState<TimeRange>('eval-runs:timeRange', '30d');
+  const [selectedAgent, setSelectedAgent] = usePersistedState('eval-runs:selectedAgent', DEFAULT_CONFIG.agents.find(a => a.enabled !== false)?.key || 'all');
 
-  // View
-  const [viewMode, setViewMode] = useState<ViewMode>('flat');
+  // View (persisted)
+  const [viewMode, setViewMode] = usePersistedState<ViewMode>('eval-runs:viewMode', 'flat');
   const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const [sort, setSort] = useState<{ field: string; dir: 'asc' | 'desc' }>({ field: 'timestamp', dir: 'desc' });
-  const [showRegressionsOnly, setShowRegressionsOnly] = useState(false);
+  const [sort, setSort] = usePersistedState<{ field: string; dir: 'asc' | 'desc' }>('eval-runs:sort', { field: 'timestamp', dir: 'desc' });
+  const [showRegressionsOnly, setShowRegressionsOnly] = usePersistedState('eval-runs:showRegressionsOnly', false);
 
-  // Advanced filters
-  const [filterStatus, setFilterStatus] = useState<'all' | 'passed' | 'failed' | 'mixed'>('all');
+  // Advanced filters (persisted)
+  const [filterStatus, setFilterStatus] = usePersistedState<'all' | 'passed' | 'failed' | 'mixed'>('eval-runs:filterStatus', 'all');
   const [filterBenchmarks, setFilterBenchmarks] = useState<Set<string>>(new Set());
   const [filterModels, setFilterModels] = useState<Set<string>>(new Set());
   const [filterPassRateMin, setFilterPassRateMin] = useState<number>(0);

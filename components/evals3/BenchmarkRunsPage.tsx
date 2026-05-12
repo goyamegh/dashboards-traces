@@ -16,6 +16,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   GitCompare, Calendar, CheckCircle2, XCircle, Play,
@@ -112,10 +113,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
   // Version state
   const [testCaseVersion, setTestCaseVersion] = useState<number | null>(null);
-  const [runVersionFilter, setRunVersionFilter] = useState<number | 'all'>('all');
+  const [runVersionFilter, setRunVersionFilter] = usePersistedState<number | 'all'>('benchmark-runs:runVersionFilter', 'all');
 
   // Tab state
-  const [activeTab, setActiveTab] = useState<string>('runs');
+  const [activeTab, setActiveTab] = usePersistedState<string>('benchmark-runs:activeTab', 'runs');
 
   const { isCancelling, handleCancelRun } = useBenchmarkCancellation();
 
@@ -145,7 +146,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
       if (!isPolling) {
         try {
-          const benchmarkTcs = await asyncTestCaseStorage.getByIds(exp.testCaseIds);
+          const benchmarkTcs = await asyncTestCaseStorage.getByIds(exp.testCaseIds || []);
           setTestCases(benchmarkTcs);
         } catch (error) {
           console.error('Failed to load test cases:', error);
@@ -189,7 +190,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
   // ─── Derived Data ────────────────────────────────────────────────────────
 
   const benchmarkTestCases = useMemo(() =>
-    testCases.filter(tc => benchmark?.testCaseIds.includes(tc.id)),
+    testCases.filter(tc => (benchmark?.testCaseIds || []).includes(tc.id)),
     [testCases, benchmark]
   );
 
@@ -269,10 +270,19 @@ export const BenchmarkRunsPage2: React.FC = () => {
     if (isRunning) { alert('A run is already in progress.'); return; }
     const latestRun = getLatestRun(benchmark);
     const runNumber = (benchmark.runs?.length || 0) + 1;
+    // Use latest run's config, fall back to persisted preferences, then defaults
+    let defaultAgent = DEFAULT_CONFIG.agents[0]?.key || '';
+    let defaultModel = Object.keys(DEFAULT_CONFIG.models)[0] || '';
+    try {
+      const storedAgent = localStorage.getItem('agent-health:quick-run:agentKey');
+      const storedModel = localStorage.getItem('agent-health:quick-run:modelId');
+      if (storedAgent) defaultAgent = JSON.parse(storedAgent);
+      if (storedModel) defaultModel = JSON.parse(storedModel);
+    } catch { /* use defaults */ }
     setRunConfigValues({
       name: `Run ${runNumber}`, description: '',
-      agentKey: latestRun?.agentKey || DEFAULT_CONFIG.agents[0]?.key || '',
-      modelId: latestRun?.modelId || Object.keys(DEFAULT_CONFIG.models)[0] || '',
+      agentKey: latestRun?.agentKey || defaultAgent,
+      modelId: latestRun?.modelId || defaultModel,
       headers: latestRun?.headers,
     });
     setIsRunConfigOpen(true);
@@ -281,7 +291,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
   const handleStartRun = async () => {
     if (!benchmark) return;
     setIsRunConfigOpen(false);
-    const initialStatuses: UseCaseRunStatus[] = benchmark.testCaseIds.map(id => {
+    const initialStatuses: UseCaseRunStatus[] = (benchmark.testCaseIds || []).map(id => {
       const testCase = testCases.find(tc => tc.id === id);
       return { id, name: testCase?.name || id, status: 'pending' as const };
     });
