@@ -15,6 +15,7 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Parent server dynamically detects observio agent's actual bound port and patches `/api/agents` endpoint
 
 ### Changed
+- Rewrite First Run Experience as a narrative landing: promise-driven hero with two primary CTAs, four-step horizontal journey (Explore → Connect → Evaluate → Improve & scale), four outcome-framed value cards, and a subtle scale moment with Docker and CloudFormation install commands. Replaces the previous two-card "How it works" + "Getting Started" layout. Preserves all existing CTAs, install commands, optional coding agents banner, and `data-testid="first-run-experience"`.
 - Hide sample data by default when customer has real evaluation data; add "Show sample data" toggle
 - Collapse built-in agents when custom agents exist; group agent dropdowns (Your Agents / Built-in)
 
