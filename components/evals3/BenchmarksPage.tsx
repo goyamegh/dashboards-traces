@@ -295,7 +295,7 @@ export const BenchmarksPage4: React.FC = () => {
   }
 
   return (
-    <div className="p-4 h-full flex flex-col">
+    <div className="p-4 h-full flex flex-col" data-testid="benchmarks-page">
       <Breadcrumbs
         items={[
           { label: 'Evaluations', href: '/evaluations/benchmarks' },
@@ -360,7 +360,7 @@ export const BenchmarksPage4: React.FC = () => {
       {/* ── Header ─────────────────────────────────────────────────── */}
       <div className="flex items-center justify-between mb-4">
         <div>
-          <h2 className="text-xl font-bold">Benchmarks</h2>
+          <h2 className="text-xl font-bold" data-testid="benchmarks-title">Benchmarks</h2>
           <p className="text-[11px] text-muted-foreground mt-0.5">Collections of test cases to run evaluations against your agents</p>
         </div>
         <div className="flex items-center gap-6 text-xs">

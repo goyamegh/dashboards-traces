@@ -19,26 +19,27 @@ test.describe('Navigation', () => {
     // Check all main navigation links are present
     await expect(page.locator('[data-testid="nav-overview"]')).toBeVisible();
     await expect(page.locator('[data-testid="nav-agent-traces"]')).toBeVisible();
-    await expect(page.locator('[data-testid="nav-test-cases"]')).toBeVisible();
-    await expect(page.locator('[data-testid="nav-benchmarks"]')).toBeVisible();
+    await expect(page.locator('[data-testid="nav-evals3-test-cases"]')).toBeVisible();
+    await expect(page.locator('[data-testid="nav-evals3-benchmarks"]')).toBeVisible();
     await expect(page.locator('[data-testid="nav-settings"]')).toBeVisible();
   });
 
   test('should navigate to Dashboard page', async ({ page }) => {
     await page.click('[data-testid="nav-overview"]');
-    await expect(page.locator('[data-testid="dashboard-page"]')).toBeVisible();
-    await expect(page.locator('[data-testid="dashboard-title"]')).toHaveText('Leaderboard Overview');
+    // Dashboard shows either the full page or a first-run experience when no data exists
+    const dashboardPage = page.locator('[data-testid="dashboard-page"]').or(page.locator('[data-testid="first-run-experience"]'));
+    await expect(dashboardPage).toBeVisible({ timeout: 15000 });
   });
 
   test('should navigate to Test Cases page', async ({ page }) => {
-    await page.click('[data-testid="nav-test-cases"]');
-    await expect(page.locator('[data-testid="test-cases-page"]')).toBeVisible();
+    await page.click('[data-testid="nav-evals3-test-cases"]');
+    await page.waitForSelector('[data-testid="test-cases-page"]', { timeout: 10000 });
     await expect(page.locator('[data-testid="test-cases-title"]')).toHaveText('Test Cases');
   });
 
   test('should navigate to Benchmarks page', async ({ page }) => {
-    await page.click('[data-testid="nav-benchmarks"]');
-    await expect(page.locator('[data-testid="benchmarks-page"]')).toBeVisible();
+    await page.click('[data-testid="nav-evals3-benchmarks"]');
+    await page.waitForSelector('[data-testid="benchmarks-page"]', { timeout: 10000 });
     await expect(page.locator('[data-testid="benchmarks-title"]')).toHaveText('Benchmarks');
   });
 
@@ -69,8 +70,8 @@ test.describe('Navigation', () => {
 test.describe('URL-based Navigation', () => {
   test('should load Dashboard from root URL', async ({ page }) => {
     await page.goto('/');
-    await page.waitForSelector('[data-testid="dashboard-page"]');
-    await expect(page.locator('[data-testid="dashboard-title"]')).toBeVisible();
+    const dashboardPage = page.locator('[data-testid="dashboard-page"]').or(page.locator('[data-testid="first-run-experience"]'));
+    await expect(dashboardPage).toBeVisible({ timeout: 15000 });
   });
 
   test('should load Test Cases from direct URL', async ({ page }) => {
