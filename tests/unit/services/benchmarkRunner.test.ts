@@ -55,10 +55,12 @@ jest.mock('@/services/connectors/server', () => ({
 }));
 
 const mockStartPolling = jest.fn();
+const mockStartPollingAsync = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('@/services/traces/tracePoller', () => ({
   tracePollingManager: {
     startPolling: (...args: any[]) => mockStartPolling(...args),
+    startPollingAsync: (...args: any[]) => mockStartPollingAsync(...args),
   },
 }));
 
@@ -355,7 +357,7 @@ describe('Experiment Runner', () => {
 
       await executeRun(experiment, run, jest.fn(), { client: mockClient });
 
-      expect(mockStartPolling).toHaveBeenCalledWith(
+      expect(mockStartPollingAsync).toHaveBeenCalledWith(
         'saved-report-1',
         'trace-run-id',
         expect.objectContaining({
@@ -879,7 +881,32 @@ describe('Experiment Runner', () => {
 
       await runSingleUseCase(run, testCase, mockStorageModule);
 
-      expect(mockStartPolling).toHaveBeenCalled();
+      expect(mockStartPollingAsync).toHaveBeenCalled();
+    });
+
+    it('should not await trace polling when awaitTraces is false (UI mode)', async () => {
+      const testCase = createTestCase('tc-1');
+      const run = createBenchmarkRun('run-1');
+
+      // Track if startPollingAsync was called, but resolve eventually to not hang Jest
+      let pollingCalled = false;
+      mockStartPollingAsync.mockImplementation(() => {
+        pollingCalled = true;
+        // Resolve after a delay — but runSingleUseCase should NOT wait for it
+        return new Promise<void>((resolve) => setTimeout(resolve, 100));
+      });
+
+      mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [], metrics: {}, runId: 'trace-run-id', metricsStatus: 'pending' });
+      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1' });
+
+      // Measure time — with awaitTraces: false, should return nearly instantly
+      const start = Date.now();
+      const reportId = await runSingleUseCase(run, testCase, mockStorageModule, undefined, undefined, undefined, { awaitTraces: false });
+      const elapsed = Date.now() - start;
+
+      expect(reportId).toBe('saved-report-1');
+      expect(pollingCalled).toBe(true); // Polling was started (fire-and-forget)
+      expect(elapsed).toBeLessThan(50); // Should return immediately, not wait 100ms
     });
 
     it('should resolve model key to model ID', async () => {
@@ -1238,8 +1265,8 @@ describe('Experiment Runner', () => {
 
       await executeRun(experiment, run, jest.fn(), { client: mockClient });
 
-      // Get the callbacks passed to startPolling
-      const startPollingCall = mockStartPolling.mock.calls[0];
+      // Get the callbacks passed to startPollingAsync
+      const startPollingCall = mockStartPollingAsync.mock.calls[0];
       const callbacks = startPollingCall[2];
 
       // Simulate traces being found
@@ -1284,7 +1311,7 @@ describe('Experiment Runner', () => {
       await executeRun(experiment, run, jest.fn(), { client: mockClient });
 
       // Get the callbacks
-      const callbacks = mockStartPolling.mock.calls[0][2];
+      const callbacks = mockStartPollingAsync.mock.calls[0][2];
 
       // Simulate traces being found
       await callbacks.onTracesFound([], { id: 'saved-report-1', trajectory: [] });
@@ -1304,7 +1331,7 @@ describe('Experiment Runner', () => {
 
       await runSingleUseCase(run, testCase, mockStorageModule);
 
-      expect(mockStartPolling).not.toHaveBeenCalled();
+      expect(mockStartPollingAsync).not.toHaveBeenCalled();
     });
 
     it('should call onAttempt callback during polling', async () => {
@@ -1323,7 +1350,7 @@ describe('Experiment Runner', () => {
       await executeRun(experiment, run, jest.fn(), { client: mockClient });
 
       // Get the callbacks
-      const callbacks = mockStartPolling.mock.calls[0][2];
+      const callbacks = mockStartPollingAsync.mock.calls[0][2];
 
       // Simulate attempt callback - now a no-op (no verbose logging)
       callbacks.onAttempt(1, 10);
@@ -1348,13 +1375,69 @@ describe('Experiment Runner', () => {
       await executeRun(experiment, run, jest.fn(), { client: mockClient });
 
       // Get the callbacks
-      const callbacks = mockStartPolling.mock.calls[0][2];
+      const callbacks = mockStartPollingAsync.mock.calls[0][2];
 
       // Simulate error callback
       callbacks.onError(new Error('Polling failed'));
 
       // Verify console.error was called
       expect(console.error).toHaveBeenCalled();
+    });
+
+    it('should wait for trace polling to complete before returning from executeRun', async () => {
+      const testCase = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run = createBenchmarkRun('run-1');
+
+      // Track execution order
+      const executionOrder: string[] = [];
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase]);
+      mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [] });
+      mockSaveReportWithClient.mockResolvedValue({
+        id: 'saved-report-1',
+        runId: 'trace-run-id',
+        metricsStatus: 'pending',
+      });
+
+      // Make startPollingAsync take some time to resolve
+      mockStartPollingAsync.mockImplementation(() => {
+        return new Promise<void>((resolve) => {
+          setTimeout(() => {
+            executionOrder.push('polling-resolved');
+            resolve();
+          }, 50);
+        });
+      });
+
+      const resultPromise = executeRun(experiment, run, jest.fn(), { client: mockClient });
+      await resultPromise;
+      executionOrder.push('executeRun-returned');
+
+      // executeRun should have waited for polling to resolve
+      expect(executionOrder).toEqual(['polling-resolved', 'executeRun-returned']);
+    });
+
+    it('should handle trace polling rejection gracefully in executeRun', async () => {
+      const testCase = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run = createBenchmarkRun('run-1');
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase]);
+      mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [] });
+      mockSaveReportWithClient.mockResolvedValue({
+        id: 'saved-report-1',
+        runId: 'trace-run-id',
+        metricsStatus: 'pending',
+      });
+
+      // Make startPollingAsync reject
+      mockStartPollingAsync.mockRejectedValue(new Error('Traces unavailable'));
+
+      // executeRun should NOT throw — it uses Promise.allSettled
+      const result = await executeRun(experiment, run, jest.fn(), { client: mockClient });
+      expect(result).toBeDefined();
+      expect(result.results['tc-1'].status).toBe('completed');
     });
   });
 

@@ -206,6 +206,11 @@ export async function executeRun(
   let completedCount = 0;
   let startedCount = 0;
 
+  // Track pending trace polling promises so we can await them before returning.
+  // This ensures trace-mode runs (useTraces: true) have their judge evaluation
+  // complete before the benchmark reports results (fixes #184).
+  const pendingTracePolls: Promise<void>[] = [];
+
   // Shared throttle signal: when any task hits a rate-limit error,
   // subsequent task starts wait until this timestamp expires.
   // Uses exponential backoff: consecutive throttle errors increase the delay.
@@ -291,7 +296,9 @@ export async function executeRun(
 
           // Start trace polling for trace-mode runs (metricsStatus: 'pending')
           if (savedReport.metricsStatus === 'pending' && savedReport.runId) {
-            startTracePollingForReport(savedReport, testCase, client, benchmark, run);
+            const pollPromise = startTracePollingForReport(savedReport, testCase, client, benchmark, run);
+            // Attach .catch to prevent unhandled rejection if cancelled/errored before allSettled
+            pendingTracePolls.push(pollPromise.catch(() => {}));
           }
 
           // Start and finalize OTel case span (now that we know the agentRunId)
@@ -367,6 +374,20 @@ export async function executeRun(
         currentTestCaseId: benchmark.testCaseIds[lastIndex],
         status: 'cancelled',
       });
+    }
+
+    // Wait for all pending trace polls to complete before reporting final results.
+    // This ensures trace-mode runs (useTraces: true) have their judge evaluation
+    // finish before the benchmark reports pass/fail stats (fixes #184).
+    if (pendingTracePolls.length > 0 && !cancellationToken?.isCancelled) {
+      console.log(`[BenchmarkRunner] Waiting for ${pendingTracePolls.length} trace-mode evaluations to complete...`);
+      const traceResults = await Promise.allSettled(pendingTracePolls);
+      const traceFailures = traceResults.filter(r => r.status === 'rejected');
+      if (traceFailures.length > 0) {
+        console.warn(`[BenchmarkRunner] ${traceFailures.length}/${pendingTracePolls.length} trace polling tasks failed`);
+      } else {
+        console.log(`[BenchmarkRunner] All ${pendingTracePolls.length} trace-mode evaluations completed`);
+      }
     }
 
     // Report final progress
@@ -487,13 +508,19 @@ async function saveReportWithModule(storage: IStorageModule, report: any): Promi
  * Run a single use case with a single configuration (for quick testing).
  * Uses the storage adapter — works with both file and OpenSearch backends.
  */
+export interface RunSingleUseCaseOptions {
+  /** Whether to await trace polling completion before returning (default: true for CLI, false for UI) */
+  awaitTraces?: boolean;
+}
+
 export async function runSingleUseCase(
   run: BenchmarkRun,
   testCase: TestCase,
   storage: IStorageModule,
   onStep?: (step: any) => void,
   evaluatorId?: string,
-  existingReportId?: string
+  existingReportId?: string,
+  options?: RunSingleUseCaseOptions
 ): Promise<string> {
   const agentConfig = buildAgentConfigForRun(run);
   const bedrockModelId = getBedrockModelId(run.modelId);
@@ -548,7 +575,20 @@ export async function runSingleUseCase(
 
   // Start trace polling for trace-mode runs
   if (savedReport.metricsStatus === 'pending' && savedReport.runId) {
-    startTracePollingForReportWithModule(savedReport, testCase, storage);
+    if (options?.awaitTraces !== false) {
+      // CLI/batch mode: block until traces arrive and judge evaluates
+      try {
+        await startTracePollingForReportWithModule(savedReport, testCase, storage);
+      } catch (err) {
+        // Trace polling failed (timeout, auth, etc.) — don't crash.
+        // The report is already saved with metricsStatus: 'error' by the poller.
+        console.warn(`[BenchmarkRunner] Trace polling failed for ${savedReport.id}: ${err instanceof Error ? err.message : err}`);
+      }
+    } else {
+      // UI mode: fire-and-forget, let the UI poll for status updates
+      startTracePollingForReportWithModule(savedReport, testCase, storage)
+        .catch(err => console.warn(`[BenchmarkRunner] Background trace polling failed for ${savedReport.id}:`, err.message));
+    }
   }
 
   // Emit OTel eval span for this standalone test run (if telemetry enabled and not pending judge)
@@ -571,10 +611,10 @@ export async function runSingleUseCase(
  * Start trace polling for a report that has metricsStatus: 'pending'.
  * Uses the storage adapter — works with both file and OpenSearch backends.
  */
-function startTracePollingForReportWithModule(report: EvaluationReport, testCase: TestCase, storage: IStorageModule): void {
+function startTracePollingForReportWithModule(report: EvaluationReport, testCase: TestCase, storage: IStorageModule): Promise<void> {
   if (!report.runId) {
     console.warn(`[BenchmarkRunner] No runId for report ${report.id}, cannot start trace polling`);
-    return;
+    return Promise.resolve();
   }
 
   // Pass agent config to trace poller for hooks
@@ -582,7 +622,7 @@ function startTracePollingForReportWithModule(report: EvaluationReport, testCase
   const allAgents = [...config.agents, ...getCustomAgents()];
   const agentConfig = allAgents.find(a => a.key === report.agentKey);
 
-  tracePollingManager.startPolling(
+  return tracePollingManager.startPollingAsync(
     report.id,
     report.runId,
     {
@@ -656,6 +696,8 @@ function startTracePollingForReportWithModule(report: EvaluationReport, testCase
     },
     {
       agentConfig, // Pass agent config for hooks
+      intervalMs: agentConfig?.tracePolling?.intervalMs,
+      maxAttempts: agentConfig?.tracePolling?.maxAttempts,
     }
   );
 }
@@ -663,10 +705,10 @@ function startTracePollingForReportWithModule(report: EvaluationReport, testCase
 /**
  * Start trace polling for the batch benchmark execution path (uses raw OpenSearch client).
  */
-function startTracePollingForReport(report: EvaluationReport, testCase: TestCase, client: Client, benchmark?: Benchmark, run?: BenchmarkRun): void {
+function startTracePollingForReport(report: EvaluationReport, testCase: TestCase, client: Client, benchmark?: Benchmark, run?: BenchmarkRun): Promise<void> {
   if (!report.runId) {
     console.warn(`[BenchmarkRunner] No runId for report ${report.id}, cannot start trace polling`);
-    return;
+    return Promise.resolve();
   }
 
   // Pass agent config to trace poller for hooks
@@ -674,7 +716,7 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
   const allAgents = [...config.agents, ...getCustomAgents()];
   const agentConfig = allAgents.find(a => a.key === report.agentKey);
 
-  tracePollingManager.startPolling(
+  return tracePollingManager.startPollingAsync(
     report.id,
     report.runId,
     {
@@ -730,6 +772,8 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
     },
     {
       agentConfig, // Pass agent config for hooks
+      intervalMs: agentConfig?.tracePolling?.intervalMs,
+      maxAttempts: agentConfig?.tracePolling?.maxAttempts,
     }
   );
 }

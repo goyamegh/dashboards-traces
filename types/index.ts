@@ -93,6 +93,10 @@ export interface AgentConfig {
   headers?: Record<string, string>; // Custom headers for agent endpoint (e.g., AWS credentials)
   auth?: ConnectorAuthConfig; // Explicit auth config (preferred over headers inference)
   useTraces?: boolean; // When true, fetch traces instead of logs for evaluation
+  tracePolling?: { // Configurable trace polling settings (used when useTraces: true)
+    intervalMs?: number;   // Polling interval in ms (default: 10000)
+    maxAttempts?: number;  // Max polling attempts (default: 30, ~5 min total)
+  };
   connectorType?: ConnectorProtocol; // Connector protocol (defaults to 'agui-streaming')
   connectorConfig?: Record<string, any>; // Connector-specific configuration
   hooks?: AgentHooks; // Lifecycle hooks for custom setup/transform logic

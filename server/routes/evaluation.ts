@@ -284,7 +284,8 @@ router.post('/api/evaluate', async (req: Request, res: Response) => {
         }
       },
       evaluatorId,
-      preCreatedReportId || undefined
+      preCreatedReportId || undefined,
+      { awaitTraces: false } // UI mode: don't block, let UI poll for trace status
     );
 
     // Fetch the completed report via adapter

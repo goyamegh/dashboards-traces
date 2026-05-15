@@ -149,6 +149,32 @@ describe('TracePollingManager', () => {
       // Verify complete cleanup - getState should return undefined
       expect(tracePollingManager.getState('report-mem-1')).toBeUndefined();
     });
+
+    it('rejects completion promise when stopPolling is called on async poll', async () => {
+      mockFetchTracesByRunIds.mockResolvedValue({ spans: [] });
+      mockUpdateReport.mockResolvedValue(undefined);
+
+      const callbacks: PollCallbacks = {
+        onTracesFound: jest.fn(),
+        onError: jest.fn(),
+      };
+
+      const promise = tracePollingManager.startPollingAsync(
+        'report-stop-async', 'run-stop', callbacks,
+        { intervalMs: 10000, maxAttempts: 30 }
+      );
+
+      // Catch rejection before stopping
+      let rejectedError: Error | undefined;
+      const handled = promise.catch((err) => { rejectedError = err; });
+
+      // Stop polling - should reject the promise
+      tracePollingManager.stopPolling('report-stop-async');
+      await handled;
+
+      expect(rejectedError).toBeDefined();
+      expect(rejectedError!.message).toContain('Polling stopped');
+    });
   });
 
   describe('getState', () => {
@@ -819,6 +845,79 @@ describe('TracePollingManager', () => {
       );
 
       consoleErrorSpy.mockRestore();
+    });
+  });
+
+  describe('startPollingAsync', () => {
+    it('resolves when traces are found and callback succeeds', async () => {
+      const mockSpans = [{ traceId: 'trace-1', spanId: 'span-1', name: 'test' }] as unknown as Span[];
+      const mockReport = { id: 'report-1', trajectory: [] } as unknown as EvaluationReport;
+
+      (fetchTracesByRunIds as jest.Mock).mockResolvedValue({ spans: mockSpans });
+      (asyncRunStorage.getReportById as jest.Mock).mockResolvedValue(mockReport);
+      (asyncRunStorage.updateReport as jest.Mock).mockResolvedValue(undefined);
+
+      const onTracesFound = jest.fn().mockResolvedValue(undefined);
+      const callbacks: PollCallbacks = {
+        onTracesFound,
+        onError: jest.fn(),
+      };
+
+      await tracePollingManager.startPollingAsync('report-async-1', 'run-1', callbacks, {
+        intervalMs: 10,
+        maxAttempts: 3,
+      });
+
+      expect(onTracesFound).toHaveBeenCalledWith(mockSpans, mockReport);
+    });
+
+    it('rejects when max attempts reached without traces', async () => {
+      (fetchTracesByRunIds as jest.Mock).mockResolvedValue({ spans: [] });
+      (asyncRunStorage.updateReport as jest.Mock).mockResolvedValue(undefined);
+
+      const onError = jest.fn();
+      const callbacks: PollCallbacks = {
+        onTracesFound: jest.fn(),
+        onError,
+      };
+
+      const promise = tracePollingManager.startPollingAsync('report-async-2', 'run-2', callbacks, {
+        intervalMs: 1000,
+        maxAttempts: 2,
+      });
+
+      // Attach rejection handler before advancing timers to avoid unhandled rejection
+      let rejectedError: Error | undefined;
+      const settled = promise.catch((err) => { rejectedError = err; });
+
+      // Run all timers to completion
+      await jest.runAllTimersAsync();
+      await settled;
+
+      expect(rejectedError).toBeDefined();
+      expect(rejectedError!.message).toContain('Traces not available after 2 attempts');
+      expect(onError).toHaveBeenCalled();
+    });
+
+    it('rejects when onTracesFound callback throws', async () => {
+      const mockSpans = [{ traceId: 'trace-1', spanId: 'span-1', name: 'test' }] as unknown as Span[];
+      const mockReport = { id: 'report-1', trajectory: [] } as unknown as EvaluationReport;
+
+      (fetchTracesByRunIds as jest.Mock).mockResolvedValue({ spans: mockSpans });
+      (asyncRunStorage.getReportById as jest.Mock).mockResolvedValue(mockReport);
+      (asyncRunStorage.updateReport as jest.Mock).mockResolvedValue(undefined);
+
+      const callbacks: PollCallbacks = {
+        onTracesFound: jest.fn().mockRejectedValue(new Error('Judge failed')),
+        onError: jest.fn(),
+      };
+
+      await expect(
+        tracePollingManager.startPollingAsync('report-async-3', 'run-3', callbacks, {
+          intervalMs: 10,
+          maxAttempts: 3,
+        })
+      ).rejects.toThrow('Judge failed');
     });
   });
 });

@@ -178,6 +178,7 @@
     "path-to-regexp": ">=8.4.0",
     "picomatch": ">=4.0.4",
     "uuid": "$uuid",
+    "protobufjs": ">=8.2.0",
     "@anthropic-ai/claude-agent-sdk": {
       "zod": "$zod"
     },
