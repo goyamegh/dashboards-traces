@@ -23,6 +23,7 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Fix Dependabot vulnerabilities: add npm overrides for hono (>=4.12.18), fast-uri (>=3.1.2), and ip-address (>=10.1.1)
 
 ### Fixed
+- Add missing EVAL category capsule to span viewer trace flyout — eval spans were counted in stats but not rendered as clickable pills ([#204](https://github.com/opensearch-project/agent-health/pull/204))
 - Connector type drift: use single source of truth (`CONNECTOR_TYPE_INFO`) in server validation and Settings UI instead of hardcoded arrays ([#176](https://github.com/opensearch-project/agent-health/pull/176))
 
 ## [0.4.0] - 2025-05-05
