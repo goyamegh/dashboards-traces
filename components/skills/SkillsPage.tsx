@@ -196,12 +196,12 @@ export const SkillsPage: React.FC = () => {
   };
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl">
+    <div className="p-6 space-y-6 max-w-5xl" data-testid="skills-page">
       {/* Header */}
       <div className="flex items-center gap-3">
         <Wand2 className="h-6 w-6 text-primary" />
         <div>
-          <h1 className="text-2xl font-bold">Skills Evaluator</h1>
+          <h1 className="text-2xl font-bold" data-testid="skills-title">Skills Evaluator</h1>
           <p className="text-sm text-muted-foreground">Evaluate and improve AgentSkills via A/B testing</p>
         </div>
         <Badge variant="outline" className="ml-auto">AgentSkills.io</Badge>
@@ -216,7 +216,7 @@ export const SkillsPage: React.FC = () => {
               <FolderOpen className="h-3 w-3" />Skill
             </label>
             <Select value={skillPath} onValueChange={handleSkillSelect}>
-              <SelectTrigger className="h-9">
+              <SelectTrigger className="h-9" data-testid="skill-selector">
                 <SelectValue placeholder={loadingSkills ? 'Discovering skills...' : 'Select a skill'} />
               </SelectTrigger>
               <SelectContent>
@@ -241,7 +241,7 @@ export const SkillsPage: React.FC = () => {
             <div className="flex-1">
               <label className="text-xs text-muted-foreground mb-1 block">Agent Under Test</label>
               <Select value={selectedAgent} onValueChange={setSelectedAgent}>
-                <SelectTrigger className="h-9">
+                <SelectTrigger className="h-9" data-testid="agent-selector">
                   <SelectValue placeholder="Select agent" />
                 </SelectTrigger>
                 <SelectContent>
@@ -256,7 +256,7 @@ export const SkillsPage: React.FC = () => {
                 <Scale className="h-3 w-3" />Judge Model
               </label>
               <Select value={selectedModel} onValueChange={setSelectedModel}>
-                <SelectTrigger className="h-9">
+                <SelectTrigger className="h-9" data-testid="judge-model-selector">
                   <SelectValue placeholder="Select judge model" />
                 </SelectTrigger>
                 <SelectContent>
@@ -269,6 +269,7 @@ export const SkillsPage: React.FC = () => {
             <div className="flex-1 flex items-end">
               <Button
                 className="w-full"
+                data-testid="run-evaluation-btn"
                 onClick={() => handleRunEval(false)}
                 disabled={!validation?.valid || evalPhase === 'running'}
               >
@@ -283,7 +284,7 @@ export const SkillsPage: React.FC = () => {
 
           {/* Validation result */}
           {validation && (
-            <div className={`flex items-center gap-3 p-3 rounded-md ${validation.valid ? 'bg-green-50 dark:bg-green-950/20' : 'bg-red-50 dark:bg-red-950/20'}`}>
+            <div data-testid="validation-result" className={`flex items-center gap-3 p-3 rounded-md ${validation.valid ? 'bg-green-50 dark:bg-green-950/20' : 'bg-red-50 dark:bg-red-950/20'}`}>
               {validation.valid ? (
                 <CheckCircle className="h-4 w-4 text-green-600" />
               ) : (
