@@ -24,6 +24,7 @@ import { calculateRunStats, getReportIdsFromRun } from '@/lib/runStats.js';
 import { formatJson, formatMarkdownTable, parseOutputFormat, OUTPUT_FORMAT_DESCRIPTION, type OutputFormat } from '@/cli/utils/formatOutput.js';
 import type { AgentConfig, Benchmark, BenchmarkRun, TestCaseRun, EvaluationReport, TestCaseSource } from '@/types/index.js';
 import { existsSync, statSync } from 'fs';
+import { isCodeFile } from '@/lib/testCases/loader.js';
 
 interface BenchmarkOptions {
   agent: string[];
@@ -70,7 +71,7 @@ function getDefaultModel(config: ResolvedConfig): string {
  * Check if a string looks like a file path (ends with .json)
  */
 export function isFilePath(value: string): boolean {
-  return value.toLowerCase().endsWith('.json');
+  return value.toLowerCase().endsWith('.json') || isCodeFile(value);
 }
 
 /**

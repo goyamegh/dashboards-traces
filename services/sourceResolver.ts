@@ -9,11 +9,15 @@ import type { TestCaseSource, TestCase } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
 import { validateTestCasesArrayJson } from '@/lib/testCaseValidation';
 import { debug } from '@/lib/debug';
+import type { EvalResult } from '@/lib/testCases/types';
+
+export type EvaluateFn = (result: EvalResult) => Promise<void> | void;
 
 export interface ResolvedSources {
   testCases: TestCase[];
   sources: TestCaseSource[];
   deduplicatedCount: number;
+  evaluateFnMap: Map<string, EvaluateFn>;
 }
 
 export async function resolveTestCaseSources(
@@ -22,6 +26,7 @@ export async function resolveTestCaseSources(
 ): Promise<ResolvedSources> {
   const allTestCases: TestCase[] = [];
   const updatedSources: TestCaseSource[] = [];
+  const evaluateFnMap = new Map<string, EvaluateFn>();
 
   for (const source of sources) {
     switch (source.type) {
@@ -51,6 +56,18 @@ export async function resolveTestCaseSources(
         allTestCases.push(...testCases);
         updatedSources.push({ ...source, testCaseIds });
         debug('SourceResolver', `Imported ${testCases.length} test cases from ${source.filenames.length} file(s)`);
+        break;
+      }
+
+      case 'code-import': {
+        const { testCases, fnMap } = await resolveCodeImport(source.filenames, storage);
+        const testCaseIds = testCases.map((tc) => tc.id);
+        allTestCases.push(...testCases);
+        for (const [id, fn] of fnMap) {
+          evaluateFnMap.set(id, fn);
+        }
+        updatedSources.push({ ...source, testCaseIds });
+        debug('SourceResolver', `Code-imported ${testCases.length} test cases from ${source.filenames.length} file(s)`);
         break;
       }
 
@@ -88,6 +105,7 @@ export async function resolveTestCaseSources(
     testCases: Array.from(seen.values()),
     sources: updatedSources,
     deduplicatedCount,
+    evaluateFnMap,
   };
 }
 
@@ -123,6 +141,47 @@ async function resolveFileImport(filenames: string[], storage: IStorageModule): 
   }
 
   return allCreated;
+}
+
+async function resolveCodeImport(
+  filenames: string[],
+  storage: IStorageModule
+): Promise<{ testCases: TestCase[]; fnMap: Map<string, EvaluateFn> }> {
+  const { loadTestCasesFromModule } = await import('@/lib/testCases/loader');
+  const allTestCases: TestCase[] = [];
+  const fnMap = new Map<string, EvaluateFn>();
+
+  for (const filename of filenames) {
+    if (!fs.existsSync(filename)) {
+      throw new Error(`Code file not found: ${filename}`);
+    }
+
+    const loaded = await loadTestCasesFromModule(filename);
+    const sourceFile = path.relative(process.cwd(), loaded.filePath);
+
+    const upsertInput = loaded.testCases.map(tc => ({
+      name: tc.name,
+      category: tc.options.category,
+      difficulty: tc.options.difficulty,
+      initialPrompt: tc.options.prompt,
+      context: tc.options.context,
+      labels: tc.options.labels,
+      sourceFile,
+      sourceHash: tc.hash,
+    }));
+
+    const result = await storage.testCases.bulkUpsert(upsertInput);
+    allTestCases.push(...result.testCases);
+
+    result.testCases.forEach((stored, i) => {
+      const loadedTc = loaded.testCases[i];
+      if (loadedTc?.evaluate) {
+        fnMap.set(stored.id, loadedTc.evaluate);
+      }
+    });
+  }
+
+  return { testCases: allTestCases, fnMap };
 }
 
 async function resolveDirectoryImport(dirPaths: string[], storage: IStorageModule): Promise<TestCase[]> {

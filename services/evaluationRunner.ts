@@ -44,6 +44,7 @@ export interface ExecuteEvaluationRunOptions {
     status: RunResultStatus;
     error?: string;
   }) => Promise<void>;
+  evaluateFnMap?: Map<string, (result: any) => Promise<void> | void>;
 }
 
 /**
@@ -92,7 +93,7 @@ export async function executeEvaluationRun(
   testCases: TestCase[],
   options: ExecuteEvaluationRunOptions
 ): Promise<EvaluationRun> {
-  const { cancellationToken, storageModule, onProgress, onTestCaseComplete } = options;
+  const { cancellationToken, storageModule, onProgress, onTestCaseComplete, evaluateFnMap } = options;
   const totalTestCases = testCases.length;
   const concurrency = run.concurrency ?? 1;
   const runStartTime = Date.now();
@@ -169,14 +170,45 @@ export async function executeEvaluationRun(
         run.results[testCaseId] = { reportId: '', status: 'running' };
 
         try {
+          // Check if this test case has a deterministic evaluate function
+          const hasDeterministicEval = evaluateFnMap?.has(testCaseId) ?? false;
+
           // Run the evaluation using connector
           const report = await runEvaluationWithConnector(
             agentConfig,
             bedrockModelId,
             testCase,
             () => {}, // No debug callback needed
-            { registry: connectorRegistry, evaluatorId: run.evaluatorId }
+            { registry: connectorRegistry, evaluatorId: run.evaluatorId, skipJudge: hasDeterministicEval }
           );
+
+          // Run deterministic evaluation if applicable
+          if (hasDeterministicEval) {
+            const evalFn = evaluateFnMap!.get(testCaseId)!;
+            const trajectory = report.trajectory || [];
+            const agentOutput = trajectory
+              .filter((s: any) => s.type === 'response')
+              .map((s: any) => s.content)
+              .join('\n');
+
+            try {
+              await evalFn({
+                trajectory,
+                agentOutput,
+                rawEvents: report.rawEvents || [],
+                runId: report.runId,
+                durationMs: report.performanceMetrics?.durationMs ?? 0,
+              });
+              (report as any).passFailStatus = 'passed';
+              (report as any).evaluationType = 'deterministic';
+              (report as any).metrics = { accuracy: 100, faithfulness: 100, latency_score: 100, trajectory_alignment_score: 100 };
+            } catch (evalError: any) {
+              (report as any).passFailStatus = 'failed';
+              (report as any).evaluationType = 'deterministic';
+              (report as any).assertionError = evalError.message;
+              (report as any).metrics = { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 };
+            }
+          }
 
           // Save the report via storage module
           const savedReport = await storageModule.runs.create(report as any);

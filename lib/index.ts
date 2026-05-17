@@ -68,3 +68,10 @@ export { connectorRegistry, registerConnector } from '../services/connectors/reg
 
 // ConnectorRegistry type for custom implementations
 export type { ConnectorRegistry } from '../services/connectors/types.js';
+
+// Test case SDK (for writing .eval.ts files)
+export { test, defineTestCases, judge } from './testCases/index.js';
+export type { TestOptions, CodeTestCase, EvalResult } from './testCases/types.js';
+
+// Assertion library (re-exported for customer convenience)
+export { expect } from 'chai';

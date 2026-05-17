@@ -105,6 +105,7 @@ export interface ITestCaseOperations {
    * See cli/commands/benchmark.ts for usage.
    */
   bulkCreate(testCases: Partial<TestCase>[]): Promise<{ created: number; errors: number; testCases: TestCase[] }>;
+  bulkUpsert(testCases: Partial<TestCase>[]): Promise<{ created: number; updated: number; unchanged: number; testCases: TestCase[] }>;
 }
 
 /**

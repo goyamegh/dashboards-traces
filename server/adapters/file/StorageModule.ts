@@ -248,6 +248,40 @@ class FileTestCaseOperations implements ITestCaseOperations {
     }
     return { created, errors, testCases: createdTestCases };
   }
+
+  async bulkUpsert(testCases: Partial<TestCase>[]): Promise<{ created: number; updated: number; unchanged: number; testCases: TestCase[] }> {
+    const { items: all } = await this.getAll();
+    let created = 0;
+    let updated = 0;
+    let unchanged = 0;
+    const results: TestCase[] = [];
+
+    for (const tc of testCases) {
+      const existing = all.find(
+        e => e.name === tc.name && (tc.sourceFile ? e.sourceFile === tc.sourceFile : true)
+      );
+
+      if (existing) {
+        if (existing.sourceHash === tc.sourceHash) {
+          unchanged++;
+          results.push(existing);
+        } else {
+          const updatedTc = await this.update(existing.id, {
+            ...tc,
+            sourceHash: tc.sourceHash,
+          });
+          updated++;
+          results.push(updatedTc);
+        }
+      } else {
+        const newTc = await this.create(tc);
+        created++;
+        results.push(newTc);
+      }
+    }
+
+    return { created, updated, unchanged, testCases: results };
+  }
 }
 
 // ============================================================================

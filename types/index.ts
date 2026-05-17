@@ -407,6 +407,10 @@ export interface TestCase {
   currentVersion: number;           // Latest version number
   versions: TestCaseVersion[];      // All versions (immutable history)
 
+  // Source provenance (code-imported test cases)
+  sourceFile?: string;              // Relative path: "evals/cybergym.eval.ts"
+  sourceHash?: string;              // SHA-256 of per-test-case content (for drift detection)
+
   // Metadata
   isPromoted: boolean;              // Available for experiments
   createdAt: string;
@@ -867,6 +871,7 @@ export type TestCaseSource =
   | { type: 'benchmark'; benchmarkId: string; benchmarkVersion?: number }
   | { type: 'test-case-ids'; ids: string[] }
   | { type: 'file-import'; filenames: string[]; testCaseIds: string[] }
+  | { type: 'code-import'; filenames: string[]; testCaseIds: string[] }
   | { type: 'directory-import'; dirPaths: string[]; testCaseIds: string[] }
   | { type: 'label-filter'; labels: string[] };
 
