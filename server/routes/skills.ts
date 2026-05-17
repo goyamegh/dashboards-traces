@@ -11,6 +11,8 @@ import { Router, Request, Response } from 'express';
 import { resolve } from 'path';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
+import { execSync } from 'child_process';
+import { platform } from 'os';
 import { debug } from '@/lib/debug';
 import { loadConfigSync } from '@/lib/config/index';
 import { getCustomAgents } from '@/server/services/customAgentStore';
@@ -29,27 +31,20 @@ const router = Router();
  */
 router.get('/api/skills/discover', async (_req: Request, res: Response) => {
   const cwd = process.cwd();
-  const skills: { path: string; name: string; description: string }[] = [];
+  const skills: { path: string; name: string; description: string; source: string }[] = [];
 
-  const scanDirs = [
-    // Claude Code
-    join(cwd, '.claude', 'skills'),
-    // Kiro
-    join(cwd, '.kiro', 'skills'),
-    join(cwd, '.kiro', 'steering'),
-    // Codex
-    join(cwd, '.codex'),
-    // Cursor
-    join(cwd, '.cursor', 'rules'),
-    // GitHub Copilot
-    join(cwd, '.github', 'copilot'),
-    // Continue
-    join(cwd, '.continue', 'skills'),
-    // Generic
-    join(cwd, 'skills'),
+  const scanDirs: { dir: string; source: string }[] = [
+    { dir: join(cwd, '.claude', 'skills'), source: 'Claude Code' },
+    { dir: join(cwd, '.kiro', 'skills'), source: 'Kiro' },
+    { dir: join(cwd, '.kiro', 'steering'), source: 'Kiro' },
+    { dir: join(cwd, '.codex'), source: 'Codex' },
+    { dir: join(cwd, '.cursor', 'rules'), source: 'Cursor' },
+    { dir: join(cwd, '.github', 'copilot'), source: 'Copilot' },
+    { dir: join(cwd, '.continue', 'skills'), source: 'Continue' },
+    { dir: join(cwd, 'skills'), source: 'Project' },
   ];
 
-  for (const dir of scanDirs) {
+  for (const { dir, source } of scanDirs) {
     if (!existsSync(dir)) continue;
     try {
       const entries = readdirSync(dir, { withFileTypes: true });
@@ -68,6 +63,7 @@ router.get('/api/skills/discover', async (_req: Request, res: Response) => {
             path: relativePath,
             name: result.skill.metadata.name,
             description: result.skill.metadata.description,
+            source,
           });
         }
       }
@@ -77,6 +73,46 @@ router.get('/api/skills/discover', async (_req: Request, res: Response) => {
   }
 
   res.json({ skills });
+});
+
+/**
+ * POST /api/skills/browse
+ * Open native OS folder picker dialog and return the selected path.
+ */
+router.post('/api/skills/browse', async (_req: Request, res: Response) => {
+  try {
+    let selectedPath: string | null = null;
+
+    if (platform() === 'darwin') {
+      const result = execSync(
+        `osascript -e 'POSIX path of (choose folder with prompt "Select a skill folder")'`,
+        { encoding: 'utf-8', timeout: 60000 }
+      ).trim();
+      if (result) selectedPath = result.replace(/\/$/, '');
+    } else if (platform() === 'linux') {
+      const result = execSync(
+        `zenity --file-selection --directory --title="Select a skill folder" 2>/dev/null || kdialog --getexistingdirectory ~ 2>/dev/null`,
+        { encoding: 'utf-8', timeout: 60000 }
+      ).trim();
+      if (result) selectedPath = result;
+    } else {
+      // Windows - PowerShell folder browser
+      const ps = `Add-Type -AssemblyName System.Windows.Forms; $f = New-Object System.Windows.Forms.FolderBrowserDialog; $f.Description = 'Select a skill folder'; if ($f.ShowDialog() -eq 'OK') { $f.SelectedPath }`;
+      const result = execSync(`powershell -Command "${ps}"`, { encoding: 'utf-8', timeout: 60000 }).trim();
+      if (result) selectedPath = result;
+    }
+
+    if (!selectedPath) {
+      return res.json({ cancelled: true, path: null });
+    }
+
+    res.json({ cancelled: false, path: selectedPath });
+  } catch (err: any) {
+    if (err.status === 1 || err.message?.includes('User canceled')) {
+      return res.json({ cancelled: true, path: null });
+    }
+    res.status(500).json({ error: `Failed to open folder picker: ${err.message}` });
+  }
 });
 
 /**

@@ -3,18 +3,17 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Loader2, CheckCircle, XCircle, Play, Wand2, FolderOpen, ArrowUpCircle, ChevronRight, Folder, Scale, MoreHorizontal } from 'lucide-react';
+import React, { useState, useCallback, useEffect } from 'react';
+import { Loader2, CheckCircle, XCircle, Play, Wand2, FolderOpen, ArrowUpCircle, ChevronRight, Folder, Scale } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Input } from '@/components/ui/input';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Progress } from '@/components/ui/progress';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { DEFAULT_CONFIG } from '@/lib/constants';
-import { discoverSkills, validateSkill, streamSkillEval, getSkillResults } from '@/services/client/skillsApi';
+import { discoverSkills, validateSkill, browseForSkillFolder, streamSkillEval, getSkillResults } from '@/services/client/skillsApi';
 import type { DiscoveredSkill } from '@/services/client/skillsApi';
 import type { SkillValidationResult, SkillEvalProgressEvent, SkillBenchmarkResult, AgentConfig, ModelConfig } from '@/types';
 
@@ -42,9 +41,7 @@ export const SkillsPage: React.FC = () => {
   const [skillPath, setSkillPath] = useState('');
   const [selectedAgent, setSelectedAgent] = useState('');
   const [selectedModel, setSelectedModel] = useState('');
-  const [showCustomPath, setShowCustomPath] = useState(false);
-  const [customPathInput, setCustomPathInput] = useState('');
-  const customPathRef = useRef<HTMLInputElement>(null);
+  const [browsingFolder, setBrowsingFolder] = useState(false);
 
   // Discovered skills
   const [availableSkills, setAvailableSkills] = useState<DiscoveredSkill[]>([]);
@@ -96,7 +93,6 @@ export const SkillsPage: React.FC = () => {
 
   const validateAndSelect = useCallback(async (path: string) => {
     setSkillPath(path);
-    setShowCustomPath(false);
     setValidation(null);
     setValidationError(null);
     setBenchmark(null);
@@ -117,20 +113,26 @@ export const SkillsPage: React.FC = () => {
   }, []);
 
   const handleSkillSelect = useCallback((value: string) => {
-    if (value === '__custom__') {
-      setShowCustomPath(true);
-      setCustomPathInput('');
-      setTimeout(() => customPathRef.current?.focus(), 50);
+    if (value === '__browse__') {
+      handleBrowse();
       return;
     }
     validateAndSelect(value);
   }, [validateAndSelect]);
 
-  const handleCustomPathSubmit = useCallback(() => {
-    const path = customPathInput.trim();
-    if (!path) return;
-    validateAndSelect(path);
-  }, [customPathInput, validateAndSelect]);
+  const handleBrowse = useCallback(async () => {
+    setBrowsingFolder(true);
+    try {
+      const result = await browseForSkillFolder();
+      if (!result.cancelled && result.path) {
+        validateAndSelect(result.path);
+      }
+    } catch (err) {
+      setValidationError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBrowsingFolder(false);
+    }
+  }, [validateAndSelect]);
 
   const handleRunEval = useCallback(async (auto = false) => {
     if (!validation?.valid) return;
@@ -236,48 +238,28 @@ export const SkillsPage: React.FC = () => {
             <label className="text-xs text-muted-foreground mb-1 block flex items-center gap-1">
               <FolderOpen className="h-3 w-3" />Skill
             </label>
-            {showCustomPath ? (
-              <div className="flex gap-2">
-                <Input
-                  ref={customPathRef}
-                  placeholder="Enter skill folder path..."
-                  value={customPathInput}
-                  onChange={(e) => setCustomPathInput(e.target.value)}
-                  onKeyDown={(e) => e.key === 'Enter' && handleCustomPathSubmit()}
-                  className="h-9 text-sm"
-                  data-testid="custom-path-input"
-                />
-                <Button variant="outline" size="sm" className="h-9" onClick={handleCustomPathSubmit} disabled={!customPathInput.trim()}>
-                  Open
-                </Button>
-                <Button variant="ghost" size="sm" className="h-9" onClick={() => setShowCustomPath(false)}>
-                  Cancel
-                </Button>
-              </div>
-            ) : (
-              <Select value={skillPath} onValueChange={handleSkillSelect}>
-                <SelectTrigger className="h-9" data-testid="skill-selector">
-                  <SelectValue placeholder={loadingSkills ? 'Discovering skills...' : 'Select a skill'} />
-                </SelectTrigger>
-                <SelectContent>
-                  {availableSkills.map(s => (
-                    <SelectItem key={s.path} value={s.path}>
-                      <div className="flex items-center gap-2">
-                        <span>{s.name}</span>
-                        <span className="text-muted-foreground text-xs">— {s.path}</span>
-                      </div>
-                    </SelectItem>
-                  ))}
-                  <SelectItem value="__custom__">
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <MoreHorizontal className="h-3 w-3" />
-                      <span>Other...</span>
+            <Select value={skillPath} onValueChange={handleSkillSelect}>
+              <SelectTrigger className="h-9" data-testid="skill-selector">
+                <SelectValue placeholder={loadingSkills ? 'Discovering skills...' : browsingFolder ? 'Opening folder picker...' : 'Select a skill'} />
+              </SelectTrigger>
+              <SelectContent>
+                {availableSkills.map(s => (
+                  <SelectItem key={s.path} value={s.path}>
+                    <div className="flex items-center gap-2">
+                      <span>{s.name}</span>
+                      <span className="text-muted-foreground text-xs">— {s.source}</span>
                     </div>
                   </SelectItem>
-                </SelectContent>
-              </Select>
-            )}
-            {skillPath && !showCustomPath && <PathBreadcrumb path={skillPath} />}
+                ))}
+                <SelectItem value="__browse__">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <FolderOpen className="h-3 w-3" />
+                    <span>Browse...</span>
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+            {skillPath && <PathBreadcrumb path={skillPath} />}
           </div>
 
           {/* Config row */}

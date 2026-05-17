@@ -14,6 +14,7 @@ export interface DiscoveredSkill {
   path: string;
   name: string;
   description: string;
+  source: string;
 }
 
 export async function discoverSkills(): Promise<DiscoveredSkill[]> {
@@ -23,6 +24,14 @@ export async function discoverSkills(): Promise<DiscoveredSkill[]> {
   }
   const data = await response.json();
   return data.skills;
+}
+
+export async function browseForSkillFolder(): Promise<{ cancelled: boolean; path: string | null }> {
+  const response = await fetch('/api/skills/browse', { method: 'POST' });
+  if (!response.ok) {
+    throw new Error(`Browse failed: ${response.statusText}`);
+  }
+  return response.json();
 }
 
 export async function validateSkill(path: string): Promise<SkillValidationResult> {
