@@ -35,3 +35,10 @@ export {
   clearAssistantSession,
   checkAssistantHealth,
 } from './assistantApi';
+
+export {
+  discoverSkills,
+  validateSkill,
+  streamSkillEval,
+  getSkillResults,
+} from './skillsApi';

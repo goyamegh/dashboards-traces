@@ -32,6 +32,7 @@ import {
   createConfigureCommand,
   createKillCommand,
   createSetupTelemetryCommand,
+  createSkillCommand,
 } from './commands/index.js';
 
 // Get package.json for version
@@ -242,6 +243,7 @@ program.addCommand(createRemoteCommand());
 program.addCommand(createConfigureCommand());
 program.addCommand(createKillCommand());
 program.addCommand(createSetupTelemetryCommand());
+program.addCommand(createSkillCommand());
 
 // Add serve command as an alias for the default action
 program
