@@ -11,6 +11,7 @@ import { Request, Response, Router } from 'express';
 import { debug } from '@/lib/debug';
 import { computeMetrics, computeBatchMetrics, computeMetricsFromSampleSpans, computeAggregateMetrics } from '../services/metricsService';
 import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
+import { createOpenSearchClient } from '../services/opensearchClientFactory.js';
 import { MetricsResult } from '@/types';
 
 const router = Router();
@@ -44,12 +45,8 @@ router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
 
     debug('MetricsAPI', 'Computing metrics for runId:', runId);
 
-    const metrics = await computeMetrics(runId, {
-      endpoint: config.endpoint,
-      username: config.username,
-      password: config.password,
-      indexPattern
-    });
+    const client = createOpenSearchClient(config);
+    const metrics = await computeMetrics(runId, { client, indexPattern });
 
     debug('MetricsAPI', 'Metrics computed:', {
       runId: metrics.runId,
@@ -106,15 +103,10 @@ router.post('/api/metrics/batch', async (req: Request, res: Response) => {
         }));
       } else {
         const indexPattern = config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces;
-        const osConfig = {
-          endpoint: config.endpoint,
-          username: config.username,
-          password: config.password,
-          indexPattern
-        };
+        const client = createOpenSearchClient(config);
 
         try {
-          realResults = await computeBatchMetrics(realRunIds, osConfig);
+          realResults = await computeBatchMetrics(realRunIds, { client, indexPattern });
         } catch (e: any) {
           realResults = realRunIds.map((runId: string) => ({
             runId,

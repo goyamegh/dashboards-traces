@@ -32,8 +32,20 @@ router.get('/api/skills/discover', async (_req: Request, res: Response) => {
   const skills: { path: string; name: string; description: string }[] = [];
 
   const scanDirs = [
+    // Claude Code
     join(cwd, '.claude', 'skills'),
-    join(cwd, 'docs', 'skills'),
+    // Kiro
+    join(cwd, '.kiro', 'skills'),
+    join(cwd, '.kiro', 'steering'),
+    // Codex
+    join(cwd, '.codex'),
+    // Cursor
+    join(cwd, '.cursor', 'rules'),
+    // GitHub Copilot
+    join(cwd, '.github', 'copilot'),
+    // Continue
+    join(cwd, '.continue', 'skills'),
+    // Generic
     join(cwd, 'skills'),
   ];
 
