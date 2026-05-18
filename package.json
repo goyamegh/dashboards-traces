@@ -178,8 +178,12 @@
     "path-to-regexp": ">=8.4.0",
     "picomatch": ">=4.0.4",
     "uuid": "$uuid",
+    "protobufjs": ">=8.2.0",
     "@anthropic-ai/claude-agent-sdk": {
       "zod": "$zod"
-    }
+    },
+    "hono": ">=4.12.18",
+    "fast-uri": ">=3.1.2",
+    "ip-address": ">=10.1.1"
   }
 }

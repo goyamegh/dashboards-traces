@@ -151,9 +151,11 @@ aws cloudformation create-stack \
 ```
 
 This deploys:
-- **Amazon OpenSearch Service** domain for trace storage
+- **Amazon OpenSearch Service** domain or **OpenSearch Serverless** collection for trace storage
 - **OpenSearch Ingestion (OSIS)** pipeline for OTLP data collection
 - **IAM roles** for pipeline execution and agent telemetry ingestion
+
+> **Both Amazon OpenSearch Service domains and OpenSearch Serverless collections are supported.** Set `OPENSEARCH_STORAGE_AWS_SERVICE=es` for managed domains or `OPENSEARCH_STORAGE_AWS_SERVICE=aoss` for Serverless collections. Both use SigV4 authentication (`OPENSEARCH_STORAGE_AUTH_TYPE=sigv4`). See [docs/CONFIGURATION.md](./docs/CONFIGURATION.md) for details.
 
 After deployment, connect it to Agent Health:
 

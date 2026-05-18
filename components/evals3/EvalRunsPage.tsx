@@ -110,7 +110,7 @@ export const EvalRunsPage: React.FC = () => {
   // Filters (persisted)
   const [search, setSearch] = useState('');
   const [timeRange, setTimeRange] = usePersistedState<TimeRange>('eval-runs:timeRange', '30d');
-  const [selectedAgent, setSelectedAgent] = usePersistedState('eval-runs:selectedAgent', DEFAULT_CONFIG.agents.find(a => a.enabled !== false)?.key || 'all');
+  const [selectedAgent, setSelectedAgent] = usePersistedState('eval-runs:selectedAgent', 'all');
 
   // View (persisted)
   const [viewMode, setViewMode] = usePersistedState<ViewMode>('eval-runs:viewMode', 'flat');

@@ -51,6 +51,7 @@ export interface PollCallbacks {
 class TracePollingManager {
   private polls: Map<string, PollState> = new Map();
   private callbacks: Map<string, PollCallbacks> = new Map();
+  private completionPromises: Map<string, { resolve: () => void; reject: (err: Error) => void }> = new Map();
 
   /**
    * Start polling for traces for a specific report
@@ -86,7 +87,9 @@ class TracePollingManager {
   }
 
   /**
-   * Stop polling for a specific report
+   * Stop polling for a specific report.
+   * If a completion promise exists (from startPollingAsync), it is rejected
+   * so callers awaiting it are unblocked.
    */
   stopPolling(reportId: string): void {
     const state = this.polls.get(reportId);
@@ -96,6 +99,12 @@ class TracePollingManager {
       }
       state.running = false;
       debug('TracePoller', `Stopped polling for report ${reportId}`);
+    }
+    // Reject any pending completion promise so awaiting callers don't hang
+    const pending = this.completionPromises.get(reportId);
+    if (pending) {
+      pending.reject(new Error(`Polling stopped for report ${reportId}`));
+      this.completionPromises.delete(reportId);
     }
     this.callbacks.delete(reportId);
     this.polls.delete(reportId);
@@ -119,6 +128,60 @@ class TracePollingManager {
       }
     });
     return active;
+  }
+
+  /**
+   * Start polling and return a Promise that resolves when polling completes.
+   * This allows callers (e.g., benchmark runner) to await trace availability
+   * instead of firing and forgetting.
+   *
+   * If polling is already active for this reportId, returns the existing
+   * completion promise (no duplicate poll started).
+   */
+  startPollingAsync(
+    reportId: string,
+    runId: string,
+    callbacks: PollCallbacks,
+    options?: { intervalMs?: number; maxAttempts?: number; agentConfig?: AgentConfig }
+  ): Promise<void> {
+    // If already polling, return the existing completion promise
+    const existing = this.completionPromises.get(reportId);
+    if (existing && this.polls.has(reportId) && this.polls.get(reportId)!.running) {
+      debug('TracePoller', `Already polling for report ${reportId}, returning existing promise`);
+      return new Promise<void>((resolve, reject) => {
+        const current = this.completionPromises.get(reportId)!;
+        this.completionPromises.set(reportId, {
+          resolve: () => { current.resolve(); resolve(); },
+          reject: (err) => { current.reject(err); reject(err); },
+        });
+      });
+    }
+
+    return new Promise<void>((resolve, reject) => {
+      this.completionPromises.set(reportId, { resolve, reject });
+
+      // Wrap callbacks to resolve/reject the promise on completion
+      const wrappedCallbacks: PollCallbacks = {
+        onTracesFound: async (spans, report) => {
+          try {
+            await callbacks.onTracesFound(spans, report);
+            this.completionPromises.get(reportId)?.resolve();
+          } catch (err) {
+            this.completionPromises.get(reportId)?.reject(err as Error);
+          } finally {
+            this.completionPromises.delete(reportId);
+          }
+        },
+        onAttempt: callbacks.onAttempt,
+        onError: (error) => {
+          callbacks.onError(error);
+          this.completionPromises.get(reportId)?.reject(error);
+          this.completionPromises.delete(reportId);
+        },
+      };
+
+      this.startPolling(reportId, runId, wrappedCallbacks, options);
+    });
   }
 
   /**

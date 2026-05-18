@@ -53,6 +53,11 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
   const [reportId, setReportId] = useState<string | null>(null);
   const [report, setReport] = useState<ServerEvaluationReport | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  /** When set, the inline SSE dropped and the modal is polling for completion. */
+  const [reconnectState, setReconnectState] = useState<
+    | null
+    | { reportId: string; reason: string; lastStatus?: string }
+  >(null);
   const [showBuiltInAgents, setShowBuiltInAgents] = useState(false);
 
   // OpenAI-compatible dynamic model discovery
@@ -99,6 +104,9 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
     demo: 'Demo',
     bedrock: 'AWS Bedrock',
     'openai-compatible': 'OpenAI-compatible',
+    'claude-code': 'Claude Code',
+    litellm: 'LiteLLM',
+    agentic: 'Agentic Judge',
   };
 
   const fetchOpenaiCompatModels = useCallback(async () => {
@@ -180,6 +188,7 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
     setReport(null);
     setReportId(null);
     setErrorMessage(null);
+    setReconnectState(null);
 
     try {
       // Build the request — use testCaseId for stored test cases, inline object for ad-hoc
@@ -214,12 +223,17 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
           testCase: runTestCase,
           evaluatorId: selectedEvaluatorId,
         },
-        (step) => setCurrentSteps(prev => [...prev, step])
+        {
+          onStep: (step) => setCurrentSteps(prev => [...prev, step]),
+          onReconnect: (id, reason) => setReconnectState({ reportId: id, reason }),
+          onPoll: (r) => setReconnectState(prev => prev ? { ...prev, lastStatus: r.status } : prev),
+        }
       );
 
       // Report is saved server-side; use the returned summary
       setReportId(result.reportId);
       setReport(result.report);
+      setReconnectState(null);
     } catch (error) {
       console.error('Evaluation error:', error);
       setErrorMessage(error instanceof Error ? error.message : 'Evaluation failed');
@@ -378,10 +392,14 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                 <div className="flex items-center gap-1">
                   <Label className="text-xs">Judge Model</Label>
                   <span
-                    className={`text-muted-foreground cursor-default ${selectedModelProvider === 'openai-compatible' ? 'text-blue-500 dark:text-blue-400' : ''}`}
+                    className={`text-muted-foreground cursor-default ${selectedModelProvider === 'openai-compatible' ? 'text-blue-500 dark:text-blue-400' : selectedModelProvider === 'agentic' ? 'text-purple-500 dark:text-purple-400' : ''}`}
                     title={
                       selectedModelProvider === 'openai-compatible'
                         ? 'OpenAI-compatible — set OPENAI_COMPATIBLE_ENDPOINT and OPENAI_COMPATIBLE_API_KEY in .env. Click ↻ to discover available models.'
+                        : selectedModelProvider === 'agentic'
+                        ? 'Agentic Judge — uses an agent with tool access to evaluate trajectories. Supports Claude Code or custom endpoints.'
+                        : selectedModelProvider === 'claude-code'
+                        ? 'Claude Code — spawns the claude CLI to evaluate trajectories.'
                         : 'Select the LLM used to judge agent trajectories'
                     }
                   >
@@ -462,6 +480,18 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
               {errorMessage && (
                 <div className="mb-4 p-3 text-sm text-red-600 bg-red-50 rounded border border-red-200">
                   {errorMessage}
+                </div>
+              )}
+              {reconnectState && !report && (
+                <div className="mb-4 p-3 text-sm rounded border border-amber-300 bg-amber-50 dark:bg-amber-500/10 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 flex items-start gap-2">
+                  <Loader2 size={14} className="mt-0.5 animate-spin shrink-0" />
+                  <div>
+                    <div className="font-medium">Stream disconnected — reconnecting via polling…</div>
+                    <div className="text-xs opacity-80 mt-0.5">
+                      The server is still running the evaluation. Waiting for it to finish.
+                      {reconnectState.lastStatus ? ` (status: ${reconnectState.lastStatus})` : ''}
+                    </div>
+                  </div>
                 </div>
               )}
               {currentSteps.length > 0 || report ? (

@@ -17,16 +17,27 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Observio sample agent: port auto-increment when default port 3001 is in use (up to 10 attempts)
 - Observio sample agent: configurable `REACT_MAX_ITERATIONS` via environment variable (default: 100)
 - Parent server dynamically detects observio agent's actual bound port and patches `/api/agents` endpoint
+- Agentic judge provider: evaluate trajectories using an agent with tool access (Claude Code or custom endpoint)
+- Shared `JudgeModelSelect` component: groups judge models by provider (Bedrock, Agentic, Claude Code, OpenAI-compatible, LiteLLM, Demo)
+- Informational banner in "Create Test Case" flow explaining required fields
+- SSE disconnect recovery for ad-hoc evaluations: server pre-persists a placeholder run and emits its `reportId` in the `started` event; clients fall back to polling `GET /api/storage/runs/:id` if the stream drops mid-evaluation. Applies to both CLI (`agent-health run`) and UI (`QuickRunModal`). The QuickRunModal now shows a "reconnecting…" hint while polling. ([#197](https://github.com/opensearch-project/agent-health/pull/197))
+- 15-second SSE heartbeat events to keep long-running evaluation connections alive through TCP idle timeouts.
 
 ### Changed
+- Rewrite First Run Experience as a narrative landing: promise-driven hero with two primary CTAs, four-step horizontal journey (Explore → Connect → Evaluate → Improve & scale), four outcome-framed value cards, and a subtle scale moment with Docker and CloudFormation install commands. Replaces the previous two-card "How it works" + "Getting Started" layout. Preserves all existing CTAs, install commands, optional coding agents banner, and `data-testid="first-run-experience"`.
 - Hide sample data by default when customer has real evaluation data; add "Show sample data" toggle
 - Collapse built-in agents when custom agents exist; group agent dropdowns (Your Agents / Built-in)
+- Default agent filter to "All Agents" on benchmarks and runs pages instead of first enabled agent
+
+### Security
+- Fix Dependabot vulnerabilities: add npm overrides for hono (>=4.12.18), fast-uri (>=3.1.2), and ip-address (>=10.1.1)
 
 ### Fixed
 - Guard testCaseIds accesses in evals3 pages to prevent crash on undefined ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - Prevent duplicate observio instances by starting agent before server ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - DocType discriminator for shared storage and PATCH sanitization in evaluation runs ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - Connector type drift: use single source of truth (`CONNECTOR_TYPE_INFO`) in server validation and Settings UI instead of hardcoded arrays ([#176](https://github.com/opensearch-project/agent-health/pull/176))
+- `useTraces: true` causes benchmark judge to never evaluate — runs permanently show 0% pass rate. Benchmark runner now awaits trace polling completion before reporting results ([#184](https://github.com/opensearch-project/agent-health/issues/184))
 
 ## [0.4.0] - 2025-05-05
 

@@ -14,6 +14,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { JudgeModelSelect } from '@/components/JudgeModelSelect';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Benchmark, TestCase, RunConfigInput, Evaluator } from '@/types';
 import { asyncBenchmarkStorage, asyncTestCaseStorage } from '@/services/storage';
@@ -288,7 +289,7 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
             <ChevronRight size={16} className="text-muted-foreground" />
             <StepIndicator
               step={2}
-              label="Use Cases"
+              label="Test Cases"
               isActive={step === 'useCases'}
               isComplete={step === 'runs'}
             />
@@ -329,7 +330,7 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
               </div>
             )}
 
-            {/* Step 2: Select Use Cases */}
+            {/* Step 2: Select Test Cases */}
             {step === 'useCases' && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
@@ -359,7 +360,7 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
 
                 <div className="flex items-center justify-between">
                   <div className="text-sm text-muted-foreground">
-                    Selected: {selectedUseCaseIds.size} use case{selectedUseCaseIds.size !== 1 ? 's' : ''}
+                    Selected: {selectedUseCaseIds.size} test case{selectedUseCaseIds.size !== 1 ? 's' : ''}
                   </div>
                   {benchmark && testCasesChanged && (
                     <div className="flex items-center gap-2 text-sm text-yellow-500">
@@ -485,21 +486,10 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
 
                           <div className="space-y-2">
                             <Label>Judge Model</Label>
-                            <Select
+                            <JudgeModelSelect
                               value={run.modelId}
                               onValueChange={val => handleUpdateRun(run.id, { modelId: val })}
-                            >
-                              <SelectTrigger>
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {Object.entries(DEFAULT_CONFIG.models).map(([key, model]) => (
-                                  <SelectItem key={key} value={key}>
-                                    {model.display_name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                            />
                           </div>
                         </div>
 
@@ -561,7 +551,7 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
                 onClick={() => setStep('useCases')}
                 disabled={!canProceedFromInfo}
               >
-                Next: Select Use Cases
+                Next: Select Test Cases
                 <ChevronRight size={16} className="ml-1" />
               </Button>
             )}
