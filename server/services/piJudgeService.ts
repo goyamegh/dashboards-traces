@@ -169,7 +169,8 @@ function spawnPi(prompt: string, systemPrompt: string): Promise<string> {
         } else {
           resolvePromise(stdout);
         }
-      } catch {
+      } catch (parseError) {
+        debug('PiJudge', 'Failed to parse Pi CLI output as JSON, using raw stdout:', (parseError as Error).message);
         resolvePromise(stdout);
       }
     });

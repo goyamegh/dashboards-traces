@@ -220,6 +220,27 @@ router.post('/api/storage/evaluation-runs/:id/cancel', async (req: Request, res:
   }
 });
 
+// PUT /api/storage/evaluation-runs/:id - Create or update a run without execution (for migration/import)
+router.put('/api/storage/evaluation-runs/:id', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const storage = getStorageModule();
+
+    const run = { ...req.body, id, docType: 'evaluation-run' as const };
+    const existing = await storage.evaluationRuns.getById(id);
+    if (existing) {
+      const updated = await storage.evaluationRuns.update(id, run);
+      res.json(updated);
+    } else {
+      await storage.evaluationRuns.create(run);
+      res.status(201).json(run);
+    }
+  } catch (error: any) {
+    console.error('[StorageAPI] Upsert evaluation run failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // DELETE /api/storage/evaluation-runs/:id - Delete an evaluation run
 router.delete('/api/storage/evaluation-runs/:id', async (req: Request, res: Response) => {
   try {

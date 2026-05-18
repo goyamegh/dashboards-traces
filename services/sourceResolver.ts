@@ -92,15 +92,13 @@ export async function resolveTestCaseSources(
 }
 
 async function fetchTestCasesByIds(ids: string[], storage: IStorageModule): Promise<TestCase[]> {
-  const testCases: TestCase[] = [];
-  for (const id of ids) {
-    const tc = await storage.testCases.getById(id);
-    if (!tc) {
-      throw new Error(`Test case not found: ${id}`);
-    }
-    testCases.push(tc);
-  }
-  return testCases;
+  return Promise.all(
+    ids.map(async (id) => {
+      const tc = await storage.testCases.getById(id);
+      if (!tc) throw new Error(`Test case not found: ${id}`);
+      return tc;
+    })
+  );
 }
 
 async function resolveFileImport(filenames: string[], storage: IStorageModule): Promise<TestCase[]> {

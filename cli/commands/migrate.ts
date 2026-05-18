@@ -288,16 +288,12 @@ export function createMigrateCommand(): Command {
                 const createRes = await fetch(
                   `${serverResult.baseUrl}/api/storage/evaluation-runs/${run.id}`,
                   {
-                    method: 'PATCH',
+                    method: 'PUT',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify(evalRun),
                   }
                 );
-                // If PATCH fails (404), try creating via a direct storage call
                 if (!createRes.ok) {
-                  // Fallback: the PATCH endpoint requires the doc to exist
-                  // For migration we'd need a direct create, but the POST endpoint
-                  // also executes. So we skip runs that can't be created via API.
                   errors++;
                   if (opts.verbose) {
                     console.log(chalk.red(`    ✗ ${run.id} - could not create (${createRes.status})`));
