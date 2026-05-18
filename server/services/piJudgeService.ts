@@ -32,7 +32,7 @@ const PI_TIMEOUT_MS = 300_000;
 
 /**
  * Evaluate agent trajectory using pi.dev CLI
- * Spawns `pi --print --output-format json` and pipes the evaluation prompt to stdin.
+ * Spawns `pi --print --mode json` and pipes the evaluation prompt to stdin.
  */
 export async function evaluateWithPi(
   request: JudgeRequest

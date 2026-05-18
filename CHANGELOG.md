@@ -10,6 +10,10 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ## [Unreleased]
 
 ### Added
+- Pi.dev coding agent connector and judge provider for CLI-based agent evaluation ([#205](https://github.com/opensearch-project/agent-health/pull/205))
+- Unified EvaluationRun architecture with composable test case sources (benchmark, test-case-ids, label-filter, file-import, directory-import) ([#205](https://github.com/opensearch-project/agent-health/pull/205))
+- Pi package for Agent Health instrumentation assistance ([#205](https://github.com/opensearch-project/agent-health/pull/205))
+- Persist user preferences across sessions with usePersistedState hook ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - Observio sample agent: port auto-increment when default port 3001 is in use (up to 10 attempts)
 - Observio sample agent: configurable `REACT_MAX_ITERATIONS` via environment variable (default: 100)
 - Parent server dynamically detects observio agent's actual bound port and patches `/api/agents` endpoint
@@ -19,6 +23,9 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Collapse built-in agents when custom agents exist; group agent dropdowns (Your Agents / Built-in)
 
 ### Fixed
+- Guard testCaseIds accesses in evals3 pages to prevent crash on undefined ([#205](https://github.com/opensearch-project/agent-health/pull/205))
+- Prevent duplicate observio instances by starting agent before server ([#205](https://github.com/opensearch-project/agent-health/pull/205))
+- DocType discriminator for shared storage and PATCH sanitization in evaluation runs ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - Connector type drift: use single source of truth (`CONNECTOR_TYPE_INFO`) in server validation and Settings UI instead of hardcoded arrays ([#176](https://github.com/opensearch-project/agent-health/pull/176))
 
 ## [0.4.0] - 2025-05-05

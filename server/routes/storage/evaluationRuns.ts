@@ -279,7 +279,13 @@ router.patch('/api/storage/evaluation-runs/:id', async (req: Request, res: Respo
       return res.status(404).json({ error: 'Evaluation run not found' });
     }
 
-    const updated = await storage.evaluationRuns.update(id, req.body);
+    const { name, description, benchmarkId } = req.body;
+    const allowedFields: Record<string, any> = {};
+    if (name !== undefined) allowedFields.name = name;
+    if (description !== undefined) allowedFields.description = description;
+    if (benchmarkId !== undefined) allowedFields.benchmarkId = benchmarkId;
+
+    const updated = await storage.evaluationRuns.update(id, allowedFields);
     res.json(updated);
   } catch (error: any) {
     if (error.meta?.statusCode === 404) {

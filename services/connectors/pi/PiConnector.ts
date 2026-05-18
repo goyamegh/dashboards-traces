@@ -92,7 +92,7 @@ export class PiConnector extends SubprocessConnector {
 
   /**
    * Parse Pi streaming output (JSON format)
-   * Pi's --output-format json produces NDJSON lines
+   * Pi's --mode json produces NDJSON lines
    */
   protected override parseStreamingOutput(
     chunk: string,
@@ -334,11 +334,11 @@ export const piConnector = new PiConnector();
  * Create a Pi connector with the Agent Health package pre-configured
  */
 export function createAgentHealthPiConnector(packagePath?: string): PiConnector {
-  return new PiConnector({
-    args: [
-      '--print',
-      '--output-format', 'json',
-      ...(packagePath ? ['--package', packagePath] : []),
-    ],
-  });
+  const args = ['--print', '--mode', 'json'];
+  if (packagePath) {
+    args.push('--skill', `${packagePath}/skills/*`);
+    args.push('--extension', `${packagePath}/extensions/agent-health.ts`);
+    args.push('--append-system-prompt', `${packagePath}/prompts/agent-health.md`);
+  }
+  return new PiConnector({ args });
 }
