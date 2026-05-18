@@ -42,7 +42,14 @@ export type {
 export type {
   BeforeRequestContext,
   AgentHooks,
+  JudgeContext,
+  JudgeResult,
+  BuildTrajectoryContext,
 } from '../types/index.js';
+
+// Trace types and SDK utilities (for custom judge hooks)
+export type { Span, TrajectoryStep } from '../types/index.js';
+export { fetchTracesByRunIds as fetchTraces } from '../services/traces/index.js';
 
 // Connector types (for custom connector implementations)
 export type {

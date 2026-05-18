@@ -64,6 +64,37 @@ export interface BuildTrajectoryContext {
   runId: string;
 }
 
+/**
+ * Context passed to a custom judge hook.
+ * Contains all data needed for evaluation: trajectory, traces, and expected outcomes.
+ * Also provides fetchTraces as an SDK utility for additional trace fetching.
+ */
+export interface JudgeContext {
+  trajectory: TrajectoryStep[];
+  traces: Span[];
+  expectedOutcomes: string[];
+  expectedTrajectory?: string[];
+  runId: string;
+  /** SDK utility: fetch traces by run IDs from OpenSearch */
+  fetchTraces: (runIds: string[]) => Promise<{ spans: Span[] }>;
+}
+
+/**
+ * Result returned by a custom judge hook.
+ */
+export interface JudgeResult {
+  passFailStatus: 'passed' | 'failed';
+  metrics: {
+    accuracy: number;
+    faithfulness?: number;
+    latency_score?: number;
+    trajectory_alignment_score?: number;
+    [key: string]: number | undefined;
+  };
+  llmJudgeReasoning: string;
+  improvementStrategies?: string[];
+}
+
 export interface AgentHooks {
   /**
    * Called before sending request to agent.
@@ -82,6 +113,27 @@ export interface AgentHooks {
    * Use to customize trajectory extraction for agents with custom span formats.
    */
   buildTrajectory?: (context: BuildTrajectoryContext) => Promise<TrajectoryStep[]>;
+
+  /**
+   * Custom judge hook. When defined, replaces the built-in Bedrock judge.
+   * Receives trajectory + traces + expected outcomes, returns pass/fail evaluation.
+   *
+   * @example
+   * ```typescript
+   * hooks: {
+   *   judge: async ({ trajectory, traces, expectedOutcomes, fetchTraces }) => {
+   *     // Custom evaluation logic using traces
+   *     const relevantSpans = traces.filter(s => s.attributes?.['gen_ai.system']);
+   *     return {
+   *       passFailStatus: relevantSpans.length > 0 ? 'passed' : 'failed',
+   *       metrics: { accuracy: 85 },
+   *       llmJudgeReasoning: 'Custom evaluation based on trace analysis',
+   *     };
+   *   }
+   * }
+   * ```
+   */
+  judge?: (context: JudgeContext) => Promise<JudgeResult>;
 }
 
 export interface AgentConfig {
