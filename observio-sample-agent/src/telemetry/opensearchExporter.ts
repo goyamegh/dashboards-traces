@@ -21,6 +21,11 @@ export interface OpenSearchExporterConfig {
   password?: string;
   indexName?: string;
   tlsSkipVerify?: boolean;
+  /** SigV4 auth config (takes precedence over basic auth) */
+  authType?: 'basic' | 'sigv4';
+  awsRegion?: string;
+  awsProfile?: string;
+  awsService?: 'es' | 'aoss';
 }
 
 function hrTimeToDate(hrTime: HrTime): string {
@@ -151,23 +156,49 @@ function spanToDocument(span: ReadableSpan): Record<string, unknown> {
 }
 
 export class OpenSearchSpanExporter implements SpanExporter {
-  private client: Client;
+  private client: Client | null = null;
+  private clientPromise: Promise<Client>;
   private indexName: string;
   private shutdownRequested = false;
 
   constructor(config: OpenSearchExporterConfig) {
-    this.client = new Client({
-      node: config.endpoint,
-      auth: config.username && config.password
-        ? { username: config.username, password: config.password }
-        : undefined,
-      ssl: {
-        rejectUnauthorized: config.tlsSkipVerify !== true,
-      },
-    });
-
     this.indexName = config.indexName || 'otel-v1-apm-span-000001';
-    console.log(`[Telemetry] OpenSearch exporter initialized → ${config.endpoint} (index: ${this.indexName})`);
+    this.clientPromise = this.createClient(config);
+    console.log(`[Telemetry] OpenSearch exporter initialized → ${config.endpoint} (index: ${this.indexName}, auth: ${config.authType || 'basic'})`);
+  }
+
+  private async createClient(config: OpenSearchExporterConfig): Promise<Client> {
+    if (config.authType === 'sigv4') {
+      const { AwsSigv4Signer } = await import('@opensearch-project/opensearch/aws');
+      const { fromNodeProviderChain } = await import('@aws-sdk/credential-providers');
+      const credentials = fromNodeProviderChain({
+        ...(config.awsProfile && { profile: config.awsProfile }),
+      });
+      this.client = new Client({
+        ...AwsSigv4Signer({
+          region: config.awsRegion || process.env.AWS_REGION || 'us-east-1',
+          service: config.awsService || 'es',
+          getCredentials: async () => credentials(),
+        }),
+        node: config.endpoint,
+      });
+    } else {
+      this.client = new Client({
+        node: config.endpoint,
+        auth: config.username && config.password
+          ? { username: config.username, password: config.password }
+          : undefined,
+        ssl: {
+          rejectUnauthorized: config.tlsSkipVerify !== true,
+        },
+      });
+    }
+    return this.client;
+  }
+
+  private async getClient(): Promise<Client> {
+    if (this.client) return this.client;
+    return this.clientPromise;
   }
 
   export(spans: ReadableSpan[], resultCallback: (result: ExportResult) => void): void {
@@ -187,6 +218,7 @@ export class OpenSearchSpanExporter implements SpanExporter {
   private async _export(spans: ReadableSpan[]): Promise<void> {
     if (spans.length === 0) return;
 
+    const client = await this.getClient();
     const body: Array<Record<string, unknown>> = [];
     for (const span of spans) {
       const doc = spanToDocument(span);
@@ -195,7 +227,7 @@ export class OpenSearchSpanExporter implements SpanExporter {
       body.push(doc);
     }
 
-    const response = await this.client.bulk({ body });
+    const response = await client.bulk({ body });
 
     if (response.body.errors) {
       const errors = response.body.items
@@ -211,7 +243,8 @@ export class OpenSearchSpanExporter implements SpanExporter {
 
   async shutdown(): Promise<void> {
     this.shutdownRequested = true;
-    await this.client.close();
+    const client = await this.getClient();
+    await client.close();
   }
 
   async forceFlush(): Promise<void> {
