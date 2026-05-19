@@ -6,8 +6,7 @@
 /**
  * Tests for observio-sample-agent telemetry provider.
  *
- * Verifies dual-mode export initialization behavior via console output,
- * since module-level state makes mocking individual constructors complex.
+ * Verifies OTLP export initialization behavior via console output.
  */
 
 describe('observio telemetry provider', () => {
@@ -18,10 +17,6 @@ describe('observio telemetry provider', () => {
     jest.resetModules();
     process.env = { ...originalEnv };
     delete process.env.OTEL_ENABLED;
-    delete process.env.OPENSEARCH_LOGS_ENDPOINT;
-    delete process.env.OPENSEARCH_LOGS_USERNAME;
-    delete process.env.OPENSEARCH_LOGS_PASSWORD;
-    delete process.env.OPENSEARCH_LOGS_TRACES_INDEX;
     delete process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
     delete process.env.OTEL_SERVICE_NAME;
     consoleSpy = jest.spyOn(console, 'log').mockImplementation();
@@ -43,68 +38,34 @@ describe('observio telemetry provider', () => {
       );
     });
 
-    it('uses config file or disables when no endpoint configured', () => {
-      const { initTelemetry } = require('@/observio-sample-agent/src/telemetry/provider');
-      initTelemetry();
-
-      // If agent-health.config.json exists with observability config, telemetry enables via config.
-      // If no config file exists, telemetry is disabled.
-      const calls = consoleSpy.mock.calls.map((c: any[]) => c[0]);
-      const hasEnabled = calls.some((c: string) => c?.includes?.('Observio telemetry enabled'));
-      const hasDisabled = calls.some((c: string) => c?.includes?.('Observio telemetry disabled'));
-      expect(hasEnabled || hasDisabled).toBe(true);
-    });
-
-    it('prefers OpenSearch direct export when OPENSEARCH_LOGS_ENDPOINT is set', () => {
-      process.env.OPENSEARCH_LOGS_ENDPOINT = 'https://my-cluster.example.com';
-      process.env.OPENSEARCH_LOGS_USERNAME = 'admin';
-      process.env.OPENSEARCH_LOGS_PASSWORD = 'secret';
-
+    it('disables telemetry when OTEL_EXPORTER_OTLP_ENDPOINT is not set', () => {
       const { initTelemetry } = require('@/observio-sample-agent/src/telemetry/provider');
       initTelemetry();
 
       expect(consoleSpy).toHaveBeenCalledWith(
-        '[Telemetry] Observio telemetry enabled → OpenSearch (https://my-cluster.example.com)'
+        '[Telemetry] Observio telemetry disabled (OTEL_EXPORTER_OTLP_ENDPOINT not set)'
       );
     });
 
-    it('falls back to OTLP when only OTEL_EXPORTER_OTLP_ENDPOINT is set', () => {
+    it('enables OTLP export when OTEL_EXPORTER_OTLP_ENDPOINT is set', () => {
       process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://api-gw.example.com/v1/traces';
 
       const { initTelemetry } = require('@/observio-sample-agent/src/telemetry/provider');
       initTelemetry();
 
-      // Config file takes precedence over OTLP env var if present.
-      // Either OpenSearch via config or OTLP fallback is valid.
       expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('Observio telemetry enabled')
-      );
-    });
-
-    it('prefers OpenSearch over OTLP when both are set', () => {
-      process.env.OPENSEARCH_LOGS_ENDPOINT = 'https://my-cluster.example.com';
-      process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://api-gw.example.com';
-
-      const { initTelemetry } = require('@/observio-sample-agent/src/telemetry/provider');
-      initTelemetry();
-
-      expect(consoleSpy).toHaveBeenCalledWith(
-        expect.stringContaining('→ OpenSearch')
-      );
-      expect(consoleSpy).not.toHaveBeenCalledWith(
-        expect.stringContaining('→ OTLP')
+        '[Telemetry] Observio telemetry enabled → OTLP (https://api-gw.example.com/v1/traces)'
       );
     });
 
     it('is idempotent - second call is a no-op', () => {
-      process.env.OPENSEARCH_LOGS_ENDPOINT = 'https://my-cluster.example.com';
+      process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://api-gw.example.com/v1/traces';
 
       const { initTelemetry } = require('@/observio-sample-agent/src/telemetry/provider');
       initTelemetry();
       consoleSpy.mockClear();
       initTelemetry(); // second call
 
-      // Should not log again (provider already initialized)
       expect(consoleSpy).not.toHaveBeenCalledWith(
         expect.stringContaining('Observio telemetry enabled')
       );

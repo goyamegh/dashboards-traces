@@ -6,72 +6,73 @@
 /**
  * OTel TracerProvider for the Observio sample agent.
  *
- * Supports two export modes:
- *   1. Direct OpenSearch — writes spans directly to the Agent Health cluster
- *      (preferred, uses OPENSEARCH_LOGS_ENDPOINT)
- *   2. OTLP/HTTP — exports via OTLP to an OSI pipeline endpoint
- *      (fallback, uses OTEL_EXPORTER_OTLP_ENDPOINT)
+ * Exports spans via OTLP/HTTP to an OSI pipeline endpoint.
+ * Uses a diagnostic wrapper around OTLPTraceExporter that surfaces
+ * export failures instead of swallowing them silently.
  *
- * Configuration (via .env):
- *   OPENSEARCH_LOGS_ENDPOINT — OpenSearch cluster URL (preferred)
- *   OPENSEARCH_LOGS_USERNAME / OPENSEARCH_LOGS_PASSWORD — basic auth
- *   OTEL_EXPORTER_OTLP_ENDPOINT — OTLP pipeline URL (fallback)
+ * Configuration (via .env or inherited from parent process):
+ *   OTEL_EXPORTER_OTLP_ENDPOINT — OTLP pipeline URL (required)
  *   OTEL_SERVICE_NAME — service name (default: observio-sample-agent)
  *   OTEL_ENABLED — set to 'false' to disable (default: enabled)
  */
 
 import { trace, context, type Tracer, type Context, type Span } from '@opentelemetry/api';
-import { NodeTracerProvider, BatchSpanProcessor, SimpleSpanProcessor, type SpanExporter } from '@opentelemetry/sdk-trace-node';
+import { NodeTracerProvider, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-node';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { resourceFromAttributes } from '@opentelemetry/resources';
-import { OpenSearchSpanExporter, type OpenSearchExporterConfig } from './opensearchExporter';
-import { existsSync, readFileSync } from 'fs';
-import { join, dirname } from 'path';
+import type { ReadableSpan, SpanExporter } from '@opentelemetry/sdk-trace-node';
+import type { ExportResult } from '@opentelemetry/core';
+import { ExportResultCode } from '@opentelemetry/core';
 
 export const OBSERVIO_TRACER_NAME = 'observio-sample-agent';
 
 let provider: NodeTracerProvider | null = null;
 
 /**
- * Read the observability config from the parent project's agent-health.config.json.
- * This ensures observio exports to the same cluster that the dashboard reads from.
+ * Wraps an OTLP exporter to log export results — both success and failure.
+ * The default OTLPTraceExporter swallows errors internally; this makes them visible.
  */
-function readObservabilityConfig(): OpenSearchExporterConfig | null {
-  // Walk up to find agent-health.config.json (from observio-sample-agent/)
-  let dir = process.cwd();
-  for (let i = 0; i < 5; i++) {
-    const candidate = join(dir, 'agent-health.config.json');
-    if (existsSync(candidate)) {
-      try {
-        const raw = JSON.parse(readFileSync(candidate, 'utf-8'));
-        const obs = raw.observability;
-        if (obs?.endpoint) {
-          return {
-            endpoint: obs.endpoint,
-            authType: obs.authType || 'basic',
-            username: obs.username,
-            password: obs.password,
-            awsRegion: obs.awsRegion,
-            awsProfile: obs.awsProfile,
-            awsService: obs.awsService || 'es',
-            indexName: obs.indexes?.traces?.replace('*', '000001') || 'otel-v1-apm-span-000001',
-            tlsSkipVerify: obs.tlsSkipVerify,
-          };
-        }
-      } catch { /* ignore parse errors */ }
-    }
-    dir = dirname(dir);
+class DiagnosticExporterWrapper implements SpanExporter {
+  private delegate: SpanExporter;
+  private exportCount = 0;
+  private errorCount = 0;
+
+  constructor(delegate: SpanExporter) {
+    this.delegate = delegate;
   }
-  return null;
+
+  export(spans: ReadableSpan[], resultCallback: (result: ExportResult) => void): void {
+    this.delegate.export(spans, (result) => {
+      this.exportCount++;
+      if (result.code === ExportResultCode.SUCCESS) {
+        console.log(`[Telemetry] OTLP export success: ${spans.length} span(s) sent`);
+      } else {
+        this.errorCount++;
+        const errMsg = result.error?.message || 'unknown error';
+        console.error(`[Telemetry] OTLP export FAILED (${this.errorCount}/${this.exportCount} total failures): ${errMsg}`);
+        if (this.errorCount === 1) {
+          console.error('[Telemetry] Hint: Check that OTEL_EXPORTER_OTLP_ENDPOINT is reachable and accepts unauthenticated OTLP/HTTP requests.');
+        }
+      }
+      resultCallback(result);
+    });
+  }
+
+  async shutdown(): Promise<void> {
+    if (this.errorCount > 0) {
+      console.warn(`[Telemetry] Observio OTLP exporter shutting down with ${this.errorCount}/${this.exportCount} failed exports`);
+    }
+    return this.delegate.shutdown?.() ?? Promise.resolve();
+  }
+
+  async forceFlush(): Promise<void> {
+    return this.delegate.forceFlush?.() ?? Promise.resolve();
+  }
 }
 
 /**
  * Initialize OTel telemetry for the observio agent.
- *
- * Priority:
- *   1. Direct OpenSearch via env vars (OPENSEARCH_LOGS_ENDPOINT)
- *   2. Direct OpenSearch via agent-health.config.json observability data source
- *   3. OTLP/HTTP fallback (OTEL_EXPORTER_OTLP_ENDPOINT)
+ * Requires OTEL_EXPORTER_OTLP_ENDPOINT to be set (typically inherited from parent .env).
  */
 export function initTelemetry(): void {
   if (provider) return;
@@ -82,37 +83,15 @@ export function initTelemetry(): void {
     return;
   }
 
-  let exporter: SpanExporter;
-  const osEndpoint = process.env.OPENSEARCH_LOGS_ENDPOINT;
   const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
-
-  if (osEndpoint) {
-    exporter = new OpenSearchSpanExporter({
-      endpoint: osEndpoint,
-      username: process.env.OPENSEARCH_LOGS_USERNAME,
-      password: process.env.OPENSEARCH_LOGS_PASSWORD,
-      authType: (process.env.OPENSEARCH_LOGS_AUTH_TYPE as any) || 'basic',
-      awsRegion: process.env.OPENSEARCH_LOGS_AWS_REGION,
-      awsProfile: process.env.OPENSEARCH_LOGS_AWS_PROFILE,
-      awsService: (process.env.OPENSEARCH_LOGS_AWS_SERVICE as any) || 'es',
-      indexName: process.env.OPENSEARCH_LOGS_TRACES_INDEX?.replace('*', '000001') || 'otel-v1-apm-span-000001',
-      tlsSkipVerify: true,
-    });
-    console.log(`[Telemetry] Observio telemetry enabled → OpenSearch (${osEndpoint})`);
-  } else {
-    // Try reading from shared config file
-    const obsConfig = readObservabilityConfig();
-    if (obsConfig) {
-      exporter = new OpenSearchSpanExporter(obsConfig);
-      console.log(`[Telemetry] Observio telemetry enabled → OpenSearch via config (${obsConfig.endpoint})`);
-    } else if (otlpEndpoint) {
-      exporter = new OTLPTraceExporter({ url: otlpEndpoint });
-      console.log(`[Telemetry] Observio telemetry enabled → OTLP (${otlpEndpoint})`);
-    } else {
-      console.log('[Telemetry] Observio telemetry disabled (no data source configured)');
-      return;
-    }
+  if (!otlpEndpoint) {
+    console.log('[Telemetry] Observio telemetry disabled (OTEL_EXPORTER_OTLP_ENDPOINT not set)');
+    return;
   }
+
+  const otlpExporter = new OTLPTraceExporter({ url: otlpEndpoint });
+  const exporter = new DiagnosticExporterWrapper(otlpExporter);
+  console.log(`[Telemetry] Observio telemetry enabled → OTLP (${otlpEndpoint})`);
 
   const resource = resourceFromAttributes({
     'service.name': process.env.OTEL_SERVICE_NAME || 'observio-sample-agent',
@@ -120,7 +99,8 @@ export function initTelemetry(): void {
     'telemetry.sdk.language': 'nodejs',
   });
 
-  // Use SimpleSpanProcessor for immediate export (agent runs are infrequent)
+  // Use SimpleSpanProcessor for immediate export — agent runs are infrequent
+  // and we need spans to land before the trace poller starts looking
   const spanProcessors = [
     new SimpleSpanProcessor(exporter),
   ];
