@@ -10,6 +10,7 @@ import { pathToFileURL } from 'url';
 import { createRequire, Module as NodeModule } from 'module';
 import type { CodeTestCase } from './types.js';
 import { test as testFn, setActiveFile, getRegisteredTests, clearRegistry } from './define.js';
+import { judge as judgeFn, wasJudgeCalled, resetJudgeFlag } from './judge.js';
 
 const CODE_EXTENSIONS = ['.ts', '.js', '.mjs'];
 
@@ -78,17 +79,34 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
         normalized.endsWith('/lib/testCases/define')
       );
     };
+    // What we hand back to the user when they require the SDK. Must be the
+    // same shape as the published @opensearch-project/agent-health package's
+    // top-level exports so fixtures work both in-tree and against the npm
+    // package without code changes.
+    const sdkExports = {
+      test: testFn,
+      judge: judgeFn,
+      wasJudgeCalled,
+      resetJudgeFlag,
+    };
     const wrappedRequire = (id: string) => {
       if (isDefineId(id)) {
-        return { test: testFn };
+        return sdkExports;
       }
-      const resolved = fileRequire.resolve(id);
-      const normalized = resolved.replace(/\\/g, '/');
-      if (
-        normalized.endsWith('/lib/testCases/define.js') ||
-        normalized.endsWith('/lib/testCases/define')
-      ) {
-        return { test: testFn };
+      // Fall back to a resolution-based check so that fixtures requiring the
+      // SDK by absolute path or via the published package name still hand back
+      // our test() registrar (and therefore land in our file-scoped registry).
+      try {
+        const resolved = fileRequire.resolve(id);
+        const normalized = resolved.replace(/\\/g, '/');
+        if (
+          normalized.endsWith('/lib/testCases/define.js') ||
+          normalized.endsWith('/lib/testCases/define')
+        ) {
+          return sdkExports;
+        }
+      } catch {
+        // ignore unresolvable IDs — fileRequire below will surface the error
       }
       return fileRequire(id);
     };
