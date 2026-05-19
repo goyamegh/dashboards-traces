@@ -68,6 +68,7 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Fix Mend dependency vulnerabilities in `observio-sample-agent`: bump direct `ws` dep to `^8.20.1` (CVE-2026-45736); bump `langsmith` override to `>=0.6.0` for CVE-2026-45134 (High 7.1); add `protobufjs` override (>=8.2.0) covering CVE-2026-44288/289/290/291/292/293/294 and CVE-2026-45740 (highest 8.8) ([#163](https://github.com/opensearch-project/agent-health/issues/163), [#201](https://github.com/opensearch-project/agent-health/issues/201), [#203](https://github.com/opensearch-project/agent-health/issues/203), [#208](https://github.com/opensearch-project/agent-health/issues/208))
 
 ### Fixed
+- Update `sampleTraces.test.ts` root-span assertion: `demo-trace-001` now has two roots (agent + eval `test_suite_run`) since [#204](https://github.com/opensearch-project/agent-health/pull/204) added eval spans sharing the trace ID. Test now asserts both expected root span IDs by name instead of count. ([#207](https://github.com/opensearch-project/agent-health/pull/207))
 - Guard testCaseIds accesses in evals3 pages to prevent crash on undefined ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - Prevent duplicate observio instances by starting agent before server ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - DocType discriminator for shared storage and PATCH sanitization in evaluation runs ([#205](https://github.com/opensearch-project/agent-health/pull/205))
