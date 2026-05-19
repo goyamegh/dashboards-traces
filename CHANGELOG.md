@@ -69,6 +69,8 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ### Fixed
 - Update `sampleTraces.test.ts` root-span assertion: `demo-trace-001` now has two roots (agent + eval `test_suite_run`) since [#204](https://github.com/opensearch-project/agent-health/pull/204) added eval spans sharing the trace ID. Test now asserts both expected root span IDs by name instead of count. ([#207](https://github.com/opensearch-project/agent-health/pull/207))
+- Fix `PiConnector.integration.test.ts` drift with implementation: assert the actual `--skill` / `--extension` / `--append-system-prompt` args expanded from `packagePath` instead of the obsolete single `--package` arg. ([#207](https://github.com/opensearch-project/agent-health/pull/207))
+- Fix syntax error in `traceBlocking.integration.test.ts` from a botched merge (duplicate `return; }` block) that prevented the suite from compiling. ([#207](https://github.com/opensearch-project/agent-health/pull/207))
 - Guard testCaseIds accesses in evals3 pages to prevent crash on undefined ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - Prevent duplicate observio instances by starting agent before server ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - DocType discriminator for shared storage and PATCH sanitization in evaluation runs ([#205](https://github.com/opensearch-project/agent-health/pull/205))

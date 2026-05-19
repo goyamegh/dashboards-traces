@@ -681,7 +681,7 @@ describe('PiConnector Integration Tests', () => {
       expect(conn).toBeInstanceOf(PiConnector);
     });
 
-    it('should include --package arg when packagePath is provided', async () => {
+    it('should include package-derived args when packagePath is provided', async () => {
       const conn = createAgentHealthPiConnector('/my/package');
       const proc = createMockProcess();
       mockSpawn.mockReturnValue(proc);
@@ -696,8 +696,14 @@ describe('PiConnector Integration Tests', () => {
       await executePromise;
 
       const spawnArgs = mockSpawn.mock.calls[0][1];
-      expect(spawnArgs).toContain('--package');
-      expect(spawnArgs).toContain('/my/package');
+      // Implementation expands packagePath into --skill / --extension /
+      // --append-system-prompt args (rather than a single --package arg).
+      expect(spawnArgs).toContain('--skill');
+      expect(spawnArgs).toContain('/my/package/skills/*');
+      expect(spawnArgs).toContain('--extension');
+      expect(spawnArgs).toContain('/my/package/extensions/agent-health.ts');
+      expect(spawnArgs).toContain('--append-system-prompt');
+      expect(spawnArgs).toContain('/my/package/prompts/agent-health.md');
     });
   });
 
