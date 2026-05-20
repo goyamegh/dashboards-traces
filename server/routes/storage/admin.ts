@@ -94,15 +94,18 @@ router.post('/api/storage/test-connection', async (req: Request, res: Response) 
       return res.status(400).json({ status: 'error', message: 'Endpoint is required' });
     }
 
+    // Fall back to file config, then env vars, for any missing credentials
+    const fileConfig = getStorageConfigFromFile();
+
     const result = await testStorageConnection({
       endpoint,
-      authType: authType ?? process.env.OPENSEARCH_STORAGE_AUTH_TYPE,
-      username: username ?? process.env.OPENSEARCH_STORAGE_USERNAME,
-      password: password ?? process.env.OPENSEARCH_STORAGE_PASSWORD,
-      awsProfile: awsProfile ?? process.env.OPENSEARCH_STORAGE_AWS_PROFILE,
-      awsRegion: awsRegion ?? process.env.OPENSEARCH_STORAGE_AWS_REGION,
-      awsService: awsService ?? process.env.OPENSEARCH_STORAGE_AWS_SERVICE,
-      tlsSkipVerify: tlsSkipVerify ?? (process.env.OPENSEARCH_STORAGE_TLS_SKIP_VERIFY === 'true'),
+      authType: authType ?? fileConfig?.authType ?? process.env.OPENSEARCH_STORAGE_AUTH_TYPE,
+      username: username ?? fileConfig?.username ?? process.env.OPENSEARCH_STORAGE_USERNAME,
+      password: password ?? fileConfig?.password ?? process.env.OPENSEARCH_STORAGE_PASSWORD,
+      awsProfile: awsProfile ?? fileConfig?.awsProfile ?? process.env.OPENSEARCH_STORAGE_AWS_PROFILE,
+      awsRegion: awsRegion ?? fileConfig?.awsRegion ?? process.env.OPENSEARCH_STORAGE_AWS_REGION,
+      awsService: awsService ?? fileConfig?.awsService ?? process.env.OPENSEARCH_STORAGE_AWS_SERVICE,
+      tlsSkipVerify: tlsSkipVerify ?? fileConfig?.tlsSkipVerify ?? (process.env.OPENSEARCH_STORAGE_TLS_SKIP_VERIFY === 'true'),
     });
     res.json(result);
   } catch (error: any) {

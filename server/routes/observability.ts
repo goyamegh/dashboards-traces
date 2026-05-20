@@ -13,6 +13,7 @@
 import { Router, Request, Response } from 'express';
 import { testObservabilityConnection, checkObservabilityHealth } from '../adapters/index.js';
 import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
+import { getObservabilityConfigFromFile } from '../services/configService.js';
 
 const router = Router();
 
@@ -53,19 +54,22 @@ router.post('/api/observability/test-connection', async (req: Request, res: Resp
       return res.status(400).json({ status: 'error', message: 'Endpoint is required' });
     }
 
+    // Fall back to file config, then env vars, for any missing credentials
+    const fileConfig = getObservabilityConfigFromFile();
+
     const result = await testObservabilityConnection({
       endpoint,
-      authType: authType ?? process.env.OPENSEARCH_LOGS_AUTH_TYPE,
-      username: username ?? process.env.OPENSEARCH_LOGS_USERNAME,
-      password: password ?? process.env.OPENSEARCH_LOGS_PASSWORD,
-      awsProfile: awsProfile ?? process.env.OPENSEARCH_LOGS_AWS_PROFILE,
-      awsRegion: awsRegion ?? process.env.OPENSEARCH_LOGS_AWS_REGION,
-      awsService: awsService ?? process.env.OPENSEARCH_LOGS_AWS_SERVICE,
-      tlsSkipVerify: tlsSkipVerify ?? (process.env.OPENSEARCH_LOGS_TLS_SKIP_VERIFY === 'true'),
+      authType: authType ?? fileConfig?.authType ?? process.env.OPENSEARCH_LOGS_AUTH_TYPE,
+      username: username ?? fileConfig?.username ?? process.env.OPENSEARCH_LOGS_USERNAME,
+      password: password ?? fileConfig?.password ?? process.env.OPENSEARCH_LOGS_PASSWORD,
+      awsProfile: awsProfile ?? fileConfig?.awsProfile ?? process.env.OPENSEARCH_LOGS_AWS_PROFILE,
+      awsRegion: awsRegion ?? fileConfig?.awsRegion ?? process.env.OPENSEARCH_LOGS_AWS_REGION,
+      awsService: awsService ?? fileConfig?.awsService ?? process.env.OPENSEARCH_LOGS_AWS_SERVICE,
+      tlsSkipVerify: tlsSkipVerify ?? fileConfig?.tlsSkipVerify ?? (process.env.OPENSEARCH_LOGS_TLS_SKIP_VERIFY === 'true'),
       indexes: {
-        traces: indexes?.traces || DEFAULT_OTEL_INDEXES.traces,
-        logs: indexes?.logs || DEFAULT_OTEL_INDEXES.logs,
-        metrics: indexes?.metrics || DEFAULT_OTEL_INDEXES.metrics,
+        traces: indexes?.traces || fileConfig?.indexes?.traces || DEFAULT_OTEL_INDEXES.traces,
+        logs: indexes?.logs || fileConfig?.indexes?.logs || DEFAULT_OTEL_INDEXES.logs,
+        metrics: indexes?.metrics || fileConfig?.indexes?.metrics || DEFAULT_OTEL_INDEXES.metrics,
       },
     });
 
