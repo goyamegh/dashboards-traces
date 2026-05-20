@@ -282,14 +282,17 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
                 etc.) are unaffected. */}
             {timeRange ? (
               <div className="flex items-center gap-2 w-full">
-                {/* Name column — fixed flex-basis so timelines align.
-                    Depth padding lives inside this cell, eating into
-                    the visible name area for deep trees rather than
-                    shifting the whole row right. */}
+                {/* Name column — narrow flex-basis (~220px) so the gap
+                    between the end of the span name and the start of
+                    the timeline bar stays small even for short names,
+                    while keeping all timelines aligned at the same x
+                    position regardless of tree depth. Long names
+                    truncate with the existing ellipsis (full name is
+                    available on hover via the row tooltip). */}
                 <div
                   className="flex items-center gap-2 flex-shrink-0 min-w-0"
                   style={{
-                    width: 360,
+                    width: 220,
                     paddingLeft: `${depth * 24 + (depth > 0 ? 12 : 0)}px`,
                   }}
                 >
@@ -299,7 +302,7 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
                   >
                     <SpanIcon size={14} style={{ color: getSpanColor(span) }} />
                   </div>
-                  <div className="flex-1 min-w-0 font-medium text-sm truncate">
+                  <div className="flex-1 min-w-0 font-medium text-sm truncate" title={span.name}>
                     {span.name}
                   </div>
                 </div>
