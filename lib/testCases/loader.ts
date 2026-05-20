@@ -7,7 +7,7 @@ import { createHash } from 'crypto';
 import { readFileSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { pathToFileURL } from 'url';
-import { createRequire } from 'module';
+import { createRequire, Module as NodeModule } from 'module';
 import type { CodeTestCase } from './types.js';
 import { test as testFn, setActiveFile, getRegisteredTests, clearRegistry } from './define.js';
 
@@ -54,16 +54,40 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
     // injected. This avoids module caching issues across multiple loads.
     const code = readFileSync(absPath, 'utf-8');
     const fileDir = dirname(absPath);
-    const Module = require('module') as typeof import('module');
+    // NOTE: do not call require('module') here — this file is bundled as ESM
+    // by esbuild for the server, and Dynamic require of built-ins is unsupported
+    // in ESM output. Use the statically-imported NodeModule instead.
+    const Module = NodeModule as typeof import('module');
     const m = new (Module as any)(absPath);
     m.filename = absPath;
     m.paths = (Module as any)._nodeModulePaths(fileDir);
     // Provide a require function scoped to the file's directory, but override
     // any require of the define module to return our own instance
     const fileRequire = createRequire(absPath);
+    // Match if `id` looks like our own define module before doing any
+    // filesystem resolution. Required because:
+    //   1) the loader is bundled as ESM by esbuild, so synthetic CJS
+    //      `require.resolve` is unavailable here, and
+    //   2) `lib/testCases/define.ts` is not compiled to a .js sibling, so
+    //      `fileRequire.resolve('../../lib/testCases/define')` from a
+    //      fixture would throw MODULE_NOT_FOUND.
+    const isDefineId = (id: string) => {
+      const normalized = id.replace(/\\/g, '/').replace(/\.js$/, '');
+      return (
+        normalized === 'lib/testCases/define' ||
+        normalized.endsWith('/lib/testCases/define')
+      );
+    };
     const wrappedRequire = (id: string) => {
+      if (isDefineId(id)) {
+        return { test: testFn };
+      }
       const resolved = fileRequire.resolve(id);
-      if (resolved === require.resolve('./define.js') || resolved === require.resolve('./define')) {
+      const normalized = resolved.replace(/\\/g, '/');
+      if (
+        normalized.endsWith('/lib/testCases/define.js') ||
+        normalized.endsWith('/lib/testCases/define')
+      ) {
         return { test: testFn };
       }
       return fileRequire(id);
