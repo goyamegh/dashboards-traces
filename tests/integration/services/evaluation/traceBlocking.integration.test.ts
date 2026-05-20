@@ -178,8 +178,6 @@ describe('Issue #184 - useTraces benchmark blocking (integration)', () => {
       console.warn('Skipping: prerequisites not met (backend/observio/testCaseId)');
       return;
     }
-      return;
-    }
 
     // This test waits for the full trace poller timeout (up to 5 min with defaults).
     // We only run it if FULL_TRACE_TEST=true is set.

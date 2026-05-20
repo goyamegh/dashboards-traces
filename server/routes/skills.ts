@@ -26,6 +26,26 @@ import type { SkillEvalProgressEvent, SkillBenchmarkResult, SkillGradingResult }
 const router = Router();
 
 /**
+ * Validate that a resolved path is within the current working directory.
+ * Prevents path traversal attacks by rejecting absolute paths or paths
+ * that escape the workspace root.
+ */
+function validatePathWithinCwd(inputPath: string): { valid: boolean; absolutePath: string; error?: string } {
+  const cwd = process.cwd();
+  const absolutePath = resolve(cwd, inputPath);
+
+  // Ensure the resolved path is within cwd (no parent traversal)
+  if (!absolutePath.startsWith(cwd + '/') && absolutePath !== cwd) {
+    return { valid: false, absolutePath, error: `Path must be within the workspace: ${cwd}` };
+  }
+
+  return { valid: true, absolutePath };
+}
+
+/** Managed workspace root for skill evaluation results */
+const SKILL_EVALS_ROOT = resolve(process.cwd(), 'agent-health-data', 'skill-evals');
+
+/**
  * GET /api/skills/discover
  * Scan common locations for SKILL.md files and return available skills.
  */
@@ -126,10 +146,14 @@ router.post('/api/skills/validate', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'path is required' });
   }
 
-  const absolutePath = resolve(skillPath);
-  debug('SkillsAPI', 'Validating skill at:', absolutePath);
+  const pathCheck = validatePathWithinCwd(skillPath);
+  if (!pathCheck.valid) {
+    return res.status(400).json({ error: pathCheck.error });
+  }
 
-  const result = parseSkill(absolutePath);
+  debug('SkillsAPI', 'Validating skill at:', pathCheck.absolutePath);
+
+  const result = parseSkill(pathCheck.absolutePath);
   res.json(result);
 });
 
@@ -153,7 +177,11 @@ router.post('/api/skills/eval', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'path is required' });
   }
 
-  const absolutePath = resolve(skillPath);
+  const pathCheck = validatePathWithinCwd(skillPath);
+  if (!pathCheck.valid) {
+    return res.status(400).json({ error: pathCheck.error });
+  }
+  const absolutePath = pathCheck.absolutePath;
 
   // Validate skill
   const validation = parseSkill(absolutePath);
@@ -236,7 +264,7 @@ router.post('/api/skills/eval', async (req: Request, res: Response) => {
 
     // Step 2: Propose improvement (if there are failures)
     const iterationDir = join(workspacePath, `iteration-${iteration}`);
-    const { withSkillGradings, withoutSkillGradings } = loadGradings(iterationDir, evalsFile.evals.length);
+    const { withSkillGradings, withoutSkillGradings } = loadGradings(iterationDir, evalsFile.evals.map(e => e.id));
 
     const hasFailures = withSkillGradings.some(g => g.summary.pass_rate < 1);
 
@@ -302,9 +330,13 @@ router.get('/api/skills/results', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'workspace query parameter is required' });
   }
 
-  const absolutePath = resolve(workspace);
+  // Constrain results to the managed skill-evals root
+  const absolutePath = resolve(SKILL_EVALS_ROOT, workspace);
+  if (!absolutePath.startsWith(SKILL_EVALS_ROOT + '/') && absolutePath !== SKILL_EVALS_ROOT) {
+    return res.status(400).json({ error: 'workspace must be a skill name within the managed skill-evals directory' });
+  }
   if (!existsSync(absolutePath)) {
-    return res.status(404).json({ error: `Workspace not found: ${absolutePath}` });
+    return res.status(404).json({ error: `Workspace not found: ${workspace}` });
   }
 
   const iterations: SkillBenchmarkResult[] = [];
@@ -331,15 +363,15 @@ router.get('/api/skills/results', async (req: Request, res: Response) => {
 /**
  * Load grading results from an iteration directory.
  */
-function loadGradings(iterationDir: string, evalCount: number): {
+function loadGradings(iterationDir: string, evalIds: (string | number)[]): {
   withSkillGradings: SkillGradingResult[];
   withoutSkillGradings: SkillGradingResult[];
 } {
   const withSkillGradings: SkillGradingResult[] = [];
   const withoutSkillGradings: SkillGradingResult[] = [];
 
-  for (let i = 1; i <= evalCount; i++) {
-    const evalDir = join(iterationDir, `eval-${i}`);
+  for (const id of evalIds) {
+    const evalDir = join(iterationDir, `eval-${id}`);
 
     const withPath = join(evalDir, 'with_skill', 'grading.json');
     if (existsSync(withPath)) {

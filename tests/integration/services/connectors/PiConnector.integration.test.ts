@@ -696,8 +696,10 @@ describe('PiConnector Integration Tests', () => {
       await executePromise;
 
       const spawnArgs = mockSpawn.mock.calls[0][1];
-      expect(spawnArgs).toContain('--package');
-      expect(spawnArgs).toContain('/my/package');
+      expect(spawnArgs).toContain('--skill');
+      expect(spawnArgs).toContain('/my/package/skills/*');
+      expect(spawnArgs).toContain('--extension');
+      expect(spawnArgs).toContain('/my/package/extensions/agent-health.ts');
     });
   });
 
