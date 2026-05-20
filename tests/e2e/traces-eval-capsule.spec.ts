@@ -35,7 +35,7 @@ test.describe('Eval Span Category Capsule', () => {
     await expect(evalSpanLabel).toBeVisible({ timeout: 5000 });
   });
 
-  test('clicking an eval span in the inline tree opens the SpanDetailsPanel below', async ({ page }) => {
+  test('clicking a span in the inline tree opens the bottom drawer with a flat attributes table', async ({ page }) => {
     const traceRow = page.locator('tbody tr').first();
     if (!await traceRow.isVisible().catch(() => false)) {
       return;
@@ -49,23 +49,43 @@ test.describe('Eval Span Category Capsule', () => {
       return;
     }
 
-    // Click the second visible span row inside the inline tree (a child
-    // span if hierarchy exists, otherwise just the second sibling).
+    // Click the first visible span row inside the inline tree.
     const treeRows = tree.locator('> div > div');
     const rowCount = await treeRows.count();
-    if (rowCount < 2) {
+    if (rowCount < 1) {
       return;
     }
-    await treeRows.nth(1).click();
+    await treeRows.first().click();
     await page.waitForTimeout(800);
 
-    // SpanDetailsPanel renders below the tree (Chrome DevTools Inspect style)
-    // with INPUT / OUTPUT / All Attributes sections.
-    const detailsPanel = page.locator('text=ALL ATTRIBUTES').first();
-    if (await detailsPanel.isVisible().catch(() => false)) {
-      await expect(detailsPanel).toBeVisible();
+    // The bottom drawer (Sheet side="bottom") should be open with the
+    // SimpleSpanAttributesTable inside. Verify the filter input and at
+    // least the "X attributes" identity strip render.
+    const filterInput = page.locator('input[placeholder="Filter attributes…"]').first();
+    await expect(filterInput).toBeVisible({ timeout: 3000 });
+
+    const identityStrip = page.locator('text=/\\d+ attributes?/').first();
+    await expect(identityStrip).toBeVisible({ timeout: 3000 });
+
+    // Pressing Escape should close the drawer.
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(500);
+    await expect(filterInput).not.toBeVisible({ timeout: 3000 });
+  });
+
+  test('per-span timeline bars render in the inline tree', async ({ page }) => {
+    const traceRow = page.locator('tbody tr').first();
+    if (!await traceRow.isVisible().catch(() => false)) {
+      return;
     }
-    // Otherwise the click missed a bar — that's acceptable in this smoke check.
+    await traceRow.click();
+    await page.waitForTimeout(1500);
+
+    // Each visible span row in the inline tree carries a `.trace-row-timeline`
+    // mini-gantt bar in its right-hand area.
+    const bars = page.locator('.trace-inline-tree .trace-row-timeline');
+    await expect(bars.first()).toBeVisible({ timeout: 3000 });
+    expect(await bars.count()).toBeGreaterThan(0);
   });
 
   test('Maximize button on the expanded row opens fullscreen view', async ({ page }) => {

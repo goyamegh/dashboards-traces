@@ -15,11 +15,12 @@
 
 import React from 'react';
 import { ChevronDown, ChevronRight, Coins, Bot, Zap, Wrench, ClipboardCheck, AlertCircle, Circle } from 'lucide-react';
-import { Span } from '@/types';
+import { Span, TimeRange } from '@/types';
 import { getSpanColor, flattenVisibleSpans } from '@/services/traces';
 import { getSpanCategory, getCategoryMeta } from '@/services/traces/spanCategorization';
 import { formatDuration } from '@/services/traces/utils';
 import { Badge } from '@/components/ui/badge';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 
 // Icon mapping
@@ -52,6 +53,13 @@ interface TraceTreeTableProps {
   onSelect: (span: Span) => void;
   expandedSpans: Set<string>;
   onToggleExpand: (spanId: string) => void;
+  /**
+   * When provided, render a per-row timeline bar in the right-hand area
+   * showing each span's relative start/duration within the parent trace.
+   * Without this prop the tree behaves identically to the original
+   * (no timeline column).
+   */
+  timeRange?: TimeRange;
 }
 
 const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
@@ -60,6 +68,7 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
   onSelect,
   expandedSpans,
   onToggleExpand,
+  timeRange,
 }) => {
   const [hoveredSpan, setHoveredSpan] = React.useState<string | null>(null);
   
@@ -285,6 +294,43 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
                     {span.attributes['gen_ai.usage.output_tokens']}
                   </Badge>
                 )}
+
+                {/* Per-span timeline bar (optional) — fills the empty
+                    horizontal space on the right of each tree row with a
+                    mini-gantt showing where this span sits within the
+                    trace. Only rendered when `timeRange` is provided. */}
+                {timeRange && timeRange.duration > 0 && (() => {
+                  const startMs = new Date(span.startTime).getTime();
+                  const endMs = new Date(span.endTime).getTime();
+                  const offsetPct = Math.max(0, Math.min(100,
+                    ((startMs - timeRange.startTime) / timeRange.duration) * 100
+                  ));
+                  const widthPct = Math.max(0.5, Math.min(100 - offsetPct,
+                    ((endMs - startMs) / timeRange.duration) * 100
+                  ));
+                  return (
+                    <TooltipProvider delayDuration={200}>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <div className="trace-row-timeline relative h-1.5 w-44 bg-muted/40 rounded-sm overflow-hidden flex-shrink-0">
+                            <div
+                              className="absolute top-0 bottom-0 rounded-sm"
+                              style={{
+                                left: `${offsetPct}%`,
+                                width: `${widthPct}%`,
+                                backgroundColor: getSpanColor(span),
+                              }}
+                            />
+                          </div>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="text-[10px]">
+                          <div>start +{formatDuration(startMs - timeRange.startTime)}</div>
+                          <div>duration {formatDuration(duration)}</div>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  );
+                })()}
 
                 {/* Duration with color coding */}
                 <div className={cn(

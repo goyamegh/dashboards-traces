@@ -62,9 +62,10 @@ import { processSpansIntoTree } from '@/services/traces';
 import { startMeasure, endMeasure } from '@/lib/performance';
 import { cn, formatRelativeTime } from '@/lib/utils';
 import TraceTreeTable from './TraceTreeTable';
-import SpanDetailsPanel from './SpanDetailsPanel';
+import SimpleSpanAttributesTable from './SimpleSpanAttributesTable';
 import TraceFullScreenView from './TraceFullScreenView';
 import MetricsOverview, { FilterAction } from './MetricsOverview';
+import { Sheet, SheetContent } from '@/components/ui/sheet';
 
 // ==================== Types ====================
 
@@ -319,8 +320,9 @@ interface ExpandedTraceRowProps {
  * Renders the inline expanded view for a trace, shown directly below the
  * clicked row (Chrome DevTools "Inspect"-tab style).
  *
- * Top section: trace tree timeline (per-span distribution bars).
- * Bottom section (only when a span is selected): SpanDetailsPanel.
+ * The tree is rendered inline; per-span details, however, slide up as a
+ * page-level bottom drawer (so they get full horizontal width and don't
+ * compete with the trace list above).
  */
 const ExpandedTraceRow: React.FC<ExpandedTraceRowProps> = ({ trace, onClose }) => {
   const [selectedSpan, setSelectedSpan] = useState<Span | null>(null);
@@ -399,29 +401,51 @@ const ExpandedTraceRow: React.FC<ExpandedTraceRowProps> = ({ trace, onClose }) =
             </div>
           </div>
 
-          {/* Trace tree (Reddit-style L-shaped connecting lines between
-              parent/child spans) — gives the inline expansion a clear
-              hierarchical structure rather than a flat dropdown list. */}
+          {/* Trace tree with Reddit-style L-shaped connecting lines AND a
+              per-span timeline bar in the right-hand area showing each
+              span's relative position/duration within the trace — fills
+              the previously-empty horizontal space and gives temporal
+              perspective without sacrificing the structural tree view. */}
           <div className="max-h-[480px] overflow-auto px-3 py-2 trace-inline-tree">
             <TraceTreeTable
               spanTree={spanTree}
+              timeRange={timeRange}
               selectedSpan={selectedSpan}
               onSelect={setSelectedSpan}
               expandedSpans={expandedSpans}
               onToggleExpand={handleToggleExpand}
             />
           </div>
-
-          {/* Span details panel BELOW the tree (Chrome DevTools style) */}
-          {selectedSpan && (
-            <div className="border-t bg-muted/20 max-h-[420px] overflow-auto">
-              <SpanDetailsPanel
-                span={selectedSpan}
-                onClose={() => setSelectedSpan(null)}
-              />
-            </div>
-          )}
         </div>
+
+        {/* Span details bottom drawer — slides up from the bottom of the
+            page (instead of inline-below-the-tree) so it gets the full
+            page width and doesn't visually compete with the trace list
+            above. Mounts via Radix portal at <body>. */}
+        <Sheet
+          open={selectedSpan !== null}
+          onOpenChange={(o) => { if (!o) setSelectedSpan(null); }}
+        >
+          <SheetContent
+            side="bottom"
+            className="h-[55vh] p-0 flex flex-col"
+            aria-label="Span details"
+          >
+            {/* Close button — Radix Dialog handles Escape, this is the
+                visible affordance. */}
+            <Button
+              variant="ghost"
+              size="icon"
+              className="absolute top-2 right-2 h-7 w-7 z-10"
+              onClick={() => setSelectedSpan(null)}
+              aria-label="Close span details"
+              title="Close (Esc)"
+            >
+              <X size={14} />
+            </Button>
+            {selectedSpan && <SimpleSpanAttributesTable span={selectedSpan} />}
+          </SheetContent>
+        </Sheet>
 
         {/* Fullscreen view (preserves access to all view modes) */}
         <TraceFullScreenView
