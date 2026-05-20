@@ -19,6 +19,10 @@
 
 import { test, expect } from './fixtures/test-fixtures';
 import * as path from 'path';
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 const OBSERVIO_ENDPOINT = 'http://localhost:3001/run-agent';
 const FIXTURE_PATH = path.resolve(__dirname, '../fixtures/observio-sample.eval.js');
@@ -64,6 +68,14 @@ test.describe('Code SDK - Observio E2E via API', () => {
         '. Skipping live agent tests. Start with: cd observio-sample-agent && npm run start:ag-ui'
       );
     }
+  });
+
+  // The tests in this file use page.evaluate(() => fetch('/api/...')) which
+  // resolves the relative URL against the page's current origin. Without an
+  // explicit goto, that origin is about:blank and every fetch fails. Navigate
+  // to baseURL once before each test so /api/* resolves to the backend.
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
   });
 
   test('should verify fixture file is loadable via evaluation-runs API', async ({ page }) => {
@@ -301,6 +313,12 @@ test.describe('Code SDK - Observio E2E via API', () => {
 });
 
 test.describe('Code SDK - Server-side code-import validation', () => {
+  // Same rationale as above: ensure relative /api/* fetches resolve against
+  // the backend origin rather than about:blank.
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/');
+  });
+
   test('should reject code-import with non-existent file path', async ({ page }) => {
     const result = await page.evaluate(async () => {
       try {
