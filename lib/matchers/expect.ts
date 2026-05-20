@@ -52,20 +52,17 @@ function ensurePluginsInstalled(): void {
   ): any {
     const negate = utils.flag(this, 'negate');
     const ok = negate ? !expr : !!expr;
-    // Compute a stable description from chai's own message. Fall back to
-    // its inspect dump if the message is a function.
-    const rawMsg = typeof msg === 'function' ? msg() : msg;
-    const negateRawMsg = typeof negateMsg === 'function' ? negateMsg() : negateMsg;
-    const description = ok ? (rawMsg || '') : (negateRawMsg || rawMsg || '');
+    // chai resolves #{this}, #{exp}, #{act} placeholders only when it builds
+    // its own error message. We resolve them here so the recorded
+    // description is human-readable in the UI for both passing and failing
+    // assertions.
+    const description = describeAssertion(this, expr, msg, negateMsg, expected, actual, utils);
 
     try {
       const result = originalAssert.call(this, expr, msg, negateMsg, expected, actual, showDiff);
-      // Only record top-level user-visible assertions, not chained internals.
-      // Chai sets `eql.deep` etc. flag during chained calls; we filter those
-      // by skipping records where description is empty.
       if (description) {
         recordVerdict({
-          description: shortDescription(description, this),
+          description,
           pass: true,
           method: 'code-assertion',
           actual: safeClone(actual ?? utils.flag(this, 'object')),
@@ -76,7 +73,7 @@ function ensurePluginsInstalled(): void {
     } catch (err: any) {
       if (description) {
         recordVerdict({
-          description: shortDescription(description, this),
+          description,
           pass: false,
           method: 'code-assertion',
           actual: safeClone(actual ?? utils.flag(this, 'object')),
@@ -173,14 +170,56 @@ ensurePluginsInstalled();
 /** The user-facing `expect` — chai's expect with our plugin pre-installed. */
 export const expect = chai.expect;
 
+/**
+ * Build a UI-friendly description for an assertion. Chai's raw msg/negateMsg
+ * contain `#{this}`, `#{exp}`, `#{act}` placeholders that only get resolved
+ * by chai when it builds an error message. We resolve them here so the
+ * description is readable on pass too.
+ */
+function describeAssertion(
+  ctx: any,
+  _expr: unknown,
+  msg: string | (() => string),
+  negateMsg: string | (() => string),
+  expected: unknown,
+  actual: unknown,
+  utils: any
+): string {
+  const rawMsg = typeof msg === 'function' ? msg() : msg;
+  const rawNeg = typeof negateMsg === 'function' ? negateMsg() : negateMsg;
+  const template: string = rawMsg || rawNeg || '';
+  if (!template) return '';
+  const obj = utils.flag(ctx, 'object');
+  const resolved = template
+    .replace(/#\{this\}/g, () => safeInspect(obj, utils))
+    .replace(/#\{act\}/g, () => safeInspect(actual, utils))
+    .replace(/#\{exp\}/g, () => safeInspect(expected, utils));
+  return shortDescription(resolved);
+}
+
+function safeInspect(v: unknown, utils: any): string {
+  try {
+    const str =
+      utils.objDisplay && typeof utils.objDisplay === 'function'
+        ? utils.objDisplay(v)
+        : utils.inspect
+        ? utils.inspect(v)
+        : String(v);
+    if (typeof str !== 'string') return String(v);
+    return str.length > 60 ? `${str.slice(0, 57)}\u2026` : str;
+  } catch {
+    return String(v);
+  }
+}
+
 /** Trim chai's verbose default messages to a UI-friendly description. */
-function shortDescription(msg: string, ctx: any): string {
+function shortDescription(msg: string): string {
   // chai messages look like "expected X to contain Y". Drop the "expected X "
   // prefix when we have a useful object label so the UI shows the matcher,
   // not the actual data dump.
   const trimmed = msg.replace(/^expected\s+/i, '');
   // Cap at 120 chars to keep tables readable.
-  return trimmed.length > 120 ? `${trimmed.slice(0, 117)}…` : trimmed;
+  return trimmed.length > 120 ? `${trimmed.slice(0, 117)}\u2026` : trimmed;
 }
 
 /** Best-effort clone for serialization \u2014 stringify primitives and small objects. */

@@ -77,6 +77,14 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
         normalized.endsWith('/lib/testCases/define')
       );
     };
+    // Intercept the published package name as well — fixtures generally
+    // do `require('@opensearch-project/agent-health')` and Node's resolver
+    // would otherwise hit the package's exports map (which only exposes
+    // 'import' for ESM consumers).
+    const isPackageName = (id: string) =>
+      id === '@opensearch-project/agent-health' ||
+      id === '@opensearch/agent-health' ||
+      id === 'agent-health';
     // What we hand back to the user when they require the SDK. Must be the
     // same shape as the published @opensearch-project/agent-health package's
     // top-level exports so fixtures work both in-tree and against the npm
@@ -86,9 +94,15 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
       judge: judgeFn,
       wasJudgeCalled,
       resetJudgeFlag,
+      // Lazy-resolve the matcher exports so this loader doesn't have to
+      // statically import them (avoiding a build-time circular include).
+      get expect() {
+        // eslint-disable-next-line @typescript-eslint/no-require-imports
+        return require('../matchers/expect.js').expect;
+      },
     };
     const wrappedRequire = (id: string) => {
-      if (isDefineId(id)) {
+      if (isDefineId(id) || isPackageName(id)) {
         return sdkExports;
       }
       // Fall back to a resolution-based check so that fixtures requiring the

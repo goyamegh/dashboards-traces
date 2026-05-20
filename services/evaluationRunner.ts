@@ -244,11 +244,25 @@ export async function executeEvaluationRun(
             }
           }
 
+          // Deterministic eval already produced a verdict via the matcher
+          // session. Mark the report as final so the trace-mode polling /
+          // Bedrock-judge path below is skipped — those would otherwise call
+          // callBedrockJudge with empty expectedOutcomes and fail loudly.
+          if (hasDeterministicEval) {
+            (report as any).metricsStatus = 'completed';
+            (report as any).skipJudge = true;
+          }
+
           // Save the report via storage module
           const savedReport = await storageModule.runs.create(report as any);
 
-          // If trace mode (metricsStatus: 'pending'), poll for traces and run judge inline
-          if (savedReport.metricsStatus === 'pending' && savedReport.runId) {
+          // If trace mode (metricsStatus: 'pending'), poll for traces and run judge inline.
+          // Skipped for deterministic runs (matcher session decided the verdict already).
+          if (
+            !hasDeterministicEval &&
+            savedReport.metricsStatus === 'pending' &&
+            savedReport.runId
+          ) {
             debug('EvaluationRunner', `[${testCaseId}] Trace mode: polling for traces (runId=${savedReport.runId})`);
             await waitForTracesAndJudge(savedReport, testCase, storageModule, agentConfig);
           }

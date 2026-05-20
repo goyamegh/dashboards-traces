@@ -117,6 +117,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       return;
     }
     const testCases = resolved.testCases;
+    const evaluateFnMap = resolved.evaluateFnMap;
 
     // Create test case snapshots
     const snapshots: TestCaseSnapshot[] = testCases.map(tc => ({
@@ -159,6 +160,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       const completedRun = await executeEvaluationRun(run, testCases, {
         storageModule: storage,
         cancellationToken,
+        evaluateFnMap,
         onProgress: (progress: any) => {
           sendSSE(res, 'progress', progress);
         },
