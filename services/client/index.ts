@@ -37,7 +37,6 @@ export {
 } from './assistantApi';
 
 export {
-export {
   discoverSkills,
   validateSkill,
   streamSkillEval,

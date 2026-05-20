@@ -363,7 +363,8 @@ describe('Sample Traces', () => {
     it('should have root spans without parent', () => {
       const spans = getSampleSpansByTraceId('demo-trace-001');
       const rootSpans = spans.filter((s) => !s.parentSpanId);
-      expect(rootSpans.length).toBe(1);
+      // Agent root span + eval suite root span
+      expect(rootSpans.length).toBe(2);
     });
 
     it('should have consistent parent references', () => {
