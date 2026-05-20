@@ -9,6 +9,10 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Changed
+- **UI:** Sidebar now uses a uniform near-black background (`hsl(var(--background))`) in dark mode instead of the previous dark gray (`#1D1E24`), so the sidebar header / nav region matches the existing footer (which already used `bg-background`). Removes the visible top-vs-bottom seam in the left navigation. Light mode unchanged.
+- **UI:** The radial gradient background previously seen only on the Dashboard / Overview page now applies on every page. The `dashboard-gradient-bg` class is now attached to the `SidebarInset` `<main>` in `Layout.tsx`, replacing the per-page `useEffect` toggle in `Dashboard.tsx`.
+
 ### Added
 - Cross-page user preferences are now stored under a single shared `agent-health:prefs:*` namespace, so picking a value once is reflected on every other page that exposes the same control. Shared keys:
   - `prefs:timeRange` — Benchmarks / Test Cases / Evaluation Runs / Agent Traces (Agent Traces converts the shared `'1h' | '6h' | '1d' | '7d' | '30d' | 'all'` enum to its internal minute-based query cutoff).
