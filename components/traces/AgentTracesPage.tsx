@@ -61,7 +61,7 @@ import { categorizeSpanTree } from '@/services/traces/spanCategorization';
 import { processSpansIntoTree } from '@/services/traces';
 import { startMeasure, endMeasure } from '@/lib/performance';
 import { cn, formatRelativeTime } from '@/lib/utils';
-import TraceTimelineChart from './TraceTimelineChart';
+import TraceTreeTable from './TraceTreeTable';
 import SpanDetailsPanel from './SpanDetailsPanel';
 import TraceFullScreenView from './TraceFullScreenView';
 import MetricsOverview, { FilterAction } from './MetricsOverview';
@@ -357,10 +357,12 @@ const ExpandedTraceRow: React.FC<ExpandedTraceRowProps> = ({ trace, onClose }) =
   return (
     <tr className="bg-muted/20 border-b">
       <td colSpan={8} className="p-0">
-        <div className="border-l-2 border-opensearch-blue bg-background">
+        {/* Wrap the entire expansion in a smaller-text scope so spans inside
+            one trace look visually distinct from the outer table rows. */}
+        <div className="border-l-2 border-opensearch-blue bg-background text-[11px]">
           {/* Compact header */}
-          <div className="flex items-center justify-between px-3 py-2 border-b bg-card">
-            <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0">
+          <div className="flex items-center justify-between px-3 py-1.5 border-b bg-card">
+            <div className="flex items-center gap-2 text-[10px] text-muted-foreground min-w-0">
               <span className="font-medium text-foreground truncate" title={trace.rootSpanName}>
                 {trace.rootSpanName}
               </span>
@@ -377,33 +379,34 @@ const ExpandedTraceRow: React.FC<ExpandedTraceRowProps> = ({ trace, onClose }) =
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7"
+                className="h-6 w-6"
                 onClick={() => setFullscreenOpen(true)}
                 title="Open fullscreen"
                 aria-label="Open trace in fullscreen view"
               >
-                <Maximize2 size={14} />
+                <Maximize2 size={12} />
               </Button>
               <Button
                 variant="ghost"
                 size="icon"
-                className="h-7 w-7"
+                className="h-6 w-6"
                 onClick={onClose}
                 title="Collapse"
                 aria-label="Collapse expanded trace row"
               >
-                <X size={14} />
+                <X size={12} />
               </Button>
             </div>
           </div>
 
-          {/* Trace tree with per-span timeline distribution bars */}
-          <div className="max-h-[480px] overflow-auto">
-            <TraceTimelineChart
+          {/* Trace tree (Reddit-style L-shaped connecting lines between
+              parent/child spans) — gives the inline expansion a clear
+              hierarchical structure rather than a flat dropdown list. */}
+          <div className="max-h-[480px] overflow-auto px-3 py-2 trace-inline-tree">
+            <TraceTreeTable
               spanTree={spanTree}
-              timeRange={timeRange}
               selectedSpan={selectedSpan}
-              onSelectSpan={setSelectedSpan}
+              onSelect={setSelectedSpan}
               expandedSpans={expandedSpans}
               onToggleExpand={handleToggleExpand}
             />

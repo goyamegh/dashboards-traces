@@ -24,15 +24,14 @@ test.describe('Eval Span Category Capsule', () => {
     await traceRow.click();
     await page.waitForTimeout(1500);
 
-    // The expanded row should render the trace tree timeline chart inline.
-    const timelineChart = page.locator('[data-testid="trace-timeline-chart"]').first();
-    await expect(timelineChart).toBeVisible({ timeout: 5000 });
+    // The expanded row should render the trace tree inline.
+    const tree = page.locator('.trace-inline-tree').first();
+    await expect(tree).toBeVisible({ timeout: 5000 });
 
-    // The chart's y-axis labels list every visible span. Eval spans like
-    // `test_case` / `test_suite_run` should be present in the rendered
-    // ECharts canvas (or DOM siblings rendered via SVG text nodes).
-    // Use page-level text matching since echarts renders labels inside SVG.
-    const evalSpanLabel = page.locator('text=/test_case|test_suite_run|evaluation/i').first();
+    // Eval spans like `test_case` / `test_suite_run` should be present in
+    // the rendered tree. The TraceTreeTable renders span names as plain
+    // text inside divs, so a regex text match is enough.
+    const evalSpanLabel = page.locator('.trace-inline-tree').locator('text=/test_case|test_suite_run|evaluation/i').first();
     await expect(evalSpanLabel).toBeVisible({ timeout: 5000 });
   });
 
@@ -45,20 +44,20 @@ test.describe('Eval Span Category Capsule', () => {
     await traceRow.click();
     await page.waitForTimeout(1500);
 
-    const timelineChart = page.locator('[data-testid="trace-timeline-chart"]').first();
-    if (!await timelineChart.isVisible().catch(() => false)) {
+    const tree = page.locator('.trace-inline-tree').first();
+    if (!await tree.isVisible().catch(() => false)) {
       return;
     }
 
-    // Click somewhere inside the chart to select a span (best-effort — the
-    // first non-root bar is at row index 1, ROW_HEIGHT=20). The exact
-    // pixel doesn't have to land on a bar; if no span is selected the
-    // SpanDetailsPanel just won't appear and the test will skip below.
-    const box = await timelineChart.boundingBox();
-    if (box) {
-      await page.mouse.click(box.x + 260, box.y + 35);
-      await page.waitForTimeout(800);
+    // Click the second visible span row inside the inline tree (a child
+    // span if hierarchy exists, otherwise just the second sibling).
+    const treeRows = tree.locator('> div > div');
+    const rowCount = await treeRows.count();
+    if (rowCount < 2) {
+      return;
     }
+    await treeRows.nth(1).click();
+    await page.waitForTimeout(800);
 
     // SpanDetailsPanel renders below the tree (Chrome DevTools Inspect style)
     // with INPUT / OUTPUT / All Attributes sections.

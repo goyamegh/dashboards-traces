@@ -509,3 +509,29 @@ select:focus {
 .dark *::-webkit-scrollbar-corner {
   background: #1f2937;
 }
+
+/* ==================== Agent Traces inline tree expansion ==================== */
+/* Scale down typography inside the inline trace expansion so that spans
+   nested inside one trace row look visually subordinate to the outer
+   table rows. The TraceTreeTable component is reused as-is — these
+   overrides only apply when it's wrapped in `.trace-inline-tree`. */
+.trace-inline-tree .text-sm {
+  font-size: 11px;
+  line-height: 1.25rem;
+}
+.trace-inline-tree .text-xs {
+  font-size: 10px;
+}
+.trace-inline-tree .text-\[10px\] {
+  font-size: 9px;
+}
+/* Tighter row vertical padding in the inline tree (default is py-2 = 8px). */
+.trace-inline-tree > div > div {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+/* Smaller span icon to match the smaller text. */
+.trace-inline-tree .w-6.h-6 {
+  width: 1.125rem;   /* 18px */
+  height: 1.125rem;
+}
