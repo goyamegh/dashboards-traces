@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import { useNavigate } from 'react-router-dom';
 import { X, Play, Save, Star, CheckCircle2, XCircle, Loader2, ExternalLink, Clock, RefreshCw, Info, ChevronRight } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -14,7 +15,8 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { TestCase, TrajectoryStep, Evaluator } from '@/types';
-import { DEFAULT_CONFIG } from '@/lib/constants';
+import { DEFAULT_CONFIG, getPreferredDefaultAgentKey } from '@/lib/constants';
+import { PREFS_KEYS } from '@/lib/preferences';
 import { ENV_CONFIG } from '@/lib/config';
 import { parseLabels } from '@/lib/labels';
 import { runServerEvaluation, ServerEvaluationReport } from '@/services/client/evaluationApi';
@@ -34,12 +36,18 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
 }) => {
   const navigate = useNavigate();
 
-  // Agent/Model selection - all agents are available since evaluation runs server-side
-  const [selectedAgentKey, setSelectedAgentKey] = useState(
-    () => DEFAULT_CONFIG.agents[0]?.key
+  // Agent/Model selection — persisted across sessions under shared `prefs:*`
+  // keys so the choice is reused on every other page that has a run-config
+  // dropdown (NewRunPage, BenchmarkRunsPage, BenchmarkEditor).
+  // Default prefers `observio` so the popup arrives pre-populated with a
+  // working sample agent the user can run immediately. Use a lazy initializer
+  // so we don't traverse the agent list on every render — the default is
+  // only consulted when localStorage is empty on first mount.
+  const [selectedAgentKey, setSelectedAgentKey] = usePersistedState(
+    PREFS_KEYS.agentKey, getPreferredDefaultAgentKey()
   );
-  const [selectedModelId, setSelectedModelId] = useState('claude-sonnet-4.5');
-  const [selectedEvaluatorId, setSelectedEvaluatorId] = useState<string | undefined>();
+  const [selectedModelId, setSelectedModelId] = usePersistedState(PREFS_KEYS.modelId, 'claude-sonnet-4.5');
+  const [selectedEvaluatorId, setSelectedEvaluatorId] = usePersistedState<string | undefined>('quick-run:evaluatorId', undefined);
   const [evaluators, setEvaluators] = useState<Evaluator[]>([]);
 
   // Ad-hoc run fields (when no testCase)
@@ -52,6 +60,11 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
   const [reportId, setReportId] = useState<string | null>(null);
   const [report, setReport] = useState<ServerEvaluationReport | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  /** When set, the inline SSE dropped and the modal is polling for completion. */
+  const [reconnectState, setReconnectState] = useState<
+    | null
+    | { reportId: string; reason: string; lastStatus?: string }
+  >(null);
   const [showBuiltInAgents, setShowBuiltInAgents] = useState(false);
 
   // OpenAI-compatible dynamic model discovery
@@ -65,6 +78,28 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
   const [bedrockDiscoveryError, setBedrockDiscoveryError] = useState<string | null>(null);
 
   const selectedAgent = DEFAULT_CONFIG.agents.find(a => a.key === selectedAgentKey);
+
+  // If the persisted agent key no longer matches any known agent (e.g. config
+  // changed since the value was stored, or the stored value is empty), fall
+  // back to the preferred default. This guarantees the popup is always opened
+  // with a usable agent pre-populated.
+  //
+  // We deliberately omit `selectedAgentKey` from the dependency list to avoid
+  // a re-entry loop: if `getPreferredDefaultAgentKey()` ever returned a value
+  // that doesn't itself match an agent (e.g. agents list races with this
+  // effect), including the key in deps would cause the effect to fire again
+  // on every change and we'd spin. The effect only ever needs to react when
+  // `selectedAgent` becomes undefined, which is when reconciliation is
+  // actually required.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (!selectedAgent) {
+      const fallback = getPreferredDefaultAgentKey();
+      if (fallback && fallback !== selectedAgentKey) {
+        setSelectedAgentKey(fallback);
+      }
+    }
+  }, [selectedAgent, setSelectedAgentKey]);
 
   // Group models by provider for the dropdown (includes dynamically discovered OpenAI-compatible models)
   const modelsByProvider = Object.entries(DEFAULT_CONFIG.models).reduce((acc, [key, model]) => {
@@ -182,6 +217,7 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
     setReport(null);
     setReportId(null);
     setErrorMessage(null);
+    setReconnectState(null);
 
     try {
       // Build the request — use testCaseId for stored test cases, inline object for ad-hoc
@@ -216,12 +252,17 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
           testCase: runTestCase,
           evaluatorId: selectedEvaluatorId,
         },
-        (step) => setCurrentSteps(prev => [...prev, step])
+        {
+          onStep: (step) => setCurrentSteps(prev => [...prev, step]),
+          onReconnect: (id, reason) => setReconnectState({ reportId: id, reason }),
+          onPoll: (r) => setReconnectState(prev => prev ? { ...prev, lastStatus: r.status } : prev),
+        }
       );
 
       // Report is saved server-side; use the returned summary
       setReportId(result.reportId);
       setReport(result.report);
+      setReconnectState(null);
     } catch (error) {
       console.error('Evaluation error:', error);
       setErrorMessage(error instanceof Error ? error.message : 'Evaluation failed');
@@ -326,7 +367,7 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
               <div className="space-y-1">
                 <Label className="text-xs">Agent</Label>
                 <Select value={selectedAgentKey} onValueChange={setSelectedAgentKey}>
-                  <SelectTrigger className="w-48 h-8">
+                  <SelectTrigger className="w-48 h-8" data-testid="quickrun-agent-select">
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
@@ -349,9 +390,23 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                         <ChevronRight size={12} className={showBuiltInAgents ? 'rotate-90 transition-transform' : 'transition-transform'} />
                         Built-in ({DEFAULT_CONFIG.agents.filter(a => a.builtIn !== false).length})
                       </button>
-                      {showBuiltInAgents && DEFAULT_CONFIG.agents.filter(a => a.builtIn !== false).map(agent => (
-                        <SelectItem key={agent.key} value={agent.key}>{agent.name}</SelectItem>
-                      ))}
+                      {DEFAULT_CONFIG.agents.filter(a => a.builtIn !== false).map(agent => {
+                        // Always render the currently-selected built-in so the
+                        // <SelectValue /> trigger has its label even while the
+                        // built-in section is collapsed. Hide the others using
+                        // CSS so toggling the section doesn't lose state.
+                        const isSelected = agent.key === selectedAgentKey;
+                        const hidden = !showBuiltInAgents && !isSelected;
+                        return (
+                          <SelectItem
+                            key={agent.key}
+                            value={agent.key}
+                            className={hidden ? 'hidden' : ''}
+                          >
+                            {agent.name}
+                          </SelectItem>
+                        );
+                      })}
                     </SelectGroup>
                   </SelectContent>
                 </Select>
@@ -468,6 +523,18 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
               {errorMessage && (
                 <div className="mb-4 p-3 text-sm text-red-600 bg-red-50 rounded border border-red-200">
                   {errorMessage}
+                </div>
+              )}
+              {reconnectState && !report && (
+                <div className="mb-4 p-3 text-sm rounded border border-amber-300 bg-amber-50 dark:bg-amber-500/10 dark:border-amber-500/30 text-amber-800 dark:text-amber-300 flex items-start gap-2">
+                  <Loader2 size={14} className="mt-0.5 animate-spin shrink-0" />
+                  <div>
+                    <div className="font-medium">Stream disconnected — reconnecting via polling…</div>
+                    <div className="text-xs opacity-80 mt-0.5">
+                      The server is still running the evaluation. Waiting for it to finish.
+                      {reconnectState.lastStatus ? ` (status: ${reconnectState.lastStatus})` : ''}
+                    </div>
+                  </div>
                 </div>
               )}
               {currentSteps.length > 0 || report ? (

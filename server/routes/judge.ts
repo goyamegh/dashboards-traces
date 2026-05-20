@@ -14,6 +14,7 @@ import { evaluateTrajectory, parseBedrockError } from '@/server/services/bedrock
 import { evaluateWithOpenAICompatible, parseOpenAICompatibleError } from '@/server/services/judgeService';
 import { evaluateWithLiteLLM, parseLiteLLMError } from '@/server/services/litellmJudgeService';
 import { evaluateWithClaudeCode, parseClaudeCodeError } from '@/server/services/claudeCodeJudgeService';
+import { evaluateWithPi, parsePiError } from '@/server/services/piJudgeService';
 import { evaluateWithAgenticJudge, parseAgenticJudgeError } from '@/server/services/agenticJudgeService';
 import { loadConfigSync } from '@/lib/config/index';
 import serverConfig from '@/server/config';
@@ -244,6 +245,14 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       return res.json(result);
     }
 
+    if (provider === 'pi') {
+      debug('JudgeAPI', 'Pi provider - spawning pi CLI');
+      const result = await evaluateWithPi(
+        { trajectory, expectedOutcomes, expectedTrajectory, logs }
+      );
+      return res.json(result);
+    }
+
     if (provider === 'agentic') {
       debug('JudgeAPI', 'Agentic judge provider - running agent-based evaluation');
       const judgeConfig = config.judge || {};
@@ -305,13 +314,15 @@ router.post('/api/judge', async (req: Request, res: Response) => {
 
     const errorMessage = provider === 'agentic'
       ? parseAgenticJudgeError(error)
-      : provider === 'claude-code'
-        ? parseClaudeCodeError(error)
-        : provider === 'litellm'
-          ? parseLiteLLMError(error)
-          : provider === 'openai-compatible'
-            ? parseOpenAICompatibleError(error)
-            : parseBedrockError(error);
+      : provider === 'pi'
+        ? parsePiError(error)
+        : provider === 'claude-code'
+          ? parseClaudeCodeError(error)
+          : provider === 'litellm'
+            ? parseLiteLLMError(error)
+            : provider === 'openai-compatible'
+              ? parseOpenAICompatibleError(error)
+              : parseBedrockError(error);
 
     res.status(500).json({
       error: `Judge evaluation failed: ${errorMessage}`,

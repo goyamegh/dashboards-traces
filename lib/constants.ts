@@ -42,6 +42,11 @@ export const CONNECTOR_TYPE_INFO: Record<ConnectorProtocol, ConnectorTypeInfo> =
     description: 'Invokes the Claude Code CLI. Server-only — use the CLI or benchmark runner.',
     serverOnly: true,
   },
+  'pi': {
+    label: 'Pi (pi.dev)',
+    description: 'Invokes the pi.dev coding agent CLI. Server-only — use the CLI or benchmark runner.',
+    serverOnly: true,
+  },
   'strands': {
     label: 'Amazon Strands',
     description: 'Amazon Strands agent framework via Bedrock Agent Runtime API. Server-only — requires AWS SDK.',
@@ -69,6 +74,37 @@ export const BROWSER_SAFE_CONNECTORS = (Object.entries(CONNECTOR_TYPE_INFO) as [
 
 /** Keys of built-in agents shipped with the tool. */
 export const BUILT_IN_AGENT_KEYS = new Set(['demo', 'observio', 'claude-code', 'strands', 'langgraph-rest']);
+
+/**
+ * Ordered list of preferred default agent keys, used when picking an initial
+ * agent for popups/forms (e.g. QuickRunModal). The first entry that exists in
+ * `DEFAULT_CONFIG.agents` (and is enabled) wins.
+ *
+ * `observio` is preferred because it's a fully-featured local sample agent
+ * users can run end-to-end without external infra.
+ */
+export const PREFERRED_DEFAULT_AGENT_KEYS = ['observio', 'demo'] as const;
+
+/**
+ * Pick a sensible default agent key.
+ *
+ * Resolution order:
+ *  1. First entry in PREFERRED_DEFAULT_AGENT_KEYS that exists and is enabled
+ *  2. First enabled agent in DEFAULT_CONFIG.agents
+ *  3. First agent in DEFAULT_CONFIG.agents (even if disabled)
+ *  4. Empty string
+ */
+export function getPreferredDefaultAgentKey(): string {
+  const agents = DEFAULT_CONFIG.agents || [];
+  const isEnabled = (a: { enabled?: boolean }) => a.enabled !== false;
+  for (const preferred of PREFERRED_DEFAULT_AGENT_KEYS) {
+    const found = agents.find(a => a.key === preferred && isEnabled(a));
+    if (found) return found.key;
+  }
+  const firstEnabled = agents.find(isEnabled);
+  if (firstEnabled) return firstEnabled.key;
+  return agents[0]?.key || '';
+}
 
 /**
  * Get Claude Code connector environment variables at runtime.
@@ -137,6 +173,11 @@ export const DEFAULT_CONFIG: AppConfig = {
       connectorType: "agui-streaming",
       headers: {},
       useTraces: true,
+      // OTel `service.name` differs from the agent key for the observio sample
+      // agent (see observio-sample-agent/src/telemetry/provider.ts), so the
+      // Agent Traces page translates `prefs:agentFilter == 'observio'` to a
+      // service-name filter of 'observio-sample-agent' at query time.
+      traceServiceName: "observio-sample-agent",
     },
     {
       key: "claude-code",
@@ -159,6 +200,19 @@ export const DEFAULT_CONFIG: AppConfig = {
       connectorConfig: {
         agentAliasId: "${STRANDS_ALIAS_ID:-TSTALIASID}",
         region: "${AWS_REGION:-us-east-1}",
+      },
+      enabled: false,
+    },
+    {
+      key: "pi",
+      name: "Pi (pi.dev)",
+      endpoint: "pi",
+      description: "Pi.dev coding agent with Agent Health package (requires pi CLI installed)",
+      connectorType: "pi",
+      headers: {},
+      useTraces: false,
+      connectorConfig: {
+        packagePath: './observio-sample-agent/pi-package',
       },
       enabled: false,
     },

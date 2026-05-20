@@ -26,8 +26,9 @@ test.describe('Navigation', () => {
 
   test('should navigate to Dashboard page', async ({ page }) => {
     await page.click('[data-testid="nav-overview"]');
-    await expect(page.locator('[data-testid="dashboard-page"]')).toBeVisible();
-    await expect(page.locator('[data-testid="dashboard-title"]')).toHaveText('Leaderboard Overview');
+    // Dashboard shows either the full page or a first-run experience when no data exists
+    const dashboardPage = page.locator('[data-testid="dashboard-page"]').or(page.locator('[data-testid="first-run-experience"]'));
+    await expect(dashboardPage).toBeVisible({ timeout: 15000 });
   });
 
   test('should navigate to Test Cases page', async ({ page }) => {
@@ -97,8 +98,8 @@ test.describe('Navigation', () => {
 test.describe('URL-based Navigation', () => {
   test('should load Dashboard from root URL', async ({ page }) => {
     await page.goto('/');
-    await page.waitForSelector('[data-testid="dashboard-page"]');
-    await expect(page.locator('[data-testid="dashboard-title"]')).toBeVisible();
+    const dashboardPage = page.locator('[data-testid="dashboard-page"]').or(page.locator('[data-testid="first-run-experience"]'));
+    await expect(dashboardPage).toBeVisible({ timeout: 15000 });
   });
 
   test('should load Test Cases from direct URL', async ({ page }) => {

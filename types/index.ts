@@ -12,7 +12,7 @@ export type Difficulty = 'Easy' | 'Medium' | 'Hard';
 export type DateFormatVariant = 'date' | 'datetime' | 'detailed';
 
 // Judge provider determines which backend service handles evaluation
-export type JudgeProvider = 'demo' | 'bedrock' | 'openai-compatible' | 'litellm' | 'claude-code' | 'agentic';
+export type JudgeProvider = 'demo' | 'bedrock' | 'openai-compatible' | 'litellm' | 'claude-code' | 'agentic' | 'pi';
 
 // ============ AI Assistant Types ============
 
@@ -31,7 +31,7 @@ export interface AssistantContext {
 }
 
 // Connector protocol for agent communication
-export type ConnectorProtocol = 'agui-streaming' | 'rest' | 'openai-compatible' | 'subprocess' | 'claude-code' | 'strands' | 'langgraph' | 'mock';
+export type ConnectorProtocol = 'agui-streaming' | 'rest' | 'openai-compatible' | 'subprocess' | 'claude-code' | 'pi' | 'strands' | 'langgraph' | 'mock';
 
 export interface ModelConfig {
   model_id: string;
@@ -93,6 +93,22 @@ export interface AgentConfig {
   headers?: Record<string, string>; // Custom headers for agent endpoint (e.g., AWS credentials)
   auth?: ConnectorAuthConfig; // Explicit auth config (preferred over headers inference)
   useTraces?: boolean; // When true, fetch traces instead of logs for evaluation
+  tracePolling?: { // Configurable trace polling settings (used when useTraces: true)
+    intervalMs?: number;   // Polling interval in ms (default: 10000)
+    maxAttempts?: number;  // Max polling attempts (default: 30, ~5 min total)
+  };
+  /**
+   * OTel `service.name` resource attribute that this agent reports under.
+   * Defaults to {@link AgentConfig.key} when not set, which is correct for
+   * agents whose OTel SDK uses the same identifier as the config key (e.g.
+   * `claude-code`). Override only when the agent's OTel service name differs
+   * from its config key, e.g. `observio` -> `observio-sample-agent`.
+   *
+   * Used by the Agent Traces page to translate the user's cross-page agent
+   * filter (`agent-health:prefs:agentFilter`, which stores agent keys) into
+   * the actual `service.name` to filter by in OpenSearch queries.
+   */
+  traceServiceName?: string;
   connectorType?: ConnectorProtocol; // Connector protocol (defaults to 'agui-streaming')
   connectorConfig?: Record<string, any>; // Connector-specific configuration
   hooks?: AgentHooks; // Lifecycle hooks for custom setup/transform logic
@@ -834,6 +850,74 @@ export type Experiment = Benchmark;
 export type ExperimentProgress = BenchmarkProgress;
 /** @deprecated Use BenchmarkStartedEvent instead */
 export type ExperimentStartedEvent = BenchmarkStartedEvent;
+
+// ============ Evaluation Run Types (Unified Run Architecture) ============
+
+/**
+ * Discriminator for documents in evals_benchmarks index.
+ * Legacy docs without this field default to 'benchmark' via normalization.
+ */
+export type EvalDocType = 'benchmark' | 'evaluation-run';
+
+/**
+ * Describes where test cases came from for an evaluation run.
+ * Multiple sources can be combined (union, deduplicated by test case ID).
+ */
+export type TestCaseSource =
+  | { type: 'benchmark'; benchmarkId: string; benchmarkVersion?: number }
+  | { type: 'test-case-ids'; ids: string[] }
+  | { type: 'file-import'; filenames: string[]; testCaseIds: string[] }
+  | { type: 'directory-import'; dirPaths: string[]; testCaseIds: string[] }
+  | { type: 'label-filter'; labels: string[] };
+
+/**
+ * EvaluationRun — first-class execution record.
+ * Stored as top-level doc in evals_benchmarks index with docType: 'evaluation-run'.
+ * Replaces embedded BenchmarkRun as primary execution entity.
+ */
+export interface EvaluationRun {
+  id: string;
+  docType: 'evaluation-run';
+  name: string;
+  description?: string;
+  createdAt: string;
+  completedAt?: string;
+  status: BenchmarkRunStatus;
+  error?: string;
+
+  // Execution config
+  agentKey: string;
+  agentEndpoint?: string;
+  modelId: string;
+  evaluatorId?: string;
+  headers?: Record<string, string>;
+  concurrency?: number;
+
+  // Provenance — where did the test cases come from?
+  sources: TestCaseSource[];
+  trigger: 'ui' | 'cli' | 'api' | 'schedule';
+
+  // Resolved test cases (snapshotted at execution time for reproducibility)
+  testCaseSnapshots: TestCaseSnapshot[];
+
+  // Results (testCaseId → individual result)
+  results: Record<string, {
+    reportId: string;
+    status: RunResultStatus;
+    error?: string;
+    performanceMetrics?: TestCasePerformanceMetrics;
+  }>;
+
+  // Denormalized stats
+  stats?: RunStats;
+
+  // Performance metrics
+  performanceMetrics?: RunPerformanceMetrics;
+
+  // Benchmark association (undefined for ad-hoc runs, set for benchmark runs)
+  benchmarkId?: string;
+  benchmarkVersion?: number;
+}
 
 // ============ Comparison Types ============
 

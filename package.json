@@ -1,6 +1,6 @@
 {
-  "name": "@goyamegh/agent-health",
-  "version": "0.5.3",
+  "name": "@opensearch-project/agent-health",
+  "version": "0.5.0",
   "type": "module",
   "description": "Agent Evaluation and Observability Framework",
   "license": "Apache-2.0",
@@ -67,7 +67,7 @@
     "build:lib": "esbuild lib/index.ts lib/config/index.ts --bundle --platform=node --format=esm --outdir=lib/dist --packages=external",
     "build:all": "npm run build && npm run build:server && npm run build:cli && npm run build:lib",
     "start:observio": "cd observio-sample-agent && npm install --legacy-peer-deps --silent && npm run start:ag-ui",
-    "dev:all": "npm run start:observio & npm run dev:server",
+    "dev:all": "npm run dev:server",
     "demo": "npm run build:all && node cli/dist/index.js",
     "prepublishOnly": "npm run build:all"
   },
@@ -178,8 +178,14 @@
     "path-to-regexp": ">=8.4.0",
     "picomatch": ">=4.0.4",
     "uuid": "$uuid",
+    "protobufjs": ">=8.2.0",
     "@anthropic-ai/claude-agent-sdk": {
       "zod": "$zod"
-    }
+    },
+    "hono": ">=4.12.18",
+    "fast-uri": ">=3.1.2",
+    "ip-address": ">=10.1.1",
+    "ws": ">=8.20.1",
+    "@babel/runtime": ">=7.26.10"
   }
 }

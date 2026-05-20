@@ -33,8 +33,8 @@ export default defineConfig({
     /* Base URL to use in actions like `await page.goto('/')`. */
     /* In CI, use production server; in local dev, use Vite dev server */
     baseURL: process.env.CI
-      ? `http://localhost:${backendPort}`
-      : (process.env.PLAYWRIGHT_BASE_URL || `http://localhost:${devPort}`),
+      ? `http://127.0.0.1:${backendPort}`
+      : (process.env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${devPort}`),
 
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: 'on-first-retry',
@@ -59,20 +59,20 @@ export default defineConfig({
   webServer: process.env.CI
     ? {
         command: 'npm run server',
-        url: `http://localhost:${backendPort}`,
+        url: `http://127.0.0.1:${backendPort}`,
         reuseExistingServer: false,
         timeout: 120000,
       }
     : [
         {
           command: 'npm run dev:server',
-          url: `http://localhost:${backendPort}/health`,
+          url: `http://127.0.0.1:${backendPort}/health`,
           reuseExistingServer: true,
           timeout: 120000,
         },
         {
           command: 'npm run dev',
-          url: `http://localhost:${devPort}`,
+          url: `http://127.0.0.1:${devPort}`,
           reuseExistingServer: true,
           timeout: 120000,
         },

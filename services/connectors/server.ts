@@ -20,17 +20,20 @@ export {
   claudeCodeConnector,
   createBedrockClaudeCodeConnector,
 } from './claude-code/ClaudeCodeConnector';
+export { PiConnector, piConnector, createAgentHealthPiConnector } from './pi/PiConnector';
 export { StrandsConnector, strandsConnector } from './strands/StrandsConnector';
 
 // Register server-only connectors
 import { connectorRegistry } from './registry';
 import { subprocessConnector } from './subprocess/SubprocessConnector';
 import { claudeCodeConnector } from './claude-code/ClaudeCodeConnector';
+import { piConnector } from './pi/PiConnector';
 import { strandsConnector } from './strands/StrandsConnector';
 
 // Register server-only connectors on module load
 connectorRegistry.register(subprocessConnector);
 connectorRegistry.register(claudeCodeConnector);
+connectorRegistry.register(piConnector);
 connectorRegistry.register(strandsConnector);
 
 console.log('[Connectors] Server connectors registered:', connectorRegistry.getRegisteredTypes().join(', '));

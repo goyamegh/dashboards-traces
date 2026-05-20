@@ -40,7 +40,7 @@
     "node-fetch": "^2.6.7",
     "ts-node": "^10.9.2",
     "uuid": "^14.0.0",
-    "ws": "^8.18.3",
+    "ws": "^8.20.1",
     "zod": "^3.22.0"
   },
   "devDependencies": {
@@ -50,7 +50,8 @@
     "uuid": "^14.0.0",
     "fast-xml-parser": ">=5.7.2",
     "postcss": ">=8.5.7",
-    "langsmith": ">=0.5.26",
-    "hono": ">=4.12.16"
+    "langsmith": ">=0.6.0",
+    "hono": ">=4.12.16",
+    "protobufjs": ">=8.2.0"
   }
 }

@@ -334,19 +334,17 @@ export async function fetchTraces(
 export async function validateAwsCredentials(profile?: string): Promise<string | null> {
   try {
     const { fromNodeProviderChain } = await import('@aws-sdk/credential-providers');
+    const { BedrockClient, ListFoundationModelsCommand } = await import('@aws-sdk/client-bedrock');
 
-    const provider = fromNodeProviderChain({
+    const credentials = fromNodeProviderChain({
       ...(profile && { profile }),
     });
 
-    const creds = await provider();
+    // Make a real API call to verify credentials are usable, not just locally cached
+    const client = new BedrockClient({ credentials, region: process.env.AWS_REGION || 'us-east-1' });
+    await client.send(new ListFoundationModelsCommand({ byOutputModality: 'TEXT' }));
 
-    // Check if credentials have an expiration and it's in the past
-    if (creds.expiration && creds.expiration.getTime() < Date.now()) {
-      return `AWS credentials expired at ${creds.expiration.toISOString()} (profile: ${profile || 'default'}). Run \`aws sso login --profile ${profile || 'default'}\` or refresh your credentials.`;
-    }
-
-    return null; // Credentials resolved successfully
+    return null; // Credentials are valid — API call succeeded
   } catch (error: any) {
     const msg = error.message || String(error);
     if (/expired|invalid.*token|no.*credentials|could not load/i.test(msg)) {

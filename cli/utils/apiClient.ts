@@ -10,7 +10,7 @@
  * Follows the server-mediated architecture pattern.
  */
 
-import type { Benchmark, BenchmarkRun, BenchmarkProgress, RunConfigInput, TestCaseRun, StorageMetadata, AgentConfig, ModelConfig, TestCase, Evaluator } from '@/types/index.js';
+import type { Benchmark, BenchmarkRun, BenchmarkProgress, RunConfigInput, TestCaseRun, StorageMetadata, AgentConfig, ModelConfig, TestCase, Evaluator, EvaluationRun, TestCaseSource } from '@/types/index.js';
 
 /**
  * Error thrown when the server sends an explicit error event via SSE.
@@ -67,7 +67,8 @@ export interface ModelWithKey extends ModelConfig {
  * Evaluation progress events from SSE stream
  */
 export type EvaluationProgressEvent =
-  | { type: 'started'; testCase: string; agent: string }
+  | { type: 'started'; testCase: string; agent: string; reportId?: string }
+  | { type: 'heartbeat' }
   | { type: 'step'; stepIndex: number; step: { type: string; content: string } }
   | { type: 'completed'; report: EvaluationResult }
   | { type: 'error'; error: string };
@@ -103,6 +104,34 @@ export interface BulkCreateTestCasesResponse {
  */
 export class ApiClient {
   constructor(private baseUrl: string) {}
+
+  /**
+   * Generic polling loop: fetches a resource repeatedly until it reaches a terminal state.
+   * Shared by pollRunStatus (benchmarks) and pollReportStatus (single evaluations).
+   */
+  private async pollUntilTerminal<T>(
+    fetchFn: () => Promise<T | null>,
+    isTerminal: (item: T) => boolean,
+    options?: { timeoutMs?: number; intervalMs?: number; onPoll?: (item: T) => void }
+  ): Promise<T | null> {
+    const timeoutMs = options?.timeoutMs ?? 600000;
+    const intervalMs = options?.intervalMs ?? 5000;
+    const startTime = Date.now();
+
+    while (Date.now() - startTime < timeoutMs) {
+      const item = await fetchFn();
+      if (!item) return null;
+
+      options?.onPoll?.(item);
+
+      if (isTerminal(item)) return item;
+
+      await new Promise(resolve => setTimeout(resolve, intervalMs));
+    }
+
+    // Timeout — return whatever we have now
+    return fetchFn();
+  }
 
   /**
    * Check if server is healthy, with optional retries and exponential backoff.
@@ -346,12 +375,6 @@ export class ApiClient {
    *
    * Used as a fallback when SSE stream connection is lost but server continues
    * processing in the background.
-   *
-   * @param benchmarkId - The benchmark ID
-   * @param runId - The run ID to poll
-   * @param onProgress - Optional callback for progress updates during polling
-   * @param timeoutMs - Maximum time to wait (default: 10 minutes)
-   * @returns The final run state, or null if not found
    */
   async pollRunStatus(
     benchmarkId: string,
@@ -359,27 +382,11 @@ export class ApiClient {
     onProgress?: (run: BenchmarkRun) => void,
     timeoutMs = 600000
   ): Promise<BenchmarkRun | null> {
-    const startTime = Date.now();
-    const pollInterval = 5000; // 5 seconds
-
-    while (Date.now() - startTime < timeoutMs) {
-      const run = await this.getRun(benchmarkId, runId);
-      if (!run) return null;
-
-      // Notify progress callback
-      onProgress?.(run);
-
-      // Check for terminal states
-      if (run.status && ['completed', 'failed', 'cancelled'].includes(run.status)) {
-        return run;
-      }
-
-      // Wait before next poll
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
-    }
-
-    // Timeout reached - return current state
-    return this.getRun(benchmarkId, runId);
+    return this.pollUntilTerminal(
+      () => this.getRun(benchmarkId, runId),
+      (run) => !!run.status && ['completed', 'failed', 'cancelled'].includes(run.status),
+      { timeoutMs, onPoll: onProgress }
+    );
   }
 
   /**
@@ -568,7 +575,8 @@ export class ApiClient {
    */
 
   /**
-   * Run a single test case evaluation via server API (SSE stream)
+   * Run a single test case evaluation via server API (SSE stream).
+   * Falls back to polling if the SSE stream disconnects mid-evaluation.
    */
   async runEvaluation(
     testCaseId: string,
@@ -603,6 +611,7 @@ export class ApiClient {
     const decoder = new TextDecoder();
     let buffer = '';
     let result: EvaluationResult | null = null;
+    let reportId: string | null = null;
 
     try {
       while (true) {
@@ -617,6 +626,15 @@ export class ApiClient {
           if (line.startsWith('data: ')) {
             try {
               const event = JSON.parse(line.slice(6));
+
+              // Capture reportId from started event for polling fallback
+              if (event.type === 'started' && event.reportId) {
+                reportId = event.reportId;
+              }
+
+              // Skip heartbeat events (they just keep the connection alive)
+              if (event.type === 'heartbeat') continue;
+
               onProgress?.(event);
 
               if (event.type === 'completed') {
@@ -632,6 +650,37 @@ export class ApiClient {
           }
         }
       }
+    } catch (streamError) {
+      // Server-sent error events are explicit failures — don't attempt recovery
+      if (streamError instanceof ServerError) {
+        throw streamError;
+      }
+
+      // If we already have a completed result, return it despite the stream error
+      if (result) {
+        return result;
+      }
+
+      // Stream disconnected — fall back to polling if we have a reportId
+      if (reportId) {
+        console.warn(`[ApiClient] SSE stream disconnected: ${streamError instanceof Error ? streamError.message : streamError}`);
+        console.warn(`[ApiClient] Falling back to polling for report ${reportId} — server is still processing in the background...`);
+
+        // Notify any progress listener so the CLI/UI can update its spinner
+        onProgress?.({ type: 'reconnecting', reportId } as any);
+
+        // No artificial delay before polling: pollUntilTerminal already waits
+        // 5s between fetches and the report may already be complete on the server.
+        const polledResult = await this.pollReportStatus(reportId, undefined, (report) => {
+          // Forward intermediate polled status as a progress event
+          onProgress?.({ type: 'polling', reportId: report.id, status: report.status } as any);
+        });
+        if (polledResult) {
+          return polledResult;
+        }
+      }
+
+      throw streamError;
     } finally {
       try {
         await reader.cancel();
@@ -641,10 +690,51 @@ export class ApiClient {
     }
 
     if (!result) {
+      // Stream ended without completed event — try polling
+      if (reportId) {
+        console.warn('[ApiClient] SSE stream ended without completion event, polling for status...');
+        onProgress?.({ type: 'reconnecting', reportId } as any);
+        const polledResult = await this.pollReportStatus(reportId, undefined, (report) => {
+          onProgress?.({ type: 'polling', reportId: report.id, status: report.status } as any);
+        });
+        if (polledResult) {
+          return polledResult;
+        }
+      }
       throw new Error('No result received from evaluation');
     }
 
     return result;
+  }
+
+  /**
+   * Poll for a single evaluation report's completion status.
+   * Used as fallback when the SSE stream disconnects during evaluation.
+   *
+   * @param reportId   The reportId returned from the SSE 'started' event
+   * @param timeoutMs  Max time to keep polling (defaults to 10 minutes)
+   * @param onPoll     Optional callback fired on every poll cycle with the latest report
+   */
+  async pollReportStatus(
+    reportId: string,
+    timeoutMs: number = 600000,
+    onPoll?: (report: TestCaseRun) => void
+  ): Promise<EvaluationResult | null> {
+    const report = await this.pollUntilTerminal(
+      () => this.getReportById(reportId),
+      (r) => !!r.status && ['completed', 'failed', 'cancelled'].includes(r.status),
+      { timeoutMs, onPoll }
+    );
+
+    if (!report) return null;
+    return {
+      id: report.id,
+      status: report.status || 'unknown',
+      passFailStatus: report.passFailStatus as 'passed' | 'failed' | undefined,
+      metrics: report.metrics as EvaluationResult['metrics'],
+      trajectorySteps: report.trajectory?.length || 0,
+      llmJudgeReasoning: report.llmJudgeReasoning,
+    };
   }
 
   /**
@@ -744,6 +834,115 @@ export class ApiClient {
         errorMessage = errorBody;
       }
       throw new Error(`Failed to fetch traces: ${errorMessage}`);
+    }
+
+    return res.json();
+  }
+
+  // ─── Evaluation Runs ────────────────────────────────────────────────────────
+
+  /**
+   * Create and execute an evaluation run with SSE streaming.
+   */
+  async createEvaluationRun(
+    params: {
+      name?: string;
+      sources: TestCaseSource[];
+      agentKey: string;
+      modelId: string;
+      evaluatorId?: string;
+      concurrency?: number;
+      benchmarkId?: string;
+      trigger?: string;
+    },
+    onEvent: (event: { type: string; data: any }) => void
+  ): Promise<EvaluationRun | null> {
+    const res = await fetch(`${this.baseUrl}/api/storage/evaluation-runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params),
+    });
+
+    if (!res.ok) {
+      const errorBody = await res.text();
+      let errorMessage: string;
+      try {
+        const parsed = JSON.parse(errorBody);
+        errorMessage = parsed.error || errorBody;
+      } catch {
+        errorMessage = errorBody;
+      }
+      throw new ServerError(`Failed to create evaluation run: ${errorMessage}`);
+    }
+
+    if (!res.body) {
+      throw new Error('No response body for SSE stream');
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let completedRun: EvaluationRun | null = null;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const events = buffer.split('\n\n');
+      buffer = events.pop() || '';
+
+      for (const event of events) {
+        const lines = event.split('\n');
+        let eventType = '';
+        let eventData = '';
+
+        for (const line of lines) {
+          if (line.startsWith('event: ')) eventType = line.slice(7);
+          else if (line.startsWith('data: ')) eventData = line.slice(6);
+        }
+
+        if (!eventData) continue;
+
+        try {
+          const data = JSON.parse(eventData);
+          onEvent({ type: eventType, data });
+
+          if (eventType === 'completed') {
+            completedRun = data;
+          } else if (eventType === 'error') {
+            throw new ServerError(data.error || 'Evaluation run failed');
+          }
+        } catch (e) {
+          if (e instanceof ServerError) throw e;
+          // Ignore JSON parse errors from incomplete chunks
+        }
+      }
+    }
+
+    return completedRun;
+  }
+
+  /**
+   * Promote an ad-hoc evaluation run to a benchmark.
+   */
+  async promoteEvaluationRun(runId: string, benchmarkName: string): Promise<{ benchmark: Benchmark; run: EvaluationRun }> {
+    const res = await fetch(`${this.baseUrl}/api/storage/evaluation-runs/${runId}/promote`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ benchmarkName }),
+    });
+
+    if (!res.ok) {
+      const errorBody = await res.text();
+      let errorMessage: string;
+      try {
+        const parsed = JSON.parse(errorBody);
+        errorMessage = parsed.error || errorBody;
+      } catch {
+        errorMessage = errorBody;
+      }
+      throw new Error(`Failed to promote run: ${errorMessage}`);
     }
 
     return res.json();
