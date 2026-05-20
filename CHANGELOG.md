@@ -14,7 +14,18 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - **UI:** The radial gradient background previously seen only on the Dashboard / Overview page now applies on every page. The `dashboard-gradient-bg` class is now attached to the `SidebarInset` `<main>` in `Layout.tsx`, replacing the per-page `useEffect` toggle in `Dashboard.tsx`.
 
 ### Added
-- **Code-based test SDK (experimental)**: Playwright-style `test()` API for writing programmatic test cases in `.eval.js`/`.eval.ts` files, with built-in `judge()`, `expect` (chai), and `fetchTraces` utilities. The API surface is marked `@experimental` and may change in a minor release without a deprecation cycle. Set `AGENT_HEALTH_SUPPRESS_EXPERIMENTAL=1` to silence the runtime notice. ([#207](https://github.com/opensearch-project/agent-health/pull/207))
+- **Code-based test SDK (experimental)**: Playwright-style `test()` API for writing programmatic test cases in `.eval.js`/`.eval.ts` files, with per-matcher results displayed in the UI. Includes:
+  - `test(name, body)` and `test(name, options, body)` signatures with within-file duplicate detection
+  - All `TestOptions` fields are optional; only `name` is required
+  - No-prompt mode — tests with no `prompt` skip agent invocation entirely (purely deterministic / data-driven tests)
+  - Custom chai matchers: `.haveCalledTool()`, `.haveStepsOfType()`, `.haveOutputMatching()`, `.haveCompletedWithin()`
+  - Trajectory accessor sugar: `result.trajectory.toolCalls()`, `.firstToolCall()`, `.stepsOfType()`
+  - LLM judge as a callable: `await judge(result, 'claim')` records a structured matcher verdict
+  - Traces fixture: pre-loaded `totalTokens`, `totalCost`, `spanDuration(name)`, `toolCalls[]`, `spans[]`
+  - Cold-start migration that folds legacy `category` / `difficulty` / `subcategory` fields into the unified `labels` array (`category:RCA`, `difficulty:Medium`, etc.)
+  - New `/api/server-info` endpoint surfacing migration status to the UI
+  - Experimental status surfaced via README badge + first-call console.warn (suppressible with `AGENT_HEALTH_SUPPRESS_EXPERIMENTAL=1`)
+  - Documented at `docs/SDK.md`; samples at `evals/demo.eval.js` ([#207](https://github.com/opensearch-project/agent-health/pull/207))
 - Cross-page user preferences are now stored under a single shared `agent-health:prefs:*` namespace, so picking a value once is reflected on every other page that exposes the same control. Shared keys:
   - `prefs:timeRange` — Benchmarks / Test Cases / Evaluation Runs / Agent Traces (Agent Traces converts the shared `'1h' | '6h' | '1d' | '7d' | '30d' | 'all'` enum to its internal minute-based query cutoff).
   - `prefs:agentFilter` — Benchmarks and Evaluation Runs filter dropdowns (default `'all'`). Not Agent Traces — its dropdown options are telemetry service names which live in a different value space than the eval pages' agent-config keys.

@@ -81,6 +81,24 @@ npx @opensearch-project/agent-health export -b my-benchmark -o test-cases.json
 
 The JSON file must be an array of test case objects with required fields: `name`, `category`, `difficulty`, `initialPrompt`, `expectedOutcomes`.
 
+### Code-based test SDK (experimental)
+
+For more expressive test cases (deterministic checks + targeted LLM judging + per-matcher results), use the code SDK:
+
+```javascript
+const { test, expect } = require('@opensearch-project/agent-health');
+
+test('rca-coherent', { prompt: 'Why is X failing?' }, async ({ result, judge }) => {
+  expect(result.trajectory).to.haveCalledTool('search_logs');
+  expect(result).to.haveCompletedWithin(60_000);
+  await judge(result, 'identifies the root cause');
+});
+```
+
+Full guide: [docs/SDK.md](docs/SDK.md). Samples: [evals/demo.eval.js](evals/demo.eval.js).
+
+The SDK is **experimental** — the API surface may change in a minor release without a deprecation cycle. Set `AGENT_HEALTH_SUPPRESS_EXPERIMENTAL=1` to silence the runtime notice.
+
 ## Environment Setup
 
 Copy `.env.example` to `.env`. Key variables:
