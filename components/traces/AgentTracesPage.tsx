@@ -330,11 +330,15 @@ const ExpandedTraceRow: React.FC<ExpandedTraceRowProps> = ({ trace, onClose }) =
   const spanTree = useMemo(() => processSpansIntoTree(trace.spans), [trace.spans]);
   const timeRange = useMemo(() => calculateTimeRange(trace.spans), [trace.spans]);
 
-  // Auto-expand root spans when trace loads/changes
+  // Auto-expand root spans on initial mount and when the trace changes.
+  // Keyed on `trace.traceId` (not `spanTree`) so user-driven expand/collapse
+  // toggles aren't reset if the parent happens to re-render with the same
+  // logical trace.
   useEffect(() => {
     const rootIds = new Set(spanTree.map(s => s.spanId));
     setExpandedSpans(rootIds);
-  }, [spanTree]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [trace.traceId]);
 
   // Reset selected span whenever trace changes
   useEffect(() => {
@@ -376,6 +380,7 @@ const ExpandedTraceRow: React.FC<ExpandedTraceRowProps> = ({ trace, onClose }) =
                 className="h-7 w-7"
                 onClick={() => setFullscreenOpen(true)}
                 title="Open fullscreen"
+                aria-label="Open trace in fullscreen view"
               >
                 <Maximize2 size={14} />
               </Button>
@@ -385,6 +390,7 @@ const ExpandedTraceRow: React.FC<ExpandedTraceRowProps> = ({ trace, onClose }) =
                 className="h-7 w-7"
                 onClick={onClose}
                 title="Collapse"
+                aria-label="Collapse expanded trace row"
               >
                 <X size={14} />
               </Button>
@@ -856,20 +862,22 @@ export const AgentTracesPage: React.FC = () => {
     setExpandedTraceId(prev => (prev === trace.traceId ? null : trace.traceId));
   };
 
-  // Close inline expansion
-  const handleCloseFlyout = () => {
+  // Collapse the inline expanded row.
+  // Wrapped in useCallback so it can be included in the Escape-key effect's
+  // dependency array without retriggering it on every render.
+  const handleCollapseExpandedTrace = useCallback(() => {
     setExpandedTraceId(null);
-  };
+  }, []);
 
   // Dismiss inline expansion on Escape key
   useEffect(() => {
     if (!expandedTraceId) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') handleCloseFlyout();
+      if (e.key === 'Escape') handleCollapseExpandedTrace();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [expandedTraceId]);
+  }, [expandedTraceId, handleCollapseExpandedTrace]);
 
   // Calculate latency distribution for histogram
   const latencyDistribution = useMemo(() => {
@@ -1539,7 +1547,7 @@ export const AgentTracesPage: React.FC = () => {
                         {expandedTraceId === trace.traceId && (
                           <ExpandedTraceRow
                             trace={trace}
-                            onClose={handleCloseFlyout}
+                            onClose={handleCollapseExpandedTrace}
                           />
                         )}
                       </React.Fragment>
