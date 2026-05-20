@@ -270,36 +270,45 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
               </div>
             )}
 
-            {/* Content with proper left padding */}
-            <div className="flex items-center gap-2 flex-1 min-w-0" style={{ paddingLeft: `${depth * 24 + (depth > 0 ? 12 : 0)}px` }}>
-              {/* Span icon */}
-              <div
-                className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0"
-                style={{ backgroundColor: getSpanColor(span) + '40' }}
-              >
-                <SpanIcon size={14} style={{ color: getSpanColor(span) }} />
-              </div>
+            {/* Content with proper left padding.
+                When timeRange is provided we use a 3-column layout:
+                  [name (fixed width — depth padding goes INSIDE so all
+                   timelines align at the same x position)] |
+                  [timeline bar — flex-1, fills the entire space between
+                   name and actions, all the way to the right edge] |
+                  [actions: eval badge + duration + chevron]
+                Without timeRange we fall back to the original two-column
+                flex-1 name layout so other call-sites (fullscreen view,
+                etc.) are unaffected. */}
+            {timeRange ? (
+              <div className="flex items-center gap-2 w-full">
+                {/* Name column — fixed flex-basis so timelines align.
+                    Depth padding lives inside this cell, eating into
+                    the visible name area for deep trees rather than
+                    shifting the whole row right. */}
+                <div
+                  className="flex items-center gap-2 flex-shrink-0 min-w-0"
+                  style={{
+                    width: 360,
+                    paddingLeft: `${depth * 24 + (depth > 0 ? 12 : 0)}px`,
+                  }}
+                >
+                  <div
+                    className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0"
+                    style={{ backgroundColor: getSpanColor(span) + '40' }}
+                  >
+                    <SpanIcon size={14} style={{ color: getSpanColor(span) }} />
+                  </div>
+                  <div className="flex-1 min-w-0 font-medium text-sm truncate">
+                    {span.name}
+                  </div>
+                </div>
 
-              {/* Span name - allows truncation */}
-              <div className="flex-1 min-w-0 font-medium text-sm truncate">
-                {span.name}
-              </div>
-
-              {/* Right side elements - fixed width container */}
-              <div className="flex items-center gap-1.5 flex-shrink-0">
-                {/* Eval count badge (if present) - smaller design */}
-                {span.attributes?.['gen_ai.usage.output_tokens'] && (
-                  <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 flex items-center gap-0.5">
-                    <Coins size={9} />
-                    {span.attributes['gen_ai.usage.output_tokens']}
-                  </Badge>
-                )}
-
-                {/* Per-span timeline bar (optional) — fills the empty
-                    horizontal space on the right of each tree row with a
-                    mini-gantt showing where this span sits within the
-                    trace. Only rendered when `timeRange` is provided. */}
-                {timeRange && timeRange.duration > 0 && (() => {
+                {/* Timeline column — flex-1 fills all remaining horizontal
+                    space (from end of name column to the start of the
+                    actions column on the right). The bar inside it spans
+                    the full width of this column. */}
+                {timeRange.duration > 0 && (() => {
                   const startMs = new Date(span.startTime).getTime();
                   const endMs = new Date(span.endTime).getTime();
                   const offsetPct = Math.max(0, Math.min(100,
@@ -309,59 +318,117 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
                     ((endMs - startMs) / timeRange.duration) * 100
                   ));
                   return (
-                    <TooltipProvider delayDuration={200}>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <div className="trace-row-timeline relative h-1.5 w-44 bg-muted/40 rounded-sm overflow-hidden flex-shrink-0">
-                            <div
-                              className="absolute top-0 bottom-0 rounded-sm"
-                              style={{
-                                left: `${offsetPct}%`,
-                                width: `${widthPct}%`,
-                                backgroundColor: getSpanColor(span),
-                              }}
-                            />
-                          </div>
-                        </TooltipTrigger>
-                        <TooltipContent side="top" className="text-[10px]">
-                          <div>start +{formatDuration(startMs - timeRange.startTime)}</div>
-                          <div>duration {formatDuration(duration)}</div>
-                        </TooltipContent>
-                      </Tooltip>
-                    </TooltipProvider>
+                    <div className="flex-1 min-w-0 px-3">
+                      <TooltipProvider delayDuration={200}>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <div className="trace-row-timeline relative h-2 w-full bg-muted/40 rounded-sm overflow-hidden">
+                              <div
+                                className="absolute top-0 bottom-0 rounded-sm"
+                                style={{
+                                  left: `${offsetPct}%`,
+                                  width: `${widthPct}%`,
+                                  backgroundColor: getSpanColor(span),
+                                }}
+                              />
+                            </div>
+                          </TooltipTrigger>
+                          <TooltipContent side="top" className="text-[10px]">
+                            <div>start +{formatDuration(startMs - timeRange.startTime)}</div>
+                            <div>duration {formatDuration(duration)}</div>
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    </div>
                   );
                 })()}
 
-                {/* Duration with color coding */}
-                <div className={cn(
-                  "text-xs font-mono min-w-14 text-right whitespace-nowrap",
-                  getDurationColor(duration)
-                )}>
-                  {formatDuration(duration)}
-                </div>
-
-                {/* Expand indicator - dedicated space for alignment */}
-                <div className="w-6 flex items-center justify-center">
-                  {span.hasChildren && (
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        onToggleExpand(span.spanId);
-                      }}
-                      className="hover:bg-muted rounded p-0.5"
-                    >
-                      <ChevronDown
-                        size={14}
-                        className={cn(
-                          'text-muted-foreground transition-transform',
-                          !isExpanded && '-rotate-90'
-                        )}
-                      />
-                    </button>
+                {/* Actions column — fixed width on the right edge */}
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  {span.attributes?.['gen_ai.usage.output_tokens'] && (
+                    <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 flex items-center gap-0.5">
+                      <Coins size={9} />
+                      {span.attributes['gen_ai.usage.output_tokens']}
+                    </Badge>
                   )}
+                  <div className={cn(
+                    "text-xs font-mono min-w-14 text-right whitespace-nowrap",
+                    getDurationColor(duration)
+                  )}>
+                    {formatDuration(duration)}
+                  </div>
+                  <div className="w-6 flex items-center justify-center">
+                    {span.hasChildren && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleExpand(span.spanId);
+                        }}
+                        className="hover:bg-muted rounded p-0.5"
+                      >
+                        <ChevronDown
+                          size={14}
+                          className={cn(
+                            'text-muted-foreground transition-transform',
+                            !isExpanded && '-rotate-90'
+                          )}
+                        />
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : (
+              <div className="flex items-center gap-2 flex-1 min-w-0" style={{ paddingLeft: `${depth * 24 + (depth > 0 ? 12 : 0)}px` }}>
+                {/* Span icon */}
+                <div
+                  className="w-6 h-6 rounded flex items-center justify-center flex-shrink-0"
+                  style={{ backgroundColor: getSpanColor(span) + '40' }}
+                >
+                  <SpanIcon size={14} style={{ color: getSpanColor(span) }} />
+                </div>
+
+                {/* Span name - allows truncation */}
+                <div className="flex-1 min-w-0 font-medium text-sm truncate">
+                  {span.name}
+                </div>
+
+                {/* Right side elements - fixed width container */}
+                <div className="flex items-center gap-1.5 flex-shrink-0">
+                  {span.attributes?.['gen_ai.usage.output_tokens'] && (
+                    <Badge variant="outline" className="text-[10px] px-1 py-0 h-4 flex items-center gap-0.5">
+                      <Coins size={9} />
+                      {span.attributes['gen_ai.usage.output_tokens']}
+                    </Badge>
+                  )}
+                  <div className={cn(
+                    "text-xs font-mono min-w-14 text-right whitespace-nowrap",
+                    getDurationColor(duration)
+                  )}>
+                    {formatDuration(duration)}
+                  </div>
+                  <div className="w-6 flex items-center justify-center">
+                    {span.hasChildren && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onToggleExpand(span.spanId);
+                        }}
+                        className="hover:bg-muted rounded p-0.5"
+                      >
+                        <ChevronDown
+                          size={14}
+                          className={cn(
+                            'text-muted-foreground transition-transform',
+                            !isExpanded && '-rotate-90'
+                          )}
+                        />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         );
       })}

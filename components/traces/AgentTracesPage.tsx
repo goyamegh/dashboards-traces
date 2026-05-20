@@ -52,12 +52,9 @@ import { DEFAULT_CONFIG } from '@/lib/constants';
 import {
   fetchRecentTraces,
   groupSpansByTrace,
-  getCategoryColors,
   calculateTimeRange,
 } from '@/services/traces';
 import { formatDuration, formatCompact } from '@/services/traces/utils';
-import { flattenSpans, calculateCategoryStats } from '@/services/traces/traceStats';
-import { categorizeSpanTree } from '@/services/traces/spanCategorization';
 import { processSpansIntoTree } from '@/services/traces';
 import { startMeasure, endMeasure } from '@/lib/performance';
 import { cn, formatRelativeTime } from '@/lib/utils';
@@ -140,14 +137,6 @@ interface TraceRowProps {
 
 const TraceRow: React.FC<TraceRowProps> = ({ trace, onSelect, isSelected, isExpanded }) => {
   const [copiedField, setCopiedField] = React.useState<string | null>(null);
-
-  // Compute per-trace category stats for mini distribution bar
-  const categoryStats = useMemo(() => {
-    const tree = processSpansIntoTree(trace.spans);
-    const categorized = categorizeSpanTree(tree);
-    const flat = flattenSpans(categorized);
-    return calculateCategoryStats(flat, trace.duration);
-  }, [trace.spans, trace.duration]);
 
   const handleCopy = (e: React.MouseEvent, text: string, field: string) => {
     e.stopPropagation();
@@ -246,53 +235,6 @@ const TraceRow: React.FC<TraceRowProps> = ({ trace, onSelect, isSelected, isExpa
           {formatDuration(trace.duration)}
         </span>
       </td>
-      <td className="py-1.5 px-3 align-middle">
-        <TooltipProvider>
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <div className="h-3.5 w-[80px] rounded-sm overflow-hidden flex bg-muted/30 cursor-default">
-                {categoryStats.map((stat) => {
-                  const colors = getCategoryColors(stat.category);
-                  const widthPercent = Math.max(stat.percentage, 1);
-                  return (
-                    <div
-                      key={stat.category}
-                      className={cn('h-full', colors.bar)}
-                      style={{ width: `${widthPercent}%`, opacity: 0.45 }}
-                    />
-                  );
-                })}
-              </div>
-            </TooltipTrigger>
-            <TooltipContent
-              side="bottom"
-              className="bg-gray-900 dark:bg-gray-800 border-gray-800 p-3 max-w-xs text-white [&>svg]:fill-gray-900 dark:[&>svg]:fill-gray-800"
-            >
-              <div className="space-y-1.5">
-                <div className="text-xs font-semibold mb-2">Time Distribution</div>
-                {categoryStats.map((stat) => {
-                  const colors = getCategoryColors(stat.category);
-                  const formattedPercent = stat.percentage < 1
-                    ? stat.percentage.toFixed(1)
-                    : stat.percentage.toFixed(0);
-                  return (
-                    <div key={stat.category} className="flex items-center justify-between gap-4 text-xs">
-                      <div className="flex items-center gap-2">
-                        <div className={cn('w-2.5 h-2.5 rounded-sm flex-shrink-0', colors.bar)} />
-                        <span className="font-medium">{stat.category}</span>
-                      </div>
-                      <div className="flex items-center gap-2 text-gray-300">
-                        <span>{formatDuration(stat.totalDuration)}</span>
-                        <span className="text-gray-400">({formattedPercent}%)</span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </TooltipContent>
-          </Tooltip>
-        </TooltipProvider>
-      </td>
       <td className="py-1.5 px-3 align-middle text-center">
         <Badge variant="secondary" className="text-[11px] py-0 px-1.5">
           {formatCompact(trace.spanCount)}
@@ -358,7 +300,7 @@ const ExpandedTraceRow: React.FC<ExpandedTraceRowProps> = ({ trace, onClose }) =
 
   return (
     <tr className="bg-muted/20 border-b">
-      <td colSpan={8} className="p-0">
+      <td colSpan={7} className="p-0">
         {/* Wrap the entire expansion in a smaller-text scope so spans inside
             one trace look visually distinct from the outer table rows. */}
         <div className="border-l-2 border-opensearch-blue bg-background text-[11px]">
@@ -1553,9 +1495,6 @@ export const AgentTracesPage: React.FC = () => {
                       <th className="h-8 px-3 text-left align-middle font-medium text-xs text-muted-foreground bg-background border-b">
                         Duration
                       </th>
-                      <th className="h-8 px-3 text-left align-middle font-medium text-xs text-muted-foreground bg-background border-b">
-                        Distribution
-                      </th>
                       <th className="h-8 px-3 text-center align-middle font-medium text-xs text-muted-foreground bg-background border-b">
                         Spans
                       </th>
@@ -1582,7 +1521,7 @@ export const AgentTracesPage: React.FC = () => {
                     {/* Intersection observer target for lazy loading (client-side + server-side) */}
                     {(displayedTraces.length < filteredTraces.length || hasMore) && (
                       <tr ref={loadMoreRef} className="hover:bg-transparent border-b transition-colors">
-                        <td colSpan={8} className="py-1.5 px-3 align-middle text-center py-4">
+                        <td colSpan={7} className="py-1.5 px-3 align-middle text-center py-4">
                           <div className="flex items-center justify-center gap-2 text-muted-foreground">
                             <RefreshCw size={16} className={isLoadingMore ? 'animate-spin' : ''} />
                             <span className="text-sm">
