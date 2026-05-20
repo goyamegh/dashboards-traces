@@ -267,11 +267,17 @@ export async function executeEvaluationRun(
             await waitForTracesAndJudge(savedReport, testCase, storageModule, agentConfig);
           }
 
-          // Update result with success
-          const status: RunResultStatus = 'completed';
+          // Update result with success. The run-level status mirrors the
+          // report's verdict so aggregate stats (run.stats.passed/failed)
+          // reflect what actually happened rather than just "the runner
+          // didn't crash". Reports that finished but failed assertions are
+          // marked 'failed' here too.
+          const reportPassFail = (savedReport as any).passFailStatus;
+          const status: RunResultStatus = reportPassFail === 'failed' ? 'failed' : 'completed';
           run.results[testCaseId] = {
             reportId: savedReport.id,
             status,
+            ...(reportPassFail ? { passFailStatus: reportPassFail } : {}),
           };
 
           completedCount++;

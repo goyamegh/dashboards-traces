@@ -16,6 +16,7 @@ import chalk from 'chalk';
 import ora from 'ora';
 import Table from 'cli-table3';
 import { readFileSync, writeFileSync } from 'fs';
+import * as path from 'path';
 import { loadConfig, DEFAULT_SERVER_CONFIG, type ResolvedConfig } from '@/lib/config/index.js';
 import { ensureServer, createServerCleanup, isServerRunning, type EnsureServerResult } from '@/cli/utils/serverLifecycle.js';
 import { ApiClient, ServerError, type BenchmarkExecutionEvent } from '@/cli/utils/apiClient.js';
@@ -759,6 +760,95 @@ export function createBenchmarkCommand(): Command {
         let benchmark: Benchmark | null = null;
 
         if (fileMode) {
+          // Code-based test SDK files (.eval.js / .eval.ts) go through the
+          // code-import EvaluationRun path — the lib's loader registers
+          // tests, the runner streams results back via SSE, and we print
+          // the same summary the JSON path does.
+          if (isCodeFile(filePath!)) {
+            // Resolve agent
+            let agent: AgentConfig | undefined;
+            if (options.agent.length === 0) {
+              agent = config.agents.find((a) => a.enabled !== false);
+              if (!agent) {
+                console.error(chalk.red('  Error: No enabled agents found in config.'));
+                process.exit(1);
+              }
+              console.log(chalk.gray(`  Agent: ${agent.name} (default)`));
+            } else {
+              agent = findAgent(options.agent[0], config);
+              if (!agent) {
+                console.error(chalk.red(`  Error: Agent not found: ${options.agent[0]}`));
+                process.exit(1);
+              }
+              console.log(chalk.gray(`  Agent: ${agent.name}`));
+            }
+
+            const modelId = options.model || getDefaultModel(config);
+            const runName = options.name || `cli-${path.basename(filePath!, path.extname(filePath!))}-${Date.now()}`;
+            const concurrency = Math.max(1, Math.min(20, parseInt(options.concurrency, 10) || 1));
+
+            const runSpinner = ora(`Running ${path.basename(filePath!)} via SDK code-import...`).start();
+            let runId: string | undefined;
+            let total = 0;
+            const completed = new Map<string, { status: string; reportId?: string }>();
+
+            try {
+              const completedRun = await api.createEvaluationRun(
+                {
+                  name: runName,
+                  sources: [
+                    { type: 'code-import', filenames: [filePath!], testCaseIds: [] } as TestCaseSource,
+                  ],
+                  agentKey: agent.key,
+                  modelId,
+                  evaluatorId: options.evaluator,
+                  concurrency,
+                  trigger: 'cli',
+                },
+                (event) => {
+                  if (event.type === 'started') {
+                    runId = event.data.runId;
+                    total = event.data.testCases?.length ?? 0;
+                    runSpinner.text = `Run ${runId} — ${total} test cases queued`;
+                  } else if (event.type === 'testCaseComplete') {
+                    completed.set(event.data.testCaseId, event.data.result);
+                    runSpinner.text = `Run ${runId} — ${completed.size}/${total} done`;
+                  }
+                }
+              );
+
+              runSpinner.succeed(`Run ${runId} completed (${completed.size}/${total})`);
+
+              // Render summary table
+              const stats = completedRun?.stats || { passed: 0, failed: 0, total: 0, pending: 0 };
+              const snapshots = completedRun?.testCaseSnapshots || [];
+              const results = completedRun?.results || {};
+              console.log('');
+              console.log(chalk.bold(`  ${runName}`));
+              const fmt = (n: number, c: any) => c(String(n).padStart(3));
+              console.log(`  ${fmt(stats.passed, chalk.green)} passed   ${fmt(stats.failed, chalk.red)} failed   ${fmt(stats.total, chalk.gray)} total`);
+              console.log('');
+              for (const snap of snapshots) {
+                const r = (results as any)[snap.id];
+                let icon = chalk.gray('·');
+                if (r?.status === 'completed') icon = chalk.green('✓');
+                else if (r?.status === 'failed') icon = chalk.red('✗');
+                console.log(`  ${icon} ${snap.name}`);
+              }
+              console.log('');
+              console.log(chalk.gray(`  Inspect: ${serverResult.baseUrl}/evaluations/runs/${runId}/inspect`));
+              console.log('');
+
+              // Code-import runs are self-contained — no per-agent benchmark loop
+              cleanup();
+              process.exit(stats.failed > 0 ? 1 : 0);
+            } catch (error) {
+              runSpinner.fail(`Run failed: ${error instanceof Error ? error.message : error}`);
+              cleanup();
+              process.exit(1);
+            }
+          }
+
           // File mode: import test cases from JSON file and create/reuse benchmark
           const importSpinner = ora(`Loading test cases from ${filePath}...`).start();
           try {

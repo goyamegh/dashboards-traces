@@ -192,7 +192,10 @@ describe('executeEvaluationRun - deterministic evaluation', () => {
       onProgress: jest.fn(),
     });
 
-    expect(run.results['tc-1'].status).toBe('completed');
+    // Run-level status mirrors the report's verdict so aggregate
+    // stats reflect the actual pass/fail outcome.
+    expect(run.results['tc-1'].status).toBe('failed');
+    expect(run.results['tc-1'].passFailStatus).toBe('failed');
   });
 
   it('uses LLM judge path when test case is not in evaluateFnMap', async () => {
