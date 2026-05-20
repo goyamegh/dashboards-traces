@@ -41,30 +41,73 @@ export function setActiveFile(filePath: string): void {
 /**
  * Register a code-based test case.
  *
+ * Two valid signatures (Playwright-style):
+ * - `test(name, body)` — no options at all
+ * - `test(name, options, body)` — with options
+ *
+ * Only `name` is required. All TestOptions fields are optional. When
+ * `options.prompt` is absent, the runner skips agent invocation and the
+ * body receives an empty EvalResult.
+ *
+ * Throws if a test with the same name is already registered in the same
+ * source file. Cross-file duplicates are allowed (storage identity is
+ * `name + sourceFile`).
+ *
  * @experimental The SDK shape (signature, options, body fixtures) may change
  * in a minor release without a deprecation cycle. See `lib/index.ts`.
- *
- * @param name        Human-readable test name. Required.
- * @param options     Test options (prompt, labels, timeout, etc.).
- * @param evaluate    Test body — receives the {@link EvalResult} and asserts.
  */
 export function test(
   name: string,
+  body: (result: EvalResult) => Promise<void> | void
+): void;
+export function test(
+  name: string,
   options: TestOptions,
-  evaluate: (result: EvalResult) => Promise<void> | void
+  body: (result: EvalResult) => Promise<void> | void
+): void;
+export function test(
+  name: string,
+  optionsOrBody: TestOptions | ((result: EvalResult) => Promise<void> | void),
+  maybeBody?: (result: EvalResult) => Promise<void> | void
 ): void {
   emitExperimentalWarningOnce();
-  if (!name || typeof name !== 'string') throw new Error('test() requires a name');
-  if (!options.prompt) throw new Error(`test("${name}") requires options.prompt`);
-  if (!options.category) throw new Error(`test("${name}") requires options.category`);
-  if (!options.difficulty) throw new Error(`test("${name}") requires options.difficulty`);
-  if (typeof evaluate !== 'function') throw new Error(`test("${name}") requires an evaluate function`);
+
+  // Resolve the two-arg / three-arg overload
+  let options: TestOptions;
+  let evaluate: (result: EvalResult) => Promise<void> | void;
+  if (typeof optionsOrBody === 'function') {
+    options = {};
+    evaluate = optionsOrBody;
+  } else {
+    options = optionsOrBody ?? {};
+    evaluate = maybeBody as (result: EvalResult) => Promise<void> | void;
+  }
+
+  if (!name || typeof name !== 'string') {
+    throw new Error('test() requires a name (the first argument)');
+  }
+  if (typeof evaluate !== 'function') {
+    throw new Error(`test("${name}") requires a body function`);
+  }
 
   const key = activeFile ?? DEFAULT_KEY;
   if (!registries.has(key)) {
     registries.set(key, []);
   }
-  registries.get(key)!.push({ name, options, evaluate });
+  const registry = registries.get(key)!;
+
+  // Duplicate detection — within-file uniqueness. Cross-file collisions are
+  // fine because storage identity is `name + sourceFile`.
+  if (registry.some(t => t.name === name)) {
+    const fileLabel = activeFile ? ` in ${activeFile}` : '';
+    throw new Error(
+      `Duplicate test name "${name}"${fileLabel}. ` +
+      `Test names must be unique within a single .eval file. ` +
+      `Either rename one of the tests or move them into separate files.`
+    );
+  }
+
+  registry.push({ name, options, evaluate, sourceFile: activeFile ?? undefined });
 }
 
 export function getRegisteredTests(filePath?: string): CodeTestCase[] {
@@ -84,48 +127,66 @@ export function clearRegistry(filePath?: string): void {
 /**
  * @deprecated Use test() instead. This wrapper exists for backward compatibility.
  * @experimental The SDK is experimental — see `lib/index.ts`.
+ *
+ * Legacy `category` and `difficulty` fields are migrated to labels:
+ * `'category:RCA'`, `'difficulty:Medium'`. Existing labels on the input
+ * are preserved.
  */
 export function defineTestCases(cases: Array<{
   name: string;
-  category: string;
-  difficulty: 'Easy' | 'Medium' | 'Hard';
-  initialPrompt: string;
+  category?: string;
+  difficulty?: 'Easy' | 'Medium' | 'Hard';
+  initialPrompt?: string;
   description?: string;
   context?: { description: string; value: string }[];
   labels?: string[];
   evaluate: (result: EvalResult) => Promise<void> | void;
 }>): CodeTestCase[] {
+  emitExperimentalWarningOnce();
   if (!Array.isArray(cases) || cases.length === 0) {
     throw new Error('defineTestCases requires a non-empty array of test cases');
   }
   const result: CodeTestCase[] = [];
   for (const tc of cases) {
     if (!tc.name) throw new Error('Each test case must have a name');
-    if (!tc.initialPrompt) throw new Error(`Test case "${tc.name}" must have an initialPrompt`);
     if (!tc.evaluate) throw new Error(`Test case "${tc.name}" must have an evaluate function`);
-    if (!tc.category) throw new Error(`Test case "${tc.name}" must have a category`);
-    if (!tc.difficulty) throw new Error(`Test case "${tc.name}" must have a difficulty`);
+
+    // Merge legacy category/difficulty into labels
+    const labels = [...(tc.labels ?? [])];
+    if (tc.category && !labels.some(l => l.startsWith('category:'))) {
+      labels.push(`category:${tc.category}`);
+    }
+    if (tc.difficulty && !labels.some(l => l.startsWith('difficulty:'))) {
+      labels.push(`difficulty:${tc.difficulty}`);
+    }
 
     const codeTestCase: CodeTestCase = {
       name: tc.name,
       options: {
         prompt: tc.initialPrompt,
-        category: tc.category,
-        difficulty: tc.difficulty,
         description: tc.description,
         context: tc.context,
-        labels: tc.labels,
+        labels: labels.length > 0 ? labels : undefined,
       },
       evaluate: tc.evaluate,
+      sourceFile: activeFile ?? undefined,
     };
     result.push(codeTestCase);
 
-    // Also register it
+    // Also register it (subject to within-file duplicate detection)
     const key = activeFile ?? DEFAULT_KEY;
     if (!registries.has(key)) {
       registries.set(key, []);
     }
-    registries.get(key)!.push(codeTestCase);
+    const registry = registries.get(key)!;
+    if (registry.some(t => t.name === tc.name)) {
+      const fileLabel = activeFile ? ` in ${activeFile}` : '';
+      throw new Error(
+        `Duplicate test name "${tc.name}"${fileLabel}. ` +
+        `Test names must be unique within a single .eval file.`
+      );
+    }
+    registry.push(codeTestCase);
   }
   return result;
 }

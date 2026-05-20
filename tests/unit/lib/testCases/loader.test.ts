@@ -45,8 +45,7 @@ describe('computeTestCaseHash', () => {
     name: 'Test',
     options: {
       prompt: 'Analyze this',
-      category: 'RCA',
-      difficulty: 'Medium',
+      labels: ['category:RCA', 'difficulty:Medium'],
     },
     evaluate: () => {},
   };
@@ -67,8 +66,8 @@ describe('computeTestCaseHash', () => {
     expect(computeTestCaseHash(baseTc)).not.toBe(computeTestCaseHash(modified));
   });
 
-  it('produces different hash when category changes', () => {
-    const modified = { ...baseTc, options: { ...baseTc.options, category: 'Security' } };
+  it('produces different hash when labels change', () => {
+    const modified = { ...baseTc, options: { ...baseTc.options, labels: ['category:Security', 'difficulty:Medium'] } };
     expect(computeTestCaseHash(baseTc)).not.toBe(computeTestCaseHash(modified));
   });
 

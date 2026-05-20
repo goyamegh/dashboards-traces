@@ -8,6 +8,7 @@ import * as path from 'path';
 import type { TestCaseSource, TestCase } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
 import { validateTestCasesArrayJson } from '@/lib/testCaseValidation';
+import { getCategoryFromLabels, getDifficultyFromLabels } from '@/lib/testCaseLabels';
 import { debug } from '@/lib/debug';
 import type { EvalResult } from '@/lib/testCases/types';
 
@@ -159,18 +160,29 @@ async function resolveCodeImport(
     const loaded = await loadTestCasesFromModule(filename);
     const sourceFile = path.relative(process.cwd(), loaded.filePath);
 
-    const upsertInput = loaded.testCases.map(tc => ({
-      name: tc.name,
-      category: tc.options.category,
-      difficulty: tc.options.difficulty,
-      initialPrompt: tc.options.prompt,
-      context: tc.options.context,
-      labels: tc.options.labels,
-      sourceFile,
-      sourceHash: tc.hash,
-    }));
+    const upsertInput = loaded.testCases.map(tc => {
+      // Labels are the source of truth in the new SDK. Derive the legacy
+      // top-level fields for back-compat with existing storage / UI that
+      // still reads them. Cold-start migration folds these the other way
+      // for documents created before labels existed.
+      const labels = tc.options.labels;
+      const category = getCategoryFromLabels(labels);
+      const difficulty = getDifficultyFromLabels(labels);
+      return {
+        name: tc.name,
+        // Derived from labels for back-compat. Optional now — the storage
+        // layer accepts undefined and the UI falls back to label lookups.
+        ...(category ? { category } : {}),
+        ...(difficulty ? { difficulty } : {}),
+        initialPrompt: tc.options.prompt,
+        context: tc.options.context,
+        labels,
+        sourceFile,
+        sourceHash: tc.hash,
+      };
+    });
 
-    const result = await storage.testCases.bulkUpsert(upsertInput);
+    const result = await storage.testCases.bulkUpsert(upsertInput as Parameters<typeof storage.testCases.bulkUpsert>[0]);
     allTestCases.push(...result.testCases);
 
     result.testCases.forEach((stored, i) => {

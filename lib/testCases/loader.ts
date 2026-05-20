@@ -23,8 +23,6 @@ export function computeTestCaseHash(tc: CodeTestCase): string {
   const content = JSON.stringify({
     name: tc.name,
     prompt: tc.options.prompt,
-    category: tc.options.category,
-    difficulty: tc.options.difficulty,
     context: tc.options.context,
     labels: tc.options.labels,
     description: tc.options.description,
