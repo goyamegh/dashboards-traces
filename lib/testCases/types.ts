@@ -4,6 +4,7 @@
  */
 
 import type { TrajectoryStep } from '@/types';
+import type { TracesAccessor } from '../matchers/index.js';
 
 /**
  * Options for a code-based test case.
@@ -38,19 +39,66 @@ export interface TestOptions {
   timeout?: number;
 }
 
+/**
+ * The trajectory accessor namespace exposed via EvalResult.trajectory in
+ * the new SDK. It IS the same array returned by the runner so users can
+ * iterate freely; the helpers are added as non-enumerable methods so
+ * `for/of` and JSON.stringify behave naturally.
+ */
+export interface TrajectoryAccessor extends Array<TrajectoryStep> {
+  /** Steps of the given type, in order of occurrence. */
+  stepsOfType(type: string): TrajectoryStep[];
+  /** All `action` steps, optionally filtered by toolName and partial args. */
+  toolCalls(name?: string, argsPartial?: Record<string, unknown>): TrajectoryStep[];
+  /** First action-step matching, with `.index` annotated for ordering checks, or null. */
+  firstToolCall(
+    name?: string,
+    argsPartial?: Record<string, unknown>
+  ): (TrajectoryStep & { index: number }) | null;
+}
+
 export interface CodeTestCase {
   name: string;
   options: TestOptions;
-  evaluate: (result: EvalResult) => Promise<void> | void;
+  evaluate: TestBodyFn | LegacyEvaluateFn;
   /** Resolved file the test was registered from — set by the loader. */
   sourceFile?: string;
 }
 
+/**
+ * The Playwright-style test body signature: receives a fixtures object
+ * with `result`, `judge`, `traces`, and `expect`.
+ */
+export type TestBodyFn = (fixtures: TestFixtures) => Promise<void> | void;
+
+/**
+ * Legacy single-arg signature kept for backward compatibility. Old code
+ * that did `test(name, opts, async (result) => { ... })` keeps working.
+ */
+export type LegacyEvaluateFn = (result: EvalResult) => Promise<void> | void;
+
+export interface TestFixtures {
+  result: EvalResult;
+  judge: typeof import('./judge.js').judge;
+  traces: TracesAccessor;
+  expect: typeof import('../matchers/expect.js').expect;
+}
+
 export interface EvalResult {
-  trajectory: TrajectoryStep[];
+  /** All trajectory steps with sugar accessors (toolCalls, firstToolCall, etc.). */
+  trajectory: TrajectoryAccessor;
+  /** Concatenated final response text from the agent's `assistant`/`response` steps. */
   agentOutput: string;
+  /** Convenience: same as agentOutput. Returns the last assistant text. */
+  finalResponse(): string;
+  /** Try-parse `agentOutput` as JSON. Returns undefined when not parseable. */
+  parsedOutput(): unknown;
+  /** Raw AG-UI events as received from the agent. */
   rawEvents: any[];
+  /** Agent-supplied run id (for log/trace correlation). */
   runId?: string;
+  /** Wall-clock duration of the agent invocation in ms (0 when no prompt). */
   durationMs: number;
+  /** Token usage when reported by the agent. */
   tokenUsage?: { prompt: number; completion: number; total: number };
 }

@@ -12,7 +12,13 @@ import { getCategoryFromLabels, getDifficultyFromLabels } from '@/lib/testCaseLa
 import { debug } from '@/lib/debug';
 import type { EvalResult } from '@/lib/testCases/types';
 
-export type EvaluateFn = (result: EvalResult) => Promise<void> | void;
+/**
+ * The signature of a test body. Accepts both legacy `(result)` form and
+ * the new Playwright-style fixtures object. Internally the runner passes
+ * a single argument that satisfies both shapes (an EvalResult merged with
+ * the fixtures), so callers downcast as needed.
+ */
+export type EvaluateFn = (resultOrFixtures: any) => Promise<void> | void;
 
 export interface ResolvedSources {
   testCases: TestCase[];

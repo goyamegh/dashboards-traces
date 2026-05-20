@@ -86,5 +86,10 @@ export type { ConnectorRegistry } from '../services/connectors/types.js';
 export { test, defineTestCases, judge } from './testCases/index.js';
 export type { TestOptions, CodeTestCase, EvalResult } from './testCases/types.js';
 
-// Assertion library (re-exported for customer convenience)
-export { expect } from 'chai';
+// Per-matcher results: chai-based `expect` with our recording plugin and
+// custom matchers (haveCalledTool, haveStepsOfType, haveOutputMatching,
+// haveCompletedWithin), plus the traces fixture type. Verdicts produced
+// by these matchers and by judge() are persisted on TestCaseRun and
+// shown in the UI as a per-matcher breakdown.
+export { expect } from './matchers/index.js';
+export type { TracesAccessor, MatcherResult, MatcherMethod } from './matchers/index.js';

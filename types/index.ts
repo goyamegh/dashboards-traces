@@ -377,6 +377,11 @@ export interface TestCaseRun {
   rawEvents?: any[]; // Raw AG UI events for debugging
   connectorProtocol?: ConnectorProtocol; // Protocol used to execute this run (for trajectory parsing)
 
+  // Per-matcher verdicts captured by the SDK during the test body
+  // execution. One entry per `expect(...).to.X(...)`, `judge(...)`, or
+  // traces helper invocation. UI consumers render this as a breakdown.
+  matcherResults?: import('../lib/matchers/types.js').MatcherResult[];
+
   // Server-side performance metrics (timing data from evaluation execution)
   performanceMetrics?: TestCasePerformanceMetrics;
 

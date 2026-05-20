@@ -48,7 +48,7 @@ module.exports = {
   },
   // Skip node_modules except for specific packages that need transformation
   transformIgnorePatterns: [
-    'node_modules/(?!(your-esm-packages)/)',
+    'node_modules/(?!(chai|check-error|loupe|deep-eql|pathval|assertion-error)/)',
   ],
   // Increase timeout for integration tests
   testTimeout: 30000,
