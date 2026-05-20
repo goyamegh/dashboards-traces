@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { test, defineTestCases, getRegisteredTests, clearRegistry, setActiveFile } from '@/lib/testCases/define';
+import { test, defineTestCases, getRegisteredTests, clearRegistry, setActiveFile, _resetExperimentalWarning } from '@/lib/testCases/define';
 
 describe('test() API', () => {
   beforeEach(() => {
@@ -152,5 +152,46 @@ describe('defineTestCases (backward compat)', () => {
   it('throws when required fields missing', () => {
     expect(() => defineTestCases([{ name: '', category: 'RCA', difficulty: 'Easy', initialPrompt: 'p', evaluate: () => {} }]))
       .toThrow('name');
+  });
+});
+
+describe('experimental warning', () => {
+  let warnSpy: jest.SpyInstance;
+  let originalEnv: string | undefined;
+
+  beforeEach(() => {
+    clearRegistry();
+    _resetExperimentalWarning();
+    originalEnv = process.env.AGENT_HEALTH_SUPPRESS_EXPERIMENTAL;
+    delete process.env.AGENT_HEALTH_SUPPRESS_EXPERIMENTAL;
+    warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    warnSpy.mockRestore();
+    if (originalEnv === undefined) {
+      delete process.env.AGENT_HEALTH_SUPPRESS_EXPERIMENTAL;
+    } else {
+      process.env.AGENT_HEALTH_SUPPRESS_EXPERIMENTAL = originalEnv;
+    }
+  });
+
+  it('emits the experimental warning the first time test() is called', () => {
+    test('First', { prompt: 'p', category: 'RCA', difficulty: 'Easy' }, async () => {});
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    expect(warnSpy.mock.calls[0][0]).toMatch(/experimental/i);
+  });
+
+  it('does not emit again on subsequent test() calls', () => {
+    test('First', { prompt: 'p', category: 'RCA', difficulty: 'Easy' }, async () => {});
+    test('Second', { prompt: 'p', category: 'RCA', difficulty: 'Easy' }, async () => {});
+    test('Third', { prompt: 'p', category: 'RCA', difficulty: 'Easy' }, async () => {});
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('is suppressed when AGENT_HEALTH_SUPPRESS_EXPERIMENTAL=1 is set', () => {
+    process.env.AGENT_HEALTH_SUPPRESS_EXPERIMENTAL = '1';
+    test('First', { prompt: 'p', category: 'RCA', difficulty: 'Easy' }, async () => {});
+    expect(warnSpy).not.toHaveBeenCalled();
   });
 });

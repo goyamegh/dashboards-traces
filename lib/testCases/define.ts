@@ -9,6 +9,28 @@ const registries = new Map<string, CodeTestCase[]>();
 let activeFile: string | null = null;
 const DEFAULT_KEY = '__default__';
 
+// Emit a one-time experimental-status warning the first time the SDK is
+// touched, unless the user opts out. This is intentionally noisy enough to be
+// noticed but only fires once per process so it doesn't pollute test output.
+let experimentalWarningEmitted = false;
+function emitExperimentalWarningOnce(): void {
+  if (experimentalWarningEmitted) return;
+  experimentalWarningEmitted = true;
+  if (process.env.AGENT_HEALTH_SUPPRESS_EXPERIMENTAL === '1') return;
+  // eslint-disable-next-line no-console
+  console.warn(
+    '[agent-health] The code-based test SDK (test()/judge()/expect()) is ' +
+    'experimental. The API may change in a minor release without a ' +
+    'deprecation cycle. Pin your @opensearch-project/agent-health version, ' +
+    'or set AGENT_HEALTH_SUPPRESS_EXPERIMENTAL=1 to silence this notice.'
+  );
+}
+
+/** @internal */
+export function _resetExperimentalWarning(): void {
+  experimentalWarningEmitted = false;
+}
+
 export function setActiveFile(filePath: string): void {
   activeFile = filePath;
   if (!registries.has(filePath)) {
@@ -16,11 +38,22 @@ export function setActiveFile(filePath: string): void {
   }
 }
 
+/**
+ * Register a code-based test case.
+ *
+ * @experimental The SDK shape (signature, options, body fixtures) may change
+ * in a minor release without a deprecation cycle. See `lib/index.ts`.
+ *
+ * @param name        Human-readable test name. Required.
+ * @param options     Test options (prompt, labels, timeout, etc.).
+ * @param evaluate    Test body — receives the {@link EvalResult} and asserts.
+ */
 export function test(
   name: string,
   options: TestOptions,
   evaluate: (result: EvalResult) => Promise<void> | void
 ): void {
+  emitExperimentalWarningOnce();
   if (!name || typeof name !== 'string') throw new Error('test() requires a name');
   if (!options.prompt) throw new Error(`test("${name}") requires options.prompt`);
   if (!options.category) throw new Error(`test("${name}") requires options.category`);
@@ -50,6 +83,7 @@ export function clearRegistry(filePath?: string): void {
 
 /**
  * @deprecated Use test() instead. This wrapper exists for backward compatibility.
+ * @experimental The SDK is experimental — see `lib/index.ts`.
  */
 export function defineTestCases(cases: Array<{
   name: string;
