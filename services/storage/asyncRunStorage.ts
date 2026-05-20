@@ -106,6 +106,8 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     rawEvents: stored.rawEvents as any[] | undefined,
     logs: (stored.logs || []) as OpenSearchLog[],
     improvementStrategies: stored.improvementStrategies as any[] | undefined,
+    // Per-matcher verdicts captured by the SDK during the test body
+    matcherResults: (stored as any).matcherResults as any[] | undefined,
     // Trace-mode fields
     metricsStatus: storedAny.metricsStatus as 'pending' | 'calculating' | 'ready' | 'error' | undefined,
     traceFetchAttempts: storedAny.traceFetchAttempts,
@@ -153,6 +155,8 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
   if (report.traceError !== undefined) base.traceError = report.traceError;
   if (report.spans !== undefined) base.spans = report.spans;
   if (report.connectorProtocol !== undefined) base.connectorProtocol = report.connectorProtocol;
+  // SDK matcher verdicts: persist alongside the report
+  if (report.matcherResults !== undefined) (base as any).matcherResults = report.matcherResults;
 
   return base;
 }
