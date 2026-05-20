@@ -213,15 +213,10 @@ function escapeRegex(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// ─── TypeScript module augmentation for the custom matchers ────────────
-// So users get IntelliSense on `expect(traj).to.haveCalledTool(...)` etc.
-declare global {
-  namespace Chai {
-    interface Assertion {
-      haveCalledTool(toolName: string, argsPartial?: Record<string, unknown>): Assertion;
-      haveStepsOfType(type: string): Assertion;
-      haveOutputMatching(pattern: RegExp | string): Assertion;
-      haveCompletedWithin(thresholdMs: number): Assertion;
-    }
-  }
-}
+// ─── TypeScript module augmentation ─────────────────────────────────
+// chai@4 uses ambient namespace declarations rather than modules, so we
+// can't `declare module 'chai'` here. The custom matchers above
+// (haveCalledTool, haveStepsOfType, haveOutputMatching, haveCompletedWithin)
+// are registered via `Assertion.addMethod` and work at runtime; user code
+// that wants type-safe access can either cast `as any` or drop a tiny
+// .d.ts in their own project that augments `Chai.Assertion`.

@@ -40,6 +40,7 @@ import { EvaluationReport, RunAnnotation, TestCase, TestCasePerformanceMetrics, 
 import { fetchRunMetrics, formatCost, formatDuration, formatTokens } from '@/services/metrics';
 import { TrajectoryView } from './TrajectoryView';
 import { RawEventsPanel } from './RawEventsPanel';
+import { MatcherResultsPanel } from './MatcherResultsPanel';
 import TraceVisualization from './traces/TraceVisualization';
 import ViewToggle, { ViewMode } from './traces/ViewToggle';
 import TraceFullScreenView from './traces/TraceFullScreenView';
@@ -1208,6 +1209,11 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                   </div>
                 </CardContent></Card>
               </div>
+            )}
+
+            {/* Matcher results — per-assertion breakdown for SDK runs */}
+            {liveReport.matcherResults && liveReport.matcherResults.length > 0 && (
+              <MatcherResultsPanel results={liveReport.matcherResults} />
             )}
 
             {/* LLM Judge Reasoning */}
