@@ -16,6 +16,7 @@ import {
 import type { IStorageModule } from '@/server/adapters/types';
 import { runEvaluationWithConnector, callBedrockJudge } from '@/services/evaluation';
 import { connectorRegistry } from '@/services/connectors/server';
+import { v4 as uuidv4 } from 'uuid';
 import { loadConfigSync } from '@/lib/config/index';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { getCustomAgents } from '@/server/services/customAgentStore';
@@ -172,15 +173,25 @@ export async function executeEvaluationRun(
         try {
           // Check if this test case has a deterministic evaluate function
           const hasDeterministicEval = evaluateFnMap?.has(testCaseId) ?? false;
+          // Detect code-only tests that have no prompt — skip agent invocation
+          // entirely and run the deterministic body against an empty result.
+          const hasPrompt = !!(testCase.initialPrompt && testCase.initialPrompt.trim().length > 0);
+          const skipAgentInvocation = !hasPrompt && hasDeterministicEval;
 
-          // Run the evaluation using connector
-          const report = await runEvaluationWithConnector(
-            agentConfig,
-            bedrockModelId,
-            testCase,
-            () => {}, // No debug callback needed
-            { registry: connectorRegistry, evaluatorId: run.evaluatorId, skipJudge: hasDeterministicEval }
-          );
+          let report: EvaluationReport;
+          if (skipAgentInvocation) {
+            debug('EvaluationRunner', `[${testCaseId}] No prompt — running deterministic body without agent invocation`);
+            report = synthesizeEmptyReport(testCase, agentConfig.key, bedrockModelId);
+          } else {
+            // Run the evaluation using connector
+            report = await runEvaluationWithConnector(
+              agentConfig,
+              bedrockModelId,
+              testCase,
+              () => {}, // No debug callback needed
+              { registry: connectorRegistry, evaluatorId: run.evaluatorId, skipJudge: hasDeterministicEval }
+            );
+          }
 
           // Run deterministic evaluation if applicable
           if (hasDeterministicEval) {
@@ -419,4 +430,43 @@ async function waitForTracesAndJudge(
       { agentConfig }
     );
   });
+}
+
+/**
+ * Build a synthetic empty EvaluationReport for tests that have no prompt
+ * (deterministic-only tests). The body is expected to assert on
+ * non-trajectory data (fixtures, external state, computed values) so the
+ * trajectory and agent output are deliberately empty.
+ *
+ * The report is shaped exactly like a real evaluation report so the rest of
+ * the pipeline (storage, UI, judge skipping) treats it identically.
+ */
+function synthesizeEmptyReport(
+  testCase: TestCase,
+  agentKey: string,
+  modelId: string
+): EvaluationReport {
+  const now = new Date().toISOString();
+  return {
+    id: uuidv4(),
+    testCaseId: testCase.id,
+    testCaseVersion: testCase.currentVersion,
+    timestamp: now,
+    agentName: agentKey,
+    agentKey,
+    modelName: modelId,
+    modelId,
+    status: 'completed',
+    trajectory: [],
+    rawEvents: [],
+    metrics: { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 },
+    performanceMetrics: { durationMs: 0 },
+    metricsStatus: 'completed',
+    skipJudge: true,
+    llmJudgeReasoning: '',
+    // Deterministic body decides pass/fail; defaults to passed and is
+    // overridden by the body's evaluate() call in the runner.
+    passFailStatus: 'passed',
+    evaluationType: 'deterministic',
+  } as unknown as EvaluationReport;
 }

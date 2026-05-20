@@ -420,7 +420,9 @@ export interface TestCaseVersion {
   createdAt: string;
 
   // Content fields (snapshot)
-  initialPrompt: string;
+  // initialPrompt is optional: code-based test cases without a prompt cause
+  // the runner to skip agent invocation entirely (deterministic-only tests).
+  initialPrompt?: string;
   context: AgentContextItem[];
   tools?: AgentToolDefinition[];
   expectedPPL?: string;
@@ -470,7 +472,9 @@ export interface TestCase {
   lastRunAt?: string;               // Timestamp of the most recent evaluation run
 
   // Current version content (convenience accessors - mirrors latest version)
-  initialPrompt: string;
+  // Optional because code-based test cases may have no prompt at all
+  // (deterministic-only tests where the runner skips agent invocation).
+  initialPrompt?: string;
   context: AgentContextItem[]; // AG-UI format context passed to agent
   tools?: AgentToolDefinition[]; // Tools available to the agent (client-provided)
   expectedPPL?: string; // Expected PPL query for validation

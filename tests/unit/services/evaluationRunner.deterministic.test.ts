@@ -231,4 +231,95 @@ describe('executeEvaluationRun - deterministic evaluation', () => {
       expect.objectContaining({ skipJudge: false })
     );
   });
+
+  it('skips agent invocation entirely when test case has no prompt', async () => {
+    const evaluateFn: EvaluateFn = jest.fn();
+    const evaluateFnMap = new Map<string, EvaluateFn>([['tc-noprompt', evaluateFn]]);
+
+    const testCase: TestCase = {
+      id: 'tc-noprompt',
+      name: 'Deterministic Only',
+      // No initialPrompt at all
+      context: [],
+      currentVersion: 1,
+    } as unknown as TestCase;
+    const run: EvaluationRun = {
+      id: 'run-1',
+      agentKey: 'test-agent',
+      modelId: 'claude-sonnet',
+      status: 'running',
+      results: {},
+      createdAt: new Date().toISOString(),
+    } as unknown as EvaluationRun;
+
+    let savedReport: any = null;
+    (storage.runs.create as jest.Mock).mockImplementation((report: any) => {
+      savedReport = report;
+      return Promise.resolve({ ...report });
+    });
+
+    await executeEvaluationRun(run, [testCase], {
+      storageModule: storage,
+      evaluateFnMap,
+      onProgress: jest.fn(),
+    });
+
+    // Verify the connector was NEVER called — agent invocation skipped
+    expect(mockRunEval).not.toHaveBeenCalled();
+
+    // Verify the deterministic body still ran with an empty result
+    expect(evaluateFn).toHaveBeenCalledTimes(1);
+    expect(evaluateFn).toHaveBeenCalledWith(expect.objectContaining({
+      trajectory: [],
+      agentOutput: '',
+      rawEvents: [],
+      durationMs: 0,
+    }));
+
+    // Verify a synthetic report was persisted with deterministic verdict
+    expect(savedReport).not.toBeNull();
+    expect(savedReport.passFailStatus).toBe('passed');
+    expect(savedReport.evaluationType).toBe('deterministic');
+    expect(savedReport.skipJudge).toBe(true);
+    expect(savedReport.testCaseId).toBe('tc-noprompt');
+    expect(run.results['tc-noprompt'].status).toBe('completed');
+  });
+
+  it('still calls agent when prompt is present even if evaluate function exists', async () => {
+    const evaluateFn: EvaluateFn = jest.fn();
+    const evaluateFnMap = new Map<string, EvaluateFn>([['tc-prompt', evaluateFn]]);
+
+    const testCase: TestCase = {
+      id: 'tc-prompt',
+      name: 'Hybrid',
+      initialPrompt: 'Do something',
+      context: [],
+    } as unknown as TestCase;
+    const run: EvaluationRun = {
+      id: 'run-1',
+      agentKey: 'test-agent',
+      modelId: 'claude-sonnet',
+      status: 'running',
+      results: {},
+      createdAt: new Date().toISOString(),
+    } as unknown as EvaluationRun;
+
+    mockRunEval.mockResolvedValue({
+      id: 'report-1',
+      trajectory: [],
+      rawEvents: [],
+      status: 'completed',
+      performanceMetrics: { durationMs: 100 },
+    });
+    (storage.runs.create as jest.Mock).mockImplementation((report: any) => Promise.resolve({ ...report, id: 'report-1' }));
+
+    await executeEvaluationRun(run, [testCase], {
+      storageModule: storage,
+      evaluateFnMap,
+      onProgress: jest.fn(),
+    });
+
+    // Connector WAS called — prompt is present
+    expect(mockRunEval).toHaveBeenCalledTimes(1);
+  });
 });
