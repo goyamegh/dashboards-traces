@@ -80,10 +80,6 @@ export async function createApp(): Promise<Express> {
       password: obsConfig.password,
       tlsSkipVerify: obsConfig.tlsSkipVerify,
       indexName: 'otel-v1-apm-span',
-      authType: obsConfig.authType as 'basic' | 'sigv4' | undefined,
-      awsRegion: obsConfig.awsRegion,
-      awsProfile: obsConfig.awsProfile,
-      awsService: obsConfig.awsService as 'es' | 'aoss' | undefined,
     };
   }
   initEvalTracerProvider(resolveEvalTelemetryConfig({
