@@ -47,6 +47,9 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - 15-second SSE heartbeat events to keep long-running evaluation connections alive through TCP idle timeouts.
 
 ### Changed
+- Agent Traces page: Service column now renders as plain text instead of a capsule/badge for easier scanning.
+- Agent Traces page: Start Time column now uses relative-time formatting (e.g. "5m ago", "2h ago") consistent with Test Cases (Created) and Benchmarks (Last Run). Hover shows the absolute timestamp.
+- Agent Traces page: Clicking a trace row now expands inline (Chrome DevTools "Inspect"-style) to show the trace tree timeline with per-span distribution bars directly below the row, instead of opening a right-side flyout. Clicking an individual span opens its details panel below the trace tree (rather than to the right), making both the tree and the details easier to read on wide screens. Fullscreen access is preserved via a maximize button in the inline header.
 - Rewrite First Run Experience as a narrative landing: promise-driven hero with two primary CTAs, four-step horizontal journey (Explore → Connect → Evaluate → Improve & scale), four outcome-framed value cards, and a subtle scale moment with Docker and CloudFormation install commands. Replaces the previous two-card "How it works" + "Getting Started" layout. Preserves all existing CTAs, install commands, optional coding agents banner, and `data-testid="first-run-experience"`.
 - Hide sample data by default when customer has real evaluation data; add "Show sample data" toggle
 - Collapse built-in agents when custom agents exist; group agent dropdowns (Your Agents / Built-in)

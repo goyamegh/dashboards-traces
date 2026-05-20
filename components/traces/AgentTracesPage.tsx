@@ -9,7 +9,8 @@
  * Table-based view showing agent traces from OTEL data with:
  * - Table format with trace summaries
  * - Latency histogram distribution
- * - Flyout panel for detailed trace view
+ * - Inline expandable trace tree (Chrome-DevTools "Inspect" style) with
+ *   per-span details rendered below the tree
  * - Input/output display for spans following OTEL conventions
  */
 
@@ -24,6 +25,7 @@ import {
   CheckCircle2,
   XCircle,
   ChevronRight,
+  ChevronDown,
   SlidersHorizontal,
   X,
   Copy,
@@ -31,13 +33,13 @@ import {
   ArrowUp,
   ArrowDown,
   ArrowUpDown,
+  Maximize2,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { Popover, PopoverTrigger, PopoverContent } from '@/components/ui/popover';
 import {
   Tooltip,
@@ -51,16 +53,18 @@ import {
   fetchRecentTraces,
   groupSpansByTrace,
   getCategoryColors,
+  calculateTimeRange,
 } from '@/services/traces';
 import { formatDuration, formatCompact } from '@/services/traces/utils';
 import { flattenSpans, calculateCategoryStats } from '@/services/traces/traceStats';
 import { categorizeSpanTree } from '@/services/traces/spanCategorization';
 import { processSpansIntoTree } from '@/services/traces';
 import { startMeasure, endMeasure } from '@/lib/performance';
-import { cn } from '@/lib/utils';
-import { TraceFlyoutContent } from './TraceFlyoutContent';
+import { cn, formatRelativeTime } from '@/lib/utils';
+import TraceTimelineChart from './TraceTimelineChart';
+import SpanDetailsPanel from './SpanDetailsPanel';
+import TraceFullScreenView from './TraceFullScreenView';
 import MetricsOverview, { FilterAction } from './MetricsOverview';
-import { useSidebarCollapse } from '@/components/Layout';
 
 // ==================== Types ====================
 
@@ -130,9 +134,10 @@ interface TraceRowProps {
   trace: TraceTableRow;
   onSelect: () => void;
   isSelected: boolean;
+  isExpanded: boolean;
 }
 
-const TraceRow: React.FC<TraceRowProps> = ({ trace, onSelect, isSelected }) => {
+const TraceRow: React.FC<TraceRowProps> = ({ trace, onSelect, isSelected, isExpanded }) => {
   const [copiedField, setCopiedField] = React.useState<string | null>(null);
 
   // Compute per-trace category stats for mini distribution bar
@@ -175,7 +180,9 @@ const TraceRow: React.FC<TraceRowProps> = ({ trace, onSelect, isSelected }) => {
       onClick={onSelect}
     >
       <td className="py-1.5 px-3 align-middle text-xs text-muted-foreground whitespace-nowrap">
-        {trace.startTime.toLocaleString()}
+        <span title={trace.startTime.toLocaleString()}>
+          {formatRelativeTime(trace.startTime.toISOString())}
+        </span>
       </td>
       <td className="py-1.5 px-3 align-middle font-mono text-xs">
         <div className="flex items-center gap-1.5">
@@ -229,9 +236,9 @@ const TraceRow: React.FC<TraceRowProps> = ({ trace, onSelect, isSelected }) => {
         </div>
       </td>
       <td className="py-1.5 px-3 align-middle">
-        <Badge variant="outline" className="text-[11px] py-0 px-1.5">
+        <span className="text-xs text-foreground" title={trace.serviceName || 'unknown'}>
           {trace.serviceName || 'unknown'}
-        </Badge>
+        </span>
       </td>
       <td className="py-1.5 px-3 align-middle">
         <span className={`font-mono text-xs ${trace.duration > 5000 ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
@@ -291,7 +298,136 @@ const TraceRow: React.FC<TraceRowProps> = ({ trace, onSelect, isSelected }) => {
         </Badge>
       </td>
       <td className="py-1.5 px-3 align-middle">
-        <ChevronRight size={14} className="text-muted-foreground" />
+        {isExpanded ? (
+          <ChevronDown size={14} className="text-foreground" />
+        ) : (
+          <ChevronRight size={14} className="text-muted-foreground" />
+        )}
+      </td>
+    </tr>
+  );
+};
+
+// ==================== Expanded Trace Row (inline detail) ====================
+
+interface ExpandedTraceRowProps {
+  trace: TraceTableRow;
+  onClose: () => void;
+}
+
+/**
+ * Renders the inline expanded view for a trace, shown directly below the
+ * clicked row (Chrome DevTools "Inspect"-tab style).
+ *
+ * Top section: trace tree timeline (per-span distribution bars).
+ * Bottom section (only when a span is selected): SpanDetailsPanel.
+ */
+const ExpandedTraceRow: React.FC<ExpandedTraceRowProps> = ({ trace, onClose }) => {
+  const [selectedSpan, setSelectedSpan] = useState<Span | null>(null);
+  const [expandedSpans, setExpandedSpans] = useState<Set<string>>(new Set());
+  const [fullscreenOpen, setFullscreenOpen] = useState(false);
+
+  const spanTree = useMemo(() => processSpansIntoTree(trace.spans), [trace.spans]);
+  const timeRange = useMemo(() => calculateTimeRange(trace.spans), [trace.spans]);
+
+  // Auto-expand root spans when trace loads/changes
+  useEffect(() => {
+    const rootIds = new Set(spanTree.map(s => s.spanId));
+    setExpandedSpans(rootIds);
+  }, [spanTree]);
+
+  // Reset selected span whenever trace changes
+  useEffect(() => {
+    setSelectedSpan(null);
+  }, [trace.traceId]);
+
+  const handleToggleExpand = useCallback((spanId: string) => {
+    setExpandedSpans(prev => {
+      const next = new Set(prev);
+      if (next.has(spanId)) next.delete(spanId);
+      else next.add(spanId);
+      return next;
+    });
+  }, []);
+
+  return (
+    <tr className="bg-muted/20 border-b">
+      <td colSpan={8} className="p-0">
+        <div className="border-l-2 border-opensearch-blue bg-background">
+          {/* Compact header */}
+          <div className="flex items-center justify-between px-3 py-2 border-b bg-card">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground min-w-0">
+              <span className="font-medium text-foreground truncate" title={trace.rootSpanName}>
+                {trace.rootSpanName}
+              </span>
+              <span>•</span>
+              <span className="font-mono">{trace.traceId.slice(0, 12)}…</span>
+              <span>•</span>
+              <span>{trace.spanCount} spans</span>
+              <span>•</span>
+              <span className="font-medium text-amber-700 dark:text-amber-400">
+                {formatDuration(trace.duration)}
+              </span>
+            </div>
+            <div className="flex items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={() => setFullscreenOpen(true)}
+                title="Open fullscreen"
+              >
+                <Maximize2 size={14} />
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-7 w-7"
+                onClick={onClose}
+                title="Collapse"
+              >
+                <X size={14} />
+              </Button>
+            </div>
+          </div>
+
+          {/* Trace tree with per-span timeline distribution bars */}
+          <div className="max-h-[480px] overflow-auto">
+            <TraceTimelineChart
+              spanTree={spanTree}
+              timeRange={timeRange}
+              selectedSpan={selectedSpan}
+              onSelectSpan={setSelectedSpan}
+              expandedSpans={expandedSpans}
+              onToggleExpand={handleToggleExpand}
+            />
+          </div>
+
+          {/* Span details panel BELOW the tree (Chrome DevTools style) */}
+          {selectedSpan && (
+            <div className="border-t bg-muted/20 max-h-[420px] overflow-auto">
+              <SpanDetailsPanel
+                span={selectedSpan}
+                onClose={() => setSelectedSpan(null)}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Fullscreen view (preserves access to all view modes) */}
+        <TraceFullScreenView
+          open={fullscreenOpen}
+          onOpenChange={setFullscreenOpen}
+          title={trace.rootSpanName}
+          subtitle={`Trace ID: ${trace.traceId.slice(0, 16)}...`}
+          spanTree={spanTree}
+          timeRange={timeRange}
+          selectedSpan={selectedSpan}
+          onSelectSpan={setSelectedSpan}
+          flatSpans={trace.spans}
+          serviceName={trace.serviceName}
+          spanCount={trace.spanCount}
+        />
       </td>
     </tr>
   );
@@ -300,9 +436,6 @@ const TraceRow: React.FC<TraceRowProps> = ({ trace, onSelect, isSelected }) => {
 // ==================== Main Component ====================
 
 export const AgentTracesPage: React.FC = () => {
-  // Sidebar collapse control
-  const { isCollapsed, setIsCollapsed } = useSidebarCollapse();
-  
   // Filter state — persisted across sessions.
   //   * Agent filter is shared with the eval list pages via `prefs:agentFilter`.
   //     The dropdown values are agent config keys (e.g. `'observio'`); when
@@ -373,8 +506,7 @@ export const AgentTracesPage: React.FC = () => {
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
 
   // Flyout state
-  const [flyoutOpen, setFlyoutOpen] = useState(false);
-  const [selectedTrace, setSelectedTrace] = useState<TraceTableRow | null>(null);
+  const [expandedTraceId, setExpandedTraceId] = useState<string | null>(null);
 
   // Scroll state for hiding container header
   const [isScrolled, setIsScrolled] = useState(false);
@@ -719,33 +851,25 @@ export const AgentTracesPage: React.FC = () => {
     };
   }, [displayCount, filteredTraces, hasMore, isLoadingMore, loadMoreTraces]);
 
-  // Handle trace selection
+  // Handle trace selection (toggle inline expansion)
   const handleSelectTrace = (trace: TraceTableRow) => {
-    // If flyout is already open, just update the selected trace (no close/reopen flash)
-    // If flyout is closed, open it with the selected trace and collapse the sidebar
-    setSelectedTrace(trace);
-    if (!flyoutOpen) {
-      setFlyoutOpen(true);
-      // Collapse sidebar when opening flyout for more screen space
-      setIsCollapsed(true);
-    }
+    setExpandedTraceId(prev => (prev === trace.traceId ? null : trace.traceId));
   };
 
-  // Close flyout
+  // Close inline expansion
   const handleCloseFlyout = () => {
-    setFlyoutOpen(false);
-    setSelectedTrace(null);
+    setExpandedTraceId(null);
   };
 
-  // Dismiss flyout on Escape key
+  // Dismiss inline expansion on Escape key
   useEffect(() => {
-    if (!flyoutOpen) return;
+    if (!expandedTraceId) return;
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') handleCloseFlyout();
     };
     document.addEventListener('keydown', onKeyDown);
     return () => document.removeEventListener('keydown', onKeyDown);
-  }, [flyoutOpen]);
+  }, [expandedTraceId]);
 
   // Calculate latency distribution for histogram
   const latencyDistribution = useMemo(() => {
@@ -1405,12 +1529,20 @@ export const AgentTracesPage: React.FC = () => {
                   </thead>
                   <tbody className="[&_tr:last-child]:border-0">
                     {displayedTraces.map((trace) => (
-                      <TraceRow
-                        key={trace.traceId}
-                        trace={trace}
-                        onSelect={() => handleSelectTrace(trace)}
-                        isSelected={selectedTrace?.traceId === trace.traceId}
-                      />
+                      <React.Fragment key={trace.traceId}>
+                        <TraceRow
+                          trace={trace}
+                          onSelect={() => handleSelectTrace(trace)}
+                          isSelected={expandedTraceId === trace.traceId}
+                          isExpanded={expandedTraceId === trace.traceId}
+                        />
+                        {expandedTraceId === trace.traceId && (
+                          <ExpandedTraceRow
+                            trace={trace}
+                            onClose={handleCloseFlyout}
+                          />
+                        )}
+                      </React.Fragment>
                     ))}
                     {/* Intersection observer target for lazy loading (client-side + server-side) */}
                     {(displayedTraces.length < filteredTraces.length || hasMore) && (
@@ -1433,35 +1565,7 @@ export const AgentTracesPage: React.FC = () => {
         </div>
       </Card>
 
-      {/* Trace Detail Flyout - Resizable Panel */}
-      {flyoutOpen && selectedTrace && (
-        <div className="fixed inset-0 z-50 pointer-events-none">
-          <ResizablePanelGroup direction="horizontal" className="h-full pointer-events-none">
-            {/* Left invisible panel - allows content below to be interactive */}
-            <ResizablePanel 
-              defaultSize={40}
-              minSize={10}
-              maxSize={70}
-              className="pointer-events-none"
-            />
-            
-            <ResizableHandle withHandle className="pointer-events-auto" />
-            
-            {/* Right panel - Flyout content */}
-            <ResizablePanel 
-              defaultSize={60}
-              minSize={30}
-              maxSize={90}
-              className="bg-background border-l shadow-2xl pointer-events-auto"
-            >
-              <TraceFlyoutContent
-                trace={selectedTrace}
-                onClose={handleCloseFlyout}
-              />
-            </ResizablePanel>
-          </ResizablePanelGroup>
-        </div>
-      )}
+      {/* Trace details now render inline within the table as ExpandedTraceRow */}
     </div>
   );
 };
