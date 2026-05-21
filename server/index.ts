@@ -30,21 +30,24 @@ const MAX_PORT_ATTEMPTS = 10;
 let observioChild: ChildProcess | null = null;
 
 /**
- * Verify that a process on the given port is actually observio by probing its endpoint.
- * Returns true only if it responds with any HTTP status (even 400 means alive).
+ * Verify that a process on the given port is actually observio by probing its
+ * dedicated `/health` endpoint. The observio HTTP server exposes `GET /health`
+ * (see observio-sample-agent/src/server/http_server.ts) which is a side-effect-free
+ * liveness probe — unlike POST /run-agent, which goes through the full request
+ * pipeline and writes audit / validation-error logs on every probe.
+ *
+ * Returns true only if /health responds with HTTP 200.
  */
 async function isObservioResponding(port: number): Promise<boolean> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 2000);
-    const res = await fetch(`http://localhost:${port}/run-agent`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: '{}',
+    const res = await fetch(`http://localhost:${port}/health`, {
+      method: 'GET',
       signal: controller.signal,
     });
     clearTimeout(timeout);
-    return res.status > 0;
+    return res.ok;
   } catch {
     return false;
   }

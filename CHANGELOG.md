@@ -9,6 +9,10 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Fixed
+- **Observio startup race condition**: When auto-starting the observio sample agent, the server now probes `GET /health` before assuming an existing process on port 3001 is functional. If the port is held by a stale or unresponsive process, the server kills it and respawns observio fresh. Previously, a dying process briefly holding the port would cause the server to silently use a non-functional endpoint. The probe targets the dedicated, side-effect-free `/health` endpoint rather than `POST /run-agent` so it does not write audit / validation-error logs on every server startup ([#210](https://github.com/opensearch-project/agent-health/pull/210)).
+- **Observio telemetry visibility**: Switched observio's span processor from `BatchSpanProcessor` to `SimpleSpanProcessor` and added `flushTelemetry()` after each agent run so spans are exported immediately and queryable before the trace poller starts looking. Wrapped the OTLP exporter with a diagnostic layer that logs success / failure of every export (the default `OTLPTraceExporter` swallows errors silently) ([#210](https://github.com/opensearch-project/agent-health/pull/210)).
+
 ### Changed
 - **UI:** Sidebar now uses a uniform near-black background (`hsl(var(--background))`) in dark mode instead of the previous dark gray (`#1D1E24`), so the sidebar header / nav region matches the existing footer (which already used `bg-background`). Removes the visible top-vs-bottom seam in the left navigation. Light mode unchanged.
 - **UI:** The radial gradient background previously seen only on the Dashboard / Overview page now applies on every page. The `dashboard-gradient-bg` class is now attached to the `SidebarInset` `<main>` in `Layout.tsx`, replacing the per-page `useEffect` toggle in `Dashboard.tsx`.
