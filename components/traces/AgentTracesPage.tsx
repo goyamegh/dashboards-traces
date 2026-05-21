@@ -14,6 +14,8 @@
  */
 
 import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { PREFS_KEYS, SharedTimeRange, sharedTimeRangeToMinutes } from '@/lib/preferences';
 import {
   Search,
   RefreshCw,
@@ -301,22 +303,26 @@ export const AgentTracesPage: React.FC = () => {
   // Sidebar collapse control
   const { isCollapsed, setIsCollapsed } = useSidebarCollapse();
   
-  // Filter state
-  const [selectedAgent, setSelectedAgent] = useState<string>('all');
-  const [textSearch, setTextSearch] = useState('');
-  const [debouncedSearch, setDebouncedSearch] = useState('');
-  const [timeRange, setTimeRange] = useState<string>(() => {
-    if (typeof window !== 'undefined') {
-      return localStorage.getItem('agentTraces.timeRange') || '1440';
-    }
-    return '1440';
-  });
+  // Filter state — persisted across sessions.
+  //   * Agent filter is shared with the eval list pages via `prefs:agentFilter`.
+  //     The dropdown values are agent config keys (e.g. `'observio'`); when
+  //     querying OpenSearch we translate the key to the agent's actual OTel
+  //     `service.name` via {@link AgentConfig.traceServiceName} (falling back
+  //     to the key itself when the field is unset).
+  //   * Time range is shared via `prefs:timeRange`.
+  const [selectedAgent, setSelectedAgent] = usePersistedState<string>(PREFS_KEYS.agentFilter, 'all');
+  const [textSearch, setTextSearch] = usePersistedState<string>('agent-traces:textSearch', '');
+  // Seed debouncedSearch with the persisted textSearch so the initial query
+  // includes any restored search text without waiting for the debounce timer.
+  const [debouncedSearch, setDebouncedSearch] = useState<string>(() => textSearch);
+  const [timeRange, setTimeRange] = usePersistedState<SharedTimeRange>(PREFS_KEYS.timeRange, '1d');
+  const minutesAgo = sharedTimeRangeToMinutes(timeRange);
 
   // Advanced filter state
   const [filterPopoverOpen, setFilterPopoverOpen] = useState(false);
   const [rootSpanSuggestOpen, setRootSpanSuggestOpen] = useState(false);
   const [serviceSuggestOpen, setServiceSuggestOpen] = useState(false);
-  const [filters, setFilters] = useState<{
+  const [filters, setFilters] = usePersistedState<{
     status: string;
     service: string;
     rootSpan: string;
@@ -329,7 +335,7 @@ export const AgentTracesPage: React.FC = () => {
     spanCountMax: string;
     timeWindowStart: string;
     timeWindowEnd: string;
-  }>({
+  }>('agent-traces:filters', {
     status: 'all',
     service: '',
     rootSpan: '',
@@ -380,22 +386,36 @@ export const AgentTracesPage: React.FC = () => {
   // Get unique service names from agents config (no memo — recomputes when
   // parent App re-renders after refreshConfig(), keeping custom agents visible)
   const agentOptions = (() => {
+    // Use agent.key as the dropdown value so the filter is consistent with
+    // the eval list pages and the shared `prefs:agentFilter` localStorage
+    // key carries cleanly across all of them. Display name stays human-
+    // readable.
     const agents = DEFAULT_CONFIG.agents
       .filter(a => a.enabled !== false)
-      .map(a => ({ value: a.name, label: a.name }));
+      .map(a => ({ value: a.key, label: a.name }));
     return [{ value: 'all', label: 'All Agents' }, ...agents];
   })();
 
-  // Time range options
-  const timeRangeOptions = [
-    { value: '15', label: 'Last 15m' },
-    { value: '60', label: 'Last 1hr' },
-    { value: '180', label: 'Last 3hr' },
-    { value: '360', label: 'Last 6hr' },
-    { value: '720', label: 'Last 12hr' },
-    { value: '1440', label: 'Last 1d' },
-    { value: '4320', label: 'Last 3d' },
-    { value: '10080', label: 'Last 7d' },
+  /**
+   * Translate the selected agent key (e.g. 'observio') into the OTel
+   * `service.name` value to filter on (e.g. 'observio-sample-agent').
+   * Falls back to the key itself when no override is set, which is correct
+   * for agents whose OTel SDK uses the same identifier (e.g. `claude-code`).
+   */
+  const selectedAgentServiceName = useMemo(() => {
+    if (selectedAgent === 'all') return undefined;
+    const cfg = DEFAULT_CONFIG.agents.find(a => a.key === selectedAgent);
+    return cfg?.traceServiceName ?? selectedAgent;
+  }, [selectedAgent]);
+
+  // Time range options — unified with eval list pages.
+  const timeRangeOptions: { value: SharedTimeRange; label: string }[] = [
+    { value: '1h', label: 'Last 1h' },
+    { value: '6h', label: 'Last 6h' },
+    { value: '1d', label: 'Last 1d' },
+    { value: '7d', label: 'Last 7d' },
+    { value: '30d', label: 'Last 30d' },
+    { value: 'all', label: 'All time' },
   ];
 
   // Debounce text search
@@ -406,18 +426,8 @@ export const AgentTracesPage: React.FC = () => {
     return () => clearTimeout(timer);
   }, [textSearch]);
 
-  // Persist filter selections to localStorage
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('agentTraces.selectedAgent', selectedAgent);
-    }
-  }, [selectedAgent]);
-
-  useEffect(() => {
-    if (typeof window !== 'undefined') {
-      localStorage.setItem('agentTraces.timeRange', timeRange);
-    }
-  }, [timeRange]);
+  // Persist filter selections to localStorage — handled by usePersistedState above.
+  // (legacy `agentTraces.*` keys are migrated once on mount; see initialization block)
 
   // Convert spans to trace table rows
   const processSpansToTraces = useCallback((allSpans: Span[]): TraceTableRow[] => {
@@ -506,8 +516,8 @@ export const AgentTracesPage: React.FC = () => {
 
     try {
       const result = await fetchRecentTraces({
-        minutesAgo: parseInt(timeRange),
-        serviceName: selectedAgent !== 'all' ? selectedAgent : undefined,
+        minutesAgo: minutesAgo,
+        serviceName: selectedAgentServiceName,
         textSearch: debouncedSearch || undefined,
         size: 100,
       });
@@ -545,8 +555,8 @@ export const AgentTracesPage: React.FC = () => {
 
     try {
       const result = await fetchRecentTraces({
-        minutesAgo: parseInt(timeRange),
-        serviceName: selectedAgent !== 'all' ? selectedAgent : undefined,
+        minutesAgo: minutesAgo,
+        serviceName: selectedAgentServiceName,
         textSearch: debouncedSearch || undefined,
         size: 100,
         cursor: currentCursor,
@@ -771,7 +781,7 @@ export const AgentTracesPage: React.FC = () => {
     // Create 20 time buckets for the selected time range
     const numBuckets = 20;
     const now = Date.now();
-    const timeRangeMs = parseInt(timeRange) * 60 * 1000;
+    const timeRangeMs = minutesAgo * 60 * 1000;
     const bucketSize = timeRangeMs / numBuckets;
 
     const errorBuckets = Array(numBuckets).fill(0);
@@ -1224,7 +1234,7 @@ export const AgentTracesPage: React.FC = () => {
               </Select>
 
               {/* Time Range */}
-              <Select value={timeRange} onValueChange={setTimeRange}>
+              <Select value={timeRange} onValueChange={(v) => setTimeRange(v as SharedTimeRange)}>
                 <SelectTrigger className="w-[85px] h-7 text-xs">
                   <SelectValue />
                 </SelectTrigger>

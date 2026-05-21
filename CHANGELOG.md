@@ -9,7 +9,34 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Changed
+- **UI:** Sidebar now uses a uniform near-black background (`hsl(var(--background))`) in dark mode instead of the previous dark gray (`#1D1E24`), so the sidebar header / nav region matches the existing footer (which already used `bg-background`). Removes the visible top-vs-bottom seam in the left navigation. Light mode unchanged.
+- **UI:** The radial gradient background previously seen only on the Dashboard / Overview page now applies on every page. The `dashboard-gradient-bg` class is now attached to the `SidebarInset` `<main>` in `Layout.tsx`, replacing the per-page `useEffect` toggle in `Dashboard.tsx`.
+
 ### Added
+- Cross-page user preferences are now stored under a single shared `agent-health:prefs:*` namespace, so picking a value once is reflected on every other page that exposes the same control. Shared keys:
+  - `prefs:timeRange` — Benchmarks / Test Cases / Evaluation Runs / Agent Traces (Agent Traces converts the shared `'1h' | '6h' | '1d' | '7d' | '30d' | 'all'` enum to its internal minute-based query cutoff).
+  - `prefs:agentFilter` — Benchmarks and Evaluation Runs filter dropdowns (default `'all'`). Not Agent Traces — its dropdown options are telemetry service names which live in a different value space than the eval pages' agent-config keys.
+  - `prefs:benchmarkFilter` — Test Cases benchmark filter (default `'all'`).
+  - `prefs:viewMode` — Test Cases / Evaluation Runs (`'flat' | 'grouped'`).
+  - `prefs:agentKey` and `prefs:modelId` — run-config selection (QuickRunModal, NewRunPage; BenchmarkRunsPage and BenchmarkEditor read the same keys).
+  - The storage layout is intentionally flat — each preference is its own JSON-encoded localStorage entry under `agent-health:prefs:*`, so the bundle is portable. `lib/preferences.ts` exports `getPreferencesSnapshot()`, `applyPreferencesSnapshot()` and `clearPreferences()` for one-call dump / restore / reset, which is the natural shape to send to a server-side preference store later.
+  - Page-specific values that don't share semantics across pages stay under their per-page keys: Dashboard's narrower (`7d`/`30d`/`all`) time range, Agent Traces' page-specific agent filter (telemetry service name space), all sort orders, all advanced filters, all search inputs, collapsed groups, EvalRuns benchmark/model filter sets and pass-rate range.
+  - Coverage: 14 unit tests in `tests/unit/lib/preferences.test.ts` for the shared API (snapshot / apply / clear, time-range conversion, forward-compat for unknown keys, quota-exceeded resilience), 9 unit tests for `usePersistedSet`, 4 e2e tests for the QuickRunModal default-agent behaviour, and 19 e2e tests in `tests/e2e/sidebar-persisted-preferences.spec.ts` (including a cross-page sync test that walks Eval Runs → Benchmarks → Test Cases → Agent Traces and verifies `prefs:timeRange` stays consistent, plus a UI-position test confirming the view-toggle is in the page header with Grouped listed first).
+
+### Changed
+- Test Cases and Evaluation Runs pages: the flat / grouped view toggle now lives in the page header (next to search and filters) rather than in a separate row below the title — matches the Benchmarks layout for a consistent feel. **Grouped is listed first** in both pages.
+- Agent Traces page: time-range options unified with the eval list pages (`Last 1h`, `Last 6h`, `Last 1d`, `Last 7d`, `Last 30d`, `All time`) so the shared `prefs:timeRange` carries cleanly across them. The previous minute-granularity options (15m, 3h, 6h, 12h, 3d) are no longer offered; `'all'` is treated as a 90-day cutoff at query time.
+- Persist input preferences across all sidebar pages so filters, sorts, search queries and view modes survive reloads and SPA navigation. Newly-persisted state, all under the unified `agent-health:` localStorage namespace and powered by `usePersistedState` (and the new `usePersistedSet` helper for `Set<string>`-shaped state):
+    - **Dashboard `/`** — `dashboard:timeRange`, `dashboard:selectedMetric`, `dashboard:filters`.
+    - **Benchmarks `/evaluations/benchmarks`** — `benchmarks:search` (already had `timeRange`, `selectedAgent`, `sort`).
+    - **Test Cases `/evaluations/test-cases`** — `test-cases:search`, `test-cases:collapsedGroups` (already had `viewMode`, `timeRange`, `selectedBenchmark`, `sort`).
+    - **Evaluation Runs `/evaluations/runs`** — `eval-runs:search`, `eval-runs:filterBenchmarks`, `eval-runs:filterModels`, `eval-runs:filterPassRateMin`, `eval-runs:filterPassRateMax`, `eval-runs:collapsedGroups` (already had `timeRange`, `selectedAgent`, `viewMode`, `sort`, `showRegressionsOnly`, `filterStatus`).
+    - **Agent Traces `/agent-traces`** — `agent-traces:selectedAgent` (page-specific because its options are telemetry service names, not agent-config keys), `agent-traces:textSearch`, `agent-traces:filters` (advanced filter object). Time range is shared via `prefs:timeRange` (see above). Legacy `agentTraces.*` raw keys are no longer migrated; users keep their picks by re-selecting once — the storage shape is portable so future preference syncing won't need bespoke migration code.
+    - **AI Dev Tools `/coding-agents`** — `coding-agents:activeTab` (URL `?tab=` still wins on first navigation), `coding-agents:rangePreset`, `coding-agents:sessions:agentFilter`, `coding-agents:sessions:completedFilter`, `coding-agents:sessions:projectFilter`, `coding-agents:workspace:agentTab`, `coding-agents:workspace:section`.
+  - New `usePersistedSet<T>(key, defaultValue?)` hook persists `Set<string>` (and other `Set<T>`) state as a JSON array under `agent-health:<key>` while exposing a `Set` API to call sites; covered by 9 unit tests in `tests/unit/hooks/usePersistedSet.test.ts`.
+  - New e2e suite `tests/e2e/sidebar-persisted-preferences.spec.ts` covers seeded round-trip and UI round-trip for every persisted key on every sidebar page (16 tests).
+- QuickRunModal (test case popup): pre-populate a sensible default agent (preferring Observio Sample Agent) so users can run a test case without first picking an agent. The selection persists per-user via the shared `agent-health:prefs:agentKey` localStorage key, so subsequent opens — and the agent dropdowns on NewRunPage / BenchmarkRunsPage / BenchmarkEditor — reuse the last-used agent. The selected built-in agent is now always rendered in the agent dropdown (even when the "Built-in" group is collapsed) so the trigger label is always populated. New e2e suite: `tests/e2e/quick-run-agent-preference.spec.ts`.
 - Pi.dev coding agent connector and judge provider for CLI-based agent evaluation ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - Unified EvaluationRun architecture with composable test case sources (benchmark, test-case-ids, label-filter, file-import, directory-import) ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - Pi package for Agent Health instrumentation assistance ([#205](https://github.com/opensearch-project/agent-health/pull/205))
@@ -29,8 +56,13 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Collapse built-in agents when custom agents exist; group agent dropdowns (Your Agents / Built-in)
 - Default agent filter to "All Agents" on benchmarks and runs pages instead of first enabled agent
 
+### Fixed
+- Test Cases / Evaluation Runs / Benchmarks search filters no longer crash with `TypeError: Cannot read properties of undefined (reading 'toLowerCase')` when a record has a missing `name`/`id`. The filters now treat missing string fields as empty.
+
 ### Security
 - Fix Dependabot vulnerabilities: add npm overrides for hono (>=4.12.18), fast-uri (>=3.1.2), and ip-address (>=10.1.1)
+- Fix Mend dependency vulnerabilities: bump `ws` to `>=8.20.1` to address CVE-2026-45736 (uninitialized memory disclosure in `websocket.close()`); add npm override for `@babel/runtime` (>=7.26.10) for CVE-2025-27789. Affects root `package.json` ([#162](https://github.com/opensearch-project/agent-health/issues/162), [#202](https://github.com/opensearch-project/agent-health/issues/202))
+- Fix Mend dependency vulnerabilities in `observio-sample-agent`: bump direct `ws` dep to `^8.20.1` (CVE-2026-45736); bump `langsmith` override to `>=0.6.0` for CVE-2026-45134 (High 7.1); add `protobufjs` override (>=8.2.0) covering CVE-2026-44288/289/290/291/292/293/294 and CVE-2026-45740 (highest 8.8) ([#163](https://github.com/opensearch-project/agent-health/issues/163), [#201](https://github.com/opensearch-project/agent-health/issues/201), [#203](https://github.com/opensearch-project/agent-health/issues/203), [#208](https://github.com/opensearch-project/agent-health/issues/208))
 
 ### Fixed
 - Guard testCaseIds accesses in evals3 pages to prevent crash on undefined ([#205](https://github.com/opensearch-project/agent-health/pull/205))

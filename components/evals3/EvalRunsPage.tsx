@@ -16,6 +16,8 @@
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { usePersistedState } from '@/hooks/usePersistedState';
+import { usePersistedSet } from '@/hooks/usePersistedSet';
+import { PREFS_KEYS } from '@/lib/preferences';
 import { useNavigate } from 'react-router-dom';
 import {
   CheckCircle2, XCircle, Loader2, Clock, Search, RefreshCw,
@@ -108,22 +110,22 @@ export const EvalRunsPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
 
   // Filters (persisted)
-  const [search, setSearch] = useState('');
-  const [timeRange, setTimeRange] = usePersistedState<TimeRange>('eval-runs:timeRange', '30d');
-  const [selectedAgent, setSelectedAgent] = usePersistedState('eval-runs:selectedAgent', 'all');
+  const [search, setSearch] = usePersistedState<string>('eval-runs:search', '');
+  const [timeRange, setTimeRange] = usePersistedState<TimeRange>(PREFS_KEYS.timeRange, '30d');
+  const [selectedAgent, setSelectedAgent] = usePersistedState(PREFS_KEYS.agentFilter, 'all');
 
   // View (persisted)
-  const [viewMode, setViewMode] = usePersistedState<ViewMode>('eval-runs:viewMode', 'flat');
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
+  const [viewMode, setViewMode] = usePersistedState<ViewMode>(PREFS_KEYS.viewMode, 'flat');
+  const [collapsedGroups, setCollapsedGroups] = usePersistedSet<string>('eval-runs:collapsedGroups');
   const [sort, setSort] = usePersistedState<{ field: string; dir: 'asc' | 'desc' }>('eval-runs:sort', { field: 'timestamp', dir: 'desc' });
   const [showRegressionsOnly, setShowRegressionsOnly] = usePersistedState('eval-runs:showRegressionsOnly', false);
 
   // Advanced filters (persisted)
   const [filterStatus, setFilterStatus] = usePersistedState<'all' | 'passed' | 'failed' | 'mixed'>('eval-runs:filterStatus', 'all');
-  const [filterBenchmarks, setFilterBenchmarks] = useState<Set<string>>(new Set());
-  const [filterModels, setFilterModels] = useState<Set<string>>(new Set());
-  const [filterPassRateMin, setFilterPassRateMin] = useState<number>(0);
-  const [filterPassRateMax, setFilterPassRateMax] = useState<number>(100);
+  const [filterBenchmarks, setFilterBenchmarks] = usePersistedSet<string>('eval-runs:filterBenchmarks');
+  const [filterModels, setFilterModels] = usePersistedSet<string>('eval-runs:filterModels');
+  const [filterPassRateMin, setFilterPassRateMin] = usePersistedState<number>('eval-runs:filterPassRateMin', 0);
+  const [filterPassRateMax, setFilterPassRateMax] = usePersistedState<number>('eval-runs:filterPassRateMax', 100);
   const [filterOpen, setFilterOpen] = useState(false);
 
   // Scroll
@@ -179,9 +181,9 @@ export const EvalRunsPage: React.FC = () => {
         if (search) {
           const q = search.toLowerCase();
           if (
-            !run.name.toLowerCase().includes(q) &&
-            !run.id.toLowerCase().includes(q) &&
-            !bm.name.toLowerCase().includes(q) &&
+            !(run.name ?? '').toLowerCase().includes(q) &&
+            !(run.id ?? '').toLowerCase().includes(q) &&
+            !(bm.name ?? '').toLowerCase().includes(q) &&
             !agentName.toLowerCase().includes(q)
           ) continue;
         }
@@ -638,6 +640,15 @@ export const EvalRunsPage: React.FC = () => {
               {TIME_OPTIONS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
             </SelectContent>
           </Select>
+          {/* View mode toggle (Grouped first — default mental model) */}
+          <div className="flex items-center border border-border rounded-md overflow-hidden h-7" data-testid="viewmode-toggle">
+            <button data-testid="viewmode-grouped" onClick={() => setViewMode('grouped')} className={`px-2 h-full text-xs flex items-center gap-1 transition-colors ${viewMode === 'grouped' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+              <Layers size={11} /> Grouped
+            </button>
+            <button data-testid="viewmode-flat" onClick={() => setViewMode('flat')} className={`px-2 h-full text-xs flex items-center gap-1 transition-colors ${viewMode === 'flat' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+              <List size={11} /> Flat
+            </button>
+          </div>
           <Button variant="outline" size="sm" onClick={loadData} disabled={loading} className="h-7">
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
           </Button>
@@ -757,17 +768,8 @@ export const EvalRunsPage: React.FC = () => {
         </div>
       )}
 
-      {/* ── Inline Metrics Bar ──────────────────────────────────── */}
-      {/* ── View Toggle ────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center border border-border rounded-md overflow-hidden">
-          <button onClick={() => setViewMode('grouped')} className={`px-2 py-1 text-xs flex items-center gap-1 transition-colors ${viewMode === 'grouped' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
-            <Layers size={11} /> Grouped
-          </button>
-          <button onClick={() => setViewMode('flat')} className={`px-2 py-1 text-xs flex items-center gap-1 transition-colors ${viewMode === 'flat' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
-            <List size={11} /> Flat
-          </button>
-        </div>
+      {/* ── Inline Metrics Bar (view toggle moved into header) ── */}
+      <div className="flex items-center justify-end mb-2">
         <span className="text-[10px] text-muted-foreground">{totalRuns} run{totalRuns !== 1 ? 's' : ''}</span>
       </div>
 
