@@ -9,6 +9,11 @@ const registries = new Map<string, CodeTestCase[]>();
 let activeFile: string | null = null;
 const DEFAULT_KEY = '__default__';
 
+// Active describe stack (synchronous push/pop). Each entry is a describe
+// name; nested describes accumulate. When test() runs, it captures the
+// current stack and joins with ' > ' to derive the test's benchmarkPath.
+const describeStack: string[] = [];
+
 // Emit a one-time experimental-status warning the first time the SDK is
 // touched, unless the user opts out. This is intentionally noisy enough to be
 // noticed but only fires once per process so it doesn't pollute test output.
@@ -96,18 +101,67 @@ export function test(
   }
   const registry = registries.get(key)!;
 
-  // Duplicate detection — within-file uniqueness. Cross-file collisions are
-  // fine because storage identity is `name + sourceFile`.
-  if (registry.some(t => t.name === name)) {
+  // Within-file uniqueness guard: a name+benchmarkPath pair must be unique.
+  // The same name in two different describe blocks is allowed because they
+  // map to different benchmarks.
+  const benchmarkPath = describeStack.length > 0 ? describeStack.join(' > ') : undefined;
+  if (registry.some(t => t.name === name && t.benchmarkPath === benchmarkPath)) {
     const fileLabel = activeFile ? ` in ${activeFile}` : '';
+    const groupLabel = benchmarkPath ? ` (in describe "${benchmarkPath}")` : '';
     throw new Error(
-      `Duplicate test name "${name}"${fileLabel}. ` +
-      `Test names must be unique within a single .eval file. ` +
-      `Either rename one of the tests or move them into separate files.`
+      `Duplicate test name "${name}"${groupLabel}${fileLabel}. ` +
+      `Test names must be unique within their describe block. ` +
+      `Move one of the tests to a different describe() or rename it.`
     );
   }
 
-  registry.push({ name, options, evaluate, sourceFile: activeFile ?? undefined });
+  registry.push({
+    name,
+    options,
+    evaluate,
+    sourceFile: activeFile ?? undefined,
+    benchmarkPath,
+  });
+}
+
+/**
+ * Group tests under a benchmark name. Equivalent to Playwright's
+ * `describe()` — the wrapped `test()` calls inherit the describe's name as
+ * their benchmark group. Nested describes flatten with ' > '.
+ *
+ * @example
+ *   describe('RCA Suite', () => {
+ *     test('payment-service is the root cause', { prompt: ... }, async ({ result, judge }) => {
+ *       expect(result.trajectory).to.haveCalledTool('search_logs');
+ *       await judge(result, 'identifies the failing dependency');
+ *     });
+ *   });
+ *
+ * The describe body MUST be synchronous (no `await`/dynamic content), like
+ * Playwright. The function is invoked once at registration time.
+ */
+export function describe(name: string, fn: () => void): void {
+  emitExperimentalWarningOnce();
+  if (!name || typeof name !== 'string') {
+    throw new Error('describe() requires a name (the first argument)');
+  }
+  if (typeof fn !== 'function') {
+    throw new Error(`describe("${name}") requires a body function`);
+  }
+  describeStack.push(name);
+  try {
+    const result = fn();
+    if (result instanceof Promise) {
+      // Mirror Playwright — describe bodies must be synchronous because
+      // they run during registration, well before any test executes.
+      throw new Error(
+        `describe("${name}") body returned a Promise. ` +
+        `describe blocks must be synchronous — use test() inside, not await.`
+      );
+    }
+  } finally {
+    describeStack.pop();
+  }
 }
 
 export function getRegisteredTests(filePath?: string): CodeTestCase[] {

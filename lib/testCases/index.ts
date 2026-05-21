@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-export { test, getRegisteredTests, clearRegistry } from './define.js';
+export { test, describe, getRegisteredTests, clearRegistry } from './define.js';
 export { loadTestCasesFromModule, isCodeFile, computeTestCaseHash } from './loader.js';
 export { judge, wasJudgeCalled, resetJudgeFlag } from './judge.js';
 export type { CodeTestCase, EvalResult, TestOptions } from './types.js';

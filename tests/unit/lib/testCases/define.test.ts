@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { test, getRegisteredTests, clearRegistry, setActiveFile, _resetExperimentalWarning } from '@/lib/testCases/define';
+import { test, describe as ahDescribe, getRegisteredTests, clearRegistry, setActiveFile, _resetExperimentalWarning } from '@/lib/testCases/define';
 
 describe('test() API', () => {
   beforeEach(() => {
@@ -165,6 +165,79 @@ describe('file-scoped registries', () => {
 
     clearRegistry();
     expect(getRegisteredTests()).toHaveLength(0);
+  });
+});
+
+describe('describe() API', () => {
+  beforeEach(() => {
+    clearRegistry();
+  });
+
+  it('attaches benchmarkPath = describe name to nested test() calls', () => {
+    ahDescribe('RCA Suite', () => {
+      test('finds root cause', { prompt: 'p' }, () => {});
+    });
+    const tests = getRegisteredTests();
+    expect(tests).toHaveLength(1);
+    expect(tests[0].benchmarkPath).toBe('RCA Suite');
+  });
+
+  it('flattens nested describes with " > "', () => {
+    ahDescribe('A', () => {
+      ahDescribe('B', () => {
+        test('t', { prompt: 'p' }, () => {});
+      });
+    });
+    expect(getRegisteredTests()[0].benchmarkPath).toBe('A > B');
+  });
+
+  it('tests outside any describe have undefined benchmarkPath', () => {
+    test('orphan', () => {});
+    expect(getRegisteredTests()[0].benchmarkPath).toBeUndefined();
+  });
+
+  it('mixes describe-grouped and orphan tests in the same file', () => {
+    ahDescribe('Group', () => {
+      test('grouped', () => {});
+    });
+    test('orphan', () => {});
+    const tests = getRegisteredTests();
+    expect(tests.find(t => t.name === 'grouped')!.benchmarkPath).toBe('Group');
+    expect(tests.find(t => t.name === 'orphan')!.benchmarkPath).toBeUndefined();
+  });
+
+  it('allows the same test name in different describes', () => {
+    ahDescribe('A', () => {
+      test('shared', () => {});
+    });
+    ahDescribe('B', () => {
+      test('shared', () => {});
+    });
+    const tests = getRegisteredTests();
+    expect(tests).toHaveLength(2);
+    expect(tests.map(t => t.benchmarkPath)).toEqual(['A', 'B']);
+  });
+
+  it('throws on duplicate test name within the same describe', () => {
+    expect(() => {
+      ahDescribe('A', () => {
+        test('dup', () => {});
+        test('dup', () => {});
+      });
+    }).toThrow(/Duplicate test name "dup".*in describe "A"/);
+  });
+
+  it('throws if describe body returns a Promise', () => {
+    expect(() => ahDescribe('A', (async () => {}) as any))
+      .toThrow(/describe.*body returned a Promise/);
+  });
+
+  it('requires a name', () => {
+    expect(() => ahDescribe('', () => {})).toThrow(/requires a name/);
+  });
+
+  it('requires a body function', () => {
+    expect(() => ahDescribe('A', undefined as any)).toThrow(/requires a body function/);
   });
 });
 

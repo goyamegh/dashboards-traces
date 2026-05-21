@@ -9,7 +9,7 @@ import { resolve, dirname } from 'path';
 import { pathToFileURL } from 'url';
 import { createRequire, Module as NodeModule } from 'module';
 import type { CodeTestCase } from './types.js';
-import { test as testFn, setActiveFile, getRegisteredTests, clearRegistry } from './define.js';
+import { test as testFn, describe as describeFn, setActiveFile, getRegisteredTests, clearRegistry } from './define.js';
 import { judge as judgeFn, wasJudgeCalled, resetJudgeFlag } from './judge.js';
 import { expect as ahExpect } from '../matchers/expect.js';
 
@@ -38,6 +38,14 @@ export interface LoadedTestCase extends CodeTestCase {
 export interface LoadResult {
   testCases: LoadedTestCase[];
   filePath: string;
+  /**
+   * Benchmark groups derived from `describe()` blocks in the file.
+   * Maps benchmark name (the joined describe path, e.g. 'RCA Suite' or
+   * 'A > B' for nested) to the test case names within. Tests outside any
+   * `describe()` are not in this map; they go to the file-default benchmark
+   * (CLI / server names it after the filename).
+   */
+  benchmarks: Map<string, string[]>;
 }
 
 export async function loadTestCasesFromModule(filePath: string): Promise<LoadResult> {
@@ -92,6 +100,7 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
     // package without code changes.
     const sdkExports = {
       test: testFn,
+      describe: describeFn,
       judge: judgeFn,
       wasJudgeCalled,
       resetJudgeFlag,
@@ -162,5 +171,17 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
     hash: computeTestCaseHash(tc),
   }));
 
-  return { testCases: loaded, filePath: absPath };
+  // Derive describe-group → test names mapping. Tests outside any
+  // describe() have benchmarkPath=undefined and are excluded; the CLI/
+  // server adds them to the file-default benchmark separately.
+  const benchmarks = new Map<string, string[]>();
+  for (const tc of loaded) {
+    if (tc.benchmarkPath) {
+      const list = benchmarks.get(tc.benchmarkPath) ?? [];
+      list.push(tc.name);
+      benchmarks.set(tc.benchmarkPath, list);
+    }
+  }
+
+  return { testCases: loaded, filePath: absPath, benchmarks };
 }

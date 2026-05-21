@@ -63,6 +63,13 @@ export interface CodeTestCase {
   evaluate: TestBodyFn | LegacyEvaluateFn;
   /** Resolved file the test was registered from — set by the loader. */
   sourceFile?: string;
+  /**
+   * Benchmark group path — the joined `describe('...', ...)` names that
+   * wrapped this `test()` call, joined with ' > ' for nested describes.
+   * `undefined` when the test was registered outside any describe; the
+   * loader/CLI then puts the test into the file-default benchmark.
+   */
+  benchmarkPath?: string;
 }
 
 /**
