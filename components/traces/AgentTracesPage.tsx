@@ -483,15 +483,33 @@ const ExpandedTraceRow: React.FC<ExpandedTraceRowProps> = ({ trace, onClose }) =
         {/* Span details bottom drawer — slides up from the bottom of the
             page (instead of inline-below-the-tree) so it gets the full
             page width and doesn't visually compete with the trace list
-            above. Mounts via Radix portal at <body>. */}
+            above. Mounts via Radix portal at <body>.
+
+            When fullscreen is open we DO NOT render this inline drawer
+            because the TraceFullScreenView renders its own bottom drawer
+            scoped to the fullscreen overlay. Otherwise the page-level
+            drawer would float on top of the fullscreen modal and the
+            user would see two drawers, with the page-level one stealing
+            keyboard focus / ESC handling. */}
         <Sheet
-          open={selectedSpan !== null}
+          open={selectedSpan !== null && !fullscreenOpen}
           onOpenChange={(o) => { if (!o) setSelectedSpan(null); }}
         >
           <SheetContent
             side="bottom"
             className="h-[55vh] p-0 flex flex-col"
             aria-label="Span details"
+            onPointerDownOutside={(e) => {
+              // The sheet overlay has pointer-events-none so clicks on
+              // the trace tree behind the drawer would normally pass
+              // through and could re-select a different span
+              // (re-opening the drawer mid-close). Blocking outside
+              // pointer-down here ensures the drawer only closes via
+              // the explicit X button or the ESC key, which matches the
+              // mental model of "this is a detail panel, dismiss it on
+              // purpose".
+              e.preventDefault();
+            }}
           >
             {/* Close button — Radix Dialog handles Escape, this is the
                 visible affordance. */}

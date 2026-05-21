@@ -124,5 +124,49 @@ test.describe('Eval Span Category Capsule', () => {
     if (await fullScreenMarker.isVisible().catch(() => false)) {
       await expect(fullScreenMarker).toBeVisible();
     }
+
+    // The fullscreen overlay should NOT contain the legacy 'Exit
+    // Fullscreen' text button (we removed it in favour of the single X
+    // top-right — having both was confusing). It should also not render
+    // the legacy right-side SpanDetailsPanel artifacts ('Distribution',
+    // 'Span category', 'INPUT'/'OUTPUT' headers) because span details
+    // now live in the bottom drawer scoped to the fullscreen container.
+    const exitFullscreenText = page.getByText(/Exit Fullscreen/i);
+    expect(await exitFullscreenText.count()).toBe(0);
+    const legacyPanel = page.locator('[role="dialog"]').locator('text=/Distribution|Span category/i');
+    expect(await legacyPanel.count()).toBe(0);
+  });
+
+  test('clicking the X on the bottom drawer closes it', async ({ page }) => {
+    // Find a multi-span trace, expand it, click a span, then verify the
+    // X on the bottom drawer actually dismisses it. Regression test for
+    // a bug where clicks on the trace tree behind the (pointer-events:
+    // none) sheet overlay would re-select a different span and re-open
+    // the drawer mid-close, making the X feel broken.
+    const allRows = page.locator('tbody tr');
+    const rowCount = await allRows.count();
+    if (rowCount === 0) return;
+
+    // Look for any row — single-span traces still render an inline tree
+    // with the root span clickable, which is enough for this test.
+    const traceRow = allRows.first();
+    await traceRow.click();
+    await page.waitForTimeout(1200);
+
+    const treeNode = page.locator('.trace-inline-tree').locator('div').filter({ hasText: /test_case|invoke_agent|llm_request|claude_code/ }).first();
+    if (!await treeNode.isVisible().catch(() => false)) return;
+    await treeNode.click();
+    await page.waitForTimeout(800);
+
+    const drawer = page.locator('[aria-label="Span details"]');
+    if (await drawer.count() === 0) return; // Some spans don't open a drawer; skip.
+    await expect(drawer.first()).toBeVisible();
+
+    // Click the X.
+    await page.locator('[aria-label="Close span details"]').first().click();
+    await page.waitForTimeout(800);
+
+    // Drawer should now be gone.
+    expect(await drawer.count()).toBe(0);
   });
 });
