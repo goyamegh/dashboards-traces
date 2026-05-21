@@ -566,6 +566,10 @@ Release-pipeline retry of `0.5.0`. The `0.5.0` git tag was cut on [`be9f7cb5`](h
   - **React Flow surfaces** (TraceFlowView, AgentMapView, TraceFlowComparison, SpanNode) — `Background` color, `MiniMap` mask/className, and `SpanNode` `Handle` styles use `hsl(var(--border))`, `bg-card`, `border-border`, `bg-muted-foreground/60` instead of `slate-*` `!important` overrides; minimap and connector handles render in both themes.
   - **Tooltip** — shadcn `TooltipContent` default migrated from `bg-gray-900 dark:bg-gray-800` + `text-white` to `bg-popover` + `text-popover-foreground`; the per-row Time Distribution tooltip on Agent Traces no longer fights the theme. Light tooltip is now darker than its surrounding surface (and dark tooltip lighter), as expected.
 - **Tests:** New `tests/unit/components/uxThemingRegression.test.ts` (16 cases) reads each fixed source file and fails if the bad patterns return.
+- **Tests:** Repaired three pre-existing test failures unrelated to the theming work that were blocking the local pre-push hook:
+  - `tests/integration/services/evaluation/traceBlocking.integration.test.ts` — duplicate `return; }` from a bad merge made the file fail to parse.
+  - `tests/unit/cli/sampleTraces.test.ts` — root-span count assertion stale after eval spans were added to `demo-trace-001` (now 2 roots: agent + eval suite).
+  - `tests/integration/services/connectors/PiConnector.integration.test.ts` — assertion expected a `--package` arg but `createAgentHealthPiConnector` actually passes `--skill` / `--extension` / `--append-system-prompt`.
 
 ### Changed
 - **UI:** Sidebar now uses a uniform near-black background (`hsl(var(--background))`) in dark mode instead of the previous dark gray (`#1D1E24`), so the sidebar header / nav region matches the existing footer (which already used `bg-background`). Removes the visible top-vs-bottom seam in the left navigation. Light mode unchanged.
