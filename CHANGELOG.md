@@ -14,6 +14,8 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - **UI:** The radial gradient background previously seen only on the Dashboard / Overview page now applies on every page. The `dashboard-gradient-bg` class is now attached to the `SidebarInset` `<main>` in `Layout.tsx`, replacing the per-page `useEffect` toggle in `Dashboard.tsx`.
 
 ### Added
+- **Skill Evaluator**: A/B evaluation and improvement for AgentSkills with CLI command (`agent-health skill <path>`), server routes (`/api/skills/*`), and UI page (`/skills`). Includes skill discovery from known paths, validation, eval generation, and iterative improvement proposals via LLM judge. ([#206](https://github.com/opensearch-project/agent-health/pull/206))
+- **Shared Observability Client**: Consolidated OpenSearch client creation across traces, logs, and metrics routes into a pooled utility with config-fingerprint caching and 5-min TTL auto-cleanup. ([#206](https://github.com/opensearch-project/agent-health/pull/206))
 - **Code-based test SDK (experimental)**: Playwright-style `test()` API for writing programmatic test cases in `.eval.js`/`.eval.ts` files, with per-matcher results displayed in the UI. Includes:
   - `test(name, body)` and `test(name, options, body)` signatures with within-file duplicate detection
   - All `TestOptions` fields are optional; only `name` is required
@@ -72,6 +74,8 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Default agent filter to "All Agents" on benchmarks and runs pages instead of first enabled agent
 
 ### Fixed
+- Fix metrics 401 errors against SigV4-authenticated clusters by using OpenSearch SDK client instead of raw fetch with Basic auth. ([#206](https://github.com/opensearch-project/agent-health/pull/206))
+- Fix CLI `AGENT_HEALTH_PORT` env var not being respected in server config resolution. ([#206](https://github.com/opensearch-project/agent-health/pull/206))
 - Test Cases / Evaluation Runs / Benchmarks search filters no longer crash with `TypeError: Cannot read properties of undefined (reading 'toLowerCase')` when a record has a missing `name`/`id`. The filters now treat missing string fields as empty.
 
 ### Security
