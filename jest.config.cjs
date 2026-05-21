@@ -36,6 +36,9 @@ module.exports = {
     '^@xyflow/react$': '<rootDir>/__mocks__/xyflow-react.ts',
     // Mock OpenTelemetry incubating module (not installed by default)
     '^@opentelemetry/semantic-conventions/incubating$': '<rootDir>/__mocks__/@opentelemetry/semantic-conventions/incubating.ts',
+    // Mock chai (chai@5 is ESM-only and Jest's CJS loader can't import
+    // it; route to the chai@4 alias for tests via __mocks__/chai.ts)
+    '^chai$': '<rootDir>/__mocks__/chai.ts',
     // Mock uuid (v14 is ESM-only, incompatible with Jest CJS transform)
     '^uuid$': '<rootDir>/__mocks__/uuid.ts',
     // Handle .js imports resolving to .ts files (ESM compatibility)
@@ -48,7 +51,7 @@ module.exports = {
   },
   // Skip node_modules except for specific packages that need transformation
   transformIgnorePatterns: [
-    'node_modules/(?!(your-esm-packages)/)',
+    'node_modules/(?!(chai|check-error|loupe|deep-eql|pathval|assertion-error)/)',
   ],
   // Increase timeout for integration tests
   testTimeout: 30000,

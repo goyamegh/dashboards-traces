@@ -19,6 +19,7 @@ Agent Health helps you evaluate, monitor, and optimize AI agents. From autonomou
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE.txt)
 [![npm version](https://img.shields.io/npm/v/@opensearch-project/agent-health.svg)](https://www.npmjs.com/package/@opensearch-project/agent-health)
 [![Build](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml/badge.svg)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
+[![SDK Status](https://img.shields.io/badge/Code--Based%20SDK-Experimental-orange.svg)](docs/SDK.md)
 
 </div>
 

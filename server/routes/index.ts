@@ -10,6 +10,7 @@
 import { Router } from 'express';
 import { debug } from '../../lib/debug';
 import healthRoutes from './health';
+import serverInfoRoutes from './serverInfo';
 import judgeRoutes from './judge';
 import agentRoutes from './agent';
 import tracesRoutes from './traces';
@@ -36,6 +37,7 @@ router.use((req, res, next) => {
 
 // Mount all routes
 router.use(healthRoutes);        // /health
+router.use(serverInfoRoutes);    // /api/server-info
 router.use(judgeRoutes);         // /api/judge
 router.use(agentRoutes);         // /api/agent
 router.use(tracesRoutes);        // /api/traces, /api/traces/health

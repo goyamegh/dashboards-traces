@@ -681,7 +681,7 @@ describe('PiConnector Integration Tests', () => {
       expect(conn).toBeInstanceOf(PiConnector);
     });
 
-    it('should include --skill and --extension args when packagePath is provided', async () => {
+    it('should include package-derived args when packagePath is provided', async () => {
       const conn = createAgentHealthPiConnector('/my/package');
       const proc = createMockProcess();
       mockSpawn.mockReturnValue(proc);
@@ -696,6 +696,8 @@ describe('PiConnector Integration Tests', () => {
       await executePromise;
 
       const spawnArgs = mockSpawn.mock.calls[0][1];
+      // Implementation expands packagePath into --skill / --extension /
+      // --append-system-prompt args (rather than a single --package arg).
       expect(spawnArgs).toContain('--skill');
       expect(spawnArgs).toContain('/my/package/skills/*');
       expect(spawnArgs).toContain('--extension');

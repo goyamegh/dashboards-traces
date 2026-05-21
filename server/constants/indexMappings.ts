@@ -157,6 +157,24 @@ export function getIndexMappings(): IndexMappings {
           logs: { type: 'object', enabled: false },
           rawEvents: { type: 'object', enabled: false },
           improvementStrategies: { type: 'object', enabled: false },
+          // Per-matcher verdicts captured by the SDK during the test body.
+          // Stored as a nested array so we can filter / aggregate by
+          // matcher.method or matcher.pass when needed.
+          matcherResults: {
+            type: 'nested',
+            properties: {
+              description: { type: 'text' },
+              pass: { type: 'boolean' },
+              method: { type: 'keyword' },
+              durationMs: { type: 'integer' },
+              actual: { type: 'object', enabled: false },
+              expected: { type: 'object', enabled: false },
+              errorMessage: { type: 'text' },
+              score: { type: 'float' },
+              reasoning: { type: 'text' },
+              model: { type: 'keyword' },
+            },
+          },
           spans: { type: 'object', enabled: false },
           metricsStatus: { type: 'keyword' },
           traceFetchAttempts: { type: 'integer' },

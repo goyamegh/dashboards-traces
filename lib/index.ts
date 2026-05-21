@@ -42,7 +42,14 @@ export type {
 export type {
   BeforeRequestContext,
   AgentHooks,
+  JudgeContext,
+  JudgeResult,
+  BuildTrajectoryContext,
 } from '../types/index.js';
+
+// Trace types and SDK utilities (for custom judge hooks)
+export type { Span, TrajectoryStep } from '../types/index.js';
+export { fetchTracesByRunIds as fetchTraces } from '../services/traces/index.js';
 
 // Connector types (for custom connector implementations)
 export type {
@@ -68,3 +75,21 @@ export { connectorRegistry, registerConnector } from '../services/connectors/reg
 
 // ConnectorRegistry type for custom implementations
 export type { ConnectorRegistry } from '../services/connectors/types.js';
+
+// Test case SDK (for writing .eval.ts/.eval.js files)
+//
+// @experimental The code-based test case SDK is experimental. The API surface
+// (test signature, options shape, fixtures, matcher set) may change in a
+// minor release without a deprecation cycle. Pin your @opensearch-project/
+// agent-health version if you depend on it. To suppress the runtime warning
+// emitted when the SDK is first used, set `AGENT_HEALTH_SUPPRESS_EXPERIMENTAL=1`.
+export { test, describe, judge } from './testCases/index.js';
+export type { TestOptions, CodeTestCase, EvalResult } from './testCases/types.js';
+
+// Per-matcher results: chai-based `expect` with our recording plugin and
+// custom matchers (haveCalledTool, haveStepsOfType, haveOutputMatching,
+// haveCompletedWithin), plus the traces fixture type. Verdicts produced
+// by these matchers and by judge() are persisted on TestCaseRun and
+// shown in the UI as a per-matcher breakdown.
+export { expect } from './matchers/index.js';
+export type { TracesAccessor, MatcherResult, MatcherMethod } from './matchers/index.js';

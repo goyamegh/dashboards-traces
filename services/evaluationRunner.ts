@@ -16,6 +16,12 @@ import {
 import type { IStorageModule } from '@/server/adapters/types';
 import { runEvaluationWithConnector, callBedrockJudge } from '@/services/evaluation';
 import { connectorRegistry } from '@/services/connectors/server';
+import { v4 as uuidv4 } from 'uuid';
+import { startSession, endSession, emptyTracesAccessor } from '@/lib/matchers/index';
+import type { EvalResult, TrajectoryAccessor, TestFixtures } from '@/lib/testCases/types';
+import { judge } from '@/lib/testCases/judge';
+import { expect } from '@/lib/matchers/expect';
+import type { TrajectoryStep } from '@/types';
 import { loadConfigSync } from '@/lib/config/index';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { getCustomAgents } from '@/server/services/customAgentStore';
@@ -44,6 +50,7 @@ export interface ExecuteEvaluationRunOptions {
     status: RunResultStatus;
     error?: string;
   }) => Promise<void>;
+  evaluateFnMap?: Map<string, (result: any) => Promise<void> | void>;
 }
 
 /**
@@ -92,7 +99,7 @@ export async function executeEvaluationRun(
   testCases: TestCase[],
   options: ExecuteEvaluationRunOptions
 ): Promise<EvaluationRun> {
-  const { cancellationToken, storageModule, onProgress, onTestCaseComplete } = options;
+  const { cancellationToken, storageModule, onProgress, onTestCaseComplete, evaluateFnMap } = options;
   const totalTestCases = testCases.length;
   const concurrency = run.concurrency ?? 1;
   const runStartTime = Date.now();
@@ -169,29 +176,108 @@ export async function executeEvaluationRun(
         run.results[testCaseId] = { reportId: '', status: 'running' };
 
         try {
-          // Run the evaluation using connector
-          const report = await runEvaluationWithConnector(
-            agentConfig,
-            bedrockModelId,
-            testCase,
-            () => {}, // No debug callback needed
-            { registry: connectorRegistry, evaluatorId: run.evaluatorId }
-          );
+          // Check if this test case has a deterministic evaluate function
+          const hasDeterministicEval = evaluateFnMap?.has(testCaseId) ?? false;
+          // Detect code-only tests that have no prompt — skip agent invocation
+          // entirely and run the deterministic body against an empty result.
+          const hasPrompt = !!(testCase.initialPrompt && testCase.initialPrompt.trim().length > 0);
+          const skipAgentInvocation = !hasPrompt && hasDeterministicEval;
+
+          let report: EvaluationReport;
+          if (skipAgentInvocation) {
+            debug('EvaluationRunner', `[${testCaseId}] No prompt — running deterministic body without agent invocation`);
+            report = synthesizeEmptyReport(testCase, agentConfig.key, bedrockModelId);
+          } else {
+            // Run the evaluation using connector
+            report = await runEvaluationWithConnector(
+              agentConfig,
+              bedrockModelId,
+              testCase,
+              () => {}, // No debug callback needed
+              { registry: connectorRegistry, evaluatorId: run.evaluatorId, skipJudge: hasDeterministicEval }
+            );
+          }
+
+          // Run deterministic evaluation if applicable
+          if (hasDeterministicEval) {
+            const evalFn = evaluateFnMap!.get(testCaseId)!;
+            const trajectorySteps = report.trajectory || [];
+            // The AG-UI converter emits 'assistant' for the final text; older
+            // protocols emit 'response'. Accept both.
+            const agentOutput = trajectorySteps
+              .filter((s: any) => s.type === 'response' || s.type === 'assistant')
+              .map((s: any) => s.content)
+              .join('\n');
+
+            const evalResult = buildEvalResult({
+              trajectory: trajectorySteps,
+              agentOutput,
+              rawEvents: report.rawEvents || [],
+              runId: report.runId,
+              durationMs: report.performanceMetrics?.durationMs ?? 0,
+            });
+
+            const session = startSession();
+            try {
+              // Backward-compat: legacy 1-arg bodies receive the EvalResult
+              // directly. New 1-arg bodies that destructure receive the
+              // fixtures object. We pass the result twice via Object.assign
+              // so both shapes work transparently.
+              const fixtures = buildFixtures(evalResult);
+              const arg = Object.assign(evalResult, { ...fixtures, result: evalResult }) as any;
+              await evalFn(arg);
+              const matcherResults = endSession();
+              const anyFailed = matcherResults.some(m => !m.pass);
+              (report as any).passFailStatus = anyFailed ? 'failed' : 'passed';
+              (report as any).evaluationType = 'deterministic';
+              (report as any).matcherResults = matcherResults;
+              (report as any).metrics = anyFailed
+                ? { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 }
+                : { accuracy: 100, faithfulness: 100, latency_score: 100, trajectory_alignment_score: 100 };
+            } catch (evalError: any) {
+              const matcherResults = endSession();
+              (report as any).passFailStatus = 'failed';
+              (report as any).evaluationType = 'deterministic';
+              (report as any).assertionError = evalError.message;
+              (report as any).matcherResults = matcherResults;
+              (report as any).metrics = { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 };
+            }
+          }
+
+          // Deterministic eval already produced a verdict via the matcher
+          // session. Mark the report as final so the trace-mode polling /
+          // Bedrock-judge path below is skipped — those would otherwise call
+          // callBedrockJudge with empty expectedOutcomes and fail loudly.
+          if (hasDeterministicEval) {
+            (report as any).metricsStatus = 'completed';
+            (report as any).skipJudge = true;
+          }
 
           // Save the report via storage module
           const savedReport = await storageModule.runs.create(report as any);
 
-          // If trace mode (metricsStatus: 'pending'), poll for traces and run judge inline
-          if (savedReport.metricsStatus === 'pending' && savedReport.runId) {
+          // If trace mode (metricsStatus: 'pending'), poll for traces and run judge inline.
+          // Skipped for deterministic runs (matcher session decided the verdict already).
+          if (
+            !hasDeterministicEval &&
+            savedReport.metricsStatus === 'pending' &&
+            savedReport.runId
+          ) {
             debug('EvaluationRunner', `[${testCaseId}] Trace mode: polling for traces (runId=${savedReport.runId})`);
             await waitForTracesAndJudge(savedReport, testCase, storageModule, agentConfig);
           }
 
-          // Update result with success
-          const status: RunResultStatus = 'completed';
+          // Update result with success. The run-level status mirrors the
+          // report's verdict so aggregate stats (run.stats.passed/failed)
+          // reflect what actually happened rather than just "the runner
+          // didn't crash". Reports that finished but failed assertions are
+          // marked 'failed' here too.
+          const reportPassFail = (savedReport as any).passFailStatus;
+          const status: RunResultStatus = reportPassFail === 'failed' ? 'failed' : 'completed';
           run.results[testCaseId] = {
             reportId: savedReport.id,
             status,
+            ...(reportPassFail ? { passFailStatus: reportPassFail } : {}),
           };
 
           completedCount++;
@@ -387,4 +473,140 @@ async function waitForTracesAndJudge(
       { agentConfig }
     );
   });
+}
+
+/**
+ * Build a synthetic empty EvaluationReport for tests that have no prompt
+ * (deterministic-only tests). The body is expected to assert on
+ * non-trajectory data (fixtures, external state, computed values) so the
+ * trajectory and agent output are deliberately empty.
+ *
+ * The report is shaped exactly like a real evaluation report so the rest of
+ * the pipeline (storage, UI, judge skipping) treats it identically.
+ */
+function synthesizeEmptyReport(
+  testCase: TestCase,
+  agentKey: string,
+  modelId: string
+): EvaluationReport {
+  const now = new Date().toISOString();
+  return {
+    id: uuidv4(),
+    testCaseId: testCase.id,
+    testCaseVersion: testCase.currentVersion,
+    timestamp: now,
+    agentName: agentKey,
+    agentKey,
+    modelName: modelId,
+    modelId,
+    status: 'completed',
+    trajectory: [],
+    rawEvents: [],
+    metrics: { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 },
+    performanceMetrics: { durationMs: 0 },
+    metricsStatus: 'completed',
+    skipJudge: true,
+    llmJudgeReasoning: '',
+    // Deterministic body decides pass/fail; defaults to passed and is
+    // overridden by the body's evaluate() call in the runner.
+    passFailStatus: 'passed',
+    evaluationType: 'deterministic',
+  } as unknown as EvaluationReport;
+}
+
+/**
+ * Wrap the trajectory array with non-enumerable accessor methods. The
+ * returned value is still the same Array so iteration / JSON.stringify
+ * behave as before, but `traj.toolCalls(...)`, `traj.firstToolCall(...)`,
+ * and `traj.stepsOfType(...)` are available for use inside test bodies.
+ */
+function makeTrajectoryAccessor(steps: TrajectoryStep[]): TrajectoryAccessor {
+  const arr = steps as TrajectoryAccessor;
+  Object.defineProperties(arr, {
+    stepsOfType: {
+      value(type: string) {
+        return arr.filter((s: any) => s?.type === type);
+      },
+      enumerable: false,
+    },
+    toolCalls: {
+      value(name?: string, argsPartial?: Record<string, unknown>) {
+        return arr.filter((s: any) => {
+          if (s?.type !== 'action') return false;
+          if (name && s.toolName !== name) return false;
+          if (argsPartial) return supersetOf(s.toolArgs ?? s.input, argsPartial);
+          return true;
+        });
+      },
+      enumerable: false,
+    },
+    firstToolCall: {
+      value(name?: string, argsPartial?: Record<string, unknown>) {
+        for (let i = 0; i < arr.length; i++) {
+          const s: any = arr[i];
+          if (s?.type !== 'action') continue;
+          if (name && s.toolName !== name) continue;
+          if (argsPartial && !supersetOf(s.toolArgs ?? s.input, argsPartial)) continue;
+          return Object.assign({}, s, { index: i });
+        }
+        return null;
+      },
+      enumerable: false,
+    },
+  });
+  return arr;
+}
+
+function supersetOf(actual: any, expected: Record<string, unknown>): boolean {
+  if (typeof actual !== 'object' || actual === null) return false;
+  for (const [k, v] of Object.entries(expected)) {
+    if (!(k in actual)) return false;
+    if (typeof v === 'object' && v !== null) {
+      if (!supersetOf((actual as any)[k], v as Record<string, unknown>)) return false;
+    } else if ((actual as any)[k] !== v) return false;
+  }
+  return true;
+}
+
+/**
+ * Build the EvalResult object that flows into the test body. Wraps the
+ * raw trajectory with sugar accessors and exposes finalResponse() /
+ * parsedOutput() helpers as #198 specifies.
+ */
+function buildEvalResult(input: {
+  trajectory: TrajectoryStep[];
+  agentOutput: string;
+  rawEvents: any[];
+  runId?: string;
+  durationMs: number;
+  tokenUsage?: { prompt: number; completion: number; total: number };
+}): EvalResult {
+  const trajectory = makeTrajectoryAccessor(input.trajectory);
+  return {
+    trajectory,
+    agentOutput: input.agentOutput,
+    finalResponse: () => input.agentOutput,
+    parsedOutput: () => {
+      try { return JSON.parse(input.agentOutput); }
+      catch { return undefined; }
+    },
+    rawEvents: input.rawEvents,
+    runId: input.runId,
+    durationMs: input.durationMs,
+    tokenUsage: input.tokenUsage,
+  };
+}
+
+/**
+ * Build the fixtures object passed to the new Playwright-style test body.
+ * The traces fixture is currently always empty \u2014 a follow-up commit will
+ * pre-load real OTel data when agentConfig.useTraces is set.
+ */
+function buildFixtures(result: EvalResult): TestFixtures {
+  return {
+    result,
+    judge,
+    traces: emptyTracesAccessor(),
+    expect,
+  };
 }

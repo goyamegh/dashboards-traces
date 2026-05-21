@@ -16,6 +16,8 @@ import { migrateYamlToJsonIfNeeded } from './services/configMigration.js';
 import { getStorageConfigFromFile, getObservabilityConfigFromFile } from './services/configService.js';
 import { getStorageConfigFromEnv, getObservabilityConfigFromEnv } from './middleware/dataSourceConfig.js';
 import { initializeStorageFromConfig } from './services/storageInitializer.js';
+import { runColdStartMigrations } from './services/coldStartMigrations.js';
+import { getStorageModule } from './adapters/index.js';
 import { initEvalTracerProvider, resolveEvalTelemetryConfig, shutdownEvalTracer } from '@/lib/telemetry';
 import type { OpenSearchExporterConfig } from '@/lib/telemetry';
 
@@ -90,6 +92,18 @@ export async function createApp(): Promise<Express> {
 
   // Swap to OpenSearch storage when configured and reachable
   await initializeStorageBackend();
+
+  // Run idempotent cold-start migrations against whatever storage backend
+  // is now active. Failures here are logged but never fatal — the server
+  // can still serve requests against unmigrated data.
+  try {
+    const storage = getStorageModule();
+    if (storage) {
+      await runColdStartMigrations(storage);
+    }
+  } catch (err: any) {
+    console.warn(`[app] Cold-start migrations failed: ${err?.message || err}`);
+  }
 
   const app = express();
 

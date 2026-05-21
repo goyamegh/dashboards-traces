@@ -64,6 +64,37 @@ export interface BuildTrajectoryContext {
   runId: string;
 }
 
+/**
+ * Context passed to a custom judge hook.
+ * Contains all data needed for evaluation: trajectory, traces, and expected outcomes.
+ * Also provides fetchTraces as an SDK utility for additional trace fetching.
+ */
+export interface JudgeContext {
+  trajectory: TrajectoryStep[];
+  traces: Span[];
+  expectedOutcomes: string[];
+  expectedTrajectory?: string[];
+  runId: string;
+  /** SDK utility: fetch traces by run IDs from OpenSearch */
+  fetchTraces: (runIds: string[]) => Promise<{ spans: Span[] }>;
+}
+
+/**
+ * Result returned by a custom judge hook.
+ */
+export interface JudgeResult {
+  passFailStatus: 'passed' | 'failed';
+  metrics: {
+    accuracy: number;
+    faithfulness?: number;
+    latency_score?: number;
+    trajectory_alignment_score?: number;
+    [key: string]: number | undefined;
+  };
+  llmJudgeReasoning: string;
+  improvementStrategies?: string[];
+}
+
 export interface AgentHooks {
   /**
    * Called before sending request to agent.
@@ -82,6 +113,27 @@ export interface AgentHooks {
    * Use to customize trajectory extraction for agents with custom span formats.
    */
   buildTrajectory?: (context: BuildTrajectoryContext) => Promise<TrajectoryStep[]>;
+
+  /**
+   * Custom judge hook. When defined, replaces the built-in Bedrock judge.
+   * Receives trajectory + traces + expected outcomes, returns pass/fail evaluation.
+   *
+   * @example
+   * ```typescript
+   * hooks: {
+   *   judge: async ({ trajectory, traces, expectedOutcomes, fetchTraces }) => {
+   *     // Custom evaluation logic using traces
+   *     const relevantSpans = traces.filter(s => s.attributes?.['gen_ai.system']);
+   *     return {
+   *       passFailStatus: relevantSpans.length > 0 ? 'passed' : 'failed',
+   *       metrics: { accuracy: 85 },
+   *       llmJudgeReasoning: 'Custom evaluation based on trace analysis',
+   *     };
+   *   }
+   * }
+   * ```
+   */
+  judge?: (context: JudgeContext) => Promise<JudgeResult>;
 }
 
 export interface AgentConfig {
@@ -325,6 +377,11 @@ export interface TestCaseRun {
   rawEvents?: any[]; // Raw AG UI events for debugging
   connectorProtocol?: ConnectorProtocol; // Protocol used to execute this run (for trajectory parsing)
 
+  // Per-matcher verdicts captured by the SDK during the test body
+  // execution. One entry per `expect(...).to.X(...)`, `judge(...)`, or
+  // traces helper invocation. UI consumers render this as a breakdown.
+  matcherResults?: import('../lib/matchers/types.js').MatcherResult[];
+
   // Server-side performance metrics (timing data from evaluation execution)
   performanceMetrics?: TestCasePerformanceMetrics;
 
@@ -368,7 +425,9 @@ export interface TestCaseVersion {
   createdAt: string;
 
   // Content fields (snapshot)
-  initialPrompt: string;
+  // initialPrompt is optional: code-based test cases without a prompt cause
+  // the runner to skip agent invocation entirely (deterministic-only tests).
+  initialPrompt?: string;
   context: AgentContextItem[];
   tools?: AgentToolDefinition[];
   expectedPPL?: string;
@@ -407,6 +466,10 @@ export interface TestCase {
   currentVersion: number;           // Latest version number
   versions: TestCaseVersion[];      // All versions (immutable history)
 
+  // Source provenance (code-imported test cases)
+  sourceFile?: string;              // Relative path: "evals/cybergym.eval.ts"
+  sourceHash?: string;              // SHA-256 of per-test-case content (for drift detection)
+
   // Metadata
   isPromoted: boolean;              // Available for experiments
   createdAt: string;
@@ -414,7 +477,9 @@ export interface TestCase {
   lastRunAt?: string;               // Timestamp of the most recent evaluation run
 
   // Current version content (convenience accessors - mirrors latest version)
-  initialPrompt: string;
+  // Optional because code-based test cases may have no prompt at all
+  // (deterministic-only tests where the runner skips agent invocation).
+  initialPrompt?: string;
   context: AgentContextItem[]; // AG-UI format context passed to agent
   tools?: AgentToolDefinition[]; // Tools available to the agent (client-provided)
   expectedPPL?: string; // Expected PPL query for validation
@@ -867,6 +932,7 @@ export type TestCaseSource =
   | { type: 'benchmark'; benchmarkId: string; benchmarkVersion?: number }
   | { type: 'test-case-ids'; ids: string[] }
   | { type: 'file-import'; filenames: string[]; testCaseIds: string[] }
+  | { type: 'code-import'; filenames: string[]; testCaseIds: string[] }
   | { type: 'directory-import'; dirPaths: string[]; testCaseIds: string[] }
   | { type: 'label-filter'; labels: string[] };
 
