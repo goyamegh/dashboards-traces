@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
-import { Loader2, CheckCircle, XCircle, Play, Wand2, FolderOpen, ArrowUpCircle, ChevronRight, Folder, Scale } from 'lucide-react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { Loader2, CheckCircle, XCircle, Play, Wand2, FolderOpen, ArrowUpCircle, ChevronRight, Folder, Scale, Upload } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -12,7 +12,10 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Progress } from '@/components/ui/progress';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Input } from '@/components/ui/input';
 import { DEFAULT_CONFIG } from '@/lib/constants';
+import { PREFS_KEYS } from '@/lib/preferences';
+import { usePersistedState } from '@/hooks/usePersistedState';
 import { discoverSkills, validateSkill, browseForSkillFolder, streamSkillEval, getSkillResults } from '@/services/client/skillsApi';
 import type { DiscoveredSkill } from '@/services/client/skillsApi';
 import type { SkillValidationResult, SkillEvalProgressEvent, SkillBenchmarkResult, AgentConfig, ModelConfig } from '@/types';
@@ -39,9 +42,12 @@ function PathBreadcrumb({ path }: { path: string }) {
 export const SkillsPage: React.FC = () => {
   // Config inputs
   const [skillPath, setSkillPath] = useState('');
-  const [selectedAgent, setSelectedAgent] = useState('');
-  const [selectedModel, setSelectedModel] = useState('');
+  const [selectedAgent, setSelectedAgent] = usePersistedState<string>(PREFS_KEYS.agentKey, '');
+  const [selectedModel, setSelectedModel] = usePersistedState<string>(PREFS_KEYS.modelId, '');
   const [browsingFolder, setBrowsingFolder] = useState(false);
+  const [showManualPath, setShowManualPath] = useState(false);
+  const [manualPath, setManualPath] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Discovered skills
   const [availableSkills, setAvailableSkills] = useState<DiscoveredSkill[]>([]);
@@ -83,12 +89,16 @@ export const SkillsPage: React.FC = () => {
       .finally(() => setLoadingSkills(false));
   }, []);
 
-  // Set defaults
+  // Set defaults only if no persisted preference exists
   useEffect(() => {
-    const claudeAgent = agents.find(a => a.connectorType === 'claude-code');
-    if (claudeAgent && !selectedAgent) setSelectedAgent(claudeAgent.key);
-    const realModel = models.find(m => !m.model_id.startsWith('mock://'));
-    if (realModel && !selectedModel) setSelectedModel(realModel.key);
+    if (!selectedAgent) {
+      const claudeAgent = agents.find(a => a.connectorType === 'claude-code');
+      if (claudeAgent) setSelectedAgent(claudeAgent.key);
+    }
+    if (!selectedModel) {
+      const realModel = models.find(m => !m.model_id.startsWith('mock://'));
+      if (realModel) setSelectedModel(realModel.key);
+    }
   }, [agents.length, models.length]);
 
   const validateAndSelect = useCallback(async (path: string) => {
@@ -117,8 +127,38 @@ export const SkillsPage: React.FC = () => {
       handleBrowse();
       return;
     }
+    if (value === '__manual__') {
+      setShowManualPath(true);
+      return;
+    }
+    if (value === '__upload__') {
+      fileInputRef.current?.click();
+      return;
+    }
+    setShowManualPath(false);
     validateAndSelect(value);
   }, [validateAndSelect]);
+
+  const handleManualPathSubmit = useCallback(() => {
+    if (manualPath.trim()) {
+      setShowManualPath(false);
+      validateAndSelect(manualPath.trim());
+    }
+  }, [manualPath, validateAndSelect]);
+
+  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    // For webkitdirectory uploads, extract the folder path from the first file
+    const firstFile = files[0];
+    const relativePath = (firstFile as any).webkitRelativePath || firstFile.name;
+    const folderName = relativePath.split('/')[0];
+    // Show the folder name as the selected skill path
+    setManualPath(folderName);
+    setShowManualPath(true);
+    // Reset the input
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, []);
 
   const handleBrowse = useCallback(async () => {
     setBrowsingFolder(true);
@@ -251,15 +291,52 @@ export const SkillsPage: React.FC = () => {
                     </div>
                   </SelectItem>
                 ))}
+                <SelectItem value="__manual__">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <FolderOpen className="h-3 w-3" />
+                    <span>Enter path manually...</span>
+                  </div>
+                </SelectItem>
+                <SelectItem value="__upload__">
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Upload className="h-3 w-3" />
+                    <span>Upload folder...</span>
+                  </div>
+                </SelectItem>
                 <SelectItem value="__browse__">
                   <div className="flex items-center gap-2 text-muted-foreground">
                     <FolderOpen className="h-3 w-3" />
-                    <span>Browse...</span>
+                    <span>Browse (OS dialog)...</span>
                   </div>
                 </SelectItem>
               </SelectContent>
             </Select>
-            {skillPath && <PathBreadcrumb path={skillPath} />}
+            {/* Hidden file input for folder upload */}
+            <input
+              ref={fileInputRef}
+              type="file"
+              className="hidden"
+              {...{ webkitdirectory: '', directory: '' } as any}
+              onChange={handleFileUpload}
+            />
+            {/* Manual path input */}
+            {showManualPath && (
+              <div className="flex gap-2 mt-2">
+                <Input
+                  value={manualPath}
+                  onChange={(e) => setManualPath(e.target.value)}
+                  placeholder="Enter skill directory path (e.g., .claude/skills/my-skill)"
+                  className="h-8 text-sm"
+                  onKeyDown={(e) => e.key === 'Enter' && handleManualPathSubmit()}
+                  data-testid="manual-path-input"
+                  autoFocus
+                />
+                <Button size="sm" variant="outline" onClick={handleManualPathSubmit} disabled={!manualPath.trim()}>
+                  Validate
+                </Button>
+              </div>
+            )}
+            {skillPath && !showManualPath && <PathBreadcrumb path={skillPath} />}
           </div>
 
           {/* Config row */}
