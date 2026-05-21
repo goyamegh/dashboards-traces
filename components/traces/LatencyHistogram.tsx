@@ -20,43 +20,28 @@ interface LatencyHistogramProps {
   data: HistogramBucket[];
 }
 
+// Tailwind classes per latency bucket. Dark variants stay near-fully saturated
+// (`dark:bg-{c}-400/80`) so bars remain visible against `bg-card`, instead of the
+// previous 0.3-alpha overlay that disappeared into dark backgrounds. Driving this
+// from the cascade also means the bars react to theme toggles without re-render.
+const BAR_CLASSES = [
+  'bg-emerald-300 border border-emerald-500 dark:bg-emerald-400/80 dark:border-emerald-300/70',
+  'bg-lime-300 border border-lime-500 dark:bg-lime-400/80 dark:border-lime-300/70',
+  'bg-yellow-300 border border-yellow-500 dark:bg-yellow-400/80 dark:border-yellow-300/70',
+  'bg-amber-400 border border-amber-500 dark:bg-amber-400/80 dark:border-amber-300/70',
+  'bg-orange-400 border border-orange-500 dark:bg-orange-400/80 dark:border-orange-300/70',
+  'bg-red-400 border border-red-500 dark:bg-red-400/80 dark:border-red-300/70',
+];
+const FALLBACK_BAR_CLASSES = 'bg-gray-300 border border-gray-400 dark:bg-gray-400/70 dark:border-gray-300/60';
+
 export const LatencyHistogram: React.FC<LatencyHistogramProps> = ({ data }) => {
   const maxCount = Math.max(...data.map(b => b.count), 1);
-
-  // Aggro-style-edit: Softer color gradient using border-like colors (theme-aware)
-  const getBarStyle = (index: number): React.CSSProperties => {
-    const isDarkMode = document.documentElement.classList.contains('dark');
-    
-    // Softer colors that work in both light and dark modes
-    const lightColors = [
-      { backgroundColor: 'rgb(134, 239, 172)', border: '1px solid rgb(74, 222, 128)' },    // <100ms - soft green
-      { backgroundColor: 'rgb(163, 230, 53)', border: '1px solid rgb(132, 204, 22)' },     // 100-500ms - lime
-      { backgroundColor: 'rgb(253, 224, 71)', border: '1px solid rgb(234, 179, 8)' },      // 500ms-1s - yellow
-      { backgroundColor: 'rgb(251, 191, 36)', border: '1px solid rgb(245, 158, 11)' },     // 1-5s - amber
-      { backgroundColor: 'rgb(251, 146, 60)', border: '1px solid rgb(249, 115, 22)' },     // 5-10s - orange
-      { backgroundColor: 'rgb(248, 113, 113)', border: '1px solid rgb(239, 68, 68)' },     // >10s - red
-    ];
-    
-    const darkColors = [
-      { backgroundColor: 'rgba(134, 239, 172, 0.3)', border: '1px solid rgba(134, 239, 172, 0.5)' },  // <100ms
-      { backgroundColor: 'rgba(163, 230, 53, 0.3)', border: '1px solid rgba(163, 230, 53, 0.5)' },    // 100-500ms
-      { backgroundColor: 'rgba(253, 224, 71, 0.3)', border: '1px solid rgba(253, 224, 71, 0.5)' },    // 500ms-1s
-      { backgroundColor: 'rgba(251, 191, 36, 0.3)', border: '1px solid rgba(251, 191, 36, 0.5)' },    // 1-5s
-      { backgroundColor: 'rgba(251, 146, 60, 0.3)', border: '1px solid rgba(251, 146, 60, 0.5)' },    // 5-10s
-      { backgroundColor: 'rgba(248, 113, 113, 0.3)', border: '1px solid rgba(248, 113, 113, 0.5)' },  // >10s
-    ];
-    
-    const colors = isDarkMode ? darkColors : lightColors;
-    return colors[index] || (isDarkMode 
-      ? { backgroundColor: 'rgba(156, 163, 175, 0.3)', border: '1px solid rgba(156, 163, 175, 0.5)' }
-      : { backgroundColor: 'rgb(209, 213, 219)', border: '1px solid rgb(156, 163, 175)' }
-    );
-  };
 
   return (
     <div className="flex items-end gap-2 h-24">
       {data.map((bucket, index) => {
         const heightPercent = maxCount > 0 ? (bucket.count / maxCount) * 100 : 0;
+        const barClass = BAR_CLASSES[index] || FALLBACK_BAR_CLASSES;
 
         return (
           <div
@@ -71,11 +56,8 @@ export const LatencyHistogram: React.FC<LatencyHistogramProps> = ({ data }) => {
                 </span>
               )}
               <div
-                className="w-full rounded-t transition-all"
-                style={{
-                  height: `${Math.max(heightPercent, bucket.count > 0 ? 4 : 0)}%`,
-                  ...getBarStyle(index)
-                }}
+                className={`w-full rounded-t transition-all ${barClass}`}
+                style={{ height: `${Math.max(heightPercent, bucket.count > 0 ? 4 : 0)}%` }}
                 title={`${bucket.label}: ${bucket.count} traces`}
               />
             </div>
