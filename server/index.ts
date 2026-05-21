@@ -13,7 +13,7 @@ import { ChildProcess } from 'child_process';
 import config from './config/index.js';
 import { createApp } from './app.js';
 import { getStorageConfigFromFile, getObservabilityConfigFromFile } from './services/configService.js';
-import { findObservioRoot, spawnObservioAgent, OBSERVIO_DEFAULT_PORT, resetObservioPort, isPortFree, setObservioPort, waitForObservioReady } from './services/observioAgent.js';
+import { findObservioRoot, spawnObservioAgent, OBSERVIO_DEFAULT_PORT, resetObservioPort, isPortFree, setObservioPort, waitForObservioReady, killObservioAgent } from './services/observioAgent.js';
 import { validateAwsCredentials } from './services/tracesService.js';
 
 // Register server-side connectors (subprocess, claude-code)
@@ -30,9 +30,33 @@ const MAX_PORT_ATTEMPTS = 10;
 let observioChild: ChildProcess | null = null;
 
 /**
- * Try to auto-start the observio sample agent if available.
- * Checks if an instance is already running before spawning.
- * Awaits port detection so the server knows the correct endpoint at boot time.
+ * Verify that a process on the given port is actually observio by probing its
+ * dedicated `/health` endpoint. The observio HTTP server exposes `GET /health`
+ * (see observio-sample-agent/src/server/http_server.ts) which is a side-effect-free
+ * liveness probe — unlike POST /run-agent, which goes through the full request
+ * pipeline and writes audit / validation-error logs on every probe.
+ *
+ * Returns true only if /health responds with HTTP 200.
+ */
+async function isObservioResponding(port: number): Promise<boolean> {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 2000);
+    const res = await fetch(`http://localhost:${port}/health`, {
+      method: 'GET',
+      signal: controller.signal,
+    });
+    clearTimeout(timeout);
+    return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Try to auto-start the observio sample agent.
+ * Always kills stale processes on the default port and spawns fresh.
+ * This avoids race conditions where a dying process briefly occupies the port.
  */
 async function tryStartObservioAgent(): Promise<void> {
   try {
@@ -42,12 +66,20 @@ async function tryStartObservioAgent(): Promise<void> {
       return;
     }
 
-    // Check if observio is already running on the default port
     const portFree = await isPortFree(OBSERVIO_DEFAULT_PORT);
     if (!portFree) {
-      console.log(`  Observio sample agent: already running on port ${OBSERVIO_DEFAULT_PORT}`);
-      setObservioPort(OBSERVIO_DEFAULT_PORT);
-      return;
+      const responding = await isObservioResponding(OBSERVIO_DEFAULT_PORT);
+      if (responding) {
+        console.log(`  Observio sample agent: already running on port ${OBSERVIO_DEFAULT_PORT}`);
+        setObservioPort(OBSERVIO_DEFAULT_PORT);
+        return;
+      }
+      console.log(`  Observio sample agent: port ${OBSERVIO_DEFAULT_PORT} occupied by unresponsive process, killing...`);
+      await killObservioAgent(OBSERVIO_DEFAULT_PORT);
+      for (let i = 0; i < 10; i++) {
+        if (await isPortFree(OBSERVIO_DEFAULT_PORT)) break;
+        await new Promise(r => setTimeout(r, 300));
+      }
     }
 
     observioChild = spawnObservioAgent(root);
