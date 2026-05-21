@@ -261,12 +261,12 @@ const FlowPanelInner: React.FC<{
         variant={BackgroundVariant.Dots}
         gap={16}
         size={1}
-        color="#334155"
+        color="hsl(var(--border))"
       />
       <MiniMap
         nodeColor={minimapNodeColor}
-        maskColor="rgba(15, 23, 42, 0.8)"
-        className="!bg-slate-900/50 !border-slate-700 !bottom-2 !right-2"
+        maskColor="hsl(var(--background) / 0.8)"
+        className="!bg-card/80 !border !border-border !bottom-2 !right-2"
         style={{ width: 100, height: 60 }}
         pannable
         zoomable
@@ -506,12 +506,12 @@ const MergedFlowViewInner: React.FC<{
         variant={BackgroundVariant.Dots}
         gap={16}
         size={1}
-        color="#334155"
+        color="hsl(var(--border))"
       />
       <MiniMap
         nodeColor={minimapNodeColor}
-        maskColor="rgba(15, 23, 42, 0.8)"
-        className="!bg-slate-900/50 !border-slate-700"
+        maskColor="hsl(var(--background) / 0.8)"
+        className="!bg-card/80 !border !border-border"
         pannable
         zoomable
       />

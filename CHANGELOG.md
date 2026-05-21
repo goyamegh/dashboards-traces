@@ -9,6 +9,15 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Fixed
+- **UI theming (paper cuts):** Five high-impact light/dark theming regressions:
+  - **RawEventsPanel** — replaced hardcoded `bg-gray-*` / `text-gray-*` with theme tokens (`bg-card`, `bg-muted`, `text-foreground`, `text-muted-foreground`) so the AG-UI raw-events viewer is legible in light mode.
+  - **LatencyHistogram & MetricsOverview** — bar palettes now include `dark:bg-*/80` variants; bars are no longer near-invisible at 0.3 alpha in dark mode.
+  - **MetricsTimeSeriesChart** — Recharts `CartesianGrid` / `XAxis` / `YAxis` / dot strokes now drive from `hsl(var(--border))` and `hsl(var(--muted-foreground))` instead of literal hex; chart axes flip with the theme.
+  - **React Flow surfaces** (TraceFlowView, AgentMapView, TraceFlowComparison, SpanNode) — `Background` color, `MiniMap` mask/className, and `SpanNode` `Handle` styles use `hsl(var(--border))`, `bg-card`, `border-border`, `bg-muted-foreground/60` instead of `slate-*` `!important` overrides; minimap and connector handles render in both themes.
+  - **Tooltip** — shadcn `TooltipContent` default migrated from `bg-gray-900 dark:bg-gray-800` + `text-white` to `bg-popover` + `text-popover-foreground`; the per-row Time Distribution tooltip on Agent Traces no longer fights the theme. Light tooltip is now darker than its surrounding surface (and dark tooltip lighter), as expected.
+- **Tests:** New `tests/unit/components/uxThemingRegression.test.ts` (16 cases) reads each fixed source file and fails if the bad patterns return.
+
 ### Changed
 - **UI:** Sidebar now uses a uniform near-black background (`hsl(var(--background))`) in dark mode instead of the previous dark gray (`#1D1E24`), so the sidebar header / nav region matches the existing footer (which already used `bg-background`). Removes the visible top-vs-bottom seam in the left navigation. Light mode unchanged.
 - **UI:** The radial gradient background previously seen only on the Dashboard / Overview page now applies on every page. The `dashboard-gradient-bg` class is now attached to the `SidebarInset` `<main>` in `Layout.tsx`, replacing the per-page `useEffect` toggle in `Dashboard.tsx`.
