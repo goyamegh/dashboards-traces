@@ -143,8 +143,8 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         className="h-screen flex-shrink-0 transition-all duration-300"
         style={{
           width: isCollapsed ? '64px' : '180px',
-          background: isDarkMode ? 'hsl(var(--background))' : '#FFFFFF',
-          borderRight: isDarkMode ? '1px solid #343741' : '1px solid #D3DAE6',
+          background: 'hsl(var(--background))',
+          borderRight: '1px solid hsl(var(--border))',
           boxShadow: '0px 0px 12px rgba(0, 0, 0, 0.05), 0px 0px 4px rgba(0, 0, 0, 0.05), 0px 0px 2px rgba(0, 0, 0, 0.05)',
           borderRadius: '0px 24px 24px 0px',
           display: 'flex',

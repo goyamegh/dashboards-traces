@@ -1051,8 +1051,8 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                             {new Date(log.timestamp).toLocaleTimeString()}
                           </span>
                           <span className={`text-xs font-semibold ${
-                            log.level === 'ERROR' ? 'text-red-400' :
-                            log.level === 'WARN' ? 'text-yellow-400' :
+                            log.level === 'ERROR' ? 'text-red-600 dark:text-red-400' :
+                            log.level === 'WARN' ? 'text-amber-600 dark:text-amber-400' :
                             'text-muted-foreground'
                           }`}>
                             [{log.level || 'INFO'}]
