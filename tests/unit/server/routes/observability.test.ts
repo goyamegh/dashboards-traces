@@ -68,9 +68,36 @@ function getRouteHandler(router: any, method: string, path: string) {
 }
 
 describe('Observability Routes', () => {
+  // Save and restore env vars touched by these tests so we don't leak state.
+  const ENV_KEYS = [
+    'OPENSEARCH_LOGS_ENDPOINT',
+    'OPENSEARCH_LOGS_AUTH_TYPE',
+    'OPENSEARCH_LOGS_USERNAME',
+    'OPENSEARCH_LOGS_PASSWORD',
+    'OPENSEARCH_LOGS_AWS_PROFILE',
+    'OPENSEARCH_LOGS_AWS_REGION',
+    'OPENSEARCH_LOGS_AWS_SERVICE',
+    'OPENSEARCH_LOGS_TLS_SKIP_VERIFY',
+  ] as const;
+  const savedEnv: Record<string, string | undefined> = {};
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetObservabilityConfigFromFile.mockReturnValue(null);
+    for (const key of ENV_KEYS) {
+      savedEnv[key] = process.env[key];
+      delete process.env[key];
+    }
+  });
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      if (savedEnv[key] === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = savedEnv[key]!;
+      }
+    }
   });
 
   describe('POST /api/observability/test-connection', () => {
@@ -110,7 +137,7 @@ describe('Observability Routes', () => {
       expect(res.json).toHaveBeenCalledWith({ status: 'ok', clusterName: 'obs-cluster' });
     });
 
-    it('should fall back to file config when credentials are not in request body', async () => {
+    it('should fall back to file config when endpoint matches and credentials are not in request body', async () => {
       mockGetObservabilityConfigFromFile.mockReturnValue({
         endpoint: 'https://file-obs:9200',
         authType: 'sigv4',
@@ -150,8 +177,32 @@ describe('Observability Routes', () => {
       );
     });
 
-    it('should fall back to env vars when neither request body nor file config has credentials', async () => {
+    it('should NOT fall back to file config credentials when request endpoint differs', async () => {
+      mockGetObservabilityConfigFromFile.mockReturnValue({
+        endpoint: 'https://stored-obs:9200',
+        authType: 'basic',
+        username: 'file-user',
+        password: 'file-pass',
+      });
+      mockTestObservabilityConnection.mockResolvedValue({ status: 'error', message: 'auth failed' });
+
+      const { req, res } = createMocks({
+        endpoint: 'https://attacker-obs:9200',
+      });
+      const handler = getRouteHandler(observabilityRoutes, 'post', '/api/observability/test-connection');
+
+      await handler(req, res);
+
+      const args = mockTestObservabilityConnection.mock.calls[0][0];
+      expect(args.endpoint).toBe('https://attacker-obs:9200');
+      expect(args.username).toBeUndefined();
+      expect(args.password).toBeUndefined();
+      expect(args.authType).toBeUndefined();
+    });
+
+    it('should fall back to env vars when endpoint matches OPENSEARCH_LOGS_ENDPOINT and no file/body creds', async () => {
       mockGetObservabilityConfigFromFile.mockReturnValue(null);
+      process.env.OPENSEARCH_LOGS_ENDPOINT = 'https://env-obs:9200';
       process.env.OPENSEARCH_LOGS_USERNAME = 'env-user';
       process.env.OPENSEARCH_LOGS_PASSWORD = 'env-pass';
       process.env.OPENSEARCH_LOGS_AUTH_TYPE = 'basic';
@@ -172,19 +223,36 @@ describe('Observability Routes', () => {
           authType: 'basic',
         })
       );
-
-      delete process.env.OPENSEARCH_LOGS_USERNAME;
-      delete process.env.OPENSEARCH_LOGS_PASSWORD;
-      delete process.env.OPENSEARCH_LOGS_AUTH_TYPE;
     });
 
-    it('should prefer request body over file config and env vars', async () => {
+    it('should NOT fall back to env vars when endpoint differs from OPENSEARCH_LOGS_ENDPOINT', async () => {
+      mockGetObservabilityConfigFromFile.mockReturnValue(null);
+      process.env.OPENSEARCH_LOGS_ENDPOINT = 'https://env-obs:9200';
+      process.env.OPENSEARCH_LOGS_USERNAME = 'env-user';
+      process.env.OPENSEARCH_LOGS_PASSWORD = 'env-pass';
+      mockTestObservabilityConnection.mockResolvedValue({ status: 'error', message: 'auth failed' });
+
+      const { req, res } = createMocks({
+        endpoint: 'https://other-obs:9200',
+      });
+      const handler = getRouteHandler(observabilityRoutes, 'post', '/api/observability/test-connection');
+
+      await handler(req, res);
+
+      const args = mockTestObservabilityConnection.mock.calls[0][0];
+      expect(args.endpoint).toBe('https://other-obs:9200');
+      expect(args.username).toBeUndefined();
+      expect(args.password).toBeUndefined();
+    });
+
+    it('should prefer request body over file config and env vars (even when endpoints match)', async () => {
       mockGetObservabilityConfigFromFile.mockReturnValue({
-        endpoint: 'https://file-obs:9200',
+        endpoint: 'https://my-obs:9200',
         authType: 'basic',
         username: 'file-user',
         password: 'file-pass',
       });
+      process.env.OPENSEARCH_LOGS_ENDPOINT = 'https://my-obs:9200';
       process.env.OPENSEARCH_LOGS_USERNAME = 'env-user';
       process.env.OPENSEARCH_LOGS_PASSWORD = 'env-pass';
       mockTestObservabilityConnection.mockResolvedValue({ status: 'ok', clusterName: 'test' });
@@ -205,9 +273,6 @@ describe('Observability Routes', () => {
           password: 'body-pass',
         })
       );
-
-      delete process.env.OPENSEARCH_LOGS_USERNAME;
-      delete process.env.OPENSEARCH_LOGS_PASSWORD;
     });
 
     it('should use file config index patterns as fallback', async () => {

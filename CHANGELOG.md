@@ -88,6 +88,7 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - DocType discriminator for shared storage and PATCH sanitization in evaluation runs ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - Connector type drift: use single source of truth (`CONNECTOR_TYPE_INFO`) in server validation and Settings UI instead of hardcoded arrays ([#176](https://github.com/opensearch-project/agent-health/pull/176))
 - `useTraces: true` causes benchmark judge to never evaluate — runs permanently show 0% pass rate. Benchmark runner now awaits trace polling completion before reporting results ([#184](https://github.com/opensearch-project/agent-health/issues/184))
+- Settings “Test Connection” failed when credentials were saved via the UI: backend now falls back to file config (then env vars) for missing fields, with the request endpoint required to match the configured endpoint to avoid forwarding stored credentials to arbitrary hosts ([#213](https://github.com/opensearch-project/agent-health/pull/213))
 
 ## [0.4.0] - 2025-05-05
 
