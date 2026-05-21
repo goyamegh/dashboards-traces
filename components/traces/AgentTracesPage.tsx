@@ -382,6 +382,12 @@ const ExpandedTraceRow: React.FC<ExpandedTraceRowProps> = ({ trace, onClose }) =
         <Sheet
           open={selectedSpan !== null && !fullscreenOpen}
           onOpenChange={(o) => { if (!o) setSelectedSpan(null); }}
+          // Non-modal so the trace tree behind the drawer stays
+          // interactive — users need to keep clicking spans to swap
+          // the drawer's content. Modal Radix dialogs trap focus,
+          // lock body scroll, and aria-hide siblings, which made the
+          // page feel unresponsive while the drawer was open.
+          modal={false}
         >
           <SheetContent
             side="bottom"

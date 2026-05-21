@@ -94,8 +94,11 @@ const SimpleSpanAttributesTable: React.FC<SimpleSpanAttributesTableProps> = ({ s
   return (
     <div className="flex flex-col h-full">
       {/* Identity strip — bare minimum so users always know which span
-          they're looking at. Everything else is in the table below. */}
-      <div className="flex items-center justify-between gap-3 px-3 py-2 border-b bg-muted/30 text-[11px] flex-wrap">
+          they're looking at. Everything else is in the table below.
+          The right padding (pr-10) reserves space for the absolutely
+          positioned close (X) button rendered by the parent drawer so
+          it doesn't visually overlap the trailing "N attributes" text. */}
+      <div className="flex items-center justify-between gap-3 pl-3 pr-10 py-2 border-b bg-muted/30 text-[11px] flex-wrap">
         <div className="flex items-center gap-2 min-w-0">
           <span className="font-medium truncate" title={span.name}>{span.name}</span>
           <span className="text-muted-foreground">·</span>
