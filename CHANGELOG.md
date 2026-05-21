@@ -16,7 +16,15 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
   - **MetricsTimeSeriesChart** — Recharts `CartesianGrid` / `XAxis` / `YAxis` / dot strokes now drive from `hsl(var(--border))` and `hsl(var(--muted-foreground))` instead of literal hex; chart axes flip with the theme.
   - **React Flow surfaces** (TraceFlowView, AgentMapView, TraceFlowComparison, SpanNode) — `Background` color, `MiniMap` mask/className, and `SpanNode` `Handle` styles use `hsl(var(--border))`, `bg-card`, `border-border`, `bg-muted-foreground/60` instead of `slate-*` `!important` overrides; minimap and connector handles render in both themes.
   - **Tooltip** — shadcn `TooltipContent` default migrated from `bg-gray-900 dark:bg-gray-800` + `text-white` to `bg-popover` + `text-popover-foreground`; the per-row Time Distribution tooltip on Agent Traces no longer fights the theme. Light tooltip is now darker than its surrounding surface (and dark tooltip lighter), as expected.
-- **Tests:** New `tests/unit/components/uxThemingRegression.test.ts` (16 cases) reads each fixed source file and fails if the bad patterns return.
+- **UI theming (paper cuts, Scope B — 7 HIGH-severity fixes):**
+  - **RunSummaryPanel** — donut chart slices now read from `hsl(var(--primary))` and `hsl(var(--destructive))` instead of hardcoded `#015aa3` / `#ef4444`, so the chart picks up the active theme.
+  - **QuickRunModal** — error banner gains `dark:` variants (`dark:text-red-300 dark:bg-red-500/10 dark:border-red-500/30`); the previously pure white-pink box no longer hangs in dark mode.
+  - **TrajectoryView** — failed-step header text uses `text-red-600 dark:text-red-400` instead of `text-red-400` only (raised contrast from 3.4:1 to AA on white).
+  - **RunDetailsContent** — log-level coloring (`ERROR` / `WARN`) now has both light and dark variants (`text-red-600 dark:text-red-400`, `text-amber-600 dark:text-amber-400`); previously illegible on the light theme.
+  - **ReportsPage** — difficulty badges (Easy / Medium / Hard) gain full light-mode token sets (`bg-{c}-50 text-{c}-700/800 border-{c}-200`) alongside the existing dark variants; previously dark-only.
+  - **CodingAgentsPage** — active search highlight migrated from `bg-yellow-400 text-black` to themed `bg-yellow-200 text-yellow-900 dark:bg-yellow-500/30 dark:text-yellow-200`; the active match no longer screams against surrounding chrome.
+  - **Layout** — sidebar inline `style.background` and `style.borderRight` now use `hsl(var(--background))` and `hsl(var(--border))` instead of branched `isDarkMode ? '#1D1E24' : '#FFFFFF'` / `#343741` / `#D3DAE6`; one rule, two themes, no drift.
+- **Tests:** `tests/unit/components/uxThemingRegression.test.ts` extended with 10 Scope B regression guards (26 total) — each reads the fixed source file and fails if the bad pattern is reintroduced.
 - **Tests:** Repaired three pre-existing test failures unrelated to the theming work that were blocking the local pre-push hook:
   - `tests/integration/services/evaluation/traceBlocking.integration.test.ts` — duplicate `return; }` from a bad merge made the file fail to parse.
   - `tests/unit/cli/sampleTraces.test.ts` — root-span count assertion stale after eval spans were added to `demo-trace-001` (now 2 roots: agent + eval suite).
