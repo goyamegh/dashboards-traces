@@ -86,10 +86,11 @@ async function startServer() {
 
   const tryListen = (port: number): Promise<void> => {
     return new Promise((resolve, reject) => {
-      const server = app.listen(port, '0.0.0.0');
+      const host = process.env.HOST || '0.0.0.0';
+      const server = app.listen(port, host);
 
       server.on('listening', () => {
-        console.log(`\n  Backend Server running on http://0.0.0.0:${port}`);
+        console.log(`\n  Backend Server running on http://${host}:${port}`);
         console.log(`   Health check: http://localhost:${port}/health`);
         console.log(`   AWS Region: ${process.env.AWS_REGION || 'us-west-2'}`);
         console.log(`   Bedrock Model: ${process.env.BEDROCK_MODEL_ID || 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'}`);
