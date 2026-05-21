@@ -23,7 +23,7 @@ import { ApiClient, ServerError, type BenchmarkExecutionEvent } from '@/cli/util
 import { validateTestCasesArrayJson, type ValidatedTestCaseInput } from '@/lib/testCaseValidation.js';
 import { calculateRunStats, getReportIdsFromRun } from '@/lib/runStats.js';
 import { formatJson, formatMarkdownTable, parseOutputFormat, OUTPUT_FORMAT_DESCRIPTION, type OutputFormat } from '@/cli/utils/formatOutput.js';
-import type { AgentConfig, Benchmark, BenchmarkRun, TestCaseRun, EvaluationReport, TestCaseSource } from '@/types/index.js';
+import type { AgentConfig, Benchmark, BenchmarkRun, TestCase, TestCaseRun, EvaluationReport, TestCaseSource } from '@/types/index.js';
 import { existsSync, statSync } from 'fs';
 import { isCodeFile } from '@/lib/testCases/loader.js';
 
@@ -813,7 +813,7 @@ export function createBenchmarkCommand(): Command {
 
             const uploadSpinner = ora('Importing test cases to server...').start();
             const bulkResult = await api.bulkCreateTestCases(upsertInputs as any);
-            uploadSpinner.succeed(`Imported ${bulkResult.created} test cases (${bulkResult.updated} updated, ${bulkResult.unchanged} unchanged)`);
+            uploadSpinner.succeed(`Imported ${bulkResult.created} test cases`);
 
             // Map test case name -> stored id for quick lookups
             const idByName = new Map(bulkResult.testCases.map(tc => [tc.name, tc.id]));

@@ -150,8 +150,8 @@ export function describe(name: string, fn: () => void): void {
   }
   describeStack.push(name);
   try {
-    const result = fn();
-    if (result instanceof Promise) {
+    const result = fn() as unknown;
+    if (result && typeof (result as any).then === 'function') {
       // Mirror Playwright — describe bodies must be synchronous because
       // they run during registration, well before any test executes.
       throw new Error(
