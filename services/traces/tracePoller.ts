@@ -16,10 +16,18 @@ import { fetchTracesByRunIds } from './index';
 import { asyncRunStorage } from '../storage/asyncRunStorage';
 import { executeBuildTrajectoryHook } from '@/lib/hooks';
 
-// Polling configuration
-const DEFAULT_POLL_INTERVAL_MS = 10000; // 10 seconds
-const DEFAULT_MAX_ATTEMPTS = 60; // 10 minutes total
-const MAX_POLL_CEILING = 60; // Hard ceiling: never exceed 60 attempts regardless of agent config
+// Polling configuration. Defaults are overridable via env vars so that
+// CI / E2E runs without a real OpenSearch trace backend can fail fast
+// instead of waiting the full ~10 min before the poller gives up.
+const envInt = (name: string, fallback: number): number => {
+  const raw = process.env[name];
+  if (!raw) return fallback;
+  const parsed = parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+const DEFAULT_POLL_INTERVAL_MS = envInt('TRACE_POLL_INTERVAL_MS', 10000); // 10 seconds
+const DEFAULT_MAX_ATTEMPTS = envInt('TRACE_POLL_MAX_ATTEMPTS', 60); // 10 minutes total at default interval
+const MAX_POLL_CEILING = 60; // Hard ceiling: never exceed 60 attempts regardless of agent config or env override
 
 export interface PollState {
   reportId: string;
