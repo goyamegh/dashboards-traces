@@ -10,7 +10,7 @@
  * Supports single trace mode (timeline/flow) and comparison mode (side-by-side/merged).
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Activity, Network, List, GitBranch, Info, MessageSquare, X as XIcon } from 'lucide-react';
 import {
   FullScreenDialog,
@@ -22,9 +22,11 @@ import {
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Span, TimeRange, CategorizedSpan } from '@/types';
+import { computeTraceSummary } from '@/services/traces';
 import TraceVisualization from './TraceVisualization';
 import { ViewMode } from './ViewToggle';
 import SimpleSpanAttributesTable from './SimpleSpanAttributesTable';
+import TraceSummaryStrip from './TraceSummaryStrip';
 
 interface TraceFullScreenViewProps {
   /** Whether the fullscreen dialog is open */
@@ -149,14 +151,21 @@ export const TraceFullScreenView: React.FC<TraceFullScreenViewProps> = ({
 
   const displaySpanCount = spanCount ?? spanTree.length;
 
+  // Same headline summary as the inline expansion shows above the
+  // tree (category breakdown / errors / tokens / models). Reusing
+  // the TraceSummaryStrip component keeps inline and fullscreen
+  // header content visually identical — if the user opens fullscreen
+  // they don't lose the at-a-glance signal they were looking at.
+  const headerSummary = useMemo(() => computeTraceSummary(spanTree), [spanTree]);
+
   return (
     <FullScreenDialog open={open} onOpenChange={onOpenChange}>
       <FullScreenDialogContent>
         {/* Header */}
         <FullScreenDialogHeader>
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-3 min-w-0">
             <Activity size={20} className="text-opensearch-blue" />
-            <div>
+            <div className="min-w-0">
               <FullScreenDialogTitle className="flex items-center gap-2">
                 {title}
                 {displaySpanCount > 0 && (
@@ -165,8 +174,13 @@ export const TraceFullScreenView: React.FC<TraceFullScreenViewProps> = ({
                   </Badge>
                 )}
               </FullScreenDialogTitle>
+              {/* Summary strip — same content the inline expansion shows. */}
+              <TraceSummaryStrip
+                summary={headerSummary}
+                className="text-xs mt-1"
+              />
               {subtitle && (
-                <p className="text-xs text-muted-foreground mt-0.5">{subtitle}</p>
+                <p className="text-[10px] text-muted-foreground mt-0.5">{subtitle}</p>
               )}
             </div>
           </div>
