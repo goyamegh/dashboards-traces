@@ -6,9 +6,6 @@
 /**
  * Sample code-based test case fixture for Observio agent.
  *
- * Uses the legacy module.exports pattern (backward compat with defineTestCases).
- * The loader supports both this and the new test() registration API.
- *
  * Format: CJS (module.exports) for Jest compatibility.
  */
 
@@ -16,8 +13,6 @@ const { test } = require('../../lib/testCases/define');
 
 test('Observio Basic Response', {
   prompt: 'What is the root cause of high CPU usage on the web server?',
-  category: 'RCA',
-  difficulty: 'Easy',
   description: 'Verify that Observio agent produces a non-empty trajectory and response',
   context: [
     {
@@ -46,8 +41,6 @@ test('Observio Basic Response', {
 
 test('Observio Trajectory Structure', {
   prompt: 'Analyze the error logs and identify the failing service.',
-  category: 'RCA',
-  difficulty: 'Medium',
   description: 'Verify that Observio trajectory contains expected step types',
   context: [
     {

@@ -760,108 +760,53 @@ export function createBenchmarkCommand(): Command {
         let benchmark: Benchmark | null = null;
 
         if (fileMode) {
-          // Code-based test SDK files (.eval.js / .eval.ts) go through the
-          // code-import EvaluationRun path — the lib's loader registers
-          // tests, the runner streams results back via SSE, and we print
-          // the same summary the JSON path does.
-          if (isCodeFile(filePath!)) {
-            // Resolve agent
-            let agent: AgentConfig | undefined;
-            if (options.agent.length === 0) {
-              agent = config.agents.find((a) => a.enabled !== false);
-              if (!agent) {
-                console.error(chalk.red('  Error: No enabled agents found in config.'));
-                process.exit(1);
-              }
-              console.log(chalk.gray(`  Agent: ${agent.name} (default)`));
-            } else {
-              agent = findAgent(options.agent[0], config);
-              if (!agent) {
-                console.error(chalk.red(`  Error: Agent not found: ${options.agent[0]}`));
-                process.exit(1);
-              }
-              console.log(chalk.gray(`  Agent: ${agent.name}`));
-            }
-
-            const modelId = options.model || getDefaultModel(config);
-            const runName = options.name || `cli-${path.basename(filePath!, path.extname(filePath!))}-${Date.now()}`;
-            const concurrency = Math.max(1, Math.min(20, parseInt(options.concurrency, 10) || 1));
-
-            const runSpinner = ora(`Running ${path.basename(filePath!)} via SDK code-import...`).start();
-            let runId: string | undefined;
-            let total = 0;
-            const completed = new Map<string, { status: string; reportId?: string }>();
-
-            try {
-              const completedRun = await api.createEvaluationRun(
-                {
-                  name: runName,
-                  sources: [
-                    { type: 'code-import', filenames: [filePath!], testCaseIds: [] } as TestCaseSource,
-                  ],
-                  agentKey: agent.key,
-                  modelId,
-                  evaluatorId: options.evaluator,
-                  concurrency,
-                  trigger: 'cli',
-                },
-                (event) => {
-                  if (event.type === 'started') {
-                    runId = event.data.runId;
-                    total = event.data.testCases?.length ?? 0;
-                    runSpinner.text = `Run ${runId} — ${total} test cases queued`;
-                  } else if (event.type === 'testCaseComplete') {
-                    completed.set(event.data.testCaseId, event.data.result);
-                    runSpinner.text = `Run ${runId} — ${completed.size}/${total} done`;
-                  }
-                }
-              );
-
-              runSpinner.succeed(`Run ${runId} completed (${completed.size}/${total})`);
-
-              // Render summary table
-              const stats = completedRun?.stats || { passed: 0, failed: 0, total: 0, pending: 0 };
-              const snapshots = completedRun?.testCaseSnapshots || [];
-              const results = completedRun?.results || {};
-              console.log('');
-              console.log(chalk.bold(`  ${runName}`));
-              const fmt = (n: number, c: any) => c(String(n).padStart(3));
-              console.log(`  ${fmt(stats.passed, chalk.green)} passed   ${fmt(stats.failed, chalk.red)} failed   ${fmt(stats.total, chalk.gray)} total`);
-              console.log('');
-              for (const snap of snapshots) {
-                const r = (results as any)[snap.id];
-                let icon = chalk.gray('·');
-                if (r?.status === 'completed') icon = chalk.green('✓');
-                else if (r?.status === 'failed') icon = chalk.red('✗');
-                console.log(`  ${icon} ${snap.name}`);
-              }
-              console.log('');
-              console.log(chalk.gray(`  Inspect: ${serverResult.baseUrl}/evaluations/runs/${runId}/inspect`));
-              console.log('');
-
-              // Code-import runs are self-contained — no per-agent benchmark loop
-              cleanup();
-              process.exit(stats.failed > 0 ? 1 : 0);
-            } catch (error) {
-              runSpinner.fail(`Run failed: ${error instanceof Error ? error.message : error}`);
-              cleanup();
-              process.exit(1);
-            }
-          }
-
-          // File mode: import test cases from JSON file and create/reuse benchmark
+          // File mode: import test cases (JSON or code-based .eval.js/.ts)
+          // and create/reuse a benchmark. Both paths produce the same
+          // upstream behavior — a Benchmark + nested BenchmarkRun — so the
+          // resulting runs land in the same UI list, share the same
+          // RunInspectorPage, and support compare/promote/etc.
           const importSpinner = ora(`Loading test cases from ${filePath}...`).start();
           try {
-            const validatedTestCases = loadAndValidateTestCasesFile(filePath!);
-            importSpinner.succeed(`Validated ${validatedTestCases.length} test cases from file`);
+            let upsertInputs: Array<Partial<TestCase>>;
 
-            // Bulk create via server
+            if (isCodeFile(filePath!)) {
+              // Code-based SDK file: load via the lib loader, register tests,
+              // and shape into the same upsert input shape JSON uses.
+              const { loadTestCasesFromModule } = await import('@/lib/testCases/loader.js');
+              const { getCategoryFromLabels, getDifficultyFromLabels } = await import('@/lib/testCaseLabels.js');
+              const loaded = await loadTestCasesFromModule(filePath!);
+              const sourceFile = path.relative(process.cwd(), loaded.filePath);
+              upsertInputs = loaded.testCases.map(tc => {
+                const labels = tc.options.labels;
+                const category = getCategoryFromLabels(labels);
+                const difficulty = getDifficultyFromLabels(labels);
+                return {
+                  name: tc.name,
+                  ...(category ? { category: category as any } : {}),
+                  ...(difficulty ? { difficulty: difficulty as any } : {}),
+                  initialPrompt: tc.options.prompt,
+                  context: tc.options.context,
+                  labels,
+                  sourceFile,
+                  sourceHash: tc.hash,
+                  description: tc.options.description,
+                };
+              });
+            } else {
+              // JSON file: existing validation + shaping.
+              const validatedTestCases = loadAndValidateTestCasesFile(filePath!);
+              upsertInputs = validatedTestCases.map(tc => tc as unknown as Partial<TestCase>);
+            }
+
+            importSpinner.succeed(`Loaded ${upsertInputs.length} test cases from ${filePath}`);
+
+            // Bulk create / upsert via server (idempotent on rerun)
             const uploadSpinner = ora('Importing test cases to server...').start();
-            const bulkResult = await api.bulkCreateTestCases(validatedTestCases);
-            uploadSpinner.succeed(`Imported ${bulkResult.created} test cases`);
+            const bulkResult = await api.bulkCreateTestCases(upsertInputs as any);
+            uploadSpinner.succeed(`Imported ${bulkResult.created} test cases (${bulkResult.updated} updated, ${bulkResult.unchanged} unchanged)`);
 
             // Reuse existing benchmark with same name, or create a new one
-            const benchmarkName = (options.file && options.name) ? options.name : `file-${Date.now()}`;
+            const benchmarkName = options.name || `file-${path.basename(filePath!, path.extname(filePath!))}`;
             const createSpinner = ora('Creating benchmark...').start();
             const existingBenchmark = await api.findBenchmark(benchmarkName);
             if (existingBenchmark) {

@@ -32,7 +32,6 @@ import { BenchmarkRunsPage2 as Evals3BenchmarkRuns } from './components/evals3/B
 import { TestCaseDetailPage as Evals3TestCaseDetail } from './components/evals3/TestCaseDetailPage';
 import { EvalRunsPage as Evals3EvalRuns } from './components/evals3/EvalRunsPage';
 import { RunInspectorPage as Evals3RunInspector } from './components/evals3/RunInspectorPage';
-import { EvalRunInspectorPage as Evals3EvalRunInspector } from './components/evals3/EvalRunInspectorPage';
 import { NewRunPage as Evals3NewRun } from './components/evals3/NewRunPage';
 import { EvalRunDetailPage as Evals3EvalRunDetail } from './components/evals3/EvalRunDetailPage';
 
@@ -138,7 +137,6 @@ function App() {
             <Route path="/evaluations/runs" element={<Evals3EvalRuns />} />
             <Route path="/evaluations/runs/new" element={<Evals3NewRun />} />
             <Route path="/evaluations/runs/:runId" element={<Evals3EvalRunDetail />} />
-            <Route path="/evaluations/runs/:runId/inspect" element={<Evals3EvalRunInspector />} />
             <Route path="/evaluations/benchmarks/:benchmarkId/runs" element={<Evals3BenchmarkRuns />} />
             <Route path="/evaluations/benchmarks/:benchmarkId/runs/:runId" element={<Navigate to="inspect" replace />} />
             <Route path="/evaluations/benchmarks/:benchmarkId/runs/:runId/inspect" element={<Evals3RunInspector />} />

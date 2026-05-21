@@ -11,6 +11,7 @@ import { createRequire, Module as NodeModule } from 'module';
 import type { CodeTestCase } from './types.js';
 import { test as testFn, setActiveFile, getRegisteredTests, clearRegistry } from './define.js';
 import { judge as judgeFn, wasJudgeCalled, resetJudgeFlag } from './judge.js';
+import { expect as ahExpect } from '../matchers/expect.js';
 
 const CODE_EXTENSIONS = ['.ts', '.js', '.mjs'];
 
@@ -94,12 +95,10 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
       judge: judgeFn,
       wasJudgeCalled,
       resetJudgeFlag,
-      // Lazy-resolve the matcher exports so this loader doesn't have to
-      // statically import them (avoiding a build-time circular include).
-      get expect() {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        return require('../matchers/expect.js').expect;
-      },
+      // Pre-resolved matcher API — must be a direct import (not a runtime
+      // require) so it works in bundled ESM contexts (CLI, server) where
+      // the synthetic CJS `require` isn't available at module-top scope.
+      expect: ahExpect,
     };
     const wrappedRequire = (id: string) => {
       if (isDefineId(id) || isPackageName(id)) {
@@ -145,22 +144,15 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
     }
   }
 
-  // Support both patterns:
-  // 1. test() registration (Playwright-style) → tests are in the registry
-  // 2. defineTestCases() / default export (legacy) → tests come from exports
-  let testCases = getRegisteredTests(absPath);
-
-  if (testCases.length === 0) {
-    // Fall back to default/named export for legacy support
-    const exported = module.default ?? module.testCases;
-    if (exported && Array.isArray(exported)) {
-      testCases = exported;
-    }
-  }
+  // Tests come exclusively from test() / describe() registration calls
+  // (Playwright-style). Legacy default-export array form was removed when
+  // we dropped defineTestCases() — the SDK is experimental and the API
+  // shape is intentionally narrow.
+  const testCases = getRegisteredTests(absPath);
 
   if (testCases.length === 0) {
     throw new Error(
-      `Module ${filePath} has no test cases. Use test() to register, or export an array via default/named export.`
+      `Module ${filePath} has no test cases. Register tests with test(name, options?, body) inside the file.`
     );
   }
 

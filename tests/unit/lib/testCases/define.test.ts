@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { test, defineTestCases, getRegisteredTests, clearRegistry, setActiveFile, _resetExperimentalWarning } from '@/lib/testCases/define';
+import { test, getRegisteredTests, clearRegistry, setActiveFile, _resetExperimentalWarning } from '@/lib/testCases/define';
 
 describe('test() API', () => {
   beforeEach(() => {
@@ -165,85 +165,6 @@ describe('file-scoped registries', () => {
 
     clearRegistry();
     expect(getRegisteredTests()).toHaveLength(0);
-  });
-});
-
-describe('defineTestCases (backward compat)', () => {
-  beforeEach(() => {
-    clearRegistry();
-  });
-
-  it('converts legacy format and migrates category/difficulty to labels', () => {
-    const result = defineTestCases([{
-      name: 'Legacy Test',
-      category: 'Security',
-      difficulty: 'Medium',
-      initialPrompt: 'Find the bug',
-      evaluate: async () => {},
-    }]);
-
-    expect(result).toHaveLength(1);
-    expect(result[0].name).toBe('Legacy Test');
-    expect(result[0].options.prompt).toBe('Find the bug');
-    expect(result[0].options.labels).toEqual(['category:Security', 'difficulty:Medium']);
-
-    // Also registered
-    expect(getRegisteredTests()).toHaveLength(1);
-  });
-
-  it('preserves existing labels and adds category/difficulty alongside', () => {
-    const result = defineTestCases([{
-      name: 'With Labels',
-      category: 'RCA',
-      difficulty: 'Easy',
-      initialPrompt: 'p',
-      labels: ['team:platform'],
-      evaluate: () => {},
-    }]);
-
-    expect(result[0].options.labels).toEqual(['team:platform', 'category:RCA', 'difficulty:Easy']);
-  });
-
-  it('does not duplicate category label when one is already present', () => {
-    const result = defineTestCases([{
-      name: 'Has Cat',
-      category: 'RCA',         // duplicate of label below
-      difficulty: 'Easy',
-      initialPrompt: 'p',
-      labels: ['category:Security'],   // wins
-      evaluate: () => {},
-    }]);
-
-    expect(result[0].options.labels).toEqual(['category:Security', 'difficulty:Easy']);
-  });
-
-  it('accepts legacy entries without category/difficulty/initialPrompt', () => {
-    const result = defineTestCases([{
-      name: 'Bare Legacy',
-      evaluate: () => {},
-    }]);
-
-    expect(result).toHaveLength(1);
-    expect(result[0].options.labels).toBeUndefined();
-    expect(result[0].options.prompt).toBeUndefined();
-  });
-
-  it('throws for empty array', () => {
-    expect(() => defineTestCases([])).toThrow('non-empty array');
-  });
-
-  it('throws for null input', () => {
-    expect(() => defineTestCases(null as any)).toThrow();
-  });
-
-  it('throws when name is missing', () => {
-    expect(() => defineTestCases([{ name: '', evaluate: () => {} }]))
-      .toThrow('name');
-  });
-
-  it('throws when evaluate function is missing', () => {
-    expect(() => defineTestCases([{ name: 'X' } as any]))
-      .toThrow('evaluate function');
   });
 });
 

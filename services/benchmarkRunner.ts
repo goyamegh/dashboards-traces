@@ -25,6 +25,12 @@ import type { Client } from '@opensearch-project/opensearch';
 import type { IStorageModule } from '@/server/adapters/types';
 import { runEvaluationWithConnector, callBedrockJudge } from './evaluation';
 import { connectorRegistry } from '@/services/connectors/server';
+import { startSession, endSession, emptyTracesAccessor } from '@/lib/matchers/index';
+import type { EvalResult, TrajectoryAccessor, TestFixtures } from '@/lib/testCases/types';
+import { judge as judgeFn } from '@/lib/testCases/judge';
+import { expect as ahExpect } from '@/lib/matchers/expect';
+import type { TrajectoryStep } from '@/types';
+import { v4 as uuidv4 } from 'uuid';
 import { loadConfigSync } from '@/lib/config/index';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { tracePollingManager } from './traces/tracePoller';
@@ -94,6 +100,14 @@ export interface ExecuteRunOptions {
   storageModule?: IStorageModule;
   /** Callback invoked after each test case completes (for persisting intermediate progress) */
   onTestCaseComplete?: OnTestCaseCompleteCallback;
+  /**
+   * Per-test-case deterministic evaluate functions keyed by test case ID.
+   * Set when the SDK's code-import path resolves a .eval.js/.eval.ts file
+   * into runnable test bodies. When the runner sees a test case in this
+   * map it skips the LLM-judge path and runs the body inside a matcher
+   * session, recording per-matcher verdicts on the report.
+   */
+  evaluateFnMap?: Map<string, (fixtures: any) => Promise<void> | void>;
 }
 
 /**
@@ -166,7 +180,7 @@ export async function executeRun(
   options: ExecuteRunOptions
 ): Promise<BenchmarkRun> {
   const totalTestCases = benchmark.testCaseIds.length;
-  const { cancellationToken, client, storageModule, onTestCaseComplete } = options;
+  const { cancellationToken, client, storageModule, onTestCaseComplete, evaluateFnMap } = options;
   const concurrency = run.concurrency ?? 1;
   const runStartTime = Date.now();
 
@@ -275,14 +289,72 @@ export async function executeRun(
           const agentConfig = buildAgentConfigForRun(run);
           const bedrockModelId = getBedrockModelId(run.modelId);
 
-          // Run the evaluation using connector
-          const report = await runEvaluationWithConnector(
-            agentConfig,
-            bedrockModelId,
-            testCase,
-            () => {}, // No debug callback needed
-            { registry: connectorRegistry, evaluatorId: run.evaluatorId }
-          );
+          // SDK code-import: when this test case has a registered
+          // evaluate function we either skip agent invocation entirely
+          // (no prompt) or invoke the agent and run the body inside a
+          // matcher session afterwards. Mirrors evaluationRunner.ts.
+          const hasDeterministicEval = evaluateFnMap?.has(testCaseId) ?? false;
+          const hasPrompt = !!(testCase.initialPrompt && testCase.initialPrompt.trim().length > 0);
+          const skipAgentInvocation = !hasPrompt && hasDeterministicEval;
+
+          let report;
+          if (skipAgentInvocation) {
+            debug('BenchmarkRunner', `[${testCaseId}] No prompt — running deterministic body without agent invocation`);
+            report = synthesizeEmptyReport(testCase, agentConfig.key, bedrockModelId);
+          } else {
+            // Run the evaluation using connector. Pass skipJudge when a
+            // deterministic body is going to decide pass/fail.
+            report = await runEvaluationWithConnector(
+              agentConfig,
+              bedrockModelId,
+              testCase,
+              () => {},
+              { registry: connectorRegistry, evaluatorId: run.evaluatorId, skipJudge: hasDeterministicEval }
+            );
+          }
+
+          // If the test has a deterministic body, run it inside a
+          // matcher session and let the verdicts dictate pass/fail.
+          if (hasDeterministicEval) {
+            const evalFn = evaluateFnMap!.get(testCaseId)!;
+            const trajectorySteps = (report.trajectory || []) as TrajectoryStep[];
+            const agentOutput = trajectorySteps
+              .filter((s: any) => s.type === 'response' || s.type === 'assistant')
+              .map((s: any) => s.content)
+              .join('\n');
+            const evalResult = buildEvalResult({
+              trajectory: trajectorySteps,
+              agentOutput,
+              rawEvents: (report as any).rawEvents || [],
+              runId: report.runId,
+              durationMs: report.performanceMetrics?.durationMs ?? 0,
+            });
+            const fixtures = buildFixtures(evalResult);
+            const session = startSession();
+            try {
+              await evalFn(Object.assign(evalResult, { ...fixtures, result: evalResult }));
+              const matcherResults = endSession();
+              const anyFailed = matcherResults.some(m => !m.pass);
+              (report as any).passFailStatus = anyFailed ? 'failed' : 'passed';
+              (report as any).evaluationType = 'deterministic';
+              (report as any).matcherResults = matcherResults;
+              (report as any).metrics = anyFailed
+                ? { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 }
+                : { accuracy: 100, faithfulness: 100, latency_score: 100, trajectory_alignment_score: 100 };
+            } catch (evalError: any) {
+              const matcherResults = endSession();
+              (report as any).passFailStatus = 'failed';
+              (report as any).evaluationType = 'deterministic';
+              (report as any).assertionError = evalError.message;
+              (report as any).matcherResults = matcherResults;
+              (report as any).metrics = { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 };
+            }
+            // Mark the report as final so trace-mode polling below skips
+            // the Bedrock judge fallback (which would error with empty
+            // expectedOutcomes for SDK-loaded test cases).
+            (report as any).metricsStatus = 'completed';
+            (report as any).skipJudge = true;
+          }
 
           // Save the report to OpenSearch and get the actual stored ID
           const savedReport = await saveReportWithClient(client, report, {
@@ -294,8 +366,10 @@ export async function executeRun(
           updateTestCaseLastRunAt(client, testCaseId, new Date().toISOString())
             .catch(err => console.warn(`[BenchmarkRunner] Failed to update lastRunAt for ${testCaseId}:`, err.message));
 
-          // Start trace polling for trace-mode runs (metricsStatus: 'pending')
-          if (savedReport.metricsStatus === 'pending' && savedReport.runId) {
+          // Start trace polling for trace-mode runs (metricsStatus: 'pending').
+          // Deterministic SDK runs already populated the report with their own
+          // verdict in the matcher session above, so skip this path.
+          if (!hasDeterministicEval && savedReport.metricsStatus === 'pending' && savedReport.runId) {
             const pollPromise = startTracePollingForReport(savedReport, testCase, client, benchmark, run);
             // Attach .catch to prevent unhandled rejection if cancelled/errored before allSettled
             pendingTracePolls.push(pollPromise.catch(() => {}));
@@ -831,3 +905,110 @@ async function refreshBenchmarkRunStats(
 // Backwards compatibility aliases
 /** @deprecated Use runBenchmark instead */
 export const runExperiment = runBenchmark;
+
+// ─── SDK code-import helpers (mirrored from evaluationRunner.ts) ────────────
+//
+// These helpers let us run a deterministic test body against a synthetic
+// EvalResult shape, recording per-matcher verdicts on the resulting report.
+
+function makeTrajectoryAccessor(steps: TrajectoryStep[]): TrajectoryAccessor {
+  const arr = steps as TrajectoryAccessor;
+  Object.defineProperties(arr, {
+    stepsOfType: {
+      value(type: string) { return arr.filter((s: any) => s?.type === type); },
+      enumerable: false,
+    },
+    toolCalls: {
+      value(name?: string, argsPartial?: Record<string, unknown>) {
+        return arr.filter((s: any) => {
+          if (s?.type !== 'action') return false;
+          if (name && s.toolName !== name) return false;
+          if (argsPartial) return supersetOf(s.toolArgs ?? s.input, argsPartial);
+          return true;
+        });
+      },
+      enumerable: false,
+    },
+    firstToolCall: {
+      value(name?: string, argsPartial?: Record<string, unknown>) {
+        for (let i = 0; i < arr.length; i++) {
+          const s: any = arr[i];
+          if (s?.type !== 'action') continue;
+          if (name && s.toolName !== name) continue;
+          if (argsPartial && !supersetOf(s.toolArgs ?? s.input, argsPartial)) continue;
+          return Object.assign({}, s, { index: i });
+        }
+        return null;
+      },
+      enumerable: false,
+    },
+  });
+  return arr;
+}
+
+function supersetOf(actual: any, expected: Record<string, unknown>): boolean {
+  if (typeof actual !== 'object' || actual === null) return false;
+  for (const [k, v] of Object.entries(expected)) {
+    if (!(k in actual)) return false;
+    if (typeof v === 'object' && v !== null) {
+      if (!supersetOf((actual as any)[k], v as Record<string, unknown>)) return false;
+    } else if ((actual as any)[k] !== v) return false;
+  }
+  return true;
+}
+
+function buildEvalResult(input: {
+  trajectory: TrajectoryStep[];
+  agentOutput: string;
+  rawEvents: any[];
+  runId?: string;
+  durationMs: number;
+  tokenUsage?: { prompt: number; completion: number; total: number };
+}): EvalResult {
+  const trajectory = makeTrajectoryAccessor(input.trajectory);
+  return {
+    trajectory,
+    agentOutput: input.agentOutput,
+    finalResponse: () => input.agentOutput,
+    parsedOutput: () => {
+      try { return JSON.parse(input.agentOutput); } catch { return undefined; }
+    },
+    rawEvents: input.rawEvents,
+    runId: input.runId,
+    durationMs: input.durationMs,
+    tokenUsage: input.tokenUsage,
+  };
+}
+
+function buildFixtures(result: EvalResult): TestFixtures {
+  return {
+    result,
+    judge: judgeFn,
+    traces: emptyTracesAccessor(),
+    expect: ahExpect,
+  };
+}
+
+function synthesizeEmptyReport(testCase: TestCase, agentKey: string, modelId: string): EvaluationReport {
+  const now = new Date().toISOString();
+  return {
+    id: uuidv4(),
+    testCaseId: testCase.id,
+    testCaseVersion: testCase.currentVersion,
+    timestamp: now,
+    agentName: agentKey,
+    agentKey,
+    modelName: modelId,
+    modelId,
+    status: 'completed',
+    trajectory: [],
+    rawEvents: [],
+    metrics: { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 },
+    performanceMetrics: { durationMs: 0 },
+    metricsStatus: 'completed',
+    skipJudge: true,
+    llmJudgeReasoning: '',
+    passFailStatus: 'passed',
+    evaluationType: 'deterministic',
+  } as unknown as EvaluationReport;
+}
