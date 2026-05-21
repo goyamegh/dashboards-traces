@@ -110,6 +110,8 @@ export interface RunEvaluationWithConnectorOptions {
   onRawEvent?: (event: any) => void;
   /** Optional evaluator ID for custom evaluation criteria */
   evaluatorId?: string;
+  /** When true, skip the LLM judge (caller will handle evaluation) */
+  skipJudge?: boolean;
 }
 
 /**
@@ -129,7 +131,7 @@ export async function runEvaluationWithConnector(
   onStep: (step: TrajectoryStep) => void,
   options: RunEvaluationWithConnectorOptions
 ): Promise<EvaluationReport> {
-  const { registry: connectorRegistry, onRawEvent, evaluatorId } = options;
+  const { registry: connectorRegistry, onRawEvent, evaluatorId, skipJudge } = options;
 
   const reportId = uuidv4();
   let fullTrajectory: TrajectoryStep[] = [];
@@ -259,6 +261,32 @@ export async function runEvaluationWithConnector(
           trajectory_alignment_score: 0,
         },
         llmJudgeReasoning: 'Waiting for traces to become available...',
+        improvementStrategies: [],
+        runId: agentRunId || undefined,
+        rawEvents,
+        connectorProtocol: connector.type as ConnectorProtocol,
+        performanceMetrics: {
+          durationMs: Date.now() - evalStartTime,
+          agentDurationMs,
+        },
+      };
+    }
+
+    // SKIP JUDGE MODE: Return report without judge evaluation (caller handles it)
+    if (skipJudge) {
+      return {
+        id: reportId,
+        timestamp: new Date().toISOString(),
+        agentName: agent.name,
+        agentKey: agent.key,
+        modelName: modelId,
+        modelId,
+        testCaseId: testCase.id,
+        testCaseVersion: testCase.currentVersion ?? 1,
+        status: 'completed',
+        trajectory: fullTrajectory,
+        metrics: { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 },
+        llmJudgeReasoning: '',
         improvementStrategies: [],
         runId: agentRunId || undefined,
         rawEvents,

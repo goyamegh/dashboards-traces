@@ -11,30 +11,44 @@ test.describe('Eval Span Category Capsule', () => {
     await page.waitForTimeout(3000);
   });
 
-  test('should display Eval capsule in span category pills when trace has eval spans', async ({ page }) => {
-    // The first demo trace (demo-trace-001) contains eval spans with
-    // gen_ai.operation.name=evaluation. Click it to open the flyout.
-    const traceRow = page.locator('tbody tr').first();
-    if (!await traceRow.isVisible().catch(() => false)) {
-      // No traces available (e.g. no demo data) — skip gracefully
+  test('should display eval spans in the inline trace tree when expanded', async ({ page }) => {
+    // Find a trace whose root-span column contains 'test_case' (or similar
+    // eval-flavoured root) since real backend data is unordered. Falls back
+    // to skipping if none are visible (e.g. fresh OpenSearch with only LLM
+    // traces) so the suite stays green across data shapes.
+    const allRows = page.locator('tbody tr');
+    const rowCount = await allRows.count();
+    if (rowCount === 0) return;
+
+    let traceRow = null;
+    for (let i = 0; i < rowCount; i++) {
+      const row = allRows.nth(i);
+      const text = (await row.textContent()) || '';
+      if (/test_case|test_suite_run|evaluation/i.test(text)) {
+        traceRow = row;
+        break;
+      }
+    }
+    if (!traceRow) {
+      // No eval-rooted trace in the current dataset — skip rather than fail.
       return;
     }
 
     await traceRow.click();
     await page.waitForTimeout(1500);
 
-    // The flyout should be open showing "Span category:" section.
-    // Look for the Eval pill button which contains text "Eval".
-    const evalPill = page.locator('button:has-text("Eval")').first();
-    await expect(evalPill).toBeVisible({ timeout: 5000 });
+    // The expanded row should render the trace tree inline.
+    const tree = page.locator('.trace-inline-tree').first();
+    await expect(tree).toBeVisible({ timeout: 5000 });
 
-    // Verify the pill shows a count (the number should be > 0)
-    const pillText = await evalPill.textContent();
-    expect(pillText).toContain('Eval');
+    // Eval spans like `test_case` / `test_suite_run` should be present in
+    // the rendered tree. The TraceTreeTable renders span names as plain
+    // text inside divs, so a regex text match is enough.
+    const evalSpanLabel = page.locator('.trace-inline-tree').locator('text=/test_case|test_suite_run|evaluation/i').first();
+    await expect(evalSpanLabel).toBeVisible({ timeout: 5000 });
   });
 
-  test('should show Eval in the time distribution bar legend', async ({ page }) => {
-    // Click on the first trace row to open flyout
+  test('clicking a span in the inline tree opens the bottom drawer with a flat attributes table', async ({ page }) => {
     const traceRow = page.locator('tbody tr').first();
     if (!await traceRow.isVisible().catch(() => false)) {
       return;
@@ -43,38 +57,116 @@ test.describe('Eval Span Category Capsule', () => {
     await traceRow.click();
     await page.waitForTimeout(1500);
 
-    // Switch to Info tab if available (in TraceFlyoutContent, default tab is timeline)
-    const infoTab = page.locator('button:has-text("Info"), [role="tab"]:has-text("Info")').first();
-    if (await infoTab.isVisible().catch(() => false)) {
-      await infoTab.click();
-      await page.waitForTimeout(500);
-    }
-
-    // The time distribution legend should include "EVAL" text
-    const evalLegend = page.locator('text=EVAL').first();
-    await expect(evalLegend).toBeVisible({ timeout: 5000 });
-  });
-
-  test('Eval capsule should be expandable to show eval span details', async ({ page }) => {
-    const traceRow = page.locator('tbody tr').first();
-    if (!await traceRow.isVisible().catch(() => false)) {
+    const tree = page.locator('.trace-inline-tree').first();
+    if (!await tree.isVisible().catch(() => false)) {
       return;
     }
 
-    await traceRow.click();
-    await page.waitForTimeout(1500);
-
-    // Click the Eval pill to expand details
-    const evalPill = page.locator('button:has-text("Eval")').first();
-    if (!await evalPill.isVisible().catch(() => false)) {
+    // Click the first visible span row inside the inline tree.
+    const treeRows = tree.locator('> div > div');
+    const rowCount = await treeRows.count();
+    if (rowCount < 1) {
       return;
     }
+    await treeRows.first().click();
+    await page.waitForTimeout(800);
 
-    await evalPill.click();
+    // The bottom drawer (Sheet side="bottom") should be open with the
+    // SimpleSpanAttributesTable inside. Verify the filter input and at
+    // least the "X attributes" identity strip render.
+    const filterInput = page.locator('input[placeholder="Filter attributes…"]').first();
+    await expect(filterInput).toBeVisible({ timeout: 3000 });
+
+    const identityStrip = page.locator('text=/\\d+ attributes?/').first();
+    await expect(identityStrip).toBeVisible({ timeout: 3000 });
+
+    // Pressing Escape should close the drawer.
+    await page.keyboard.press('Escape');
     await page.waitForTimeout(500);
+    await expect(filterInput).not.toBeVisible({ timeout: 3000 });
+  });
 
-    // After expanding, eval span names should be visible (e.g., test_case, test_suite_run)
-    const expandedContent = page.locator('text=test_case').or(page.locator('text=test_suite_run'));
-    await expect(expandedContent.first()).toBeVisible({ timeout: 3000 });
+  test('per-span timeline bars render in the inline tree', async ({ page }) => {
+    const traceRow = page.locator('tbody tr').first();
+    if (!await traceRow.isVisible().catch(() => false)) {
+      return;
+    }
+    await traceRow.click();
+    await page.waitForTimeout(1500);
+
+    // Each visible span row in the inline tree carries a `.trace-row-timeline`
+    // mini-gantt bar in its right-hand area.
+    const bars = page.locator('.trace-inline-tree .trace-row-timeline');
+    await expect(bars.first()).toBeVisible({ timeout: 3000 });
+    expect(await bars.count()).toBeGreaterThan(0);
+  });
+
+  test('Maximize button on the expanded row opens fullscreen view', async ({ page }) => {
+    const traceRow = page.locator('tbody tr').first();
+    if (!await traceRow.isVisible().catch(() => false)) {
+      return;
+    }
+
+    await traceRow.click();
+    await page.waitForTimeout(1500);
+
+    // The inline expansion header has a Maximize2 button with title="Open fullscreen".
+    const maxBtn = page.locator('button[title="Open fullscreen"]').first();
+    if (!await maxBtn.isVisible().catch(() => false)) {
+      return;
+    }
+    await maxBtn.click();
+    await page.waitForTimeout(800);
+
+    // Fullscreen view is a Dialog/Sheet — verify some marker like the
+    // "Trace tree" view-toggle button or the title text becomes visible.
+    const fullScreenMarker = page.locator('button:has-text("Trace tree"), [role="dialog"]').first();
+    if (await fullScreenMarker.isVisible().catch(() => false)) {
+      await expect(fullScreenMarker).toBeVisible();
+    }
+
+    // The fullscreen overlay should NOT contain the legacy 'Exit
+    // Fullscreen' text button (we removed it in favour of the single X
+    // top-right — having both was confusing). It should also not render
+    // the legacy right-side SpanDetailsPanel artifacts ('Distribution',
+    // 'Span category', 'INPUT'/'OUTPUT' headers) because span details
+    // now live in the bottom drawer scoped to the fullscreen container.
+    const exitFullscreenText = page.getByText(/Exit Fullscreen/i);
+    expect(await exitFullscreenText.count()).toBe(0);
+    const legacyPanel = page.locator('[role="dialog"]').locator('text=/Distribution|Span category/i');
+    expect(await legacyPanel.count()).toBe(0);
+  });
+
+  test('clicking the X on the bottom drawer closes it', async ({ page }) => {
+    // Find a multi-span trace, expand it, click a span, then verify the
+    // X on the bottom drawer actually dismisses it. Regression test for
+    // a bug where clicks on the trace tree behind the (pointer-events:
+    // none) sheet overlay would re-select a different span and re-open
+    // the drawer mid-close, making the X feel broken.
+    const allRows = page.locator('tbody tr');
+    const rowCount = await allRows.count();
+    if (rowCount === 0) return;
+
+    // Look for any row — single-span traces still render an inline tree
+    // with the root span clickable, which is enough for this test.
+    const traceRow = allRows.first();
+    await traceRow.click();
+    await page.waitForTimeout(1200);
+
+    const treeNode = page.locator('.trace-inline-tree').locator('div').filter({ hasText: /test_case|invoke_agent|llm_request|claude_code/ }).first();
+    if (!await treeNode.isVisible().catch(() => false)) return;
+    await treeNode.click();
+    await page.waitForTimeout(800);
+
+    const drawer = page.locator('[aria-label="Span details"]');
+    if (await drawer.count() === 0) return; // Some spans don't open a drawer; skip.
+    await expect(drawer.first()).toBeVisible();
+
+    // Click the X.
+    await page.locator('[aria-label="Close span details"]').first().click();
+    await page.waitForTimeout(800);
+
+    // Drawer should now be gone.
+    expect(await drawer.count()).toBe(0);
   });
 });

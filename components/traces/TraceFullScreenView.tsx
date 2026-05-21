@@ -11,7 +11,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Activity, Minimize2, Network, List, GitBranch, Info, MessageSquare } from 'lucide-react';
+import { Activity, Network, List, GitBranch, Info, MessageSquare, X as XIcon } from 'lucide-react';
 import {
   FullScreenDialog,
   FullScreenDialogContent,
@@ -24,6 +24,7 @@ import { Badge } from '@/components/ui/badge';
 import { Span, TimeRange, CategorizedSpan } from '@/types';
 import TraceVisualization from './TraceVisualization';
 import { ViewMode } from './ViewToggle';
+import SimpleSpanAttributesTable from './SimpleSpanAttributesTable';
 
 interface TraceFullScreenViewProps {
   /** Whether the fullscreen dialog is open */
@@ -127,16 +128,24 @@ export const TraceFullScreenView: React.FC<TraceFullScreenViewProps> = ({
     }
   }, [open, spanTree, controlledExpandedSpans]);
 
-  // Keyboard shortcut to close
+  // Keyboard shortcut to close — if a span-details drawer is currently
+  // showing inside fullscreen, ESC should close the drawer first (matches
+  // typical nested-modal expectations) and only close the fullscreen on a
+  // second press.
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && open) {
-        onOpenChange(false);
+        if (selectedSpan && onSelectSpan) {
+          onSelectSpan(null);
+          e.stopPropagation();
+        } else {
+          onOpenChange(false);
+        }
       }
     };
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [open, onOpenChange]);
+  }, [open, onOpenChange, selectedSpan, onSelectSpan]);
 
   const displaySpanCount = spanCount ?? spanTree.length;
 
@@ -211,22 +220,18 @@ export const TraceFullScreenView: React.FC<TraceFullScreenViewProps> = ({
                 Messages
               </Button>
             </div>
-            
-            <Button
-              variant="ghost"
-              size="sm"
-              onClick={() => onOpenChange(false)}
-              className="gap-1.5"
-            >
-              <Minimize2 size={16} />
-              Exit Fullscreen
-            </Button>
+
+            {/* Single close affordance — the dialog already provides Esc
+                and the FullScreenDialogCloseButton X. The previous design
+                had both an 'Exit Fullscreen' text button AND the X which
+                was redundant; the X (top-right corner) is the universally
+                expected place to dismiss a fullscreen overlay. */}
             <FullScreenDialogCloseButton />
           </div>
         </FullScreenDialogHeader>
 
         {/* Main content area */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 flex flex-col overflow-hidden relative">
           {spanTree.length === 0 ? (
             <div className="h-full flex flex-col items-center justify-center text-muted-foreground">
               <Activity size={48} className="mb-4 opacity-20" />
@@ -243,10 +248,36 @@ export const TraceFullScreenView: React.FC<TraceFullScreenViewProps> = ({
               onSelectSpan={handleSelectSpan}
               expandedSpans={expandedSpans}
               onToggleExpand={handleToggleExpand}
-              showSpanDetailsPanel={true}
+              showSpanDetailsPanel={false}
               flatSpans={flatSpans}
               serviceName={serviceName}
             />
+          )}
+
+          {/* Span details bottom drawer rendered INSIDE the fullscreen
+              container (absolute, not fixed) so it slides up from the
+              bottom of the fullscreen overlay rather than the page body.
+              This means it never overlaps the trace list behind the
+              fullscreen and the user gets the same flat-attribute UX in
+              both inline and fullscreen modes. */}
+          {selectedSpan && (
+            <div
+              className="absolute inset-x-0 bottom-0 h-[55vh] bg-background border-t shadow-2xl flex flex-col z-20 animate-in slide-in-from-bottom-4 duration-200"
+              role="dialog"
+              aria-label="Span details"
+            >
+              <Button
+                variant="ghost"
+                size="icon"
+                className="absolute top-2 right-2 h-7 w-7 z-10"
+                onClick={() => onSelectSpan?.(null)}
+                aria-label="Close span details"
+                title="Close (Esc)"
+              >
+                <XIcon size={14} />
+              </Button>
+              <SimpleSpanAttributesTable span={selectedSpan} />
+            </div>
           )}
         </div>
       </FullScreenDialogContent>

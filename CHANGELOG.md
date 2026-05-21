@@ -9,7 +9,23 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Changed
+- **UI:** Sidebar now uses a uniform near-black background (`hsl(var(--background))`) in dark mode instead of the previous dark gray (`#1D1E24`), so the sidebar header / nav region matches the existing footer (which already used `bg-background`). Removes the visible top-vs-bottom seam in the left navigation. Light mode unchanged.
+- **UI:** The radial gradient background previously seen only on the Dashboard / Overview page now applies on every page. The `dashboard-gradient-bg` class is now attached to the `SidebarInset` `<main>` in `Layout.tsx`, replacing the per-page `useEffect` toggle in `Dashboard.tsx`.
+
 ### Added
+- **Code-based test SDK (experimental)**: Playwright-style `test()` API for writing programmatic test cases in `.eval.js`/`.eval.ts` files, with per-matcher results displayed in the UI. Includes:
+  - `test(name, body)` and `test(name, options, body)` signatures with within-file duplicate detection
+  - All `TestOptions` fields are optional; only `name` is required
+  - No-prompt mode — tests with no `prompt` skip agent invocation entirely (purely deterministic / data-driven tests)
+  - Custom chai matchers: `.haveCalledTool()`, `.haveStepsOfType()`, `.haveOutputMatching()`, `.haveCompletedWithin()`
+  - Trajectory accessor sugar: `result.trajectory.toolCalls()`, `.firstToolCall()`, `.stepsOfType()`
+  - LLM judge as a callable: `await judge(result, 'claim')` records a structured matcher verdict
+  - Traces fixture: pre-loaded `totalTokens`, `totalCost`, `spanDuration(name)`, `toolCalls[]`, `spans[]`
+  - Cold-start migration that folds legacy `category` / `difficulty` / `subcategory` fields into the unified `labels` array (`category:RCA`, `difficulty:Medium`, etc.)
+  - New `/api/server-info` endpoint surfacing migration status to the UI
+  - Experimental status surfaced via README badge + first-call console.warn (suppressible with `AGENT_HEALTH_SUPPRESS_EXPERIMENTAL=1`)
+  - Documented at `docs/SDK.md`; samples at `evals/demo.eval.js` ([#207](https://github.com/opensearch-project/agent-health/pull/207))
 - Cross-page user preferences are now stored under a single shared `agent-health:prefs:*` namespace, so picking a value once is reflected on every other page that exposes the same control. Shared keys:
   - `prefs:timeRange` — Benchmarks / Test Cases / Evaluation Runs / Agent Traces (Agent Traces converts the shared `'1h' | '6h' | '1d' | '7d' | '30d' | 'all'` enum to its internal minute-based query cutoff).
   - `prefs:agentFilter` — Benchmarks and Evaluation Runs filter dropdowns (default `'all'`). Not Agent Traces — its dropdown options are telemetry service names which live in a different value space than the eval pages' agent-config keys.
@@ -47,6 +63,9 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - 15-second SSE heartbeat events to keep long-running evaluation connections alive through TCP idle timeouts.
 
 ### Changed
+- Agent Traces page: Service column now renders as plain text instead of a capsule/badge for easier scanning.
+- Agent Traces page: Start Time column now uses relative-time formatting (e.g. "5m ago", "2h ago") consistent with Test Cases (Created) and Benchmarks (Last Run). Hover shows the absolute timestamp.
+- Agent Traces page: Clicking a trace row now expands inline (Chrome DevTools "Inspect"-style) to show the **trace tree** with Reddit-style L-shaped connecting lines linking parent and child spans, **plus a per-span mini-gantt timeline bar** that stretches across the full available row width (from a fixed-width name column on the left all the way to the actions column on the right) so the relative position and duration of each span are easy to read at a glance. The header strip above the inline tree no longer repeats trace ID / span count / duration (already in the parent row above) — instead it surfaces a **summary of non-redundant signals**: the span-category breakdown (e.g. `3 LLM · 1 tool · 1 agent`), an error indicator if any span ended in ERROR, the total token usage (input+output, hover for split), and the model(s) used (from `gen_ai.request.model`). Clicking an individual span now opens a **bottom drawer** (slides up from the bottom of the page) containing a flat, alphabetically-sorted table of every attribute on the span with a built-in filter and per-row copy buttons — no curated INPUT/OUTPUT/Duration sections, every attribute is given equal visual weight. The drawer dismisses on its X button, on Esc, but no longer on outside-click — outside-clicks fall through to the trace tree underneath (so picking a different span in the tree just swaps the drawer's contents instead of fighting a re-select-and-reopen race that made the X feel broken). Span text inside the inline expansion uses a slightly smaller type scale than the outer trace table so nested spans look visually subordinate to their parent trace row. The previous **Distribution** column was removed from the trace list (the per-span timeline inside the inline expansion makes the flat per-trace category-distribution mini-bar redundant). The fullscreen view (reached via the maximize button on the inline header) was tightened: it now has a single close affordance (the top-right X; the redundant 'Exit Fullscreen' button was removed), the legacy right-side SpanDetailsPanel with its curated INPUT/OUTPUT/Duration sections is no longer rendered inside fullscreen (the trace tree gets the full width), and the span-attributes bottom drawer renders **inside** the fullscreen overlay rather than at body root — so it stops floating above and competing with the fullscreen modal. Esc inside fullscreen first closes the drawer (if open) and only then closes the fullscreen, matching nested-modal expectations.
 - Rewrite First Run Experience as a narrative landing: promise-driven hero with two primary CTAs, four-step horizontal journey (Explore → Connect → Evaluate → Improve & scale), four outcome-framed value cards, and a subtle scale moment with Docker and CloudFormation install commands. Replaces the previous two-card "How it works" + "Getting Started" layout. Preserves all existing CTAs, install commands, optional coding agents banner, and `data-testid="first-run-experience"`.
 - Hide sample data by default when customer has real evaluation data; add "Show sample data" toggle
 - Collapse built-in agents when custom agents exist; group agent dropdowns (Your Agents / Built-in)
@@ -61,6 +80,9 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 - Fix Mend dependency vulnerabilities in `observio-sample-agent`: bump direct `ws` dep to `^8.20.1` (CVE-2026-45736); bump `langsmith` override to `>=0.6.0` for CVE-2026-45134 (High 7.1); add `protobufjs` override (>=8.2.0) covering CVE-2026-44288/289/290/291/292/293/294 and CVE-2026-45740 (highest 8.8) ([#163](https://github.com/opensearch-project/agent-health/issues/163), [#201](https://github.com/opensearch-project/agent-health/issues/201), [#203](https://github.com/opensearch-project/agent-health/issues/203), [#208](https://github.com/opensearch-project/agent-health/issues/208))
 
 ### Fixed
+- Update `sampleTraces.test.ts` root-span assertion: `demo-trace-001` now has two roots (agent + eval `test_suite_run`) since [#204](https://github.com/opensearch-project/agent-health/pull/204) added eval spans sharing the trace ID. Test now asserts both expected root span IDs by name instead of count. ([#207](https://github.com/opensearch-project/agent-health/pull/207))
+- Fix `PiConnector.integration.test.ts` drift with implementation: assert the actual `--skill` / `--extension` / `--append-system-prompt` args expanded from `packagePath` instead of the obsolete single `--package` arg. ([#207](https://github.com/opensearch-project/agent-health/pull/207))
+- Fix syntax error in `traceBlocking.integration.test.ts` from a botched merge (duplicate `return; }` block) that prevented the suite from compiling. ([#207](https://github.com/opensearch-project/agent-health/pull/207))
 - Guard testCaseIds accesses in evals3 pages to prevent crash on undefined ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - Prevent duplicate observio instances by starting agent before server ([#205](https://github.com/opensearch-project/agent-health/pull/205))
 - DocType discriminator for shared storage and PATCH sanitization in evaluation runs ([#205](https://github.com/opensearch-project/agent-health/pull/205))

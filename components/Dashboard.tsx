@@ -187,14 +187,7 @@ export const Dashboard: React.FC = () => {
   const [timeRange, setTimeRange] = usePersistedState<TimeRange>('dashboard:timeRange', '7d');
   const [selectedMetric, setSelectedMetric] = usePersistedState<TrendMetric>('dashboard:selectedMetric', 'passRate');
 
-  // Apply gradient background to the scrollable main container
-  useEffect(() => {
-    const main = document.querySelector('main');
-    if (main) {
-      main.classList.add('dashboard-gradient-bg');
-      return () => { main.classList.remove('dashboard-gradient-bg'); };
-    }
-  }, []);
+  // Gradient background is now applied globally via SidebarInset in Layout.tsx
 
   // Fetch test case count (independent of benchmark data)
   useEffect(() => {

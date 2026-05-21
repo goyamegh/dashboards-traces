@@ -16,14 +16,16 @@ import chalk from 'chalk';
 import ora from 'ora';
 import Table from 'cli-table3';
 import { readFileSync, writeFileSync } from 'fs';
+import * as path from 'path';
 import { loadConfig, DEFAULT_SERVER_CONFIG, type ResolvedConfig } from '@/lib/config/index.js';
 import { ensureServer, createServerCleanup, isServerRunning, type EnsureServerResult } from '@/cli/utils/serverLifecycle.js';
 import { ApiClient, ServerError, type BenchmarkExecutionEvent } from '@/cli/utils/apiClient.js';
 import { validateTestCasesArrayJson, type ValidatedTestCaseInput } from '@/lib/testCaseValidation.js';
 import { calculateRunStats, getReportIdsFromRun } from '@/lib/runStats.js';
 import { formatJson, formatMarkdownTable, parseOutputFormat, OUTPUT_FORMAT_DESCRIPTION, type OutputFormat } from '@/cli/utils/formatOutput.js';
-import type { AgentConfig, Benchmark, BenchmarkRun, TestCaseRun, EvaluationReport, TestCaseSource } from '@/types/index.js';
+import type { AgentConfig, Benchmark, BenchmarkRun, TestCase, TestCaseRun, EvaluationReport, TestCaseSource } from '@/types/index.js';
 import { existsSync, statSync } from 'fs';
+import { isCodeFile } from '@/lib/testCases/loader.js';
 
 interface BenchmarkOptions {
   agent: string[];
@@ -70,7 +72,7 @@ function getDefaultModel(config: ResolvedConfig): string {
  * Check if a string looks like a file path (ends with .json)
  */
 export function isFilePath(value: string): boolean {
-  return value.toLowerCase().endsWith('.json');
+  return value.toLowerCase().endsWith('.json') || isCodeFile(value);
 }
 
 /**
@@ -755,37 +757,115 @@ export function createBenchmarkCommand(): Command {
       const api = new ApiClient(serverResult.baseUrl);
 
       try {
-        let benchmark: Benchmark | null = null;
+        // Multiple benchmarks may be derived from a single SDK file (one
+        // per `describe()` block, plus a file-default for orphan tests).
+        // benchmarksToRun is the list we hand to the agent loop below.
+        let benchmarksToRun: Benchmark[] = [];
 
         if (fileMode) {
-          // File mode: import test cases from JSON file and create/reuse benchmark
+          // File mode: import test cases (JSON or code-based .eval.js/.ts)
+          // and create/reuse one or more benchmarks. Both paths produce the
+          // same upstream behavior — Benchmark + nested BenchmarkRun — so
+          // the resulting runs land in the same UI list, share the same
+          // RunInspectorPage, and support compare/promote/etc.
           const importSpinner = ora(`Loading test cases from ${filePath}...`).start();
           try {
-            const validatedTestCases = loadAndValidateTestCasesFile(filePath!);
-            importSpinner.succeed(`Validated ${validatedTestCases.length} test cases from file`);
+            let upsertInputs: Array<Partial<TestCase>>;
+            // For SDK files: groups maps describe-name -> test names;
+            // orphans is the list of test names with no describe.
+            let groups: Map<string, string[]> = new Map();
+            let orphans: string[] = [];
 
-            // Bulk create via server
+            if (isCodeFile(filePath!)) {
+              const { loadTestCasesFromModule } = await import('@/lib/testCases/loader.js');
+              const { getCategoryFromLabels, getDifficultyFromLabels } = await import('@/lib/testCaseLabels.js');
+              const loaded = await loadTestCasesFromModule(filePath!);
+              const sourceFile = path.relative(process.cwd(), loaded.filePath);
+              groups = loaded.benchmarks;
+              const inGroup = new Set<string>();
+              for (const list of groups.values()) {
+                for (const name of list) inGroup.add(name);
+              }
+              orphans = loaded.testCases.filter(tc => !inGroup.has(tc.name)).map(tc => tc.name);
+              upsertInputs = loaded.testCases.map(tc => {
+                const labels = tc.options.labels;
+                const category = getCategoryFromLabels(labels);
+                const difficulty = getDifficultyFromLabels(labels);
+                return {
+                  name: tc.name,
+                  ...(category ? { category: category as any } : {}),
+                  ...(difficulty ? { difficulty: difficulty as any } : {}),
+                  initialPrompt: tc.options.prompt,
+                  context: tc.options.context,
+                  labels,
+                  sourceFile,
+                  sourceHash: tc.hash,
+                  description: tc.options.description,
+                };
+              });
+            } else {
+              const validatedTestCases = loadAndValidateTestCasesFile(filePath!);
+              upsertInputs = validatedTestCases.map(tc => tc as unknown as Partial<TestCase>);
+              orphans = upsertInputs.map(tc => (tc as any).name);
+            }
+
+            importSpinner.succeed(`Loaded ${upsertInputs.length} test cases from ${filePath}`);
+
             const uploadSpinner = ora('Importing test cases to server...').start();
-            const bulkResult = await api.bulkCreateTestCases(validatedTestCases);
+            const bulkResult = await api.bulkCreateTestCases(upsertInputs as any);
             uploadSpinner.succeed(`Imported ${bulkResult.created} test cases`);
 
-            // Reuse existing benchmark with same name, or create a new one
-            const benchmarkName = (options.file && options.name) ? options.name : `file-${Date.now()}`;
-            const createSpinner = ora('Creating benchmark...').start();
-            const existingBenchmark = await api.findBenchmark(benchmarkName);
-            if (existingBenchmark) {
-              benchmark = await api.updateBenchmark(existingBenchmark.id, {
-                testCaseIds: bulkResult.testCases.map(tc => tc.id),
+            // Map test case name -> stored id for quick lookups
+            const idByName = new Map(bulkResult.testCases.map(tc => [tc.name, tc.id]));
+
+            // Build the list of benchmarks. Two paths:
+            //  - SDK with describe(): one benchmark per describe group
+            //  - JSON or SDK without describe(): single file-default benchmark
+            const fileDefaultName = options.name || path.basename(filePath!, path.extname(filePath!));
+            const benchmarkSpecs: Array<{ name: string; description: string; testCaseNames: string[] }> = [];
+            for (const [groupName, testNames] of groups) {
+              benchmarkSpecs.push({
+                name: groupName,
+                description: `From describe("${groupName}") in ${filePath}`,
+                testCaseNames: testNames,
               });
-              createSpinner.succeed(`Updated existing benchmark: ${benchmark.name} (${benchmark.id})`);
-            } else {
-              benchmark = await api.createBenchmark({
-                name: benchmarkName,
-                description: `Imported from ${filePath}`,
-                testCaseIds: bulkResult.testCases.map(tc => tc.id),
-              });
-              createSpinner.succeed(`Created benchmark: ${benchmark.name}`);
             }
+            if (orphans.length > 0) {
+              benchmarkSpecs.push({
+                name: fileDefaultName,
+                description: `Imported from ${filePath}`,
+                testCaseNames: orphans,
+              });
+            }
+            // Defensive: if everything wound up in describes and there are no
+            // orphans, the file-default benchmark is empty — skip it. If a
+            // file is somehow empty of tests, the loader would have already
+            // thrown earlier.
+            if (benchmarkSpecs.length === 0) {
+              throw new Error(`No test cases to run from ${filePath}`);
+            }
+
+            const createSpinner = ora(`Creating ${benchmarkSpecs.length} benchmark(s)...`).start();
+            for (const spec of benchmarkSpecs) {
+              const tcIds = spec.testCaseNames.map(n => idByName.get(n)).filter((x): x is string => !!x);
+              if (tcIds.length === 0) continue;
+              const existingBenchmark = await api.findBenchmark(spec.name);
+              let bm: Benchmark;
+              if (existingBenchmark) {
+                // Merge: union with existing testCaseIds so cross-file
+                // contributions to the same describe-named benchmark stack.
+                const merged = Array.from(new Set([...(existingBenchmark.testCaseIds || []), ...tcIds]));
+                bm = await api.updateBenchmark(existingBenchmark.id, { testCaseIds: merged });
+              } else {
+                bm = await api.createBenchmark({
+                  name: spec.name,
+                  description: spec.description,
+                  testCaseIds: tcIds,
+                });
+              }
+              benchmarksToRun.push(bm);
+            }
+            createSpinner.succeed(`Prepared ${benchmarksToRun.length} benchmark(s) for execution`);
           } catch (error) {
             importSpinner.fail(`File import failed: ${error instanceof Error ? error.message : error}`);
             process.exit(1);
@@ -804,20 +884,21 @@ export function createBenchmarkCommand(): Command {
 
             // Create temporary benchmark
             const createSpinner = ora('Creating quick benchmark...').start();
-            benchmark = await api.createBenchmark({
+            const bm = await api.createBenchmark({
               name: `quick-${Date.now()}`,
               description: 'Auto-generated benchmark for quick mode',
               testCaseIds: testCases.map((tc) => tc.id),
             });
-            createSpinner.succeed(`Created benchmark: ${benchmark.name}`);
+            benchmarksToRun.push(bm);
+            createSpinner.succeed(`Created benchmark: ${bm.name}`);
           } catch (error) {
             testCasesSpinner.fail(`Failed to create benchmark: ${error instanceof Error ? error.message : error}`);
             process.exit(1);
           }
         } else {
           // Named benchmark mode
-          benchmark = await api.findBenchmark(options.name!);
-          if (!benchmark) {
+          const bm = await api.findBenchmark(options.name!);
+          if (!bm) {
             console.error(chalk.red(`  Error: Benchmark not found: "${options.name}"`));
             console.log('');
             console.log(chalk.cyan('  The -n/--name option accepts:'));
@@ -834,17 +915,25 @@ export function createBenchmarkCommand(): Command {
           }
 
           // Check if benchmark is sample data (read-only)
-          if (benchmark.id.startsWith('demo-')) {
+          if (bm.id.startsWith('demo-')) {
             console.error(chalk.red(`  Error: Cannot execute sample benchmarks.`));
             console.log(chalk.gray('  Sample data is read-only with pre-completed runs.'));
             console.log(chalk.gray('  Create a real benchmark in the UI to run evaluations.'));
             console.log('');
             process.exit(1);
           }
+          benchmarksToRun.push(bm);
         }
 
-        console.log(chalk.gray(`  Benchmark: ${benchmark.name} (${benchmark.id})`));
-        console.log(chalk.gray(`  Test Cases: ${benchmark.testCaseIds.length}`));
+        if (benchmarksToRun.length === 0) {
+          console.error(chalk.red('  Error: No benchmarks to run.'));
+          process.exit(1);
+        }
+
+        // Print summary of what we're going to run
+        for (const bm of benchmarksToRun) {
+          console.log(chalk.gray(`  Benchmark: ${bm.name} (${bm.id}) — ${bm.testCaseIds.length} test cases`));
+        }
         console.log(chalk.gray(`  Server: ${serverResult.baseUrl}`));
 
         // Find agents
@@ -886,22 +975,39 @@ export function createBenchmarkCommand(): Command {
           console.log(chalk.gray(`  Concurrency: ${concurrency}`));
         }
 
-        // Run benchmark for each agent
+        // Run each benchmark for each agent. With describe()-grouped SDK
+        // files, benchmarksToRun contains one entry per describe block; for
+        // JSON or named-benchmark or quick mode it's a single benchmark.
         const allResults: AgentResults[] = [];
+        let totalTestCasesAcrossBenchmarks = 0;
 
-        for (const agent of agents) {
-          const modelId = options.model || getDefaultModel(config);
-          const results = await runBenchmarkForAgent(
-            api,
-            agent,
-            modelId,
-            benchmark,
-            options.verbose || false,
-            concurrency,
-            options.evaluator
-          );
-          allResults.push(results);
+        for (const benchmark of benchmarksToRun) {
+          if (benchmarksToRun.length > 1) {
+            console.log('');
+            console.log(chalk.bold(`Benchmark: ${benchmark.name}`));
+          }
+          totalTestCasesAcrossBenchmarks += benchmark.testCaseIds.length;
+          for (const agent of agents) {
+            const modelId = options.model || getDefaultModel(config);
+            const results = await runBenchmarkForAgent(
+              api,
+              agent,
+              modelId,
+              benchmark,
+              options.verbose || false,
+              concurrency,
+              options.evaluator
+            );
+            // Annotate the result so the summary can attribute it to the right benchmark
+            (results as any).benchmark = benchmark;
+            allResults.push(results);
+          }
         }
+
+        // Use the first benchmark for output backward-compat where the
+        // existing summary helpers assume a single benchmark. Multi-bench
+        // summary lines were already printed above per-benchmark.
+        const benchmark = benchmarksToRun[0];
 
         // Output results
         const outputFormat = parseOutputFormat(options.output);
@@ -932,8 +1038,9 @@ export function createBenchmarkCommand(): Command {
         console.log(chalk.cyan('View results:'));
         for (const result of allResults) {
           const runId = result.run?.id || result.runId;
+          const bm = (result as any).benchmark || benchmark;
           if (runId) {
-            console.log(chalk.gray(`  ${result.agent.name}: ${serverResult.baseUrl}/benchmarks/${benchmark.id}/runs/${runId}`));
+            console.log(chalk.gray(`  ${result.agent.name} (${bm.name}): ${serverResult.baseUrl}/evaluations/benchmarks/${bm.id}/runs/${runId}/inspect`));
           }
         }
         if (process.env.OPENSEARCH_DASHBOARDS_URL) {

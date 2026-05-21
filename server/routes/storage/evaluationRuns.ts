@@ -103,9 +103,21 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
 
     const storage = getStorageModule();
 
-    // Resolve test case sources
-    const resolved = await resolveTestCaseSources(sources, storage);
+    // Resolve test case sources. This can throw (e.g. file not found for code-import)
+    // AFTER flushHeaders has already opened the SSE stream, in which case the outer
+    // catch can't fall back to res.status(500).json(...) — we'd hang the client.
+    // We catch source-resolution errors specifically here and emit an SSE error.
+    let resolved;
+    try {
+      resolved = await resolveTestCaseSources(sources, storage);
+    } catch (resolveError: any) {
+      console.error('[StorageAPI] Source resolution failed:', resolveError.message);
+      sendSSE(res, 'error', { error: resolveError.message });
+      res.end();
+      return;
+    }
     const testCases = resolved.testCases;
+    const evaluateFnMap = resolved.evaluateFnMap;
 
     // Create test case snapshots
     const snapshots: TestCaseSnapshot[] = testCases.map(tc => ({
@@ -148,6 +160,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       const completedRun = await executeEvaluationRun(run, testCases, {
         storageModule: storage,
         cancellationToken,
+        evaluateFnMap,
         onProgress: (progress: any) => {
           sendSSE(res, 'progress', progress);
         },
@@ -191,6 +204,19 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
     console.error('[StorageAPI] Create evaluation run failed:', error.message);
     if (!res.headersSent) {
       res.status(500).json({ error: error.message });
+    } else {
+      // Headers already sent (SSE stream is open) — emit an error event
+      // and close the stream so the client doesn't hang waiting for completion.
+      try {
+        sendSSE(res, 'error', { error: error.message });
+      } catch {
+        // Stream may already be in a bad state; ignore
+      }
+      try {
+        res.end();
+      } catch {
+        // Already ended
+      }
     }
   }
 });

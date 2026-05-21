@@ -218,6 +218,9 @@ export async function saveReportWithClient(
     rawEvents: report.rawEvents || [], // Ensure empty array if null/undefined
     logs: report.logs || report.openSearchLogs,
     improvementStrategies: report.improvementStrategies,
+    // SDK matcher verdicts: persist alongside the report so the inspect
+    // page can render the per-matcher breakdown.
+    ...(report.matcherResults !== undefined ? { matcherResults: report.matcherResults } : {}),
   };
 
   // Add trace-mode fields if present
