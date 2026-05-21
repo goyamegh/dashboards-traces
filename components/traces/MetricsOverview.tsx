@@ -69,13 +69,13 @@ export const MetricsOverview: React.FC<MetricsOverviewProps> = ({
   const maxErrors = Math.max(...errorTimeSeries.map(p => p.value), 1);
   const maxRequests = Math.max(...requestTimeSeries.map(p => p.value), 1);
 
-  // Get color for latency bucket
+  // Get color for latency bucket — uses softer shades in dark mode for visibility
   const getLatencyColor = (bucket: LatencyBucket) => {
-    if (bucket.max <= 100) return 'bg-green-500';
-    if (bucket.max <= 500) return 'bg-blue-500';
-    if (bucket.max <= 1000) return 'bg-yellow-500';
-    if (bucket.max <= 5000) return 'bg-orange-500';
-    return 'bg-red-500';
+    if (bucket.max <= 100) return 'bg-green-500 dark:bg-green-400/80';
+    if (bucket.max <= 500) return 'bg-blue-500 dark:bg-blue-400/80';
+    if (bucket.max <= 1000) return 'bg-yellow-500 dark:bg-yellow-400/80';
+    if (bucket.max <= 5000) return 'bg-orange-500 dark:bg-orange-400/80';
+    return 'bg-red-500 dark:bg-red-400/80';
   };
 
   // Generate smooth cubic bezier SVG path from data points

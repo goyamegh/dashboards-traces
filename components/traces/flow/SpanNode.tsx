@@ -116,7 +116,7 @@ function SpanNodeComponent({ data, selected }: SpanNodeProps) {
       <Handle
         type="target"
         position={Position.Top}
-        className="!w-2 !h-2 !bg-slate-400 !border-slate-600"
+        className="!w-2 !h-2 !bg-muted-foreground/60 !border-border"
       />
 
       {/* Header: Icon + Category Badge */}
@@ -187,7 +187,7 @@ function SpanNodeComponent({ data, selected }: SpanNodeProps) {
       <Handle
         type="source"
         position={Position.Bottom}
-        className="!w-2 !h-2 !bg-slate-400 !border-slate-600"
+        className="!w-2 !h-2 !bg-muted-foreground/60 !border-border"
       />
     </div>
   );
