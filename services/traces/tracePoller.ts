@@ -18,7 +18,8 @@ import { executeBuildTrajectoryHook } from '@/lib/hooks';
 
 // Polling configuration
 const DEFAULT_POLL_INTERVAL_MS = 10000; // 10 seconds
-const DEFAULT_MAX_ATTEMPTS = 30; // 5 minutes total
+const DEFAULT_MAX_ATTEMPTS = 60; // 10 minutes total
+const MAX_POLL_CEILING = 60; // Hard ceiling: never exceed 60 attempts regardless of agent config
 
 export interface PollState {
   reportId: string;
@@ -72,7 +73,7 @@ class TracePollingManager {
       reportId,
       runId,
       attempts: 0,
-      maxAttempts: options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS,
+      maxAttempts: Math.min(options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS, MAX_POLL_CEILING),
       intervalMs: options?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS,
       lastAttempt: null,
       running: true,

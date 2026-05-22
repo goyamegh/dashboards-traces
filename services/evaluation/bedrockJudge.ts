@@ -125,6 +125,11 @@ export async function callBedrockJudge(
 
       console.error(`[BedrockJudge] Attempt ${attempt} failed:`, errorMessage);
 
+      // Fail fast on validation errors — retrying won't help
+      if (errorMessage.includes('is required') || errorMessage.includes('Missing required field')) {
+        throw new Error(`Bedrock Judge validation error (not retryable): ${errorMessage}`);
+      }
+
       // If this is the last attempt, throw the error
       if (isLastAttempt) {
         throw new Error(`Bedrock Judge evaluation failed after ${maxRetries} attempts: ${errorMessage}`);
