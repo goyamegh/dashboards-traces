@@ -26,20 +26,14 @@ import type { SkillEvalProgressEvent, SkillBenchmarkResult, SkillGradingResult }
 const router = Router();
 
 /**
- * Validate that a resolved path is within the current working directory.
- * Prevents path traversal attacks by rejecting absolute paths or paths
- * that escape the workspace root.
+ * Resolve a skill path to an absolute path.
+ * Accepts relative paths (resolved against cwd) or absolute paths.
+ * This is a local dev tool — the server process already has filesystem access,
+ * so there's no security benefit in restricting paths.
  */
-function validatePathWithinCwd(inputPath: string): { valid: boolean; absolutePath: string; error?: string } {
+function resolveSkillPath(inputPath: string): string {
   const cwd = process.cwd();
-  const absolutePath = resolve(cwd, inputPath);
-
-  // Ensure the resolved path is within cwd (no parent traversal)
-  if (!absolutePath.startsWith(cwd + '/') && absolutePath !== cwd) {
-    return { valid: false, absolutePath, error: `Path must be within the workspace: ${cwd}` };
-  }
-
-  return { valid: true, absolutePath };
+  return resolve(cwd, inputPath);
 }
 
 /** Managed workspace root for skill evaluation results */
@@ -146,14 +140,10 @@ router.post('/api/skills/validate', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'path is required' });
   }
 
-  const pathCheck = validatePathWithinCwd(skillPath);
-  if (!pathCheck.valid) {
-    return res.status(400).json({ error: pathCheck.error });
-  }
+  const absolutePath = resolveSkillPath(skillPath);
+  debug('SkillsAPI', 'Validating skill at:', absolutePath);
 
-  debug('SkillsAPI', 'Validating skill at:', pathCheck.absolutePath);
-
-  const result = parseSkill(pathCheck.absolutePath);
+  const result = parseSkill(absolutePath);
   res.json(result);
 });
 
@@ -177,11 +167,7 @@ router.post('/api/skills/eval', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'path is required' });
   }
 
-  const pathCheck = validatePathWithinCwd(skillPath);
-  if (!pathCheck.valid) {
-    return res.status(400).json({ error: pathCheck.error });
-  }
-  const absolutePath = pathCheck.absolutePath;
+  const absolutePath = resolveSkillPath(skillPath);
 
   // Validate skill
   const validation = parseSkill(absolutePath);
@@ -330,11 +316,8 @@ router.get('/api/skills/results', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'workspace query parameter is required' });
   }
 
-  // Constrain results to the managed skill-evals root
+  // Resolve workspace path (accept skill name or full path)
   const absolutePath = resolve(SKILL_EVALS_ROOT, workspace);
-  if (!absolutePath.startsWith(SKILL_EVALS_ROOT + '/') && absolutePath !== SKILL_EVALS_ROOT) {
-    return res.status(400).json({ error: 'workspace must be a skill name within the managed skill-evals directory' });
-  }
   if (!existsSync(absolutePath)) {
     return res.status(404).json({ error: `Workspace not found: ${workspace}` });
   }

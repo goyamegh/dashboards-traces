@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Loader2, CheckCircle, XCircle, Play, Wand2, FolderOpen, ArrowUpCircle, ChevronRight, Folder, Scale, Upload } from 'lucide-react';
+import React, { useState, useCallback, useEffect } from 'react';
+import { Loader2, CheckCircle, XCircle, Play, Wand2, FolderOpen, ArrowUpCircle, ChevronRight, Folder, Scale } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -44,10 +44,8 @@ export const SkillsPage: React.FC = () => {
   const [skillPath, setSkillPath] = useState('');
   const [selectedAgent, setSelectedAgent] = usePersistedState<string>(PREFS_KEYS.agentKey, '');
   const [selectedModel, setSelectedModel] = usePersistedState<string>(PREFS_KEYS.modelId, '');
-  const [browsingFolder, setBrowsingFolder] = useState(false);
   const [showManualPath, setShowManualPath] = useState(false);
   const [manualPath, setManualPath] = useState('');
-  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Discovered skills
   const [availableSkills, setAvailableSkills] = useState<DiscoveredSkill[]>([]);
@@ -123,16 +121,8 @@ export const SkillsPage: React.FC = () => {
   }, []);
 
   const handleSkillSelect = useCallback((value: string) => {
-    if (value === '__browse__') {
-      handleBrowse();
-      return;
-    }
     if (value === '__manual__') {
       setShowManualPath(true);
-      return;
-    }
-    if (value === '__upload__') {
-      fileInputRef.current?.click();
       return;
     }
     setShowManualPath(false);
@@ -146,22 +136,7 @@ export const SkillsPage: React.FC = () => {
     }
   }, [manualPath, validateAndSelect]);
 
-  const handleFileUpload = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    // For webkitdirectory uploads, extract the folder path from the first file
-    const firstFile = files[0];
-    const relativePath = (firstFile as any).webkitRelativePath || firstFile.name;
-    const folderName = relativePath.split('/')[0];
-    // Show the folder name as the selected skill path
-    setManualPath(folderName);
-    setShowManualPath(true);
-    // Reset the input
-    if (fileInputRef.current) fileInputRef.current.value = '';
-  }, []);
-
   const handleBrowse = useCallback(async () => {
-    setBrowsingFolder(true);
     try {
       const result = await browseForSkillFolder();
       if (!result.cancelled && result.path) {
@@ -169,8 +144,6 @@ export const SkillsPage: React.FC = () => {
       }
     } catch (err) {
       setValidationError(err instanceof Error ? err.message : String(err));
-    } finally {
-      setBrowsingFolder(false);
     }
   }, [validateAndSelect]);
 
@@ -280,7 +253,7 @@ export const SkillsPage: React.FC = () => {
             </label>
             <Select value={skillPath} onValueChange={handleSkillSelect}>
               <SelectTrigger className="h-9" data-testid="skill-selector">
-                <SelectValue placeholder={loadingSkills ? 'Discovering skills...' : browsingFolder ? 'Opening folder picker...' : 'Select a skill'} />
+                <SelectValue placeholder={loadingSkills ? 'Discovering skills...' : 'Select a skill'} />
               </SelectTrigger>
               <SelectContent>
                 {availableSkills.map(s => (
@@ -297,35 +270,15 @@ export const SkillsPage: React.FC = () => {
                     <span>Enter path manually...</span>
                   </div>
                 </SelectItem>
-                <SelectItem value="__upload__">
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <Upload className="h-3 w-3" />
-                    <span>Upload folder...</span>
-                  </div>
-                </SelectItem>
-                <SelectItem value="__browse__">
-                  <div className="flex items-center gap-2 text-muted-foreground">
-                    <FolderOpen className="h-3 w-3" />
-                    <span>Browse (OS dialog)...</span>
-                  </div>
-                </SelectItem>
               </SelectContent>
             </Select>
-            {/* Hidden file input for folder upload */}
-            <input
-              ref={fileInputRef}
-              type="file"
-              className="hidden"
-              {...{ webkitdirectory: '', directory: '' } as any}
-              onChange={handleFileUpload}
-            />
             {/* Manual path input */}
             {showManualPath && (
               <div className="flex gap-2 mt-2">
                 <Input
                   value={manualPath}
                   onChange={(e) => setManualPath(e.target.value)}
-                  placeholder="Enter skill directory path (e.g., .claude/skills/my-skill)"
+                  placeholder="Path to skill directory (e.g., .claude/skills/my-skill)"
                   className="h-8 text-sm"
                   onKeyDown={(e) => e.key === 'Enter' && handleManualPathSubmit()}
                   data-testid="manual-path-input"
