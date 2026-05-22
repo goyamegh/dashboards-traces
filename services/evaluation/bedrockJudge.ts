@@ -86,7 +86,12 @@ export async function callBedrockJudge(
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || `API request failed with status ${response.status}`);
+        const errorMessage = errorData.error || `API request failed with status ${response.status}`;
+        // 4xx client errors are validation failures — retrying won't help
+        if (response.status >= 400 && response.status < 500) {
+          throw Object.assign(new Error(`Bedrock Judge validation error (not retryable): ${errorMessage}`), { nonRetryable: true });
+        }
+        throw new Error(errorMessage);
       }
 
       const result = await response.json();
@@ -125,9 +130,9 @@ export async function callBedrockJudge(
 
       console.error(`[BedrockJudge] Attempt ${attempt} failed:`, errorMessage);
 
-      // Fail fast on validation errors — retrying won't help
-      if (errorMessage.includes('is required') || errorMessage.includes('Missing required field')) {
-        throw new Error(`Bedrock Judge validation error (not retryable): ${errorMessage}`);
+      // Fail fast on non-retryable errors (4xx validation failures)
+      if ((error as any)?.nonRetryable) {
+        throw error;
       }
 
       // If this is the last attempt, throw the error

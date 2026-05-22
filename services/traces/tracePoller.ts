@@ -73,7 +73,7 @@ class TracePollingManager {
       reportId,
       runId,
       attempts: 0,
-      maxAttempts: Math.min(options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS, MAX_POLL_CEILING),
+      maxAttempts: Math.min(Number.isFinite(options?.maxAttempts) ? options!.maxAttempts : DEFAULT_MAX_ATTEMPTS, MAX_POLL_CEILING),
       intervalMs: options?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS,
       lastAttempt: null,
       running: true,

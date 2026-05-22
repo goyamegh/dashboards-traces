@@ -162,8 +162,9 @@ describe('bedrockJudge', () => {
     });
 
     it('should fail fast on validation errors without retrying', async () => {
-      mockFetch.mockResolvedValue({
+      mockFetch.mockResolvedValueOnce({
         ok: false,
+        status: 400,
         json: () => Promise.resolve({ error: 'Trajectory is required and must be a non-empty array' }),
       });
 
@@ -175,8 +176,9 @@ describe('bedrockJudge', () => {
     });
 
     it('should fail fast on missing required field errors without retrying', async () => {
-      mockFetch.mockResolvedValue({
+      mockFetch.mockResolvedValueOnce({
         ok: false,
+        status: 400,
         json: () => Promise.resolve({ error: 'Missing required field: expectedOutcomes or expectedTrajectory' }),
       });
 
@@ -191,6 +193,7 @@ describe('bedrockJudge', () => {
       const mockError = { error: 'Server error' };
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        status: 500,
         json: () => Promise.resolve(mockError),
       });
       // Succeed on second attempt
@@ -248,9 +251,10 @@ describe('bedrockJudge', () => {
     });
 
     it('should reflect retry count in judgeAttempts after transient failure', async () => {
-      // First attempt fails
+      // First attempt fails with 500 (retryable)
       mockFetch.mockResolvedValueOnce({
         ok: false,
+        status: 500,
         json: () => Promise.resolve({ error: 'Transient error' }),
       });
       // Second attempt succeeds
