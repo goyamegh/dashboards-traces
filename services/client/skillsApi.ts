@@ -34,6 +34,18 @@ export async function browseForSkillFolder(): Promise<{ cancelled: boolean; path
   return response.json();
 }
 
+export async function uploadSkillFile(content: string, fileName?: string, evalsContent?: string): Promise<{ path: string; skillName: string }> {
+  const response = await fetch('/api/skills/upload', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content, fileName, evalsContent }),
+  });
+  if (!response.ok) {
+    throw new Error(`Upload failed: ${response.statusText}`);
+  }
+  return response.json();
+}
+
 export async function validateSkill(path: string): Promise<SkillValidationResult> {
   const response = await fetch('/api/skills/validate', {
     method: 'POST',

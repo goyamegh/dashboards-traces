@@ -90,6 +90,39 @@ router.get('/api/skills/discover', async (_req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/skills/upload
+ * Accept a SKILL.md file (and optional evals.json) as text content,
+ * save to a managed directory, and return the path for validation/eval.
+ */
+router.post('/api/skills/upload', async (req: Request, res: Response) => {
+  const { fileName, content, evalsContent } = req.body;
+
+  if (!content || typeof content !== 'string') {
+    return res.status(400).json({ error: 'content is required (SKILL.md text)' });
+  }
+
+  const { mkdirSync, writeFileSync } = await import('fs');
+
+  // Derive skill name from frontmatter or filename
+  const nameMatch = content.match(/^name:\s*(.+)$/m);
+  const skillName = nameMatch ? nameMatch[1].trim() : (fileName || 'uploaded-skill').replace(/\.md$/i, '');
+  const safeDir = skillName.replace(/[^a-z0-9-]/gi, '-').toLowerCase();
+
+  const uploadDir = resolve(process.cwd(), 'agent-health-data', 'uploaded-skills', safeDir);
+  mkdirSync(uploadDir, { recursive: true });
+  writeFileSync(join(uploadDir, 'SKILL.md'), content, 'utf-8');
+
+  if (evalsContent) {
+    const evalsDir = join(uploadDir, 'evals');
+    mkdirSync(evalsDir, { recursive: true });
+    writeFileSync(join(evalsDir, 'evals.json'), evalsContent, 'utf-8');
+  }
+
+  debug('SkillsAPI', 'Uploaded skill to:', uploadDir);
+  res.json({ path: uploadDir, skillName: safeDir });
+});
+
+/**
  * POST /api/skills/browse
  * Open native OS folder picker dialog and return the selected path.
  */

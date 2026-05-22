@@ -3,8 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useCallback, useEffect } from 'react';
-import { Loader2, CheckCircle, XCircle, Play, Wand2, FolderOpen, ArrowUpCircle, ChevronRight, Folder, Scale } from 'lucide-react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { Loader2, CheckCircle, XCircle, Play, Wand2, FolderOpen, ArrowUpCircle, ChevronRight, Folder, Scale, Upload } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -16,7 +16,7 @@ import { Input } from '@/components/ui/input';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { PREFS_KEYS } from '@/lib/preferences';
 import { usePersistedState } from '@/hooks/usePersistedState';
-import { discoverSkills, validateSkill, browseForSkillFolder, streamSkillEval, getSkillResults } from '@/services/client/skillsApi';
+import { discoverSkills, validateSkill, browseForSkillFolder, streamSkillEval, getSkillResults, uploadSkillFile } from '@/services/client/skillsApi';
 import type { DiscoveredSkill } from '@/services/client/skillsApi';
 import type { SkillValidationResult, SkillEvalProgressEvent, SkillBenchmarkResult, AgentConfig, ModelConfig } from '@/types';
 
@@ -46,6 +46,7 @@ export const SkillsPage: React.FC = () => {
   const [selectedModel, setSelectedModel] = usePersistedState<string>(PREFS_KEYS.modelId, '');
   const [showManualPath, setShowManualPath] = useState(false);
   const [manualPath, setManualPath] = useState('');
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
   // Discovered skills
   const [availableSkills, setAvailableSkills] = useState<DiscoveredSkill[]>([]);
@@ -135,6 +136,20 @@ export const SkillsPage: React.FC = () => {
       validateAndSelect(manualPath.trim());
     }
   }, [manualPath, validateAndSelect]);
+
+  const handleFileUpload = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const content = await file.text();
+      const { path } = await uploadSkillFile(content, file.name);
+      validateAndSelect(path);
+    } catch (err) {
+      setValidationError(err instanceof Error ? err.message : String(err));
+    }
+    // Reset input so same file can be re-uploaded
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  }, [validateAndSelect]);
 
   const handleBrowse = useCallback(async () => {
     try {
@@ -290,6 +305,24 @@ export const SkillsPage: React.FC = () => {
               </div>
             )}
             {skillPath && !showManualPath && <PathBreadcrumb path={skillPath} />}
+            {/* Upload file */}
+            <div className="flex items-center gap-2 mt-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept=".md,.markdown"
+                className="hidden"
+                onChange={handleFileUpload}
+              />
+              <Button
+                size="sm"
+                variant="ghost"
+                className="text-xs text-muted-foreground"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Upload className="h-3 w-3 mr-1" />Upload SKILL.md
+              </Button>
+            </div>
           </div>
 
           {/* Config row */}
