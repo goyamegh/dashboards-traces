@@ -47,6 +47,26 @@ const CONFIG_FILE_NAMES = [
 ];
 
 /**
+ * Server-side JSON config file. Loaded by the *server services*
+ * (configService, customAgentStore, dataSourceConfig, etc.), not by this
+ * loader — the schemas are different. We only probe for it here so the
+ * startup log can accurately tell the user whether *any* on-disk config
+ * was picked up, instead of saying "No config file found" when the JSON
+ * file is in fact driving OpenSearch / Bedrock / agents.
+ */
+const SERVER_JSON_CONFIG_FILENAME = 'agent-health.config.json';
+
+/**
+ * Check whether the server-side JSON config exists in the given directory.
+ * This file is *not* loaded by this loader — it's a separate config plane
+ * for runtime (storage, observability, custom agents) read directly by
+ * server services. We only surface its presence in the startup log.
+ */
+export function hasServerJsonConfig(cwd: string = process.cwd()): boolean {
+  return existsSync(resolve(cwd, SERVER_JSON_CONFIG_FILENAME));
+}
+
+/**
  * Find config file in the given directory
  */
 export function findConfigFile(cwd: string = process.cwd()): ConfigFileInfo | null {
@@ -223,8 +243,17 @@ export async function loadConfig(
   if (configFile) {
     console.log(`[Config] Loading ${configFile.path}`);
     userConfig = await loadUserConfig(configFile.path);
+  } else if (hasServerJsonConfig(cwd)) {
+    // Code config absent, but server-side JSON config present — it's loaded
+    // by separate server services (storage / observability / custom agents).
+    // Be explicit so the user doesn't think *no* config is in effect.
+    console.log(
+      `[Config] No code config (agent-health.config.{ts,js,mjs}); ` +
+      `server JSON config (${SERVER_JSON_CONFIG_FILENAME}) detected and ` +
+      `loaded by server services. Using built-in defaults for agents/models.`,
+    );
   } else {
-    // No config file is fine - env vars and defaults are used
+    // Truly no config file — env vars and built-in defaults only.
     console.log('[Config] No config file found, using defaults + environment variables');
   }
 
