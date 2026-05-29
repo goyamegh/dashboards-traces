@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useCallback, useEffect, useRef } from 'react';
-import { Loader2, CheckCircle, XCircle, Play, Wand2, FolderOpen, ArrowUpCircle, ChevronRight, Folder, Scale, Upload } from 'lucide-react';
+import { Loader2, CheckCircle, XCircle, Play, Wand2, FolderOpen, ArrowUpCircle, ChevronRight, Folder, Scale, Upload, AlertTriangle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -18,7 +18,7 @@ import { PREFS_KEYS } from '@/lib/preferences';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { discoverSkills, validateSkill, browseForSkillFolder, streamSkillEval, getSkillResults, uploadSkillFile } from '@/services/client/skillsApi';
 import type { DiscoveredSkill } from '@/services/client/skillsApi';
-import type { SkillValidationResult, SkillEvalProgressEvent, SkillBenchmarkResult, AgentConfig, ModelConfig } from '@/types';
+import type { SkillValidationResult, SkillEvalProgressEvent, SkillBenchmarkResult } from '@/types';
 
 type EvalPhase = 'idle' | 'validating' | 'running' | 'done' | 'error';
 
@@ -62,6 +62,14 @@ export const SkillsPage: React.FC = () => {
   const [progressPercent, setProgressPercent] = useState(0);
   const [totalEvals, setTotalEvals] = useState(0);
   const [completedEvals, setCompletedEvals] = useState(0);
+  // Per-eval outcomes accumulated during a run — surfaces 'errored' distinct
+  // from 'failed' so the user can tell "agent crashed" from "skill missed".
+  const [evalOutcomes, setEvalOutcomes] = useState<Array<{
+    evalId: number;
+    condition: 'with_skill' | 'without_skill';
+    evalStatus: 'passed' | 'failed' | 'errored';
+    errorMessage?: string;
+  }>>([]);
 
   // Results
   const [benchmark, setBenchmark] = useState<SkillBenchmarkResult | null>(null);
@@ -168,6 +176,7 @@ export const SkillsPage: React.FC = () => {
     setProgressText('Starting evaluation...');
     setProgressPercent(0);
     setCompletedEvals(0);
+    setEvalOutcomes([]);
     setBenchmark(null);
     setImprovement(null);
 
@@ -197,7 +206,21 @@ export const SkillsPage: React.FC = () => {
                 setProgressPercent(Math.round((next / (totalEvals * 2)) * 100));
                 return next;
               });
-              setProgressText(`Eval #${event.evalId} [${event.condition}]: ${Math.round(event.passRate * 100)}% pass rate`);
+              setEvalOutcomes(prev => [
+                ...prev,
+                {
+                  evalId: event.evalId,
+                  condition: event.condition,
+                  evalStatus: event.evalStatus,
+                  errorMessage: event.errorMessage,
+                },
+              ]);
+              {
+                const label = event.evalStatus === 'errored'
+                  ? 'errored'
+                  : `${Math.round(event.passRate * 100)}% pass rate`;
+                setProgressText(`Eval #${event.evalId} [${event.condition}]: ${label}`);
+              }
               break;
             case 'improving':
               setProgressText('Analyzing failures and proposing improvements...');
@@ -373,29 +396,40 @@ export const SkillsPage: React.FC = () => {
 
           {/* Validation result */}
           {validation && (
-            <div data-testid="validation-result" className={`flex items-center gap-3 p-3 rounded-md ${validation.valid ? 'bg-green-50 dark:bg-green-950/20' : 'bg-red-50 dark:bg-red-950/20'}`}>
+            <div data-testid="validation-result" className={`flex items-start gap-3 p-3 rounded-md ${validation.valid ? 'bg-green-50 dark:bg-green-950/20' : 'bg-red-50 dark:bg-red-950/20'}`}>
               {validation.valid ? (
-                <CheckCircle className="h-4 w-4 text-green-600" />
+                <CheckCircle className="h-4 w-4 text-green-600 mt-0.5 shrink-0" />
               ) : (
-                <XCircle className="h-4 w-4 text-red-600" />
+                <XCircle className="h-4 w-4 text-red-600 mt-0.5 shrink-0" />
               )}
-              <div className="flex-1 min-w-0">
+              <div className="flex-1 min-w-0 space-y-1">
                 {validation.skill && (
-                  <div className="flex items-center gap-2">
-                    <span className="font-medium text-sm">{validation.skill.metadata.name}</span>
-                    <span className="text-xs text-muted-foreground truncate">{validation.skill.metadata.description}</span>
-                  </div>
+                  <>
+                    <div className="font-medium text-sm">{validation.skill.metadata.name}</div>
+                    {/* Show full description — it's the *trigger* the loader matches against;
+                        truncating it hides the most-important authored field. */}
+                    <div className="text-xs text-muted-foreground whitespace-pre-wrap break-words">
+                      {validation.skill.metadata.description}
+                    </div>
+                  </>
                 )}
-                {validation.evalsFile && (
-                  <span className="text-xs text-muted-foreground">{validation.evalsFile.evals.length} eval cases</span>
-                )}
-                {!validation.evalsFile && validation.valid && (
-                  <span className="text-xs text-amber-600">No evals — will auto-generate on run</span>
+                <div className="text-xs text-muted-foreground">
+                  {validation.evalsFile && <span>{validation.evalsFile.evals.length} eval cases</span>}
+                  {!validation.evalsFile && validation.valid && (
+                    <span className="text-amber-600">No evals — will auto-generate on run</span>
+                  )}
+                </div>
+                {validation.warnings.length > 0 && (
+                  <ul className="mt-2 space-y-1">
+                    {validation.warnings.map((w, i) => (
+                      <li key={i} className="flex items-start gap-1.5 text-xs text-amber-700 dark:text-amber-500">
+                        <AlertTriangle className="h-3 w-3 mt-0.5 shrink-0" />
+                        <span className="break-words">{w}</span>
+                      </li>
+                    ))}
+                  </ul>
                 )}
               </div>
-              {validation.warnings.map((w, i) => (
-                <Badge key={i} variant="outline" className="text-amber-600 text-xs">{w}</Badge>
-              ))}
             </div>
           )}
           {validationError && (
@@ -407,6 +441,22 @@ export const SkillsPage: React.FC = () => {
             <div className="space-y-2">
               <Progress value={progressPercent} className="h-2" />
               <p className="text-xs text-muted-foreground">{progressText}</p>
+              {evalOutcomes.length > 0 && (
+                <div className="flex items-center gap-3 text-xs">
+                  <span className="text-green-600">
+                    {evalOutcomes.filter(o => o.evalStatus === 'passed').length} passed
+                  </span>
+                  <span className="text-red-600">
+                    {evalOutcomes.filter(o => o.evalStatus === 'failed').length} failed
+                  </span>
+                  {/* 'errored' is intentionally separate from 'failed': it means
+                      the agent crashed / endpoint unreachable, not that the skill missed. */}
+                  <span className="text-amber-600 flex items-center gap-1">
+                    <AlertTriangle className="h-3 w-3" />
+                    {evalOutcomes.filter(o => o.evalStatus === 'errored').length} errored
+                  </span>
+                </div>
+              )}
             </div>
           )}
           {evalPhase === 'error' && (

@@ -12,6 +12,7 @@
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
 import type { Skill, SkillGradingResult, SkillBenchmarkResult } from '@/types';
 import { debug } from '@/lib/debug';
+import { DEFAULT_SKILL_MODEL_ID } from './constants';
 
 export interface ImprovementProposal {
   originalInstructions: string;
@@ -50,7 +51,7 @@ export async function proposeImprovement(options: ImproveOptions): Promise<Impro
   );
 
   const prompt = buildImprovementPrompt(skill, failures, baselineSuccesses, benchmark);
-  const effectiveModelId = modelId || 'us.anthropic.claude-sonnet-4-6';
+  const effectiveModelId = modelId || DEFAULT_SKILL_MODEL_ID;
 
   debug('SkillImprover', `Requesting improvement. Failures: ${failures.length}`);
 

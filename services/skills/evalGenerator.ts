@@ -14,6 +14,7 @@ import { join } from 'path';
 import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-runtime';
 import type { Skill, SkillEvalsFile } from '@/types';
 import { debug } from '@/lib/debug';
+import { DEFAULT_SKILL_MODEL_ID } from './constants';
 
 /**
  * Generate eval cases by calling Bedrock with the skill's instructions.
@@ -26,7 +27,7 @@ export async function generateEvals(
   debug('EvalGenerator', `Generating evals for skill: ${skill.metadata.name}`);
 
   const prompt = buildGenerationPrompt(skill);
-  const effectiveModelId = modelId || 'us.anthropic.claude-sonnet-4-6';
+  const effectiveModelId = modelId || DEFAULT_SKILL_MODEL_ID;
 
   const client = new BedrockRuntimeClient({
     region: process.env.AWS_REGION || 'us-west-2',
@@ -132,11 +133,11 @@ function parseGeneratedEvals(reasoning: string, skillName: string): SkillEvalsFi
         };
       }
     } catch {
-      debug('EvalGenerator', 'Failed to parse generated JSON, trying fallback');
+      debug('EvalGenerator', 'Failed to parse JSON inside markers, trying loose extraction');
     }
   }
 
-  // Fallback: try to extract any JSON block from the response
+  // Fallback: try to extract any JSON block from the response.
   const jsonMatch = reasoning.match(/\{[\s\S]*"evals"\s*:\s*\[[\s\S]*\]\s*\}/);
   if (jsonMatch) {
     try {
@@ -151,18 +152,18 @@ function parseGeneratedEvals(reasoning: string, skillName: string): SkillEvalsFi
         })),
       };
     } catch {
-      // Fall through to default
+      // fall through
     }
   }
 
-  // Last resort: return a minimal eval
-  return {
-    skill_name: skillName,
-    evals: [{
-      id: 1,
-      prompt: `Help me with a task related to ${skillName}`,
-      expected_output: `A response that demonstrates knowledge of ${skillName} capabilities`,
-      assertions: [`The response is relevant to ${skillName}`],
-    }],
-  };
+  // No silent "minimal eval" fallback — that mode hides authoring problems
+  // (the user thinks they ran a real evaluation against a generic prompt).
+  // Throw with an actionable message: the user can either retry, or hand-author
+  // an evals/evals.json (the format they need is right above this function).
+  throw new Error(
+    `Eval auto-generation for "${skillName}" failed: model response did not contain a parseable JSON eval set ` +
+    `between EVALS_JSON_START / EVALS_JSON_END markers. ` +
+    `Retry the evaluation, or hand-author evals/evals.json with shape ` +
+    `{"skill_name": "${skillName}", "evals": [{"id": 1, "prompt": "...", "assertions": ["..."]}]}.`,
+  );
 }
