@@ -413,12 +413,23 @@ export const SkillsPage: React.FC = () => {
                     </div>
                   </>
                 )}
-                <div className="text-xs text-muted-foreground">
-                  {validation.evalsFile && <span>{validation.evalsFile.evals.length} eval cases</span>}
-                  {!validation.evalsFile && validation.valid && (
-                    <span className="text-amber-600">No evals — will auto-generate on run</span>
-                  )}
-                </div>
+                {/* Hard validation errors — render inline (with the icon row) instead of
+                    leaving an empty panel and showing the message in a separate strip. */}
+                {!validation.valid && validation.errors.length > 0 && (
+                  <ul className="space-y-1">
+                    {validation.errors.map((e, i) => (
+                      <li key={i} className="text-xs text-red-700 dark:text-red-400 break-words">{e}</li>
+                    ))}
+                  </ul>
+                )}
+                {validation.valid && (
+                  <div className="text-xs text-muted-foreground">
+                    {validation.evalsFile && <span>{validation.evalsFile.evals.length} eval cases</span>}
+                    {!validation.evalsFile && (
+                      <span className="text-amber-600">No evals — will auto-generate on run</span>
+                    )}
+                  </div>
+                )}
                 {validation.warnings.length > 0 && (
                   <ul className="mt-2 space-y-1">
                     {validation.warnings.map((w, i) => (
@@ -432,7 +443,10 @@ export const SkillsPage: React.FC = () => {
               </div>
             </div>
           )}
-          {validationError && (
+          {/* Separate strip only fires when validation never produced a result
+              (e.g. fetch failure on the manual-path button) — not for normal
+              parse errors, which now render inside the panel above. */}
+          {validationError && !validation && (
             <div className="p-3 rounded-md bg-red-50 dark:bg-red-950/20 text-sm text-red-600">{validationError}</div>
           )}
 
