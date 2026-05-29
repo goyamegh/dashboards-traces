@@ -1040,7 +1040,7 @@ export function createBenchmarkCommand(): Command {
           const runId = result.run?.id || result.runId;
           const bm = (result as any).benchmark || benchmark;
           if (runId) {
-            console.log(chalk.gray(`  ${result.agent.name} (${bm.name}): ${serverResult.baseUrl}/evaluations/benchmarks/${bm.id}/runs/${runId}/inspect`));
+            console.log(chalk.gray(`  ${result.agent.name} (${bm.name}): ${serverResult.baseUrl}/evaluations/benchmarks/${bm.id}/runs/${runId}`));
           }
         }
         if (process.env.OPENSEARCH_DASHBOARDS_URL) {

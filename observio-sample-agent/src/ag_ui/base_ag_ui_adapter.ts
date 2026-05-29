@@ -76,6 +76,7 @@ import { AGUIAuditLogger } from '../utils/ag_ui_audit_logger';
 import { TextMessageManager } from './managers/text_message_manager';
 import { SpanStatusCode } from '@opentelemetry/api';
 import { startAgentSpan } from '../telemetry/spans';
+import { flushTelemetry } from '../telemetry/provider';
 
 export interface BaseAGUIConfig {
   port?: number;
@@ -290,8 +291,9 @@ export class BaseAGUIAdapter {
       // End audit logging for successful completion
       this.auditLogger?.endRequest(input.threadId, input.runId, 'success');
 
-      // End the OTel root span (success)
+      // End the OTel root span (success) and flush immediately
       agentSpan.end();
+      flushTelemetry().catch(() => {});
 
       // Complete the stream
       observer.complete();
@@ -321,9 +323,10 @@ export class BaseAGUIAdapter {
       // End audit logging for error
       this.auditLogger?.endRequest(input.threadId, input.runId, 'error', errorMessage);
 
-      // End the OTel root span (error)
+      // End the OTel root span (error) and flush immediately
       agentSpan.setStatus({ code: SpanStatusCode.ERROR, message: errorMessage });
       agentSpan.end();
+      flushTelemetry().catch(() => {});
 
       // Complete the stream
       observer.complete();

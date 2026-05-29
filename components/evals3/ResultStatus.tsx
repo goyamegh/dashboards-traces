@@ -33,6 +33,9 @@ export function getResultStatus(
   if (report?.metricsStatus === 'pending') return 'pending_traces';
   if (report?.metricsStatus === 'calculating') return 'pending_judgment';
 
+  // Judge/trace evaluation failed — treat as failed
+  if (report?.metricsStatus === 'error') return 'failed';
+
   // Agent execution completed and metrics ready — check judgment result
   if (report?.passFailStatus === 'passed') return 'passed';
   if (report?.passFailStatus === 'failed') return 'failed';

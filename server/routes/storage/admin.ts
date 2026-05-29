@@ -81,10 +81,27 @@ router.get('/api/storage/health', async (req: Request, res: Response) => {
 // ============================================================================
 
 /**
+ * Normalize an endpoint URL for safe comparison: trims trailing slashes and
+ * lowercases the value. Returns undefined for empty/missing inputs.
+ */
+function normalizeEndpoint(value: string | undefined | null): string | undefined {
+  if (!value) return undefined;
+  return value.trim().replace(/\/+$/, '').toLowerCase();
+}
+
+/**
  * POST /api/storage/test-connection
- * Test connection to a storage cluster with provided credentials
- * Falls back to env vars for any missing fields
- * Body: { endpoint, username?, password?, tlsSkipVerify? }
+ * Test connection to a storage cluster with provided credentials.
+ *
+ * Credential resolution order: request body → file config → env vars.
+ *
+ * Stored credentials (file config / env vars) are only used as fallbacks when
+ * the request `endpoint` matches the corresponding configured endpoint. This
+ * prevents sending saved credentials to an arbitrary endpoint specified in the
+ * request body (credential exfiltration). Callers wanting to test a different
+ * endpoint must provide credentials explicitly in the request body.
+ *
+ * Body: { endpoint, username?, password?, tlsSkipVerify?, authType?, awsProfile?, awsRegion?, awsService? }
  */
 router.post('/api/storage/test-connection', async (req: Request, res: Response) => {
   try {
@@ -94,15 +111,26 @@ router.post('/api/storage/test-connection', async (req: Request, res: Response) 
       return res.status(400).json({ status: 'error', message: 'Endpoint is required' });
     }
 
+    // Only fall back to stored credentials when the request endpoint matches
+    // the configured endpoint, to avoid forwarding saved creds to other hosts.
+    const fileConfig = getStorageConfigFromFile();
+    const envEndpoint = process.env.OPENSEARCH_STORAGE_ENDPOINT;
+    const reqNorm = normalizeEndpoint(endpoint);
+    const fileMatches = !!(fileConfig?.endpoint && normalizeEndpoint(fileConfig.endpoint) === reqNorm);
+    const envMatches = !!(envEndpoint && normalizeEndpoint(envEndpoint) === reqNorm);
+
+    const safeFile = fileMatches ? fileConfig : null;
+    const useEnv = envMatches;
+
     const result = await testStorageConnection({
       endpoint,
-      authType: authType ?? process.env.OPENSEARCH_STORAGE_AUTH_TYPE,
-      username: username ?? process.env.OPENSEARCH_STORAGE_USERNAME,
-      password: password ?? process.env.OPENSEARCH_STORAGE_PASSWORD,
-      awsProfile: awsProfile ?? process.env.OPENSEARCH_STORAGE_AWS_PROFILE,
-      awsRegion: awsRegion ?? process.env.OPENSEARCH_STORAGE_AWS_REGION,
-      awsService: awsService ?? process.env.OPENSEARCH_STORAGE_AWS_SERVICE,
-      tlsSkipVerify: tlsSkipVerify ?? (process.env.OPENSEARCH_STORAGE_TLS_SKIP_VERIFY === 'true'),
+      authType: authType ?? safeFile?.authType ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AUTH_TYPE : undefined),
+      username: username ?? safeFile?.username ?? (useEnv ? process.env.OPENSEARCH_STORAGE_USERNAME : undefined),
+      password: password ?? safeFile?.password ?? (useEnv ? process.env.OPENSEARCH_STORAGE_PASSWORD : undefined),
+      awsProfile: awsProfile ?? safeFile?.awsProfile ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_PROFILE : undefined),
+      awsRegion: awsRegion ?? safeFile?.awsRegion ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_REGION : undefined),
+      awsService: awsService ?? safeFile?.awsService ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_SERVICE : undefined),
+      tlsSkipVerify: tlsSkipVerify ?? safeFile?.tlsSkipVerify ?? (useEnv ? (process.env.OPENSEARCH_STORAGE_TLS_SKIP_VERIFY === 'true') : undefined),
     });
     res.json(result);
   } catch (error: any) {

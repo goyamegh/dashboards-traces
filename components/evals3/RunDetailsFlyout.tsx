@@ -21,6 +21,7 @@ type ResultStatus = 'passed' | 'failed' | 'running' | 'pending';
 function getResultStatus(report: EvaluationReport): ResultStatus {
   if (report.passFailStatus === 'passed') return 'passed';
   if (report.passFailStatus === 'failed') return 'failed';
+  if (report.metricsStatus === 'error') return 'failed';
   if (report.status === 'running') return 'running';
   return 'pending';
 }

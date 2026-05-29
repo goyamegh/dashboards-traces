@@ -285,3 +285,11 @@ export {
   type CategoryStats,
   type ToolInfo,
 } from './traceStats';
+
+// Trace-level summary (category counts + tokens + models) reused by both
+// the inline expansion header and the fullscreen header.
+export {
+  computeTraceSummary,
+  isEmptyTraceSummary,
+  type TraceSummary,
+} from './traceSummary';

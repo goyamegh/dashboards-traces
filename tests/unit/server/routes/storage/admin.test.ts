@@ -990,4 +990,256 @@ describe('Admin Storage Routes', () => {
       });
     });
   });
+
+  // ============================================================================
+  // Test Connection Tests
+  // ============================================================================
+
+  describe('POST /api/storage/test-connection', () => {
+    // Save and restore env vars touched by these tests so we don't leak state
+    // (or accidentally clobber pre-existing values in dev/CI).
+    const ENV_KEYS = [
+      'OPENSEARCH_STORAGE_ENDPOINT',
+      'OPENSEARCH_STORAGE_AUTH_TYPE',
+      'OPENSEARCH_STORAGE_USERNAME',
+      'OPENSEARCH_STORAGE_PASSWORD',
+      'OPENSEARCH_STORAGE_AWS_PROFILE',
+      'OPENSEARCH_STORAGE_AWS_REGION',
+      'OPENSEARCH_STORAGE_AWS_SERVICE',
+      'OPENSEARCH_STORAGE_TLS_SKIP_VERIFY',
+    ] as const;
+    const savedEnv: Record<string, string | undefined> = {};
+
+    beforeEach(() => {
+      for (const key of ENV_KEYS) {
+        savedEnv[key] = process.env[key];
+        delete process.env[key];
+      }
+    });
+
+    afterEach(() => {
+      for (const key of ENV_KEYS) {
+        if (savedEnv[key] === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = savedEnv[key]!;
+        }
+      }
+    });
+
+    it('should return error when endpoint is missing', async () => {
+      const { req, res } = createMocks({}, {});
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/test-connection');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({ status: 'error', message: 'Endpoint is required' });
+    });
+
+    it('should use credentials from request body when provided', async () => {
+      mockTestStorageConnection.mockResolvedValue({ status: 'ok', clusterName: 'test' });
+
+      const { req, res } = createMocks({}, {
+        endpoint: 'https://my-cluster:9200',
+        username: 'admin',
+        password: 'secret',
+        authType: 'basic',
+      });
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/test-connection');
+
+      await handler(req, res);
+
+      expect(mockTestStorageConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          endpoint: 'https://my-cluster:9200',
+          username: 'admin',
+          password: 'secret',
+          authType: 'basic',
+        })
+      );
+      expect(res.json).toHaveBeenCalledWith({ status: 'ok', clusterName: 'test' });
+    });
+
+    it('should fall back to file config when endpoint matches and credentials are not in request body', async () => {
+      mockGetStorageConfigFromFile.mockReturnValue({
+        endpoint: 'https://file-cluster:9200',
+        authType: 'basic',
+        username: 'file-user',
+        password: 'file-pass',
+        awsProfile: 'file-profile',
+        awsRegion: 'us-east-1',
+        awsService: 'es',
+        tlsSkipVerify: true,
+      });
+      mockTestStorageConnection.mockResolvedValue({ status: 'ok', clusterName: 'file-cluster' });
+
+      const { req, res } = createMocks({}, {
+        endpoint: 'https://file-cluster:9200',
+      });
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/test-connection');
+
+      await handler(req, res);
+
+      expect(mockTestStorageConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          endpoint: 'https://file-cluster:9200',
+          username: 'file-user',
+          password: 'file-pass',
+          authType: 'basic',
+          awsProfile: 'file-profile',
+          awsRegion: 'us-east-1',
+          awsService: 'es',
+          tlsSkipVerify: true,
+        })
+      );
+    });
+
+    it('should treat trailing slash and case differences as the same endpoint when matching file config', async () => {
+      mockGetStorageConfigFromFile.mockReturnValue({
+        endpoint: 'https://File-Cluster:9200/',
+        authType: 'basic',
+        username: 'file-user',
+        password: 'file-pass',
+      });
+      mockTestStorageConnection.mockResolvedValue({ status: 'ok' });
+
+      const { req, res } = createMocks({}, {
+        endpoint: 'https://file-cluster:9200',
+      });
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/test-connection');
+
+      await handler(req, res);
+
+      expect(mockTestStorageConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          username: 'file-user',
+          password: 'file-pass',
+        })
+      );
+    });
+
+    it('should NOT fall back to file config credentials when request endpoint differs', async () => {
+      mockGetStorageConfigFromFile.mockReturnValue({
+        endpoint: 'https://stored-cluster:9200',
+        authType: 'basic',
+        username: 'file-user',
+        password: 'file-pass',
+      });
+      mockTestStorageConnection.mockResolvedValue({ status: 'error', message: 'auth failed' });
+
+      const { req, res } = createMocks({}, {
+        endpoint: 'https://attacker-host:9200',
+      });
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/test-connection');
+
+      await handler(req, res);
+
+      const args = mockTestStorageConnection.mock.calls[0][0];
+      expect(args.endpoint).toBe('https://attacker-host:9200');
+      expect(args.username).toBeUndefined();
+      expect(args.password).toBeUndefined();
+      expect(args.authType).toBeUndefined();
+    });
+
+    it('should fall back to env vars when endpoint matches OPENSEARCH_STORAGE_ENDPOINT and no file/body creds', async () => {
+      mockGetStorageConfigFromFile.mockReturnValue(null);
+      process.env.OPENSEARCH_STORAGE_ENDPOINT = 'https://env-cluster:9200';
+      process.env.OPENSEARCH_STORAGE_USERNAME = 'env-user';
+      process.env.OPENSEARCH_STORAGE_PASSWORD = 'env-pass';
+      mockTestStorageConnection.mockResolvedValue({ status: 'ok', clusterName: 'env-cluster' });
+
+      const { req, res } = createMocks({}, {
+        endpoint: 'https://env-cluster:9200',
+      });
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/test-connection');
+
+      await handler(req, res);
+
+      expect(mockTestStorageConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          endpoint: 'https://env-cluster:9200',
+          username: 'env-user',
+          password: 'env-pass',
+        })
+      );
+    });
+
+    it('should NOT fall back to env vars when endpoint differs from OPENSEARCH_STORAGE_ENDPOINT', async () => {
+      mockGetStorageConfigFromFile.mockReturnValue(null);
+      process.env.OPENSEARCH_STORAGE_ENDPOINT = 'https://env-cluster:9200';
+      process.env.OPENSEARCH_STORAGE_USERNAME = 'env-user';
+      process.env.OPENSEARCH_STORAGE_PASSWORD = 'env-pass';
+      mockTestStorageConnection.mockResolvedValue({ status: 'error', message: 'auth failed' });
+
+      const { req, res } = createMocks({}, {
+        endpoint: 'https://other-cluster:9200',
+      });
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/test-connection');
+
+      await handler(req, res);
+
+      const args = mockTestStorageConnection.mock.calls[0][0];
+      expect(args.endpoint).toBe('https://other-cluster:9200');
+      expect(args.username).toBeUndefined();
+      expect(args.password).toBeUndefined();
+    });
+
+    it('should prefer request body over file config and env vars (even when endpoints match)', async () => {
+      mockGetStorageConfigFromFile.mockReturnValue({
+        endpoint: 'https://my-cluster:9200',
+        username: 'file-user',
+        password: 'file-pass',
+      });
+      process.env.OPENSEARCH_STORAGE_ENDPOINT = 'https://my-cluster:9200';
+      process.env.OPENSEARCH_STORAGE_USERNAME = 'env-user';
+      process.env.OPENSEARCH_STORAGE_PASSWORD = 'env-pass';
+      mockTestStorageConnection.mockResolvedValue({ status: 'ok', clusterName: 'test' });
+
+      const { req, res } = createMocks({}, {
+        endpoint: 'https://my-cluster:9200',
+        username: 'body-user',
+        password: 'body-pass',
+      });
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/test-connection');
+
+      await handler(req, res);
+
+      expect(mockTestStorageConnection).toHaveBeenCalledWith(
+        expect.objectContaining({
+          username: 'body-user',
+          password: 'body-pass',
+        })
+      );
+    });
+
+    it('should return error result from testStorageConnection', async () => {
+      mockGetStorageConfigFromFile.mockReturnValue(null);
+      mockTestStorageConnection.mockResolvedValue({ status: 'error', message: 'Connection refused' });
+
+      const { req, res } = createMocks({}, {
+        endpoint: 'https://bad-cluster:9200',
+      });
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/test-connection');
+
+      await handler(req, res);
+
+      expect(res.json).toHaveBeenCalledWith({ status: 'error', message: 'Connection refused' });
+    });
+
+    it('should return 500 when testStorageConnection throws', async () => {
+      mockGetStorageConfigFromFile.mockReturnValue(null);
+      mockTestStorageConnection.mockRejectedValue(new Error('Unexpected failure'));
+
+      const { req, res } = createMocks({}, {
+        endpoint: 'https://crash-cluster:9200',
+      });
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/test-connection');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(res.json).toHaveBeenCalledWith({ status: 'error', message: 'Unexpected failure' });
+    });
+  });
 });
