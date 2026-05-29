@@ -19,6 +19,7 @@ import type {
   SkillEval,
   SkillEvalCondition,
   SkillEvalRunResult,
+  SkillEvalStatus,
   SkillTimingData,
   SkillGradingResult,
   SkillBenchmarkResult,
@@ -150,6 +151,7 @@ async function runOneCondition(
   // Execute — don't pass modelId to agent (it's for the judge, not the agent under test)
   const startTime = Date.now();
   const trajectory: TrajectoryStep[] = [];
+  let executionError: Error | undefined;
 
   try {
     await runEvaluationWithConnector(
@@ -161,10 +163,14 @@ async function runOneCondition(
     );
   } catch (err) {
     debug('SkillRunner', `Execution failed for eval ${evalCase.id} (${condition}):`, err);
+    executionError = err instanceof Error ? err : new Error(String(err));
+    // Push a synthetic error step so downstream consumers (UI / serializer)
+    // can still see *something* in the trajectory — but the canonical signal
+    // is the SkillExecutionError thrown below, surfaced via evalStatus.
     trajectory.push({
       id: `error-${evalCase.id}-${condition}`,
       type: 'response',
-      content: `Error: ${err instanceof Error ? err.message : String(err)}`,
+      content: `Error: ${executionError.message}`,
       timestamp: Date.now(),
     });
   }
@@ -175,27 +181,73 @@ async function runOneCondition(
   // Write timing.json
   writeFileSync(join(conditionDir, 'timing.json'), JSON.stringify(timing, null, 2));
 
-  // Grade assertions
-  onProgress?.({ type: 'eval_grading', evalId: evalCase.id, condition });
-
+  // Grade assertions — skip if the agent itself errored. Grading an error
+  // response would (a) waste a judge call and (b) wrongly attribute the
+  // failure to the *skill*, when the skill is unknowable until the agent
+  // is healthy. Surface 'errored' as a distinct outcome instead.
   let grading: SkillGradingResult;
-  if (evalCase.assertions.length > 0) {
-    grading = await gradeAssertions({
-      trajectory,
-      assertions: evalCase.assertions,
-      serverBaseUrl,
-      modelId,
-    });
+  let evalStatus: SkillEvalStatus;
+
+  if (executionError) {
+    grading = {
+      assertion_results: evalCase.assertions.map(a => ({
+        text: a,
+        passed: false,
+        evidence: `Skipped: agent execution errored before grading (${executionError!.message})`,
+      })),
+      summary: {
+        passed: 0,
+        failed: evalCase.assertions.length,
+        total: evalCase.assertions.length,
+        pass_rate: 0,
+      },
+    };
+    evalStatus = 'errored';
   } else {
-    grading = { assertion_results: [], summary: { passed: 0, failed: 0, total: 0, pass_rate: 0 } };
+    onProgress?.({ type: 'eval_grading', evalId: evalCase.id, condition });
+
+    if (evalCase.assertions.length > 0) {
+      grading = await gradeAssertions({
+        trajectory,
+        assertions: evalCase.assertions,
+        serverBaseUrl,
+        modelId,
+      });
+    } else {
+      grading = { assertion_results: [], summary: { passed: 0, failed: 0, total: 0, pass_rate: 0 } };
+    }
+
+    evalStatus = grading.summary.total > 0 && grading.summary.passed === grading.summary.total
+      ? 'passed'
+      : 'failed';
   }
 
   // Write grading.json
   writeFileSync(join(conditionDir, 'grading.json'), JSON.stringify(grading, null, 2));
 
-  onProgress?.({ type: 'eval_done', evalId: evalCase.id, condition, passRate: grading.summary.pass_rate });
+  onProgress?.({
+    type: 'eval_done',
+    evalId: evalCase.id,
+    condition,
+    passRate: grading.summary.pass_rate,
+    evalStatus,
+    ...(executionError ? { errorMessage: executionError.message } : {}),
+  });
 
-  return { evalId: evalCase.id, condition, trajectory, timing, grading };
+  // Surface the execution error via the result's evalStatus / errorMessage
+  // (in-band) instead of throwing — the suite keeps running so a single bad
+  // eval doesn't poison the rest. Callers wanting fail-fast can inspect
+  // `result.evalStatus === 'errored'` or wrap with SkillExecutionError.
+
+  return {
+    evalId: evalCase.id,
+    condition,
+    trajectory,
+    timing,
+    grading,
+    evalStatus,
+    ...(executionError ? { errorMessage: executionError.message } : {}),
+  };
 }
 
 /**

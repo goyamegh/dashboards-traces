@@ -104,12 +104,29 @@ export interface SkillBenchmarkResult {
 
 export type SkillEvalCondition = 'with_skill' | 'without_skill';
 
+/**
+ * Per-eval outcome.
+ *
+ *  - 'passed'  : agent ran cleanly and every assertion graded true
+ *  - 'failed'  : agent ran cleanly but at least one assertion graded false
+ *               (this is the signal the improver learns from)
+ *  - 'errored' : agent execution itself failed (crash / timeout / endpoint
+ *               unreachable). Skill quality is *unknowable* until the agent
+ *               is healthy again — keep this distinct from 'failed' so the
+ *               improver does not try to "fix the skill" for a bug elsewhere.
+ */
+export type SkillEvalStatus = 'passed' | 'failed' | 'errored';
+
 export interface SkillEvalRunResult {
   evalId: number;
   condition: SkillEvalCondition;
   trajectory: TrajectoryStep[];
   timing: SkillTimingData;
   grading: SkillGradingResult;
+  /** Tri-state outcome — see SkillEvalStatus jsdoc. */
+  evalStatus: SkillEvalStatus;
+  /** Populated when evalStatus === 'errored'. */
+  errorMessage?: string;
 }
 
 // ============ Progress Events ============
@@ -118,7 +135,16 @@ export type SkillEvalProgressEvent =
   | { type: 'started'; skillName: string; totalEvals: number; iteration: number }
   | { type: 'eval_running'; evalId: number; condition: SkillEvalCondition; prompt: string }
   | { type: 'eval_grading'; evalId: number; condition: SkillEvalCondition }
-  | { type: 'eval_done'; evalId: number; condition: SkillEvalCondition; passRate: number }
+  | {
+      type: 'eval_done';
+      evalId: number;
+      condition: SkillEvalCondition;
+      passRate: number;
+      /** Tri-state status — distinguishes assertion failure from execution error. */
+      evalStatus: SkillEvalStatus;
+      /** Populated when evalStatus === 'errored'. */
+      errorMessage?: string;
+    }
   | { type: 'improving'; message: string }
   | { type: 'improved'; applied: boolean; changes: string; reasoning: string; improvedInstructions?: string }
   | { type: 'completed'; benchmark: SkillBenchmarkResult }
