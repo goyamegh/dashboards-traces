@@ -9,10 +9,10 @@
 
 import { Router, Request, Response } from 'express';
 import { resolve } from 'path';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'fs';
+import { existsSync, readFileSync, readdirSync, writeFileSync, copyFileSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
-import { platform } from 'os';
+import { homedir, platform } from 'os';
 import { debug } from '@/lib/debug';
 import { loadConfigSync } from '@/lib/config/index';
 import { getCustomAgents } from '@/server/services/customAgentStore';
@@ -45,9 +45,15 @@ const SKILL_EVALS_ROOT = resolve(process.cwd(), 'agent-health-data', 'skill-eval
  */
 router.get('/api/skills/discover', async (_req: Request, res: Response) => {
   const cwd = process.cwd();
+  const home = homedir();
   const skills: { path: string; name: string; description: string; source: string }[] = [];
 
+  // Per Claude Code spec, skills exist at *both* user scope (~/.claude/skills)
+  // and project scope (<cwd>/.claude/skills). User-scope skills are visible
+  // across all projects; project-scope skills are repo-local. We surface both,
+  // labelling the source so the UI can disambiguate.
   const scanDirs: { dir: string; source: string }[] = [
+    { dir: join(home, '.claude', 'skills'), source: 'Claude Code (user)' },
     { dir: join(cwd, '.claude', 'skills'), source: 'Claude Code' },
     { dir: join(cwd, '.kiro', 'skills'), source: 'Kiro' },
     { dir: join(cwd, '.kiro', 'steering'), source: 'Kiro' },
@@ -57,6 +63,10 @@ router.get('/api/skills/discover', async (_req: Request, res: Response) => {
     { dir: join(cwd, '.continue', 'skills'), source: 'Continue' },
     { dir: join(cwd, 'skills'), source: 'Project' },
   ];
+
+  // Dedupe by absolute skill path so a symlinked or duplicated skill
+  // does not appear twice in the dropdown.
+  const seen = new Set<string>();
 
   for (const { dir, source } of scanDirs) {
     if (!existsSync(dir)) continue;
@@ -70,11 +80,20 @@ router.get('/api/skills/discover', async (_req: Request, res: Response) => {
 
         const result = parseSkill(skillDir);
         if (result.valid && result.skill) {
-          const relativePath = skillDir.startsWith(cwd)
-            ? skillDir.slice(cwd.length + 1)
-            : skillDir;
+          const absSkillDir = resolve(skillDir);
+          if (seen.has(absSkillDir)) continue;
+          seen.add(absSkillDir);
+
+          // Display path: relative to cwd if inside the project, else use ~/ shorthand
+          // for home-relative paths so the dropdown stays scannable.
+          let displayPath = absSkillDir;
+          if (absSkillDir.startsWith(cwd + '/') || absSkillDir === cwd) {
+            displayPath = absSkillDir.slice(cwd.length + 1) || '.';
+          } else if (absSkillDir.startsWith(home + '/')) {
+            displayPath = '~' + absSkillDir.slice(home.length);
+          }
           skills.push({
-            path: relativePath,
+            path: displayPath,
             name: result.skill.metadata.name,
             description: result.skill.metadata.description,
             source,
@@ -306,9 +325,31 @@ router.post('/api/skills/eval', async (req: Request, res: Response) => {
       );
 
       if (auto && proposal.improvedInstructions !== proposal.originalInstructions) {
-        // Auto-apply: write improved SKILL.md
+        // Auto-apply: write improved SKILL.md, but reversibly.
+        //
+        // Skills authoring principle: don't surprise the user with destructive
+        // writes. We:
+        //   1. Write a `.bak` snapshot of the original alongside the file, so
+        //      the user can restore even if they don't have it under VCS.
+        //   2. Guard against the silent no-op case where the original
+        //      instructions text doesn't appear verbatim in the file (e.g.
+        //      whitespace mismatch after CRLF normalisation). Without this
+        //      guard, `String.replace` returns the unchanged file and we'd
+        //      claim "applied" while nothing changed.
         const skillMdPath = join(absolutePath, 'SKILL.md');
+        const backupPath = `${skillMdPath}.bak`;
         const original = readFileSync(skillMdPath, 'utf-8');
+
+        if (!original.includes(proposal.originalInstructions)) {
+          throw new Error(
+            `Cannot auto-apply: the original instructions snapshot does not match the current SKILL.md content ` +
+            `(file may have been edited since the proposal was generated). The proposal is preserved at ` +
+            `${join(iterationDir, 'improvement-proposal.json')} — review and apply manually.`,
+          );
+        }
+
+        // Snapshot first, then write. If the write fails halfway, the .bak still has the original.
+        copyFileSync(skillMdPath, backupPath);
         const updated = original.replace(proposal.originalInstructions, proposal.improvedInstructions);
         writeFileSync(skillMdPath, updated);
 
