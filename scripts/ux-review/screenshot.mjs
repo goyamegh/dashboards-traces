@@ -7,7 +7,7 @@
 //   stage = "before" | "after"
 
 import { chromium } from 'playwright';
-import { mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { argv } from 'node:process';
 
@@ -23,12 +23,16 @@ const BASE = process.env.BASE_URL || 'http://localhost:4001';
 const ROOT = process.env.SHOT_ROOT || `${process.env.HOME}/ux-review-shots`;
 mkdirSync(ROOT, { recursive: true });
 
-// Known-good IDs in this project's OpenSearch:
-const RUN_ID = 'run-1779332071373-z6mfu2tdn';
-const BENCHMARK_RUN_ID = 'run-1779332065086-18ed2gnbs';
-const BENCHMARK_ID = 'bench-1779332063830-1dfywimjg';
+// Known-good IDs in this project's OpenSearch — override via env vars for your own cluster.
+const RUN_ID = process.env.UX_REVIEW_RUN_ID || 'run-1779332071373-z6mfu2tdn';
 // Benchmark with 40 runs, suitable for the time-series chart
-const COMPARE_BENCHMARK_ID = 'exp-1765401828206-yq9ychdhu';
+const COMPARE_BENCHMARK_ID = process.env.UX_REVIEW_COMPARE_BENCHMARK_ID || 'exp-1765401828206-yq9ychdhu';
+
+if (!process.env.UX_REVIEW_RUN_ID || !process.env.UX_REVIEW_COMPARE_BENCHMARK_ID) {
+  console.warn(
+    '[ux-review] Using default RUN_ID / COMPARE_BENCHMARK_ID — set UX_REVIEW_RUN_ID and UX_REVIEW_COMPARE_BENCHMARK_ID env vars for your own cluster.',
+  );
+}
 
 const SHOTS = [
   // 1. RawEventsPanel: open run detail by reportId, switch trajectory toggle to "Raw Events"
@@ -53,7 +57,7 @@ const SHOTS = [
       }
       await page.waitForTimeout(500);
     },
-    selector: 'main',
+    elementSelector: 'main',
   },
   // 2. LatencyHistogram: agent-traces page — expand Metrics card to show the distribution histogram
   {
@@ -72,7 +76,7 @@ const SHOTS = [
       await page.locator('text=/Latency Distribution/i').first().waitFor({ timeout: 5000 }).catch(() => {});
       await page.waitForTimeout(500);
     },
-    selector: 'main',
+    elementSelector: 'main',
   },
   // 3. MetricsTimeSeriesChart: comparison page for benchmark
   {
@@ -94,7 +98,7 @@ const SHOTS = [
       }
       await page.waitForTimeout(1000);
     },
-    selector: 'main',
+    elementSelector: 'main',
   },
   // 4. Slate !important overrides: agent-traces — open a trace, switch to Agent Map tab
   {
@@ -116,7 +120,7 @@ const SHOTS = [
         await page.waitForTimeout(2000);
       }
     },
-    selector: 'main',
+    elementSelector: 'main',
   },
   // 5. Tooltip flip: hover the per-row Distribution bar to surface the Time Distribution tooltip
   {
@@ -132,7 +136,7 @@ const SHOTS = [
         await page.waitForTimeout(800);
       }
     },
-    selector: 'main',
+    elementSelector: 'main',
   },
 ];
 
