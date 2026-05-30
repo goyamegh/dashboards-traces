@@ -180,6 +180,10 @@ export const SkillsPage: React.FC = () => {
     setBenchmark(null);
     setImprovement(null);
 
+    // Snapshot start time so the recovery probe can distinguish a stale
+    // pre-existing iteration from one this run produced.
+    const runStartedAt = Date.now();
+
     try {
       const result = await streamSkillEval(
         {
@@ -247,9 +251,49 @@ export const SkillsPage: React.FC = () => {
       // Load history
       loadHistory();
     } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+
+      // Recovery probe. Long agent runs (60–200s with no SSE traffic)
+      // sometimes lose the stream to proxy idle timeouts — the server
+      // continues running and writes benchmark.json + improvement-proposal
+      // to disk, but the client throws "Evaluation completed without
+      // benchmark results" and the user thinks everything was lost.
+      //
+      // Before surfacing the error, ask the workspace whether a fresh
+      // iteration landed since this run started. If it did, treat as
+      // success and load that iteration's evidence into the UI.
+      if (validation?.skill) {
+        try {
+          const workspace = `agent-health-data/skill-evals/${validation.skill.metadata.name}`;
+          const { iterations: iters, proposals } = await getSkillResults(workspace);
+          const recovered = iters.find(it => Date.parse(it.created_at) >= runStartedAt);
+          if (recovered) {
+            setBenchmark(recovered);
+            const recoveredProposal = proposals?.[recovered.iteration];
+            if (recoveredProposal) setImprovement(recoveredProposal);
+            setIterations(iters);
+            setEvalPhase('done');
+            setProgressPercent(100);
+            setActiveTab('results');
+            setProgressText(
+              'Stream lost mid-run, but the server finished and the result was recovered from disk. ' +
+              '(Original error: ' + message + ')',
+            );
+            return;
+          }
+        } catch {
+          // Probe itself failed — fall through to the original error path.
+        }
+      }
+
       setEvalPhase('error');
-      setProgressText(err instanceof Error ? err.message : String(err));
+      setProgressText(message);
     }
+    // loadHistory is intentionally omitted from deps — it's declared below
+    // (TDZ would error if listed) and its identity is stable across renders
+    // for our purposes (it closes over `validation`, which is already in
+    // the dep list).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [validation, skillPath, selectedAgent, selectedModel, totalEvals]);
 
   const loadHistory = useCallback(async () => {

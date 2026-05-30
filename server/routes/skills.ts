@@ -280,10 +280,48 @@ router.post('/api/skills/eval', async (req: Request, res: Response) => {
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  // Disable proxy buffering for nginx/ALB-style intermediaries that hold SSE
+  // bytes in a buffer until the response ends. Without this, even active
+  // 'data:' frames may not reach the browser until res.end() fires.
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
+  // Keepalive heartbeat. Each per-eval agent run takes 60–200s with no
+  // outbound SSE traffic, which trips intermediate-proxy idle timeouts and
+  // EventSource-style readers — the stream silently dies and the client
+  // sees no 'completed' event despite the server finishing successfully
+  // (benchmark.json + improvement-proposal.json land on disk).
+  //
+  // SSE comment lines (':' prefix) are ignored by the EventSource parser
+  // but reset every proxy idle timer along the way. 15s is well below
+  // typical 30–60s defaults.
+  let keepaliveActive = true;
+  const keepaliveTimer = setInterval(() => {
+    if (!keepaliveActive) return;
+    try {
+      res.write(': keepalive\n\n');
+    } catch {
+      // Underlying socket is gone — stop trying so we don't spam errors.
+      keepaliveActive = false;
+      clearInterval(keepaliveTimer);
+    }
+  }, 15_000);
+  const stopKeepalive = () => {
+    keepaliveActive = false;
+    clearInterval(keepaliveTimer);
+  };
+  // If the client closes the connection mid-run, stop the timer immediately.
+  // The eval itself keeps running on the server (writes benchmark.json /
+  // improvement-proposal.json to disk for recovery on next page load).
+  req.on('close', stopKeepalive);
+
   const sendEvent = (event: SkillEvalProgressEvent) => {
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
+    try {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    } catch {
+      // Client gone; let the run finish so disk artifacts are intact.
+      stopKeepalive();
+    }
   };
 
   try {
@@ -371,10 +409,12 @@ router.post('/api/skills/eval', async (req: Request, res: Response) => {
     }
 
     sendEvent({ type: 'completed', benchmark });
+    stopKeepalive();
     res.end();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     sendEvent({ type: 'error', message });
+    stopKeepalive();
     res.end();
   }
 });
