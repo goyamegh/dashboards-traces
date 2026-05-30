@@ -158,7 +158,18 @@ export async function streamSkillEval(
   return { benchmark, improvement };
 }
 
-export async function getSkillResults(workspace: string): Promise<{ iterations: SkillBenchmarkResult[] }> {
+export interface SkillResultsResponse {
+  iterations: SkillBenchmarkResult[];
+  /** Improvement proposals keyed by iteration number (sparse — only present for iterations that had failures). */
+  proposals?: Record<number, {
+    applied: boolean;
+    changes: string;
+    reasoning: string;
+    improvedInstructions?: string;
+  }>;
+}
+
+export async function getSkillResults(workspace: string): Promise<SkillResultsResponse> {
   const response = await fetch(`/api/skills/results?workspace=${encodeURIComponent(workspace)}`);
   if (!response.ok) {
     throw new Error(`Failed to load results: ${response.statusText}`);

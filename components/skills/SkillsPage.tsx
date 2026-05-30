@@ -256,12 +256,34 @@ export const SkillsPage: React.FC = () => {
     if (!validation?.skill) return;
     const workspace = `agent-health-data/skill-evals/${validation.skill.metadata.name}`;
     try {
-      const { iterations: iters } = await getSkillResults(workspace);
+      const { iterations: iters, proposals } = await getSkillResults(workspace);
       setIterations(iters);
+      // If there's prior history, prime the Results / Improvement tabs with
+      // the most-recent iteration so users can view past evidence without
+      // re-running the eval. New runs (handleRunEval) override these via
+      // their own setBenchmark / setImprovement calls.
+      if (iters.length > 0) {
+        const latest = iters[iters.length - 1];
+        setBenchmark(prev => prev ?? latest);
+        const latestProposal = proposals?.[latest.iteration];
+        if (latestProposal) {
+          setImprovement(prev => prev ?? latestProposal);
+        }
+      }
     } catch {
-      // Workspace might not exist yet
+      // Workspace might not exist yet — that's expected for first-time skills.
     }
   }, [validation]);
+
+  // Auto-load history whenever validation transitions to a valid skill, so
+  // the Results / Improvement / History tabs surface past iterations without
+  // requiring a fresh run. The dependency on validation.skill.path means
+  // switching between skills re-loads the right workspace.
+  useEffect(() => {
+    if (validation?.valid && validation.skill) {
+      loadHistory();
+    }
+  }, [validation?.skill?.path, loadHistory]);
 
   const fmtPct = (n: number) => `${Math.round(n * 100)}%`;
   const fmtDelta = (n: number) => {

@@ -390,22 +390,57 @@ router.get('/api/skills/results', async (req: Request, res: Response) => {
     return res.status(400).json({ error: 'workspace query parameter is required' });
   }
 
-  // Resolve workspace path (accept skill name or full path)
-  const absolutePath = resolve(SKILL_EVALS_ROOT, workspace);
+  // Resolve workspace path. Accept any of:
+  //   - bare skill name              "add-connector"
+  //   - prefixed path                  "agent-health-data/skill-evals/add-connector"
+  //   - absolute path                  "/abs/path/to/workspace"
+  // The frontend has historically built the prefixed form, while CLI / API
+  // callers tend to pass the bare name. Normalise here so both work.
+  const normalised = workspace.startsWith('agent-health-data/skill-evals/')
+    ? workspace.slice('agent-health-data/skill-evals/'.length)
+    : workspace;
+  const absolutePath = resolve(SKILL_EVALS_ROOT, normalised);
   if (!existsSync(absolutePath)) {
     return res.status(404).json({ error: `Workspace not found: ${workspace}` });
   }
 
+  // Pair each iteration's benchmark with its improvement-proposal (if present).
+  // Returning them together lets the UI populate Results / Improvement / History
+  // tabs immediately when re-opening a previously-evaluated skill, instead of
+  // requiring a fresh run to surface past evidence.
   const iterations: SkillBenchmarkResult[] = [];
+  const proposals: Record<number, {
+    applied: boolean;
+    changes: string;
+    reasoning: string;
+    improvedInstructions?: string;
+  }> = {};
 
   try {
     const entries = readdirSync(absolutePath, { withFileTypes: true });
     for (const entry of entries) {
-      if (entry.isDirectory() && entry.name.startsWith('iteration-')) {
-        const benchmarkPath = resolve(absolutePath, entry.name, 'benchmark.json');
-        if (existsSync(benchmarkPath)) {
-          const data = JSON.parse(readFileSync(benchmarkPath, 'utf-8'));
-          iterations.push(data);
+      if (!entry.isDirectory() || !entry.name.startsWith('iteration-')) continue;
+      const benchmarkPath = resolve(absolutePath, entry.name, 'benchmark.json');
+      if (!existsSync(benchmarkPath)) continue;
+      const benchmark: SkillBenchmarkResult = JSON.parse(readFileSync(benchmarkPath, 'utf-8'));
+      iterations.push(benchmark);
+
+      const proposalPath = resolve(absolutePath, entry.name, 'improvement-proposal.json');
+      if (existsSync(proposalPath)) {
+        try {
+          const proposal = JSON.parse(readFileSync(proposalPath, 'utf-8'));
+          // Normalise to the wire-format the SSE 'improved' event uses
+          // ('changes' rather than 'changesDescription'), so the frontend
+          // doesn't need a parallel state shape for past vs. live proposals.
+          proposals[benchmark.iteration] = {
+            applied: false,
+            changes: proposal.changesDescription ?? '',
+            reasoning: proposal.reasoning ?? '',
+            improvedInstructions: proposal.improvedInstructions,
+          };
+        } catch {
+          // Proposal exists but is malformed — skip silently; the
+          // benchmark is still useful for the Results / History tabs.
         }
       }
     }
@@ -414,7 +449,7 @@ router.get('/api/skills/results', async (req: Request, res: Response) => {
   }
 
   iterations.sort((a, b) => a.iteration - b.iteration);
-  res.json({ iterations });
+  res.json({ iterations, proposals });
 });
 
 /**
