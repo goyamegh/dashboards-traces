@@ -85,6 +85,13 @@ function assistantTextLine(text: string): string {
 function resultLine(result: string, extras: Record<string, unknown> = {}): string {
   return JSON.stringify({ type: 'result', result, ...extras }) + '\n';
 }
+/** assistant message containing a tool_use block (e.g. Skill, Bash, …). */
+function assistantToolUseLine(toolName: string, leadingText?: string): string {
+  const content: any[] = [];
+  if (leadingText) content.push({ type: 'text', text: leadingText });
+  content.push({ type: 'tool_use', id: 'tu_1', name: toolName, input: {} });
+  return JSON.stringify({ type: 'assistant', message: { content } }) + '\n';
+}
 
 /** Wait one microtask + macrotask so async dispatch in streamAssistantResponse runs. */
 async function flushAsync() {
@@ -281,6 +288,98 @@ describe('AssistantService', () => {
 
       expect(fullResponse).toContain('1 tool call(s) were denied');
       expect(fullResponse).toContain('Bash');
+    });
+
+    it('renders a tool_use block as an inline note instead of ending the turn at a stranded cursor', async () => {
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
+      assistantService = require('@/server/services/assistantService');
+
+      let fullResponse = '';
+      const deltas: string[] = [];
+      const turn = new Promise<void>((resolve, reject) => {
+        assistantService.streamAssistantResponse(
+          'tool-use',
+          'Why did this run fail?',
+          undefined,
+          (d: string) => deltas.push(d),
+          (full: string) => { fullResponse = full; resolve(); },
+          (err: string) => reject(new Error(err))
+        );
+      });
+      await flushAsync();
+
+      // Real failure mode observed in production: assistant streams text, then
+      // emits a tool_use block (e.g. Skill) as the next thing it would do. With
+      // tools disabled in the chat surface, that turn ends with no further text.
+      mockProc.stdout.emit('data', Buffer.from(
+        assistantTextLine('Looking at the trajectory…') +
+        assistantToolUseLine('Skill', 'Let me find the SOP that drives /cp-oncall.')
+      ));
+      mockProc.emit('close', 0);
+      await turn;
+
+      // The leading text ran through normally.
+      expect(fullResponse).toContain('Looking at the trajectory');
+      expect(fullResponse).toContain('Let me find the SOP');
+      // The tool_use block surfaced as a clear inline note, not a silent end.
+      expect(fullResponse).toMatch(/Tried to invoke `Skill`/);
+      expect(fullResponse).toMatch(/tool execution is disabled/);
+      // And the note was streamed to the client (so it shows up live, not just at done).
+      expect(deltas.some((d) => /Tried to invoke `Skill`/.test(d))).toBe(true);
+    });
+
+    it('passes --disallowed-tools \'*\' so the spawned CLI refuses tool calls', async () => {
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
+      assistantService = require('@/server/services/assistantService');
+
+      const turn = new Promise<void>((resolve, reject) => {
+        assistantService.streamAssistantResponse(
+          'no-tools',
+          'Hi',
+          undefined,
+          () => {},
+          () => resolve(),
+          (err: string) => reject(new Error(err))
+        );
+      });
+      await flushAsync();
+      mockProc.stdout.emit('data', Buffer.from(assistantTextLine('ok')));
+      mockProc.emit('close', 0);
+      await turn;
+
+      const args: string[] = mockSpawn.mock.calls[0][1];
+      const idx = args.indexOf('--disallowed-tools');
+      expect(idx).toBeGreaterThan(-1);
+      expect(args[idx + 1]).toBe('*');
+    });
+
+    it('system prompt explicitly forbids tool/skill invocation', async () => {
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
+      assistantService = require('@/server/services/assistantService');
+
+      const turn = new Promise<void>((resolve, reject) => {
+        assistantService.streamAssistantResponse(
+          'no-tools-prompt',
+          'Hi',
+          undefined,
+          () => {},
+          () => resolve(),
+          (err: string) => reject(new Error(err))
+        );
+      });
+      await flushAsync();
+      mockProc.stdout.emit('data', Buffer.from(assistantTextLine('ok')));
+      mockProc.emit('close', 0);
+      await turn;
+
+      const args: string[] = mockSpawn.mock.calls[0][1];
+      const idx = args.indexOf('--append-system-prompt');
+      const sysPrompt = args[idx + 1];
+      expect(sysPrompt).toMatch(/NO tools enabled/);
+      expect(sysPrompt).toMatch(/Do NOT say things like/);
     });
 
     it('inherits AWS_PROFILE / AWS_REGION', async () => {

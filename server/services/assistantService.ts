@@ -220,7 +220,13 @@ export function buildSystemPrompt(context?: AssistantContext): string {
 
   let systemPrompt = `You are an AI assistant for Agent Health, an evaluation framework for Root Cause Analysis (RCA) agents. Help users understand evaluation results, configure agents, interpret trajectories, and improve agent performance.
 
-When a Live Data Snapshot is provided below, ground your answers in that data — quote judge reasoning verbatim where relevant, reference specific trajectory steps by index, and only speculate when data is missing. Be concise and helpful.`;
+When a Live Data Snapshot is provided below, ground your answers in that data — quote judge reasoning verbatim where relevant, reference specific trajectory steps by index, and only speculate when data is missing. Be concise and helpful.
+
+## Tool Use Policy
+
+You are running inside a read-only chat surface with NO tools enabled — no Skill, Bash, Read, Write, WebFetch, MCP servers, slash commands, or any other tool/function calls are available. Do NOT say things like "Let me check…", "Let me search…", or "Let me find the SOP" — you cannot run anything; those phrases produce dead ends in the UI.
+
+Use ONLY the Live Data Snapshot below. If something is missing from the snapshot, state plainly what is missing and tell the user what to fetch (file path, CLI command, URL) so they can paste the result back into the chat. Finish every answer with a complete written conclusion — never end mid-thought as if a tool were about to run.`;
 
   if (skillContent) {
     systemPrompt += `\n\n---\n\n## Agent Health Reference\n\n${skillContent}`;
@@ -303,6 +309,11 @@ function streamFromClaude(
     '--verbose',
     '--output-format', 'stream-json',
     '--dangerously-skip-permissions',
+    // Belt-and-suspenders: explicitly forbid all tool/skill invocations.
+    // The chat surface has no tool execution backend, and rendering a stranded
+    // tool_use block confuses the UI. The system prompt also instructs the
+    // model not to attempt tools.
+    '--disallowed-tools', '*',
     '--append-system-prompt', systemPrompt,
   ];
 
@@ -337,6 +348,15 @@ function streamFromClaude(
         if (block?.type === 'text' && typeof block.text === 'string' && block.text.length > 0) {
           fullResponse += block.text;
           onDelta(block.text);
+        } else if (block?.type === 'tool_use') {
+          // The chat surface has no tool execution backend (we strip MCP/skills env
+          // and pass --disallowed-tools '*'). Render a clear inline note so the
+          // user understands the assistant tried to use a tool here, instead of
+          // silently ending the turn at a streaming cursor.
+          const toolName = typeof block.name === 'string' ? block.name : 'a tool';
+          const note = `\n\n_(Tried to invoke \`${toolName}\` here — tool execution is disabled in this chat. I'll continue with the data I have or tell you what to fetch manually.)_\n\n`;
+          fullResponse += note;
+          onDelta(note);
         }
       }
       return;
