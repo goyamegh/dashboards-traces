@@ -28,6 +28,9 @@ import { UseCaseComparisonTable } from './UseCaseComparisonTable';
 import { RunPairSelector } from './RunPairSelector';
 import { ModeToggle } from './ModeToggle';
 import { VerdictStrip } from './VerdictStrip';
+import { FailureClusterPanel } from './FailureClusterPanel';
+import { extractFirstDivergence } from '@/services/trajectoryDiffService';
+import type { FailureCluster, FailureCaseEvidenceInput } from '@/services/client/comparisonClusterApi';
 import { Breadcrumbs } from '@/components/evals3/Breadcrumbs';
 import { asyncBenchmarkStorage, asyncRunStorage, asyncTestCaseStorage } from '@/services/storage';
 import {
@@ -39,6 +42,7 @@ import {
   countRowsByStatus,
   calculateRowStatus,
   collectRunIdsFromReports,
+  calculateCombinedScore,
   detectComparisonMode,
   ComparisonMode,
   RowStatus,
@@ -181,6 +185,11 @@ export const ComparisonPage: React.FC = () => {
 
   // User-overridden mode (null means use detected mode)
   const [modeOverride, setModeOverride] = useState<ComparisonMode | null>(null);
+
+  // Failure-cluster state — populated by the FailureClusterPanel after analysis.
+  // Drives row dot-coloring and the cluster-driven case filter below.
+  const [failureClusters, setFailureClusters] = useState<FailureCluster[]>([]);
+  const [clusterCaseFilter, setClusterCaseFilter] = useState<{ caseIds: string[]; clusterName: string } | null>(null);
 
   // Load all benchmarks and test cases
   useEffect(() => {
@@ -376,8 +385,100 @@ export const ComparisonPage: React.FC = () => {
     rows = filterRowsByCategory(rows, categoryFilter);
     rows = filterRowsByStatus(rows, statusFilter, selectedRunIds);
     if (rowStatusFilter !== 'all') rows = rows.filter(row => calculateRowStatus(row, referenceRunId) === rowStatusFilter);
+    if (clusterCaseFilter) {
+      const allow = new Set(clusterCaseFilter.caseIds);
+      rows = rows.filter(row => allow.has(row.testCaseId));
+    }
     return rows;
-  }, [allComparisonRows, categoryFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId]);
+  }, [allComparisonRows, categoryFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId, clusterCaseFilter]);
+
+  // Build the regressed-case evidence the cluster panel will analyze. Picks
+  // a winner/loser per row by combined score, mirroring DivergencePreviewRow
+  // so the divergence summary the LLM sees matches what the user sees.
+  const regressedEvidence = useMemo<{
+    cases: FailureCaseEvidenceInput[];
+    loserLabel: string;
+    winnerLabel: string;
+  }>(() => {
+    const cases: FailureCaseEvidenceInput[] = [];
+    let bestLoserAgent = '';
+    let bestWinnerAgent = '';
+
+    const regressedRows = allComparisonRows.filter(row => {
+      const status = calculateRowStatus(row, referenceRunId);
+      return status === 'regression' || status === 'mixed';
+    });
+
+    for (const row of regressedRows) {
+      const completed = selectedRuns.filter(r => row.results[r.id]?.status === 'completed');
+      if (completed.length < 2) continue;
+
+      let winnerRun = completed[0];
+      let loserRun = completed[0];
+      let winnerScore = -Infinity;
+      let loserScore = Infinity;
+      for (const r of completed) {
+        const result = row.results[r.id];
+        if (!result) continue;
+        const score = calculateCombinedScore(result);
+        if (score > winnerScore) { winnerScore = score; winnerRun = r; }
+        if (score < loserScore) { loserScore = score; loserRun = r; }
+      }
+      if (winnerRun.id === loserRun.id) continue;
+
+      const winnerReport = reports[row.results[winnerRun.id]?.reportId ?? ''];
+      const loserReport = reports[row.results[loserRun.id]?.reportId ?? ''];
+
+      let firstDivergence: FailureCaseEvidenceInput['firstDivergence'] | undefined;
+      if (winnerReport?.trajectory && loserReport?.trajectory) {
+        const fd = extractFirstDivergence(loserReport.trajectory, winnerReport.trajectory);
+        if (fd) {
+          firstDivergence = {
+            stepIndex: fd.index,
+            type: fd.type,
+            baselineSummary: fd.baselineSummary,
+            comparisonSummary: fd.comparisonSummary,
+          };
+        }
+      }
+
+      cases.push({
+        caseId: row.testCaseId,
+        caseName: row.testCaseName,
+        judgeReasoning: loserReport?.llmJudgeReasoning,
+        improvementStrategies: loserReport?.improvementStrategies,
+        firstDivergence,
+      });
+
+      // Track agent labels — used to label the cluster prompt. Pick the most
+      // common winner/loser pair seen across regressed rows.
+      if (!bestLoserAgent) bestLoserAgent = loserRun.agentKey;
+      if (!bestWinnerAgent) bestWinnerAgent = winnerRun.agentKey;
+    }
+
+    return {
+      cases,
+      loserLabel: bestLoserAgent ? getAgentName(bestLoserAgent) : 'losing run',
+      winnerLabel: bestWinnerAgent ? getAgentName(bestWinnerAgent) : 'winning run',
+    };
+  }, [allComparisonRows, referenceRunId, selectedRuns, reports]);
+
+  // Map caseId -> cluster index for row dot-coloring in the table.
+  const clusterByCaseId = useMemo(() => {
+    const map = new Map<string, number>();
+    failureClusters.forEach((c, idx) => {
+      for (const id of c.caseIds) {
+        if (!map.has(id)) map.set(id, idx);
+      }
+    });
+    return map;
+  }, [failureClusters]);
+
+  // When the user picks a different benchmark / runs, drop the cluster filter.
+  useEffect(() => {
+    setClusterCaseFilter(null);
+    setFailureClusters([]);
+  }, [benchmarkId, selectedRunIds.join(',')]);
 
   const categories = useMemo(() => Array.from(new Set(allComparisonRows.map(r => r.category))).sort(), [allComparisonRows]);
 
@@ -485,6 +586,24 @@ export const ComparisonPage: React.FC = () => {
             {/* Verdict — always visible, top of page */}
             <VerdictStrip mode={mode} runs={runAggregates} />
 
+            {/* Diagnosis — failure pattern clustering across regressed cases.
+                Renders only when there are regressed rows to analyze. */}
+            {regressedEvidence.cases.length > 0 && (
+              <FailureClusterPanel
+                loserLabel={regressedEvidence.loserLabel}
+                winnerLabel={regressedEvidence.winnerLabel}
+                cases={regressedEvidence.cases}
+                activeCaseFilter={clusterCaseFilter?.caseIds}
+                onClustersChange={setFailureClusters}
+                onFilterByCases={(caseIds, clusterName) => {
+                  // Toggle off if the same cluster is clicked twice.
+                  setClusterCaseFilter(prev =>
+                    prev && prev.clusterName === clusterName ? null : { caseIds, clusterName }
+                  );
+                }}
+              />
+            )}
+
             {/* Detailed metrics — power-user surface, collapsed by default */}
             <Collapsible open={summaryOpen} onOpenChange={setSummaryOpen}>
               <CollapsibleTrigger asChild>
@@ -550,6 +669,17 @@ export const ComparisonPage: React.FC = () => {
                     <Badge variant="outline" className={`cursor-pointer text-[9px] px-2 py-0.5 ${rowStatusFilter === 'neutral' ? 'bg-muted text-muted-foreground' : 'hover:bg-muted/50'}`} onClick={() => setRowStatusFilter('neutral')}>
                       {rowStatusCounts.neutral} unchanged
                     </Badge>
+                    {clusterCaseFilter && (
+                      <Badge
+                        variant="outline"
+                        className="cursor-pointer text-[9px] px-2 py-0.5 border-purple-500/30 bg-purple-500/10 text-purple-300 inline-flex items-center gap-1"
+                        onClick={() => setClusterCaseFilter(null)}
+                        title="Click to clear cluster filter"
+                      >
+                        Cluster: {clusterCaseFilter.clusterName}
+                        <X size={9} />
+                      </Badge>
+                    )}
                   </div>
                 </div>
                 <p className="text-[10px] text-muted-foreground">Click a row to expand the side-by-side diff</p>
@@ -571,6 +701,7 @@ export const ComparisonPage: React.FC = () => {
                 runs={selectedRuns}
                 reports={reports}
                 referenceRunId={referenceRunId}
+                clusterByCaseId={clusterByCaseId}
                 trajectoryRunPair={trajectoryRunPair}
                 trajectoryTargetTestCase={trajectoryTargetTestCase}
                 onTrajectoryRequest={(testCaseId) => {

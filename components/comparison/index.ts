@@ -12,6 +12,7 @@ export { VersionIndicator } from './VersionIndicator';
 export { UseCaseExpandedRow } from './UseCaseExpandedRow';
 export { ModeToggle } from './ModeToggle';
 export { VerdictStrip } from './VerdictStrip';
+export { FailureClusterPanel, getClusterDotColor, CLUSTER_DOT_COLORS } from './FailureClusterPanel';
 
 // Sections
 export { TrajectorySection } from './sections/TrajectorySection';

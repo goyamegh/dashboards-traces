@@ -27,6 +27,7 @@ import sessionAnnotationsRoutes from './sessionAnnotations';
 import { codingAnalyticsEnabled } from '../services/codingAgents';
 import assistantRoutes from './assistant';
 import skillsRoutes from './skills';
+import comparisonClusterRoutes from './comparisonCluster';
 
 const router = Router();
 
@@ -51,6 +52,7 @@ router.use(evaluationRoutes);    // /api/evaluate
 router.use(debugRoutes);         // /api/debug
 router.use(assistantRoutes);     // /api/assistant/*
 router.use(skillsRoutes);        // /api/skills/*
+router.use(comparisonClusterRoutes); // /api/comparison/cluster-failures
 
 // Coding Agent Analytics — only mount when feature is enabled
 if (codingAnalyticsEnabled) {

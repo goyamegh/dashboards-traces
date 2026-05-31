@@ -25,6 +25,7 @@ import { calculateRowStatus, calculateCombinedScore, RowStatus } from '@/service
 import { extractFirstDivergence } from '@/services/trajectoryDiffService';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { ArrowRightLeft, Plus, Minus } from 'lucide-react';
+import { getClusterDotColor } from './FailureClusterPanel';
 
 // Helper to get agent display name from key
 const getAgentName = (agentKey: string): string => {
@@ -141,6 +142,8 @@ interface UseCaseComparisonTableProps {
   reports: Record<string, EvaluationReport>;
   referenceRunId?: string;
   visibleEvaluators?: Set<EvaluatorType>;
+  /** Map of testCaseId → cluster index, used to draw a colored dot per row */
+  clusterByCaseId?: Map<string, number>;
   trajectoryRunPair?: [string, string] | null;
   trajectoryTargetTestCase?: string | null;
   onTrajectoryRequest?: (testCaseId: string) => void;
@@ -159,6 +162,7 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
   reports,
   referenceRunId: propReferenceRunId,
   visibleEvaluators,
+  clusterByCaseId,
   onTrajectoryRequest,
 }) => {
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
@@ -237,6 +241,14 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
                         </div>
                         <div className="space-y-1 min-w-0">
                           <div className="flex items-center gap-2">
+                            {clusterByCaseId?.has(row.testCaseId) && (
+                              <span
+                                className="inline-block h-2 w-2 rounded-full shrink-0"
+                                style={{ backgroundColor: getClusterDotColor(clusterByCaseId.get(row.testCaseId) ?? 0) }}
+                                title="Part of a failure pattern cluster"
+                                aria-hidden
+                              />
+                            )}
                             <Link
                               to={`/evals3/test-cases/${row.testCaseId}`}
                               className="font-medium truncate max-w-48 hover:underline text-foreground"
