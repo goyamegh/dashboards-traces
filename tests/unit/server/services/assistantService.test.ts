@@ -19,6 +19,12 @@ jest.mock('fs', () => ({
   existsSync: jest.fn().mockReturnValue(true),
 }));
 
+// Mock crypto.randomUUID for deterministic session ids
+jest.mock('crypto', () => ({
+  ...jest.requireActual('crypto'),
+  randomUUID: jest.fn().mockReturnValue('00000000-0000-4000-8000-000000000000'),
+}));
+
 // Mock config loader
 jest.mock('@/lib/config/index', () => ({
   loadConfigSync: jest.fn().mockReturnValue({
@@ -44,8 +50,20 @@ jest.mock('@/server/config/index', () => ({
 }));
 
 // Mock debug
-jest.mock('@/lib/debug', () => ({
-  debug: jest.fn(),
+jest.mock('@/lib/debug', () => ({ debug: jest.fn() }));
+
+// Mock storage modules used by loadContextSnapshot
+const mockGetReportById = jest.fn();
+const mockGetTestCaseById = jest.fn();
+const mockGetBenchmarkById = jest.fn();
+jest.mock('@/services/storage/asyncRunStorage', () => ({
+  asyncRunStorage: { getReportById: (...a: any[]) => mockGetReportById(...a) },
+}));
+jest.mock('@/services/storage/asyncTestCaseStorage', () => ({
+  asyncTestCaseStorage: { getById: (...a: any[]) => mockGetTestCaseById(...a) },
+}));
+jest.mock('@/services/storage/asyncBenchmarkStorage', () => ({
+  asyncBenchmarkStorage: { getById: (...a: any[]) => mockGetBenchmarkById(...a) },
 }));
 
 function createMockProcess() {
@@ -57,300 +75,450 @@ function createMockProcess() {
   return proc;
 }
 
+// Real-shape NDJSON helpers (matches actual `claude --output-format stream-json`).
+function assistantTextLine(text: string): string {
+  return JSON.stringify({
+    type: 'assistant',
+    message: { content: [{ type: 'text', text }] },
+  }) + '\n';
+}
+function resultLine(result: string, extras: Record<string, unknown> = {}): string {
+  return JSON.stringify({ type: 'result', result, ...extras }) + '\n';
+}
+
+/** Wait one microtask + macrotask so async dispatch in streamAssistantResponse runs. */
+async function flushAsync() {
+  await Promise.resolve();
+  await new Promise((r) => setImmediate(r));
+  await Promise.resolve();
+}
+
 describe('AssistantService', () => {
   let assistantService: typeof import('@/server/services/assistantService');
 
   beforeEach(() => {
     jest.clearAllMocks();
     jest.resetModules();
-    // Make claude available by default
     mockExecSync.mockReturnValue('claude version 1.0.0');
+    mockGetReportById.mockResolvedValue(null);
+    mockGetTestCaseById.mockResolvedValue(null);
+    mockGetBenchmarkById.mockResolvedValue(null);
   });
 
   describe('isClaudeAvailable', () => {
-    it('should return true when claude CLI is found', () => {
+    it('returns true when claude CLI is found', () => {
       mockExecSync.mockReturnValue('claude version 1.0.0');
       assistantService = require('@/server/services/assistantService');
-      const result = assistantService.isClaudeAvailable();
-      expect(result).toBe(true);
+      expect(assistantService.isClaudeAvailable()).toBe(true);
     });
 
-    it('should return false when claude CLI is not found', () => {
+    it('returns false when claude CLI is not found', () => {
       mockExecSync.mockImplementation(() => { throw new Error('command not found'); });
       assistantService = require('@/server/services/assistantService');
-      const result = assistantService.isClaudeAvailable();
-      expect(result).toBe(false);
+      expect(assistantService.isClaudeAvailable()).toBe(false);
     });
   });
 
-  describe('streamAssistantResponse', () => {
-    it('should stream NDJSON deltas from claude CLI', (done) => {
+  describe('streamAssistantResponse — claude CLI', () => {
+    it('streams real-shape NDJSON deltas (parsed.message.content[].text)', (done) => {
       const mockProc = createMockProcess();
       mockSpawn.mockReturnValue(mockProc);
-
       assistantService = require('@/server/services/assistantService');
 
       const deltas: string[] = [];
-
       assistantService.streamAssistantResponse(
-        'test-session',
+        'real-shape',
         'Hello',
         {},
-        (delta: string) => deltas.push(delta),
+        (d: string) => deltas.push(d),
         (full: string) => {
-          expect(deltas).toContain('Hello');
-          expect(deltas).toContain(' world');
-          expect(full).toContain('Hello');
+          expect(deltas).toEqual(['Hello', ' world']);
+          expect(full).toBe('Hello world');
           done();
         },
-        (err: string) => done(new Error(err))
+        (err: string) => done(new Error('unexpected error: ' + err))
       );
 
-      // Simulate NDJSON output
-      mockProc.stdout.emit('data', Buffer.from(
-        '{"type":"assistant","subtype":"text","content":"Hello"}\n' +
-        '{"type":"assistant","subtype":"text","content":" world"}\n'
-      ));
-      mockProc.emit('close', 0);
+      flushAsync().then(() => {
+        mockProc.stdout.emit('data', Buffer.from(assistantTextLine('Hello') + assistantTextLine(' world')));
+        mockProc.emit('close', 0);
+      });
     });
 
-    it('should store messages in session', (done) => {
+    it('emits onError (not onDone) when CLI returns no text', (done) => {
       const mockProc = createMockProcess();
       mockSpawn.mockReturnValue(mockProc);
-
       assistantService = require('@/server/services/assistantService');
 
       assistantService.streamAssistantResponse(
-        'session-store',
-        'Test message',
+        'empty',
+        'Hi',
         undefined,
         () => {},
-        () => {
-          const messages = assistantService.getSessionMessages('session-store');
-          expect(messages).toBeDefined();
-          expect(messages.length).toBeGreaterThanOrEqual(2);
-          // First non-system message should be the user message
-          const userMsg = messages.find((m: any) => m.role === 'user');
-          expect(userMsg).toBeDefined();
-          expect(userMsg!.content).toBe('Test message');
-          done();
-        },
-        (err: string) => done(new Error(err))
-      );
-
-      mockProc.stdout.emit('data', Buffer.from(
-        '{"type":"assistant","subtype":"text","content":"Response"}\n'
-      ));
-      mockProc.emit('close', 0);
-    });
-
-    it('should call onError when process exits with non-zero code', (done) => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc);
-
-      assistantService = require('@/server/services/assistantService');
-
-      assistantService.streamAssistantResponse(
-        'error-session',
-        'Hello',
-        undefined,
-        () => {},
-        () => done(new Error('Should not call onDone')),
+        () => done(new Error('should not call onDone with empty response')),
         (err: string) => {
-          expect(err).toContain('error');
+          expect(err).toMatch(/no text/i);
           done();
         }
       );
 
-      mockProc.stderr.emit('data', Buffer.from('Some error occurred'));
-      mockProc.emit('close', 1);
+      flushAsync().then(() => {
+        mockProc.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'system', subtype: 'init' }) + '\n'));
+        mockProc.emit('close', 0);
+      });
     });
 
-    it('should call onError when process emits ENOENT', (done) => {
+    it('uses --session-id on first turn and --resume on second turn (same sessionId)', async () => {
+      const proc1 = createMockProcess();
+      const proc2 = createMockProcess();
+      mockSpawn.mockReturnValueOnce(proc1).mockReturnValueOnce(proc2);
+      assistantService = require('@/server/services/assistantService');
+
+      // Turn 1
+      const turn1 = new Promise<void>((resolve, reject) => {
+        assistantService.streamAssistantResponse(
+          'continuity',
+          'first message',
+          undefined,
+          () => {},
+          () => resolve(),
+          (err: string) => reject(new Error(err))
+        );
+      });
+      await flushAsync();
+      proc1.stdout.emit('data', Buffer.from(assistantTextLine('reply1')));
+      proc1.emit('close', 0);
+      await turn1;
+
+      // Turn 2
+      const turn2 = new Promise<void>((resolve, reject) => {
+        assistantService.streamAssistantResponse(
+          'continuity',
+          'second message',
+          undefined,
+          () => {},
+          () => resolve(),
+          (err: string) => reject(new Error(err))
+        );
+      });
+      await flushAsync();
+      proc2.stdout.emit('data', Buffer.from(assistantTextLine('reply2')));
+      proc2.emit('close', 0);
+      await turn2;
+
+      const args1: string[] = mockSpawn.mock.calls[0][1];
+      const args2: string[] = mockSpawn.mock.calls[1][1];
+      expect(args1).toContain('--session-id');
+      expect(args1).toContain('00000000-0000-4000-8000-000000000000');
+      expect(args1).not.toContain('--resume');
+      expect(args2).toContain('--resume');
+      expect(args2).toContain('00000000-0000-4000-8000-000000000000');
+      expect(args2).not.toContain('--session-id');
+
+      // Only the latest user message should be sent on stdin (not concatenated history).
+      expect(proc2.stdin.write).toHaveBeenCalledWith('second message');
+    });
+
+    it('strips CLAUDECODE / CLAUDE_CODE_* env vars from the spawned child', async () => {
+      const original = { ...process.env };
+      process.env.CLAUDECODE = '1';
+      process.env.CLAUDE_CODE_SSE_PORT = '12345';
+      process.env.CLAUDE_CODE_ENTRYPOINT = '/usr/bin/claude';
+
       const mockProc = createMockProcess();
       mockSpawn.mockReturnValue(mockProc);
+      assistantService = require('@/server/services/assistantService');
 
+      try {
+        const turn = new Promise<void>((resolve, reject) => {
+          assistantService.streamAssistantResponse(
+            'env-strip',
+            'Hi',
+            undefined,
+            () => {},
+            () => resolve(),
+            (err: string) => reject(new Error(err))
+          );
+        });
+        await flushAsync();
+        mockProc.stdout.emit('data', Buffer.from(assistantTextLine('ok')));
+        mockProc.emit('close', 0);
+        await turn;
+
+        const env = mockSpawn.mock.calls[0][2].env;
+        expect(env).not.toHaveProperty('CLAUDECODE');
+        expect(env).not.toHaveProperty('CLAUDE_CODE_SSE_PORT');
+        expect(env).not.toHaveProperty('CLAUDE_CODE_ENTRYPOINT');
+      } finally {
+        process.env = original;
+      }
+    });
+
+    it('appends a denial note when result.permission_denials is non-empty', async () => {
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
+      assistantService = require('@/server/services/assistantService');
+
+      let fullResponse = '';
+      const turn = new Promise<void>((resolve, reject) => {
+        assistantService.streamAssistantResponse(
+          'denials',
+          'Do something',
+          undefined,
+          () => {},
+          (full: string) => { fullResponse = full; resolve(); },
+          (err: string) => reject(new Error(err))
+        );
+      });
+      await flushAsync();
+
+      mockProc.stdout.emit('data', Buffer.from(
+        assistantTextLine('Sure thing.') +
+        resultLine('Sure thing.', { permission_denials: [{ tool_name: 'Bash' }] })
+      ));
+      mockProc.emit('close', 0);
+      await turn;
+
+      expect(fullResponse).toContain('1 tool call(s) were denied');
+      expect(fullResponse).toContain('Bash');
+    });
+
+    it('inherits AWS_PROFILE / AWS_REGION', async () => {
+      const original = { profile: process.env.AWS_PROFILE, region: process.env.AWS_REGION };
+      process.env.AWS_PROFILE = 'test-profile';
+      process.env.AWS_REGION = 'us-west-2';
+
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
+      assistantService = require('@/server/services/assistantService');
+
+      try {
+        const turn = new Promise<void>((resolve, reject) => {
+          assistantService.streamAssistantResponse(
+            'aws',
+            'Hi',
+            undefined,
+            () => {},
+            () => resolve(),
+            (err: string) => reject(new Error(err))
+          );
+        });
+        await flushAsync();
+        mockProc.stdout.emit('data', Buffer.from(assistantTextLine('ok')));
+        mockProc.emit('close', 0);
+        await turn;
+
+        const env = mockSpawn.mock.calls[0][2].env;
+        expect(env.AWS_PROFILE).toBe('test-profile');
+        expect(env.AWS_REGION).toBe('us-west-2');
+      } finally {
+        process.env.AWS_PROFILE = original.profile;
+        process.env.AWS_REGION = original.region;
+      }
+    });
+
+    it('inlines run snapshot from storage into system prompt when runId is provided', async () => {
+      mockGetReportById.mockResolvedValue({
+        id: 'run-123',
+        status: 'completed',
+        passFailStatus: 'failed',
+        metrics: { accuracy: 20 },
+        agentName: 'Claude Code',
+        modelName: 'claude-opus-4-7',
+        testCaseId: 'tc-abc',
+        llmJudgeReasoning: 'The agent did not produce a final response.',
+        improvementStrategies: [],
+        trajectory: [{ type: 'thinking', content: 'reasoning step' } as any],
+      });
+      mockGetTestCaseById.mockResolvedValue({
+        id: 'tc-abc',
+        name: 'Investigate ticket',
+        description: 'desc',
+        labels: ['category:RCA'],
+        currentVersion: 3,
+        initialPrompt: 'do the thing',
+        versions: [{ expectedOutcomes: 'final response with next steps' } as any],
+      });
+
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
+      assistantService = require('@/server/services/assistantService');
+
+      const turn = new Promise<void>((resolve, reject) => {
+        assistantService.streamAssistantResponse(
+          'snap',
+          'Why did this fail?',
+          { runId: 'run-123', currentUrl: '/runs/run-123' },
+          () => {},
+          () => resolve(),
+          (err: string) => reject(new Error(err))
+        );
+      });
+      await flushAsync();
+      mockProc.stdout.emit('data', Buffer.from(assistantTextLine('ok')));
+      mockProc.emit('close', 0);
+      await turn;
+
+      const args: string[] = mockSpawn.mock.calls[0][1];
+      const idx = args.indexOf('--append-system-prompt');
+      const sysPrompt = args[idx + 1];
+
+      expect(sysPrompt).toContain('Live Data Snapshot');
+      expect(sysPrompt).toContain('run-123');
+      expect(sysPrompt).toContain('did not produce a final response');
+      expect(sysPrompt).toContain('Investigate ticket');
+      expect(sysPrompt).toContain('expectedOutcomes');
+      expect(mockGetReportById).toHaveBeenCalledWith('run-123');
+      // Test case fetched via run.testCaseId fallback
+      expect(mockGetTestCaseById).toHaveBeenCalledWith('tc-abc');
+    });
+
+    it('reassembles partial NDJSON lines across data chunks', (done) => {
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
+      assistantService = require('@/server/services/assistantService');
+
+      const deltas: string[] = [];
+      assistantService.streamAssistantResponse(
+        'partial',
+        'Hi',
+        undefined,
+        (d: string) => deltas.push(d),
+        () => {
+          expect(deltas).toEqual(['chunk1']);
+          done();
+        },
+        (err: string) => done(new Error(err))
+      );
+
+      flushAsync().then(() => {
+        const line = assistantTextLine('chunk1');
+        // Split mid-line
+        mockProc.stdout.emit('data', Buffer.from(line.slice(0, 30)));
+        mockProc.stdout.emit('data', Buffer.from(line.slice(30)));
+        mockProc.emit('close', 0);
+      });
+    });
+
+    it('calls onError on non-zero exit', (done) => {
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
       assistantService = require('@/server/services/assistantService');
 
       assistantService.streamAssistantResponse(
-        'enoent-session',
-        'Hello',
+        'err',
+        'Hi',
         undefined,
         () => {},
-        () => done(new Error('Should not call onDone')),
+        () => done(new Error('should not call onDone')),
+        (err: string) => {
+          expect(err).toContain('boom');
+          done();
+        }
+      );
+
+      flushAsync().then(() => {
+        mockProc.stderr.emit('data', Buffer.from('boom'));
+        mockProc.emit('close', 1);
+      });
+    });
+
+    it('reports ENOENT clearly', (done) => {
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
+      assistantService = require('@/server/services/assistantService');
+
+      assistantService.streamAssistantResponse(
+        'enoent',
+        'Hi',
+        undefined,
+        () => {},
+        () => done(new Error('should not call onDone')),
         (err: string) => {
           expect(err).toContain('not found');
           done();
         }
       );
 
-      const error = new Error('spawn ENOENT') as NodeJS.ErrnoException;
-      error.code = 'ENOENT';
-      mockProc.emit('error', error);
-    });
-
-    it('should inherit AWS_PROFILE from environment', (done) => {
-      const originalProfile = process.env.AWS_PROFILE;
-      const originalRegion = process.env.AWS_REGION;
-      process.env.AWS_PROFILE = 'test-profile';
-      process.env.AWS_REGION = 'us-west-2';
-
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc);
-
-      assistantService = require('@/server/services/assistantService');
-
-      assistantService.streamAssistantResponse(
-        'aws-session',
-        'Hello',
-        undefined,
-        () => {},
-        () => {
-          const spawnCall = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1];
-          expect(spawnCall[2].env.AWS_PROFILE).toBe('test-profile');
-          expect(spawnCall[2].env.AWS_REGION).toBe('us-west-2');
-
-          process.env.AWS_PROFILE = originalProfile;
-          process.env.AWS_REGION = originalRegion;
-          done();
-        },
-        (err: string) => { process.env.AWS_PROFILE = originalProfile; process.env.AWS_REGION = originalRegion; done(new Error(err)); }
-      );
-
-      mockProc.stdout.emit('data', Buffer.from('{"type":"assistant","subtype":"text","content":"ok"}\n'));
-      mockProc.emit('close', 0);
-    });
-
-    it('should include system prompt with AGENT_HEALTH.md content', (done) => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc);
-
-      assistantService = require('@/server/services/assistantService');
-
-      assistantService.streamAssistantResponse(
-        'prompt-session',
-        'Hello',
-        undefined,
-        () => {},
-        () => {
-          const spawnCall = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1];
-          const args: string[] = spawnCall[1];
-          expect(args).toContain('--append-system-prompt');
-          const sysPromptIdx = args.indexOf('--append-system-prompt');
-          expect(args[sysPromptIdx + 1]).toContain('Agent Health');
-          done();
-        },
-        (err: string) => done(new Error(err))
-      );
-
-      mockProc.stdout.emit('data', Buffer.from('{"type":"assistant","subtype":"text","content":"ok"}\n'));
-      mockProc.emit('close', 0);
-    });
-
-    it('should handle partial NDJSON lines correctly', (done) => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc);
-
-      assistantService = require('@/server/services/assistantService');
-
-      const deltas: string[] = [];
-
-      assistantService.streamAssistantResponse(
-        'partial-session',
-        'Hello',
-        undefined,
-        (delta: string) => deltas.push(delta),
-        () => {
-          expect(deltas).toContain('chunk1');
-          done();
-        },
-        (err: string) => done(new Error(err))
-      );
-
-      // Send partial line, then complete it
-      mockProc.stdout.emit('data', Buffer.from('{"type":"assistant","subtype":"tex'));
-      mockProc.stdout.emit('data', Buffer.from('t","content":"chunk1"}\n'));
-      mockProc.emit('close', 0);
-    });
-
-    it('should include page context in system prompt', (done) => {
-      const mockProc = createMockProcess();
-      mockSpawn.mockReturnValue(mockProc);
-
-      assistantService = require('@/server/services/assistantService');
-
-      assistantService.streamAssistantResponse(
-        'context-session',
-        'What is this benchmark?',
-        { currentUrl: '/benchmarks/bench-123', benchmarkId: 'bench-123' },
-        () => {},
-        () => {
-          const spawnCall = mockSpawn.mock.calls[mockSpawn.mock.calls.length - 1];
-          const args: string[] = spawnCall[1];
-          const sysPromptIdx = args.indexOf('--append-system-prompt');
-          if (sysPromptIdx > -1) {
-            const systemPrompt = args[sysPromptIdx + 1];
-            expect(systemPrompt).toContain('bench-123');
-          }
-          done();
-        },
-        (err: string) => done(new Error(err))
-      );
-
-      mockProc.stdout.emit('data', Buffer.from('{"type":"assistant","subtype":"text","content":"ok"}\n'));
-      mockProc.emit('close', 0);
+      flushAsync().then(() => {
+        const e = new Error('spawn ENOENT') as NodeJS.ErrnoException;
+        e.code = 'ENOENT';
+        mockProc.emit('error', e);
+      });
     });
   });
 
-  describe('clearSession', () => {
-    it('should remove session data', (done) => {
+  describe('session management', () => {
+    it('stores user + assistant messages in session', async () => {
       const mockProc = createMockProcess();
       mockSpawn.mockReturnValue(mockProc);
-
       assistantService = require('@/server/services/assistantService');
 
-      assistantService.streamAssistantResponse(
-        'clear-session',
-        'Hello',
-        undefined,
-        () => {},
-        () => {
-          const before = assistantService.getSessionMessages('clear-session');
-          expect(before.length).toBeGreaterThan(0);
-
-          assistantService.clearSession('clear-session');
-          const after = assistantService.getSessionMessages('clear-session');
-          expect(after.length).toBe(0);
-          done();
-        },
-        (err: string) => done(new Error(err))
-      );
-
-      mockProc.stdout.emit('data', Buffer.from('{"type":"assistant","subtype":"text","content":"ok"}\n'));
+      const turn = new Promise<void>((resolve, reject) => {
+        assistantService.streamAssistantResponse(
+          'msgs',
+          'Test message',
+          undefined,
+          () => {},
+          () => resolve(),
+          (err: string) => reject(new Error(err))
+        );
+      });
+      await flushAsync();
+      mockProc.stdout.emit('data', Buffer.from(assistantTextLine('Response')));
       mockProc.emit('close', 0);
+      await turn;
+
+      const messages = assistantService.getSessionMessages('msgs');
+      expect(messages.length).toBe(2);
+      expect(messages[0]).toMatchObject({ role: 'user', content: 'Test message' });
+      expect(messages[1]).toMatchObject({ role: 'assistant', content: 'Response' });
     });
 
-    it('should not throw when clearing non-existent session', () => {
+    it('clearSession removes session data', async () => {
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
       assistantService = require('@/server/services/assistantService');
-      expect(() => assistantService.clearSession('nonexistent')).not.toThrow();
-    });
-  });
 
-  describe('getSessionMessages', () => {
-    it('should return empty array for unknown session', () => {
+      const turn = new Promise<void>((resolve, reject) => {
+        assistantService.streamAssistantResponse(
+          'clr',
+          'Hi',
+          undefined,
+          () => {},
+          () => resolve(),
+          (err: string) => reject(new Error(err))
+        );
+      });
+      await flushAsync();
+      mockProc.stdout.emit('data', Buffer.from(assistantTextLine('ok')));
+      mockProc.emit('close', 0);
+      await turn;
+
+      expect(assistantService.getSessionMessages('clr').length).toBeGreaterThan(0);
+      assistantService.clearSession('clr');
+      expect(assistantService.getSessionMessages('clr')).toEqual([]);
+    });
+
+    it('clearSession on unknown session is a no-op', () => {
       assistantService = require('@/server/services/assistantService');
-      expect(assistantService.getSessionMessages('unknown')).toEqual([]);
+      expect(() => assistantService.clearSession('nope')).not.toThrow();
+    });
+
+    it('getSessionMessages returns [] for unknown session', () => {
+      assistantService = require('@/server/services/assistantService');
+      expect(assistantService.getSessionMessages('nope')).toEqual([]);
     });
   });
 
   describe('buildSystemPrompt', () => {
-    it('should include skill content', () => {
+    it('includes skill content', () => {
       assistantService = require('@/server/services/assistantService');
       const prompt = assistantService.buildSystemPrompt();
       expect(prompt).toContain('Agent Health');
     });
 
-    it('should include context when provided', () => {
+    it('includes context fields when provided', () => {
       assistantService = require('@/server/services/assistantService');
       const prompt = assistantService.buildSystemPrompt({
         currentUrl: '/benchmarks/bench-1',
