@@ -29,10 +29,11 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { asyncBenchmarkStorage, asyncTestCaseStorage } from '@/services/storage';
+import { executeBenchmarkRun } from '@/services/client';
 import { Benchmark, BenchmarkRun, TestCase } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatRelativeTime, getModelName } from '@/lib/utils';
-import { BenchmarkEditor } from '@/components/BenchmarkEditor';
+import { BenchmarkEditor, RunConfigForExecution } from '@/components/BenchmarkEditor';
 import { Breadcrumbs } from '@/components/evals3/Breadcrumbs';
 import { validateTestCasesArrayJson } from '@/lib/testCaseValidation';
 
@@ -101,10 +102,19 @@ interface BenchmarkStats {
   runCount: number; latestRun: BenchmarkRun | null; latestScore: number | null;
   bestScore: number | null; worstScore: number | null; trend: TrendDir;
   passRateHistory: number[]; // pass rates of last N runs, oldest first
+  /**
+   * Epoch ms of the most recent activity, defined as
+   * `max(latestRun.createdAt, benchmark.updatedAt)`.
+   * Used for the default "Last Activity" sort so that newly created/updated
+   * benchmarks (with no completed run yet) don't sink to the bottom.
+   */
+  lastTouched: number;
+  /** Whether the most recent activity was a run completion or a benchmark mutation. */
+  lastTouchedKind: 'run' | 'updated';
 }
 
 // Sort types
-type BmSortField = 'name' | 'tcs' | 'runs' | 'score' | 'best' | 'worst' | 'trend';
+type BmSortField = 'name' | 'tcs' | 'runs' | 'lastTouched' | 'score' | 'best' | 'worst' | 'trend';
 type SortDir = 'asc' | 'desc';
 
 /** Tiny inline sparkline for pass rate trend */
@@ -157,11 +167,16 @@ export const BenchmarksPage4: React.FC = () => {
 
   // Editor/Import state
   const [showEditor, setShowEditor] = useState(false);
+  const [editorError, setEditorError] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [showSampleData, setShowSampleData] = useState<boolean | undefined>(undefined);
 
   // Sort state for Benchmarks tab
-  const [bmSort, setBmSort] = usePersistedState<{ field: BmSortField; dir: SortDir }>('benchmarks:sort', { field: 'runs', dir: 'desc' });
+  // NOTE: storage key bumped from 'benchmarks:sort' to 'benchmarks:sort:v2' so that
+  //       users with a saved 'runs'-desc preference pick up the new "Last Activity"
+  //       default. Existing manual choices (e.g. sort by Name) are reset; this is an
+  //       intentional one-time migration tied to the bug fix that introduced lastTouched.
+  const [bmSort, setBmSort] = usePersistedState<{ field: BmSortField; dir: SortDir }>('benchmarks:sort:v2', { field: 'lastTouched', dir: 'desc' });
 
   const loadData = useCallback(async () => {
     try {
@@ -215,13 +230,23 @@ export const BenchmarksPage4: React.FC = () => {
       const runs = bm.runs || [];
       const scores = runs.map(r => computeScore(r)).filter((s): s is number => s !== null);
       const sorted = [...runs].sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      const latestRun = sorted[0] || null;
+      // "Last Activity" = whichever is more recent: the latest run's createdAt or the
+      // benchmark's own updatedAt (test cases changed, renamed, etc.). Explicitly NOT
+      // createdAt — a brand-new benchmark with no runs is still "touched now" via updatedAt.
+      const latestRunMs = latestRun ? new Date(latestRun.createdAt).getTime() : 0;
+      const updatedMs = bm.updatedAt ? new Date(bm.updatedAt).getTime() : 0;
+      const lastTouched = Math.max(latestRunMs, updatedMs);
+      const lastTouchedKind: 'run' | 'updated' = latestRunMs > updatedMs ? 'run' : 'updated';
       map.set(bm.id, {
-        runCount: runs.length, latestRun: sorted[0] || null,
-        latestScore: sorted[0] ? computeScore(sorted[0]) : null,
+        runCount: runs.length, latestRun,
+        latestScore: latestRun ? computeScore(latestRun) : null,
         bestScore: scores.length > 0 ? Math.max(...scores) : null,
         worstScore: scores.length > 0 ? Math.min(...scores) : null,
         trend: getTrend(runs),
         passRateHistory: sorted.slice(0, 10).reverse().map(r => computeScore(r) ?? 0),
+        lastTouched,
+        lastTouchedKind,
       });
     }
     return map;
@@ -248,6 +273,7 @@ export const BenchmarksPage4: React.FC = () => {
         case 'name': return dir * a.name.localeCompare(b.name);
         case 'tcs': return dir * ((a.testCaseIds || []).length - (b.testCaseIds || []).length);
         case 'runs': return dir * ((sa?.runCount || 0) - (sb?.runCount || 0));
+        case 'lastTouched': return dir * ((sa?.lastTouched || 0) - (sb?.lastTouched || 0));
         case 'score': return dir * ((sa?.latestScore ?? -1) - (sb?.latestScore ?? -1));
         case 'best': return dir * ((sa?.bestScore ?? -1) - (sb?.bestScore ?? -1));
         case 'worst': return dir * ((sa?.worstScore ?? -1) - (sb?.worstScore ?? -1));
@@ -393,7 +419,7 @@ export const BenchmarksPage4: React.FC = () => {
                   <SortHeader label="Name" active={bmSort.field === 'name'} dir={bmSort.dir} onClick={() => handleBmSort('name')} />
                   <SortHeader label="# TCs" active={bmSort.field === 'tcs'} dir={bmSort.dir} onClick={() => handleBmSort('tcs')} className="text-center" />
                   <SortHeader label="Runs" active={bmSort.field === 'runs'} dir={bmSort.dir} onClick={() => handleBmSort('runs')} className="text-center" />
-                  <th className="h-7 px-2 text-left align-middle font-medium text-xs text-muted-foreground bg-background border-b whitespace-nowrap">Last Run</th>
+                  <SortHeader label="Last Activity" active={bmSort.field === 'lastTouched'} dir={bmSort.dir} onClick={() => handleBmSort('lastTouched')} />
                   <SortHeader label="Latest Result" active={bmSort.field === 'score'} dir={bmSort.dir} onClick={() => handleBmSort('score')} className="text-center" />
                   <th className="h-7 px-2 text-center align-middle font-medium text-xs text-muted-foreground bg-background border-b whitespace-nowrap">Trend</th>
                   <th className="h-7 px-2 text-right align-middle font-medium text-xs text-muted-foreground bg-background border-b whitespace-nowrap">Actions</th>
@@ -416,12 +442,30 @@ export const BenchmarksPage4: React.FC = () => {
                         <td className="px-2 py-1.5 align-middle text-center text-[11px]">{(bm.testCaseIds || []).length}</td>
                         <td className="px-2 py-1.5 align-middle text-center text-[11px]">{stats?.runCount || 0}</td>
                         <td className="px-2 py-1.5 align-middle">
-                          {lr ? (
-                            <button className="text-[10px] text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 hover:underline"
-                              onClick={e => { e.stopPropagation(); navigate(`/evaluations/benchmarks/${bm.id}/runs/${lr.id}`); }}>
-                              {formatRelativeTime(lr.createdAt)}
-                            </button>
-                          ) : <span className="text-[10px] text-muted-foreground">—</span>}
+                          {(() => {
+                            // "Last Activity" cell: show whichever signal is more recent.
+                            //  - If the benchmark itself was updated more recently than its last
+                            //    run finished (e.g. just created, or a new test-case version),
+                            //    show "Updated <relative>" so users see why it sorted to the top.
+                            //  - Otherwise behave like before — a clickable link to the latest run.
+                            const kind = stats?.lastTouchedKind ?? (lr ? 'run' : 'updated');
+                            if (kind === 'run' && lr) {
+                              return (
+                                <button className="text-[10px] text-blue-600 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 hover:underline"
+                                  onClick={e => { e.stopPropagation(); navigate(`/evaluations/benchmarks/${bm.id}/runs/${lr.id}`); }}>
+                                  {formatRelativeTime(lr.createdAt)}
+                                </button>
+                              );
+                            }
+                            if (bm.updatedAt) {
+                              return (
+                                <span className="text-[10px] text-muted-foreground" title={new Date(bm.updatedAt).toLocaleString()}>
+                                  Updated {formatRelativeTime(bm.updatedAt)}
+                                </span>
+                              );
+                            }
+                            return <span className="text-[10px] text-muted-foreground">—</span>;
+                          })()}
                         </td>
                         <td className="px-2 py-1.5 align-middle text-center">
                           {lr ? (() => {
@@ -468,10 +512,56 @@ export const BenchmarksPage4: React.FC = () => {
       {showEditor && (
         <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm">
           <div className="fixed inset-4 z-50 overflow-auto bg-background border rounded-lg shadow-lg">
+            {editorError && (
+              <div
+                role="alert"
+                data-testid="benchmark-editor-error"
+                className="sticky top-0 z-10 bg-red-500/10 border-b border-red-500/30 text-red-400 px-4 py-2 text-sm flex items-center justify-between"
+              >
+                <span>Failed to create benchmark: {editorError}</span>
+                <button
+                  onClick={() => setEditorError(null)}
+                  className="ml-4 text-red-400 hover:text-red-300"
+                  aria-label="dismiss error"
+                >×</button>
+              </div>
+            )}
             <BenchmarkEditor
               benchmark={null}
-              onSave={(bm) => { setShowEditor(false); navigate(`/evaluations/benchmarks/${bm.id}/runs`); }}
-              onCancel={() => setShowEditor(false)}
+              onSave={async (bm) => {
+                // Persist before navigating — evals3 wrapper does not auto-save like the legacy page.
+                try {
+                  await asyncBenchmarkStorage.save(bm);
+                } catch (err: any) {
+                  setEditorError(err?.message || String(err));
+                  return; // keep editor open so the user doesn't lose their input
+                }
+                setEditorError(null);
+                setShowEditor(false);
+                loadData();
+                navigate(`/evaluations/benchmarks/${bm.id}/runs`);
+              }}
+              onSaveAndRun={async (bm: Benchmark, runConfigs: RunConfigForExecution[]) => {
+                // 1. Save the benchmark first. On failure, keep the editor open so the form is preserved.
+                try {
+                  await asyncBenchmarkStorage.save(bm);
+                } catch (err: any) {
+                  setEditorError(err?.message || String(err));
+                  return;
+                }
+                setEditorError(null);
+                setShowEditor(false);
+                loadData();
+                // 2. Navigate to the runs page so the user sees in-progress runs as they start.
+                navigate(`/evaluations/benchmarks/${bm.id}/runs`);
+                // 3. Fire all configured runs in the background (server streams via SSE; runs page polls).
+                //    Failures here are surfaced on the runs page — we don't block navigation.
+                for (const rc of runConfigs) {
+                  executeBenchmarkRun(bm.id, rc, () => { /* progress shown on runs page */ })
+                    .catch(e => console.error('[BenchmarksPage4] background run failed:', e));
+                }
+              }}
+              onCancel={() => { setEditorError(null); setShowEditor(false); }}
             />
           </div>
         </div>
