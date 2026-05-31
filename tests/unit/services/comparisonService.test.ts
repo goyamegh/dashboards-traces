@@ -17,6 +17,7 @@ import {
   calculateRowStatus,
   countRowsByStatus,
   getRealTestCaseMeta,
+  detectComparisonMode,
 } from '@/services/comparisonService';
 import {
   BenchmarkRun,
@@ -688,6 +689,57 @@ describe('comparisonService', () => {
       expect(counts.regression).toBe(1);
       expect(counts.neutral).toBe(1);
       expect(counts.mixed).toBe(0);
+    });
+  });
+
+  describe('detectComparisonMode', () => {
+    const buildRun = (id: string, agentKey: string): BenchmarkRun => ({
+      id,
+      name: id,
+      createdAt: '2024-01-01T00:00:00Z',
+      agentKey,
+      modelId: 'model-1',
+      status: 'completed',
+      results: {},
+    });
+
+    it('returns iterate when no runs are selected', () => {
+      expect(detectComparisonMode([])).toBe('iterate');
+    });
+
+    it('returns iterate for a single run', () => {
+      expect(detectComparisonMode([buildRun('r1', 'claude')])).toBe('iterate');
+    });
+
+    it('returns iterate when all runs share the same agentKey', () => {
+      const runs = [
+        buildRun('r1', 'claude'),
+        buildRun('r2', 'claude'),
+        buildRun('r3', 'claude'),
+      ];
+      expect(detectComparisonMode(runs)).toBe('iterate');
+    });
+
+    it('returns compare when runs span multiple agentKeys', () => {
+      const runs = [buildRun('r1', 'claude'), buildRun('r2', 'kiro')];
+      expect(detectComparisonMode(runs)).toBe('compare');
+    });
+
+    it('returns compare when at least two of three runs have distinct agentKeys', () => {
+      const runs = [
+        buildRun('r1', 'claude'),
+        buildRun('r2', 'claude'),
+        buildRun('r3', 'kiro'),
+      ];
+      expect(detectComparisonMode(runs)).toBe('compare');
+    });
+
+    it('treats missing agentKey as iterate', () => {
+      const runs = [
+        { ...buildRun('r1', ''), agentKey: '' },
+        { ...buildRun('r2', ''), agentKey: '' },
+      ];
+      expect(detectComparisonMode(runs)).toBe('iterate');
     });
   });
 });

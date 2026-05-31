@@ -26,6 +26,8 @@ import { AggregateMetricsChart } from './AggregateMetricsChart';
 import { MetricsTimeSeriesChart } from './MetricsTimeSeriesChart';
 import { UseCaseComparisonTable } from './UseCaseComparisonTable';
 import { RunPairSelector } from './RunPairSelector';
+import { ModeToggle } from './ModeToggle';
+import { VerdictStrip } from './VerdictStrip';
 import { Breadcrumbs } from '@/components/evals3/Breadcrumbs';
 import { asyncBenchmarkStorage, asyncRunStorage, asyncTestCaseStorage } from '@/services/storage';
 import {
@@ -37,6 +39,8 @@ import {
   countRowsByStatus,
   calculateRowStatus,
   collectRunIdsFromReports,
+  detectComparisonMode,
+  ComparisonMode,
   RowStatus,
 } from '@/services/comparisonService';
 import { fetchBatchMetrics } from '@/services/metrics';
@@ -174,6 +178,9 @@ export const ComparisonPage: React.FC = () => {
   const [trajectoryTargetTestCase, setTrajectoryTargetTestCase] = useState<string | null>(null);
   const [showRunPairSelector, setShowRunPairSelector] = useState(false);
   const [trajectoryRunPair, setTrajectoryRunPair] = useState<[string, string] | null>(null);
+
+  // User-overridden mode (null means use detected mode)
+  const [modeOverride, setModeOverride] = useState<ComparisonMode | null>(null);
 
   // Load all benchmarks and test cases
   useEffect(() => {
@@ -321,6 +328,9 @@ export const ComparisonPage: React.FC = () => {
 
   const selectedRuns = useMemo((): BenchmarkRun[] => allRuns.filter(r => selectedRunIds.includes(r.id)), [allRuns, selectedRunIds]);
 
+  const detectedMode = useMemo((): ComparisonMode => detectComparisonMode(selectedRuns), [selectedRuns]);
+  const mode: ComparisonMode = modeOverride ?? detectedMode;
+
   const runAggregates = useMemo((): RunAggregateMetrics[] => {
     return selectedRuns.map(run => {
       const base = calculateRunAggregates(run, reports);
@@ -434,6 +444,11 @@ export const ComparisonPage: React.FC = () => {
             </SelectContent>
           </Select>
           <RunMultiSelect runs={allRuns} selectedIds={selectedRunIds} onToggle={toggleRun} onSelectAll={(ids) => updateSelection(ids)} />
+          <ModeToggle
+            mode={mode}
+            detectedMode={detectedMode}
+            onChange={(m) => setModeOverride(m === detectedMode ? null : m)}
+          />
           <div className="ml-auto flex items-center gap-2">
             <Select value={categoryFilter} onValueChange={(v) => setCategoryFilter(v as Category | 'all')}>
               <SelectTrigger className="w-32 h-7 text-xs"><SelectValue placeholder="Category" /></SelectTrigger>
@@ -467,29 +482,39 @@ export const ComparisonPage: React.FC = () => {
               </div>
             )}
 
-            {/* Compare Summary — collapsible, collapsed by default */}
+            {/* Verdict — always visible, top of page */}
+            <VerdictStrip mode={mode} runs={runAggregates} />
+
+            {/* Detailed metrics — power-user surface, collapsed by default */}
             <Collapsible open={summaryOpen} onOpenChange={setSummaryOpen}>
               <CollapsibleTrigger asChild>
                 <button className="flex items-center gap-2 w-full text-left px-3 py-2 rounded-lg border border-border/50 hover:bg-muted/30 transition-colors">
                   <ChevronRight size={14} className={`text-muted-foreground transition-transform ${summaryOpen ? 'rotate-90' : ''}`} />
-                  <span className="text-xs font-medium">Compare Summary</span>
+                  <span className="text-xs font-medium">Detailed metrics</span>
                   {!summaryOpen && (
                     <span className="text-[10px] text-muted-foreground ml-1">
-                      {runAggregates.map(a => `${a.runName}: ${a.passRatePercent}%`).join(' · ')}
+                      Full table, radar, and time-series breakdown
                     </span>
                   )}
                 </button>
               </CollapsibleTrigger>
               <CollapsibleContent className="space-y-3 mt-2">
                 <RunSummaryTable runs={runAggregates} referenceRunId={referenceRunId} />
-                <div className="flex flex-col md:flex-row gap-4">
-                  <div className="w-full md:w-[400px] flex-shrink-0">
+                {mode === 'iterate' && (
+                  <div className="flex flex-col md:flex-row gap-4">
+                    <div className="w-full md:w-[400px] flex-shrink-0">
+                      <AggregateMetricsChart runs={runAggregates} height={240} referenceRunId={referenceRunId} />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <MetricsTimeSeriesChart runs={runAggregates} height={240} />
+                    </div>
+                  </div>
+                )}
+                {mode === 'compare' && (
+                  <div className="w-full md:w-[400px]">
                     <AggregateMetricsChart runs={runAggregates} height={240} referenceRunId={referenceRunId} />
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <MetricsTimeSeriesChart runs={runAggregates} height={240} />
-                  </div>
-                </div>
+                )}
               </CollapsibleContent>
             </Collapsible>
 

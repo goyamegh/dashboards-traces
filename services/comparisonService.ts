@@ -339,6 +339,30 @@ export function calculateRowStatus(
 }
 
 /**
+ * Comparison mode — drives whether the page asks
+ * "why is one agent better?" (compare) or
+ * "is my agent improving?" (iterate).
+ *
+ * - 'compare':  ≥2 distinct agentKeys across the selected runs.
+ * - 'iterate':  all runs share one agentKey (a sequence of attempts).
+ */
+export type ComparisonMode = 'compare' | 'iterate';
+
+/**
+ * Detect the comparison mode from the selected runs.
+ * Empty / single-run selections fall back to 'iterate' so that downstream
+ * components have a deterministic mode to render against.
+ */
+export function detectComparisonMode(runs: ExperimentRun[]): ComparisonMode {
+  if (runs.length < 2) return 'iterate';
+  const agentKeys = new Set<string>();
+  for (const run of runs) {
+    if (run.agentKey) agentKeys.add(run.agentKey);
+  }
+  return agentKeys.size >= 2 ? 'compare' : 'iterate';
+}
+
+/**
  * Count rows by status for summary display
  */
 export function countRowsByStatus(
