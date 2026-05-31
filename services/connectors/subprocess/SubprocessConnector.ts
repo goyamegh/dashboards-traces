@@ -79,6 +79,24 @@ export class SubprocessConnector extends BaseConnector {
     onRawEvent?: ConnectorRawEventCallback
   ): Promise<ConnectorResponse> {
     this.debug('========== execute() STARTED ==========');
+
+    // Reset per-run streaming state so consecutive calls don't bleed.
+    this.streamBuffer = [];
+
+    // Apply per-request connectorConfig overrides (from agent-health.config.ts).
+    // The base SubprocessConnector previously ignored these and only used the
+    // constructor defaults. Specialized subclasses (ClaudeCode, Pi) already do
+    // this — we replicate the pattern here so any agent registered with
+    // connectorType: 'subprocess' can specify command/args/inputMode/etc.
+    const cfgOverride = (request.connectorConfig || {}) as Partial<SubprocessConfig>;
+    if (cfgOverride.command !== undefined) this.config.command = cfgOverride.command as string;
+    if (cfgOverride.args !== undefined) this.config.args = cfgOverride.args as string[];
+    if (cfgOverride.env !== undefined) this.config.env = { ...(this.config.env || {}), ...(cfgOverride.env as Record<string, string>) };
+    if (cfgOverride.inputMode !== undefined) this.config.inputMode = cfgOverride.inputMode as any;
+    if (cfgOverride.outputParser !== undefined) this.config.outputParser = cfgOverride.outputParser as any;
+    if (cfgOverride.timeout !== undefined) this.config.timeout = cfgOverride.timeout as number;
+    if (cfgOverride.workingDir !== undefined) this.config.workingDir = cfgOverride.workingDir as string;
+
     const command = endpoint || this.config.command;
     const args = this.config.args || [];
     // Use pre-built payload from hook if available, otherwise build fresh
@@ -113,9 +131,18 @@ export class SubprocessConnector extends BaseConnector {
       let stderr = '';
       let settled = false;
 
-      // Build final args (add input as argument if inputMode is 'arg')
+      // Build final args (add input as argument if inputMode is 'arg').
+      //
+      // We spawn with `shell: true` so the args are re-joined into a single
+      // command line by /bin/sh. That means we MUST shell-quote the prompt
+      // string ourselves — otherwise spaces in the prompt cause it to be
+      // word-split by the shell, and the child binary sees multiple
+      // arguments instead of one. (e.g. "/cp-oncall investigate <url>"
+      // would arrive as 3 args, breaking CLIs that treat the first
+      // unrecognized token as a subcommand.)
+      const shellQuote = (s: string): string => `'${String(s).replace(/'/g, `'\\''`)}'`;
       const finalArgs = this.config.inputMode === 'arg'
-        ? [...args, input]
+        ? [...args, shellQuote(input)]
         : args;
 
       this.debug('Spawning process...');
@@ -250,32 +277,67 @@ export class SubprocessConnector extends BaseConnector {
     this.debug('========== execute() COMPLETED ==========');
   }
 
-  /**
-   * Hook called before returning the streaming trajectory on process close.
-   * Subclasses can override to flush internal buffers.
-   */
-  protected onBeforeStreamEnd(
-    _trajectory: TrajectoryStep[],
-    _onProgress?: ConnectorProgressCallback
-  ): void {
-    // No-op by default
-  }
+  /** Buffer of clean stdout lines accumulated during streaming.
+   *  Used by onBeforeStreamEnd() to emit a consolidated `response` step. */
+  private streamBuffer: string[] = [];
 
   /**
-   * Parse streaming output and emit steps in real-time
+   * Parse streaming output and emit steps in real-time.
+   *
+   * For plain-text CLIs (Kiro etc.) we:
+   *   1. strip ANSI escape codes (color, cursor moves, spinner frames)
+   *   2. drop lines that are empty / pure control characters / spinner glyphs
+   *   3. emit each surviving line as an `assistant` step immediately
+   *   4. buffer the cleaned text so `onBeforeStreamEnd()` can emit a final
+   *      `response` step containing the full coherent answer (good for the
+   *      judge) — without losing the live stream.
    */
   protected parseStreamingOutput(
     chunk: string,
     trajectory: TrajectoryStep[],
     onProgress?: ConnectorProgressCallback
   ): void {
-    // Default implementation treats each line as potential output
-    // Subclasses can override for protocol-specific parsing
-    const lines = chunk.split('\n').filter(line => line.trim());
-    for (const line of lines) {
+    // Strip ANSI: CSI sequences (\x1b[...m, cursor moves, etc.) and OSC
+    const stripped = chunk
+      .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')   // OSC ... BEL
+      .replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '')            // CSI
+      .replace(/\x1b[=>NOP\\]/g, '')                     // single-char escapes
+      .replace(/\r/g, '\n');                             // normalize CR to NL
+
+    const lines = stripped.split('\n');
+    for (const raw of lines) {
+      // Drop control chars, BEL, spinner braille glyphs, and trim
+      const line = raw.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').trim();
+      if (!line) continue;
+      // Skip pure-spinner lines (just braille dots / progress glyphs)
+      if (/^[⠁-⣿\s]+$/.test(line)) continue;
+      // Skip very short lines that are likely artifacts
+      if (line.length < 2 && !/[A-Za-z0-9]/.test(line)) continue;
+
+      this.streamBuffer.push(line);
       const step = this.createStep('assistant', line);
       trajectory.push(step);
       onProgress?.(step);
+    }
+  }
+
+  /**
+   * On stream end: emit a consolidated `response` step containing the full
+   * clean output. Streaming gave the user real-time visibility; this final
+   * step gives the judge a single coherent answer to grade against.
+   */
+  protected onBeforeStreamEnd(
+    trajectory: TrajectoryStep[],
+    onProgress?: ConnectorProgressCallback
+  ): void {
+    if (this.streamBuffer.length > 0) {
+      const finalText = this.streamBuffer.join('\n').trim();
+      this.streamBuffer = [];
+      if (finalText) {
+        const step = this.createStep('response', finalText);
+        trajectory.push(step);
+        onProgress?.(step);
+      }
     }
   }
 
