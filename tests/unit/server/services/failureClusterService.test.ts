@@ -20,6 +20,8 @@ jest.mock('@aws-sdk/client-bedrock-runtime', () => ({
 
 import {
   clusterFailures,
+  getClusterById,
+  clusterId,
   _resetClusterCache,
 } from '@/server/services/failureClusterService';
 
@@ -173,6 +175,34 @@ CLUSTERS_JSON_END`)
     });
 
     expect(result.clusters[0].clusterType).toBe('other');
+  });
+
+  it('exposes returned clusters via getClusterById and assigns stable ids', async () => {
+    sendMock.mockResolvedValue(buildResponse(validJson));
+
+    const result = await clusterFailures({
+      loserLabel: 'Claude',
+      winnerLabel: 'Kiro',
+      cases: [
+        { caseId: 'cp-1', judgeReasoning: 'wrong region' },
+        { caseId: 'cp-2', judgeReasoning: 'wrong region' },
+      ],
+    });
+
+    expect(result.clusters[0].id).toBeTruthy();
+    const expectedId = clusterId(result.clusters[0]);
+    expect(result.clusters[0].id).toBe(expectedId);
+
+    const fetched = getClusterById(result.clusters[0].id);
+    expect(fetched).toBeDefined();
+    expect(fetched!.name).toBe('Wrong region shortcode');
+    expect(fetched!.caseIds).toEqual(['cp-1', 'cp-2']);
+    expect(fetched!.loserLabel).toBe('Claude');
+    expect(fetched!.winnerLabel).toBe('Kiro');
+  });
+
+  it('returns undefined from getClusterById for unknown ids', () => {
+    expect(getClusterById('c-doesnotexist')).toBeUndefined();
   });
 
   it('skips clusters that reference no valid case IDs', async () => {

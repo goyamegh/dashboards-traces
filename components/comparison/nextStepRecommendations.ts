@@ -69,7 +69,7 @@ const ACTIONS_BY_CLUSTER: Record<ClusterType, NextStepAction[]> = {
       sublabel: 'Write a Skill so it knows the missing facts',
       featureArea: 'skills',
       target: { kind: 'route-with-state', path: '/skills', stateKey: 'fromCluster' },
-      status: 'coming-soon',
+      status: 'ready',
     },
     {
       id: 'inspect-trace-knowledge',
@@ -84,8 +84,8 @@ const ACTIONS_BY_CLUSTER: Record<ClusterType, NextStepAction[]> = {
       label: 'Try a stronger model',
       sublabel: 'Re-run the failing cases on a different model',
       featureArea: 'model-pick',
-      target: { kind: 'modal', modalKey: 'quick-run' },
-      status: 'coming-soon',
+      target: { kind: 'route-with-state', path: '/evaluations/runs/new', stateKey: 'fromCluster' },
+      status: 'ready',
     },
   ],
   tool_gap: [
@@ -94,7 +94,7 @@ const ACTIONS_BY_CLUSTER: Record<ClusterType, NextStepAction[]> = {
       label: 'Give it the missing tool',
       sublabel: 'Add or fix a connector / endpoint in Settings',
       featureArea: 'connectors',
-      target: { kind: 'route', path: '/settings' },
+      target: { kind: 'route-with-state', path: '/settings', stateKey: 'fromCluster' },
       status: 'ready',
     },
     {
@@ -120,8 +120,8 @@ const ACTIONS_BY_CLUSTER: Record<ClusterType, NextStepAction[]> = {
       label: 'Try a stronger model',
       sublabel: 'Re-run the failing cases on a different model',
       featureArea: 'model-pick',
-      target: { kind: 'modal', modalKey: 'quick-run' },
-      status: 'coming-soon',
+      target: { kind: 'route-with-state', path: '/evaluations/runs/new', stateKey: 'fromCluster' },
+      status: 'ready',
     },
     {
       id: 'tighten-with-skill',
@@ -129,7 +129,7 @@ const ACTIONS_BY_CLUSTER: Record<ClusterType, NextStepAction[]> = {
       sublabel: 'Write a Skill that nudges multi-step thinking',
       featureArea: 'skills',
       target: { kind: 'route-with-state', path: '/skills', stateKey: 'fromCluster' },
-      status: 'coming-soon',
+      status: 'ready',
     },
     {
       id: 'inspect-trace-reasoning',
@@ -163,7 +163,7 @@ const ACTIONS_BY_CLUSTER: Record<ClusterType, NextStepAction[]> = {
       sublabel: 'Lock in this regression with reproducible cases',
       featureArea: 'test-cases',
       target: { kind: 'route-with-state', path: '/evaluations/test-cases', stateKey: 'fromCluster' },
-      status: 'coming-soon',
+      status: 'ready',
     },
   ],
 };

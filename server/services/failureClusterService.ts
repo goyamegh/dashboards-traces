@@ -37,6 +37,8 @@ export interface FailureCaseEvidence {
 export type ClusterType = 'knowledge' | 'tool_gap' | 'reasoning' | 'other';
 
 export interface FailureCluster {
+  /** Stable content-derived id; lookupable via getClusterById() */
+  id: string;
   /** Short, human-readable name (e.g. "Wrong region shortcode") */
   name: string;
   /** One-sentence root-cause summary */
@@ -80,18 +82,36 @@ const bedrockClient = new BedrockRuntimeClient({
   region: config.AWS_REGION,
 });
 
-// ─── In-memory cache ──────────────────────────────────────────────────────
-// Keyed by a content fingerprint of the regressed case set. Lifetime is
-// the server process — cleared on restart. If two callers fingerprint the
-// same way, they get the same answer.
+// ─── In-memory caches ─────────────────────────────────────────────────────
+// 1. Result cache — keyed by a content fingerprint of the regressed-case
+//    input. Same evidence in → same clusters out without a re-LLM call.
+// 2. Cluster-by-id cache — every cluster the LLM returned, keyed by a
+//    short stable hash of (cluster name + caseIds + summary). Lets receiving
+//    pages (Skills, Settings, etc.) fetch a cluster's context by id when the
+//    user clicks a next-step button, without the URL carrying full state.
 
 interface CacheEntry {
   result: ClusterFailuresResult;
   computedAt: number;
 }
 
+export interface ClusterContextRecord {
+  id: string;
+  name: string;
+  summary: string;
+  clusterType: 'knowledge' | 'tool_gap' | 'reasoning' | 'other';
+  caseIds: string[];
+  exampleEvidence?: string;
+  /** The labels the cluster was producing failures around (e.g. agent names) */
+  loserLabel: string;
+  winnerLabel: string;
+  storedAt: number;
+}
+
 const cache = new Map<string, CacheEntry>();
+const clusterById = new Map<string, ClusterContextRecord>();
 const CACHE_MAX_ENTRIES = 200;
+const CLUSTER_BY_ID_MAX = 1000;
 
 function fingerprint(input: ClusterFailuresInput): string {
   const ids = input.cases.map(c => c.caseId).sort();
@@ -100,6 +120,27 @@ function fingerprint(input: ClusterFailuresInput): string {
     .sort()
     .join('|');
   return `${input.loserLabel}::${input.winnerLabel}::${ids.join(',')}::${reasoningHash}`;
+}
+
+/**
+ * Stable id for a cluster — short hash over content. Same cluster content
+ * always maps to the same id, so re-runs return identical receiving-page URLs.
+ */
+export function clusterId(cluster: { name: string; caseIds: string[]; summary: string }): string {
+  const seed = `${cluster.name}|${cluster.summary}|${[...cluster.caseIds].sort().join(',')}`;
+  // Cheap deterministic FNV-1a 32-bit; we don't need crypto strength here.
+  let hash = 0x811c9dc5;
+  for (let i = 0; i < seed.length; i++) {
+    hash ^= seed.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return `c-${hash.toString(36)}`;
+}
+
+/** Look up a cluster by id (in-process cache only). Returns undefined if the
+ *  process restarted or the cluster aged out. */
+export function getClusterById(id: string): ClusterContextRecord | undefined {
+  return clusterById.get(id);
 }
 
 // ─── Prompt construction ──────────────────────────────────────────────────
@@ -234,7 +275,14 @@ function parseClusters(
     const clusterType: ClusterType = isValidClusterType(r.clusterType) ? r.clusterType : 'other';
 
     if (!name || !summary || caseIds.length === 0) continue;
-    result.push({ name, summary, caseIds, exampleEvidence, clusterType });
+    result.push({
+      id: clusterId({ name, summary, caseIds }),
+      name,
+      summary,
+      caseIds,
+      exampleEvidence,
+      clusterType,
+    });
   }
 
   return result;
@@ -309,10 +357,30 @@ export async function clusterFailures(
   }
   cache.set(key, { result, computedAt: response.$metadata.attempts ?? 0 });
 
+  // Index every cluster by id so receiving pages can fetch it later by URL.
+  for (const c of clusters) {
+    if (clusterById.size >= CLUSTER_BY_ID_MAX) {
+      const oldestKey = clusterById.keys().next().value;
+      if (oldestKey) clusterById.delete(oldestKey);
+    }
+    clusterById.set(c.id, {
+      id: c.id,
+      name: c.name,
+      summary: c.summary,
+      clusterType: c.clusterType,
+      caseIds: c.caseIds,
+      exampleEvidence: c.exampleEvidence,
+      loserLabel: input.loserLabel,
+      winnerLabel: input.winnerLabel,
+      storedAt: response.$metadata.attempts ?? 0,
+    });
+  }
+
   return result;
 }
 
 /** Test/diagnostic helper. */
 export function _resetClusterCache(): void {
   cache.clear();
+  clusterById.clear();
 }

@@ -151,11 +151,16 @@ const NextStepStrip: React.FC<{ cluster: FailureCluster }> = ({ cluster }) => {
 
   const onActivate = (action: NextStepAction) => {
     if (action.target.kind === 'route') {
-      navigate(action.target.path);
+      // Pass the clusterId as a query param so the receiving page can
+      // optionally fetch context (most read it; some — like /traces — just
+      // navigate generically).
+      const sep = action.target.path.includes('?') ? '&' : '?';
+      navigate(`${action.target.path}${sep}clusterId=${encodeURIComponent(cluster.id)}`);
     } else if (action.target.kind === 'route-with-state') {
-      navigate(action.target.path, {
+      navigate(`${action.target.path}?clusterId=${encodeURIComponent(cluster.id)}`, {
         state: {
           [action.target.stateKey]: {
+            clusterId: cluster.id,
             clusterName: cluster.name,
             clusterSummary: cluster.summary,
             clusterType: cluster.clusterType,
@@ -164,9 +169,20 @@ const NextStepStrip: React.FC<{ cluster: FailureCluster }> = ({ cluster }) => {
         },
       });
     } else {
-      // 'modal' targets aren't wired yet — surfaced as 'coming-soon' in the
-      // catalog so this branch shouldn't fire today. Safety guard:
-      console.warn(`[FailureClusterPanel] No handler for modal target: ${action.target.modalKey}`);
+      // 'modal' — open in-place. Dispatch a custom event the parent page
+      // listens for; keeps this component decoupled from any specific modal.
+      window.dispatchEvent(new CustomEvent('comparison:open-modal', {
+        detail: {
+          modalKey: action.target.modalKey,
+          cluster: {
+            id: cluster.id,
+            name: cluster.name,
+            summary: cluster.summary,
+            clusterType: cluster.clusterType,
+            caseIds: cluster.caseIds,
+          },
+        },
+      }));
     }
   };
 

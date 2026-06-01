@@ -19,6 +19,8 @@ import { usePersistedState } from '@/hooks/usePersistedState';
 import { discoverSkills, validateSkill, browseForSkillFolder, streamSkillEval, getSkillResults, uploadSkillFile } from '@/services/client/skillsApi';
 import type { DiscoveredSkill } from '@/services/client/skillsApi';
 import type { SkillValidationResult, SkillEvalProgressEvent, SkillBenchmarkResult } from '@/types';
+import { useClusterContext } from '@/hooks/useClusterContext';
+import { ClusterContextBanner } from '@/components/comparison/ClusterContextBanner';
 
 type EvalPhase = 'idle' | 'validating' | 'running' | 'done' | 'error';
 
@@ -40,6 +42,11 @@ function PathBreadcrumb({ path }: { path: string }) {
 }
 
 export const SkillsPage: React.FC = () => {
+  // Cluster context — when present, render a banner and let the user
+  // know we've pre-loaded the failing scenario as the focus of their
+  // skill iteration.
+  const { context: clusterContext } = useClusterContext();
+
   // Config inputs
   const [skillPath, setSkillPath] = useState('');
   const [selectedAgent, setSelectedAgent] = usePersistedState<string>(PREFS_KEYS.agentKey, '');
@@ -346,6 +353,10 @@ export const SkillsPage: React.FC = () => {
         </div>
         <Badge variant="outline" className="ml-auto">AgentSkills.io</Badge>
       </div>
+
+      {clusterContext && (
+        <ClusterContextBanner context={clusterContext} />
+      )}
 
       {/* Input Section */}
       <Card>

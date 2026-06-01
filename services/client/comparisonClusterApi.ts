@@ -12,6 +12,8 @@ import type { ImprovementStrategy } from '@/types';
 export type ClusterType = 'knowledge' | 'tool_gap' | 'reasoning' | 'other';
 
 export interface FailureCluster {
+  /** Stable content-derived id; lookupable via fetchClusterById */
+  id: string;
   name: string;
   summary: string;
   caseIds: string[];
@@ -43,6 +45,33 @@ export interface ClusterFailuresResponse {
   clusters: FailureCluster[];
   totalFailures: number;
   modelId: string;
+}
+
+export interface ClusterContextRecord {
+  id: string;
+  name: string;
+  summary: string;
+  clusterType: ClusterType;
+  caseIds: string[];
+  exampleEvidence?: string;
+  loserLabel: string;
+  winnerLabel: string;
+}
+
+/**
+ * Fetch a cluster's context by its stable id (returned in
+ * ClusterFailuresResponse.clusters[].id). Returns null on 404 so callers
+ * can degrade gracefully when the server restarted and the cache is gone.
+ */
+export async function fetchClusterById(
+  clusterId: string
+): Promise<ClusterContextRecord | null> {
+  const response = await fetch(`/api/comparison/clusters/${encodeURIComponent(clusterId)}`);
+  if (response.status === 404) return null;
+  if (!response.ok) {
+    throw new Error(`Failed to fetch cluster ${clusterId}: ${response.status}`);
+  }
+  return response.json();
 }
 
 export async function clusterFailures(

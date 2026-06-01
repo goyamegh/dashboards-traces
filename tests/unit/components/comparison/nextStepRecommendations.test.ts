@@ -89,14 +89,13 @@ describe('nextStepRecommendations', () => {
       expect(b.id).toBe('grade-tool-usage');
     });
 
-    it('promotes a ready action into top-2 when both catalog tops are coming-soon', () => {
-      // reasoning's catalog has try-stronger-model (coming-soon), then
-      // tighten-with-skill (coming-soon), then inspect-trace-reasoning (ready).
-      // The runtime guardrail must promote the trace one so the strip has
-      // at least one clickable button.
-      const [first, second] = getTopTwoNextSteps('reasoning');
-      const anyReady = first.status === 'ready' || second.status === 'ready';
-      expect(anyReady).toBe(true);
+    it('every clusterType has at least one ready action in its top-2', () => {
+      // We never want the strip to show two unclickable buttons.
+      for (const ct of CLUSTER_TYPES) {
+        const top = getTopTwoNextSteps(ct);
+        const anyReady = top.some(a => a.status === 'ready');
+        expect({ ct, anyReady }).toEqual({ ct, anyReady: true });
+      }
     });
   });
 });

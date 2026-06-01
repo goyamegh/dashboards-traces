@@ -27,6 +27,7 @@
 import { Request, Response, Router } from 'express';
 import {
   clusterFailures,
+  getClusterById,
   FailureCaseEvidence,
 } from '../services/failureClusterService';
 import { debug } from '@/lib/debug';
@@ -80,6 +81,30 @@ router.post('/api/comparison/cluster-failures', async (req: Request, res: Respon
     debug('ComparisonCluster', `failed: ${message}`);
     return res.status(500).json({ error: message });
   }
+});
+
+/**
+ * GET /api/comparison/clusters/:clusterId
+ *
+ * Look up a cluster previously returned from /cluster-failures by its
+ * stable content-hash id. Used by receiving pages (Skills, Settings,
+ * QuickRun, TestCases) to read cluster context without the URL carrying
+ * full state.
+ *
+ * Returns 404 if the process restarted (in-memory cache lost) or the id
+ * was never produced. Receiving pages handle 404 by rendering the
+ * generic page (no banner, no pre-fill) so the UX degrades gracefully.
+ */
+router.get('/api/comparison/clusters/:clusterId', (req: Request, res: Response) => {
+  const { clusterId } = req.params;
+  if (!clusterId || typeof clusterId !== 'string') {
+    return res.status(400).json({ error: '`clusterId` path parameter is required' });
+  }
+  const cluster = getClusterById(clusterId);
+  if (!cluster) {
+    return res.status(404).json({ error: `Cluster ${clusterId} not found (cache may have expired)` });
+  }
+  return res.json(cluster);
 });
 
 export default router;
