@@ -176,7 +176,10 @@ export const ComparisonPage: React.FC = () => {
   // State for filters
   const [categoryFilter, setCategoryFilter] = useState<Category | 'all'>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  const [rowStatusFilter, setRowStatusFilter] = useState<RowStatus | 'all'>('all');
+  // 'differences' means "show only the rows where the runs disagree" (regression
+  // | improvement | mixed) — hides 'neutral' rows so failures stand out. Default
+  // to it; the user came here for differences, not to scroll past green checkmarks.
+  const [rowStatusFilter, setRowStatusFilter] = useState<RowStatus | 'all' | 'differences'>('differences');
 
   // Trajectory gating state
   const [trajectoryTargetTestCase, setTrajectoryTargetTestCase] = useState<string | null>(null);
@@ -351,7 +354,21 @@ export const ComparisonPage: React.FC = () => {
           if (tm) { totalTokens += tm.totalTokens || 0; totalInputTokens += tm.inputTokens || 0; totalOutputTokens += tm.outputTokens || 0; totalCostUsd += tm.costUsd || 0; totalDurationMs += tm.durationMs || 0; totalLlmCalls += tm.llmCalls || 0; totalToolCalls += tm.toolCalls || 0; mc++; }
         }
       }
-      return { ...base, totalTokens: mc > 0 ? totalTokens : undefined, totalInputTokens: mc > 0 ? totalInputTokens : undefined, totalOutputTokens: mc > 0 ? totalOutputTokens : undefined, totalCostUsd: mc > 0 ? totalCostUsd : undefined, avgDurationMs: mc > 0 ? Math.round(totalDurationMs / mc) : undefined, totalLlmCalls: mc > 0 ? totalLlmCalls : undefined, totalToolCalls: mc > 0 ? totalToolCalls : undefined };
+      // Fall back to the run-level performance metrics when no traces are
+      // available — prefer real data we already have over showing "0ms" /
+      // "$0.00" (which reads as "this agent costs nothing" in the verdict).
+      const perf = (run as BenchmarkRun & { performanceMetrics?: { avgTestCaseDurationMs?: number; durationMs?: number } }).performanceMetrics;
+      const fallbackAvgDurationMs = perf?.avgTestCaseDurationMs ?? (perf?.durationMs && base.totalTestCases ? Math.round(perf.durationMs / base.totalTestCases) : undefined);
+      return {
+        ...base,
+        totalTokens: mc > 0 ? totalTokens : undefined,
+        totalInputTokens: mc > 0 ? totalInputTokens : undefined,
+        totalOutputTokens: mc > 0 ? totalOutputTokens : undefined,
+        totalCostUsd: mc > 0 ? totalCostUsd : undefined,
+        avgDurationMs: mc > 0 ? Math.round(totalDurationMs / mc) : fallbackAvgDurationMs,
+        totalLlmCalls: mc > 0 ? totalLlmCalls : undefined,
+        totalToolCalls: mc > 0 ? totalToolCalls : undefined,
+      };
     });
   }, [selectedRuns, reports, traceMetricsMap]);
 
@@ -384,13 +401,29 @@ export const ComparisonPage: React.FC = () => {
     let rows = allComparisonRows;
     rows = filterRowsByCategory(rows, categoryFilter);
     rows = filterRowsByStatus(rows, statusFilter, selectedRunIds);
-    if (rowStatusFilter !== 'all') rows = rows.filter(row => calculateRowStatus(row, referenceRunId) === rowStatusFilter);
+    if (rowStatusFilter === 'differences') {
+      rows = rows.filter(row => calculateRowStatus(row, referenceRunId) !== 'neutral');
+    } else if (rowStatusFilter !== 'all') {
+      rows = rows.filter(row => calculateRowStatus(row, referenceRunId) === rowStatusFilter);
+    }
     if (clusterCaseFilter) {
       const allow = new Set(clusterCaseFilter.caseIds);
       rows = rows.filter(row => allow.has(row.testCaseId));
     }
     return rows;
   }, [allComparisonRows, categoryFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId, clusterCaseFilter]);
+
+  // If the filter is 'differences' but there are no differences (all-pass /
+  // all-fail benchmark), automatically show everything so the user isn't
+  // staring at an empty table.
+  useEffect(() => {
+    if (rowStatusFilter !== 'differences') return;
+    const totalDifferences =
+      rowStatusCounts.regression + rowStatusCounts.improvement + rowStatusCounts.mixed;
+    if (totalDifferences === 0 && rowStatusCounts.neutral > 0) {
+      setRowStatusFilter('all');
+    }
+  }, [rowStatusFilter, rowStatusCounts]);
 
   // Build the regressed-case evidence the cluster panel will analyze. Picks
   // a winner/loser per row by combined score, mirroring DivergencePreviewRow
@@ -404,12 +437,24 @@ export const ComparisonPage: React.FC = () => {
     let bestLoserAgent = '';
     let bestWinnerAgent = '';
 
-    const regressedRows = allComparisonRows.filter(row => {
-      const status = calculateRowStatus(row, referenceRunId);
-      return status === 'regression' || status === 'mixed';
+    // We want every row where there's a pass/fail disagreement between
+    // the selected runs — regardless of which is the baseline. The cluster
+    // story is "the LOSER failed where the WINNER passed", so we collect
+    // any row where at least one run failed AND at least one passed.
+    const disagreementRows = allComparisonRows.filter(row => {
+      const completed = selectedRuns.filter(r => row.results[r.id]?.status === 'completed');
+      if (completed.length < 2) return false;
+      let anyPassed = false;
+      let anyFailed = false;
+      for (const r of completed) {
+        const result = row.results[r.id];
+        if (result?.passFailStatus === 'passed') anyPassed = true;
+        if (result?.passFailStatus === 'failed') anyFailed = true;
+      }
+      return anyPassed && anyFailed;
     });
 
-    for (const row of regressedRows) {
+    for (const row of disagreementRows) {
       const completed = selectedRuns.filter(r => row.results[r.id]?.status === 'completed');
       if (completed.length < 2) continue;
 
@@ -644,12 +689,26 @@ export const ComparisonPage: React.FC = () => {
                 <div className="flex items-center gap-2 mb-1">
                   <h2 className="text-sm font-semibold">Table Compare</h2>
                   <div className="flex items-center gap-1 ml-2">
+                    {(() => {
+                      const totalDiffs =
+                        rowStatusCounts.regression + rowStatusCounts.improvement + rowStatusCounts.mixed;
+                      return (
+                        <Badge
+                          variant="outline"
+                          className={`cursor-pointer text-[9px] px-2 py-0.5 transition-colors ${rowStatusFilter === 'differences' ? 'bg-primary/20 border-primary text-primary' : 'hover:bg-muted'}`}
+                          onClick={() => setRowStatusFilter('differences')}
+                          title="Show only the rows where the runs disagree"
+                        >
+                          {totalDiffs} differences
+                        </Badge>
+                      );
+                    })()}
                     <Badge
                       variant="outline"
                       className={`cursor-pointer text-[9px] px-2 py-0.5 transition-colors ${rowStatusFilter === 'all' ? 'bg-primary/20 border-primary text-primary' : 'hover:bg-muted'}`}
                       onClick={() => setRowStatusFilter('all')}
                     >
-                      All test cases
+                      Show all ({allComparisonRows.length})
                     </Badge>
                     {rowStatusCounts.regression > 0 && (
                       <Badge variant="outline" className={`cursor-pointer text-[9px] px-2 py-0.5 border-red-500/30 ${rowStatusFilter === 'regression' ? 'bg-red-500/10 text-red-400' : 'hover:bg-red-500/5'}`} onClick={() => setRowStatusFilter('regression')}>
@@ -666,9 +725,6 @@ export const ComparisonPage: React.FC = () => {
                         {rowStatusCounts.mixed} mixed
                       </Badge>
                     )}
-                    <Badge variant="outline" className={`cursor-pointer text-[9px] px-2 py-0.5 ${rowStatusFilter === 'neutral' ? 'bg-muted text-muted-foreground' : 'hover:bg-muted/50'}`} onClick={() => setRowStatusFilter('neutral')}>
-                      {rowStatusCounts.neutral} unchanged
-                    </Badge>
                     {clusterCaseFilter && (
                       <Badge
                         variant="outline"
@@ -682,7 +738,11 @@ export const ComparisonPage: React.FC = () => {
                     )}
                   </div>
                 </div>
-                <p className="text-[10px] text-muted-foreground">Click a row to expand the side-by-side diff</p>
+                <p className="text-[10px] text-muted-foreground">
+                  {rowStatusFilter === 'differences' && rowStatusCounts.neutral > 0
+                    ? `Showing ${filteredRows.length} differing case${filteredRows.length === 1 ? '' : 's'} · ${rowStatusCounts.neutral} unchanged hidden — click "Show all" above to include them`
+                    : 'Click a row to expand the side-by-side diff'}
+                </p>
               </div>
 
               {/* Run pair selector for trajectory comparison (shown when > 2 runs) */}

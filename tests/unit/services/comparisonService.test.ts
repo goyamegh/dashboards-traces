@@ -635,6 +635,82 @@ describe('comparisonService', () => {
 
       expect(calculateRowStatus(row, referenceRunId)).toBe('mixed');
     });
+
+    it('treats baseline-passed + other-failed as regression even when scores are close', () => {
+      // The headline case: Kiro passed CP-test-04, Claude failed it. Even
+      // if the accuracy numbers are within a few points, this is the row
+      // the user actually came here for.
+      const row: TestCaseComparisonRow = {
+        testCaseId: '1',
+        testCaseName: 'TC1',
+        category: 'RCA',
+        difficulty: 'Easy',
+        labels: [],
+        results: {
+          'oldest-run': {
+            status: 'completed',
+            passFailStatus: 'passed',
+            accuracy: 75, faithfulness: 75, trajectoryAlignment: 75, latencyScore: 75,
+          },
+          'run-2': {
+            status: 'completed',
+            passFailStatus: 'failed',
+            accuracy: 73, faithfulness: 73, trajectoryAlignment: 73, latencyScore: 73,
+          },
+        },
+        hasVersionDifference: false,
+        versions: [],
+      };
+      expect(calculateRowStatus(row, referenceRunId)).toBe('regression');
+    });
+
+    it('treats baseline-failed + other-passed as improvement even when scores are close', () => {
+      const row: TestCaseComparisonRow = {
+        testCaseId: '1',
+        testCaseName: 'TC1',
+        category: 'RCA',
+        difficulty: 'Easy',
+        labels: [],
+        results: {
+          'oldest-run': {
+            status: 'completed',
+            passFailStatus: 'failed',
+            accuracy: 65, faithfulness: 65, trajectoryAlignment: 65, latencyScore: 65,
+          },
+          'run-2': {
+            status: 'completed',
+            passFailStatus: 'passed',
+            accuracy: 67, faithfulness: 67, trajectoryAlignment: 67, latencyScore: 67,
+          },
+        },
+        hasVersionDifference: false,
+        versions: [],
+      };
+      expect(calculateRowStatus(row, referenceRunId)).toBe('improvement');
+    });
+
+    it('returns neutral when both runs pass with similar scores', () => {
+      const row: TestCaseComparisonRow = {
+        testCaseId: '1',
+        testCaseName: 'TC1',
+        category: 'RCA',
+        difficulty: 'Easy',
+        labels: [],
+        results: {
+          'oldest-run': {
+            status: 'completed', passFailStatus: 'passed',
+            accuracy: 88, faithfulness: 88, trajectoryAlignment: 88, latencyScore: 88,
+          },
+          'run-2': {
+            status: 'completed', passFailStatus: 'passed',
+            accuracy: 86, faithfulness: 86, trajectoryAlignment: 86, latencyScore: 86,
+          },
+        },
+        hasVersionDifference: false,
+        versions: [],
+      };
+      expect(calculateRowStatus(row, referenceRunId)).toBe('neutral');
+    });
   });
 
   describe('countRowsByStatus', () => {

@@ -4,7 +4,8 @@
  */
 
 import React, { useState, useMemo } from 'react';
-import { Loader2, Sparkles, AlertCircle, RefreshCw, BookOpen, Wrench, Brain, HelpCircle, Filter } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Loader2, Sparkles, AlertCircle, RefreshCw, BookOpen, Wrench, Brain, HelpCircle, Filter, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import {
@@ -14,6 +15,12 @@ import {
   type ClusterType,
   type ClusterFailuresResponse,
 } from '@/services/client/comparisonClusterApi';
+import {
+  getTopTwoNextSteps,
+  FEATURE_AREA_ICON_COLOR,
+  FEATURE_AREA_LABEL,
+  type NextStepAction,
+} from './nextStepRecommendations';
 
 export interface ClusterMembership {
   caseId: string;
@@ -85,6 +92,92 @@ export const getClusterDotColor = (idx: number): string =>
   CLUSTER_DOT_COLORS[idx % CLUSTER_DOT_COLORS.length];
 
 type Phase = 'idle' | 'loading' | 'loaded' | 'error';
+
+// ─── Next-step strip (one per cluster) ───────────────────────────────────
+
+const NextStepButton: React.FC<{
+  action: NextStepAction;
+  onActivate: (action: NextStepAction) => void;
+}> = ({ action, onActivate }) => {
+  const disabled = action.status === 'coming-soon';
+  const dotColor = FEATURE_AREA_ICON_COLOR[action.featureArea];
+
+  return (
+    <button
+      type="button"
+      onClick={() => !disabled && onActivate(action)}
+      disabled={disabled}
+      className={cn(
+        'group flex-1 min-w-0 text-left rounded-md border border-border px-2.5 py-1.5 transition-colors',
+        disabled
+          ? 'opacity-60 cursor-not-allowed bg-muted/20'
+          : 'bg-background hover:bg-muted/40 hover:border-primary/40'
+      )}
+      title={
+        disabled
+          ? 'Coming soon — the destination page does not yet accept the seeded context.'
+          : `Opens ${FEATURE_AREA_LABEL[action.featureArea]}`
+      }
+    >
+      <div className="flex items-center gap-1.5">
+        <span
+          className="inline-block h-1.5 w-1.5 rounded-full shrink-0"
+          style={{ backgroundColor: dotColor }}
+          aria-hidden
+        />
+        <span className="text-[11px] font-medium leading-tight truncate">{action.label}</span>
+        {disabled ? (
+          <span className="ml-auto text-[9px] uppercase tracking-wide text-muted-foreground shrink-0">
+            soon
+          </span>
+        ) : (
+          <ChevronRight
+            size={11}
+            className="ml-auto text-muted-foreground group-hover:text-foreground shrink-0"
+          />
+        )}
+      </div>
+      <div className="text-[10px] text-muted-foreground mt-0.5 leading-tight truncate">
+        {action.sublabel}
+      </div>
+    </button>
+  );
+};
+
+const NextStepStrip: React.FC<{ cluster: FailureCluster }> = ({ cluster }) => {
+  const navigate = useNavigate();
+  const actions = getTopTwoNextSteps(cluster.clusterType);
+  if (actions.length === 0) return null;
+
+  const onActivate = (action: NextStepAction) => {
+    if (action.target.kind === 'route') {
+      navigate(action.target.path);
+    } else if (action.target.kind === 'route-with-state') {
+      navigate(action.target.path, {
+        state: {
+          [action.target.stateKey]: {
+            clusterName: cluster.name,
+            clusterSummary: cluster.summary,
+            clusterType: cluster.clusterType,
+            caseIds: cluster.caseIds,
+          },
+        },
+      });
+    } else {
+      // 'modal' targets aren't wired yet — surfaced as 'coming-soon' in the
+      // catalog so this branch shouldn't fire today. Safety guard:
+      console.warn(`[FailureClusterPanel] No handler for modal target: ${action.target.modalKey}`);
+    }
+  };
+
+  return (
+    <div className="mt-1.5 ml-4 flex gap-1.5 flex-wrap">
+      {actions.map(a => (
+        <NextStepButton key={a.id} action={a} onActivate={onActivate} />
+      ))}
+    </div>
+  );
+};
 
 export const FailureClusterPanel: React.FC<FailureClusterPanelProps> = ({
   loserLabel,
@@ -293,6 +386,7 @@ export const FailureClusterPanel: React.FC<FailureClusterPanelProps> = ({
                   </button>
                 )}
               </div>
+              <NextStepStrip cluster={cluster} />
             </div>
           );
         })}

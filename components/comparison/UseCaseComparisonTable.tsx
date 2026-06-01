@@ -203,9 +203,9 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
               </TableHead>
               {runs.map((run) => (
                 <TableHead key={run.id} className="text-center min-w-32">
-                  <div className="truncate">{run.name}</div>
-                  <div className="text-xs text-muted-foreground font-normal truncate">
-                    {getAgentName(run.agentKey)}
+                  <div className="truncate">{getAgentName(run.agentKey)}</div>
+                  <div className="text-[10px] text-muted-foreground font-normal truncate">
+                    {run.name}
                   </div>
                 </TableHead>
               ))}

@@ -137,29 +137,27 @@ const CompareVerdict: React.FC<{ runs: RunAggregateMetrics[] }> = ({ runs }) => 
   return (
     <div className="rounded-lg border border-border bg-card">
       <div className="flex flex-wrap items-center gap-3 px-4 py-3">
-        <div className="flex items-center gap-2">
-          <Trophy size={16} className={isTie ? 'text-muted-foreground' : 'text-amber-400'} />
-          <div>
+        <div className="flex items-center gap-2 min-w-0">
+          <Trophy size={16} className={isTie ? 'text-muted-foreground' : 'text-amber-400 shrink-0'} />
+          <div className="min-w-0">
             <div className="text-[10px] uppercase tracking-wide text-muted-foreground">
               {isTie ? 'Tie' : 'Winner'}
             </div>
-            <div className="text-sm font-semibold leading-tight">
+            <div className="text-sm font-semibold leading-tight truncate">
               {isTie ? (
                 <>
                   {getAgentName(winner.agentKey)} ≈ {getAgentName(loser.agentKey)}
                 </>
               ) : (
                 <>
-                  {getAgentName(winner.agentKey)}
-                  <span className="text-muted-foreground font-normal">
-                    {' '}beats{' '}
-                  </span>
-                  {getAgentName(loser.agentKey)}
+                  <span title={getAgentName(winner.agentKey)}>{getAgentName(winner.agentKey)}</span>
+                  <span className="text-muted-foreground font-normal"> beats </span>
+                  <span title={getAgentName(loser.agentKey)}>{getAgentName(loser.agentKey)}</span>
                 </>
               )}
             </div>
-            <div className="text-[10px] text-muted-foreground">
-              {getModelName(winner.modelId)} vs {getModelName(loser.modelId)} · n={totalCases}
+            <div className="text-[10px] text-muted-foreground truncate">
+              {winner.runName} ({getModelName(winner.modelId)}) vs {loser.runName} ({getModelName(loser.modelId)}) · n={totalCases}
             </div>
           </div>
         </div>
@@ -178,22 +176,25 @@ const CompareVerdict: React.FC<{ runs: RunAggregateMetrics[] }> = ({ runs }) => 
             }
             tooltip="Winner pass rate vs loser pass rate, with delta in percentage points"
           />
-          <MetricChip
-            icon={Coins}
-            label="Cost"
-            primaryValue={formatCost(winnerCost)}
-            secondaryValue={loserCost !== undefined ? formatCost(loserCost) : undefined}
-            delta={
-              deltaCost !== undefined ? (
-                <DeltaBadge
-                  delta={deltaCost}
-                  invert
-                  format={(v) => formatCost(Math.abs(v))}
-                />
-              ) : undefined
-            }
-            tooltip="Total cost — flagged red if winner is also more expensive"
-          />
+          {(winnerCost !== undefined || loserCost !== undefined) && (
+            <MetricChip
+              icon={Coins}
+              label="Cost"
+              primaryValue={formatCost(winnerCost)}
+              secondaryValue={loserCost !== undefined ? formatCost(loserCost) : undefined}
+              delta={
+                deltaCost !== undefined ? (
+                  <DeltaBadge
+                    delta={deltaCost}
+                    invert
+                    format={(v) => formatCost(Math.abs(v))}
+                  />
+                ) : undefined
+              }
+              tooltip="Total cost — flagged red if winner is also more expensive"
+            />
+          )}
+          {(winnerDur !== undefined || loserDur !== undefined) && (
           <MetricChip
             icon={Clock}
             label="Avg duration"
@@ -210,6 +211,7 @@ const CompareVerdict: React.FC<{ runs: RunAggregateMetrics[] }> = ({ runs }) => 
             }
             tooltip="Average per-case duration"
           />
+          )}
         </div>
       </div>
     </div>
