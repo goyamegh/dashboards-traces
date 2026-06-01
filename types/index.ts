@@ -28,6 +28,13 @@ export interface AssistantContext {
   runId?: string;
   traceId?: string;
   testCaseId?: string;
+  /**
+   * On comparison pages (`/compare/:benchmarkId?runs=a,b,…`), the list of run
+   * IDs the user is currently comparing. The assistant pre-loads these into
+   * the grounded snapshot so it can answer cross-run questions even before
+   * reaching for tools.
+   */
+  comparisonRunIds?: string[];
 }
 
 // Connector protocol for agent communication

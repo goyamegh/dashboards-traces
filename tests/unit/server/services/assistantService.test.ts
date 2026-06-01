@@ -290,7 +290,7 @@ describe('AssistantService', () => {
       expect(fullResponse).toContain('Bash');
     });
 
-    it('renders a tool_use block as an inline note instead of ending the turn at a stranded cursor', async () => {
+    it('renders a tool_use block as an inline “using tool” note (tools enabled)', async () => {
       const mockProc = createMockProcess();
       mockSpawn.mockReturnValue(mockProc);
       assistantService = require('@/server/services/assistantService');
@@ -309,34 +309,33 @@ describe('AssistantService', () => {
       });
       await flushAsync();
 
-      // Real failure mode observed in production: assistant streams text, then
-      // emits a tool_use block (e.g. Skill) as the next thing it would do. With
-      // tools disabled in the chat surface, that turn ends with no further text.
+      // With tools enabled (the default), the assistant streams text, then
+      // emits a tool_use block. We surface a friendly inline note while the
+      // tool runs; the next text block (here implicit) would follow normally.
       mockProc.stdout.emit('data', Buffer.from(
         assistantTextLine('Looking at the trajectory…') +
-        assistantToolUseLine('Skill', 'Let me find the SOP that drives /cp-oncall.')
+        assistantToolUseLine('Bash', 'Let me grep the logs.')
       ));
       mockProc.emit('close', 0);
       await turn;
 
-      // The leading text ran through normally.
       expect(fullResponse).toContain('Looking at the trajectory');
-      expect(fullResponse).toContain('Let me find the SOP');
-      // The tool_use block surfaced as a clear inline note, not a silent end.
-      expect(fullResponse).toMatch(/Tried to invoke `Skill`/);
-      expect(fullResponse).toMatch(/tool execution is disabled/);
-      // And the note was streamed to the client (so it shows up live, not just at done).
-      expect(deltas.some((d) => /Tried to invoke `Skill`/.test(d))).toBe(true);
+      expect(fullResponse).toContain('Let me grep the logs');
+      // New marker format: "🔧 Using `Bash`…" instead of the old disabled note.
+      expect(fullResponse).toMatch(/Using `Bash`/);
+      expect(fullResponse).not.toMatch(/tool execution is disabled/);
+      // And the marker streams live.
+      expect(deltas.some((d) => /Using `Bash`/.test(d))).toBe(true);
     });
 
-    it('passes --disallowed-tools \'*\' so the spawned CLI refuses tool calls', async () => {
+    it('does NOT pass --disallowed-tools — tools are enabled by default', async () => {
       const mockProc = createMockProcess();
       mockSpawn.mockReturnValue(mockProc);
       assistantService = require('@/server/services/assistantService');
 
       const turn = new Promise<void>((resolve, reject) => {
         assistantService.streamAssistantResponse(
-          'no-tools',
+          'with-tools',
           'Hi',
           undefined,
           () => {},
@@ -350,19 +349,19 @@ describe('AssistantService', () => {
       await turn;
 
       const args: string[] = mockSpawn.mock.calls[0][1];
-      const idx = args.indexOf('--disallowed-tools');
-      expect(idx).toBeGreaterThan(-1);
-      expect(args[idx + 1]).toBe('*');
+      expect(args).not.toContain('--disallowed-tools');
+      // --dangerously-skip-permissions is still set so MCP tools run without prompts.
+      expect(args).toContain('--dangerously-skip-permissions');
     });
 
-    it('system prompt explicitly forbids tool/skill invocation', async () => {
+    it('system prompt advertises tool access (Claude CLI path)', async () => {
       const mockProc = createMockProcess();
       mockSpawn.mockReturnValue(mockProc);
       assistantService = require('@/server/services/assistantService');
 
       const turn = new Promise<void>((resolve, reject) => {
         assistantService.streamAssistantResponse(
-          'no-tools-prompt',
+          'tools-prompt',
           'Hi',
           undefined,
           () => {},
@@ -378,8 +377,98 @@ describe('AssistantService', () => {
       const args: string[] = mockSpawn.mock.calls[0][1];
       const idx = args.indexOf('--append-system-prompt');
       const sysPrompt = args[idx + 1];
-      expect(sysPrompt).toMatch(/NO tools enabled/);
-      expect(sysPrompt).toMatch(/Do NOT say things like/);
+      expect(sysPrompt).toMatch(/full tool access|chrome-devtools|MCP/i);
+      expect(sysPrompt).not.toMatch(/NO tools enabled/);
+    });
+
+    it('passes --mcp-config pointing at ~/.claude.json so user MCPs (chrome-devtools, github, …) load', async () => {
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
+      assistantService = require('@/server/services/assistantService');
+
+      const turn = new Promise<void>((resolve, reject) => {
+        assistantService.streamAssistantResponse(
+          'mcp-config',
+          'Hi',
+          undefined,
+          () => {},
+          () => resolve(),
+          (err: string) => reject(new Error(err))
+        );
+      });
+      await flushAsync();
+      mockProc.stdout.emit('data', Buffer.from(assistantTextLine('ok')));
+      mockProc.emit('close', 0);
+      await turn;
+
+      const args: string[] = mockSpawn.mock.calls[0][1];
+      const idx = args.indexOf('--mcp-config');
+      expect(idx).toBeGreaterThan(-1);
+      expect(args[idx + 1]).toMatch(/\.claude\.json$/);
+    });
+
+    it('inlines all comparison runs when comparisonRunIds is provided', async () => {
+      mockGetReportById.mockImplementation((id: string) => {
+        const map: Record<string, any> = {
+          'run-A': {
+            id: 'run-A',
+            agentName: 'agent-alpha',
+            modelName: 'claude-3-5-sonnet',
+            passFailStatus: 'passed',
+            metrics: { accuracy: 90 },
+            testCaseId: 'tc-1',
+            llmJudgeReasoning: 'Alpha did the thing.',
+            trajectory: [],
+          },
+          'run-B': {
+            id: 'run-B',
+            agentName: 'agent-beta',
+            modelName: 'claude-3-5-sonnet',
+            passFailStatus: 'failed',
+            metrics: { accuracy: 30 },
+            testCaseId: 'tc-1',
+            llmJudgeReasoning: 'Beta forgot the thing.',
+            trajectory: [],
+          },
+        };
+        return Promise.resolve(map[id] ?? null);
+      });
+
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
+      assistantService = require('@/server/services/assistantService');
+
+      const turn = new Promise<void>((resolve, reject) => {
+        assistantService.streamAssistantResponse(
+          'compare',
+          'Which tests passed for which agent?',
+          {
+            currentUrl: '/compare/bench-X?runs=run-A,run-B',
+            benchmarkId: 'bench-X',
+            comparisonRunIds: ['run-A', 'run-B'],
+          },
+          () => {},
+          () => resolve(),
+          (err: string) => reject(new Error(err))
+        );
+      });
+      await flushAsync();
+      mockProc.stdout.emit('data', Buffer.from(assistantTextLine('ok')));
+      mockProc.emit('close', 0);
+      await turn;
+
+      const args: string[] = mockSpawn.mock.calls[0][1];
+      const idx = args.indexOf('--append-system-prompt');
+      const sysPrompt = args[idx + 1];
+
+      expect(sysPrompt).toContain('Comparison Runs (2 of 2)');
+      expect(sysPrompt).toContain('run-A');
+      expect(sysPrompt).toContain('run-B');
+      expect(sysPrompt).toContain('agent-alpha');
+      expect(sysPrompt).toContain('agent-beta');
+      expect(sysPrompt).toContain('Beta forgot the thing.');
+      expect(mockGetReportById).toHaveBeenCalledWith('run-A');
+      expect(mockGetReportById).toHaveBeenCalledWith('run-B');
     });
 
     it('inherits AWS_PROFILE / AWS_REGION', async () => {
@@ -625,6 +714,25 @@ describe('AssistantService', () => {
       });
       expect(prompt).toContain('bench-1');
       expect(prompt).toContain('/benchmarks/bench-1');
+    });
+
+    it('renders comparison run IDs in the page-context section', () => {
+      assistantService = require('@/server/services/assistantService');
+      const prompt = assistantService.buildSystemPrompt({
+        currentUrl: '/compare/bench-X?runs=a,b',
+        benchmarkId: 'bench-X',
+        comparisonRunIds: ['run-a', 'run-b'],
+      });
+      expect(prompt).toContain('Comparison run IDs: run-a, run-b');
+    });
+
+    it('toolsAvailable=true advertises tool access; default forbids tools', () => {
+      assistantService = require('@/server/services/assistantService');
+      const noTools = assistantService.buildSystemPrompt(undefined, false);
+      expect(noTools).toMatch(/NO tool access/);
+      const withTools = assistantService.buildSystemPrompt(undefined, true);
+      expect(withTools).toMatch(/full tool access|chrome-devtools/i);
+      expect(withTools).not.toMatch(/NO tool access/);
     });
   });
 });

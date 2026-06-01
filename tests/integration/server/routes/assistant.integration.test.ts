@@ -155,6 +155,42 @@ describe('Assistant API (integration)', () => {
       expect(mockStreamAssistantResponse.mock.calls[0][2]).toEqual(ctx);
     });
 
+    it('forwards comparisonRunIds in the context (compare-page payload)', async () => {
+      // Regression guard: when the user is on /compare/<bench>?runs=a,b the
+      // frontend hook puts the run IDs under context.comparisonRunIds. Verify
+      // they reach the service unchanged so the snapshot loader can fetch each
+      // run and answer cross-agent questions like "which tests passed for which
+      // agent?".
+      mockStreamAssistantResponse.mockImplementation(
+        (_sid: string, _msg: string, _ctx: any, _onDelta: any, onDone: any) => {
+          process.nextTick(() => onDone('ok'));
+          return { abort: jest.fn() };
+        }
+      );
+
+      const ctx = {
+        currentUrl: '/compare/bench-X?runs=run-A,run-B',
+        benchmarkId: 'bench-X',
+        comparisonRunIds: ['run-A', 'run-B'],
+      };
+      await request(buildApp())
+        .post('/api/assistant/chat')
+        .send({ sessionId: 'cmp', message: 'which tests passed for which agent?', context: ctx })
+        .buffer(true)
+        .parse((response, callback) => {
+          let data = '';
+          response.on('data', (chunk) => { data += chunk.toString(); });
+          response.on('end', () => callback(null, data));
+        })
+        .expect(200);
+
+      const passedCtx = mockStreamAssistantResponse.mock.calls[0][2];
+      expect(passedCtx.benchmarkId).toBe('bench-X');
+      expect(passedCtx.comparisonRunIds).toEqual(['run-A', 'run-B']);
+      // currentUrl now includes the query string (used to be path-only).
+      expect(passedCtx.currentUrl).toBe('/compare/bench-X?runs=run-A,run-B');
+    });
+
     it('returns 400 when sessionId is missing', async () => {
       const res = await request(buildApp())
         .post('/api/assistant/chat')
