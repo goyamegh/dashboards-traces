@@ -24,12 +24,16 @@ import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatDate, getModelName } from '@/lib/utils';
 import { TestCaseInspectorPanel } from './TestCaseInspectorPanel';
 import { Breadcrumbs } from './Breadcrumbs';
+import { ensureTracePollingForReport } from '@/services/traces/browserRecovery';
 
 interface TestCaseResult {
   testCaseId: string;
   testCase: TestCase | null;
   reportId: string | null;
   status: ResultStatus;
+  // Populated when the report could be fetched. Used by the inspect-page-wide
+  // trace-polling recovery so we don't have to re-fetch in a second effect.
+  report?: EvaluationReport | null;
 }
 
 
@@ -73,13 +77,32 @@ export const RunInspectorPage: React.FC = () => {
           } catch { /* fallback to execution status */ }
         }
         const status = getResultStatus(runResult, report);
-        return { testCaseId: tcId, testCase: tcMap.get(tcId) || null, reportId: runResult?.reportId || null, status };
+        return { testCaseId: tcId, testCase: tcMap.get(tcId) || null, reportId: runResult?.reportId || null, status, report };
       }));
 
       setResults(resultRows);
       if (resultRows.length > 0 && !initialSelectionDone.current) {
         setSelectedTcId(resultRows[0].testCaseId);
         initialSelectionDone.current = true;
+      }
+
+      // Fan out trace-polling recovery for *every* pending result.
+      // Without this, the user previously had to manually click each pending
+      // row to mount RunDetailsContent and trigger its inline recovery — so
+      // the second/third pending rows could remain stuck for hours.
+      // ensureTracePollingForReport() is idempotent and a no-op for non-pending
+      // reports, so this is safe to call unconditionally.
+      for (const row of resultRows) {
+        if (!row.report || !row.testCase) continue;
+        if (row.report.metricsStatus !== 'pending' || !row.report.runId) continue;
+        ensureTracePollingForReport(row.report, row.testCase, {
+          onUpdated: (updated) => {
+            setResults(prev => prev.map(r => r.testCaseId === row.testCaseId
+              ? { ...r, report: updated, status: getResultStatus({ status: 'completed' }, updated) }
+              : r
+            ));
+          },
+        });
       }
     } catch (error) {
       console.error('Failed to load:', error);
@@ -179,6 +202,9 @@ export const RunInspectorPage: React.FC = () => {
                 return (
                   <div
                     key={r.testCaseId}
+                    data-testid="test-case-row"
+                    data-test-case-id={r.testCaseId}
+                    data-status={r.status}
                     className={`flex items-center gap-2 px-2.5 py-2 rounded-md cursor-pointer transition-all ${
                       isSelected
                         ? 'bg-blue-500/10 border-l-2 border-l-blue-500 text-foreground'

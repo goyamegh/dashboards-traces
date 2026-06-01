@@ -269,6 +269,16 @@ async function updateTestCaseResult(
 // Registry of active cancellation tokens for in-progress runs
 const activeRuns = new Map<string, CancellationToken>();
 
+/**
+ * Read-only accessor for the in-memory active-run registry. Used by
+ * `server/services/benchmarkRunRecoveryOnBoot.ts` to distinguish runs that
+ * are *actually* in-flight in this process from runs whose `status: 'running'`
+ * was orphaned by a previous restart.
+ */
+export function isRunActiveInThisProcess(runId: string): boolean {
+  return activeRuns.has(runId);
+}
+
 function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }

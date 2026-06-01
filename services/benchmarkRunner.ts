@@ -684,8 +684,11 @@ export async function runSingleUseCase(
 /**
  * Start trace polling for a report that has metricsStatus: 'pending'.
  * Uses the storage adapter — works with both file and OpenSearch backends.
+ *
+ * Exported so server-side boot recovery (`server/services/traceRecoveryOnBoot.ts`)
+ * can re-attach polling for reports that were orphaned by a server restart.
  */
-function startTracePollingForReportWithModule(report: EvaluationReport, testCase: TestCase, storage: IStorageModule): Promise<void> {
+export function startTracePollingForReportWithModule(report: EvaluationReport, testCase: TestCase, storage: IStorageModule): Promise<void> {
   if (!report.runId) {
     console.warn(`[BenchmarkRunner] No runId for report ${report.id}, cannot start trace polling`);
     return Promise.resolve();

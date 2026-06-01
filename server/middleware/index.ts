@@ -16,6 +16,8 @@ import { fileURLToPath } from 'url';
 import { debug } from '../../lib/debug.js';
 import { storageClientMiddleware } from './storageClient.js';
 import { apiKeyAuth } from './apiKeyAuth.js';
+import { makeSpaFallbackMiddleware } from './spaFallback.js';
+export { makeSpaFallbackMiddleware, ASSET_EXT_RE } from './spaFallback.js';
 
 // Get directory of this file for resolving paths relative to package location
 // Server always runs from server/dist/, so path resolution is straightforward
@@ -78,6 +80,9 @@ function setupStaticServing(app: Express): void {
 /**
  * SPA fallback - serve index.html for all non-API routes.
  * Must be registered AFTER API routes so it only catches client-side routes.
+ *
+ * Asset paths (anything that has a file extension or lives under /assets/ or
+ * /static/) are explicitly skipped — see `./spaFallback.ts` for details.
  */
 export function setupSpaFallback(app: Express): void {
   if (process.env.AGENT_HEALTH_HEADLESS === '1') return;
@@ -90,17 +95,7 @@ export function setupSpaFallback(app: Express): void {
   // Read index.html once at startup — avoids sendFile issues in esbuild bundles
   const indexHtml = fs.readFileSync(indexPath, 'utf-8');
 
-  app.use((req: Request, res: Response, next: NextFunction) => {
-    // Skip API routes and health checks
-    if (req.path.startsWith('/api/') || req.path === '/health') {
-      return next();
-    }
-    // Only serve index.html for GET/HEAD requests (not OPTIONS, POST, etc.)
-    if (req.method !== 'GET' && req.method !== 'HEAD') {
-      return next();
-    }
-    res.type('html').send(indexHtml);
-  });
+  app.use(makeSpaFallbackMiddleware(indexHtml));
 }
 
 /**
