@@ -18,7 +18,7 @@ import type { TestCase, TrajectoryStep, AgentHooks } from '@/types';
  * - langgraph: LangGraph agent via direct REST API
  * - mock: Demo/testing connector
  */
-export type ConnectorProtocol = 'agui-streaming' | 'rest' | 'openai-compatible' | 'subprocess' | 'claude-code' | 'pi' | 'strands' | 'langgraph' | 'mock';
+export type ConnectorProtocol = 'agui-streaming' | 'rest' | 'openai-compatible' | 'subprocess' | 'claude-code' | 'kiro' | 'pi' | 'strands' | 'langgraph' | 'mock';
 
 // ============ Authentication Types ============
 

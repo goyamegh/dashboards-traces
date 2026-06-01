@@ -186,14 +186,29 @@ export class SubprocessConnector extends BaseConnector {
         }
       });
 
-      // Handle stderr
+      // Handle stderr.
+      //
+      // We push stderr chunks into rawOutput (alongside stdout) so the saved
+      // benchmark report retains them. Without this, agents that emit
+      // structured tool events on stderr (e.g. kiro-cli's `[tool] Running:`
+      // markers) leave no audit trail in the persisted run, and the LLM judge
+      // is forced to grade the agent's narrative alone.
+      //
+      // We also delegate streaming-mode subclasses a hook (`parseStderrChunk`)
+      // so they can convert stderr-borne events into trajectory steps in
+      // real time. The default implementation is a no-op for connectors
+      // (claude-code, plain text CLIs) that don't carry events on stderr.
       proc.stderr.on('data', (data: Buffer) => {
         const chunk = data.toString();
         this.debug('stderr received:', chunk.length, 'bytes');
         this.debug('stderr:', chunk);
         stderr += chunk;
+        rawOutput.push({ type: 'stderr', data: chunk, timestamp: Date.now() });
         onRawEvent?.({ type: 'stderr', data: chunk });
-        this.debug('stderr:', chunk);
+
+        if (this.config.outputParser === 'streaming') {
+          this.parseStderrChunk(chunk, trajectory, onProgress);
+        }
       });
 
       // Handle process exit
@@ -280,6 +295,22 @@ export class SubprocessConnector extends BaseConnector {
   /** Buffer of clean stdout lines accumulated during streaming.
    *  Used by onBeforeStreamEnd() to emit a consolidated `response` step. */
   private streamBuffer: string[] = [];
+
+  /**
+   * Parse a stderr chunk in streaming mode. Default is a no-op.
+   *
+   * Override in subclasses for CLIs that carry tool-event markers on stderr.
+   * Implementations should buffer partial lines (chunks rarely align with
+   * line boundaries) and emit steps via `onProgress` AND push them onto
+   * `trajectory` so they appear in the final response.
+   */
+  protected parseStderrChunk(
+    _chunk: string,
+    _trajectory: TrajectoryStep[],
+    _onProgress?: ConnectorProgressCallback
+  ): void {
+    // No-op by default; KiroConnector overrides this.
+  }
 
   /**
    * Parse streaming output and emit steps in real-time.
