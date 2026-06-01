@@ -383,3 +383,74 @@ test.describe('Evals3 Benchmarks Page — default sort by Last Activity', () => 
     }
   });
 });
+
+/**
+ * Benchmark version-badge regression coverage on the list page.
+ *
+ * The Evals3 BenchmarksPage4 rewrite shipped without a row-level version
+ * indicator, so users couldn't tell at a glance which benchmarks had been
+ * edited. We now render `data-testid="benchmark-version-badge"` on every row.
+ *
+ * Note: Edit is exposed in TWO places — the row-level pencil here
+ * (`data-testid="edit-benchmark-button-row"`) AND the header button on the
+ * benchmark detail page (`data-testid="edit-benchmark-button"`). Both are
+ * regression-tested; the detail-page version-bump E2E lives in
+ * `evals3-benchmark-runs.spec.ts`.
+ */
+test.describe('Evals3 Benchmarks Page — version badge & row Edit', () => {
+  let benchmarkId: string | null = null;
+
+  test.beforeAll(async ({ request }) => {
+    const bmRes = await request.post('/api/storage/benchmarks', {
+      data: {
+        name: `E2E Version Badge BM ${Date.now()}`,
+        description: 'Seed for version-badge e2e',
+        currentVersion: 1,
+        versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: [] }],
+        testCaseIds: [],
+        runs: [],
+      },
+    });
+    if (bmRes.ok()) {
+      const bm = await bmRes.json();
+      benchmarkId = bm.id || bm.benchmark?.id;
+    }
+  });
+
+  test.afterAll(async ({ request }) => {
+    if (benchmarkId) {
+      await request.delete(`/api/storage/benchmarks/${encodeURIComponent(benchmarkId)}`).catch(() => {});
+    }
+  });
+
+  test('every row shows a version badge starting at v1', async ({ page }) => {
+    test.skip(!benchmarkId, 'Seed benchmark unavailable');
+    await page.goto('/evaluations/benchmarks');
+    await page.waitForSelector('[data-testid="benchmarks-page"]', { timeout: 30_000 });
+
+    const seededRow = page.locator('tbody tr', { hasText: 'E2E Version Badge BM' }).first();
+    await expect(seededRow).toBeVisible();
+    await expect(seededRow.locator('[data-testid="benchmark-version-badge"]')).toHaveText(/^v\d+$/);
+    await expect(seededRow.locator('[data-testid="benchmark-version-badge"]')).toHaveText('v1');
+  });
+
+  test('every row exposes a row-level Edit button (parity with detail page)', async ({ page }) => {
+    test.skip(!benchmarkId, 'Seed benchmark unavailable');
+    await page.goto('/evaluations/benchmarks');
+    await page.waitForSelector('[data-testid="benchmarks-page"]', { timeout: 30_000 });
+
+    // Every row should expose `edit-benchmark-button-row`. Distinct testid from
+    // the detail-page button (`edit-benchmark-button`) so the two surfaces are
+    // independently locatable in tests.
+    const rowCount = await page.locator('tbody tr').count();
+    expect(rowCount).toBeGreaterThan(0);
+    const editButtons = page.locator('[data-testid="edit-benchmark-button-row"]');
+    expect(await editButtons.count()).toBe(rowCount);
+
+    // Clicking opens the editor in *edit* mode (not create).
+    const seededRow = page.locator('tbody tr', { hasText: 'E2E Version Badge BM' }).first();
+    await seededRow.locator('[data-testid="edit-benchmark-button-row"]').click();
+    await expect(page.locator('text=Edit Benchmark').first()).toBeVisible({ timeout: 5_000 });
+    await expect(page.locator('text=Create Benchmark')).toHaveCount(0);
+  });
+});

@@ -21,7 +21,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   Play, CheckCircle2, XCircle, Loader2, Clock, Search, X, RefreshCw,
   Activity, BarChart3, Layers, TrendingUp, TrendingDown, Minus, AlertTriangle,
-  SlidersHorizontal, ChevronDown, Upload, Plus,
+  SlidersHorizontal, ChevronDown, Upload, Plus, Pencil,
 } from 'lucide-react';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { Badge } from '@/components/ui/badge';
@@ -165,8 +165,15 @@ export const BenchmarksPage4: React.FC = () => {
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  // Editor/Import state
+  // Editor/Import state — the editor opens in *create* mode when
+  // editingBenchmark === null and *edit* mode otherwise. Edit is exposed BOTH
+  // on the list page (row pencil) AND on the benchmark detail page (header
+  // button) so users have parity wherever they happen to be looking; the row
+  // pencil is for power-users who want to bulk-curate without navigating into
+  // each benchmark, the detail-page button is for users already viewing a
+  // specific benchmark's runs.
   const [showEditor, setShowEditor] = useState(false);
+  const [editingBenchmark, setEditingBenchmark] = useState<Benchmark | null>(null);
   const [editorError, setEditorError] = useState<string | null>(null);
   const [isImporting, setIsImporting] = useState(false);
   const [showSampleData, setShowSampleData] = useState<boolean | undefined>(undefined);
@@ -356,7 +363,7 @@ export const BenchmarksPage4: React.FC = () => {
             <Upload size={12} /> {isImporting ? 'Importing...' : 'Import JSON'}
           </Button>
           {/* New Benchmark */}
-          <Button size="sm" onClick={() => setShowEditor(true)} className="h-7 gap-1.5 text-xs">
+          <Button size="sm" onClick={() => { setEditingBenchmark(null); setEditorError(null); setShowEditor(true); }} className="h-7 gap-1.5 text-xs">
             <Plus size={12} /> New Benchmark
           </Button>
           {/* Sample data toggle */}
@@ -436,7 +443,18 @@ export const BenchmarksPage4: React.FC = () => {
                       <tr key={bm.id} className="border-b hover:bg-muted/50 cursor-pointer transition-colors"
                         onClick={() => navigate(`/evaluations/benchmarks/${bm.id}/runs`)}>
                         <td className="px-2 py-1.5 align-middle">
-                          <div className="text-xs font-medium truncate max-w-[220px]">{bm.name}</div>
+                          <div className="flex items-center gap-1.5">
+                            <div className="text-xs font-medium truncate max-w-[220px]">{bm.name}</div>
+                            {/* Version badge — mirrors the legacy /benchmarks page so users
+                                can see when a benchmark has been edited (v2, v3, ...). */}
+                            <span
+                              data-testid="benchmark-version-badge"
+                              className="inline-flex items-center px-1 rounded border border-border text-[9px] text-muted-foreground leading-4"
+                              title={`Benchmark version v${bm.currentVersion || 1}`}
+                            >
+                              v{bm.currentVersion || 1}
+                            </span>
+                          </div>
                           {bm.description && <div className="text-[9px] text-muted-foreground truncate max-w-[220px]">{bm.description}</div>}
                         </td>
                         <td className="px-2 py-1.5 align-middle text-center text-[11px]">{(bm.testCaseIds || []).length}</td>
@@ -494,10 +512,31 @@ export const BenchmarksPage4: React.FC = () => {
                           </div>
                         </td>
                         <td className="px-2 py-1.5 align-middle text-right">
-                          <button className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border border-border hover:bg-muted transition-colors"
-                            onClick={e => { e.stopPropagation(); navigate(`/evaluations/benchmarks/${bm.id}/runs`); }}>
-                            <Play size={9} /> Run
-                          </button>
+                          <div className="inline-flex items-center gap-1">
+                            {/* Edit benchmark — opens BenchmarkEditor in edit mode.
+                                Changing the test-case selection here is one of the
+                                two UI paths that increment currentVersion (the
+                                other is the Edit button on the detail page). See
+                                server/routes/storage/benchmarks.ts version-bump logic. */}
+                            <button
+                              data-testid="edit-benchmark-button-row"
+                              aria-label="Edit benchmark"
+                              title="Edit benchmark"
+                              className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border border-border hover:bg-muted transition-colors"
+                              onClick={e => {
+                                e.stopPropagation();
+                                setEditorError(null);
+                                setEditingBenchmark(bm);
+                                setShowEditor(true);
+                              }}
+                            >
+                              <Pencil size={9} />
+                            </button>
+                            <button className="inline-flex items-center gap-1 px-1.5 py-0.5 text-[10px] rounded border border-border hover:bg-muted transition-colors"
+                              onClick={e => { e.stopPropagation(); navigate(`/evaluations/benchmarks/${bm.id}/runs`); }}>
+                              <Play size={9} /> Run
+                            </button>
+                          </div>
                         </td>
                       </tr>
                     );
@@ -518,7 +557,7 @@ export const BenchmarksPage4: React.FC = () => {
                 data-testid="benchmark-editor-error"
                 className="sticky top-0 z-10 bg-red-500/10 border-b border-red-500/30 text-red-400 px-4 py-2 text-sm flex items-center justify-between"
               >
-                <span>Failed to create benchmark: {editorError}</span>
+                <span>{editingBenchmark ? 'Failed to save benchmark:' : 'Failed to create benchmark:'} {editorError}</span>
                 <button
                   onClick={() => setEditorError(null)}
                   className="ml-4 text-red-400 hover:text-red-300"
@@ -527,19 +566,25 @@ export const BenchmarksPage4: React.FC = () => {
               </div>
             )}
             <BenchmarkEditor
-              benchmark={null}
+              benchmark={editingBenchmark}
               onSave={async (bm) => {
-                // Persist before navigating — evals3 wrapper does not auto-save like the legacy page.
                 try {
                   await asyncBenchmarkStorage.save(bm);
                 } catch (err: any) {
                   setEditorError(err?.message || String(err));
-                  return; // keep editor open so the user doesn't lose their input
+                  return;
                 }
                 setEditorError(null);
                 setShowEditor(false);
+                const wasEditing = editingBenchmark !== null;
+                setEditingBenchmark(null);
                 loadData();
-                navigate(`/evaluations/benchmarks/${bm.id}/runs`);
+                // Editing in place: stay on the list so the user can confirm
+                // the version bump landed in the row badge. Only navigate
+                // away on a brand-new create.
+                if (!wasEditing) {
+                  navigate(`/evaluations/benchmarks/${bm.id}/runs`);
+                }
               }}
               onSaveAndRun={async (bm: Benchmark, runConfigs: RunConfigForExecution[]) => {
                 // 1. Save the benchmark first. On failure, keep the editor open so the form is preserved.
@@ -551,6 +596,7 @@ export const BenchmarksPage4: React.FC = () => {
                 }
                 setEditorError(null);
                 setShowEditor(false);
+                setEditingBenchmark(null);
                 loadData();
                 // 2. Navigate to the runs page so the user sees in-progress runs as they start.
                 navigate(`/evaluations/benchmarks/${bm.id}/runs`);
@@ -561,7 +607,7 @@ export const BenchmarksPage4: React.FC = () => {
                     .catch(e => console.error('[BenchmarksPage4] background run failed:', e));
                 }
               }}
-              onCancel={() => { setEditorError(null); setShowEditor(false); }}
+              onCancel={() => { setEditorError(null); setShowEditor(false); setEditingBenchmark(null); }}
             />
           </div>
         </div>
