@@ -50,17 +50,18 @@ export const AssistantModal: React.FC = () => {
 
         <AssistantModalPrimitive.Trigger asChild>
           <button
-            className="group relative size-12 rounded-full bg-gradient-to-br from-violet-500 via-fuchsia-500 to-pink-500 text-white shadow-lg hover:shadow-xl hover:scale-105 active:scale-95 transition-all flex items-center justify-center"
+            className="group relative size-12 rounded-full bg-transparent text-foreground hover:bg-accent/40 active:scale-95 transition-all flex items-center justify-center"
             aria-label="Open AI Assistant"
             data-testid="assistant-modal-trigger"
             onClick={() => { if (nudge) dismissNudge(); }}
           >
-            {/* Pulse ring on first paint */}
+            {/* Subtle pulse ring on first paint — uses the foreground color so it
+                stays consistent with the dark sparkle icon. */}
             <span
-              className="absolute inset-0 rounded-full bg-fuchsia-400 opacity-0 group-hover:opacity-30 motion-safe:animate-ping motion-safe:[animation-iteration-count:1] motion-safe:[animation-duration:1.5s]"
+              className="absolute inset-0 rounded-full bg-foreground/20 opacity-0 motion-safe:animate-ping motion-safe:[animation-iteration-count:1] motion-safe:[animation-duration:1.5s]"
               aria-hidden="true"
             />
-            <SparkleIcon className="size-5 motion-safe:group-hover:rotate-12 transition-transform" />
+            <SparkleIcon className="size-6 text-foreground motion-safe:group-hover:rotate-12 transition-transform" />
           </button>
         </AssistantModalPrimitive.Trigger>
       </AssistantModalPrimitive.Anchor>
@@ -73,7 +74,7 @@ export const AssistantModal: React.FC = () => {
         {/* Header */}
         <div className="flex items-center justify-between border-b px-4 py-3">
           <h3 className="text-sm font-semibold flex items-center gap-2">
-            <SparkleIcon className="size-4 text-fuchsia-500" />
+            <SparkleIcon className="size-4 text-foreground" />
             AI Assistant
           </h3>
         </div>
