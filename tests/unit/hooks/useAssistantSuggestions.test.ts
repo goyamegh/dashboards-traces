@@ -93,4 +93,38 @@ describe('useAssistantSuggestions › classifyRoute', () => {
       expect(ctx.suggestions).toHaveLength(3);
     }
   });
+
+  describe('/evaluations/* (evals3) routes', () => {
+    it('classifies /evaluations/benchmarks/:id/runs as a benchmark detail', () => {
+      const ctx = classifyRoute('/evaluations/benchmarks/bench-1/runs');
+      expect(ctx.key).toBe('benchmark-detail');
+      expect(ctx.nudge).toBeTruthy();
+    });
+
+    it('classifies /evaluations/benchmarks/:id/runs/:rid/inspect as a run detail', () => {
+      const ctx = classifyRoute('/evaluations/benchmarks/bench-1/runs/r-2/inspect');
+      expect(ctx.key).toBe('run-detail');
+    });
+
+    it('classifies /evaluations/runs/:id as a run detail', () => {
+      const ctx = classifyRoute('/evaluations/runs/r-1');
+      expect(ctx.key).toBe('run-detail');
+    });
+
+    it('classifies /evaluations/benchmarks (list) without a nudge', () => {
+      const ctx = classifyRoute('/evaluations/benchmarks');
+      expect(ctx.key).toBe('benchmarks-list');
+      expect(ctx.nudge).toBeUndefined();
+    });
+
+    it('classifies /evaluations/test-cases/:id as a test-case detail', () => {
+      const ctx = classifyRoute('/evaluations/test-cases/tc-1');
+      expect(ctx.key).toBe('test-case-detail');
+    });
+
+    it('classifies /agent-traces as traces', () => {
+      const ctx = classifyRoute('/agent-traces');
+      expect(ctx.key).toBe('traces');
+    });
+  });
 });

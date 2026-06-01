@@ -48,7 +48,14 @@ export const DEFAULT_SUGGESTIONS: string[] = [
 
 export function classifyRoute(pathname: string): RouteContext {
   // Order matters — match more specific routes first.
-  if (/^\/runs\/[^/]+\/?$/.test(pathname) || /^\/benchmarks\/[^/]+\/runs\/[^/]+/.test(pathname)) {
+  // Run detail across both legacy (/runs/:id, /benchmarks/:b/runs/:r) and
+  // evals3 (/evaluations/runs/:id, /evaluations/benchmarks/:b/runs/:r/inspect) shapes.
+  if (
+    /^\/runs\/[^/]+\/?$/.test(pathname) ||
+    /^\/benchmarks\/[^/]+\/runs\/[^/]+/.test(pathname) ||
+    /^\/evaluations\/runs\/[^/]+/.test(pathname) ||
+    /^\/evaluations\/benchmarks\/[^/]+\/runs\/[^/]+/.test(pathname)
+  ) {
     return {
       key: 'run-detail',
       suggestions: [
@@ -59,7 +66,11 @@ export function classifyRoute(pathname: string): RouteContext {
       nudge: 'Want me to explain this run?',
     };
   }
-  if (/^\/benchmarks\/[^/]+/.test(pathname)) {
+  // Benchmark detail (legacy + evals3).
+  if (
+    /^\/benchmarks\/[^/]+/.test(pathname) ||
+    /^\/evaluations\/benchmarks\/[^/]+/.test(pathname)
+  ) {
     return {
       key: 'benchmark-detail',
       suggestions: [
@@ -70,7 +81,11 @@ export function classifyRoute(pathname: string): RouteContext {
       nudge: 'Want a read on this benchmark?',
     };
   }
-  if (/^\/benchmarks\/?$/.test(pathname)) {
+  // Benchmark list (legacy + evals3).
+  if (
+    /^\/benchmarks\/?$/.test(pathname) ||
+    /^\/evaluations\/benchmarks\/?$/.test(pathname)
+  ) {
     return {
       key: 'benchmarks-list',
       suggestions: [
@@ -80,18 +95,8 @@ export function classifyRoute(pathname: string): RouteContext {
       ],
     };
   }
-  if (/^\/traces\b/.test(pathname)) {
-    return {
-      key: 'traces',
-      suggestions: [
-        "Where's the bottleneck?",
-        'Which LLM call was most expensive?',
-        'Explain this span tree',
-      ],
-      nudge: 'Spot the slow span?',
-    };
-  }
-  if (/^\/test-cases\/[^/]+/.test(pathname)) {
+  // Test cases (legacy + evals3).
+  if (/^\/test-cases\/[^/]+/.test(pathname) || /^\/evaluations\/test-cases\/[^/]+/.test(pathname)) {
     return {
       key: 'test-case-detail',
       suggestions: [
@@ -100,6 +105,17 @@ export function classifyRoute(pathname: string): RouteContext {
         'Convert this to a code-based test',
       ],
       nudge: 'Strengthen this test case?',
+    };
+  }
+  if (/^\/traces\b/.test(pathname) || /^\/agent-traces\b/.test(pathname)) {
+    return {
+      key: 'traces',
+      suggestions: [
+        "Where's the bottleneck?",
+        'Which LLM call was most expensive?',
+        'Explain this span tree',
+      ],
+      nudge: 'Spot the slow span?',
     };
   }
   if (/^\/settings/.test(pathname)) {
