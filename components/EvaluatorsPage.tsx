@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Plus, Trash2, Eye, Pencil, Copy, RefreshCw, FlaskConical, Shield, Target, Brain, ListChecks } from 'lucide-react';
+import { Plus, Trash2, Eye, Pencil, Copy, RefreshCw, FlaskConical, Shield, Target, Brain, ListChecks, Clock } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -30,6 +30,19 @@ const EVALUATOR_ICONS: Record<string, React.ComponentType<any>> = {
   'system-safety': Shield,
 };
 
+function formatRelativeTime(dateStr: string | undefined): string {
+  if (!dateStr) return '';
+  const diff = Date.now() - new Date(dateStr).getTime();
+  const minutes = Math.floor(diff / 60_000);
+  if (minutes < 1) return 'just now';
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days}d ago`;
+  return new Date(dateStr).toLocaleDateString();
+}
+
 export const EvaluatorsPage: React.FC = () => {
   const navigate = useNavigate();
   const [evaluators, setEvaluators] = useState<Evaluator[]>([]);
@@ -47,7 +60,11 @@ export const EvaluatorsPage: React.FC = () => {
         throw new Error(`Failed to load evaluators: ${response.statusText}`);
       }
       const data = await response.json();
-      const allEvaluators = data.evaluators || [];
+      const allEvaluators = (data.evaluators || []).sort((a: Evaluator, b: Evaluator) => {
+        const aTime = a.updatedAt || a.createdAt || '';
+        const bTime = b.updatedAt || b.createdAt || '';
+        return bTime.localeCompare(aTime);
+      });
       setEvaluators(allEvaluators);
       setSystemCount(allEvaluators.filter((e: any) => e.isSystem).length);
       setCustomCount(allEvaluators.filter((e: any) => !e.isSystem).length);
@@ -222,6 +239,14 @@ export const EvaluatorsPage: React.FC = () => {
                         {evaluator.inferenceConfig?.provider && (
                           <span className="capitalize">
                             {evaluator.inferenceConfig.provider}
+                          </span>
+                        )}
+                        {(evaluator.updatedAt || evaluator.createdAt) && (
+                          <span className="flex items-center gap-1" title={evaluator.updatedAt || evaluator.createdAt}>
+                            <Clock className="h-3 w-3" />
+                            {evaluator.updatedAt && evaluator.updatedAt !== evaluator.createdAt
+                              ? `Updated ${formatRelativeTime(evaluator.updatedAt)}`
+                              : `Created ${formatRelativeTime(evaluator.createdAt)}`}
                           </span>
                         )}
                       </div>
