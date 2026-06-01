@@ -8,12 +8,19 @@
  *
  * Provides streaming conversational AI with in-memory session management.
  * Primary: spawns `claude` CLI with NDJSON streaming, using `--session-id`/`--resume` for continuity.
- * Fallback: uses configured LLM judge provider (Bedrock or LiteLLM).
+ *   The spawned CLI inherits the user's MCP servers from `~/.claude.json`
+ *   (filesystem, git, github, chrome-devtools, etc.) and is allowed to use
+ *   built-in tools (Bash, Read, Write, WebFetch, …). This makes the chat
+ *   surface a real Claude Code session with the same tool access the user
+ *   has on the command line.
+ * Fallback: uses configured LLM judge provider (Bedrock or LiteLLM). The
+ *   fallbacks have no tool access — they only see the inlined snapshot.
  */
 
 import { spawn, execSync, type ChildProcess } from 'child_process';
-import { readFileSync } from 'fs';
+import { readFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
+import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { loadConfigSync } from '@/lib/config/index';
 import { debug } from '@/lib/debug';
@@ -31,11 +38,30 @@ const AGENT_HEALTH_SKILL_PATH = resolve(process.cwd(), 'docs/skills/AGENT_HEALTH
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 
-/** Per-turn timeout for the claude CLI process. Configurable via ASSISTANT_TIMEOUT_MS env. */
+/**
+ * Per-turn timeout for the claude CLI process. Configurable via ASSISTANT_TIMEOUT_MS env.
+ * Default raised from 10min → 30min because tool-using turns (especially
+ * chrome-devtools navigations) can take significantly longer than pure-text turns.
+ */
 const CLAUDE_TIMEOUT_MS = (() => {
   const v = parseInt(process.env.ASSISTANT_TIMEOUT_MS || '', 10);
-  return Number.isFinite(v) && v > 0 ? v : 600_000;
+  return Number.isFinite(v) && v > 0 ? v : 1_800_000;
 })();
+
+/**
+ * Path to the MCP config the assistant spawns inherit. Defaults to the user's
+ * `~/.claude.json` (which is what the standalone `claude` CLI reads), so any
+ * MCP servers the user has set up — filesystem, git, github, chrome-devtools,
+ * builder, context7, tumbler, workplace-chat, … — are available out of the box.
+ * Override with ASSISTANT_MCP_CONFIG to point at a curated subset.
+ */
+function resolveMcpConfigPath(): string | null {
+  const override = process.env.ASSISTANT_MCP_CONFIG;
+  if (override && existsSync(override)) return override;
+  const userConfig = resolve(homedir(), '.claude.json');
+  if (existsSync(userConfig)) return userConfig;
+  return null;
+}
 
 /** Cap for fallback (Bedrock/LiteLLM) message history per turn. */
 const FALLBACK_HISTORY_CAP = 20;
@@ -111,6 +137,26 @@ function summarizeTrajectory(traj: TrajectoryStep[] | undefined): TrajectoryStep
   return traj.slice(-TRAJECTORY_SNAPSHOT_STEPS);
 }
 
+/** Build a slim, snapshot-friendly view of a run report. */
+function slimRun(run: any) {
+  return {
+    id: run.id,
+    status: run.status,
+    passFailStatus: run.passFailStatus,
+    metrics: run.metrics,
+    agentName: run.agentName,
+    modelName: run.modelName,
+    testCaseId: run.testCaseId,
+    testCaseVersion: run.testCaseVersion,
+    experimentId: run.experimentId,
+    experimentRunId: run.experimentRunId,
+    llmJudgeReasoning: run.llmJudgeReasoning,
+    improvementStrategies: run.improvementStrategies,
+    trajectory: summarizeTrajectory(run.trajectory),
+    trajectoryTotalSteps: run.trajectory?.length ?? 0,
+  };
+}
+
 /**
  * Fetch and inline run / benchmark / test case data so the assistant can answer
  * grounded questions without needing tool access.
@@ -123,24 +169,8 @@ export async function loadContextSnapshot(context?: AssistantContext): Promise<s
     try {
       const run = await asyncRunStorage.getReportById(context.runId);
       if (run) {
-        const slim = {
-          id: run.id,
-          status: run.status,
-          passFailStatus: run.passFailStatus,
-          metrics: run.metrics,
-          agentName: run.agentName,
-          modelName: run.modelName,
-          testCaseId: run.testCaseId,
-          testCaseVersion: run.testCaseVersion,
-          experimentId: run.experimentId,
-          experimentRunId: run.experimentRunId,
-          llmJudgeReasoning: run.llmJudgeReasoning,
-          improvementStrategies: run.improvementStrategies,
-          trajectory: summarizeTrajectory(run.trajectory),
-          trajectoryTotalSteps: run.trajectory?.length ?? 0,
-        };
         sections.push(
-          `### Run ${run.id}\n\`\`\`json\n${truncate(JSON.stringify(slim, null, 2), SNAPSHOT_SECTION_CHAR_CAP)}\n\`\`\``
+          `### Run ${run.id}\n\`\`\`json\n${truncate(JSON.stringify(slimRun(run), null, 2), SNAPSHOT_SECTION_CHAR_CAP)}\n\`\`\``
         );
 
         // Pull the linked test case so the assistant knows the prompt + expected outcomes.
@@ -153,6 +183,35 @@ export async function loadContextSnapshot(context?: AssistantContext): Promise<s
     } catch (err: any) {
       debug('Assistant', 'loadContextSnapshot run fetch failed:', err?.message);
       sections.push(`### Run ${context.runId}\n_Failed to load: ${err?.message || 'unknown error'}_`);
+    }
+  }
+
+  // Comparison page: load every run the user is currently comparing so the
+  // assistant can answer cross-run questions ("which tests passed for which
+  // agent?") without needing tool access.
+  if (Array.isArray(context.comparisonRunIds) && context.comparisonRunIds.length > 0) {
+    const compared: any[] = [];
+    const missing: string[] = [];
+    for (const id of context.comparisonRunIds) {
+      try {
+        const run = await asyncRunStorage.getReportById(id);
+        if (run) {
+          compared.push(slimRun(run));
+        } else {
+          missing.push(id);
+        }
+      } catch (err: any) {
+        debug('Assistant', 'loadContextSnapshot comparison fetch failed for', id, err?.message);
+        missing.push(id);
+      }
+    }
+    if (compared.length > 0) {
+      sections.push(
+        `### Comparison Runs (${compared.length} of ${context.comparisonRunIds.length})\n\`\`\`json\n${truncate(JSON.stringify(compared, null, 2), SNAPSHOT_SECTION_CHAR_CAP * 2)}\n\`\`\``
+      );
+    }
+    if (missing.length > 0) {
+      sections.push(`_Missing runs in comparison set: ${missing.join(', ')}_`);
     }
   }
 
@@ -214,19 +273,118 @@ export async function loadContextSnapshot(context?: AssistantContext): Promise<s
  * Build the system prompt synchronously. For grounded context, callers should
  * await `loadContextSnapshot` separately and append (this keeps the function
  * sync-friendly for tests and the Bedrock/LiteLLM fallbacks).
+ *
+ * @param context        Page context (URL, benchmark/run/test-case IDs)
+ * @param toolsAvailable Whether the spawned model has tool access. Controls
+ *                       the tool-use policy section: Claude CLI (true) vs.
+ *                       Bedrock/LiteLLM fallbacks (false).
  */
-export function buildSystemPrompt(context?: AssistantContext): string {
+export function buildSystemPrompt(
+  context?: AssistantContext,
+  toolsAvailable: boolean = false
+): string {
   const skillContent = loadSkillContent();
+  const frontendPort = process.env.AGENT_HEALTH_DEV_PORT || '4000';
+  const backendPort = process.env.AGENT_HEALTH_PORT || '4001';
 
   let systemPrompt = `You are an AI assistant for Agent Health, an evaluation framework for Root Cause Analysis (RCA) agents. Help users understand evaluation results, configure agents, interpret trajectories, and improve agent performance.
 
-When a Live Data Snapshot is provided below, ground your answers in that data — quote judge reasoning verbatim where relevant, reference specific trajectory steps by index, and only speculate when data is missing. Be concise and helpful.
+When a Live Data Snapshot is provided below, ground your answers in that data — quote judge reasoning verbatim where relevant, reference specific trajectory steps by index, and only speculate when data is missing. Be concise and helpful.`;
+
+  if (toolsAvailable) {
+    systemPrompt += `
 
 ## Tool Use Policy
 
-You are running inside a read-only chat surface with NO tools enabled — no Skill, Bash, Read, Write, WebFetch, MCP servers, slash commands, or any other tool/function calls are available. Do NOT say things like "Let me check…", "Let me search…", or "Let me find the SOP" — you cannot run anything; those phrases produce dead ends in the UI.
+You are running as a real Claude Code session embedded in the Agent Health web UI. You have full tool access — the same tools the user has on the command line:
 
-Use ONLY the Live Data Snapshot below. If something is missing from the snapshot, state plainly what is missing and tell the user what to fetch (file path, CLI command, URL) so they can paste the result back into the chat. Finish every answer with a complete written conclusion — never end mid-thought as if a tool were about to run.`;
+- **Built-in:** Bash, Read, Write, Edit, WebFetch, Glob, Grep, TodoWrite, etc.
+- **MCP servers** loaded from the user's \`~/.claude.json\`, typically including:
+  - \`filesystem\` — file access rooted at the user's home directory
+  - \`git\`, \`github\` — repository and PR/issue inspection
+  - \`chrome-devtools\` — headless Chrome you can drive to navigate the running Agent Health UI, take screenshots, inspect the DOM, and read console output
+  - any other MCPs the user has configured (context7, builder, tumbler, workplace-chat, …)
+
+Use them. Don't ask permission — you are already authorized (\`--dangerously-skip-permissions\` is set for this session).
+
+### How to investigate Agent Health questions
+
+The user is running Agent Health locally:
+- **Frontend** (Vite/React, hash router): http://localhost:${frontendPort}
+- **Backend** (Express, REST): http://localhost:${backendPort}
+
+Prefer hitting the backend API directly (faster and more structured than DOM scraping). Useful endpoints:
+- \`GET /api/storage/runs/:id\` — single run report (includes trajectory, judge reasoning, metrics, pass/fail)
+- \`GET /api/storage/runs/by-benchmark/:benchmarkId\` — all runs for a benchmark
+- \`GET /api/storage/benchmarks/:id\` — benchmark definition + run summaries (use \`?fields=full\` for detail)
+- \`GET /api/storage/test-cases/:id\` — test case definition with expected outcomes
+- \`GET /api/storage/runs/iterations/:benchmarkId/:testCaseId\` — every run of a single test case in a benchmark
+- \`GET /api/storage/runs/by-benchmark-run/:benchmarkId/:runId\` — all per-test-case results for one benchmark execution
+
+### CRITICAL: Always Investigate — Never Ask the User to Paste Data
+
+If the Live Data Snapshot below shows "Run not found" or is missing data you need, **use your tools to fetch it**. You have full API access. NEVER tell the user to "paste back" data, run CLI commands, or manually export results. Instead:
+
+1. Identify what data is missing (run details, test cases, judge reasoning, evaluator config)
+2. Fetch it yourself via \`curl http://localhost:${backendPort}/api/storage/...\`
+3. If the benchmark ID is known, fetch all runs: \`curl http://localhost:${backendPort}/api/storage/runs/by-benchmark/<benchmarkId>\`
+4. If a run ID fails, try listing runs for the benchmark and find matches by agent/timestamp
+5. Read source code in the project if needed (evaluator templates, judge prompts, etc.)
+
+Only state "data not available" if you've tried fetching and confirmed it doesn't exist.
+
+Example workflow for "which tests passed for which agent?" on the comparison page:
+1. Read the \`comparisonRunIds\` from the page context below.
+2. For each run id, \`curl http://localhost:${backendPort}/api/storage/runs/by-benchmark-run/<benchmarkId>/<runId>\` to get the per-test-case pass/fail for that agent.
+3. Cross-tabulate by \`testCaseId\` and present the result.
+
+Reach for \`chrome-devtools\` (navigate, take_screenshot, evaluate_script) when the user is asking about something visual that the API can't capture — e.g. "what does the trajectory diff look like for test X?". The frontend route is hash-based, so URLs look like http://localhost:${frontendPort}/#/compare/<benchmarkId>?runs=<id1>,<id2>.
+
+### Evaluator Architecture Knowledge
+
+You have deep knowledge of the evaluation system. Use this to answer questions about judge quality, custom evaluators, and eval-vs-reality gaps.
+
+**Default Judge (system-rca-default):**
+- Pass threshold: 70% accuracy (permissive — agent can miss 30% of outcomes and still pass)
+- Scoring: Each expectedOutcome scored individually: Fully achieved = 1.0, Partially = 0.5, Not = 0.0
+- accuracy = (sum of scores / total outcomes) × 100
+- Critical failures (wrong conclusions, hallucinations, missing steps) override to FAIL regardless of score
+- Trajectory is compacted before judge sees it: content truncated to 500 chars, toolOutput to 1000 chars
+
+**Built-in Alternative Evaluators:**
+- \`system-factuality\`: 80% threshold, checks hallucination rate and source grounding
+- \`system-tool-usage\`: 80% threshold, checks tool selection accuracy and redundant calls
+- \`system-reasoning-depth\`: 75% threshold, checks logical coherence and step completeness
+- \`system-safety\`: 90% threshold, checks safety score, bias, and guardrail adherence
+
+**Custom Evaluators:**
+Users can create custom evaluators with:
+- A domain-specific \`systemPrompt\` (the judge instructions)
+- Custom \`scoringConfig\` with weighted metrics and a custom passThreshold
+- Custom \`inferenceConfig\` to override the judge model/provider
+
+**When users ask about eval-vs-reality gaps, consider:**
+1. Are expectedOutcomes too outcome-focused vs procedure-focused? (Judge rewards "got the right answer" without checking "used the right method")
+2. Is the 70% threshold too permissive for the domain? (Critical domains like oncall need 85%+)
+3. Does the domain have hard correctness rules the generic judge can't verify? (e.g., specific CLI syntax, routing tables, valid command names)
+4. Is trajectory compaction hiding important details? (tool output truncation may obscure wrong commands)
+5. Would a domain-specific evaluator with explicit rubric criteria perform better?
+
+**Recommend custom evaluators when:**
+- The domain has checkable rules (correct tool names, valid syntax, routing decisions)
+- The default judge is too charitable (passing agents that fail in practice)
+- Multiple dimensions matter independently (routing + tool correctness + diagnostic completeness)
+
+Always finish with a complete written conclusion — don't end mid-thought.`;
+  } else {
+    systemPrompt += `
+
+## Tool Use Policy
+
+You are running through a fallback LLM provider (Bedrock or LiteLLM) with NO tool access — no Bash, Read, WebFetch, MCP servers, or function calls are available. Do NOT say "Let me check…" or "Let me search…" — those phrases produce dead ends.
+
+Use ONLY the Live Data Snapshot below. If something is missing, state plainly what's missing and suggest what the user can fetch (CLI command, URL, file path) and paste back. Finish every answer with a complete written conclusion.`;
+  }
 
   if (skillContent) {
     systemPrompt += `\n\n---\n\n## Agent Health Reference\n\n${skillContent}`;
@@ -239,6 +397,9 @@ Use ONLY the Live Data Snapshot below. If something is missing from the snapshot
     if (context.runId) systemPrompt += `\nActive run ID: ${context.runId}`;
     if (context.traceId) systemPrompt += `\nActive trace ID: ${context.traceId}`;
     if (context.testCaseId) systemPrompt += `\nActive test case ID: ${context.testCaseId}`;
+    if (context.comparisonRunIds && context.comparisonRunIds.length > 0) {
+      systemPrompt += `\nComparison run IDs: ${context.comparisonRunIds.join(', ')}`;
+    }
   }
 
   return systemPrompt;
@@ -273,6 +434,9 @@ export function isClaudeAvailable(): boolean {
  * IMPORTANT: strip CLAUDE_CODE_* / CLAUDECODE inheritance. If the server is started
  * from inside an active Claude Code session, those vars cause the nested CLI to
  * misbehave (the CLI explicitly refuses to run when CLAUDECODE=1).
+ *
+ * HOME is preserved so the spawned CLI can locate `~/.claude.json` and inherit
+ * the user's MCP servers, login session, and AWS Bedrock routing.
  */
 function buildChildEnv(): Record<string, string> {
   const env: Record<string, string> = { ...(process.env as Record<string, string>) };
@@ -309,13 +473,17 @@ function streamFromClaude(
     '--verbose',
     '--output-format', 'stream-json',
     '--dangerously-skip-permissions',
-    // Belt-and-suspenders: explicitly forbid all tool/skill invocations.
-    // The chat surface has no tool execution backend, and rendering a stranded
-    // tool_use block confuses the UI. The system prompt also instructs the
-    // model not to attempt tools.
-    '--disallowed-tools', '*',
     '--append-system-prompt', systemPrompt,
   ];
+
+  // Inherit the user's MCP servers (filesystem, git, github, chrome-devtools, …)
+  // from `~/.claude.json` so the assistant has the same tool access as the
+  // standalone `claude` CLI. We pass --mcp-config explicitly because Claude CLI's
+  // default project-scoped resolution may otherwise filter user-scoped MCPs.
+  const mcpConfigPath = resolveMcpConfigPath();
+  if (mcpConfigPath) {
+    args.push('--mcp-config', mcpConfigPath);
+  }
 
   // Use a stable session id so follow-up turns can --resume into the same conversation.
   if (session.claudeStarted) {
@@ -327,12 +495,16 @@ function streamFromClaude(
   debug('Assistant', 'Spawning claude CLI', {
     sessionId: session.claudeSessionId,
     resume: session.claudeStarted,
+    mcpConfig: mcpConfigPath,
   });
 
   const child = spawn('claude', args, {
     env: buildChildEnv(),
     stdio: ['pipe', 'pipe', 'pipe'],
     timeout: CLAUDE_TIMEOUT_MS,
+    // Run from the Agent Health project root so any project-scoped MCPs (e.g.
+    // a `.mcp.json` in the repo) are also picked up.
+    cwd: process.cwd(),
   });
 
   let fullResponse = '';
@@ -349,14 +521,27 @@ function streamFromClaude(
           fullResponse += block.text;
           onDelta(block.text);
         } else if (block?.type === 'tool_use') {
-          // The chat surface has no tool execution backend (we strip MCP/skills env
-          // and pass --disallowed-tools '*'). Render a clear inline note so the
-          // user understands the assistant tried to use a tool here, instead of
-          // silently ending the turn at a streaming cursor.
-          const toolName = typeof block.name === 'string' ? block.name : 'a tool';
-          const note = `\n\n_(Tried to invoke \`${toolName}\` here — tool execution is disabled in this chat. I'll continue with the data I have or tell you what to fetch manually.)_\n\n`;
+          // Tools are enabled in this session — surface a friendly inline
+          // marker so the user can see what the assistant is doing while
+          // the tool runs. The actual result will arrive in a subsequent
+          // "user" / tool_result event and is rendered silently (the model
+          // will summarize it in its next assistant text block).
+          const toolName = typeof block.name === 'string' ? block.name : 'tool';
+          const note = `\n\n_🔧 Using \`${toolName}\`…_\n\n`;
           fullResponse += note;
           onDelta(note);
+        }
+      }
+      return;
+    }
+
+    // Tool results come back as `user` messages with `tool_result` content.
+    // We don't render them inline (would clutter the chat) — the model will
+    // summarize them in its next text block. But we do log for debug.
+    if (parsed.type === 'user' && parsed.message?.content && Array.isArray(parsed.message.content)) {
+      for (const block of parsed.message.content) {
+        if (block?.type === 'tool_result') {
+          debug('Assistant', 'tool_result for', block.tool_use_id, '(suppressed from UI)');
         }
       }
       return;
@@ -606,8 +791,10 @@ export function streamAssistantResponse(
   let aborted = false;
 
   // Build system prompt + grounded snapshot, then dispatch.
+  // The fallback path uses the no-tools prompt; the Claude CLI path overrides
+  // it below with the tools-enabled variant.
   (async () => {
-    const baseSystemPrompt = buildSystemPrompt(context);
+    const baseSystemPrompt = buildSystemPrompt(context, /* toolsAvailable */ false);
     let snapshot = '';
     try {
       snapshot = await loadContextSnapshot(context);
@@ -620,7 +807,9 @@ export function streamAssistantResponse(
 
     if (isClaudeAvailable()) {
       debug('Assistant', 'Using claude CLI for session:', sessionId);
-      childProcess = streamFromClaude(session, message, systemPrompt, onDelta, handleDone, handleError);
+      // Tools-enabled prompt for the real Claude Code session.
+      const toolEnabledPrompt = buildSystemPrompt(context, /* toolsAvailable */ true) + snapshot;
+      childProcess = streamFromClaude(session, message, toolEnabledPrompt, onDelta, handleDone, handleError);
       return;
     }
 
