@@ -22,6 +22,12 @@
  *   - Reject creating with a system id (400)
  *   - DELETE a custom evaluator
  *   - 404 for unknown ids
+ *
+ * Version-history endpoints (consumed by EvaluatorVersionHistory):
+ *   - GET /:id/versions returns all versions newest-first
+ *   - GET /:id/versions/:n returns a specific version
+ *   - System evaluator versions endpoint returns exactly one version
+ *   - Per-version content matches what the matching PUT/POST sent
  */
 
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
@@ -241,5 +247,120 @@ describe('Evaluators CRUD Integration Tests', () => {
     );
     expect(followUp.status).toBe(404);
     // Note: don't push to createdIds — already deleted.
+  });
+
+  // ─────────────────────────────────────────────────────────────────────────────
+  // Version-history endpoints — backbone of the new EvaluatorVersionHistory UI.
+  // ─────────────────────────────────────────────────────────────────────────────
+
+  it('GET /:id/versions returns all versions newest-first', async () => {
+    if (!backendAvailable) return;
+
+    // Create v1, then PUT twice to land at v3 with three distinct prompts.
+    const v1 = await fetch(`${BASE_URL}/api/storage/evaluators`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createPayload('versions-list')),
+    }).then((r) => r.json());
+    createdIds.push(v1.id);
+
+    await fetch(`${BASE_URL}/api/storage/evaluators/${encodeURIComponent(v1.id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...v1, systemPrompt: 'v2 prompt body' }),
+    });
+    const v3 = await fetch(
+      `${BASE_URL}/api/storage/evaluators/${encodeURIComponent(v1.id)}`,
+      {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...v1, systemPrompt: 'v3 prompt body' }),
+      },
+    ).then((r) => r.json());
+    expect(v3.currentVersion).toBe(3);
+
+    const resp = await fetch(
+      `${BASE_URL}/api/storage/evaluators/${encodeURIComponent(v1.id)}/versions`,
+    );
+    expect(resp.ok).toBe(true);
+    const body = await resp.json();
+    expect(body.total).toBe(3);
+    expect(Array.isArray(body.versions)).toBe(true);
+    expect(body.versions).toHaveLength(3);
+
+    // Newest-first ordering is what the UI relies on (latest badge on row 0).
+    const versionNumbers = body.versions.map((v: any) => v.currentVersion ?? v.version);
+    expect(versionNumbers).toEqual([3, 2, 1]);
+  });
+
+  it('GET /:id/versions/:n returns the snapshot content for that version', async () => {
+    if (!backendAvailable) return;
+
+    const v1 = await fetch(`${BASE_URL}/api/storage/evaluators`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createPayload('version-pin')),
+    }).then((r) => r.json());
+    createdIds.push(v1.id);
+
+    // Bump to v2 with a different system prompt so we can tell them apart.
+    await fetch(`${BASE_URL}/api/storage/evaluators/${encodeURIComponent(v1.id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ...v1, systemPrompt: 'pinned v2 prompt body' }),
+    });
+
+    const v1Resp = await fetch(
+      `${BASE_URL}/api/storage/evaluators/${encodeURIComponent(v1.id)}/versions/1`,
+    );
+    expect(v1Resp.ok).toBe(true);
+    const v1Body = await v1Resp.json();
+    expect(v1Body.systemPrompt).toBe(v1.systemPrompt);
+
+    const v2Resp = await fetch(
+      `${BASE_URL}/api/storage/evaluators/${encodeURIComponent(v1.id)}/versions/2`,
+    );
+    expect(v2Resp.ok).toBe(true);
+    const v2Body = await v2Resp.json();
+    expect(v2Body.systemPrompt).toBe('pinned v2 prompt body');
+  });
+
+  it('returns 404 for an unknown version on an existing evaluator', async () => {
+    if (!backendAvailable) return;
+
+    const created = await fetch(`${BASE_URL}/api/storage/evaluators`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(createPayload('missing-version')),
+    }).then((r) => r.json());
+    createdIds.push(created.id);
+
+    const resp = await fetch(
+      `${BASE_URL}/api/storage/evaluators/${encodeURIComponent(created.id)}/versions/99`,
+    );
+    expect(resp.status).toBe(404);
+  });
+
+  it('system evaluators expose exactly one (immutable) version', async () => {
+    if (!backendAvailable) return;
+
+    const resp = await fetch(
+      `${BASE_URL}/api/storage/evaluators/${encodeURIComponent(SYSTEM_ID)}/versions`,
+    );
+    expect(resp.ok).toBe(true);
+    const body = await resp.json();
+    expect(body.total).toBe(1);
+    expect(body.versions).toHaveLength(1);
+
+    // GET /:id/versions/1 succeeds, anything else 404s.
+    const v1Resp = await fetch(
+      `${BASE_URL}/api/storage/evaluators/${encodeURIComponent(SYSTEM_ID)}/versions/1`,
+    );
+    expect(v1Resp.ok).toBe(true);
+
+    const v2Resp = await fetch(
+      `${BASE_URL}/api/storage/evaluators/${encodeURIComponent(SYSTEM_ID)}/versions/2`,
+    );
+    expect(v2Resp.status).toBe(404);
   });
 });

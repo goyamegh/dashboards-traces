@@ -110,6 +110,7 @@ function App() {
             <Route path="/benchmarks/:benchmarkId/runs" element={<BenchmarkRunsPage />} />
             <Route path="/evaluators" element={<EvaluatorsPage />} />
             <Route path="/evaluators/new" element={<EvaluatorEditPage />} />
+            <Route path="/evaluators/:evaluatorId" element={<EvaluatorEditPage />} />
             <Route path="/evaluators/:evaluatorId/edit" element={<EvaluatorEditPage />} />
 
             {/* Unified run details page - works for both test case and benchmark runs */}

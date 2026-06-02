@@ -99,7 +99,7 @@ test.describe('Evaluator Edit Page (redesign)', () => {
     });
     await expect(page.getByText(/system \(read-only\)/i)).toBeVisible();
     await expect(
-      page.getByText(/duplicate from the list to create an editable/i),
+      page.getByText(/duplicate.*editable copy/i),
     ).toBeVisible();
 
     // Save is hidden, Cancel is visible
@@ -150,9 +150,12 @@ test.describe('Evaluator Edit Page (redesign)', () => {
     expect(created.id).toBeTruthy();
     expect(created.name).toBe(evalName);
 
-    // After create the page navigates back to the list
-    await expect(page).toHaveURL(/\/evaluators$/);
-    await expect(page.getByText(evalName)).toBeVisible({ timeout: 10000 });
+    // After create, the page navigates to the read-only view of the new
+    // evaluator (so the user can confirm the persisted state and the v1 pill).
+    await expect(page).toHaveURL(new RegExp(`/evaluators/${created.id}$`));
+    await expect(page.getByRole('heading', { name: /view evaluator/i })).toBeVisible({
+      timeout: 10000,
+    });
 
     // Cleanup via the API so we don't depend on the list-row delete UX.
     const del = await request.delete(`/api/storage/evaluators/${created.id}`);
