@@ -19,8 +19,14 @@ import { executeBuildTrajectoryHook } from '@/lib/hooks';
 // Polling configuration. Defaults are overridable via env vars so that
 // CI / E2E runs without a real OpenSearch trace backend can fail fast
 // instead of waiting the full ~10 min before the poller gives up.
+//
+// NOTE: this module is imported by browser code (RunDetailsContent.tsx) for
+// recovery polling, where `process` is not defined. Guard the access so we
+// silently fall back to defaults in the browser instead of throwing
+// `ReferenceError: process is not defined` at module load time.
 const envInt = (name: string, fallback: number): number => {
-  const raw = process.env[name];
+  const raw =
+    typeof process !== 'undefined' && process?.env ? process.env[name] : undefined;
   if (!raw) return fallback;
   const parsed = parseInt(raw, 10);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
