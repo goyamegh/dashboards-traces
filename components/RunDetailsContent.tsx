@@ -49,6 +49,7 @@ import { fetchTracesByRunIds, processSpansIntoTree, calculateTimeRange } from '@
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { ENV_CONFIG } from '@/lib/config';
 import { formatDate, getLabelColor, getDifficultyColor } from '@/lib/utils';
+import { RunScore } from '@/components/RunScore';
 import { asyncRunStorage, asyncTestCaseStorage } from '@/services/storage';
 import { callBedrockJudge } from '@/services/evaluation';
 import { tracePollingManager } from '@/services/traces/tracePoller';
@@ -220,7 +221,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
               judgeModelId
             );
 
-            console.info(`[RunDetails] Judge result: ${judgment.passFailStatus}, accuracy: ${judgment.metrics.accuracy}%`);
+            console.info(`[RunDetails] Judge result: ${judgment.passFailStatus}`, judgment.metrics);
 
             // Update report with judge results
             await asyncRunStorage.updateReport(liveReport.id, {
@@ -587,8 +588,16 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
             /* Fallback for legacy runs without evaluator */
             <Card className="bg-muted/50 col-span-2">
               <CardContent className="p-2">
-                <div className="text-[10px] text-muted-foreground mb-0.5">Accuracy</div>
-                <div className="text-xs font-semibold text-blue-700 dark:text-blue-400">{liveReport.metrics.accuracy}%</div>
+                <div className="text-[10px] text-muted-foreground mb-0.5">Score</div>
+                {/* Renders the run's overall score (mean of every metric the
+                    evaluator emitted) with a tooltip listing each contributing
+                    metric, instead of hardcoding `accuracy` — which only the
+                    RCA Default evaluator emits. */}
+                <RunScore
+                  metrics={liveReport.metrics as Record<string, number | undefined>}
+                  showLabel={false}
+                  className="text-xs font-semibold text-blue-700 dark:text-blue-400"
+                />
               </CardContent>
             </Card>
           )}

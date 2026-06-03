@@ -63,7 +63,12 @@ function getPassFail(run: TestCaseRun): 'pass' | 'fail' | 'running' | 'unknown' 
   if (run.status === 'running') return 'running';
   if (run.passFailStatus === 'passed') return 'pass';
   if (run.passFailStatus === 'failed') return 'fail';
-  if (run.status === 'completed') return run.metrics?.accuracy >= 50 ? 'pass' : 'fail';
+  // No verdict from the judge — don't fabricate one from a single metric
+  // value. The previous fallback of `accuracy >= 50` only worked under the
+  // RCA Default evaluator (the only one that emits a metric named
+  // `accuracy`), so for runs scored by any other evaluator it always
+  // returned 'fail' regardless of how the judge actually scored the run.
+  // 'unknown' is the honest answer.
   return 'unknown';
 }
 

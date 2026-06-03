@@ -22,6 +22,7 @@ import { parseLabels } from '@/lib/labels';
 import { runServerEvaluation, ServerEvaluationReport } from '@/services/client/evaluationApi';
 import { asyncTestCaseStorage } from '@/services/storage';
 import { TrajectoryView } from './TrajectoryView';
+import { RunScore } from '@/components/RunScore';
 
 interface QuickRunModalProps {
   testCase: TestCase | null; // null = ad-hoc run mode
@@ -558,8 +559,13 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                           FAILED
                         </Badge>
                       )}
-                      <span className="text-sm text-muted-foreground">
-                        Accuracy: {report.metrics.accuracy}%
+                      <span className="text-sm text-muted-foreground inline-flex items-center gap-1">
+                        {/* Generic "Score: X%" rather than "Accuracy:" — the
+                            number is the run's overall score under whichever
+                            evaluator scored it (RCA Default emits `accuracy`,
+                            other evaluators emit different metrics). The
+                            tooltip on hover lists each contributing metric. */}
+                        <RunScore metrics={report.metrics as Record<string, number | undefined>} />
                       </span>
                     </div>
                   )}

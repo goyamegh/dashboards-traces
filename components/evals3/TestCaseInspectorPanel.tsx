@@ -16,6 +16,7 @@ import { Badge } from '@/components/ui/badge';
 import { EvaluationReport, TestCase } from '@/types';
 import { RunDetailsContent } from '../RunDetailsContent';
 import { type ResultStatus } from './ResultStatus';
+import { getRunDisplayName } from '@/lib/utils';
 
 interface TestCaseInspectorPanelProps {
   report: EvaluationReport;
@@ -44,14 +45,27 @@ export const TestCaseInspectorPanel: React.FC<TestCaseInspectorPanelProps> = ({
 
   return (
     <div className="h-full flex flex-col">
-      {/* Compact header — just name + status */}
+      {/* Compact header — run name (so the user sees which run they're
+          inspecting) + status badge. The test case name is already shown in
+          the page header above, so repeating it here would be redundant. */}
       <div className="px-4 py-2.5 border-b bg-card shrink-0">
         <div className="flex items-center gap-2">
           {badge.icon}
-          <span className="text-sm font-semibold truncate flex-1">{testCase?.name || report.testCaseId}</span>
+          <span
+            className="text-sm font-semibold truncate flex-1"
+            title={getRunDisplayName(report)}
+          >
+            {getRunDisplayName(report)}
+          </span>
           <Badge className={`text-[9px] px-1.5 py-0 shrink-0 ${badge.cls}`}>
             {badge.label}
           </Badge>
+        </div>
+        {/* Secondary line: agent · model — mirrors the runs list so the
+            user has the same execution context visible whether they're
+            scanning the list or focused on a single run. */}
+        <div className="text-[10px] text-muted-foreground mt-1 truncate">
+          {report.agentName || '—'} · {report.modelName || '—'}
         </div>
       </div>
 

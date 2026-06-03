@@ -20,6 +20,7 @@ import { Loader2, Coins, Clock, Cpu, Wrench } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { BenchmarkRun, EvaluationReport } from '@/types';
 import { fetchBatchMetrics, formatCost, formatTokens, formatDuration } from '@/services/metrics';
+import { getRunOverallScore } from '@/lib/utils';
 
 interface BenchmarkSummaryChartsProps {
   runs: BenchmarkRun[];
@@ -32,7 +33,15 @@ interface RunStats {
   passCount: number;
   failCount: number;
   totalCount: number;
-  avgAccuracy: number;
+  /**
+   * Mean of every metric the per-test-case evaluator emitted, averaged
+   * across every test case in this benchmark run. Replaces the old
+   * `avgAccuracy` field which only worked for benchmarks scored under the
+   * RCA Default evaluator (the only one that emits a metric named
+   * `accuracy`); all other evaluators registered as `0` in the previous
+   * implementation, dragging the average toward zero.
+   */
+  avgScore: number;
   passRatePercent: number;
 }
 
@@ -68,7 +77,8 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
   // Calculate stats for each run from stored report metrics
   const runStats: RunStats[] = useMemo(() => {
     return (runs || []).map(run => {
-      let totalAccuracy = 0;
+      let totalScore = 0;
+      let scoredCount = 0;
       let passCount = 0;
       let completedCount = 0;
       const totalCount = Object.keys(run.results || {}).length;
@@ -77,7 +87,15 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
         if (result.reportId && result.status === 'completed') {
           const report = reports[result.reportId];
           if (report && report.status === 'completed') {
-            totalAccuracy += report.metrics?.accuracy ?? 0;
+            // Use the run's overall score (mean of all populated metrics),
+            // not just `accuracy`. `null` means the report had no scorable
+            // metrics yet — we skip it from the aggregate rather than
+            // counting it as a 0.
+            const score = getRunOverallScore(report.metrics as Record<string, number | undefined>);
+            if (score !== null) {
+              totalScore += score;
+              scoredCount++;
+            }
             if (report.passFailStatus === 'passed') passCount++;
             completedCount++;
           }
@@ -90,7 +108,7 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
         passCount,
         failCount: completedCount - passCount,
         totalCount,
-        avgAccuracy: completedCount > 0 ? Math.round(totalAccuracy / completedCount) : 0,
+        avgScore: scoredCount > 0 ? Math.round(totalScore / scoredCount) : 0,
         passRatePercent: totalCount > 0 ? Math.round((passCount / totalCount) * 100) : 0,
       };
     });
@@ -101,8 +119,8 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
     const totalPass = runStats.reduce((sum, r) => sum + r.passCount, 0);
     const totalFail = runStats.reduce((sum, r) => sum + r.failCount, 0);
     const total = totalPass + totalFail;
-    const avgAccuracy = runStats.length > 0
-      ? Math.round(runStats.reduce((sum, r) => sum + r.avgAccuracy, 0) / runStats.length)
+    const avgScore = runStats.length > 0
+      ? Math.round(runStats.reduce((sum, r) => sum + r.avgScore, 0) / runStats.length)
       : 0;
 
     return {
@@ -110,7 +128,7 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
       totalFail,
       total,
       passRatePercent: total > 0 ? Math.round((totalPass / total) * 100) : 0,
-      avgAccuracy,
+      avgScore,
     };
   }, [runStats]);
 
@@ -153,10 +171,13 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
     fetchMetrics();
   }, [reports]);
 
-  // Data for accuracy bar chart
-  const accuracyChartData = runStats.map((stat, index) => ({
+  // Data for the per-run score bar chart — each bar is one benchmark run's
+  // average score across its test cases. "Score" is generic (the underlying
+  // metric set varies per evaluator), the tooltip in the chart shows
+  // `score` so renaming the dataKey is intentional.
+  const scoreChartData = runStats.map((stat, index) => ({
     name: stat.runName,
-    accuracy: stat.avgAccuracy,
+    score: stat.avgScore,
     fill: COLORS.bars[index % COLORS.bars.length],
   }));
 
@@ -181,9 +202,9 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
 
         <Card className="bg-muted/50">
           <CardContent className="p-4">
-            <div className="text-xs text-muted-foreground mb-1">Avg Accuracy</div>
+            <div className="text-xs text-muted-foreground mb-1">Avg Score</div>
             <div className="text-2xl font-bold text-blue-400">
-              {overallStats.avgAccuracy}%
+              {overallStats.avgScore}%
             </div>
             <div className="text-xs text-muted-foreground">
               across {runs.length} run{runs.length !== 1 ? 's' : ''}
@@ -315,15 +336,15 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
           </CardContent>
         </Card>
 
-        {/* Accuracy Bar Chart */}
+        {/* Per-run Score Bar Chart */}
         <Card>
           <CardHeader className="pb-2">
-            <CardTitle className="text-sm font-medium">Accuracy by Run</CardTitle>
+            <CardTitle className="text-sm font-medium">Score by Run</CardTitle>
           </CardHeader>
           <CardContent>
             <ResponsiveContainer width="100%" height={150}>
               <BarChart
-                data={accuracyChartData}
+                data={scoreChartData}
                 layout="vertical"
                 margin={{ top: 5, right: 30, left: 80, bottom: 5 }}
               >
@@ -350,8 +371,8 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
                     borderRadius: '6px',
                   }}
                 />
-                <Bar dataKey="accuracy" radius={[0, 4, 4, 0]}>
-                  {accuracyChartData.map((entry, index) => (
+                <Bar dataKey="score" radius={[0, 4, 4, 0]}>
+                  {scoreChartData.map((entry, index) => (
                     <Cell key={`cell-${index}`} fill={entry.fill} />
                   ))}
                 </Bar>

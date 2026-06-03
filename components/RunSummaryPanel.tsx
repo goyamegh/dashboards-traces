@@ -10,7 +10,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { EvaluationReport, ExperimentRun } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
-import { formatDate, getModelName } from '@/lib/utils';
+import { formatDate, getModelName, getRunOverallScore } from '@/lib/utils';
 import { fetchBatchMetrics, formatTokens, formatCost, formatDuration } from '@/services/metrics';
 
 interface RunSummaryPanelProps {
@@ -33,7 +33,7 @@ export const RunSummaryPanel: React.FC<RunSummaryPanelProps> = ({
   const calculateStats = () => {
     let passed = 0;
     let failed = 0;
-    let totalAccuracy = 0;
+    let totalScore = 0;
     let reportCount = 0;
 
     Object.values(run.results || {}).forEach(result => {
@@ -41,7 +41,13 @@ export const RunSummaryPanel: React.FC<RunSummaryPanelProps> = ({
         const report = reports[result.reportId];
         if (report) {
           reportCount++;
-          totalAccuracy += report.metrics?.accuracy ?? 0;
+          // Aggregate the run's overall score (mean of every metric the
+          // evaluator emitted), not just `accuracy` — only the RCA Default
+          // evaluator emits `accuracy`, so the previous fallback of `?? 0`
+          // dragged the mean toward zero for any benchmark scored under
+          // a different evaluator.
+          const score = getRunOverallScore(report.metrics as Record<string, number | undefined>);
+          if (score !== null) totalScore += score;
 
           if (report.passFailStatus === 'passed') {
             passed++;
@@ -56,14 +62,14 @@ export const RunSummaryPanel: React.FC<RunSummaryPanelProps> = ({
 
     const total = Object.keys(run.results || {}).length;
     const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
-    const avgAccuracy = reportCount > 0 ? Math.round(totalAccuracy / reportCount) : 0;
+    const avgScore = reportCount > 0 ? Math.round(totalScore / reportCount) : 0;
 
     return {
       passed,
       failed,
       total,
       passRate,
-      avgAccuracy,
+      avgScore,
     };
   };
 
@@ -167,10 +173,14 @@ export const RunSummaryPanel: React.FC<RunSummaryPanelProps> = ({
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center justify-between mb-2">
-                <span className="text-sm text-muted-foreground">Accuracy</span>
-                <span className="text-lg font-bold text-opensearch-blue">{stats.avgAccuracy}%</span>
+                {/* "Score" not "Accuracy" — individual reports may have been
+                    scored under different evaluators (RCA emits `accuracy`,
+                    others emit `tool_selection_accuracy`, `reasoning_coherence`,
+                    etc.). The aggregate is a generic mean of per-run means. */}
+                <span className="text-sm text-muted-foreground">Avg Score</span>
+                <span className="text-lg font-bold text-opensearch-blue">{stats.avgScore}%</span>
               </div>
-              <Progress value={stats.avgAccuracy} className="h-2 [&>div]:bg-opensearch-blue" />
+              <Progress value={stats.avgScore} className="h-2 [&>div]:bg-opensearch-blue" />
             </CardContent>
           </Card>
         </div>

@@ -25,6 +25,7 @@ import { cancelExperimentRun } from '@/services/client';
 import { Experiment, ExperimentRun, EvaluationReport, TestCase } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { getDifficultyColor, formatDate, getModelName } from '@/lib/utils';
+import { RunScore } from '@/components/RunScore';
 import { formatDuration } from '@/services/metrics';
 import { ENV_CONFIG } from '@/lib/config';
 import { RunDetailsContent } from './RunDetailsContent';
@@ -172,11 +173,13 @@ const Sidebar = ({ context, selectedItem, onSelectItem, onToggleCollapse, isColl
                           {testCase.difficulty}
                         </Badge>
                       )}
-                      {/* Metrics */}
+                      {/* Run score — always labeled "Score: X%" with a
+                          tooltip listing each metric contribution. */}
                       {report && (
-                        <span className="text-xs text-muted-foreground">
-                          {report.metrics.accuracy}%
-                        </span>
+                        <RunScore
+                          metrics={report.metrics as Record<string, number | undefined>}
+                          className="text-xs text-muted-foreground"
+                        />
                       )}
                     </div>
 

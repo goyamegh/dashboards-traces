@@ -13,6 +13,7 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
 import { TestCase, EvaluationReport } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
+import { RunScore } from '@/components/RunScore';
 import { formatDate, formatRelativeTime } from '@/lib/utils';
 import { QuickRunModal } from './QuickRunModal';
 import { TestCaseEditor } from './TestCaseEditor';
@@ -74,12 +75,16 @@ const RunCard = ({ run, isLatest, onClick, onDelete, isDeleting }: RunCardProps)
             {/* Metrics */}
             <div className="flex items-center gap-4 text-sm">
               <div className="text-center">
-                <div className="text-opensearch-blue font-semibold">{run.metrics.accuracy}%</div>
-                <div className="text-xs text-muted-foreground">Accuracy</div>
-              </div>
-              <div className="text-center">
-                <div className="text-blue-400 font-semibold">{run.metrics.faithfulness}%</div>
-                <div className="text-xs text-muted-foreground">Faithfulness</div>
+                {/* Overall score = mean of every metric this run's evaluator
+                    emitted, with a hover tooltip that lists each metric and
+                    value. Replaces the previous hardcoded `accuracy` display
+                    that read `0%` for any non-RCA-Default evaluator. */}
+                <RunScore
+                  metrics={run.metrics as Record<string, number | undefined>}
+                  showLabel={false}
+                  className="text-opensearch-blue font-semibold"
+                />
+                <div className="text-xs text-muted-foreground">Score</div>
               </div>
             </div>
           </div>

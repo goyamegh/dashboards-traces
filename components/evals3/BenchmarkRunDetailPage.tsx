@@ -25,7 +25,8 @@ import { Skeleton } from '@/components/ui/skeleton';
 import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
 import { Benchmark, BenchmarkRun, TestCase, EvaluationReport } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
-import { getLabelColor, formatDate, getModelName } from '@/lib/utils';
+import { getLabelColor, formatDate, getModelName, getRunOverallScore } from '@/lib/utils';
+import { RunScore } from '@/components/RunScore';
 import { RunDetailsFlyout } from './RunDetailsFlyout';
 import { ResultStatus, getResultStatus, StatusIcon, StatusLabel } from './ResultStatus';
 import { Breadcrumbs } from './Breadcrumbs';
@@ -38,7 +39,13 @@ interface TestCaseResult {
   reportId: string | null;
   report: EvaluationReport | null;
   status: ResultStatus;
-  accuracy: number | null;
+  /**
+   * Overall score for this run (mean of every metric the evaluator emitted),
+   * not just `accuracy`. Previously this row stored `metrics.accuracy` which
+   * was always `null` for non-RCA-Default evaluators — making the per-row
+   * score column blank and the table-wide "Avg Accuracy" stat misleading.
+   */
+  score: number | null;
 }
 
 // ─── Main Component ──────────────────────────────────────────────────────────
@@ -87,7 +94,9 @@ export const BenchmarkRunDetailPage: React.FC = () => {
           reportId: runResult?.reportId || null,
           report,
           status: getResultStatus(runResult, report),
-          accuracy: report?.metrics?.accuracy ?? null,
+          // Mean of every populated metric on this report. Works for any
+          // evaluator without per-evaluator config lookup.
+          score: getRunOverallScore(report?.metrics as Record<string, number | undefined> | undefined),
         };
       });
 
@@ -107,8 +116,8 @@ export const BenchmarkRunDetailPage: React.FC = () => {
   const totalCount = results.length;
   const judgedCount = passCount + failCount;
   const passRate = judgedCount > 0 ? Math.round((passCount / judgedCount) * 100) : 0;
-  const avgAccuracy = results.filter(r => r.accuracy !== null).length > 0
-    ? Math.round(results.reduce((s, r) => s + (r.accuracy ?? 0), 0) / results.filter(r => r.accuracy !== null).length)
+  const avgScore = results.filter(r => r.score !== null).length > 0
+    ? Math.round(results.reduce((s, r) => s + (r.score ?? 0), 0) / results.filter(r => r.score !== null).length)
     : null;
 
   if (loading) {
@@ -184,10 +193,13 @@ export const BenchmarkRunDetailPage: React.FC = () => {
                   <div className="text-lg font-bold">{passRate}%</div>
                   <div className="text-[10px] text-muted-foreground">Pass Rate</div>
                 </div>
-                {avgAccuracy !== null && (
+                {avgScore !== null && (
                   <div className="text-center">
-                    <div className="text-lg font-bold text-blue-600 dark:text-blue-400">{avgAccuracy}%</div>
-                    <div className="text-[10px] text-muted-foreground">Avg Accuracy</div>
+                    <div className="text-lg font-bold text-blue-600 dark:text-blue-400">{avgScore}%</div>
+                    {/* "Avg Score" not "Avg Accuracy" — individual rows can be
+                        scored under different evaluators emitting different
+                        metrics, so the aggregate is a generic mean of means. */}
+                    <div className="text-[10px] text-muted-foreground">Avg Score</div>
                   </div>
                 )}
               </div>
@@ -262,8 +274,12 @@ export const BenchmarkRunDetailPage: React.FC = () => {
                   ))}
                 </div>
                 <div className="w-20 shrink-0 text-right">
-                  {r.accuracy !== null
-                    ? <span className={`text-sm font-semibold tabular-nums ${r.accuracy >= 50 ? 'text-green-500' : 'text-red-500'}`}>{r.accuracy}%</span>
+                  {r.report
+                    ? <RunScore
+                        metrics={r.report.metrics as Record<string, number | undefined>}
+                        showLabel={false}
+                        className={`text-sm font-semibold tabular-nums ${r.score !== null && r.score >= 50 ? 'text-green-500' : 'text-red-500'}`}
+                      />
                     : <span className="text-xs text-muted-foreground">—</span>}
                 </div>
                 <div className="w-16 shrink-0 text-right">
