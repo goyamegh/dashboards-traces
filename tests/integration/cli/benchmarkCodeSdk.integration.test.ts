@@ -286,8 +286,9 @@ describe('Code SDK — CLI subprocess integration (every SDK condition)', () => 
         cleanEnv[k] = v;
       }
     }
-    cleanEnv.AGENT_HEALTH_PORT = port;
-    cleanEnv.AGENT_HEALTH_SUPPRESS_EXPERIMENTAL = '1';
+    cleanEnv.AH_PORT = port;
+    cleanEnv.AH_SUPPRESS_EXPERIMENTAL = '1';
+    cleanEnv.AH_QUIET_DEPRECATIONS = '1';
     const cli = spawnSync('node', [CLI_BUNDLE, 'benchmark', '-f', fixturePath, '-a', 'demo', '-n', benchmarkName], {
       cwd: REPO_ROOT,
       env: cleanEnv,

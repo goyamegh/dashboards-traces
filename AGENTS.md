@@ -97,7 +97,7 @@ test('rca-coherent', { prompt: 'Why is X failing?' }, async ({ result, judge }) 
 
 Full guide: [docs/SDK.md](docs/SDK.md). Samples: [evals/demo.eval.js](evals/demo.eval.js).
 
-The SDK is **experimental** — the API surface may change in a minor release without a deprecation cycle. Set `AGENT_HEALTH_SUPPRESS_EXPERIMENTAL=1` to silence the runtime notice.
+The SDK is **experimental** — the API surface may change in a minor release without a deprecation cycle. Set `AH_SUPPRESS_EXPERIMENTAL=1` to silence the runtime notice.
 
 ## Environment Setup
 
