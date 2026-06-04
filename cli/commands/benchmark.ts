@@ -820,7 +820,18 @@ export function createBenchmarkCommand(): Command {
 
             const uploadSpinner = ora('Importing test cases to server...').start();
             const bulkResult = await api.bulkCreateTestCases(upsertInputs as any);
-            uploadSpinner.succeed(`Imported ${bulkResult.created} test cases`);
+            // SDK upsert path returns `updated` / `unchanged` alongside
+            // `created`; surface the breakdown so the operator can see which
+            // records were reused vs. version-bumped vs. freshly created. JSON
+            // imports leave `updated` undefined and fall through to the legacy
+            // "Imported N test cases" line.
+            if (typeof bulkResult.updated === 'number') {
+              uploadSpinner.succeed(
+                `Imported: ${bulkResult.created} created, ${bulkResult.updated} updated, ${bulkResult.unchanged ?? 0} unchanged`
+              );
+            } else {
+              uploadSpinner.succeed(`Imported ${bulkResult.created} test cases`);
+            }
 
             // Map test case name -> stored id for quick lookups
             const idByName = new Map(bulkResult.testCases.map(tc => [tc.name, tc.id]));
@@ -853,15 +864,91 @@ export function createBenchmarkCommand(): Command {
             }
 
             const createSpinner = ora(`Creating ${benchmarkSpecs.length} benchmark(s)...`).start();
+            // Self-heal source path used below — only meaningful for SDK/code
+            // imports (`isCodeFile(filePath)` is true). For JSON imports we
+            // leave it undefined and the merge stays a plain set-union.
+            const sdkSourceFile = isCodeFile(filePath!)
+              ? path.relative(process.cwd(), path.resolve(filePath!))
+              : undefined;
             for (const spec of benchmarkSpecs) {
               const tcIds = spec.testCaseNames.map(n => idByName.get(n)).filter((x): x is string => !!x);
               if (tcIds.length === 0) continue;
               const existingBenchmark = await api.findBenchmark(spec.name);
               let bm: Benchmark;
               if (existingBenchmark) {
-                // Merge: union with existing testCaseIds so cross-file
-                // contributions to the same describe-named benchmark stack.
-                const merged = Array.from(new Set([...(existingBenchmark.testCaseIds || []), ...tcIds]));
+                // Merge with existing testCaseIds so cross-file contributions
+                // to the same describe-named benchmark stack. For SDK imports,
+                // also self-heal: drop any pre-existing IDs whose stored
+                // (name, sourceFile) matches a freshly upserted canonical ID
+                // — those are duplicates left over from the pre-fix bug where
+                // the bulk endpoint always called bulkCreate and minted fresh
+                // IDs for every run, growing benchmark.testCaseIds unbounded.
+                const existingIds = existingBenchmark.testCaseIds || [];
+                let prunedIds = existingIds;
+                if (sdkSourceFile && existingIds.length > 0) {
+                  const canonicalNames = new Set(spec.testCaseNames);
+                  const canonicalIdSet = new Set(tcIds);
+                  // Distinguish three outcomes per fetch so a transient
+                  // network blip can never silently delete a valid benchmark
+                  // reference:
+                  //   - { kind: 'found', tc }   → evaluate the prune predicate
+                  //   - { kind: 'missing' }     → confirmed 404, drop the dangling ref
+                  //   - { kind: 'error', err }  → fetch threw (network / 5xx);
+                  //                              KEEP the id, log a warning,
+                  //                              skip pruning for this item
+                  type FetchResult =
+                    | { kind: 'found'; tc: TestCase }
+                    | { kind: 'missing' }
+                    | { kind: 'error'; err: unknown };
+                  const fetched: FetchResult[] = await Promise.all(
+                    existingIds.map(async (id): Promise<FetchResult> => {
+                      try {
+                        // api.getTestCase returns null on 404 and throws on
+                        // any other non-OK / network failure — we rely on
+                        // that distinction here.
+                        const tc = await api.getTestCase(id);
+                        return tc ? { kind: 'found', tc } : { kind: 'missing' };
+                      } catch (err) {
+                        return { kind: 'error', err };
+                      }
+                    })
+                  );
+                  let transientErrors = 0;
+                  prunedIds = existingIds.filter((id, i) => {
+                    const r = fetched[i];
+                    if (r.kind === 'error') {
+                      transientErrors++;
+                      return true; // keep — don't prune on transient failures
+                    }
+                    if (r.kind === 'missing') {
+                      return false; // confirmed 404 — drop dangling ref
+                    }
+                    const tc = r.tc;
+                    const isStaleSdkBloat =
+                      tc.sourceFile === sdkSourceFile &&
+                      canonicalNames.has(tc.name) &&
+                      !canonicalIdSet.has(id);
+                    return !isStaleSdkBloat;
+                  });
+                  if (transientErrors > 0) {
+                    console.log(
+                      chalk.yellow(
+                        `  Note: ${transientErrors} TestCase fetch(es) failed during self-heal — ` +
+                          `keeping those IDs to avoid corrupting benchmark.testCaseIds on a network blip.`
+                      )
+                    );
+                  }
+                  const droppedCount = existingIds.length - prunedIds.length;
+                  if (droppedCount > 0) {
+                    console.log(
+                      chalk.gray(
+                        `  Self-healed "${spec.name}": pruned ${droppedCount} stale TestCase ID(s) ` +
+                          `from "${sdkSourceFile}" left over from pre-fix runs.`
+                      )
+                    );
+                  }
+                }
+                const merged = Array.from(new Set([...prunedIds, ...tcIds]));
                 bm = await api.updateBenchmark(existingBenchmark.id, { testCaseIds: merged });
               } else {
                 bm = await api.createBenchmark({
