@@ -140,16 +140,21 @@ export class SubprocessConnector extends BaseConnector {
 
       // Build final args (add input as argument if inputMode is 'arg').
       //
-      // We spawn with `shell: true` so the args are re-joined into a single
-      // command line by /bin/sh. That means we MUST shell-quote the prompt
-      // string ourselves — otherwise spaces in the prompt cause it to be
-      // word-split by the shell, and the child binary sees multiple
-      // arguments instead of one. (e.g. "/my-agent investigate <url>"
-      // would arrive as 3 args, breaking CLIs that treat the first
-      // unrecognized token as a subcommand.)
-      const shellQuote = (s: string): string => `'${String(s).replace(/'/g, `'\\''`)}'`;
+      // We spawn with `shell: false` (the default) and pass `args` as an
+      // array. The OS exec syscall delivers each array element as a separate
+      // argv slot to the child binary verbatim, with NO shell interpretation
+      // — so spaces, slashes, quotes, backticks, `$()`, `;`, `&`, and other
+      // shell metacharacters in the prompt are passed through as literal
+      // bytes instead of being evaluated. This is the only safe way to pass
+      // user-controlled prompt strings to spawn().
+      //
+      // Historical note: an earlier version used `shell: true` and a
+      // hand-rolled `shellQuote` that only escaped single quotes. That left
+      // a command-injection hole — a prompt containing `'$(rm -rf ~)'` would
+      // get evaluated by /bin/sh. Switching to `shell: false` removes the
+      // attack surface entirely; quoting is no longer the connector's job.
       const finalArgs = this.config.inputMode === 'arg'
-        ? [...args, shellQuote(input)]
+        ? [...args, input]
         : args;
 
       this.debug('Spawning process...');
@@ -157,7 +162,7 @@ export class SubprocessConnector extends BaseConnector {
       const proc = spawn(command, finalArgs, {
         env,
         cwd: this.config.workingDir,
-        shell: true,
+        shell: false,
       });
       this.debug('Process spawned, PID:', proc.pid);
 
@@ -450,7 +455,12 @@ export class SubprocessConnector extends BaseConnector {
     if (!command) return false;
 
     return new Promise((resolve) => {
-      const proc = spawn('which', [command], { shell: true });
+      // shell: false to avoid metacharacter expansion on the command name.
+      // `which` itself is invoked from PATH; a malicious endpoint string
+      // (e.g. `kiro-cli; rm -rf ~`) would have been evaluated under shell:
+      // true, but here it's passed as a literal argv slot to `which` which
+      // will simply return non-zero for a name that doesn't exist on PATH.
+      const proc = spawn('which', [command], { shell: false });
       proc.on('close', (code) => resolve(code === 0));
       proc.on('error', () => resolve(false));
     });
