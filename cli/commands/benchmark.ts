@@ -801,6 +801,13 @@ export function createBenchmarkCommand(): Command {
                   sourceFile,
                   sourceHash: tc.hash,
                   description: tc.options.description,
+                  // Forward expectedOutcomes / expectedTrajectory — see
+                  // services/sourceResolver.ts for rationale. Without
+                  // these, the CLI's import path stripped them out and a
+                  // server-side evaluator (`-e <evaluator>`) couldn't
+                  // grade a code-SDK test (issue #245).
+                  ...(tc.options.expectedOutcomes ? { expectedOutcomes: tc.options.expectedOutcomes } : {}),
+                  ...(tc.options.expectedTrajectory ? { expectedTrajectory: tc.options.expectedTrajectory } : {}),
                 };
               });
             } else {
