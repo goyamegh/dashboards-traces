@@ -31,6 +31,8 @@ import {
   emptyTracesAccessor,
   unavailableTracesAccessor,
   buildTracesAccessor,
+  buildJudgeMatcherEntry,
+  formatExpectedOutcomesAsClaim,
 } from '@/lib/matchers/index';
 import type { TracesAccessor } from '@/lib/matchers/index';
 import type { EvalResult, TrajectoryAccessor, TestFixtures } from '@/lib/testCases/types';
@@ -351,10 +353,8 @@ export async function executeRun(
               (report as any).passFailStatus = anyFailed ? 'failed' : 'passed';
               (report as any).evaluationType = 'deterministic';
               (report as any).matcherResults = matcherResults;
-              // Clear the trace-mode placeholder llmJudgeReasoning so
-              // it doesn't bleed through to the UI's Judge Reasoning
-              // panel for deterministic verdicts. See evaluationRunner.ts
-              // for the canonical comment.
+              // Option B BC shim: legacy field empty for SDK runs;
+              // canonical judge data lives in `matcherResults`.
               (report as any).llmJudgeReasoning = '';
               (report as any).metrics = anyFailed
                 ? { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 }
@@ -746,6 +746,13 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
             passFailStatus: judgment.passFailStatus,
             metrics: judgment.metrics,
             llmJudgeReasoning: judgment.llmJudgeReasoning,
+            // Unified judge surface (issue #230 follow-up).
+            matcherResults: [
+              buildJudgeMatcherEntry(judgment, {
+                claim: formatExpectedOutcomesAsClaim(testCase.expectedOutcomes),
+                model: judgeModelId,
+              }),
+            ],
             improvementStrategies: judgment.improvementStrategies,
           } as any);
 
@@ -833,6 +840,13 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
             passFailStatus: judgment.passFailStatus,
             metrics: judgment.metrics,
             llmJudgeReasoning: judgment.llmJudgeReasoning,
+            // Unified judge surface (issue #230 follow-up).
+            matcherResults: [
+              buildJudgeMatcherEntry(judgment, {
+                claim: formatExpectedOutcomesAsClaim(testCase.expectedOutcomes),
+                model: judgeModelId,
+              }),
+            ],
             improvementStrategies: judgment.improvementStrategies,
           });
           if (report.experimentId) {
