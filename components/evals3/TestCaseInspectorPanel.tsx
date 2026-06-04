@@ -11,7 +11,7 @@
  */
 
 import React from 'react';
-import { CheckCircle2, XCircle, Loader2, Clock } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Clock, AlertTriangle } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { EvaluationReport, TestCase } from '@/types';
 import { RunDetailsContent } from '../RunDetailsContent';
@@ -30,13 +30,19 @@ export const TestCaseInspectorPanel: React.FC<TestCaseInspectorPanelProps> = ({
   testCase,
   status,
 }) => {
-  const isPassed = status === 'passed' || report.passFailStatus === 'passed';
-  const isFailed = status === 'failed' || report.passFailStatus === 'failed';
-  const displayStatus = isFailed ? 'failed' : isPassed ? 'passed' : status;
+  // Issue #242: an evaluator-error report has metricsStatus='error' and a
+  // cleared (null) passFailStatus. The runner derives status='errored'
+  // for these via getResultStatus(); the badge below must light up the
+  // amber ERRORED chip rather than falling through to PENDING.
+  const isErrored = status === 'errored' || report.metricsStatus === 'error';
+  const isPassed = !isErrored && (status === 'passed' || report.passFailStatus === 'passed');
+  const isFailed = !isErrored && (status === 'failed' || report.passFailStatus === 'failed');
+  const displayStatus = isErrored ? 'errored' : isFailed ? 'failed' : isPassed ? 'passed' : status;
 
   const badgeConfig: Record<string, { icon: React.ReactNode; label: string; cls: string }> = {
     passed: { icon: <CheckCircle2 size={16} className="text-green-500 shrink-0" />, label: 'PASSED', cls: 'bg-green-100 text-green-700 border-green-300 dark:bg-green-500/15 dark:text-green-400 dark:border-green-500/30' },
     failed: { icon: <XCircle size={16} className="text-red-500 shrink-0" />, label: 'FAILED', cls: 'bg-red-100 text-red-700 border-red-300 dark:bg-red-500/15 dark:text-red-400 dark:border-red-500/30' },
+    errored: { icon: <AlertTriangle size={16} className="text-amber-500 shrink-0" />, label: 'ERRORED', cls: 'bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-500/15 dark:text-amber-400 dark:border-amber-500/30' },
     pending_traces: { icon: <Loader2 size={16} className="text-amber-500 animate-spin shrink-0" />, label: 'AWAITING TRACES', cls: 'bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-500/15 dark:text-amber-400 dark:border-amber-500/30' },
     pending_judgment: { icon: <Loader2 size={16} className="text-purple-500 animate-spin shrink-0" />, label: 'JUDGING', cls: 'bg-purple-100 text-purple-700 border-purple-300 dark:bg-purple-500/15 dark:text-purple-400 dark:border-purple-500/30' },
     pending: { icon: <Clock size={16} className="text-muted-foreground shrink-0" />, label: 'PENDING', cls: 'bg-muted text-muted-foreground border-border' },
