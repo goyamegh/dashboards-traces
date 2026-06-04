@@ -19,11 +19,6 @@ jest.mock('fs', () => ({
   readFileSync: mockReadFileSync,
 }));
 
-// Mock path.resolve
-jest.mock('path', () => ({
-  resolve: jest.fn((...args: string[]) => args.join('/')),
-}));
-
 // Mock bedrockService helpers
 jest.mock('@/server/services/bedrockService', () => ({
   buildEvaluationPrompt: jest.fn().mockReturnValue('mock evaluation prompt'),

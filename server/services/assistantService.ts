@@ -25,6 +25,7 @@ import { randomUUID } from 'crypto';
 import { loadConfigSync } from '@/lib/config/index';
 import { debug } from '@/lib/debug';
 import { readEnv } from '@/lib/envCompat';
+import { getSkillPath } from '@/lib/packagePaths';
 import serverConfig from '@/server/config/index';
 import { asyncRunStorage } from '@/services/storage/asyncRunStorage';
 import { asyncBenchmarkStorage } from '@/services/storage/asyncBenchmarkStorage';
@@ -35,7 +36,10 @@ import type { AssistantMessage, AssistantContext, TrajectoryStep } from '@/types
 // Constants
 // ============================================================================
 
-const AGENT_HEALTH_SKILL_PATH = resolve(process.cwd(), 'docs/skills/AGENT_HEALTH.md');
+/** Path to the AGENT_HEALTH.md skill file */
+const AGENT_HEALTH_SKILL_PATH = getSkillPath('AGENT_HEALTH.md');
+
+/** Session TTL: 30 minutes in milliseconds */
 const SESSION_TTL_MS = 30 * 60 * 1000;
 const CLEANUP_INTERVAL_MS = 5 * 60 * 1000;
 

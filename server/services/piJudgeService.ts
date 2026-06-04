@@ -11,7 +11,6 @@
  */
 
 import { spawn } from 'child_process';
-import { resolve } from 'path';
 import { buildEvaluationPrompt, JudgeRequest, JudgeResponse } from '@/server/services/bedrockService';
 import { JUDGE_SYSTEM_PROMPT } from '@/server/prompts/judgePrompt';
 import { resolvePiCommand } from '@/server/services/piBinary';
@@ -19,13 +18,14 @@ import { parseJudgeResponse } from '@/server/services/judgeResponseParser';
 import { buildJudgeDebug } from '@/server/services/judgeDebug';
 import { Evaluator } from '@/types';
 import { debug } from '@/lib/debug';
+import { getPiPackagePath } from '@/lib/packagePaths';
 
 // ============================================================================
 // Constants
 // ============================================================================
 
 /** Path to the pi-package (for --package flag) */
-const PI_PACKAGE_PATH = resolve(process.cwd(), 'observio-sample-agent/pi-package');
+const PI_PACKAGE_PATH = getPiPackagePath();
 
 /** Timeout for the pi CLI process (5 minutes) */
 const PI_TIMEOUT_MS = 300_000;

@@ -12,20 +12,20 @@
 
 import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
-import { resolve } from 'path';
 import { buildEvaluationPrompt, JudgeRequest, JudgeResponse } from '@/server/services/bedrockService';
 import { JUDGE_SYSTEM_PROMPT } from '@/server/prompts/judgePrompt';
 import { parseJudgeResponse } from '@/server/services/judgeResponseParser';
 import { buildJudgeDebug } from '@/server/services/judgeDebug';
 import { Evaluator } from '@/types';
 import { debug } from '@/lib/debug';
+import { getSkillPath } from '@/lib/packagePaths';
 
 // ============================================================================
 // Constants
 // ============================================================================
 
 /** Path to the AGENT_HEALTH.md skill file (appended to system prompt) */
-const AGENT_HEALTH_SKILL_PATH = resolve(process.cwd(), 'docs/skills/AGENT_HEALTH.md');
+const AGENT_HEALTH_SKILL_PATH = getSkillPath('AGENT_HEALTH.md');
 
 /** Timeout for the claude CLI process (5 minutes) */
 const CLAUDE_TIMEOUT_MS = 300_000;

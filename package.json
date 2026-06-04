@@ -47,7 +47,8 @@
     "deployment/cloudformation/",
     "docs/",
     "examples/",
-    "tsconfig.lib.json"
+    "tsconfig.lib.json",
+    "observio-sample-agent/pi-package/"
   ],
   "scripts": {
     "dev": "vite",
