@@ -42,7 +42,7 @@ const isDryRun = args.includes('--dry-run');
 const baseIdx = args.indexOf('--base');
 const BASE_URL = baseIdx >= 0 && args[baseIdx + 1]
   ? args[baseIdx + 1]
-  : (process.env.AGENT_HEALTH_BACKEND || 'http://localhost:4001');
+  : (process.env.AH_BACKEND || process.env.AGENT_HEALTH_BACKEND || 'http://localhost:4001');
 
 const DEFAULT_PAGE_SIZE = 1000;
 

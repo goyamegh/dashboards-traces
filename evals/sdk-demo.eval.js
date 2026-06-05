@@ -12,7 +12,7 @@
  *   3. data-only-no-prompt   (deterministic)  — no agent call at all
  *
  * Run with:
- *   AGENT_HEALTH_PORT=4002 npx @opensearch-project/agent-health benchmark \
+ *   AH_PORT=4002 npx @opensearch-project/agent-health benchmark \
  *     -f evals/sdk-demo.eval.js -a demo
  */
 

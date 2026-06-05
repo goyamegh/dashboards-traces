@@ -82,7 +82,8 @@ export type { ConnectorRegistry } from '../services/connectors/types.js';
 // (test signature, options shape, fixtures, matcher set) may change in a
 // minor release without a deprecation cycle. Pin your @opensearch-project/
 // agent-health version if you depend on it. To suppress the runtime warning
-// emitted when the SDK is first used, set `AGENT_HEALTH_SUPPRESS_EXPERIMENTAL=1`.
+// emitted when the SDK is first used, set `AH_SUPPRESS_EXPERIMENTAL=1`
+// (legacy `AGENT_HEALTH_SUPPRESS_EXPERIMENTAL=1` is still accepted).
 export { test, describe, beforeAll, afterAll, beforeEach, afterEach, judge } from './testCases/index.js';
 export type {
   TestOptions,

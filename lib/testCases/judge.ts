@@ -20,6 +20,7 @@
 
 import type { TrajectoryStep } from '@/types';
 import { recordVerdict } from '../matchers/session.js';
+import { readEnv } from '../envCompat.js';
 
 export interface JudgeVerdict {
   passFailStatus: 'passed' | 'failed';
@@ -69,7 +70,7 @@ export async function judge(
   const claims = Array.isArray(claimOrClaims) ? claimOrClaims : [claimOrClaims];
 
   const serverUrl =
-    options?.serverUrl ?? `http://localhost:${process.env.AGENT_HEALTH_PORT ?? '4001'}`;
+    options?.serverUrl ?? `http://localhost:${readEnv('AH_PORT', 'AGENT_HEALTH_PORT') || '4001'}`;
 
   const description =
     claims.length === 1 ? `judge: ${claims[0]}` : `judge: ${claims.length} claims`;

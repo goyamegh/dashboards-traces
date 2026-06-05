@@ -11,6 +11,7 @@ import type {
   HookKind,
   RegisteredHook,
 } from './types.js';
+import { readEnv } from '../envCompat.js';
 
 const registries = new Map<string, CodeTestCase[]>();
 // Hooks live in a parallel registry keyed by file path, exactly matching
@@ -32,13 +33,13 @@ let experimentalWarningEmitted = false;
 function emitExperimentalWarningOnce(): void {
   if (experimentalWarningEmitted) return;
   experimentalWarningEmitted = true;
-  if (process.env.AGENT_HEALTH_SUPPRESS_EXPERIMENTAL === '1') return;
+  if (readEnv('AH_SUPPRESS_EXPERIMENTAL', 'AGENT_HEALTH_SUPPRESS_EXPERIMENTAL') === '1') return;
   // eslint-disable-next-line no-console
   console.warn(
     '[agent-health] The code-based test SDK (test()/judge()/expect()) is ' +
     'experimental. The API may change in a minor release without a ' +
     'deprecation cycle. Pin your @opensearch-project/agent-health version, ' +
-    'or set AGENT_HEALTH_SUPPRESS_EXPERIMENTAL=1 to silence this notice.'
+    'or set AH_SUPPRESS_EXPERIMENTAL=1 to silence this notice.'
   );
 }
 

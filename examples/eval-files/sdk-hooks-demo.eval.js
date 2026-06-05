@@ -13,7 +13,7 @@
  * test gets its own directory; concurrent runs are isolated automatically.
  *
  * Run with:
- *   AGENT_HEALTH_PORT=4002 npx @opensearch-project/agent-health benchmark \
+ *   AH_PORT=4002 npx @opensearch-project/agent-health benchmark \
  *     -f evals/sdk-hooks-demo.eval.js -a demo
  */
 

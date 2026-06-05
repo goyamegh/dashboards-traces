@@ -24,6 +24,7 @@ import { homedir } from 'os';
 import { randomUUID } from 'crypto';
 import { loadConfigSync } from '@/lib/config/index';
 import { debug } from '@/lib/debug';
+import { readEnv } from '@/lib/envCompat';
 import serverConfig from '@/server/config/index';
 import { asyncRunStorage } from '@/services/storage/asyncRunStorage';
 import { asyncBenchmarkStorage } from '@/services/storage/asyncBenchmarkStorage';
@@ -284,8 +285,8 @@ export function buildSystemPrompt(
   toolsAvailable: boolean = false
 ): string {
   const skillContent = loadSkillContent();
-  const frontendPort = process.env.AGENT_HEALTH_DEV_PORT || '4000';
-  const backendPort = process.env.AGENT_HEALTH_PORT || '4001';
+  const frontendPort = readEnv('AH_DEV_PORT', 'AGENT_HEALTH_DEV_PORT') || '4000';
+  const backendPort = readEnv('AH_PORT', 'AGENT_HEALTH_PORT') || '4001';
 
   let systemPrompt = `You are an AI assistant for Agent Health, an evaluation framework for Root Cause Analysis (RCA) agents. Help users understand evaluation results, configure agents, interpret trajectories, and improve agent performance.
 

@@ -187,7 +187,8 @@ export interface UserConfig {
    * Enable or disable the Coding Agent Analytics feature.
    * When false, no coding agent routes are mounted, no background timers
    * run, and the "Coding Agents" nav tab is hidden.
-   * Can also be disabled via AGENT_HEALTH_DISABLE_CODING_ANALYTICS=true env var.
+   * Can also be disabled via AH_DISABLE_CODING_ANALYTICS=true env var
+   * (legacy AGENT_HEALTH_DISABLE_CODING_ANALYTICS=true is still accepted).
    * @default true
    */
   codingAgentAnalytics?: boolean;

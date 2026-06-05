@@ -8,7 +8,7 @@
 > ⚠️ **Experimental.** The SDK API surface — `test()` signature, options shape,
 > fixtures, matcher set — may change in a minor release without a deprecation
 > cycle. Pin your `@opensearch-project/agent-health` version if you depend on
-> it. Set `AGENT_HEALTH_SUPPRESS_EXPERIMENTAL=1` to silence the runtime notice.
+> it. Set `AH_SUPPRESS_EXPERIMENTAL=1` to silence the runtime notice.
 
 The SDK lets you write Agent Health test cases as plain JavaScript / TypeScript
 files instead of clicking through the UI. Tests live alongside your repo,
@@ -337,7 +337,7 @@ curl -sN -X POST http://localhost:4002/api/storage/evaluation-runs \
 ### Suppress the experimental warning in your test runs
 
 ```bash
-AGENT_HEALTH_SUPPRESS_EXPERIMENTAL=1 npm test
+AH_SUPPRESS_EXPERIMENTAL=1 npm test
 ```
 
 ### Get IntelliSense for custom matchers in TypeScript
