@@ -173,7 +173,7 @@ const MatcherRow: React.FC<RowProps> = ({ result }) => {
           {result.reasoning && (
             <div>
               <div className="font-semibold text-foreground mb-1.5">reasoning</div>
-              {result.method === 'llm-judge' ? (
+              {result.method === 'llm-judge' && hasRealMarkdown(result.reasoning) ? (
                 // Render as markdown so headers, bullets, and bold formatting
                 // from the Bedrock judge come through as structure rather than
                 // literal `**` / `-` characters in plain prose.
@@ -280,4 +280,38 @@ function formatValue(v: unknown): string {
   } catch {
     return String(v);
   }
+}
+
+/**
+ * Heuristic: does this string contain syntax that the user wrote with the
+ * intent of being formatted as Markdown (bold, headings, fenced code, real
+ * bullet lists with multiple items, links)?
+ *
+ * The Bedrock judge often returns plain prose with one leading numbered
+ * sentence (`1. 'X' - Fully achieved`) and a trailing summary paragraph.
+ * Run through ReactMarkdown that becomes <p>…</p><ol><li>…</li></ol><p>…</p>
+ * — the single-item indented <ol> visually fragments the reasoning into
+ * what looks like "another box later". For prose-with-newlines like that
+ * we'd rather render plain text (whitespace-pre-wrap) so it stays one
+ * contiguous block.
+ */
+function hasRealMarkdown(text: string): boolean {
+  if (!text) return false;
+  // Bold / italic markers
+  if (/\*\*[^*\n]+\*\*/.test(text)) return true;
+  if (/__[^_\n]+__/.test(text)) return true;
+  // Headings
+  if (/^#{1,6}\s+\S/m.test(text)) return true;
+  // Fenced code blocks or inline code
+  if (/```/.test(text)) return true;
+  if (/`[^`\n]+`/.test(text)) return true;
+  // Markdown links / images
+  if (/!?\[[^\]]+\]\([^)]+\)/.test(text)) return true;
+  // Real bullet list (>=2 consecutive lines starting with `- ` or `* `)
+  if (/(^|\n)[*\-]\s+\S.*\n[*\-]\s+/.test(text)) return true;
+  // Real numbered list (>=2 consecutive numbered lines)
+  if (/(^|\n)\d+\.\s+\S.*\n\d+\.\s+/.test(text)) return true;
+  // Block quote
+  if (/^>\s/m.test(text)) return true;
+  return false;
 }
