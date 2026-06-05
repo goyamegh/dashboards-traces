@@ -40,17 +40,14 @@ export const testCaseSchema = z.object({
   // it actually grades a run (see services/evaluation/evaluatorError.ts
   // — issue #242 surfaces "Missing required field" as an evaluator
   // error), but the test case schema itself shouldn't gate authoring.
+  //
+  // `expectedTrajectory` is intentionally NOT modelled here. It exists on
+  // the persisted `TestCase` shape (set by the SDK loader from `test()`
+  // options) but the JSON-paste / form authoring path doesn't surface it,
+  // and adding it here without plumbing it through `ValidatedTestCaseInput`
+  // / `TestCaseFormState` / the editor save path would silently drop it on
+  // round-trip (PR #258 review feedback).
   expectedOutcomes: z.array(z.string()).optional().default([]),
-  expectedTrajectory: z
-    .array(
-      z.object({
-        step: z.number(),
-        description: z.string(),
-        requiredTools: z.array(z.string()).optional().default([]),
-      }),
-    )
-    .optional()
-    .default([]),
 });
 
 export const testCasesArraySchema = z.array(testCaseSchema).min(1, 'Array cannot be empty');

@@ -224,7 +224,8 @@ export async function executeEvaluationRun(
         // runs list. If the placeholder doesn't yet exist when that event
         // fires, the consumer will see an empty list and assume "no row"
         // — even though one is about to appear. Persist FIRST so the
-        // contract is `after `running` event ⇒ row exists`.
+        // contract "once a `running` event has been observed, the row is
+        // already on disk" holds for every subscriber.
         //
         // Best-effort: a storage failure here must not abort the run, so
         // we swallow the error and fall back to the post-completion

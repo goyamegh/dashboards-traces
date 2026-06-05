@@ -413,8 +413,9 @@ describe('testCaseValidation', () => {
     it('accepts JSON with empty expectedOutcomes (cross-surface parity)', () => {
       // Cross-surface parity (commit fd984c9e): the form-state parser must
       // accept the same shapes the schema accepts. Both empty arrays and
-      // omitted fields are valid; the form starts with one empty input slot
-      // either way (default `['']` is applied by the editor, not the parser).
+      // omitted fields are valid; `parseJsonToFormState` then normalizes
+      // an empty / omitted array to `['']` so the form starts with one
+      // empty input slot for editing.
       const json = JSON.stringify({
         name: 'Test',
         category: 'RCA',
@@ -424,6 +425,9 @@ describe('testCaseValidation', () => {
       });
       const result = parseJsonToFormState(json);
       expect(result.valid).toBe(true);
+      // Confirm the parser's normalization to a single-empty-string slot
+      // (this is what the form renders, not what the schema validates).
+      expect(result.data?.expectedOutcomes).toEqual(['']);
     });
   });
 });
