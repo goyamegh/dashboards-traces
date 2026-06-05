@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { CheckCircle2, XCircle, Clock, Target, BarChart3, Coins, Timer, Hash, Zap } from 'lucide-react';
+import { CheckCircle2, XCircle, Clock, Target, BarChart3, Coins, Timer, Hash, Zap, AlertTriangle } from 'lucide-react';
 import { PieChart, Pie, Cell, ResponsiveContainer } from 'recharts';
 import { Card, CardContent } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -33,27 +33,50 @@ export const RunSummaryPanel: React.FC<RunSummaryPanelProps> = ({
   const calculateStats = () => {
     let passed = 0;
     let failed = 0;
+    // Issue #242: track evaluator-error runs separately so they don't
+    // poison the pass-rate denominator nor inflate the failed bucket.
+    let errored = 0;
+    let pending = 0;
     let totalScore = 0;
-    let reportCount = 0;
+    // Reports that actually contributed a *real* score to the running
+    // average. Errored reports (zeroed metrics) and pending/calculating
+    // reports (placeholder metrics) are deliberately excluded so they
+    // don't drag Avg Score toward zero — mirrors `lib/runStats.ts`'s
+    // canonical bucketing (#259 review feedback / Copilot).
+    let scoredCount = 0;
 
     Object.values(run.results || {}).forEach(result => {
       if (result.status === 'completed' && result.reportId) {
         const report = reports[result.reportId];
-        if (report) {
-          reportCount++;
-          // Aggregate the run's overall score (mean of every metric the
-          // evaluator emitted), not just `accuracy` — only the RCA Default
-          // evaluator emits `accuracy`, so the previous fallback of `?? 0`
-          // dragged the mean toward zero for any benchmark scored under
-          // a different evaluator.
-          const score = getRunOverallScore(report.metrics as Record<string, number | undefined>);
-          if (score !== null) totalScore += score;
+        if (!report) return;
 
-          if (report.passFailStatus === 'passed') {
-            passed++;
-          } else {
-            failed++;
-          }
+        // Mirror lib/runStats.ts's canonical order: metricsStatus wins
+        // over passFailStatus (which may carry a stale verdict on
+        // errored docs, or a placeholder on pending docs).
+        if (report.metricsStatus === 'pending' || report.metricsStatus === 'calculating') {
+          // Trace-mode in flight — metrics are placeholders, score is
+          // unknown. Counted as pending, not as a 0% scorer.
+          pending++;
+          return;
+        }
+        if (report.metricsStatus === 'error') {
+          // Issue #242: errored runs have zeroed metrics. Including
+          // them in the average would defeat the entire point of the
+          // dedicated bucket — skip the score aggregation here too.
+          errored++;
+          return;
+        }
+
+        // Real verdict — contribute to the average and bucket pass/fail.
+        const score = getRunOverallScore(report.metrics as Record<string, number | undefined>);
+        if (score !== null) {
+          totalScore += score;
+          scoredCount++;
+        }
+        if (report.passFailStatus === 'passed') {
+          passed++;
+        } else {
+          failed++;
         }
       } else if (result.status === 'failed') {
         failed++;
@@ -61,12 +84,21 @@ export const RunSummaryPanel: React.FC<RunSummaryPanelProps> = ({
     });
 
     const total = Object.keys(run.results || {}).length;
-    const passRate = total > 0 ? Math.round((passed / total) * 100) : 0;
-    const avgScore = reportCount > 0 ? Math.round(totalScore / reportCount) : 0;
+    // Pass rate excludes errored runs from the denominator (issue #242):
+    // a misconfigured judge shouldn't be able to drag the score to 0%.
+    const evaluable = Math.max(0, total - errored);
+    const passRate = evaluable > 0 ? Math.round((passed / evaluable) * 100) : 0;
+    // Avg Score is computed only over runs that actually scored. See the
+    // `scoredCount` comment above — errored / pending / calculating are
+    // excluded so the surface number reflects judge output, not
+    // placeholder zeros.
+    const avgScore = scoredCount > 0 ? Math.round(totalScore / scoredCount) : 0;
 
     return {
       passed,
       failed,
+      errored,
+      pending,
       total,
       passRate,
       avgScore,
@@ -100,6 +132,8 @@ export const RunSummaryPanel: React.FC<RunSummaryPanelProps> = ({
   const pieData = [
     { name: 'Passed', value: stats.passed, color: '#015aa3' },
     { name: 'Failed', value: stats.failed, color: '#ef4444' },
+    // Issue #242: dedicated amber slice for evaluator-error runs.
+    { name: 'Errored', value: stats.errored, color: '#f59e0b' },
   ].filter(d => d.value > 0);
 
   return (
@@ -156,6 +190,15 @@ export const RunSummaryPanel: React.FC<RunSummaryPanelProps> = ({
                       <XCircle size={16} className="text-red-700 dark:text-red-400" />
                       <span className="text-red-700 dark:text-red-400 font-medium">{stats.failed} failed</span>
                     </div>
+                    {stats.errored > 0 && (
+                      <div
+                        className="flex items-center gap-2"
+                        title="Evaluator could not run on these (e.g. judge validation error). Excluded from pass-rate aggregation."
+                      >
+                        <AlertTriangle size={16} className="text-amber-600 dark:text-amber-500" />
+                        <span className="text-amber-600 dark:text-amber-500 font-medium">{stats.errored} errored</span>
+                      </div>
+                    )}
                     <span className="text-sm text-muted-foreground">{stats.total} total test cases</span>
                   </div>
                 </div>

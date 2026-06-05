@@ -19,7 +19,7 @@ import { usePersistedSet } from '@/hooks/usePersistedSet';
 import { PREFS_KEYS } from '@/lib/preferences';
 import { useNavigate } from 'react-router-dom';
 import {
-  ChevronRight, ChevronDown, CheckCircle2, XCircle,
+  ChevronRight, ChevronDown, CheckCircle2, XCircle, AlertTriangle,
   Loader2, Clock, Search, RefreshCw, Activity, BarChart3,
   SlidersHorizontal, Layers, List, ChevronsDownUp, ChevronsUpDown, Upload, Plus,
   Pencil, Play, Calendar,
@@ -59,8 +59,14 @@ function truncate(s: string | undefined, max: number): string {
   if (!s) return '—';
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
-function getPassFail(run: TestCaseRun): 'pass' | 'fail' | 'running' | 'unknown' {
+function getPassFail(run: TestCaseRun): 'pass' | 'fail' | 'errored' | 'running' | 'unknown' {
   if (run.status === 'running') return 'running';
+  // Issue #242: a run whose evaluator could not produce a verdict
+  // (`metricsStatus: 'error'`) is bucketed as `errored`, NOT `fail`. The
+  // agent may have completed normally; the judge / trace pipeline
+  // failed before scoring. Surfacing it as 'fail' here would defeat the
+  // distinct bucket the rest of the run-stats pipeline preserves.
+  if (run.metricsStatus === 'error') return 'errored';
   if (run.passFailStatus === 'passed') return 'pass';
   if (run.passFailStatus === 'failed') return 'fail';
   // No verdict from the judge — don't fabricate one from a single metric
@@ -73,10 +79,11 @@ function getPassFail(run: TestCaseRun): 'pass' | 'fail' | 'running' | 'unknown' 
 }
 
 
-function PassFailBadge({ result }: { result: 'pass' | 'fail' | 'running' | 'unknown' }) {
+function PassFailBadge({ result }: { result: 'pass' | 'fail' | 'errored' | 'running' | 'unknown' }) {
   const c = {
     pass: { icon: <CheckCircle2 size={12} />, label: 'Pass', cls: 'text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-500/10 border-green-300 dark:border-green-500/20' },
     fail: { icon: <XCircle size={12} />, label: 'Fail', cls: 'text-red-600 dark:text-red-400 bg-red-100 dark:bg-red-500/10 border-red-300 dark:border-red-500/20' },
+    errored: { icon: <AlertTriangle size={12} />, label: 'Errored', cls: 'text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/20' },
     running: { icon: <Loader2 size={12} className="animate-spin" />, label: 'Running', cls: 'text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-500/10 border-blue-300 dark:border-blue-500/20' },
     unknown: { icon: <Clock size={12} />, label: '—', cls: 'text-muted-foreground bg-muted/50 border-border' },
   }[result];

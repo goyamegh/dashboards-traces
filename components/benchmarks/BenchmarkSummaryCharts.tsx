@@ -32,6 +32,8 @@ interface RunStats {
   runName: string;
   passCount: number;
   failCount: number;
+  /** Issue #242: evaluator-error runs counted separately from failures. */
+  erroredCount: number;
   totalCount: number;
   /**
    * Mean of every metric the per-test-case evaluator emitted, averaged
@@ -80,6 +82,9 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
       let totalScore = 0;
       let scoredCount = 0;
       let passCount = 0;
+      // Issue #242: track evaluator-error reports so they're not folded
+      // into `failCount` (which would conflate them with agent failures).
+      let erroredCount = 0;
       let completedCount = 0;
       const totalCount = Object.keys(run.results || {}).length;
 
@@ -87,6 +92,14 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
         if (result.reportId && result.status === 'completed') {
           const report = reports[result.reportId];
           if (report && report.status === 'completed') {
+            // metricsStatus wins over passFailStatus, which may carry a
+            // stale verdict on errored reports. Errored reports are
+            // excluded from the aggregate score (their zeroed metrics
+            // would otherwise drag the mean toward zero).
+            if (report.metricsStatus === 'error') {
+              erroredCount++;
+              return;
+            }
             // Use the run's overall score (mean of all populated metrics),
             // not just `accuracy`. `null` means the report had no scorable
             // metrics yet — we skip it from the aggregate rather than
@@ -102,14 +115,19 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
         }
       });
 
+      // Pass rate denominator excludes errored runs (issue #242) so a
+      // misconfigured evaluator can't drag a benchmark's chart to 0%.
+      const evaluable = Math.max(0, totalCount - erroredCount);
+
       return {
         runId: run.id,
         runName: run.name,
         passCount,
         failCount: completedCount - passCount,
+        erroredCount,
         totalCount,
         avgScore: scoredCount > 0 ? Math.round(totalScore / scoredCount) : 0,
-        passRatePercent: totalCount > 0 ? Math.round((passCount / totalCount) * 100) : 0,
+        passRatePercent: evaluable > 0 ? Math.round((passCount / evaluable) * 100) : 0,
       };
     });
   }, [runs, reports]);

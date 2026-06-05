@@ -1090,6 +1090,15 @@ export interface TestCaseRunResult {
   reportId?: string;
   status: 'completed' | 'failed' | 'missing';
   passFailStatus?: PassFailStatus;
+  /**
+   * Issue #242: when the evaluator could not produce a verdict
+   * (`metricsStatus: 'error'` on the report), the comparison row carries
+   * this flag so MetricCell can render an amber `Errored` chip distinct
+   * from `Failed`. The legacy `passFailStatus` field on these reports is
+   * cleared (`null`), so without this flag the cell would silently fall
+   * through to `Failed` styling.
+   */
+  errored?: boolean;
   accuracy?: number;
   faithfulness?: number;
   trajectoryAlignment?: number;

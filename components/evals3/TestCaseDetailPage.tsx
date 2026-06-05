@@ -27,7 +27,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Play, Calendar, CheckCircle2, XCircle, Pencil,
+  Play, Calendar, CheckCircle2, XCircle, Pencil, AlertTriangle,
   FileText, Target, Loader2, X,
   Link as LinkIcon, Check as CheckIcon,
   GitBranch, Activity, Scale, MessageSquare, Clock,
@@ -70,8 +70,12 @@ function getTimeThreshold(range: TimeRange): Date | null {
   return new Date(Date.now() - ms[range]);
 }
 
-type ResultStatus = 'passed' | 'failed' | 'running' | 'pending';
+type ResultStatus = 'passed' | 'failed' | 'errored' | 'running' | 'pending';
 function getStatus(r: EvaluationReport): ResultStatus {
+  // Issue #242: evaluator-error reports are bucketed as 'errored', not
+  // 'failed'. metricsStatus wins over passFailStatus because the storage
+  // layer may still carry a stale verdict on transient runs.
+  if (r.metricsStatus === 'error') return 'errored';
   if (r.passFailStatus === 'passed') return 'passed';
   if (r.passFailStatus === 'failed') return 'failed';
   if (r.status === 'running') return 'running';
@@ -224,7 +228,12 @@ export const TestCaseDetailPage: React.FC = () => {
 
   const passCount = filteredRuns.filter(r => r.passFailStatus === 'passed').length;
   const failCount = filteredRuns.filter(r => r.passFailStatus === 'failed').length;
-  const passRate = filteredRuns.length > 0 ? Math.round((passCount / filteredRuns.length) * 100) : 0;
+  // Issue #242: evaluator-error runs are bucketed separately and excluded
+  // from the pass-rate denominator so a misconfigured judge can't drag
+  // the per-test-case pass rate to 0%.
+  const erroredCount = filteredRuns.filter(r => r.metricsStatus === 'error').length;
+  const evaluable = Math.max(0, filteredRuns.length - erroredCount);
+  const passRate = evaluable > 0 ? Math.round((passCount / evaluable) * 100) : 0;
 
   const selectedRun = filteredRuns.find(r => r.id === selectedRunId) || null;
 
@@ -358,6 +367,15 @@ export const TestCaseDetailPage: React.FC = () => {
           <span className="flex items-center gap-1.5">
             <span className="text-green-500 font-medium">{passCount}✓</span>
             <span className="text-red-500 font-medium">{failCount}✗</span>
+            {erroredCount > 0 && (
+              <span
+                className="flex items-center gap-0.5 text-amber-500 font-medium ml-1"
+                title="Evaluator could not run (e.g. judge validation error). Excluded from pass-rate aggregation."
+              >
+                <AlertTriangle size={11} />
+                {erroredCount}
+              </span>
+            )}
           </span>
           <span className="text-muted-foreground/30">·</span>
           <span className={`font-medium ${passRate >= 80 ? 'text-green-500' : passRate >= 50 ? 'text-amber-500' : 'text-red-500'}`}>
@@ -493,7 +511,12 @@ export const TestCaseDetailPage: React.FC = () => {
                 </div>
               ) : (
                 filteredRuns.map((run, index) => {
-                  const isPassed = run.passFailStatus === 'passed';
+                  // Issue #242: triage rows by metricsStatus FIRST so an
+                  // errored run lights up the amber AlertTriangle and not
+                  // the red XCircle (which would conflate it with a real
+                  // agent failure).
+                  const isErrored = run.metricsStatus === 'error';
+                  const isPassed = !isErrored && run.passFailStatus === 'passed';
                   const isSelected = run.id === selectedRunId;
                   const isLatest = index === 0;
                   const runName = getRunDisplayName(run);
@@ -513,14 +536,21 @@ export const TestCaseDetailPage: React.FC = () => {
                       }`}
                       onClick={() => setSelectedRunId(run.id)}
                     >
-                      {/* Pass/fail icon — the only place status is shown.
-                          The text label was previously here too, but the run
-                          name is more useful and the icon already conveys
-                          status at a glance. */}
-                      <div className="shrink-0 mt-0.5" title={isPassed ? 'Passed' : 'Failed'}>
-                        {isPassed
-                          ? <CheckCircle2 size={12} className="text-green-500" />
-                          : <XCircle size={12} className="text-red-500" />}
+                      {/* Pass/fail/errored icon — the only place status is
+                          shown. The text label was previously here too, but
+                          the run name is more useful and the icon already
+                          conveys status at a glance. Issue #242: errored
+                          runs render an amber AlertTriangle to distinguish
+                          evaluator failures from agent failures. */}
+                      <div
+                        className="shrink-0 mt-0.5"
+                        title={isErrored ? 'Errored (evaluator could not run)' : isPassed ? 'Passed' : 'Failed'}
+                      >
+                        {isErrored
+                          ? <AlertTriangle size={12} className="text-amber-500" />
+                          : isPassed
+                            ? <CheckCircle2 size={12} className="text-green-500" />
+                            : <XCircle size={12} className="text-red-500" />}
                       </div>
                       <div className="flex-1 min-w-0">
                         {/* Row 1: run name + Latest badge + copy-link + accuracy */}
@@ -660,7 +690,8 @@ export const TestCaseDetailPage: React.FC = () => {
                 </div>
               ) : (
                 filteredRuns.map((run, index) => {
-                  const isPassed = run.passFailStatus === 'passed';
+                  const isErrored = run.metricsStatus === 'error';
+                  const isPassed = !isErrored && run.passFailStatus === 'passed';
                   const runName = getRunDisplayName(run);
                   const evaluatorLabel = run.evaluatorId
                     ? (evaluatorNameById[run.evaluatorId] || run.evaluatorId)
@@ -673,9 +704,11 @@ export const TestCaseDetailPage: React.FC = () => {
                       className="group flex items-center gap-3 px-3 py-2 rounded-md cursor-pointer transition-colors hover:bg-muted/50 border border-transparent"
                       onClick={() => setSelectedRunId(run.id)}
                     >
-                      {isPassed
-                        ? <CheckCircle2 size={14} className="text-green-500 shrink-0" />
-                        : <XCircle size={14} className="text-red-500 shrink-0" />}
+                      {isErrored
+                        ? <AlertTriangle size={14} className="text-amber-500 shrink-0" />
+                        : isPassed
+                          ? <CheckCircle2 size={14} className="text-green-500 shrink-0" />
+                          : <XCircle size={14} className="text-red-500 shrink-0" />}
                       <span className="text-xs font-semibold text-foreground truncate" title={runName}>{runName}</span>
                       {index === 0 && <Badge variant="outline" className="text-[7px] px-1 py-0 bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/10 dark:text-blue-400 dark:border-blue-500/30">Latest</Badge>}
                       {/* Copy-link icon for the canonical /runs/<id> URL. Hidden

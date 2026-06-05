@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { useNavigate } from 'react-router-dom';
-import { X, Play, Save, Star, CheckCircle2, XCircle, Loader2, ExternalLink, Clock, RefreshCw, Info, ChevronRight } from 'lucide-react';
+import { X, Play, Save, Star, CheckCircle2, XCircle, Loader2, ExternalLink, Clock, RefreshCw, Info, ChevronRight, AlertTriangle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { getJudgeReasoningText } from '@/lib/matchers/judgeAccessor';
 import { Button } from '@/components/ui/button';
@@ -548,6 +548,17 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                         <Badge className="bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-500/20 dark:text-amber-400 dark:border-amber-500/30 text-sm px-3 py-1">
                           <Clock size={14} className="mr-1" />
                           PENDING
+                        </Badge>
+                      ) : report.metricsStatus === 'error' ? (
+                        // Issue #242: distinct ERRORED bucket so an evaluator
+                        // that couldn't produce a verdict isn't conflated with
+                        // a real agent failure (which would be FAILED in red).
+                        <Badge
+                          className="bg-amber-100 text-amber-700 border-amber-300 dark:bg-amber-500/20 dark:text-amber-400 dark:border-amber-500/30 text-sm px-3 py-1"
+                          title="Evaluator could not run (e.g. judge validation error). Excluded from pass-rate aggregation."
+                        >
+                          <AlertTriangle size={14} className="mr-1" />
+                          ERRORED
                         </Badge>
                       ) : report.passFailStatus === 'passed' ? (
                         <Badge className="bg-green-100 text-green-700 border-green-300 dark:bg-green-500/20 dark:text-green-400 dark:border-green-500/30 text-sm px-3 py-1">
