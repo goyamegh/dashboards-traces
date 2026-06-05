@@ -20,6 +20,7 @@
  */
 
 import * as dotenv from 'dotenv';
+import * as path from 'path';
 import { readFileSync, existsSync } from 'fs';
 import { AgentFactory } from './agents/agent_factory';
 import { Logger } from './utils/logger';
@@ -28,8 +29,15 @@ import { ConfigLoader } from './config/config_loader';
 // Load environment variables — own dir first, then parent project .env
 // (matches main_ag_ui.ts so observio inherits the agent-health config when
 // run as a built-in agent and falls back to its own .env when standalone).
-dotenv.config(); // observio-sample-agent/.env
-dotenv.config({ path: '../.env' }); // parent project .env (won't override existing vars)
+//
+// Both paths resolve via __dirname so they work regardless of process.cwd()
+// — npm scripts that launch this from the repo root would otherwise see
+// '../.env' relative to that root, which is one level too high. The compiled
+// output ends up in observio-sample-agent/dist/main.js, so __dirname at
+// runtime is observio-sample-agent/dist; '../' goes to the package root and
+// '../../' goes to the parent project root.
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
+dotenv.config({ path: path.join(__dirname, '..', '..', '.env') });
 
 // Main execution
 async function main() {

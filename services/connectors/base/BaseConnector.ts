@@ -193,7 +193,13 @@ export abstract class BaseConnector implements AgentConnector {
     const span = trace.getSpan(otelContext.active());
     if (!span) return {};
     const ctx = span.spanContext();
-    if (!ctx.traceId || !ctx.spanId || ctx.traceId === '0'.repeat(32)) return {};
+    if (!ctx.traceId || !ctx.spanId) return {};
+    // Both trace-id and parent-id must be non-zero per W3C trace context spec
+    // (https://www.w3.org/TR/trace-context/#trace-id). Emitting an all-zero
+    // value would produce an invalid traceparent that downstream SDKs
+    // typically reject silently — the agent's root span won't adopt our
+    // context as parent and we'd get back to two unrelated trace trees.
+    if (ctx.traceId === '0'.repeat(32) || ctx.spanId === '0'.repeat(16)) return {};
     // 00 = W3C version; flags=01 means SAMPLED so the agent's exporter forwards.
     const flags = (ctx.traceFlags ?? 1).toString(16).padStart(2, '0');
     const env: Record<string, string> = {

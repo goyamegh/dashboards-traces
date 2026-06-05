@@ -246,11 +246,17 @@ export async function fetchTraces(
   // When the caller wants any-of-these (run-report Traces tab), we OR them via
   // bool.should so spans matching any single strategy are returned.
   const useUnion =
+    // useUnion fires when 2+ correlation clauses end up in the query.
+    // Each agents-window entry is its own clause that needs OR semantics, so
+    // count the agents array's length rather than treating it as one boolean
+    // — otherwise multiple windows (rare in the run-report path but possible
+    // for callers passing more than one agent) would be ANDed via must,
+    // which makes the query return zero results when no single span matches
+    // every window.
     [
       !!traceId,
       !!(runIds && runIds.length > 0),
-      !!(agents && agents.length > 0),
-    ].filter(Boolean).length > 1;
+    ].filter(Boolean).length + (agents?.length ?? 0) > 1;
 
   const must: any[] = [];
   const should: any[] = [];

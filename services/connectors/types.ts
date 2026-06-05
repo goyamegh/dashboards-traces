@@ -102,7 +102,7 @@ export type ConnectorRawEventCallback = (event: any) => void;
  * downstream agent, so the agent's spans become children of agent-health's
  * `test_case` eval span (single trace tree).
  *
- * Strategies (see docs/AGENT.md → "Trace correlation conventions"):
+ * Strategies (see AGENTS.md → "Trace correlation conventions"):
  *   A. propagateEnv     — inject W3C TRACEPARENT env var into subprocess
  *   A. propagateHeader  — inject W3C `traceparent` HTTP header into request
  *   C. serviceName      — OpenSearch `service.name` to look for as a

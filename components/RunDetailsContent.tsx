@@ -262,12 +262,15 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
             console.error(`[RunDetails] Failed to judge report ${liveReport.id}:`, error);
             // Pre-#242 fallback recovery (this PR doesn't pull in the
             // dedicated evaluatorError helper from PR #242). Same shape:
-            // surface the error in the judge reasoning field and mark the
-            // run's metricsStatus as 'error' so the UI shows it cleanly.
+            // surface the error in the judge reasoning field, mark the
+            // run's metricsStatus as 'error', AND record traceError so the
+            // trace-mode error banner shows the real failure reason instead
+            // of "Unknown error".
             const message = error instanceof Error ? error.message : String(error);
             await asyncRunStorage.updateReport(liveReport.id, {
               metricsStatus: 'error',
               llmJudgeReasoning: message,
+              traceError: message,
             } as any);
 
             // Update local state
@@ -398,15 +401,25 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
 
     try {
       // Resolve the agent's OpenSearch service.name for the time-window
-      // fallback (Strategy C). Mirrors connector-side `traceContext.serviceName`
-      // defaults; users running custom agents can extend this map.
+      // fallback (Strategy C). Priority order:
+      //   1. AgentConfig.traceServiceName — the explicit override declared
+      //      in lib/constants.ts (or user-provided via agent-health.config.ts).
+      //      Required for managed/3rd-party agents whose service.name doesn't
+      //      match our naming convention.
+      //   2. Per-protocol convention map below — covers the connector types
+      //      this PR ships with built-in defaults.
+      //   3. <agentKey>-agent fallback — best-effort.
       const protocolToServiceName: Record<string, string> = {
         'claude-code': 'claude-code-agent',
         'kiro': 'kiro-agent',
         'pi': 'pi-agent',
         'agui-streaming': 'observio-sample-agent',
       };
+      const agentConfig = report.agentKey
+        ? DEFAULT_CONFIG.agents.find(a => a.key === report.agentKey)
+        : undefined;
       const serviceName =
+        agentConfig?.traceServiceName ||
         (report.connectorProtocol && protocolToServiceName[report.connectorProtocol]) ||
         (report.agentKey ? `${report.agentKey}-agent` : undefined);
 

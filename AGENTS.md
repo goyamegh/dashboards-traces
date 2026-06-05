@@ -284,19 +284,32 @@ OpenSearch `terms` query unions both. SubprocessConnector also exports
 `AGENT_EVAL_RUN_ID=<runId>` to the child env as the conventional source for this
 attribute.
 
-### Strategy C — service-name + time-window (opt-in fallback)
+### Strategy C — service-name + time-window (always-on fallback)
 
 For closed-source / 3rd-party agents that do neither A nor B, register the
 agent's OpenSearch `service.name` on the connector via
-`traceContext.serviceName`. The Traces tab on the run-report exposes a checkbox
-**"Include all agent spans in window"**. When ticked, the API issues a query
-clause `service.name = <agent's serviceName> AND startTime IN [run.startedAt,
-run.endedAt]` and unions it with A/B.
+`traceContext.serviceName`. The run-report Traces tab **always** issues this
+clause unioned with A/B — the API receives `agents: [{serviceName, startedAt,
+endedAt}]` derived from the connector's `traceServiceName` (or the protocol→
+name convention map) and the run's wall-clock window. The OpenSearch query
+builder unions all three clauses via `bool.should` so spans matching any
+strategy are returned without duplication.
 
-This strategy is **opt-in** because it can surface unrelated spans:
-  - concurrent runs of the same agent on overlapping windows
-  - other users on a shared OTel cluster running the same agent
-  - long-lived agent sessions that cross run boundaries
+This strategy was originally opt-in via a UI checkbox — the noise risk it can
+surface is real (concurrent runs of the same agent on overlapping windows,
+other users on a shared OTel cluster running the same agent, long-lived agent
+sessions that cross run boundaries) — but in practice the run-report Traces
+tab landed on a near-empty trace tree by default until the user noticed the
+toggle. Empty-by-default was a worse cost than the noise risk, so Strategy C
+is now always-on. Users who need stricter isolation can override the
+connector's `serviceName` to a tenant-scoped value.
+
+Window derivation:
+  - When `report.performanceMetrics.durationMs` is set: `[timestamp −
+    durationMs − 60s, timestamp + 60s]` (tight bound).
+  - When `durationMs` is missing (older runs persisted before that field):
+    fall back to a 30-minute lookback. Wide enough for any realistic agent
+    run, narrow enough to keep cross-team noise minimal.
 
 Default per-connector `serviceName` values:
 
