@@ -240,16 +240,23 @@ router.post('/api/judge', async (req: Request, res: Response) => {
 
     if (provider === 'claude-code') {
       debug('JudgeAPI', 'Claude Code provider - spawning claude CLI');
+      // Pass the resolved evaluator so its `systemPrompt` replaces the
+      // hardcoded baseline (and `scoringConfig.metrics` drives dynamic metric
+      // extraction). Pre-fix this was the silent-prompt-drop bug.
       const result = await evaluateWithClaudeCode(
-        { trajectory, expectedOutcomes, expectedTrajectory, logs }
+        { trajectory, expectedOutcomes, expectedTrajectory, logs },
+        evaluator
       );
       return res.json(result);
     }
 
     if (provider === 'pi') {
       debug('JudgeAPI', 'Pi provider - spawning pi CLI');
+      // Pass the resolved evaluator so its `systemPrompt` is forwarded to
+      // the pi CLI via `--system-prompt` instead of the hardcoded baseline.
       const result = await evaluateWithPi(
-        { trajectory, expectedOutcomes, expectedTrajectory, logs }
+        { trajectory, expectedOutcomes, expectedTrajectory, logs },
+        evaluator
       );
       return res.json(result);
     }
@@ -289,8 +296,13 @@ router.post('/api/judge', async (req: Request, res: Response) => {
         });
       }
       debug('JudgeAPI', 'Agent trace judge - evaluating with run-scoped trace tools (runId=' + runId + ')');
+      // Pass the resolved evaluator so a saved `systemPrompt` replaces the
+      // default base prompt (the trace-tool addendum is still appended
+      // inside the service so the judge always knows query_spans/query_logs
+      // exist).
       const result = await evaluateWithPiAgenticTrace(
-        { trajectory, expectedOutcomes, expectedTrajectory, logs, runId, modelId: resolvedModelId }
+        { trajectory, expectedOutcomes, expectedTrajectory, logs, runId, modelId: resolvedModelId },
+        evaluator
       );
       return res.json(result);
     }
@@ -299,12 +311,15 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       debug('JudgeAPI', 'Agentic judge provider - running agent-based evaluation');
       const judgeConfig = config.judge || {};
       const backend = resolvedModelId === 'agentic-custom' ? 'custom' : 'claude-code';
+      // Pass the resolved evaluator so its `systemPrompt` replaces the
+      // baseline (the AGENTIC_JUDGE_ADDENDUM stays appended).
       const result = await evaluateWithAgenticJudge(
         { trajectory, expectedOutcomes, expectedTrajectory, logs, runId },
         {
           backend,
           endpoint: judgeConfig.endpoint,
-        }
+        },
+        evaluator
       );
       return res.json(result);
     }

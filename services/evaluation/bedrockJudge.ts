@@ -19,6 +19,18 @@ interface JudgeResult {
   improvementStrategies: ImprovementStrategy[];
   judgeDurationMs?: number;
   judgeAttempts?: number;
+  /** Raw text the judge model emitted (forwarded from /api/judge). */
+  rawResponse?: string;
+  /** Extra JSON keys the model emitted that weren't typed wire fields. */
+  extraFields?: Record<string, unknown>;
+  /** System/user prompts the judge actually saw (when AH_JUDGE_DEBUG=1). */
+  judgeDebug?: {
+    provider?: string;
+    modelId?: string;
+    evaluatorId?: string;
+    systemPrompt?: string;
+    userPrompt?: string;
+  };
 }
 
 /**
@@ -115,6 +127,12 @@ export async function callBedrockJudge(
         improvementStrategies: result.improvementStrategies || [],
         judgeDurationMs: Date.now() - judgeStartTime,
         judgeAttempts: attempt,
+        // Forward debug breadcrumbs from the route so the runner can persist
+        // them on the run document. These are absent in older /api/judge
+        // responses (back-compat) and in production unless AH_JUDGE_DEBUG=1.
+        rawResponse: result.rawResponse,
+        extraFields: result.extraFields,
+        judgeDebug: result.judgeDebug,
       };
     } catch (error) {
       const isLastAttempt = attempt === maxRetries;

@@ -410,9 +410,15 @@ export async function runEvaluationWithConnector(
       promptTokens: 0,
       completionTokens: 0,
       latencyMs: judgment.judgeDurationMs ?? 0,
-      rawResponse: judgment.llmJudgeReasoning,
+      // Prefer the actual unparsed model output when present (post
+      // evaluator-prompt-plumbing). Pre-fix code stuffed the parsed
+      // reasoning here — fall back to that for back-compat with judges
+      // that don't yet forward the raw text.
+      rawResponse: judgment.rawResponse ?? judgment.llmJudgeReasoning,
       parsedMetrics: judgment.metrics as any,
       improvementStrategies: judgment.improvementStrategies,
+      ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
+      ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
     };
 
     return {
@@ -658,9 +664,14 @@ export async function runEvaluation(
       promptTokens: 0,
       completionTokens: 0,
       latencyMs: judgment.judgeDurationMs ?? 0,
-      rawResponse: judgment.llmJudgeReasoning,
+      // Prefer the actual unparsed model output when present (post
+      // evaluator-prompt-plumbing). Pre-fix code stuffed the parsed
+      // reasoning here — fall back to that for back-compat.
+      rawResponse: judgment.rawResponse ?? judgment.llmJudgeReasoning,
       parsedMetrics: judgment.metrics as any,
       improvementStrategies: judgment.improvementStrategies,
+      ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
+      ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
     };
 
     return {

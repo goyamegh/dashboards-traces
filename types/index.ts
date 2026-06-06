@@ -339,15 +339,56 @@ export interface LLMJudgeResponse {
   promptTokens: number;
   completionTokens: number;
   latencyMs: number;
+  /**
+   * Raw judge text exactly as the model returned it (pre-JSON-parse). Set
+   * by the routing layer from `JudgeResponse.rawResponse`. Older callers
+   * stuffed the parsed `llmJudgeReasoning` into this field as a fallback;
+   * post evaluator-prompt-plumbing the field carries the actual unparsed
+   * model output for debugging "prompt edited but output didn't change"
+   * scenarios.
+   */
   rawResponse: string;
-  parsedMetrics?: {
-    accuracy: number;
-    faithfulness: number;
-    latency_score: number;
-    trajectory_alignment_score: number;
-  };
+  /**
+   * Parsed numeric metrics. Open-ended `[key: string]: number` so a saved
+   * evaluator can declare arbitrary metric names in its `scoringConfig.metrics`
+   * and they flow through here unchanged. Legacy keys (`accuracy`,
+   * `faithfulness`, `latency_score`, `trajectory_alignment_score`) remain
+   * conventional but are no longer required — evaluators are pluggable.
+   */
+  parsedMetrics?: { [key: string]: number | undefined };
   improvementStrategies?: ImprovementStrategy[];
   error?: string;
+  /**
+   * Any JSON keys the judge emitted that did NOT map onto a typed wire
+   * field or a declared metric. Captured by
+   * {@link parseJudgeResponse} (server/services/judgeResponseParser) so the
+   * run-detail "Judge debug" surface can show prompt-iteration output (e.g.
+   * `improvement_candidates`, `failure_tags`, `confidence`) without a code
+   * change. Empty/undefined when the model emitted only typed fields.
+   */
+  extraFields?: Record<string, unknown>;
+  /**
+   * Optional debug breadcrumbs persisted when `AH_JUDGE_DEBUG=1` (or in dev
+   * mode). Captures exactly what the run-detail UI needs to confirm "the
+   * prompt I saved is the prompt that ran" — the system prompt the model
+   * received, the user prompt, and which provider executed the call. The
+   * raw response itself is on the parent {@link rawResponse}.
+   *
+   * Disabled by default to keep persisted run docs lean (system prompts
+   * can be 10–20 KB).
+   */
+  judgeDebug?: {
+    /** Provider that executed the call: 'bedrock' | 'claude-code' | 'pi' | 'agent' | 'agentic' | 'openai-compatible' | 'litellm'. */
+    provider?: string;
+    /** Effective model id passed to the provider (post-resolution). */
+    modelId?: string;
+    /** Evaluator id used (system or user). */
+    evaluatorId?: string;
+    /** The full system prompt the model received. */
+    systemPrompt?: string;
+    /** The user-message prompt the model received. */
+    userPrompt?: string;
+  };
 }
 
 // Storage feature - User annotations on runs

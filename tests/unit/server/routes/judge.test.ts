@@ -467,7 +467,8 @@ describe('Judge Routes', () => {
         expect.objectContaining({
           trajectory: expect.any(Array),
           expectedOutcomes: expect.any(Array),
-        })
+        }),
+        expect.objectContaining({ id: 'system-rca-default' }) // Default evaluator
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -557,7 +558,8 @@ describe('Judge Routes', () => {
         }),
         expect.objectContaining({
           backend: 'claude-code',
-        })
+        }),
+        expect.objectContaining({ id: 'system-rca-default' }) // Default evaluator
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -591,7 +593,8 @@ describe('Judge Routes', () => {
         }),
         expect.objectContaining({
           backend: 'custom',
-        })
+        }),
+        expect.objectContaining({ id: 'system-rca-default' }) // Default evaluator
       );
     });
 
@@ -692,7 +695,8 @@ describe('Judge Routes', () => {
 
       expect(res.status).not.toHaveBeenCalledWith(400);
       expect(mockEvaluateWithPiAgenticTrace).toHaveBeenCalledWith(
-        expect.objectContaining({ runId: 'run-abc-123' })
+        expect.objectContaining({ runId: 'run-abc-123' }),
+        expect.objectContaining({ id: 'custom-trace-eval' }) // Saved evaluator
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ passFailStatus: 'passed' })
@@ -736,7 +740,8 @@ describe('Judge Routes', () => {
 
       expect(res.status).not.toHaveBeenCalledWith(403);
       expect(mockEvaluateWithPiAgenticTrace).toHaveBeenCalledWith(
-        expect.objectContaining({ runId: 'run-OWN' })
+        expect.objectContaining({ runId: 'run-OWN' }),
+        expect.objectContaining({ id: 'custom-trace-eval' }) // Saved evaluator
       );
     });
   });

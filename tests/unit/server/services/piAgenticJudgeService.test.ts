@@ -11,7 +11,7 @@
  * traceJudgeTools.test.ts) that don't need a model.
  */
 
-import { pickJudgeModel, extractFinalAssistantText, findRequestedModel } from '@/server/services/piAgenticJudgeService';
+import { pickJudgeModel, extractFinalAssistantText, findRequestedModel, buildAgentTraceJudgeSystemPrompt } from '@/server/services/piAgenticJudgeService';
 
 describe('pickJudgeModel', () => {
   const m = (provider: string, id: string) => ({ provider, id });
@@ -91,5 +91,48 @@ describe('extractFinalAssistantText', () => {
     expect(extractFinalAssistantText([{ role: 'user', content: [{ type: 'text', text: 'x' }] }])).toBe('');
     expect(extractFinalAssistantText([])).toBe('');
     expect(extractFinalAssistantText(undefined as any)).toBe('');
+  });
+});
+
+describe('buildAgentTraceJudgeSystemPrompt (evaluator-prompt-plumbing contract)', () => {
+  // The trace-judging contract — the existence and use of `query_spans`/
+  // `query_logs` — must survive any user customization of the saved
+  // evaluator's `systemPrompt`. These tests pin that invariant so a future
+  // refactor breaks loudly with a clear message.
+
+  it('uses the default base prompt when no evaluator is supplied', () => {
+    const out = buildAgentTraceJudgeSystemPrompt(undefined);
+    expect(out).toContain('observability and Root Cause Analysis');
+    expect(out).toContain('query_spans');
+    expect(out).toContain('query_logs');
+  });
+
+  it('uses the default base prompt when evaluator.systemPrompt is empty/whitespace', () => {
+    expect(buildAgentTraceJudgeSystemPrompt({ systemPrompt: '' }))
+      .toContain('observability and Root Cause Analysis');
+    expect(buildAgentTraceJudgeSystemPrompt({ systemPrompt: '   \n  ' }))
+      .toContain('observability and Root Cause Analysis');
+  });
+
+  it('replaces the base prompt with the saved evaluator.systemPrompt verbatim', () => {
+    const out = buildAgentTraceJudgeSystemPrompt({
+      systemPrompt: 'I am the CP-Oncall judge. Emit only JSON.',
+    });
+    expect(out).toContain('I am the CP-Oncall judge');
+    // The default base must NOT be present — the saved prompt fully
+    // replaces it. (Pre-fix the override was silently dropped.)
+    expect(out).not.toContain('observability and Root Cause Analysis');
+  });
+
+  it('ALWAYS appends the trace-tool addendum, even when the saved prompt does not mention tools', () => {
+    // This is the critical invariant: a user who saves a custom prompt and
+    // forgets to mention query_spans/query_logs must NOT accidentally
+    // disable trace-grounded judging.
+    const out = buildAgentTraceJudgeSystemPrompt({
+      systemPrompt: 'You are a custom judge. Do not use tools.',
+    });
+    expect(out).toContain('query_spans');
+    expect(out).toContain('query_logs');
+    expect(out).toContain('READ-ONLY');
   });
 });

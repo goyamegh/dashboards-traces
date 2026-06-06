@@ -1244,6 +1244,85 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                 </div>
               </div>
             )}
+
+            {/* Judge debug — the runtime breadcrumbs that answer "did my
+               saved evaluator prompt actually reach the model?". Only
+               present when the run was executed with `AH_JUDGE_DEBUG=1`
+               (or in dev) AND when extra fields the model emitted weren't
+               typed wire fields. Both are gated independently — either
+               surface alone justifies showing the section. */}
+            {(liveReport.llmJudgeResponse?.judgeDebug ||
+              liveReport.llmJudgeResponse?.extraFields ||
+              liveReport.llmJudgeResponse?.rawResponse) && (
+              <div>
+                <h3 className="text-lg font-semibold mb-3">Judge Debug</h3>
+                <Card>
+                  <CardContent className="p-4 space-y-4">
+                    {liveReport.llmJudgeResponse?.judgeDebug && (
+                      <>
+                        <div className="text-xs text-muted-foreground space-x-3">
+                          {liveReport.llmJudgeResponse.judgeDebug.provider && (
+                            <span><strong>Provider:</strong> {liveReport.llmJudgeResponse.judgeDebug.provider}</span>
+                          )}
+                          {liveReport.llmJudgeResponse.judgeDebug.modelId && (
+                            <span><strong>Model:</strong> {liveReport.llmJudgeResponse.judgeDebug.modelId}</span>
+                          )}
+                          {liveReport.llmJudgeResponse.judgeDebug.evaluatorId && (
+                            <span><strong>Evaluator:</strong> {liveReport.llmJudgeResponse.judgeDebug.evaluatorId}</span>
+                          )}
+                        </div>
+                        {liveReport.llmJudgeResponse.judgeDebug.systemPrompt && (
+                          <details>
+                            <summary className="text-sm font-medium cursor-pointer">
+                              System prompt the model received ({liveReport.llmJudgeResponse.judgeDebug.systemPrompt.length} chars)
+                            </summary>
+                            <pre className="mt-2 text-xs bg-muted/30 p-3 rounded whitespace-pre-wrap break-words max-h-96 overflow-y-auto">
+                              {liveReport.llmJudgeResponse.judgeDebug.systemPrompt}
+                            </pre>
+                          </details>
+                        )}
+                        {liveReport.llmJudgeResponse.judgeDebug.userPrompt && (
+                          <details>
+                            <summary className="text-sm font-medium cursor-pointer">
+                              User prompt ({liveReport.llmJudgeResponse.judgeDebug.userPrompt.length} chars)
+                            </summary>
+                            <pre className="mt-2 text-xs bg-muted/30 p-3 rounded whitespace-pre-wrap break-words max-h-96 overflow-y-auto">
+                              {liveReport.llmJudgeResponse.judgeDebug.userPrompt}
+                            </pre>
+                          </details>
+                        )}
+                      </>
+                    )}
+                    {liveReport.llmJudgeResponse?.rawResponse && (
+                      <details>
+                        <summary className="text-sm font-medium cursor-pointer">
+                          Raw judge response ({liveReport.llmJudgeResponse.rawResponse.length} chars)
+                        </summary>
+                        <pre className="mt-2 text-xs bg-muted/30 p-3 rounded whitespace-pre-wrap break-words max-h-96 overflow-y-auto">
+                          {liveReport.llmJudgeResponse.rawResponse}
+                        </pre>
+                      </details>
+                    )}
+                    {liveReport.llmJudgeResponse?.extraFields && Object.keys(liveReport.llmJudgeResponse.extraFields).length > 0 && (
+                      <details open>
+                        <summary className="text-sm font-medium cursor-pointer">
+                          Additional judge output ({Object.keys(liveReport.llmJudgeResponse.extraFields).length} field{Object.keys(liveReport.llmJudgeResponse.extraFields).length === 1 ? '' : 's'})
+                        </summary>
+                        <pre className="mt-2 text-xs bg-muted/30 p-3 rounded whitespace-pre-wrap break-words max-h-96 overflow-y-auto">
+                          {JSON.stringify(liveReport.llmJudgeResponse.extraFields, null, 2)}
+                        </pre>
+                      </details>
+                    )}
+                    {!liveReport.llmJudgeResponse?.judgeDebug && (
+                      <p className="text-xs text-muted-foreground">
+                        Set <code>AH_JUDGE_DEBUG=1</code> on the server to capture the
+                        system/user prompts the judge received on future runs.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
+              </div>
+            )}
           </TabsContent>
 
           <TabsContent value="annotations" className="p-6 mt-0 space-y-4 overflow-y-auto">
