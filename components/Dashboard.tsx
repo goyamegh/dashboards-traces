@@ -8,7 +8,7 @@ import { usePersistedState } from '@/hooks/usePersistedState';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Info, BarChart3, Play, FileText, AlertTriangle, Clock,
-  CheckCircle2, XCircle, ArrowRight, TrendingDown, X,
+  CheckCircle2, XCircle, ArrowRight, TrendingDown, X, Activity,
 } from 'lucide-react';
 import {
   asyncBenchmarkStorage,
@@ -59,6 +59,25 @@ interface RunRow {
 interface RegressionRow extends RunRow {
   prevPassRate: number;
   delta: number; // negative
+}
+
+interface AgentImprovementRow {
+  agentKey: string;
+  agentName: string;
+  totalRuns: number;
+  failingRuns: number;       // runs with failed > 0
+  failedTestCases: number;   // sum of failed across all runs
+  totalTestCases: number;    // sum of total across all runs
+  passRate: number;          // failedTestCases excluded from numerator
+  latestPassRate: number;    // latest run only
+  latestRunAt: string;
+  benchmarkCount: number;
+  bestRow: RunRow;           // most-recent failing row, for click-through
+}
+
+interface AgentRegressionRow extends AgentImprovementRow {
+  prevAggregatePassRate: number;
+  delta: number;
 }
 
 // ==================== Helpers ====================
@@ -338,20 +357,61 @@ const RecentHeader: React.FC = () => (
   </div>
 );
 
-// ==================== Needs Improvement Widget ====================
+// ==================== Needs Improvement Widget (agent-centric) ====================
 
 interface NeedsImprovementWidgetProps {
-  failingRows: RunRow[];
-  regressions: RegressionRow[];
+  failingAgents: AgentImprovementRow[];
+  regressingAgents: AgentRegressionRow[];
+  onAgentClick: (agentKey: string) => void;
   onRowClick: (row: RunRow) => void;
 }
 
+const AgentRow: React.FC<{
+  row: AgentImprovementRow | AgentRegressionRow;
+  onClick: () => void;
+  trailing: React.ReactNode;
+}> = ({ row, onClick, trailing }) => (
+  <button
+    onClick={onClick}
+    className="group w-full grid items-center gap-2 px-3 h-8 text-left text-[11px] border-b last:border-b-0 hover:bg-muted/50 transition-colors"
+    style={{ gridTemplateColumns: '12px minmax(0,1fr) auto 56px' }}
+  >
+    <Activity className="h-3 w-3 text-muted-foreground shrink-0" />
+    <div className="min-w-0">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="truncate">
+            <span className="font-medium">{row.agentName}</span>
+            <span className="text-muted-foreground"> · </span>
+            <span className="text-muted-foreground">
+              {row.totalRuns} run{row.totalRuns === 1 ? '' : 's'} · {row.benchmarkCount} bench
+            </span>
+          </div>
+        </TooltipTrigger>
+        <TooltipContent>
+          <div className="text-[11px]">
+            <div className="font-medium">{row.agentName}</div>
+            <div className="text-muted-foreground">
+              {row.totalRuns} runs across {row.benchmarkCount} benchmark{row.benchmarkCount === 1 ? '' : 's'}
+            </div>
+            <div className="text-muted-foreground">
+              {row.failedTestCases} failing test case{row.failedTestCases === 1 ? '' : 's'} of {row.totalTestCases}
+            </div>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+    </div>
+    {trailing}
+    <RateBarMini rate={row.passRate} />
+  </button>
+);
+
 const NeedsImprovementWidget: React.FC<NeedsImprovementWidgetProps> = ({
-  failingRows, regressions, onRowClick,
+  failingAgents, regressingAgents, onAgentClick,
 }) => {
   const navigate = useNavigate();
-  const initialTab = failingRows.length > 0 ? 'failing' : 'regressions';
-  const empty = failingRows.length === 0 && regressions.length === 0;
+  const initialTab = failingAgents.length > 0 ? 'failing' : 'regressions';
+  const empty = failingAgents.length === 0 && regressingAgents.length === 0;
 
   return (
     <Card className="flex flex-col overflow-hidden" data-testid="needs-improvement-card">
@@ -359,7 +419,7 @@ const NeedsImprovementWidget: React.FC<NeedsImprovementWidgetProps> = ({
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm flex items-center gap-1.5">
             <AlertTriangle className="h-3.5 w-3.5 text-amber-500" />
-            Needs Improvement
+            Agents Needing Improvement
           </CardTitle>
           <Button
             variant="ghost"
@@ -371,7 +431,7 @@ const NeedsImprovementWidget: React.FC<NeedsImprovementWidgetProps> = ({
           </Button>
         </div>
         <CardDescription className="text-[11px] leading-tight">
-          Where to focus to improve agent quality fastest.
+          Agents with the most failing test cases or biggest regressions.
         </CardDescription>
       </CardHeader>
 
@@ -380,7 +440,7 @@ const NeedsImprovementWidget: React.FC<NeedsImprovementWidgetProps> = ({
           <div className="flex-1 flex flex-col items-center justify-center px-4 py-6">
             <CheckCircle2 className="h-6 w-6 text-emerald-500 mb-1.5 opacity-70" />
             <p className="text-[11px] text-muted-foreground text-center">
-              No failing runs and no regressions detected.
+              All agents are passing cleanly. Nothing to fix right now.
             </p>
           </div>
         ) : (
@@ -389,35 +449,35 @@ const NeedsImprovementWidget: React.FC<NeedsImprovementWidgetProps> = ({
               <TabsTrigger value="failing" className="h-6 px-2 text-[11px] gap-1">
                 Failing
                 <Badge variant="secondary" className="h-4 px-1 text-[9px] tabular-nums">
-                  {failingRows.length}
+                  {failingAgents.length}
                 </Badge>
               </TabsTrigger>
               <TabsTrigger value="regressions" className="h-6 px-2 text-[11px] gap-1">
                 Regressions
                 <Badge variant="secondary" className="h-4 px-1 text-[9px] tabular-nums">
-                  {regressions.length}
+                  {regressingAgents.length}
                 </Badge>
               </TabsTrigger>
             </TabsList>
 
             <TabsContent value="failing" className="mt-2 flex-1 min-h-0">
-              {failingRows.length === 0 ? (
+              {failingAgents.length === 0 ? (
                 <p className="px-4 py-4 text-center text-[11px] text-muted-foreground">
-                  No failing runs.
+                  No agents have failing runs.
                 </p>
               ) : (
                 <ScrollArea className="h-full border-t">
-                  {failingRows.map(r => (
-                    <WidgetRow
-                      key={`fail-${r.benchmarkId}-${r.run.id}`}
-                      row={r}
-                      onClick={() => onRowClick(r)}
+                  {failingAgents.map(a => (
+                    <AgentRow
+                      key={`fail-${a.agentKey}`}
+                      row={a}
+                      onClick={() => onAgentClick(a.agentKey)}
                       trailing={
                         <Badge
                           variant="outline"
                           className="text-[9px] h-4 py-0 px-1.5 border-red-500/40 text-red-600 dark:text-red-400 leading-none"
                         >
-                          {r.failed} failing
+                          {a.failedTestCases} failing
                         </Badge>
                       }
                     />
@@ -427,24 +487,24 @@ const NeedsImprovementWidget: React.FC<NeedsImprovementWidgetProps> = ({
             </TabsContent>
 
             <TabsContent value="regressions" className="mt-2 flex-1 min-h-0">
-              {regressions.length === 0 ? (
+              {regressingAgents.length === 0 ? (
                 <p className="px-4 py-4 text-center text-[11px] text-muted-foreground">
-                  No regressions vs prior runs.
+                  No agent regressions vs prior runs.
                 </p>
               ) : (
                 <ScrollArea className="h-full border-t">
-                  {regressions.map(r => (
-                    <WidgetRow
-                      key={`reg-${r.benchmarkId}-${r.run.id}`}
-                      row={r}
-                      onClick={() => onRowClick(r)}
+                  {regressingAgents.map(a => (
+                    <AgentRow
+                      key={`reg-${a.agentKey}`}
+                      row={a}
+                      onClick={() => onAgentClick(a.agentKey)}
                       trailing={
                         <Badge
                           variant="outline"
                           className="text-[9px] h-4 py-0 px-1.5 border-red-500/40 text-red-600 dark:text-red-400 gap-0.5 leading-none"
                         >
                           <TrendingDown className="h-2.5 w-2.5" />
-                          {Math.round(r.delta * 100)}pp
+                          {Math.round(a.delta * 100)}pp
                         </Badge>
                       }
                     />
@@ -474,10 +534,10 @@ export const Dashboard: React.FC = () => {
   const isSampleMode = isSampleDataActive();
 
   const [filters, setFilters] = usePersistedState<DashboardFilter>('dashboard:filters', {});
-  const [timeRange, setTimeRange] = usePersistedState<TimeRange>('dashboard:timeRange', '7d');
+  const [timeRange, setTimeRange] = usePersistedState<TimeRange>('dashboard:timeRange', 'all');
   const [selectedMetric, setSelectedMetric] = usePersistedState<TrendMetric>('dashboard:selectedMetric', 'passRate');
 
-  // Test case count
+  // Test case count — kept for backward-compat with stats-summary-bar tests; not surfaced in pills.
   useEffect(() => {
     let cancelled = false;
     asyncTestCaseStorage.getAll()
@@ -575,6 +635,101 @@ export const Dashboard: React.FC = () => {
     return out.sort((a, b) => a.delta - b.delta).slice(0, 20);
   }, [allRows]);
 
+  const failingAgents = useMemo<AgentImprovementRow[]>(() => {
+    type Agg = {
+      agentKey: string;
+      agentName: string;
+      runs: RunRow[];
+      benchmarks: Set<string>;
+      passed: number;
+      failed: number;
+      total: number;
+    };
+    const groups = new Map<string, Agg>();
+    for (const r of allRows) {
+      const key = r.run.agentKey || 'unknown';
+      let g = groups.get(key);
+      if (!g) {
+        g = { agentKey: key, agentName: r.agentName, runs: [], benchmarks: new Set(), passed: 0, failed: 0, total: 0 };
+        groups.set(key, g);
+      }
+      g.runs.push(r);
+      g.benchmarks.add(r.benchmarkId);
+      g.passed += r.passed;
+      g.failed += r.failed;
+      g.total += r.total;
+    }
+    const out: AgentImprovementRow[] = [];
+    for (const g of groups.values()) {
+      if (g.failed === 0) continue;
+      const sortedRuns = [...g.runs].sort(
+        (a, b) => new Date(b.run.createdAt).getTime() - new Date(a.run.createdAt).getTime(),
+      );
+      const latest = sortedRuns[0];
+      const failingRow = sortedRuns.find(r => r.failed > 0) || latest;
+      out.push({
+        agentKey: g.agentKey,
+        agentName: g.agentName,
+        totalRuns: g.runs.length,
+        failingRuns: g.runs.filter(r => r.failed > 0).length,
+        failedTestCases: g.failed,
+        totalTestCases: g.total,
+        passRate: g.total > 0 ? g.passed / g.total : 0,
+        latestPassRate: latest.passRate,
+        latestRunAt: latest.run.createdAt,
+        benchmarkCount: g.benchmarks.size,
+        bestRow: failingRow,
+      });
+    }
+    // Worst pass rate first; ties broken by absolute failure count.
+    return out
+      .sort((a, b) => a.passRate - b.passRate || b.failedTestCases - a.failedTestCases)
+      .slice(0, 20);
+  }, [allRows]);
+
+  const regressingAgents = useMemo<AgentRegressionRow[]>(() => {
+    // Per agent, compare aggregate pass rate of latest run vs aggregate pass rate of all earlier runs.
+    const groups = new Map<string, RunRow[]>();
+    for (const r of allRows) {
+      const key = r.run.agentKey || 'unknown';
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(r);
+    }
+    const out: AgentRegressionRow[] = [];
+    for (const [agentKey, runs] of groups.entries()) {
+      if (runs.length < 2) continue;
+      const sorted = [...runs].sort(
+        (a, b) => new Date(b.run.createdAt).getTime() - new Date(a.run.createdAt).getTime(),
+      );
+      const latest = sorted[0];
+      const earlier = sorted.slice(1);
+      const earlierTotal = earlier.reduce((s, r) => s + r.total, 0);
+      const earlierPassed = earlier.reduce((s, r) => s + r.passed, 0);
+      if (earlierTotal === 0) continue;
+      const earlierRate = earlierPassed / earlierTotal;
+      if (latest.passRate >= earlierRate) continue;
+      const totalPassed = sorted.reduce((s, r) => s + r.passed, 0);
+      const totalAll = sorted.reduce((s, r) => s + r.total, 0);
+      const totalFailed = sorted.reduce((s, r) => s + r.failed, 0);
+      out.push({
+        agentKey,
+        agentName: latest.agentName,
+        totalRuns: runs.length,
+        failingRuns: runs.filter(r => r.failed > 0).length,
+        failedTestCases: totalFailed,
+        totalTestCases: totalAll,
+        passRate: totalAll > 0 ? totalPassed / totalAll : 0,
+        latestPassRate: latest.passRate,
+        latestRunAt: latest.run.createdAt,
+        benchmarkCount: new Set(runs.map(r => r.benchmarkId)).size,
+        bestRow: latest,
+        prevAggregatePassRate: earlierRate,
+        delta: latest.passRate - earlierRate,
+      });
+    }
+    return out.sort((a, b) => a.delta - b.delta).slice(0, 20);
+  }, [allRows]);
+
   const recentRows = useMemo<RunRow[]>(
     () =>
       [...allRows]
@@ -582,6 +737,9 @@ export const Dashboard: React.FC = () => {
         .slice(0, 15),
     [allRows],
   );
+
+  const goToAgent = (agentKey: string) =>
+    navigate(`/evaluations/runs?agent=${encodeURIComponent(agentKey)}`);
 
   const goToRun = (row: RunRow) =>
     navigate(`/evaluations/benchmarks/${row.benchmarkId}/runs/${row.run.id}/inspect`);
@@ -598,7 +756,7 @@ export const Dashboard: React.FC = () => {
         <div>
           <h2 className="text-xl font-bold" data-testid="dashboard-title">Leaderboard Overview</h2>
           <p className="text-[12px] text-muted-foreground">
-            Track performance trends and surface runs that need improvement
+            See where each agent is failing or regressing, and improve them fast
           </p>
         </div>
         <DashboardSkeleton />
@@ -639,7 +797,7 @@ export const Dashboard: React.FC = () => {
               Leaderboard Overview
             </h2>
             <p className="text-[12px] text-muted-foreground leading-tight mt-0.5">
-              Track performance trends and surface runs that need improvement
+              See where each agent is failing or regressing, and improve them fast
             </p>
           </div>
           <div className="flex flex-wrap items-center gap-1.5" data-testid="stats-summary-bar">
@@ -653,16 +811,9 @@ export const Dashboard: React.FC = () => {
             <StatPill
               to="/evaluations/runs"
               icon={Play}
-              label="Runs"
+              label="Evaluation Runs"
               value={totalRuns.toLocaleString()}
               testId="stats-runs"
-            />
-            <StatPill
-              to="/evaluations/test-cases"
-              icon={FileText}
-              label="Test Cases"
-              value={testCaseCount === null ? '—' : testCaseCount}
-              testId="stats-test-cases"
             />
           </div>
         </div>
@@ -736,8 +887,9 @@ export const Dashboard: React.FC = () => {
 
               {/* Needs Improvement — 1/3 */}
               <NeedsImprovementWidget
-                failingRows={failingRows}
-                regressions={regressions}
+                failingAgents={failingAgents}
+                regressingAgents={regressingAgents}
+                onAgentClick={goToAgent}
                 onRowClick={goToRun}
               />
             </div>

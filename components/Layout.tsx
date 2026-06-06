@@ -12,6 +12,7 @@ import {
   Activity,
   Search,
   TestTube,
+  BarChart3,
   MessageSquare,
   Wand2,
 } from "lucide-react";
@@ -71,6 +72,7 @@ const navItems = [
 
 const navItemsAfterEvaluation = [
   { to: "/skills", icon: Wand2, label: "Skills", tooltip: "Evaluate and improve AgentSkills", testId: "nav-skills" },
+  { to: "/coding-agents", icon: BarChart3, label: "AI Dev Tools", tooltip: "Claude Code, Kiro & Codex analytics", testId: "nav-coding-agents" },
   { to: "/assistant", icon: MessageSquare, label: "Assistant", tooltip: "AI assistant for help and analysis", testId: "nav-assistant" },
 ];
 
@@ -78,7 +80,7 @@ const navItemsAfterEvaluation = [
 export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
   const navigate = useNavigate();
-  const { status, version, loading } = useServerStatus();
+  const { status, version, loading, features } = useServerStatus();
 
   // Determine if testing section should be open based on current path
   const isTestingPath = location.pathname.startsWith("/test-cases") ||
@@ -280,7 +282,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                   </SidebarMenuItem>
                 )}
 
-                {navItemsAfterEvaluation.map((item) => (
+                {navItemsAfterEvaluation.filter(item => item.to !== '/coding-agents' || features.codingAgentAnalytics).map((item) => (
                   <SidebarMenuItem key={item.to}>
                     <SidebarMenuButton
                       asChild
