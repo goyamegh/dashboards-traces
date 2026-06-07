@@ -26,6 +26,7 @@ import { loadConfigSync } from '@/lib/config/index';
 import { debug } from '@/lib/debug';
 import { readEnv } from '@/lib/envCompat';
 import { getSkillPath } from '@/lib/packagePaths';
+import { resolveAgentPath, discoverAgentPath, renderDiscoveryMarkdown } from '@/server/services/agentPath';
 import serverConfig from '@/server/config/index';
 import { asyncRunStorage } from '@/services/storage/asyncRunStorage';
 import { asyncBenchmarkStorage } from '@/services/storage/asyncBenchmarkStorage';
@@ -420,6 +421,27 @@ Use ONLY the Live Data Snapshot below. If something is missing, state plainly wh
     systemPrompt += `\n\n---\n\n## Agent Health Reference\n\n${skillContent}`;
   }
 
+  // When AH_AGENT_PATH is configured, mount the user's agent repo so the
+  // assistant grounds answers in the actual codebase. For the tools-enabled
+  // path (Claude CLI), we hint that filesystem tools can drill deeper than
+  // the snapshot we inject. For the fallback (no tools), the snapshot is
+  // all we have.
+  const agentPath = resolveAgentPath();
+  if (agentPath) {
+    const discovery = discoverAgentPath(agentPath);
+    const overview = renderDiscoveryMarkdown(discovery);
+    if (overview) {
+      systemPrompt += `\n\n---\n\n## Agent Repository Context\n\n` +
+        `The user has pointed agent-health at their agent repository. ` +
+        `Treat the files below as authoritative source for the agent under evaluation. ` +
+        `Reference real component/tool/file names from this repo when answering.` +
+        (toolsAvailable
+          ? ` You also have Read/Grep/Glob and the spawned CLI is rooted at this repo, so explore further as needed.`
+          : ``) +
+        `\n\n${overview}`;
+    }
+  }
+
   if (context) {
     systemPrompt += '\n\n---\n\n## Current Page Context\n';
     if (context.currentUrl) systemPrompt += `\nThe user is currently viewing: ${context.currentUrl}`;
@@ -532,9 +554,11 @@ function streamFromClaude(
     env: buildChildEnv(),
     stdio: ['pipe', 'pipe', 'pipe'],
     timeout: CLAUDE_TIMEOUT_MS,
-    // Run from the Agent Health project root so any project-scoped MCPs (e.g.
-    // a `.mcp.json` in the repo) are also picked up.
-    cwd: process.cwd(),
+    // When AH_AGENT_PATH is configured, root the spawned claude CLI at the
+    // user's agent repo so its built-in Read/Grep/Glob can browse the agent's
+    // source. Otherwise fall back to the agent-health project root so any
+    // project-scoped MCPs (e.g. a `.mcp.json` in the repo) are picked up.
+    cwd: resolveAgentPath() || process.cwd(),
   });
 
   let fullResponse = '';
