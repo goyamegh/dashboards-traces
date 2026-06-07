@@ -180,7 +180,8 @@ program
   .option('-e, --env-file <path>', 'Load environment variables from file (e.g., .env)')
   .option('--no-browser', 'Do not open browser automatically')
   .option('--headless', 'Run API server only (no frontend, no browser)')
-  .option('--api-key <key>', 'Require API key for coding-agents endpoints');
+  .option('--api-key <key>', 'Require API key for coding-agents endpoints')
+  .option('--agent-path <path>', 'Path to the agent repository the judge and assistant should use as grounding context (or set AH_AGENT_PATH)');
 
 program.action(async (options) => {
   console.log(chalk.cyan.bold(`\n  Agent Health v${version} - AI Agent Evaluation Framework\n`));
@@ -194,6 +195,18 @@ program.action(async (options) => {
     loadEnvFile(options.envFile);
   } else if (existsSync(defaultEnvPath)) {
     console.log(chalk.gray('  Auto-loaded .env from current directory'));
+  }
+
+  // Apply --agent-path: set AH_AGENT_PATH on process.env before booting the
+  // server. The runtime resolver (server/services/agentPath/path.ts) only
+  // reads from env, so this single write covers both the in-process server
+  // and any subprocesses we later spawn.
+  if (options.agentPath) {
+    const abs = resolve(options.agentPath);
+    process.env.AH_AGENT_PATH = abs;
+    console.log(chalk.gray(`  Agent path: ${abs}`));
+  } else if (process.env.AH_AGENT_PATH) {
+    console.log(chalk.gray(`  Agent path: ${process.env.AH_AGENT_PATH} (from AH_AGENT_PATH)`));
   }
 
   const port = parseInt(options.port, 10);
@@ -264,8 +277,17 @@ program
   .option('--no-browser', 'Do not open browser automatically')
   .option('--headless', 'Run API server only (no frontend, no browser)')
   .option('--api-key <key>', 'Require API key for coding-agents endpoints')
+  .option('--agent-path <path>', 'Path to the agent repository the judge and assistant should use as grounding context (or set AH_AGENT_PATH)')
   .action(async (options) => {
     console.log(chalk.cyan.bold(`\n  Agent Health v${version} - AI Agent Evaluation Framework\n`));
+
+    if (options.agentPath) {
+      const abs = resolve(options.agentPath);
+      process.env.AH_AGENT_PATH = abs;
+      console.log(chalk.gray(`  Agent path: ${abs}`));
+    } else if (process.env.AH_AGENT_PATH) {
+      console.log(chalk.gray(`  Agent path: ${process.env.AH_AGENT_PATH} (from AH_AGENT_PATH)`));
+    }
 
     const port = parseInt(options.port, 10);
     const headless = options.headless || false;

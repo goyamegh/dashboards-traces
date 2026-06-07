@@ -19,6 +19,7 @@ import { readFileSync, writeFileSync } from 'fs';
 import * as path from 'path';
 import { loadConfig, DEFAULT_SERVER_CONFIG, type ResolvedConfig } from '@/lib/config/index.js';
 import { ensureServer, createServerCleanup, isServerRunning, type EnsureServerResult } from '@/cli/utils/serverLifecycle.js';
+import { applyAgentPathOption } from '@/cli/utils/agentPathOption.js';
 import { ApiClient, ServerError, type BenchmarkExecutionEvent } from '@/cli/utils/apiClient.js';
 import { validateTestCasesArrayJson, type ValidatedTestCaseInput } from '@/lib/testCaseValidation.js';
 import { calculateRunStats, getReportIdsFromRun } from '@/lib/runStats.js';
@@ -723,8 +724,10 @@ export function createBenchmarkCommand(): Command {
     .option('-c, --concurrency <n>', 'Number of test cases to run in parallel (default: 1)', '1')
     .option('-v, --verbose', 'Show detailed output')
     .option('--stop-server', 'Stop the server after benchmark completes (default: keep running)')
-    .action(async (options: BenchmarkOptions & { name?: string }) => {
+    .option('--agent-path <path>', 'Path to the agent repository to use as judge grounding context (or set AH_AGENT_PATH)')
+    .action(async (options: BenchmarkOptions & { name?: string; agentPath?: string }) => {
       console.log(chalk.bold('\nAgent Health - Benchmark Runner\n'));
+      applyAgentPathOption(options);
 
       // Load config
       const config = await loadConfig();

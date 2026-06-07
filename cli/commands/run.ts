@@ -18,6 +18,7 @@ import ora from 'ora';
 import Table from 'cli-table3';
 import { loadConfig, type ResolvedConfig } from '@/lib/config/index.js';
 import { ensureServer, createServerCleanup } from '@/cli/utils/serverLifecycle.js';
+import { applyAgentPathOption } from '@/cli/utils/agentPathOption.js';
 import { ApiClient, type EvaluationResult, type EvaluationProgressEvent } from '@/cli/utils/apiClient.js';
 import type { AgentConfig, TrajectoryStep } from '@/types/index.js';
 import { formatJson, formatMarkdownTable, parseOutputFormat, OUTPUT_FORMAT_DESCRIPTION, type OutputFormat } from '@/cli/utils/formatOutput.js';
@@ -214,8 +215,10 @@ export function createRunCommand(): Command {
     .option('--judge-model <id>', "Judge LLM model id, distinct from --model. Falls back to evaluator's inferenceConfig.modelId, then BEDROCK_MODEL_ID env. Ignored by agentic-provider judges (pi/agent/agentic/claude-code) which pick their own model.")
     .option('-o, --output <format>', OUTPUT_FORMAT_DESCRIPTION, 'table')
     .option('-v, --verbose', 'Show detailed trajectory output')
-    .action(async (options: RunOptions & { testCase: string }) => {
+    .option('--agent-path <path>', 'Path to the agent repository to use as judge grounding context (or set AH_AGENT_PATH)')
+    .action(async (options: RunOptions & { testCase: string; agentPath?: string }) => {
       console.log(chalk.bold('\nAgent Health - Test Case Runner\n'));
+      applyAgentPathOption(options);
 
       // Load config (registers custom connectors)
       const config = await loadConfig();
