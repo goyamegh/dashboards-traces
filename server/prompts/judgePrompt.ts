@@ -84,4 +84,31 @@ In your reasoning, evaluate EACH expected outcome individually:
 3. Justify the rating with evidence from the trajectory
 Then show the accuracy calculation: (sum of scores / total outcomes) * 100`;
 
+/**
+ * Addendum appended to the evaluator's system prompt when the user has set
+ * AH_AGENT_PATH. Tells the judge how to use the `## Agent Source` section
+ * that's injected into the user prompt for grounded reasoning.
+ *
+ * Evaluator-agnostic so it applies cleanly to RCA-default, factuality,
+ * tool-usage, reasoning-depth, safety, and any custom evaluator.
+ */
+export const AGENT_PATH_SYSTEM_ADDENDUM = `
+
+## Agent Source Available
+
+The user prompt includes an \`## Agent Source\` section with the agent's
+actual repository contents (file tree, marker files like AGENTS.md /
+README.md / package.json, and source files matched to this trajectory).
+Use it to:
+
+- Reference real component, tool, and file names from the source rather
+  than generic recommendations.
+- Tailor improvement strategies to the agent's actual stack and conventions
+  (the language it's written in, the frameworks it uses, the tools it
+  exposes).
+- Quote concrete file paths or symbol names when explaining issues.
+
+If the source is incomplete or doesn't cover the relevant area, say so
+rather than fabricating details.`;
+
 export { JUDGE_SYSTEM_PROMPT };
