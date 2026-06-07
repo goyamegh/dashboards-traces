@@ -17,12 +17,17 @@
 
 import { spawn } from 'child_process';
 import { buildEvaluationPrompt, JudgeRequest, JudgeResponse } from '@/server/services/bedrockService';
-import { JUDGE_SYSTEM_PROMPT } from '@/server/prompts/judgePrompt';
+import { JUDGE_SYSTEM_PROMPT, AGENT_PATH_SYSTEM_ADDENDUM } from '@/server/prompts/judgePrompt';
 import { loadSkillContent } from '@/server/services/claudeCodeJudgeService';
 import { parseJudgeResponse as parseSharedJudgeResponse } from '@/server/services/judgeResponseParser';
 import { buildJudgeDebug } from '@/server/services/judgeDebug';
 import { Evaluator } from '@/types';
 import { debug } from '@/lib/debug';
+import {
+  getAgentPathForSpawn,
+  getAgentSourceForPrompt,
+  isAgentPathConfigured,
+} from '@/server/services/agentPath';
 
 // ============================================================================
 // Constants
@@ -120,13 +125,24 @@ async function evaluateWithClaudeCodeAgentic(
 ): Promise<JudgeResponse> {
   const { trajectory, expectedOutcomes, expectedTrajectory, logs } = request;
 
-  const userPrompt = buildEvaluationPrompt(trajectory, expectedOutcomes, expectedTrajectory, logs);
+  const agentSource = isAgentPathConfigured()
+    ? await getAgentSourceForPrompt({ trajectory, expectedOutcomes })
+    : null;
+
+  const userPrompt = buildEvaluationPrompt(
+    trajectory,
+    expectedOutcomes,
+    expectedTrajectory,
+    logs,
+    agentSource,
+  );
   const skillContent = loadSkillContent();
   const baseSystemPrompt =
     evaluator?.systemPrompt && evaluator.systemPrompt.trim().length > 0
       ? evaluator.systemPrompt
       : JUDGE_SYSTEM_PROMPT;
-  const systemPrompt = baseSystemPrompt + AGENTIC_JUDGE_ADDENDUM +
+  const agentPathAddendum = agentSource ? AGENT_PATH_SYSTEM_ADDENDUM : '';
+  const systemPrompt = baseSystemPrompt + AGENTIC_JUDGE_ADDENDUM + agentPathAddendum +
     (skillContent ? `\n\n---\n\n## Agent Health Reference\n\n${skillContent}` : '');
 
   const startTime = Date.now();
@@ -186,7 +202,7 @@ async function evaluateWithCustomEndpoint(
       expectedOutcomes: request.expectedOutcomes,
       expectedTrajectory: request.expectedTrajectory,
       logs: request.logs,
-      systemPrompt: baseSystemPrompt + AGENTIC_JUDGE_ADDENDUM,
+      systemPrompt: baseSystemPrompt + AGENTIC_JUDGE_ADDENDUM + (isAgentPathConfigured() ? AGENT_PATH_SYSTEM_ADDENDUM : ''),
     }),
     signal: AbortSignal.timeout(AGENTIC_TIMEOUT_MS),
   });
@@ -256,6 +272,7 @@ function spawnClaudeAgentic(prompt: string, systemPrompt: string): Promise<strin
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: AGENTIC_TIMEOUT_MS,
+      cwd: getAgentPathForSpawn() || undefined,
     });
 
     let stdout = '';

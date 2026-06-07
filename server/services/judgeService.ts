@@ -15,8 +15,10 @@ import { buildEvaluationPrompt, JudgeRequest, JudgeResponse } from './bedrockSer
 import { debug } from '@/lib/debug';
 import type { Evaluator } from '@/types';
 import { getDefaultEvaluator } from '@/server/prompts/evaluatorTemplates';
+import { AGENT_PATH_SYSTEM_ADDENDUM } from '@/server/prompts/judgePrompt';
 import { parseJudgeResponse } from '@/server/services/judgeResponseParser';
 import { buildJudgeDebug } from '@/server/services/judgeDebug';
+import { getAgentSourceForPrompt, isAgentPathConfigured } from '@/server/services/agentPath';
 
 // ============================================================================
 // Main Evaluation Function
@@ -45,7 +47,16 @@ export async function evaluateWithOpenAICompatible(
   debug('JudgeService', 'Model:', modelId);
   debug('JudgeService', 'Endpoint:', config.OPENAI_COMPATIBLE_ENDPOINT);
 
-  const userPrompt = buildEvaluationPrompt(trajectory, expectedOutcomes, expectedTrajectory, logs);
+  const agentSource = isAgentPathConfigured()
+    ? await getAgentSourceForPrompt({ trajectory, expectedOutcomes, modelId })
+    : null;
+  const userPrompt = buildEvaluationPrompt(
+    trajectory,
+    expectedOutcomes,
+    expectedTrajectory,
+    logs,
+    agentSource,
+  );
   debug('JudgeService', 'Prompt built, length:', userPrompt.length, 'characters');
 
   // Get inference config from evaluator with fallback defaults
@@ -55,7 +66,7 @@ export async function evaluateWithOpenAICompatible(
   const body = {
     model: modelId,
     messages: [
-      { role: 'system', content: effectiveEvaluator.systemPrompt },
+      { role: 'system', content: effectiveEvaluator.systemPrompt + (agentSource ? AGENT_PATH_SYSTEM_ADDENDUM : '') },
       { role: 'user', content: userPrompt },
     ],
     temperature,

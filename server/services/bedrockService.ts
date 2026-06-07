@@ -12,8 +12,10 @@ import config from '../config';
 import { TrajectoryStep, ImprovementStrategy, Evaluator, EvaluationMetrics } from '@/types';
 import { debug } from '@/lib/debug';
 import { getDefaultEvaluator } from '@/server/prompts/evaluatorTemplates';
+import { AGENT_PATH_SYSTEM_ADDENDUM } from '@/server/prompts/judgePrompt';
 import { parseJudgeResponse } from '@/server/services/judgeResponseParser';
 import { buildJudgeDebug } from '@/server/services/judgeDebug';
+import { getAgentSourceForPrompt, isAgentPathConfigured } from '@/server/services/agentPath';
 
 // ============================================================================
 // Types
@@ -132,13 +134,21 @@ export function compactTrajectory(trajectory: TrajectoryStep[]): TrajectoryStep[
 }
 
 /**
- * Build the evaluation prompt for the LLM judge
+ * Build the evaluation prompt for the LLM judge.
+ *
+ * If `agentSource` is non-null/non-empty, it is appended as an
+ * `## Agent Source` section so the judge can ground its reasoning in the
+ * user's actual agent codebase. Callers compute this asynchronously via
+ * `getAgentSourceForPrompt()` (which runs all three agent-path phases) and
+ * pass it in here; this function stays sync for use in tests and any
+ * caller that doesn't want agent-path injection.
  */
 export function buildEvaluationPrompt(
   trajectory: TrajectoryStep[],
   expectedOutcomes?: string[],
   expectedTrajectory?: any[],
-  logs?: any[]
+  logs?: any[],
+  agentSource?: string | null,
 ): string {
   // Compact trajectory to reduce size
   const compactedTrajectory = compactTrajectory(trajectory);
@@ -167,6 +177,10 @@ ${expectedJson}
     expectedSection = '## Expected Outcomes\nNo expected outcomes defined.';
   }
 
+  const agentSourceSection = agentSource && agentSource.trim().length > 0
+    ? `\n## Agent Source\n${agentSource}\n`
+    : '';
+
   return `# Evaluation Task
 
 ## Actual Agent Trajectory
@@ -180,7 +194,7 @@ ${expectedSection}
 \`\`\`json
 ${logsJson}
 \`\`\`
-
+${agentSourceSection}
 Please evaluate the agent's performance and provide your assessment in the JSON format specified.`;
 }
 
@@ -235,8 +249,24 @@ export async function evaluateTrajectory(
     });
   }
 
-  // Build evaluation prompt
-  const userPrompt = buildEvaluationPrompt(trajectory, expectedOutcomes, expectedTrajectory, logs);
+  // Build evaluation prompt — pull agent source for grounded reasoning when
+  // AH_AGENT_PATH is configured. Phase 3 (gather) uses the same model as the
+  // judge so the user doesn't need separate API credentials.
+  const agentSource = isAgentPathConfigured()
+    ? await getAgentSourceForPrompt({
+        trajectory,
+        expectedOutcomes,
+        modelId: effectiveModelId,
+      })
+    : null;
+
+  const userPrompt = buildEvaluationPrompt(
+    trajectory,
+    expectedOutcomes,
+    expectedTrajectory,
+    logs,
+    agentSource,
+  );
 
   debug('JudgeAPI', 'Prompt built, length:', userPrompt.length, 'characters');
 
@@ -255,7 +285,7 @@ export async function evaluateTrajectory(
         content: [{ text: userPrompt }],
       },
     ],
-    system: [{ text: effectiveEvaluator.systemPrompt }],
+    system: [{ text: effectiveEvaluator.systemPrompt + (agentSource ? AGENT_PATH_SYSTEM_ADDENDUM : '') }],
     inferenceConfig: {
       maxTokens,
       temperature,

@@ -13,12 +13,17 @@
 import { spawn } from 'child_process';
 import { readFileSync } from 'fs';
 import { buildEvaluationPrompt, JudgeRequest, JudgeResponse } from '@/server/services/bedrockService';
-import { JUDGE_SYSTEM_PROMPT } from '@/server/prompts/judgePrompt';
+import { JUDGE_SYSTEM_PROMPT, AGENT_PATH_SYSTEM_ADDENDUM } from '@/server/prompts/judgePrompt';
 import { parseJudgeResponse } from '@/server/services/judgeResponseParser';
 import { buildJudgeDebug } from '@/server/services/judgeDebug';
 import { Evaluator } from '@/types';
 import { debug } from '@/lib/debug';
 import { getSkillPath } from '@/lib/packagePaths';
+import {
+  getAgentPathForSpawn,
+  getAgentSourceForPrompt,
+  isAgentPathConfigured,
+} from '@/server/services/agentPath';
 
 // ============================================================================
 // Constants
@@ -59,6 +64,9 @@ export function loadSkillContent(): string {
  *
  * The AGENT_HEALTH.md skill is appended in either case so the judge keeps
  * its operational reference material regardless of the saved prompt.
+ *
+ * When AH_AGENT_PATH is configured, the agent-path addendum is appended so
+ * the judge knows to ground reasoning in the user's agent source.
  */
 export function buildSystemPrompt(evaluator?: Evaluator): string {
   const base =
@@ -66,10 +74,11 @@ export function buildSystemPrompt(evaluator?: Evaluator): string {
       ? evaluator.systemPrompt
       : JUDGE_SYSTEM_PROMPT;
   const skillContent = loadSkillContent();
+  const agentPathAddendum = isAgentPathConfigured() ? AGENT_PATH_SYSTEM_ADDENDUM : '';
   if (skillContent) {
-    return `${base}\n\n---\n\n## Agent Health Reference\n\n${skillContent}`;
+    return `${base}${agentPathAddendum}\n\n---\n\n## Agent Health Reference\n\n${skillContent}`;
   }
-  return base;
+  return base + agentPathAddendum;
 }
 
 // ============================================================================
@@ -100,7 +109,20 @@ export async function evaluateWithClaudeCode(
   debug('ClaudeCodeJudge', 'Expected outcomes:', expectedOutcomes?.length || 0);
   debug('ClaudeCodeJudge', 'Evaluator:', evaluator ? `${evaluator.name} (${evaluator.id})` : '(none, using default prompt)');
 
-  const userPrompt = buildEvaluationPrompt(trajectory, expectedOutcomes, expectedTrajectory, logs);
+  // Pull agent source when AH_AGENT_PATH is configured. The spawned claude
+  // CLI will additionally have cwd: agentPath set so it can browse files
+  // on demand for any context the injected snapshot doesn't cover.
+  const agentSource = isAgentPathConfigured()
+    ? await getAgentSourceForPrompt({ trajectory, expectedOutcomes })
+    : null;
+
+  const userPrompt = buildEvaluationPrompt(
+    trajectory,
+    expectedOutcomes,
+    expectedTrajectory,
+    logs,
+    agentSource,
+  );
   debug('ClaudeCodeJudge', 'Prompt built, length:', userPrompt.length, 'characters');
 
   const systemPrompt = buildSystemPrompt(evaluator);
@@ -173,6 +195,11 @@ function spawnClaude(prompt: string, systemPrompt: string): Promise<string> {
       env,
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: CLAUDE_TIMEOUT_MS,
+      // When AH_AGENT_PATH is configured, run the spawned claude CLI with
+      // the agent path as its CWD so the model can use Read/Grep/Glob to
+      // explore the user's repo on demand. Falls back to inheriting the
+      // current process CWD when the env var is not set.
+      cwd: getAgentPathForSpawn() || undefined,
     });
 
     let stdout = '';
