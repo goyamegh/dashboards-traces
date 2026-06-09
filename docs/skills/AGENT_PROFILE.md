@@ -84,7 +84,7 @@ any reasoner.)
 
 ```jsonc
 {
-  "session":   { "sessionId", "serviceName", "spanCount", "trajectorySteps", "durationMs", "tokens" },
+  "session":   { "sessionId", "serviceName", "traceIds", "spanCount", "trajectorySteps", "durationMs", "tokens" },
   "evaluator": { "id", "name", "systemPrompt", "metrics", "passThreshold" },
   "signals":   [ { "id", "title", "severity", "count", "evidence" } ],
   "trajectory":[ /* TrajectoryStep[] reconstructed from spans */ ],
