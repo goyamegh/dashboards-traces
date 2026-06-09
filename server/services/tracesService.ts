@@ -267,9 +267,20 @@ export async function fetchTraces(
   }
 
   if (runIds && runIds.length > 0) {
-    sink.push({
-      terms: { 'span.attributes.gen_ai@request@id': runIds }
-    });
+    // Filter out null/undefined/empty before building the terms clause.
+    // A `terms` query with `[null]` makes OpenSearch reject the ENTIRE
+    // request (`x_content_parse_exception: No value specified for terms
+    // query`), which zeroes out the whole result — including any unioned
+    // Strategy C (agents) clause. This bit the run-detail Traces tab for
+    // runs whose `runId` wasn't persisted (deferred trace-mode path):
+    // fetchTracesForRun sent `runIds: [undefined]` and the tab showed 0
+    // spans even though the time-window fallback would have returned them.
+    const validRunIds = runIds.filter((id): id is string => typeof id === 'string' && id.length > 0);
+    if (validRunIds.length > 0) {
+      sink.push({
+        terms: { 'span.attributes.gen_ai@request@id': validRunIds }
+      });
+    }
   }
 
   if (agents && agents.length > 0) {

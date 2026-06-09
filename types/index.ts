@@ -441,6 +441,17 @@ export interface TestCaseRun {
   agentKey?: string;
   modelName: string;
   modelId?: string;
+  /**
+   * Optional judge model id, separate from {@link modelId} (which is the
+   * agent's LLM). Set explicitly via the run config (UI dropdown / CLI
+   * `--judge-model` / API `judgeModelId` field) or left unset to fall back
+   * to the evaluator's `inferenceConfig.modelId`, then the server-default
+   * Bedrock judge model. For agentic providers (`pi`, `agent`, `agentic`,
+   * `claude-code`) the value is informational — the provider picks its own
+   * model from its credentialed registry. Stored on the run document so the
+   * "Judge debug" surface and audit trail show which judge model was used.
+   */
+  judgeModelId?: string;
   agentEndpoint?: string;
   evaluatorId?: string;              // Which evaluator was used (optional for backwards compatibility)
 
@@ -461,6 +472,18 @@ export interface TestCaseRun {
   llmJudgeReasoning: string;
   improvementStrategies?: ImprovementStrategy[];
   llmJudgeResponse?: LLMJudgeResponse; // Storage: Raw Bedrock judge response
+  /**
+   * W3C OTel trace id (32 hex). Stamped onto the run document at save time
+   * when polled spans expose one, used as the strongest correlation key for
+   * the run-detail Traces tab and the agent (trace) judge's `query_spans`
+   * tool. See #190 (this field as a top-level shortcut over re-extracting
+   * from `spans[0]`) and #264 (unified trace correlation strategies).
+   *
+   * Distinct from {@link runId} (the connector's run id, e.g.
+   * `subprocess-<timestamp>`); pre-fix the runner mis-stamped runId here
+   * which broke `traceId`-based queries.
+   */
+  traceId?: string;
   openSearchLogs?: OpenSearchLog[]; // Storage: Persisted logs (alternative to logs)
   annotations?: RunAnnotation[]; // Storage: User notes on this run
   runId?: string; // Agent's run ID from AG UI events (for log correlation)
@@ -955,7 +978,15 @@ export interface BenchmarkRun {
   // Configuration snapshot
   agentKey: string;                // Reference to AgentConfig.key
   agentEndpoint?: string;          // Override agent endpoint (optional)
-  modelId: string;                 // Model to use (also determines judge provider)
+  modelId: string;                 // Agent's LLM (passed to the connector)
+  /**
+   * Optional judge model id, distinct from {@link modelId} (the agent's
+   * LLM). Customer input via the run config dialog / CLI `--judge-model` /
+   * API. Falls back to `evaluator.inferenceConfig.modelId`, then the
+   * server-default Bedrock judge model. Ignored by agentic providers
+   * (`pi`, `agent`, `agentic`, `claude-code`) which pick their own model.
+   */
+  judgeModelId?: string;
   evaluatorId?: string;            // Evaluator to use for judging (optional, defaults to RCA Default)
   headers?: Record<string, string>; // Custom headers
   concurrency?: number;              // Parallel test case execution limit (1 = sequential, default)
@@ -1065,6 +1096,11 @@ export interface EvaluationRun {
   agentKey: string;
   agentEndpoint?: string;
   modelId: string;
+  /**
+   * Optional judge model id, distinct from {@link modelId} (the agent's
+   * LLM). Same precedence rules as on {@link BenchmarkRun.judgeModelId}.
+   */
+  judgeModelId?: string;
   evaluatorId?: string;
   headers?: Record<string, string>;
   concurrency?: number;
@@ -1158,7 +1194,7 @@ export interface TestCaseComparisonRow {
 
 // Derived type for creating new benchmark runs - stays in sync with BenchmarkRun
 export type RunConfigInput = Pick<BenchmarkRun,
-  'name' | 'description' | 'agentKey' | 'modelId' | 'agentEndpoint' | 'headers' | 'concurrency' | 'evaluatorId'
+  'name' | 'description' | 'agentKey' | 'modelId' | 'judgeModelId' | 'agentEndpoint' | 'headers' | 'concurrency' | 'evaluatorId'
 >;
 
 // ============ Server/API Types ============

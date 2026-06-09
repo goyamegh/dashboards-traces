@@ -1118,7 +1118,11 @@ describe('Experiment Runner', () => {
         status: 'completed',
         passFailStatus: 'passed',
         llmJudgeReasoning: 'Good job',
-        traceId: 'trace-123',
+        // The connector's runId is now persisted as `runId` (Strategy B
+        // trace correlation), NOT mis-stamped into `traceId`. `traceId`
+        // stays undefined until a real W3C trace id is available from
+        // polled spans. See #190 / #264.
+        runId: 'trace-123',
       }));
       expect(mockRunsCreate).not.toHaveBeenCalled();
     });
@@ -1327,7 +1331,13 @@ describe('Experiment Runner', () => {
         }),
         [],
         expect.any(Function),
-        'anthropic.claude-3-sonnet-20240229-v1:0'
+        'anthropic.claude-3-sonnet-20240229-v1:0',
+        // evaluatorId (undefined in this fixture), runId, and the Strategy C
+        // `agents` hints are now forwarded so the agent (trace) judge can
+        // scope its query_spans/query_logs tools. See #264.
+        undefined,
+        expect.any(String),
+        expect.any(Array)
       );
 
       expect(mockUpdateRunWithClient).toHaveBeenCalledWith(mockClient, 'saved-report-1', expect.objectContaining({

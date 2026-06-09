@@ -203,7 +203,7 @@ export async function evaluateWithPiAgenticTrace(
   request: JudgeRequest,
   evaluator?: Evaluator
 ): Promise<JudgeResponse> {
-  const { trajectory, expectedOutcomes, expectedTrajectory, logs, runId } = request;
+  const { trajectory, expectedOutcomes, expectedTrajectory, logs, runId, agents } = request;
 
   debug('AgentJudge', '========== AGENT TRACE JUDGE (in-process) ==========');
   debug('AgentJudge', 'runId:', runId ?? '(none)', 'trajectory steps:', trajectory.length);
@@ -243,7 +243,7 @@ export async function evaluateWithPiAgenticTrace(
     agentDir: getAgentDir(),
     systemPromptOverride: () => systemPrompt,
     appendSystemPromptOverride: () => [],
-    extensionFactories: [createTraceJudgeExtension(runId, serverUrl)],
+    extensionFactories: [createTraceJudgeExtension(runId, serverUrl, agents)],
   });
   await resourceLoader.reload();
 

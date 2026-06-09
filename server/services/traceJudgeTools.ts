@@ -25,8 +25,19 @@ function textResult(obj: unknown) {
  * Build an extension factory that registers the run-scoped trace tools.
  * @param runId   the single run the tools are hard-scoped to (closure, not a tool param)
  * @param serverUrl base URL of this Agent Health server (reuses /api/traces, /api/logs)
+ * @param agents  optional Strategy C correlation hints (service.name + time-window).
+ *                When the agent's instrumentation doesn't share `gen_ai.request.id`
+ *                with agent-health's runId (e.g. claude-code emits its own session
+ *                ids), Strategy B alone returns just the eval span. Forwarding
+ *                `agents` lets `/api/traces` union Strategy B (runIds) with
+ *                Strategy C (service.name within the run's wall-clock window) so
+ *                the judge actually sees the agent's emitted spans. See #264.
  */
-export function createTraceJudgeExtension(runId: string | undefined, serverUrl: string): PiExtensionFactory {
+export function createTraceJudgeExtension(
+  runId: string | undefined,
+  serverUrl: string,
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>
+): PiExtensionFactory {
   return (pi: PiExtensionAPI) => {
     pi.registerTool({
       name: 'query_spans',
@@ -53,10 +64,24 @@ export function createTraceJudgeExtension(runId: string | undefined, serverUrl: 
           return textResult({ error: 'No run id available — trace tools are disabled for this judge invocation.' });
         }
         try {
+          // Send Strategy B (runIds) AND Strategy C (agents: service.name +
+          // time-window) together. The /api/traces route unions them via
+          // bool.should so a span matching EITHER comes back without
+          // duplication. Without `agents`, claude-code's instrumentation
+          // (which doesn't stamp gen_ai.request.id with agent-health's
+          // runId) is invisible to the judge — leaving the judge to
+          // reason from the trajectory text alone.
+          const body: Record<string, unknown> = {
+            runIds: [runId],
+            size: 500,
+          };
+          if (agents && agents.length > 0) {
+            body.agents = agents;
+          }
           const res = await fetch(`${serverUrl}/api/traces`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ runIds: [runId], size: 500 }),
+            body: JSON.stringify(body),
           });
           if (!res.ok) {
             return textResult({ error: `traces query failed: HTTP ${res.status}` });

@@ -36,6 +36,16 @@ export interface JudgeRequest {
    * agent trace judge to select the matching in-process pi model.
    */
   modelId?: string;
+  /**
+   * Optional time-window/service-name correlation hints for the agent
+   * (trace) judge. Pre-fix `traceJudgeTools` queried `/api/traces` with
+   * just `runIds: [runId]` (Strategy B), which only matches spans the
+   * agent emits with `gen_ai.request.id = runId` — i.e. agent-health's
+   * own eval-emitter spans, NOT the subprocess agent's instrumentation.
+   * Forwarding `agents` lets the tool union Strategy C (service.name +
+   * time-window) so claude-code's emitted spans are findable. See #264.
+   */
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>;
 }
 
 export interface JudgeResponse {

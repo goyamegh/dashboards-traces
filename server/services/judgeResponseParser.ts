@@ -41,11 +41,16 @@ import { debug } from '@/lib/debug';
  * outputs. Anything outside this set is stuffed into `extraFields`. Keep this
  * in sync with the JSON schema each judge system prompt asks the model to
  * emit (see `server/prompts/judgePrompt.ts`).
+ *
+ * `scores` is included so a rubric-style prompt that emits
+ * `"scores": { "tool_correctness": 80, ... }` doesn't double-surface those
+ * values — they're already pulled into `metrics` by name in extractMetrics.
  */
 const TYPED_RESPONSE_KEYS = new Set([
   'pass_fail_status',
   'reasoning',
   'metrics',
+  'scores',
   'improvement_strategies',
   // Legacy: old prompts emit these at the top level instead of under `metrics`.
   'accuracy',
@@ -100,7 +105,21 @@ function extractMetrics(parsed: any, evaluator: Evaluator | undefined, source: s
   // Provider-specific dynamic extraction when an evaluator is provided.
   if (evaluator?.scoringConfig?.metrics?.length) {
     for (const def of evaluator.scoringConfig.metrics) {
-      const v = coerceNumber(parsed?.[def.name] ?? parsed?.metrics?.[def.name]);
+      // Look for the declared metric in three places, in priority order:
+      //   1. top-level `parsed[name]` — the simplest shape we ask for in
+      //      the default judge prompt.
+      //   2. `parsed.metrics[name]` — the legacy nested shape every
+      //      built-in template still uses.
+      //   3. `parsed.scores[name]` — a common shape in user-authored
+      //      rubric-style prompts (see the AES Oncall evaluator), where
+      //      individual dimension scores live under a `scores` object.
+      // Without (3) a custom prompt that says `"scores": { "tool_correctness": 80, ... }`
+      // would parse into `metrics: {}` even though the values are clearly there.
+      const v = coerceNumber(
+        parsed?.[def.name] ??
+        parsed?.metrics?.[def.name] ??
+        parsed?.scores?.[def.name]
+      );
       if (v !== undefined) {
         metrics[def.name] = v;
       } else {
@@ -148,17 +167,30 @@ function extractExtraFields(parsed: any, evaluator: Evaluator | undefined): Reco
     if (declaredMetricNames.has(key)) continue;
     extra[key] = value;
   }
-  // Surface unmapped metrics: anything inside `metrics` that's neither a
-  // legacy key nor declared by the evaluator is "stuff the model invented".
-  if (parsed.metrics && typeof parsed.metrics === 'object') {
-    const unmapped: Record<string, unknown> = {};
-    for (const [k, v] of Object.entries(parsed.metrics)) {
-      if (declaredMetricNames.has(k)) continue;
-      if (['accuracy', 'faithfulness', 'latency_score', 'trajectory_alignment_score'].includes(k)) continue;
-      unmapped[k] = v;
-    }
-    if (Object.keys(unmapped).length > 0) {
-      extra.metrics_unmapped = unmapped;
+  // Surface unmapped metrics: anything inside `metrics` or `scores` that's
+  // neither a legacy key nor declared by the evaluator is "stuff the model
+  // invented". Both shapes (nested `metrics`, rubric-style `scores`) get the
+  // same treatment.
+  const declaredAndLegacy = new Set([
+    ...declaredMetricNames,
+    'accuracy',
+    'faithfulness',
+    'latency_score',
+    'trajectory_alignment_score',
+  ]);
+  for (const subKey of ['metrics', 'scores'] as const) {
+    const sub = parsed[subKey];
+    if (sub && typeof sub === 'object') {
+      const unmapped: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(sub)) {
+        if (declaredAndLegacy.has(k)) continue;
+        unmapped[k] = v;
+      }
+      if (Object.keys(unmapped).length > 0) {
+        // Keyed under e.g. `metrics_unmapped` or `scores_unmapped` so the
+        // UI can show which sub-object the model used.
+        extra[`${subKey}_unmapped`] = unmapped;
+      }
     }
   }
   return Object.keys(extra).length > 0 ? extra : undefined;

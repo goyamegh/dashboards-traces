@@ -81,7 +81,7 @@ router.get('/api/storage/evaluation-runs/:id', async (req: Request, res: Respons
 // POST /api/storage/evaluation-runs - Create and execute an evaluation run (SSE streaming)
 router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) => {
   try {
-    const { sources, agentKey, modelId, name, evaluatorId, concurrency, benchmarkId, trigger } = req.body;
+    const { sources, agentKey, modelId, judgeModelId, name, evaluatorId, concurrency, benchmarkId, trigger } = req.body;
 
     // Validate required fields
     if (!sources || !Array.isArray(sources) || sources.length === 0) {
@@ -138,6 +138,10 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       sources,
       agentKey,
       modelId,
+      // Customer-supplied judge model id (separate from agent's `modelId`).
+      // Forwarded onto the run document so the runner reads it and the UI
+      // can show which judge model graded each test case in this run.
+      judgeModelId: typeof judgeModelId === 'string' && judgeModelId ? judgeModelId : undefined,
       evaluatorId,
       concurrency,
       benchmarkId,

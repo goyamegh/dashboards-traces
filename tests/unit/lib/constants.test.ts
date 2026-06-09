@@ -141,37 +141,20 @@ describe('lib/constants', () => {
         expect(model.max_output_tokens).toBe(64000);
       });
 
-      it('should have claude-opus-4.5 model', () => {
-        const model = DEFAULT_CONFIG.models['claude-opus-4.5'];
+      it('should have claude-opus-4.8 model', () => {
+        const model = DEFAULT_CONFIG.models['claude-opus-4.8'];
         expect(model).toBeDefined();
-        expect(model.model_id).toBe('us.anthropic.claude-opus-4-5-20251101-v1:0');
-        expect(model.display_name).toBe('Claude Opus 4.5');
-        expect(model.max_output_tokens).toBe(64000);
+        expect(model.model_id).toBe('us.anthropic.claude-opus-4-8-v1');
+        expect(model.display_name).toBe('Claude Opus 4.8');
+        expect(model.max_output_tokens).toBe(128000);
       });
 
-      it('should have claude-opus-4.1 model', () => {
-        const model = DEFAULT_CONFIG.models['claude-opus-4.1'];
+      it('should have claude-opus-4.7 model', () => {
+        const model = DEFAULT_CONFIG.models['claude-opus-4.7'];
         expect(model).toBeDefined();
-        expect(model.model_id).toBe('us.anthropic.claude-opus-4-1-20250805-v1:0');
-        expect(model.display_name).toBe('Claude Opus 4.1');
-        expect(model.max_output_tokens).toBe(32000);
-      });
-
-      it('should have claude-opus-4 model', () => {
-        const model = DEFAULT_CONFIG.models['claude-opus-4'];
-        expect(model).toBeDefined();
-        expect(model.model_id).toBe('us.anthropic.claude-opus-4-20250514-v1:0');
-        expect(model.display_name).toBe('Claude Opus 4');
-        expect(model.max_output_tokens).toBe(32000);
-      });
-
-      it('should have claude-sonnet-4 model', () => {
-        const model = DEFAULT_CONFIG.models['claude-sonnet-4'];
-        expect(model).toBeDefined();
-        expect(model.model_id).toContain('claude-sonnet-4');
-        expect(model.display_name).toBe('Claude Sonnet 4');
-        expect(model.context_window).toBe(200000);
-        expect(model.max_output_tokens).toBeGreaterThan(0);
+        expect(model.model_id).toBe('us.anthropic.claude-opus-4-7-v1');
+        expect(model.display_name).toBe('Claude Opus 4.7');
+        expect(model.max_output_tokens).toBe(128000);
       });
 
       it('should have claude-sonnet-4.5 model', () => {
@@ -180,11 +163,11 @@ describe('lib/constants', () => {
         expect(model.display_name).toBe('Claude Sonnet 4.5');
       });
 
-      it('should have claude-haiku-3.5 model', () => {
-        const model = DEFAULT_CONFIG.models['claude-haiku-3.5'];
-        expect(model).toBeDefined();
-        expect(model.display_name).toBe('Claude Haiku 3.5');
-      });
+      // Note: claude-opus-4.5 / 4.1 / 4, claude-sonnet-4, and claude-haiku-3.5
+      // were removed from the default catalog (trimmed list — newest tiers
+      // only). Discovery still surfaces any Bedrock model the account has
+      // access to via /api/judge/bedrock-models; the static catalog just
+      // seeds the dropdown with current models.
 
       it('should have valid model structure', () => {
         Object.entries(DEFAULT_CONFIG.models).forEach(([key, model]) => {

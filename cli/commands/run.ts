@@ -29,6 +29,13 @@ interface RunOptions {
   agent: string[];
   model?: string;
   evaluator?: string;
+  /**
+   * Optional judge model id, distinct from `model` (the agent's LLM).
+   * Wired via `--judge-model <id>`. Forwarded as `judgeModelId` on the
+   * `/api/evaluate` request body. Falls back server-side to the
+   * evaluator's `inferenceConfig.modelId`, then `BEDROCK_MODEL_ID` env.
+   */
+  judgeModel?: string;
   output: string;
   verbose?: boolean;
 }
@@ -96,7 +103,8 @@ async function runForAgent(
   agent: AgentConfig,
   modelId: string,
   verbose: boolean,
-  evaluatorId?: string
+  evaluatorId?: string,
+  judgeModelId?: string
 ): Promise<EvaluationResult | null> {
   const spinner = ora(`Running ${agent.name}...`).start();
 
@@ -112,7 +120,8 @@ async function runForAgent(
           spinner.text = `${agent.name}: Started evaluation...`;
         }
       },
-      evaluatorId
+      evaluatorId,
+      judgeModelId
     );
 
     if (report.status === 'completed' && report.passFailStatus === 'passed') {
@@ -200,8 +209,9 @@ export function createRunCommand(): Command {
     .description('Run a test case against agents')
     .requiredOption('-t, --test-case <id>', 'Test case ID or name')
     .option('-a, --agent <key>', 'Agent key (can be specified multiple times)', (val, arr: string[]) => [...arr, val], [])
-    .option('-m, --model <id>', 'Model ID (uses agent default if not specified)')
+    .option('-m, --model <id>', "Agent's LLM model id (uses agent default if not specified)")
     .option('-e, --evaluator <id>', 'Evaluator ID (uses RCA default if not specified)')
+    .option('--judge-model <id>', "Judge LLM model id, distinct from --model. Falls back to evaluator's inferenceConfig.modelId, then BEDROCK_MODEL_ID env. Ignored by agentic-provider judges (pi/agent/agentic/claude-code) which pick their own model.")
     .option('-o, --output <format>', OUTPUT_FORMAT_DESCRIPTION, 'table')
     .option('-v, --verbose', 'Show detailed trajectory output')
     .action(async (options: RunOptions & { testCase: string }) => {
@@ -272,7 +282,7 @@ export function createRunCommand(): Command {
           }
 
           try {
-            const report = await runForAgent(client, testCase.id, agent, modelId, options.verbose || false, options.evaluator);
+            const report = await runForAgent(client, testCase.id, agent, modelId, options.verbose || false, options.evaluator, options.judgeModel);
             results.push({ agent, report });
           } catch (error) {
             const errorMsg = error instanceof Error ? error.message : String(error);

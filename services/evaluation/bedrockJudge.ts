@@ -54,6 +54,18 @@ interface ExpectedBehavior {
  * @param logs - Optional OpenSearch logs
  * @param onProgress - Optional progress callback
  * @param modelId - Model ID for judge evaluation (determines provider routing)
+ * @param evaluatorId - Optional saved evaluator id (resolves the system prompt server-side)
+ * @param runId - Agent run id. Forwarded so the `agent` (trace) judge provider's
+ *   read-only `query_spans` / `query_logs` tools can scope to this single run.
+ *   Without it the route 400s with `runId is required for the agent (trace)
+ *   judge provider`. For other providers it's ignored. Pre-fix the runner
+ *   never forwarded this even when known on the report, so picking the
+ *   `agent-trace-judge` model from the UI Judge Model dropdown always
+ *   failed at the route layer.
+ * @param agents - Optional Strategy C correlation hints (service.name +
+ *   time-window) for the agent (trace) judge. The trace tool unions
+ *   Strategy B (`runIds`) with these so spans the agent emits under its
+ *   own correlation (claude-code's session id, etc.) are findable. See #264.
  */
 export async function callBedrockJudge(
   trajectory: TrajectoryStep[],
@@ -61,7 +73,9 @@ export async function callBedrockJudge(
   logs?: OpenSearchLog[],
   onProgress?: (chunk: string) => void,
   modelId?: string,
-  evaluatorId?: string
+  evaluatorId?: string,
+  runId?: string,
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>
 ): Promise<JudgeResult> {
   const maxRetries = 10;
   const baseDelay = 1000; // 1 second
@@ -94,6 +108,15 @@ export async function callBedrockJudge(
           logs,
           modelId,
           ...(evaluatorId ? { evaluatorId } : {}),
+          // Forward runId so /api/judge can route to the `agent` (trace)
+          // provider — its tools require this to scope. Other providers
+          // ignore it.
+          ...(runId ? { runId } : {}),
+          // Forward Strategy C correlation hints (#264) so the agent (trace)
+          // judge tool can find spans the agent emits under its OWN
+          // correlation (claude-code's session id, etc.), not just spans
+          // that share agent-health's runId via gen_ai.request.id.
+          ...(agents && agents.length > 0 ? { agents } : {}),
         }),
       });
 

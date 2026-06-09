@@ -174,7 +174,7 @@ router.get('/api/judge/bedrock-models', async (_req: Request, res: Response) => 
  */
 router.post('/api/judge', async (req: Request, res: Response) => {
   try {
-    const { trajectory, expectedOutcomes, expectedTrajectory, logs, modelId, evaluatorId, runId } = req.body;
+    const { trajectory, expectedOutcomes, expectedTrajectory, logs, modelId, evaluatorId, runId, agents } = req.body;
 
     // Validate required fields
     if (!trajectory || !Array.isArray(trajectory) || trajectory.length === 0) {
@@ -301,7 +301,7 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       // inside the service so the judge always knows query_spans/query_logs
       // exist).
       const result = await evaluateWithPiAgenticTrace(
-        { trajectory, expectedOutcomes, expectedTrajectory, logs, runId, modelId: resolvedModelId },
+        { trajectory, expectedOutcomes, expectedTrajectory, logs, runId, modelId: resolvedModelId, agents },
         evaluator
       );
       return res.json(result);

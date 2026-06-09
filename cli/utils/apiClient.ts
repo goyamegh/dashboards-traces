@@ -593,12 +593,21 @@ export class ApiClient {
     agentKey: string,
     modelId: string,
     onProgress?: (event: EvaluationProgressEvent) => void,
-    evaluatorId?: string
+    evaluatorId?: string,
+    judgeModelId?: string
   ): Promise<EvaluationResult> {
     const res = await fetch(`${this.baseUrl}/api/evaluate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ testCaseId, agentKey, modelId, evaluatorId }),
+      body: JSON.stringify({
+        testCaseId,
+        agentKey,
+        modelId,
+        evaluatorId,
+        // Customer-supplied judge model id, distinct from `modelId` (the
+        // agent's LLM). When unset the server defaults to BEDROCK_MODEL_ID.
+        ...(judgeModelId ? { judgeModelId } : {}),
+      }),
     });
 
     if (!res.ok) {

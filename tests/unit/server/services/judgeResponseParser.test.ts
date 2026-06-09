@@ -101,6 +101,29 @@ describe('judgeResponseParser', () => {
         expect(out.metrics.custom_score).toBe(72);
       });
 
+      it('extracts metrics from a rubric-style `scores` object', () => {
+        // The AES Oncall evaluator (and other rubric-style judges) emit
+        // dimension scores under a `scores` key. Without this fallback the
+        // declared metrics would be silently missing even though the values
+        // are clearly in the JSON.
+        const evaluator = makeEvaluator(['tool_correctness', 'diagnostic_completeness']);
+        const raw = JSON.stringify({
+          pass_fail_status: 'failed',
+          reasoning: 'r',
+          scores: { tool_correctness: 30, diagnostic_completeness: 40, calibration: 60 },
+          weighted_score: 35,
+        });
+        const out = parseJudgeResponse(raw, { evaluator });
+        expect(out.metrics.tool_correctness).toBe(30);
+        expect(out.metrics.diagnostic_completeness).toBe(40);
+        // `calibration` wasn't declared so it lands in extraFields.scores_unmapped,
+        // not in `metrics`.
+        expect(out.metrics).not.toHaveProperty('calibration');
+        expect(out.extraFields?.scores_unmapped).toEqual({ calibration: 60 });
+        // `weighted_score` is a typical extra field on rubric prompts.
+        expect(out.extraFields?.weighted_score).toBe(35);
+      });
+
       it('drops missing metrics silently (does not synthesize a 0)', () => {
         // If the model didn't emit a metric, downstream UIs need to be able
         // to tell the difference between "scored 0" and "didn't score". We
