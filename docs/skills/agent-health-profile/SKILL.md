@@ -25,7 +25,9 @@ When the user asks to profile/improve the agent (or runs `/agent-health:profile`
    - the codebase in the current working directory.
 
 4. Produce a prioritized list of concrete edits. For each: the file, the change,
-   why (tie it to a signal or a rubric criterion), and a priority.
+   why (tie it to a signal or a rubric criterion), a priority, and **cite the
+   evidence** — the signal that triggered it and the session's `traceIds`
+   (open them in the Traces tab to verify).
 
 5. Apply the edits on a new branch (never the working tree directly), then
    summarize the diff for the user to review.

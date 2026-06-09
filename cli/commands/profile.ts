@@ -164,6 +164,10 @@ export function createProfileCommand(): Command {
           session: {
             sessionId,
             serviceName: observedService,
+            // Distinct trace ids in this session — the anchor for verified
+            // evidence: open these in the Agent Health Traces tab to confirm a
+            // finding (a Claude Code session can span multiple traces).
+            traceIds: [...new Set(spans.map(s => s.traceId).filter(Boolean))],
             spanCount: spans.length,
             trajectorySteps: trajectory.length,
             durationMs,
@@ -184,7 +188,8 @@ export function createProfileCommand(): Command {
             '  (a) the trajectory below, (b) the signals, (c) the CURRENT CHAT you already have,',
             '  and (d) the codebase in the current working directory.',
             'Produce a prioritized list of concrete edits. For each: the file to change,',
-            'what to change, why (tie it to a signal or rubric criterion), and priority.',
+            'what to change, why (tie it to a signal or rubric criterion + cite the evidence:',
+            'the session.traceIds / the signal that triggered it), and priority.',
             'Make minimal, generalizable changes on a branch — do not edit the working tree directly.',
           ].join('\n'),
         };
