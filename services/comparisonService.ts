@@ -166,6 +166,10 @@ export function buildTestCaseComparisonRows(
         reportId: report.id,
         status: runResult.status === 'completed' ? 'completed' : 'failed',
         passFailStatus: report.passFailStatus,
+        // Issue #242: surface evaluator-error reports so the comparison
+        // surface (MetricCell) can light up the amber `Errored` chip
+        // instead of conflating with `Failed`.
+        errored: report.metricsStatus === 'error',
         accuracy: report.metrics.accuracy,
         faithfulness: report.metrics.faithfulness,
         trajectoryAlignment: report.metrics.trajectory_alignment_score,

@@ -18,7 +18,7 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Loader2, ChevronDown, ChevronRight, Calendar, Ban,
+  Loader2, ChevronDown, ChevronRight, Calendar, Ban, AlertTriangle,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -113,6 +113,10 @@ export const BenchmarkRunDetailPage: React.FC = () => {
   // Stats
   const passCount = results.filter(r => r.status === 'passed').length;
   const failCount = results.filter(r => r.status === 'failed').length;
+  // Issue #242: errored runs (evaluator could not produce a verdict) are
+  // bucketed separately and excluded from the pass-rate denominator so a
+  // misconfigured judge can't drag the score to 0%.
+  const erroredCount = results.filter(r => r.status === 'errored').length;
   const totalCount = results.length;
   const judgedCount = passCount + failCount;
   const passRate = judgedCount > 0 ? Math.round((passCount / judgedCount) * 100) : 0;
@@ -189,6 +193,18 @@ export const BenchmarkRunDetailPage: React.FC = () => {
                   <div className="text-lg font-bold text-red-500">{failCount}</div>
                   <div className="text-[10px] text-muted-foreground">Failed</div>
                 </div>
+                {erroredCount > 0 && (
+                  <div
+                    className="text-center"
+                    title="Evaluator could not produce a verdict (e.g. judge validation error). Excluded from pass-rate."
+                  >
+                    <div className="text-lg font-bold text-amber-500 flex items-center gap-1 justify-center">
+                      <AlertTriangle size={14} />
+                      {erroredCount}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">Errored</div>
+                  </div>
+                )}
                 <div className="text-center">
                   <div className="text-lg font-bold">{passRate}%</div>
                   <div className="text-[10px] text-muted-foreground">Pass Rate</div>

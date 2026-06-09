@@ -78,6 +78,8 @@ interface RunRow {
   agentName: string;
   passed: number;
   failed: number;
+  /** Issue #242: evaluator-error runs counted separately from `failed`. */
+  errored: number;
   total: number;
 }
 
@@ -100,9 +102,15 @@ function SortHeader({ label, active, dir, onClick, className }: {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function computeRunStats(run: BenchmarkRun): { passed: number; failed: number; total: number } {
+function computeRunStats(run: BenchmarkRun): { passed: number; failed: number; errored: number; total: number } {
   if (run.stats && run.stats.total > 0) {
-    return { passed: run.stats.passed, failed: run.stats.failed, total: run.stats.total };
+    return {
+      passed: run.stats.passed,
+      failed: run.stats.failed,
+      // `errored` is optional on older stored runs (issue #242).
+      errored: run.stats.errored ?? 0,
+      total: run.stats.total,
+    };
   }
   const results = Object.values(run.results || {});
   let passed = 0, failed = 0;
@@ -111,7 +119,9 @@ function computeRunStats(run: BenchmarkRun): { passed: number; failed: number; t
     else if (r.status === 'failed' || r.status === 'cancelled') failed++;
   }
   const total = results.length;
-  return { passed, failed, total };
+  // Result-status fallback can't distinguish errored without the report;
+  // 0 is the safe default and stats refresh on next load will populate it.
+  return { passed, failed, errored: 0, total };
 }
 
 // ─── Main Component ──────────────────────────────────────────────────────────
@@ -579,6 +589,15 @@ export const EvalRunsPage: React.FC = () => {
             <span className="text-green-500 font-medium">{rr.passed}</span>
             <span className="text-muted-foreground">/</span>
             <span className="text-red-500 font-medium">{rr.failed}</span>
+            {rr.errored > 0 && (
+              <span
+                className="flex items-center gap-0.5 text-amber-500 font-medium ml-0.5"
+                title="Evaluator could not run on these (e.g. judge validation error). Excluded from pass-rate aggregation."
+              >
+                <AlertTriangle size={10} />
+                {rr.errored}
+              </span>
+            )}
             <span className="text-muted-foreground">/</span>
             <span className="text-muted-foreground">{rr.total}</span>
           </div>

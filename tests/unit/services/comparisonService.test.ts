@@ -233,8 +233,38 @@ describe('comparisonService', () => {
       expect(rows[0].testCaseId).toBe('tc-1');
       expect(rows[0].results['run-1'].status).toBe('completed');
       expect(rows[0].results['run-1'].passFailStatus).toBe('passed');
+      expect(rows[0].results['run-1'].errored).toBeFalsy();
       expect(rows[0].results['run-2'].status).toBe('completed');
       expect(rows[0].results['run-2'].passFailStatus).toBe('failed');
+      expect(rows[0].results['run-2'].errored).toBeFalsy();
+    });
+
+    // Issue #242: when a report carries metricsStatus='error' (evaluator
+    // failed to produce a verdict), the comparison row must surface a
+    // truthy `errored` flag so the MetricCell can render the amber
+    // `Errored` chip distinct from `Failed`. Without this, the row
+    // falls through to passFailStatus-based styling and a misconfigured
+    // judge masquerades as an agent failure.
+    it('flags reports with metricsStatus="error" as errored on the row', () => {
+      const erroredReports: Record<string, EvaluationReport> = {
+        ...mockReports,
+        'report-2': {
+          id: 'report-2',
+          testCaseId: 'tc-1',
+          // The actual run-time shape: metricsStatus='error' and
+          // passFailStatus is null (cleared by buildEvaluatorErrorPatch).
+          metricsStatus: 'error',
+          passFailStatus: null as any,
+          metrics: { accuracy: 0, faithfulness: 0, trajectory_alignment_score: 0, latency_score: 0 },
+        } as unknown as EvaluationReport,
+      };
+
+      const rows = buildTestCaseComparisonRows(mockRuns, erroredReports, mockGetMeta, mockGetVersion);
+      expect(rows[0].results['run-1'].errored).toBeFalsy(); // unchanged
+      expect(rows[0].results['run-2'].errored).toBe(true);
+      // metricsStatus wins, so passFailStatus is whatever the report carries
+      // (null on errored docs), but the comparison cell will read .errored
+      // first and render the amber chip.
     });
 
     it('should detect version differences', () => {

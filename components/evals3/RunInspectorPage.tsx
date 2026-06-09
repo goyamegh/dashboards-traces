@@ -20,7 +20,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { Loader2, Clock, XCircle, Calendar, GitCompare } from 'lucide-react';
+import { Loader2, Clock, XCircle, Calendar, GitCompare, AlertTriangle } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -185,6 +185,10 @@ export const RunInspectorPage: React.FC = () => {
 
   const passCount = results.filter(r => r.status === 'passed').length;
   const failCount = results.filter(r => r.status === 'failed').length;
+  // Issue #242: errored runs are evaluator failures and must be displayed
+  // as their own bucket. Excluded from the pass-rate denominator below so a
+  // misconfigured evaluator can't drag the score to 0%.
+  const erroredCount = results.filter(r => r.status === 'errored').length;
   const totalCount = results.length;
   const judgedCount = passCount + failCount;
   const passRate = judgedCount > 0 ? Math.round((passCount / judgedCount) * 100) : 0;
@@ -235,6 +239,15 @@ export const RunInspectorPage: React.FC = () => {
             <span className="flex items-center gap-1">
               <span className="text-green-500 font-semibold">{passCount}✓</span>
               <span className="text-red-500 font-semibold">{failCount}✗</span>
+              {erroredCount > 0 && (
+                <span
+                  className="flex items-center gap-0.5 text-amber-500 font-semibold ml-1"
+                  title="Evaluator could not run (e.g. judge validation error). Excluded from pass-rate aggregation."
+                >
+                  <AlertTriangle size={11} className="shrink-0" />
+                  {erroredCount}
+                </span>
+              )}
               <span>/ {totalCount}</span>
             </span>
             <span className={`font-semibold ${passRate >= 80 ? 'text-green-500' : passRate >= 50 ? 'text-amber-500' : 'text-red-500'}`}>
