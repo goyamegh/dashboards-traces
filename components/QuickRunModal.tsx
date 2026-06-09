@@ -92,6 +92,13 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
   const [bedrockDiscoveryState, setBedrockDiscoveryState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [bedrockDiscoveryError, setBedrockDiscoveryError] = useState<string | null>(null);
 
+  // Anthropic-direct + GitHub Models dynamic discovery. Same model has a
+  // different id per provider (Bedrock inference-profile vs Anthropic id vs
+  // Copilot/GitHub slug), so we discover each provider's own ids rather than
+  // hardcoding. These feed the Judge Model dropdown as extra options.
+  const [anthropicModels, setAnthropicModels] = useState<Array<{ id: string; name: string }>>([]);
+  const [githubModels, setGithubModels] = useState<Array<{ id: string; name: string }>>([]);
+
   const selectedAgent = DEFAULT_CONFIG.agents.find(a => a.key === selectedAgentKey);
 
   // If the persisted agent key no longer matches any known agent (e.g. config
@@ -144,6 +151,18 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
     modelsByProvider['bedrock'] = [...(modelsByProvider['bedrock'] || []), ...discoveredBedrockModels];
   }
 
+  // Merge in discovered Anthropic-direct + GitHub Models / Copilot models.
+  // These only ever appear via discovery (no static catalog entries), and
+  // surface under their own provider groups in the Judge Model dropdown so
+  // the same model's provider-specific id is selectable (e.g. an Opus id
+  // from Copilot, distinct from the Bedrock inference-profile id).
+  if (anthropicModels.length > 0) {
+    modelsByProvider['anthropic'] = anthropicModels.map(m => ({ key: m.id, model_id: m.id, display_name: m.name, provider: 'anthropic' }));
+  }
+  if (githubModels.length > 0) {
+    modelsByProvider['github'] = githubModels.map(m => ({ key: m.id, model_id: m.id, display_name: m.name, provider: 'github' }));
+  }
+
   const providerLabels: Record<string, string> = {
     demo: 'Demo',
     bedrock: 'AWS Bedrock',
@@ -151,6 +170,8 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
     'claude-code': 'Claude Code',
     litellm: 'LiteLLM',
     agentic: 'Agentic Judge',
+    anthropic: 'Anthropic (direct)',
+    github: 'GitHub Models / Copilot',
   };
 
   const fetchOpenaiCompatModels = useCallback(async () => {
@@ -189,6 +210,25 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
       setBedrockDiscoveryState('error');
       setBedrockDiscoveryError('Cannot reach server');
     }
+  }, []);
+
+  // Anthropic-direct + GitHub Models discovery. Best-effort: both no-op
+  // silently when their provider isn't configured (no ANTHROPIC_API_KEY /
+  // GITHUB_TOKEN), so the shared refresh button stays a single click.
+  const fetchAnthropicModels = useCallback(async () => {
+    try {
+      const response = await fetch('/api/judge/anthropic-models');
+      const data = await response.json();
+      if (response.ok) setAnthropicModels(data.models || []);
+    } catch { /* provider not configured / unreachable — ignore */ }
+  }, []);
+
+  const fetchGithubModels = useCallback(async () => {
+    try {
+      const response = await fetch('/api/judge/github-models');
+      const data = await response.json();
+      if (response.ok) setGithubModels(data.models || []);
+    } catch { /* provider not configured / unreachable — ignore */ }
   }, []);
 
   const selectedModelConfig = DEFAULT_CONFIG.models[selectedModelId] ||
@@ -513,7 +553,7 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                         ? `OpenAI-compatible discovery failed: ${openaiCompatDiscoveryError}`
                         : 'Discover models from Bedrock and OpenAI-compatible endpoints'
                     }
-                    onClick={() => { fetchBedrockModels(); fetchOpenaiCompatModels(); }}
+                    onClick={() => { fetchBedrockModels(); fetchOpenaiCompatModels(); fetchAnthropicModels(); fetchGithubModels(); }}
                     disabled={bedrockDiscoveryState === 'loading' || openaiCompatDiscoveryState === 'loading'}
                     className={`h-8 w-8 flex items-center justify-center rounded border bg-background disabled:opacity-50 ${
                       bedrockDiscoveryState === 'done' || openaiCompatDiscoveryState === 'done'

@@ -32,6 +32,22 @@ export const OPENAI_COMPATIBLE_API_KEY = process.env.OPENAI_COMPATIBLE_API_KEY |
 export const OPENAI_COMPATIBLE_ENDPOINT = process.env.OPENAI_COMPATIBLE_ENDPOINT || 'http://localhost:4000/v1/chat/completions';
 
 // ============================================================================
+// Anthropic + GitHub Models Configuration (judge-model discovery)
+// ============================================================================
+
+// Anthropic direct API. Used by /api/judge/anthropic-models to list the
+// provider's own model ids (e.g. claude-opus-4-1-20250805) via GET /v1/models.
+export const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || '';
+export const ANTHROPIC_BASE_URL = process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com';
+
+// GitHub Models / Copilot. The GitHub Models catalog API surfaces model ids
+// across vendors (openai/gpt-4o, anthropic/claude-..., etc.) — including the
+// Copilot-flavored Claude/Opus slugs, which differ from the Bedrock and
+// Anthropic-direct ids. A standard GitHub PAT (GITHUB_TOKEN) authorizes it.
+export const GITHUB_TOKEN = process.env.GITHUB_TOKEN || process.env.GH_TOKEN || '';
+export const GITHUB_MODELS_URL = process.env.GITHUB_MODELS_URL || 'https://models.github.ai/catalog/models';
+
+// ============================================================================
 // OpenSearch Logs Configuration
 // ============================================================================
 
@@ -87,6 +103,10 @@ const config = {
   BEDROCK_MODEL_ID,
   OPENAI_COMPATIBLE_API_KEY,
   OPENAI_COMPATIBLE_ENDPOINT,
+  ANTHROPIC_API_KEY,
+  ANTHROPIC_BASE_URL,
+  GITHUB_TOKEN,
+  GITHUB_MODELS_URL,
   OPENSEARCH_LOGS,
   STORAGE_CONFIG,
   isStorageConfigured,

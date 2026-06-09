@@ -170,6 +170,115 @@ router.get('/api/judge/bedrock-models', async (_req: Request, res: Response) => 
 });
 
 /**
+ * GET /api/judge/anthropic-models
+ * Discover available models from the Anthropic direct API (GET /v1/models).
+ * Anthropic ids (e.g. `claude-opus-4-1-20250805`) differ from the Bedrock
+ * inference-profile ids and the Copilot slugs for the same model — each
+ * provider names the same model differently, so discovery per provider is
+ * the only reliable way to get usable ids.
+ * Returns { models: Array<{id, name}>, configured: boolean }
+ */
+router.get('/api/judge/anthropic-models', async (_req: Request, res: Response) => {
+  const configured = !!serverConfig.ANTHROPIC_API_KEY;
+  const modelsUrl = `${serverConfig.ANTHROPIC_BASE_URL.replace(/\/$/, '')}/v1/models`;
+  debug('JudgeAPI', 'Fetching Anthropic models from:', modelsUrl);
+  if (!configured) {
+    return res.status(503).json({
+      error: 'Anthropic API not configured — set ANTHROPIC_API_KEY.',
+      endpoint: modelsUrl,
+      configured,
+    });
+  }
+  try {
+    const response = await fetch(modelsUrl, {
+      headers: {
+        'x-api-key': serverConfig.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      return res.status(response.status).json({
+        error: `Anthropic /v1/models returned ${response.status}`,
+        details: body,
+        endpoint: modelsUrl,
+        configured,
+      });
+    }
+    const data = await response.json();
+    // Anthropic /v1/models returns { data: [{ id, display_name, ... }] }
+    const models = (data.data || []).map((m: any) => ({
+      id: m.id,
+      name: m.display_name || m.id,
+    })).filter((m: any) => m.id);
+    debug('JudgeAPI', 'Discovered', models.length, 'Anthropic models');
+    return res.json({ models, endpoint: modelsUrl, configured });
+  } catch (err: any) {
+    return res.status(503).json({
+      error: `Cannot reach Anthropic API: ${err.message}`,
+      endpoint: modelsUrl,
+      configured,
+    });
+  }
+});
+
+/**
+ * GET /api/judge/github-models
+ * Discover models from the GitHub Models catalog (and, by extension, the
+ * Copilot model surface). Returns the vendor-prefixed ids GitHub uses
+ * (e.g. `openai/gpt-4o`, `anthropic/claude-3.5-sonnet`) — these are the
+ * ids you'd reference when judging via Copilot/GitHub Models, distinct from
+ * the Anthropic-direct and Bedrock ids for the same underlying model.
+ * Returns { models: Array<{id, name}>, configured: boolean }
+ */
+router.get('/api/judge/github-models', async (_req: Request, res: Response) => {
+  const configured = !!serverConfig.GITHUB_TOKEN;
+  const url = serverConfig.GITHUB_MODELS_URL;
+  debug('JudgeAPI', 'Fetching GitHub Models catalog from:', url);
+  if (!configured) {
+    return res.status(503).json({
+      error: 'GitHub Models not configured — set GITHUB_TOKEN (a PAT with models:read).',
+      endpoint: url,
+      configured,
+    });
+  }
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${serverConfig.GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      return res.status(response.status).json({
+        error: `GitHub Models catalog returned ${response.status}`,
+        details: body,
+        endpoint: url,
+        configured,
+      });
+    }
+    const data = await response.json();
+    // GitHub Models catalog returns an array of { id, name, publisher, ... }
+    // (older shape) or { models: [...] }. Handle both.
+    const list: any[] = Array.isArray(data) ? data : (data.models || data.data || []);
+    const models = list.map((m: any) => ({
+      id: m.id || m.name,
+      name: m.friendly_name || m.name || m.id,
+    })).filter((m: any) => m.id);
+    debug('JudgeAPI', 'Discovered', models.length, 'GitHub Models');
+    return res.json({ models, endpoint: url, configured });
+  } catch (err: any) {
+    return res.status(503).json({
+      error: `Cannot reach GitHub Models catalog: ${err.message}`,
+      endpoint: url,
+      configured,
+    });
+  }
+});
+
+/**
  * POST /api/judge - Evaluate agent trajectory
  */
 router.post('/api/judge', async (req: Request, res: Response) => {
