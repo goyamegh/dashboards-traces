@@ -9,6 +9,11 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Security
+- **PR #265 review hardening** ([server/routes/judge.ts](server/routes/judge.ts), [server/services/judgeDebug.ts](server/services/judgeDebug.ts)): addressed the Code-Diff-Analyzer findings on the new judge-model discovery endpoints.
+  - **SSRF guard on credential-forwarding discovery URLs.** `/api/judge/anthropic-models` and `/api/judge/github-models` forward `ANTHROPIC_API_KEY` / `GITHUB_TOKEN` to operator-configurable base URLs (`ANTHROPIC_BASE_URL`, `GITHUB_MODELS_URL`). A new `validateDiscoveryUrl` requires https + an allowlisted host (`api.anthropic.com`; `models.github.ai` / `api.githubcopilot.com` / `github.com`) before the credential is sent; localhost is permitted for test proxies, and `AH_ALLOW_CUSTOM_MODEL_ENDPOINTS=1` is the documented opt-out for custom gateways. Non-allowlisted hosts get a 400 with no credential forwarded.
+  - **`judgeDebug` no longer auto-enables outside explicit `development`.** `isJudgeDebugEnabled()` now gates the auto-on on `NODE_ENV === 'development'` (was `!== 'production'`), so CI/staging with `NODE_ENV` unset no longer persist full system/user prompts (up to ~20 KB) by default. Explicit `AH_JUDGE_DEBUG=1` still works everywhere. New test case pins the unset/`test`/`staging` → OFF behavior.
+
 ### Added
 - **Judge-model discovery for Anthropic-direct and GitHub Models / Copilot** ([server/routes/judge.ts](server/routes/judge.ts), [server/config/index.ts](server/config/index.ts), [components/QuickRunModal.tsx](components/QuickRunModal.tsx)): two new discovery endpoints mirror the existing Bedrock (`ListInferenceProfiles`) and OpenAI-compatible (`GET /models`) ones, so the Judge Model dropdown can be populated from each provider's own catalog instead of relying solely on the hand-curated static list:
   - `GET /api/judge/anthropic-models` — Anthropic direct `GET /v1/models` (gated on `ANTHROPIC_API_KEY`; `ANTHROPIC_BASE_URL` overridable). Returns Anthropic's own ids (e.g. `claude-opus-4-1-20250805`).

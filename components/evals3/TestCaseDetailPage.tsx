@@ -772,7 +772,7 @@ export const TestCaseDetailPage: React.FC = () => {
                   <Label>Agent Model</Label>
                   <JudgeModelSelect
                     value={runConfig.modelId}
-                    onValueChange={val => setRunConfig(prev => ({ ...prev, modelId: val || '' }))}
+                    onValueChange={val => setRunConfig(prev => ({ ...prev, modelId: val }))}
                     filterToAgentLLMs={true}
                   />
                 </div>
@@ -805,8 +805,8 @@ export const TestCaseDetailPage: React.FC = () => {
                       controls the judge LLM, not the agent's. */}
                   <Label>Judge Model</Label>
                   <JudgeModelSelect
-                    value={runConfig.judgeModelId}
-                    onValueChange={val => setRunConfig(prev => ({ ...prev, judgeModelId: val }))}
+                    value={runConfig.judgeModelId ?? ''}
+                    onValueChange={val => setRunConfig(prev => ({ ...prev, judgeModelId: val || undefined }))}
                     allowDefault={true}
                   />
                 </div>

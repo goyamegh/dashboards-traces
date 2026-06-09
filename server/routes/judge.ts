@@ -20,11 +20,47 @@ import { evaluateWithAgenticJudge, parseAgenticJudgeError } from '@/server/servi
 import { loadConfigSync } from '@/lib/config/index';
 import serverConfig from '@/server/config';
 import { debug } from '@/lib/debug';
+import { readEnv } from '@/lib/envCompat';
 import { getStorageModule } from '@/server/adapters';
 import { getDefaultEvaluator, getSystemEvaluatorById, isSystemEvaluatorId } from '@/server/prompts/evaluatorTemplates';
 import type { Evaluator } from '@/types';
 
 const router = Router();
+
+/**
+ * SSRF guard for model-discovery endpoints that forward a provider credential
+ * (Anthropic API key, GitHub token) to an operator-configurable base URL.
+ *
+ * Both URLs are env-driven (`ANTHROPIC_BASE_URL`, `GITHUB_MODELS_URL`) so an
+ * operator can point them at a proxy/gateway — but a credential must never be
+ * sent to an arbitrary host. We require https and an allowlisted hostname
+ * (the provider's own hosts, plus localhost for test proxies). Operators who
+ * genuinely need a different host must opt in explicitly via
+ * `AH_ALLOW_CUSTOM_MODEL_ENDPOINTS=1`, which is the documented escape hatch.
+ *
+ * Returns `null` when the URL is safe to call; otherwise an error string
+ * (the caller returns 400 and does NOT forward the credential).
+ */
+function validateDiscoveryUrl(rawUrl: string, allowedHosts: string[]): string | null {
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    return `Invalid discovery URL: ${rawUrl}`;
+  }
+  if (u.protocol !== 'https:' && u.hostname !== 'localhost' && u.hostname !== '127.0.0.1') {
+    return `Refusing to send credential over non-https URL: ${u.protocol}//${u.hostname}`;
+  }
+  const optIn = readEnv('AH_ALLOW_CUSTOM_MODEL_ENDPOINTS', 'AGENT_HEALTH_ALLOW_CUSTOM_MODEL_ENDPOINTS') === '1';
+  if (optIn) return null;
+  const host = u.hostname.toLowerCase();
+  const ok = allowedHosts.some(h => host === h || host.endsWith(`.${h}`)) || host === 'localhost' || host === '127.0.0.1';
+  if (!ok) {
+    return `Refusing to forward credential to non-allowlisted host '${host}'. ` +
+      `Allowed: ${allowedHosts.join(', ')}. Set AH_ALLOW_CUSTOM_MODEL_ENDPOINTS=1 to override.`;
+  }
+  return null;
+}
 
 /**
  * Generate mock evaluation result for demo mode
@@ -189,6 +225,11 @@ router.get('/api/judge/anthropic-models', async (_req: Request, res: Response) =
       configured,
     });
   }
+  // SSRF guard: never forward ANTHROPIC_API_KEY to a non-allowlisted host.
+  const anthropicUrlError = validateDiscoveryUrl(modelsUrl, ['api.anthropic.com']);
+  if (anthropicUrlError) {
+    return res.status(400).json({ error: anthropicUrlError, endpoint: modelsUrl, configured });
+  }
   try {
     const response = await fetch(modelsUrl, {
       headers: {
@@ -241,6 +282,11 @@ router.get('/api/judge/github-models', async (_req: Request, res: Response) => {
       endpoint: url,
       configured,
     });
+  }
+  // SSRF guard: never forward GITHUB_TOKEN to a non-allowlisted host.
+  const githubUrlError = validateDiscoveryUrl(url, ['models.github.ai', 'api.githubcopilot.com', 'github.com']);
+  if (githubUrlError) {
+    return res.status(400).json({ error: githubUrlError, endpoint: url, configured });
   }
   try {
     const response = await fetch(url, {

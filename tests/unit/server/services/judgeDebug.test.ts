@@ -56,6 +56,20 @@ describe('judgeDebug', () => {
       process.env.NODE_ENV = 'production';
       expect(isJudgeDebugEnabled()).toBe(false);
     });
+
+    it('defaults OFF when NODE_ENV is unset (CI / staging) - only explicit development auto-enables', () => {
+      // Security (PR #265 review): CI and many staging setups leave NODE_ENV
+      // unset. Capturing full system/user prompts there could expose
+      // sensitive evaluator instructions, so the auto-on is gated on
+      // === 'development', not !== 'production'. Unset => OFF unless
+      // AH_JUDGE_DEBUG=1 is set explicitly.
+      delete process.env.NODE_ENV;
+      expect(isJudgeDebugEnabled()).toBe(false);
+      process.env.NODE_ENV = 'staging';
+      expect(isJudgeDebugEnabled()).toBe(false);
+      process.env.NODE_ENV = 'test';
+      expect(isJudgeDebugEnabled()).toBe(false);
+    });
   });
 
   describe('buildJudgeDebug', () => {

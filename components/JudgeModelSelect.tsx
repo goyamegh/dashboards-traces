@@ -50,8 +50,16 @@ const AGENT_LLM_PROVIDERS = new Set(['bedrock', 'openai-compatible', 'litellm'])
 const DEFAULT_SENTINEL = '__default__';
 
 interface JudgeModelSelectProps {
-  value: string | undefined;
-  onValueChange: (value: string | undefined) => void;
+  /**
+   * Selected model id. `''` (empty string) is the "use evaluator default"
+   * sentinel when `allowDefault` is set — the public API is always a plain
+   * `string` (never `undefined`) so existing call sites that store the model
+   * id as a required `string` (benchmark dialogs etc.) don't have to handle
+   * `undefined`. Internally this maps to a Radix-safe non-empty sentinel
+   * because Radix `<SelectItem value="">` is disallowed.
+   */
+  value: string;
+  onValueChange: (value: string) => void;
   /** Additional dynamically discovered models to merge in */
   extraModels?: Array<{ key: string; display_name: string; provider: string }>;
   className?: string;
@@ -64,10 +72,11 @@ interface JudgeModelSelectProps {
    */
   filterToAgentLLMs?: boolean;
   /**
-   * When true, render a "Use evaluator default" sentinel item at the top
-   * of the list that maps to `undefined`. Use this for the "Judge Model"
-   * role so the customer can defer to the evaluator's `inferenceConfig`
-   * (resolved server-side, falling back to `BEDROCK_MODEL_ID` env).
+   * When true, render a "Use evaluator default" item at the top that maps to
+   * `''` (empty string). Use this for the "Judge Model" role so the customer
+   * can defer to the evaluator's `inferenceConfig` (resolved server-side,
+   * falling back to `BEDROCK_MODEL_ID` env). The caller maps `''` ↔
+   * `undefined` at its own state boundary if it stores an optional field.
    */
   allowDefault?: boolean;
   /** Label for the default sentinel. Default: "Use evaluator default". */
@@ -115,16 +124,14 @@ export function JudgeModelSelect({
     return (ai === -1 ? 999 : ai) - (bi === -1 ? 999 : bi);
   });
 
-  // The Select primitive (Radix) treats undefined as "no value". When we
-  // want a sentinel for "undefined", we round-trip through DEFAULT_SENTINEL
-  // so the trigger shows the placeholder/label and the change event flips
-  // back to undefined.
-  const renderedValue = allowDefault
-    ? (value === undefined || value === '' ? DEFAULT_SENTINEL : value)
-    : (value || '');
+  // Radix treats `''` as "no value" and disallows `<SelectItem value="">`,
+  // so we round-trip the empty-string "default" through a non-empty internal
+  // sentinel. The PUBLIC contract stays `string` in both directions: the
+  // trigger shows the placeholder for `''`, and the change event emits `''`
+  // (never `undefined`) when the default item is chosen.
+  const renderedValue = value === '' ? (allowDefault ? DEFAULT_SENTINEL : '') : value;
   const handleChange = (val: string) => {
-    if (allowDefault && val === DEFAULT_SENTINEL) onValueChange(undefined);
-    else onValueChange(val);
+    onValueChange(val === DEFAULT_SENTINEL ? '' : val);
   };
 
   return (
