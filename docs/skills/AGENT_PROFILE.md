@@ -31,10 +31,10 @@ at a live session's traces.
 #    - the /agent-health:profile slash command
 #    - the curated customer skills (agent-health-profile, agent-health-assistant,
 #      instrument-otel)
-npx @opensearch-project/agent-health setup
+npx @goyamegh/agent-health setup
 
 # 2. Stream Claude Code telemetry into Agent Health's OpenSearch.
-npx @opensearch-project/agent-health setup-telemetry
+npx @goyamegh/agent-health setup-telemetry
 ```
 
 `setup` is idempotent — re-running won't duplicate the hook, and won't overwrite
@@ -53,7 +53,7 @@ Use your agent normally and steer it as you like. When the session is done:
 /agent-health:profile -e <evaluator-id>
 
 # …or directly, optionally with upfront feedback to steer the analysis:
-npx @opensearch-project/agent-health profile -e <evaluator-id> --feedback "focus on routing; it ignored the SOP"
+npx @goyamegh/agent-health profile -e <evaluator-id> --feedback "focus on routing; it ignored the SOP"
 ```
 
 If `-e` is omitted it defaults to `system-rca-default`. `--feedback "<text>"` is

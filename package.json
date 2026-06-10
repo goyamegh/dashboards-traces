@@ -1,16 +1,16 @@
 {
-  "name": "@opensearch-project/agent-health",
-  "version": "0.5.0",
+  "name": "@goyamegh/agent-health",
+  "version": "0.5.19",
   "type": "module",
   "description": "Agent Evaluation and Observability Framework",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
-    "url": "https://github.com/opensearch-project/agent-health.git"
+    "url": "https://github.com/goyamegh/agent-health.git"
   },
-  "homepage": "https://github.com/opensearch-project/agent-health#readme",
+  "homepage": "https://github.com/goyamegh/agent-health#readme",
   "bugs": {
-    "url": "https://github.com/opensearch-project/agent-health/issues"
+    "url": "https://github.com/goyamegh/agent-health/issues"
   },
   "keywords": [
     "opensearch",
@@ -200,5 +200,8 @@
     "ws": ">=8.20.1",
     "@babel/runtime": ">=7.26.10",
     "qs": ">=6.15.2"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

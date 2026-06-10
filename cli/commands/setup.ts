@@ -39,7 +39,7 @@ const HOOK_MATCHER = 'Bash';
  * file.
  */
 function resolveInvoke(): string {
-  let pkgName = '@opensearch-project/agent-health';
+  let pkgName = '@goyamegh/agent-health';
   for (const p of [join(__dirname, '..', '..', 'package.json'), join(__dirname, '..', '..', '..', 'package.json')]) {
     try { pkgName = JSON.parse(readFileSync(p, 'utf-8')).name || pkgName; break; } catch { /* keep default */ }
   }
