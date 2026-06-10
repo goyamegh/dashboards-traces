@@ -31,11 +31,12 @@ const HOOK_COMMAND = "mkdir -p .claude/agent-health && jq -r '.session_id' > .cl
 const HOOK_MATCHER = 'Bash';
 
 /**
- * Resolve how the CLI should be invoked from generated files (slash command).
- * Prefer the bare binary when it's on PATH (global install); otherwise fall
- * back to `npx <packageName>` so a pure-npx customer still works. The package
- * name is read from our own package.json so a forked/renamed publish keeps
- * working without editing this file.
+ * Resolve how the CLI should be invoked from generated files (slash command +
+ * skills). Always uses `npx <packageName>` so the generated artifacts work
+ * without a global install (and still resolve a global/local install if one
+ * exists, since npx prefers those). The package name is read from our own
+ * package.json so a forked/renamed publish keeps working without editing this
+ * file.
  */
 function resolveInvoke(): string {
   let pkgName = '@opensearch-project/agent-health';
