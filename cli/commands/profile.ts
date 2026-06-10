@@ -88,9 +88,10 @@ export function createProfileCommand(): Command {
     .description('Profile a live agent session and surface what to fix in its codebase (uses your evaluator as the rubric)')
     .option('-e, --evaluator <id>', 'Evaluator id to use as the profiling rubric (default: system-rca-default)')
     .option('-s, --session <id>', 'Coding-agent session id (default: auto-detected)')
+    .option('-f, --feedback <text>', 'Your upfront steering/feedback on the session (e.g. "focus on routing; it ignored the SOP")')
     .option('--service <name>', 'OTel service name to filter spans (default: claude-code)', 'claude-code')
     .option('-o, --output <format>', 'Output format: table | json', 'table')
-    .action(async (options: { evaluator?: string; session?: string; service: string; output: string }) => {
+    .action(async (options: { evaluator?: string; session?: string; feedback?: string; service: string; output: string }) => {
       const asJson = options.output === 'json';
       if (!asJson) console.log(chalk.bold('\nAgent Health - Profile\n'));
 
@@ -181,15 +182,22 @@ export function createProfileCommand(): Command {
             passThreshold: evaluator.scoringConfig?.passThreshold,
           },
           signals,
+          // Optional upfront human steering — the context traces alone can't
+          // capture ("focus on routing", "it ignored the SOP"). Weighted
+          // heavily by the reasoner, above the deterministic signals.
+          userFeedback: options.feedback || undefined,
           trajectory,
           instructions: [
             'You are improving the agent whose session is profiled above, in ITS OWN codebase.',
+            options.feedback
+              ? `The user gave this upfront feedback — treat it as the PRIMARY lens, above the signals: "${options.feedback}"`
+              : 'No upfront user feedback was given; rely on the rubric + signals.',
             'Using the evaluator.systemPrompt as your rubric, review:',
-            '  (a) the trajectory below, (b) the signals, (c) the CURRENT CHAT you already have,',
-            '  and (d) the codebase in the current working directory.',
+            '  (a) the trajectory below, (b) the signals, (c) the userFeedback (if any),',
+            '  (d) the CURRENT CHAT you already have, and (e) the codebase in the cwd.',
             'Produce a prioritized list of concrete edits. For each: the file to change,',
-            'what to change, why (tie it to a signal or rubric criterion + cite the evidence:',
-            'the session.traceIds / the signal that triggered it), and priority.',
+            'what to change, why (tie it to the user feedback, a signal, or a rubric criterion +',
+            'cite the evidence: the session.traceIds / the signal that triggered it), and priority.',
             'Make minimal, generalizable changes on a branch — do not edit the working tree directly.',
           ].join('\n'),
         };
@@ -207,6 +215,7 @@ export function createProfileCommand(): Command {
 
         // Human-readable summary.
         console.log(chalk.cyan(`\n  Evaluator: ${evaluator.name} (${evaluator.id})`));
+        if (options.feedback) console.log(chalk.magenta(`  Your feedback: "${options.feedback}"`));
         console.log(chalk.gray(
           `  ${profile.session.spanCount} spans · ${profile.session.trajectorySteps} steps · ` +
           `${(durationMs / 1000).toFixed(1)}s · ${tokens.toLocaleString()} tokens`
