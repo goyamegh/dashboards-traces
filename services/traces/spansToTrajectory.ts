@@ -41,7 +41,7 @@ const WRITE_TOOL_HINTS = ['write', 'edit', 'apply', 'create', 'delete', 'patch',
 const READ_TOOL_HINTS = ['read', 'get', 'list', 'search', 'grep', 'glob', 'find', 'cat', 'view', 'fetch', 'ls'];
 /** Phrases that signal a human correcting/redirecting the agent. */
 const REDIRECT_PATTERNS = [
-  /\bno[,.\s]/i, /\bactually\b/i, /\bwrong\b/i, /\bnot? (?:that|right|correct)\b/i,
+  /\bno[,.\s]/i, /\bactually\b/i, /\bwrong\b/i, /\bnot (?:that|right|correct)\b/i,
   /\binstead\b/i, /\bstop\b/i, /\bdon'?t\b/i, /\bthat'?s not\b/i, /\btry (?:x|again|something)\b/i,
 ];
 
@@ -174,12 +174,20 @@ function claudeNativeSignals(spans: Span[]): SessionSignal[] {
     });
   }
 
-  // user_redirect — only if prompts are logged (else <REDACTED>).
-  const prompts = sorted
-    .filter(s => spanType(s) === 'interaction')
-    .map(s => String(s.attributes?.['user_prompt'] ?? ''))
-    .filter(p => p && p !== '<REDACTED>');
-  const redirects = prompts.filter((p, i) => i > 0 && REDIRECT_PATTERNS.some(re => re.test(p)));
+  // user_redirect — a correction prompt AFTER the agent has acted (only when
+  // prompts are logged; else <REDACTED>). Gate on a prior agent span so multiple
+  // opening prompts before the agent responds don't count as redirects (matches
+  // the generic path's sawAgentTurn gating).
+  const redirects: string[] = [];
+  let sawAgentSpan = false;
+  for (const s of sorted) {
+    const t = spanType(s);
+    if (t === 'llm_request' || t === 'tool' || t === 'tool.execution') { sawAgentSpan = true; continue; }
+    if (t === 'interaction') {
+      const p = String(s.attributes?.['user_prompt'] ?? '');
+      if (sawAgentSpan && p && p !== '<REDACTED>' && REDIRECT_PATTERNS.some(re => re.test(p))) redirects.push(p);
+    }
+  }
   if (redirects.length > 0) {
     signals.push({
       id: 'user_redirect',
@@ -211,6 +219,32 @@ function claudeNativeSignals(spans: Span[]): SessionSignal[] {
       severity: 'high',
       count: retries,
       evidence: retryEvidence,
+    });
+  }
+
+  // repeated_tool_calls — identical tool + args invoked more than once. Only
+  // groups when tool_input is present (native tool spans often omit it); without
+  // args each call is keyed by its spanId so legitimately-repeated tools (e.g.
+  // many distinct Bash calls) don't false-positive.
+  const repeatSeen = new Map<string, number>();
+  for (const s of sorted) {
+    if (spanType(s) !== 'tool') continue;
+    const a = s.attributes || {};
+    const name = String(a['tool_name'] ?? a['gen_ai.tool.name'] ?? '?');
+    const input = a['tool_input'] ?? a['gen_ai.tool.input'];
+    const key = input != null && input !== ''
+      ? `${name}::${typeof input === 'string' ? input : JSON.stringify(input)}`
+      : `${name}::__unique-${s.spanId}`;
+    repeatSeen.set(key, (repeatSeen.get(key) ?? 0) + 1);
+  }
+  const repeated = [...repeatSeen.entries()].filter(([, n]) => n > 1);
+  if (repeated.length > 0) {
+    signals.push({
+      id: 'repeated_tool_calls',
+      title: 'Agent repeated identical tool calls (possible loop / distrust of output)',
+      severity: 'medium',
+      count: repeated.reduce((acc, [, n]) => acc + (n - 1), 0),
+      evidence: truncate(repeated.map(([k, n]) => `${k.split('::')[0]} ×${n}`).join(', ')),
     });
   }
 
@@ -279,6 +313,9 @@ function genericTrajectory(spans: Span[], serviceName?: string): TrajectoryStep[
 
 function genericSignals(spans: Span[], serviceName?: string): SessionSignal[] {
   const messages = extractMessagesFromSpans(spans, serviceName);
+  // Span ids that errored, so tool_error_retry can key off real span status
+  // rather than scraping the result text for words like "error".
+  const erroredSpanIds = new Set(spans.filter(s => s.status === 'ERROR').map(s => s.spanId));
   const signals: SessionSignal[] = [];
 
   let sawAgentTurn = false;
@@ -297,7 +334,13 @@ function genericSignals(spans: Span[], serviceName?: string): SessionSignal[] {
   for (let i = 0; i < messages.length - 1; i++) {
     const cur = messages[i];
     if (cur.role !== 'tool_result') continue;
-    if (!/error|failed|exception|not found|denied/i.test(cur.content)) continue;
+    // Primary signal: the underlying span errored. Fall back to a content
+    // heuristic only when the result has no span id to check.
+    const spanId = cur.metadata?.spanId;
+    const errored = spanId
+      ? erroredSpanIds.has(spanId)
+      : /error|failed|exception|not found|denied/i.test(cur.content);
+    if (!errored) continue;
     const tool = cur.metadata?.toolName;
     if (tool && messages.slice(i + 1).some(m => m.role === 'tool_call' && m.metadata?.toolName === tool)) {
       retries++; if (!retryEvidence) retryEvidence = `${tool}: ${truncate(cur.content, 120)}`;

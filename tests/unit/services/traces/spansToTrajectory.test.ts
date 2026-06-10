@@ -212,4 +212,46 @@ describe('Claude Code native (attribute-based) spans', () => {
     ];
     expect(scanSessionSignals(spans).find(s => s.id === 'tool_error_retry')).toBeDefined();
   });
+
+  it('gates user_redirect on a prior agent span (no false positive on opening prompts)', () => {
+    // Two user prompts before any agent span — must NOT flag a redirect.
+    const before: Span[] = [
+      ccSpan('i1', 'interaction', { user_prompt: 'do the thing' }, '2026-01-01T00:00:00.000Z'),
+      ccSpan('i2', 'interaction', { user_prompt: 'no, the other thing' }, '2026-01-01T00:00:01.000Z'),
+    ];
+    expect(scanSessionSignals(before).find(s => s.id === 'user_redirect')).toBeUndefined();
+    // Same redirect phrase AFTER an agent span — must flag.
+    const after: Span[] = [
+      ccSpan('i1', 'interaction', { user_prompt: 'do the thing' }, '2026-01-01T00:00:00.000Z'),
+      ccSpan('l1', 'llm_request', { model: 'claude', stop_reason: 'end_turn' }, '2026-01-01T00:00:01.000Z'),
+      ccSpan('i2', 'interaction', { user_prompt: 'no, that is wrong' }, '2026-01-01T00:00:02.000Z'),
+    ];
+    expect(scanSessionSignals(after).find(s => s.id === 'user_redirect')).toBeDefined();
+  });
+
+  it('does NOT match "no right" as a redirect (regex requires "not")', () => {
+    const clean: Span[] = [
+      ccSpan('l1', 'llm_request', { model: 'claude' }, '2026-01-01T00:00:00.000Z'),
+      ccSpan('i1', 'interaction', { user_prompt: 'annotate the rightmost correct column' }, '2026-01-01T00:00:01.000Z'),
+    ];
+    // After the `not?`→`not` fix, neither "right" nor "correct" (without a
+    // preceding "not") trips the redirect pattern.
+    expect(scanSessionSignals(clean).find(s => s.id === 'user_redirect')).toBeUndefined();
+  });
+
+  it('detects native repeated_tool_calls only when args are identical', () => {
+    const repeated: Span[] = [
+      ccSpan('t1', 'tool', { tool_name: 'grep', tool_input: '{"q":"foo"}', tool_use_id: 'a' }, '2026-01-01T00:00:00.000Z'),
+      ccSpan('t2', 'tool', { tool_name: 'grep', tool_input: '{"q":"foo"}', tool_use_id: 'b' }, '2026-01-01T00:00:01.000Z'),
+    ];
+    const sig = scanSessionSignals(repeated).find(s => s.id === 'repeated_tool_calls');
+    expect(sig).toBeDefined();
+    expect(sig!.count).toBe(1);
+    // Same tool, NO args — must not group (each call unique by spanId).
+    const noArgs: Span[] = [
+      ccSpan('t1', 'tool', { tool_name: 'Bash', tool_use_id: 'a' }, '2026-01-01T00:00:00.000Z'),
+      ccSpan('t2', 'tool', { tool_name: 'Bash', tool_use_id: 'b' }, '2026-01-01T00:00:01.000Z'),
+    ];
+    expect(scanSessionSignals(noArgs).find(s => s.id === 'repeated_tool_calls')).toBeUndefined();
+  });
 });

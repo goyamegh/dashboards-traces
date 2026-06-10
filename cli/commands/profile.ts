@@ -150,11 +150,11 @@ export function createProfileCommand(): Command {
         const tokens = sumAttr(spans, ['gen_ai.usage.input_tokens', 'input_tokens'])
           + sumAttr(spans, ['gen_ai.usage.output_tokens', 'output_tokens']);
         // Report the service name actually seen on the spans (e.g. `claude-code`
-        // for native telemetry vs `claude-code-agent` for the connector), not
-        // the CLI default.
+        // for native telemetry vs `claude-code-agent` for the connector), reading
+        // whichever attribute key the span carries (`service.name` or `serviceName`).
+        const svcSpan = spans.find(s => s.attributes?.['service.name'] || s.attributes?.['serviceName']);
         const observedService = String(
-          spans.find(s => s.attributes?.['service.name'] || s.attributes?.['serviceName'])?.attributes?.['service.name']
-          ?? spans[0]?.attributes?.['serviceName'] ?? options.service
+          svcSpan?.attributes?.['service.name'] ?? svcSpan?.attributes?.['serviceName'] ?? options.service
         );
 
         spinner?.succeed('Session profiled');
