@@ -52,11 +52,13 @@ Use your agent normally and steer it as you like. When the session is done:
 # From inside the coding session (slash command):
 /agent-health:profile -e <evaluator-id>
 
-# …or directly:
-npx @opensearch-project/agent-health profile -e <evaluator-id>
+# …or directly, optionally with upfront feedback to steer the analysis:
+npx @opensearch-project/agent-health profile -e <evaluator-id> --feedback "focus on routing; it ignored the SOP"
 ```
 
-If `-e` is omitted it defaults to `system-rca-default`. List evaluators with
+If `-e` is omitted it defaults to `system-rca-default`. `--feedback "<text>"` is
+optional upfront human steering — context the traces can't capture; the reasoner
+weights it above the deterministic signals. List evaluators with
 `agent-health list` (or the `/api/storage/evaluators` API).
 
 ---
@@ -87,8 +89,9 @@ any reasoner.)
   "session":   { "sessionId", "serviceName", "traceIds", "spanCount", "trajectorySteps", "durationMs", "tokens" },
   "evaluator": { "id", "name", "systemPrompt", "metrics", "passThreshold" },
   "signals":   [ { "id", "title", "severity", "count", "evidence" } ],
+  "userFeedback": "<your --feedback text, if given>",
   "trajectory":[ /* TrajectoryStep[] reconstructed from spans */ ],
-  "instructions": "Using the rubric, review trajectory + signals + chat + codebase; propose edits…"
+  "instructions": "Using the rubric + feedback, review trajectory + signals + chat + codebase; propose edits…"
 }
 ```
 
