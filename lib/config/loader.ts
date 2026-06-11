@@ -193,6 +193,10 @@ function mergeConfigs(
     reporters,
     judge,
     telemetry,
+    // Cluster config authored in TS. Passed through verbatim; the server
+    // resolves it against JSON/env at startup (see resolveStorageConfig).
+    storage: userConfig.storage,
+    observability: userConfig.observability,
   };
 }
 
@@ -289,6 +293,8 @@ export function loadConfigSync(cwd: string = process.cwd()): ResolvedConfig {
     reporters: [['console']],
     judge: { provider: 'bedrock', model: 'claude-sonnet-4' },
     telemetry: {},
+    storage: undefined,
+    observability: undefined,
   };
 }
 

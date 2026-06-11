@@ -260,6 +260,22 @@ describe('loadConfig', () => {
     expect(config.judge.model).toBe('claude-sonnet-4');
   });
 
+  it('exposes storage/observability on the resolved config (undefined when unset) (#261)', async () => {
+    const mockFs = require('fs');
+    mockFs.existsSync.mockReturnValue(false);
+
+    const { loadConfig, clearConfigCache } = require('@/lib/config/loader');
+    clearConfigCache();
+
+    const config = await loadConfig('/nonexistent', true);
+    // The keys must exist on ResolvedConfig so server/app.ts can pass them to
+    // setTsClusterConfig(); with no config file they resolve to undefined.
+    expect('storage' in config).toBe(true);
+    expect('observability' in config).toBe(true);
+    expect(config.storage).toBeUndefined();
+    expect(config.observability).toBeUndefined();
+  });
+
   it('logs an explicit message when only the server-side JSON config is present', async () => {
     // No code config (.ts/.js/.mjs), but agent-health.config.json exists.
     // The loader doesn't read the JSON itself — server services do — but

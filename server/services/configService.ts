@@ -55,10 +55,19 @@ interface ConfigFileDataSources {
 
 // Config status returned to frontend (no raw credentials — username is safe to expose,
 // password is indicated only as a boolean so the UI can show placeholder dots)
+/**
+ * Where a resolved data-source config came from.
+ * - 'file'        : agent-health.config.json (UI-writable, highest precedence)
+ * - 'typescript'  : agent-health.config.ts via defineConfig() (committed default)
+ * - 'environment' : OPENSEARCH_* env vars
+ * - 'none'        : not configured (file-based fallback)
+ */
+export type ConfigSource = 'file' | 'typescript' | 'environment' | 'none';
+
 export interface ConfigStatus {
   storage: {
     configured: boolean;
-    source: 'file' | 'environment' | 'none';
+    source: ConfigSource;
     endpoint?: string;
     authType?: ClusterAuthType;
     username?: string;    // Safe to return; lets the form pre-fill the username
@@ -69,7 +78,7 @@ export interface ConfigStatus {
   };
   observability: {
     configured: boolean;
-    source: 'file' | 'environment' | 'none';
+    source: ConfigSource;
     endpoint?: string;
     authType?: ClusterAuthType;
     username?: string;
@@ -91,6 +100,56 @@ export interface ConfigStatus {
       drifted: boolean;
     };
   };
+}
+
+// ============================================================================
+// TypeScript config bridge (agent-health.config.ts -> server)
+// ============================================================================
+//
+// The CLI-launched server loads the user's agent-health.config.ts in-process
+// (server/app.ts -> loadConfig()). Storage / observability cluster config
+// authored there is handed to this module via setTsClusterConfig() so the
+// runtime resolution chain can consult it. This is the "single TS source of
+// truth" path requested in #261.
+//
+// Precedence (highest wins): agent-health.config.json (UI-written) ->
+// agent-health.config.ts -> OPENSEARCH_* env -> file-based fallback.
+
+let tsStorageConfig: StorageClusterConfig | null = null;
+let tsObservabilityConfig: ObservabilityClusterConfig | null = null;
+
+/**
+ * Register cluster config authored in agent-health.config.ts.
+ * Called once at server startup with the in-process resolved TS config.
+ * Pass `null`/omit a field to leave it unset; an endpoint-less object is
+ * treated as "not configured".
+ */
+export function setTsClusterConfig(opts: {
+  storage?: StorageClusterConfig | null;
+  observability?: ObservabilityClusterConfig | null;
+}): void {
+  if (opts.storage !== undefined) {
+    tsStorageConfig = opts.storage && opts.storage.endpoint ? opts.storage : null;
+  }
+  if (opts.observability !== undefined) {
+    tsObservabilityConfig = opts.observability && opts.observability.endpoint ? opts.observability : null;
+  }
+}
+
+/** Storage cluster config authored in agent-health.config.ts, or null. */
+export function getStorageConfigFromTs(): StorageClusterConfig | null {
+  return tsStorageConfig;
+}
+
+/** Observability cluster config authored in agent-health.config.ts, or null. */
+export function getObservabilityConfigFromTs(): ObservabilityClusterConfig | null {
+  return tsObservabilityConfig;
+}
+
+/** Test-only: reset the TS config holder between cases. */
+export function __resetTsClusterConfigForTests(): void {
+  tsStorageConfig = null;
+  tsObservabilityConfig = null;
 }
 
 /**
@@ -313,66 +372,61 @@ export function clearObservabilityConfig(): void {
 export function getConfigStatus(): ConfigStatus {
   const config = readConfigFromDisk() as ConfigFileDataSources | null;
 
-  // Determine storage config source
-  let storageSource: 'file' | 'environment' | 'none' = 'none';
-  let storageEndpoint: string | undefined;
-
+  // Resolve the active storage config + source (precedence: file > ts > env).
+  let storageSource: ConfigSource = 'none';
+  let activeStorage: Partial<StorageClusterConfig> = {};
   if (config?.storage?.endpoint) {
     storageSource = 'file';
-    storageEndpoint = config.storage.endpoint;
+    activeStorage = config.storage;
+  } else if (tsStorageConfig?.endpoint) {
+    storageSource = 'typescript';
+    activeStorage = tsStorageConfig;
   } else if (process.env.OPENSEARCH_STORAGE_ENDPOINT) {
     storageSource = 'environment';
-    storageEndpoint = process.env.OPENSEARCH_STORAGE_ENDPOINT;
+    activeStorage = {
+      endpoint: process.env.OPENSEARCH_STORAGE_ENDPOINT,
+      authType: (process.env.OPENSEARCH_STORAGE_AUTH_TYPE as ClusterAuthType) || undefined,
+      username: process.env.OPENSEARCH_STORAGE_USERNAME,
+      password: process.env.OPENSEARCH_STORAGE_PASSWORD,
+      awsProfile: process.env.OPENSEARCH_STORAGE_AWS_PROFILE,
+      awsRegion: process.env.OPENSEARCH_STORAGE_AWS_REGION,
+      awsService: (process.env.OPENSEARCH_STORAGE_AWS_SERVICE as 'es' | 'aoss') || undefined,
+    };
   }
 
-  // Determine observability config source
-  let obsSource: 'file' | 'environment' | 'none' = 'none';
-  let obsEndpoint: string | undefined;
+  // Resolve the active observability config + source (precedence: file > ts > env).
+  let obsSource: ConfigSource = 'none';
+  let activeObs: Partial<ObservabilityClusterConfig> = {};
   let obsIndexes: ConfigStatus['observability']['indexes'];
-
   if (config?.observability?.endpoint) {
     obsSource = 'file';
-    obsEndpoint = config.observability.endpoint;
+    activeObs = config.observability;
     obsIndexes = config.observability.indexes;
+  } else if (tsObservabilityConfig?.endpoint) {
+    obsSource = 'typescript';
+    activeObs = tsObservabilityConfig;
+    obsIndexes = tsObservabilityConfig.indexes;
   } else if (process.env.OPENSEARCH_LOGS_ENDPOINT) {
     obsSource = 'environment';
-    obsEndpoint = process.env.OPENSEARCH_LOGS_ENDPOINT;
+    activeObs = {
+      endpoint: process.env.OPENSEARCH_LOGS_ENDPOINT,
+      authType: (process.env.OPENSEARCH_LOGS_AUTH_TYPE as ClusterAuthType) || undefined,
+      username: process.env.OPENSEARCH_LOGS_USERNAME,
+      password: process.env.OPENSEARCH_LOGS_PASSWORD,
+      awsProfile: process.env.OPENSEARCH_LOGS_AWS_PROFILE,
+      awsRegion: process.env.OPENSEARCH_LOGS_AWS_REGION,
+      awsService: (process.env.OPENSEARCH_LOGS_AWS_SERVICE as 'es' | 'aoss') || undefined,
+    };
     obsIndexes = {
       traces: process.env.OPENSEARCH_LOGS_TRACES_INDEX,
       logs: process.env.OPENSEARCH_LOGS_INDEX,
     };
   }
 
-  // Resolve SigV4 fields
-  const storageAuthType: ClusterAuthType | undefined = storageSource === 'file'
-    ? config?.storage?.authType
-    : (process.env.OPENSEARCH_STORAGE_AUTH_TYPE as ClusterAuthType) || undefined;
-  const storageAwsProfile = storageSource === 'file'
-    ? config?.storage?.awsProfile
-    : process.env.OPENSEARCH_STORAGE_AWS_PROFILE;
-  const storageAwsRegion = storageSource === 'file'
-    ? config?.storage?.awsRegion
-    : process.env.OPENSEARCH_STORAGE_AWS_REGION;
-  const storageAwsService = storageSource === 'file'
-    ? config?.storage?.awsService
-    : (process.env.OPENSEARCH_STORAGE_AWS_SERVICE as 'es' | 'aoss') || undefined;
-
-  const obsAuthType: ClusterAuthType | undefined = obsSource === 'file'
-    ? config?.observability?.authType
-    : (process.env.OPENSEARCH_LOGS_AUTH_TYPE as ClusterAuthType) || undefined;
-  const obsAwsProfile = obsSource === 'file'
-    ? config?.observability?.awsProfile
-    : process.env.OPENSEARCH_LOGS_AWS_PROFILE;
-  const obsAwsRegion = obsSource === 'file'
-    ? config?.observability?.awsRegion
-    : process.env.OPENSEARCH_LOGS_AWS_REGION;
-  const obsAwsService = obsSource === 'file'
-    ? config?.observability?.awsService
-    : (process.env.OPENSEARCH_LOGS_AWS_SERVICE as 'es' | 'aoss') || undefined;
-
-  // Compute runtime storage state
+  // Compute runtime storage state. Mirror the resolution precedence so drift
+  // detection compares against whatever config the storage backend will use.
   const storageState = getStorageState();
-  const resolvedStorageConfig = getStorageConfigFromFile() ??
+  const resolvedStorageConfig = getStorageConfigFromFile() ?? getStorageConfigFromTs() ??
     (process.env.OPENSEARCH_STORAGE_ENDPOINT ? { endpoint: process.env.OPENSEARCH_STORAGE_ENDPOINT } as StorageClusterConfig : null);
   const fileConfigKey = resolvedStorageConfig ? configToCacheKey(resolvedStorageConfig) : null;
   const drifted = fileConfigKey !== storageState.configKey &&
@@ -382,32 +436,24 @@ export function getConfigStatus(): ConfigStatus {
     storage: {
       configured: storageSource !== 'none',
       source: storageSource,
-      endpoint: storageEndpoint,
-      authType: storageAuthType,
-      username: storageSource === 'file'
-        ? config?.storage?.username
-        : process.env.OPENSEARCH_STORAGE_USERNAME,
-      hasPassword: storageSource === 'file'
-        ? Boolean(config?.storage?.password)
-        : Boolean(process.env.OPENSEARCH_STORAGE_PASSWORD),
-      awsProfile: storageAwsProfile,
-      awsRegion: storageAwsRegion,
-      awsService: storageAwsService,
+      endpoint: activeStorage.endpoint,
+      authType: activeStorage.authType,
+      username: activeStorage.username,
+      hasPassword: Boolean(activeStorage.password),
+      awsProfile: activeStorage.awsProfile,
+      awsRegion: activeStorage.awsRegion,
+      awsService: activeStorage.awsService,
     },
     observability: {
       configured: obsSource !== 'none',
       source: obsSource,
-      endpoint: obsEndpoint,
-      authType: obsAuthType,
-      username: obsSource === 'file'
-        ? config?.observability?.username
-        : process.env.OPENSEARCH_LOGS_USERNAME,
-      hasPassword: obsSource === 'file'
-        ? Boolean(config?.observability?.password)
-        : Boolean(process.env.OPENSEARCH_LOGS_PASSWORD),
-      awsProfile: obsAwsProfile,
-      awsRegion: obsAwsRegion,
-      awsService: obsAwsService,
+      endpoint: activeObs.endpoint,
+      authType: activeObs.authType,
+      username: activeObs.username,
+      hasPassword: Boolean(activeObs.password),
+      awsProfile: activeObs.awsProfile,
+      awsRegion: activeObs.awsRegion,
+      awsService: activeObs.awsService,
       indexes: obsIndexes,
     },
     runtime: {

@@ -52,6 +52,10 @@ import {
   saveStorageConfig,
   saveObservabilityConfig,
   getConfigStatus,
+  setTsClusterConfig,
+  getStorageConfigFromTs,
+  getObservabilityConfigFromTs,
+  __resetTsClusterConfigForTests,
 } from '../../../../server/services/configService';
 
 const mockedFs = fs as jest.Mocked<typeof fs>;
@@ -77,6 +81,8 @@ function setStoredConfig(config: Record<string, unknown>): void {
 describe('configService (real implementation)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    // Reset the TS-config bridge so cases don't leak state into each other.
+    __resetTsClusterConfigForTests();
     // Default: config file does not exist (clean slate)
     mockedFs.existsSync.mockReturnValue(false);
     mockedFs.readFileSync.mockReturnValue('{}');
@@ -411,6 +417,133 @@ describe('configService (real implementation)', () => {
 
       expect(json).not.toContain('super-secret');
       expect(json).not.toContain('obs-secret');
+    });
+  });
+
+  // ==========================================================================
+  // TypeScript config bridge (#261): agent-health.config.ts -> server
+  // ==========================================================================
+
+  describe('TypeScript config bridge', () => {
+    const OLD_ENV = process.env;
+
+    beforeEach(() => {
+      process.env = { ...OLD_ENV };
+      delete process.env.OPENSEARCH_STORAGE_ENDPOINT;
+      delete process.env.OPENSEARCH_STORAGE_USERNAME;
+      delete process.env.OPENSEARCH_STORAGE_PASSWORD;
+      delete process.env.OPENSEARCH_LOGS_ENDPOINT;
+      delete process.env.OPENSEARCH_LOGS_USERNAME;
+      delete process.env.OPENSEARCH_LOGS_PASSWORD;
+    });
+
+    afterEach(() => {
+      process.env = OLD_ENV;
+      __resetTsClusterConfigForTests();
+    });
+
+    it('getStorageConfigFromTs / getObservabilityConfigFromTs default to null', () => {
+      expect(getStorageConfigFromTs()).toBeNull();
+      expect(getObservabilityConfigFromTs()).toBeNull();
+    });
+
+    it('setTsClusterConfig stores storage and observability cluster config', () => {
+      setTsClusterConfig({
+        storage: { endpoint: 'https://ts-store.com', authType: 'sigv4', awsRegion: 'us-east-1' },
+        observability: { endpoint: 'https://ts-obs.com', indexes: { traces: 'ts-traces-*' } },
+      });
+
+      expect(getStorageConfigFromTs()).toEqual({
+        endpoint: 'https://ts-store.com',
+        authType: 'sigv4',
+        awsRegion: 'us-east-1',
+      });
+      expect(getObservabilityConfigFromTs()?.endpoint).toBe('https://ts-obs.com');
+      expect(getObservabilityConfigFromTs()?.indexes?.traces).toBe('ts-traces-*');
+    });
+
+    it('treats an endpoint-less object as "not configured" (null)', () => {
+      setTsClusterConfig({
+        storage: { endpoint: '' } as any,
+        observability: {} as any,
+      });
+      expect(getStorageConfigFromTs()).toBeNull();
+      expect(getObservabilityConfigFromTs()).toBeNull();
+    });
+
+    it('passing undefined for a field leaves the previous value untouched', () => {
+      setTsClusterConfig({ storage: { endpoint: 'https://ts-store.com' } });
+      // Only update observability; storage should be preserved.
+      setTsClusterConfig({ observability: { endpoint: 'https://ts-obs.com' } });
+      expect(getStorageConfigFromTs()?.endpoint).toBe('https://ts-store.com');
+      expect(getObservabilityConfigFromTs()?.endpoint).toBe('https://ts-obs.com');
+    });
+
+    it('getConfigStatus reports source=typescript when only TS config is present', () => {
+      mockedFs.existsSync.mockReturnValue(false); // no JSON file
+      setTsClusterConfig({
+        storage: { endpoint: 'https://ts-store.com', username: 'ts-user', password: 'ts-pw', authType: 'basic' },
+        observability: { endpoint: 'https://ts-obs.com', awsRegion: 'us-west-2' },
+      });
+
+      const status = getConfigStatus();
+
+      expect(status.storage.source).toBe('typescript');
+      expect(status.storage.configured).toBe(true);
+      expect(status.storage.endpoint).toBe('https://ts-store.com');
+      expect(status.storage.username).toBe('ts-user');
+      expect(status.storage.hasPassword).toBe(true);
+      expect(status.observability.source).toBe('typescript');
+      expect(status.observability.endpoint).toBe('https://ts-obs.com');
+      expect(status.observability.awsRegion).toBe('us-west-2');
+    });
+
+    it('getConfigStatus prefers JSON file over TS config (precedence)', () => {
+      setStoredConfig({
+        storage: { endpoint: 'https://json-store.com', username: 'json-user' },
+      });
+      setTsClusterConfig({
+        storage: { endpoint: 'https://ts-store.com', username: 'ts-user' },
+      });
+
+      const status = getConfigStatus();
+
+      expect(status.storage.source).toBe('file');
+      expect(status.storage.endpoint).toBe('https://json-store.com');
+      expect(status.storage.username).toBe('json-user');
+    });
+
+    it('getConfigStatus prefers TS config over env vars (precedence)', () => {
+      mockedFs.existsSync.mockReturnValue(false); // no JSON file
+      process.env.OPENSEARCH_STORAGE_ENDPOINT = 'https://env-store.com';
+      process.env.OPENSEARCH_STORAGE_USERNAME = 'env-user';
+      setTsClusterConfig({
+        storage: { endpoint: 'https://ts-store.com', username: 'ts-user' },
+      });
+
+      const status = getConfigStatus();
+
+      expect(status.storage.source).toBe('typescript');
+      expect(status.storage.endpoint).toBe('https://ts-store.com');
+      expect(status.storage.username).toBe('ts-user');
+    });
+
+    it('getConfigStatus falls through to env when neither JSON nor TS is present', () => {
+      mockedFs.existsSync.mockReturnValue(false);
+      process.env.OPENSEARCH_STORAGE_ENDPOINT = 'https://env-store.com';
+
+      const status = getConfigStatus();
+
+      expect(status.storage.source).toBe('environment');
+      expect(status.storage.endpoint).toBe('https://env-store.com');
+    });
+
+    it('getConfigStatus never leaks TS-config passwords', () => {
+      setTsClusterConfig({
+        storage: { endpoint: 'https://ts-store.com', password: 'ts-super-secret' },
+      });
+      const json = JSON.stringify(getConfigStatus());
+      expect(json).not.toContain('ts-super-secret');
     });
   });
 });
