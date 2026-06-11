@@ -23,24 +23,65 @@ This works because:
 - File-based storage is used by default (no OpenSearch needed)
 - Results shown in terminal
 
+## Two config files, and why
+
+Agent Health has **two** config files that serve different roles. Knowing which
+is which avoids the most common confusion:
+
+| File | Authored by | Holds | Lifecycle |
+|------|-------------|-------|-----------|
+| `agent-health.config.ts` | you (code) | **agents, connectors, models, judge, reporters, telemetry**, and optionally **storage/observability** cluster config | hand-written, loaded at startup |
+| `agent-health.config.json` | the app (Settings UI) | **data** — storage/observability cluster endpoints + credentials | read **and written back** at runtime |
+
+The JSON file exists because the **Settings page writes config back to disk** at
+runtime (you can't safely round-trip edits into hand-authored TypeScript). The
+TypeScript file is your committed, version-controlled source of truth.
+
+For **storage** and **observability**, both files can express the same thing.
+Resolution precedence (highest wins):
+
+```
+1. agent-health.config.json   (written by the Settings UI)
+2. agent-health.config.ts     (defineConfig storage/observability)
+3. OPENSEARCH_STORAGE_* / OPENSEARCH_LOGS_* env vars
+4. file-based storage fallback (storage only)
+```
+
+Keeping the JSON highest means runtime edits from the Settings UI still win;
+the TypeScript file is the committed default. If you never touch the Settings
+UI, a single `agent-health.config.ts` (reading secrets from `process.env`) is
+all you need — no JSON file required.
+
 ## Unified Config File (`agent-health.config.json`)
 
-On first startup, Agent Health creates `agent-health.config.json` in your working directory. This file consolidates all settings that were previously scattered across environment variables and YAML files.
+When you configure storage/observability through the **Settings page** (or when
+an older `agent-health.yaml` is auto-migrated), Agent Health writes
+`agent-health.config.json` in your working directory. It holds data-source
+cluster config (and any custom agents added via the UI):
 
 ```json
 {
   "storage": {
-    "type": "file",
-    "dataDir": ".agent-health-data"
+    "endpoint": "https://my-cluster.us-east-1.es.amazonaws.com",
+    "authType": "sigv4",
+    "awsRegion": "us-east-1",
+    "awsService": "es",
+    "awsProfile": "default"
   },
-  "server": {
-    "port": 4001
+  "observability": {
+    "endpoint": "https://my-traces-cluster.us-east-1.es.amazonaws.com",
+    "authType": "sigv4",
+    "awsRegion": "us-east-1",
+    "indexes": { "traces": "otel-v1-apm-span-*", "logs": "ml-commons-logs-*" }
   },
   "debug": false
 }
 ```
 
-Settings saved through the UI (e.g., from the Settings page) are persisted to this file automatically.
+Settings saved through the UI are persisted to this file automatically. If you
+prefer a single committed config, set these in `agent-health.config.ts` instead
+(see [TypeScript Config File](#typescript-config-file-optional)) and don't edit
+them from the Settings page.
 
 ### YAML to JSON Auto-Migration
 
@@ -187,21 +228,36 @@ export default defineConfig({
       name: 'My Custom Agent',
       connectorType: 'rest', // or 'agui-streaming', 'langgraph', 'strands', 'subprocess'
       endpoint: 'http://localhost:8080/chat',
-      models: ['claude-sonnet-4'],
+      useTraces: true,
     },
   ],
 
-  // Override storage (can also use env vars)
+  // Optional: OpenSearch storage for eval results (can also use env vars / the
+  // Settings UI). Read secrets from process.env so this file stays committable.
   storage: {
-    endpoint: process.env.OPENSEARCH_STORAGE_ENDPOINT,
-    username: 'admin',
-    password: process.env.OPENSEARCH_STORAGE_PASSWORD,
+    endpoint: process.env.OPENSEARCH_STORAGE_ENDPOINT!,
+    authType: 'sigv4',          // 'none' | 'basic' | 'sigv4'
+    awsRegion: 'us-east-1',
+    awsService: 'es',           // 'es' (managed) | 'aoss' (serverless)
+    awsProfile: process.env.AWS_PROFILE,
+  },
+
+  // Optional: OpenSearch observability cluster for traces/logs (Traces tab).
+  observability: {
+    endpoint: process.env.OPENSEARCH_LOGS_ENDPOINT!,
+    authType: 'sigv4',
+    awsRegion: 'us-east-1',
+    indexes: { traces: 'otel-v1-apm-span-*', logs: 'ml-commons-logs-*' },
   },
 
   // Custom test cases location
   testCases: './my-tests/*.yaml',
 });
 ```
+
+> **Precedence:** `agent-health.config.json` (Settings UI) > `agent-health.config.ts`
+> (above) > `OPENSEARCH_*` env vars > file-based fallback. See
+> [Two config files, and why](#two-config-files-and-why).
 
 ### Config File Options
 
@@ -210,11 +266,12 @@ export default defineConfig({
 | `agents` | `UserAgentConfig[]` | Custom agents (merged with defaults) |
 | `models` | `UserModelConfig[]` | Custom models (merged with defaults) |
 | `connectors` | `AgentConnector[]` | Custom connectors |
-| `storage` | `StorageConfig` | OpenSearch storage config |
-| `observability` | `ObservabilityConfig` | OpenSearch logs config |
+| `storage` | `StorageClusterConfig` | OpenSearch storage cluster (endpoint + auth) |
+| `observability` | `ObservabilityClusterConfig` | OpenSearch traces/logs cluster (endpoint + auth + index patterns) |
 | `testCases` | `string \| string[]` | Test case file patterns |
 | `reporters` | `ReporterConfig[]` | Output reporters |
 | `judge` | `JudgeConfig` | Judge model configuration |
+| `telemetry` | `TelemetryConfig` | OTel evaluation span emission |
 | `extends` | `boolean` | Extend defaults (`true`) or replace (`false`) |
 
 ### Agent Config Options
@@ -225,12 +282,12 @@ interface UserAgentConfig {
   name: string;             // Display name
   endpoint: string;         // URL or command name
   connectorType?: string;   // 'agui-streaming', 'rest', 'langgraph', 'strands', 'subprocess', 'claude-code', 'mock'
-  models: string[];         // Supported model keys
   headers?: Record<string, string>;  // HTTP headers
   useTraces?: boolean;      // Enable trace collection
-  connectorConfig?: any;    // Connector-specific config
+  connectorConfig?: Record<string, any>;  // Connector-specific config
+  hooks?: AgentHooks;       // beforeRequest hook, etc.
   description?: string;     // Description
-  enabled?: boolean;        // Enable/disable agent
+  enabled?: boolean;        // Enable/disable agent (default true)
 }
 ```
 
@@ -267,12 +324,19 @@ Settings are loaded in this order (later overrides earlier):
       ↓
 2. Environment variables (.env file)
       ↓
-3. JSON config file (agent-health.config.json) - auto-created
+3. TypeScript config file (agent-health.config.ts) — agents/connectors/models/judge
+   and optionally storage/observability
       ↓
-4. TypeScript config file (agent-health.config.ts) - OPTIONAL, for custom agents/connectors
+4. JSON config file (agent-health.config.json) — storage/observability written
+   by the Settings UI (highest precedence for data sources)
 ```
 
-**Note:** `agent-health.config.json` is the primary config file for runtime settings (storage, server, debug). The TypeScript config file (`agent-health.config.ts`) is used for advanced customization like custom agents, connectors, and models.
+**Note:** For **agents/models/connectors/judge/reporters/telemetry**, the
+TypeScript config (`agent-health.config.ts`) is authoritative. For **storage and
+observability** data sources, the resolution order is
+`agent-health.config.json` (Settings UI) > `agent-health.config.ts` >
+`OPENSEARCH_*` env > file-based fallback — see
+[Two config files, and why](#two-config-files-and-why).
 
 ## Validation
 
