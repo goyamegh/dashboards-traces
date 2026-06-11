@@ -25,6 +25,7 @@ import { initializeStorageFromConfig } from '../../services/storageInitializer.j
 import {
   getConfigStatus,
   getStorageConfigFromFile,
+  getStorageConfigFromTs,
   saveStorageConfig,
   saveObservabilityConfig,
   clearStorageConfig,
@@ -114,23 +115,26 @@ router.post('/api/storage/test-connection', async (req: Request, res: Response) 
     // Only fall back to stored credentials when the request endpoint matches
     // the configured endpoint, to avoid forwarding saved creds to other hosts.
     const fileConfig = getStorageConfigFromFile();
+    const tsConfig = getStorageConfigFromTs();
     const envEndpoint = process.env.OPENSEARCH_STORAGE_ENDPOINT;
     const reqNorm = normalizeEndpoint(endpoint);
     const fileMatches = !!(fileConfig?.endpoint && normalizeEndpoint(fileConfig.endpoint) === reqNorm);
+    const tsMatches = !!(tsConfig?.endpoint && normalizeEndpoint(tsConfig.endpoint) === reqNorm);
     const envMatches = !!(envEndpoint && normalizeEndpoint(envEndpoint) === reqNorm);
 
     const safeFile = fileMatches ? fileConfig : null;
+    const safeTs = tsMatches ? tsConfig : null;
     const useEnv = envMatches;
 
     const result = await testStorageConnection({
       endpoint,
-      authType: authType ?? safeFile?.authType ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AUTH_TYPE : undefined),
-      username: username ?? safeFile?.username ?? (useEnv ? process.env.OPENSEARCH_STORAGE_USERNAME : undefined),
-      password: password ?? safeFile?.password ?? (useEnv ? process.env.OPENSEARCH_STORAGE_PASSWORD : undefined),
-      awsProfile: awsProfile ?? safeFile?.awsProfile ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_PROFILE : undefined),
-      awsRegion: awsRegion ?? safeFile?.awsRegion ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_REGION : undefined),
-      awsService: awsService ?? safeFile?.awsService ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_SERVICE : undefined),
-      tlsSkipVerify: tlsSkipVerify ?? safeFile?.tlsSkipVerify ?? (useEnv ? (process.env.OPENSEARCH_STORAGE_TLS_SKIP_VERIFY === 'true') : undefined),
+      authType: authType ?? safeFile?.authType ?? safeTs?.authType ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AUTH_TYPE : undefined),
+      username: username ?? safeFile?.username ?? safeTs?.username ?? (useEnv ? process.env.OPENSEARCH_STORAGE_USERNAME : undefined),
+      password: password ?? safeFile?.password ?? safeTs?.password ?? (useEnv ? process.env.OPENSEARCH_STORAGE_PASSWORD : undefined),
+      awsProfile: awsProfile ?? safeFile?.awsProfile ?? safeTs?.awsProfile ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_PROFILE : undefined),
+      awsRegion: awsRegion ?? safeFile?.awsRegion ?? safeTs?.awsRegion ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_REGION : undefined),
+      awsService: awsService ?? safeFile?.awsService ?? safeTs?.awsService ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_SERVICE : undefined),
+      tlsSkipVerify: tlsSkipVerify ?? safeFile?.tlsSkipVerify ?? safeTs?.tlsSkipVerify ?? (useEnv ? (process.env.OPENSEARCH_STORAGE_TLS_SKIP_VERIFY === 'true') : undefined),
     });
     res.json(result);
   } catch (error: any) {
@@ -467,7 +471,7 @@ router.delete('/api/storage/config/storage', (req: Request, res: Response) => {
  */
 router.post('/api/storage/config/retry', async (req: Request, res: Response) => {
   try {
-    const config = getStorageConfigFromFile() ?? getStorageConfigFromEnv() ?? null;
+    const config = getStorageConfigFromFile() ?? getStorageConfigFromTs() ?? getStorageConfigFromEnv() ?? null;
     const state = await initializeStorageFromConfig(config);
     res.json({
       success: state.backend !== 'error',

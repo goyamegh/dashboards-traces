@@ -119,6 +119,7 @@ jest.mock('@/server/services/storageInitializer', () => ({
 jest.mock('@/server/services/configService', () => ({
   getConfigStatus: jest.fn(),
   getStorageConfigFromFile: jest.fn(),
+  getStorageConfigFromTs: jest.fn(),
   saveStorageConfig: jest.fn(),
   saveObservabilityConfig: jest.fn(),
   clearStorageConfig: jest.fn(),

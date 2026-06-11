@@ -25,6 +25,7 @@ jest.mock('@/server/middleware/dataSourceConfig', () => ({
 // Mock configService
 jest.mock('@/server/services/configService', () => ({
   getObservabilityConfigFromFile: jest.fn(),
+  getObservabilityConfigFromTs: jest.fn(),
 }));
 
 import { testObservabilityConnection, checkObservabilityHealth } from '@/server/adapters/index';

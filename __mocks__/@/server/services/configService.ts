@@ -12,14 +12,14 @@
 export interface ConfigStatus {
   storage: {
     configured: boolean;
-    source: 'file' | 'environment' | 'none';
+    source: 'file' | 'typescript' | 'environment' | 'none';
     endpoint?: string;
     username?: string;
     hasPassword?: boolean;
   };
   observability: {
     configured: boolean;
-    source: 'file' | 'environment' | 'none';
+    source: 'file' | 'typescript' | 'environment' | 'none';
     endpoint?: string;
     username?: string;
     hasPassword?: boolean;
@@ -38,6 +38,13 @@ export const saveStorageConfig = jest.fn();
 export const clearStorageConfig = jest.fn();
 
 export const getObservabilityConfigFromFile = jest.fn().mockReturnValue(null);
+
+// TypeScript config bridge (agent-health.config.ts -> server). Mocked as
+// jest.fn() so tests can configure return values per case.
+export const setTsClusterConfig = jest.fn();
+export const getStorageConfigFromTs = jest.fn().mockReturnValue(null);
+export const getObservabilityConfigFromTs = jest.fn().mockReturnValue(null);
+export const __resetTsClusterConfigForTests = jest.fn();
 
 export const saveObservabilityConfig = jest.fn();
 

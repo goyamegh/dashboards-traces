@@ -13,7 +13,7 @@ import routes from './routes/index.js';
 import { setupMiddleware, setupSpaFallback } from './middleware/index.js';
 import { loadConfig } from '@/lib/config/index';
 import { migrateYamlToJsonIfNeeded } from './services/configMigration.js';
-import { getStorageConfigFromFile, getObservabilityConfigFromFile } from './services/configService.js';
+import { getStorageConfigFromFile, getObservabilityConfigFromFile, getStorageConfigFromTs, getObservabilityConfigFromTs, setTsClusterConfig } from './services/configService.js';
 import { getStorageConfigFromEnv, getObservabilityConfigFromEnv } from './middleware/dataSourceConfig.js';
 import { initializeStorageFromConfig } from './services/storageInitializer.js';
 import { runColdStartMigrations } from './services/coldStartMigrations.js';
@@ -31,7 +31,7 @@ import { connectorRegistry } from '@/services/connectors/registry';
  * Priority: file config > environment variables > null.
  */
 function resolveStorageConfigAtStartup() {
-  return getStorageConfigFromFile() ?? getStorageConfigFromEnv() ?? null;
+  return getStorageConfigFromFile() ?? getStorageConfigFromTs() ?? getStorageConfigFromEnv() ?? null;
 }
 
 /**
@@ -62,6 +62,11 @@ export async function createApp(): Promise<Express> {
 
   const config = await loadConfig();
 
+  // Bridge cluster config authored in agent-health.config.ts into the server's
+  // runtime resolution chain (#261). Precedence stays: JSON file > this TS
+  // config > OPENSEARCH_* env > file-based fallback.
+  setTsClusterConfig({ storage: config.storage, observability: config.observability });
+
   // Register user-defined connectors from config (so they work in benchmark execution)
   if (config.connectors?.length) {
     for (const connector of config.connectors) {
@@ -73,7 +78,7 @@ export async function createApp(): Promise<Express> {
   // Initialize evaluation telemetry (OTel span emission).
   // Prefer the observability data source for direct OpenSearch export — this
   // ensures eval spans land in the same cluster/index as agent spans.
-  const obsConfig = getObservabilityConfigFromFile() ?? getObservabilityConfigFromEnv();
+  const obsConfig = getObservabilityConfigFromFile() ?? getObservabilityConfigFromTs() ?? getObservabilityConfigFromEnv();
   let opensearchExporterConfig: OpenSearchExporterConfig | undefined;
   if (obsConfig?.endpoint) {
     opensearchExporterConfig = {
