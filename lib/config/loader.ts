@@ -10,6 +10,7 @@
 
 import { existsSync } from 'fs';
 import { resolve, join } from 'path';
+import { projectStatePath, userStatePath } from './statePaths.js';
 import { pathToFileURL } from 'url';
 import type { AgentConfig, ModelConfig } from '@/types';
 import type { AgentConnector } from '@/services/connectors/types';
@@ -47,23 +48,14 @@ const CONFIG_FILE_NAMES = [
 ];
 
 /**
- * Server-side JSON config file. Loaded by the *server services*
- * (configService, customAgentStore, dataSourceConfig, etc.), not by this
- * loader — the schemas are different. We only probe for it here so the
- * startup log can accurately tell the user whether *any* on-disk config
- * was picked up, instead of saying "No config file found" when the JSON
- * file is in fact driving OpenSearch / Bedrock / agents.
- */
-const SERVER_JSON_CONFIG_FILENAME = 'agent-health.config.json';
-
-/**
- * Check whether the server-side JSON config exists in the given directory.
- * This file is *not* loaded by this loader — it's a separate config plane
- * for runtime (storage, observability, custom agents) read directly by
- * server services. We only surface its presence in the startup log.
+ * Runtime state file (config v2: `.agent-health/state.json`, user or project
+ * scope). Loaded by the *server services* (configService, customAgentStore,
+ * dataSourceConfig), not by this loader. We only probe for it so the startup
+ * log can tell the user whether on-disk runtime state is in effect (ui-first
+ * mode) instead of saying "No config file found".
  */
 export function hasServerJsonConfig(cwd: string = process.cwd()): boolean {
-  return existsSync(resolve(cwd, SERVER_JSON_CONFIG_FILENAME));
+  return existsSync(projectStatePath(cwd)) || existsSync(userStatePath());
 }
 
 /**
@@ -253,8 +245,8 @@ export async function loadConfig(
     // Be explicit so the user doesn't think *no* config is in effect.
     console.log(
       `[Config] No code config (agent-health.config.{ts,js,mjs}); ` +
-      `server JSON config (${SERVER_JSON_CONFIG_FILENAME}) detected and ` +
-      `loaded by server services. Using built-in defaults for agents/models.`,
+      `runtime state (.agent-health/state.json) detected and loaded by server ` +
+      `services (ui-first mode). Using built-in defaults for agents/models.`,
     );
   } else {
     // Truly no config file — env vars and built-in defaults only.

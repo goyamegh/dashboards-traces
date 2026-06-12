@@ -51,6 +51,7 @@ tokens.json
 *.local.json
 
 # File-based storage backend (runtime data, not source)
+.agent-health/
 agent-health-data/
 
 # AI-agent generated specification files (keep steering shared)

@@ -15,14 +15,17 @@
  */
 
 import fs from 'fs';
-import path from 'path';
-import { debug } from '../../lib/debug.js';
 import { getStorageState, type StorageBackend } from '../adapters/index.js';
 import { configToCacheKey } from './opensearchClientFactory.js';
+import {
+  readLayeredState,
+  readStateScope,
+  writeStateScope,
+  isCodeFirstMode,
+  projectStatePath,
+  userStatePath,
+} from '../../lib/config/statePaths.js';
 import type { StorageClusterConfig, ObservabilityClusterConfig, ClusterAuthType } from '../../types/index.js';
-
-// Same filename used by customAgentStore.ts
-const CONFIG_FILENAME = 'agent-health.config.json';
 
 // Type for the config file sections owned by this module
 interface ConfigFileDataSources {
@@ -153,49 +156,15 @@ export function __resetTsClusterConfigForTests(): void {
 }
 
 /**
- * Get the config file path.
- * Checks CWD first, then falls back to CWD as default write location.
+ * Read the effective runtime state (config v2).
+ *
+ * Reads go through the layered state resolver (project `.agent-health/state.json`
+ * over user `~/.agent-health/state.json`). In code-first mode (an
+ * `agent-health.config.ts` is present) this returns `{}`, so storage/observability
+ * fall through to the authored `.ts` config (the strict "state ignored" rule).
  */
-function getConfigFilePath(): string {
-  const cwdPath = path.join(process.cwd(), CONFIG_FILENAME);
-  return cwdPath;
-}
-
-/**
- * Read the full JSON config from disk.
- * Returns `{}` when file doesn't exist (safe to create new).
- * Returns `null` when file exists but read/parse fails (unsafe to write — would clobber).
- */
-function readConfigFromDisk(): Record<string, unknown> | null {
-  try {
-    const filePath = getConfigFilePath();
-    if (!fs.existsSync(filePath)) return {};
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      console.error('[ConfigService] Config file contains non-object content, refusing to overwrite');
-      return null;
-    }
-    return parsed as Record<string, unknown>;
-  } catch (err) {
-    console.error('[ConfigService] Failed to read config file:', err);
-    return null;
-  }
-}
-
-/**
- * Write config back to disk, preserving all sibling keys.
- * Same pattern as customAgentStore.ts.
- */
-function writeConfigToDisk(config: Record<string, unknown>): void {
-  try {
-    const filePath = getConfigFilePath();
-    fs.writeFileSync(filePath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-    debug('ConfigService', `Config saved to ${filePath}`);
-  } catch (error) {
-    console.error('[ConfigService] Failed to write config file:', error);
-    throw error;
-  }
+function readConfigFromDisk(): Record<string, unknown> {
+  return readLayeredState();
 }
 
 // ============================================================================
@@ -203,11 +172,11 @@ function writeConfigToDisk(config: Record<string, unknown>): void {
 // ============================================================================
 
 /**
- * Get storage configuration from file
- * Returns null if not configured in file
+ * Get storage configuration from the runtime state file.
+ * Returns null if not configured (or in code-first mode — state is ignored).
  */
 export function getStorageConfigFromFile(): StorageClusterConfig | null {
-  const config = readConfigFromDisk() as ConfigFileDataSources | null;
+  const config = readConfigFromDisk() as ConfigFileDataSources;
 
   if (!config?.storage?.endpoint) {
     return null;
@@ -229,11 +198,9 @@ export function getStorageConfigFromFile(): StorageClusterConfig | null {
  * Save storage configuration to file
  */
 export function saveStorageConfig(storageConfig: StorageClusterConfig): void {
-  const existing = readConfigFromDisk();
-  if (existing === null) {
-    throw new Error('Cannot save storage config: existing config file is unreadable or corrupt');
-  }
-  const existingStorage = (existing.storage as any) || {};
+  // Merge against the project-scope state file (the write target). Throws in
+  // code-first mode via writeStateScope below.
+  const existingStorage = (readStateScope('project').storage as any) || {};
 
   // Use ?? so that an absent/undefined field in the incoming payload falls back
   // to whatever is already stored. The form converts sentinel and empty values
@@ -243,7 +210,7 @@ export function saveStorageConfig(storageConfig: StorageClusterConfig): void {
   const resolvedUsername = storageConfig.username ?? existingStorage.username;
   const resolvedPassword = storageConfig.password ?? existingStorage.password;
 
-  existing.storage = {
+  const storage = {
     endpoint: storageConfig.endpoint,
     ...(storageConfig.authType && { authType: storageConfig.authType }),
     ...(resolvedUsername && { username: resolvedUsername }),
@@ -254,29 +221,16 @@ export function saveStorageConfig(storageConfig: StorageClusterConfig): void {
     ...(storageConfig.tlsSkipVerify !== undefined && { tlsSkipVerify: storageConfig.tlsSkipVerify }),
   };
 
-  writeConfigToDisk(existing);
+  writeStateScope({ storage }, 'project');
 }
 
 /**
  * Clear storage configuration from file
  */
 export function clearStorageConfig(): void {
-  const existing = readConfigFromDisk();
-  if (existing === null) {
-    throw new Error('Cannot clear storage config: existing config file is unreadable or corrupt');
-  }
-  delete existing.storage;
-
-  // If config is now empty, delete the file
-  if (Object.keys(existing).length === 0) {
-    const filePath = getConfigFilePath();
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-      debug('ConfigService', 'Config file deleted (empty)');
-    }
-  } else {
-    writeConfigToDisk(existing);
-  }
+  // Deleting the key removes it from the project state file, preserving
+  // siblings. Throws in code-first mode (state is managed by the .ts).
+  writeStateScope({ storage: undefined }, 'project');
 }
 
 // ============================================================================
@@ -288,7 +242,7 @@ export function clearStorageConfig(): void {
  * Returns null if not configured in file
  */
 export function getObservabilityConfigFromFile(): ObservabilityClusterConfig | null {
-  const config = readConfigFromDisk() as ConfigFileDataSources | null;
+  const config = readConfigFromDisk() as ConfigFileDataSources;
 
   if (!config?.observability?.endpoint) {
     return null;
@@ -311,18 +265,14 @@ export function getObservabilityConfigFromFile(): ObservabilityClusterConfig | n
  * Save observability configuration to file
  */
 export function saveObservabilityConfig(obsConfig: ObservabilityClusterConfig): void {
-  const existing = readConfigFromDisk();
-  if (existing === null) {
-    throw new Error('Cannot save observability config: existing config file is unreadable or corrupt');
-  }
-  const existingObs = (existing.observability as any) || {};
+  const existingObs = (readStateScope('project').observability as any) || {};
 
   // Use ?? so that an absent/undefined field in the incoming payload falls back
   // to whatever is already stored.
   const resolvedUsername = obsConfig.username ?? existingObs.username;
   const resolvedPassword = obsConfig.password ?? existingObs.password;
 
-  existing.observability = {
+  const observability = {
     endpoint: obsConfig.endpoint,
     ...(obsConfig.authType && { authType: obsConfig.authType }),
     ...(resolvedUsername && { username: resolvedUsername }),
@@ -336,29 +286,14 @@ export function saveObservabilityConfig(obsConfig: ObservabilityClusterConfig): 
     }),
   };
 
-  writeConfigToDisk(existing);
+  writeStateScope({ observability }, 'project');
 }
 
 /**
  * Clear observability configuration from file
  */
 export function clearObservabilityConfig(): void {
-  const existing = readConfigFromDisk();
-  if (existing === null) {
-    throw new Error('Cannot clear observability config: existing config file is unreadable or corrupt');
-  }
-  delete existing.observability;
-
-  // If config is now empty, delete the file
-  if (Object.keys(existing).length === 0) {
-    const filePath = getConfigFilePath();
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-      debug('ConfigService', 'Config file deleted (empty)');
-    }
-  } else {
-    writeConfigToDisk(existing);
-  }
+  writeStateScope({ observability: undefined }, 'project');
 }
 
 // ============================================================================
@@ -370,17 +305,20 @@ export function clearObservabilityConfig(): void {
  * Never exposes credentials - only shows source and endpoint
  */
 export function getConfigStatus(): ConfigStatus {
-  const config = readConfigFromDisk() as ConfigFileDataSources | null;
+  const config = readConfigFromDisk() as ConfigFileDataSources;
 
-  // Resolve the active storage config + source (precedence: file > ts > env).
+  // Resolve the active storage config + source.
+  // Precedence: authored .ts (typescript) > runtime state file > env. In
+  // code-first mode `config` (layered state) is {} so .ts wins; in ui-first
+  // there is no .ts so the state file wins.
   let storageSource: ConfigSource = 'none';
   let activeStorage: Partial<StorageClusterConfig> = {};
-  if (config?.storage?.endpoint) {
-    storageSource = 'file';
-    activeStorage = config.storage;
-  } else if (tsStorageConfig?.endpoint) {
+  if (tsStorageConfig?.endpoint) {
     storageSource = 'typescript';
     activeStorage = tsStorageConfig;
+  } else if (config?.storage?.endpoint) {
+    storageSource = 'file';
+    activeStorage = config.storage;
   } else if (process.env.OPENSEARCH_STORAGE_ENDPOINT) {
     storageSource = 'environment';
     activeStorage = {
@@ -394,18 +332,18 @@ export function getConfigStatus(): ConfigStatus {
     };
   }
 
-  // Resolve the active observability config + source (precedence: file > ts > env).
+  // Resolve the active observability config + source (precedence: ts > state > env).
   let obsSource: ConfigSource = 'none';
   let activeObs: Partial<ObservabilityClusterConfig> = {};
   let obsIndexes: ConfigStatus['observability']['indexes'];
-  if (config?.observability?.endpoint) {
-    obsSource = 'file';
-    activeObs = config.observability;
-    obsIndexes = config.observability.indexes;
-  } else if (tsObservabilityConfig?.endpoint) {
+  if (tsObservabilityConfig?.endpoint) {
     obsSource = 'typescript';
     activeObs = tsObservabilityConfig;
     obsIndexes = tsObservabilityConfig.indexes;
+  } else if (config?.observability?.endpoint) {
+    obsSource = 'file';
+    activeObs = config.observability;
+    obsIndexes = config.observability.indexes;
   } else if (process.env.OPENSEARCH_LOGS_ENDPOINT) {
     obsSource = 'environment';
     activeObs = {
@@ -426,7 +364,7 @@ export function getConfigStatus(): ConfigStatus {
   // Compute runtime storage state. Mirror the resolution precedence so drift
   // detection compares against whatever config the storage backend will use.
   const storageState = getStorageState();
-  const resolvedStorageConfig = getStorageConfigFromFile() ?? getStorageConfigFromTs() ??
+  const resolvedStorageConfig = getStorageConfigFromTs() ?? getStorageConfigFromFile() ??
     (process.env.OPENSEARCH_STORAGE_ENDPOINT ? { endpoint: process.env.OPENSEARCH_STORAGE_ENDPOINT } as StorageClusterConfig : null);
   const fileConfigKey = resolvedStorageConfig ? configToCacheKey(resolvedStorageConfig) : null;
   const drifted = fileConfigKey !== storageState.configKey &&
@@ -468,9 +406,9 @@ export function getConfigStatus(): ConfigStatus {
 }
 
 /**
- * Check if config file exists
+ * Whether any config is in effect: an authored config file (code-first) or a
+ * runtime state file at project or user scope.
  */
 export function configFileExists(): boolean {
-  const filePath = getConfigFilePath();
-  return fs.existsSync(filePath);
+  return isCodeFirstMode() || fs.existsSync(projectStatePath()) || fs.existsSync(userStatePath());
 }
