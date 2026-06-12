@@ -15,6 +15,9 @@ import { resolve } from 'path';
 import { buildEvaluationPrompt, JudgeRequest, JudgeResponse } from '@/server/services/bedrockService';
 import { JUDGE_SYSTEM_PROMPT } from '@/server/prompts/judgePrompt';
 import { resolvePiCommand } from '@/server/services/piBinary';
+import { parseJudgeResponse } from '@/server/services/judgeResponseParser';
+import { buildJudgeDebug } from '@/server/services/judgeDebug';
+import { Evaluator } from '@/types';
 import { debug } from '@/lib/debug';
 
 // ============================================================================
@@ -45,34 +48,17 @@ export interface SpawnPiOptions {
 
 /**
  * Parse the verdict JSON out of a raw pi judge response string. Handles
- * markdown ```json fences and bare `{...}`. @internal
+ * markdown ```json fences and bare `{...}`.
+ *
+ * Delegates to the shared {@link parseJudgeResponse} so this provider honors
+ * the evaluator's `scoringConfig.metrics` (instead of hardcoding the legacy
+ * 4-metric schema) and surfaces extra fields the model emits via
+ * `JudgeResponse.extraFields`. The `evaluator` argument is optional for
+ * back-compat with the standalone unit test that exercises this helper.
+ * @internal
  */
-export function parsePiJudgeJson(result: string): JudgeResponse {
-  let jsonText = result.trim();
-  const jsonMatch = jsonText.match(/```json\s*([\s\S]*?)\s*```/);
-  if (jsonMatch) {
-    jsonText = jsonMatch[1];
-  } else {
-    const startIdx = jsonText.indexOf('{');
-    const endIdx = jsonText.lastIndexOf('}');
-    if (startIdx !== -1 && endIdx !== -1) {
-      jsonText = jsonText.slice(startIdx, endIdx + 1);
-    }
-  }
-  const parsed = JSON.parse(jsonText);
-  const accuracy = parsed.accuracy ?? parsed.metrics?.accuracy ?? 0;
-  return {
-    passFailStatus: (parsed.pass_fail_status || 'failed') as 'passed' | 'failed',
-    metrics: {
-      accuracy,
-      faithfulness: parsed.metrics?.faithfulness,
-      latency_score: parsed.metrics?.latency_score,
-      trajectory_alignment_score: parsed.metrics?.trajectory_alignment_score,
-    },
-    llmJudgeReasoning: parsed.reasoning,
-    improvementStrategies: parsed.improvement_strategies || [],
-    duration: 0,
-  };
+export function parsePiJudgeJson(result: string, evaluator?: Evaluator): JudgeResponse {
+  return parseJudgeResponse(result, { evaluator, source: 'PiJudge' });
 }
 
 // ============================================================================
@@ -82,32 +68,59 @@ export function parsePiJudgeJson(result: string): JudgeResponse {
 /**
  * Evaluate agent trajectory using pi.dev CLI
  * Spawns `pi --print --mode json` and pipes the evaluation prompt to stdin.
+ *
+ * @param request - The judge request containing trajectory and expected outcomes
+ * @param evaluator - Optional saved evaluator. When provided, its `systemPrompt`
+ *   is passed to the pi CLI via `--system-prompt`, fully replacing the
+ *   hardcoded `JUDGE_SYSTEM_PROMPT` baseline. `scoringConfig.metrics` drives
+ *   dynamic metric extraction from the response.
  */
 export async function evaluateWithPi(
-  request: JudgeRequest
+  request: JudgeRequest,
+  evaluator?: Evaluator
 ): Promise<JudgeResponse> {
   const { trajectory, expectedOutcomes, expectedTrajectory, logs } = request;
 
   debug('PiJudge', '========== PI JUDGE REQUEST ==========');
   debug('PiJudge', 'Trajectory steps:', trajectory.length);
   debug('PiJudge', 'Expected outcomes:', expectedOutcomes?.length || 0);
+  debug('PiJudge', 'Evaluator:', evaluator ? `${evaluator.name} (${evaluator.id})` : '(none, using default prompt)');
 
   const userPrompt = buildEvaluationPrompt(trajectory, expectedOutcomes, expectedTrajectory, logs);
   debug('PiJudge', 'Prompt built, length:', userPrompt.length, 'characters');
 
+  // Saved evaluator's prompt fully replaces the hardcoded baseline; falling
+  // back keeps back-compat with callers that don't pass an evaluator (the
+  // SDK pre-evaluator code path and a couple of integration tests).
+  const systemPrompt =
+    evaluator?.systemPrompt && evaluator.systemPrompt.trim().length > 0
+      ? evaluator.systemPrompt
+      : JUDGE_SYSTEM_PROMPT;
+
   const startTime = Date.now();
 
-  const result = await spawnPi(userPrompt, JUDGE_SYSTEM_PROMPT);
+  const result = await spawnPi(userPrompt, systemPrompt);
   const duration = Date.now() - startTime;
 
   debug('PiJudge', 'Response received in', duration, 'ms');
   debug('PiJudge', '--- Raw Pi Response ---');
   debug('PiJudge', result.substring(0, 500) + (result.length > 500 ? '...' : ''));
 
-  const parsed = parsePiJudgeJson(result);
+  const parsed = parseJudgeResponse(result, {
+    evaluator,
+    duration,
+    source: 'PiJudge',
+  });
   debug('PiJudge', '========== PI JUDGE RESPONSE ==========');
   debug('PiJudge', 'Pass/Fail Status:', parsed.passFailStatus?.toUpperCase() || 'MISSING');
-  return { ...parsed, duration };
+  const judgeDebug = buildJudgeDebug({
+    provider: 'pi',
+    evaluatorId: evaluator?.id,
+    systemPrompt,
+    userPrompt,
+  });
+  if (judgeDebug) parsed.judgeDebug = judgeDebug;
+  return parsed;
 }
 
 // ============================================================================

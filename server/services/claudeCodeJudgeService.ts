@@ -15,6 +15,9 @@ import { readFileSync } from 'fs';
 import { resolve } from 'path';
 import { buildEvaluationPrompt, JudgeRequest, JudgeResponse } from '@/server/services/bedrockService';
 import { JUDGE_SYSTEM_PROMPT } from '@/server/prompts/judgePrompt';
+import { parseJudgeResponse } from '@/server/services/judgeResponseParser';
+import { buildJudgeDebug } from '@/server/services/judgeDebug';
+import { Evaluator } from '@/types';
 import { debug } from '@/lib/debug';
 
 // ============================================================================
@@ -45,14 +48,28 @@ export function loadSkillContent(): string {
 }
 
 /**
- * Build the full system prompt including skill content
+ * Build the full system prompt including skill content.
+ *
+ * When the caller passes a saved {@link Evaluator}, its `systemPrompt`
+ * REPLACES the hardcoded `JUDGE_SYSTEM_PROMPT` baseline — the same way the
+ * `bedrock` and `openai-compatible` providers have always behaved. Without
+ * this an evaluator saved in storage (e.g. a custom `cp-oncall` judge prompt)
+ * silently falls back to the built-in baseline on the claude-code path,
+ * which is exactly the silent-prompt-drop bug fixed in this change.
+ *
+ * The AGENT_HEALTH.md skill is appended in either case so the judge keeps
+ * its operational reference material regardless of the saved prompt.
  */
-export function buildSystemPrompt(): string {
+export function buildSystemPrompt(evaluator?: Evaluator): string {
+  const base =
+    evaluator?.systemPrompt && evaluator.systemPrompt.trim().length > 0
+      ? evaluator.systemPrompt
+      : JUDGE_SYSTEM_PROMPT;
   const skillContent = loadSkillContent();
   if (skillContent) {
-    return `${JUDGE_SYSTEM_PROMPT}\n\n---\n\n## Agent Health Reference\n\n${skillContent}`;
+    return `${base}\n\n---\n\n## Agent Health Reference\n\n${skillContent}`;
   }
-  return JUDGE_SYSTEM_PROMPT;
+  return base;
 }
 
 // ============================================================================
@@ -65,21 +82,28 @@ export function buildSystemPrompt(): string {
  * and pipes the evaluation prompt to stdin.
  *
  * @param request - The judge request containing trajectory and expected outcomes
- * @returns JudgeResponse with pass/fail, accuracy, reasoning, and improvement strategies
+ * @param evaluator - Optional saved evaluator. When provided, its `systemPrompt`
+ *   replaces the hardcoded `JUDGE_SYSTEM_PROMPT` (the AGENT_HEALTH.md skill is
+ *   still appended) and its `scoringConfig.metrics` drives dynamic metric
+ *   extraction in the parsed response. When absent, falls back to the legacy
+ *   hardcoded prompt + 4-metric schema for back-compat with old callers.
+ * @returns JudgeResponse with pass/fail, metrics, reasoning, and improvement strategies
  */
 export async function evaluateWithClaudeCode(
-  request: JudgeRequest
+  request: JudgeRequest,
+  evaluator?: Evaluator
 ): Promise<JudgeResponse> {
   const { trajectory, expectedOutcomes, expectedTrajectory, logs } = request;
 
   debug('ClaudeCodeJudge', '========== CLAUDE CODE JUDGE REQUEST ==========');
   debug('ClaudeCodeJudge', 'Trajectory steps:', trajectory.length);
   debug('ClaudeCodeJudge', 'Expected outcomes:', expectedOutcomes?.length || 0);
+  debug('ClaudeCodeJudge', 'Evaluator:', evaluator ? `${evaluator.name} (${evaluator.id})` : '(none, using default prompt)');
 
   const userPrompt = buildEvaluationPrompt(trajectory, expectedOutcomes, expectedTrajectory, logs);
   debug('ClaudeCodeJudge', 'Prompt built, length:', userPrompt.length, 'characters');
 
-  const systemPrompt = buildSystemPrompt();
+  const systemPrompt = buildSystemPrompt(evaluator);
 
   const startTime = Date.now();
 
@@ -90,43 +114,23 @@ export async function evaluateWithClaudeCode(
   debug('ClaudeCodeJudge', '--- Raw Claude Code Response ---');
   debug('ClaudeCodeJudge', result.substring(0, 500) + (result.length > 500 ? '...' : ''));
 
-  // Extract JSON from response — handles markdown code blocks and bare JSON
-  let jsonText = result.trim();
-  const jsonMatch = jsonText.match(/```json\s*([\s\S]*?)\s*```/);
-  if (jsonMatch) {
-    jsonText = jsonMatch[1];
-    debug('ClaudeCodeJudge', 'Extracted JSON from markdown code block');
-  } else {
-    const startIdx = jsonText.indexOf('{');
-    const endIdx = jsonText.lastIndexOf('}');
-    if (startIdx !== -1 && endIdx !== -1) {
-      jsonText = jsonText.slice(startIdx, endIdx + 1);
-      debug('ClaudeCodeJudge', 'Extracted JSON from text');
-    }
-  }
-
-  const parsed = JSON.parse(jsonText);
-
-  debug('ClaudeCodeJudge', '========== CLAUDE CODE JUDGE RESPONSE ==========');
-  debug('ClaudeCodeJudge', 'Pass/Fail Status:', parsed.pass_fail_status?.toUpperCase() || 'MISSING');
-
-  // Handle both simplified format (accuracy at top level) and legacy format
-  const accuracy = parsed.accuracy ?? parsed.metrics?.accuracy ?? 0;
-  debug('ClaudeCodeJudge', 'Accuracy:', accuracy);
-  debug('ClaudeCodeJudge', 'Improvement Strategies:', parsed.improvement_strategies?.length ?? 0, 'items');
-
-  return {
-    passFailStatus: (parsed.pass_fail_status || 'failed') as 'passed' | 'failed',
-    metrics: {
-      accuracy,
-      faithfulness: parsed.metrics?.faithfulness,
-      latency_score: parsed.metrics?.latency_score,
-      trajectory_alignment_score: parsed.metrics?.trajectory_alignment_score,
-    },
-    llmJudgeReasoning: parsed.reasoning,
-    improvementStrategies: parsed.improvement_strategies || [],
+  // Shared parser: dynamic metric extraction from `evaluator.scoringConfig.metrics`,
+  // captures `rawResponse` for the run-detail debug surface, and stuffs any
+  // unexpected JSON keys the model emitted into `extraFields` instead of
+  // silently dropping them.
+  const parsed = parseJudgeResponse(result, {
+    evaluator,
     duration,
-  };
+    source: 'ClaudeCodeJudge',
+  });
+  const judgeDebug = buildJudgeDebug({
+    provider: 'claude-code',
+    evaluatorId: evaluator?.id,
+    systemPrompt,
+    userPrompt,
+  });
+  if (judgeDebug) parsed.judgeDebug = judgeDebug;
+  return parsed;
 }
 
 // ============================================================================

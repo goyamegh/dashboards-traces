@@ -285,6 +285,10 @@ export const TestCaseDetailPage: React.FC = () => {
         {
           agentKey: runConfig.agentKey,
           modelId: runConfig.modelId,
+          // Forward customer-supplied judge model id alongside agent
+          // model. When undefined, the server picks via
+          // evaluator.inferenceConfig.modelId → BEDROCK_MODEL_ID env.
+          judgeModelId: runConfig.judgeModelId,
           testCaseId: testCase.id,
           evaluatorId: runConfig.evaluatorId,
           // Persist the user-supplied run name (or fall back to the
@@ -792,29 +796,53 @@ export const TestCaseDetailPage: React.FC = () => {
                   </Select>
                 </div>
                 <div className="space-y-2">
-                  <Label>Judge Model</Label>
+                  {/* Agent Model — the LLM the AGENT uses. Filtered to
+                      providers the agent connector can actually invoke
+                      (bedrock / openai-compatible / litellm). Hides
+                      judge-only pseudo-models (pi-judge, agent-trace-judge,
+                      claude-code-judge, agentic-*) so they can't be
+                      accidentally picked as the agent's model. */}
+                  <Label>Agent Model</Label>
                   <JudgeModelSelect
                     value={runConfig.modelId}
                     onValueChange={val => setRunConfig(prev => ({ ...prev, modelId: val }))}
+                    filterToAgentLLMs={true}
                   />
                 </div>
               </div>
-              <div className="space-y-2">
-                <Label>Evaluator</Label>
-                <Select
-                  value={runConfig.evaluatorId || '__default__'}
-                  onValueChange={val => setRunConfig(prev => ({ ...prev, evaluatorId: val === '__default__' ? undefined : val }))}
-                >
-                  <SelectTrigger><SelectValue placeholder="RCA Default" /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="__default__">RCA Default</SelectItem>
-                    {evaluators.map(evaluator => (
-                      <SelectItem key={evaluator.id} value={evaluator.id}>
-                        {evaluator.name} {evaluator.isSystem ? '(System)' : ''}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>Evaluator</Label>
+                  <Select
+                    value={runConfig.evaluatorId || '__default__'}
+                    onValueChange={val => setRunConfig(prev => ({ ...prev, evaluatorId: val === '__default__' ? undefined : val }))}
+                  >
+                    <SelectTrigger><SelectValue placeholder="RCA Default" /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="__default__">RCA Default</SelectItem>
+                      {evaluators.map(evaluator => (
+                        <SelectItem key={evaluator.id} value={evaluator.id}>
+                          {evaluator.name} {evaluator.isSystem ? '(System)' : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-2">
+                  {/* Judge Model — customer input, distinct from the
+                      agent's model. "Use evaluator default" maps to
+                      undefined; server resolves from
+                      evaluator.inferenceConfig.modelId then BEDROCK_MODEL_ID.
+                      Includes ALL providers (pi/agent/agentic/claude-code/
+                      bedrock/openai-compatible) since this dropdown
+                      controls the judge LLM, not the agent's. */}
+                  <Label>Judge Model</Label>
+                  <JudgeModelSelect
+                    value={runConfig.judgeModelId ?? ''}
+                    onValueChange={val => setRunConfig(prev => ({ ...prev, judgeModelId: val || undefined }))}
+                    allowDefault={true}
+                  />
+                </div>
               </div>
               <div className="flex justify-end gap-2 pt-2">
                 <Button variant="ghost" onClick={() => setIsRunConfigOpen(false)}>Cancel</Button>
@@ -939,7 +967,7 @@ const LiveRunPanel: React.FC<LiveRunPanelProps> = ({
             <Activity size={14} className="mr-2" /> Traces
           </TabsTrigger>
           <TabsTrigger value="judge" className="rounded-none border-b-2 border-transparent data-[state=active]:border-opensearch-blue data-[state=active]:text-opensearch-blue">
-            <Scale size={14} className="mr-2" /> LLM Judge
+            <Scale size={14} className="mr-2" /> Judge Evaluation
           </TabsTrigger>
           <TabsTrigger value="annotations" className="rounded-none border-b-2 border-transparent data-[state=active]:border-opensearch-blue data-[state=active]:text-opensearch-blue">
             <MessageSquare size={14} className="mr-2" /> Annotations
@@ -979,7 +1007,7 @@ const LiveRunPanel: React.FC<LiveRunPanelProps> = ({
         <TabsContent value="judge" className="flex-1 overflow-y-auto p-6 mt-0">
           <div className="flex flex-col items-center justify-center text-center text-muted-foreground py-16">
             <Scale size={32} className="mb-3 opacity-30" />
-            <p className="text-sm font-medium">LLM Judge reasoning will appear here once judging completes</p>
+            <p className="text-sm font-medium">Judge evaluation will appear here once judging completes</p>
             <p className="text-xs mt-1">
               The judge runs after the agent finishes; expect a short delay after the trajectory ends.
             </p>

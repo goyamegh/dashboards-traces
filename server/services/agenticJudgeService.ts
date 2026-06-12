@@ -19,6 +19,9 @@ import { spawn } from 'child_process';
 import { buildEvaluationPrompt, JudgeRequest, JudgeResponse } from '@/server/services/bedrockService';
 import { JUDGE_SYSTEM_PROMPT } from '@/server/prompts/judgePrompt';
 import { loadSkillContent } from '@/server/services/claudeCodeJudgeService';
+import { parseJudgeResponse as parseSharedJudgeResponse } from '@/server/services/judgeResponseParser';
+import { buildJudgeDebug } from '@/server/services/judgeDebug';
+import { Evaluator } from '@/types';
 import { debug } from '@/lib/debug';
 
 // ============================================================================
@@ -69,11 +72,17 @@ export interface AgenticJudgeOptions {
  *
  * @param request - The judge request containing trajectory and expected outcomes
  * @param options - Configuration for the agentic judge backend
+ * @param evaluator - Optional saved evaluator. When provided, its `systemPrompt`
+ *   replaces the hardcoded `JUDGE_SYSTEM_PROMPT` baseline (the
+ *   `AGENTIC_JUDGE_ADDENDUM` describing this provider's tool-use contract is
+ *   still appended on top). `scoringConfig.metrics` drives dynamic metric
+ *   extraction in the parsed response.
  * @returns JudgeResponse with pass/fail, metrics, reasoning, and improvement strategies
  */
 export async function evaluateWithAgenticJudge(
   request: JudgeRequest,
-  options: AgenticJudgeOptions = { backend: 'claude-code' }
+  options: AgenticJudgeOptions = { backend: 'claude-code' },
+  evaluator?: Evaluator
 ): Promise<JudgeResponse> {
   const { trajectory, expectedOutcomes, expectedTrajectory, logs } = request;
 
@@ -81,13 +90,14 @@ export async function evaluateWithAgenticJudge(
   debug('AgenticJudge', 'Backend:', options.backend);
   debug('AgenticJudge', 'Trajectory steps:', trajectory.length);
   debug('AgenticJudge', 'Expected outcomes:', expectedOutcomes?.length || 0);
+  debug('AgenticJudge', 'Evaluator:', evaluator ? `${evaluator.name} (${evaluator.id})` : '(none, using default prompt)');
 
   if (options.backend === 'custom' && options.endpoint) {
-    return evaluateWithCustomEndpoint(request, options);
+    return evaluateWithCustomEndpoint(request, options, evaluator);
   }
 
   // Default: claude-code agentic mode (with tool access)
-  return evaluateWithClaudeCodeAgentic(request);
+  return evaluateWithClaudeCodeAgentic(request, evaluator);
 }
 
 // ============================================================================
@@ -97,15 +107,26 @@ export async function evaluateWithAgenticJudge(
 /**
  * Run evaluation using Claude Code in full agentic mode (not --print).
  * This allows the judge to use tools, read files, and iterate.
+ *
+ * The saved evaluator's `systemPrompt` (when provided) replaces the
+ * hardcoded `JUDGE_SYSTEM_PROMPT` baseline; the `AGENTIC_JUDGE_ADDENDUM`
+ * (the tool-use contract specific to this provider) and the AGENT_HEALTH.md
+ * skill are still appended so the agentic-judge contract isn't lost when a
+ * user customizes the prompt.
  */
 async function evaluateWithClaudeCodeAgentic(
-  request: JudgeRequest
+  request: JudgeRequest,
+  evaluator?: Evaluator
 ): Promise<JudgeResponse> {
   const { trajectory, expectedOutcomes, expectedTrajectory, logs } = request;
 
   const userPrompt = buildEvaluationPrompt(trajectory, expectedOutcomes, expectedTrajectory, logs);
   const skillContent = loadSkillContent();
-  const systemPrompt = JUDGE_SYSTEM_PROMPT + AGENTIC_JUDGE_ADDENDUM +
+  const baseSystemPrompt =
+    evaluator?.systemPrompt && evaluator.systemPrompt.trim().length > 0
+      ? evaluator.systemPrompt
+      : JUDGE_SYSTEM_PROMPT;
+  const systemPrompt = baseSystemPrompt + AGENTIC_JUDGE_ADDENDUM +
     (skillContent ? `\n\n---\n\n## Agent Health Reference\n\n${skillContent}` : '');
 
   const startTime = Date.now();
@@ -117,7 +138,15 @@ async function evaluateWithClaudeCodeAgentic(
   debug('AgenticJudge', '--- Raw Response ---');
   debug('AgenticJudge', result.substring(0, 500) + (result.length > 500 ? '...' : ''));
 
-  return parseJudgeResponse(result, duration);
+  const parsed = parseJudgeResponse(result, duration, evaluator);
+  const judgeDebug = buildJudgeDebug({
+    provider: 'agentic',
+    evaluatorId: evaluator?.id,
+    systemPrompt,
+    userPrompt,
+  });
+  if (judgeDebug) parsed.judgeDebug = judgeDebug;
+  return parsed;
 }
 
 // ============================================================================
@@ -127,14 +156,24 @@ async function evaluateWithClaudeCodeAgentic(
 /**
  * Run evaluation via a custom agentic judge endpoint.
  * The endpoint should accept the same JudgeRequest format and return JudgeResponse.
+ *
+ * The saved evaluator's `systemPrompt` (when provided) replaces the
+ * hardcoded baseline before being forwarded so the remote endpoint sees the
+ * same prompt the local agentic backend would use.
  */
 async function evaluateWithCustomEndpoint(
   request: JudgeRequest,
-  options: AgenticJudgeOptions
+  options: AgenticJudgeOptions,
+  evaluator?: Evaluator
 ): Promise<JudgeResponse> {
   const startTime = Date.now();
 
   debug('AgenticJudge', 'Calling custom endpoint:', options.endpoint);
+
+  const baseSystemPrompt =
+    evaluator?.systemPrompt && evaluator.systemPrompt.trim().length > 0
+      ? evaluator.systemPrompt
+      : JUDGE_SYSTEM_PROMPT;
 
   const response = await fetch(options.endpoint!, {
     method: 'POST',
@@ -147,7 +186,7 @@ async function evaluateWithCustomEndpoint(
       expectedOutcomes: request.expectedOutcomes,
       expectedTrajectory: request.expectedTrajectory,
       logs: request.logs,
-      systemPrompt: JUDGE_SYSTEM_PROMPT + AGENTIC_JUDGE_ADDENDUM,
+      systemPrompt: baseSystemPrompt + AGENTIC_JUDGE_ADDENDUM,
     }),
     signal: AbortSignal.timeout(AGENTIC_TIMEOUT_MS),
   });
@@ -169,10 +208,10 @@ async function evaluateWithCustomEndpoint(
 
   // Otherwise, try to parse the result as raw LLM output
   if (typeof result === 'string' || result.result) {
-    return parseJudgeResponse(result.result || result, duration);
+    return parseJudgeResponse(result.result || result, duration, evaluator);
   }
 
-  return parseJudgeResponse(JSON.stringify(result), duration);
+  return parseJudgeResponse(JSON.stringify(result), duration, evaluator);
 }
 
 // ============================================================================
@@ -284,42 +323,18 @@ function spawnClaudeAgentic(prompt: string, systemPrompt: string): Promise<strin
 // ============================================================================
 
 /**
- * Parse raw judge response into structured JudgeResponse
+ * Parse raw judge response into structured JudgeResponse.
+ *
+ * Delegates to the shared {@link parseSharedJudgeResponse} so the agentic
+ * provider honors `evaluator.scoringConfig.metrics` (instead of hardcoding
+ * the legacy 4-metric schema) and surfaces extra fields the model emits.
  */
-function parseJudgeResponse(result: string, duration: number): JudgeResponse {
-  let jsonText = result.trim();
-
-  // Extract JSON from markdown code blocks
-  const jsonMatch = jsonText.match(/```json\s*([\s\S]*?)\s*```/);
-  if (jsonMatch) {
-    jsonText = jsonMatch[1];
-  } else {
-    const startIdx = jsonText.indexOf('{');
-    const endIdx = jsonText.lastIndexOf('}');
-    if (startIdx !== -1 && endIdx !== -1) {
-      jsonText = jsonText.slice(startIdx, endIdx + 1);
-    }
-  }
-
-  const parsed = JSON.parse(jsonText);
-
-  const accuracy = parsed.accuracy ?? parsed.metrics?.accuracy ?? 0;
-
-  debug('AgenticJudge', 'Pass/Fail:', parsed.pass_fail_status?.toUpperCase() || 'MISSING');
-  debug('AgenticJudge', 'Accuracy:', accuracy);
-
-  return {
-    passFailStatus: (parsed.pass_fail_status || 'failed') as 'passed' | 'failed',
-    metrics: {
-      accuracy,
-      faithfulness: parsed.metrics?.faithfulness,
-      latency_score: parsed.metrics?.latency_score,
-      trajectory_alignment_score: parsed.metrics?.trajectory_alignment_score,
-    },
-    llmJudgeReasoning: parsed.reasoning,
-    improvementStrategies: parsed.improvement_strategies || [],
+function parseJudgeResponse(result: string, duration: number, evaluator?: Evaluator): JudgeResponse {
+  return parseSharedJudgeResponse(result, {
+    evaluator,
     duration,
-  };
+    source: 'AgenticJudge',
+  });
 }
 
 // ============================================================================

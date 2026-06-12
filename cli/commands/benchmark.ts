@@ -31,6 +31,10 @@ interface BenchmarkOptions {
   agent: string[];
   model?: string;
   evaluator?: string;
+  /**
+   * Optional judge model id, distinct from `model`. See `RunOptions.judgeModel`.
+   */
+  judgeModel?: string;
   output: string;
   verbose?: boolean;
   export?: string;
@@ -133,7 +137,8 @@ async function runBenchmarkForAgent(
   benchmark: Benchmark,
   verbose: boolean,
   concurrency?: number,
-  evaluatorId?: string
+  evaluatorId?: string,
+  judgeModelId?: string
 ): Promise<AgentResults> {
   const results: AgentResults = {
     agent,
@@ -157,6 +162,8 @@ async function runBenchmarkForAgent(
         modelId: modelId,
         ...(concurrency && concurrency > 1 ? { concurrency } : {}),
         ...(evaluatorId ? { evaluatorId } : {}),
+        // Forward customer-supplied judge model id alongside agent model.
+        ...(judgeModelId ? { judgeModelId } : {}),
       },
       (event: BenchmarkExecutionEvent) => {
         if (event.type === 'started') {
@@ -582,6 +589,8 @@ async function runUnifiedMode(
         sources,
         agentKey,
         modelId,
+        // Customer-supplied judge model id, distinct from `modelId`.
+        ...(options.judgeModel ? { judgeModelId: options.judgeModel } : {}),
         evaluatorId: options.evaluator,
         concurrency,
         benchmarkId,
@@ -705,8 +714,9 @@ export function createBenchmarkCommand(): Command {
       (val: string, arr: string[]) => [...arr, val],
       []
     )
-    .option('-m, --model <id>', 'Model ID (uses agent default if not specified)')
+    .option('-m, --model <id>', "Agent's LLM model id (uses agent default if not specified)")
     .option('-e, --evaluator <id>', 'Evaluator ID (uses RCA default if not specified)')
+    .option('--judge-model <id>', "Judge LLM model id, distinct from --model. Falls back to evaluator's inferenceConfig.modelId, then BEDROCK_MODEL_ID env. Ignored by agentic-provider judges (pi/agent/agentic/claude-code) which pick their own model.")
     .option('-o, --output <format>', OUTPUT_FORMAT_DESCRIPTION, 'table')
     .option('--export <path>', 'Export results to file')
     .option('--format <type>', 'Report format for --export: json (default), html, pdf', 'json')
@@ -1127,7 +1137,8 @@ export function createBenchmarkCommand(): Command {
               benchmark,
               options.verbose || false,
               concurrency,
-              options.evaluator
+              options.evaluator,
+              options.judgeModel
             );
             // Annotate the result so the summary can attribute it to the right benchmark
             (results as any).benchmark = benchmark;

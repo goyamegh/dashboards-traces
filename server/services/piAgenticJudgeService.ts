@@ -18,20 +18,22 @@
  */
 
 import { buildEvaluationPrompt, JudgeRequest, JudgeResponse } from '@/server/services/bedrockService';
-import { parsePiJudgeJson } from '@/server/services/piJudgeService';
+import { parseJudgeResponse } from '@/server/services/judgeResponseParser';
+import { buildJudgeDebug } from '@/server/services/judgeDebug';
 import { createTraceJudgeExtension } from '@/server/services/traceJudgeTools';
 import type { PiSdk } from '@/server/services/piSdkTypes';
+import { Evaluator } from '@/types';
 import { readEnv } from '@/lib/envCompat';
 import { debug } from '@/lib/debug';
 
-/** System prompt: tells the judge it has real trace/log tools and to use them. */
-const AGENTIC_TRACE_JUDGE_SYSTEM_PROMPT = `You are an expert evaluator for observability and Root Cause Analysis (RCA) agents.
-
-You are an AGENTIC judge: in addition to the trajectory shown in the prompt, you have READ-ONLY tools that return the REAL OpenTelemetry spans and logs for the exact run you are judging:
-  - query_spans({ nameFilter? }): the run's actual spans (tool calls, token usage, latency, gen_ai.* attributes)
-  - query_logs({ query? }): the run's correlated logs (evidence for/against a root cause)
-
-These tools are hard-scoped to this single run; you cannot query other runs. PREFER verifying claims against this real data instead of trusting the trajectory narrative. For example: before accepting "the agent called search_logs", confirm a matching span exists; before accepting a budget claim, check real token usage; before accepting a root-cause claim, look for supporting log evidence.
+/**
+ * Default base prompt used when no saved evaluator's `systemPrompt` is provided.
+ * The trace-tool addendum is appended to whatever base is in effect (default
+ * or saved evaluator) so the agentic-judge contract — the existence and use
+ * of `query_spans` / `query_logs` — is preserved regardless of how the user
+ * customizes the judge prompt.
+ */
+const DEFAULT_AGENT_TRACE_JUDGE_BASE_PROMPT = `You are an expert evaluator for observability and Root Cause Analysis (RCA) agents.
 
 When you are done investigating, respond with ONLY a JSON object (no prose, optionally fenced in \`\`\`json):
 {
@@ -41,6 +43,26 @@ When you are done investigating, respond with ONLY a JSON object (no prose, opti
   "metrics": { "faithfulness": <0-100>, "latency_score": <0-100>, "trajectory_alignment_score": <0-100> },
   "improvement_strategies": []
 }`;
+
+/**
+ * Trace-tool addendum that's ALWAYS appended to whatever base system prompt
+ * is in effect (default or user-saved evaluator). Without this paragraph the
+ * judge has no way to know `query_spans` / `query_logs` exist or what they
+ * return — the trace-judging contract collapses into trajectory-only
+ * judgement. Documenting the tools is structurally separate from "how to
+ * judge an RCA agent", which is what the saved evaluator's prompt covers.
+ */
+const AGENT_TRACE_TOOL_ADDENDUM = `
+
+---
+
+## Available trace-query tools (READ-ONLY, scoped to the run being judged)
+
+In addition to the trajectory shown in the prompt you have these tools that return the REAL OpenTelemetry spans and logs for the run you are judging:
+  - query_spans({ nameFilter? }): the run's actual spans (tool calls, token usage, latency, gen_ai.* attributes)
+  - query_logs({ query? }): the run's correlated logs (evidence for/against a root cause)
+
+These tools are hard-scoped to this single run — you cannot query other runs. PREFER verifying claims against this real data over trusting the trajectory narrative. Confirm a span exists before crediting a tool call, check real token usage before crediting a budget claim, and look for log evidence before crediting a root-cause claim.`;
 
 /**
  * Dynamically load the pi SDK (optionalDependency). Throws a clear, actionable
@@ -68,6 +90,28 @@ async function loadPiSdk(): Promise<PiSdk> {
 /** Strip the Bedrock inference-profile region prefix (us./eu./global./au.). */
 function bedrockBaseId(id: string): string {
   return id.replace(/^(us|eu|global|au)\./, '');
+}
+
+/**
+ * Compose the final system prompt the trace judge will see.
+ *
+ * Two-layer composition:
+ *   1. Base prompt: the saved evaluator's `systemPrompt` (when non-empty),
+ *      else the default. This is the surface the user iterates on.
+ *   2. {@link AGENT_TRACE_TOOL_ADDENDUM} is ALWAYS appended on top so the
+ *      tool-use contract (`query_spans` / `query_logs`) survives any
+ *      customization of the base prompt. A regression test pins this
+ *      invariant — see piAgenticJudgeService.test.
+ *
+ * Exported for unit testing; production callers go through
+ * {@link evaluateWithPiAgenticTrace}.
+ */
+export function buildAgentTraceJudgeSystemPrompt(evaluator?: { systemPrompt?: string }): string {
+  const baseSystemPrompt =
+    evaluator?.systemPrompt && evaluator.systemPrompt.trim().length > 0
+      ? evaluator.systemPrompt
+      : DEFAULT_AGENT_TRACE_JUDGE_BASE_PROMPT;
+  return baseSystemPrompt + AGENT_TRACE_TOOL_ADDENDUM;
 }
 
 /** Inference-profile prefix appropriate for the current AWS region. */
@@ -146,12 +190,24 @@ export function extractFinalAssistantText(messages: any[]): string {
  * Requires `request.runId` so the trace tools can scope to the run. Without a
  * runId the tools report "no run id" and the judge degrades to a
  * trajectory-only judgement rather than failing.
+ *
+ * @param request - The judge request, must include `runId` for trace scoping.
+ * @param evaluator - Optional saved evaluator. When provided, its `systemPrompt`
+ *   replaces the default base prompt; the trace-tool addendum is ALWAYS
+ *   appended on top so the judge knows `query_spans`/`query_logs` exist
+ *   regardless of how the user customizes the base prompt. Its
+ *   `scoringConfig.metrics` drives dynamic metric extraction in the parsed
+ *   response.
  */
-export async function evaluateWithPiAgenticTrace(request: JudgeRequest): Promise<JudgeResponse> {
-  const { trajectory, expectedOutcomes, expectedTrajectory, logs, runId } = request;
+export async function evaluateWithPiAgenticTrace(
+  request: JudgeRequest,
+  evaluator?: Evaluator
+): Promise<JudgeResponse> {
+  const { trajectory, expectedOutcomes, expectedTrajectory, logs, runId, agents } = request;
 
   debug('AgentJudge', '========== AGENT TRACE JUDGE (in-process) ==========');
   debug('AgentJudge', 'runId:', runId ?? '(none)', 'trajectory steps:', trajectory.length);
+  debug('AgentJudge', 'Evaluator:', evaluator ? `${evaluator.name} (${evaluator.id})` : '(none, using default prompt)');
 
   const userPrompt = buildEvaluationPrompt(trajectory, expectedOutcomes, expectedTrajectory, logs);
   const serverUrl =
@@ -175,12 +231,19 @@ export async function evaluateWithPiAgenticTrace(request: JudgeRequest): Promise
   }
   debug('AgentJudge', 'model:', `${model.provider}/${model.id}`);
 
+  // Compose the system prompt: saved evaluator's prompt (if any) replaces
+  // the default base, then the trace-tool addendum is unconditionally
+  // appended. Editing the saved prompt cannot accidentally break the
+  // trace-judging contract — a regression test in piAgenticJudgeService.test
+  // pins this invariant.
+  const systemPrompt = buildAgentTraceJudgeSystemPrompt(evaluator);
+
   const resourceLoader = new DefaultResourceLoader({
     cwd: process.cwd(),
     agentDir: getAgentDir(),
-    systemPromptOverride: () => AGENTIC_TRACE_JUDGE_SYSTEM_PROMPT,
+    systemPromptOverride: () => systemPrompt,
     appendSystemPromptOverride: () => [],
-    extensionFactories: [createTraceJudgeExtension(runId, serverUrl)],
+    extensionFactories: [createTraceJudgeExtension(runId, serverUrl, agents)],
   });
   await resourceLoader.reload();
 
@@ -201,11 +264,23 @@ export async function evaluateWithPiAgenticTrace(request: JudgeRequest): Promise
   const finalText = extractFinalAssistantText(session.messages);
   const duration = Date.now() - startTime;
 
-  const parsed = parsePiJudgeJson(finalText);
+  const parsed = parseJudgeResponse(finalText, {
+    evaluator,
+    duration,
+    source: 'AgentJudge',
+  });
   debug('AgentJudge', 'Pass/Fail:', parsed.passFailStatus, 'in', duration, 'ms');
+  const judgeDebug = buildJudgeDebug({
+    provider: 'agent',
+    modelId: `${model.provider}/${model.id}`,
+    evaluatorId: evaluator?.id,
+    systemPrompt,
+    userPrompt,
+  });
+  if (judgeDebug) parsed.judgeDebug = judgeDebug;
   // Per RFC 004: individual judge verdicts never carry recommendations
   // (those belong to the insights synthesis layer). Forcing an empty array
   // also keeps the persisted matcherResults.improvementStrategies shape stable
   // regardless of what the model emitted.
-  return { ...parsed, improvementStrategies: [], duration };
+  return { ...parsed, improvementStrategies: [] };
 }

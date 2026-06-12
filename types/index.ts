@@ -339,15 +339,56 @@ export interface LLMJudgeResponse {
   promptTokens: number;
   completionTokens: number;
   latencyMs: number;
+  /**
+   * Raw judge text exactly as the model returned it (pre-JSON-parse). Set
+   * by the routing layer from `JudgeResponse.rawResponse`. Older callers
+   * stuffed the parsed `llmJudgeReasoning` into this field as a fallback;
+   * post evaluator-prompt-plumbing the field carries the actual unparsed
+   * model output for debugging "prompt edited but output didn't change"
+   * scenarios.
+   */
   rawResponse: string;
-  parsedMetrics?: {
-    accuracy: number;
-    faithfulness: number;
-    latency_score: number;
-    trajectory_alignment_score: number;
-  };
+  /**
+   * Parsed numeric metrics. Open-ended `[key: string]: number` so a saved
+   * evaluator can declare arbitrary metric names in its `scoringConfig.metrics`
+   * and they flow through here unchanged. Legacy keys (`accuracy`,
+   * `faithfulness`, `latency_score`, `trajectory_alignment_score`) remain
+   * conventional but are no longer required — evaluators are pluggable.
+   */
+  parsedMetrics?: { [key: string]: number | undefined };
   improvementStrategies?: ImprovementStrategy[];
   error?: string;
+  /**
+   * Any JSON keys the judge emitted that did NOT map onto a typed wire
+   * field or a declared metric. Captured by
+   * {@link parseJudgeResponse} (server/services/judgeResponseParser) so the
+   * run-detail "Judge debug" surface can show prompt-iteration output (e.g.
+   * `improvement_candidates`, `failure_tags`, `confidence`) without a code
+   * change. Empty/undefined when the model emitted only typed fields.
+   */
+  extraFields?: Record<string, unknown>;
+  /**
+   * Optional debug breadcrumbs persisted when `AH_JUDGE_DEBUG=1` (or in dev
+   * mode). Captures exactly what the run-detail UI needs to confirm "the
+   * prompt I saved is the prompt that ran" — the system prompt the model
+   * received, the user prompt, and which provider executed the call. The
+   * raw response itself is on the parent {@link rawResponse}.
+   *
+   * Disabled by default to keep persisted run docs lean (system prompts
+   * can be 10–20 KB).
+   */
+  judgeDebug?: {
+    /** Provider that executed the call: 'bedrock' | 'claude-code' | 'pi' | 'agent' | 'agentic' | 'openai-compatible' | 'litellm'. */
+    provider?: string;
+    /** Effective model id passed to the provider (post-resolution). */
+    modelId?: string;
+    /** Evaluator id used (system or user). */
+    evaluatorId?: string;
+    /** The full system prompt the model received. */
+    systemPrompt?: string;
+    /** The user-message prompt the model received. */
+    userPrompt?: string;
+  };
 }
 
 // Storage feature - User annotations on runs
@@ -400,6 +441,17 @@ export interface TestCaseRun {
   agentKey?: string;
   modelName: string;
   modelId?: string;
+  /**
+   * Optional judge model id, separate from {@link modelId} (which is the
+   * agent's LLM). Set explicitly via the run config (UI dropdown / CLI
+   * `--judge-model` / API `judgeModelId` field) or left unset to fall back
+   * to the evaluator's `inferenceConfig.modelId`, then the server-default
+   * Bedrock judge model. For agentic providers (`pi`, `agent`, `agentic`,
+   * `claude-code`) the value is informational — the provider picks its own
+   * model from its credentialed registry. Stored on the run document so the
+   * "Judge debug" surface and audit trail show which judge model was used.
+   */
+  judgeModelId?: string;
   agentEndpoint?: string;
   evaluatorId?: string;              // Which evaluator was used (optional for backwards compatibility)
 
@@ -420,6 +472,18 @@ export interface TestCaseRun {
   llmJudgeReasoning: string;
   improvementStrategies?: ImprovementStrategy[];
   llmJudgeResponse?: LLMJudgeResponse; // Storage: Raw Bedrock judge response
+  /**
+   * W3C OTel trace id (32 hex). Stamped onto the run document at save time
+   * when polled spans expose one, used as the strongest correlation key for
+   * the run-detail Traces tab and the agent (trace) judge's `query_spans`
+   * tool. See #190 (this field as a top-level shortcut over re-extracting
+   * from `spans[0]`) and #264 (unified trace correlation strategies).
+   *
+   * Distinct from {@link runId} (the connector's run id, e.g.
+   * `subprocess-<timestamp>`); pre-fix the runner mis-stamped runId here
+   * which broke `traceId`-based queries.
+   */
+  traceId?: string;
   openSearchLogs?: OpenSearchLog[]; // Storage: Persisted logs (alternative to logs)
   annotations?: RunAnnotation[]; // Storage: User notes on this run
   runId?: string; // Agent's run ID from AG UI events (for log correlation)
@@ -914,7 +978,15 @@ export interface BenchmarkRun {
   // Configuration snapshot
   agentKey: string;                // Reference to AgentConfig.key
   agentEndpoint?: string;          // Override agent endpoint (optional)
-  modelId: string;                 // Model to use (also determines judge provider)
+  modelId: string;                 // Agent's LLM (passed to the connector)
+  /**
+   * Optional judge model id, distinct from {@link modelId} (the agent's
+   * LLM). Customer input via the run config dialog / CLI `--judge-model` /
+   * API. Falls back to `evaluator.inferenceConfig.modelId`, then the
+   * server-default Bedrock judge model. Ignored by agentic providers
+   * (`pi`, `agent`, `agentic`, `claude-code`) which pick their own model.
+   */
+  judgeModelId?: string;
   evaluatorId?: string;            // Evaluator to use for judging (optional, defaults to RCA Default)
   headers?: Record<string, string>; // Custom headers
   concurrency?: number;              // Parallel test case execution limit (1 = sequential, default)
@@ -1024,6 +1096,11 @@ export interface EvaluationRun {
   agentKey: string;
   agentEndpoint?: string;
   modelId: string;
+  /**
+   * Optional judge model id, distinct from {@link modelId} (the agent's
+   * LLM). Same precedence rules as on {@link BenchmarkRun.judgeModelId}.
+   */
+  judgeModelId?: string;
   evaluatorId?: string;
   headers?: Record<string, string>;
   concurrency?: number;
@@ -1126,7 +1203,7 @@ export interface TestCaseComparisonRow {
 
 // Derived type for creating new benchmark runs - stays in sync with BenchmarkRun
 export type RunConfigInput = Pick<BenchmarkRun,
-  'name' | 'description' | 'agentKey' | 'modelId' | 'agentEndpoint' | 'headers' | 'concurrency' | 'evaluatorId'
+  'name' | 'description' | 'agentKey' | 'modelId' | 'judgeModelId' | 'agentEndpoint' | 'headers' | 'concurrency' | 'evaluatorId'
 >;
 
 // ============ Server/API Types ============

@@ -17,6 +17,14 @@ export interface CreateEvaluationRunRequest {
   sources: TestCaseSource[];
   agentKey: string;
   modelId: string;
+  /**
+   * Optional judge model id, distinct from `modelId` (the agent's LLM).
+   * Customer input via the run config UI / CLI `--judge-model`. Forwarded
+   * to the server which falls back to the evaluator's `inferenceConfig.modelId`,
+   * then `BEDROCK_MODEL_ID` env. Agentic-provider judges (`pi`, `agent`,
+   * `agentic`, `claude-code`) ignore this and pick their own model.
+   */
+  judgeModelId?: string;
   evaluatorId?: string;
   concurrency?: number;
   benchmarkId?: string;

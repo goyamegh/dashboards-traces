@@ -48,7 +48,20 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
   const [selectedAgentKey, setSelectedAgentKey] = usePersistedState(
     PREFS_KEYS.agentKey, getPreferredDefaultAgentKey()
   );
+  // Agent's LLM — the model the AGENT uses to think (Bedrock / OpenAI-compatible).
+  // Renamed from the historical name `selectedModelId` (which was sent both
+  // to the agent AND the judge); see comment on `selectedJudgeModelId` below.
   const [selectedModelId, setSelectedModelId] = usePersistedState(PREFS_KEYS.modelId, 'claude-sonnet-4.5');
+  // Judge's LLM — the model the LLM judge uses to grade the trajectory.
+  // Distinct from {@link selectedModelId} (the agent's model). Stored under a
+  // dedicated pref key so the choice is persisted independently. `undefined`
+  // means "use the evaluator's inferenceConfig.modelId, falling back to the
+  // server-side BEDROCK_MODEL_ID default" — the recommended setting for
+  // agentic-provider judges (pi/agent/agentic/claude-code), which pick their
+  // own model and ignore this value.
+  const [selectedJudgeModelId, setSelectedJudgeModelId] = usePersistedState<string | undefined>(
+    'quick-run:judgeModelId', undefined
+  );
   const [selectedEvaluatorId, setSelectedEvaluatorId] = usePersistedState<string | undefined>('quick-run:evaluatorId', undefined);
   const [evaluators, setEvaluators] = useState<Evaluator[]>([]);
 
@@ -78,6 +91,13 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
   const [bedrockModels, setBedrockModels] = useState<Array<{ id: string; name: string }>>([]);
   const [bedrockDiscoveryState, setBedrockDiscoveryState] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [bedrockDiscoveryError, setBedrockDiscoveryError] = useState<string | null>(null);
+
+  // Anthropic-direct + GitHub Models dynamic discovery. Same model has a
+  // different id per provider (Bedrock inference-profile vs Anthropic id vs
+  // Copilot/GitHub slug), so we discover each provider's own ids rather than
+  // hardcoding. These feed the Judge Model dropdown as extra options.
+  const [anthropicModels, setAnthropicModels] = useState<Array<{ id: string; name: string }>>([]);
+  const [githubModels, setGithubModels] = useState<Array<{ id: string; name: string }>>([]);
 
   const selectedAgent = DEFAULT_CONFIG.agents.find(a => a.key === selectedAgentKey);
 
@@ -131,6 +151,18 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
     modelsByProvider['bedrock'] = [...(modelsByProvider['bedrock'] || []), ...discoveredBedrockModels];
   }
 
+  // Merge in discovered Anthropic-direct + GitHub Models / Copilot models.
+  // These only ever appear via discovery (no static catalog entries), and
+  // surface under their own provider groups in the Judge Model dropdown so
+  // the same model's provider-specific id is selectable (e.g. an Opus id
+  // from Copilot, distinct from the Bedrock inference-profile id).
+  if (anthropicModels.length > 0) {
+    modelsByProvider['anthropic'] = anthropicModels.map(m => ({ key: m.id, model_id: m.id, display_name: m.name, provider: 'anthropic' }));
+  }
+  if (githubModels.length > 0) {
+    modelsByProvider['github'] = githubModels.map(m => ({ key: m.id, model_id: m.id, display_name: m.name, provider: 'github' }));
+  }
+
   const providerLabels: Record<string, string> = {
     demo: 'Demo',
     bedrock: 'AWS Bedrock',
@@ -138,6 +170,8 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
     'claude-code': 'Claude Code',
     litellm: 'LiteLLM',
     agentic: 'Agentic Judge',
+    anthropic: 'Anthropic (direct)',
+    github: 'GitHub Models / Copilot',
   };
 
   const fetchOpenaiCompatModels = useCallback(async () => {
@@ -176,6 +210,25 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
       setBedrockDiscoveryState('error');
       setBedrockDiscoveryError('Cannot reach server');
     }
+  }, []);
+
+  // Anthropic-direct + GitHub Models discovery. Best-effort: both no-op
+  // silently when their provider isn't configured (no ANTHROPIC_API_KEY /
+  // GITHUB_TOKEN), so the shared refresh button stays a single click.
+  const fetchAnthropicModels = useCallback(async () => {
+    try {
+      const response = await fetch('/api/judge/anthropic-models');
+      const data = await response.json();
+      if (response.ok) setAnthropicModels(data.models || []);
+    } catch { /* provider not configured / unreachable — ignore */ }
+  }, []);
+
+  const fetchGithubModels = useCallback(async () => {
+    try {
+      const response = await fetch('/api/judge/github-models');
+      const data = await response.json();
+      if (response.ok) setGithubModels(data.models || []);
+    } catch { /* provider not configured / unreachable — ignore */ }
   }, []);
 
   const selectedModelConfig = DEFAULT_CONFIG.models[selectedModelId] ||
@@ -250,6 +303,10 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
         {
           agentKey: selectedAgent.key,
           modelId: selectedModelId,
+          // Customer-supplied judge model (separate dropdown). When unset,
+          // server picks per priority: evaluator.inferenceConfig.modelId
+          // > BEDROCK_MODEL_ID env. Agentic-provider judges ignore this.
+          judgeModelId: selectedJudgeModelId,
           testCaseId: testCase?.id,
           testCase: runTestCase,
           evaluatorId: selectedEvaluatorId,
@@ -432,20 +489,23 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                 </Select>
               </div>
 
-              {/* Model Selection (grouped by provider) */}
+              {/* Agent Model selection (grouped by provider).
+                  Filtered to LLM providers the AGENT can actually invoke
+                  (`bedrock`, `openai-compatible`, `litellm`). Judge-only
+                  pseudo-models like `pi-judge`, `agentic-claude-code`,
+                  `claude-code-judge` are hidden from this dropdown — they
+                  belong in the Judge Model dropdown below. Pre-fix the
+                  unified dropdown let users pick a judge-only model as the
+                  agent's model and the agent broke (Bedrock rejected it). */}
               <div className="space-y-1">
                 <div className="flex items-center gap-1">
-                  <Label className="text-xs">Judge Model</Label>
+                  <Label className="text-xs">Agent Model</Label>
                   <span
-                    className={`text-muted-foreground cursor-default ${selectedModelProvider === 'openai-compatible' ? 'text-blue-500 dark:text-blue-400' : selectedModelProvider === 'agentic' ? 'text-purple-500 dark:text-purple-400' : ''}`}
+                    className={`text-muted-foreground cursor-default ${selectedModelProvider === 'openai-compatible' ? 'text-blue-500 dark:text-blue-400' : ''}`}
                     title={
                       selectedModelProvider === 'openai-compatible'
                         ? 'OpenAI-compatible — set OPENAI_COMPATIBLE_ENDPOINT and OPENAI_COMPATIBLE_API_KEY in .env. Click ↻ to discover available models.'
-                        : selectedModelProvider === 'agentic'
-                        ? 'Agentic Judge — uses an agent with tool access to evaluate trajectories. Supports Claude Code or custom endpoints.'
-                        : selectedModelProvider === 'claude-code'
-                        ? 'Claude Code — spawns the claude CLI to evaluate trajectories.'
-                        : 'Select the LLM used to judge agent trajectories'
+                        : 'The LLM the agent uses to think. Distinct from the Judge Model below.'
                     }
                   >
                     <Info size={11} className="inline" />
@@ -457,16 +517,24 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
-                      {Object.entries(modelsByProvider).map(([provider, models]) => (
-                        <SelectGroup key={provider}>
-                          <SelectLabel>{providerLabels[provider] || provider}</SelectLabel>
-                          {models.map(model => (
-                            <SelectItem key={model.key} value={model.key}>
-                              {model.display_name}
-                            </SelectItem>
-                          ))}
-                        </SelectGroup>
-                      ))}
+                      {Object.entries(modelsByProvider)
+                        .filter(([provider]) =>
+                          // The agent can only be invoked via these LLM providers.
+                          // Hide judge-only providers from the agent dropdown.
+                          provider === 'bedrock' ||
+                          provider === 'openai-compatible' ||
+                          provider === 'litellm'
+                        )
+                        .map(([provider, models]) => (
+                          <SelectGroup key={provider}>
+                            <SelectLabel>{providerLabels[provider] || provider}</SelectLabel>
+                            {models.map(model => (
+                              <SelectItem key={model.key} value={model.key}>
+                                {model.display_name}
+                              </SelectItem>
+                            ))}
+                          </SelectGroup>
+                        ))}
                     </SelectContent>
                   </Select>
                   <button
@@ -485,7 +553,7 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                         ? `OpenAI-compatible discovery failed: ${openaiCompatDiscoveryError}`
                         : 'Discover models from Bedrock and OpenAI-compatible endpoints'
                     }
-                    onClick={() => { fetchBedrockModels(); fetchOpenaiCompatModels(); }}
+                    onClick={() => { fetchBedrockModels(); fetchOpenaiCompatModels(); fetchAnthropicModels(); fetchGithubModels(); }}
                     disabled={bedrockDiscoveryState === 'loading' || openaiCompatDiscoveryState === 'loading'}
                     className={`h-8 w-8 flex items-center justify-center rounded border bg-background disabled:opacity-50 ${
                       bedrockDiscoveryState === 'done' || openaiCompatDiscoveryState === 'done'
@@ -498,6 +566,47 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                     <RefreshCw size={12} className={bedrockDiscoveryState === 'loading' || openaiCompatDiscoveryState === 'loading' ? 'animate-spin' : ''} />
                   </button>
                 </div>
+              </div>
+
+              {/* Judge Model selection — customer input, distinct from the
+                  agent's model. "Use evaluator default" maps to undefined,
+                  meaning the server resolves from
+                  `evaluator.inferenceConfig.modelId` then `BEDROCK_MODEL_ID`
+                  env. Agentic-provider judges (`pi`, `agent`, `agentic`,
+                  `claude-code`) ignore this value and pick from their own
+                  credentialed registries — explicit selection is still
+                  forwarded for the audit trail. */}
+              <div className="space-y-1">
+                <div className="flex items-center gap-1">
+                  <Label className="text-xs">Judge Model</Label>
+                  <span
+                    className="text-muted-foreground cursor-default"
+                    title="The LLM that grades the agent's trajectory. Pick 'Use evaluator default' to let the evaluator's inferenceConfig (or the server-default Bedrock model) decide. Agentic-provider judges (pi/agent/agentic/claude-code) pick their own model regardless."
+                  >
+                    <Info size={11} className="inline" />
+                  </span>
+                </div>
+                <Select
+                  value={selectedJudgeModelId || '__default__'}
+                  onValueChange={val => setSelectedJudgeModelId(val === '__default__' ? undefined : val)}
+                >
+                  <SelectTrigger className="w-44 h-8">
+                    <SelectValue placeholder="Use evaluator default" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="__default__">Use evaluator default</SelectItem>
+                    {Object.entries(modelsByProvider).map(([provider, models]) => (
+                      <SelectGroup key={provider}>
+                        <SelectLabel>{providerLabels[provider] || provider}</SelectLabel>
+                        {models.map(model => (
+                          <SelectItem key={model.key} value={model.key}>
+                            {model.display_name}
+                          </SelectItem>
+                        ))}
+                      </SelectGroup>
+                    ))}
+                  </SelectContent>
+                </Select>
               </div>
 
               {/* Run Button */}

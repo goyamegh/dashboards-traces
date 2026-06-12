@@ -12,6 +12,8 @@ import config from '../config';
 import { TrajectoryStep, ImprovementStrategy, Evaluator, EvaluationMetrics } from '@/types';
 import { debug } from '@/lib/debug';
 import { getDefaultEvaluator } from '@/server/prompts/evaluatorTemplates';
+import { parseJudgeResponse } from '@/server/services/judgeResponseParser';
+import { buildJudgeDebug } from '@/server/services/judgeDebug';
 
 // ============================================================================
 // Types
@@ -34,6 +36,16 @@ export interface JudgeRequest {
    * agent trace judge to select the matching in-process pi model.
    */
   modelId?: string;
+  /**
+   * Optional time-window/service-name correlation hints for the agent
+   * (trace) judge. Pre-fix `traceJudgeTools` queried `/api/traces` with
+   * just `runIds: [runId]` (Strategy B), which only matches spans the
+   * agent emits with `gen_ai.request.id = runId` — i.e. agent-health's
+   * own eval-emitter spans, NOT the subprocess agent's instrumentation.
+   * Forwarding `agents` lets the tool union Strategy C (service.name +
+   * time-window) so claude-code's emitted spans are findable. See #264.
+   */
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>;
 }
 
 export interface JudgeResponse {
@@ -42,19 +54,36 @@ export interface JudgeResponse {
   llmJudgeReasoning: string;
   improvementStrategies: ImprovementStrategy[];
   duration: number;
-}
-
-interface BedrockJudgeResult {
-  pass_fail_status: string;
-  accuracy?: number;
-  metrics?: {
-    accuracy?: number;
-    faithfulness?: number;
-    latency_score?: number;
-    trajectory_alignment_score?: number;
+  /**
+   * Raw judge text exactly as the model returned it (pre-JSON-parse,
+   * pre-trimming). Captured by every provider so the run-detail UI's
+   * "Judge debug" surface can show what the model actually emitted vs. what
+   * we coerced into typed fields. Optional for back-compat with reports
+   * persisted before this field existed.
+   */
+  rawResponse?: string;
+  /**
+   * Any JSON keys the judge emitted that did NOT map onto a typed field
+   * (`pass_fail_status` / `reasoning` / `metrics` / `improvement_strategies`)
+   * or onto an evaluator-declared metric. This is the escape hatch that lets
+   * users iterate on the judge prompt — asking for a new field like
+   * `failure_tags` or `confidence` — without a code change. Empty/undefined
+   * when the model only emitted typed fields.
+   */
+  extraFields?: Record<string, unknown>;
+  /**
+   * Optional debug breadcrumbs the routing/persistence layer can use to
+   * answer "did my saved prompt actually reach the model?". Set by services
+   * when `AH_JUDGE_DEBUG=1` or `NODE_ENV=development`; otherwise omitted to
+   * keep persisted run docs lean (system prompts can be 10–20 KB).
+   */
+  judgeDebug?: {
+    provider?: string;
+    modelId?: string;
+    evaluatorId?: string;
+    systemPrompt?: string;
+    userPrompt?: string;
   };
-  reasoning: string;
-  improvement_strategies?: ImprovementStrategy[];
 }
 
 // ============================================================================
@@ -254,62 +283,28 @@ export async function evaluateTrajectory(
   debug('JudgeAPI', '--- Raw Bedrock Response ---');
   debug('JudgeAPI', responseText.substring(0, 500) + (responseText.length > 500 ? '...' : ''));
 
-  // Parse JSON response
-  let jsonText = responseText.trim();
-  const jsonMatch = jsonText.match(/```json\s*([\s\S]*?)\s*```/);
-  if (jsonMatch) {
-    jsonText = jsonMatch[1];
-    debug('JudgeAPI', 'Extracted JSON from markdown code block');
-  } else {
-    const startIdx = jsonText.indexOf('{');
-    const endIdx = jsonText.lastIndexOf('}');
-    if (startIdx !== -1 && endIdx !== -1) {
-      jsonText = jsonText.slice(startIdx, endIdx + 1);
-      debug('JudgeAPI', 'Extracted JSON from text');
-    }
-  }
-
-  const result: BedrockJudgeResult = JSON.parse(jsonText);
-
   debug('JudgeAPI', '========== BEDROCK JUDGE RESPONSE ==========');
-  debug('JudgeAPI', 'Pass/Fail Status:', result.pass_fail_status?.toUpperCase() || 'MISSING');
 
-  // Extract metrics dynamically based on evaluator's scoring config
-  const metrics: Record<string, number> = {};
-
-  for (const metricDef of effectiveEvaluator.scoringConfig.metrics) {
-    const metricName = metricDef.name;
-    // Check top-level first (new format), then nested metrics object (legacy)
-    const value = (result as any)[metricName] ?? result.metrics?.[metricName];
-    if (value !== undefined && value !== null) {
-      const parsed = typeof value === 'number' ? value : parseFloat(value);
-      if (Number.isFinite(parsed)) {
-        metrics[metricName] = parsed;
-        debug('JudgeAPI', `Metric '${metricName}':`, parsed);
-      } else {
-        debug('JudgeAPI', `Warning: Metric '${metricName}' has invalid value:`, value);
-      }
-    } else {
-      debug('JudgeAPI', `Warning: Metric '${metricName}' not found in judge response`);
-    }
-  }
-
-  debug('JudgeAPI', 'Improvement Strategies:', result.improvement_strategies?.length ?? 0, 'items');
-  if (result.improvement_strategies?.length) {
-    result.improvement_strategies.forEach((s, i) => {
-      debug('JudgeAPI', `  ${i + 1}. [${s.priority}] ${s.category}: ${s.issue}`);
-    });
-  }
-  debug('JudgeAPI', 'Evaluation completed successfully');
-
-  // Return structured response with dynamic metrics
-  return {
-    passFailStatus: (result.pass_fail_status || 'failed') as 'passed' | 'failed',
-    metrics,
-    llmJudgeReasoning: result.reasoning,
-    improvementStrategies: result.improvement_strategies || [],
+  // Delegate JSON parsing + metric extraction to the shared parser. It
+  // captures `rawResponse` and any extra fields the model emitted that
+  // aren't declared in the evaluator's scoringConfig (so prompt iteration
+  // works without a code change) — see judgeResponseParser.ts.
+  const parsed = parseJudgeResponse(responseText, {
+    evaluator: effectiveEvaluator,
     duration,
-  };
+    source: 'JudgeAPI',
+  });
+  // Optionally capture the prompts so the run-detail UI's "Judge debug" tab
+  // can confirm the saved evaluator prompt actually reached the model.
+  const judgeDebug = buildJudgeDebug({
+    provider: 'bedrock',
+    modelId: effectiveModelId,
+    evaluatorId: effectiveEvaluator.id,
+    systemPrompt: effectiveEvaluator.systemPrompt,
+    userPrompt,
+  });
+  if (judgeDebug) parsed.judgeDebug = judgeDebug;
+  return parsed;
 }
 
 /**

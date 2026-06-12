@@ -17,6 +17,8 @@ import {
 } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
 import { runEvaluationWithConnector, callBedrockJudge, invokeAgent } from '@/services/evaluation';
+import { readEnv } from '@/lib/envCompat';
+import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
 import { connectorRegistry } from '@/services/connectors/server';
 import { startTestCaseSpan, finalizeTestCaseSpan, addEvaluationResultEvents } from '@/lib/telemetry';
@@ -261,6 +263,11 @@ export async function executeEvaluationRun(
             agentEndpoint: agentConfig.endpoint,
             modelId: run.modelId,
             modelName: modelConfig?.display_name || run.modelId,
+            // Inherit run-level judgeModelId onto the per-test-case run.
+            // Same pattern as `evaluatorId` below — the run-detail UI
+            // and the audit trail need to know which judge model graded
+            // each child report, not just the parent EvaluationRun.
+            judgeModelId: run.judgeModelId,
             connectorProtocol: (agentConfig as any).connectorType,
             // The whole point of this fix: persist evaluatorId on the
             // per-test-case run so the run-details page resolves the
@@ -451,7 +458,15 @@ export async function executeEvaluationRun(
                 result: emptyResult,
                 agent: agentFixture,
                 traces: tracesView,
-                judge: bindJudge({ evaluatorId: run.evaluatorId, model: bedrockModelId }),
+                // Judge fixture binding. We pass the run-level `judgeModelId`
+                // (customer input) as the bound `model`, NOT the agent's
+                // bedrockModelId. Pre-fix this passed `bedrockModelId` which
+                // meant the agent's model leaked into the judge call as if
+                // it were the judge model — wrong for any judge that's not
+                // configured to use the same model as the agent. The server
+                // /api/judge resolves the actual judge model from the
+                // evaluator config when this is undefined.
+                judge: bindJudge({ evaluatorId: run.evaluatorId, model: run.judgeModelId }),
                 evaluate: evaluateFixture,
               };
               const arg = Object.assign(emptyResult, { ...fixtures, result: emptyResult }) as any;
@@ -523,7 +538,15 @@ export async function executeEvaluationRun(
               bedrockModelId,
               testCase,
               () => {}, // No debug callback needed
-              { registry: connectorRegistry, evaluatorId: run.evaluatorId, skipJudge: false }
+              {
+                registry: connectorRegistry,
+                evaluatorId: run.evaluatorId,
+                // Forward run-level judge model so the SDK runs match the
+                // UI/CLI "separate agent vs judge model" contract. Persisted
+                // on the child report via the saveReport patch below.
+                judgeModelId: run.judgeModelId,
+                skipJudge: false,
+              }
             );
             report = caseSpanContext
               ? await context.with(caseSpanContext, runEval)
@@ -543,6 +566,10 @@ export async function executeEvaluationRun(
           // (the connector path predates the cross-surface parity work),
           // so we stamp it onto the doc here.
           (report as any).evaluatorId = (report as any).evaluatorId ?? run.evaluatorId;
+          // Same fallback for judgeModelId — the connector return path
+          // doesn't carry it, but `run.judgeModelId` is the cx input so
+          // we stamp it onto the report on save.
+          (report as any).judgeModelId = (report as any).judgeModelId ?? run.judgeModelId;
           (report as any).experimentRunId = (report as any).experimentRunId ?? run.id;
           (report as any).experimentId = (report as any).experimentId ?? run.benchmarkId;
           let savedReport: EvaluationReport;
@@ -762,7 +789,15 @@ async function waitForTracesAndJudge(
 
             const config = getConfig();
             const modelConfig = config.models[report.modelId || ''];
-            const judgeModelId = modelConfig?.model_id || report.modelId;
+            // Trace-mode polled judge — same priority chain as the
+            // standard path: report.judgeModelId (persisted on the run
+            // doc) > BEDROCK_MODEL_ID env > agent's modelId (last-resort
+            // BC fallback for runs that didn't carry the new field).
+            const judgeModelId =
+              report.judgeModelId ||
+              readEnv('BEDROCK_MODEL_ID', 'AGENT_HEALTH_BEDROCK_MODEL_ID') ||
+              modelConfig?.model_id ||
+              report.modelId;
 
             const judgment = await callBedrockJudge(
               finalTrajectory,
@@ -772,7 +807,13 @@ async function waitForTracesAndJudge(
               },
               [],
               () => {},
-              judgeModelId
+              judgeModelId,
+              report.evaluatorId,
+              report.runId,
+              // Strategy C correlation hints (#264) so the agent trace
+              // judge tool can find spans the agent emits under its OWN
+              // correlation, not just spans matching agent-health's runId.
+              buildJudgeAgentsHints(report, agentConfig?.traceServiceName)
             );
 
             await storage.runs.update(report.id, {
@@ -792,6 +833,22 @@ async function waitForTracesAndJudge(
                 }),
               ],
               improvementStrategies: judgment.improvementStrategies,
+              // Persist the full judge sidecar so the run-detail Judge
+              // Output card has all the breadcrumbs even on the
+              // trace-deferred SDK path. Same shape as the synchronous
+              // /api/evaluate path.
+              llmJudgeResponse: {
+                modelId: judgeModelId || '',
+                timestamp: new Date().toISOString(),
+                promptTokens: 0,
+                completionTokens: 0,
+                latencyMs: judgment.judgeDurationMs ?? 0,
+                rawResponse: judgment.rawResponse ?? judgment.llmJudgeReasoning,
+                parsedMetrics: judgment.metrics as any,
+                improvementStrategies: judgment.improvementStrategies,
+                ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
+                ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
+              },
             } as any);
 
             debug('EvaluationRunner', `[${testCase.id}] Trace judge complete: ${judgment.passFailStatus}`);

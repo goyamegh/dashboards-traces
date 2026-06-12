@@ -29,6 +29,15 @@ import { debug } from '@/lib/debug';
 export interface ServerEvaluationRequest {
   agentKey: string;
   modelId: string;
+  /**
+   * Optional judge model id, distinct from `modelId` (the agent's LLM).
+   * Customer input via the run config dialog. Forwarded as `judgeModelId`
+   * on the `/api/evaluate` request body. Falls back server-side to the
+   * evaluator's `inferenceConfig.modelId`, then `BEDROCK_MODEL_ID` env.
+   * Ignored by agentic-provider judges (`pi`, `agent`, `agentic`,
+   * `claude-code`) which pick their own model.
+   */
+  judgeModelId?: string;
   /** Look up test case by ID from storage/samples */
   testCaseId?: string;
   /** Provide test case inline (for ad-hoc runs) */

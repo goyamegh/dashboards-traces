@@ -311,6 +311,49 @@ await judge(result, 'baseline check');
 In practice, prefer the fixture-destructured form so SDK runs and UI runs
 produce comparable verdicts.
 
+### Custom evaluator prompts and provider parity
+
+The saved evaluator's `systemPrompt` and `scoringConfig.metrics` are honored
+on **every** judge provider — `bedrock`, `openai-compatible`, `litellm`,
+`claude-code`, `pi`, `agent` (trace), and `agentic`. When the judge model's
+`provider` (resolved from the model config or `evaluator.inferenceConfig`)
+changes, the same prompt and rubric flow through unchanged. Two
+provider-specific addendums are appended automatically because they
+document the provider's tool-use contract, not the rubric:
+
+- `agentic`: `AGENTIC_JUDGE_ADDENDUM` (the model is told it can iterate /
+  use tools / cross-reference).
+- `agent` (trace): a `query_spans` / `query_logs` paragraph so the judge
+  knows the run-scoped trace tools are available, even when the saved
+  prompt doesn't mention them.
+
+The saved prompt fully replaces the default base in both cases — a
+regression test pins this for the `agent` provider in
+[tests/unit/server/services/piAgenticJudgeService.test.ts](../tests/unit/server/services/piAgenticJudgeService.test.ts).
+
+### Surfacing extra judge-emitted fields
+
+If the saved system prompt asks the model for fields beyond the typed wire
+shape (`pass_fail_status` / `reasoning` / `metrics` / `improvement_strategies`),
+those extra keys are captured into
+`LLMJudgeResponse.extraFields` and rendered on the run-detail page's "Judge
+Debug" section. There's no code change required to surface a new field —
+ask for it in the prompt and it shows up. Numeric metrics inside `metrics`
+that aren't declared in `scoringConfig.metrics` are split into
+`extraFields.metrics_unmapped` so nothing the judge emits is silently
+dropped.
+
+### Inspecting what reached the model (`AH_JUDGE_DEBUG`)
+
+When iterating on a judge prompt, set `AH_JUDGE_DEBUG=1` on the server (or
+run in dev — it's the default in `NODE_ENV !== 'production'`) to capture
+the **system prompt** and **user prompt** the judge actually saw, plus the
+**raw response** before parsing. They land on
+`LLMJudgeResponse.judgeDebug` and render under "Judge Debug" on the
+run-detail page — use them to confirm in one round whether your prompt
+edit reached the model. Disabled by default in prod because system prompts
+can be 10–20 KB and shipping them on every run bloats persisted run docs.
+
 ### Traces fixture
 
 The runner pre-loads OTel data into the `traces` fixture before invoking

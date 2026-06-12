@@ -110,9 +110,9 @@ router.post('/api/evaluate', async (req: Request, res: Response) => {
     return res.status(400).json({ error: validationError });
   }
 
-  const { testCaseId, agentKey, modelId, agentEndpoint, evaluatorId, runName, runDescription } = req.body;
+  const { testCaseId, agentKey, modelId, judgeModelId, agentEndpoint, evaluatorId, runName, runDescription } = req.body;
   const inlineTestCase = req.body.testCase as TestCase | undefined;
-  debug('EvalAPI', 'testCaseId:', testCaseId, 'agentKey:', agentKey, 'modelId:', modelId, 'inline:', !!inlineTestCase);
+  debug('EvalAPI', 'testCaseId:', testCaseId, 'agentKey:', agentKey, 'modelId:', modelId, 'judgeModelId:', judgeModelId || '(default)', 'inline:', !!inlineTestCase);
 
   // Validate agent exists (check both built-in and custom agents)
   const config = loadConfigSync();
@@ -180,6 +180,18 @@ router.post('/api/evaluate', async (req: Request, res: Response) => {
     createdAt: new Date().toISOString(),
     agentKey: agent.key,
     modelId: modelId,
+    // Customer-supplied judge model id (separate from agent's `modelId`).
+    // Forwarded into runSingleUseCase → runEvaluationWithConnector → the
+    // judge call. Falls back to BEDROCK_MODEL_ID env at the runner level.
+    judgeModelId: typeof judgeModelId === 'string' && judgeModelId ? judgeModelId : undefined,
+    // Customer-supplied evaluator id. The runner reads this via
+    // `run.evaluatorId` and forwards it to (a) bindJudge for SDK matchers,
+    // (b) the standard-mode judge call, and (c) the trace-mode polled
+    // judge after spans land. Pre-fix this was missing from the runConfig
+    // here, so the trace-mode polled judge silently fell back to
+    // `system-rca-default` even when /api/evaluate was called with the
+    // correct evaluatorId on the request body.
+    evaluatorId: typeof evaluatorId === 'string' && evaluatorId ? evaluatorId : undefined,
     agentEndpoint: agentEndpoint || agent.endpoint,
     results: {},
   };
@@ -215,6 +227,10 @@ router.post('/api/evaluate', async (req: Request, res: Response) => {
       agentEndpoint: agentEndpoint || agent.endpoint,
       modelId: modelId,
       modelName: model.display_name || modelId,
+      // Persist the run-level judge model so the run-detail UI can show
+      // "judge model: <whatever the customer picked>" as part of the audit
+      // trail. Optional — absent runs were graded by the server default.
+      judgeModelId: typeof judgeModelId === 'string' && judgeModelId ? judgeModelId : undefined,
       evaluatorId,
       status: 'running',
       trajectory: [],

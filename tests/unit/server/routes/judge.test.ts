@@ -183,6 +183,41 @@ describe('Judge Routes', () => {
     });
   });
 
+  describe('GET /api/judge/anthropic-models', () => {
+    const ORIG_KEY = process.env.ANTHROPIC_API_KEY;
+    afterEach(() => {
+      if (ORIG_KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = ORIG_KEY;
+      jest.restoreAllMocks();
+    });
+
+    it('returns 503 when ANTHROPIC_API_KEY is not configured', async () => {
+      // serverConfig caches env at import; the route reads serverConfig
+      // .ANTHROPIC_API_KEY which is '' by default in the test env.
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(judgeRoutes, 'get', '/api/judge/anthropic-models');
+      await handler(req, res);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ configured: false, error: expect.stringContaining('Anthropic API not configured') })
+      );
+    });
+  });
+
+  describe('GET /api/judge/github-models', () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    it('returns 503 when GITHUB_TOKEN is not configured', async () => {
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(judgeRoutes, 'get', '/api/judge/github-models');
+      await handler(req, res);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ configured: false, error: expect.stringContaining('GitHub Models not configured') })
+      );
+    });
+  });
+
   describe('POST /api/judge', () => {
     it('returns 400 when trajectory is missing', async () => {
       const { req, res } = createMocks({});
@@ -467,7 +502,8 @@ describe('Judge Routes', () => {
         expect.objectContaining({
           trajectory: expect.any(Array),
           expectedOutcomes: expect.any(Array),
-        })
+        }),
+        expect.objectContaining({ id: 'system-rca-default' }) // Default evaluator
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -557,7 +593,8 @@ describe('Judge Routes', () => {
         }),
         expect.objectContaining({
           backend: 'claude-code',
-        })
+        }),
+        expect.objectContaining({ id: 'system-rca-default' }) // Default evaluator
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -591,7 +628,8 @@ describe('Judge Routes', () => {
         }),
         expect.objectContaining({
           backend: 'custom',
-        })
+        }),
+        expect.objectContaining({ id: 'system-rca-default' }) // Default evaluator
       );
     });
 
@@ -692,7 +730,8 @@ describe('Judge Routes', () => {
 
       expect(res.status).not.toHaveBeenCalledWith(400);
       expect(mockEvaluateWithPiAgenticTrace).toHaveBeenCalledWith(
-        expect.objectContaining({ runId: 'run-abc-123' })
+        expect.objectContaining({ runId: 'run-abc-123' }),
+        expect.objectContaining({ id: 'custom-trace-eval' }) // Saved evaluator
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({ passFailStatus: 'passed' })
@@ -736,7 +775,8 @@ describe('Judge Routes', () => {
 
       expect(res.status).not.toHaveBeenCalledWith(403);
       expect(mockEvaluateWithPiAgenticTrace).toHaveBeenCalledWith(
-        expect.objectContaining({ runId: 'run-OWN' })
+        expect.objectContaining({ runId: 'run-OWN' }),
+        expect.objectContaining({ id: 'custom-trace-eval' }) // Saved evaluator
       );
     });
   });

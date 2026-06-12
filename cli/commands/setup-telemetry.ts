@@ -238,12 +238,24 @@ async function testEndpoint(endpoint: string): Promise<{ ok: boolean; message: s
  * IMPORTANT: Only the alias should set OTEL env vars — they are scoped to Claude Code sessions.
  * Global exports would pollute the environment for other processes (Agent Health server,
  * Observio agent) which read their own .env files and should not be overridden by shell vars.
+ *
+ * NOTE: OTEL_SERVICE_NAME=claude-code-agent matches the Strategy C convention
+ * (see AGENTS.md and ClaudeCodeConnector.traceContext.serviceName). Without it,
+ * Claude Code's bundled OTel SDK falls back to its default service.name=claude-code,
+ * and spans get filtered out by the run-report Traces tab and trace-to-run
+ * correlation. Keep in sync with ClaudeCodeConnector's traceContext.serviceName.
+ *
+ * NOTE: OTEL_EXPORTER_OTLP_PROTOCOL=http/json is required because the
+ * AgentHealthObservability stack's API Gateway OTLP ingest endpoint accepts
+ * JSON-only payloads (verified empirically: protobuf bodies return
+ * HTTP 400 "Invalid JSON"). The previous default of http/protobuf caused
+ * every span export from manual cc-otel sessions to be silently dropped.
  */
 function buildRcBlock(endpoint: string): string {
   const lines = [
     RC_BLOCK_START,
     `# cc-otel: Launch Claude Code with telemetry enabled (env vars are alias-scoped)`,
-    `alias cc-otel="export AWS_PROFILE=Bedrock && export CLAUDE_CODE_USE_BEDROCK=1 && export DISABLE_PROMPT_CACHING=1 && export DISABLE_ERROR_REPORTING=1 && export DISABLE_TELEMETRY=0 && export AWS_REGION=us-east-1 && export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 && export CLAUDE_CODE_ENABLE_TELEMETRY=1 && export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1 && export OTEL_METRICS_EXPORTER=otlp && export OTEL_LOGS_EXPORTER=otlp && export OTEL_TRACES_EXPORTER=otlp && export OTEL_EXPORTER_OTLP_PROTOCOL=http/protobuf && export OTEL_EXPORTER_OTLP_ENDPOINT=${endpoint} && claude"`,
+    `alias cc-otel="export AWS_PROFILE=Bedrock && export CLAUDE_CODE_USE_BEDROCK=1 && export DISABLE_PROMPT_CACHING=1 && export DISABLE_ERROR_REPORTING=1 && export DISABLE_TELEMETRY=0 && export AWS_REGION=us-east-1 && export CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 && export CLAUDE_CODE_ENABLE_TELEMETRY=1 && export CLAUDE_CODE_ENHANCED_TELEMETRY_BETA=1 && export OTEL_SERVICE_NAME=claude-code-agent && export OTEL_METRICS_EXPORTER=otlp && export OTEL_LOGS_EXPORTER=otlp && export OTEL_TRACES_EXPORTER=otlp && export OTEL_EXPORTER_OTLP_PROTOCOL=http/json && export OTEL_EXPORTER_OTLP_ENDPOINT=${endpoint} && claude"`,
     RC_BLOCK_END,
   ];
   return '\n' + lines.join('\n') + '\n';
@@ -452,6 +464,7 @@ async function showStatus(): Promise<void> {
   // Check env vars
   const checks: Array<{ name: string; envVar: string; expected?: string }> = [
     { name: 'Telemetry enabled', envVar: 'CLAUDE_CODE_ENABLE_TELEMETRY', expected: '1' },
+    { name: 'Service name', envVar: 'OTEL_SERVICE_NAME', expected: 'claude-code-agent' },
     { name: 'Traces exporter', envVar: 'OTEL_TRACES_EXPORTER', expected: 'otlp' },
     { name: 'Logs exporter', envVar: 'OTEL_LOGS_EXPORTER', expected: 'otlp' },
     { name: 'Metrics exporter', envVar: 'OTEL_METRICS_EXPORTER', expected: 'otlp' },

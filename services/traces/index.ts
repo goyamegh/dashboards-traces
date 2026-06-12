@@ -79,14 +79,27 @@ export async function fetchTracesByRunIds(runIds: string[]): Promise<TraceSearch
  * cross-team noise on a shared cluster.
  */
 export async function fetchTracesForRun(params: {
-  runId: string;
+  /**
+   * Agent run id (Strategy B correlation). Optional — runs persisted via the
+   * deferred trace-mode path may not carry one; in that case correlation
+   * falls back to the time-window `windowAgents` clause (Strategy C).
+   */
+  runId?: string;
   evalTraceId?: string;
   includeWindowFallback?: boolean;
   windowAgents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>;
   size?: number;
 }): Promise<TraceSearchResult> {
   const { runId, evalTraceId, includeWindowFallback, windowAgents, size = 1000 } = params;
-  const query: TraceQueryParams = { runIds: [runId], size };
+  // Only include the runIds clause when runId is a non-empty string. A
+  // `[undefined]` array makes the server build a `terms: [null]` query that
+  // OpenSearch rejects wholesale (taking the Strategy C window fallback down
+  // with it). Runs persisted via the deferred trace-mode path may not carry
+  // a runId, so this guard is load-bearing for the Traces tab. See #264.
+  const query: TraceQueryParams = { size };
+  if (typeof runId === 'string' && runId.length > 0) {
+    query.runIds = [runId];
+  }
   if (evalTraceId) query.traceId = evalTraceId;
   if (includeWindowFallback && windowAgents && windowAgents.length > 0) {
     query.agents = windowAgents;

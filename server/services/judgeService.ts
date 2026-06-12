@@ -15,6 +15,8 @@ import { buildEvaluationPrompt, JudgeRequest, JudgeResponse } from './bedrockSer
 import { debug } from '@/lib/debug';
 import type { Evaluator } from '@/types';
 import { getDefaultEvaluator } from '@/server/prompts/evaluatorTemplates';
+import { parseJudgeResponse } from '@/server/services/judgeResponseParser';
+import { buildJudgeDebug } from '@/server/services/judgeDebug';
 
 // ============================================================================
 // Main Evaluation Function
@@ -88,55 +90,24 @@ export async function evaluateWithOpenAICompatible(
   debug('JudgeService', '--- Raw Response ---');
   debug('JudgeService', responseText.substring(0, 500) + (responseText.length > 500 ? '...' : ''));
 
-  // Extract JSON — handles markdown code blocks and bare JSON
-  let jsonText = responseText.trim();
-  const jsonMatch = jsonText.match(/```json\s*([\s\S]*?)\s*```/);
-  if (jsonMatch) {
-    jsonText = jsonMatch[1];
-    debug('JudgeService', 'Extracted JSON from markdown code block');
-  } else {
-    const startIdx = jsonText.indexOf('{');
-    const endIdx = jsonText.lastIndexOf('}');
-    if (startIdx !== -1 && endIdx !== -1) {
-      jsonText = jsonText.slice(startIdx, endIdx + 1);
-      debug('JudgeService', 'Extracted JSON from text');
-    }
-  }
-
-  const result = JSON.parse(jsonText);
-
   debug('JudgeService', '========== OPENAI-COMPATIBLE JUDGE RESPONSE ==========');
-  debug('JudgeService', 'Pass/Fail Status:', result.pass_fail_status?.toUpperCase() || 'MISSING');
 
-  // Extract metrics dynamically based on evaluator's scoring config
-  const metrics: Record<string, number> = {};
-
-  for (const metricDef of effectiveEvaluator.scoringConfig.metrics) {
-    const metricName = metricDef.name;
-    // Check top-level first (new format), then nested metrics object (legacy)
-    const value = (result as any)[metricName] ?? result.metrics?.[metricName];
-    if (value !== undefined && value !== null) {
-      const parsed = typeof value === 'number' ? value : parseFloat(value);
-      if (Number.isFinite(parsed)) {
-        metrics[metricName] = parsed;
-        debug('JudgeService', `Metric '${metricName}':`, parsed);
-      } else {
-        debug('JudgeService', `Warning: Metric '${metricName}' has invalid value:`, value);
-      }
-    } else {
-      debug('JudgeService', `Warning: Metric '${metricName}' not found in judge response`);
-    }
-  }
-
-  debug('JudgeService', 'Improvement Strategies:', result.improvement_strategies?.length ?? 0, 'items');
-
-  return {
-    passFailStatus: (result.pass_fail_status || 'failed') as 'passed' | 'failed',
-    metrics,
-    llmJudgeReasoning: result.reasoning,
-    improvementStrategies: result.improvement_strategies || [],
+  // Delegate JSON parse + metric extraction + extra-field capture to the
+  // shared parser — single implementation across all providers.
+  const parsed = parseJudgeResponse(responseText, {
+    evaluator: effectiveEvaluator,
     duration,
-  };
+    source: 'JudgeService',
+  });
+  const judgeDebug = buildJudgeDebug({
+    provider: 'openai-compatible',
+    modelId,
+    evaluatorId: effectiveEvaluator.id,
+    systemPrompt: effectiveEvaluator.systemPrompt,
+    userPrompt,
+  });
+  if (judgeDebug) parsed.judgeDebug = judgeDebug;
+  return parsed;
 }
 
 // ============================================================================

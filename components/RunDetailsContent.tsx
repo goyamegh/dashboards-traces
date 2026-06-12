@@ -223,11 +223,16 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
           setTracesFetched(true);
 
           try {
-            // Call the Bedrock judge with the trajectory and expectedOutcomes
-            // Resolve model key to full Bedrock model ID
-            const judgeModelId = liveReport.modelId
-              ? (DEFAULT_CONFIG.models[liveReport.modelId]?.model_id || liveReport.modelId)
-              : undefined;
+            // Trace-mode polled judge (UI fallback path). Same priority
+            // as the runner: report.judgeModelId > BEDROCK_MODEL_ID env >
+            // agent's modelId. Reading process.env from a browser bundle
+            // returns undefined, so we hop straight to the agent's modelId
+            // BC fallback when the run document didn't carry the new field.
+            const judgeModelId = liveReport.judgeModelId
+              ? (DEFAULT_CONFIG.models[liveReport.judgeModelId]?.model_id || liveReport.judgeModelId)
+              : (liveReport.modelId
+                  ? (DEFAULT_CONFIG.models[liveReport.modelId]?.model_id || liveReport.modelId)
+                  : undefined);
             console.info(`[RunDetails] Calling Bedrock judge for report ${liveReport.id} with model: ${judgeModelId || '(default)'}`);
 
             const judgment = await callBedrockJudge(
@@ -885,7 +890,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
             }
           </TabsTrigger>
           <TabsTrigger value="judge" className="rounded-none border-b-2 border-transparent data-[state=active]:border-opensearch-blue data-[state=active]:text-opensearch-blue">
-            <Scale size={14} className="mr-2" /> LLM Judge
+            <Scale size={14} className="mr-2" /> Judge Evaluation
           </TabsTrigger>
           <TabsTrigger value="annotations" className="rounded-none border-b-2 border-transparent data-[state=active]:border-opensearch-blue data-[state=active]:text-opensearch-blue">
             <MessageSquare size={14} className="mr-2" /> Annotations
@@ -1242,6 +1247,168 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                     );
                   })}
                 </div>
+              </div>
+            )}
+
+            {/* Judge output — every field the judge emitted, rendered
+               flat (no collapsibles) so users see the complete picture
+               upfront. Pre-fix the judge response was scattered across
+               the page and partially hidden behind expand toggles, which
+               made it hard to confirm "did my prompt edit actually
+               reach the model?" / "what custom fields are in the JSON?"
+               in one glance.
+
+               Renders:
+                 - identity strip (provider · model · evaluator · tokens · latency)
+                 - parsed metrics (mirror of the metrics already in the run
+                   summary, kept here so the judge tab is self-contained)
+                 - additional judge output (extraFields) — every key the
+                   prompt asked the judge for that doesn't fit the typed
+                   wire shape (improvement_candidates, failure_tags,
+                   weighted_score, scores_unmapped, etc.) shown as a
+                   key/value list rather than a JSON blob
+                 - system prompt (capped height, scrollable in place)
+                 - user prompt (capped height, scrollable in place)
+                 - raw judge response (capped height, scrollable in place)
+
+               Long blocks use `max-h-80 overflow-y-auto` so the section
+               doesn't push the rest of the page off-screen on a 10–20 KB
+               saved prompt. */}
+            {(liveReport.llmJudgeResponse?.judgeDebug ||
+              liveReport.llmJudgeResponse?.extraFields ||
+              liveReport.llmJudgeResponse?.rawResponse ||
+              liveReport.llmJudgeResponse?.parsedMetrics) && (
+              <div>
+                <h3 className="text-lg font-semibold mb-3">Judge Output</h3>
+                <Card>
+                  <CardContent className="p-4 space-y-5">
+                    {/* Identity / metadata strip — always visible. */}
+                    <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground border-b pb-3">
+                      {liveReport.llmJudgeResponse?.judgeDebug?.provider && (
+                        <span><strong>Provider:</strong> {liveReport.llmJudgeResponse.judgeDebug.provider}</span>
+                      )}
+                      {(liveReport.llmJudgeResponse?.judgeDebug?.modelId || liveReport.llmJudgeResponse?.modelId) && (
+                        <span><strong>Judge model:</strong> {liveReport.llmJudgeResponse?.judgeDebug?.modelId || liveReport.llmJudgeResponse?.modelId}</span>
+                      )}
+                      {liveReport.llmJudgeResponse?.judgeDebug?.evaluatorId && (
+                        <span><strong>Evaluator:</strong> {liveReport.llmJudgeResponse.judgeDebug.evaluatorId}</span>
+                      )}
+                      {typeof liveReport.llmJudgeResponse?.promptTokens === 'number' && (
+                        <span><strong>Tokens:</strong> {liveReport.llmJudgeResponse.promptTokens.toLocaleString()} prompt + {(liveReport.llmJudgeResponse.completionTokens || 0).toLocaleString()} completion</span>
+                      )}
+                      {typeof liveReport.llmJudgeResponse?.latencyMs === 'number' && liveReport.llmJudgeResponse.latencyMs > 0 && (
+                        <span><strong>Latency:</strong> {liveReport.llmJudgeResponse.latencyMs.toLocaleString()} ms</span>
+                      )}
+                    </div>
+
+                    {/* Parsed metrics — typed wire fields the run summary
+                        already shows, mirrored here so the judge tab is
+                        self-contained without scrolling back up. */}
+                    {liveReport.llmJudgeResponse?.parsedMetrics && Object.keys(liveReport.llmJudgeResponse.parsedMetrics).length > 0 && (
+                      <div>
+                        <div className="text-sm font-semibold mb-1.5">Parsed metrics</div>
+                        <div className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs">
+                          {Object.entries(liveReport.llmJudgeResponse.parsedMetrics)
+                            .filter(([, v]) => v !== undefined && v !== null)
+                            .map(([k, v]) => (
+                              <div key={k} className="flex items-center justify-between border-b border-border/40 pb-1">
+                                <span className="text-muted-foreground">{k}</span>
+                                <span className="font-mono font-semibold">{typeof v === 'number' ? v : String(v)}</span>
+                              </div>
+                            ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Additional judge output — the escape hatch. Every
+                        key the model emitted that doesn't map onto a
+                        typed wire field or a declared metric. Rendered
+                        as a key/value list with values pretty-printed
+                        rather than dumped as a single JSON blob. */}
+                    {liveReport.llmJudgeResponse?.extraFields && Object.keys(liveReport.llmJudgeResponse.extraFields).length > 0 && (
+                      <div>
+                        <div className="text-sm font-semibold mb-1.5">
+                          Additional judge output
+                          <span className="text-xs font-normal text-muted-foreground ml-2">
+                            ({Object.keys(liveReport.llmJudgeResponse.extraFields).length} field{Object.keys(liveReport.llmJudgeResponse.extraFields).length === 1 ? '' : 's'} the prompt asked for, beyond the typed shape)
+                          </span>
+                        </div>
+                        <div className="space-y-1.5">
+                          {Object.entries(liveReport.llmJudgeResponse.extraFields).map(([key, value]) => {
+                            const isPrimitive = value === null || (typeof value !== 'object');
+                            const display = isPrimitive
+                              ? String(value)
+                              : JSON.stringify(value, null, 2);
+                            return (
+                              <div key={key} className="text-xs">
+                                <code className="text-muted-foreground font-semibold">{key}</code>
+                                {isPrimitive ? (
+                                  <span className="ml-2 font-mono">{display}</span>
+                                ) : (
+                                  <pre className="mt-1 bg-muted/30 p-2 rounded whitespace-pre-wrap break-words max-h-48 overflow-y-auto">{display}</pre>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* System prompt the judge model received — always
+                        rendered when present (AH_JUDGE_DEBUG=1) so users
+                        can confirm their saved evaluator prompt actually
+                        flowed through. Capped height keeps a 20 KB prompt
+                        from blowing out the page. */}
+                    {liveReport.llmJudgeResponse?.judgeDebug?.systemPrompt && (
+                      <div>
+                        <div className="text-sm font-semibold mb-1.5">
+                          System prompt the model received
+                          <span className="text-xs font-normal text-muted-foreground ml-2">
+                            ({liveReport.llmJudgeResponse.judgeDebug.systemPrompt.length.toLocaleString()} chars)
+                          </span>
+                        </div>
+                        <pre className="text-xs bg-muted/30 p-3 rounded whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
+                          {liveReport.llmJudgeResponse.judgeDebug.systemPrompt}
+                        </pre>
+                      </div>
+                    )}
+
+                    {liveReport.llmJudgeResponse?.judgeDebug?.userPrompt && (
+                      <div>
+                        <div className="text-sm font-semibold mb-1.5">
+                          User prompt
+                          <span className="text-xs font-normal text-muted-foreground ml-2">
+                            ({liveReport.llmJudgeResponse.judgeDebug.userPrompt.length.toLocaleString()} chars)
+                          </span>
+                        </div>
+                        <pre className="text-xs bg-muted/30 p-3 rounded whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
+                          {liveReport.llmJudgeResponse.judgeDebug.userPrompt}
+                        </pre>
+                      </div>
+                    )}
+
+                    {liveReport.llmJudgeResponse?.rawResponse && (
+                      <div>
+                        <div className="text-sm font-semibold mb-1.5">
+                          Raw judge response
+                          <span className="text-xs font-normal text-muted-foreground ml-2">
+                            ({liveReport.llmJudgeResponse.rawResponse.length.toLocaleString()} chars)
+                          </span>
+                        </div>
+                        <pre className="text-xs bg-muted/30 p-3 rounded whitespace-pre-wrap break-words max-h-80 overflow-y-auto">
+                          {liveReport.llmJudgeResponse.rawResponse}
+                        </pre>
+                      </div>
+                    )}
+
+                    {!liveReport.llmJudgeResponse?.judgeDebug && (
+                      <p className="text-xs text-muted-foreground border-t pt-3">
+                        Set <code>AH_JUDGE_DEBUG=1</code> on the server to capture the
+                        system/user prompts the judge received on future runs.
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
               </div>
             )}
           </TabsContent>

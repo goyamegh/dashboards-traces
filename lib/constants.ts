@@ -235,6 +235,20 @@ export const DEFAULT_CONFIG: AppConfig = {
       context_window: 200000,
       max_output_tokens: 4096
     },
+    "claude-opus-4.8": {
+      model_id: "us.anthropic.claude-opus-4-8-v1",
+      display_name: "Claude Opus 4.8",
+      provider: "bedrock",
+      context_window: 200000,
+      max_output_tokens: 128000
+    },
+    "claude-opus-4.7": {
+      model_id: "us.anthropic.claude-opus-4-7-v1",
+      display_name: "Claude Opus 4.7",
+      provider: "bedrock",
+      context_window: 200000,
+      max_output_tokens: 128000
+    },
     "claude-opus-4.6": {
       model_id: "us.anthropic.claude-opus-4-6-v1",
       display_name: "Claude Opus 4.6",
@@ -249,34 +263,6 @@ export const DEFAULT_CONFIG: AppConfig = {
       context_window: 200000,
       max_output_tokens: 64000
     },
-    "claude-haiku-4.5": {
-      model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-      display_name: "Claude Haiku 4.5",
-      provider: "bedrock",
-      context_window: 200000,
-      max_output_tokens: 64000
-    },
-    "claude-opus-4.5": {
-      model_id: "us.anthropic.claude-opus-4-5-20251101-v1:0",
-      display_name: "Claude Opus 4.5",
-      provider: "bedrock",
-      context_window: 200000,
-      max_output_tokens: 64000
-    },
-    "claude-opus-4.1": {
-      model_id: "us.anthropic.claude-opus-4-1-20250805-v1:0",
-      display_name: "Claude Opus 4.1",
-      provider: "bedrock",
-      context_window: 200000,
-      max_output_tokens: 32000
-    },
-    "claude-opus-4": {
-      model_id: "us.anthropic.claude-opus-4-20250514-v1:0",
-      display_name: "Claude Opus 4",
-      provider: "bedrock",
-      context_window: 200000,
-      max_output_tokens: 32000
-    },
     "claude-sonnet-4.5": {
       model_id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
       display_name: "Claude Sonnet 4.5",
@@ -284,19 +270,12 @@ export const DEFAULT_CONFIG: AppConfig = {
       context_window: 200000,
       max_output_tokens: 4096
     },
-    "claude-sonnet-4": {
-      model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0",
-      display_name: "Claude Sonnet 4",
+    "claude-haiku-4.5": {
+      model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      display_name: "Claude Haiku 4.5",
       provider: "bedrock",
       context_window: 200000,
-      max_output_tokens: 4096
-    },
-    "claude-haiku-3.5": {
-      model_id: "us.anthropic.claude-3-5-haiku-20241022-v1:0",
-      display_name: "Claude Haiku 3.5",
-      provider: "bedrock",
-      context_window: 200000,
-      max_output_tokens: 4096
+      max_output_tokens: 64000
     },
     "claude-code-judge": {
       model_id: "claude-code-judge",
@@ -325,20 +304,6 @@ export const DEFAULT_CONFIG: AppConfig = {
       provider: "openai-compatible",
       context_window: 128000,
       max_output_tokens: 4096
-    },
-    "deepseek-r1:8b": {
-      model_id: "deepseek-r1:8b",
-      display_name: "DeepSeek R1 8B (Ollama)",
-      provider: "openai-compatible",
-      context_window: 128000,
-      max_output_tokens: 8192
-    },
-    "gemma3:12b": {
-      model_id: "gemma3:12b",
-      display_name: "Gemma 3 12B (Ollama)",
-      provider: "openai-compatible",
-      context_window: 128000,
-      max_output_tokens: 8192
     },
   },
   defaults: {

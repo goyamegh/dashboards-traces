@@ -36,7 +36,7 @@ export const UseCaseExpandedRow: React.FC<UseCaseExpandedRowProps> = ({
           </TabsTrigger>
           <TabsTrigger value="judge" className="gap-2">
             <Scale size={14} />
-            LLM Judge
+            Judge Evaluation
           </TabsTrigger>
         </TabsList>
 

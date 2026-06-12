@@ -16,6 +16,7 @@ import { AGUIEvent } from '@/types/agui';
 import { generateMockTrajectory } from './mockTrajectory';
 import { callBedrockJudge } from './bedrockJudge';
 import { buildJudgeMatcherEntry, formatExpectedOutcomesAsClaim } from '@/lib/matchers/judgeAccessor';
+import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 
 // Re-export for use by experimentRunner when calling judge after trace polling
 export { callBedrockJudge };
@@ -112,6 +113,22 @@ export interface RunEvaluationWithConnectorOptions {
   onRawEvent?: (event: any) => void;
   /** Optional evaluator ID for custom evaluation criteria */
   evaluatorId?: string;
+  /**
+   * Optional judge model id, distinct from the agent's `modelId` argument.
+   * When set, this is the judge LLM (the model the LLM judge uses to grade
+   * the trajectory). When unset the judge falls back to the evaluator's
+   * `inferenceConfig.modelId` (resolved server-side in `/api/judge`),
+   * then the server-default `BEDROCK_MODEL_ID` env var — NEVER to the
+   * agent's `modelId`. Customer input via UI dropdown / CLI
+   * `--judge-model` / API `judgeModelId` field.
+   *
+   * Pre-fix the agent's `modelId` was reused as the judge model id, which
+   * meant picking a judge-only pseudo-model like `pi-judge` from the UI
+   * dropdown ALSO got passed to the agent and broke the agent's Bedrock
+   * call (Bedrock doesn't know what `pi-judge` is). Now the two are
+   * fully decoupled.
+   */
+  judgeModelId?: string;
   /** When true, skip the LLM judge (caller will handle evaluation) */
   skipJudge?: boolean;
 }
@@ -299,6 +316,9 @@ export async function runEvaluationWithConnector(
   options: RunEvaluationWithConnectorOptions
 ): Promise<EvaluationReport> {
   const { registry: connectorRegistry, onRawEvent, evaluatorId, skipJudge } = options;
+  // Pull `judgeModelId` once so the closure inside the standard-mode call
+  // below uses the run-level value rather than the agent's `modelId`.
+  const optionsJudgeModelId = options.judgeModelId;
 
   const reportId = uuidv4();
   let fullTrajectory: TrajectoryStep[] = [];
@@ -389,7 +409,21 @@ export async function runEvaluationWithConnector(
     // STANDARD MODE: Call judge
     const models = getModels();
     const modelConfig = models[modelId];
-    const judgeModelId = modelConfig?.model_id || modelId;
+    // Judge model resolution — SEPARATE from the agent's `modelId`. Priority:
+    //   1. options.judgeModelId  (run-level customer input)
+    //   2. server default `BEDROCK_MODEL_ID`  (env, falls back to a recent Claude)
+    //   3. agent's modelId  (last-resort BC fallback for old callers that didn't
+    //                       split agent vs judge model; tolerated for one release
+    //                       so behavior of pre-existing benchmark runs is
+    //                       preserved when neither cx input nor server default
+    //                       is available)
+    // Anything else (evaluator's own `inferenceConfig.modelId`, agentic-provider
+    // model picking) is resolved server-side in /api/judge from the evaluator.
+    const judgeModelId =
+      optionsJudgeModelId ||
+      process.env.BEDROCK_MODEL_ID ||
+      modelConfig?.model_id ||
+      modelId;
     const judgment = await callBedrockJudge(
       fullTrajectory,
       {
@@ -399,7 +433,23 @@ export async function runEvaluationWithConnector(
       undefined, // No logs in direct connector mode
       (chunk) => debug('Eval', 'Judge progress:', chunk.slice(0, 100)),
       judgeModelId,
-      evaluatorId
+      evaluatorId,
+      // Forward agent runId so the `agent` (trace) judge provider can
+      // scope its query_spans/query_logs tools. See callBedrockJudge.
+      agentRunId || undefined,
+      // Strategy C correlation hints (#264) so the trace judge tool can
+      // find spans the agent emits under its OWN correlation (claude-code
+      // session ids etc.), not just spans matching agent-health's runId
+      // via gen_ai.request.id.
+      buildJudgeAgentsHints(
+        {
+          agentKey: agent.key,
+          connectorProtocol: (agent.connectorType as any),
+          timestamp: new Date().toISOString(),
+          performanceMetrics: { durationMs: Date.now() - evalStartTime, agentDurationMs },
+        },
+        agent.traceServiceName
+      )
     );
 
     debug('Eval', 'Metrics:', judgment.metrics);
@@ -410,9 +460,15 @@ export async function runEvaluationWithConnector(
       promptTokens: 0,
       completionTokens: 0,
       latencyMs: judgment.judgeDurationMs ?? 0,
-      rawResponse: judgment.llmJudgeReasoning,
+      // Prefer the actual unparsed model output when present (post
+      // evaluator-prompt-plumbing). Pre-fix code stuffed the parsed
+      // reasoning here — fall back to that for back-compat with judges
+      // that don't yet forward the raw text.
+      rawResponse: judgment.rawResponse ?? judgment.llmJudgeReasoning,
       parsedMetrics: judgment.metrics as any,
       improvementStrategies: judgment.improvementStrategies,
+      ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
+      ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
     };
 
     return {
@@ -638,7 +694,13 @@ export async function runEvaluation(
     // Call judge
     const models = getModels();
     const modelConfig = models[modelId];
-    const judgeModelId = modelConfig?.model_id || modelId;
+    // Deprecated path — mirror the standard-mode judgeModelId resolution
+    // chain so this stays consistent if anyone still hits this code path.
+    // The agent's `modelId` is NOT used as the judge model here either.
+    const judgeModelId =
+      process.env.BEDROCK_MODEL_ID ||
+      modelConfig?.model_id ||
+      modelId;
     const judgment = await callBedrockJudge(
       fullTrajectory,
       {
@@ -647,7 +709,10 @@ export async function runEvaluation(
       },
       logs,
       (chunk) => debug('Eval', 'Judge progress:', chunk.slice(0, 100)),
-      judgeModelId
+      judgeModelId,
+      undefined, // evaluatorId not threaded on the legacy path
+      // Same forwarding as the standard branch above.
+      agentRunId || undefined
     );
 
     debug('Eval', 'Metrics:', judgment.metrics);
@@ -658,9 +723,14 @@ export async function runEvaluation(
       promptTokens: 0,
       completionTokens: 0,
       latencyMs: judgment.judgeDurationMs ?? 0,
-      rawResponse: judgment.llmJudgeReasoning,
+      // Prefer the actual unparsed model output when present (post
+      // evaluator-prompt-plumbing). Pre-fix code stuffed the parsed
+      // reasoning here — fall back to that for back-compat.
+      rawResponse: judgment.rawResponse ?? judgment.llmJudgeReasoning,
       parsedMetrics: judgment.metrics as any,
       improvementStrategies: judgment.improvementStrategies,
+      ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
+      ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
     };
 
     return {

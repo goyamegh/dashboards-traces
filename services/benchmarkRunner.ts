@@ -26,6 +26,8 @@ import type { IStorageModule } from '@/server/adapters/types';
 import { runEvaluationWithConnector, callBedrockJudge, invokeAgent } from './evaluation';
 import { buildEvaluatorErrorPatch } from './evaluation/evaluatorError';
 import { connectorRegistry } from '@/services/connectors/server';
+import { readEnv } from '@/lib/envCompat';
+import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 import {
   runInSession,
   recordVerdict,
@@ -458,7 +460,11 @@ export async function executeRun(
                 result: emptyResult,
                 agent: agentFixture,
                 traces: tracesView,
-                judge: bindJudge({ evaluatorId: run.evaluatorId, model: bedrockModelId }),
+                // See the matching comment in services/evaluationRunner.ts.
+                // Customer-supplied `run.judgeModelId` becomes the bound
+                // judge model; the agent's `bedrockModelId` no longer
+                // leaks into the judge call.
+                judge: bindJudge({ evaluatorId: run.evaluatorId, model: run.judgeModelId }),
                 evaluate: evaluateFixture,
               };
               try {
@@ -732,15 +738,34 @@ async function saveReportWithModule(storage: IStorageModule, report: any): Promi
     testCaseId: report.testCaseId,
     agentId: report.agentKey || report.agentName,
     modelId: report.modelId || report.modelName,
+    // Persist the agent's runId (Strategy B trace correlation key). Without
+    // it the run-detail Traces tab can't scope to the run's eval span and
+    // a null runId even rejected the whole trace query. See #264.
+    runId: report.runId,
+    // Persist judgeModelId on the report so the run-detail UI can show
+    // "agent: <m1> judge: <m2>" and the audit trail is intact. Inherits
+    // from the run-level cx input (BenchmarkRun.judgeModelId).
+    judgeModelId: report.judgeModelId,
+    evaluatorId: report.evaluatorId,
     status: report.status,
     passFailStatus: report.passFailStatus,
-    traceId: report.runId,
+    // Real W3C OTel trace id when we have it (extracted from polled spans),
+    // else undefined. Pre-fix this was set to `report.runId` — i.e. the
+    // connector's subprocess id (`subprocess-<timestamp>`) was being
+    // mis-stamped as a 32-hex W3C traceId, which broke trace-tab
+    // correlation that prefers `traceId` over `runId`. The runner's
+    // `runId` field is preserved separately as `traceId: report.traceId`
+    // here only when a real OTel traceId is available. See #190 / #264.
+    traceId: report.traceId || (report.spans?.[0] as any)?.traceId,
     llmJudgeReasoning: report.llmJudgeReasoning,
     metrics: report.metrics,
     trajectory: report.trajectory,
     rawEvents: report.rawEvents || [],
     logs: report.logs || report.openSearchLogs,
     improvementStrategies: report.improvementStrategies,
+    // Same fix as the placeholder-update path: pass through the full
+    // judge sidecar (rawResponse, extraFields, judgeDebug, parsedMetrics).
+    llmJudgeResponse: report.llmJudgeResponse,
     metricsStatus: report.metricsStatus,
     traceFetchAttempts: report.traceFetchAttempts,
     lastTraceFetchAt: report.lastTraceFetchAt,
@@ -788,11 +813,30 @@ export async function runSingleUseCase(
     bedrockModelId,
     testCase,
     onStep || (() => {}),
-    { registry: connectorRegistry, evaluatorId }
+    {
+      registry: connectorRegistry,
+      evaluatorId,
+      // Forward the run-level judge model so the judge call uses what the
+      // customer picked in the run config dialog / CLI / API — not the
+      // agent's own model. See {@link RunEvaluationWithConnectorOptions.judgeModelId}.
+      judgeModelId: run.judgeModelId,
+    }
   );
   const report = caseSpanContext
     ? await context.with(caseSpanContext, runEval)
     : await runEval();
+
+  // Stamp `judgeModelId` onto the report BEFORE saving so both code
+  // paths (placeholder-update and create) persist the run-level cx
+  // input. The connector return path doesn't carry it, but `run` does.
+  (report as any).judgeModelId = (report as any).judgeModelId ?? run.judgeModelId;
+  // Same fix for `evaluatorId`. The connector return path doesn't carry
+  // it either, so without this stamp the trace-mode polled judge (which
+  // reads `report.evaluatorId` to forward to /api/judge) silently falls
+  // back to the default RCA evaluator — the bug that surfaced when
+  // running the AES Oncall test case with `useTraces: true` + the
+  // agent (trace) judge.
+  (report as any).evaluatorId = (report as any).evaluatorId ?? run.evaluatorId;
 
   // If a placeholder run was pre-created, update it instead of creating a new one.
   // We use the storage-layer field names (traceId, etc.) to match `saveReportWithModule`
@@ -803,13 +847,42 @@ export async function runSingleUseCase(
     const updates = {
       status: report.status,
       passFailStatus: report.passFailStatus,
-      traceId: report.runId,
+      // Persist the agent's runId on the placeholder-update path. The
+      // placeholder was created at run-start before the agent ran, so it
+      // had no runId; without re-stamping it here the doc keeps runId
+      // undefined. That broke the run-detail Traces tab: with no runId,
+      // its trace query degraded (and a `[null]` runIds clause even
+      // rejected the whole query). Strategy B correlation + the eval-span
+      // match both depend on this being present. See #264.
+      runId: report.runId,
+      // Same fix as saveReportWithModule above — only stamp a real W3C
+      // trace id, not the subprocess connector's run id.
+      traceId: report.traceId || (report.spans?.[0] as any)?.traceId,
+      // Same reason as the report-level stamp above — the placeholder
+      // doc was created with judgeModelId set, but on update we re-stamp
+      // it from the run config in case the placeholder pre-creation skipped
+      // the field (storage transient failures during /api/evaluate).
+      judgeModelId: run.judgeModelId,
+      // Re-stamp evaluatorId for the same reason. /api/evaluate sets it
+      // on the placeholder, but if that step failed silently the doc has
+      // no evaluatorId — and the trace-mode polled judge then reads it
+      // off the report and falls back to the default. Belt-and-braces.
+      evaluatorId: run.evaluatorId,
       llmJudgeReasoning: report.llmJudgeReasoning,
       metrics: report.metrics,
       trajectory: report.trajectory,
       rawEvents: report.rawEvents || [],
       logs: report.logs || report.openSearchLogs,
       improvementStrategies: report.improvementStrategies,
+      // The full judge response (rawResponse, parsedMetrics, extraFields,
+      // judgeDebug, ...) lives on `llmJudgeResponse` and was previously
+      // dropped by the placeholder-update path — callers using
+      // /api/evaluate (UI "Run Test", CLI `agent-health run`) lost the
+      // detailed judge breadcrumbs even though the connector returned
+      // them. Forwarding both top-level pieces (`improvementStrategies`,
+      // `llmJudgeReasoning`) plus the full sidecar so the run-detail
+      // "Judge Debug" surface and `extraFields` rendering work end-to-end.
+      llmJudgeResponse: report.llmJudgeResponse,
       metricsStatus: report.metricsStatus,
       traceFetchAttempts: report.traceFetchAttempts,
       lastTraceFetchAt: report.lastTraceFetchAt,
@@ -892,8 +965,14 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
       onTracesFound: async (spans, updatedReport) => {
         try {
           const finalTrajectory = agentConfig?.hooks?.buildTrajectory ? updatedReport.trajectory : report.trajectory;
-          // Call the Bedrock judge with the trajectory and expectedOutcomes
-          const judgeModelId = report.modelId ? getBedrockModelId(report.modelId) : undefined;
+          // Trace-mode polled judge — same priority chain as the standard
+          // path: report.judgeModelId (persisted at run-create time) >
+          // BEDROCK_MODEL_ID env > agent's modelId (last-resort BC
+          // fallback for runs that didn't carry the new field).
+          const judgeModelId =
+            report.judgeModelId ||
+            readEnv('BEDROCK_MODEL_ID', 'AGENT_HEALTH_BEDROCK_MODEL_ID') ||
+            (report.modelId ? getBedrockModelId(report.modelId) : undefined);
 
           const judgment = await callBedrockJudge(
             finalTrajectory,
@@ -903,7 +982,12 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
             },
             [], // No logs for trace-mode - traces are the source of truth
             () => {}, // No progress callback needed
-            judgeModelId
+            judgeModelId,
+            report.evaluatorId,
+            // Forward report.runId so the agent (trace) judge can scope.
+            report.runId,
+            // Strategy C correlation hints (#264).
+            buildJudgeAgentsHints(report, agentConfig?.traceServiceName)
           );
 
           // Update report with judge results
@@ -921,6 +1005,24 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
               }),
             ],
             improvementStrategies: judgment.improvementStrategies,
+            // Persist the full judge sidecar (rawResponse, parsedMetrics,
+            // extraFields, judgeDebug, ...) so the run-detail Judge
+            // Output card has all the breadcrumbs even on the trace-mode
+            // polled-judge code path. Pre-fix this update silently
+            // dropped llmJudgeResponse, mirroring the placeholder-update
+            // bug fixed earlier in this PR for the standard path.
+            llmJudgeResponse: {
+              modelId: judgeModelId || '',
+              timestamp: new Date().toISOString(),
+              promptTokens: 0,
+              completionTokens: 0,
+              latencyMs: judgment.judgeDurationMs ?? 0,
+              rawResponse: judgment.rawResponse ?? judgment.llmJudgeReasoning,
+              parsedMetrics: judgment.metrics as any,
+              improvementStrategies: judgment.improvementStrategies,
+              ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
+              ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
+            },
           } as any);
 
           // Emit deferred OTel eval span now that judge is complete
@@ -993,13 +1095,20 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
       onTracesFound: async (spans, updatedReport) => {
         try {
           const finalTrajectory = agentConfig?.hooks?.buildTrajectory ? updatedReport.trajectory : report.trajectory;
-          const judgeModelId = report.modelId ? getBedrockModelId(report.modelId) : undefined;
+          // Trace-mode timeout judge (no spans found) — same priority as above.
+          const judgeModelId =
+            report.judgeModelId ||
+            readEnv('BEDROCK_MODEL_ID', 'AGENT_HEALTH_BEDROCK_MODEL_ID') ||
+            (report.modelId ? getBedrockModelId(report.modelId) : undefined);
           const judgment = await callBedrockJudge(
             finalTrajectory,
             { expectedOutcomes: testCase.expectedOutcomes, expectedTrajectory: testCase.expectedTrajectory },
             [],
             () => {},
-            judgeModelId
+            judgeModelId,
+            report.evaluatorId,
+            report.runId,
+            buildJudgeAgentsHints(report, agentConfig?.traceServiceName)
           );
           await updateRunWithClient(client, report.id, {
             trajectory: finalTrajectory,
@@ -1015,6 +1124,22 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
               }),
             ],
             improvementStrategies: judgment.improvementStrategies,
+            // Same fix as the storage-module path above — persist the
+            // full judge sidecar (rawResponse, parsedMetrics, extraFields,
+            // judgeDebug, ...) so the legacy OpenSearch-client path also
+            // surfaces the complete judge output on the run document.
+            llmJudgeResponse: {
+              modelId: judgeModelId || '',
+              timestamp: new Date().toISOString(),
+              promptTokens: 0,
+              completionTokens: 0,
+              latencyMs: judgment.judgeDurationMs ?? 0,
+              rawResponse: judgment.rawResponse ?? judgment.llmJudgeReasoning,
+              parsedMetrics: judgment.metrics as any,
+              improvementStrategies: judgment.improvementStrategies,
+              ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
+              ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
+            },
           });
           if (report.experimentId) {
             await updateBenchmarkRunStatsForReport(client, report.experimentId, report.id);
