@@ -82,6 +82,7 @@ Agent Health ships with built-in skill files for *Claude Code* and *Kiro* that t
 | **Create PR** | [`.claude/skills/create-pr/SKILL.md`](./.claude/skills/create-pr/SKILL.md) | [`.kiro/steering/create-pr.md`](./.kiro/steering/create-pr.md) | PR workflow with DCO signoff and CI compliance |
 | **Config & Auth** | [`.claude/skills/config-auth/SKILL.md`](./.claude/skills/config-auth/SKILL.md) | — | Config loading, AWS auth, multi-profile setup |
 | **Instrument with OTel** | [`.claude/skills/instrument-otel/SKILL.md`](./.claude/skills/instrument-otel/SKILL.md) | — | OpenTelemetry GenAI span structure + config for Agent Health |
+| **Agent Health** | [`.claude/skills/agent-health/SKILL.md`](./.claude/skills/agent-health/SKILL.md) | [`.kiro/steering/agent-health.md`](./.kiro/steering/agent-health.md) | Evaluate, benchmark & improve agents with the agent-health CLI/APIs |
 
 **To use these skills:**
 - *Claude Code* — Skills in `.claude/skills/` are auto-discovered when the directory exists in your workspace root. No extra setup needed.

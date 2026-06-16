@@ -1,3 +1,8 @@
+---
+name: agent-health
+description: Evaluate, benchmark, and improve an AI agent with the Agent Health CLI and server APIs. Use when the user wants to run evaluations/benchmarks, interpret judge results (matcherResults / improvementStrategies), diagnose eval-vs-reality gaps, or raise an agent's pass rate. Mirror of docs/skills/AGENT_HEALTH.md.
+---
+
 # Agent Health - AI Assistant Instructions
 
 Use these instructions to evaluate and improve your agent using the agent-health CLI and server APIs.
