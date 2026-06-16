@@ -464,19 +464,28 @@ test.describe('Evals3 Benchmark Runs Page — Edit without forced run', () => {
         executeRequested = true;
       }
     };
+    // try/finally guarantees the listener is removed even if any of the
+    // assertions inside this block throw. Without it, a failing test would
+    // leak the listener onto the Page for the rest of the suite — every
+    // subsequent network request in this same Page would still fire
+    // executeRequested = true and could pollute later assertions or slow
+    // the suite down. Test isolation > test brevity.
     page.on('request', onRequest);
+    try {
+      await page.click('[data-testid="editor-save-without-run"]');
 
-    await page.click('[data-testid="editor-save-without-run"]');
+      const updateResp = await updatePromise;
+      expect(updateResp.status()).toBeLessThan(400);
 
-    const updateResp = await updatePromise;
-    expect(updateResp.status()).toBeLessThan(400);
+      // Editor must have closed (it's gone from the DOM).
+      await expect(page.locator('text=Edit Benchmark')).toHaveCount(0, { timeout: 5_000 });
 
-    // Editor must have closed (it's gone from the DOM).
-    await expect(page.locator('text=Edit Benchmark')).toHaveCount(0, { timeout: 5_000 });
-
-    // Give the page a beat to settle, then unhook.
-    await page.waitForTimeout(500);
-    page.off('request', onRequest);
+      // Give the page a beat to settle so any straggling /execute would have
+      // had time to fire.
+      await page.waitForTimeout(500);
+    } finally {
+      page.off('request', onRequest);
+    }
 
     expect(executeRequested, 'no /execute POST should fire when saving without a run').toBe(false);
 
