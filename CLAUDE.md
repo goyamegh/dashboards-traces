@@ -12,6 +12,14 @@ AgentEval is an evaluation framework for Root Cause Analysis (RCA) agents. It us
 - **Benchmark Run**: Point-in-time snapshot with agent/model config and results
 - **Trajectory**: Sequence of agent steps (thinking → action → tool_result → response)
 
+## Configuration model (config v2)
+
+Config has two planes, selected by **presence of an authored config file**:
+- **`agent-health.config.ts`** (project, or user `~/.agent-health/`) — human-authored agents/models/judge/telemetry + optional `storage`/`observability`. The app never writes it.
+- **`.agent-health/state.json`** (gitignored, project + user scoped) — runtime state the Settings UI writes.
+
+If a `.ts` exists (**code-first**) it WINS and the state file is ignored; data-source **Save returns `409`** (edit the `.ts` + restart). Otherwise (**ui-first**) the Settings UI writes `.agent-health/state.json`. **Test Connection never writes anything** (probe only). Full rules: [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and the "Configuration model (config v2)" section in [AGENTS.md](AGENTS.md).
+
 ## Development Commands
 
 ### Starting the Application

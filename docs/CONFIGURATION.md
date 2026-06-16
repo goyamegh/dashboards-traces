@@ -68,6 +68,23 @@ In **code-first** mode (an `agent-health.config.ts` exists) this file is
 **ignored**, and the Settings data-source panels are read-only — set
 storage/observability in the `.ts` (see [TypeScript Config File](#typescript-config-file-optional)).
 
+### What gets written, and when
+
+The app **never writes your `agent-health.config.ts`** — you author it by hand.
+UI writes only ever target `.agent-health/state.json`, and only in ui-first mode:
+
+| Action | UI-first (no `.ts`) | Code-first (a `.ts` exists) |
+|--------|---------------------|------------------------------|
+| **Test Connection** | nothing written — connectivity probe only | nothing written — probe only |
+| **Save** (storage / observability / remote server) | writes `.agent-health/state.json` (project scope) | **`409 "managed by agent-health.config.ts"`** — nothing written |
+| **Change a value for real** | Save in the UI | edit `agent-health.config.ts` + restart |
+
+So if you edit the endpoint field and hit **Test Connection**, it only probes
+that endpoint (falling back to stored credentials *only* when the endpoint
+matches the configured one); the typed value is **not persisted** until you
+**Save** — and in code-first mode Save is rejected with a `409`. To actually
+switch clusters in code-first mode, edit the `.ts` and restart.
+
 ### Auto-migration from legacy files
 
 Existing `agent-health.yaml` and `agent-health.config.json` files are migrated
@@ -311,21 +328,19 @@ Settings are loaded in this order (later overrides earlier):
 ```
 1. Built-in defaults (lib/constants.ts)
       ↓
-2. Environment variables (.env file)
+2. Environment variables (.env / OPENSEARCH_*)
       ↓
-3. TypeScript config file (agent-health.config.ts) — agents/connectors/models/judge
-   and optionally storage/observability
+3. Runtime state (.agent-health/state.json) — UI-written; used only in ui-first mode
       ↓
-4. JSON config file (agent-health.config.json) — storage/observability written
-   by the Settings UI (highest precedence for data sources)
+4. agent-health.config.ts — authored; in code-first mode it WINS and the state file is ignored
 ```
 
 **Note:** For **agents/models/connectors/judge/reporters/telemetry**, the
-TypeScript config (`agent-health.config.ts`) is authoritative. For **storage and
-observability** data sources, the resolution order is
-`agent-health.config.json` (Settings UI) > `agent-health.config.ts` >
-`OPENSEARCH_*` env > file-based fallback — see
-[Two config files, and why](#two-config-files-and-why).
+TypeScript config (`agent-health.config.ts`) is always authoritative. For
+**storage and observability** the order depends on mode — code-first: `.ts` >
+`OPENSEARCH_*` env > file fallback (state ignored); ui-first:
+`.agent-health/state.json` > `OPENSEARCH_*` env > file fallback. See
+[Two modes: code-first vs UI-first](#two-modes-code-first-vs-ui-first).
 
 ## Validation
 
