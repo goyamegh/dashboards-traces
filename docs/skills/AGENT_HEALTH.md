@@ -27,19 +27,23 @@ Copy to project root, then tell your assistant: "Read AGENT_HEALTH.md and follow
 
 ## Prerequisites
 
-### OpenSearch Storage (Required)
+### Storage (file-based by default; OpenSearch optional)
 
-Evaluations **require** an OpenSearch cluster to store results. Without it, all `run` and `benchmark` commands will fail with:
+Agent Health uses **file-based storage by default** — results are written to a
+local `.agent-health-data/` directory and `run` / `benchmark` work with **no
+OpenSearch cluster required**. Point at OpenSearch only when you want shared,
+production-grade persistence (multiple machines / a team dashboard).
 
-> OpenSearch storage not configured. Cannot run evaluations without storage.
-
-Required environment variables:
+To use OpenSearch instead of file storage, set:
 
 | Variable | Description |
 |---|---|
 | `OPENSEARCH_STORAGE_ENDPOINT` | OpenSearch cluster URL (e.g. `https://search-my-cluster.us-west-2.es.amazonaws.com`) |
-| `OPENSEARCH_STORAGE_USERNAME` | OpenSearch username |
-| `OPENSEARCH_STORAGE_PASSWORD` | OpenSearch password |
+| `OPENSEARCH_STORAGE_USERNAME` | OpenSearch username (basic auth) |
+| `OPENSEARCH_STORAGE_PASSWORD` | OpenSearch password (basic auth) |
+
+SigV4 auth and `agent-health.config.json` / Settings-UI configuration are also
+supported — see [docs/CONFIGURATION.md](../CONFIGURATION.md).
 
 ### AWS Credentials for LLM Judge (Required)
 
@@ -49,7 +53,7 @@ The Bedrock LLM judge scores evaluation results and needs AWS credentials to cal
 |---|---|
 | `AWS_PROFILE` | AWS profile with Bedrock access |
 | `AWS_REGION` | AWS region for Bedrock (e.g. `us-west-2`) |
-| `BEDROCK_MODEL_ID` | *(Optional)* Model ID for the judge. Default: `anthropic.claude-3-5-sonnet-20241022-v2:0` |
+| `BEDROCK_MODEL_ID` | *(Optional)* Default judge model ID. Default: `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
 
 ### `.env` File
 
@@ -64,7 +68,7 @@ OPENSEARCH_STORAGE_PASSWORD=your-password
 # AWS / Bedrock
 AWS_PROFILE=your-aws-profile
 AWS_REGION=us-west-2
-# BEDROCK_MODEL_ID=anthropic.claude-3-5-sonnet-20241022-v2:0  # optional, this is the default
+# BEDROCK_MODEL_ID=us.anthropic.claude-sonnet-4-5-20250929-v1:0  # optional, this is the default
 ```
 
 Alternatively, pass `--env-file <path>` to load a `.env` file from a different location.
@@ -113,6 +117,23 @@ npx @opensearch-project/agent-health export -b <benchmark-name> -o test-cases.js
 
 ---
 
+## Code-based test SDK (write tests as files)
+
+Besides JSON test cases, Agent Health has an **experimental code-based SDK** for
+writing tests as `.eval.js` / `.eval.ts` files (Playwright-style `test()` /
+`expect()` / fixtures / `judge()` / lifecycle hooks). Run them the same way you
+run a JSON file:
+
+```bash
+# `-f` accepts BOTH JSON test-case files and code SDK (.eval.js / .eval.ts) files
+npx @opensearch-project/agent-health benchmark -f ./evals/demo.eval.js -a my-agent
+```
+
+They produce **per-matcher results** (`matcherResults[]`) instead of a single
+pass/fail. Full guide: [docs/SDK.md](../SDK.md).
+
+---
+
 ## Improvement Workflow
 
 ### Step 0: Verify Setup
@@ -130,9 +151,14 @@ npx @opensearch-project/agent-health benchmark -n "My Benchmark" -a my-agent --e
 Read `baseline.json` and find entries where `passFailStatus: "failed"`.
 
 Key fields to examine:
-- `llmJudgeReasoning` - Why it failed
+- `matcherResults[*].reasoning` - the canonical judge verdict + reasoning per matcher (`llmJudgeReasoning` is a legacy, deprecated shim carrying the same text)
 - `improvementStrategies` - Specific recommendations with priority
 - `trajectory` - Step-by-step agent execution
+
+> Distinguish **`failed`** (the agent answered, judge scored it below threshold)
+> from **errored** (`metricsStatus: "error"` — the *evaluator itself* could not
+> run, e.g. a judge validation error). Errored runs are **excluded** from
+> pass-rate aggregation; don't treat them as agent misses.
 
 ### Step 3: Fix Based on Strategies
 Focus on `priority: "high"` issues first:
@@ -173,7 +199,11 @@ Repeat until all high-priority issues are resolved.
     "reports": [{
       "testCaseId": "tc-001",
       "passFailStatus": "failed",
+      "metricsStatus": "completed",
       "metrics": { "accuracy": 45 },
+      "matcherResults": [
+        { "method": "llm-judge", "passed": false, "score": 45, "reasoning": "The agent failed because..." }
+      ],
       "llmJudgeReasoning": "The agent failed because...",
       "improvementStrategies": [{
         "category": "Tool Usage | Reasoning | Completeness",
@@ -191,6 +221,23 @@ Repeat until all high-priority issues are resolved.
   }]
 }
 ```
+
+### Metrics, scoring, and run status
+
+- **Metrics are evaluator-defined and heterogeneous.** Only the *RCA Default*
+  evaluator emits a metric named `accuracy`. Other evaluators emit their own
+  metric names (`tool_selection_accuracy`, `reasoning_coherence`,
+  `bias_detection`, …) and custom evaluators emit whatever their
+  `scoringConfig` defines. Don't assume `metrics.accuracy` exists.
+- **A run's overall score** is the rounded mean of whatever numeric metrics the
+  run's evaluator emitted (`null`/`—` when none), not a single "accuracy".
+- **`matcherResults[]` is the canonical judge surface.** Read the judge verdict
+  + reasoning from `matcherResults` entries (`method: 'llm-judge'`).
+  `llmJudgeReasoning` is still populated as a backward-compatible shim but is
+  deprecated.
+- **Run status:** `passed` / `failed` come from `passFailStatus`; a separate
+  **`errored`** state (`metricsStatus: 'error'`) means the evaluator could not
+  run and is excluded from pass-rate denominators.
 
 ---
 
@@ -232,8 +279,17 @@ The Agent Health server runs on port 4001 and exposes the following REST APIs. A
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/api/judge` | Evaluate trajectory → `{ trajectory, expectedOutcomes?, modelId }` → `{ passFailStatus, metrics, llmJudgeReasoning, improvementStrategies }` |
-| GET | `/api/judge/litellm-models` | List LiteLLM models → `{ models: string[], endpoint, configured }` |
+| POST | `/api/judge` | Evaluate trajectory → `{ trajectory, expectedOutcomes?, modelId, judgeModelId?, evaluatorId? }` → `{ passFailStatus, metrics, matcherResults, improvementStrategies }` |
+| GET | `/api/judge/bedrock-models` | Discover Bedrock judge models (`ListInferenceProfiles`) |
+| GET | `/api/judge/openai-compatible-models` | List OpenAI-compatible models → `{ models, endpoint, configured }` (renamed from `/api/judge/litellm-models`) |
+| GET | `/api/judge/anthropic-models` | Discover Anthropic-direct models (needs `ANTHROPIC_API_KEY`) |
+| GET | `/api/judge/github-models` | Discover GitHub Models / Copilot models (needs `GITHUB_TOKEN`) |
+
+**Agent model vs judge model are distinct inputs.** `modelId` is the agent's
+LLM; `judgeModelId` is the judge's LLM (CLI `--judge-model`, falls back to the
+evaluator's `inferenceConfig.modelId`, then `BEDROCK_MODEL_ID`). Agentic-provider
+judges (`pi` / `agent` / `agentic` / `claude-code`) pick their own model and
+ignore `judgeModelId`.
 
 ### Traces & Metrics
 
@@ -317,6 +373,35 @@ The Agent Health server runs on port 4001 and exposes the following REST APIs. A
 |---|---|---|
 | GET | `/api/storage/benchmarks/:id/report` | Download report. Query: `format?` ('json'\|'html'\|'pdf') |
 
+### Storage: Evaluators
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/storage/evaluators` | List evaluators (5 built-in system + custom) |
+| GET | `/api/storage/evaluators/:id` | Get evaluator (latest version) |
+| GET | `/api/storage/evaluators/:id/versions` | List all versions (newest first) |
+| GET | `/api/storage/evaluators/:id/versions/:version` | Get a specific version snapshot |
+| POST | `/api/storage/evaluators` | Create custom evaluator |
+| PUT | `/api/storage/evaluators/:id` | Update (creates a new immutable version) |
+| DELETE | `/api/storage/evaluators/:id` | Delete custom evaluator (system evaluators are protected) |
+
+### Storage: Evaluation Runs (code-based SDK)
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/api/storage/evaluation-runs` | List evaluation runs |
+| GET | `/api/storage/evaluation-runs/:id` | Get evaluation run |
+| POST | `/api/storage/evaluation-runs` | Start a run (SSE). Accepts `sources: [{ type: 'code-import', filenames }]` for `.eval.js` / `.eval.ts` SDK files, plus `agentKey`, `modelId`, `judgeModelId?`, `evaluatorId?` |
+| POST | `/api/storage/evaluation-runs/:id/cancel` | Cancel a run |
+| POST | `/api/storage/evaluation-runs/:id/promote` | Promote a run |
+
+### Comparison
+
+| Method | Path | Description |
+|---|---|---|
+| POST | `/api/comparison/cluster-failures` | Cluster regressed cases into named failure patterns (`knowledge` / `tool_gap` / `reasoning` / `other`) |
+| GET | `/api/comparison/clusters/:clusterId` | Fetch a previously computed cluster by id |
+
 ### Storage: Admin
 
 | Method | Path | Description |
@@ -340,15 +425,23 @@ The Agent Health server runs on port 4001 and exposes the following REST APIs. A
 
 ## UI Pages
 
+The evaluation surface lives under `/evaluations/*`. The app uses
+`BrowserRouter` — plain paths, no `#` prefix.
+
 | Page | Route | Description |
 |---|---|---|
 | Dashboard | `/` | Overview with agent stats, recent runs, system health |
-| Benchmarks | `/benchmarks` | List all benchmarks with pass rates, run counts |
-| Benchmark Detail | `/benchmarks/:id` | Benchmark runs, test case results, comparison |
-| Run Detail | `/benchmarks/:benchmarkId/runs/:runId` | Individual run results with trajectory, judge reasoning |
-| Traces | `/traces` | OpenTelemetry trace explorer with timeline/flow views |
+| Benchmarks | `/evaluations/benchmarks` | List benchmarks with pass rates, run counts, version badges |
+| Benchmark Runs | `/evaluations/benchmarks/:id/runs` | Runs for a benchmark (split / tabs layout) |
+| Run Inspector | `/evaluations/benchmarks/:id/runs/:runId/inspect` | Per-test-case results, trajectory, judge, traces |
+| Test Cases | `/evaluations/test-cases` | List / create / edit / version test cases |
+| Test Case Detail | `/evaluations/test-cases/:id` | Definition + runs with an inline live-run panel |
+| Eval Runs | `/evaluations/runs` · `/evaluations/runs/:id` | Code-import (SDK) and ad-hoc run results |
+| Evaluators | `/evaluators` · `/evaluators/:id` | Manage evaluators; version history + Git-style diff |
+| Compare | `/compare/:benchmarkId?runs=a,b` | Diagnosis surface: verdict strip, first-divergence, failure clusters |
+| Agent Traces | `/agent-traces` | OpenTelemetry trace explorer (timeline / flow) |
+| Coding Agents | `/coding-agents` | Coding Agent Analytics (Claude Code / Kiro / Codex) |
 | Settings | `/settings` | Configure agents, models, storage, observability connections |
-| Use Cases | `/settings` (tab) | Manage test cases (create, edit, version) |
 | Assistant | `/assistant` | Full-page AI chat interface for help and analysis |
 
 ---

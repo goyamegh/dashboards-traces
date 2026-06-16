@@ -28,7 +28,7 @@ npx @opensearch-project/agent-health benchmark -f ./test-cases.json -a <agent-ke
 ## Improvement Workflow
 
 1. **Baseline**: Run a benchmark and export results
-2. **Analyze**: Find `passFailStatus: "failed"` entries, read `llmJudgeReasoning` and `improvementStrategies`
+2. **Analyze**: Find `passFailStatus: "failed"` entries, read `matcherResults[*].reasoning` (the canonical judge verdict) and `improvementStrategies`
 3. **Fix**: Focus on `priority: "high"` strategies first — they indicate real failures
 4. **Verify**: Re-run the benchmark and compare pass rates
 5. **Iterate**: Repeat until high-priority issues are resolved
@@ -37,8 +37,14 @@ npx @opensearch-project/agent-health benchmark -f ./test-cases.json -a <agent-ke
 
 Key fields in evaluation reports:
 - `passFailStatus`: "passed" or "failed" — the overall judgment
-- `metrics.accuracy`: 0-100 score from the LLM judge
-- `llmJudgeReasoning`: Detailed explanation of why the agent passed or failed
+- `metricsStatus`: when `"error"`, the *evaluator* couldn't run (an **errored**
+  run, distinct from a `failed` agent answer) — excluded from pass-rate aggregation
+- `metrics`: evaluator-defined numeric scores. Names are **heterogeneous** — only
+  the RCA Default evaluator emits `accuracy`; others emit `tool_selection_accuracy`,
+  `reasoning_coherence`, etc. A run's overall score is the mean of whatever it emitted.
+- `matcherResults[]`: the canonical judge surface — per-matcher `passed` / `score` /
+  `reasoning` (`method: 'llm-judge'` for the LLM judge). `llmJudgeReasoning` is a
+  deprecated backward-compatible shim of the same text.
 - `improvementStrategies`: Actionable recommendations with category, issue, recommendation, and priority
 - `trajectory`: Step-by-step agent execution (thinking → action → tool_result → response)
 
