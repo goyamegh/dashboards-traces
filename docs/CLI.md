@@ -396,7 +396,7 @@ agent-health kill <target>      # target: sample-agent
 | `OPENSEARCH_STORAGE_USERNAME` | Storage auth user |
 | `OPENSEARCH_STORAGE_PASSWORD` | Storage auth password |
 | **Storage (AWS SigV4)** | |
-| `OPENSEARCH_STORAGE_AUTH_TYPE` | Set to `sigv4` for AWS SigV4 auth |
+| `OPENSEARCH_STORAGE_AUTH_TYPE` | Auth type: `none` \| `basic` \| `sigv4` |
 | `OPENSEARCH_STORAGE_AWS_REGION` | AWS region (required for SigV4) |
 | `OPENSEARCH_STORAGE_AWS_PROFILE` | AWS profile name (optional) |
 | `OPENSEARCH_STORAGE_AWS_SERVICE` | `es` (managed) or `aoss` (serverless) |
@@ -405,7 +405,7 @@ agent-health kill <target>      # target: sample-agent
 | `OPENSEARCH_LOGS_USERNAME` | Logs auth user |
 | `OPENSEARCH_LOGS_PASSWORD` | Logs auth password |
 | **Observability (AWS SigV4)** | |
-| `OPENSEARCH_LOGS_AUTH_TYPE` | Set to `sigv4` for AWS SigV4 auth |
+| `OPENSEARCH_LOGS_AUTH_TYPE` | Auth type: `none` \| `basic` \| `sigv4` |
 | `OPENSEARCH_LOGS_AWS_REGION` | AWS region (required for SigV4) |
 | `OPENSEARCH_LOGS_AWS_PROFILE` | AWS profile name (optional) |
 | `OPENSEARCH_LOGS_AWS_SERVICE` | `es` (managed) or `aoss` (serverless) |

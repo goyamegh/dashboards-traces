@@ -86,8 +86,10 @@ To use OpenSearch instead of file storage, set:
 | `OPENSEARCH_STORAGE_USERNAME` | OpenSearch username (basic auth) |
 | `OPENSEARCH_STORAGE_PASSWORD` | OpenSearch password (basic auth) |
 
-SigV4 auth and `agent-health.config.json` / Settings-UI configuration are also
-supported — see [docs/CONFIGURATION.md](../CONFIGURATION.md).
+SigV4 auth (AWS profile **or** the default credential chain; `es` domains or
+`aoss` Serverless collections), `none` (no auth), and basic auth are all
+supported, configurable via env vars, `agent-health.config.json`, or the
+Settings UI — see [docs/CONFIGURATION.md](https://github.com/opensearch-project/agent-health/blob/main/docs/CONFIGURATION.md).
 
 ### AWS Credentials for LLM Judge (Required)
 
@@ -174,7 +176,7 @@ npx @opensearch-project/agent-health benchmark -f ./evals/demo.eval.js -a my-age
 ```
 
 They produce **per-matcher results** (`matcherResults[]`) instead of a single
-pass/fail. Full guide: [docs/SDK.md](../SDK.md).
+pass/fail. Full guide: [docs/SDK.md](https://github.com/opensearch-project/agent-health/blob/main/docs/SDK.md).
 
 ---
 
@@ -243,10 +245,10 @@ Repeat until all high-priority issues are resolved.
     "reports": [{
       "testCaseId": "tc-001",
       "passFailStatus": "failed",
-      "metricsStatus": "completed",
+      "metricsStatus": "ready",
       "metrics": { "accuracy": 45 },
       "matcherResults": [
-        { "method": "llm-judge", "passed": false, "score": 45, "reasoning": "The agent failed because..." }
+        { "method": "llm-judge", "description": "identifies the root cause", "pass": false, "score": 0.45, "reasoning": "The agent failed because..." }
       ],
       "llmJudgeReasoning": "The agent failed because...",
       "improvementStrategies": [{
@@ -276,9 +278,10 @@ Repeat until all high-priority issues are resolved.
 - **A run's overall score** is the rounded mean of whatever numeric metrics the
   run's evaluator emitted (`null`/`—` when none), not a single "accuracy".
 - **`matcherResults[]` is the canonical judge surface.** Read the judge verdict
-  + reasoning from `matcherResults` entries (`method: 'llm-judge'`).
-  `llmJudgeReasoning` is still populated as a backward-compatible shim but is
-  deprecated.
+  + reasoning from `matcherResults` entries (`method: 'llm-judge'`). Each entry
+  is a `MatcherResult`: `{ description, pass (boolean), score? (0–1), method,
+  reasoning?, durationMs? }`. `llmJudgeReasoning` is still populated as a
+  backward-compatible shim but is deprecated.
 - **Run status:** `passed` / `failed` come from `passFailStatus`; a separate
   **`errored`** state (`metricsStatus: 'error'`) means the evaluator could not
   run and is excluded from pass-rate denominators.
@@ -334,17 +337,22 @@ The Agent Health server runs on port 4001 and exposes the following REST APIs. A
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/api/judge` | Evaluate trajectory → `{ trajectory, expectedOutcomes?, modelId, judgeModelId?, evaluatorId? }` → `{ passFailStatus, metrics, matcherResults, improvementStrategies }` |
+| POST | `/api/judge` | Evaluate a captured trajectory → `{ trajectory, expectedOutcomes? \| expectedTrajectory?, modelId?, evaluatorId?, runId?, logs?, agents? }` → `JudgeResponse` `{ passFailStatus, metrics, llmJudgeReasoning, improvementStrategies }` |
 | GET | `/api/judge/bedrock-models` | Discover Bedrock judge models (`ListInferenceProfiles`) |
 | GET | `/api/judge/openai-compatible-models` | List OpenAI-compatible models → `{ models, endpoint, configured }` (renamed from `/api/judge/litellm-models`) |
 | GET | `/api/judge/anthropic-models` | Discover Anthropic-direct models (needs `ANTHROPIC_API_KEY`) |
 | GET | `/api/judge/github-models` | Discover GitHub Models / Copilot models (needs `GITHUB_TOKEN`) |
 
-**Agent model vs judge model are distinct inputs.** `modelId` is the agent's
-LLM; `judgeModelId` is the judge's LLM (CLI `--judge-model`, falls back to the
-evaluator's `inferenceConfig.modelId`, then `BEDROCK_MODEL_ID`). Agentic-provider
-judges (`pi` / `agent` / `agentic` / `claude-code`) pick their own model and
-ignore `judgeModelId`.
+**On `/api/judge`, `modelId` is the *judge* model** — the trajectory is already
+captured, so there is no agent invocation here, and `/api/judge` does **not**
+take a `judgeModelId`. The agent-vs-judge model distinction (where `modelId`
+is the *agent's* LLM and `judgeModelId` is the *judge's*) applies to the run
+endpoints — `POST /api/evaluate` and `POST /api/storage/evaluation-runs` — and
+the CLI (`-m` / `--judge-model`). Agentic-provider judges (`pi` / `agent` /
+`agentic` / `claude-code`) pick their own model and ignore the judge model id.
+The run-level `matcherResults[]` are assembled by the runner from the judge's
+response (see [Output Reference](#output-reference)); the raw `/api/judge`
+primitive returns `llmJudgeReasoning`.
 
 ### Traces & Metrics
 
