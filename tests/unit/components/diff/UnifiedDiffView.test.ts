@@ -104,6 +104,28 @@ describe('diffLines (UnifiedDiffView)', () => {
   });
 });
 
+describe('diffLines OOM guard (regression: Uint32Array allocation cap)', () => {
+  it('throws a clear error rather than allocating gigabytes when the DP table would exceed the cap', () => {
+    // The cap is 10M cells. A 4000x3000 input is 12_003_001 cells — just
+    // over the cap, but small enough that the input strings themselves
+    // (~28k+21k bytes) don't dominate the test runtime. Without the
+    // guard, this allocation would attempt ~48 MB of Uint32Array memory
+    // and proceed; with it we throw fast.
+    const before = Array.from({ length: 4000 }, (_, i) => `line-${i}`).join('\n');
+    const after = Array.from({ length: 3000 }, (_, i) => `other-${i}`).join('\n');
+    expect(() => diffLines(before, after)).toThrow(/Diff too large/);
+  });
+
+  it('still works for inputs at the boundary just under the cap', () => {
+    // 1000 x 1000 = 1_002_001 cells — well under the 10M cap. Should
+    // run cleanly. Just enough to prove we didn't accidentally cap the
+    // common path.
+    const before = Array.from({ length: 1000 }, (_, i) => `a${i}`).join('\n');
+    const after = Array.from({ length: 1000 }, (_, i) => `a${i}`).join('\n');
+    expect(() => diffLines(before, after)).not.toThrow();
+  });
+});
+
 describe('summarizeDiff', () => {
   it('counts adds, removes, and unchanged lines independently', () => {
     const summary = summarizeDiff([

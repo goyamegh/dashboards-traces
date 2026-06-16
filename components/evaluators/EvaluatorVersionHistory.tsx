@@ -92,12 +92,13 @@ export const EvaluatorVersionHistory: React.FC<EvaluatorVersionHistoryProps> = (
   const [compareOpen, setCompareOpen] = useState(false);
   const [diffMode, setDiffMode] = useState<DiffMode>('unified');
 
-  const loadVersions = async () => {
+  const loadVersions = async (signal?: AbortSignal) => {
     setLoading(true);
     setError(null);
     try {
       const response = await fetch(
-        `${ENV_CONFIG.backendUrl}/api/storage/evaluators/${encodeURIComponent(evaluatorId)}/versions`
+        `${ENV_CONFIG.backendUrl}/api/storage/evaluators/${encodeURIComponent(evaluatorId)}/versions`,
+        { signal },
       );
       if (!response.ok) {
         throw new Error(`Failed to load versions (${response.status})`);
@@ -122,18 +123,34 @@ export const EvaluatorVersionHistory: React.FC<EvaluatorVersionHistoryProps> = (
       });
       // Newest first — matches the way Git log lists commits.
       list.sort((a, b) => b.version - a.version);
+      if (signal?.aborted) return;
       setVersions(list);
     } catch (err: any) {
+      // Aborts are expected when the component unmounts mid-fetch — don't
+      // surface them as errors. Anything else is a real failure.
+      if (err?.name === 'AbortError' || signal?.aborted) return;
       setError(err?.message || 'Failed to load version history');
       setVersions([]);
     } finally {
-      setLoading(false);
+      // Skip the loading flag flip if we've been aborted; the unmounted
+      // component's state setter would otherwise trigger a React warning.
+      if (!signal?.aborted) setLoading(false);
     }
   };
 
   useEffect(() => {
     if (!evaluatorId) return;
-    loadVersions();
+    // Cancel any in-flight fetch when evaluatorId / refreshKey changes or
+    // when the component unmounts. Without this, navigating away from a
+    // long-history evaluator (or kicking off a refresh quickly) leaks
+    // setState calls onto a stale render and produces the React unmount
+    // warning. The abort propagates into fetch's `signal` option so the
+    // browser actually cancels the network request, not just the callback.
+    const controller = new AbortController();
+    void loadVersions(controller.signal);
+    return () => {
+      controller.abort();
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [evaluatorId, refreshKey]);
 
@@ -185,7 +202,7 @@ export const EvaluatorVersionHistory: React.FC<EvaluatorVersionHistoryProps> = (
         </CardHeader>
         <CardContent>
           <div className="text-sm text-destructive py-2">{error}</div>
-          <Button variant="outline" size="sm" className="mt-2" onClick={loadVersions}>
+          <Button variant="outline" size="sm" className="mt-2" onClick={() => loadVersions()}>
             <RefreshCw className="h-3.5 w-3.5 mr-2" /> Retry
           </Button>
         </CardContent>
@@ -230,7 +247,7 @@ export const EvaluatorVersionHistory: React.FC<EvaluatorVersionHistoryProps> = (
               </CardDescription>
             </div>
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="sm" onClick={loadVersions}>
+              <Button variant="outline" size="sm" onClick={() => loadVersions()}>
                 <RefreshCw className="h-3.5 w-3.5 mr-2" /> Refresh
               </Button>
               <Button

@@ -74,7 +74,20 @@ const DivergencePreviewRow: React.FC<DivergencePreviewRowProps> = ({ row, runs, 
   // something the loser didn't, 'removed' means loser did something the
   // winner didn't, 'modified' means they did the same thing differently.
   const divergence = extractFirstDivergence(loserReport.trajectory, winnerReport.trajectory);
-  if (!divergence) return null;
+  if (!divergence) {
+    // Trajectories are identical (or both empty) but outcomes still
+    // diverged — e.g. one judge passed and the other failed on the same
+    // sequence of tool calls. Rendering nothing here used to hide the
+    // most interesting case from the user ("why did identical work get
+    // different verdicts?"). Surface a short note so they know the
+    // divergence is in interpretation, not behavior, and can click into
+    // the row for the full judge reasoning.
+    return (
+      <div className="flex items-start gap-1.5 mt-1 text-[10px] text-muted-foreground italic">
+        <span>Same trajectory, different outcome — see judge reasoning.</span>
+      </div>
+    );
+  }
 
   const Icon =
     divergence.type === 'added' ? Plus :

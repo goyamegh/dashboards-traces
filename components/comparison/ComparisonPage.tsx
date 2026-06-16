@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
 import { useParams, useSearchParams, useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import {
@@ -416,12 +416,27 @@ export const ComparisonPage: React.FC = () => {
   // If the filter is 'differences' but there are no differences (all-pass /
   // all-fail benchmark), automatically show everything so the user isn't
   // staring at an empty table.
+  //
+  // Latched with a ref so this only fires once per filter mode — without
+  // the latch, `rowStatusCounts` recomputes on every poll/refresh of the
+  // underlying runs, and even though the filter is already 'all' by then,
+  // the effect's deps fire and it re-evaluates the same condition
+  // repeatedly. With the latch we also reset back to 'unfired' when the
+  // user manually flips the filter back to 'differences' — that's a fresh
+  // intent that should be allowed to auto-switch again if the data still
+  // shows zero differences.
+  const autoSwitchedRef = useRef(false);
   useEffect(() => {
-    if (rowStatusFilter !== 'differences') return;
+    if (rowStatusFilter !== 'differences') {
+      autoSwitchedRef.current = false;
+      return;
+    }
+    if (autoSwitchedRef.current) return;
     const totalDifferences =
       rowStatusCounts.regression + rowStatusCounts.improvement + rowStatusCounts.mixed;
     if (totalDifferences === 0 && rowStatusCounts.neutral > 0) {
       setRowStatusFilter('all');
+      autoSwitchedRef.current = true;
     }
   }, [rowStatusFilter, rowStatusCounts]);
 
