@@ -188,7 +188,20 @@ export const storageAdmin = {
   /**
    * Check storage health/connectivity
    */
-  async health(): Promise<{ status: string; cluster?: unknown; error?: string }> {
+  async health(): Promise<{
+    status: string;
+    cluster?: unknown;
+    error?: string;
+    /** Active storage backend. 'file' means OpenSearch is unavailable / not configured. */
+    backend?: 'file' | 'opensearch' | string;
+    /**
+     * Real OpenSearch connectivity, present when OpenSearch is configured but
+     * the active backend fell back to file storage. Top-level `status` reflects
+     * the active (possibly file) backend, NOT OpenSearch — use this to report
+     * true OpenSearch connectivity.
+     */
+    opensearch?: { status: string; message?: string; latencyMs?: number };
+  }> {
     return request('GET', '/health');
   },
 

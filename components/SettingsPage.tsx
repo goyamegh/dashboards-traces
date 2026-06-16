@@ -44,7 +44,14 @@ interface StorageStats {
   experiments: number;
   runs: number;
   analytics: number;
+  /** True only when the configured OpenSearch cluster is actually reachable. */
   isConnected: boolean;
+  /** Active storage backend. 'file' = OpenSearch unavailable / not configured. */
+  backend?: string;
+  /** OpenSearch configured but unreachable — we fell back to file storage. */
+  osConfiguredButUnreachable?: boolean;
+  /** Underlying OpenSearch error message, surfaced to the user when present. */
+  osError?: string;
 }
 
 interface AgentEndpoint {
@@ -151,6 +158,11 @@ export const SettingsPage: React.FC = () => {
   const [showAdvancedIndexes, setShowAdvancedIndexes] = useState(false);
   const [storageTestStatus, setStorageTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [storageTestMessage, setStorageTestMessage] = useState('');
+  // Ref mirror of storageTestStatus so loadStorageStats (a stable useCallback)
+  // can read the latest value without taking it as a dep and re-rendering on
+  // every status change.
+  const storageTestStatusRef = useRef<typeof storageTestStatus>('idle');
+  useEffect(() => { storageTestStatusRef.current = storageTestStatus; }, [storageTestStatus]);
   const [observabilityTestStatus, setObservabilityTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [observabilityTestMessage, setObservabilityTestMessage] = useState('');
 
@@ -177,13 +189,49 @@ export const SettingsPage: React.FC = () => {
       const health = await storageAdmin.health();
       const stats = await storageAdmin.stats();
 
+      // The top-level `status` reflects the ACTIVE backend (which may be the
+      // file fallback), not OpenSearch. When OpenSearch is configured but
+      // unreachable the server returns { status: 'ok', backend: 'file',
+      // opensearch: { status: 'error', ... } }. Report true OpenSearch
+      // connectivity so the UI never shows a green "Connected to OpenSearch"
+      // while silently running on file storage.
+      const osOk = (s?: string) => s === 'ok' || s === 'connected';
+      let isConnected: boolean;
+      let osConfiguredButUnreachable = false;
+      let osError: string | undefined;
+      if (health.opensearch) {
+        // OpenSearch configured; `opensearch` carries its real status.
+        isConnected = osOk(health.opensearch.status);
+        osConfiguredButUnreachable = !isConnected;
+        osError = isConnected ? undefined : health.opensearch.message;
+      } else if (health.backend && health.backend !== 'opensearch') {
+        // File backend with no OpenSearch configured — not connected to OS.
+        isConnected = false;
+      } else {
+        // OpenSearch storage module active (or legacy response shape).
+        isConnected = osOk(health.status);
+      }
+
       setStorageStats({
         testCases: stats.stats.evals_test_cases?.count || 0,
         experiments: stats.stats.evals_experiments?.count || 0,
         runs: stats.stats.evals_runs?.count || 0,
         analytics: stats.stats.evals_analytics?.count || 0,
-        isConnected: health.status === 'connected' || health.status === 'ok',
+        isConnected,
+        backend: health.backend,
+        osConfiguredButUnreachable,
+        osError,
       });
+      // If live health check confirms a real OpenSearch connection, clear any
+      // stale "Test Connection" error from earlier in the session (e.g. expired
+      // creds that have since been refreshed). Only clear errors — don't stomp
+      // a fresh success/testing message.
+      if (isConnected) {
+        setStorageTestStatus(prev => (prev === 'error' ? 'idle' : prev));
+        setStorageTestMessage(prev =>
+          prev && storageTestStatusRef.current === 'error' ? '' : prev
+        );
+      }
     } catch (error) {
       console.error('Failed to load storage stats:', error);
       setStorageStats({
@@ -1603,6 +1651,13 @@ export const SettingsPage: React.FC = () => {
                         <CheckCircle2 size={16} className="text-opensearch-blue" />
                         <span className="text-sm text-opensearch-blue">Connected to OpenSearch</span>
                       </>
+                    ) : storageStats.osConfiguredButUnreachable ? (
+                      <>
+                        <AlertTriangle size={16} className="text-amber-400" />
+                        <span className="text-sm text-amber-400">
+                          OpenSearch unreachable — using file storage fallback
+                        </span>
+                      </>
                     ) : (
                       <>
                         <XCircle size={16} className="text-red-400" />
@@ -1621,6 +1676,13 @@ export const SettingsPage: React.FC = () => {
                     Refresh
                   </Button>
                 </div>
+
+                {/* OpenSearch unreachable detail */}
+                {storageStats.osConfiguredButUnreachable && storageStats.osError && (
+                  <div className="text-xs text-amber-400/80 break-words rounded-md border border-amber-400/20 bg-amber-400/5 p-2">
+                    {storageStats.osError}
+                  </div>
+                )}
 
                 {/* Index Stats */}
                 {storageStats.isConnected && (
