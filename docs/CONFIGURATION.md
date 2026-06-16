@@ -1,12 +1,12 @@
 # Configuration Guide
 
-Agent Health uses a unified configuration system with multiple tiers:
+Agent Health has **one file you author** plus state the app manages:
 
-1. **`agent-health.config.json`** - Unified JSON config file (primary, auto-created)
-2. **Environment Variables** - for quick overrides and secrets
-3. **TypeScript Config File** - for power users with custom agents/connectors (optional)
+1. **`agent-health.config.ts`** — the config you write (agents, connectors, models, judge, reporters, telemetry, and optionally storage/observability). Optional; only for customization.
+2. **`.agent-health/state.json`** — runtime state the app writes (storage/observability/custom agents/debug). You don't hand-edit this; the Settings UI manages it.
+3. **Environment variables** — secrets and quick overrides (`process.env` / `.env`).
 
-Settings are consolidated into `agent-health.config.json`, which is created automatically on first startup. Priority: **file config > env vars > defaults**.
+Which is authoritative depends on the mode (below). Zero config also works — file-based storage and built-in demo agents need nothing.
 
 ## Quick Start (Zero Config)
 
@@ -23,69 +23,58 @@ This works because:
 - File-based storage is used by default (no OpenSearch needed)
 - Results shown in terminal
 
-## Two config files, and why
+## Two modes: code-first vs UI-first
 
-Agent Health has **two** config files that serve different roles. Knowing which
-is which avoids the most common confusion:
+Which file is authoritative depends on whether you author an `agent-health.config.ts`:
 
-| File | Authored by | Holds | Lifecycle |
-|------|-------------|-------|-----------|
-| `agent-health.config.ts` | you (code) | **agents, connectors, models, judge, reporters, telemetry**, and optionally **storage/observability** cluster config | hand-written, loaded at startup |
-| `agent-health.config.json` | the app (Settings UI) | **data** — storage/observability cluster endpoints + credentials | read **and written back** at runtime |
+| Mode | Trigger | Source of truth | Settings UI (data sources) |
+|------|---------|-----------------|----------------------------|
+| **Code-first** | an `agent-health.config.{ts,js,mjs}` exists (project **or** user scope) | the `.ts` + `.env` | read-only — edit the file and restart |
+| **UI-first** | no authored config file anywhere | `.agent-health/state.json` + `.env` | writable — the UI persists here |
 
-The JSON file exists because the **Settings page writes config back to disk** at
-runtime (you can't safely round-trip edits into hand-authored TypeScript). The
-TypeScript file is your committed, version-controlled source of truth.
+**The rule:** if an authored config file is present, the runtime state file is
+**ignored entirely** and the `.ts` wins. Otherwise the state file (written by the
+Settings UI) is used. Exactly one plane is active — no merging, no precedence puzzle.
 
-For **storage** and **observability**, both files can express the same thing.
-Resolution precedence (highest wins):
+`.agent-health/` resolves at both **user** (`~/.agent-health/`) and **project**
+(`<cwd>/.agent-health/`) scope, project overriding user — so you can set clusters
+once globally and override per project.
+
+Resolution for storage/observability (each tier overrides the one below):
 
 ```
-1. agent-health.config.json   (written by the Settings UI)
-2. agent-health.config.ts     (defineConfig storage/observability)
-3. OPENSEARCH_STORAGE_* / OPENSEARCH_LOGS_* env vars
-4. file-based storage fallback (storage only)
+Code-first:  project agent-health.config.ts → user ~/.agent-health/*.ts → OPENSEARCH_* env
+UI-first:    project .agent-health/state.json → user ~/.agent-health/state.json → OPENSEARCH_* env → file-storage fallback
 ```
 
-Keeping the JSON highest means runtime edits from the Settings UI still win;
-the TypeScript file is the committed default. If you never touch the Settings
-UI, a single `agent-health.config.ts` (reading secrets from `process.env`) is
-all you need — no JSON file required.
+A single committed `agent-health.config.ts` (reading secrets from `process.env`)
+is all most projects need — no state file required.
 
-## Unified Config File (`agent-health.config.json`)
+## Runtime state file (`.agent-health/state.json`)
 
-When you configure storage/observability through the **Settings page** (or when
-an older `agent-health.yaml` is auto-migrated), Agent Health writes
-`agent-health.config.json` in your working directory. It holds data-source
-cluster config (and any custom agents added via the UI):
+In **UI-first** mode (no authored config), configuring storage/observability via
+the **Settings page** writes `.agent-health/state.json` (project scope by
+default; gitignored). Don't hand-edit it — treat it as app-managed state:
 
 ```json
 {
-  "storage": {
-    "endpoint": "https://my-cluster.us-east-1.es.amazonaws.com",
-    "authType": "sigv4",
-    "awsRegion": "us-east-1",
-    "awsService": "es",
-    "awsProfile": "default"
-  },
-  "observability": {
-    "endpoint": "https://my-traces-cluster.us-east-1.es.amazonaws.com",
-    "authType": "sigv4",
-    "awsRegion": "us-east-1",
-    "indexes": { "traces": "otel-v1-apm-span-*", "logs": "ml-commons-logs-*" }
-  },
+  "storage": { "endpoint": "https://...", "authType": "sigv4", "awsRegion": "us-east-1", "awsService": "es", "awsProfile": "default" },
+  "observability": { "endpoint": "https://...", "authType": "sigv4", "awsRegion": "us-east-1", "indexes": { "traces": "otel-v1-apm-span-*", "logs": "ml-commons-logs-*" } },
   "debug": false
 }
 ```
 
-Settings saved through the UI are persisted to this file automatically. If you
-prefer a single committed config, set these in `agent-health.config.ts` instead
-(see [TypeScript Config File](#typescript-config-file-optional)) and don't edit
-them from the Settings page.
+In **code-first** mode (an `agent-health.config.ts` exists) this file is
+**ignored**, and the Settings data-source panels are read-only — set
+storage/observability in the `.ts` (see [TypeScript Config File](#typescript-config-file-optional)).
 
-### YAML to JSON Auto-Migration
+### Auto-migration from legacy files
 
-If you have an existing `agent-health.yaml` configuration file, it will be automatically migrated to `agent-health.config.json` on the first startup. The migration is handled by `configMigration.ts` and preserves all your existing settings. The original YAML file is left in place for reference but is no longer read.
+Existing `agent-health.yaml` and `agent-health.config.json` files are migrated
+once to `.agent-health/state.json` on first startup (handled by
+`configMigration.ts`); the originals are renamed to `*.backup`. If you also have
+an `agent-health.config.ts`, the migrated storage/observability are ignored
+(code-first) — a startup warning tells you to move them into the `.ts`.
 
 ## File-Based Storage (Default)
 

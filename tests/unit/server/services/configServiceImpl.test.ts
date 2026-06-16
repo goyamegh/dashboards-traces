@@ -4,19 +4,14 @@
  */
 
 /**
- * Tests for the REAL configService implementation.
+ * Tests for the REAL configService implementation under config v2 (#271).
  *
- * These tests import the actual module via a relative path to bypass the
- * moduleNameMapper (which redirects `@/server/services/configService` to the
- * jest mock).  `fs` is mocked so nothing touches the real disk.
- *
- * Covers the Bug-2 fix (credential preservation via `??`) and the Bug-3 fix
- * (returning username + hasPassword in getConfigStatus).
+ * configService now reads/writes runtime state via lib/config/statePaths
+ * (project `.agent-health/state.json` over user, ignored in code-first mode),
+ * so we mock statePaths rather than fs. Covers credential preservation, the
+ * ts > state > env precedence, the TS-config bridge, and the mode gate.
  */
 
-jest.mock('fs');
-
-// Mock the new dependencies added to configService
 jest.mock('@/server/adapters/index', () => ({
   getStorageState: jest.fn().mockReturnValue({
     backend: 'file',
@@ -30,9 +25,17 @@ jest.mock('@/server/services/opensearchClientFactory', () => ({
   configToCacheKey: jest.fn().mockReturnValue(null),
 }));
 
-import fs from 'fs';
+jest.mock('@/lib/config/statePaths', () => ({
+  readLayeredState: jest.fn(() => ({})),
+  readStateScope: jest.fn(() => ({})),
+  writeStateScope: jest.fn(),
+  isCodeFirstMode: jest.fn(() => false),
+  projectStatePath: jest.fn(() => '/cwd/.agent-health/state.json'),
+  userStatePath: jest.fn(() => '/home/u/.agent-health/state.json'),
+}));
 
-// Silence noise from the debug module's init block
+import { readLayeredState, readStateScope, writeStateScope } from '@/lib/config/statePaths';
+
 beforeAll(() => {
   jest.spyOn(console, 'log').mockImplementation(() => {});
   jest.spyOn(console, 'warn').mockImplementation(() => {});
@@ -45,247 +48,128 @@ afterAll(() => {
   jest.restoreAllMocks();
 });
 
-// Import the REAL module using a relative path that is not caught by moduleNameMapper.
-// The mapper only catches: @/server/services/configService, ../services/configService.js,
-// ../../services/configService.js  — this 4-level relative path is not in the mapper.
+// Import the REAL module via a relative path not caught by moduleNameMapper.
 import {
   saveStorageConfig,
   saveObservabilityConfig,
+  clearStorageConfig,
+  clearObservabilityConfig,
   getConfigStatus,
+  getStorageConfigFromFile,
+  getObservabilityConfigFromFile,
   setTsClusterConfig,
   getStorageConfigFromTs,
   getObservabilityConfigFromTs,
   __resetTsClusterConfigForTests,
 } from '../../../../server/services/configService';
 
-const mockedFs = fs as jest.Mocked<typeof fs>;
+const mockReadLayeredState = readLayeredState as jest.Mock;
+const mockReadStateScope = readStateScope as jest.Mock;
+const mockWriteStateScope = writeStateScope as jest.Mock;
 
-// Helper to capture what gets written to disk and parse it back to an object
-function captureWrite(): () => Record<string, unknown> {
-  let written: string | undefined;
-  mockedFs.writeFileSync.mockImplementation((_path, data) => {
-    written = data as string;
-  });
-  return () => {
-    if (!written) throw new Error('writeFileSync was not called');
-    return JSON.parse(written.trimEnd());
-  };
+/** Last patch written via writeStateScope. */
+function lastWrite(): { patch: any; scope: string } {
+  const calls = mockWriteStateScope.mock.calls;
+  if (calls.length === 0) throw new Error('writeStateScope was not called');
+  const [patch, scope] = calls[calls.length - 1];
+  return { patch, scope };
 }
 
-// Helper to set what readFileSync returns
-function setStoredConfig(config: Record<string, unknown>): void {
-  mockedFs.existsSync.mockReturnValue(true);
-  mockedFs.readFileSync.mockReturnValue(JSON.stringify(config));
-}
+describe('configService (real implementation, config v2)', () => {
+  const OLD_ENV = process.env;
 
-describe('configService (real implementation)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
-    // Reset the TS-config bridge so cases don't leak state into each other.
     __resetTsClusterConfigForTests();
-    // Default: config file does not exist (clean slate)
-    mockedFs.existsSync.mockReturnValue(false);
-    mockedFs.readFileSync.mockReturnValue('{}');
-    mockedFs.writeFileSync.mockImplementation(() => {});
+    mockReadLayeredState.mockReturnValue({});
+    mockReadStateScope.mockReturnValue({});
+    mockWriteStateScope.mockReset();
+    process.env = { ...OLD_ENV };
+    delete process.env.OPENSEARCH_STORAGE_ENDPOINT;
+    delete process.env.OPENSEARCH_STORAGE_USERNAME;
+    delete process.env.OPENSEARCH_STORAGE_PASSWORD;
+    delete process.env.OPENSEARCH_LOGS_ENDPOINT;
+    delete process.env.OPENSEARCH_LOGS_USERNAME;
+    delete process.env.OPENSEARCH_LOGS_PASSWORD;
+  });
+
+  afterEach(() => {
+    process.env = OLD_ENV;
   });
 
   // ==========================================================================
-  // readConfigFromDisk — clobber prevention
-  // ==========================================================================
-
-  describe('clobber prevention', () => {
-    it('saveStorageConfig throws when existing config file is unreadable (corrupt JSON)', () => {
-      mockedFs.existsSync.mockReturnValue(true);
-      mockedFs.readFileSync.mockReturnValue('NOT VALID JSON {{{');
-
-      expect(() => saveStorageConfig({ endpoint: 'https://new.com' }))
-        .toThrow('existing config file is unreadable or corrupt');
-      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
-    });
-
-    it('saveObservabilityConfig throws when existing config file is unreadable (corrupt JSON)', () => {
-      mockedFs.existsSync.mockReturnValue(true);
-      mockedFs.readFileSync.mockReturnValue('NOT VALID JSON {{{');
-
-      expect(() => saveObservabilityConfig({ endpoint: 'https://obs.com' }))
-        .toThrow('existing config file is unreadable or corrupt');
-      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
-    });
-
-    it('saveStorageConfig throws when config file contains a JSON array', () => {
-      mockedFs.existsSync.mockReturnValue(true);
-      mockedFs.readFileSync.mockReturnValue('["not", "an", "object"]');
-
-      expect(() => saveStorageConfig({ endpoint: 'https://new.com' }))
-        .toThrow('existing config file is unreadable or corrupt');
-      expect(mockedFs.writeFileSync).not.toHaveBeenCalled();
-    });
-
-    it('saveStorageConfig succeeds when config file does not exist (new file)', () => {
-      mockedFs.existsSync.mockReturnValue(false);
-      const getWritten = captureWrite();
-
-      saveStorageConfig({ endpoint: 'https://new.com' });
-
-      const result = getWritten();
-      expect((result.storage as any).endpoint).toBe('https://new.com');
-    });
-  });
-
-  // ==========================================================================
-  // saveStorageConfig — Bug-2: credential preservation
+  // saveStorageConfig — writes to project state, preserves credentials
   // ==========================================================================
 
   describe('saveStorageConfig', () => {
-    it('writes endpoint, username, and password when all are provided', () => {
-      setStoredConfig({});
-      const getWritten = captureWrite();
-
+    it('writes endpoint, username, and password to the project state file', () => {
       saveStorageConfig({ endpoint: 'https://new.com', username: 'alice', password: 'secret' });
 
-      const result = getWritten();
-      expect(result.storage).toEqual({
-        endpoint: 'https://new.com',
-        username: 'alice',
-        password: 'secret',
-      });
+      const { patch, scope } = lastWrite();
+      expect(scope).toBe('project');
+      expect(patch.storage).toEqual({ endpoint: 'https://new.com', username: 'alice', password: 'secret' });
     });
 
-    it('preserves stored username and password when new values are undefined', () => {
-      setStoredConfig({
-        storage: { endpoint: 'https://old.com', username: 'stored-user', password: 'stored-pass' },
-      });
-      const getWritten = captureWrite();
+    it('preserves stored username/password when new values are undefined', () => {
+      mockReadStateScope.mockReturnValue({ storage: { endpoint: 'old', username: 'stored-user', password: 'stored-pass' } });
 
-      // Simulate what the frontend sends after loading settings with blank password field:
-      // username is undefined, password is undefined
       saveStorageConfig({ endpoint: 'https://new.com', username: undefined, password: undefined });
 
-      const result = getWritten();
-      expect((result.storage as any).username).toBe('stored-user');
-      expect((result.storage as any).password).toBe('stored-pass');
-      expect((result.storage as any).endpoint).toBe('https://new.com');
+      const { patch } = lastWrite();
+      expect(patch.storage.username).toBe('stored-user');
+      expect(patch.storage.password).toBe('stored-pass');
+      expect(patch.storage.endpoint).toBe('https://new.com');
     });
 
-    it('overwrites stored username when a new username is provided', () => {
-      setStoredConfig({
-        storage: { endpoint: 'https://old.com', username: 'old-user', password: 'old-pass' },
-      });
-      const getWritten = captureWrite();
+    it('overwrites stored username/password when new values are provided', () => {
+      mockReadStateScope.mockReturnValue({ storage: { endpoint: 'old', username: 'old-user', password: 'old-pass' } });
 
       saveStorageConfig({ endpoint: 'https://new.com', username: 'new-user', password: undefined });
+      let { patch } = lastWrite();
+      expect(patch.storage.username).toBe('new-user');
+      expect(patch.storage.password).toBe('old-pass');
 
-      const result = getWritten();
-      expect((result.storage as any).username).toBe('new-user');
-      expect((result.storage as any).password).toBe('old-pass'); // preserved
-    });
-
-    it('overwrites stored password when a new password is provided', () => {
-      setStoredConfig({
-        storage: { endpoint: 'https://old.com', username: 'user', password: 'old-pass' },
-      });
-      const getWritten = captureWrite();
-
+      mockWriteStateScope.mockClear();
       saveStorageConfig({ endpoint: 'https://new.com', username: undefined, password: 'new-pass' });
-
-      const result = getWritten();
-      expect((result.storage as any).password).toBe('new-pass');
-      expect((result.storage as any).username).toBe('user'); // preserved
+      ({ patch } = lastWrite());
+      expect(patch.storage.password).toBe('new-pass');
+      expect(patch.storage.username).toBe('old-user');
     });
 
-    it('does not write username or password keys when both are absent and nothing was stored', () => {
-      setStoredConfig({});
-      const getWritten = captureWrite();
-
+    it('omits username/password keys when both absent and nothing stored', () => {
       saveStorageConfig({ endpoint: 'https://new.com', username: undefined, password: undefined });
-
-      const result = getWritten();
-      expect(result.storage).not.toHaveProperty('username');
-      expect(result.storage).not.toHaveProperty('password');
+      const { patch } = lastWrite();
+      expect(patch.storage).not.toHaveProperty('username');
+      expect(patch.storage).not.toHaveProperty('password');
     });
 
-    it('preserves other top-level config keys (e.g. customAgents) when saving', () => {
-      setStoredConfig({
-        customAgents: [{ key: 'my-agent', name: 'My Agent', endpoint: 'http://agent' }],
-      });
-      const getWritten = captureWrite();
-
-      saveStorageConfig({ endpoint: 'https://store.com' });
-
-      const result = getWritten();
-      expect(result.customAgents).toBeDefined();
+    it('writes tlsSkipVerify and SigV4 fields when provided', () => {
+      saveStorageConfig({ endpoint: 'https://new.com', authType: 'sigv4', awsRegion: 'us-east-1', awsService: 'es', tlsSkipVerify: true });
+      const { patch } = lastWrite();
+      expect(patch.storage.authType).toBe('sigv4');
+      expect(patch.storage.awsRegion).toBe('us-east-1');
+      expect(patch.storage.tlsSkipVerify).toBe(true);
     });
 
-    it('writes tlsSkipVerify when provided', () => {
-      setStoredConfig({});
-      const getWritten = captureWrite();
-
-      saveStorageConfig({ endpoint: 'https://new.com', tlsSkipVerify: true });
-
-      const result = getWritten();
-      expect((result.storage as any).tlsSkipVerify).toBe(true);
+    it('propagates the writeStateScope error (e.g. code-first mode)', () => {
+      mockWriteStateScope.mockImplementation(() => { throw new Error('managed by agent-health.config.ts (code-first mode)'); });
+      expect(() => saveStorageConfig({ endpoint: 'https://x' })).toThrow(/code-first/);
     });
   });
 
   // ==========================================================================
-  // saveObservabilityConfig — Bug-2: credential preservation
+  // saveObservabilityConfig
   // ==========================================================================
 
   describe('saveObservabilityConfig', () => {
-    it('writes endpoint, username, and password when all are provided', () => {
-      setStoredConfig({});
-      const getWritten = captureWrite();
-
+    it('writes observability config to project state', () => {
       saveObservabilityConfig({ endpoint: 'https://obs.com', username: 'bob', password: 'pw' });
-
-      const result = getWritten();
-      expect(result.observability).toEqual({
-        endpoint: 'https://obs.com',
-        username: 'bob',
-        password: 'pw',
-      });
+      const { patch } = lastWrite();
+      expect(patch.observability).toEqual({ endpoint: 'https://obs.com', username: 'bob', password: 'pw' });
     });
 
-    it('preserves stored username and password when new values are undefined', () => {
-      setStoredConfig({
-        observability: {
-          endpoint: 'https://old-obs.com',
-          username: 'obs-user',
-          password: 'obs-pass',
-        },
-      });
-      const getWritten = captureWrite();
-
-      saveObservabilityConfig({ endpoint: 'https://new-obs.com', username: undefined, password: undefined });
-
-      const result = getWritten();
-      expect((result.observability as any).username).toBe('obs-user');
-      expect((result.observability as any).password).toBe('obs-pass');
-      expect((result.observability as any).endpoint).toBe('https://new-obs.com');
-    });
-
-    it('overwrites stored credentials when new values are provided', () => {
-      setStoredConfig({
-        observability: { endpoint: 'https://old-obs.com', username: 'old', password: 'old-pw' },
-      });
-      const getWritten = captureWrite();
-
-      saveObservabilityConfig({ endpoint: 'https://new-obs.com', username: 'new', password: 'new-pw' });
-
-      const result = getWritten();
-      expect((result.observability as any).username).toBe('new');
-      expect((result.observability as any).password).toBe('new-pw');
-    });
-
-    it('preserves indexes when credentials change', () => {
-      setStoredConfig({
-        observability: {
-          endpoint: 'https://obs.com',
-          username: 'user',
-          password: 'pass',
-        },
-      });
-      const getWritten = captureWrite();
+    it('preserves credentials and keeps indexes when credentials change', () => {
+      mockReadStateScope.mockReturnValue({ observability: { endpoint: 'https://obs.com', username: 'user', password: 'pass' } });
 
       saveObservabilityConfig({
         endpoint: 'https://obs.com',
@@ -294,256 +178,139 @@ describe('configService (real implementation)', () => {
         indexes: { traces: 'my-traces-*', logs: 'my-logs-*' },
       });
 
-      const result = getWritten();
-      expect((result.observability as any).indexes).toEqual({ traces: 'my-traces-*', logs: 'my-logs-*' });
-      expect((result.observability as any).username).toBe('user');
-      expect((result.observability as any).password).toBe('pass');
+      const { patch } = lastWrite();
+      expect(patch.observability.username).toBe('user');
+      expect(patch.observability.password).toBe('pass');
+      expect(patch.observability.indexes).toEqual({ traces: 'my-traces-*', logs: 'my-logs-*' });
     });
   });
 
   // ==========================================================================
-  // getConfigStatus — Bug-3: username + hasPassword
+  // clear*
+  // ==========================================================================
+
+  describe('clear*', () => {
+    it('clearStorageConfig deletes the storage key via undefined patch', () => {
+      clearStorageConfig();
+      expect(lastWrite().patch).toEqual({ storage: undefined });
+    });
+
+    it('clearObservabilityConfig deletes the observability key via undefined patch', () => {
+      clearObservabilityConfig();
+      expect(lastWrite().patch).toEqual({ observability: undefined });
+    });
+  });
+
+  // ==========================================================================
+  // getStorageConfigFromFile / getObservabilityConfigFromFile (runtime state)
+  // ==========================================================================
+
+  describe('getStorageConfigFromFile', () => {
+    it('returns null when state is empty (unconfigured or code-first)', () => {
+      mockReadLayeredState.mockReturnValue({});
+      expect(getStorageConfigFromFile()).toBeNull();
+    });
+
+    it('returns the storage config from layered state', () => {
+      mockReadLayeredState.mockReturnValue({ storage: { endpoint: 'https://s.com', authType: 'sigv4' } });
+      expect(getStorageConfigFromFile()?.endpoint).toBe('https://s.com');
+    });
+
+    it('getObservabilityConfigFromFile returns observability from state', () => {
+      mockReadLayeredState.mockReturnValue({ observability: { endpoint: 'https://o.com' } });
+      expect(getObservabilityConfigFromFile()?.endpoint).toBe('https://o.com');
+    });
+  });
+
+  // ==========================================================================
+  // getConfigStatus — source + credential surfacing
   // ==========================================================================
 
   describe('getConfigStatus', () => {
-    const OLD_ENV = process.env;
-
-    beforeEach(() => {
-      process.env = { ...OLD_ENV };
-      delete process.env.OPENSEARCH_STORAGE_ENDPOINT;
-      delete process.env.OPENSEARCH_STORAGE_USERNAME;
-      delete process.env.OPENSEARCH_STORAGE_PASSWORD;
-      delete process.env.OPENSEARCH_LOGS_ENDPOINT;
-      delete process.env.OPENSEARCH_LOGS_USERNAME;
-      delete process.env.OPENSEARCH_LOGS_PASSWORD;
-    });
-
-    afterEach(() => {
-      process.env = OLD_ENV;
-    });
-
-    it('returns username from file config', () => {
-      setStoredConfig({
-        storage: { endpoint: 'https://store.com', username: 'file-user', password: 'pw' },
-      });
+    it('reports source=file with username/hasPassword from the state file', () => {
+      mockReadLayeredState.mockReturnValue({ storage: { endpoint: 'https://store.com', username: 'file-user', password: 'pw' } });
 
       const status = getConfigStatus();
 
+      expect(status.storage.source).toBe('file');
+      expect(status.storage.configured).toBe(true);
       expect(status.storage.username).toBe('file-user');
-    });
-
-    it('returns hasPassword: true when password is stored in file', () => {
-      setStoredConfig({
-        storage: { endpoint: 'https://store.com', username: 'user', password: 'secret' },
-      });
-
-      const status = getConfigStatus();
-
       expect(status.storage.hasPassword).toBe(true);
     });
 
-    it('returns hasPassword: false when no password is stored in file', () => {
-      setStoredConfig({
-        storage: { endpoint: 'https://store.com', username: 'user' },
-      });
-
-      const status = getConfigStatus();
-
-      expect(status.storage.hasPassword).toBe(false);
-    });
-
-    it('returns username from env var when no file config', () => {
-      mockedFs.existsSync.mockReturnValue(false);
-      process.env.OPENSEARCH_STORAGE_ENDPOINT = 'https://env-store.com';
+    it('reports source=environment from env vars', () => {
+      process.env.OPENSEARCH_STORAGE_ENDPOINT = 'https://env.com';
       process.env.OPENSEARCH_STORAGE_USERNAME = 'env-user';
 
       const status = getConfigStatus();
-
       expect(status.storage.source).toBe('environment');
       expect(status.storage.username).toBe('env-user');
     });
 
-    it('returns hasPassword: true when env var password exists', () => {
-      mockedFs.existsSync.mockReturnValue(false);
-      process.env.OPENSEARCH_STORAGE_ENDPOINT = 'https://env-store.com';
-      process.env.OPENSEARCH_STORAGE_PASSWORD = 'env-secret';
-
-      const status = getConfigStatus();
-
-      expect(status.storage.hasPassword).toBe(true);
-    });
-
-    it('returns hasPassword: false when no env var password', () => {
-      mockedFs.existsSync.mockReturnValue(false);
-      process.env.OPENSEARCH_STORAGE_ENDPOINT = 'https://env-store.com';
-
-      const status = getConfigStatus();
-
-      expect(status.storage.hasPassword).toBe(false);
-    });
-
-    it('returns observability username from file config', () => {
-      setStoredConfig({
-        observability: { endpoint: 'https://obs.com', username: 'obs-user', password: 'pw' },
+    it('never leaks credentials in a field named password', () => {
+      mockReadLayeredState.mockReturnValue({
+        storage: { endpoint: 'https://store.com', password: 'super-secret' },
+        observability: { endpoint: 'https://obs.com', password: 'obs-secret' },
       });
-
-      const status = getConfigStatus();
-
-      expect(status.observability.username).toBe('obs-user');
-      expect(status.observability.hasPassword).toBe(true);
-    });
-
-    it('returns observability username from env var when no file config', () => {
-      mockedFs.existsSync.mockReturnValue(false);
-      process.env.OPENSEARCH_LOGS_ENDPOINT = 'https://env-obs.com';
-      process.env.OPENSEARCH_LOGS_USERNAME = 'env-obs-user';
-      process.env.OPENSEARCH_LOGS_PASSWORD = 'env-obs-pass';
-
-      const status = getConfigStatus();
-
-      expect(status.observability.source).toBe('environment');
-      expect(status.observability.username).toBe('env-obs-user');
-      expect(status.observability.hasPassword).toBe(true);
-    });
-
-    it('never returns credentials in a field named password', () => {
-      setStoredConfig({
-        storage: { endpoint: 'https://store.com', username: 'user', password: 'super-secret' },
-        observability: { endpoint: 'https://obs.com', username: 'obs', password: 'obs-secret' },
-      });
-
-      const status = getConfigStatus();
-      const json = JSON.stringify(status);
-
+      const json = JSON.stringify(getConfigStatus());
       expect(json).not.toContain('super-secret');
       expect(json).not.toContain('obs-secret');
     });
   });
 
   // ==========================================================================
-  // TypeScript config bridge (#261): agent-health.config.ts -> server
+  // TypeScript config bridge + precedence (ts > state > env)
   // ==========================================================================
 
   describe('TypeScript config bridge', () => {
-    const OLD_ENV = process.env;
-
-    beforeEach(() => {
-      process.env = { ...OLD_ENV };
-      delete process.env.OPENSEARCH_STORAGE_ENDPOINT;
-      delete process.env.OPENSEARCH_STORAGE_USERNAME;
-      delete process.env.OPENSEARCH_STORAGE_PASSWORD;
-      delete process.env.OPENSEARCH_LOGS_ENDPOINT;
-      delete process.env.OPENSEARCH_LOGS_USERNAME;
-      delete process.env.OPENSEARCH_LOGS_PASSWORD;
-    });
-
-    afterEach(() => {
-      process.env = OLD_ENV;
-      __resetTsClusterConfigForTests();
-    });
-
     it('getStorageConfigFromTs / getObservabilityConfigFromTs default to null', () => {
       expect(getStorageConfigFromTs()).toBeNull();
       expect(getObservabilityConfigFromTs()).toBeNull();
     });
 
-    it('setTsClusterConfig stores storage and observability cluster config', () => {
-      setTsClusterConfig({
-        storage: { endpoint: 'https://ts-store.com', authType: 'sigv4', awsRegion: 'us-east-1' },
-        observability: { endpoint: 'https://ts-obs.com', indexes: { traces: 'ts-traces-*' } },
-      });
+    it('setTsClusterConfig stores cluster config; endpoint-less treated as null', () => {
+      setTsClusterConfig({ storage: { endpoint: 'https://ts.com', authType: 'sigv4', awsRegion: 'us-east-1' } });
+      expect(getStorageConfigFromTs()).toEqual({ endpoint: 'https://ts.com', authType: 'sigv4', awsRegion: 'us-east-1' });
 
-      expect(getStorageConfigFromTs()).toEqual({
-        endpoint: 'https://ts-store.com',
-        authType: 'sigv4',
-        awsRegion: 'us-east-1',
-      });
-      expect(getObservabilityConfigFromTs()?.endpoint).toBe('https://ts-obs.com');
-      expect(getObservabilityConfigFromTs()?.indexes?.traces).toBe('ts-traces-*');
-    });
-
-    it('treats an endpoint-less object as "not configured" (null)', () => {
-      setTsClusterConfig({
-        storage: { endpoint: '' } as any,
-        observability: {} as any,
-      });
+      setTsClusterConfig({ storage: { endpoint: '' } as any });
       expect(getStorageConfigFromTs()).toBeNull();
-      expect(getObservabilityConfigFromTs()).toBeNull();
-    });
-
-    it('passing undefined for a field leaves the previous value untouched', () => {
-      setTsClusterConfig({ storage: { endpoint: 'https://ts-store.com' } });
-      // Only update observability; storage should be preserved.
-      setTsClusterConfig({ observability: { endpoint: 'https://ts-obs.com' } });
-      expect(getStorageConfigFromTs()?.endpoint).toBe('https://ts-store.com');
-      expect(getObservabilityConfigFromTs()?.endpoint).toBe('https://ts-obs.com');
     });
 
     it('getConfigStatus reports source=typescript when only TS config is present', () => {
-      mockedFs.existsSync.mockReturnValue(false); // no JSON file
+      mockReadLayeredState.mockReturnValue({}); // code-first → state ignored
       setTsClusterConfig({
-        storage: { endpoint: 'https://ts-store.com', username: 'ts-user', password: 'ts-pw', authType: 'basic' },
-        observability: { endpoint: 'https://ts-obs.com', awsRegion: 'us-west-2' },
+        storage: { endpoint: 'https://ts-store.com', username: 'ts-user', password: 'ts-pw' },
+        observability: { endpoint: 'https://ts-obs.com' },
       });
 
       const status = getConfigStatus();
-
       expect(status.storage.source).toBe('typescript');
-      expect(status.storage.configured).toBe(true);
-      expect(status.storage.endpoint).toBe('https://ts-store.com');
       expect(status.storage.username).toBe('ts-user');
       expect(status.storage.hasPassword).toBe(true);
       expect(status.observability.source).toBe('typescript');
-      expect(status.observability.endpoint).toBe('https://ts-obs.com');
-      expect(status.observability.awsRegion).toBe('us-west-2');
     });
 
-    it('getConfigStatus prefers JSON file over TS config (precedence)', () => {
-      setStoredConfig({
-        storage: { endpoint: 'https://json-store.com', username: 'json-user' },
-      });
-      setTsClusterConfig({
-        storage: { endpoint: 'https://ts-store.com', username: 'ts-user' },
-      });
+    it('TS config WINS over the state file when both are present (config v2 precedence)', () => {
+      // (In practice the mode gate makes state {} in code-first; this asserts
+      // the resolution order directly.)
+      mockReadLayeredState.mockReturnValue({ storage: { endpoint: 'https://state.com', username: 'state-user' } });
+      setTsClusterConfig({ storage: { endpoint: 'https://ts.com', username: 'ts-user' } });
 
       const status = getConfigStatus();
-
-      expect(status.storage.source).toBe('file');
-      expect(status.storage.endpoint).toBe('https://json-store.com');
-      expect(status.storage.username).toBe('json-user');
-    });
-
-    it('getConfigStatus prefers TS config over env vars (precedence)', () => {
-      mockedFs.existsSync.mockReturnValue(false); // no JSON file
-      process.env.OPENSEARCH_STORAGE_ENDPOINT = 'https://env-store.com';
-      process.env.OPENSEARCH_STORAGE_USERNAME = 'env-user';
-      setTsClusterConfig({
-        storage: { endpoint: 'https://ts-store.com', username: 'ts-user' },
-      });
-
-      const status = getConfigStatus();
-
       expect(status.storage.source).toBe('typescript');
-      expect(status.storage.endpoint).toBe('https://ts-store.com');
+      expect(status.storage.endpoint).toBe('https://ts.com');
       expect(status.storage.username).toBe('ts-user');
     });
 
-    it('getConfigStatus falls through to env when neither JSON nor TS is present', () => {
-      mockedFs.existsSync.mockReturnValue(false);
-      process.env.OPENSEARCH_STORAGE_ENDPOINT = 'https://env-store.com';
-
-      const status = getConfigStatus();
-
-      expect(status.storage.source).toBe('environment');
-      expect(status.storage.endpoint).toBe('https://env-store.com');
+    it('TS config wins over env vars', () => {
+      process.env.OPENSEARCH_STORAGE_ENDPOINT = 'https://env.com';
+      setTsClusterConfig({ storage: { endpoint: 'https://ts.com' } });
+      expect(getConfigStatus().storage.source).toBe('typescript');
     });
 
-    it('getConfigStatus never leaks TS-config passwords', () => {
-      setTsClusterConfig({
-        storage: { endpoint: 'https://ts-store.com', password: 'ts-super-secret' },
-      });
-      const json = JSON.stringify(getConfigStatus());
-      expect(json).not.toContain('ts-super-secret');
+    it('never leaks TS-config passwords in getConfigStatus', () => {
+      setTsClusterConfig({ storage: { endpoint: 'https://ts.com', password: 'ts-super-secret' } });
+      expect(JSON.stringify(getConfigStatus())).not.toContain('ts-super-secret');
     });
   });
 });

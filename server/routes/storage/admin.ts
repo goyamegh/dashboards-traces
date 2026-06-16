@@ -32,6 +32,7 @@ import {
   clearObservabilityConfig,
 } from '../../services/configService.js';
 import { getStorageConfigFromEnv } from '../../middleware/dataSourceConfig.js';
+import { isCodeFirstMode } from '../../../lib/config/statePaths.js';
 
 const router = Router();
 
@@ -319,6 +320,9 @@ router.get('/api/storage/config/status', (req: Request, res: Response) => {
  */
 router.post('/api/storage/config/storage', async (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
     const { endpoint, username, password, tlsSkipVerify, authType, awsProfile, awsRegion, awsService } = req.body;
 
     if (!endpoint) {
@@ -429,6 +433,9 @@ router.post(
  */
 router.post('/api/storage/config/observability', (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
     const { endpoint, username, password, tlsSkipVerify, indexes, authType, awsProfile, awsRegion, awsService } = req.body;
 
     if (!endpoint) {
@@ -449,6 +456,9 @@ router.post('/api/storage/config/observability', (req: Request, res: Response) =
  */
 router.delete('/api/storage/config/storage', (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
     clearStorageConfig();
     const state: StorageState = {
       backend: 'file',
@@ -510,6 +520,9 @@ router.post('/api/storage/config/use-file-storage', (req: Request, res: Response
  */
 router.delete('/api/storage/config/observability', (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
     clearObservabilityConfig();
     res.json({ success: true, message: 'Observability configuration cleared' });
   } catch (error: any) {

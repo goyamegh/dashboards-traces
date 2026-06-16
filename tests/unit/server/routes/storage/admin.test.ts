@@ -71,6 +71,16 @@ jest.mock('@/server/middleware/dataSourceConfig', () => ({
   getStorageConfigFromEnv: jest.fn(),
 }));
 
+// Mock statePaths (config v2) so we can flip code-first mode for the mode-gate tests.
+jest.mock('@/lib/config/statePaths', () => ({
+  isCodeFirstMode: jest.fn(() => false),
+  readLayeredState: jest.fn(() => ({})),
+  writeStateScope: jest.fn(),
+  readStateScope: jest.fn(() => ({})),
+  projectStatePath: jest.fn(() => '/cwd/.agent-health/state.json'),
+  userStatePath: jest.fn(() => '/home/u/.agent-health/state.json'),
+}));
+
 // Mock @opensearch-project/opensearch Client constructor
 jest.mock('@opensearch-project/opensearch', () => ({
   Client: jest.fn().mockImplementation(() => ({})),
@@ -166,6 +176,8 @@ const mockSaveObservabilityConfig = saveObservabilityConfig as jest.Mock;
 const mockClearStorageConfig = clearStorageConfig as jest.Mock;
 const mockClearObservabilityConfig = clearObservabilityConfig as jest.Mock;
 import { resolveStorageConfig, getStorageConfigFromEnv } from '@/server/middleware/dataSourceConfig';
+import { isCodeFirstMode } from '@/lib/config/statePaths';
+const mockIsCodeFirstMode = isCodeFirstMode as jest.Mock;
 
 const mockResolveStorageConfig = resolveStorageConfig as jest.Mock;
 const mockGetStorageConfigFromEnv = getStorageConfigFromEnv as jest.Mock;
@@ -1241,6 +1253,26 @@ describe('Admin Storage Routes', () => {
 
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({ status: 'error', message: 'Unexpected failure' });
+    });
+  });
+
+  describe('code-first mode gate (config v2)', () => {
+    afterEach(() => mockIsCodeFirstMode.mockReturnValue(false));
+
+    it('POST /api/storage/config/storage returns 409 in code-first mode', async () => {
+      mockIsCodeFirstMode.mockReturnValue(true);
+      const { req, res } = createMocks({}, { endpoint: 'https://x' });
+      const handler = getRouteHandler(adminRoutes, 'post', '/api/storage/config/storage');
+      await handler(req, res);
+      expect(res.status).toHaveBeenCalledWith(409);
+    });
+
+    it('DELETE /api/storage/config/observability returns 409 in code-first mode', async () => {
+      mockIsCodeFirstMode.mockReturnValue(true);
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(adminRoutes, 'delete', '/api/storage/config/observability');
+      await handler(req, res);
+      expect(res.status).toHaveBeenCalledWith(409);
     });
   });
 });
