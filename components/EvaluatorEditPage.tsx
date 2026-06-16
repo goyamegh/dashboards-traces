@@ -183,13 +183,31 @@ export const EvaluatorEditPage: React.FC = () => {
         // unchanged from the user's perspective), so without this the
         // header would still read v{N-1} after a save.
         const updated = await response.json().catch(() => null);
-        if (updated) {
-          setCurrentVersion(updated.currentVersion ?? currentVersion + 1);
+        if (updated && typeof updated.currentVersion === 'number') {
+          // Trust ONLY the server-reported version. The previous fallback
+          // of `currentVersion + 1` was wrong when the user had loaded an
+          // older version from history before saving (the server creates
+          // a new branch tip whose number isn't necessarily current+1
+          // from the user's perspective). Without `updated.currentVersion`
+          // we'd corrupt the version chain in the header and any
+          // subsequent edit would compound the drift. We still apply the
+          // other field updates so the form reflects what was persisted.
+          setCurrentVersion(updated.currentVersion);
           if (updated.systemPrompt != null) setSystemPrompt(updated.systemPrompt);
           if (updated.scoringConfig?.metrics) setMetrics(updated.scoringConfig.metrics);
           if (typeof updated.scoringConfig?.passThreshold === 'number') {
             setPassThreshold(updated.scoringConfig.passThreshold);
           }
+        } else {
+          // Server responded 200 but the body is missing currentVersion
+          // (server bug, partial response, etc.). Surface the issue
+          // instead of silently writing a guessed version into the
+          // header. The persisted state is still correct on the server;
+          // a page refresh will recover.
+          console.warn(
+            '[EvaluatorEditPage] PUT succeeded but response is missing currentVersion; refresh the page to see the latest version number.',
+            updated,
+          );
         }
         // Strip any #history hash so we land on the Latest tab — that's
         // where the user can immediately verify their edit took effect.
