@@ -28,7 +28,8 @@ import { connectorRegistry } from '@/services/connectors/registry';
 
 /**
  * Resolve storage config at startup (no request context available).
- * Priority: file config > environment variables > null.
+ * Priority: agent-health.config.json (file) > agent-health.config.ts (TS) >
+ * OPENSEARCH_STORAGE_* env vars > null.
  */
 function resolveStorageConfigAtStartup() {
   return getStorageConfigFromFile() ?? getStorageConfigFromTs() ?? getStorageConfigFromEnv() ?? null;
@@ -57,15 +58,17 @@ async function initializeStorageBackend(): Promise<void> {
  * @returns Configured Express app
  */
 export async function createApp(): Promise<Express> {
-  // Migrate agent-health.yaml → agent-health.config.json if needed (one-time)
+  // Migrate legacy agent-health.yaml / agent-health.config.json → .agent-health/state.json (one-time)
   await migrateYamlToJsonIfNeeded();
 
   const config = await loadConfig();
 
   // Bridge cluster config authored in agent-health.config.ts into the server's
-  // runtime resolution chain (#261). Precedence stays: JSON file > this TS
-  // config > OPENSEARCH_* env > file-based fallback.
-  setTsClusterConfig({ storage: config.storage, observability: config.observability });
+  // runtime resolution chain (#271). In code-first mode (a .ts is present) the
+  // .ts wins and the runtime state file is ignored; otherwise the state file is
+  // used. Pass `null` (not undefined) for absent fields so each createApp()
+  // fully resets the bridge (undefined means "leave previous value").
+  setTsClusterConfig({ storage: config.storage ?? null, observability: config.observability ?? null });
 
   // Register user-defined connectors from config (so they work in benchmark execution)
   if (config.connectors?.length) {
