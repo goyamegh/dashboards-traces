@@ -377,6 +377,8 @@ Tests in `tests/` folder mirroring source structure. Jest config in [jest.config
 
 **Coverage thresholds:** Lines 90%, Statements 90%, Functions 80%, Branches 80%. Always use `@/` path alias in imports, never relative paths.
 
+**Test levels (required by default):** every feature/bug fix ships unit **plus** integration (`tests/integration/`, real server/API) and/or Playwright e2e (`tests/e2e/`) tests for any API- or UI-visible behavior. A UI bug isn't fixed for good without a Playwright test asserting the rendered result. See AGENTS.md → "Test levels".
+
 ## CI/CD Workflows
 
 GitHub Actions workflows in `.github/workflows/`:

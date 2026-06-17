@@ -373,6 +373,16 @@ Use the Agent Health trace viewer to validate your instrumentation:
 
 Tests use Jest with ts-jest. Test files are in `__tests__/` directories or named `*.test.ts`.
 
+### Test levels — required by default for every feature and bug fix
+
+Do not stop at unit tests. Each change ships with regression tests at the levels it touches:
+
+- **Unit** (`tests/unit/`) — logic/engine with mocked deps.
+- **Integration** (`tests/integration/`, `npm run test:integration`) — the real server/API path (boot `createApp()` or hit a running backend, assert the HTTP response). Required for anything touching config resolution, storage, routes, migration, or persisted state. Clean up any data created (see Integration Test Cleanup).
+- **Playwright e2e** (`tests/e2e/`, `npm run test:e2e`) — any UI-visible behavior or bug (badges, connected/error/empty states, toasts). A UI bug is not fixed for good until an e2e test asserts the rendered result.
+
+Rule of thumb: if a human could see or hit it, there must be an integration and/or Playwright test that fails if the bug returns. Reviewers should reject feature/bugfix PRs that only add unit tests for UI- or API-visible behavior.
+
 ```bash
 npm test                                    # All tests
 npm run test:unit                           # Unit tests only
