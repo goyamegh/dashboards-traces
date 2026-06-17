@@ -196,19 +196,29 @@ export const SettingsPage: React.FC = () => {
       // connectivity so the UI never shows a green "Connected to OpenSearch"
       // while silently running on file storage.
       const osOk = (s?: string) => s === 'ok' || s === 'connected';
+      const backend = health.backend;
       let isConnected: boolean;
       let osConfiguredButUnreachable = false;
       let osError: string | undefined;
-      if (health.opensearch) {
-        // OpenSearch configured; `opensearch` carries its real status.
+      if (backend === 'opensearch') {
+        // OpenSearch is the ACTIVE backend — genuinely connected.
+        isConnected = true;
+      } else if (backend === 'file') {
+        // File storage is the active backend. Never "connected", even if
+        // OpenSearch is reachable (e.g. explicit file-storage override). Only
+        // surface an error when OpenSearch is configured AND unreachable.
+        isConnected = false;
+        if (health.opensearch && !osOk(health.opensearch.status)) {
+          osConfiguredButUnreachable = true;
+          osError = health.opensearch.message;
+        }
+      } else if (health.opensearch) {
+        // Unknown active backend, but OpenSearch state is reported.
         isConnected = osOk(health.opensearch.status);
         osConfiguredButUnreachable = !isConnected;
         osError = isConnected ? undefined : health.opensearch.message;
-      } else if (health.backend && health.backend !== 'opensearch') {
-        // File backend with no OpenSearch configured — not connected to OS.
-        isConnected = false;
       } else {
-        // OpenSearch storage module active (or legacy response shape).
+        // Legacy response shape (no backend field).
         isConnected = osOk(health.status);
       }
 
@@ -1657,6 +1667,11 @@ export const SettingsPage: React.FC = () => {
                         <span className="text-sm text-amber-400">
                           OpenSearch unreachable — using file storage fallback
                         </span>
+                      </>
+                    ) : storageStats.backend === 'file' ? (
+                      <>
+                        <Database size={16} className="text-muted-foreground" />
+                        <span className="text-sm text-muted-foreground">Using file storage</span>
                       </>
                     ) : (
                       <>

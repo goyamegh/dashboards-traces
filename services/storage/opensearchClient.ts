@@ -192,15 +192,21 @@ export const storageAdmin = {
     status: string;
     cluster?: unknown;
     error?: string;
-    /** Active storage backend. 'file' means OpenSearch is unavailable / not configured. */
-    backend?: 'file' | 'opensearch' | string;
+    /** Active storage backend. 'file' means OpenSearch is unavailable / not configured; 'error' means configured-but-unreachable. */
+    backend?: 'file' | 'opensearch' | 'error';
     /**
      * Real OpenSearch connectivity, present when OpenSearch is configured but
      * the active backend fell back to file storage. Top-level `status` reflects
      * the active (possibly file) backend, NOT OpenSearch — use this to report
-     * true OpenSearch connectivity.
+     * true OpenSearch connectivity. Shape mirrors testStorageConnection().
      */
-    opensearch?: { status: string; message?: string; latencyMs?: number };
+    opensearch?: {
+      status: string;
+      message?: string;
+      latencyMs?: number;
+      clusterName?: string;
+      clusterStatus?: string;
+    };
   }> {
     return request('GET', '/health');
   },
