@@ -12,7 +12,7 @@ import 'dotenv/config';
 import { ChildProcess } from 'child_process';
 import config from './config/index.js';
 import { createApp } from './app.js';
-import { getStorageConfigFromFile, getObservabilityConfigFromFile } from './services/configService.js';
+import { getStorageConfigFromFile, getObservabilityConfigFromFile, getStorageConfigFromTs, getObservabilityConfigFromTs } from './services/configService.js';
 import { findObservioRoot, spawnObservioAgent, OBSERVIO_DEFAULT_PORT, resetObservioPort, isPortFree, setObservioPort, waitForObservioReady, killObservioAgent } from './services/observioAgent.js';
 import { validateAwsCredentials } from './services/tracesService.js';
 import { resumePendingTracePollsSafely } from './services/traceRecoveryOnBoot.js';
@@ -129,8 +129,9 @@ async function startServer() {
         console.log(`   Health check: http://localhost:${port}/health`);
         console.log(`   AWS Region: ${process.env.AWS_REGION || 'us-west-2'}`);
         console.log(`   Bedrock Model: ${process.env.BEDROCK_MODEL_ID || 'us.anthropic.claude-sonnet-4-5-20250929-v1:0'}`);
-        const storageEndpoint = process.env.OPENSEARCH_STORAGE_ENDPOINT
-          || getStorageConfigFromFile()?.endpoint;
+        const storageEndpoint = getStorageConfigFromFile()?.endpoint
+          ?? getStorageConfigFromTs()?.endpoint
+          ?? process.env.OPENSEARCH_STORAGE_ENDPOINT;
         if (storageEndpoint) {
           console.log(`   OpenSearch Storage: ${storageEndpoint}`);
         } else {
@@ -138,7 +139,7 @@ async function startServer() {
         }
 
         // Proactive credential check for SigV4 clusters (non-blocking)
-        const obsConfig = getObservabilityConfigFromFile();
+        const obsConfig = getObservabilityConfigFromFile() ?? getObservabilityConfigFromTs();
         if (obsConfig?.authType === 'sigv4') {
           validateAwsCredentials(obsConfig.awsProfile).then(credError => {
             if (credError) {

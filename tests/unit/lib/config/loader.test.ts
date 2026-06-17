@@ -260,13 +260,29 @@ describe('loadConfig', () => {
     expect(config.judge.model).toBe('claude-sonnet-4');
   });
 
-  it('logs an explicit message when only the server-side JSON config is present', async () => {
-    // No code config (.ts/.js/.mjs), but agent-health.config.json exists.
-    // The loader doesn't read the JSON itself — server services do — but
-    // the startup log must surface its presence so the user doesn't think
+  it('exposes storage/observability on the resolved config (undefined when unset) (#261)', async () => {
+    const mockFs = require('fs');
+    mockFs.existsSync.mockReturnValue(false);
+
+    const { loadConfig, clearConfigCache } = require('@/lib/config/loader');
+    clearConfigCache();
+
+    const config = await loadConfig('/nonexistent', true);
+    // The keys must exist on ResolvedConfig so server/app.ts can pass them to
+    // setTsClusterConfig(); with no config file they resolve to undefined.
+    expect('storage' in config).toBe(true);
+    expect('observability' in config).toBe(true);
+    expect(config.storage).toBeUndefined();
+    expect(config.observability).toBeUndefined();
+  });
+
+  it('logs an explicit message when only the runtime state file is present', async () => {
+    // No code config (.ts/.js/.mjs), but .agent-health/state.json exists.
+    // The loader doesn't read it — server services do — but the startup log
+    // must surface its presence (ui-first mode) so the user doesn't think
     // "no config" when storage / observability are in fact configured.
     const mockFs = require('fs');
-    mockFs.existsSync.mockImplementation((p: string) => p.endsWith('agent-health.config.json'));
+    mockFs.existsSync.mockImplementation((p: string) => p.endsWith('state.json'));
 
     const logSpy = jest.spyOn(console, 'log').mockImplementation();
     const { loadConfig, clearConfigCache } = require('@/lib/config/loader');
@@ -274,7 +290,7 @@ describe('loadConfig', () => {
     await loadConfig('/test', true);
 
     const calls = logSpy.mock.calls.map(c => c.join(' '));
-    expect(calls.some(s => s.includes('agent-health.config.json') && s.includes('detected'))).toBe(true);
+    expect(calls.some(s => s.includes('state.json') && s.includes('detected'))).toBe(true);
     // And the misleading "No config file found" message must NOT fire.
     expect(calls.some(s => s.includes('No config file found'))).toBe(false);
   });
@@ -299,9 +315,9 @@ describe('hasServerJsonConfig', () => {
     jest.resetModules();
   });
 
-  it('returns true when agent-health.config.json exists', () => {
+  it('returns true when the runtime state file exists', () => {
     const mockFs = require('fs');
-    mockFs.existsSync.mockImplementation((p: string) => p.endsWith('agent-health.config.json'));
+    mockFs.existsSync.mockImplementation((p: string) => p.endsWith('state.json'));
 
     const { hasServerJsonConfig } = require('@/lib/config/loader');
     expect(hasServerJsonConfig('/test')).toBe(true);

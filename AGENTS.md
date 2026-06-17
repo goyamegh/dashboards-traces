@@ -109,6 +109,26 @@ Copy `.env.example` to `.env`. Key variables:
 - `OPENSEARCH_STORAGE_*` - OpenSearch cluster for persistence
 - `OPENSEARCH_LOGS_*` - OpenSearch cluster for logs/traces
 
+## Configuration model (config v2)
+
+Two config planes; which one is authoritative is decided by **presence of an authored config file**.
+
+- **`agent-health.config.ts`** (project `<cwd>/` or user `~/.agent-health/`) — the file a human authors: agents, connectors, models, judge, reporters, telemetry, and optionally `storage` / `observability` clusters. **The app never writes this file.**
+- **`.agent-health/state.json`** (project + user scoped, gitignored) — runtime state the Settings UI writes (`storage`/`observability`/`customAgents`/`debug`/`remoteServers`). Machine-managed; don't hand-edit.
+- **`.env` / `OPENSEARCH_*`** — secrets and overrides.
+
+**Modes:**
+- **code-first** (any `agent-health.config.{ts,js,mjs}` present): the `.ts` + `.env` are authoritative; `.agent-health/state.json` is **ignored entirely**; the Settings data-source / remote-server / debug **write endpoints return `409`** ("managed by agent-health.config.ts"). Test Connection is still allowed (read-only probe; writes nothing).
+- **ui-first** (no authored config): `.agent-health/state.json` is the writable store; Save persists there (project scope by default; `--global` / user scope is opt-in).
+
+**Resolution** for storage/observability (`getConfigStatus` order is `ts > state > env`):
+- code-first: `.ts` → `OPENSEARCH_*` env → file-storage fallback (state ignored)
+- ui-first: project `.agent-health/state.json` → user `~/.agent-health/state.json` → `OPENSEARCH_*` env → file fallback
+
+**What writes what:** Test Connection → nothing (probe). Save → `.agent-health/state.json` in ui-first, or `409` in code-first. Changing a cluster in code-first = edit the `.ts` + restart. Legacy `agent-health.yaml` / `agent-health.config.json` are migrated once to `.agent-health/state.json` at startup (originals → `*.backup`); if a `.ts` is also present the migrated clusters are ignored and a startup warning says so.
+
+Human-facing details: [docs/CONFIGURATION.md](docs/CONFIGURATION.md). Design + file-by-file plan: [issue #271](https://github.com/opensearch-project/agent-health/issues/271).
+
 ## Architecture
 
 > **Full documentation:** See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture patterns.
@@ -352,6 +372,16 @@ Use the Agent Health trace viewer to validate your instrumentation:
 ## Testing
 
 Tests use Jest with ts-jest. Test files are in `__tests__/` directories or named `*.test.ts`.
+
+### Test levels — required by default for every feature and bug fix
+
+Do not stop at unit tests. Each change ships with regression tests at the levels it touches:
+
+- **Unit** (`tests/unit/`) — logic/engine with mocked deps.
+- **Integration** (`tests/integration/`, `npm run test:integration`) — the real server/API path (boot `createApp()` or hit a running backend, assert the HTTP response). Required for anything touching config resolution, storage, routes, migration, or persisted state. Clean up any data created (see Integration Test Cleanup).
+- **Playwright e2e** (`tests/e2e/`, `npm run test:e2e`) — any UI-visible behavior or bug (badges, connected/error/empty states, toasts). A UI bug is not fixed for good until an e2e test asserts the rendered result.
+
+Rule of thumb: if a human could see or hit it, there must be an integration and/or Playwright test that fails if the bug returns. Reviewers should reject feature/bugfix PRs that only add unit tests for UI- or API-visible behavior.
 
 ```bash
 npm test                                    # All tests

@@ -116,6 +116,43 @@ export default {
     // },
   ],
 
+  // --- Data sources (OpenSearch clusters) ----------------------------------
+  // storage:       where eval results (test cases, benchmarks, runs,
+  //                analytics) are persisted. Omit for zero-config file-based
+  //                storage.
+  // observability: where agent traces/logs/metrics are read from (Traces tab).
+  //
+  // Resolution precedence (highest wins):
+  //   agent-health.config.json (written by the Settings UI at runtime)
+  //     -> these TS fields -> OPENSEARCH_STORAGE_*/OPENSEARCH_LOGS_* env
+  //     -> file-based fallback (storage only).
+  //
+  // Read environment-specific values and secrets from process.env so the
+  // committed config carries no credentials.
+  //
+  // storage: {
+  //   endpoint: process.env.OPENSEARCH_STORAGE_ENDPOINT,
+  //   authType: 'sigv4',            // 'none' | 'basic' | 'sigv4'
+  //   awsRegion: 'us-east-1',
+  //   awsService: 'es',             // 'es' (managed) | 'aoss' (serverless)
+  //   awsProfile: process.env.AWS_PROFILE,
+  //   // For basic auth instead of SigV4:
+  //   // username: process.env.OPENSEARCH_STORAGE_USERNAME,
+  //   // password: process.env.OPENSEARCH_STORAGE_PASSWORD,
+  // },
+  //
+  // observability: {
+  //   endpoint: process.env.OPENSEARCH_LOGS_ENDPOINT,
+  //   authType: 'sigv4',
+  //   awsRegion: 'us-east-1',
+  //   awsService: 'es',
+  //   awsProfile: process.env.AWS_PROFILE,
+  //   indexes: {
+  //     traces: 'otel-v1-apm-span-*',
+  //     logs: 'ml-commons-logs-*',
+  //   },
+  // },
+
   // Custom models (merged with built-in models by default)
   // models: [
   //   {

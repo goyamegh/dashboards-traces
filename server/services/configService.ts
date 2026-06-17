@@ -6,23 +6,29 @@
 /**
  * Configuration Service
  *
- * Manages server-side configuration stored in agent-health.config.json.
+ * Manages server-side data-source configuration. In ui-first mode this lives in
+ * `.agent-health/state.json` (runtime state, project + user scoped); in
+ * code-first mode (an agent-health.config.ts exists) the state file is ignored
+ * and the .ts is authoritative.
  * Provides secure credential storage without browser exposure.
  *
- * Shares the same JSON file as customAgentStore.ts — each module
- * owns its own top-level keys (storage, observability vs customAgents).
- * Safe because Node.js is single-threaded and both use synchronous fs calls.
+ * Reads/writes go through lib/config/statePaths (the single owner of paths +
+ * mode + layered read/write); other state owners (customAgentStore, debug,
+ * remoteServers) route through the same module so there is no split-brain.
  */
 
 import fs from 'fs';
-import path from 'path';
-import { debug } from '../../lib/debug.js';
 import { getStorageState, type StorageBackend } from '../adapters/index.js';
 import { configToCacheKey } from './opensearchClientFactory.js';
+import {
+  readLayeredState,
+  readStateScope,
+  writeStateScope,
+  isCodeFirstMode,
+  projectStatePath,
+  userStatePath,
+} from '@/lib/config/statePaths';
 import type { StorageClusterConfig, ObservabilityClusterConfig, ClusterAuthType } from '../../types/index.js';
-
-// Same filename used by customAgentStore.ts
-const CONFIG_FILENAME = 'agent-health.config.json';
 
 // Type for the config file sections owned by this module
 interface ConfigFileDataSources {
@@ -55,10 +61,19 @@ interface ConfigFileDataSources {
 
 // Config status returned to frontend (no raw credentials — username is safe to expose,
 // password is indicated only as a boolean so the UI can show placeholder dots)
+/**
+ * Where a resolved data-source config came from.
+ * - 'file'        : .agent-health/state.json runtime state (ui-first; UI-writable)
+ * - 'typescript'  : agent-health.config.ts via defineConfig() (committed default)
+ * - 'environment' : OPENSEARCH_* env vars
+ * - 'none'        : not configured (file-based fallback)
+ */
+export type ConfigSource = 'file' | 'typescript' | 'environment' | 'none';
+
 export interface ConfigStatus {
   storage: {
     configured: boolean;
-    source: 'file' | 'environment' | 'none';
+    source: ConfigSource;
     endpoint?: string;
     authType?: ClusterAuthType;
     username?: string;    // Safe to return; lets the form pre-fill the username
@@ -69,7 +84,7 @@ export interface ConfigStatus {
   };
   observability: {
     configured: boolean;
-    source: 'file' | 'environment' | 'none';
+    source: ConfigSource;
     endpoint?: string;
     authType?: ClusterAuthType;
     username?: string;
@@ -93,50 +108,67 @@ export interface ConfigStatus {
   };
 }
 
-/**
- * Get the config file path.
- * Checks CWD first, then falls back to CWD as default write location.
- */
-function getConfigFilePath(): string {
-  const cwdPath = path.join(process.cwd(), CONFIG_FILENAME);
-  return cwdPath;
-}
+// ============================================================================
+// TypeScript config bridge (agent-health.config.ts -> server)
+// ============================================================================
+//
+// The CLI-launched server loads the user's agent-health.config.ts in-process
+// (server/app.ts -> loadConfig()). Storage / observability cluster config
+// authored there is handed to this module via setTsClusterConfig() so the
+// runtime resolution chain can consult it. This is the "single TS source of
+// truth" path requested in #261.
+//
+// Precedence: code-first (an agent-health.config.ts exists) -> .ts wins and the
+// state file is ignored; otherwise (ui-first) -> .agent-health/state.json ->
+// OPENSEARCH_* env -> file-based fallback. (getConfigStatus resolves ts > state > env.)
+
+let tsStorageConfig: StorageClusterConfig | null = null;
+let tsObservabilityConfig: ObservabilityClusterConfig | null = null;
 
 /**
- * Read the full JSON config from disk.
- * Returns `{}` when file doesn't exist (safe to create new).
- * Returns `null` when file exists but read/parse fails (unsafe to write — would clobber).
+ * Register cluster config authored in agent-health.config.ts.
+ * Called once at server startup with the in-process resolved TS config.
+ * Pass `null`/omit a field to leave it unset; an endpoint-less object is
+ * treated as "not configured".
  */
-function readConfigFromDisk(): Record<string, unknown> | null {
-  try {
-    const filePath = getConfigFilePath();
-    if (!fs.existsSync(filePath)) return {};
-    const raw = fs.readFileSync(filePath, 'utf-8');
-    const parsed = JSON.parse(raw);
-    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      console.error('[ConfigService] Config file contains non-object content, refusing to overwrite');
-      return null;
-    }
-    return parsed as Record<string, unknown>;
-  } catch (err) {
-    console.error('[ConfigService] Failed to read config file:', err);
-    return null;
+export function setTsClusterConfig(opts: {
+  storage?: StorageClusterConfig | null;
+  observability?: ObservabilityClusterConfig | null;
+}): void {
+  if (opts.storage !== undefined) {
+    tsStorageConfig = opts.storage && opts.storage.endpoint ? opts.storage : null;
+  }
+  if (opts.observability !== undefined) {
+    tsObservabilityConfig = opts.observability && opts.observability.endpoint ? opts.observability : null;
   }
 }
 
+/** Storage cluster config authored in agent-health.config.ts, or null. */
+export function getStorageConfigFromTs(): StorageClusterConfig | null {
+  return tsStorageConfig;
+}
+
+/** Observability cluster config authored in agent-health.config.ts, or null. */
+export function getObservabilityConfigFromTs(): ObservabilityClusterConfig | null {
+  return tsObservabilityConfig;
+}
+
+/** Test-only: reset the TS config holder between cases. */
+export function __resetTsClusterConfigForTests(): void {
+  tsStorageConfig = null;
+  tsObservabilityConfig = null;
+}
+
 /**
- * Write config back to disk, preserving all sibling keys.
- * Same pattern as customAgentStore.ts.
+ * Read the effective runtime state (config v2).
+ *
+ * Reads go through the layered state resolver (project `.agent-health/state.json`
+ * over user `~/.agent-health/state.json`). In code-first mode (an
+ * `agent-health.config.ts` is present) this returns `{}`, so storage/observability
+ * fall through to the authored `.ts` config (the strict "state ignored" rule).
  */
-function writeConfigToDisk(config: Record<string, unknown>): void {
-  try {
-    const filePath = getConfigFilePath();
-    fs.writeFileSync(filePath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-    debug('ConfigService', `Config saved to ${filePath}`);
-  } catch (error) {
-    console.error('[ConfigService] Failed to write config file:', error);
-    throw error;
-  }
+function readConfigFromDisk(): Record<string, unknown> {
+  return readLayeredState();
 }
 
 // ============================================================================
@@ -144,11 +176,11 @@ function writeConfigToDisk(config: Record<string, unknown>): void {
 // ============================================================================
 
 /**
- * Get storage configuration from file
- * Returns null if not configured in file
+ * Get storage configuration from the runtime state file.
+ * Returns null if not configured (or in code-first mode — state is ignored).
  */
 export function getStorageConfigFromFile(): StorageClusterConfig | null {
-  const config = readConfigFromDisk() as ConfigFileDataSources | null;
+  const config = readConfigFromDisk() as ConfigFileDataSources;
 
   if (!config?.storage?.endpoint) {
     return null;
@@ -170,11 +202,9 @@ export function getStorageConfigFromFile(): StorageClusterConfig | null {
  * Save storage configuration to file
  */
 export function saveStorageConfig(storageConfig: StorageClusterConfig): void {
-  const existing = readConfigFromDisk();
-  if (existing === null) {
-    throw new Error('Cannot save storage config: existing config file is unreadable or corrupt');
-  }
-  const existingStorage = (existing.storage as any) || {};
+  // Merge against the project-scope state file (the write target). Throws in
+  // code-first mode via writeStateScope below.
+  const existingStorage = (readStateScope('project').storage as any) || {};
 
   // Use ?? so that an absent/undefined field in the incoming payload falls back
   // to whatever is already stored. The form converts sentinel and empty values
@@ -184,7 +214,7 @@ export function saveStorageConfig(storageConfig: StorageClusterConfig): void {
   const resolvedUsername = storageConfig.username ?? existingStorage.username;
   const resolvedPassword = storageConfig.password ?? existingStorage.password;
 
-  existing.storage = {
+  const storage = {
     endpoint: storageConfig.endpoint,
     ...(storageConfig.authType && { authType: storageConfig.authType }),
     ...(resolvedUsername && { username: resolvedUsername }),
@@ -195,29 +225,16 @@ export function saveStorageConfig(storageConfig: StorageClusterConfig): void {
     ...(storageConfig.tlsSkipVerify !== undefined && { tlsSkipVerify: storageConfig.tlsSkipVerify }),
   };
 
-  writeConfigToDisk(existing);
+  writeStateScope({ storage }, 'project');
 }
 
 /**
  * Clear storage configuration from file
  */
 export function clearStorageConfig(): void {
-  const existing = readConfigFromDisk();
-  if (existing === null) {
-    throw new Error('Cannot clear storage config: existing config file is unreadable or corrupt');
-  }
-  delete existing.storage;
-
-  // If config is now empty, delete the file
-  if (Object.keys(existing).length === 0) {
-    const filePath = getConfigFilePath();
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-      debug('ConfigService', 'Config file deleted (empty)');
-    }
-  } else {
-    writeConfigToDisk(existing);
-  }
+  // Deleting the key removes it from the project state file, preserving
+  // siblings. Throws in code-first mode (state is managed by the .ts).
+  writeStateScope({ storage: undefined }, 'project');
 }
 
 // ============================================================================
@@ -229,7 +246,7 @@ export function clearStorageConfig(): void {
  * Returns null if not configured in file
  */
 export function getObservabilityConfigFromFile(): ObservabilityClusterConfig | null {
-  const config = readConfigFromDisk() as ConfigFileDataSources | null;
+  const config = readConfigFromDisk() as ConfigFileDataSources;
 
   if (!config?.observability?.endpoint) {
     return null;
@@ -252,18 +269,14 @@ export function getObservabilityConfigFromFile(): ObservabilityClusterConfig | n
  * Save observability configuration to file
  */
 export function saveObservabilityConfig(obsConfig: ObservabilityClusterConfig): void {
-  const existing = readConfigFromDisk();
-  if (existing === null) {
-    throw new Error('Cannot save observability config: existing config file is unreadable or corrupt');
-  }
-  const existingObs = (existing.observability as any) || {};
+  const existingObs = (readStateScope('project').observability as any) || {};
 
   // Use ?? so that an absent/undefined field in the incoming payload falls back
   // to whatever is already stored.
   const resolvedUsername = obsConfig.username ?? existingObs.username;
   const resolvedPassword = obsConfig.password ?? existingObs.password;
 
-  existing.observability = {
+  const observability = {
     endpoint: obsConfig.endpoint,
     ...(obsConfig.authType && { authType: obsConfig.authType }),
     ...(resolvedUsername && { username: resolvedUsername }),
@@ -277,29 +290,14 @@ export function saveObservabilityConfig(obsConfig: ObservabilityClusterConfig): 
     }),
   };
 
-  writeConfigToDisk(existing);
+  writeStateScope({ observability }, 'project');
 }
 
 /**
  * Clear observability configuration from file
  */
 export function clearObservabilityConfig(): void {
-  const existing = readConfigFromDisk();
-  if (existing === null) {
-    throw new Error('Cannot clear observability config: existing config file is unreadable or corrupt');
-  }
-  delete existing.observability;
-
-  // If config is now empty, delete the file
-  if (Object.keys(existing).length === 0) {
-    const filePath = getConfigFilePath();
-    if (fs.existsSync(filePath)) {
-      fs.unlinkSync(filePath);
-      debug('ConfigService', 'Config file deleted (empty)');
-    }
-  } else {
-    writeConfigToDisk(existing);
-  }
+  writeStateScope({ observability: undefined }, 'project');
 }
 
 // ============================================================================
@@ -311,68 +309,66 @@ export function clearObservabilityConfig(): void {
  * Never exposes credentials - only shows source and endpoint
  */
 export function getConfigStatus(): ConfigStatus {
-  const config = readConfigFromDisk() as ConfigFileDataSources | null;
+  const config = readConfigFromDisk() as ConfigFileDataSources;
 
-  // Determine storage config source
-  let storageSource: 'file' | 'environment' | 'none' = 'none';
-  let storageEndpoint: string | undefined;
-
-  if (config?.storage?.endpoint) {
+  // Resolve the active storage config + source.
+  // Precedence: authored .ts (typescript) > runtime state file > env. In
+  // code-first mode `config` (layered state) is {} so .ts wins; in ui-first
+  // there is no .ts so the state file wins.
+  let storageSource: ConfigSource = 'none';
+  let activeStorage: Partial<StorageClusterConfig> = {};
+  if (tsStorageConfig?.endpoint) {
+    storageSource = 'typescript';
+    activeStorage = tsStorageConfig;
+  } else if (config?.storage?.endpoint) {
     storageSource = 'file';
-    storageEndpoint = config.storage.endpoint;
+    activeStorage = config.storage;
   } else if (process.env.OPENSEARCH_STORAGE_ENDPOINT) {
     storageSource = 'environment';
-    storageEndpoint = process.env.OPENSEARCH_STORAGE_ENDPOINT;
+    activeStorage = {
+      endpoint: process.env.OPENSEARCH_STORAGE_ENDPOINT,
+      authType: (process.env.OPENSEARCH_STORAGE_AUTH_TYPE as ClusterAuthType) || undefined,
+      username: process.env.OPENSEARCH_STORAGE_USERNAME,
+      password: process.env.OPENSEARCH_STORAGE_PASSWORD,
+      awsProfile: process.env.OPENSEARCH_STORAGE_AWS_PROFILE,
+      awsRegion: process.env.OPENSEARCH_STORAGE_AWS_REGION,
+      awsService: (process.env.OPENSEARCH_STORAGE_AWS_SERVICE as 'es' | 'aoss') || undefined,
+    };
   }
 
-  // Determine observability config source
-  let obsSource: 'file' | 'environment' | 'none' = 'none';
-  let obsEndpoint: string | undefined;
+  // Resolve the active observability config + source (precedence: ts > state > env).
+  let obsSource: ConfigSource = 'none';
+  let activeObs: Partial<ObservabilityClusterConfig> = {};
   let obsIndexes: ConfigStatus['observability']['indexes'];
-
-  if (config?.observability?.endpoint) {
+  if (tsObservabilityConfig?.endpoint) {
+    obsSource = 'typescript';
+    activeObs = tsObservabilityConfig;
+    obsIndexes = tsObservabilityConfig.indexes;
+  } else if (config?.observability?.endpoint) {
     obsSource = 'file';
-    obsEndpoint = config.observability.endpoint;
+    activeObs = config.observability;
     obsIndexes = config.observability.indexes;
   } else if (process.env.OPENSEARCH_LOGS_ENDPOINT) {
     obsSource = 'environment';
-    obsEndpoint = process.env.OPENSEARCH_LOGS_ENDPOINT;
+    activeObs = {
+      endpoint: process.env.OPENSEARCH_LOGS_ENDPOINT,
+      authType: (process.env.OPENSEARCH_LOGS_AUTH_TYPE as ClusterAuthType) || undefined,
+      username: process.env.OPENSEARCH_LOGS_USERNAME,
+      password: process.env.OPENSEARCH_LOGS_PASSWORD,
+      awsProfile: process.env.OPENSEARCH_LOGS_AWS_PROFILE,
+      awsRegion: process.env.OPENSEARCH_LOGS_AWS_REGION,
+      awsService: (process.env.OPENSEARCH_LOGS_AWS_SERVICE as 'es' | 'aoss') || undefined,
+    };
     obsIndexes = {
       traces: process.env.OPENSEARCH_LOGS_TRACES_INDEX,
       logs: process.env.OPENSEARCH_LOGS_INDEX,
     };
   }
 
-  // Resolve SigV4 fields
-  const storageAuthType: ClusterAuthType | undefined = storageSource === 'file'
-    ? config?.storage?.authType
-    : (process.env.OPENSEARCH_STORAGE_AUTH_TYPE as ClusterAuthType) || undefined;
-  const storageAwsProfile = storageSource === 'file'
-    ? config?.storage?.awsProfile
-    : process.env.OPENSEARCH_STORAGE_AWS_PROFILE;
-  const storageAwsRegion = storageSource === 'file'
-    ? config?.storage?.awsRegion
-    : process.env.OPENSEARCH_STORAGE_AWS_REGION;
-  const storageAwsService = storageSource === 'file'
-    ? config?.storage?.awsService
-    : (process.env.OPENSEARCH_STORAGE_AWS_SERVICE as 'es' | 'aoss') || undefined;
-
-  const obsAuthType: ClusterAuthType | undefined = obsSource === 'file'
-    ? config?.observability?.authType
-    : (process.env.OPENSEARCH_LOGS_AUTH_TYPE as ClusterAuthType) || undefined;
-  const obsAwsProfile = obsSource === 'file'
-    ? config?.observability?.awsProfile
-    : process.env.OPENSEARCH_LOGS_AWS_PROFILE;
-  const obsAwsRegion = obsSource === 'file'
-    ? config?.observability?.awsRegion
-    : process.env.OPENSEARCH_LOGS_AWS_REGION;
-  const obsAwsService = obsSource === 'file'
-    ? config?.observability?.awsService
-    : (process.env.OPENSEARCH_LOGS_AWS_SERVICE as 'es' | 'aoss') || undefined;
-
-  // Compute runtime storage state
+  // Compute runtime storage state. Mirror the resolution precedence so drift
+  // detection compares against whatever config the storage backend will use.
   const storageState = getStorageState();
-  const resolvedStorageConfig = getStorageConfigFromFile() ??
+  const resolvedStorageConfig = getStorageConfigFromTs() ?? getStorageConfigFromFile() ??
     (process.env.OPENSEARCH_STORAGE_ENDPOINT ? { endpoint: process.env.OPENSEARCH_STORAGE_ENDPOINT } as StorageClusterConfig : null);
   const fileConfigKey = resolvedStorageConfig ? configToCacheKey(resolvedStorageConfig) : null;
   const drifted = fileConfigKey !== storageState.configKey &&
@@ -382,32 +378,24 @@ export function getConfigStatus(): ConfigStatus {
     storage: {
       configured: storageSource !== 'none',
       source: storageSource,
-      endpoint: storageEndpoint,
-      authType: storageAuthType,
-      username: storageSource === 'file'
-        ? config?.storage?.username
-        : process.env.OPENSEARCH_STORAGE_USERNAME,
-      hasPassword: storageSource === 'file'
-        ? Boolean(config?.storage?.password)
-        : Boolean(process.env.OPENSEARCH_STORAGE_PASSWORD),
-      awsProfile: storageAwsProfile,
-      awsRegion: storageAwsRegion,
-      awsService: storageAwsService,
+      endpoint: activeStorage.endpoint,
+      authType: activeStorage.authType,
+      username: activeStorage.username,
+      hasPassword: Boolean(activeStorage.password),
+      awsProfile: activeStorage.awsProfile,
+      awsRegion: activeStorage.awsRegion,
+      awsService: activeStorage.awsService,
     },
     observability: {
       configured: obsSource !== 'none',
       source: obsSource,
-      endpoint: obsEndpoint,
-      authType: obsAuthType,
-      username: obsSource === 'file'
-        ? config?.observability?.username
-        : process.env.OPENSEARCH_LOGS_USERNAME,
-      hasPassword: obsSource === 'file'
-        ? Boolean(config?.observability?.password)
-        : Boolean(process.env.OPENSEARCH_LOGS_PASSWORD),
-      awsProfile: obsAwsProfile,
-      awsRegion: obsAwsRegion,
-      awsService: obsAwsService,
+      endpoint: activeObs.endpoint,
+      authType: activeObs.authType,
+      username: activeObs.username,
+      hasPassword: Boolean(activeObs.password),
+      awsProfile: activeObs.awsProfile,
+      awsRegion: activeObs.awsRegion,
+      awsService: activeObs.awsService,
       indexes: obsIndexes,
     },
     runtime: {
@@ -422,9 +410,9 @@ export function getConfigStatus(): ConfigStatus {
 }
 
 /**
- * Check if config file exists
+ * Whether any config is in effect: an authored config file (code-first) or a
+ * runtime state file at project or user scope.
  */
 export function configFileExists(): boolean {
-  const filePath = getConfigFilePath();
-  return fs.existsSync(filePath);
+  return isCodeFirstMode() || fs.existsSync(projectStatePath()) || fs.existsSync(userStatePath());
 }

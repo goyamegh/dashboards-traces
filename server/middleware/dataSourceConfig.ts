@@ -18,6 +18,8 @@ import type { StorageClusterConfig, ObservabilityClusterConfig, ClusterAuthType 
 import {
   getStorageConfigFromFile,
   getObservabilityConfigFromFile,
+  getStorageConfigFromTs,
+  getObservabilityConfigFromTs,
 } from '../services/configService.js';
 
 // Default OTEL index patterns
@@ -41,9 +43,10 @@ export const STORAGE_INDEXES = {
  * Resolve storage cluster configuration
  *
  * Priority:
- * 1. File config (agent-health.config.json)
- * 2. Environment variables (OPENSEARCH_STORAGE_*)
- * 3. null (not configured)
+ * 1. File config (agent-health.config.json) - UI-writable, highest
+ * 2. TypeScript config (agent-health.config.ts via defineConfig)
+ * 3. Environment variables (OPENSEARCH_STORAGE_*)
+ * 4. null (not configured -> file-based fallback)
  */
 export function resolveStorageConfig(req: Request): StorageClusterConfig | null {
   // 1. Check file config first
@@ -52,7 +55,13 @@ export function resolveStorageConfig(req: Request): StorageClusterConfig | null 
     return fileConfig;
   }
 
-  // 2. Fall back to environment variables
+  // 2. TypeScript config (agent-health.config.ts)
+  const tsConfig = getStorageConfigFromTs();
+  if (tsConfig) {
+    return tsConfig;
+  }
+
+  // 3. Fall back to environment variables
   const envEndpoint = process.env.OPENSEARCH_STORAGE_ENDPOINT;
 
   if (envEndpoint) {
@@ -76,11 +85,12 @@ export function resolveStorageConfig(req: Request): StorageClusterConfig | null 
  * Resolve observability cluster configuration
  *
  * Priority:
- * 1. File config (agent-health.config.json)
- * 2. Environment variables (OPENSEARCH_LOGS_*)
- * 3. null (not configured)
+ * 1. File config (agent-health.config.json) - UI-writable, highest
+ * 2. TypeScript config (agent-health.config.ts via defineConfig)
+ * 3. Environment variables (OPENSEARCH_LOGS_*)
+ * 4. null (not configured)
  *
- * Index patterns use defaults if not specified in file or env vars.
+ * Index patterns use defaults if not specified in file, TS, or env vars.
  */
 export function resolveObservabilityConfig(req: Request): ObservabilityClusterConfig | null {
   // 1. Check file config first
@@ -104,7 +114,27 @@ export function resolveObservabilityConfig(req: Request): ObservabilityClusterCo
     };
   }
 
-  // 2. Fall back to environment variables
+  // 2. TypeScript config (agent-health.config.ts)
+  const tsConfig = getObservabilityConfigFromTs();
+  if (tsConfig) {
+    return {
+      endpoint: tsConfig.endpoint,
+      authType: tsConfig.authType,
+      username: tsConfig.username,
+      password: tsConfig.password,
+      awsProfile: tsConfig.awsProfile,
+      awsRegion: tsConfig.awsRegion,
+      awsService: tsConfig.awsService,
+      tlsSkipVerify: tsConfig.tlsSkipVerify,
+      indexes: {
+        traces: tsConfig.indexes?.traces || DEFAULT_OTEL_INDEXES.traces,
+        logs: tsConfig.indexes?.logs || DEFAULT_OTEL_INDEXES.logs,
+        metrics: tsConfig.indexes?.metrics || DEFAULT_OTEL_INDEXES.metrics,
+      },
+    };
+  }
+
+  // 3. Fall back to environment variables
   const envEndpoint = process.env.OPENSEARCH_LOGS_ENDPOINT;
 
   if (envEndpoint) {

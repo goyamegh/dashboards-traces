@@ -13,7 +13,7 @@
 import { Router, Request, Response } from 'express';
 import { testObservabilityConnection, checkObservabilityHealth } from '../adapters/index.js';
 import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
-import { getObservabilityConfigFromFile } from '../services/configService.js';
+import { getObservabilityConfigFromFile, getObservabilityConfigFromTs } from '../services/configService.js';
 
 const router = Router();
 
@@ -54,9 +54,9 @@ function normalizeEndpoint(value: string | undefined | null): string | undefined
  * POST /api/observability/test-connection
  * Test connection to an observability data source with provided credentials.
  *
- * Credential resolution order: request body → file config → env vars.
+ * Credential resolution order: request body → file config → TS config → env vars.
  *
- * Stored credentials (file config / env vars) are only used as fallbacks when
+ * Stored credentials (file config / TS config / env vars) are only used as fallbacks when
  * the request `endpoint` matches the corresponding configured endpoint. This
  * prevents sending saved credentials to an arbitrary endpoint specified in the
  * request body (credential exfiltration). Callers wanting to test a different
@@ -76,28 +76,31 @@ router.post('/api/observability/test-connection', async (req: Request, res: Resp
     // Only fall back to stored credentials when the request endpoint matches
     // the configured endpoint, to avoid forwarding saved creds to other hosts.
     const fileConfig = getObservabilityConfigFromFile();
+    const tsConfig = getObservabilityConfigFromTs();
     const envEndpoint = process.env.OPENSEARCH_LOGS_ENDPOINT;
     const reqNorm = normalizeEndpoint(endpoint);
     const fileMatches = !!(fileConfig?.endpoint && normalizeEndpoint(fileConfig.endpoint) === reqNorm);
+    const tsMatches = !!(tsConfig?.endpoint && normalizeEndpoint(tsConfig.endpoint) === reqNorm);
     const envMatches = !!(envEndpoint && normalizeEndpoint(envEndpoint) === reqNorm);
 
     const safeFile = fileMatches ? fileConfig : null;
+    const safeTs = tsMatches ? tsConfig : null;
     const useEnv = envMatches;
 
     const result = await testObservabilityConnection({
       endpoint,
-      authType: authType ?? safeFile?.authType ?? (useEnv ? process.env.OPENSEARCH_LOGS_AUTH_TYPE : undefined),
-      username: username ?? safeFile?.username ?? (useEnv ? process.env.OPENSEARCH_LOGS_USERNAME : undefined),
-      password: password ?? safeFile?.password ?? (useEnv ? process.env.OPENSEARCH_LOGS_PASSWORD : undefined),
-      awsProfile: awsProfile ?? safeFile?.awsProfile ?? (useEnv ? process.env.OPENSEARCH_LOGS_AWS_PROFILE : undefined),
-      awsRegion: awsRegion ?? safeFile?.awsRegion ?? (useEnv ? process.env.OPENSEARCH_LOGS_AWS_REGION : undefined),
-      awsService: awsService ?? safeFile?.awsService ?? (useEnv ? process.env.OPENSEARCH_LOGS_AWS_SERVICE : undefined),
-      tlsSkipVerify: tlsSkipVerify ?? safeFile?.tlsSkipVerify ?? (useEnv ? (process.env.OPENSEARCH_LOGS_TLS_SKIP_VERIFY === 'true') : undefined),
-      // Index patterns aren't credentials — always allow file-config fallback.
+      authType: authType ?? safeFile?.authType ?? safeTs?.authType ?? (useEnv ? process.env.OPENSEARCH_LOGS_AUTH_TYPE : undefined),
+      username: username ?? safeFile?.username ?? safeTs?.username ?? (useEnv ? process.env.OPENSEARCH_LOGS_USERNAME : undefined),
+      password: password ?? safeFile?.password ?? safeTs?.password ?? (useEnv ? process.env.OPENSEARCH_LOGS_PASSWORD : undefined),
+      awsProfile: awsProfile ?? safeFile?.awsProfile ?? safeTs?.awsProfile ?? (useEnv ? process.env.OPENSEARCH_LOGS_AWS_PROFILE : undefined),
+      awsRegion: awsRegion ?? safeFile?.awsRegion ?? safeTs?.awsRegion ?? (useEnv ? process.env.OPENSEARCH_LOGS_AWS_REGION : undefined),
+      awsService: awsService ?? safeFile?.awsService ?? safeTs?.awsService ?? (useEnv ? process.env.OPENSEARCH_LOGS_AWS_SERVICE : undefined),
+      tlsSkipVerify: tlsSkipVerify ?? safeFile?.tlsSkipVerify ?? safeTs?.tlsSkipVerify ?? (useEnv ? (process.env.OPENSEARCH_LOGS_TLS_SKIP_VERIFY === 'true') : undefined),
+      // Index patterns aren't credentials — always allow file/TS-config fallback.
       indexes: {
-        traces: indexes?.traces || fileConfig?.indexes?.traces || DEFAULT_OTEL_INDEXES.traces,
-        logs: indexes?.logs || fileConfig?.indexes?.logs || DEFAULT_OTEL_INDEXES.logs,
-        metrics: indexes?.metrics || fileConfig?.indexes?.metrics || DEFAULT_OTEL_INDEXES.metrics,
+        traces: indexes?.traces || fileConfig?.indexes?.traces || tsConfig?.indexes?.traces || DEFAULT_OTEL_INDEXES.traces,
+        logs: indexes?.logs || fileConfig?.indexes?.logs || tsConfig?.indexes?.logs || DEFAULT_OTEL_INDEXES.logs,
+        metrics: indexes?.metrics || fileConfig?.indexes?.metrics || tsConfig?.indexes?.metrics || DEFAULT_OTEL_INDEXES.metrics,
       },
     });
 

@@ -8,7 +8,14 @@
  * Type definitions for agent-health.config.ts files
  */
 
-import type { AgentConfig, ModelConfig, ConnectorProtocol, AgentHooks } from '@/types/index.js';
+import type {
+  AgentConfig,
+  ModelConfig,
+  ConnectorProtocol,
+  AgentHooks,
+  StorageClusterConfig,
+  ObservabilityClusterConfig,
+} from '@/types/index.js';
 import type { AgentConnector } from '@/services/connectors/types.js';
 
 /**
@@ -177,6 +184,30 @@ export interface UserConfig {
   telemetry?: TelemetryConfig;
 
   /**
+   * OpenSearch storage cluster for persisting test cases, benchmarks, runs and
+   * analytics. When omitted, file-based storage is used.
+   *
+   * Resolution precedence (highest wins):
+   *   agent-health.config.json (UI-written) -> this TS field ->
+   *   OPENSEARCH_STORAGE_* env vars -> file-based fallback.
+   *
+   * Keep secrets/environment-specific values out of committed config by
+   * reading them from `process.env`, e.g.:
+   *   storage: { endpoint: process.env.OPENSEARCH_STORAGE_ENDPOINT!, authType: 'sigv4', awsRegion: 'us-east-1' }
+   */
+  storage?: StorageClusterConfig;
+
+  /**
+   * OpenSearch observability cluster for traces/logs/metrics. When omitted,
+   * the Traces/Logs views require either the JSON config or OPENSEARCH_LOGS_*
+   * env vars (or remain empty).
+   *
+   * Same resolution precedence as `storage`:
+   *   agent-health.config.json -> this TS field -> OPENSEARCH_LOGS_* env -> none.
+   */
+  observability?: ObservabilityClusterConfig;
+
+  /**
    * Remote servers for aggregating coding agent data from multiple machines.
    * Each remote runs `agent-health serve --headless` and this dashboard
    * fetches + merges their session data into a unified view.
@@ -224,6 +255,10 @@ export interface ResolvedConfig {
   reporters: ReporterConfig[];
   judge: JudgeConfig;
   telemetry: TelemetryConfig;
+  /** OpenSearch storage cluster config authored in the TS config (optional). */
+  storage?: StorageClusterConfig;
+  /** OpenSearch observability cluster config authored in the TS config (optional). */
+  observability?: ObservabilityClusterConfig;
 }
 
 /**

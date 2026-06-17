@@ -25,12 +25,14 @@ import { initializeStorageFromConfig } from '../../services/storageInitializer.j
 import {
   getConfigStatus,
   getStorageConfigFromFile,
+  getStorageConfigFromTs,
   saveStorageConfig,
   saveObservabilityConfig,
   clearStorageConfig,
   clearObservabilityConfig,
 } from '../../services/configService.js';
 import { getStorageConfigFromEnv } from '../../middleware/dataSourceConfig.js';
+import { isCodeFirstMode } from '@/lib/config/statePaths';
 
 const router = Router();
 
@@ -93,9 +95,9 @@ function normalizeEndpoint(value: string | undefined | null): string | undefined
  * POST /api/storage/test-connection
  * Test connection to a storage cluster with provided credentials.
  *
- * Credential resolution order: request body → file config → env vars.
+ * Credential resolution order: request body → file config → TS config → env vars.
  *
- * Stored credentials (file config / env vars) are only used as fallbacks when
+ * Stored credentials (file config / TS config / env vars) are only used as fallbacks when
  * the request `endpoint` matches the corresponding configured endpoint. This
  * prevents sending saved credentials to an arbitrary endpoint specified in the
  * request body (credential exfiltration). Callers wanting to test a different
@@ -114,23 +116,26 @@ router.post('/api/storage/test-connection', async (req: Request, res: Response) 
     // Only fall back to stored credentials when the request endpoint matches
     // the configured endpoint, to avoid forwarding saved creds to other hosts.
     const fileConfig = getStorageConfigFromFile();
+    const tsConfig = getStorageConfigFromTs();
     const envEndpoint = process.env.OPENSEARCH_STORAGE_ENDPOINT;
     const reqNorm = normalizeEndpoint(endpoint);
     const fileMatches = !!(fileConfig?.endpoint && normalizeEndpoint(fileConfig.endpoint) === reqNorm);
+    const tsMatches = !!(tsConfig?.endpoint && normalizeEndpoint(tsConfig.endpoint) === reqNorm);
     const envMatches = !!(envEndpoint && normalizeEndpoint(envEndpoint) === reqNorm);
 
     const safeFile = fileMatches ? fileConfig : null;
+    const safeTs = tsMatches ? tsConfig : null;
     const useEnv = envMatches;
 
     const result = await testStorageConnection({
       endpoint,
-      authType: authType ?? safeFile?.authType ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AUTH_TYPE : undefined),
-      username: username ?? safeFile?.username ?? (useEnv ? process.env.OPENSEARCH_STORAGE_USERNAME : undefined),
-      password: password ?? safeFile?.password ?? (useEnv ? process.env.OPENSEARCH_STORAGE_PASSWORD : undefined),
-      awsProfile: awsProfile ?? safeFile?.awsProfile ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_PROFILE : undefined),
-      awsRegion: awsRegion ?? safeFile?.awsRegion ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_REGION : undefined),
-      awsService: awsService ?? safeFile?.awsService ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_SERVICE : undefined),
-      tlsSkipVerify: tlsSkipVerify ?? safeFile?.tlsSkipVerify ?? (useEnv ? (process.env.OPENSEARCH_STORAGE_TLS_SKIP_VERIFY === 'true') : undefined),
+      authType: authType ?? safeFile?.authType ?? safeTs?.authType ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AUTH_TYPE : undefined),
+      username: username ?? safeFile?.username ?? safeTs?.username ?? (useEnv ? process.env.OPENSEARCH_STORAGE_USERNAME : undefined),
+      password: password ?? safeFile?.password ?? safeTs?.password ?? (useEnv ? process.env.OPENSEARCH_STORAGE_PASSWORD : undefined),
+      awsProfile: awsProfile ?? safeFile?.awsProfile ?? safeTs?.awsProfile ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_PROFILE : undefined),
+      awsRegion: awsRegion ?? safeFile?.awsRegion ?? safeTs?.awsRegion ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_REGION : undefined),
+      awsService: awsService ?? safeFile?.awsService ?? safeTs?.awsService ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_SERVICE : undefined),
+      tlsSkipVerify: tlsSkipVerify ?? safeFile?.tlsSkipVerify ?? safeTs?.tlsSkipVerify ?? (useEnv ? (process.env.OPENSEARCH_STORAGE_TLS_SKIP_VERIFY === 'true') : undefined),
     });
     res.json(result);
   } catch (error: any) {
@@ -315,6 +320,9 @@ router.get('/api/storage/config/status', (req: Request, res: Response) => {
  */
 router.post('/api/storage/config/storage', async (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
     const { endpoint, username, password, tlsSkipVerify, authType, awsProfile, awsRegion, awsService } = req.body;
 
     if (!endpoint) {
@@ -425,6 +433,9 @@ router.post(
  */
 router.post('/api/storage/config/observability', (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
     const { endpoint, username, password, tlsSkipVerify, indexes, authType, awsProfile, awsRegion, awsService } = req.body;
 
     if (!endpoint) {
@@ -445,6 +456,9 @@ router.post('/api/storage/config/observability', (req: Request, res: Response) =
  */
 router.delete('/api/storage/config/storage', (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
     clearStorageConfig();
     const state: StorageState = {
       backend: 'file',
@@ -467,7 +481,7 @@ router.delete('/api/storage/config/storage', (req: Request, res: Response) => {
  */
 router.post('/api/storage/config/retry', async (req: Request, res: Response) => {
   try {
-    const config = getStorageConfigFromFile() ?? getStorageConfigFromEnv() ?? null;
+    const config = getStorageConfigFromFile() ?? getStorageConfigFromTs() ?? getStorageConfigFromEnv() ?? null;
     const state = await initializeStorageFromConfig(config);
     res.json({
       success: state.backend !== 'error',
@@ -506,6 +520,9 @@ router.post('/api/storage/config/use-file-storage', (req: Request, res: Response
  */
 router.delete('/api/storage/config/observability', (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
     clearObservabilityConfig();
     res.json({ success: true, message: 'Observability configuration cleared' });
   } catch (error: any) {

@@ -18,8 +18,7 @@ import { VALID_CONNECTOR_TYPES, BUILT_IN_AGENT_KEYS } from '@/lib/constants';
 import { addCustomAgent, removeCustomAgent, getCustomAgents } from '@/server/services/customAgentStore';
 import { getRemoteServers } from '@/server/services/codingAgents/remoteConfig';
 import { getObservioPort, waitForObservioReady } from '@/server/services/observioAgent';
-import fs from 'fs';
-import path from 'path';
+import { readLayeredState, writeStateScope, isCodeFirstMode } from '@/lib/config/statePaths';
 
 const router = Router();
 
@@ -202,24 +201,14 @@ router.get('/api/models', (req: Request, res: Response) => {
 // Remote Servers
 // ============================================================================
 
-const CONFIG_FILENAME = 'agent-health.config.json';
-
+/** Read layered runtime state (project over user; {} in code-first mode). */
 function readJsonConfig(): Record<string, unknown> {
-  const filePath = path.join(process.cwd(), CONFIG_FILENAME);
-  if (!fs.existsSync(filePath)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-  } catch {
-    return {};
-  }
+  return readLayeredState();
 }
 
+/** Persist remoteServers to the project state file. Throws in code-first mode. */
 function writeJsonConfig(config: Record<string, unknown>): void {
-  fs.writeFileSync(
-    path.join(process.cwd(), CONFIG_FILENAME),
-    JSON.stringify(config, null, 2) + '\n',
-    'utf-8',
-  );
+  writeStateScope({ remoteServers: config.remoteServers }, 'project');
 }
 
 /**
@@ -246,6 +235,10 @@ router.get('/api/remote-servers', (_req: Request, res: Response) => {
  */
 router.post('/api/remote-servers', (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      res.status(409).json({ error: 'Remote servers are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+      return;
+    }
     const { name, url, apiKey } = req.body || {};
     if (!name || typeof name !== 'string' || !name.trim()) {
       res.status(400).json({ error: 'name is required' });
@@ -288,6 +281,10 @@ router.post('/api/remote-servers', (req: Request, res: Response) => {
  */
 router.delete('/api/remote-servers/:name', (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      res.status(409).json({ error: 'Remote servers are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+      return;
+    }
     const { name } = req.params;
     const config = readJsonConfig();
     const servers = Array.isArray(config.remoteServers) ? config.remoteServers as any[] : [];

@@ -12,6 +12,14 @@ AgentEval is an evaluation framework for Root Cause Analysis (RCA) agents. It us
 - **Benchmark Run**: Point-in-time snapshot with agent/model config and results
 - **Trajectory**: Sequence of agent steps (thinking → action → tool_result → response)
 
+## Configuration model (config v2)
+
+Config has two planes, selected by **presence of an authored config file**:
+- **`agent-health.config.ts`** (project, or user `~/.agent-health/`) — human-authored agents/models/judge/telemetry + optional `storage`/`observability`. The app never writes it.
+- **`.agent-health/state.json`** (gitignored, project + user scoped) — runtime state the Settings UI writes.
+
+If a `.ts` exists (**code-first**) it WINS and the state file is ignored; data-source **Save returns `409`** (edit the `.ts` + restart). Otherwise (**ui-first**) the Settings UI writes `.agent-health/state.json`. **Test Connection never writes anything** (probe only). Full rules: [docs/CONFIGURATION.md](docs/CONFIGURATION.md) and the "Configuration model (config v2)" section in [AGENTS.md](AGENTS.md).
+
 ## Development Commands
 
 ### Starting the Application
@@ -368,6 +376,8 @@ Express server on port 4001 provides:
 Tests in `tests/` folder mirroring source structure. Jest config in [jest.config.cjs](jest.config.cjs). See `/write-test` skill for full conventions, mocking patterns, and templates.
 
 **Coverage thresholds:** Lines 90%, Statements 90%, Functions 80%, Branches 80%. Always use `@/` path alias in imports, never relative paths.
+
+**Test levels (required by default):** every feature/bug fix ships unit **plus** integration (`tests/integration/`, real server/API) and/or Playwright e2e (`tests/e2e/`) tests for any API- or UI-visible behavior. A UI bug isn't fixed for good without a Playwright test asserting the rendered result. See AGENTS.md → "Test levels".
 
 ## CI/CD Workflows
 
