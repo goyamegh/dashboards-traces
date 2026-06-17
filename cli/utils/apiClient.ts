@@ -825,6 +825,7 @@ export class ApiClient {
   async fetchTraces(params: {
     traceId?: string;
     runIds?: string[];
+    sessionId?: string;
     serviceName?: string;
     startTime?: string;
     endTime?: string;

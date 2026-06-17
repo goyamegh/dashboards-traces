@@ -82,7 +82,9 @@ agent-health run -t <test-case> [options]
 |--------|-------------|
 | `-t, --test-case <id>` | Test case ID or name **(required)** |
 | `-a, --agent <key>` | Agent key (repeatable for comparison) |
-| `-m, --model <id>` | Model override |
+| `-m, --model <id>` | Agent's LLM model id (agent default if omitted) |
+| `-e, --evaluator <id>` | Evaluator ID (RCA Default if omitted) |
+| `--judge-model <id>` | Judge LLM model id, distinct from `-m`. Falls back to the evaluator's `inferenceConfig.modelId`, then `BEDROCK_MODEL_ID`. Ignored by agentic judges (`pi`/`agent`/`agentic`/`claude-code`). |
 | `-o, --output <fmt>` | Output: `table`, `json` |
 | `-v, --verbose` | Show full trajectory |
 
@@ -104,9 +106,15 @@ agent-health benchmark [options]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `-n, --name <name>` | Benchmark name or ID | - |
-| `-f, --file <path>` | JSON file of test cases to import and benchmark | - |
+| `-f, --file <path>` | Test-case file to import and benchmark (repeatable). Accepts **JSON** test cases *and* **code SDK** files (`.eval.js` / `.eval.ts`) | - |
+| `-d, --dir <path>` | Directory of test-case JSON files (repeatable) | - |
+| `-t, --test-case <id>` | Specific stored test case ID (repeatable) | - |
+| `--label <label>` | Filter stored test cases by label (repeatable, AND logic) | - |
 | `-a, --agent <key>` | Agent key (repeatable) | First enabled agent |
-| `-m, --model <id>` | Model override | Agent default |
+| `-m, --model <id>` | Agent's LLM model id | Agent default |
+| `-e, --evaluator <id>` | Evaluator ID | RCA Default |
+| `--judge-model <id>` | Judge LLM model id, distinct from `-m` (see `run` above) | Evaluator / `BEDROCK_MODEL_ID` |
+| `-c, --concurrency <n>` | Test cases to run in parallel | `1` |
 | `-o, --output <fmt>` | Output: `table`, `json` | `table` |
 | `--export <path>` | Export results to file | - |
 | `--format <type>` | Report format for `--export`: `json`, `html`, `pdf` | `json` |
@@ -116,13 +124,15 @@ agent-health benchmark [options]
 **Modes:**
 - **Quick mode** (no `-n`, no `-f`): Auto-creates a benchmark from all stored test cases
 - **Named mode** (`-n <name>`): Runs a specific existing benchmark
-- **File mode** (`-f <path>`): Imports test cases from a JSON file, creates a benchmark, and runs it
+- **File mode** (`-f <path>`): Imports test cases from a JSON file **or runs a code SDK file** (`.eval.js` / `.eval.ts` — see [SDK.md](./SDK.md)), creates a benchmark, and runs it
 
 ```bash
 agent-health benchmark                                           # quick mode
 agent-health benchmark -n "Baseline" -a ml-commons               # named mode
-agent-health benchmark -f ./test-cases.json -a pulsar -v         # file mode
+agent-health benchmark -f ./test-cases.json -a pulsar -v         # file mode (JSON)
+agent-health benchmark -f ./evals/demo.eval.js -a observio       # file mode (code SDK)
 agent-health benchmark -f ./test-cases.json -n "My Run" -a pulsar --export results.json
+agent-health benchmark -n "Baseline" -e system-tool-usage -c 4   # custom evaluator, 4 in parallel
 agent-health benchmark -n "Baseline" --export report.html --format html
 ```
 
@@ -248,6 +258,131 @@ agent-health migrate -v            # Run migration with details
 
 ---
 
+### configure
+
+Import observability config from infrastructure outputs (e.g. a CloudFormation
+stack) into `agent-health.config.json`.
+
+```
+agent-health configure --from-stack <stack-name> [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--from-stack <name>` | Import observability config from a CloudFormation stack |
+| `--region <region>` | AWS region for the stack |
+| `--profile <profile>` | AWS CLI profile to use |
+| `--dry-run` | Show what would be written without making changes |
+
+```bash
+agent-health configure --from-stack AgentHealthObservability --region us-west-2
+agent-health configure --from-stack AgentHealthObservability --dry-run
+```
+
+---
+
+### setup-telemetry
+
+Configure Claude Code to send OpenTelemetry traces/logs to Agent Health (writes
+the `cc-otel` shell alias / env). See [docs/CLAUDE_CODE_TELEMETRY.md](./CLAUDE_CODE_TELEMETRY.md).
+
+```
+agent-health setup-telemetry [options]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `--stack <name>` | CloudFormation stack name to read the OTLP endpoint from | `AgentHealthObservability` |
+| `--endpoint <url>` | OTLP endpoint URL (skip the stack lookup) | - |
+| `--region <region>` | AWS region for the stack | - |
+| `--profile <profile>` | AWS CLI profile to use | - |
+| `--deploy` | Deploy the CloudFormation stack before configuring | - |
+| `--status` | Check current telemetry configuration status | - |
+| `--skip-rc` | Print env vars without writing to the shell rc file | - |
+| `--force` | Replace an existing telemetry block in the rc file | - |
+| `--dry-run` | Show what would be written without making changes | - |
+
+```bash
+agent-health setup-telemetry            # configure cc-otel telemetry
+agent-health setup-telemetry --status   # show current config + checklist
+```
+
+---
+
+### remote
+
+Manage connections to remote agent-health servers (multi-machine Coding Agent
+Analytics aggregation).
+
+```
+agent-health remote <add|remove|list|test>
+```
+
+| Subcommand | Description |
+|-----------|-------------|
+| `add` | Add a remote server |
+| `remove` | Remove a remote server |
+| `list` | List configured remote servers |
+| `test` | Test connectivity to all remote servers |
+
+---
+
+### skill
+
+Evaluate and improve an [AgentSkill](https://agentskills.io/) / Claude Code
+skill via an A/B benchmark (runs with vs without the skill injected) and
+optionally propose an improved `SKILL.md`. See [docs/SKILLS.md](./SKILLS.md).
+
+```
+agent-health skill <path-to-skill-dir> [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `<path>` | Path to skill directory (must contain `SKILL.md`) **(required)** |
+| `--auto` | Auto-apply proposed improvements to `SKILL.md` |
+| `-a, --agent <key>` | Agent key (default: first claude-code agent) |
+| `-j, --judge <id>` | Judge model ID (default: first Bedrock model) |
+| `-o, --output <fmt>` | Output: `table`, `json` |
+
+```bash
+agent-health skill ./my-skill
+agent-health skill ./my-skill --auto -a claude-code
+```
+
+---
+
+### compare-services
+
+Compare error patterns between two services from trace data.
+
+```
+agent-health compare-services -s <service1,service2> [options]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-s, --services <a,b>` | Comma-separated service names **(required)** | - |
+| `--start <time>` | Start time (ISO 8601 or relative like `1h`, `24h`) | - |
+| `--end <time>` | End time (ISO 8601) | now |
+| `--limit <n>` | Max spans to fetch per service | `1000` |
+
+```bash
+agent-health compare-services -s "lambda-api,eks-api" --start 24h
+```
+
+---
+
+### kill
+
+Kill a running agent process (e.g. the built-in Observio sample agent).
+
+```
+agent-health kill <target>      # target: sample-agent
+```
+
+---
+
 ## Environment Variables
 
 | Variable | Description |
@@ -261,7 +396,7 @@ agent-health migrate -v            # Run migration with details
 | `OPENSEARCH_STORAGE_USERNAME` | Storage auth user |
 | `OPENSEARCH_STORAGE_PASSWORD` | Storage auth password |
 | **Storage (AWS SigV4)** | |
-| `OPENSEARCH_STORAGE_AUTH_TYPE` | Set to `sigv4` for AWS SigV4 auth |
+| `OPENSEARCH_STORAGE_AUTH_TYPE` | Auth type: `none` \| `basic` \| `sigv4` |
 | `OPENSEARCH_STORAGE_AWS_REGION` | AWS region (required for SigV4) |
 | `OPENSEARCH_STORAGE_AWS_PROFILE` | AWS profile name (optional) |
 | `OPENSEARCH_STORAGE_AWS_SERVICE` | `es` (managed) or `aoss` (serverless) |
@@ -270,7 +405,7 @@ agent-health migrate -v            # Run migration with details
 | `OPENSEARCH_LOGS_USERNAME` | Logs auth user |
 | `OPENSEARCH_LOGS_PASSWORD` | Logs auth password |
 | **Observability (AWS SigV4)** | |
-| `OPENSEARCH_LOGS_AUTH_TYPE` | Set to `sigv4` for AWS SigV4 auth |
+| `OPENSEARCH_LOGS_AUTH_TYPE` | Auth type: `none` \| `basic` \| `sigv4` |
 | `OPENSEARCH_LOGS_AWS_REGION` | AWS region (required for SigV4) |
 | `OPENSEARCH_LOGS_AWS_PROFILE` | AWS profile name (optional) |
 | `OPENSEARCH_LOGS_AWS_SERVICE` | `es` (managed) or `aoss` (serverless) |

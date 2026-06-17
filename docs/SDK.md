@@ -21,14 +21,20 @@ const { test, expect } = require('@opensearch-project/agent-health');
 test('rca-log-analysis', {
   prompt: 'Why is service X failing?',
   labels: ['category:RCA', 'difficulty:Medium'],
-}, async function ({ result, judge, traces }) {
+}, async function ({ agent, judge, expect }) {
+  const result = await agent.run();              // invoke the agent (once)
   expect(result.agentOutput).to.contain('root cause');
   expect(result.trajectory).to.haveCalledTool('search_logs');
   expect(result).to.haveCompletedWithin(60_000);
-  await judge(result, 'identifies the failing dependency');
-  expect(traces.totalTokens).to.be.lessThan(10_000);
+  await judge(result, 'identifies the failing dependency');     // gate
+  expect(result.traces.totalTokens).to.be.lessThan(10_000);
 });
 ```
+
+> **v2 control inversion (RFC 004).** The test body now drives the agent via
+> `await agent.run()` — like Playwright's `await page.goto()`. The older eager
+> form (a pre-populated `result` fixture) still works during the transition;
+> see [Control inversion](#3-control-inversion--the-agent-fixture).
 
 ---
 
@@ -50,20 +56,52 @@ throws on duplicates.
 ### 2. The body receives **fixtures**
 
 ```javascript
-async function ({ result, judge, traces, expect }) { ... }
+async function ({ agent, judge, evaluate, expect, testInfo, provisioned }) { ... }
 ```
 
 | Fixture  | Type                                             | What it gives you |
 |----------|--------------------------------------------------|-------------------|
-| `result` | `EvalResult`                                     | Trajectory, agent output, durationMs, runId, tokenUsage |
-| `judge`  | `(result, claim) => Promise<JudgeVerdict>`       | LLM-judge matcher (calls server's `/api/judge`) |
-| `traces` | `TracesAccessor`                                 | Token counts, costs, span durations from OTel |
+| `agent`  | `AgentFixture`                                   | `await agent.run(prompt?, options?)` — invoke the agent **once** (control inversion). Returns an `EvalResult`. |
+| `judge`  | `JudgeFn`                                         | Non-throwing LLM judge. `judge(...)` gates; `judge.observe(...)` is observational. Returns a `Verdict`. |
+| `evaluate` | `EvaluateFn`                                     | Run a custom programmatic evaluator registered with `defineEvaluator()`. |
 | `expect` | chai's `expect` with our recording plugin        | Synchronous matcher entry-point |
+| `testInfo` | `TestInfo` (read-only)                          | `{ name, benchmarkPath, sourceFile, testCaseId }` |
+| `provisioned` | `Readonly<Record<string, unknown>>`          | Values set by `beforeEach` via `provide()` |
+| `result` | `EvalResult` *(legacy eager path)*               | Pre-populated agent result — present when the runner invokes before the body. Prefer `await agent.run()`. |
+| `traces` | `TracesAccessor` *(legacy)*                      | Standalone accessor; equivalent to `result.traces` after `agent.run()`. |
 
 `expect` is also exported at the top level for convenience. Both are the same
-function.
+function. `result.traces` exposes the same OTel accessor as the standalone
+`traces` fixture, scoped to the run.
 
-### 3. Lifecycle hooks (`beforeEach` / `afterEach` / `beforeAll` / `afterAll`)
+### 3. Control inversion — the `agent` fixture
+
+The test body invokes the agent itself with `await agent.run()`, the way a
+Playwright test calls `await page.goto()` — so you can do setup *before* the
+agent runs (seed a ticket, provision a workspace) and feed the result in:
+
+```javascript
+test('payment RCA', { prompt: 'Triage the latest payment incident' },
+  async ({ agent, expect, judge }) => {
+    const id = await seedTicket();                  // setup BEFORE the agent
+    const result = await agent.run(`Triage ${id}`); // per-call prompt wins over the option
+    expect(result.trajectory).to.haveCalledTool('search_logs');
+    await judge(result, 'identifies the DB outage');
+  });
+```
+
+- **Exactly one invocation per test (enforced).** One test ⇒ one invocation ⇒
+  one comparable trajectory. A second `agent.run()` throws. Multi-turn
+  conversations (if a connector models them) happen inside that single run.
+- **`agent.run(prompt?, options?)`** — `prompt` defaults to the test's `prompt`
+  option; `options` is `{ context?, env? }` (e.g. pass a provisioned workspace
+  dir via `env`). Returns a fully-captured `EvalResult` with `result.traces`.
+- **`agent.invoked`** — read-only boolean, true once `run()` has been called.
+- **Legacy eager path.** Older tests destructure a pre-populated `result`
+  fixture. That still works; new tests should prefer `agent.run()`. A codemod
+  converts the old shape — see [Migrating v1 → v2](#migrating-v1--v2).
+
+### 4. Lifecycle hooks (`beforeEach` / `afterEach` / `beforeAll` / `afterAll`)
 
 For *side-effecting* per-test setup with a teardown step — the kind that
 a connector can't express because connectors are pure request-shapers
@@ -130,7 +168,7 @@ is short-circuited to a noop variant and existing tests pay zero cost.
 
 See the demo at [`evals/sdk-hooks-demo.eval.js`](../evals/sdk-hooks-demo.eval.js).
 
-### 4. Matchers record structured verdicts
+### 5. Matchers record structured verdicts
 
 Every `expect(...).to.X(...)` call, every `judge(result, ...)` call, and every
 traces helper produces one **MatcherResult**. The runner collects them and
@@ -248,14 +286,28 @@ Every chai BDD matcher works (`.equal`, `.contain`, `.have.length.greaterThan`,
 ### LLM judge — `judge()`
 
 ```javascript
-await judge(result, 'identifies the root cause');
+const v = await judge(result, 'identifies the root cause');   // gate role
+await judge.observe(result, 'mentions the runbook');          // observe (non-gating)
 await judge(result, 'proposes a remediation', { model: 'claude-sonnet' });
 await judge(result, 'follows the SOP', { evaluatorId: 'system-rca-default' });
 ```
 
-Calls the server's `/api/judge` endpoint with the test's trajectory plus the
-user-supplied claim as the expected outcome. Throws on judge failure (so the
-test bails) and records a MatcherResult with the judge's score and reasoning.
+Calls the server's `/api/judge` endpoint with the run's trajectory plus the
+user-supplied claim as the expected outcome, and records a `MatcherResult`
+with the judge's score and reasoning.
+
+**Non-throwing (RFC 004).** `judge(...)` returns a `Verdict`
+(`{ pass, passFailStatus, score, reasoning, role, skipped, orThrow() }`)
+**without throwing**. A failing `gate`-role verdict still fails the test (the
+runner inspects the recorded MatcherResult); `judge.observe(...)` feeds
+score + insights only and never fails the run. Call `.orThrow()` on a verdict
+for the old bail-on-first-failure behaviour at a specific point.
+
+- **`judge(result, claim)`** — *gate*: a failing verdict fails the test.
+- **`judge.observe(result, claim)`** — *observe*: records score/reasoning, never gates.
+- **`{ skip: true }`** (or `AH_SKIP_JUDGE=1`) — returns a non-gating `skipped`
+  verdict with no HTTP call; `{ skip: false }` forces the judge to run even
+  when `AH_SKIP_JUDGE` is set.
 
 The legacy form `judge(trajectory, [...claims])` is preserved for backward
 compatibility with code written against the original PR.
@@ -354,10 +406,39 @@ run-detail page — use them to confirm in one round whether your prompt
 edit reached the model. Disabled by default in prod because system prompts
 can be 10–20 KB and shipping them on every run bloats persisted run docs.
 
+### Custom evaluators — `defineEvaluator()` / `evaluate()`
+
+Not every check is an LLM judge or a chai assertion — sometimes ground truth
+lives in code (a SQL result must match a golden row set, a JSON answer must
+validate against a schema). Register a deterministic evaluator once and call it
+by id:
+
+```javascript
+const { defineEvaluator, test } = require('@opensearch-project/agent-health');
+
+defineEvaluator('sql-matches-golden', ({ result }) => {
+  const rows = JSON.parse(result.agentOutput);
+  return { pass: deepEqual(rows, GOLDEN), reasoning: 'row-set comparison' };
+});
+
+test('answers the revenue query', { prompt: '...' }, async ({ agent, evaluate }) => {
+  const result = await agent.run();
+  await evaluate(result, 'sql-matches-golden');           // gate
+  await evaluate.observe(result, 'rows-are-sorted');      // observe (non-gating)
+});
+```
+
+- The evaluator fn receives `{ result, criteria?, traces? }` and returns
+  `{ pass, score?, reasoning? }`.
+- It records a `MatcherResult` with `method: 'evaluator'`, **gates by default**,
+  and runs **in-process** — deterministic and free (no LLM call).
+- `evaluate.observe(...)` feeds score/insights only, mirroring `judge.observe`.
+
 ### Traces fixture
 
-The runner pre-loads OTel data into the `traces` fixture before invoking
-the body when the agent has `useTraces: true`, so all access is sync:
+After `await agent.run()` resolves, OTel data is available synchronously on
+`result.traces` (and on the standalone `traces` fixture for the legacy eager
+path) when the agent has `useTraces: true`:
 
 ```javascript
 expect(traces.totalTokens).to.be.lessThan(10_000);
@@ -417,7 +498,7 @@ npx @opensearch-project/agent-health benchmark -f ./evals/demo.eval.js -a observ
 ### Via the HTTP API
 
 ```bash
-curl -sN -X POST http://localhost:4002/api/storage/evaluation-runs \
+curl -sN -X POST http://localhost:4001/api/storage/evaluation-runs \
   -H 'Content-Type: application/json' \
   -d '{
     "name": "Demo",
@@ -430,6 +511,20 @@ curl -sN -X POST http://localhost:4002/api/storage/evaluation-runs \
     "modelId": "claude-sonnet"
   }'
 ```
+
+### Migrating v1 → v2
+
+A codemod rewrites old eager-style eval files (a destructured `result` fixture)
+to the v2 control-inversion shape (`const result = await agent.run()`):
+
+```bash
+npx @opensearch-project/agent-health migrate sdk-v2 ./evals/*.eval.js   # writes in place
+npx @opensearch-project/agent-health migrate sdk-v2 ./evals --dry-run   # preview only
+```
+
+The `.eval.js`, `.eval.ts`, and `.eval.mjs` loaders all run through a single
+code-import execution path, so `benchmark -f <file>` executes the SDK body
+directly.
 
 ---
 
@@ -475,5 +570,8 @@ keeping it user-supplied lets you opt in without breaking anyone else.
 - [x] UI breakdown panel
 - [x] Real traces pre-loading from OTel exporter (#230)
 - [x] Lifecycle hooks (`beforeEach`/`afterEach`/`beforeAll`/`afterAll`) with `provide()` for per-test out-of-band provisioning ([#229](https://github.com/opensearch-project/agent-health/issues/229))
-- [ ] `defineEvaluator()` for #186-style mechanical / external verification
+- [x] Control inversion — the `agent` fixture (`await agent.run()`, one invocation per test) (RFC 004 / [#256](https://github.com/opensearch-project/agent-health/issues/256))
+- [x] Non-throwing run-scoped `judge` with `gate` / `observe` roles + `skip` + `orThrow()`
+- [x] `defineEvaluator()` / `evaluate()` for mechanical / external verification ([#244](https://github.com/opensearch-project/agent-health/issues/244))
+- [x] Single code-import execution path (`benchmark -f *.eval.js` runs the SDK body) + unified `.js` / `.ts` / `.mjs` loaders + `agent-health migrate sdk-v2` codemod
 - [ ] `expect.soft()` to collect-all-failures instead of bail-on-first
