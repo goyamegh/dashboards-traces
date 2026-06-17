@@ -81,6 +81,8 @@ Agent Health ships with built-in skill files for *Claude Code* and *Kiro* that t
 | **Write Test** | [`.claude/skills/write-test/SKILL.md`](./.claude/skills/write-test/SKILL.md) | [`.kiro/steering/write-test.md`](./.kiro/steering/write-test.md) | Project test conventions, mocking patterns, coverage thresholds |
 | **Create PR** | [`.claude/skills/create-pr/SKILL.md`](./.claude/skills/create-pr/SKILL.md) | [`.kiro/steering/create-pr.md`](./.kiro/steering/create-pr.md) | PR workflow with DCO signoff and CI compliance |
 | **Config & Auth** | [`.claude/skills/config-auth/SKILL.md`](./.claude/skills/config-auth/SKILL.md) | — | Config loading, AWS auth, multi-profile setup |
+| **Instrument with OTel** | [`.claude/skills/instrument-otel/SKILL.md`](./.claude/skills/instrument-otel/SKILL.md) | — | OpenTelemetry GenAI span structure + config for Agent Health |
+| **Agent Health** | [`.claude/skills/agent-health/SKILL.md`](./.claude/skills/agent-health/SKILL.md) | [`.kiro/steering/agent-health.md`](./.kiro/steering/agent-health.md) | Evaluate, benchmark & improve agents with the agent-health CLI/APIs |
 
 **To use these skills:**
 - *Claude Code* — Skills in `.claude/skills/` are auto-discovered when the directory exists in your workspace root. No extra setup needed.
@@ -213,6 +215,8 @@ A unified dashboard for monitoring AI coding agent usage across **Claude Code**,
 | `langgraph` | LangGraph REST | Non-AG-UI LangGraph instances |
 | `subprocess` | CLI | Command-line tools |
 | `claude-code` | Claude CLI | Claude Code agent comparison |
+| `kiro` | Kiro CLI | Kiro coding agent |
+| `pi` | Pi CLI | Pi coding agent |
 | `mock` | In-memory | Demo and testing |
 
 For creating custom connectors, see [docs/CONNECTORS.md](./docs/CONNECTORS.md).
@@ -319,6 +323,9 @@ For detailed development setup, testing, CI pipeline, debugging, and troubleshoo
 | [Getting Started](./GETTING_STARTED.md) | Step-by-step walkthrough from install to first evaluation |
 | [Configuration](./docs/CONFIGURATION.md) | Connect your agent and configure the environment |
 | [CLI Reference](./docs/CLI.md) | Command-line interface documentation |
+| [Code-Based SDK](./docs/SDK.md) | Write evaluations as `.eval.js` / `.eval.ts` test files (experimental) |
+| [Skill Evaluator](./docs/SKILLS.md) | A/B-benchmark and improve a `SKILL.md` |
+| [Instrument with OTel](./docs/INSTRUMENT_WITH_OTEL.md) | OpenTelemetry instrumentation for Agent Health |
 | [Coding Agent Analytics](./docs/CODING_AGENT_ANALYTICS.md) | Multi-agent dashboard and remote server monitoring |
 | [Observio Sample Agent](./observio-sample-agent/) | Reference agent for practicing evaluations |
 | [Developer Guide](./DEVELOPER_GUIDE.md) | Development setup, testing, CI, debugging |
