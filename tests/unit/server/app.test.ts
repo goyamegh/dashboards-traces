@@ -82,6 +82,9 @@ jest.mock('@/server/services/configMigration', () => ({
 jest.mock('@/server/services/configService', () => ({
   getStorageConfigFromFile: jest.fn().mockReturnValue(null),
   getObservabilityConfigFromFile: jest.fn().mockReturnValue(null),
+  getStorageConfigFromTs: jest.fn().mockReturnValue(null),
+  getObservabilityConfigFromTs: jest.fn().mockReturnValue(null),
+  setTsClusterConfig: jest.fn(),
   getConfigStatus: jest.fn(),
   saveStorageConfig: jest.fn(),
   saveObservabilityConfig: jest.fn(),

@@ -28,7 +28,8 @@ import { connectorRegistry } from '@/services/connectors/registry';
 
 /**
  * Resolve storage config at startup (no request context available).
- * Priority: file config > environment variables > null.
+ * Priority: agent-health.config.json (file) > agent-health.config.ts (TS) >
+ * OPENSEARCH_STORAGE_* env vars > null.
  */
 function resolveStorageConfigAtStartup() {
   return getStorageConfigFromFile() ?? getStorageConfigFromTs() ?? getStorageConfigFromEnv() ?? null;
@@ -65,7 +66,10 @@ export async function createApp(): Promise<Express> {
   // Bridge cluster config authored in agent-health.config.ts into the server's
   // runtime resolution chain (#261). Precedence stays: JSON file > this TS
   // config > OPENSEARCH_* env > file-based fallback.
-  setTsClusterConfig({ storage: config.storage, observability: config.observability });
+  // Pass `null` (not undefined) when a field is absent so each createApp() fully
+  // resets the TS cluster bridge — undefined means "leave previous value", which
+  // would retain stale config across repeated createApp() calls in one process.
+  setTsClusterConfig({ storage: config.storage ?? null, observability: config.observability ?? null });
 
   // Register user-defined connectors from config (so they work in benchmark execution)
   if (config.connectors?.length) {
