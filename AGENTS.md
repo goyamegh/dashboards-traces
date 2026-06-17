@@ -127,7 +127,7 @@ Two config planes; which one is authoritative is decided by **presence of an aut
 
 **What writes what:** Test Connection → nothing (probe). Save → `.agent-health/state.json` in ui-first, or `409` in code-first. Changing a cluster in code-first = edit the `.ts` + restart. Legacy `agent-health.yaml` / `agent-health.config.json` are migrated once to `.agent-health/state.json` at startup (originals → `*.backup`); if a `.ts` is also present the migrated clusters are ignored and a startup warning says so.
 
-Human-facing details: [docs/CONFIGURATION.md](docs/CONFIGURATION.md). Design + file-by-file plan: [docs/plans/config-single-source.md](docs/plans/config-single-source.md) (issue #271).
+Human-facing details: [docs/CONFIGURATION.md](docs/CONFIGURATION.md). Design + file-by-file plan: [issue #271](https://github.com/opensearch-project/agent-health/issues/271).
 
 ## Architecture
 

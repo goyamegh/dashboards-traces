@@ -6,19 +6,20 @@
 /**
  * File-backed store for custom agent endpoints added via the UI.
  * The in-memory Map provides fast reads; every mutation persists to
- * `agent-health.config.json` in the project root.  On module load the
- * Map is hydrated from the file so custom agents survive server restarts.
+ * `.agent-health/state.json` (runtime state) in ui-first mode. On module load
+ * the Map is hydrated from that state so custom agents survive server restarts.
  *
- * The JSON file uses a `{ "customAgents": [...] }` structure, designed
- * for future expansion (data-source configs, etc. can be added as
- * sibling keys without a migration).
+ * The state file uses a `{ "customAgents": [...] }` structure alongside sibling
+ * keys (storage, observability, debug, remoteServers). In code-first mode
+ * (an agent-health.config.ts exists) the state file is ignored and UI-added
+ * agents are not persisted — manage agents in the .ts.
  *
  * Graceful degradation: corrupt / missing files → empty store,
  * write failures are logged but never crash the server.
  */
 
 import type { AgentConfig } from '@/types';
-import { readLayeredState, writeStateScope, isCodeFirstMode } from '../../lib/config/statePaths.js';
+import { readLayeredState, writeStateScope, isCodeFirstMode } from '@/lib/config/statePaths';
 
 /* ------------------------------------------------------------------ */
 /*  File helpers                                                       */

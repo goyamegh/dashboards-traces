@@ -34,7 +34,7 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
   - New `lib/config/statePaths.ts` centralizes paths + mode + layered read (project over user) + corrupt-safe `writeStateScope`; all five state owners (configService, customAgentStore, debug, remoteServers, codingAgentAnalytics) route through it (no split-brain). `getConfigStatus().source` precedence is now `ts > state > env`.
   - **Migration**: `agent-health.yaml` and legacy `agent-health.config.json` are migrated once to `.agent-health/state.json` (originals renamed `*.backup`); a startup warning fires when a `.ts` is also present so migrated clusters aren't silently ignored.
   - No new runtime TypeScript dependency: ui-first users never need a `.ts`.
-  - Tests: new `statePaths.test.ts`; `configServiceImpl`/`customAgentStore` rewired to the state model; `admin` route `409` mode-gate tests. Full design: [docs/plans/config-single-source.md](docs/plans/config-single-source.md).
+  - Tests: new `statePaths.test.ts`; `configServiceImpl`/`customAgentStore` rewired to the state model; `admin` route `409` mode-gate tests. Full design: [issue #271](https://github.com/opensearch-project/agent-health/issues/271).
 
 ### Security
 - **PR #265 review hardening** ([server/routes/judge.ts](server/routes/judge.ts), [server/services/judgeDebug.ts](server/services/judgeDebug.ts)): addressed the Code-Diff-Analyzer findings on the new judge-model discovery endpoints.

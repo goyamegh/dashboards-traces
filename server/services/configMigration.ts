@@ -26,7 +26,7 @@ import {
   projectStatePath,
   isCodeFirstMode,
   LEGACY_JSON_FILENAME,
-} from '../../lib/config/statePaths.js';
+} from '@/lib/config/statePaths';
 
 const YAML_FILENAME = 'agent-health.yaml';
 const BACKUP_SUFFIX = '.backup';

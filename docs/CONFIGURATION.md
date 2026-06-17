@@ -261,9 +261,10 @@ export default defineConfig({
 });
 ```
 
-> **Precedence:** `agent-health.config.json` (Settings UI) > `agent-health.config.ts`
-> (above) > `OPENSEARCH_*` env vars > file-based fallback. See
-> [Two config files, and why](#two-config-files-and-why).
+> **Precedence:** an authored `agent-health.config.ts` (above) **wins** and the
+> runtime state file is ignored (code-first). Without a `.ts`, the Settings UI's
+> `.agent-health/state.json` is used, then `OPENSEARCH_*` env, then file-based
+> fallback. See [Two modes: code-first vs UI-first](#two-modes-code-first-vs-ui-first).
 
 ### Config File Options
 

@@ -6,12 +6,15 @@
 /**
  * Configuration Service
  *
- * Manages server-side configuration stored in agent-health.config.json.
+ * Manages server-side data-source configuration. In ui-first mode this lives in
+ * `.agent-health/state.json` (runtime state, project + user scoped); in
+ * code-first mode (an agent-health.config.ts exists) the state file is ignored
+ * and the .ts is authoritative.
  * Provides secure credential storage without browser exposure.
  *
- * Shares the same JSON file as customAgentStore.ts — each module
- * owns its own top-level keys (storage, observability vs customAgents).
- * Safe because Node.js is single-threaded and both use synchronous fs calls.
+ * Reads/writes go through lib/config/statePaths (the single owner of paths +
+ * mode + layered read/write); other state owners (customAgentStore, debug,
+ * remoteServers) route through the same module so there is no split-brain.
  */
 
 import fs from 'fs';
@@ -24,7 +27,7 @@ import {
   isCodeFirstMode,
   projectStatePath,
   userStatePath,
-} from '../../lib/config/statePaths.js';
+} from '@/lib/config/statePaths';
 import type { StorageClusterConfig, ObservabilityClusterConfig, ClusterAuthType } from '../../types/index.js';
 
 // Type for the config file sections owned by this module
@@ -60,7 +63,7 @@ interface ConfigFileDataSources {
 // password is indicated only as a boolean so the UI can show placeholder dots)
 /**
  * Where a resolved data-source config came from.
- * - 'file'        : agent-health.config.json (UI-writable, highest precedence)
+ * - 'file'        : .agent-health/state.json runtime state (ui-first; UI-writable)
  * - 'typescript'  : agent-health.config.ts via defineConfig() (committed default)
  * - 'environment' : OPENSEARCH_* env vars
  * - 'none'        : not configured (file-based fallback)
@@ -115,8 +118,9 @@ export interface ConfigStatus {
 // runtime resolution chain can consult it. This is the "single TS source of
 // truth" path requested in #261.
 //
-// Precedence (highest wins): agent-health.config.json (UI-written) ->
-// agent-health.config.ts -> OPENSEARCH_* env -> file-based fallback.
+// Precedence: code-first (an agent-health.config.ts exists) -> .ts wins and the
+// state file is ignored; otherwise (ui-first) -> .agent-health/state.json ->
+// OPENSEARCH_* env -> file-based fallback. (getConfigStatus resolves ts > state > env.)
 
 let tsStorageConfig: StorageClusterConfig | null = null;
 let tsObservabilityConfig: ObservabilityClusterConfig | null = null;

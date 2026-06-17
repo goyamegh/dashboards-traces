@@ -1537,7 +1537,7 @@ export const SettingsPage: React.FC = () => {
                   ? 'bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50'
                   : 'bg-gray-100 text-gray-900 border border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700/50'
               }`}>
-                {configStatus.storage.source === 'file' ? 'Config file (agent-health.config.json)' :
+                {configStatus.storage.source === 'file' ? 'Runtime state (.agent-health/state.json)' :
                  configStatus.storage.source === 'typescript' ? 'Config file (agent-health.config.ts)' :
                  configStatus.storage.source === 'environment' ? 'Environment variables' :
                  'Not configured'}
@@ -1867,7 +1867,7 @@ export const SettingsPage: React.FC = () => {
                   ? 'bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50'
                   : 'bg-gray-100 text-gray-900 border border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700/50'
               }`}>
-                {configStatus.observability.source === 'file' ? 'Config file (agent-health.config.json)' :
+                {configStatus.observability.source === 'file' ? 'Runtime state (.agent-health/state.json)' :
                  configStatus.observability.source === 'typescript' ? 'Config file (agent-health.config.ts)' :
                  configStatus.observability.source === 'environment' ? 'Environment variables' :
                  'Not configured'}

@@ -32,7 +32,7 @@ import {
   clearObservabilityConfig,
 } from '../../services/configService.js';
 import { getStorageConfigFromEnv } from '../../middleware/dataSourceConfig.js';
-import { isCodeFirstMode } from '../../../lib/config/statePaths.js';
+import { isCodeFirstMode } from '@/lib/config/statePaths';
 
 const router = Router();
 
@@ -95,9 +95,9 @@ function normalizeEndpoint(value: string | undefined | null): string | undefined
  * POST /api/storage/test-connection
  * Test connection to a storage cluster with provided credentials.
  *
- * Credential resolution order: request body → file config → env vars.
+ * Credential resolution order: request body → file config → TS config → env vars.
  *
- * Stored credentials (file config / env vars) are only used as fallbacks when
+ * Stored credentials (file config / TS config / env vars) are only used as fallbacks when
  * the request `endpoint` matches the corresponding configured endpoint. This
  * prevents sending saved credentials to an arbitrary endpoint specified in the
  * request body (credential exfiltration). Callers wanting to test a different

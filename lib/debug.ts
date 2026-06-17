@@ -27,7 +27,14 @@ const STATE_FILE = 'state.json';
 const AUTHORED_CONFIG_NAMES = ['agent-health.config.ts', 'agent-health.config.js', 'agent-health.config.mjs'];
 
 function debugIsCodeFirst(): boolean {
-  return AUTHORED_CONFIG_NAMES.some((n) => fs.existsSync(path.join(process.cwd(), n)));
+  // Mirror statePaths.isCodeFirstMode: an authored config at project OR user
+  // scope (~/.agent-health/) means code-first. os.homedir() is avoided so this
+  // isomorphic module stays browser-safe; this path only runs server-side.
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  return AUTHORED_CONFIG_NAMES.some((n) =>
+    fs.existsSync(path.join(process.cwd(), n)) ||
+    (!!home && fs.existsSync(path.join(home, STATE_DIR, n)))
+  );
 }
 function debugStatePath(): string {
   return path.join(process.cwd(), STATE_DIR, STATE_FILE);
