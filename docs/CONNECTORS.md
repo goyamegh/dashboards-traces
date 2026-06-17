@@ -22,6 +22,8 @@ Connectors are protocol adapters that handle communication with different types 
 | `strands` | Bedrock Agent Runtime | Amazon Strands agents (requires AWS SDK) | No |
 | `subprocess` | CLI stdin/stdout | Command-line tools | No |
 | `claude-code` | Claude Code CLI | Claude Code agent comparison | No |
+| `kiro` | Kiro CLI | Kiro coding agent (parses `[tool]` stderr markers) | No |
+| `pi` | Pi CLI | Pi coding agent | No |
 | `mock` | In-memory | Demo and testing | Yes |
 
 ## Creating a Custom Connector
@@ -291,6 +293,8 @@ Some connectors require Node.js APIs (like `child_process`) and cannot run in th
 **Server-only connectors** (in `services/connectors/server.ts`):
 - `subprocess`
 - `claude-code`
+- `kiro`
+- `pi`
 - `strands` (requires `@aws-sdk/client-bedrock-agent-runtime`)
 
 If your connector needs Node.js APIs, export it from `server.ts` only.
@@ -457,6 +461,44 @@ When creating test cases in the UI, use context items with descriptions matching
 
 This pattern allows you to pass arbitrary agent-specific fields through the standard test case schema by using context item descriptions as field identifiers.
 
+## Trace Correlation
+
+So an agent's OpenTelemetry spans join the eval `test_case` trace tree (instead
+of landing as a separate, orphaned trace), `BaseConnector` propagates trace
+context. Configure per-agent via `connectorConfig.traceContext` in
+`agent-health.config.ts`:
+
+```typescript
+{
+  key: 'my-agent',
+  connectorType: 'subprocess',
+  connectorConfig: {
+    traceContext: {
+      propagateEnv: true,        // inject TRACEPARENT env (subprocess agents)
+      propagateHeader: true,     // inject `traceparent` header (HTTP/SSE agents)
+      serviceName: 'my-otel-service-name',  // service-name + time-window fallback
+    },
+  },
+}
+```
+
+Three layered strategies, applied in priority order:
+
+- **Strategy A — W3C trace context.** The eval `test_case` span is active when
+  the connector runs; `buildTraceparentEnv()` / `injectTraceparentHeaders()`
+  emit a W3C `traceparent` so a compliant agent adopts the eval span as parent
+  and shares its `traceId` (single trace tree).
+- **Strategy B — `gen_ai.request.id`.** `SubprocessConnector` exports
+  `AGENT_EVAL_RUN_ID=<runId>`; agents you instrument can tag spans with
+  `gen_ai.request.id == runId` for a loose link.
+- **Strategy C — service-name + time window (always-on fallback).** Each
+  connector declares a default `serviceName` (`claude-code-agent`, `kiro-agent`,
+  `pi-agent`, `observio-sample-agent`); the run-report Traces tab unions a
+  `serviceName + time-window` clause so closed-source agents still correlate.
+
+See the full "Trace correlation conventions" section in
+[AGENTS.md](../AGENTS.md) for the convention map and window-derivation rules.
+
 ## Examples
 
 ### Observio Sample Agent
@@ -474,3 +516,12 @@ See `services/connectors/subprocess/SubprocessConnector.ts` for a complete examp
 ### Claude Code Connector
 
 See `services/connectors/claude-code/ClaudeCodeConnector.ts` for a complete example extending SubprocessConnector with custom output parsing.
+
+### Kiro Connector
+
+See `services/connectors/kiro/KiroConnector.ts` for a `SubprocessConnector`
+subclass that overrides `parseStderrChunk()` to convert Kiro's stderr-borne
+`[tool] Running:` / `[tool] status:` markers into structured `action` +
+`tool_result` steps. The base `SubprocessConnector` also persists `stderr` to
+`rawOutput` and honors per-request `connectorConfig` overrides (`args` /
+`inputMode` / `timeout`).

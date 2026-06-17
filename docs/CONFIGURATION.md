@@ -94,7 +94,7 @@ Override the default file-based storage with an OpenSearch cluster for shared, p
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `OPENSEARCH_STORAGE_ENDPOINT` | Storage cluster URL | - |
-| `OPENSEARCH_STORAGE_AUTH_TYPE` | Set to `sigv4` to enable SigV4 | - |
+| `OPENSEARCH_STORAGE_AUTH_TYPE` | Auth type: `none` \| `basic` \| `sigv4` (defaults to `basic` when a username/password is set) | - |
 | `OPENSEARCH_STORAGE_AWS_REGION` | AWS region (required for SigV4) | - |
 | `OPENSEARCH_STORAGE_AWS_PROFILE` | AWS profile name (uses default credential chain if omitted) | - |
 | `OPENSEARCH_STORAGE_AWS_SERVICE` | `es` for managed OpenSearch, `aoss` for Serverless | `es` |
@@ -121,7 +121,7 @@ View agent traces and logs. Only needed for ML-Commons agent.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `OPENSEARCH_LOGS_ENDPOINT` | Logs cluster URL | - |
-| `OPENSEARCH_LOGS_AUTH_TYPE` | Set to `sigv4` to enable SigV4 | - |
+| `OPENSEARCH_LOGS_AUTH_TYPE` | Auth type: `none` \| `basic` \| `sigv4` (defaults to `basic` when a username/password is set) | - |
 | `OPENSEARCH_LOGS_AWS_REGION` | AWS region (required for SigV4) | - |
 | `OPENSEARCH_LOGS_AWS_PROFILE` | AWS profile name (uses default credential chain if omitted) | - |
 | `OPENSEARCH_LOGS_AWS_SERVICE` | `es` for managed OpenSearch, `aoss` for Serverless | `es` |

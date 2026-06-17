@@ -34,6 +34,8 @@ import {
   createKillCommand,
   createSetupTelemetryCommand,
   createSkillCommand,
+  createProfileCommand,
+  createSetupCommand,
 } from './commands/index.js';
 
 // Get package.json for version
@@ -152,6 +154,10 @@ ${chalk.cyan.bold('Infrastructure:')}
   ${chalk.yellow('agent-health setup-telemetry')}            Configure Claude Code → Agent Health telemetry
   ${chalk.yellow('agent-health setup-telemetry')} ${chalk.gray('--status')}  Check current telemetry status
 
+${chalk.cyan.bold('Agent Profiling:')}
+  ${chalk.yellow('agent-health setup')}                   Install the agent-profiling hook + skill (Claude Code)
+  ${chalk.yellow('agent-health profile')} ${chalk.gray('-e <evaluator>')}    Profile the current session, surface what to fix in the agent
+
 ${chalk.cyan.bold('Maintenance:')}
   ${chalk.yellow('agent-health migrate')}                Migrate legacy benchmark data to current format
   ${chalk.yellow('agent-health kill')} ${chalk.gray('sample-agent')}       Stop a running sample agent by name
@@ -245,6 +251,8 @@ program.addCommand(createConfigureCommand());
 program.addCommand(createKillCommand());
 program.addCommand(createSetupTelemetryCommand());
 program.addCommand(createSkillCommand());
+program.addCommand(createSetupCommand());
+program.addCommand(createProfileCommand());
 
 // Add serve command as an alias for the default action
 program
