@@ -51,16 +51,24 @@ function attrsToObject(attrs?: OtlpKeyValue[]): Record<string, any> {
 
 const HEX_RE = /^[0-9a-fA-F]+$/;
 
-/** Normalize an OTLP/JSON id to lowercase hex (accepts hex or base64). */
+/**
+ * Normalize an OTLP/JSON id to lowercase hex. Accepts hex (any even length) or
+ * strictly-valid base64; returns '' for anything else so malformed ids never
+ * enter the store (which would corrupt filenames / spanId-keyed correlation).
+ */
 export function normalizeId(id: unknown): string {
   if (typeof id !== 'string' || id.length === 0) return '';
-  if (HEX_RE.test(id)) return id.toLowerCase();
-  // Lenient: treat as base64 → hex
+  if (HEX_RE.test(id) && id.length % 2 === 0) return id.toLowerCase();
+  // Otherwise only accept base64 that round-trips exactly, mapped to hex.
   try {
-    return Buffer.from(id, 'base64').toString('hex');
+    const buf = Buffer.from(id, 'base64');
+    if (buf.length > 0 && buf.toString('base64').replace(/=+$/, '') === id.replace(/=+$/, '')) {
+      return buf.toString('hex');
+    }
   } catch {
-    return id;
+    /* fall through */
   }
+  return '';
 }
 
 /** Nanoseconds (string|number) → ISO timestamp. */
@@ -109,16 +117,21 @@ export function otlpToSpans(body: any): Span[] {
         const endMs = Date.parse(endTime);
 
         const events: SpanEvent[] = (sp?.events || []).map((e: any) => ({
-          name: e?.name,
+          name: e?.name || '',
           time: nanosToIso(e?.timeUnixNano),
           attributes: attrsToObject(e?.attributes),
         }));
 
+        const traceId = normalizeId(sp?.traceId);
+        const spanId = normalizeId(sp?.spanId);
+        // Skip spans missing valid ids: an empty spanId would collide in the
+        // spanId-keyed store and silently drop unrelated spans.
+        if (!traceId || !spanId) continue;
         const parentSpanId = normalizeId(sp?.parentSpanId);
 
         out.push({
-          traceId: normalizeId(sp?.traceId),
-          spanId: normalizeId(sp?.spanId),
+          traceId,
+          spanId,
           ...(parentSpanId ? { parentSpanId } : {}),
           name: sp?.name || '',
           startTime,

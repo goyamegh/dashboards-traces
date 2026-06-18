@@ -18,6 +18,7 @@
 
 import { promises as fs } from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import type { Span } from '../../../types/index.js';
 
 /** Resolve the traces data directory (overridable for tests via AGENT_HEALTH_DATA_DIR). */
@@ -27,9 +28,11 @@ export function resolveTracesDir(baseDir?: string): string {
   return path.join(dataDir, 'traces');
 }
 
-/** Keep trace ids to safe filename chars; hash anything unexpected. */
+/** Keep trace ids to safe, bounded filenames; sha256-hash anything unexpected. */
 function safeTraceFile(traceId: string): string {
-  const safe = /^[A-Za-z0-9_.-]+$/.test(traceId) ? traceId : Buffer.from(traceId).toString('hex');
+  const safe = /^[A-Za-z0-9_.-]{1,128}$/.test(traceId)
+    ? traceId
+    : createHash('sha256').update(traceId).digest('hex');
   return `${safe}.json`;
 }
 
@@ -55,7 +58,7 @@ export class TraceStore {
 
     const byTrace = new Map<string, Span[]>();
     for (const s of spans) {
-      if (!s.traceId) continue;
+      if (!s.traceId || !s.spanId) continue;
       const arr = byTrace.get(s.traceId) || [];
       arr.push(s);
       byTrace.set(s.traceId, arr);
@@ -64,8 +67,8 @@ export class TraceStore {
     for (const [traceId, incoming] of byTrace) {
       const existing = await this.readTrace(traceId);
       const merged = new Map<string, Span>();
-      for (const s of existing) merged.set(s.spanId, s);
-      for (const s of incoming) merged.set(s.spanId, s); // newest wins
+      for (const s of existing) if (s.spanId) merged.set(s.spanId, s);
+      for (const s of incoming) merged.set(s.spanId, s); // newest wins (incoming ids guaranteed)
       await this.atomicWrite(this.fileFor(traceId), Array.from(merged.values()));
     }
   }

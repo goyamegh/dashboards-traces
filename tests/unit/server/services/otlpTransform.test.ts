@@ -15,9 +15,10 @@ describe('otlpTransform', () => {
       const b64 = Buffer.from(hex, 'hex').toString('base64');
       expect(normalizeId(b64)).toBe(hex);
     });
-    it('returns empty string for missing id', () => {
+    it('returns empty string for missing or invalid id', () => {
       expect(normalizeId(undefined)).toBe('');
       expect(normalizeId('')).toBe('');
+      expect(normalizeId('xyz!@#')).toBe('');
     });
   });
 
@@ -99,18 +100,30 @@ describe('otlpTransform', () => {
     });
 
     it('maps status codes 1→OK, 0/absent→UNSET', () => {
-      const ok = otlpToSpans({ resourceSpans: [{ scopeSpans: [{ spans: [{ traceId: 'a', spanId: 'b', name: 'x', status: { code: 1 } }] }] }] })[0];
+      const ok = otlpToSpans({ resourceSpans: [{ scopeSpans: [{ spans: [{ traceId: 'aa', spanId: 'bb', name: 'x', status: { code: 1 } }] }] }] })[0];
       expect(ok.status).toBe('OK');
-      const unset = otlpToSpans({ resourceSpans: [{ scopeSpans: [{ spans: [{ traceId: 'a', spanId: 'b', name: 'x' }] }] }] })[0];
+      const unset = otlpToSpans({ resourceSpans: [{ scopeSpans: [{ spans: [{ traceId: 'aa', spanId: 'bb', name: 'x' }] }] }] })[0];
       expect(unset.status).toBe('UNSET');
     });
 
     it('supports legacy instrumentationLibrarySpans', () => {
       const spans = otlpToSpans({
-        resourceSpans: [{ instrumentationLibrarySpans: [{ spans: [{ traceId: 'a', spanId: 'b', name: 'legacy' }] }] }],
+        resourceSpans: [{ instrumentationLibrarySpans: [{ spans: [{ traceId: 'aa', spanId: 'bb', name: 'legacy' }] }] }],
       });
       expect(spans).toHaveLength(1);
       expect(spans[0].name).toBe('legacy');
+    });
+
+    it('skips spans with missing/invalid ids (they would collide in the store)', () => {
+      const spans = otlpToSpans({
+        resourceSpans: [{ scopeSpans: [{ spans: [
+          { spanId: 'bb', name: 'no-trace' },          // missing traceId
+          { traceId: 'aa', name: 'no-span' },          // missing spanId
+          { traceId: 'a', spanId: 'b', name: 'odd-hex' }, // invalid (odd-length, not base64)
+          { traceId: 'aa', spanId: 'bb', name: 'good' },
+        ] }] }],
+      });
+      expect(spans.map((s) => s.name)).toEqual(['good']);
     });
 
     it('returns [] for empty / malformed bodies', () => {

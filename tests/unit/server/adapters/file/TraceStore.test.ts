@@ -68,6 +68,24 @@ describe('TraceStore', () => {
     expect(await store.listTraceIds()).toEqual([]);
   });
 
+  it('bounds filenames for unusual/overlong trace ids (sha256 hash)', async () => {
+    const weirdId = 'x'.repeat(5000) + '/../../etc/passwd'; // overlong + unsafe chars
+    await store.writeSpans([span({ traceId: weirdId, spanId: 's1' })]);
+    expect(await store.readTrace(weirdId)).toHaveLength(1); // round-trips via the same hash
+    const files = await fs.readdir(dir);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/^[0-9a-f]{64}\.json$/); // bounded sha256 hex filename
+  });
+
+  it('skips spans without a spanId (avoid silent dedupe collisions)', async () => {
+    await store.writeSpans([
+      span({ traceId: 'tZ', spanId: '' }),
+      span({ traceId: 'tZ', spanId: 'z1' }),
+    ]);
+    const spans = await store.readTrace('tZ');
+    expect(spans.map((s) => s.spanId)).toEqual(['z1']);
+  });
+
   it('keeps data forever (no eviction across many writes)', async () => {
     for (let i = 0; i < 25; i++) {
       await store.writeSpans([span({ traceId: `t${i}`, spanId: `s${i}` })]);

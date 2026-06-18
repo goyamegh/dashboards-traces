@@ -122,6 +122,12 @@ describe('FileObservabilityModule', () => {
       expect(matchesQuery(s, { startTime: 0, textSearch: 'bedrock' }, false)).toBe(true);
       expect(matchesQuery(s, { startTime: 0, textSearch: 'nope' }, false)).toBe(false);
     });
+
+    it('treats startTime/endTime of 0 as real epoch bounds (not "absent")', () => {
+      const s = span({ startMs: Date.parse('2024-03-01T00:00:00Z') });
+      expect(matchesQuery(s, { startTime: 0 }, false)).toBe(true); // 0 = from epoch, includes it
+      expect(matchesQuery(s, { endTime: 0 }, false)).toBe(false);   // up to epoch 1970, excludes 2024
+    });
   });
 
   describe('pagination', () => {

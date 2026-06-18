@@ -67,8 +67,8 @@ export function matchesQuery(s: Span, options: TracesQueryOptions, useUnion: boo
 
   // ---- must-filters (always required) ----
   if (sessionId && a['session.id'] !== sessionId) return false;
-  if (startTime && spanMs(s) < toMs(startTime)) return false;
-  if (endTime && spanMs(s) > toMs(endTime)) return false;
+  if (startTime !== undefined && spanMs(s) < toMs(startTime)) return false;
+  if (endTime !== undefined && spanMs(s) > toMs(endTime)) return false;
   if (serviceName && !serviceMatches(s, serviceName)) return false;
   if (textSearch) {
     const q = textSearch.toLowerCase();
@@ -114,7 +114,7 @@ class FileTracesOperations implements ITracesOperations {
 
   async query(options: TracesQueryOptions) {
     const { traceId, runIds, sessionId, startTime, endTime, size = 100, cursor, agents } = options;
-    const hasTimeRange = !!(startTime || endTime);
+    const hasTimeRange = startTime !== undefined || endTime !== undefined;
     const hasIdFilter = !!(traceId || (runIds && runIds.length > 0) || sessionId || (agents && agents.length > 0));
     if (!hasIdFilter && !hasTimeRange) {
       throw new Error('Either traceId, runIds, sessionId, agents, or time range is required');
