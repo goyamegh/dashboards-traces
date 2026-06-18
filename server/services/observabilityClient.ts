@@ -16,6 +16,7 @@ import { Client } from '@opensearch-project/opensearch';
 import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
 import { createOpenSearchClient, configToCacheKey } from './opensearchClientFactory.js';
 import { OpenSearchObservabilityModule } from '../adapters/observability/OpenSearchObservabilityModule.js';
+import { FileObservabilityModule } from '../adapters/observability/FileObservabilityModule.js';
 import type { IObservabilityModule } from '../adapters/types.js';
 import type { ClusterConfig } from '../../types/index.js';
 
@@ -87,18 +88,17 @@ export function getObservabilityClient(req: Request): ObservabilityClientResult 
 /**
  * Resolve the active observability data-source adapter for this request.
  *
- * Returns an `OpenSearchObservabilityModule` when an observability cluster is
- * configured, else `null` (callers treat null as "not configured" — today that
- * means sample/demo data; a later PR makes it the file-backed module).
- *
- * **Precedence invariant:** a configured cluster is always the source of truth.
- * A cluster that is configured but unreachable still returns its module here —
- * queries then surface the real error rather than silently using another
- * backend.
+ * **Precedence invariant:** a configured OpenSearch observability cluster is
+ * always the source of truth — it's returned even when unreachable (queries
+ * then surface the real error rather than silently using another backend).
+ * When **no** cluster is configured, the file-backed module is the zero-config
+ * default, so local runs get a working Traces view out of the box.
  */
-export function getObservabilityModule(req: Request): IObservabilityModule | null {
+export function getObservabilityModule(req: Request): IObservabilityModule {
   const config = resolveObservabilityConfig(req);
-  if (!config) return null;
+  if (!config) {
+    return new FileObservabilityModule();
+  }
 
   const client = getOrCreateClient(config);
   return new OpenSearchObservabilityModule(client, {
