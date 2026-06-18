@@ -108,6 +108,8 @@ describe('computeTraceSummary', () => {
     expect(s.inputTokens).toBe(150);
     expect(s.outputTokens).toBe(275);
     expect(s.totalTokens).toBe(425);
+    // peakInputTokens is the MAX single-span input count (100), not the sum (150)
+    expect(s.peakInputTokens).toBe(100);
   });
 
   it('falls back to legacy prompt_tokens / completion_tokens attribute names', () => {

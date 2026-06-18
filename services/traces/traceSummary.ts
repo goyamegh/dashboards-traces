@@ -28,6 +28,9 @@ export interface TraceSummary {
   inputTokens: number;
   outputTokens: number;
   totalTokens: number;
+  /** Largest single-span input-token count in the trace. Used for
+      context-window utilization (Ctx%) — the peak request, not the sum. */
+  peakInputTokens: number;
   models: string[];
 }
 
@@ -50,6 +53,7 @@ export function computeTraceSummary(spanTree: Span[]): TraceSummary {
   let inputTokens = 0;
   let outputTokens = 0;
   let totalTokens = 0;
+  let peakInputTokens = 0;
   const modelSet = new Set<string>();
 
   for (const s of flat) {
@@ -61,6 +65,7 @@ export function computeTraceSummary(spanTree: Span[]): TraceSummary {
     inputTokens += it;
     outputTokens += ot;
     totalTokens += it + ot;
+    if (it > peakInputTokens) peakInputTokens = it;
     const m = a['gen_ai.request.model'] || a['gen_ai.response.model'] || a['model'];
     if (typeof m === 'string' && m.trim()) modelSet.add(m.trim());
   }
@@ -74,6 +79,7 @@ export function computeTraceSummary(spanTree: Span[]): TraceSummary {
     inputTokens,
     outputTokens,
     totalTokens,
+    peakInputTokens,
     models: Array.from(modelSet),
   };
 }

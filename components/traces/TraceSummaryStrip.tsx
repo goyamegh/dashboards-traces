@@ -19,6 +19,7 @@
 import React from 'react';
 import { TraceSummary } from '@/services/traces';
 import { formatCompact } from '@/services/traces/utils';
+import { contextUtilizationPct, formatContextPct } from '@/lib/contextUtilization';
 import { cn } from '@/lib/utils';
 
 interface TraceSummaryStripProps {
@@ -85,6 +86,22 @@ export const TraceSummaryStrip: React.FC<TraceSummaryStripProps> = ({
         title={`Input: ${summary.inputTokens.toLocaleString()} tokens — Output: ${summary.outputTokens.toLocaleString()} tokens`}
       >
         <span className={valueClassName}>{formatCompact(summary.totalTokens)}</span> tok
+      </span>
+    );
+  }
+  // Ctx% — peak single-request input tokens as a fraction of the model's
+  // context window. Only render when the model is known (resolvable window).
+  const ctxPct = contextUtilizationPct(summary.peakInputTokens, summary.models[0]);
+  const ctxLabel = formatContextPct(ctxPct);
+  if (ctxLabel) {
+    const over = (ctxPct as number) >= 100;
+    parts.push(
+      <span
+        key="ctx"
+        className={over ? 'text-red-500 font-medium' : undefined}
+        title={`Peak context-window utilization: ${summary.peakInputTokens.toLocaleString()} input tokens at the busiest request${over ? ' — exceeds the configured context window' : ''}`}
+      >
+        <span className={over ? 'text-red-500 font-medium' : valueClassName}>{ctxLabel}</span> ctx
       </span>
     );
   }
