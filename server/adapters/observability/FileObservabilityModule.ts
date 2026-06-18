@@ -14,7 +14,7 @@
  * The trace query replicates the OpenSearch correlation semantics in-memory
  * (see services/tracesService.ts + AGENTS.md → Trace correlation conventions):
  *   A. traceId                         — W3C-propagated agents share the eval traceId
- *   B. runIds   → gen_ai.request.id    — agents tag spans with the runId
+ *   B. runIds   → agent_health.run.id   — agents tag spans with the runId
  *   C. agents   → service.name / gen_ai.agent.name within a time window
  * plus must-filters: sessionId (session.id), time range, serviceName, textSearch.
  * 2+ correlation clauses are OR-unioned (minimum_should_match: 1); a single
@@ -83,7 +83,7 @@ export function matchesQuery(s: Span, options: TracesQueryOptions, useUnion: boo
   if (traceId) clauses.push(s.traceId === traceId);
   if (runIds && runIds.length > 0) {
     const valid = runIds.filter((id): id is string => typeof id === 'string' && id.length > 0);
-    clauses.push(valid.includes(a['gen_ai.request.id']));
+    clauses.push(valid.includes(a['agent_health.run.id']));
   }
   if (agents && agents.length > 0) {
     for (const ag of agents) {

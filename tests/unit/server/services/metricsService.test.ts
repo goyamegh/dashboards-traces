@@ -570,7 +570,7 @@ describe('metricsService', () => {
       );
 
       const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(requestBody.query.bool.must[0].term['attributes.gen_ai.request.id']).toBe(
+      expect(requestBody.query.bool.must[0].term['attributes.agent_health.run.id']).toBe(
         'test-run-123'
       );
     });
@@ -659,7 +659,7 @@ describe('metricsService', () => {
                   durationInNanos: 1000000000,
                   status: { code: 1 },
                   attributes: {
-                    'gen_ai.request.id': 'run-1',
+                    'agent_health.run.id': 'run-1',
                     'gen_ai.usage.input_tokens': 100,
                     'gen_ai.usage.output_tokens': 50,
                     'gen_ai.request.model': 'anthropic.claude-sonnet-4',
@@ -673,7 +673,7 @@ describe('metricsService', () => {
                   durationInNanos: 2000000000,
                   status: { code: 1 },
                   attributes: {
-                    'gen_ai.request.id': 'run-2',
+                    'agent_health.run.id': 'run-2',
                     'gen_ai.usage.input_tokens': 200,
                     'gen_ai.usage.output_tokens': 100,
                     'gen_ai.request.model': 'anthropic.claude-sonnet-4',
@@ -696,7 +696,7 @@ describe('metricsService', () => {
       // Should use terms query (single request for both IDs)
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(requestBody.query.bool.must[0].terms['attributes.gen_ai.request.id']).toEqual(['run-1', 'run-2']);
+      expect(requestBody.query.bool.must[0].terms['attributes.agent_health.run.id']).toEqual(['run-1', 'run-2']);
     });
 
     it('should return pending metrics for run IDs with no matching spans', async () => {

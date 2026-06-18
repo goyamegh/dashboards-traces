@@ -73,7 +73,7 @@ interface OpenSearchSpanSource {
   status?: { code?: number; message?: string };
   // Plain-raw (OTEL-faithful) schema: span attributes are a nested object
   // keyed by the literal dotted OTel attribute name, e.g.
-  // attributes['gen_ai.request.id']. (Data Prepper trace-analytics-plain-raw.)
+  // attributes['agent_health.run.id'] for the runId. (Data Prepper trace-analytics-plain-raw.)
   attributes?: Record<string, any>;
 }
 
@@ -163,7 +163,7 @@ export function computeMetricsFromSampleSpans(runId: string): MetricsResult | nu
 /**
  * Compute metrics from OpenSearch traces for a run
  *
- * @param runId - The run ID (stored as the gen_ai.request.id span attribute)
+ * @param runId - The run ID (stored as the agent_health.run.id span attribute)
  * @param osConfig - OpenSearch configuration
  * @returns Computed metrics
  */
@@ -293,7 +293,7 @@ export async function computeMetrics(
         query: {
           bool: {
             must: [
-              { term: { 'attributes.gen_ai.request.id': runId } }
+              { term: { 'attributes.agent_health.run.id': runId } }
             ]
           }
         }
@@ -312,7 +312,7 @@ export async function computeMetrics(
     query: {
       bool: {
         must: [
-          { term: { 'attributes.gen_ai.request.id': runId } }
+          { term: { 'attributes.agent_health.run.id': runId } }
         ]
       }
     }
@@ -369,7 +369,7 @@ export async function computeBatchMetrics(
             query: {
               bool: {
                 must: [
-                  { terms: { 'attributes.gen_ai.request.id': chunk } }
+                  { terms: { 'attributes.agent_health.run.id': chunk } }
                 ]
               }
             }
@@ -389,7 +389,7 @@ export async function computeBatchMetrics(
         const spansByRunId = new Map<string, OpenSearchSpanSource[]>();
         for (const rid of chunk) spansByRunId.set(rid, []);
         for (const span of allSpans) {
-          const rid = span.attributes?.['gen_ai.request.id'] as string | undefined;
+          const rid = span.attributes?.['agent_health.run.id'] as string | undefined;
           if (rid && spansByRunId.has(rid)) {
             spansByRunId.get(rid)!.push(span);
           }
@@ -421,7 +421,7 @@ export async function computeBatchMetrics(
       query: {
         bool: {
           must: [
-            { terms: { 'attributes.gen_ai.request.id': chunk } }
+            { terms: { 'attributes.agent_health.run.id': chunk } }
           ]
         }
       }
@@ -459,7 +459,7 @@ export async function computeBatchMetrics(
     const spansByRunId = new Map<string, OpenSearchSpanSource[]>();
     for (const rid of chunk) spansByRunId.set(rid, []);
     for (const span of allSpans) {
-      const rid = span.attributes?.['gen_ai.request.id'] as string | undefined;
+      const rid = span.attributes?.['agent_health.run.id'] as string | undefined;
       if (rid && spansByRunId.has(rid)) {
         spansByRunId.get(rid)!.push(span);
       }

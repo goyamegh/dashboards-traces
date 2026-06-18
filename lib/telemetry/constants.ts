@@ -81,8 +81,18 @@ export const ATTR_AGENT_HEALTH_AGENT_DURATION_MS = 'agent_health.agent.duration_
 /** Connector protocol used for agent communication */
 export const ATTR_AGENT_HEALTH_CONNECTOR_PROTOCOL = 'agent_health.connector.protocol' as const;
 
-/** Agent run ID — links eval spans to the agent execution trace */
-export const ATTR_AGENT_HEALTH_AGENT_RUN_ID = 'gen_ai.request.id' as const;
+/**
+ * Agent run ID — links eval spans to the agent execution trace (Strategy B).
+ *
+ * Uses Agent Health's own namespace rather than the OpenTelemetry-reserved
+ * `gen_ai.*` namespace: `gen_ai.request.id` is not a registered semantic
+ * convention attribute (the `gen_ai.request.*` namespace is for request
+ * parameters), and the OTEL naming spec advises against adding app-specific
+ * keys under an existing OTEL namespace. W3C trace context (shared traceId,
+ * Strategy A) remains the primary correlation; this attribute is the loose
+ * link for agents that don't propagate context.
+ */
+export const ATTR_AGENT_HEALTH_AGENT_RUN_ID = 'agent_health.run.id' as const;
 
 // =============================================================================
 // Constants

@@ -18,7 +18,8 @@ import { getTracer, trace, context as otelContext } from './provider';
 const ATTR_GEN_AI_OPERATION_NAME = 'gen_ai.operation.name';
 const ATTR_GEN_AI_SYSTEM = 'gen_ai.system';
 const ATTR_GEN_AI_REQUEST_MODEL = 'gen_ai.request.model';
-const ATTR_GEN_AI_REQUEST_ID = 'gen_ai.request.id';
+// Agent Health run-id correlation (own namespace, not the OTEL gen_ai.* namespace)
+const ATTR_AGENT_HEALTH_RUN_ID = 'agent_health.run.id';
 const ATTR_GEN_AI_AGENT_NAME = 'gen_ai.agent.name';
 const ATTR_GEN_AI_USAGE_INPUT_TOKENS = 'gen_ai.usage.input_tokens';
 const ATTR_GEN_AI_USAGE_OUTPUT_TOKENS = 'gen_ai.usage.output_tokens';
@@ -44,7 +45,7 @@ export function startAgentSpan(runId: string): { span: Span; ctx: Context } {
       [ATTR_GEN_AI_OPERATION_NAME]: OP_INVOKE_AGENT,
       [ATTR_GEN_AI_SYSTEM]: 'aws.bedrock',
       [ATTR_GEN_AI_AGENT_NAME]: 'observio',
-      [ATTR_GEN_AI_REQUEST_ID]: runId,
+      [ATTR_AGENT_HEALTH_RUN_ID]: runId,
     },
   });
   const ctx = trace.setSpan(otelContext.active(), span);
@@ -78,7 +79,7 @@ export function startLLMSpan(
       ...(opts.temperature !== undefined && { [ATTR_GEN_AI_REQUEST_TEMPERATURE]: opts.temperature }),
       ...(opts.maxTokens !== undefined && { [ATTR_GEN_AI_REQUEST_MAX_TOKENS]: opts.maxTokens }),
       ...(opts.iteration !== undefined && { 'gen_ai.request.iteration': opts.iteration }),
-      ...(opts.runId && { [ATTR_GEN_AI_REQUEST_ID]: opts.runId }),
+      ...(opts.runId && { [ATTR_AGENT_HEALTH_RUN_ID]: opts.runId }),
     },
   }, parentCtx);
   const ctx = trace.setSpan(parentCtx, span);
@@ -151,7 +152,7 @@ export function startToolSpan(
     attributes: {
       [ATTR_GEN_AI_OPERATION_NAME]: OP_EXECUTE_TOOL,
       [ATTR_GEN_AI_TOOL_NAME]: toolName,
-      ...(opts?.runId && { [ATTR_GEN_AI_REQUEST_ID]: opts.runId }),
+      ...(opts?.runId && { [ATTR_AGENT_HEALTH_RUN_ID]: opts.runId }),
     },
   }, parentCtx);
 
