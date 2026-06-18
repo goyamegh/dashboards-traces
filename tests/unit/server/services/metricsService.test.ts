@@ -308,10 +308,12 @@ describe('metricsService', () => {
                 startTime: '2024-01-01T00:00:00Z',
                 endTime: '2024-01-01T00:00:02Z',
                 durationInNanos: 2000000000, // 2 seconds
-                'status.code': 1,
-                'span.attributes.gen_ai@usage@input_tokens': 1000,
-                'span.attributes.gen_ai@usage@output_tokens': 500,
-                'span.attributes.gen_ai@request@model': 'anthropic.claude-sonnet-4',
+                status: { code: 1 },
+                attributes: {
+                  'gen_ai.usage.input_tokens': 1000,
+                  'gen_ai.usage.output_tokens': 500,
+                  'gen_ai.request.model': 'anthropic.claude-sonnet-4',
+                },
               },
             },
           ],
@@ -344,25 +346,25 @@ describe('metricsService', () => {
                 name: 'agent.run',
                 traceId: 'trace-123',
                 durationInNanos: 1000000000,
-                'status.code': 1,
+                status: { code: 1 },
               },
             },
             {
               _source: {
                 name: 'agent.tool.execute',
-                'span.attributes.gen_ai@tool@name': 'search_tool',
+                attributes: { 'gen_ai.tool.name': 'search_tool' },
               },
             },
             {
               _source: {
                 name: 'agent.tool.execute',
-                'span.attributes.tool.name': 'calculator_tool',
+                attributes: { 'tool.name': 'calculator_tool' },
               },
             },
             {
               _source: {
                 name: 'custom.tool',
-                'span.attributes.gen_ai@tool@name': 'custom_tool',
+                attributes: { 'gen_ai.tool.name': 'custom_tool' },
               },
             },
           ],
@@ -390,18 +392,22 @@ describe('metricsService', () => {
               _source: {
                 name: 'llm.call.1',
                 traceId: 'trace-123',
-                'span.attributes.gen_ai@usage@input_tokens': 500,
-                'span.attributes.gen_ai@usage@output_tokens': 200,
-                'span.attributes.gen_ai@request@model': 'anthropic.claude-sonnet-4',
+                attributes: {
+                  'gen_ai.usage.input_tokens': 500,
+                  'gen_ai.usage.output_tokens': 200,
+                  'gen_ai.request.model': 'anthropic.claude-sonnet-4',
+                },
               },
             },
             {
               _source: {
                 name: 'llm.call.2',
                 traceId: 'trace-123',
-                'span.attributes.gen_ai@usage@input_tokens': 800,
-                'span.attributes.gen_ai@usage@output_tokens': 300,
-                'span.attributes.gen_ai@request@model': 'anthropic.claude-sonnet-4',
+                attributes: {
+                  'gen_ai.usage.input_tokens': 800,
+                  'gen_ai.usage.output_tokens': 300,
+                  'gen_ai.request.model': 'anthropic.claude-sonnet-4',
+                },
               },
             },
           ],
@@ -464,7 +470,7 @@ describe('metricsService', () => {
                 name: 'agent.run',
                 traceId: 'trace-123',
                 durationInNanos: 1000000000,
-                'status.code': 2, // Error status
+                status: { code: 2 }, // Error status
               },
             },
           ],
@@ -489,14 +495,14 @@ describe('metricsService', () => {
               _source: {
                 name: 'span.1',
                 traceId: 'trace-123',
-                'status.code': 1, // Success
+                status: { code: 1 }, // Success
               },
             },
             {
               _source: {
                 name: 'span.2',
                 traceId: 'trace-123',
-                'status.code': 2, // Error
+                status: { code: 2 }, // Error
               },
             },
           ],
@@ -521,9 +527,11 @@ describe('metricsService', () => {
               _source: {
                 name: 'llm.call',
                 traceId: 'trace-123',
-                'span.attributes.gen_ai@usage@input_tokens': 1000000, // 1M input tokens
-                'span.attributes.gen_ai@usage@output_tokens': 100000, // 100K output tokens
-                'span.attributes.gen_ai@request@model': 'anthropic.claude-sonnet-4',
+                attributes: {
+                  'gen_ai.usage.input_tokens': 1000000, // 1M input tokens
+                  'gen_ai.usage.output_tokens': 100000, // 100K output tokens
+                  'gen_ai.request.model': 'anthropic.claude-sonnet-4',
+                },
               },
             },
           ],
@@ -562,7 +570,7 @@ describe('metricsService', () => {
       );
 
       const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(requestBody.query.bool.must[0].term['span.attributes.gen_ai@request@id']).toBe(
+      expect(requestBody.query.bool.must[0].term['attributes.gen_ai.request.id']).toBe(
         'test-run-123'
       );
     });
@@ -603,10 +611,12 @@ describe('metricsService', () => {
           name: 'agent.run',
           traceId: 'trace-1',
           durationInNanos: 3000000000,
-          'status.code': 1,
-          'span.attributes.gen_ai@usage@input_tokens': 500,
-          'span.attributes.gen_ai@usage@output_tokens': 200,
-          'span.attributes.gen_ai@request@model': 'anthropic.claude-sonnet-4',
+          status: { code: 1 },
+          attributes: {
+            'gen_ai.usage.input_tokens': 500,
+            'gen_ai.usage.output_tokens': 200,
+            'gen_ai.request.model': 'anthropic.claude-sonnet-4',
+          },
         },
       ];
 
@@ -647,11 +657,13 @@ describe('metricsService', () => {
                   name: 'agent.run',
                   traceId: 'trace-1',
                   durationInNanos: 1000000000,
-                  'status.code': 1,
-                  'span.attributes.gen_ai@request@id': 'run-1',
-                  'span.attributes.gen_ai@usage@input_tokens': 100,
-                  'span.attributes.gen_ai@usage@output_tokens': 50,
-                  'span.attributes.gen_ai@request@model': 'anthropic.claude-sonnet-4',
+                  status: { code: 1 },
+                  attributes: {
+                    'gen_ai.request.id': 'run-1',
+                    'gen_ai.usage.input_tokens': 100,
+                    'gen_ai.usage.output_tokens': 50,
+                    'gen_ai.request.model': 'anthropic.claude-sonnet-4',
+                  },
                 },
               },
               {
@@ -659,11 +671,13 @@ describe('metricsService', () => {
                   name: 'agent.run',
                   traceId: 'trace-2',
                   durationInNanos: 2000000000,
-                  'status.code': 1,
-                  'span.attributes.gen_ai@request@id': 'run-2',
-                  'span.attributes.gen_ai@usage@input_tokens': 200,
-                  'span.attributes.gen_ai@usage@output_tokens': 100,
-                  'span.attributes.gen_ai@request@model': 'anthropic.claude-sonnet-4',
+                  status: { code: 1 },
+                  attributes: {
+                    'gen_ai.request.id': 'run-2',
+                    'gen_ai.usage.input_tokens': 200,
+                    'gen_ai.usage.output_tokens': 100,
+                    'gen_ai.request.model': 'anthropic.claude-sonnet-4',
+                  },
                 },
               },
             ],
@@ -682,7 +696,7 @@ describe('metricsService', () => {
       // Should use terms query (single request for both IDs)
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(requestBody.query.bool.must[0].terms['span.attributes.gen_ai@request@id']).toEqual(['run-1', 'run-2']);
+      expect(requestBody.query.bool.must[0].terms['attributes.gen_ai.request.id']).toEqual(['run-1', 'run-2']);
     });
 
     it('should return pending metrics for run IDs with no matching spans', async () => {

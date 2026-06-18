@@ -7,7 +7,8 @@
  * Custom OpenSearch Span Exporter for the Observio agent.
  *
  * Writes OTel spans directly to an OpenSearch cluster using bulk API.
- * Formats spans in OSIS-compatible format (flattened attributes with @ separator).
+ * Formats spans in the OTEL-faithful Data Prepper `trace-analytics-plain-raw`
+ * schema (a nested `attributes` object keyed by literal dotted OTel names).
  */
 
 import { SpanExporter, ReadableSpan } from '@opentelemetry/sdk-trace-node';
@@ -34,10 +35,6 @@ function hrTimeToNanos(hrTime: HrTime): number {
 
 function durationNanos(start: HrTime, end: HrTime): number {
   return hrTimeToNanos(end) - hrTimeToNanos(start);
-}
-
-function flattenKey(key: string): string {
-  return key.replace(/\./g, '@');
 }
 
 function spanKindToString(kind: SpanKind): string {
@@ -71,37 +68,45 @@ function spanToDocument(span: ReadableSpan): Record<string, unknown> {
     startTime: hrTimeToDate(span.startTime),
     endTime: hrTimeToDate(span.endTime),
     durationInNanos: durationNanos(span.startTime, span.endTime),
-    'status.code': statusCodeToInt(span.status.code),
-    'status.message': span.status.message || '',
+    status: {
+      code: statusCodeToInt(span.status.code),
+      message: span.status.message || '',
+    },
     traceState: '',
     droppedAttributesCount: span.droppedAttributesCount,
     droppedEventsCount: span.droppedEventsCount,
     droppedLinksCount: span.droppedLinksCount,
   };
 
+  // Span attributes: nested object keyed by literal dotted OTel names
+  // (Data Prepper trace-analytics-plain-raw / OTEL-faithful schema).
+  const spanAttributes: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(span.attributes)) {
     if (value !== undefined) {
-      doc[`span.attributes.${flattenKey(key)}`] = value;
+      spanAttributes[key] = value;
     }
   }
+  doc.attributes = spanAttributes;
 
   const resource = span.resource;
+  const resourceAttributes: Record<string, unknown> = {};
   if (resource?.attributes) {
     for (const [key, value] of Object.entries(resource.attributes)) {
       if (value !== undefined) {
-        doc[`resource.attributes.${flattenKey(key)}`] = value;
+        resourceAttributes[key] = value;
       }
     }
   }
+  doc.resource = { attributes: resourceAttributes };
 
   const serviceName = resource?.attributes?.['service.name'] || 'unknown';
   doc.serviceName = serviceName;
 
   const scope = (span as any).instrumentationScope ?? (span as any).instrumentationLibrary ?? {};
-  doc['instrumentationScope.name'] = scope.name || '';
-  if (scope.version) {
-    doc['instrumentationScope.version'] = scope.version;
-  }
+  doc.instrumentationScope = {
+    name: scope.name || '',
+    ...(scope.version ? { version: scope.version } : {}),
+  };
 
   if (span.events.length > 0) {
     doc.events = span.events.map(event => {
@@ -114,7 +119,7 @@ function spanToDocument(span: ReadableSpan): Record<string, unknown> {
         const attrs: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(event.attributes)) {
           if (value !== undefined) {
-            attrs[flattenKey(key)] = value;
+            attrs[key] = value;
           }
         }
         eventDoc.attributes = attrs;

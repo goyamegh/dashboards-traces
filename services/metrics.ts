@@ -16,7 +16,7 @@ const API_BASE = ENV_CONFIG.backendUrl;
  * Fetch metrics for a single run from OpenSearch traces
  * Backend handles config resolution (file or env vars) - no headers needed from frontend
  *
- * @param runId - The agent run ID (gen_ai@request@id from traces)
+ * @param runId - The agent run ID (gen_ai.request.id span attribute)
  * @returns Computed metrics including tokens, cost, duration, tool calls
  */
 export async function fetchRunMetrics(runId: string): Promise<TraceMetrics> {
