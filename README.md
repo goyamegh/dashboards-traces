@@ -11,7 +11,7 @@
 <h2 align="center" style="border-bottom: none">Open-source AI Agent Evaluation & Observability</h2>
 
 <p align="center">
-Agent Health helps you evaluate, monitor, and optimize AI agents. From autonomous RCA agents to coding assistants, it provides real-time execution streaming, LLM-based evaluation with trajectory comparison, batch experiments, and deep observability through OpenTelemetry traces — all backed by OpenSearch.
+Agent Health helps you evaluate, monitor, and optimize AI agents of any kind — coding assistants, ops/RCA agents, customer-support agents, data-analysis agents, retrieval/discovery agents, and multi-agent workflows. It provides real-time execution streaming, LLM-based evaluation with trajectory comparison, batch experiments, and deep observability through OpenTelemetry traces — stored locally out of the box, or in OpenSearch when you want a shared cluster.
 </p>
 
 <div align="center">
@@ -61,7 +61,8 @@ Agent Health helps you evaluate, monitor, and optimize AI agents. From autonomou
 Agent Health is an evaluation and observability framework for AI agents, built on [OpenSearch](https://opensearch.org). It helps you measure agent performance through **"Golden Path" trajectory comparison** — where an LLM judge evaluates agent actions against expected outcomes — and provides deep observability into agent execution via OpenTelemetry traces.
 
 **Who uses Agent Health:**
-- AI teams building autonomous agents (RCA, customer support, data analysis)
+- AI teams building autonomous agents (RCA, customer support, data analysis, retrieval/discovery)
+- Teams comparing coding agents and multi-agent workflows across models, prompts, and context strategies
 - QA engineers testing agent behavior across scenarios
 - Platform teams monitoring agent performance in production
 - Developers using AI coding agents who want visibility into usage, costs, and productivity

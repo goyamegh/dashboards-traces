@@ -68,6 +68,31 @@ export function getUniquePrefixes(labels: string[]): string[] {
 }
 
 /**
+ * Sentinel value used by label-filter dropdowns to mean "no label filter".
+ */
+export const ALL_LABELS = 'all';
+
+/**
+ * Collect the distinct labels across a set of labelled items, sorted
+ * alphabetically. Used to populate label-filter dropdowns so a team can
+ * categorize / slice its suite by label (e.g. `category:RCA`).
+ */
+export function collectLabels(items: Array<{ labels?: string[] }>): string[] {
+  const set = new Set<string>();
+  for (const item of items) for (const label of item.labels || []) set.add(label);
+  return Array.from(set).sort((a, b) => a.localeCompare(b));
+}
+
+/**
+ * Whether an item's labels satisfy a selected label-filter value. The sentinel
+ * `ALL_LABELS` (or an empty value) matches everything.
+ */
+export function matchesLabelFilter(itemLabels: string[] | undefined, selected: string): boolean {
+  if (!selected || selected === ALL_LABELS) return true;
+  return (itemLabels || []).includes(selected);
+}
+
+/**
  * Filter labels by prefix
  */
 export function filterByPrefix(labels: string[], prefix: string): string[] {

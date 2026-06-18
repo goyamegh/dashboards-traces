@@ -38,6 +38,7 @@ import { ClusterContextBanner } from '@/components/comparison/ClusterContextBann
 import { QuickRunModal } from '@/components/QuickRunModal';
 import { Breadcrumbs } from '@/components/evals3/Breadcrumbs';
 import { validateTestCasesArrayJson } from '@/lib/testCaseValidation';
+import { collectLabels, matchesLabelFilter, ALL_LABELS } from '@/lib/labels';
 
 // ─── Time Filter ─────────────────────────────────────────────────────────────
 
@@ -118,6 +119,7 @@ export const TestCasesPage4: React.FC = () => {
   const [timeRange, setTimeRange] = usePersistedState<TimeRange>(PREFS_KEYS.timeRange, '7d');
   const [openPopoverId, setOpenPopoverId] = useState<string | null>(null);
   const [selectedBenchmark, setSelectedBenchmark] = usePersistedState<string>(PREFS_KEYS.benchmarkFilter, 'all');
+  const [selectedLabel, setSelectedLabel] = usePersistedState<string>('test-cases:labelFilter', ALL_LABELS);
   const [isScrolled, setIsScrolled] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -180,6 +182,11 @@ export const TestCasesPage4: React.FC = () => {
   const latestRunByTc: Record<string, { timestamp: string; passed: boolean | null; id: string }> = {};
   const passRateByTc: Record<string, { passed: number; total: number }> = {};
 
+  // Distinct labels across all test cases, sorted. Labels are the unified
+  // tagging system (e.g. `category:RCA`, `difficulty:Hard`, `agent:aos-oncall`);
+  // surfacing them as a filter is how a team categorizes and slices its suite.
+  const allLabels = useMemo(() => collectLabels(testCases), [testCases]);
+
   // Filtered test cases
   const filteredTcs = useMemo(() => {
     let list = testCases;
@@ -191,8 +198,11 @@ export const TestCasesPage4: React.FC = () => {
         list = list.filter(tc => bmTcIds.has(tc.id));
       }
     }
+    if (selectedLabel !== 'all') {
+      list = list.filter(tc => matchesLabelFilter(tc.labels, selectedLabel));
+    }
     return list;
-  }, [testCases, search, selectedBenchmark, benchmarks]);
+  }, [testCases, search, selectedBenchmark, selectedLabel, benchmarks]);
 
   // Sort test cases within groups (lastRun, runs)
   const sortTcsWithinGroup = useCallback((tcs: TestCase[]): TestCase[] => {
@@ -391,6 +401,16 @@ export const TestCasesPage4: React.FC = () => {
               {benchmarks.map(bm => <SelectItem key={bm.id} value={bm.id}>{bm.name}</SelectItem>)}
             </SelectContent>
           </Select>
+          {/* Label filter — categorize / slice the suite by label */}
+          {allLabels.length > 0 && (
+            <Select value={selectedLabel} onValueChange={setSelectedLabel}>
+              <SelectTrigger className="w-[160px] h-7 text-xs" data-testid="label-filter"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Labels</SelectItem>
+                {allLabels.map(label => <SelectItem key={label} value={label}>{label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          )}
           {/* View mode toggle (Grouped first — it's the default mental model) */}
           <div className="flex items-center border border-border rounded-md overflow-hidden h-7" data-testid="viewmode-toggle">
             <button data-testid="viewmode-grouped" onClick={() => setViewMode('grouped')} className={`px-2 h-full text-xs flex items-center gap-1 transition-colors ${viewMode === 'grouped' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>

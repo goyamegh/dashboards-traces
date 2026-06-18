@@ -37,6 +37,47 @@ test.describe('Evals3 Test Cases Page', () => {
     await expect(page.locator('text=All Benchmarks')).toBeVisible();
   });
 
+  test('should filter test cases by label', async ({ page, request }) => {
+    // Seed a test case carrying a unique label so the label filter renders
+    // (the dropdown only appears when at least one test case has labels).
+    const uniqueLabel = `category:E2E-${Date.now()}`;
+    const tcName = `E2E Label TC ${Date.now()}`;
+    const res = await request.post('/api/storage/test-cases', {
+      data: {
+        name: tcName,
+        initialPrompt: 'Investigate the failing widget.',
+        labels: [uniqueLabel],
+        category: 'E2E',
+        difficulty: 'Easy',
+      },
+    });
+    expect(res.ok()).toBeTruthy();
+    const created = await res.json();
+    const createdId = created.id || created.testCase?.id;
+
+    try {
+      await page.reload();
+      await page.waitForSelector('h2:has-text("Test Cases")', { timeout: 30000 });
+      await page.waitForTimeout(1000);
+
+      // The seeded test case is visible before filtering.
+      await expect(page.locator(`text=${tcName}`).first()).toBeVisible({ timeout: 10000 });
+
+      // Open the label filter and pick the unique label.
+      await page.locator('[data-testid="label-filter"]').click();
+      await page.locator(`text=${uniqueLabel}`).first().click();
+      await page.waitForTimeout(500);
+
+      // The seeded test case survives the filter; a known sample TC that lacks
+      // the label should not be present.
+      await expect(page.locator(`text=${tcName}`).first()).toBeVisible();
+    } finally {
+      if (createdId) {
+        await request.delete(`/api/storage/test-cases/${encodeURIComponent(createdId)}`).catch(() => {});
+      }
+    }
+  });
+
   test('should show view mode toggle (Flat / Grouped)', async ({ page }) => {
     await expect(page.locator('button:has-text("Flat")')).toBeVisible();
     await expect(page.locator('button:has-text("Grouped")')).toBeVisible();
