@@ -265,7 +265,7 @@ Resources:
             - opensearch:
                 hosts:
                   - "https://${OpenSearchDomain.DomainEndpoint}"
-                index_type: trace-analytics-raw
+                index_type: trace-analytics-plain-raw
                 aws:
                   sts_role_arn: "${OSISPipelineRole.Arn}"
                   region: "${AWS::Region}"
@@ -429,10 +429,6 @@ Resources:
               dt = datetime.fromtimestamp(secs, tz=timezone.utc)
               return dt.strftime('%Y-%m-%dT%H:%M:%S') + f'.{nanos:09d}Z'
 
-          def _sanitize_key(key):
-              """Replace dots with @ in attribute keys (data prepper convention)."""
-              return key.replace('.', '@')
-
           def _convert_span(span, resource_attrs, scope_name):
               trace_id = span.get('traceId', '')
               span_id = span.get('spanId', '')
@@ -453,7 +449,7 @@ Resources:
               for evt in span.get('events', []):
                   evt_attrs = {}
                   for a in evt.get('attributes', []):
-                      evt_attrs[_sanitize_key(a['key'])] = _attr_value(a['value'])
+                      evt_attrs[a['key']] = _attr_value(a['value'])
                   events.append({
                       'name': evt.get('name', ''),
                       'time': _nano_to_iso(evt.get('timeUnixNano', '0')),
@@ -473,25 +469,29 @@ Resources:
                   'status': {'code': status_code, 'message': status.get('message', '')},
                   'events': events,
                   'links': [],
-                  'instrumentationScope.name': scope_name,
+                  'instrumentationScope': {'name': scope_name},
               }
               if not parent:
                   doc['traceGroup'] = span.get('name', '')
-                  doc['traceGroupFields.endTime'] = _nano_to_iso(end_ns)
-                  doc['traceGroupFields.durationInNanos'] = duration_nanos
-                  doc['traceGroupFields.statusCode'] = status_code
-              # Flatten resource attributes with @ separator for dotted keys
+                  doc['traceGroupFields'] = {
+                      'endTime': _nano_to_iso(end_ns),
+                      'durationInNanos': duration_nanos,
+                      'statusCode': status_code,
+                  }
+              # Resource attributes: nested resource.attributes object, literal
+              # dotted keys (Data Prepper trace-analytics-plain-raw / OTEL-faithful).
+              resource_attributes = {}
               for a in resource_attrs:
-                  key = _sanitize_key(a['key'])
                   val = _attr_value(a['value'])
-                  doc[f'resource.attributes.{key}'] = val
+                  resource_attributes[a['key']] = val
                   if a['key'] == 'service.name':
                       doc['serviceName'] = val
-              # Flatten span attributes with @ separator for dotted keys
+              doc['resource'] = {'attributes': resource_attributes}
+              # Span attributes: nested attributes object, literal dotted keys.
+              span_attributes = {}
               for a in span.get('attributes', []):
-                  key = _sanitize_key(a['key'])
-                  val = _attr_value(a['value'])
-                  doc[f'span.attributes.{key}'] = val
+                  span_attributes[a['key']] = _attr_value(a['value'])
+              doc['attributes'] = span_attributes
               doc_id = hashlib.md5(f'{trace_id}{span_id}'.encode()).hexdigest()
               return doc_id, doc
 

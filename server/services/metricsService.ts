@@ -70,13 +70,11 @@ interface OpenSearchSpanSource {
   startTime?: string;
   endTime?: string;
   durationInNanos?: number;
-  'status.code'?: number;
-  'span.attributes.gen_ai@request@id'?: string;
-  'span.attributes.gen_ai@usage@input_tokens'?: number;
-  'span.attributes.gen_ai@usage@output_tokens'?: number;
-  'span.attributes.gen_ai@request@model'?: string;
-  'span.attributes.gen_ai@tool@name'?: string;
-  'span.attributes.tool.name'?: string;
+  status?: { code?: number; message?: string };
+  // Plain-raw (OTEL-faithful) schema: span attributes are a nested object
+  // keyed by the literal dotted OTel attribute name, e.g.
+  // attributes['gen_ai.request.id']. (Data Prepper trace-analytics-plain-raw.)
+  attributes?: Record<string, any>;
 }
 
 interface OpenSearchResponse {
@@ -165,24 +163,22 @@ export function computeMetricsFromSampleSpans(runId: string): MetricsResult | nu
 /**
  * Compute metrics from OpenSearch traces for a run
  *
- * @param runId - The run ID (gen_ai@request@id)
+ * @param runId - The run ID (stored as the gen_ai.request.id span attribute)
  * @param osConfig - OpenSearch configuration
  * @returns Computed metrics
  */
-// Fields needed for metrics computation (used for _source projection in bulk queries)
+// Fields needed for metrics computation (used for _source projection in bulk
+// queries). We pull the whole nested `attributes` object: in the plain-raw
+// schema its keys are literal dotted OTel names (e.g. "gen_ai.usage.input_tokens")
+// which _source field-filtering cannot address individually.
 const METRICS_SOURCE_FIELDS = [
-  'span.attributes.gen_ai@request@id',
-  'span.attributes.gen_ai@usage@input_tokens',
-  'span.attributes.gen_ai@usage@output_tokens',
-  'span.attributes.gen_ai@request@model',
-  'span.attributes.gen_ai@tool@name',
-  'span.attributes.tool.name',
+  'attributes',
   'name',
   'traceId',
   'startTime',
   'endTime',
   'durationInNanos',
-  'status.code',
+  'status',
 ];
 
 /**
@@ -220,20 +216,21 @@ export function computeMetricsFromSpans(
   let modelId = 'default';
 
   for (const span of spans) {
-    const inTokens = Number(span['span.attributes.gen_ai@usage@input_tokens']) || 0;
-    const outTokens = Number(span['span.attributes.gen_ai@usage@output_tokens']) || 0;
+    const attrs = span.attributes || {};
+    const inTokens = Number(attrs['gen_ai.usage.input_tokens']) || 0;
+    const outTokens = Number(attrs['gen_ai.usage.output_tokens']) || 0;
     inputTokens += inTokens;
     outputTokens += outTokens;
 
-    const spanModel = span['span.attributes.gen_ai@request@model'];
+    const spanModel = attrs['gen_ai.request.model'];
     if (spanModel) {
       llmCalls++;
       modelId = spanModel;
     }
 
     if (span.name === 'agent.tool.execute' || span.name?.includes('tool')) {
-      const toolName = span['span.attributes.gen_ai@tool@name'] ||
-                       span['span.attributes.tool.name'] ||
+      const toolName = attrs['gen_ai.tool.name'] ||
+                       attrs['tool.name'] ||
                        span.name;
       if (toolName && toolName !== 'agent.tool.execute') {
         toolsUsed.add(toolName);
@@ -257,10 +254,10 @@ export function computeMetricsFromSpans(
 
   let status: 'pending' | 'success' | 'error' = 'pending';
   if (rootSpan) {
-    status = rootSpan['status.code'] === 2 ? 'error' :
-             rootSpan['status.code'] === 1 ? 'success' : 'success';
+    status = rootSpan.status?.code === 2 ? 'error' :
+             rootSpan.status?.code === 1 ? 'success' : 'success';
   } else if (spans.length > 0) {
-    const hasError = spans.some(s => s['status.code'] === 2);
+    const hasError = spans.some(s => s.status?.code === 2);
     status = hasError ? 'error' : 'success';
   }
 
@@ -296,7 +293,7 @@ export async function computeMetrics(
         query: {
           bool: {
             must: [
-              { term: { 'span.attributes.gen_ai@request@id': runId } }
+              { term: { 'attributes.gen_ai.request.id': runId } }
             ]
           }
         }
@@ -315,7 +312,7 @@ export async function computeMetrics(
     query: {
       bool: {
         must: [
-          { term: { 'span.attributes.gen_ai@request@id': runId } }
+          { term: { 'attributes.gen_ai.request.id': runId } }
         ]
       }
     }
@@ -372,7 +369,7 @@ export async function computeBatchMetrics(
             query: {
               bool: {
                 must: [
-                  { terms: { 'span.attributes.gen_ai@request@id': chunk } }
+                  { terms: { 'attributes.gen_ai.request.id': chunk } }
                 ]
               }
             }
@@ -392,7 +389,7 @@ export async function computeBatchMetrics(
         const spansByRunId = new Map<string, OpenSearchSpanSource[]>();
         for (const rid of chunk) spansByRunId.set(rid, []);
         for (const span of allSpans) {
-          const rid = span['span.attributes.gen_ai@request@id'] as unknown as string;
+          const rid = span.attributes?.['gen_ai.request.id'] as string | undefined;
           if (rid && spansByRunId.has(rid)) {
             spansByRunId.get(rid)!.push(span);
           }
@@ -424,7 +421,7 @@ export async function computeBatchMetrics(
       query: {
         bool: {
           must: [
-            { terms: { 'span.attributes.gen_ai@request@id': chunk } }
+            { terms: { 'attributes.gen_ai.request.id': chunk } }
           ]
         }
       }
@@ -462,7 +459,7 @@ export async function computeBatchMetrics(
     const spansByRunId = new Map<string, OpenSearchSpanSource[]>();
     for (const rid of chunk) spansByRunId.set(rid, []);
     for (const span of allSpans) {
-      const rid = span['span.attributes.gen_ai@request@id'] as unknown as string;
+      const rid = span.attributes?.['gen_ai.request.id'] as string | undefined;
       if (rid && spansByRunId.has(rid)) {
         spansByRunId.get(rid)!.push(span);
       }

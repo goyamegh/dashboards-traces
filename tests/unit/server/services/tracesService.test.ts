@@ -89,6 +89,26 @@ describe('tracesService', () => {
       expect(result.attributes['gen_ai.tool.name']).toBe('search');
     });
 
+    it('should read plain-raw nested attributes (literal dotted OTel keys) (#296)', () => {
+      const source: OpenSearchSpanSource = {
+        attributes: {
+          'gen_ai.request.id': 'run-456',
+          'gen_ai.usage.input_tokens': 250,
+          'gen_ai.agent.name': 'retail-agent',
+        },
+        resource: { attributes: { 'service.name': 'retail-agent' } },
+        status: { code: 2 },
+      } as any;
+
+      const result = transformSpan(source);
+
+      expect(result.attributes['gen_ai.request.id']).toBe('run-456');
+      expect(result.attributes['gen_ai.usage.input_tokens']).toBe(250);
+      expect(result.attributes['gen_ai.agent.name']).toBe('retail-agent');
+      expect(result.attributes['service.name']).toBe('retail-agent');
+      expect(result.status).toBe('ERROR');
+    });
+
     it('should convert resource.attributes with @ notation', () => {
       const source: OpenSearchSpanSource = {
         'resource.attributes.service@name': 'my-service',
@@ -211,6 +231,32 @@ describe('tracesService', () => {
       const result = await fetchTraces({ runIds: ['run-1', 'run-2'] }, client);
 
       expect(result.spans).toHaveLength(2);
+    });
+
+    it('correlates runIds via the plain-raw attributes.gen_ai.request.id field (#296)', async () => {
+      const search = jest.fn().mockResolvedValue({
+        body: { hits: { hits: [], total: { value: 0 } } },
+      });
+      const client = createMockClient({ search });
+
+      await fetchTraces({ runIds: ['run-1', 'run-2'] }, client);
+
+      const clause = JSON.stringify(search.mock.calls[0][0].body.query);
+      // The OTEL-faithful (Data Prepper trace-analytics-plain-raw) field path,
+      // NOT the legacy custom `span.attributes.gen_ai@request@id` shape.
+      expect(clause).toContain('attributes.gen_ai.request.id');
+      expect(clause).not.toContain('gen_ai@request@id');
+    });
+
+    it('correlates sessionId via attributes.session.id (#296)', async () => {
+      const search = jest.fn().mockResolvedValue({
+        body: { hits: { hits: [], total: { value: 0 } } },
+      });
+      const client = createMockClient({ search });
+
+      await fetchTraces({ sessionId: 'sess-1' }, client);
+
+      expect(JSON.stringify(search.mock.calls[0][0].body.query)).toContain('attributes.session.id');
     });
 
     it('should fetch traces by time range', async () => {

@@ -186,16 +186,16 @@ describe('OpenSearchSpanExporter', () => {
   });
 
   describe('span document format', () => {
-    it('flattens attributes with @ separator', async () => {
+    it('nests attributes under a literal dotted-key attributes object', async () => {
       mockBulk.mockResolvedValueOnce({ body: { errors: false, items: [] } });
 
       const span = createMockSpan();
       await exportSpans(exporter, [span]);
 
       const doc = mockBulk.mock.calls[0][0].body[1];
-      expect(doc['span.attributes.gen_ai@system']).toBe('anthropic');
-      expect(doc['span.attributes.gen_ai@operation@name']).toBe('invoke_agent');
-      expect(doc['resource.attributes.service@name']).toBe('observio-sample-agent');
+      expect(doc.attributes['gen_ai.system']).toBe('anthropic');
+      expect(doc.attributes['gen_ai.operation.name']).toBe('invoke_agent');
+      expect(doc.resource.attributes['service.name']).toBe('observio-sample-agent');
     });
 
     it('sets traceGroup for root spans (no parent)', async () => {
@@ -237,7 +237,7 @@ describe('OpenSearchSpanExporter', () => {
       expect(doc.kind).toBe('SPAN_KIND_SERVER');
     });
 
-    it('includes events with flattened attribute keys', async () => {
+    it('includes events with literal dotted attribute keys', async () => {
       mockBulk.mockResolvedValueOnce({ body: { errors: false, items: [] } });
 
       const span = createMockSpan({
@@ -253,7 +253,7 @@ describe('OpenSearchSpanExporter', () => {
       const doc = mockBulk.mock.calls[0][0].body[1];
       expect(doc.events).toHaveLength(1);
       expect(doc.events[0].name).toBe('gen_ai.content.prompt');
-      expect(doc.events[0].attributes['gen_ai@prompt@text']).toBe('hello');
+      expect(doc.events[0].attributes['gen_ai.prompt.text']).toBe('hello');
     });
 
     it('generates doc ID from traceId/spanId', async () => {

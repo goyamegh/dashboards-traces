@@ -278,7 +278,7 @@ export async function fetchTraces(
     const validRunIds = runIds.filter((id): id is string => typeof id === 'string' && id.length > 0);
     if (validRunIds.length > 0) {
       sink.push({
-        terms: { 'span.attributes.gen_ai@request@id': validRunIds }
+        terms: { 'attributes.gen_ai.request.id': validRunIds }
       });
     }
   }
@@ -292,7 +292,7 @@ export async function fetchTraces(
               bool: {
                 should: [
                   { term: { 'serviceName': a.serviceName } },
-                  { term: { 'span.attributes.gen_ai@agent@name': a.serviceName } },
+                  { term: { 'attributes.gen_ai.agent.name': a.serviceName } },
                 ],
                 minimum_should_match: 1,
               },
@@ -312,7 +312,7 @@ export async function fetchTraces(
   }
 
   if (sessionId) {
-    must.push({ term: { 'span.attributes.session@id': sessionId } });
+    must.push({ term: { 'attributes.session.id': sessionId } });
   }
 
   if (startTime || endTime) {
@@ -328,7 +328,7 @@ export async function fetchTraces(
       bool: {
         should: [
           { term: { 'serviceName': serviceName } },
-          { term: { 'span.attributes.gen_ai@agent@name': serviceName } }
+          { term: { 'attributes.gen_ai.agent.name': serviceName } }
         ],
         minimum_should_match: 1
       }
@@ -340,7 +340,7 @@ export async function fetchTraces(
     must.push({
       query_string: {
         query: `*${textSearch}*`,
-        fields: ['name', 'span.attributes.*'],
+        fields: ['name', 'attributes.*'],
         default_operator: 'AND'
       }
     });
