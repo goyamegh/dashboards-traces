@@ -6,6 +6,7 @@
 import { OpenSearchObservabilityModule } from '@/server/adapters/observability/OpenSearchObservabilityModule';
 import { fetchTraces, checkTracesHealth } from '@/server/services/tracesService';
 import { fetchLogs } from '@/server/services/logsService';
+import { computeMetrics, computeBatchMetrics } from '@/server/services/metricsService';
 
 jest.mock('@/server/services/tracesService', () => ({
   fetchTraces: jest.fn(),
@@ -14,10 +15,16 @@ jest.mock('@/server/services/tracesService', () => ({
 jest.mock('@/server/services/logsService', () => ({
   fetchLogs: jest.fn(),
 }));
+jest.mock('@/server/services/metricsService', () => ({
+  computeMetrics: jest.fn(),
+  computeBatchMetrics: jest.fn(),
+}));
 
 const mockFetchTraces = fetchTraces as jest.MockedFunction<typeof fetchTraces>;
 const mockCheckTracesHealth = checkTracesHealth as jest.MockedFunction<typeof checkTracesHealth>;
 const mockFetchLogs = fetchLogs as jest.MockedFunction<typeof fetchLogs>;
+const mockComputeMetrics = computeMetrics as jest.MockedFunction<typeof computeMetrics>;
+const mockComputeBatchMetrics = computeBatchMetrics as jest.MockedFunction<typeof computeBatchMetrics>;
 
 describe('OpenSearchObservabilityModule', () => {
   const client = { search: jest.fn() } as any;
@@ -106,6 +113,32 @@ describe('OpenSearchObservabilityModule', () => {
 
       expect(mockFetchLogs).toHaveBeenCalledWith({ runId: 'run-1' }, client, 'ml-logs-*');
       expect(result).toEqual({ logs: [{ id: 'l1' }], total: 1 });
+    });
+  });
+
+  describe('metrics', () => {
+    it('is supported on the OpenSearch backend', () => {
+      expect(mod.metrics.supported).toBe(true);
+    });
+
+    it('computeForRun delegates to computeMetrics with the bound client + traces index', async () => {
+      mockComputeMetrics.mockResolvedValue({ runId: 'run-1', totalTokens: 1500 } as any);
+      const m = await mod.metrics.computeForRun('run-1');
+      expect(mockComputeMetrics).toHaveBeenCalledWith('run-1', { client, indexPattern: 'otel-traces-*' });
+      expect(m).toEqual({ runId: 'run-1', totalTokens: 1500 });
+    });
+
+    it('computeForRuns delegates to computeBatchMetrics', async () => {
+      mockComputeBatchMetrics.mockResolvedValue([{ runId: 'run-1' } as any, { runId: 'run-2' } as any]);
+      const ms = await mod.metrics.computeForRuns(['run-1', 'run-2']);
+      expect(mockComputeBatchMetrics).toHaveBeenCalledWith(['run-1', 'run-2'], { client, indexPattern: 'otel-traces-*' });
+      expect(ms).toHaveLength(2);
+    });
+
+    it('computeForRuns short-circuits to [] for an empty list', async () => {
+      const ms = await mod.metrics.computeForRuns([]);
+      expect(ms).toEqual([]);
+      expect(mockComputeBatchMetrics).not.toHaveBeenCalled();
     });
   });
 

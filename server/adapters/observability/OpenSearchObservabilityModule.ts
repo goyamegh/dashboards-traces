@@ -28,6 +28,7 @@ import type {
 import type { Span, HealthStatus, OpenSearchLog } from '../../../types/index.js';
 import { fetchTraces, checkTracesHealth } from '../../services/tracesService.js';
 import { fetchLogs } from '../../services/logsService.js';
+import { computeMetrics, computeBatchMetrics } from '../../services/metricsService.js';
 
 export interface ObservabilityIndexes {
   traces: string;
@@ -67,7 +68,19 @@ class OpenSearchLogsOperations implements ILogsOperations {
   }
 }
 
-class NoopMetricsOperations implements IMetricsOperations {}
+class OpenSearchMetricsOperations implements IMetricsOperations {
+  readonly supported = true;
+  constructor(private readonly client: Client, private readonly index: string) {}
+
+  async computeForRun(runId: string) {
+    return computeMetrics(runId, { client: this.client, indexPattern: this.index });
+  }
+
+  async computeForRuns(runIds: string[]) {
+    if (!runIds.length) return [];
+    return computeBatchMetrics(runIds, { client: this.client, indexPattern: this.index });
+  }
+}
 
 export class OpenSearchObservabilityModule implements IObservabilityModule {
   readonly traces: ITracesOperations;
@@ -82,7 +95,7 @@ export class OpenSearchObservabilityModule implements IObservabilityModule {
     this.indexes = indexes;
     this.traces = new OpenSearchTracesOperations(client, indexes.traces);
     this.logs = new OpenSearchLogsOperations(client, indexes.logs);
-    this.metrics = new NoopMetricsOperations();
+    this.metrics = new OpenSearchMetricsOperations(client, indexes.traces);
   }
 
   async health(): Promise<HealthStatus> {

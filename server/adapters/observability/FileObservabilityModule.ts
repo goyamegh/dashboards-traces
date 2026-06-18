@@ -160,7 +160,22 @@ class FileLogsOperations implements ILogsOperations {
   }
 }
 
-class NoopMetricsOperations implements IMetricsOperations {}
+/**
+ * File backend does not compute trace-derived metrics on purpose: metrics
+ * (tokens / cost / model / tool usage) are an OpenSearch-backed capability, and
+ * we promote graduating to an observability cluster rather than maintaining a
+ * parallel file-store implementation. `supported = false` lets routes surface a
+ * clear "configure OpenSearch" message instead of silently returning zeroes.
+ */
+class FileMetricsOperations implements IMetricsOperations {
+  readonly supported = false;
+  async computeForRun(): Promise<null> {
+    return null;
+  }
+  async computeForRuns(): Promise<[]> {
+    return [];
+  }
+}
 
 export class FileObservabilityModule implements IObservabilityModule {
   readonly traces: ITracesOperations;
@@ -172,7 +187,7 @@ export class FileObservabilityModule implements IObservabilityModule {
     this.store = new TraceStore(baseDir);
     this.traces = new FileTracesOperations(this.store);
     this.logs = new FileLogsOperations();
-    this.metrics = new NoopMetricsOperations();
+    this.metrics = new FileMetricsOperations();
   }
 
   /** Ingest spans (used by the embedded OTLP receiver). */

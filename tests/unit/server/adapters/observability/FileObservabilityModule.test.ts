@@ -159,4 +159,16 @@ describe('FileObservabilityModule', () => {
   it('logs.query returns empty (file logs backend is a future addition)', async () => {
     expect(await mod.logs.query({ runId: 'r' })).toEqual({ logs: [], total: 0 });
   });
+
+  describe('metrics (deliberate no-op — promotes OpenSearch)', () => {
+    it('reports metrics as unsupported on the file backend', () => {
+      expect(mod.metrics.supported).toBe(false);
+    });
+    it('computeForRun returns null', async () => {
+      expect(await mod.metrics.computeForRun('run-1')).toBeNull();
+    });
+    it('computeForRuns returns []', async () => {
+      expect(await mod.metrics.computeForRuns(['run-1', 'run-2'])).toEqual([]);
+    });
+  });
 });

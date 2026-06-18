@@ -9,8 +9,8 @@
 
 import { Request, Response, Router } from 'express';
 import { debug } from '@/lib/debug';
-import { computeMetrics, computeBatchMetrics, computeMetricsFromSampleSpans, computeAggregateMetrics } from '../services/metricsService';
-import { getObservabilityClient } from '../services/observabilityClient.js';
+import { computeMetricsFromSampleSpans, computeAggregateMetrics } from '../services/metricsService';
+import { getObservabilityModule } from '../services/observabilityClient.js';
 import { MetricsResult } from '@/types';
 
 const router = Router();
@@ -30,14 +30,17 @@ router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
       }
     }
 
-    const obs = getObservabilityClient(req);
-    if (!obs) {
-      return res.status(503).json({ error: 'Observability data source not configured' });
+    const obs = getObservabilityModule(req);
+    if (!obs.metrics.supported) {
+      return res.status(503).json({ error: 'Trace-derived metrics require an OpenSearch observability cluster' });
     }
 
     debug('MetricsAPI', 'Computing metrics for runId:', runId);
 
-    const metrics = await computeMetrics(runId, { client: obs.client, indexPattern: obs.indexes.traces });
+    const metrics = await obs.metrics.computeForRun(runId);
+    if (!metrics) {
+      return res.status(503).json({ error: 'Trace-derived metrics require an OpenSearch observability cluster' });
+    }
 
     debug('MetricsAPI', 'Metrics computed:', {
       runId: metrics.runId,
@@ -81,17 +84,17 @@ router.post('/api/metrics/batch', async (req: Request, res: Response) => {
     let realResults: (MetricsResult | { runId: string; error: string; status: string })[] = [];
 
     if (realRunIds.length > 0) {
-      const obs = getObservabilityClient(req);
+      const obs = getObservabilityModule(req);
 
-      if (!obs) {
+      if (!obs.metrics.supported) {
         realResults = realRunIds.map((runId: string) => ({
           runId,
-          error: 'Observability data source not configured',
+          error: 'Trace-derived metrics require an OpenSearch observability cluster',
           status: 'error'
         }));
       } else {
         try {
-          realResults = await computeBatchMetrics(realRunIds, { client: obs.client, indexPattern: obs.indexes.traces });
+          realResults = await obs.metrics.computeForRuns(realRunIds);
         } catch (e: any) {
           realResults = realRunIds.map((runId: string) => ({
             runId,

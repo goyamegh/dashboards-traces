@@ -20,6 +20,7 @@ import type {
   SessionMetadata,
   OpenSearchLog,
   Span,
+  MetricsResult,
   HealthStatus,
   DataSourceAdapterType,
   DataSourceConfig,
@@ -221,10 +222,22 @@ export interface ITracesOperations {
 }
 
 /**
- * Metrics query operations (placeholder for future)
+ * Metrics query operations.
+ *
+ * Trace-derived metrics (tokens / cost / model / tool usage / trace duration)
+ * are computed from the spans an agent emitted, correlated to a run. This is an
+ * OpenSearch-backed capability: the file observability backend reports
+ * `supported = false` **on purpose** — rather than maintain a parallel
+ * file-store metrics implementation, we promote graduating to an OpenSearch
+ * observability cluster for trace-derived metrics.
  */
 export interface IMetricsOperations {
-  // Future: Add metrics query operations
+  /** Whether this backend computes trace-derived metrics. */
+  readonly supported: boolean;
+  /** Metrics for a single run; `null` when this backend doesn't support metrics. */
+  computeForRun(runId: string): Promise<MetricsResult | null>;
+  /** Metrics for many runs; empty array when this backend doesn't support metrics. */
+  computeForRuns(runIds: string[]): Promise<MetricsResult[]>;
 }
 
 /**
