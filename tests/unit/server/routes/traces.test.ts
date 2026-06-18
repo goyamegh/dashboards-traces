@@ -24,12 +24,14 @@ jest.mock('@/server/services/tracesService', () => {
   };
 });
 
-// Mock the observability client
+// Mock the observability client factory; the route resolves an IObservabilityModule.
 jest.mock('@/server/services/observabilityClient', () => ({
   getObservabilityClient: jest.fn(),
+  getObservabilityModule: jest.fn(),
 }));
-import { getObservabilityClient } from '@/server/services/observabilityClient';
-const mockGetObservabilityClient = getObservabilityClient as jest.MockedFunction<typeof getObservabilityClient>;
+import { getObservabilityModule } from '@/server/services/observabilityClient';
+import { OpenSearchObservabilityModule } from '@/server/adapters/observability/OpenSearchObservabilityModule';
+const mockGetObservabilityModule = getObservabilityModule as jest.MockedFunction<typeof getObservabilityModule>;
 
 // Mock the data source config middleware
 jest.mock('@/server/middleware/dataSourceConfig', () => ({
@@ -95,10 +97,9 @@ describe('Traces Routes', () => {
       OPENSEARCH_LOGS_PASSWORD: 'admin',
       OPENSEARCH_LOGS_TRACES_INDEX: 'otel-traces-*',
     };
-    mockGetObservabilityClient.mockReturnValue({
-      client: mockClient as any,
-      indexes: { traces: 'otel-traces-*', logs: 'logs-*', metrics: 'metrics-*' },
-    });
+    mockGetObservabilityModule.mockReturnValue(
+      new OpenSearchObservabilityModule(mockClient as any, { traces: 'otel-traces-*', logs: 'logs-*', metrics: 'metrics-*' })
+    );
     mockResolveObservabilityConfig.mockReturnValue({
       endpoint: 'http://localhost:9200',
       authType: 'basic',
@@ -244,7 +245,7 @@ describe('Traces Routes', () => {
     });
 
     it('should return only sample data with warning when logs not configured', async () => {
-      mockGetObservabilityClient.mockReturnValue(null);
+      mockGetObservabilityModule.mockReturnValue(null);
       const sampleSpans = [{ traceId: 'sample', spanId: 'ss1', name: 'sample' }];
       mockGetSampleSpansForRunIds.mockReturnValue(sampleSpans as any);
 
@@ -338,7 +339,7 @@ describe('Traces Routes', () => {
     });
 
     it('should return demo spans with warning when observability config is missing for time-range query', async () => {
-      mockGetObservabilityClient.mockReturnValue(null);
+      mockGetObservabilityModule.mockReturnValue(null);
       const demoSpans = [
         { traceId: 'demo-trace-001', spanId: 'ds1', name: 'demo-span', startTime: '2024-01-01', endTime: '2024-01-01', duration: 100, status: 'OK' as const, attributes: { 'service.name': 'demo' } },
         { traceId: 'demo-trace-002', spanId: 'ds2', name: 'demo-span-2', startTime: '2024-01-01', endTime: '2024-01-01', duration: 200, status: 'OK' as const, attributes: { 'service.name': 'other-service' } },
@@ -367,7 +368,7 @@ describe('Traces Routes', () => {
     });
 
     it('should filter demo spans by serviceName when no config', async () => {
-      mockGetObservabilityClient.mockReturnValue(null);
+      mockGetObservabilityModule.mockReturnValue(null);
       const demoSpans = [
         { traceId: 'demo-trace-001', spanId: 'ds1', name: 'span-a', startTime: '2024-01-01', endTime: '2024-01-01', duration: 100, status: 'OK' as const, attributes: { 'service.name': 'demo' } },
         { traceId: 'demo-trace-002', spanId: 'ds2', name: 'span-b', startTime: '2024-01-01', endTime: '2024-01-01', duration: 200, status: 'OK' as const, attributes: { 'service.name': 'other-service' } },
@@ -395,7 +396,7 @@ describe('Traces Routes', () => {
     });
 
     it('should filter demo spans by textSearch when no config', async () => {
-      mockGetObservabilityClient.mockReturnValue(null);
+      mockGetObservabilityModule.mockReturnValue(null);
       const demoSpans = [
         { traceId: 'demo-trace-001', spanId: 'ds1', name: 'invoke_agent Weather Agent', startTime: '2024-01-01', endTime: '2024-01-01', duration: 100, status: 'OK' as const, attributes: { 'service.name': 'demo' } },
         { traceId: 'demo-trace-002', spanId: 'ds2', name: 'chat claude-sonnet-4', startTime: '2024-01-01', endTime: '2024-01-01', duration: 200, status: 'OK' as const, attributes: { 'service.name': 'demo' } },
@@ -466,7 +467,7 @@ describe('Traces Routes', () => {
   describe('GET /api/traces/health', () => {
     it('should return sample_only when logs not configured', async () => {
       mockResolveObservabilityConfig.mockReturnValue(null as any);
-      mockGetObservabilityClient.mockReturnValue(null);
+      mockGetObservabilityModule.mockReturnValue(null);
       mockGetAllSampleTraceSpans.mockReturnValue([{ id: '1' }, { id: '2' }] as any);
 
       const { req, res } = createMocks();

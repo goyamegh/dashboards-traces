@@ -11,7 +11,7 @@
  */
 
 import { Request, Response, Router } from 'express';
-import { fetchTraces, checkTracesHealth, classifyOpenSearchError, validateAwsCredentials, type ErrorCategory } from '../services/tracesService.js';
+import { classifyOpenSearchError, validateAwsCredentials, type ErrorCategory } from '../services/tracesService.js';
 import {
   getSampleSpansForRunIds,
   getSampleSpansByTraceId,
@@ -20,7 +20,7 @@ import {
   isSampleTraceId,
 } from '../../cli/demo/sampleTraces.js';
 import { resolveObservabilityConfig } from '../middleware/dataSourceConfig.js';
-import { getObservabilityClient } from '../services/observabilityClient.js';
+import { getObservabilityModule } from '../services/observabilityClient.js';
 import type { Span } from '../../types/index.js';
 
 const router = Router();
@@ -69,14 +69,12 @@ router.post('/api/traces', async (req: Request, res: Response) => {
     let suggestion: string | undefined;
     let nextCursor: string | null = null;
     let hasMore: boolean = false;
-    const obs = getObservabilityClient(req);
+    const obs = getObservabilityModule(req);
 
     if (obs && (traceId || (runIds && runIds.length > 0) || sessionId || startTime || endTime || (agents && agents.length > 0))) {
       try {
-        const result = await fetchTraces(
-          { traceId, runIds, sessionId, startTime, endTime, size, serviceName, textSearch, cursor, agents },
-          obs.client,
-          obs.indexes.traces
+        const result = await obs.traces.query(
+          { traceId, runIds, sessionId, startTime, endTime, size, serviceName, textSearch, cursor, agents }
         );
 
         realSpans = (result.spans || []) as Span[];
@@ -162,12 +160,12 @@ router.get('/api/traces/health', async (req: Request, res: Response) => {
       }
     }
 
-    const obs = getObservabilityClient(req);
+    const obs = getObservabilityModule(req);
     if (!obs) {
       return res.json({ status: 'error', error: 'Failed to create client' });
     }
 
-    const result = await checkTracesHealth(obs.client, obs.indexes.traces);
+    const result = await obs.health();
     res.json(result);
   } catch (error: any) {
     res.json({ status: 'error', error: error.message });
