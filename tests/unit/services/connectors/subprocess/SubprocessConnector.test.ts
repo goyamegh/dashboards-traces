@@ -142,7 +142,7 @@ describe('SubprocessConnector', () => {
         'test-command',
         [],
         expect.objectContaining({
-          shell: true,
+          shell: false,
         })
       );
     });
@@ -940,10 +940,13 @@ describe('SubprocessConnector', () => {
   //   1. `request.connectorConfig` MUST override constructor defaults per-call
   //      (otherwise users registering an agent via agent-health.config.ts get
   //      silently ignored — args/inputMode never apply).
-  //   2. When `inputMode: 'arg'`, the prompt MUST be shell-quoted before being
-  //      handed to spawn(..., { shell: true }) — spaces/slashes in the prompt
-  //      were getting word-split by /bin/sh, causing "/my-agent investigate
-  //      <url>" to arrive at the child as 3 separate args.
+  //   2. When `inputMode: 'arg'`, the prompt MUST arrive at the child as
+  //      one verbatim argv slot. After the security fix the connector
+  //      spawns with `shell: false` and passes `args` as an array, so the
+  //      OS exec syscall delivers each element to the child unchanged —
+  //      shell metacharacters in the prompt (backticks, `$()`, `;`, &) are
+  //      no longer evaluated, and word-splitting is impossible by
+  //      construction. The previous shell-quoting layer is gone.
   //   3. With `outputParser: 'streaming'`, the connector should emit one
   //      `assistant` step per clean stdout line in real time, AND a final
   //      consolidated `response` step on close (so the judge sees the full
@@ -971,7 +974,7 @@ describe('SubprocessConnector', () => {
       expect(args.slice(0, 4)).toEqual(['chat', '--agent', 'demo-agent', '--no-interactive']);
     });
 
-    it('honors inputMode: "arg" from connectorConfig and appends a quoted prompt', async () => {
+    it('honors inputMode: "arg" from connectorConfig and appends the prompt as a verbatim arg', async () => {
       const request: ConnectorRequest = {
         testCase: { ...mockTestCase, initialPrompt: '/my-agent investigate https://example.com', context: [] },
         modelId: 'm',
@@ -985,16 +988,42 @@ describe('SubprocessConnector', () => {
       });
       await promise;
 
-      const [, args] = (spawn as jest.Mock).mock.calls[0];
-      const last = args[args.length - 1];
-      // Single shell-quoted argument carrying the entire prompt
-      expect(last.startsWith("'")).toBe(true);
-      expect(last.endsWith("'")).toBe(true);
-      expect(last).toContain('/my-agent investigate https://example.com');
-      expect(args).toHaveLength(2); // ['chat', "'<prompt>'"], NOT 4 word-split tokens
+      const [, args, opts] = (spawn as jest.Mock).mock.calls[0];
+      // shell: false (the default after the security fix) means each array
+      // element is passed verbatim as its own argv slot — no quoting needed.
+      expect(opts.shell).toBe(false);
+      expect(args).toEqual(['chat', '/my-agent investigate https://example.com']);
     });
 
-    it('escapes single quotes inside the prompt safely', async () => {
+    it('passes shell metacharacters through verbatim without evaluation (regression: command injection)', async () => {
+      // A prompt containing $(...), backticks, ;, &, etc. would have been
+      // evaluated by /bin/sh under the old `shell: true` + hand-rolled quote
+      // implementation. With `shell: false` they're delivered as literal
+      // argv bytes; this test pins that contract so the next refactor can't
+      // silently re-introduce the injection hole.
+      const malicious = `harmless prefix '$(echo PWNED > /tmp/agent-health-pwned)' suffix`;
+      const request: ConnectorRequest = {
+        testCase: { ...mockTestCase, initialPrompt: malicious, context: [] },
+        modelId: 'm',
+        connectorConfig: { args: [], inputMode: 'arg' },
+      };
+
+      const promise = connector.execute('echo', request, mockAuth);
+      setImmediate(() => {
+        mockProcess.stdout.emit('data', Buffer.from('done'));
+        mockProcess.emit('close', 0, null);
+      });
+      await promise;
+
+      const [, args, opts] = (spawn as jest.Mock).mock.calls[0];
+      expect(opts.shell).toBe(false);
+      // The prompt arrives as a single verbatim argv slot, not a re-parsed
+      // shell command, and no extra args were word-split into existence.
+      expect(args).toHaveLength(1);
+      expect(args[0]).toBe(malicious);
+    });
+
+    it('passes single-quoted text through verbatim under shell: false', async () => {
       const tricky = "it's a /test with 'quotes' and spaces";
       const request: ConnectorRequest = {
         testCase: { ...mockTestCase, initialPrompt: tricky, context: [] },
@@ -1009,14 +1038,11 @@ describe('SubprocessConnector', () => {
       });
       await promise;
 
-      const [, args] = (spawn as jest.Mock).mock.calls[0];
-      const last = args[0];
-      // Expected sh-quote pattern: '...'\''...'  (close, escaped quote, reopen)
-      expect(last).toContain(`'\\''`);
-      // The whole quoted form, when concatenated by /bin/sh, must survive as
-      // exactly the original string. Round-trip via the sh-quote inverse.
-      const unquoted = last.slice(1, -1).replace(/'\\''/g, "'");
-      expect(unquoted).toBe(tricky);
+      const [, args, opts] = (spawn as jest.Mock).mock.calls[0];
+      expect(opts.shell).toBe(false);
+      // Single arg, exactly the original string — no escaping, no wrapping.
+      expect(args).toHaveLength(1);
+      expect(args[0]).toBe(tricky);
     });
 
     it('honors timeout override from connectorConfig', async () => {

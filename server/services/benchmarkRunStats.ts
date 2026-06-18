@@ -69,7 +69,17 @@ async function computeAndPersistStats(
       } else {
         failed++;
       }
-    } catch {
+    } catch (err) {
+      // Storage failures here are not catastrophic — we treat the report
+      // as still pending so the parent benchmark stays in 'running' state
+      // and the user sees a sensible status. But silently swallowing the
+      // error left operators with no diagnostic trail when, e.g., a
+      // corrupted report id was persisted into a benchmark run. Log it
+      // with the report id so the failure is greppable in server logs.
+      console.warn(
+        `[benchmarkRunStats] Failed to fetch report ${rid}:`,
+        err instanceof Error ? err.message : err,
+      );
       pending++;
     }
   }

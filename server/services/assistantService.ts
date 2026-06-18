@@ -73,6 +73,21 @@ const TRAJECTORY_SNAPSHOT_STEPS = 30;
 /** Soft cap (chars) on each section of the inlined context snapshot. */
 const SNAPSHOT_SECTION_CHAR_CAP = 8_000;
 
+/**
+ * Hard cap on how many comparison runs we'll fan out and inline into the
+ * grounded snapshot. The comparison page can in principle compare any number
+ * of runs (the URL is `?runs=a,b,c,...`) and a malicious or accidentally
+ * long URL like `?runs=id1,id2,...,id1000` would otherwise trigger N
+ * sequential storage fetches and produce a multi-megabyte system prompt that
+ * blows past Claude's 200k-token context window. The CLI then errors out
+ * with a context-length failure that surfaces in the UI as the unhelpful
+ * "Assistant returned no text" message. 10 is enough for any realistic
+ * comparison and small enough that the resulting snapshot stays well under
+ * the section cap above. When truncated, we surface that fact explicitly
+ * so the assistant can tell the user it only saw a subset.
+ */
+const COMPARISON_RUNS_MAX = 10;
+
 // ============================================================================
 // Session Store
 // ============================================================================
@@ -193,7 +208,12 @@ export async function loadContextSnapshot(context?: AssistantContext): Promise<s
   if (Array.isArray(context.comparisonRunIds) && context.comparisonRunIds.length > 0) {
     const compared: any[] = [];
     const missing: string[] = [];
-    for (const id of context.comparisonRunIds) {
+    // Cap the fan-out (see COMPARISON_RUNS_MAX). We slice the input list
+    // BEFORE iterating so a 1000-id URL doesn't trigger 1000 storage reads.
+    const allIds = context.comparisonRunIds;
+    const idsToFetch = allIds.slice(0, COMPARISON_RUNS_MAX);
+    const truncatedCount = allIds.length - idsToFetch.length;
+    for (const id of idsToFetch) {
       try {
         const run = await asyncRunStorage.getReportById(id);
         if (run) {
@@ -208,11 +228,16 @@ export async function loadContextSnapshot(context?: AssistantContext): Promise<s
     }
     if (compared.length > 0) {
       sections.push(
-        `### Comparison Runs (${compared.length} of ${context.comparisonRunIds.length})\n\`\`\`json\n${truncate(JSON.stringify(compared, null, 2), SNAPSHOT_SECTION_CHAR_CAP * 2)}\n\`\`\``
+        `### Comparison Runs (${compared.length} of ${allIds.length})\n\`\`\`json\n${truncate(JSON.stringify(compared, null, 2), SNAPSHOT_SECTION_CHAR_CAP * 2)}\n\`\`\``
       );
     }
     if (missing.length > 0) {
       sections.push(`_Missing runs in comparison set: ${missing.join(', ')}_`);
+    }
+    if (truncatedCount > 0) {
+      sections.push(
+        `_Note: comparison set was truncated to the first ${COMPARISON_RUNS_MAX} of ${allIds.length} runs to keep the assistant's context within the model's limits. The remaining ${truncatedCount} run(s) were not loaded._`
+      );
     }
   }
 
@@ -606,9 +631,6 @@ function streamFromClaude(
       return;
     }
 
-    // First successful turn → switch to --resume next time.
-    session.claudeStarted = true;
-
     if (!fullResponse) {
       const stderrPreview = stderr.trim().slice(0, 500);
       const denialNote = permissionDenials.length > 0
@@ -617,6 +639,14 @@ function streamFromClaude(
       onError(`Assistant returned no text.${denialNote}${stderrPreview ? ` Stderr: ${stderrPreview}` : ''}`);
       return;
     }
+
+    // First successful turn (clean exit AND non-empty response) → switch to
+    // `--resume` next time. Critical: if we set this before the empty-response
+    // check above, a clean-exit-but-zero-output turn would mark the session
+    // as started, and the *next* user message would `--resume <uuid>` against
+    // a half-baked CLI session that never produced a real assistant turn.
+    // The CLI then errors out or behaves unpredictably depending on version.
+    session.claudeStarted = true;
 
     if (permissionDenials.length > 0) {
       const names = permissionDenials
@@ -794,34 +824,59 @@ export function streamAssistantResponse(
   // Build system prompt + grounded snapshot, then dispatch.
   // The fallback path uses the no-tools prompt; the Claude CLI path overrides
   // it below with the tools-enabled variant.
+  //
+  // Wrapped in try/catch around the entire IIFE body so that ANY uncaught
+  // error — a synchronous throw from `loadConfigSync()`, a downstream
+  // `streamFromBedrock`/`streamFromClaude` constructor that fails before
+  // wiring up its own onError, etc. — surfaces to the caller via
+  // `handleError` instead of becoming a silent unhandled promise rejection
+  // that strands the UI in a perpetual "waiting for assistant" state.
+  // The original code only caught `loadContextSnapshot` failures and would
+  // swallow anything later in the dispatch chain.
   (async () => {
-    const baseSystemPrompt = buildSystemPrompt(context, /* toolsAvailable */ false);
-    let snapshot = '';
     try {
-      snapshot = await loadContextSnapshot(context);
+      const baseSystemPrompt = buildSystemPrompt(context, /* toolsAvailable */ false);
+      let snapshot = '';
+      try {
+        snapshot = await loadContextSnapshot(context);
+      } catch (err: any) {
+        debug('Assistant', 'loadContextSnapshot failed:', err?.message);
+        // Snapshot failure is non-fatal — we proceed without grounded context
+        // rather than blocking the user's question. The CLI/LLM still gets
+        // the base system prompt and conversation history.
+      }
+      const systemPrompt = baseSystemPrompt + snapshot;
+
+      if (aborted) return;
+
+      if (isClaudeAvailable()) {
+        debug('Assistant', 'Using claude CLI for session:', sessionId);
+        // Tools-enabled prompt for the real Claude Code session.
+        const toolEnabledPrompt = buildSystemPrompt(context, /* toolsAvailable */ true) + snapshot;
+        childProcess = streamFromClaude(session, message, toolEnabledPrompt, onDelta, handleDone, handleError);
+        return;
+      }
+
+      const appConfig = loadConfigSync();
+      const provider = appConfig.judge?.provider || 'bedrock';
+      debug('Assistant', 'Claude CLI unavailable, falling back (provider:', provider, ')');
+
+      if (provider === 'litellm' || provider === 'openai-compatible') {
+        streamFromLiteLLM(session.messages, systemPrompt, onDelta, handleDone, handleError);
+      } else {
+        streamFromBedrock(session.messages, systemPrompt, onDelta, handleDone, handleError);
+      }
     } catch (err: any) {
-      debug('Assistant', 'loadContextSnapshot failed:', err?.message);
-    }
-    const systemPrompt = baseSystemPrompt + snapshot;
-
-    if (aborted) return;
-
-    if (isClaudeAvailable()) {
-      debug('Assistant', 'Using claude CLI for session:', sessionId);
-      // Tools-enabled prompt for the real Claude Code session.
-      const toolEnabledPrompt = buildSystemPrompt(context, /* toolsAvailable */ true) + snapshot;
-      childProcess = streamFromClaude(session, message, toolEnabledPrompt, onDelta, handleDone, handleError);
-      return;
-    }
-
-    const appConfig = loadConfigSync();
-    const provider = appConfig.judge?.provider || 'bedrock';
-    debug('Assistant', 'Claude CLI unavailable, falling back (provider:', provider, ')');
-
-    if (provider === 'litellm' || provider === 'openai-compatible') {
-      streamFromLiteLLM(session.messages, systemPrompt, onDelta, handleDone, handleError);
-    } else {
-      streamFromBedrock(session.messages, systemPrompt, onDelta, handleDone, handleError);
+      // Last-ditch: nothing in the dispatch chain accepted responsibility for
+      // this error. Tell the caller so the UI can render a real error state.
+      // Skip if the user has already aborted — their abort intent supersedes
+      // any in-flight failure and they don't want an error popup for a
+      // request they cancelled.
+      const msg = err?.message || String(err) || 'Assistant dispatch failed';
+      debug('Assistant', 'Unhandled error in dispatch IIFE:', msg);
+      if (!aborted) {
+        handleError(msg);
+      }
     }
   })();
 

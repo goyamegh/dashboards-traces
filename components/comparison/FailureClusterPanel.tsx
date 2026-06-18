@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { Loader2, Sparkles, AlertCircle, RefreshCw, BookOpen, Wrench, Brain, HelpCircle, Filter, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -213,6 +213,21 @@ export const FailureClusterPanel: React.FC<FailureClusterPanelProps> = ({
     [activeCaseFilter]
   );
 
+  // Tracks whether this component is still mounted. The cluster fetch
+  // takes ~5-15s (LLM call), and the user may navigate away from the
+  // comparison page while it's in flight. Without this guard, the
+  // setState calls in the success/error paths fire on an unmounted
+  // component — React logs a warning, and any future stale render could
+  // blow up if the cluster list referenced freed data. We flip mountedRef
+  // to false in the cleanup of a useEffect that runs once at mount.
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
   const run = async (force: boolean) => {
     if (cases.length === 0) return;
     setPhase('loading');
@@ -224,11 +239,13 @@ export const FailureClusterPanel: React.FC<FailureClusterPanelProps> = ({
         cases,
         force,
       });
+      if (!mountedRef.current) return;
       setClusters(response.clusters);
       setModelId(response.modelId);
       setPhase('loaded');
       onClustersChange?.(response.clusters);
     } catch (err) {
+      if (!mountedRef.current) return;
       const message = err instanceof Error ? err.message : String(err);
       setErrorMessage(message);
       setPhase('error');

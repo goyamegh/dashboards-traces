@@ -205,6 +205,37 @@ CLUSTERS_JSON_END`)
     expect(getClusterById('c-doesnotexist')).toBeUndefined();
   });
 
+  it('records storedAt on each ClusterContextRecord as a real wall-clock timestamp (regression: was AWS retry count)', async () => {
+    // Bedrock SDK reports `$metadata.attempts` as the retry count for the
+    // request — typically 1, sometimes 2-3 on transient errors. A previous
+    // version of this service stored that integer in `storedAt` (and in
+    // CacheEntry.computedAt), which silently broke any future cache-age
+    // logic the field was meant to enable. Pin Date.now()-based semantics
+    // so the bug can't be re-introduced by a refactor that copies the
+    // surrounding code.
+    sendMock.mockResolvedValue({
+      output: { message: { content: [{ text: validJson }] } },
+      $metadata: { attempts: 3 }, // deliberately > 1 to expose the old bug
+    });
+
+    const before = Date.now();
+    const result = await clusterFailures({
+      loserLabel: 'Claude',
+      winnerLabel: 'Kiro',
+      cases: [
+        { caseId: 'cp-1', judgeReasoning: 'wrong region' },
+        { caseId: 'cp-2', judgeReasoning: 'wrong region' },
+      ],
+    });
+    const after = Date.now();
+
+    const stored = getClusterById(result.clusters[0].id);
+    expect(stored).toBeDefined();
+    // Must be a recent wall-clock timestamp, NOT the retry count `3`.
+    expect(stored!.storedAt).toBeGreaterThanOrEqual(before);
+    expect(stored!.storedAt).toBeLessThanOrEqual(after);
+  });
+
   it('skips clusters that reference no valid case IDs', async () => {
     sendMock.mockResolvedValue(
       buildResponse(`CLUSTERS_JSON_START

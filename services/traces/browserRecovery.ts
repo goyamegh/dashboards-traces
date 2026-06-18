@@ -93,7 +93,18 @@ export function ensureTracePollingForReport(
           await asyncRunStorage.updateReport(report.id, buildEvaluatorErrorPatch(
             'judge_failed',
             err,
-          ) as any).catch(() => { /* swallow \u2014 nothing more to do */ });
+          ) as any).catch((updateErr) => {
+            // Last-resort log. If marking-as-error itself fails, the report
+            // is stuck in `pending` forever with no diagnostic trail \u2014 the
+            // recovery path quietly broke and operators have no way to
+            // notice. We can't do anything to recover from here (the
+            // storage backend is the failing dependency), but at least
+            // surface it in the server log with the report id.
+            console.warn(
+              `[browserRecovery] Failed to mark report ${report.id} as error after judge failure:`,
+              updateErr instanceof Error ? updateErr.message : updateErr,
+            );
+          });
 
           if (options?.onError) options.onError(err instanceof Error ? err : new Error(String(err)));
           if (options?.onUpdated) {

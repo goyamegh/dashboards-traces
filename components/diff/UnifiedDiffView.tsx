@@ -40,6 +40,18 @@ export interface DiffLine {
  * evaluator system prompts (typically a few hundred lines at most) this is
  * comfortably fast and avoids any runtime dependency.
  */
+/**
+ * Hard cap on the DP table size for the LCS-based diff. Chosen so the
+ * Uint32Array allocation stays under ~40 MB even at the boundary
+ * (10M * 4 bytes/cell). Real-world inputs (evaluator system prompts,
+ * scoring config JSON) are well under this; the cap exists so a
+ * pathological input — e.g. a 10k-line generated config compared against
+ * an empty string — doesn't OOM the browser tab and crash the comparison
+ * page. When the cap is hit, the function throws with a clear message
+ * that the caller can render as a fallback UI state.
+ */
+const MAX_DP_CELLS = 10_000_000;
+
 export function diffLines(before: string, after: string): DiffLine[] {
   const a = before.split('\n');
   const b = after.split('\n');
@@ -48,7 +60,13 @@ export function diffLines(before: string, after: string): DiffLine[] {
 
   // dp[i][j] = LCS length of a[i..] and b[j..]
   // Allocate (n+1) x (m+1) using a flat typed array for memory locality.
-  const dp = new Uint32Array((n + 1) * (m + 1));
+  const cells = (n + 1) * (m + 1);
+  if (cells > MAX_DP_CELLS) {
+    throw new Error(
+      `Diff too large: ${n}×${m} = ${cells.toLocaleString()} cells exceeds the ${MAX_DP_CELLS.toLocaleString()}-cell limit. Compare smaller inputs or split the diff.`,
+    );
+  }
+  const dp = new Uint32Array(cells);
   const idx = (i: number, j: number) => i * (m + 1) + j;
 
   for (let i = n - 1; i >= 0; i--) {
@@ -260,7 +278,22 @@ export const UnifiedDiffView: React.FC<UnifiedDiffViewProps> = ({
   contextLines = 3,
   className = '',
 }) => {
-  const lines = useMemo(() => diffLines(before, after), [before, after]);
+  // diffLines throws on inputs that would allocate more than MAX_DP_CELLS.
+  // Catch it here so a pathological pair of inputs renders an explanatory
+  // fallback instead of crashing the whole comparison page through the
+  // nearest error boundary. Hoist `error` to its own state so type
+  // narrowing on `lines` stays clean (avoids a discriminated-union
+  // access pattern that confuses TS in JSX render branches).
+  const { lines, errorMessage } = useMemo(() => {
+    try {
+      return { lines: diffLines(before, after), errorMessage: null as string | null };
+    } catch (err) {
+      return {
+        lines: [] as DiffLine[],
+        errorMessage: err instanceof Error ? err.message : String(err),
+      };
+    }
+  }, [before, after]);
   const summary = useMemo(() => summarizeDiff(lines), [lines]);
   const hunks = useMemo(() => groupHunks(lines, contextLines), [lines, contextLines]);
 
@@ -282,7 +315,12 @@ export const UnifiedDiffView: React.FC<UnifiedDiffViewProps> = ({
       </div>
 
       {/* Body */}
-      {isIdentical ? (
+      {errorMessage ? (
+        <div className="px-3 py-6 text-center text-sm text-muted-foreground">
+          <div className="font-medium text-foreground mb-1">Diff too large to render</div>
+          <div className="text-xs">{errorMessage}</div>
+        </div>
+      ) : isIdentical ? (
         <div className="px-3 py-6 text-center text-sm text-muted-foreground italic">
           No differences — both versions are identical.
         </div>

@@ -106,7 +106,15 @@ export async function resumePendingTracePolls(storage: IStorageModule): Promise<
       stat.pendingFound++;
 
       const reportTs = new Date(report.timestamp || 0).getTime();
-      const ageMs = Number.isFinite(reportTs) && reportTs > 0 ? now - reportTs : Infinity;
+      // If the timestamp is missing or invalid, treat the report as freshly
+      // created (ageMs = 0) rather than infinitely old. The previous
+      // `Infinity` default flipped `tooOld` to true unconditionally for any
+      // report with a missing/zero timestamp, marking even just-created
+      // reports as error during boot recovery. Treating missing timestamps
+      // as recent is the safe direction — a real orphaned report will fail
+      // its judge call on retry and end up in error anyway, but a healthy
+      // newly-created report won't be falsely tombstoned.
+      const ageMs = Number.isFinite(reportTs) && reportTs > 0 ? now - reportTs : 0;
       const tooOld = ageMs > maxAgeMs;
       const hasRunId = !!report.runId;
 

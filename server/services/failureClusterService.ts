@@ -355,7 +355,7 @@ export async function clusterFailures(
     const oldestKey = cache.keys().next().value;
     if (oldestKey) cache.delete(oldestKey);
   }
-  cache.set(key, { result, computedAt: response.$metadata.attempts ?? 0 });
+  cache.set(key, { result, computedAt: Date.now() });
 
   // Index every cluster by id so receiving pages can fetch it later by URL.
   for (const c of clusters) {
@@ -372,7 +372,7 @@ export async function clusterFailures(
       exampleEvidence: c.exampleEvidence,
       loserLabel: input.loserLabel,
       winnerLabel: input.winnerLabel,
-      storedAt: response.$metadata.attempts ?? 0,
+      storedAt: Date.now(),
     });
   }
 

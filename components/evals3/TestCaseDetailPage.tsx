@@ -263,7 +263,16 @@ export const TestCaseDetailPage: React.FC = () => {
   };
 
   const handleStartRun = async () => {
-    if (!testCase) return;
+    // Guard against rapid double-click on the dialog's Run button. Without
+    // this the second click would overwrite liveSteps and selectedRunId
+    // mid-stream, interleaving steps from both runs under one synthetic
+    // 'Running' pill, then the first run's completion handler would
+    // attempt to select a stale `result.reportId`. Belt-and-braces with
+    // the `disabled={isRunning}` already on the dialog Run button — React
+    // state updates are async and there's a small window between
+    // setIsRunning(true) and the next render where two clicks can both
+    // see isRunning=false. This synchronous check closes that window.
+    if (!testCase || isRunning) return;
     setIsRunConfigOpen(false);
     setIsRunning(true);
     setLiveSteps([]);
@@ -848,7 +857,7 @@ export const TestCaseDetailPage: React.FC = () => {
                 <Button variant="ghost" onClick={() => setIsRunConfigOpen(false)}>Cancel</Button>
                 <Button
                   onClick={handleStartRun}
-                  disabled={!runConfig.name.trim() || !runConfig.agentKey || !runConfig.modelId}
+                  disabled={isRunning || !runConfig.name.trim() || !runConfig.agentKey || !runConfig.modelId}
                   className="bg-opensearch-blue hover:bg-blue-600"
                 >
                   <Play size={16} className="mr-1" /> Start Run

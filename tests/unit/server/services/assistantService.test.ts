@@ -471,6 +471,110 @@ describe('AssistantService', () => {
       expect(mockGetReportById).toHaveBeenCalledWith('run-B');
     });
 
+    it('caps comparisonRunIds fan-out at 10 and surfaces a truncation note (regression: unbounded growth)', async () => {
+      // A malicious or accidentally long URL like /compare/x?runs=id1,...,id1000
+      // would otherwise trigger 1000 sequential storage reads and produce a
+      // multi-megabyte system prompt that blows past the model's context
+      // window. Pin the cap so a future refactor can't silently raise it.
+      mockGetReportById.mockImplementation((id: string) =>
+        Promise.resolve({
+          id,
+          agentName: 'a',
+          modelName: 'm',
+          passFailStatus: 'passed',
+          metrics: {},
+          testCaseId: 'tc-1',
+          llmJudgeReasoning: '',
+          trajectory: [],
+        })
+      );
+
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
+      assistantService = require('@/server/services/assistantService');
+
+      const manyIds = Array.from({ length: 50 }, (_, i) => `run-${i}`);
+
+      const turn = new Promise<void>((resolve, reject) => {
+        assistantService.streamAssistantResponse(
+          'compare-many',
+          'Summarize',
+          { comparisonRunIds: manyIds },
+          () => {},
+          () => resolve(),
+          (err: string) => reject(new Error(err))
+        );
+      });
+      await flushAsync();
+      mockProc.stdout.emit('data', Buffer.from(assistantTextLine('ok')));
+      mockProc.emit('close', 0);
+      await turn;
+
+      // Storage was hit at most 10 times, NOT 50.
+      expect(mockGetReportById.mock.calls.length).toBeLessThanOrEqual(10);
+
+      const args: string[] = mockSpawn.mock.calls[0][1];
+      const idx = args.indexOf('--append-system-prompt');
+      const sysPrompt = args[idx + 1];
+
+      // Header reflects the truncated count vs the original count.
+      expect(sysPrompt).toContain('Comparison Runs (10 of 50)');
+      // Explicit truncation note tells the model it didn't see everything.
+      expect(sysPrompt).toMatch(/truncated to the first 10 of 50 runs/);
+    });
+
+    it('does not mark session.claudeStarted when the CLI exits cleanly with empty output (regression: --resume against half-baked session)', async () => {
+      // If session.claudeStarted is set to true on a clean-exit-but-zero-output
+      // turn, the next user message would `--resume <uuid>` against a CLI
+      // session that never produced a real assistant turn. Pin the ordering:
+      // the flag must only flip after the empty-response check.
+      const mockProc = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc);
+      assistantService = require('@/server/services/assistantService');
+
+      let receivedError: string | null = null;
+      const turn = new Promise<void>((resolve) => {
+        assistantService.streamAssistantResponse(
+          'empty-turn',
+          'Hi',
+          undefined,
+          () => {},
+          () => resolve(),
+          (err: string) => { receivedError = err; resolve(); }
+        );
+      });
+      await flushAsync();
+      // Clean exit (code 0), but NO assistant text was ever streamed.
+      mockProc.emit('close', 0);
+      await turn;
+
+      expect(receivedError).toMatch(/Assistant returned no text/);
+
+      // The next turn must NOT use --resume because the session was never
+      // legitimately started. Trigger a second turn and inspect the spawn args.
+      const mockProc2 = createMockProcess();
+      mockSpawn.mockReturnValue(mockProc2);
+      mockSpawn.mockClear();
+
+      const turn2 = new Promise<void>((resolve, reject) => {
+        assistantService.streamAssistantResponse(
+          'empty-turn',
+          'Are you there?',
+          undefined,
+          () => {},
+          () => resolve(),
+          (err: string) => reject(new Error(err))
+        );
+      });
+      await flushAsync();
+      mockProc2.stdout.emit('data', Buffer.from(assistantTextLine('hi')));
+      mockProc2.emit('close', 0);
+      await turn2;
+
+      const args2: string[] = mockSpawn.mock.calls[0][1];
+      expect(args2).not.toContain('--resume');
+    });
+
     it('inherits AWS_PROFILE / AWS_REGION', async () => {
       const original = { profile: process.env.AWS_PROFILE, region: process.env.AWS_REGION };
       process.env.AWS_PROFILE = 'test-profile';

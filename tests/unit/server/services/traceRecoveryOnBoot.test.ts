@@ -193,6 +193,37 @@ describe('resumePendingTracePolls', () => {
     expect(updateCalls[0].updates.metricsStatus).toBe('error');
   });
 
+  it('treats reports with a missing/zero timestamp as recent (regression: Infinity-age false-tombstone bug)', async () => {
+    // Previous code defaulted ageMs to `Infinity` when report.timestamp was
+    // missing/invalid, which meant the `tooOld` branch always fired and
+    // freshly-created reports without a timestamp got marked as error
+    // during boot recovery. Now we default to age 0 ("recent") so a healthy
+    // newly-created report continues polling.
+    //
+    // We test both shapes of "missing": an explicit empty-string and an
+    // explicit invalid date string.
+    for (const ts of ['', 'not-a-date']) {
+      const r1 = makeReport({
+        id: `r-${ts || 'empty'}`,
+        metricsStatus: 'pending',
+        runId: 'run-1',
+        timestamp: ts as any,
+      });
+      const { storage, updateCalls } = mockStorage({ reports: [r1] });
+
+      const stat = await resumePendingTracePolls(storage);
+
+      expect(stat.failedOut).toBe(0);
+      expect(stat.resumed).toBe(1);
+      // No error-tombstone update; the report stays pending and polling
+      // resumes for it.
+      const errorUpdates = updateCalls.filter(u => (u.updates as any).metricsStatus === 'error');
+      expect(errorUpdates).toHaveLength(0);
+      expect(startPollingMock).toHaveBeenCalled();
+      startPollingMock.mockClear();
+    }
+  });
+
   it('marks reports as error when their test case no longer exists', async () => {
     const r1 = makeReport({ id: 'r1', metricsStatus: 'pending', runId: 'run-1', testCaseId: 'tc-gone' });
     const { storage, updateCalls } = mockStorage({

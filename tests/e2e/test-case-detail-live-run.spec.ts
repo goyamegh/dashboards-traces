@@ -81,19 +81,25 @@ async function holdEvaluateOpen(page: Page): Promise<() => Promise<void>> {
     `data: ${JSON.stringify({ type: 'error', error: 'released by test' })}\n\n`,
   );
 
-  // We need a controllable ReadableStream so we can flush the `started`
-  // frame, hold the connection, and later inject `error` on teardown.
-  let controller: ReadableStreamDefaultController<Uint8Array> | undefined;
-  const body = new ReadableStream<Uint8Array>({
-    start(c) {
-      controller = c;
-      // Send the started frame as soon as the stream is consumed; the
-      // route handler below provides the response shell.
-      c.enqueue(startedFrame);
-    },
-  });
+  // Track all stream controllers we've handed to Playwright so the teardown
+  // function can flush+close every one of them. We *must* create a fresh
+  // ReadableStream per intercepted request: a single shared stream gets
+  // closed after the first request consumes it, so any retry / parallel
+  // request (which Playwright + the SPA's reconnect logic can both
+  // produce) would receive an already-closed body and the test would hang
+  // on the started frame that never arrived. Move construction into the
+  // route handler.
+  const controllers: Array<ReadableStreamDefaultController<Uint8Array>> = [];
 
   await page.route('**/api/evaluate', async (route) => {
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        controllers.push(c);
+        // Send the started frame as soon as the stream is consumed; the
+        // route handler below provides the response shell.
+        c.enqueue(startedFrame);
+      },
+    });
     await route.fulfill({
       status: 200,
       headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
@@ -102,11 +108,13 @@ async function holdEvaluateOpen(page: Page): Promise<() => Promise<void>> {
   });
 
   return async () => {
-    try {
-      controller?.enqueue(errorFrame);
-      controller?.close();
-    } catch {
-      // Already closed — best-effort, the test is tearing down anyway.
+    for (const controller of controllers) {
+      try {
+        controller.enqueue(errorFrame);
+        controller.close();
+      } catch {
+        // Already closed — best-effort, the test is tearing down anyway.
+      }
     }
     await page.unroute('**/api/evaluate').catch(() => {});
   };

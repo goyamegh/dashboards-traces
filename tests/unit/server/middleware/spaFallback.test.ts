@@ -130,7 +130,6 @@ describe('makeSpaFallbackMiddleware', () => {
     '/missing.mjs',
     '/missing.css',
     '/missing.map',
-    '/missing.json',
     '/missing.png',
     '/missing.svg',
     '/missing.woff2',
@@ -140,6 +139,23 @@ describe('makeSpaFallbackMiddleware', () => {
     const r = await probe(app, p);
     expect(r.status).toBe(404);
     expect(r.contentType).not.toMatch(/text\/html/);
+  });
+
+  // `.json` is NOT in ASSET_EXT_RE on purpose — see the comment on the
+  // regex and the dedicated test below. A non-`/api` path ending in
+  // `.json` (future static manifests, etc.) should fall through to
+  // express's normal handler chain rather than being 404'd by the SPA
+  // fallback. Pin that behavior so a future regex "cleanup" can't
+  // silently re-introduce the bug.
+  it('does NOT 404 a non-api path ending in .json (regression: see ASSET_EXT_RE)', async () => {
+    const r = await probe(app, '/some-data.json');
+    // The SPA fallback should NOT 404 — it should let express's normal
+    // handler chain resolve the path. With no actual handler in this
+    // minimal test app, that means the SPA catch-all serves index.html
+    // (200 / text/html). The important assertion is the negative: it
+    // wasn't 404'd by ASSET_EXT_RE classifying `.json` as an asset.
+    expect(r.status).not.toBe(404);
+    expect(ASSET_EXT_RE.test('/some-data.json')).toBe(false);
   });
 
   it('does NOT intercept /api/* routes', async () => {
@@ -175,11 +191,17 @@ describe('makeSpaFallbackMiddleware', () => {
 describe('ASSET_EXT_RE', () => {
   it('matches all common web asset extensions (case-insensitive)', () => {
     const cases = [
-      'foo.js', 'foo.mjs', 'foo.cjs', 'foo.css', 'foo.json', 'foo.map',
+      'foo.js', 'foo.mjs', 'foo.cjs', 'foo.css', 'foo.map',
       'foo.wasm', 'foo.ico', 'foo.png', 'foo.JPG', 'foo.svg', 'foo.WOFF2',
       'foo.ttf', 'foo.otf', 'foo.mp4', 'foo.webm', 'foo.txt', 'foo.pdf',
     ];
     for (const c of cases) expect(ASSET_EXT_RE.test(c)).toBe(true);
+  });
+
+  it('does NOT match .json (regression: API endpoints with .json in the path must not be classified as assets)', () => {
+    expect(ASSET_EXT_RE.test('foo.json')).toBe(false);
+    expect(ASSET_EXT_RE.test('/api/data.json')).toBe(false);
+    expect(ASSET_EXT_RE.test('/manifest.json')).toBe(false);
   });
 
   it('does not match plain client-side route segments', () => {

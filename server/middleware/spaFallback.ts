@@ -29,8 +29,14 @@ import type { Request, Response, NextFunction } from 'express';
 // Anything ending in a typical web-asset extension is treated as a static
 // asset request, not a client-side route. If express.static didn't already
 // serve it, it doesn't exist — return 404, never index.html.
+//
+// `.json` is deliberately omitted: API endpoints with `.json` in the path
+// (e.g., `/api/data.json`, future static manifest endpoints) are passed
+// through to express's normal handlers. The `/api/*` short-circuit above
+// already covers most of these, but keeping `.json` out of this regex
+// also protects custom mounts under non-`/api` prefixes.
 export const ASSET_EXT_RE =
-  /\.(?:js|mjs|cjs|css|map|json|wasm|ico|png|jpe?g|gif|svg|webp|avif|woff2?|ttf|otf|eot|mp3|mp4|webm|ogg|wav|txt|xml|pdf)$/i;
+  /\.(?:js|mjs|cjs|css|map|wasm|ico|png|jpe?g|gif|svg|webp|avif|woff2?|ttf|otf|eot|mp3|mp4|webm|ogg|wav|txt|xml|pdf)$/i;
 
 /**
  * Pure SPA-fallback middleware factory. Pass the preloaded `index.html`
