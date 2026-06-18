@@ -38,7 +38,7 @@ function otlpPayload(opts: { traceId?: string; runId?: string; service?: string;
                 kind: 3,
                 startTimeUnixNano: '1700000000000000000',
                 endTimeUnixNano: '1700000001000000000',
-                attributes: opts.runId ? [{ key: 'gen_ai.request.id', value: { stringValue: opts.runId } }] : [],
+                attributes: opts.runId ? [{ key: 'agent_health.run.id', value: { stringValue: opts.runId } }] : [],
                 status: { code: 1 },
               },
             ],
@@ -88,7 +88,7 @@ describe('OTLP file-trace round-trip (integration)', () => {
     expect(res.body.spans[0].attributes['service.name']).toBe('local-agent');
   });
 
-  it('correlates by runId (gen_ai.request.id == runId)', async () => {
+  it('correlates by runId (agent_health.run.id == runId)', async () => {
     await request(app)
       .post('/v1/traces')
       .send(otlpPayload({ traceId: 'beef0000beef0000beef0000beef0000', spanId: 'cafe000000000001', runId: 'run-xyz' }))

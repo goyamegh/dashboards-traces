@@ -55,8 +55,8 @@ describe('FileObservabilityModule', () => {
       await mod.ingest([
         // Strategy A: traceId
         span({ traceId: 'trace-A', spanId: 'a1', attributes: { 'service.name': 'svc1' } }),
-        // Strategy B: gen_ai.request.id == runId
-        span({ traceId: 'trace-B', spanId: 'b1', attributes: { 'gen_ai.request.id': 'run-1', 'service.name': 'svc2' } }),
+        // Strategy B: agent_health.run.id == runId
+        span({ traceId: 'trace-B', spanId: 'b1', attributes: { 'agent_health.run.id': 'run-1', 'service.name': 'svc2' } }),
         // Strategy C: service.name within window
         span({ traceId: 'trace-C', spanId: 'c1', startMs: Date.parse('2024-06-01T12:00:00Z'), attributes: { 'service.name': 'svc3' } }),
         // session
@@ -69,7 +69,7 @@ describe('FileObservabilityModule', () => {
       expect(r.spans.map((s) => s.spanId)).toEqual(['a1']);
     });
 
-    it('B: matches by runId (gen_ai.request.id)', async () => {
+    it('B: matches by runId (agent_health.run.id)', async () => {
       const r = await mod.traces.query({ runIds: ['run-1'] });
       expect(r.spans.map((s) => s.spanId)).toEqual(['b1']);
     });

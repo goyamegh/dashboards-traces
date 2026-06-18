@@ -295,14 +295,22 @@ adopt the eval span as parent context automatically — their root span (e.g.
 `claude_code.interaction`) becomes a child of `test_case`, sharing the same
 `traceId`. Looking up by that `traceId` returns the whole tree.
 
-### Strategy B — `gen_ai.request.id` attribute (loose link, separate trees)
+### Strategy B — `agent_health.run.id` attribute (loose link, separate trees)
 
 For agents we instrument ourselves but that don't propagate W3C context, set the
-span attribute `gen_ai.request.id` equal to agent-health's `runId`. The eval span
-already carries this attribute (`ATTR_AGENT_HEALTH_AGENT_RUN_ID`), so an
+span attribute `agent_health.run.id` equal to agent-health's `runId`. The eval
+span already carries this attribute (`ATTR_AGENT_HEALTH_AGENT_RUN_ID`), so an
 OpenSearch `terms` query unions both. SubprocessConnector also exports
 `AGENT_EVAL_RUN_ID=<runId>` to the child env as the conventional source for this
 attribute.
+
+> Note: this attribute lives in Agent Health's **own** `agent_health.*` namespace
+> on purpose. It used to be stamped on the OpenTelemetry-reserved
+> `gen_ai.request.id` key, but `gen_ai.request.id` is not a registered Gen AI
+> semantic-convention attribute (the `gen_ai.request.*` namespace is for request
+> parameters), and the OTEL naming spec advises against adding app-specific keys
+> under an existing OTEL namespace. Strategy A (W3C trace context) is the primary
+> correlation; this is the loose fallback.
 
 ### Strategy C — service-name + time-window (always-on fallback)
 

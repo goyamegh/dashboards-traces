@@ -92,7 +92,7 @@ describe('tracesService', () => {
     it('should read plain-raw nested attributes (literal dotted OTel keys) (#296)', () => {
       const source: OpenSearchSpanSource = {
         attributes: {
-          'gen_ai.request.id': 'run-456',
+          'agent_health.run.id': 'run-456',
           'gen_ai.usage.input_tokens': 250,
           'gen_ai.agent.name': 'retail-agent',
         },
@@ -102,7 +102,7 @@ describe('tracesService', () => {
 
       const result = transformSpan(source);
 
-      expect(result.attributes['gen_ai.request.id']).toBe('run-456');
+      expect(result.attributes['agent_health.run.id']).toBe('run-456');
       expect(result.attributes['gen_ai.usage.input_tokens']).toBe(250);
       expect(result.attributes['gen_ai.agent.name']).toBe('retail-agent');
       expect(result.attributes['service.name']).toBe('retail-agent');
@@ -233,7 +233,7 @@ describe('tracesService', () => {
       expect(result.spans).toHaveLength(2);
     });
 
-    it('correlates runIds via the plain-raw attributes.gen_ai.request.id field (#296)', async () => {
+    it('correlates runIds via the plain-raw attributes.agent_health.run.id field (#296)', async () => {
       const search = jest.fn().mockResolvedValue({
         body: { hits: { hits: [], total: { value: 0 } } },
       });
@@ -244,7 +244,7 @@ describe('tracesService', () => {
       const clause = JSON.stringify(search.mock.calls[0][0].body.query);
       // The OTEL-faithful (Data Prepper trace-analytics-plain-raw) field path,
       // NOT the legacy custom `span.attributes.gen_ai@request@id` shape.
-      expect(clause).toContain('attributes.gen_ai.request.id');
+      expect(clause).toContain('attributes.agent_health.run.id');
       expect(clause).not.toContain('gen_ai@request@id');
     });
 

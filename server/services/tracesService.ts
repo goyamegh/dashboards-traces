@@ -278,7 +278,7 @@ export async function fetchTraces(
     const validRunIds = runIds.filter((id): id is string => typeof id === 'string' && id.length > 0);
     if (validRunIds.length > 0) {
       sink.push({
-        terms: { 'attributes.gen_ai.request.id': validRunIds }
+        terms: { 'attributes.agent_health.run.id': validRunIds }
       });
     }
   }

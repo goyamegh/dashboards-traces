@@ -450,7 +450,7 @@ describe('Evaluation Span Helpers', () => {
         expect.objectContaining({
           attributes: expect.objectContaining({
             'test.case.id': 'tc-linked',
-            'gen_ai.request.id': 'agent-run-id',
+            'agent_health.run.id': 'agent-run-id',
           }),
         }),
         expect.anything() // parent context carrying agentTraceId
