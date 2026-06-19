@@ -32,7 +32,7 @@ import { homedir } from 'os';
 import { loadConfig } from '@/lib/config/index.js';
 import { ensureServer, createServerCleanup } from '@/cli/utils/serverLifecycle.js';
 import { ApiClient } from '@/cli/utils/apiClient.js';
-import { spansToTrajectory, scanSessionSignals } from '@/services/traces/spansToTrajectory.js';
+import { buildProfile } from '@/services/profile/index.js';
 import type { Evaluator, Span } from '@/types/index.js';
 
 /** Where the PreToolUse hook (installed by `agent-health setup`) records the id. */
@@ -69,18 +69,6 @@ function resolveSessionId(explicit?: string): { sessionId: string | null; source
   }
 
   return { sessionId: null, source: 'none' };
-}
-
-/** Sum a numeric span attribute across spans (tolerant of string values). */
-function sumAttr(spans: Span[], keys: string[]): number {
-  let total = 0;
-  for (const s of spans) {
-    for (const k of keys) {
-      const v = s.attributes?.[k];
-      if (v != null && !isNaN(Number(v))) { total += Number(v); break; }
-    }
-  }
-  return total;
 }
 
 export function createProfileCommand(): Command {
@@ -139,70 +127,21 @@ export function createProfileCommand(): Command {
           return;
         }
 
-        // 3. Reconstruct trajectory + scan signals (the "profile").
+        // 3. Reconstruct trajectory + scan signals + assemble the profile via
+        // the shared core, so the CLI and `POST /api/profile` produce a
+        // byte-identical artifact for the same inputs.
         spinner && (spinner.text = 'Profiling session...');
-        const trajectory = spansToTrajectory(spans, options.service);
-        const signals = scanSessionSignals(spans, options.service);
-
-        const startTimes = spans.map(s => new Date(s.startTime).getTime()).filter(n => !isNaN(n));
-        const endTimes = spans.map(s => new Date(s.endTime).getTime()).filter(n => !isNaN(n));
-        const durationMs = startTimes.length && endTimes.length
-          ? Math.max(...endTimes) - Math.min(...startTimes) : 0;
-        const tokens = sumAttr(spans, ['gen_ai.usage.input_tokens', 'input_tokens'])
-          + sumAttr(spans, ['gen_ai.usage.output_tokens', 'output_tokens']);
-        // Report the service name actually seen on the spans (e.g. `claude-code`
-        // for native telemetry vs `claude-code-agent` for the connector), reading
-        // whichever attribute key the span carries (`service.name` or `serviceName`).
-        const svcSpan = spans.find(s => s.attributes?.['service.name'] || s.attributes?.['serviceName']);
-        const observedService = String(
-          svcSpan?.attributes?.['service.name'] ?? svcSpan?.attributes?.['serviceName'] ?? options.service
-        );
+        const profile = buildProfile(sessionId, spans, evaluator, {
+          service: options.service,
+          userFeedback: options.feedback,
+        });
+        const { signals } = profile;
+        const { durationMs, tokens } = profile.session;
 
         spinner?.succeed('Session profiled');
 
-        // 4. Assemble the profile (the context the reasoner needs).
-        const profile = {
-          session: {
-            sessionId,
-            serviceName: observedService,
-            // Distinct trace ids in this session — the anchor for verified
-            // evidence: open these in the Agent Health Traces tab to confirm a
-            // finding (a Claude Code session can span multiple traces).
-            traceIds: [...new Set(spans.map(s => s.traceId).filter(Boolean))],
-            spanCount: spans.length,
-            trajectorySteps: trajectory.length,
-            durationMs,
-            tokens,
-          },
-          evaluator: {
-            id: evaluator.id,
-            name: evaluator.name,
-            systemPrompt: evaluator.systemPrompt,
-            metrics: evaluator.scoringConfig?.metrics ?? [],
-            passThreshold: evaluator.scoringConfig?.passThreshold,
-          },
-          signals,
-          // Optional upfront human steering — the context traces alone can't
-          // capture ("focus on routing", "it ignored the SOP"). Weighted
-          // heavily by the reasoner, above the deterministic signals.
-          userFeedback: options.feedback || undefined,
-          trajectory,
-          instructions: [
-            'You are improving the agent whose session is profiled above, in ITS OWN codebase.',
-            options.feedback
-              ? `The user gave this upfront feedback — treat it as the PRIMARY lens, above the signals: "${options.feedback}"`
-              : 'No upfront user feedback was given; rely on the rubric + signals.',
-            'Using the evaluator.systemPrompt as your rubric, review:',
-            '  (a) the trajectory below, (b) the signals, (c) the userFeedback (if any),',
-            '  (d) the CURRENT CHAT you already have, and (e) the codebase in the cwd.',
-            'Produce a prioritized list of concrete edits. For each: the file to change,',
-            'what to change, why (tie it to the user feedback, a signal, or a rubric criterion +',
-            'cite the evidence: the session.traceIds / the signal that triggered it), and priority.',
-            'Make minimal, generalizable changes on a branch — do not edit the working tree directly.',
-          ].join('\n'),
-        };
-
-        // 5. Persist + emit.
+        // 4. Persist + emit. `profile` was assembled by the shared core above
+        //    (buildProfile), so the CLI and POST /api/profile never drift.
         const outDir = join('agent-health-data', 'profiles', sessionId);
         mkdirSync(outDir, { recursive: true });
         const outFile = join(outDir, 'profile.json');
