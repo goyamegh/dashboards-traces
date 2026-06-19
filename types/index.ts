@@ -1321,6 +1321,34 @@ export interface MetricsResult {
   status: 'pending' | 'success' | 'error';
 }
 
+/** Per-service rollup for the agent overview (fleet-level metrics over a window). */
+export interface ServiceOverview {
+  service: string;
+  sessions: number;
+  spans: number;
+  traces: number;
+  llmCalls: number;
+  toolCalls: number;
+  blockedOnUser: number;
+  errors: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreationTokens: number;
+  estCostUsd: number;
+  models: string[];
+  topTools: { name: string; count: number }[];
+}
+
+/** Agent overview: per-service rollups + totals over a time window. */
+export interface AgentOverview {
+  window: { startTime: number; endTime: number };
+  sampledSpans: number;
+  capped: boolean;
+  services: ServiceOverview[];
+  totals: Omit<ServiceOverview, 'service' | 'models' | 'topTools'> & { services: number };
+}
+
 // ============ Data Source Configuration Types ============
 
 /**

@@ -18,6 +18,7 @@ jest.mock('@/server/services/logsService', () => ({
 jest.mock('@/server/services/metricsService', () => ({
   computeMetrics: jest.fn(),
   computeBatchMetrics: jest.fn(),
+  getPricing: jest.fn(() => ({ input: 3, output: 15 })),
 }));
 
 const mockFetchTraces = fetchTraces as jest.MockedFunction<typeof fetchTraces>;
@@ -139,6 +140,30 @@ describe('OpenSearchObservabilityModule', () => {
       const ms = await mod.metrics.computeForRuns([]);
       expect(ms).toEqual([]);
       expect(mockComputeBatchMetrics).not.toHaveBeenCalled();
+    });
+
+    it('computeOverview fetches spans for the window and aggregates per service', async () => {
+      mockFetchTraces.mockResolvedValue({
+        spans: [
+          { traceId: 't1', spanId: 's1', name: 'claude_code.llm_request', status: 'OK', attributes: { 'service.name': 'claude-code-agent', 'session.id': 'a', model: 'opus', input_tokens: 100, output_tokens: 50 } },
+          { traceId: 't1', spanId: 's2', name: 'claude_code.tool.execution', status: 'OK', attributes: { 'service.name': 'claude-code-agent', 'session.id': 'a', tool_name: 'Bash' } },
+        ],
+        total: 2,
+      } as any);
+
+      const ov = await mod.metrics.computeOverview({ startTime: 1, endTime: 2 });
+
+      expect(mockFetchTraces).toHaveBeenCalledWith(
+        expect.objectContaining({ startTime: 1, endTime: 2 }),
+        client,
+        'otel-traces-*'
+      );
+      expect(ov!.services).toHaveLength(1);
+      expect(ov!.services[0].service).toBe('claude-code-agent');
+      expect(ov!.services[0].llmCalls).toBe(1);
+      expect(ov!.services[0].toolCalls).toBe(1);
+      expect(ov!.services[0].inputTokens).toBe(100);
+      expect(ov!.capped).toBe(false);
     });
   });
 

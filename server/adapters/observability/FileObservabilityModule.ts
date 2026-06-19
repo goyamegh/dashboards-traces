@@ -175,6 +175,9 @@ class FileMetricsOperations implements IMetricsOperations {
   async computeForRuns(): Promise<[]> {
     return [];
   }
+  async computeOverview(): Promise<null> {
+    return null;
+  }
 }
 
 export class FileObservabilityModule implements IObservabilityModule {

@@ -29,6 +29,7 @@ import type { Span, HealthStatus, OpenSearchLog } from '../../../types/index.js'
 import { fetchTraces, checkTracesHealth } from '../../services/tracesService.js';
 import { fetchLogs } from '../../services/logsService.js';
 import { computeMetrics, computeBatchMetrics } from '../../services/metricsService.js';
+import { computeAgentOverview } from '../../services/agentOverview.js';
 
 export interface ObservabilityIndexes {
   traces: string;
@@ -79,6 +80,21 @@ class OpenSearchMetricsOperations implements IMetricsOperations {
   async computeForRuns(runIds: string[]) {
     if (!runIds.length) return [];
     return computeBatchMetrics(runIds, { client: this.client, indexPattern: this.index });
+  }
+
+  async computeOverview(window: { startTime: number; endTime: number }) {
+    // Pull spans for the window and aggregate per-service. Capped at OVERVIEW_MAX
+    // spans — the overview is a summary, not an exhaustive scan (a future
+    // optimization can push this into a native OpenSearch aggregation).
+    const OVERVIEW_MAX = 10000;
+    const result = await fetchTraces(
+      { startTime: window.startTime, endTime: window.endTime, size: OVERVIEW_MAX } as any,
+      this.client,
+      this.index
+    );
+    const spans = (result.spans || []) as unknown as import('../../../types/index.js').Span[];
+    const capped = (result.total ?? spans.length) > spans.length;
+    return computeAgentOverview(spans, window, { capped });
   }
 }
 

@@ -15,6 +15,34 @@ import { MetricsResult } from '@/types';
 
 const router = Router();
 
+const NO_OVERVIEW_MSG = 'Agent overview requires an OpenSearch observability cluster';
+
+/**
+ * GET /api/metrics/overview - fleet/agent overview over a time window.
+ * Query: ?hours=168 (default 7d) | ?startTime=&endTime= (epoch ms).
+ * Registered before /:runId so "overview" isn't captured as a runId.
+ */
+router.get('/api/metrics/overview', async (req: Request, res: Response) => {
+  try {
+    const obs = getObservabilityModule(req);
+    if (!obs.metrics.supported) {
+      return res.status(503).json({ error: NO_OVERVIEW_MSG, backend: 'file' });
+    }
+    const now = Date.now();
+    const hours = Number(req.query.hours) || 168;
+    const endTime = req.query.endTime ? Number(req.query.endTime) : now;
+    const startTime = req.query.startTime ? Number(req.query.startTime) : now - hours * 3600_000;
+    const overview = await obs.metrics.computeOverview({ startTime, endTime });
+    if (!overview) {
+      return res.status(503).json({ error: NO_OVERVIEW_MSG, backend: 'file' });
+    }
+    res.json(overview);
+  } catch (error: any) {
+    console.error('[MetricsAPI] Overview error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 /**
  * GET /api/metrics/:runId - Compute metrics from traces for a single run
  */

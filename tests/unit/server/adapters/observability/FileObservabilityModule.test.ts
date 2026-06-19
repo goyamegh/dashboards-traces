@@ -170,5 +170,8 @@ describe('FileObservabilityModule', () => {
     it('computeForRuns returns []', async () => {
       expect(await mod.metrics.computeForRuns(['run-1', 'run-2'])).toEqual([]);
     });
+    it('computeOverview returns null', async () => {
+      expect(await mod.metrics.computeOverview({ startTime: 1, endTime: 2 })).toBeNull();
+    });
   });
 });

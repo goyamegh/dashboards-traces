@@ -21,6 +21,7 @@ import type {
   OpenSearchLog,
   Span,
   MetricsResult,
+  AgentOverview,
   HealthStatus,
   DataSourceAdapterType,
   DataSourceConfig,
@@ -238,6 +239,11 @@ export interface IMetricsOperations {
   computeForRun(runId: string): Promise<MetricsResult | null>;
   /** Metrics for many runs; empty array when this backend doesn't support metrics. */
   computeForRuns(runIds: string[]): Promise<MetricsResult[]>;
+  /**
+   * Fleet/agent overview: per-service rollups (sessions, LLM/tool calls,
+   * tokens, cost, models) over a time window. `null` when unsupported.
+   */
+  computeOverview(window: { startTime: number; endTime: number }): Promise<AgentOverview | null>;
 }
 
 /**

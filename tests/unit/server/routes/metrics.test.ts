@@ -24,7 +24,7 @@ const mockComputeAggregateMetrics = computeAggregateMetrics as jest.MockedFuncti
 const NO_METRICS_MSG = 'Trace-derived metrics require an OpenSearch observability cluster';
 
 /** Build a fake IObservabilityModule whose metrics ops are jest mocks. */
-function fakeModule(opts: { supported?: boolean; computeForRun?: jest.Mock; computeForRuns?: jest.Mock } = {}) {
+function fakeModule(opts: { supported?: boolean; computeForRun?: jest.Mock; computeForRuns?: jest.Mock; computeOverview?: jest.Mock } = {}) {
   return {
     traces: {} as any,
     logs: {} as any,
@@ -32,6 +32,7 @@ function fakeModule(opts: { supported?: boolean; computeForRun?: jest.Mock; comp
       supported: opts.supported ?? true,
       computeForRun: opts.computeForRun ?? jest.fn(),
       computeForRuns: opts.computeForRuns ?? jest.fn(),
+      computeOverview: opts.computeOverview ?? jest.fn(),
     },
     health: jest.fn(),
     isConfigured: () => true,
@@ -58,6 +59,31 @@ describe('Metrics Routes', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetObservabilityModule.mockReturnValue(fakeModule());
+  });
+
+  describe('GET /api/metrics/overview', () => {
+    it('returns the agent overview when the backend supports metrics', async () => {
+      const overview = { window: { startTime: 1, endTime: 2 }, sampledSpans: 2, capped: false, services: [{ service: 'claude-code-agent', llmCalls: 1 }], totals: { services: 1 } };
+      const computeOverview = jest.fn().mockResolvedValue(overview);
+      mockGetObservabilityModule.mockReturnValue(fakeModule({ computeOverview }));
+
+      const { req, res } = createMocks({}, {}, {});
+      (req as any).query = { hours: '24' };
+      const handler = getRouteHandler(metricsRoutes, 'get', '/api/metrics/overview');
+      await handler(req, res);
+
+      expect(computeOverview).toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalledWith(overview);
+    });
+
+    it('returns 503 when the backend does not support metrics (file backend)', async () => {
+      mockGetObservabilityModule.mockReturnValue(fakeModule({ supported: false }));
+      const { req, res } = createMocks({}, {}, {});
+      (req as any).query = {};
+      const handler = getRouteHandler(metricsRoutes, 'get', '/api/metrics/overview');
+      await handler(req, res);
+      expect(res.status).toHaveBeenCalledWith(503);
+    });
   });
 
   describe('GET /api/metrics/:runId', () => {
