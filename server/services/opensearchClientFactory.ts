@@ -29,14 +29,22 @@ import type { ClusterConfig } from '../../types/index.js';
  *
  * @throws Error if SigV4 is requested but `awsRegion` is missing
  */
-export function createOpenSearchClient(config: ClusterConfig): Client {
-  // Finding-2 guard: an unrecognized authType must NOT silently fall through to
-  // basic auth (a footgun: authType:'aws' previously produced an opaque 401/403
-  // "Response Error"). Normalize the common AWS case and reject typos loudly.
+/**
+ * Resolve the effective auth mode for a cluster config. Shared by
+ * createOpenSearchClient() AND configToCacheKey() so the constructed client and
+ * its pool/cache key always agree (otherwise an inferred-SigV4 config would be
+ * built as SigV4 but keyed as 'basic', colliding clients + breaking drift
+ * detection).
+ *
+ * - Infers 'sigv4' when authType is omitted but AWS fields (awsProfile/awsRegion)
+ *   are present — basic auth could never have worked there.
+ * - Throws on an unrecognized authType instead of silently using basic auth
+ *   (the footgun: authType:'aws' → opaque 401/403 'Response Error').
+ * - Defaults to 'basic' (backwards compatible) when nothing is specified.
+ */
+export function resolveAuthType(config: ClusterConfig): 'none' | 'basic' | 'sigv4' {
   let authType = config.authType as string | undefined;
   if (!authType && (config.awsProfile || config.awsRegion)) {
-    // SigV4 fields present but authType omitted — infer SigV4 (basic auth could
-    // never have worked here anyway: it needs username/password, not AWS creds).
     authType = 'sigv4';
   }
   if (authType && authType !== 'none' && authType !== 'basic' && authType !== 'sigv4') {
@@ -45,6 +53,11 @@ export function createOpenSearchClient(config: ClusterConfig): Client {
       (config.awsProfile || config.awsRegion ? ` (use 'sigv4' for AWS OpenSearch).` : '.')
     );
   }
+  return (authType as 'none' | 'basic' | 'sigv4' | undefined) ?? 'basic';
+}
+
+export function createOpenSearchClient(config: ClusterConfig): Client {
+  const authType = resolveAuthType(config);
 
   if (authType === 'none') {
     return new Client({
@@ -97,10 +110,13 @@ export function createOpenSearchClient(config: ClusterConfig): Client {
  * Used for client pool keying to avoid creating new clients per request.
  */
 export function configToCacheKey(config: ClusterConfig): string {
-  if (config.authType === 'none') {
+  // Use the SAME resolution as createOpenSearchClient so the key reflects the
+  // actually-constructed auth mode (incl. inferred SigV4).
+  const authType = resolveAuthType(config);
+  if (authType === 'none') {
     return `none|${config.endpoint}`;
   }
-  if (config.authType === 'sigv4') {
+  if (authType === 'sigv4') {
     return `sigv4|${config.endpoint}|${config.awsRegion || ''}|${config.awsProfile || ''}|${config.awsService || 'es'}`;
   }
   const credentialHash = createHash('sha256')

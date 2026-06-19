@@ -133,4 +133,25 @@ describe('initializeStorageFromConfig', () => {
 
     expect(mockClient.close).toHaveBeenCalled();
   });
+
+  it('returns a controlled error state (does NOT throw) when client creation throws, e.g. invalid authType', async () => {
+    // resolveAuthType throws for an unrecognized authType; createOpenSearchClient
+    // is now inside the try, so this must become { backend: 'error' } rather than
+    // crashing server startup.
+    mockCreateClient.mockImplementation(() => {
+      throw new Error("Invalid storage/observability authType 'aws'. Expected 'sigv4', 'basic', or 'none' (use 'sigv4' for AWS OpenSearch).");
+    });
+    const config = { endpoint: 'https://x', authType: 'aws' } as any;
+
+    let state: any;
+    await expect(
+      (async () => { state = await initializeStorageFromConfig(config); })()
+    ).resolves.not.toThrow();
+
+    expect(state.backend).toBe('error');
+    expect(state.error).toMatch(/Invalid .*authType 'aws'/);
+    expect(mockSetStorageError).toHaveBeenCalled();
+    // never swapped the module to a broken OpenSearch module
+    expect(mockSetStorageModule).not.toHaveBeenCalled();
+  });
 });

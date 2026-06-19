@@ -43,10 +43,14 @@ export async function initializeStorageFromConfig(
     return state;
   }
 
-  const configKey = configToCacheKey(config);
-  const client = createOpenSearchClient(config);
-
+  // Build the cache key + client INSIDE the try: an invalid authType (e.g. a
+  // hand-edited state.json / TS / env value) makes these throw, which must
+  // become a controlled { backend: 'error' } state — not a server-startup crash.
+  let configKey = '';
+  let client: ReturnType<typeof createOpenSearchClient> | undefined;
   try {
+    configKey = configToCacheKey(config);
+    client = createOpenSearchClient(config);
     // Verify connectivity
     await client.cluster.health({ timeout: '5s' });
 
@@ -87,7 +91,7 @@ export async function initializeStorageFromConfig(
     const errorMsg = error.message || 'Connection failed';
     console.warn(`[storageInit] OpenSearch not reachable: ${errorMsg}`);
     setStorageError(errorMsg, configKey, config.endpoint);
-    await client.close().catch(() => {});
+    if (client) await client.close().catch(() => {});
     return {
       backend: 'error',
       configKey,

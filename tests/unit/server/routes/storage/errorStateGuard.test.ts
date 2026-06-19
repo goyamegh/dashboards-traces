@@ -26,6 +26,7 @@ jest.mock('@/server/adapters/index', () => {
   return {
     ...actual,
     getStorageModule: jest.fn(() => ({
+      isConfigured: jest.fn(() => true),
       testCases: { getAll: jest.fn(async () => ({ items: [], total: 0 })) },
       benchmarks: { getAll: jest.fn(async () => ({ items: [], total: 0 })) },
       runs: { getAll: jest.fn(async () => ({ items: [], total: 0 })) },
@@ -73,12 +74,16 @@ describe('storage error-state guard (Finding 1: no silent file fallback)', () =>
     expect(res.status).not.toBe(503);
   });
 
-  it('does NOT block entity CRUD in normal file mode', async () => {
+  it('does NOT block entity CRUD in normal file mode (reaches the route, 200 + shape)', async () => {
     setStorageModule(new FileStorageModule(), {
       backend: 'file', configKey: null, error: null, configuredEndpoint: null,
     });
 
     const res = await request(app).get('/api/storage/test-cases');
-    expect(res.status).not.toBe(503);
+    // Must actually reach the test-cases handler successfully — not just "not 503"
+    // (which would also pass on a 404/500).
+    expect(res.status).toBe(200);
+    expect(res.body).toHaveProperty('testCases');
+    expect(res.body).toHaveProperty('total');
   });
 });
