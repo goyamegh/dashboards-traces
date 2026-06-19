@@ -9,6 +9,9 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Fixed
+- **Live Traces: time-range picker + real service-name filter** ([components/traces/TracesPage.tsx](components/traces/TracesPage.tsx)): the Live Traces page was a fixed last-5-minutes window, and its Service filter was built from agent *display names* (which never match the OTel `service.name`) — so recent/lagged spans were invisible and picking an agent returned nothing. Adds a time-range selector (5m / 15m / 1h / 6h / 24h / 7d, default 1h) and derives the Service dropdown from the `service.name`s actually present in fetched spans (accumulated across fetches), so e.g. `claude-code-agent` appears and filtering works.
+
 ## [0.5.1] - 2026-06-17
 
 Release-pipeline retry of `0.5.0`. The `0.5.0` git tag was cut on [`be9f7cb5`](https://github.com/opensearch-project/agent-health/commit/be9f7cb5) but the [Release Workflow](https://github.com/opensearch-project/agent-health/actions/runs/27382887163) failed at `npm test` (stale `jest.mock('@/lib/utils', ...)` factory in `RunDetailsContent.test.ts` — `getRunOverallScore` was added to the mocked module by [#247](https://github.com/opensearch-project/agent-health/pull/247) but the partial mock factory was never updated, so every test in that file threw `TypeError: getRunOverallScore is not a function` once `<RunScore>` rendered transitively). Both `npm publish` and `Release on Github` were skipped, so `0.5.0` never reached the npm registry — the latest published artifact remained `0.4.0`. This `0.5.1` ships everything `0.5.0` was meant to ship, plus the test-mock repair and a handful of additional commits that landed on `main` while diagnosing the release miss.

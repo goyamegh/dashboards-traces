@@ -18,7 +18,6 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Span } from '@/types';
-import { DEFAULT_CONFIG } from '@/lib/constants';
 import {
   fetchRecentTraces,
   processSpansIntoTree,
@@ -37,6 +36,11 @@ export const TracesPage: React.FC = () => {
 
   // Filter state
   const [selectedAgent, setSelectedAgent] = useState<string>('all');
+  const [minutesAgo, setMinutesAgo] = useState<number>(60);
+  // OTel service.names actually seen in fetched spans, accumulated across fetches
+  // so the Service filter reflects real data — not agent display names (which never
+  // match service.name, e.g. "Claude Code" vs "claude-code-agent").
+  const [knownServices, setKnownServices] = useState<string[]>([]);
   const [textSearch, setTextSearch] = useState('');
   const [debouncedSearch, setDebouncedSearch] = useState('');
 
@@ -58,14 +62,25 @@ export const TracesPage: React.FC = () => {
 
   const refreshIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Get unique service names from agents config (no deps — recomputes when
-  // parent App re-renders after refreshConfig(), keeping custom agents visible)
-  const agentOptions = (() => {
-    const agents = DEFAULT_CONFIG.agents
-      .filter(a => a.enabled !== false)
-      .map(a => ({ value: a.name, label: a.name }));
-    return [{ value: 'all', label: 'All Agents' }, ...agents];
-  })();
+  // Service filter options derived from the OTel `service.name`s actually present
+  // in fetched spans (accumulated in knownServices). Fixes the prior bug where
+  // options came from agent display names (e.g. "Claude Code") which never match
+  // the emitted service.name (e.g. "claude-code-agent"), so filtering showed nothing.
+  const agentOptions = [
+    { value: 'all', label: 'All Services' },
+    ...knownServices.map(n => ({ value: n, label: n })),
+  ];
+
+  // Live-window options (minutes). Default 60m so recent runs — including
+  // claude-code spans that lag ~5min through the OSI ingestion pipeline — appear.
+  const RANGE_OPTIONS: Array<{ value: number; label: string }> = [
+    { value: 5, label: 'Last 5 min' },
+    { value: 15, label: 'Last 15 min' },
+    { value: 60, label: 'Last 1 hour' },
+    { value: 360, label: 'Last 6 hours' },
+    { value: 1440, label: 'Last 24 hours' },
+    { value: 10080, label: 'Last 7 days' },
+  ];
 
   // Process spans into tree
   const spanTree = useMemo(() => {
@@ -106,13 +121,21 @@ export const TracesPage: React.FC = () => {
     try {
       startMeasure('TracesPage.apiCall');
       const result = await fetchRecentTraces({
-        minutesAgo: 5,
+        minutesAgo,
         serviceName: selectedAgent !== 'all' ? selectedAgent : undefined,
         textSearch: debouncedSearch || undefined,
         size: 100, // Reduced from 500 to 100 for pagination
         cursor: loadMore ? cursor || undefined : undefined,
       });
       endMeasure('TracesPage.apiCall');
+
+      // Accumulate distinct OTel service.names for the Service filter dropdown.
+      const seenServices = result.spans
+        .map(s => (s.attributes as Record<string, unknown> | undefined)?.['service.name'])
+        .filter((n): n is string => typeof n === 'string' && n.length > 0);
+      if (seenServices.length > 0) {
+        setKnownServices(prev => Array.from(new Set([...prev, ...seenServices])).sort());
+      }
 
       startMeasure('TracesPage.updateState');
       if (loadMore) {
@@ -151,7 +174,7 @@ export const TracesPage: React.FC = () => {
       setIsLoadingMore(false);
       endMeasure(operationName);
     }
-  }, [selectedAgent, debouncedSearch, cursor]);
+  }, [selectedAgent, minutesAgo, debouncedSearch, cursor]);
 
   // Initial fetch and auto-refresh
   useEffect(() => {
@@ -213,7 +236,7 @@ export const TracesPage: React.FC = () => {
         <div>
           <h2 className="text-2xl font-bold">Live Traces</h2>
           <p className="text-xs text-muted-foreground mt-1">
-            Real-time trace monitoring from the last 5 minutes
+            Real-time trace monitoring · {(RANGE_OPTIONS.find(r => r.value === minutesAgo)?.label ?? `last ${minutesAgo} min`).toLowerCase()}
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -256,9 +279,26 @@ export const TracesPage: React.FC = () => {
       <Card className="mb-4">
         <CardContent className="p-4">
           <div className="flex gap-4 items-end">
-            {/* Agent Filter */}
+            {/* Time Range */}
+            <div className="w-40 space-y-1.5">
+              <label className="text-xs text-muted-foreground">Time range</label>
+              <Select value={String(minutesAgo)} onValueChange={(v) => setMinutesAgo(Number(v))}>
+                <SelectTrigger>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {RANGE_OPTIONS.map(opt => (
+                    <SelectItem key={opt.value} value={String(opt.value)}>
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            {/* Service Filter */}
             <div className="w-48 space-y-1.5">
-              <label className="text-xs text-muted-foreground">Agent</label>
+              <label className="text-xs text-muted-foreground">Service</label>
               <Select value={selectedAgent} onValueChange={setSelectedAgent}>
                 <SelectTrigger>
                   <SelectValue />
