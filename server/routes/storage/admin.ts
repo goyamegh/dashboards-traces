@@ -329,6 +329,15 @@ router.post('/api/storage/config/storage', async (req: Request, res: Response) =
       return res.status(400).json({ error: 'Endpoint is required' });
     }
 
+    // Finding-2 guard: reject an unrecognized authType up front with a clear
+    // 400 (instead of a deferred opaque connection error) so the Settings UI
+    // gives immediate, actionable feedback.
+    if (authType !== undefined && authType !== 'none' && authType !== 'basic' && authType !== 'sigv4') {
+      return res.status(400).json({
+        error: `Invalid authType '${authType}'. Expected 'sigv4', 'basic', or 'none' (use 'sigv4' for AWS OpenSearch).`,
+      });
+    }
+
     saveStorageConfig({ endpoint, username, password, tlsSkipVerify, authType, awsProfile, awsRegion, awsService });
 
     const client = createOpenSearchClient({

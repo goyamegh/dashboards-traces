@@ -61,7 +61,13 @@ describe('Storage Routes Aggregator', () => {
 
     const calls = mockUse.mock.calls.map((call) => call[0]);
 
-    expect(calls).toEqual([
+    // Note: an inline no-silent-fallback guard middleware (Finding 1) is mounted
+    // between adminRoutes (config/recovery — must stay reachable) and the entity
+    // CRUD routes. It surfaces as an anonymous function.
+    const named = calls.filter((c) => typeof c === 'string');
+    const guards = calls.filter((c) => typeof c === 'function');
+
+    expect(named).toEqual([
       'adminRoutes',
       'testCasesRoutes',
       'benchmarksRoutes',
@@ -71,6 +77,9 @@ describe('Storage Routes Aggregator', () => {
       'reportsRoutes',
       'evaluatorsRoutes',
     ]);
+    // exactly one guard, and it sits right after adminRoutes (index 1)
+    expect(guards).toHaveLength(1);
+    expect(typeof calls[1]).toBe('function');
   });
 
   it('should export the router as default', () => {

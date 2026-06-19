@@ -30,14 +30,30 @@ import type { ClusterConfig } from '../../types/index.js';
  * @throws Error if SigV4 is requested but `awsRegion` is missing
  */
 export function createOpenSearchClient(config: ClusterConfig): Client {
-  if (config.authType === 'none') {
+  // Finding-2 guard: an unrecognized authType must NOT silently fall through to
+  // basic auth (a footgun: authType:'aws' previously produced an opaque 401/403
+  // "Response Error"). Normalize the common AWS case and reject typos loudly.
+  let authType = config.authType as string | undefined;
+  if (!authType && (config.awsProfile || config.awsRegion)) {
+    // SigV4 fields present but authType omitted — infer SigV4 (basic auth could
+    // never have worked here anyway: it needs username/password, not AWS creds).
+    authType = 'sigv4';
+  }
+  if (authType && authType !== 'none' && authType !== 'basic' && authType !== 'sigv4') {
+    throw new Error(
+      `Invalid storage/observability authType '${authType}'. Expected 'sigv4', 'basic', or 'none'` +
+      (config.awsProfile || config.awsRegion ? ` (use 'sigv4' for AWS OpenSearch).` : '.')
+    );
+  }
+
+  if (authType === 'none') {
     return new Client({
       node: config.endpoint,
       ssl: { rejectUnauthorized: !config.tlsSkipVerify },
     });
   }
 
-  if (config.authType === 'sigv4') {
+  if (authType === 'sigv4') {
     if (!config.awsRegion) {
       throw new Error('awsRegion is required when authType is "sigv4"');
     }
