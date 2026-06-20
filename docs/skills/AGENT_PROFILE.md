@@ -42,6 +42,33 @@ skill/command files unless you pass `--force`. For **Kiro**, drop
 `docs/skills/AGENT_PROFILE.md` under `.kiro/steering/`; for other tools, tell the
 assistant "read AGENT_PROFILE.md and follow it".
 
+### pi (pi.dev)
+
+pi has no native telemetry, so a **zero-dependency, single-file extension**
+([examples/pi-profiling/agent-health-profile.ts](../../examples/pi-profiling/agent-health-profile.ts))
+both *instruments* the live pi session (emitting `invoke_agent` / `chat` /
+`execute_tool` spans stamped with `session.id`, service `pi-agent`) and registers
+the profiling command. It speaks OTLP over `fetch` — nothing to `npm install`.
+Full guide: [docs/PI_PROFILING.md](../PI_PROFILING.md).
+
+```bash
+# 1. Drop the extension in (global = every pi session).
+cp examples/pi-profiling/agent-health-profile.ts ~/.pi/agent/extensions/
+
+# 2. Point telemetry at a trace store BEFORE starting pi. Simplest is
+#    Agent Health in FILE mode (no OpenSearch) — its embedded receiver persists
+#    spans and matches sessions out of the box:
+export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4001   # /v1/traces is appended
+```
+
+The extension records the session id to `.pi/agent-health/current-session` on
+`session_start`, so `agent-health profile` resolves it with no guessing and
+defaults `--service` to `pi-agent`. When done, run `/agent-health-profile -e
+<evaluator-id>` from inside pi (or `agent-health profile --service pi-agent
+--output json` from a shell). See [examples/pi-profiling/README.md](../../examples/pi-profiling/README.md)
+for OpenSearch-backed routing notes (export to the cluster's own OTLP ingest;
+the embedded receiver drops payloads when a cluster is configured).
+
 ---
 
 ## Usage
@@ -119,11 +146,15 @@ GenAI event-based spans for other agents.
 
 `profile` resolves the session id in priority order:
 1. `--session <id>` if you pass it,
-2. `.claude/agent-health/current-session` (written by the setup hook — exact),
-3. newest Claude Code transcript for this cwd (heuristic fallback).
+2. `.pi/agent-health/current-session` (written by the pi `agent-health-profile`
+   extension on `session_start` — exact),
+3. `.claude/agent-health/current-session` (written by the Claude setup hook — exact),
+4. newest Claude Code transcript for this cwd (heuristic fallback).
 
-Every Claude Code span carries `session.id`, so once resolved the fetch is exact
-(`fetchTracesBySessionId`).
+Every Claude Code span carries `session.id`, and the pi extension stamps the
+same `session.id` on the spans it emits, so once resolved the fetch is exact
+(`fetchTracesBySessionId`). When the session is resolved from the pi marker,
+`--service` defaults to `pi-agent`.
 
 ---
 
