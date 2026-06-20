@@ -26,51 +26,15 @@
 import { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
-import { existsSync, readFileSync, readdirSync, statSync, mkdirSync, writeFileSync } from 'fs';
+import { mkdirSync, writeFileSync } from 'fs';
 import { join } from 'path';
-import { homedir } from 'os';
 import { loadConfig } from '@/lib/config/index.js';
 import { projectDataDir } from '@/lib/config/statePaths.js';
 import { ensureServer, createServerCleanup } from '@/cli/utils/serverLifecycle.js';
 import { ApiClient } from '@/cli/utils/apiClient.js';
 import { spansToTrajectory, scanSessionSignals } from '@/services/traces/spansToTrajectory.js';
+import { resolveSessionId } from '@/cli/commands/profileSession.js';
 import type { Evaluator, Span } from '@/types/index.js';
-
-/** Where the PreToolUse hook (installed by `agent-health setup`) records the id. */
-const SESSION_FILE = join('.claude', 'agent-health', 'current-session');
-
-/**
- * Resolve the current coding-agent session id.
- *  1. explicit `--session`
- *  2. the file the setup hook writes (deterministic, authoritative)
- *  3. fallback: newest Claude Code transcript for this cwd (heuristic)
- */
-function resolveSessionId(explicit?: string): { sessionId: string | null; source: string } {
-  if (explicit) return { sessionId: explicit, source: 'flag' };
-
-  if (existsSync(SESSION_FILE)) {
-    const id = readFileSync(SESSION_FILE, 'utf-8').trim();
-    if (id) return { sessionId: id, source: 'hook' };
-  }
-
-  // Heuristic fallback: ~/.claude/projects/<cwd-slug>/<session-uuid>.jsonl,
-  // newest by mtime. cwd-slug = cwd with non-alphanumerics → '-'.
-  try {
-    const slug = process.cwd().replace(/[^a-zA-Z0-9]/g, '-');
-    const dir = join(homedir(), '.claude', 'projects', slug);
-    if (existsSync(dir)) {
-      const newest = readdirSync(dir)
-        .filter(f => f.endsWith('.jsonl'))
-        .map(f => ({ f, mtime: statSync(join(dir, f)).mtimeMs }))
-        .sort((a, b) => b.mtime - a.mtime)[0];
-      if (newest) return { sessionId: newest.f.replace(/\.jsonl$/, ''), source: 'transcript' };
-    }
-  } catch {
-    /* ignore — fall through to null */
-  }
-
-  return { sessionId: null, source: 'none' };
-}
 
 /** Sum a numeric span attribute across spans (tolerant of string values). */
 function sumAttr(spans: Span[], keys: string[]): number {
@@ -90,21 +54,24 @@ export function createProfileCommand(): Command {
     .option('-e, --evaluator <id>', 'Evaluator id to use as the profiling rubric (default: system-rca-default)')
     .option('-s, --session <id>', 'Coding-agent session id (default: auto-detected)')
     .option('-f, --feedback <text>', 'Your upfront steering/feedback on the session (e.g. "focus on routing; it ignored the SOP")')
-    .option('--service <name>', 'OTel service name to filter spans (default: claude-code)', 'claude-code')
+    .option('--service <name>', 'OTel service name used to extract the trajectory (default: auto — pi-agent for pi sessions, else claude-code)')
     .option('-o, --output <format>', 'Output format: table | json', 'table')
-    .action(async (options: { evaluator?: string; session?: string; feedback?: string; service: string; output: string }) => {
+    .action(async (options: { evaluator?: string; session?: string; feedback?: string; service?: string; output: string }) => {
       const asJson = options.output === 'json';
       if (!asJson) console.log(chalk.bold('\nAgent Health - Profile\n'));
 
-      const { sessionId, source } = resolveSessionId(options.session);
+      const { sessionId, source, agent } = resolveSessionId(options.session);
       if (!sessionId) {
-        const msg = 'Could not determine the current session id. Pass --session <id>, or run `agent-health setup` to install the session hook.';
+        const msg = 'Could not determine the current session id. Pass --session <id>, or run `agent-health setup` (Claude Code) / install the agent-health pi package (pi) to record the session id.';
         if (asJson) console.log(JSON.stringify({ error: msg }, null, 2));
         else console.log(chalk.red(`  ${msg}\n`));
         process.exitCode = 1;
         return;
       }
-      if (!asJson) console.log(chalk.gray(`  Session: ${sessionId} (via ${source})`));
+      // Effective service: explicit flag wins; otherwise infer from the agent
+      // that produced the session (pi → pi-agent), defaulting to claude-code.
+      const service = options.service || (agent === 'pi' ? 'pi-agent' : 'claude-code');
+      if (!asJson) console.log(chalk.gray(`  Session: ${sessionId} (via ${source}, service ${service})`));
 
       const config = await loadConfig();
       const serverResult = await ensureServer(config.server);
@@ -142,8 +109,8 @@ export function createProfileCommand(): Command {
 
         // 3. Reconstruct trajectory + scan signals (the "profile").
         spinner && (spinner.text = 'Profiling session...');
-        const trajectory = spansToTrajectory(spans, options.service);
-        const signals = scanSessionSignals(spans, options.service);
+        const trajectory = spansToTrajectory(spans, service);
+        const signals = scanSessionSignals(spans, service);
 
         const startTimes = spans.map(s => new Date(s.startTime).getTime()).filter(n => !isNaN(n));
         const endTimes = spans.map(s => new Date(s.endTime).getTime()).filter(n => !isNaN(n));
@@ -156,7 +123,7 @@ export function createProfileCommand(): Command {
         // whichever attribute key the span carries (`service.name` or `serviceName`).
         const svcSpan = spans.find(s => s.attributes?.['service.name'] || s.attributes?.['serviceName']);
         const observedService = String(
-          svcSpan?.attributes?.['service.name'] ?? svcSpan?.attributes?.['serviceName'] ?? options.service
+          svcSpan?.attributes?.['service.name'] ?? svcSpan?.attributes?.['serviceName'] ?? service
         );
 
         spinner?.succeed('Session profiled');
