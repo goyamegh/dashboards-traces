@@ -23,7 +23,7 @@ import {
 } from '@/server/services/storage';
 import type { Client } from '@opensearch-project/opensearch';
 import type { IStorageModule } from '@/server/adapters/types';
-import { runEvaluationWithConnector, callBedrockJudge, invokeAgent } from './evaluation';
+import { runEvaluationWithConnector, callBedrockJudge, invokeAgent, computeSdkMatcherSessionMetrics } from './evaluation';
 import { buildEvaluatorErrorPatch } from './evaluation/evaluatorError';
 import { connectorRegistry } from '@/services/connectors/server';
 import { readEnv } from '@/lib/envCompat';
@@ -529,9 +529,16 @@ export async function executeRun(
               // Option B BC shim: legacy field empty for SDK runs;
               // canonical judge data lives in `matcherResults`.
               (report as any).llmJudgeReasoning = '';
-              (report as any).metrics = failed
-                ? { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 }
-                : { accuracy: 100, faithfulness: 100, latency_score: 100, trajectory_alignment_score: 100 };
+              // Report-level metrics: pass-rate aggregate (and dimensional
+              // pass-through when matchers carry per-claim `judgeMetrics`).
+              // Pre-fix this was hardcoded {0,0,0,0}/{100,100,100,100}, which
+              // erased partial credit AND silently dropped any custom-evaluator
+              // dimensions a multi-claim run produced. See
+              // computeSdkMatcherSessionMetrics() in services/evaluation/index.ts.
+              (report as any).metrics = computeSdkMatcherSessionMetrics(
+                matcherResults,
+                { hasEvalError: evalError !== undefined },
+              );
               // Mark the report as final so trace-mode polling below skips
               // the Bedrock judge fallback (which would error with empty
               // expectedOutcomes for SDK-loaded test cases).

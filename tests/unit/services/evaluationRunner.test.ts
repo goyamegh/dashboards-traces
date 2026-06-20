@@ -9,6 +9,7 @@ import type { EvaluationRun, TestCase } from '@/types';
 
 // Mock dependencies
 jest.mock('@/services/evaluation', () => ({
+  ...jest.requireActual('@/services/evaluation'),
   runEvaluationWithConnector: jest.fn(),
   callBedrockJudge: jest.fn(),
 }));

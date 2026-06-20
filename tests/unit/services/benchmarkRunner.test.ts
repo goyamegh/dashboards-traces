@@ -44,6 +44,7 @@ const mockInvokeAgent = jest.fn();
 const mockCallBedrockJudge = jest.fn();
 
 jest.mock('@/services/evaluation', () => ({
+  ...jest.requireActual('@/services/evaluation'),
   runEvaluationWithConnector: (...args: any[]) => mockRunEvaluationWithConnector(...args),
   invokeAgent: (...args: any[]) => mockInvokeAgent(...args),
   callBedrockJudge: (...args: any[]) => mockCallBedrockJudge(...args),

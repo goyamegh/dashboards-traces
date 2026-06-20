@@ -9,6 +9,7 @@ import type { IStorageModule } from '@/server/adapters/types';
 import type { EvaluateFn } from '@/services/sourceResolver';
 
 jest.mock('@/services/evaluation', () => ({
+  ...jest.requireActual('@/services/evaluation'),
   runEvaluationWithConnector: jest.fn(),
   invokeAgent: jest.fn(),
   callBedrockJudge: jest.fn(),

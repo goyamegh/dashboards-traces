@@ -21,6 +21,7 @@ import type { IStorageModule } from '@/server/adapters/types';
 const mockRunEvaluationWithConnector = jest.fn();
 const mockCallBedrockJudge = jest.fn();
 jest.mock('@/services/evaluation', () => ({
+  ...jest.requireActual('@/services/evaluation'),
   runEvaluationWithConnector: (...args: any[]) => mockRunEvaluationWithConnector(...args),
   callBedrockJudge: (...args: any[]) => mockCallBedrockJudge(...args),
 }));

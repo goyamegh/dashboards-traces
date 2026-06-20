@@ -16,6 +16,7 @@ import { AGUIEvent } from '@/types/agui';
 import { generateMockTrajectory } from './mockTrajectory';
 import { callBedrockJudge } from './bedrockJudge';
 import { buildJudgeMatcherEntry, formatExpectedOutcomesAsClaim } from '@/lib/matchers/judgeAccessor';
+import type { MatcherResult } from '@/lib/matchers/types';
 import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 
 // Re-export for use by experimentRunner when calling judge after trace polling
@@ -101,6 +102,94 @@ function buildConnectorAuth(agent: AgentConfig): ConnectorAuth {
     type: 'none',
     headers,
   };
+}
+
+// ─── SDK matcher-session report-level metrics shim ─────────────────────────────
+//
+// SDK runs (.bench.js / .eval.js with a code body) collect per-matcher
+// verdicts in `report.matcherResults` and the runner then writes a
+// report-level `report.metrics` with the legacy 4-key shape
+// `{accuracy, faithfulness, latency_score, trajectory_alignment_score}` so
+// older list/aggregate UIs keep working.
+//
+// Pre-fix this shim was a hardcoded `{0,0,0,0}` (failed) / `{100,100,100,100}`
+// (passed). Two consequences:
+//   1. A 5-of-6-passing run was indistinguishable from a 0-of-6 run — every
+//      failing run looked identical in the metrics tile. (Only meaningful
+//      for `judge()` matchers, which are non-throwing per RFC 004 §4.4 —
+//      `expect()` is fail-fast and chai-throw goes through the evalError
+//      branch below.)
+//   2. A custom evaluator that emits per-claim dimensional scores via
+//      `MatcherResult.judgeMetrics` (e.g. a multi-dimensional RCA rubric with
+//      `routing_accuracy` / `tool_correctness` / `diagnostic_completeness`)
+//      had its dimensions silently dropped at the report-level boundary.
+//
+// Post-fix:
+//   - Aggregate `accuracy` is the percentage of GATE matchers that passed
+//     (rounded to integer 0..100). `observe`-role matchers and `errored`
+//     matchers are excluded from the denominator (RFC 004 §4.8).
+//   - The other three legacy keys mirror `accuracy` (BC; consumers reading
+//     them historically got 0/100, they now get a meaningful integer).
+//   - If any matcher emitted `judgeMetrics` (per-claim dimensions, see
+//     `lib/matchers/types.ts`), each dimension's MEAN across emitting gate
+//     matchers overrides the BC stub for THAT key. So a 9-dimension custom
+//     rubric ends up on `report.metrics` with `routing_accuracy: 87`,
+//     `tool_correctness: 92`, etc., not flattened to `accuracy: <yes/no>`.
+//
+// `evalError` (the bench body itself threw — includes a chai `expect()`
+// fail-fast assertion) bypasses the aggregate and returns `{0,0,0,0}` — the
+// run never reached its conclusion so a partial aggregate is misleading.
+export function computeSdkMatcherSessionMetrics(
+  matcherResults: MatcherResult[],
+  opts?: { hasEvalError?: boolean },
+): Record<string, number> {
+  if (opts?.hasEvalError) {
+    return {
+      accuracy: 0,
+      faithfulness: 0,
+      latency_score: 0,
+      trajectory_alignment_score: 0,
+    };
+  }
+
+  const gates = matcherResults.filter(m => m.role !== 'observe' && !m.errored);
+  const total = gates.length;
+  const passing = gates.filter(m => m.pass).length;
+  // Vacuous pass when there are no gates (e.g. body just calls the agent
+  // without any judge/expect claims, or every matcher is `observe`-role).
+  // The pre-fix code returned 100 here via the `!failed` branch; keep that.
+  // When some gates DID fail, return the pass-rate percentage — the actual
+  // post-fix improvement, since pre-fix this collapsed to a flat 0.
+  const passRatePct =
+    total === 0 ? 100 : Math.round((passing / total) * 100);
+
+  // BC stub — same number for all four legacy keys.
+  const out: Record<string, number> = {
+    accuracy: passRatePct,
+    faithfulness: passRatePct,
+    latency_score: passRatePct,
+    trajectory_alignment_score: passRatePct,
+  };
+
+  // Dimensional pass-through: aggregate any per-matcher `judgeMetrics`
+  // dimensions across emitting gates. Each dimension's mean (rounded) wins
+  // over the BC stub for the same key.
+  const sums: Record<string, number> = Object.create(null);
+  const counts: Record<string, number> = Object.create(null);
+  for (const m of gates) {
+    const dims = (m as any).judgeMetrics as Record<string, number | undefined> | undefined;
+    if (!dims) continue;
+    for (const [k, v] of Object.entries(dims)) {
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        sums[k] = (sums[k] ?? 0) + v;
+        counts[k] = (counts[k] ?? 0) + 1;
+      }
+    }
+  }
+  for (const k of Object.keys(sums)) {
+    out[k] = Math.round(sums[k] / counts[k]);
+  }
+  return out;
 }
 
 /**

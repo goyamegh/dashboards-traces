@@ -25,6 +25,7 @@ jest.mock('@/services/storage', () => ({
 }));
 
 jest.mock('@/services/evaluation', () => ({
+  ...jest.requireActual('@/services/evaluation'),
   callBedrockJudge: jest.fn(),
 }));
 

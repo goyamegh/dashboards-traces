@@ -16,7 +16,7 @@ import {
   BenchmarkRun,
 } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
-import { runEvaluationWithConnector, callBedrockJudge, invokeAgent } from '@/services/evaluation';
+import { runEvaluationWithConnector, callBedrockJudge, invokeAgent, computeSdkMatcherSessionMetrics } from '@/services/evaluation';
 import { readEnv } from '@/lib/envCompat';
 import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
@@ -539,9 +539,16 @@ export async function executeEvaluationRun(
               // of `matcherResults`. SDK runs leave it empty — judge data lives
               // in `matcherResults` (read via getJudgeMatcherResults()).
               (report as any).llmJudgeReasoning = '';
-              (report as any).metrics = failed
-                ? { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 }
-                : { accuracy: 100, faithfulness: 100, latency_score: 100, trajectory_alignment_score: 100 };
+              // Report-level metrics: pass-rate aggregate (and dimensional
+              // pass-through when matchers carry per-claim `judgeMetrics`).
+              // Pre-fix this was hardcoded {0,0,0,0}/{100,100,100,100}, which
+              // erased partial credit AND silently dropped any custom-evaluator
+              // dimensions a multi-claim run produced. See
+              // computeSdkMatcherSessionMetrics() in services/evaluation/index.ts.
+              (report as any).metrics = computeSdkMatcherSessionMetrics(
+                matcherResults,
+                { hasEvalError: evalError !== undefined },
+              );
               // Matcher session already decided the verdict — mark final so the
               // trace-mode polling / Bedrock-judge path below is skipped.
               (report as any).metricsStatus = 'completed';
