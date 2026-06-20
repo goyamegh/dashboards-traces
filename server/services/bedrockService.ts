@@ -108,24 +108,98 @@ export function truncateString(str: string | undefined | null, maxLength: number
   return str.substring(0, maxLength) + `... [truncated ${str.length - maxLength} chars]`;
 }
 
+// ─── Trajectory compaction caps ────────────────────────────────────────────
+//
+// Until 0.5.21 these caps were hardcoded at 500 / 1000 chars. That was sized
+// for early Sonnet 3.5 token budgets but in practice every modern judge model
+// (Opus 4.x with 200k context) ended up grading from a 500-char SLICE of each
+// assistant message — the judge frequently emitted reasoning like "the
+// response is truncated at 7465 chars... from what IS visible..." and scored
+// every claim 0 because it could not see the agent's actual answer. A
+// multi-dimensional RCA rubric grading long, multi-paragraph agent answers
+// was the first widespread example we caught.
+//
+// Defaults are now sized for the modern context window. They can be tightened
+// for cost-sensitive environments via env vars, or disabled entirely with
+// AH_JUDGE_NO_TRUNCATE=1 (e.g. to validate a regression). Pinned by the
+// `compactTrajectory honors env-var caps` cases in
+// tests/unit/server/services/bedrockService.test.ts and the
+// `compactTrajectory + buildEvaluationPrompt preserve full content` cases in
+// tests/integration/server/services/bedrockService.judgeContent.integration.test.ts.
+const DEFAULT_CONTENT_CAP = 50_000;
+const DEFAULT_TOOL_OUTPUT_CAP = 100_000;
+
+function parsePositiveInt(value: string | undefined, fallback: number): number {
+  if (!value) return fallback;
+  const n = Number.parseInt(value, 10);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return n;
+}
+
 /**
- * Reduce trajectory size by truncating large tool outputs
+ * Resolve the effective content / toolOutput caps used by `compactTrajectory`.
+ * Exported so tests (and any future caller that needs to know the effective
+ * cap before building the prompt) can introspect it without re-implementing
+ * the env-var precedence rules.
+ *
+ *   env AH_JUDGE_NO_TRUNCATE=1    -> Number.POSITIVE_INFINITY (no truncation)
+ *   env AH_JUDGE_CONTENT_CAP      -> overrides the per-step `content` cap
+ *   env AH_JUDGE_TOOL_OUTPUT_CAP  -> overrides the per-step `toolOutput` cap
+ *   otherwise                     -> DEFAULT_CONTENT_CAP / DEFAULT_TOOL_OUTPUT_CAP
+ *
+ * Explicit `opts` always win over env vars, so callers (e.g. dimension-style
+ * evaluators) can force whole-trajectory grading without exporting env vars.
  */
-export function compactTrajectory(trajectory: TrajectoryStep[]): TrajectoryStep[] {
+export function getJudgeContentCaps(opts?: {
+  contentCap?: number;
+  toolOutputCap?: number;
+}): { contentCap: number; toolOutputCap: number } {
+  if (process.env.AH_JUDGE_NO_TRUNCATE === '1') {
+    return {
+      contentCap: opts?.contentCap ?? Number.POSITIVE_INFINITY,
+      toolOutputCap: opts?.toolOutputCap ?? Number.POSITIVE_INFINITY,
+    };
+  }
+  return {
+    contentCap:
+      opts?.contentCap ??
+      parsePositiveInt(process.env.AH_JUDGE_CONTENT_CAP, DEFAULT_CONTENT_CAP),
+    toolOutputCap:
+      opts?.toolOutputCap ??
+      parsePositiveInt(
+        process.env.AH_JUDGE_TOOL_OUTPUT_CAP,
+        DEFAULT_TOOL_OUTPUT_CAP,
+      ),
+  };
+}
+
+/**
+ * Reduce trajectory size by truncating large content / tool outputs.
+ *
+ * Backward compatible: `compactTrajectory(trajectory)` still works and uses
+ * env-var defaults (see `getJudgeContentCaps`). Pass explicit caps to override
+ * env vars, e.g. for whole-trajectory dimension evaluators that must see the
+ * complete answer regardless of operator-level cost knobs.
+ */
+export function compactTrajectory(
+  trajectory: TrajectoryStep[],
+  opts?: { contentCap?: number; toolOutputCap?: number },
+): TrajectoryStep[] {
+  const { contentCap, toolOutputCap } = getJudgeContentCaps(opts);
   return trajectory.map(step => {
     const compacted = { ...step };
 
     // Truncate large content fields
     if (compacted.content && typeof compacted.content === 'string') {
-      compacted.content = truncateString(compacted.content, 500);
+      compacted.content = truncateString(compacted.content, contentCap);
     }
 
     // Truncate large tool outputs
     if (compacted.toolOutput) {
       if (typeof compacted.toolOutput === 'string') {
-        compacted.toolOutput = truncateString(compacted.toolOutput, 1000);
+        compacted.toolOutput = truncateString(compacted.toolOutput, toolOutputCap);
       } else if (typeof compacted.toolOutput === 'object') {
-        compacted.toolOutput = truncateString(JSON.stringify(compacted.toolOutput), 1000);
+        compacted.toolOutput = truncateString(JSON.stringify(compacted.toolOutput), toolOutputCap);
       }
     }
 
