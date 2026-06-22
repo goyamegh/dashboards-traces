@@ -49,6 +49,7 @@ import {
 } from '@/types';
 import {
   fetchTracesByRunIds,
+  fetchTracesForRun,
   processSpansIntoTree,
   calculateTimeRange,
   compareTraces,
@@ -65,6 +66,10 @@ interface TraceFlowComparisonProps {
   runs: BenchmarkRun[];
   reports: Record<string, EvaluationReport>;
   useCaseId: string;
+  /** Trace-window hints per agent runId (Strategy C) so closed-source spans render. */
+  windowAgentsByRunId?: Map<string, { serviceName?: string; startedAt: number; endedAt: number }>;
+  /** A span citation clicked in the deep-dive → select/highlight that span. */
+  highlight?: { runId: string; spanId: string; nonce: number } | null;
 }
 
 interface TraceData {
@@ -561,10 +566,13 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
   runs,
   reports,
   useCaseId,
+  windowAgentsByRunId,
+  highlight,
 }) => {
   const [mode, setMode] = useState<ComparisonMode>('side-by-side');
   const [traceData, setTraceData] = useState<Map<string, TraceData>>(new Map());
   const [selectedSpan, setSelectedSpan] = useState<CategorizedSpan | null>(null);
+  const detailPanelRef = useRef<HTMLDivElement>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
@@ -610,7 +618,14 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
         if (!info.agentRunId) return;
 
         try {
-          const result = await fetchTracesByRunIds([info.agentRunId]);
+          const wa = windowAgentsByRunId?.get(info.agentRunId);
+          const result = await fetchTracesForRun({
+            runId: info.agentRunId,
+            includeWindowFallback: true,
+            windowAgents: wa?.serviceName
+              ? [{ serviceName: wa.serviceName, startedAt: wa.startedAt, endedAt: wa.endedAt }]
+              : undefined,
+          });
           const spanTree = processSpansIntoTree(result.spans);
           const categorizedTree = categorizeSpanTree(spanTree);
           const timeRange = calculateTimeRange(result.spans);
@@ -647,12 +662,49 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
     );
 
     setIsLoading(false);
-  }, [runInfos]);
+  }, [runInfos, windowAgentsByRunId]);
 
   // Fetch traces on mount
   useEffect(() => {
     fetchAllTraces();
   }, [fetchAllTraces]);
+
+  // Deep-link: a span citation was clicked in the deep-dive → select that span
+  // in its run's trace so its details/evidence surface for the user.
+  useEffect(() => {
+    if (!highlight) return;
+    const findById = (nodes: CategorizedSpan[]): CategorizedSpan | null => {
+      for (const n of nodes) {
+        if (n.spanId === highlight.spanId) return n;
+        const kids = (n.children as CategorizedSpan[] | undefined) || [];
+        const hit = kids.length ? findById(kids) : null;
+        if (hit) return hit;
+      }
+      return null;
+    };
+    for (const td of traceData.values()) {
+      if (td.runId !== highlight.runId) continue;
+      const hit = findById(td.spanTree);
+      if (hit) {
+        setSelectedSpan(hit);
+        break;
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlight?.nonce, traceData]);
+
+  // After a deep-link selects a span, scroll its details panel into view. The
+  // panel renders to the RIGHT of the side-by-side flow inside a horizontally
+  // scrolling table, so without this the user lands on the Traces tab but the
+  // span they clicked is off-screen to the right.
+  useEffect(() => {
+    if (!highlight || !selectedSpan) return;
+    const t = setTimeout(() => {
+      detailPanelRef.current?.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlight?.nonce, selectedSpan?.spanId]);
 
   // Get first two traces for comparison
   const traceArray = Array.from(traceData.values());
@@ -813,7 +865,11 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
 
         {/* Details panel */}
         {selectedSpan && (
-          <div className="w-80 border-l overflow-auto">
+          <div
+            ref={detailPanelRef}
+            className="w-80 border-l overflow-auto ring-1 ring-inset ring-opensearch-blue/40"
+            data-selected-span-id={selectedSpan.spanId}
+          >
             <SpanDetailsPanel
               span={selectedSpan}
               onClose={() => setSelectedSpan(null)}

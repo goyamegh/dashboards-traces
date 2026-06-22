@@ -93,6 +93,8 @@ export function createTraceJudgeExtension(
             spans = spans.filter((s) => String(s?.name ?? '').toLowerCase().includes(f));
           }
           const summary = spans.map((s) => ({
+            spanId: s.spanId,
+            traceId: s.traceId,
             name: s.name,
             startTime: s.startTime,
             endTime: s.endTime,

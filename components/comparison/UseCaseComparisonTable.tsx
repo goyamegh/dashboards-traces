@@ -160,6 +160,10 @@ interface UseCaseComparisonTableProps {
   trajectoryRunPair?: [string, string] | null;
   trajectoryTargetTestCase?: string | null;
   onTrajectoryRequest?: (testCaseId: string) => void;
+  /** A clicked span citation from the deep-dive: expand this row + open Traces. */
+  spanDeepLink?: { testCaseId: string; runId: string; spanId: string; nonce: number } | null;
+  /** Trace-window hints (serviceName + window) per agent runId, for span fetch. */
+  windowAgentsByRunId?: Map<string, { serviceName?: string; startedAt: number; endedAt: number }>;
 }
 
 const rowStatusStyles: Record<RowStatus, string> = {
@@ -177,8 +181,18 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
   visibleEvaluators,
   clusterByCaseId,
   onTrajectoryRequest,
+  spanDeepLink,
+  windowAgentsByRunId,
 }) => {
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+
+  // A span citation was clicked in the deep-dive → auto-expand that test case
+  // so its Traces tab (and the highlighted span) becomes visible.
+  React.useEffect(() => {
+    if (spanDeepLink?.testCaseId) {
+      setExpandedRows((prev) => new Set(prev).add(spanDeepLink.testCaseId));
+    }
+  }, [spanDeepLink?.nonce, spanDeepLink?.testCaseId]);
 
   // Use prop if provided, otherwise fall back to first run
   const referenceRunId = propReferenceRunId || runs[0]?.id;
@@ -331,6 +345,8 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
                           useCaseId={row.testCaseId}
                           runs={runs}
                           reports={reports}
+                          windowAgentsByRunId={windowAgentsByRunId}
+                          spanDeepLink={spanDeepLink?.testCaseId === row.testCaseId ? spanDeepLink : null}
                         />
                       </TableCell>
                     </TableRow>

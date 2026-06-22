@@ -28,6 +28,7 @@ import { UseCaseComparisonTable } from './UseCaseComparisonTable';
 import { RunPairSelector } from './RunPairSelector';
 import { ModeToggle } from './ModeToggle';
 import { VerdictStrip } from './VerdictStrip';
+import { ComparisonDeepDive, DeepDiveRunMeta } from './ComparisonDeepDive';
 import { FailureClusterPanel } from './FailureClusterPanel';
 import { extractFirstDivergence } from '@/services/trajectoryDiffService';
 import type { FailureCluster, FailureCaseEvidenceInput } from '@/services/client/comparisonClusterApi';
@@ -183,6 +184,13 @@ export const ComparisonPage: React.FC = () => {
 
   // Trajectory gating state
   const [trajectoryTargetTestCase, setTrajectoryTargetTestCase] = useState<string | null>(null);
+  // Trace-window hints (serviceName + window) resolved by the deep-dive agent,
+  // keyed by agent runId — lets the Traces tab render closed-source spans
+  // (Strategy C) and lets span citations deep-link.
+  const [traceWindowAgents, setTraceWindowAgents] = useState<Map<string, { serviceName?: string; startedAt: number; endedAt: number }>>(new Map());
+  // A span citation the user clicked in the deep-dive → expand that test case,
+  // switch it to the Traces tab, and highlight the span. nonce re-triggers.
+  const [spanDeepLink, setSpanDeepLink] = useState<{ testCaseId: string; runId: string; spanId: string; nonce: number } | null>(null);
   const [showRunPairSelector, setShowRunPairSelector] = useState(false);
   const [trajectoryRunPair, setTrajectoryRunPair] = useState<[string, string] | null>(null);
 
@@ -643,8 +651,28 @@ export const ComparisonPage: React.FC = () => {
               </div>
             )}
 
-            {/* Verdict — always visible, top of page */}
-            <VerdictStrip mode={mode} runs={runAggregates} />
+            {/* What's actually different — agentic, trace-grounded deep-dive
+                for 2-run compares; classic VerdictStrip otherwise. */}
+            {mode === 'compare' && runAggregates.length === 2 ? (
+              <ComparisonDeepDive
+                runs={selectedRuns}
+                rows={allComparisonRows}
+                reports={reports}
+                getAgentName={getAgentName}
+                onWindowAgents={(metaRuns: DeepDiveRunMeta[]) => {
+                  const m = new Map<string, { serviceName?: string; startedAt: number; endedAt: number }>();
+                  metaRuns.forEach((r) => {
+                    if (r.runId) m.set(r.runId, { serviceName: r.serviceName, startedAt: r.startedAt, endedAt: r.endedAt });
+                  });
+                  setTraceWindowAgents(m);
+                }}
+                onSpanLink={(testCaseId, runId, spanId) =>
+                  setSpanDeepLink({ testCaseId, runId, spanId, nonce: Date.now() })
+                }
+              />
+            ) : (
+              <VerdictStrip mode={mode} runs={runAggregates} />
+            )}
 
             {/* Diagnosis — failure pattern clustering across regressed cases.
                 Renders only when there are regressed rows to analyze. */}
@@ -779,6 +807,8 @@ export const ComparisonPage: React.FC = () => {
                 clusterByCaseId={clusterByCaseId}
                 trajectoryRunPair={trajectoryRunPair}
                 trajectoryTargetTestCase={trajectoryTargetTestCase}
+                spanDeepLink={spanDeepLink}
+                windowAgentsByRunId={traceWindowAgents}
                 onTrajectoryRequest={(testCaseId) => {
                   setTrajectoryTargetTestCase(testCaseId);
                   setTrajectoryRunPair(null);

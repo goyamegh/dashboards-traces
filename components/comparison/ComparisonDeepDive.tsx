@@ -1,0 +1,227 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * ComparisonDeepDive — the top-level "what's actually different" panel for a
+ * 2-run comparison.
+ *
+ * Calls POST /api/comparison/deep-dive, which runs an in-process pi agent with
+ * read-only trace tools over BOTH runs and returns a concise markdown deep-dive
+ * citing specific spans as `[label](span:<runId>:<spanId>)`. We render the
+ * markdown and turn those span citations into clickable pills that deep-link
+ * into the Traces tab of the relevant run on the same page (via onSpanLink).
+ *
+ * The agent run is ~30-60s and costs tokens, so results are cached in-memory by
+ * report-id pair; the panel auto-runs once per pair and offers a regenerate.
+ */
+
+import React, { useState, useMemo, useCallback, useEffect } from 'react';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import { Sparkles, Loader2, RefreshCw, ArrowUpRight, AlertTriangle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { BenchmarkRun, EvaluationReport, TestCaseComparisonRow } from '@/types';
+
+export interface DeepDiveRunMeta {
+  key: string;
+  reportId: string;
+  runId?: string;
+  serviceName?: string;
+  startedAt: number;
+  endedAt: number;
+}
+interface DeepDiveResponse {
+  markdown: string;
+  modelId: string;
+  durationMs: number;
+  runs: DeepDiveRunMeta[];
+}
+
+interface CacheEntry { markdown: string; meta: DeepDiveResponse; }
+const deepDiveCache = new Map<string, CacheEntry>();
+
+interface ComparisonDeepDiveProps {
+  runs: BenchmarkRun[];
+  rows: TestCaseComparisonRow[];
+  reports: Record<string, EvaluationReport>;
+  getAgentName: (key: string) => string;
+  /** Click a span citation → deep-link into the Traces tab of that run. */
+  onSpanLink: (testCaseId: string, runId: string, spanId: string) => void;
+  /** Resolved window-agent hints (serviceName + window) so the Traces tab can render spans. */
+  onWindowAgents: (meta: DeepDiveRunMeta[]) => void;
+}
+
+export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
+  runs,
+  rows,
+  reports,
+  getAgentName,
+  onSpanLink,
+  onWindowAgents,
+}) => {
+  // Representative pair: the first test case both runs executed.
+  const pair = useMemo(() => {
+    if (runs.length !== 2) return null;
+    for (const row of rows) {
+      const a = row.results[runs[0].id]?.reportId;
+      const b = row.results[runs[1].id]?.reportId;
+      if (a && b) {
+        return {
+          testCaseId: row.testCaseId,
+          testCaseName: row.testCaseName,
+          reportIdA: a,
+          reportIdB: b,
+          cacheKey: `${a}|${b}`,
+        };
+      }
+    }
+    return null;
+  }, [runs, rows]);
+
+  const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
+  const [markdown, setMarkdown] = useState<string>('');
+  const [meta, setMeta] = useState<DeepDiveResponse | null>(null);
+  const [error, setError] = useState<string>('');
+
+  const generate = useCallback(
+    async (force = false) => {
+      if (!pair) return;
+      if (!force && deepDiveCache.has(pair.cacheKey)) {
+        const c = deepDiveCache.get(pair.cacheKey)!;
+        setMarkdown(c.markdown);
+        setMeta(c.meta);
+        setStatus('done');
+        onWindowAgents(c.meta.runs || []);
+        return;
+      }
+      setStatus('loading');
+      setError('');
+      try {
+        const res = await fetch('/api/comparison/deep-dive', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ reportIds: [pair.reportIdA, pair.reportIdB] }),
+        });
+        if (!res.ok) {
+          const e = await res.json().catch(() => ({}));
+          throw new Error(e.error || `HTTP ${res.status}`);
+        }
+        const data: DeepDiveResponse = await res.json();
+        deepDiveCache.set(pair.cacheKey, { markdown: data.markdown, meta: data });
+        setMarkdown(data.markdown);
+        setMeta(data);
+        setStatus('done');
+        onWindowAgents(data.runs || []);
+      } catch (e: any) {
+        setError(e?.message || String(e));
+        setStatus('error');
+      }
+    },
+    [pair, onWindowAgents]
+  );
+
+  // Auto-run once per report-pair.
+  useEffect(() => {
+    if (pair) generate(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pair?.cacheKey]);
+
+  // Map a cited runId → which agent label (for nicer pill titles).
+  const labelByRunId = useMemo(() => {
+    const m = new Map<string, string>();
+    (meta?.runs || []).forEach((r, i) => {
+      if (r.runId) m.set(r.runId, getAgentName(runs[i]?.agentKey) || r.key);
+    });
+    return m;
+  }, [meta, runs, getAgentName]);
+
+  if (!pair) return null;
+
+  const nameA = getAgentName(runs[0].agentKey);
+  const nameB = getAgentName(runs[1].agentKey);
+
+  // Custom anchor: `span:<runId>:<spanId>` → deep-link pill; others → normal link.
+  const SpanAnchor = ({ href, children }: { href?: string; children?: React.ReactNode }) => {
+    const m = /^span:([^:]+):(.+)$/.exec(href || '');
+    if (m) {
+      const [, runId, spanId] = m;
+      const who = labelByRunId.get(runId);
+      return (
+        <button
+          type="button"
+          data-span-id={spanId}
+          data-run-id={runId}
+          onClick={() => onSpanLink(pair.testCaseId, runId, spanId)}
+          title={`Open this span in the Traces tab${who ? ` (${who})` : ''}`}
+          className="inline-flex items-center gap-0.5 align-baseline rounded bg-opensearch-blue/10 px-1.5 py-0.5 text-[0.85em] font-medium text-opensearch-blue hover:bg-opensearch-blue/20 transition-colors"
+        >
+          {children}
+          <ArrowUpRight size={11} className="flex-shrink-0" />
+        </button>
+      );
+    }
+    return (
+      <a href={href} target="_blank" rel="noreferrer" className="text-opensearch-blue hover:underline">
+        {children}
+      </a>
+    );
+  };
+
+  return (
+    <div className="rounded-lg border border-border bg-card/40 p-4">
+      <div className="flex items-start justify-between gap-3 mb-2">
+        <div className="flex items-center gap-2 min-w-0">
+          <Sparkles size={16} className="text-opensearch-blue flex-shrink-0" />
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-foreground">What's actually different</h3>
+            <p className="text-xs text-muted-foreground truncate">
+              {nameA} <span className="opacity-60">vs</span> {nameB} · grounded in both runs' traces
+            </p>
+          </div>
+        </div>
+        {status === 'done' && (
+          <Button variant="ghost" size="sm" className="h-7 gap-1 text-xs flex-shrink-0" onClick={() => generate(true)}>
+            <RefreshCw size={12} /> Regenerate
+          </Button>
+        )}
+      </div>
+
+      {status === 'loading' && (
+        <div className="flex items-center gap-2 py-6 justify-center text-sm text-muted-foreground">
+          <Loader2 size={15} className="animate-spin" />
+          Inspecting both runs' spans &amp; logs…
+        </div>
+      )}
+
+      {status === 'error' && (
+        <div className="flex items-start gap-2 py-3 text-sm text-amber-400">
+          <AlertTriangle size={15} className="flex-shrink-0 mt-0.5" />
+          <div className="min-w-0">
+            <p>Couldn't generate the deep-dive: {error}</p>
+            <Button variant="outline" size="sm" className="h-7 mt-2 text-xs" onClick={() => generate(true)}>
+              Try again
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {status === 'done' && (
+        <>
+          <div className="prose prose-sm prose-invert max-w-none text-sm leading-relaxed [&_p]:my-1.5 [&_ul]:my-1.5 [&_li]:my-0.5 [&_strong]:text-foreground">
+            <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={(u) => u} components={{ a: SpanAnchor }}>
+              {markdown}
+            </ReactMarkdown>
+          </div>
+          {meta && (
+            <p className="text-[10px] text-muted-foreground/70 mt-3 pt-2 border-t border-border">
+              Generated by {meta.modelId.split('/').pop()} in {(meta.durationMs / 1000).toFixed(0)}s · click a
+              highlighted span to open it in the Traces tab below
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  );
+};
