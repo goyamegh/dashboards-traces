@@ -244,6 +244,17 @@ export async function evaluateWithPiAgenticTrace(
     systemPromptOverride: () => systemPrompt,
     appendSystemPromptOverride: () => [],
     extensionFactories: [createTraceJudgeExtension(runId, serverUrl, agents)],
+    // Full isolation for this HEADLESS in-process session. Without
+    // noExtensions the loader auto-loads the user's global ~/.pi/agent
+    // extensions (e.g. an interactive status-bar extension) whose render
+    // `tick` touches the TUI theme and throws "Theme not initialized",
+    // crashing the server process. Inline extensionFactories
+    // (query_spans/query_logs) still register regardless of this flag.
+    noExtensions: true,
+    noSkills: true,
+    noPromptTemplates: true,
+    noThemes: true,
+    noContextFiles: true,
   });
   await resourceLoader.reload();
 
