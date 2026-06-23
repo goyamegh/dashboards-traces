@@ -55,9 +55,10 @@ import {
   compareTraces,
   categorizeSpanTree,
 } from '@/services/traces';
-import { spansToFlow, applyDagreLayout } from '@/services/traces/flowTransform';
+import { applyDagreLayout } from '@/services/traces/flowTransform';
 import { nodeTypes } from '@/components/traces/flow/nodeTypes';
 import SpanDetailsPanel from '@/components/traces/SpanDetailsPanel';
+import TraceVisualization from '@/components/traces/TraceVisualization';
 
 type ComparisonMode = 'side-by-side' | 'merged';
 type DiffType = 'matched' | 'added' | 'removed' | 'modified';
@@ -179,108 +180,6 @@ const ModeToggle: React.FC<{
 };
 
 /**
- * Inner Flow panel content (must be inside ReactFlowProvider)
- */
-const FlowPanelInner: React.FC<{
-  spanTree: CategorizedSpan[];
-  timeRange: TimeRange;
-  selectedSpan: CategorizedSpan | null;
-  onSelectSpan: (span: CategorizedSpan | null) => void;
-}> = ({ spanTree, timeRange, selectedSpan, onSelectSpan }) => {
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
-
-  useEffect(() => {
-    if (spanTree.length === 0) {
-      setNodes([]);
-      setEdges([]);
-      return;
-    }
-
-    const { nodes: flowNodes, edges: flowEdges } = spansToFlow(
-      spanTree,
-      timeRange.duration,
-      { direction: 'TB' }
-    );
-
-    setNodes(flowNodes);
-    setEdges(flowEdges);
-
-    // Fit view after nodes are set (with small delay to ensure render)
-    setTimeout(() => {
-      if (reactFlowInstance.current) {
-        reactFlowInstance.current.fitView({ padding: 0.2, maxZoom: 1 });
-      }
-    }, 100);
-  }, [spanTree, timeRange.duration, setNodes, setEdges]);
-
-  const onInit = useCallback((instance: ReactFlowInstance) => {
-    reactFlowInstance.current = instance;
-    setTimeout(() => {
-      instance.fitView({ padding: 0.2, maxZoom: 1 });
-    }, 100);
-  }, []);
-
-  const onNodeClick = useCallback(
-    (_event: React.MouseEvent, node: Node<SpanNodeData>) => {
-      onSelectSpan(node.data.span);
-    },
-    [onSelectSpan]
-  );
-
-  const onPaneClick = useCallback(() => {
-    onSelectSpan(null);
-  }, [onSelectSpan]);
-
-  const minimapNodeColor = (node: Node<SpanNodeData>): string => {
-    const category = node.data?.span?.category;
-    switch (category) {
-      case 'AGENT': return '#6366f1';
-      case 'LLM': return '#a855f7';
-      case 'TOOL': return '#f59e0b';
-      case 'EVAL': return '#10b981';
-      case 'ERROR': return '#ef4444';
-      default: return '#64748b';
-    }
-  };
-
-  return (
-    <ReactFlow
-      nodes={nodes}
-      edges={edges}
-      onNodesChange={onNodesChange}
-      onEdgesChange={onEdgesChange}
-      onNodeClick={onNodeClick}
-      onPaneClick={onPaneClick}
-      onInit={onInit}
-      nodeTypes={nodeTypes}
-      fitView
-      fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
-      minZoom={0.1}
-      maxZoom={2}
-      defaultEdgeOptions={{ type: 'smoothstep' }}
-      proOptions={{ hideAttribution: true }}
-    >
-      <Background
-        variant={BackgroundVariant.Dots}
-        gap={16}
-        size={1}
-        color="#334155"
-      />
-      <MiniMap
-        nodeColor={minimapNodeColor}
-        maskColor="rgba(15, 23, 42, 0.8)"
-        className="!bg-slate-900/50 !border-slate-700 !bottom-2 !right-2"
-        style={{ width: 100, height: 60 }}
-        pannable
-        zoomable
-      />
-    </ReactFlow>
-  );
-};
-
-/**
  * Single Flow panel for side-by-side view.
  * Each panel gets its own ReactFlowProvider to isolate internal stores.
  */
@@ -293,20 +192,25 @@ const FlowPanel: React.FC<{
   onSelectSpan: (span: CategorizedSpan | null) => void;
 }> = ({ spanTree, timeRange, runName, spanCount, selectedSpan, onSelectSpan }) => {
   return (
-    <div className="flex-1 flex flex-col min-h-0 border-r last:border-r-0">
+    <div className="flex-1 flex flex-col min-h-0 min-w-0 border-r last:border-r-0">
       <div className="px-3 py-2 bg-muted/50 border-b text-xs font-medium text-center shrink-0">
         {runName}
         <span className="text-muted-foreground ml-2">({spanCount} spans)</span>
       </div>
-      <div className="flex-1 min-h-0 relative">
-        <ReactFlowProvider>
-          <FlowPanelInner
-            spanTree={spanTree}
-            timeRange={timeRange}
-            selectedSpan={selectedSpan}
-            onSelectSpan={onSelectSpan}
-          />
-        </ReactFlowProvider>
+      {/* Render each run's spans as a TIMELINE (tree/gantt waterfall) via the
+          shared TraceVisualization instead of the react-flow DAG — the DAG hid
+          individual spans and the user couldn't reach them. Selection is
+          controlled by the parent so deep-dive span citations highlight here
+          and surface the SpanDetailsPanel. */}
+      <div className="flex-1 min-h-0 min-w-0 relative overflow-auto">
+        <TraceVisualization
+          spanTree={spanTree as Span[]}
+          timeRange={timeRange}
+          initialViewMode="tree"
+          showViewToggle
+          selectedSpan={selectedSpan as Span | null}
+          onSelectSpan={(s) => onSelectSpan(s as CategorizedSpan | null)}
+        />
       </div>
     </div>
   );

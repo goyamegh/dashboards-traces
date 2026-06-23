@@ -78,7 +78,7 @@ const RunJudgeCard: React.FC<{
   });
 
   return (
-    <Card className="bg-card/50">
+    <Card className="bg-card/50 min-w-0">
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium">{run.name}</CardTitle>
@@ -200,7 +200,7 @@ export const JudgeSection: React.FC<JudgeSectionProps> = ({
   useCaseId,
 }) => {
   return (
-    <div className="grid grid-cols-1 gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
       {runs.map((run) => {
         const result = run.results[useCaseId];
         const report = result?.reportId ? reports[result.reportId] : null;

@@ -117,7 +117,7 @@ const RunTrajectory: React.FC<{
   }
 
   return (
-    <Card className="bg-card/50">
+    <Card className="bg-card/50 min-w-0">
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium">{run.name}</CardTitle>

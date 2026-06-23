@@ -221,7 +221,7 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
 
   return (
     <ScrollArea className="rounded-md border border-border">
-      <div className="min-w-max">
+      <div className="min-w-full">
         <Table>
           <TableHeader>
             <TableRow>
