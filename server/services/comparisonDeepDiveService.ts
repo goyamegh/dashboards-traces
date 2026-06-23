@@ -16,6 +16,7 @@
  *     service.name + time-window, so closed-source agents like claude-code are
  *     visible even though they don't stamp gen_ai.request.id with our runId),
  *   - writes a concise markdown deep-dive of the meaningful differences,
+ *     INCLUDING any errors/failures observed in either or both runs,
  *   - cites specific spans as `[label](span:<runId>:<spanId>)` links the UI
  *     parses into deep-links into the trace view (same page).
  *
@@ -81,18 +82,20 @@ You have read-only, run-scoped tools that return each run's REAL OpenTelemetry d
 WORKFLOW:
 1. Call query_spans for BOTH runs (start with no nameFilter to see the shape, then narrow). PREFER what the spans show over the trajectory summary in the prompt.
 2. Compare along the axes that actually differ for THIS pair — e.g. correctness/outcome, thoroughness vs. speed, tool economy (how many/which tools, structured API vs. scraping), unique discoveries (a related ticket, a code path), investigation approach (direct vs. delegated to sub-agents), evidence volume, wasted/retry calls. Do NOT force a fixed rubric; surface what's interesting and real for these two.
-3. If a run has NO spans (traces unavailable), say so plainly and compare on the trajectory instead — never invent spans.
+3. ERRORS — explicitly hunt for failures in EACH run: spans carrying an error/exception status or error attributes (e.g. otel.status_code=ERROR, status=ERROR, error=true, exception.message / exception.type, an HTTP/result status >= 400, a non-zero exit code), tool calls that failed or were retried repeatedly, timeouts, and error-/warn-level entries from query_logs. For every error you find, note WHICH run, WHAT failed, and HOW that agent handled it — recovered, retried, worked around it, or failed outright.
+4. If a run has NO spans (traces unavailable), say so plainly and compare on the trajectory instead — never invent spans.
 
 OUTPUT — a tight markdown deep-dive (NOT a multi-question report). Structure:
-  - A one-line **headline verdict** (e.g. "Both resolved it correctly — A was thorough, B was ~30% faster").
+  - A one-line **headline verdict** (e.g. "Both resolved it correctly — A was thorough, B was ~30% faster"; mention errors here if they materially changed the outcome).
   - 3–6 bullets of the concrete, material differences. Lead each bullet with the dimension in **bold**.
-  - Be specific with numbers from the spans (tool counts, durations, tokens) when available.
+  - An **Errors** bullet that is ALWAYS present: call out every error/failure found in run A, run B, or both — what it was, which run it hit, and how that agent handled it (recovered / retried / ignored / failed) — each backed by a span or log citation. If a run had no errors, state "no errors observed" for that run explicitly; never silently omit it.
+  - Be specific with numbers from the spans (tool counts, durations, tokens, error counts) when available.
 
 SPAN CITATIONS (important): when a claim is backed by a specific span, cite it inline as a markdown link of EXACTLY this form:
     [short human label](span:<runId>:<spanId>)
 using the exact runId and spanId from the query_spans output for that run. The UI turns these into clickable links that open the span in the trace view on the same page. Cite 3–8 spans total — only where a span genuinely backs the claim. Do not fabricate spanIds; only cite spans you saw in tool output.
 
-Keep it under ~250 words. No preamble, no "as an AI", no restating the task. Start with the headline.`;
+Keep it under ~280 words. No preamble, no "as an AI", no restating the task. Start with the headline.`;
 
 function buildUserPrompt(runs: ComparisonRunInput[]): string {
   const lines: string[] = [
