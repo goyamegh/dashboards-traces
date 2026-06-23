@@ -50,7 +50,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { loadConfigSync } from '@/lib/config/index';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { tracePollingManager } from './traces/tracePoller';
-import { fetchSpansForRun } from './traces/fetchSpansForRun';
+import { fetchSpansForRun, type TraceWindowAgent } from './traces/fetchSpansForRun';
 import { getCustomAgents } from '@/server/services/customAgentStore';
 import { debug } from '@/lib/debug';
 import { RunResultStatus } from '@/types';
@@ -425,7 +425,22 @@ export async function executeRun(
                 agentDurationMs: inv.agentDurationMs,
               };
               (report as any).connectorProtocol = inv.connector.type;
-              loadedTraces = await loadTracesAccessor(agentConfig, inv.runId ?? undefined);
+              // Strategy-C correlation: many agents (Claude Code, any subprocess
+              // agent) emit OTel under their own traceId + service.name and never
+              // tag our connector runId. Pass the connector's service.name + the
+              // run's wall-clock window so trace correlation (and therefore the
+              // judge + `traces` fixture) finds those spans, not just runId-tagged ones.
+              const traceServiceName = (inv.connector as any)?.traceContext?.serviceName as
+                | string
+                | undefined;
+              const traceWindow: TraceWindowAgent[] | undefined = traceServiceName
+                ? [{
+                    serviceName: traceServiceName,
+                    startedAt: Date.now() - (inv.agentDurationMs || 0) - 60_000,
+                    endedAt: Date.now() + 60_000,
+                  }]
+                : undefined;
+              loadedTraces = await loadTracesAccessor(agentConfig, inv.runId ?? undefined, traceWindow);
               // Expose traces on the result too (RFC 004 §4.6).
               (evalResult as any).traces = loadedTraces;
               capturedResult = evalResult;
@@ -1320,25 +1335,29 @@ function buildEvalResult(input: {
  */
 async function loadTracesAccessor(
   agentConfig: AgentConfig,
-  runId: string | undefined
+  runId: string | undefined,
+  windowAgents?: TraceWindowAgent[]
 ): Promise<TracesAccessor> {
   if (!agentConfig.useTraces) {
     return emptyTracesAccessor();
   }
-  if (!runId) {
+  const hasWindow = !!(windowAgents && windowAgents.length > 0);
+  if (!runId && !hasWindow) {
     return unavailableTracesAccessor(
-      'agent has useTraces=true but produced no runId for trace correlation'
+      'agent has useTraces=true but produced neither a runId nor a service-name window for trace correlation'
     );
   }
   const polling = agentConfig.tracePolling ?? {};
   const result = await fetchSpansForRun(runId, {
     maxAttempts: polling.maxAttempts,
     intervalMs: polling.intervalMs,
+    windowAgents,
   });
   if (result.spans.length === 0) {
+    const target = runId ? `runId=${runId}` : 'service-name window';
     const reason = result.lastError
-      ? `fetch failed for runId=${runId}: ${result.lastError}`
-      : `no spans found for runId=${runId} after polling — verify the agent's OTel exporter is reachable`;
+      ? `fetch failed for ${target}: ${result.lastError}`
+      : `no spans found for ${target} after polling — verify the agent's OTel exporter is reachable`;
     return unavailableTracesAccessor(reason);
   }
   return buildTracesAccessor(result.spans);

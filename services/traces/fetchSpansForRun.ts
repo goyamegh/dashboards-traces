@@ -29,7 +29,20 @@
  */
 import type { Span } from '@/types';
 import { debug } from '@/lib/debug';
-import { fetchTracesByRunIds } from './index';
+import { fetchTracesForRun } from './index';
+
+/**
+ * Strategy-C correlation input: an agent's OTel `service.name` plus the run's
+ * wall-clock window. Used as a fallback (and union) when the agent's spans are
+ * not tagged with the connector `runId` (Strategy B) — e.g. Claude Code / any
+ * subprocess agent whose OTel SDK emits its own trace and never sees our runId.
+ * Mirrors the `windowAgents` clause the run-report Traces tab already issues.
+ */
+export interface TraceWindowAgent {
+  serviceName: string;
+  startedAt: number;
+  endedAt: number;
+}
 
 /**
  * Hard ceiling on `maxAttempts`, mirroring the constant in
@@ -56,6 +69,15 @@ export interface FetchSpansForRunOptions {
   maxAttempts?: number;
   /** Delay between attempts in ms. */
   intervalMs?: number;
+  /**
+   * Strategy-C fallback: when provided, each poll unions the `runId` clause
+   * with a service-name + time-window clause. This is what lets the SDK
+   * `traces` fixture (and therefore the judge) actually receive spans from
+   * agents like Claude Code whose OTel spans carry their own traceId +
+   * `service.name` but NOT our connector `runId`. Without this, runId-only
+   * correlation returns 0 spans and the judge never sees the trace (#XXX).
+   */
+  windowAgents?: TraceWindowAgent[];
 }
 
 export interface FetchSpansForRunResult {
@@ -79,31 +101,40 @@ export interface FetchSpansForRunResult {
  * Never throws.
  */
 export async function fetchSpansForRun(
-  runId: string,
+  runId: string | undefined,
   options: FetchSpansForRunOptions = {}
 ): Promise<FetchSpansForRunResult> {
   const requestedMax = options.maxAttempts ?? SDK_DEFAULT_MAX_ATTEMPTS;
   const maxAttempts = Math.max(1, Math.min(requestedMax, SDK_TRACE_POLL_CEILING));
   const intervalMs = Math.max(0, options.intervalMs ?? SDK_DEFAULT_POLL_INTERVAL_MS);
+  const windowAgents = options.windowAgents?.length ? options.windowAgents : undefined;
+  const label = runId ?? `service:${windowAgents?.map(a => a.serviceName).join(',') ?? 'none'}`;
 
   let lastError: string | undefined;
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
-      const result = await fetchTracesByRunIds([runId]);
+      // Union of Strategy B (runId) and Strategy C (service-name + time window),
+      // matching the run-report Traces tab. Either clause alone can be empty
+      // (e.g. Claude Code never tags spans with our runId), so we need both.
+      const result = await fetchTracesForRun({
+        runId: runId || undefined,
+        includeWindowFallback: !!windowAgents,
+        windowAgents,
+      });
       if (result?.spans && result.spans.length > 0) {
-        debug('FetchSpansForRun', `runId=${runId} attempt=${attempt} found ${result.spans.length} spans`);
+        debug('FetchSpansForRun', `${label} attempt=${attempt} found ${result.spans.length} spans`);
         return { spans: result.spans };
       }
       // Successful fetch but no spans yet — clear any previous transient
       // error so the caller doesn't blame a long-since-recovered hiccup.
       lastError = undefined;
-      debug('FetchSpansForRun', `runId=${runId} attempt=${attempt}/${maxAttempts} empty`);
+      debug('FetchSpansForRun', `${label} attempt=${attempt}/${maxAttempts} empty`);
     } catch (err) {
       // Capture the message but keep retrying — the caller decides
       // whether to surface it as `unavailableTracesAccessor` reason.
       lastError = err instanceof Error ? err.message : String(err);
-      debug('FetchSpansForRun', `runId=${runId} attempt=${attempt} fetch error: ${lastError}`);
+      debug('FetchSpansForRun', `${label} attempt=${attempt} fetch error: ${lastError}`);
     }
 
     if (attempt < maxAttempts && intervalMs > 0) {

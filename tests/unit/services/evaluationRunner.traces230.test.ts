@@ -92,18 +92,18 @@ jest.mock('@/services/traces/tracePoller', () => ({
   tracePollingManager: { startPolling: jest.fn() },
 }));
 
-// The real fetchSpansForRun calls fetchTracesByRunIds which would try to
-// hit a real HTTP endpoint. Stub it at the source.
+// The real fetchSpansForRun calls fetchTracesForRun (runId + service-window
+// union) which would hit a real HTTP endpoint. Stub it at the source.
 jest.mock('@/services/traces/index', () => ({
-  fetchTracesByRunIds: jest.fn(),
+  fetchTracesForRun: jest.fn(),
 }));
 
 import { runEvaluationWithConnector, invokeAgent } from '@/services/evaluation';
-import { fetchTracesByRunIds } from '@/services/traces/index';
+import { fetchTracesForRun } from '@/services/traces/index';
 
 const mockRunEval = runEvaluationWithConnector as jest.Mock;
 const mockInvokeAgent = invokeAgent as jest.Mock;
-const mockFetchTraces = fetchTracesByRunIds as jest.MockedFunction<typeof fetchTracesByRunIds>;
+const mockFetchTraces = fetchTracesForRun as jest.MockedFunction<typeof fetchTracesForRun>;
 
 /** Build a stub invokeAgent result (the pure invocation primitive). */
 function stubInvocation(opts: { runId?: string | null } = {}) {
@@ -262,7 +262,11 @@ describe('executeEvaluationRun — issue #230 traces fixture pre-loading', () =>
       onProgress: jest.fn(),
     });
 
-    expect(mockFetchTraces).toHaveBeenCalledWith(['agent-run-id-123']);
+    expect(mockFetchTraces).toHaveBeenCalledWith({
+      runId: 'agent-run-id-123',
+      includeWindowFallback: false,
+      windowAgents: undefined,
+    });
     expect((caught as Error).message).toMatch(/traces fixture unavailable/);
     expect((caught as Error).message).toMatch(/no spans found for runId=agent-run-id-123/);
     expect(captureLastReport(storage).passFailStatus).toBe('failed');
@@ -363,7 +367,7 @@ describe('executeEvaluationRun — issue #230 traces fixture pre-loading', () =>
     });
 
     expect(mockFetchTraces).not.toHaveBeenCalled();
-    expect((caught as Error).message).toMatch(/produced no runId for trace correlation/);
+    expect((caught as Error).message).toMatch(/produced neither a runId nor a service-name window for trace correlation/);
     expect(captureLastReport(storage).passFailStatus).toBe('failed');
   });
 
