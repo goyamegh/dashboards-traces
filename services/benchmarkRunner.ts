@@ -443,6 +443,10 @@ export async function executeRun(
               loadedTraces = await loadTracesAccessor(agentConfig, inv.runId ?? undefined, traceWindow);
               // Expose traces on the result too (RFC 004 §4.6).
               (evalResult as any).traces = loadedTraces;
+              // Parity with the classic trace-judge path: forward the
+              // Strategy-C correlation window so an inline `judge()` reaches
+              // the agent (trace) judge with `agents` hints (#264).
+              (evalResult as any).judgeAgents = traceWindow;
               capturedResult = evalResult;
               return evalResult;
             };

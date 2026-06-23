@@ -110,6 +110,36 @@ describe('judge() — per-call options', () => {
     expect('runId' in (lastBody() as any)).toBe(false);
   });
 
+  // SDK↔UI convergence (#264 follow-up): the runner attaches Strategy-C
+  // correlation hints to the result as `judgeAgents`; judge() must forward
+  // them as `agents` so the agent (trace) judge can find this run's spans in
+  // OpenSearch by service-name + window — exactly like the classic
+  // `waitForTracesAndJudge` path. Without this, the SDK judge sends only
+  // `runId` and misses subprocess agents' spans.
+  it('forwards result.judgeAgents on the body as `agents` (SDK↔UI trace parity)', async () => {
+    const { lastBody } = mockJudgeFetch();
+    const judgeAgents = [{ serviceName: 'claude-code-agent', startedAt: 1000, endedAt: 2000 }];
+    await judge(
+      { trajectory: [{ type: 'response', content: 'ok' }], runId: 'agent-run-99', judgeAgents } as any,
+      'claim',
+    );
+    const body = lastBody() as any;
+    expect(body.agents).toEqual(judgeAgents);
+    expect(body.runId).toBe('agent-run-99'); // still forwarded alongside
+  });
+
+  it('omits `agents` when the result carries no judgeAgents hints', async () => {
+    const { lastBody } = mockJudgeFetch();
+    await judge({ trajectory: [{ type: 'response', content: 'ok' }], runId: 'r1' } as any, 'claim');
+    expect('agents' in (lastBody() as any)).toBe(false);
+  });
+
+  it('omits `agents` for the legacy trajectory-array form', async () => {
+    const { lastBody } = mockJudgeFetch();
+    await judge([{ type: 'response', content: 'ok' }] as any, 'claim');
+    expect('agents' in (lastBody() as any)).toBe(false);
+  });
+
   it('accepts the legacy form judge(trajectory, [claims])', async () => {
     const { lastBody } = mockJudgeFetch();
     const trajectory = [{ type: 'response', content: 'final' }] as any[];

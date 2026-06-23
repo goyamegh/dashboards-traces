@@ -436,6 +436,11 @@ export async function executeEvaluationRun(
               // Expose traces on the result too (RFC 004 §4.6) so the body
               // can read `result.traces.*` in addition to the `traces` fixture.
               (evalResult as any).traces = loadedTraces;
+              // Forward the SAME Strategy-C correlation window the classic
+              // `waitForTracesAndJudge` path uses (`buildJudgeAgentsHints`) so
+              // an inline `judge(result, …)` reaches the agent (trace) judge
+              // with `agents` hints — parity with the UI/runner path (#264).
+              (evalResult as any).judgeAgents = traceWindow;
               capturedResult = evalResult;
               return evalResult;
             };

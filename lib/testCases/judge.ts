@@ -262,6 +262,15 @@ async function runJudge(
   const runId = !isTrajectory(resultOrTrajectory) && isResultLike(resultOrTrajectory)
     ? resultOrTrajectory.runId
     : undefined;
+  // Strategy-C trace-correlation hints the runner attached to the result
+  // (service-name + window). Forwarding them as `agents` lets the agent
+  // (trace) judge find this run's spans in OpenSearch the same way the
+  // classic `waitForTracesAndJudge` path does (#264) — without them the SDK
+  // judge sends only `runId` and misses subprocess agents' spans. This is
+  // the SDK↔UI convergence fix.
+  const judgeAgents = !isTrajectory(resultOrTrajectory) && isResultLike(resultOrTrajectory)
+    ? (resultOrTrajectory as { judgeAgents?: unknown }).judgeAgents
+    : undefined;
   const claims = Array.isArray(claimOrClaims) ? claimOrClaims : [claimOrClaims];
 
   const serverUrl =
@@ -283,6 +292,7 @@ async function runJudge(
   if (options?.model) requestBody.modelId = options.model;
   if (options?.evaluatorId) requestBody.evaluatorId = options.evaluatorId;
   if (runId) requestBody.runId = runId;
+  if (Array.isArray(judgeAgents) && judgeAgents.length > 0) requestBody.agents = judgeAgents;
 
   // Record the success path identically whether the verdict came fresh from
   // the endpoint or from the in-process cache.

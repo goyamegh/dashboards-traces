@@ -233,4 +233,16 @@ export interface EvalResult {
    * placeholder (before `agent.run()`) yields the loud-failure accessor.
    */
   traces?: import('../matchers/traces.js').TracesAccessor;
+
+  /**
+   * Strategy-C trace-correlation hints (`{ serviceName, startedAt, endedAt }[]`)
+   * the runner computed for this run's agent. Forwarded by `judge()` as
+   * `JudgeRequest.agents` so the agent (trace) judge can find the run's spans
+   * in OpenSearch by service-name + window — the SAME hints the classic
+   * `waitForTracesAndJudge` path builds via `buildJudgeAgentsHints`. This is
+   * what brings SDK `judge()` to parity with the UI/runner trace-judge path
+   * (without it the SDK judge only sends `runId`, which misses subprocess
+   * agents' spans). Present only when the runner could derive a service name.
+   */
+  judgeAgents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>;
 }
