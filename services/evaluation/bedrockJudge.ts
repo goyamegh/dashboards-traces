@@ -10,7 +10,7 @@
 
 import { TrajectoryStep, EvaluationMetrics, ImprovementStrategy, OpenSearchLog, PassFailStatus } from '@/types';
 import { ENV_CONFIG } from '@/lib/config';
-import { readEnv } from '@/lib/envCompat';
+import { getBackendUrl } from '@/lib/portConfig';
 
 interface JudgeResult {
   passFailStatus: PassFailStatus;
@@ -79,7 +79,7 @@ export async function callBedrockJudge(
 ): Promise<JudgeResult> {
   const maxRetries = 10;
   const baseDelay = 1000; // 1 second
-  const judgeApiUrl = ENV_CONFIG.judgeApiUrl || `http://localhost:${readEnv('AH_PORT', 'AGENT_HEALTH_PORT') || '4001'}/api/judge`;
+  const judgeApiUrl = ENV_CONFIG.judgeApiUrl || `${getBackendUrl()}/api/judge`;
 
   console.log('[BedrockJudge] Sending request to backend proxy...');
   console.log('[BedrockJudge] Trajectory steps:', trajectory.length);

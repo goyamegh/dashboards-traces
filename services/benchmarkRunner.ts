@@ -48,6 +48,7 @@ import type { TrajectoryStep } from '@/types';
 import { createHookOrchestrator, type TestDescriptor } from './hookOrchestrator';
 import { v4 as uuidv4 } from 'uuid';
 import { loadConfigSync } from '@/lib/config/index';
+import { getBackendUrl } from '@/lib/portConfig';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { tracePollingManager } from './traces/tracePoller';
 import { fetchSpansForRun, type TraceWindowAgent } from './traces/fetchSpansForRun';
@@ -483,8 +484,10 @@ export async function executeRun(
                 // See the matching comment in services/evaluationRunner.ts.
                 // Customer-supplied `run.judgeModelId` becomes the bound
                 // judge model; the agent's `bedrockModelId` no longer
-                // leaks into the judge call.
-                judge: bindJudge({ evaluatorId: run.evaluatorId, model: run.judgeModelId }),
+                // leaks into the judge call. serverUrl is pinned to this
+                // server's actual bound URL so the SDK judge never defaults
+                // to 4001 / a foreign instance.
+                judge: bindJudge({ evaluatorId: run.evaluatorId, model: run.judgeModelId, serverUrl: getBackendUrl() }),
                 evaluate: evaluateFixture,
               };
               try {
