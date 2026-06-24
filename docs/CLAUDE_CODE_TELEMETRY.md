@@ -83,6 +83,15 @@ export OTEL_LOG_TOOL_CONTENT=1
 
 Every span includes `service.name: claude-code`, `session.id`, `user.account_uuid`, and `organization.id`. LLM request spans add `model`, `input_tokens`, `output_tokens`, `cost_usd`, `duration_ms`. Tool spans add `tool_name`, `result_tokens`.
 
+> **Run correlation (Strategy D).** Because Claude Code stamps a stable
+> `session.id` on *every* span of a run — and emits neither our
+> `agent_health.run.id` nor a W3C `traceparent` we control — Agent Health
+> correlates its spans by that `session.id`. `ClaudeCodeConnector` captures the
+> `session_id` from the stream-json output, persists it as `report.sessionId`,
+> and the run-report Traces tab / trace judge query `attributes.session.id`
+> (unioned with the service-name + time-window fallback). See
+> [AGENTS.md → Trace correlation conventions](../AGENTS.md).
+
 See the [Claude Code monitoring docs](https://code.claude.com/docs/en/monitoring-usage) for the full attribute reference.
 
 ## Verification

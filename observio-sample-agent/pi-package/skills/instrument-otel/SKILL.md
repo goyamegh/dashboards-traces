@@ -87,7 +87,7 @@ function startAgentSpan(runId: string) {
       'gen_ai.operation.name': 'invoke_agent',
       'gen_ai.system': '<provider>',        // e.g. 'aws.bedrock'
       'gen_ai.agent.name': '<agent-name>',
-      'gen_ai.request.id': runId,
+      'gen_ai.conversation.id': runId,   // links the trace to an Agent Health run (also accepted as agent_health.run.id)
     },
   });
   return { span, ctx: trace.setSpan(context.active(), span) };

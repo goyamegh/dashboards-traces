@@ -488,13 +488,22 @@ Three layered strategies, applied in priority order:
   the connector runs; `buildTraceparentEnv()` / `injectTraceparentHeaders()`
   emit a W3C `traceparent` so a compliant agent adopts the eval span as parent
   and shares its `traceId` (single trace tree).
-- **Strategy B — `gen_ai.request.id`.** `SubprocessConnector` exports
-  `AGENT_EVAL_RUN_ID=<runId>`; agents you instrument can tag spans with
-  `gen_ai.request.id == runId` for a loose link.
+- **Strategy B — `agent_health.run.id` / `gen_ai.conversation.id`.**
+  `SubprocessConnector` exports `AGENT_EVAL_RUN_ID=<runId>`; agents you
+  instrument can tag spans with the run id under **either** Agent Health's own
+  `agent_health.run.id` **or** the OTEL-standard `gen_ai.conversation.id` for a
+  loose link. Agent Health's eval + sample-agent spans stamp both, and the
+  correlation queries match either. (The legacy `gen_ai.request.id` is **not** a
+  registered attribute and is no longer used.)
 - **Strategy C — service-name + time window (always-on fallback).** Each
   connector declares a default `serviceName` (`claude-code-agent`, `kiro-agent`,
   `pi-agent`, `observio-sample-agent`); the run-report Traces tab unions a
   `serviceName + time-window` clause so closed-source agents still correlate.
+- **Strategy D — `session.id` (precise, real-world adopted).** Agents that emit
+  the OTEL `session.id` on every span (e.g. Claude Code) are correlated exactly
+  on it. `ClaudeCodeConnector` captures the agent's `session_id`, persists it as
+  `report.sessionId`, and the trace query matches `attributes.session.id`
+  unioned with C.
 
 See the full "Trace correlation conventions" section in
 [AGENTS.md](../AGENTS.md) for the convention map and window-derivation rules.

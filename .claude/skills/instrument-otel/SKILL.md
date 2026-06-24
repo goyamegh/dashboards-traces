@@ -27,7 +27,7 @@ Add OpenTelemetry instrumentation following GenAI semantic conventions so traces
    - `gen_ai.operation.name`: `"invoke_agent"`
    - `gen_ai.agent.name`: agent name
    - `gen_ai.system`: provider (e.g., `"aws.bedrock"`, `"openai"`, `"anthropic"`)
-   - `gen_ai.request.id`: unique run/session ID
+   - `gen_ai.conversation.id`: unique run/session ID (links the trace to an Agent Health run; also accepted as `agent_health.run.id`. `gen_ai.request.id` is not a registered attribute — don't use it)
 
    LLM spans:
    - `gen_ai.operation.name`: `"chat"`

@@ -105,7 +105,17 @@ These attributes MUST be set on spans for Agent Health to correctly categorize a
 | `gen_ai.operation.name` | `"invoke_agent"` or `"create_agent"` | `"invoke_agent"` |
 | `gen_ai.agent.name` | Your agent's name | `"rca-agent"` |
 | `gen_ai.system` | Provider identifier | `"aws.bedrock"`, `"openai"`, `"anthropic"` |
-| `gen_ai.request.id` | Unique run/session ID | `"run-abc123"` |
+| `gen_ai.conversation.id` | Unique run/session ID — links the trace to an Agent Health run | `"run-abc123"` |
+
+> **Run correlation.** Agent Health ties a trace to a run with, in order of
+> preference: **(A)** W3C trace context (if you propagate the `traceparent`
+> Agent Health injects, your spans share its `traceId` automatically); **(B)**
+> the OTEL-standard **`gen_ai.conversation.id`** set to the run id (recommended
+> for your own instrumentation — it's also accepted as `agent_health.run.id`);
+> **(C)** `service.name` + the run's time window; **(D)** the OTEL `session.id`
+> if your agent already emits one per run (e.g. Claude Code). You only need one;
+> `gen_ai.conversation.id` is the simplest to add. (`gen_ai.request.id` is **not**
+> a registered attribute — don't use it.)
 
 #### LLM Call Spans
 
@@ -144,7 +154,7 @@ def run_agent(prompt: str, run_id: str = None):
         agent_span.set_attribute("gen_ai.operation.name", "invoke_agent")
         agent_span.set_attribute("gen_ai.agent.name", "my-rca-agent")
         agent_span.set_attribute("gen_ai.system", "aws.bedrock")
-        agent_span.set_attribute("gen_ai.request.id", run_id)
+        agent_span.set_attribute("gen_ai.conversation.id", run_id)  # links the trace to an Agent Health run
 
         # LLM call
         with tracer.start_as_current_span("chat") as llm_span:
@@ -188,7 +198,7 @@ async function runAgent(prompt: string, runId?: string) {
     agentSpan.setAttribute('gen_ai.operation.name', 'invoke_agent');
     agentSpan.setAttribute('gen_ai.agent.name', 'my-rca-agent');
     agentSpan.setAttribute('gen_ai.system', 'aws.bedrock');
-    agentSpan.setAttribute('gen_ai.request.id', runId);
+    agentSpan.setAttribute('gen_ai.conversation.id', runId); // links the trace to an Agent Health run
 
     try {
       // LLM call
@@ -317,7 +327,7 @@ After instrumenting, verify your spans include:
 - [ ] LLM spans report `gen_ai.usage.input_tokens` and `gen_ai.usage.output_tokens`
 - [ ] Tool spans have `gen_ai.operation.name` = `"execute_tool"` and `gen_ai.tool.name`
 - [ ] All spans share the same trace ID (automatic if using `start_as_current_span`)
-- [ ] `gen_ai.request.id` on the root span matches the run ID used in Agent Health
+- [ ] `gen_ai.conversation.id` on the root span matches the run ID used in Agent Health (or you propagate W3C `traceparent`)
 - [ ] Failed operations set span status to ERROR
 
 ### 8. What Agent Health Does With Your Traces
@@ -326,7 +336,7 @@ Agent Health uses these attributes to:
 - **Categorize spans**: `gen_ai.operation.name` determines if a span is AGENT, LLM, TOOL, or OTHER
 - **Calculate cost**: `gen_ai.usage.input_tokens` + `gen_ai.usage.output_tokens` + `gen_ai.request.model` → USD cost
 - **Track tool usage**: `gen_ai.tool.name` populates tool call counts and tool lists
-- **Correlate runs**: `gen_ai.request.id` links traces to benchmark runs
+- **Correlate runs**: `gen_ai.conversation.id` (or W3C trace context / `agent_health.run.id`, with `session.id` as a precise fallback) links traces to benchmark runs
 - **Measure duration**: Span start/end times compute total and per-step latency
 - **Detect errors**: Span status ERROR is surfaced in the trace viewer
 
