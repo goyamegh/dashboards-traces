@@ -229,6 +229,29 @@ jobs:
 
   integration-tests:
     runs-on: ubuntu-latest
+    # Provide a real OpenSearch so the storage-backed integration suite runs
+    # against the OpenSearch path (not just file storage). Without it the
+    # server runs in file-storage mode and every test that needs the
+    # OpenSearch path (POST /api/storage/benchmarks/:id/execute, judge
+    # round-trips, storage CRUD over HTTP) fails with 400 "OpenSearch not
+    # configured". File-storage behaviour stays covered by the no-network
+    # config-mode / adapter tests, so this exercises BOTH backends.
+    #
+    # The image is PINNED BY DIGEST (multi-arch index digest for 2.17.0) per
+    # the repo's supply-chain rule — same reason actions are pinned by SHA.
+    # Security is disabled for the ephemeral test cluster so the server can
+    # connect with authType 'none'.
+    services:
+      opensearch:
+        image: opensearchproject/opensearch:2.17.0@sha256:7b9517dff561f54456fad947f11820fa595a340fd1034fc63d57b77f724b3f8f
+        env:
+          discovery.type: single-node
+          DISABLE_SECURITY_PLUGIN: "true"
+          DISABLE_INSTALL_DEMO_CONFIG: "true"
+          OPENSEARCH_JAVA_OPTS: "-Xms512m -Xmx512m"
+          bootstrap.memory_lock: "false"
+        ports:
+          - 9200:9200
     steps:
       - name: Checkout code
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -245,6 +268,21 @@ jobs:
       - name: Build server
         run: npm run build:server
 
+      - name: Wait for OpenSearch to be healthy
+        run: |
+          echo "Waiting for OpenSearch on :9200..."
+          for i in {1..40}; do
+            if curl -s http://localhost:9200/_cluster/health | grep -qE '"status":"(green|yellow)"'; then
+              echo "OpenSearch is healthy!"
+              curl -s http://localhost:9200/_cluster/health | jq . || true
+              exit 0
+            fi
+            echo "Attempt $i: OpenSearch not ready yet..."
+            sleep 3
+          done
+          echo "OpenSearch failed to become healthy within ~120s"
+          exit 1
+
       - name: Start backend server
         run: |
           node server/dist/index.js &
@@ -252,6 +290,10 @@ jobs:
           echo "Server PID: $(cat server.pid)"
         env:
           AH_PORT: 4001
+          # Point the server at the ephemeral OpenSearch service so the
+          # storage path runs against the real backend instead of file mode.
+          OPENSEARCH_STORAGE_ENDPOINT: http://localhost:9200
+          OPENSEARCH_STORAGE_AUTH_TYPE: none
 
       - name: Wait for server to be healthy
         run: |
@@ -260,6 +302,7 @@ jobs:
             if curl -s http://localhost:4001/health | grep -q '"status":"ok"'; then
               echo "Server is healthy!"
               curl -s http://localhost:4001/health | jq .
+              curl -s http://localhost:4001/api/storage/health | jq . || true
               exit 0
             fi
             echo "Attempt $i: Server not ready yet..."
