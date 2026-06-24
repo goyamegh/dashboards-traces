@@ -390,6 +390,32 @@ describe('Evaluation Service Index', () => {
       expect(result.llmJudgeReasoning).toContain('Waiting for traces');
     });
 
+    it('persists connector metadata.sessionId onto the report for Strategy D (#313)', async () => {
+      const traceAgent = { ...mockAgent, useTraces: true };
+      const mockConnector = {
+        type: 'claude-code',
+        execute: jest.fn().mockResolvedValue({
+          trajectory: [{ type: 'response', content: 'Done', timestamp: new Date().toISOString() }],
+          runId: 'subprocess-789',
+          rawEvents: [],
+          // ClaudeCodeConnector surfaces the captured session_id here.
+          metadata: { sessionId: 'sess-strategy-d', exitCode: 0 },
+        }),
+      };
+      const mockRegistry = { getForAgent: jest.fn().mockReturnValue(mockConnector) };
+
+      const result = await runEvaluationWithConnector(
+        traceAgent,
+        'claude-3-sonnet',
+        mockTestCase,
+        jest.fn(),
+        { registry: mockRegistry }
+      );
+
+      expect(result.runId).toBe('subprocess-789');
+      expect(result.sessionId).toBe('sess-strategy-d');
+    });
+
     it('should handle connector execution errors', async () => {
       const mockConnector = {
         type: 'rest',
