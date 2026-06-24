@@ -293,7 +293,10 @@ export async function computeMetrics(
         query: {
           bool: {
             must: [
-              { term: { 'attributes.agent_health.run.id': runId } }
+              { bool: { should: [
+                { term: { 'attributes.agent_health.run.id': runId } },
+                { term: { 'attributes.gen_ai.conversation.id': runId } },
+              ], minimum_should_match: 1 } }
             ]
           }
         }
@@ -312,7 +315,10 @@ export async function computeMetrics(
     query: {
       bool: {
         must: [
-          { term: { 'attributes.agent_health.run.id': runId } }
+          { bool: { should: [
+            { term: { 'attributes.agent_health.run.id': runId } },
+            { term: { 'attributes.gen_ai.conversation.id': runId } },
+          ], minimum_should_match: 1 } }
         ]
       }
     }
@@ -369,7 +375,10 @@ export async function computeBatchMetrics(
             query: {
               bool: {
                 must: [
-                  { terms: { 'attributes.agent_health.run.id': chunk } }
+                  { bool: { should: [
+                    { terms: { 'attributes.agent_health.run.id': chunk } },
+                    { terms: { 'attributes.gen_ai.conversation.id': chunk } },
+                  ], minimum_should_match: 1 } }
                 ]
               }
             }
@@ -421,7 +430,10 @@ export async function computeBatchMetrics(
       query: {
         bool: {
           must: [
-            { terms: { 'attributes.agent_health.run.id': chunk } }
+            { bool: { should: [
+              { terms: { 'attributes.agent_health.run.id': chunk } },
+              { terms: { 'attributes.gen_ai.conversation.id': chunk } },
+            ], minimum_should_match: 1 } }
           ]
         }
       }

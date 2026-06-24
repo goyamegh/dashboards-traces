@@ -35,6 +35,7 @@ import {
   ATTR_TEST_CASE_RESULT_STATUS,
   ATTR_GEN_AI_OPERATION_NAME,
   ATTR_GEN_AI_EVALUATION_NAME,
+  ATTR_GEN_AI_CONVERSATION_ID,
   ATTR_GEN_AI_EVALUATION_SCORE_VALUE,
   ATTR_GEN_AI_EVALUATION_SCORE_LABEL,
   ATTR_GEN_AI_EVALUATION_EXPLANATION,
@@ -145,6 +146,10 @@ export function startTestCaseSpan(
   };
   if (agentRunId) {
     attributes[ATTR_AGENT_HEALTH_AGENT_RUN_ID] = agentRunId;
+    // OTEL-standard correlation id (incubating). Set to the same agent run id
+    // so trace queries correlating on `gen_ai.conversation.id` find this eval
+    // span alongside `agent_health.run.id` (Strategy B).
+    attributes[ATTR_GEN_AI_CONVERSATION_ID] = agentRunId;
   }
   attributes[ATTR_TEST_CASE_INPUT] = truncate(testCase.initialPrompt || '', MAX_ATTRIBUTE_LENGTH)!;
   const expected = truncate(
@@ -304,6 +309,7 @@ export function emitDeferredTestCaseSpan(
   };
   if (agentRunId) {
     attributes[ATTR_AGENT_HEALTH_AGENT_RUN_ID] = agentRunId;
+    attributes[ATTR_GEN_AI_CONVERSATION_ID] = agentRunId;
   }
   attributes[ATTR_TEST_CASE_INPUT] = truncate(testCase.initialPrompt || '', MAX_ATTRIBUTE_LENGTH)!;
   const expected = truncate(

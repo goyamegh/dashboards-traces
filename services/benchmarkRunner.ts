@@ -420,6 +420,7 @@ export async function executeRun(
               (report as any).trajectory = inv.trajectory;
               (report as any).rawEvents = inv.rawEvents;
               (report as any).runId = inv.runId ?? undefined;
+              (report as any).sessionId = inv.metadata?.sessionId ?? undefined;
               (report as any).performanceMetrics = {
                 durationMs: inv.agentDurationMs,
                 agentDurationMs: inv.agentDurationMs,

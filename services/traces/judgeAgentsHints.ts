@@ -57,6 +57,12 @@ export interface JudgeAgentsHint {
   serviceName: string;
   startedAt: number;
   endedAt: number;
+  /**
+   * Agent-emitted session id (Strategy D). When present, trace queries
+   * correlate precisely on `attributes.session.id` (unioned with the
+   * service.name + window fallback). Sourced from `report.sessionId`.
+   */
+  sessionId?: string;
 }
 
 /**
@@ -97,7 +103,7 @@ export function resolveAgentServiceName(args: {
  * Strategy B (runIds-only) without breaking.
  */
 export function buildJudgeAgentsHints(
-  report: Pick<TestCaseRun, 'agentKey' | 'connectorProtocol' | 'timestamp' | 'performanceMetrics'>,
+  report: Pick<TestCaseRun, 'agentKey' | 'connectorProtocol' | 'timestamp' | 'performanceMetrics' | 'sessionId'>,
   agentTraceServiceName?: string
 ): JudgeAgentsHint[] {
   const serviceName = resolveAgentServiceName({
@@ -111,5 +117,10 @@ export function buildJudgeAgentsHints(
   const durationMs = report.performanceMetrics?.durationMs ?? 0;
   const lookbackMs = durationMs > 0 ? durationMs + SLACK_MS : FALLBACK_LOOKBACK_MS;
   const startedAt = endedAt - lookbackMs;
-  return [{ serviceName, startedAt, endedAt: endedAt + SLACK_MS }];
+  return [{
+    serviceName,
+    startedAt,
+    endedAt: endedAt + SLACK_MS,
+    ...(report.sessionId ? { sessionId: report.sessionId } : {}),
+  }];
 }

@@ -37,9 +37,10 @@ router.post('/api/traces', async (req: Request, res: Response) => {
     }
     if (agents !== undefined && (!Array.isArray(agents) || agents.some((a: any) =>
         !a || typeof a.serviceName !== 'string' ||
-        typeof a.startedAt !== 'number' || typeof a.endedAt !== 'number'))) {
+        typeof a.startedAt !== 'number' || typeof a.endedAt !== 'number' ||
+        (a.sessionId !== undefined && typeof a.sessionId !== 'string')))) {
       return res.status(400).json({
-        error: 'agents must be an array of { serviceName: string, startedAt: number, endedAt: number }'
+        error: 'agents must be an array of { serviceName: string, startedAt: number, endedAt: number, sessionId?: string }'
       });
     }
 

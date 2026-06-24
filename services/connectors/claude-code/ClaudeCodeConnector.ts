@@ -84,6 +84,13 @@ export class ClaudeCodeConnector extends SubprocessConnector {
   private thinkingBuffer = '';
   private textBuffer = '';
   private isInThinking = false;
+  /**
+   * Claude Code's `session_id` (present on every stream-json event). Captured
+   * for Strategy D trace correlation — it equals the `session.id` attribute
+   * Claude Code stamps on its OTel spans. Surfaced to the report via
+   * {@link extraResultMetadata}.
+   */
+  private sessionId?: string;
 
   constructor(config?: Partial<SubprocessConfig>) {
     super({ ...CLAUDE_CODE_DEFAULT_CONFIG, ...config });
@@ -155,6 +162,12 @@ export class ClaudeCodeConnector extends SubprocessConnector {
    */
   private parseJsonEvent(event: any): TrajectoryStep[] {
     const steps: TrajectoryStep[] = [];
+
+    // Capture the session id (present on system/init, assistant, user, result
+    // events). Used for Strategy D trace correlation (attributes.session.id).
+    if (typeof event.session_id === 'string' && event.session_id) {
+      this.sessionId = event.session_id;
+    }
 
     // Handle different event types from Claude Code stream-json
     if (event.type === 'assistant' && event.message?.content) {
@@ -421,6 +434,7 @@ export class ClaudeCodeConnector extends SubprocessConnector {
 
     try {
       this.debug('State reset, calling super.execute()...');
+      this.sessionId = undefined;
       const result = await super.execute(endpoint, request, auth, onProgress, onRawEvent);
       this.debug('super.execute() returned with', result.trajectory.length, 'steps');
       this.debug('========== execute() COMPLETED ==========');
@@ -441,6 +455,14 @@ export class ClaudeCodeConnector extends SubprocessConnector {
    */
   override async healthCheck(endpoint: string, auth: ConnectorAuth): Promise<boolean> {
     return super.healthCheck(endpoint || 'claude', auth);
+  }
+
+  /**
+   * Surface the captured Claude Code `session_id` so the runner can persist it
+   * as `report.sessionId` for Strategy D trace correlation.
+   */
+  protected override extraResultMetadata(): Record<string, any> {
+    return this.sessionId ? { sessionId: this.sessionId } : {};
   }
 }
 

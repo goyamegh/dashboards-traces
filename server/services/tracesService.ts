@@ -68,10 +68,14 @@ export interface TracesQueryOptions {
    * Strategy C (opt-in): include any spans where
    *   `serviceName` matches AND `startTime` falls within `[startedAt, endedAt]`.
    * Used as a fallback for agents that don't propagate W3C trace context
-   * (TRACEPARENT) and don't tag spans with `gen_ai.request.id` matching our
-   * runId. May surface unrelated spans (concurrent runs, cross-team noise).
+   * (TRACEPARENT) and don't tag spans with our runId (Strategy B). May surface
+   * unrelated spans (concurrent runs, cross-team noise).
+   *
+   * Strategy D: when `sessionId` is set (e.g. Claude Code stamps `session.id`
+   * on every span of a run), correlate precisely on `attributes.session.id`,
+   * unioned with the service.name + window fallback.
    */
-  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>;
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number; sessionId?: string }>;
 }
 
 export interface TracesResponse {
@@ -240,8 +244,11 @@ export async function fetchTraces(
   //
   // Correlation strategies (see AGENTS.md → Trace correlation conventions):
   //   A. traceId  —  W3C-propagated agents share traceId with the eval span
-  //   B. runIds   —  agents tag spans with gen_ai.request.id == runId
+  //   B. runIds   —  spans tagged with agent_health.run.id OR the OTEL-standard
+  //                  gen_ai.conversation.id == runId
   //   C. agents   —  service.name + time-window fallback (opt-in, may be noisy)
+  //   D. session  —  agents[].sessionId matches attributes.session.id (precise
+  //                  per-run correlator emitted by e.g. Claude Code)
   //
   // When the caller wants any-of-these (run-report Traces tab), we OR them via
   // bool.should so spans matching any single strategy are returned.
@@ -277,15 +284,26 @@ export async function fetchTraces(
     // spans even though the time-window fallback would have returned them.
     const validRunIds = runIds.filter((id): id is string => typeof id === 'string' && id.length > 0);
     if (validRunIds.length > 0) {
+      // Strategy B: match either Agent Health's own correlation attribute or
+      // the OTEL-standard gen_ai.conversation.id — our producers (eval +
+      // sample-agent spans) stamp both = runId, so a span matching EITHER
+      // correlates. Nested should keeps it as one OR-group within `sink`.
       sink.push({
-        terms: { 'attributes.agent_health.run.id': validRunIds }
+        bool: {
+          should: [
+            { terms: { 'attributes.agent_health.run.id': validRunIds } },
+            { terms: { 'attributes.gen_ai.conversation.id': validRunIds } },
+          ],
+          minimum_should_match: 1,
+        },
       });
     }
   }
 
   if (agents && agents.length > 0) {
     for (const a of agents) {
-      sink.push({
+      // Strategy C: service.name (or gen_ai.agent.name) within the run window.
+      const strategyC = {
         bool: {
           must: [
             {
@@ -307,7 +325,23 @@ export async function fetchTraces(
             },
           ],
         },
-      });
+      };
+      if (a.sessionId) {
+        // Strategy D: the agent's emitted session.id is a precise per-run
+        // correlator (Claude Code stamps session.id on every span). Prefer it,
+        // unioned with Strategy C as a fallback for spans it doesn't cover.
+        sink.push({
+          bool: {
+            should: [
+              { term: { 'attributes.session.id': a.sessionId } },
+              strategyC,
+            ],
+            minimum_should_match: 1,
+          },
+        });
+      } else {
+        sink.push(strategyC);
+      }
     }
   }
 

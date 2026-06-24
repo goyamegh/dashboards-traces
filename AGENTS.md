@@ -312,6 +312,37 @@ attribute.
 > under an existing OTEL namespace. Strategy A (W3C trace context) is the primary
 > correlation; this is the loose fallback.
 
+> **Also emitted: the OTEL-standard `gen_ai.conversation.id`.** Alongside
+> `agent_health.run.id`, our producers (the eval `test_case` span and the
+> observio sample agent) stamp the registered (incubating) Gen AI attribute
+> `gen_ai.conversation.id` — "the unique identifier for a conversation
+> (session, thread)" — set to the same agent run id. The trace + metrics
+> correlation queries match **either** `agent_health.run.id` **or**
+> `gen_ai.conversation.id`, so spans that adopt the standard attribute correlate
+> without any app-specific key. Use `gen_ai.conversation.id` going forward; the
+> `agent_health.run.id` mirror stays for backward compatibility.
+
+### Strategy D — `session.id` attribute (precise, real-world adopted)
+
+Many subprocess agents emit neither W3C context nor our run id, but **do** stamp
+the OTEL `session.id` attribute on every span of a run (Claude Code is the
+motivating case: 100% of its spans carry one stable `session.id`). When the
+connector captures that id, Strategy D correlates **precisely** on
+`attributes.session.id` — far tighter than the service-name + time-window
+fallback (Strategy C).
+
+- **Capture:** `SubprocessConnector` exposes an `extraResultMetadata()` hook;
+  `ClaudeCodeConnector` reads `session_id` from the stream-json events and
+  returns `{ sessionId }`. The runner persists it as `report.sessionId`.
+- **Correlate:** `buildJudgeAgentsHints(report)` adds `sessionId` to each
+  `agents` hint, and the run-report Traces tab adds it to its `windowAgents`.
+  The query builder turns each hint into `(session.id == sessionId) OR
+  (service.name + window)`, unioned with A/B. So a span is returned if it
+  matches **any** strategy, without duplication.
+- **Why not `gen_ai.response.id`?** That's a per-LLM-call provider id (a run has
+  many), so it can't correlate a whole run. `session.id` is the per-run id with
+  real adoption today; `gen_ai.conversation.id` is the standard we *emit*.
+
 ### Strategy C — service-name + time-window (always-on fallback)
 
 For closed-source / 3rd-party agents that do neither A nor B, register the

@@ -47,7 +47,7 @@ export interface JudgeRequest {
    * Forwarding `agents` lets the tool union Strategy C (service.name +
    * time-window) so claude-code's emitted spans are findable. See #264.
    */
-  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>;
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number; sessionId?: string }>;
 }
 
 export interface JudgeResponse {

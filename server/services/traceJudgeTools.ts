@@ -36,7 +36,7 @@ function textResult(obj: unknown) {
 export function createTraceJudgeExtension(
   runId: string | undefined,
   serverUrl: string,
-  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number; sessionId?: string }>
 ): PiExtensionFactory {
   return (pi: PiExtensionAPI) => {
     pi.registerTool({

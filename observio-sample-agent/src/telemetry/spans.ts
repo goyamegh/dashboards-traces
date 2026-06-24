@@ -20,6 +20,9 @@ const ATTR_GEN_AI_SYSTEM = 'gen_ai.system';
 const ATTR_GEN_AI_REQUEST_MODEL = 'gen_ai.request.model';
 // Agent Health run-id correlation (own namespace, not the OTEL gen_ai.* namespace)
 const ATTR_AGENT_HEALTH_RUN_ID = 'agent_health.run.id';
+// OTEL-standard conversation/session id (incubating). Emitted = runId so
+// Agent Health can correlate trace queries on the registered attribute.
+const ATTR_GEN_AI_CONVERSATION_ID = 'gen_ai.conversation.id';
 const ATTR_GEN_AI_AGENT_NAME = 'gen_ai.agent.name';
 const ATTR_GEN_AI_USAGE_INPUT_TOKENS = 'gen_ai.usage.input_tokens';
 const ATTR_GEN_AI_USAGE_OUTPUT_TOKENS = 'gen_ai.usage.output_tokens';
@@ -46,6 +49,7 @@ export function startAgentSpan(runId: string): { span: Span; ctx: Context } {
       [ATTR_GEN_AI_SYSTEM]: 'aws.bedrock',
       [ATTR_GEN_AI_AGENT_NAME]: 'observio',
       [ATTR_AGENT_HEALTH_RUN_ID]: runId,
+      [ATTR_GEN_AI_CONVERSATION_ID]: runId,
     },
   });
   const ctx = trace.setSpan(otelContext.active(), span);
@@ -80,6 +84,7 @@ export function startLLMSpan(
       ...(opts.maxTokens !== undefined && { [ATTR_GEN_AI_REQUEST_MAX_TOKENS]: opts.maxTokens }),
       ...(opts.iteration !== undefined && { 'gen_ai.request.iteration': opts.iteration }),
       ...(opts.runId && { [ATTR_AGENT_HEALTH_RUN_ID]: opts.runId }),
+      ...(opts.runId && { [ATTR_GEN_AI_CONVERSATION_ID]: opts.runId }),
     },
   }, parentCtx);
   const ctx = trace.setSpan(parentCtx, span);
@@ -153,6 +158,7 @@ export function startToolSpan(
       [ATTR_GEN_AI_OPERATION_NAME]: OP_EXECUTE_TOOL,
       [ATTR_GEN_AI_TOOL_NAME]: toolName,
       ...(opts?.runId && { [ATTR_AGENT_HEALTH_RUN_ID]: opts.runId }),
+      ...(opts?.runId && { [ATTR_GEN_AI_CONVERSATION_ID]: opts.runId }),
     },
   }, parentCtx);
 

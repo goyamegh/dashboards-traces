@@ -78,16 +78,21 @@ export function matchesQuery(s: Span, options: TracesQueryOptions, useUnion: boo
     if (!hit) return false;
   }
 
-  // ---- correlation clauses (A/B/C) ----
+  // ---- correlation clauses (A/B/C/D) ----
   const clauses: boolean[] = [];
   if (traceId) clauses.push(s.traceId === traceId);
   if (runIds && runIds.length > 0) {
     const valid = runIds.filter((id): id is string => typeof id === 'string' && id.length > 0);
-    clauses.push(valid.includes(a['agent_health.run.id']));
+    // Strategy B: agent_health.run.id OR the OTEL-standard gen_ai.conversation.id.
+    clauses.push(valid.includes(a['agent_health.run.id']) || valid.includes(a['gen_ai.conversation.id']));
   }
   if (agents && agents.length > 0) {
     for (const ag of agents) {
-      clauses.push(serviceMatches(s, ag.serviceName) && spanMs(s) >= ag.startedAt && spanMs(s) <= ag.endedAt);
+      // Strategy C: service.name within the run window.
+      const strategyC = serviceMatches(s, ag.serviceName) && spanMs(s) >= ag.startedAt && spanMs(s) <= ag.endedAt;
+      // Strategy D: precise per-run session.id (e.g. Claude Code).
+      const strategyD = ag.sessionId !== undefined && a['session.id'] === ag.sessionId;
+      clauses.push(strategyC || strategyD);
     }
   }
 

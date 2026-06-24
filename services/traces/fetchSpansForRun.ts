@@ -42,6 +42,8 @@ export interface TraceWindowAgent {
   serviceName: string;
   startedAt: number;
   endedAt: number;
+  /** Strategy D: precise per-run correlator (e.g. Claude Code `session.id`). */
+  sessionId?: string;
 }
 
 /**

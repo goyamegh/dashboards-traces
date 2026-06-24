@@ -159,6 +159,8 @@ export interface InvokeAgentResult {
   rawEvents: any[];
   /** Wall-clock duration of the connector.execute() call in ms. */
   agentDurationMs: number;
+  /** Connector-supplied metadata (e.g. Claude Code `sessionId`, exitCode). */
+  metadata?: Record<string, any>;
   /** The connector that handled the request (for protocol metadata). */
   connector: AgentConnector;
 }
@@ -304,6 +306,7 @@ export async function invokeAgent(
     runId: result.runId,
     rawEvents: result.rawEvents || [],
     agentDurationMs,
+    metadata: result.metadata,
     connector,
   };
 }

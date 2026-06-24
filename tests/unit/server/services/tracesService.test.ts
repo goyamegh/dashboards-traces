@@ -248,6 +248,52 @@ describe('tracesService', () => {
       expect(clause).not.toContain('gen_ai@request@id');
     });
 
+    it('also correlates runIds via the OTEL-standard attributes.gen_ai.conversation.id (#313)', async () => {
+      const search = jest.fn().mockResolvedValue({
+        body: { hits: { hits: [], total: { value: 0 } } },
+      });
+      const client = createMockClient({ search });
+
+      await fetchTraces({ runIds: ['run-1', 'run-2'] }, client);
+
+      const query = search.mock.calls[0][0].body.query;
+      const clause = JSON.stringify(query);
+      // Strategy B is now an OR over our own attribute and the OTEL-standard one.
+      expect(clause).toContain('attributes.agent_health.run.id');
+      expect(clause).toContain('attributes.gen_ai.conversation.id');
+      // Both terms carry the same runIds.
+      const runIdClause = query.bool.must.find((c: any) => c?.bool?.should?.some(
+        (s: any) => s.terms?.['attributes.gen_ai.conversation.id']));
+      expect(runIdClause.bool.should).toEqual(expect.arrayContaining([
+        { terms: { 'attributes.agent_health.run.id': ['run-1', 'run-2'] } },
+        { terms: { 'attributes.gen_ai.conversation.id': ['run-1', 'run-2'] } },
+      ]));
+    });
+
+    it('Strategy D: correlates agents[].sessionId on attributes.session.id, unioned with the window (#313)', async () => {
+      const search = jest.fn().mockResolvedValue({
+        body: { hits: { hits: [], total: { value: 0 } } },
+      });
+      const client = createMockClient({ search });
+
+      await fetchTraces({
+        runIds: ['run-1'],
+        agents: [{ serviceName: 'claude-code-agent', startedAt: 1000, endedAt: 2000, sessionId: 'sess-abc' }],
+      }, client);
+
+      const query = search.mock.calls[0][0].body.query;
+      const clause = JSON.stringify(query);
+      // session.id is present as a precise per-run correlator.
+      expect(clause).toContain('attributes.session.id');
+      expect(clause).toContain('sess-abc');
+      // The agents clause is a should over (session.id) OR (serviceName+window),
+      // so a span matching EITHER correlates.
+      const agentClause = query.bool.should.find((c: any) => c?.bool?.should?.some(
+        (s: any) => s.term?.['attributes.session.id'] === 'sess-abc'));
+      expect(agentClause).toBeTruthy();
+      expect(agentClause.bool.minimum_should_match).toBe(1);
+    });
+
     it('correlates sessionId via attributes.session.id (#296)', async () => {
       const search = jest.fn().mockResolvedValue({
         body: { hits: { hits: [], total: { value: 0 } } },

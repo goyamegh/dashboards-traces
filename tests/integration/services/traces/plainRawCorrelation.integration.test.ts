@@ -90,6 +90,32 @@ const INDEX: Record<string, any>[] = [
       'gen_ai.usage.input_tokens': 999,
     },
   }),
+  // --- #313: span correlated ONLY by the OTEL-standard gen_ai.conversation.id
+  // (no agent_health.run.id). A subprocess/eval span that adopted the standard
+  // attribute must still be found by a runIds query. ---
+  plainRawSpan({
+    spanId: 'conv-only',
+    traceId: 'trace-CONV',
+    name: 'chat',
+    attributes: {
+      'gen_ai.conversation.id': 'conv-XYZ',
+      'gen_ai.usage.input_tokens': 42,
+    },
+  }),
+  // --- #313: span correlated ONLY by session.id (no run.id / conversation.id),
+  // emitted by a subprocess agent (Claude Code). Found via Strategy D. The
+  // service name + time deliberately fall OUTSIDE any window we pass, so only
+  // the session.id clause can surface it. ---
+  plainRawSpan({
+    spanId: 'sess-only',
+    traceId: 'trace-SESS',
+    serviceName: 'claude-code-agent',
+    startTime: '2020-01-01T00:00:00.000000000Z',
+    attributes: {
+      'session.id': 'sess-D',
+      'gen_ai.tool.name': 'read_file',
+    },
+  }),
 ];
 
 // ---------------------------------------------------------------------------
@@ -167,6 +193,36 @@ describe('plain-raw trace correlation (#296)', () => {
       const sent = JSON.stringify(client.search.mock.calls[0][0].body.query);
       expect(sent).toContain('attributes.agent_health.run.id');
       expect(sent).not.toContain('gen_ai@request@id');
+    });
+
+    it('also correlates a runId against the OTEL-standard gen_ai.conversation.id (#313)', async () => {
+      const client = createPlainRawClient();
+
+      // 'conv-XYZ' is stamped only as gen_ai.conversation.id (no run.id), yet a
+      // runIds query must still surface it via the Strategy-B OR branch.
+      const result = await fetchTraces({ runIds: ['conv-XYZ'] }, client);
+
+      expect(result.spans.map((s) => s.spanId)).toEqual(['conv-only']);
+    });
+
+    it('Strategy D: correlates a subprocess span by session.id even when service+window miss (#313)', async () => {
+      const client = createPlainRawClient();
+
+      // runIds + agents → union. The sess-only span has no run.id and a
+      // service/time outside the window, so ONLY the session.id clause matches.
+      const result = await fetchTraces({
+        runIds: [RUN_A],
+        agents: [{
+          serviceName: 'claude-code-agent',
+          startedAt: Date.parse('2026-06-17T08:00:00Z'),
+          endedAt: Date.parse('2026-06-17T10:00:00Z'),
+          sessionId: 'sess-D',
+        }],
+      }, client);
+
+      const ids = result.spans.map((s) => s.spanId).sort();
+      // Run A's 3 spans (Strategy B) PLUS the session-correlated span (Strategy D).
+      expect(ids).toEqual(['llm-A', 'root-A', 'sess-only', 'tool-A']);
     });
   });
 

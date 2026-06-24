@@ -101,6 +101,19 @@ export const ATTR_AGENT_HEALTH_AGENT_RUN_ID = 'agent_health.run.id' as const;
 /** Operation name value for evaluation spans */
 export const GEN_AI_OPERATION_NAME_VALUE_EVALUATION = 'evaluation' as const;
 
+/**
+ * OTEL-registered (incubating) conversation/session identifier —
+ * `gen_ai.conversation.id` (model/gen-ai/registry.yaml): "the unique
+ * identifier for a conversation (session, thread), used to store and correlate
+ * messages within this conversation." We stamp this (= the agent run id) on our
+ * eval + sample-agent spans so trace queries can correlate on the OTEL-standard
+ * attribute in addition to our own `agent_health.run.id`. Declared as a string
+ * literal (rather than re-exported from the incubating module) so it's stable
+ * regardless of semantic-conventions packaging. See AGENTS.md → Trace
+ * correlation conventions.
+ */
+export const ATTR_GEN_AI_CONVERSATION_ID = 'gen_ai.conversation.id' as const;
+
 /** Maximum length for truncated attribute values */
 export const MAX_ATTRIBUTE_LENGTH = 10000;
 

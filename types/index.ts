@@ -487,6 +487,13 @@ export interface TestCaseRun {
   openSearchLogs?: OpenSearchLog[]; // Storage: Persisted logs (alternative to logs)
   annotations?: RunAnnotation[]; // Storage: User notes on this run
   runId?: string; // Agent's run ID from AG UI events (for log correlation)
+  /**
+   * Agent-emitted session id (e.g. Claude Code stamps `session.id` on every
+   * span of a run). Captured from the connector result and used as a precise
+   * per-run trace correlator (Strategy D) for agents that emit it but don't
+   * propagate W3C context or tag our `agent_health.run.id`.
+   */
+  sessionId?: string;
   logs?: OpenSearchLog[]; // OpenSearch logs for the run (master version)
   rawEvents?: any[]; // Raw AG UI events for debugging
   connectorProtocol?: ConnectorProtocol; // Protocol used to execute this run (for trajectory parsing)
@@ -689,8 +696,11 @@ export interface TraceQueryParams {
    * (TRACEPARENT) and don't tag spans with `gen_ai.request.id` matching our
    * runId. May surface unrelated spans (concurrent runs, cross-team noise).
    * See AGENTS.md → Trace correlation conventions.
+   *
+   * Strategy D: when `sessionId` is set on an entry, correlate precisely on
+   * `attributes.session.id` (unioned with the service.name + window fallback).
    */
-  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>;
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number; sessionId?: string }>;
 }
 
 export interface ConversationMessage {

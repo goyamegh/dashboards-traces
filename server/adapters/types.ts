@@ -83,7 +83,8 @@ export interface TracesQueryOptions {
   textSearch?: string;
   cursor?: string;
   /** Strategy C (opt-in): service.name + time-window correlation. See AGENTS.md. */
-  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>;
+  /** Strategy D: per-agent `sessionId` correlates on `attributes.session.id`. */
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number; sessionId?: string }>;
 }
 
 // ============================================================================

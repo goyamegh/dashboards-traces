@@ -570,9 +570,11 @@ describe('metricsService', () => {
       );
 
       const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(requestBody.query.bool.must[0].term['attributes.agent_health.run.id']).toBe(
-        'test-run-123'
-      );
+      // Strategy B now matches agent_health.run.id OR the OTEL-standard
+      // gen_ai.conversation.id (both stamped = runId by our producers).
+      const should = requestBody.query.bool.must[0].bool.should;
+      expect(should[0].term['attributes.agent_health.run.id']).toBe('test-run-123');
+      expect(should[1].term['attributes.gen_ai.conversation.id']).toBe('test-run-123');
     });
 
     it('should use default index pattern when not provided', async () => {
@@ -696,7 +698,9 @@ describe('metricsService', () => {
       // Should use terms query (single request for both IDs)
       expect(mockFetch).toHaveBeenCalledTimes(1);
       const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(requestBody.query.bool.must[0].terms['attributes.agent_health.run.id']).toEqual(['run-1', 'run-2']);
+      const should = requestBody.query.bool.must[0].bool.should;
+      expect(should[0].terms['attributes.agent_health.run.id']).toEqual(['run-1', 'run-2']);
+      expect(should[1].terms['attributes.gen_ai.conversation.id']).toEqual(['run-1', 'run-2']);
     });
 
     it('should return pending metrics for run IDs with no matching spans', async () => {

@@ -274,6 +274,7 @@ export class SubprocessConnector extends BaseConnector {
             args: finalArgs,
             exitCode: code,
             stderr: stderr || undefined,
+            ...this.extraResultMetadata(),
           },
         });
       });
@@ -322,6 +323,15 @@ export class SubprocessConnector extends BaseConnector {
     _onProgress?: ConnectorProgressCallback
   ): void {
     // No-op by default; KiroConnector overrides this.
+  }
+
+  /**
+   * Subclass hook: extra protocol-specific fields to merge into the
+   * connector result `metadata`. Default: none. Claude Code overrides this to
+   * surface the captured `sessionId` (Strategy D trace correlation).
+   */
+  protected extraResultMetadata(): Record<string, any> {
+    return {};
   }
 
   /**

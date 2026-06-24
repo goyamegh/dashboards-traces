@@ -87,7 +87,7 @@ export async function fetchTracesForRun(params: {
   runId?: string;
   evalTraceId?: string;
   includeWindowFallback?: boolean;
-  windowAgents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>;
+  windowAgents?: Array<{ serviceName: string; startedAt: number; endedAt: number; sessionId?: string }>;
   size?: number;
 }): Promise<TraceSearchResult> {
   const { runId, evalTraceId, includeWindowFallback, windowAgents, size = 1000 } = params;

@@ -75,7 +75,7 @@ export async function callBedrockJudge(
   modelId?: string,
   evaluatorId?: string,
   runId?: string,
-  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number; sessionId?: string }>
 ): Promise<JudgeResult> {
   const maxRetries = 10;
   const baseDelay = 1000; // 1 second

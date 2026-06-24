@@ -158,6 +158,24 @@ describe('ClaudeCodeConnector', () => {
       expect(progressSteps.length).toBeGreaterThan(0);
     });
 
+    it('captures session_id from stream-json and surfaces it as metadata.sessionId (#313)', async () => {
+      const request: ConnectorRequest = { testCase: mockTestCase, modelId: 'test-model' };
+
+      setTimeout(() => {
+        // Claude Code emits the session_id on its system/init event (and every
+        // subsequent event). It equals the `session.id` attribute on its OTel
+        // spans — captured for Strategy D trace correlation.
+        mockProcess.stdout.emit('data', Buffer.from(
+          '{"type":"system","subtype":"init","session_id":"sess-abc-123"}\n' +
+          '{"type":"assistant","message":{"content":[{"type":"text","text":"Hi"}]},"session_id":"sess-abc-123"}\n'
+        ));
+        mockProcess.emit('close', 0, null);
+      }, 10);
+
+      const result = await connector.execute('claude', request, mockAuth);
+      expect(result.metadata?.sessionId).toBe('sess-abc-123');
+    });
+
     it('should handle thinking blocks', async () => {
       const request: ConnectorRequest = {
         testCase: mockTestCase,

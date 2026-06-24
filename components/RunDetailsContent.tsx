@@ -443,11 +443,11 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
       const lookbackMs = durationMs > 0 ? durationMs + SLACK_MS : FALLBACK_LOOKBACK_MS;
       const startedAt = endedAt - lookbackMs;
       const windowAgents = serviceName
-        ? [{ serviceName, startedAt, endedAt: endedAt + SLACK_MS }]
+        ? [{ serviceName, startedAt, endedAt: endedAt + SLACK_MS, ...(report.sessionId ? { sessionId: report.sessionId } : {}) }]
         : undefined;
 
       console.info('[RunDetails] Fetching traces for runId:', report.runId,
-        windowAgents ? `(+window fallback for ${serviceName})` : '');
+        windowAgents ? `(+window fallback for ${serviceName}${report.sessionId ? ` +session ${report.sessionId}` : ''})` : '');
       const result = await fetchTracesForRun({
         runId: report.runId,
         includeWindowFallback: true,
