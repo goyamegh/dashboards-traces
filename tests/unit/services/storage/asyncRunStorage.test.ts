@@ -122,6 +122,16 @@ describe('AsyncRunStorage', () => {
         })
       );
     });
+
+    it('persists sessionId (Strategy D) through toStorageFormat (#313)', async () => {
+      mockOsRuns.create.mockResolvedValue(createMockStorageRun('run-sd'));
+      const report = createMockReport();
+      (report as any).sessionId = 'sess-roundtrip';
+      await asyncRunStorage.saveReport(report);
+      expect(mockOsRuns.create).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 'sess-roundtrip' })
+      );
+    });
   });
 
   describe('getReportsByTestCase', () => {
@@ -222,6 +232,15 @@ describe('AsyncRunStorage', () => {
       expect(mockOsRuns.getById).toHaveBeenCalledWith('run-1');
       expect(result).not.toBeNull();
       expect(result?.id).toBe('run-1');
+    });
+
+    it('reads back sessionId from storage for Strategy D (#313)', async () => {
+      const mockRun = { ...createMockStorageRun('run-1'), sessionId: 'sess-read' } as any;
+      mockOsRuns.getById.mockResolvedValue(mockRun);
+
+      const result = await asyncRunStorage.getReportById('run-1');
+
+      expect(result?.sessionId).toBe('sess-read');
     });
 
     it('returns null when not found', async () => {

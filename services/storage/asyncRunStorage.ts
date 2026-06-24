@@ -142,6 +142,7 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
       author: ann.author,
     })),
     runId: stored.traceId || (stored as any).runId,
+    sessionId: (stored as any).sessionId,
     rawEvents: stored.rawEvents as any[] | undefined,
     logs: (stored.logs || []) as OpenSearchLog[],
     improvementStrategies: stored.improvementStrategies as any[] | undefined,
@@ -192,6 +193,7 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
 
   // Add trace-mode fields if present
   if (report.metricsStatus !== undefined) base.metricsStatus = report.metricsStatus;
+  if ((report as any).sessionId !== undefined) (base as any).sessionId = (report as any).sessionId;
   if (report.traceFetchAttempts !== undefined) base.traceFetchAttempts = report.traceFetchAttempts;
   if (report.lastTraceFetchAt !== undefined) base.lastTraceFetchAt = report.lastTraceFetchAt;
   if (report.traceError !== undefined) base.traceError = report.traceError;
@@ -305,6 +307,7 @@ class AsyncRunStorage {
     if (updates.rawEvents !== undefined) storageUpdates.rawEvents = updates.rawEvents;
     if (updates.logs !== undefined) storageUpdates.logs = updates.logs;
     if (updates.runId !== undefined) storageUpdates.traceId = updates.runId;
+    if ((updates as any).sessionId !== undefined) (storageUpdates as any).sessionId = (updates as any).sessionId;
     if (updates.improvementStrategies !== undefined) storageUpdates.improvementStrategies = updates.improvementStrategies;
     if ((updates as any).matcherResults !== undefined) (storageUpdates as any).matcherResults = (updates as any).matcherResults;
 
