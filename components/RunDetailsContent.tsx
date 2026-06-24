@@ -579,7 +579,13 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
             <CardContent className="p-3 flex items-center gap-3">
               <AlertCircle className="text-red-700 dark:text-red-400" size={18} />
               <div>
-                <div className="text-sm font-medium text-red-700 dark:text-red-400">Failed to fetch traces</div>
+                <div className="text-sm font-medium text-red-700 dark:text-red-400">
+                  {/* Derive the title from the error kind label (e.g. "Agent run
+                      did not complete", "Judge evaluation failed") instead of
+                      always saying "Failed to fetch traces" — which is wrong for
+                      agent timeouts / judge errors (#335). */}
+                  {(liveReport.traceError || '').match(/^(.*?) \(kind=/)?.[1] || 'Evaluation error'}
+                </div>
                 <div className="text-xs text-muted-foreground">
                   {liveReport.traceError || 'Unknown error'}
                 </div>
