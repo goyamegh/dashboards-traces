@@ -30,6 +30,17 @@ describe('buildJudgeAgentsHints', () => {
     expect(hint.sessionId).toBeUndefined();
   });
 
+  it('anchors the window SYMMETRICALLY around the timestamp (subprocess timestamp = run start)', () => {
+    const ts = Date.parse('2026-06-23T22:00:00.000Z');
+    const durationMs = 120_000;
+    const [hint] = buildJudgeAgentsHints(baseReport({ performanceMetrics: { durationMs } as any }));
+    // span = duration + 60s slack, applied to BOTH sides so the window covers
+    // [ts, ts+duration] even when ts marks the run start.
+    const span = durationMs + 60_000;
+    expect(hint.startedAt).toBe(ts - span);
+    expect(hint.endedAt).toBe(ts + span);
+  });
+
   it('threads report.sessionId onto the hint for Strategy D (#313)', () => {
     const [hint] = buildJudgeAgentsHints(baseReport({ sessionId: 'sess-xyz' }));
     expect(hint.sessionId).toBe('sess-xyz');
