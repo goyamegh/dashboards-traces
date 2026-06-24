@@ -438,4 +438,60 @@ describe('executeEvaluationRun — issue #230 traces fixture pre-loading', () =>
     expect(saved.llmJudgeReasoning).toBe('');
     expect(saved.llmJudgeReasoning).not.toMatch(/Waiting for traces/);
   });
+
+  it('#334: a code-eval run attaches report.traceId + spans from the fetched traces (Traces tab renders for SDK runs)', async () => {
+    mockInvokeAgent.mockResolvedValue(stubInvocation());
+    mockFetchTraces.mockResolvedValue({
+      spans: [
+        {
+          spanId: 'a', traceId: 'trace-xyz', name: 'invoke_agent',
+          startTime: '2024-01-01T00:00:00Z', endTime: '2024-01-01T00:00:01Z',
+          status: 'OK', attributes: {},
+        },
+      ],
+      total: 1,
+    } as any);
+
+    const evalFn: EvaluateFn = jest.fn(async ({ agent }: any) => {
+      const result = await agent.run('Test prompt');
+      expect(result.agentOutput.length).toBeGreaterThan(0);
+    });
+
+    await executeEvaluationRun(makeRun('traced-agent'), [TC], {
+      storageModule: storage,
+      evaluateFnMap: new Map([[TC.id, evalFn]]),
+      onProgress: jest.fn(),
+    });
+
+    const saved = captureLastReport(storage);
+    expect(saved.passFailStatus).toBe('passed');
+    // Pre-fix the deterministic path left these unset → empty Traces tab. Now it
+    // reuses the spans the pre-poll already fetched from OpenSearch.
+    expect(saved.traceId).toBe('trace-xyz');
+    expect(saved.spans).toHaveLength(1);
+  });
+
+  it('#335: an agent subprocess timeout is surfaced as an `errored` report (not a silent `failed`)', async () => {
+    // agent.run() rejects → capturedResult never set → the run must be bucketed
+    // `errored` (excluded from pass-rate) with the underlying timeout surfaced,
+    // instead of a silent `failed` with an empty Judge card.
+    mockInvokeAgent.mockRejectedValue(new Error('Subprocess timed out after 600000ms'));
+
+    const evalFn: EvaluateFn = jest.fn(async ({ agent }: any) => {
+      await agent.run('Test prompt');
+    });
+
+    await executeEvaluationRun(makeRun('plain-agent'), [TC], {
+      storageModule: storage,
+      evaluateFnMap: new Map([[TC.id, evalFn]]),
+      onProgress: jest.fn(),
+    });
+
+    const saved = captureLastReport(storage);
+    expect(saved.metricsStatus).toBe('error');
+    expect(saved.passFailStatus).toBeNull();
+    expect(saved.llmJudgeReasoning).toMatch(/Agent run did not complete/);
+    expect(saved.llmJudgeReasoning).toMatch(/Subprocess timed out after 600000ms/);
+    expect(saved.assertionError).toMatch(/Subprocess timed out after 600000ms/);
+  });
 });

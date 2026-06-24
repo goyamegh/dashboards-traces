@@ -514,6 +514,11 @@ export async function executeEvaluationRun(
             const anyGateFailed = matcherResults.some(
               m => !m.pass && m.role !== 'observe' && !m.errored,
             );
+            // #335: distinguish an *agent* failure (subprocess timeout / crash —
+            // `capturedResult` was never set because `agent.run()` rejected) from
+            // a deliberate gate failure. The former must surface as a clearly
+            // labelled `errored` run, not a silent `failed` with an empty card.
+            const agentFailed = evalError !== undefined && capturedResult === undefined;
             const failed = anyGateFailed || evalError !== undefined;
             (report as any).evaluationType = 'deterministic';
             (report as any).matcherResults = matcherResults;
@@ -532,6 +537,15 @@ export async function executeEvaluationRun(
                 buildEvaluatorErrorPatch('judge_failed', erroredMatchers[0].errorMessage ?? 'judge errored'),
               );
               (report as any).skipJudge = true;
+            } else if (agentFailed) {
+              // #335: the agent never produced a trajectory (timeout/crash).
+              // Surface the underlying message (e.g. "Subprocess timed out after
+              // 600000ms") on the report instead of a silent empty `failed`.
+              Object.assign(
+                report,
+                buildEvaluatorErrorPatch('agent_failed', (evalError as any)?.message ?? String(evalError)),
+              );
+              (report as any).skipJudge = true;
             } else {
               (report as any).passFailStatus = failed ? 'failed' : 'passed';
               // Option B BC shim: legacy `llmJudgeReasoning` is a derived view
@@ -546,6 +560,23 @@ export async function executeEvaluationRun(
               (report as any).metricsStatus = 'completed';
               (report as any).skipJudge = true;
             }
+
+            // #334: attach the run's OTel traceId + spans to the report so the
+            // run-report Traces tab renders the tree for code-eval (deterministic)
+            // runs too. The classic path does this via waitForTracesAndJudge; the
+            // deterministic path skipped it entirely. Reuse the spans the pre-poll
+            // (loadTracesAccessor) already fetched from OpenSearch — no extra
+            // query. Guarded: reading an `unavailable` accessor throws (ingestion
+            // lag / opt-out), in which case we leave traceId/spans unset.
+            try {
+              const fetchedSpans = (capturedResult as any)?.traces?.spans;
+              if (Array.isArray(fetchedSpans) && fetchedSpans.length > 0) {
+                (report as any).spans = fetchedSpans;
+                if (!(report as any).traceId) {
+                  (report as any).traceId = fetchedSpans[0]?.traceId;
+                }
+              }
+            } catch { /* traces fixture unavailable — leave traceId/spans unset */ }
           } else {
             // CLASSIC PATH: no code body. Eagerly invoke the agent and run the
             // Bedrock judge (or, for useTraces agents, return a pending report

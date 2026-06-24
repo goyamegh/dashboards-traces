@@ -369,18 +369,45 @@ async function runJudge(
   }
 
   const startedAt = Date.now();
-  let response: Response;
-  try {
-    response = await fetch(`${serverUrl}/api/judge`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(requestBody),
-    });
-  } catch (err: any) {
-    const errMsg = err?.message || String(err);
-    // Endpoint unreachable — the judge could not run. This is `errored`,
-    // not a clean `pass: false`. The matcher is recorded with errored=true
-    // so the run is bucketed as `errored` (excluded from pass-rate).
+  // Resilience: the agentic (trace) judge can be slow and, under load (in-process
+  // pi sessions + query_spans/query_logs round-trips on the same server), the
+  // loopback fetch to /api/judge can transiently throw "fetch failed" (undici
+  // keep-alive socket reset / ~300s headersTimeout) or return a 5xx/429. Without
+  // a retry, ONE such transient blip records an `errored` matcher — which makes
+  // the runner clear `passFailStatus` to null and bucket the whole run as
+  // "errored" (#247) even when every other gate passed. Retry transient failures
+  // with exponential backoff before giving up. Deterministic 4xx (not 429) are
+  // not retried.
+  const MAX_JUDGE_ATTEMPTS = 3;
+  let response: Response | undefined;
+  let lastErrMsg = '';
+  for (let attempt = 1; attempt <= MAX_JUDGE_ATTEMPTS; attempt++) {
+    try {
+      const r = await fetch(`${serverUrl}/api/judge`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(requestBody),
+      });
+      if (r.ok) { response = r; break; }
+      lastErrMsg = `Judge HTTP ${r.status}: ${await r.text()}`;
+      // 4xx (except 429) are deterministic — retrying won't help; surface as errored.
+      if (r.status < 500 && r.status !== 429) { response = r; break; }
+    } catch (err: any) {
+      lastErrMsg = err?.message || String(err); // e.g. "fetch failed"
+    }
+    if (attempt < MAX_JUDGE_ATTEMPTS) {
+      // Exponential backoff (1s, 2s). Overridable via AH_JUDGE_RETRY_BACKOFF_MS
+      // (set to 0 in tests to avoid real delays); 0 disables the wait.
+      const baseMs = process.env.AH_JUDGE_RETRY_BACKOFF_MS !== undefined
+        ? Number(process.env.AH_JUDGE_RETRY_BACKOFF_MS)
+        : 1000;
+      if (baseMs > 0) await new Promise((res) => setTimeout(res, baseMs * 2 ** (attempt - 1)));
+    }
+  }
+
+  if (!response) {
+    // Every attempt failed transiently — the judge could not run. `errored`,
+    // not a clean `pass: false`.
     recordVerdict({
       description,
       pass: false,
@@ -388,7 +415,7 @@ async function runJudge(
       role,
       errored: true,
       durationMs: Date.now() - startedAt,
-      errorMessage: `Judge request failed: ${errMsg}`,
+      errorMessage: `Judge request failed after ${MAX_JUDGE_ATTEMPTS} attempts: ${lastErrMsg}`,
       reasoning: '',
     });
     return makeVerdict({
@@ -398,12 +425,11 @@ async function runJudge(
       role,
       skipped: false,
       errored: true,
-      errorMessage: `Judge request failed: ${errMsg}`,
+      errorMessage: `Judge request failed after ${MAX_JUDGE_ATTEMPTS} attempts: ${lastErrMsg}`,
     });
   }
 
   if (!response.ok) {
-    const text = await response.text();
     recordVerdict({
       description,
       pass: false,
@@ -411,7 +437,7 @@ async function runJudge(
       role,
       errored: true,
       durationMs: Date.now() - startedAt,
-      errorMessage: `Judge HTTP ${response.status}: ${text}`,
+      errorMessage: lastErrMsg,
       reasoning: '',
     });
     return makeVerdict({
@@ -421,7 +447,7 @@ async function runJudge(
       role,
       skipped: false,
       errored: true,
-      errorMessage: `Judge HTTP ${response.status}: ${text}`,
+      errorMessage: lastErrMsg,
     });
   }
 

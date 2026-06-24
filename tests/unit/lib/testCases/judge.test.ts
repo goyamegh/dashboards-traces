@@ -66,10 +66,12 @@ describe('judge() — per-call options', () => {
   beforeEach(() => {
     startSession();
     clearJudgeCache();
+    process.env.AH_JUDGE_RETRY_BACKOFF_MS = '0'; // no real delay between retries in tests
   });
   afterEach(() => {
     endSession();
     jest.restoreAllMocks();
+    delete process.env.AH_JUDGE_RETRY_BACKOFF_MS;
   });
 
   it('forwards evaluatorId on the /api/judge POST body when set', async () => {
@@ -193,6 +195,36 @@ describe('judge() — per-call options', () => {
     expect(verdict.errorMessage).toMatch(/Judge HTTP 500: boom/);
     // orThrow surfaces the error too.
     expect(() => verdict.orThrow()).toThrow(/errored/);
+  });
+
+  // Resilience: the agentic (trace) judge can transiently drop the loopback
+  // connection under load. A single `fetch failed` must NOT error the run.
+  it('retries a transient `fetch failed` and succeeds (no errored verdict)', async () => {
+    const okResp = {
+      ok: true, status: 200,
+      json: async () => ({ passFailStatus: 'passed', metrics: { accuracy: 88 }, llmJudgeReasoning: 'ok' }),
+      text: async () => '',
+    };
+    const fetchMock = jest.fn()
+      .mockRejectedValueOnce(new TypeError('fetch failed'))
+      .mockResolvedValue(okResp);
+    (global as any).fetch = fetchMock as unknown as typeof fetch;
+
+    const verdict = await judge({ trajectory: [{ type: 'response', content: 'x' }] } as any, 'claim');
+    expect(fetchMock).toHaveBeenCalledTimes(2); // 1 transient failure + 1 success
+    expect(verdict.errored).toBe(false);
+    expect(verdict.pass).toBe(true);
+  });
+
+  it('records errored only after exhausting retries on a persistent `fetch failed`', async () => {
+    const fetchMock = jest.fn().mockRejectedValue(new TypeError('fetch failed'));
+    (global as any).fetch = fetchMock as unknown as typeof fetch;
+
+    const verdict = await judge({ trajectory: [{ type: 'response', content: 'x' }] } as any, 'claim');
+    expect(fetchMock).toHaveBeenCalledTimes(3); // MAX_JUDGE_ATTEMPTS
+    expect(verdict.errored).toBe(true);
+    expect(verdict.errorMessage).toMatch(/after 3 attempts/);
+    expect(verdict.errorMessage).toMatch(/fetch failed/);
   });
 
   it('skip option returns a non-gating skipped verdict and makes no HTTP call', async () => {

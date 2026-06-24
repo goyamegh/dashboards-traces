@@ -29,6 +29,7 @@
 
 export type EvaluatorErrorKind =
   | 'judge_failed'         // Judge call itself threw (e.g. Bedrock validation, network)
+  | 'agent_failed'         // Agent never produced a result (subprocess timeout / crash)
   | 'trace_timeout'        // Trace polling exceeded max attempts with no spans
   | 'trace_incomplete'     // Spans arrived but never converged (no root span)
   | 'trace_callback_failed'// onTracesFound callback exploded
@@ -56,6 +57,7 @@ export interface EvaluatorErrorPatch {
 
 const KIND_LABEL: Record<EvaluatorErrorKind, string> = {
   judge_failed: 'Judge evaluation failed',
+  agent_failed: 'Agent run did not complete',
   trace_timeout: 'Traces never arrived',
   trace_incomplete: 'Trace did not converge',
   trace_callback_failed: 'Post-trace callback failed',
@@ -81,6 +83,10 @@ export function buildEvaluatorErrorPatch(
         ? error
         : 'Unknown error';
   const label = KIND_LABEL[kind];
+  // `agent_failed` is not an *evaluator* failure — the agent itself never
+  // produced a trajectory (timeout/crash). Use prose that says so, instead of
+  // the misleading "the evaluator failed" wording, so the Judge tab is honest.
+  const isAgent = kind === 'agent_failed';
   return {
     metricsStatus: 'error',
     // Both the human label AND the machine-readable kind token are
@@ -91,11 +97,16 @@ export function buildEvaluatorErrorPatch(
     traceError: `${label} (kind=${kind}): ${message}`,
     // The Judge tab renders this directly. Keep the prose concise and
     // explicit: the user must immediately see *why* there is no score.
-    llmJudgeReasoning:
-      `**Evaluator could not run.**\n\n` +
-      `The agent may have completed normally, but the evaluator (judge or trace pipeline) ` +
-      `failed before it could produce a verdict. This run is excluded from pass-rate aggregation.\n\n` +
-      `**Reason (${kind}):** ${message}`,
+    llmJudgeReasoning: isAgent
+      ? `**Agent run did not complete.**\n\n` +
+        `The agent failed to produce a result (e.g. a subprocess timeout or crash) before ` +
+        `the evaluation could run, so there is no trajectory to judge. This run is excluded ` +
+        `from pass-rate aggregation.\n\n` +
+        `**Reason (${kind}):** ${message}`
+      : `**Evaluator could not run.**\n\n` +
+        `The agent may have completed normally, but the evaluator (judge or trace pipeline) ` +
+        `failed before it could produce a verdict. This run is excluded from pass-rate aggregation.\n\n` +
+        `**Reason (${kind}):** ${message}`,
     passFailStatus: null,
     metrics: { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 },
   };

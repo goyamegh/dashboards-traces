@@ -506,6 +506,10 @@ export async function executeRun(
             const anyGateFailed = matcherResults.some(
               m => !m.pass && m.role !== 'observe' && !m.errored,
             );
+            // #335: an *agent* failure (subprocess timeout / crash — `agent.run()`
+            // rejected so `capturedResult` was never set) must surface as a clearly
+            // labelled `errored` run, not a silent `failed` with an empty card.
+            const agentFailed = evalError !== undefined && capturedResult === undefined;
             const failed = anyGateFailed || evalError !== undefined;
             (report as any).evaluationType = 'deterministic';
             (report as any).matcherResults = matcherResults;
@@ -523,6 +527,14 @@ export async function executeRun(
                 buildEvaluatorErrorPatch('judge_failed', erroredMatchers[0].errorMessage ?? 'judge errored'),
               );
               (report as any).skipJudge = true;
+            } else if (agentFailed) {
+              // #335: agent never produced a trajectory (timeout/crash) — surface
+              // the underlying message instead of a silent empty `failed`.
+              Object.assign(
+                report,
+                buildEvaluatorErrorPatch('agent_failed', (evalError as any)?.message ?? String(evalError)),
+              );
+              (report as any).skipJudge = true;
             } else {
               (report as any).passFailStatus = failed ? 'failed' : 'passed';
               // Option B BC shim: legacy field empty for SDK runs;
@@ -537,6 +549,21 @@ export async function executeRun(
               (report as any).metricsStatus = 'completed';
               (report as any).skipJudge = true;
             }
+
+            // #334: attach the run's OTel traceId + spans to the report so the
+            // run-report Traces tab renders the tree for code-eval runs (the
+            // classic path does this via waitForTracesAndJudge; the deterministic
+            // path skipped it). Reuse the spans the pre-poll already fetched from
+            // OpenSearch. Guarded: reading an `unavailable` accessor throws.
+            try {
+              const fetchedSpans = (capturedResult as any)?.traces?.spans;
+              if (Array.isArray(fetchedSpans) && fetchedSpans.length > 0) {
+                (report as any).spans = fetchedSpans;
+                if (!(report as any).traceId) {
+                  (report as any).traceId = fetchedSpans[0]?.traceId;
+                }
+              }
+            } catch { /* traces fixture unavailable — leave traceId/spans unset */ }
           } else {
             // CLASSIC PATH: no code body. Eagerly invoke + Bedrock judge.
             // Wrap in context.with(caseSpanContext) so the connector sees the
