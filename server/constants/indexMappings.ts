@@ -131,6 +131,7 @@ export function getIndexMappings(): IndexMappings {
           status: { type: 'keyword' },
           passFailStatus: { type: 'keyword' },
           traceId: { type: 'keyword' },
+          sessionId: { type: 'keyword' },
           tags: { type: 'keyword' },
           actualOutcomes: { type: 'object', enabled: false },
           llmJudgeReasoning: { type: 'text' },

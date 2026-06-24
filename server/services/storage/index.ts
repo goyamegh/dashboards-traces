@@ -210,6 +210,7 @@ export async function saveReportWithClient(
     status: report.status,
     passFailStatus: report.passFailStatus,
     traceId: report.runId,
+    sessionId: report.sessionId,
     tags: [],
     actualOutcomes: [],
     llmJudgeReasoning: report.llmJudgeReasoning,

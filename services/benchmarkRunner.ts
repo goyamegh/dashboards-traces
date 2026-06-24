@@ -762,6 +762,8 @@ async function saveReportWithModule(storage: IStorageModule, report: any): Promi
     // it the run-detail Traces tab can't scope to the run's eval span and
     // a null runId even rejected the whole trace query. See #264.
     runId: report.runId,
+    // Agent-emitted session id (Strategy D trace correlation, e.g. Claude Code).
+    sessionId: report.sessionId,
     // Persist judgeModelId on the report so the run-detail UI can show
     // "agent: <m1> judge: <m2>" and the audit trail is intact. Inherits
     // from the run-level cx input (BenchmarkRun.judgeModelId).
@@ -875,6 +877,8 @@ export async function runSingleUseCase(
       // rejected the whole query). Strategy B correlation + the eval-span
       // match both depend on this being present. See #264.
       runId: report.runId,
+      // Agent-emitted session id (Strategy D trace correlation, e.g. Claude Code).
+      sessionId: report.sessionId,
       // Same fix as saveReportWithModule above — only stamp a real W3C
       // trace id, not the subprocess connector's run id.
       traceId: report.traceId || (report.spans?.[0] as any)?.traceId,
