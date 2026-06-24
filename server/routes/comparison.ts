@@ -61,14 +61,21 @@ function resolveWindow(report: any): {
   agents?: Array<{ serviceName: string; startedAt: number; endedAt: number }>;
 } {
   const serviceName = resolveServiceName(report);
-  const endedAt = Date.parse(report?.timestamp || '') || Date.now();
+  // `report.timestamp` is NOT reliably the run END — trace-mode / subprocess
+  // reports (Claude Code) are persisted at run START, so an end-anchored
+  // backward window lands BEFORE the run and matches no spans (deep-dive then
+  // reports "no traces"). Anchor SYMMETRICALLY around the timestamp by
+  // ±(duration + slack) so the window covers the run whether the timestamp is
+  // its start or end. Mirrors services/traces/judgeAgentsHints.ts.
+  const ts = Date.parse(report?.timestamp || '') || Date.now();
   const durationMs = report?.performanceMetrics?.durationMs ?? 0;
-  const lookbackMs = durationMs > 0 ? durationMs + SLACK_MS : FALLBACK_LOOKBACK_MS;
-  const startedAt = endedAt - lookbackMs;
+  const span = durationMs > 0 ? durationMs + SLACK_MS : FALLBACK_LOOKBACK_MS;
+  const startedAt = ts - span;
+  const endedAt = ts + span;
   const agents = serviceName
-    ? [{ serviceName, startedAt, endedAt: endedAt + SLACK_MS }]
+    ? [{ serviceName, startedAt, endedAt }]
     : undefined;
-  return { serviceName, startedAt, endedAt: endedAt + SLACK_MS, agents };
+  return { serviceName, startedAt, endedAt, agents };
 }
 
 function extractToolNames(report: any): string[] {

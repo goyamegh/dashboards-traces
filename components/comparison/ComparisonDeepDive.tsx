@@ -40,7 +40,36 @@ interface DeepDiveResponse {
 }
 
 interface CacheEntry { markdown: string; meta: DeepDiveResponse; }
-const deepDiveCache = new Map<string, CacheEntry>();
+
+// The agentic deep-dive is expensive (runs an in-process agent over both runs'
+// spans/logs), so we cache the result. Reports are immutable, so the key (the
+// two report ids) is stable forever — the cache is backed by localStorage so a
+// page reload / re-navigation shows the prior result INSTANTLY instead of
+// re-running the agent and showing the loading spinner every single time.
+const DEEPDIVE_CACHE_PREFIX = 'agent-health:deepdive:';
+const deepDiveMemCache = new Map<string, CacheEntry>();
+
+const deepDiveCache = {
+  has(key: string): boolean {
+    if (deepDiveMemCache.has(key)) return true;
+    try { return localStorage.getItem(DEEPDIVE_CACHE_PREFIX + key) !== null; } catch { return false; }
+  },
+  get(key: string): CacheEntry | undefined {
+    const mem = deepDiveMemCache.get(key);
+    if (mem) return mem;
+    try {
+      const raw = localStorage.getItem(DEEPDIVE_CACHE_PREFIX + key);
+      if (!raw) return undefined;
+      const entry = JSON.parse(raw) as CacheEntry;
+      deepDiveMemCache.set(key, entry);
+      return entry;
+    } catch { return undefined; }
+  },
+  set(key: string, entry: CacheEntry): void {
+    deepDiveMemCache.set(key, entry);
+    try { localStorage.setItem(DEEPDIVE_CACHE_PREFIX + key, JSON.stringify(entry)); } catch { /* quota/unavailable: mem cache still serves this session */ }
+  },
+};
 
 interface ComparisonDeepDiveProps {
   runs: BenchmarkRun[];
