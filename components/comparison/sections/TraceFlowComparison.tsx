@@ -709,7 +709,7 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
   const maxDuration = Math.max(leftTrace.timeRange.duration, rightTrace.timeRange.duration);
 
   return (
-    <Card className="bg-card/50 overflow-hidden">
+    <Card className="bg-card/50 overflow-hidden" data-testid="trace-flow-comparison">
       <CardHeader className="py-2 px-4 border-b">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium flex items-center gap-2">

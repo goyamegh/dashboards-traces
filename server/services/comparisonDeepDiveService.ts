@@ -73,7 +73,7 @@ async function loadPiSdk(): Promise<PiSdk> {
   }
 }
 
-const SYSTEM_PROMPT = `You are an expert evaluator comparing TWO runs of (usually different) AI agents that were given the SAME task in the SAME harness. Your job is to explain — concisely and concretely — what is ACTUALLY different between how the two agents behaved, grounded in their real execution traces.
+export const SYSTEM_PROMPT = `You are an expert evaluator comparing TWO runs of (usually different) AI agents that were given the SAME task in the SAME harness. Your job is to explain — concisely and concretely — what is ACTUALLY different between how the two agents behaved, grounded in their real execution traces.
 
 You have read-only, run-scoped tools that return each run's REAL OpenTelemetry data:
   - query_spans({ run: "A" | "B", nameFilter? }) — the run's actual spans: tool calls + arguments, token usage, latency, gen_ai.* attributes. Each span has a spanId and runId.
@@ -97,7 +97,7 @@ using the exact runId and spanId from the query_spans output for that run. The U
 
 Keep it under ~280 words. No preamble, no "as an AI", no restating the task. Start with the headline.`;
 
-function buildUserPrompt(runs: ComparisonRunInput[]): string {
+export function buildUserPrompt(runs: ComparisonRunInput[]): string {
   const lines: string[] = [
     'Compare these two runs. Use query_spans / query_logs on BOTH (run "A" and run "B") before writing.',
     '',

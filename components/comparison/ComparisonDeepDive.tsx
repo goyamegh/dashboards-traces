@@ -170,7 +170,7 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
   };
 
   return (
-    <div className="rounded-lg border border-border bg-card/40 p-4">
+    <div className="rounded-lg border border-border bg-card/40 p-4" data-testid="comparison-deep-dive">
       <div className="flex items-start justify-between gap-3 mb-2">
         <div className="flex items-center gap-2 min-w-0">
           <Sparkles size={16} className="text-opensearch-blue flex-shrink-0" />
