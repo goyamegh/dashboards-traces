@@ -148,5 +148,12 @@ test.describe('Benchmark-free comparison (test-level primitive)', () => {
     await expect(banner).toHaveAttribute('data-overlap', 'partial');
     await expect(banner).toContainText('in common');
     await expect(banner).toContainText('only in');
+
+    // A/B legend: the comparison must make the A vs B mapping explicit
+    // (URL order — A = first run, B = second).
+    const legend = page.locator('[data-testid="comparison-ab-legend"]');
+    await expect(legend).toBeVisible();
+    await expect(legend).toContainText('A');
+    await expect(legend).toContainText('B');
   });
 });

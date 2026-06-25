@@ -330,10 +330,15 @@ export async function fetchTraces(
         // Strategy D: the agent's emitted session.id is a precise per-run
         // correlator (Claude Code stamps session.id on every span). Prefer it,
         // unioned with Strategy C as a fallback for spans it doesn't cover.
+        // Match BOTH `attributes.session.id` and its `.keyword` sub-field: a
+        // UUID like `faee44ca-...` is text-analyzed (split on `-`), so a plain
+        // `term` on the analyzed field never matches — the `.keyword` exact field
+        // is what actually correlates.
         sink.push({
           bool: {
             should: [
               { term: { 'attributes.session.id': a.sessionId } },
+              { term: { 'attributes.session.id.keyword': a.sessionId } },
               strategyC,
             ],
             minimum_should_match: 1,
@@ -346,7 +351,18 @@ export async function fetchTraces(
   }
 
   if (sessionId) {
-    must.push({ term: { 'attributes.session.id': sessionId } });
+    // Match both the analyzed field and its `.keyword` exact sub-field — a
+    // hyphenated UUID session.id is text-analyzed, so a plain `term` on
+    // `attributes.session.id` matches nothing; `.keyword` is the exact field.
+    must.push({
+      bool: {
+        should: [
+          { term: { 'attributes.session.id': sessionId } },
+          { term: { 'attributes.session.id.keyword': sessionId } },
+        ],
+        minimum_should_match: 1,
+      },
+    });
   }
 
   if (startTime || endTime) {

@@ -791,6 +791,21 @@ export const ComparisonPage: React.FC = () => {
                 (benchmark or not). Shown for 2+ runs. */}
             {selectedRuns.length >= 2 && <ComparisonOverlapBanner overlap={overlap} />}
 
+            {/* A/B legend — make the comparison's A vs B mapping explicit (URL
+                order: A = first run, B = second). Shown for 2-run compares so
+                the deep-dive, span citations and trace panes are unambiguous. */}
+            {mode === 'compare' && selectedRuns.length === 2 && (
+              <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="comparison-ab-legend">
+                {(['A', 'B'] as const).map((ab, i) => (
+                  <span key={ab} className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 ${i === 0 ? 'bg-opensearch-blue/10 border-opensearch-blue/40' : 'bg-purple-500/10 border-purple-400/40'}`}>
+                    <span className={`inline-flex items-center justify-center h-4 min-w-[1rem] px-1 rounded font-bold ${i === 0 ? 'text-opensearch-blue' : 'text-purple-300'}`}>{ab}</span>
+                    <span className="font-medium text-foreground">{getAgentName(selectedRuns[i].agentKey)}</span>
+                    <span className="text-muted-foreground">· {getModelName(selectedRuns[i].modelId)}</span>
+                  </span>
+                ))}
+              </div>
+            )}
+
             {/* What's actually different — agentic, trace-grounded deep-dive
                 for 2-run compares; classic VerdictStrip otherwise. */}
             {mode === 'compare' && runAggregates.length === 2 ? (

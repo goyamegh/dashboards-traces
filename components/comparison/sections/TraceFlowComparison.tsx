@@ -489,6 +489,10 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
         experimentRunId: run.id,
         runName: run.name,
         agentRunId: report?.runId || null,
+        // Direct correlators (deep-dive-independent): an agent's own traceId
+        // (Strategy A, e.g. pi) / session.id (Strategy D, e.g. Claude Code).
+        traceId: report?.traceId || null,
+        sessionId: report?.sessionId || null,
       };
     }).filter(info => info.agentRunId);
   }, [runs, reports, useCaseId]);
@@ -525,9 +529,13 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
           const wa = windowAgentsByRunId?.get(info.agentRunId);
           const result = await fetchTracesForRun({
             runId: info.agentRunId,
+            // Strategy A / D: the run's own traceId / session.id correlate
+            // immediately, without waiting for the deep-dive's window hints.
+            traceId: info.traceId || undefined,
+            sessionId: info.sessionId || undefined,
             includeWindowFallback: true,
             windowAgents: wa?.serviceName
-              ? [{ serviceName: wa.serviceName, startedAt: wa.startedAt, endedAt: wa.endedAt }]
+              ? [{ serviceName: wa.serviceName, startedAt: wa.startedAt, endedAt: wa.endedAt, sessionId: info.sessionId || undefined }]
               : undefined,
           });
           const spanTree = processSpansIntoTree(result.spans);
