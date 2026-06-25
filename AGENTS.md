@@ -4,7 +4,7 @@ This file provides guidance to AI agents when working with code in this reposito
 
 ## Project Overview
 
-AgentEval is an evaluation framework for Root Cause Analysis (RCA) agents using "Golden Path" trajectory comparison. An LLM Judge (AWS Bedrock Claude) evaluates agent actions against expected trajectories to score performance.
+AgentEval is an evaluation and observability framework for AI agents of any kind — coding assistants, ops/RCA agents, customer-support agents, data-analysis agents, retrieval/discovery agents, and multi-agent workflows — using "Golden Path" trajectory comparison. An LLM Judge (AWS Bedrock Claude) evaluates agent actions against expected trajectories to score performance.
 
 ## Build Commands
 
