@@ -341,7 +341,11 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
           size,
           from,
           sort: [{ createdAt: { order: 'desc' } }],
-          query: { match_all: {} },
+          // Benchmarks share this index with evaluation-runs (docType
+          // 'evaluation-run') and experiments — discriminated by docType. Exclude
+          // evaluation-runs so they don't surface as empty benchmark rows
+          // (they carry no testCaseIds/embedded runs). Mirrors getById below.
+          query: { bool: { must_not: [{ term: { 'docType.keyword': 'evaluation-run' } }] } },
         },
       });
 
@@ -360,7 +364,11 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
   async getById(id: string): Promise<Benchmark | null> {
     try {
       const result = await this.client.get({ index: this.index, id });
-      return result.body.found ? result.body._source as Benchmark : null;
+      if (!result.body.found) return null;
+      const doc = result.body._source as Benchmark & { docType?: string };
+      // Shared index with evaluation-runs — an eval-run id is NOT a benchmark, so
+      // the benchmark detail route must not render it as an empty benchmark.
+      return doc.docType === 'evaluation-run' ? null : doc;
     } catch (error: any) {
       if (error.meta?.statusCode === 404) return null;
       throw error;

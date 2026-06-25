@@ -299,14 +299,20 @@ class FileBenchmarkOperations implements IBenchmarkOperations {
   }
 
   async getAll(options?: PaginationOptions): Promise<{ items: Benchmark[]; total: number }> {
-    const all = readAllFromDir<Benchmark>(this.dir).sort(
-      (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
-    );
+    // Benchmarks share this dir with evaluation-runs (docType 'evaluation-run');
+    // exclude those so they don't surface as empty benchmark rows. Mirrors getById.
+    const all = readAllFromDir<Benchmark>(this.dir)
+      .filter((b) => (b as { docType?: string }).docType !== 'evaluation-run')
+      .sort(
+        (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+      );
     return paginate(all, options);
   }
 
   async getById(id: string): Promise<Benchmark | null> {
-    return readJsonFile<Benchmark>(this.docPath(id));
+    const doc = readJsonFile<Benchmark & { docType?: string }>(this.docPath(id));
+    // Shared dir with evaluation-runs — an eval-run id is NOT a benchmark.
+    return doc && doc.docType === 'evaluation-run' ? null : doc;
   }
 
   async create(benchmark: Partial<Benchmark>): Promise<Benchmark> {
