@@ -18,6 +18,7 @@ import {
   countRowsByStatus,
   getRealTestCaseMeta,
   detectComparisonMode,
+  computeTestCaseOverlap,
 } from '@/services/comparisonService';
 import {
   BenchmarkRun,
@@ -799,12 +800,12 @@ describe('comparisonService', () => {
   });
 
   describe('detectComparisonMode', () => {
-    const buildRun = (id: string, agentKey: string): BenchmarkRun => ({
+    const buildRun = (id: string, agentKey: string, modelId = 'model-1'): BenchmarkRun => ({
       id,
       name: id,
       createdAt: '2024-01-01T00:00:00Z',
       agentKey,
-      modelId: 'model-1',
+      modelId,
       status: 'completed',
       results: {},
     });
@@ -831,6 +832,22 @@ describe('comparisonService', () => {
       expect(detectComparisonMode(runs)).toBe('compare');
     });
 
+    it('returns compare when the same agent runs differ by model (Sonnet vs Opus)', () => {
+      const runs = [
+        buildRun('r1', 'claude-code', 'claude-sonnet-4.6'),
+        buildRun('r2', 'claude-code', 'claude-opus-4.8'),
+      ];
+      expect(detectComparisonMode(runs)).toBe('compare');
+    });
+
+    it('returns iterate when agent AND model are identical (re-runs of one config)', () => {
+      const runs = [
+        buildRun('r1', 'claude-code', 'claude-opus-4.8'),
+        buildRun('r2', 'claude-code', 'claude-opus-4.8'),
+      ];
+      expect(detectComparisonMode(runs)).toBe('iterate');
+    });
+
     it('returns compare when at least two of three runs have distinct agentKeys', () => {
       const runs = [
         buildRun('r1', 'claude'),
@@ -846,6 +863,92 @@ describe('comparisonService', () => {
         { ...buildRun('r2', ''), agentKey: '' },
       ];
       expect(detectComparisonMode(runs)).toBe('iterate');
+    });
+  });
+
+  describe('computeTestCaseOverlap', () => {
+    const mkRun = (id: string, tcIds: string[]): BenchmarkRun => ({
+      id,
+      name: `Run ${id}`,
+      createdAt: '2024-01-01T00:00:00Z',
+      agentKey: 'agent-1',
+      modelId: 'model-1',
+      status: 'completed',
+      results: Object.fromEntries(
+        tcIds.map(tc => [tc, { reportId: `${id}-${tc}`, status: 'completed' as const }])
+      ),
+    });
+
+    it('reports full overlap when all runs share the same test cases', () => {
+      const overlap = computeTestCaseOverlap([
+        mkRun('a', ['tc-1', 'tc-2', 'tc-3']),
+        mkRun('b', ['tc-1', 'tc-2', 'tc-3']),
+      ]);
+      expect(overlap.runCount).toBe(2);
+      expect(overlap.totalTestCases).toBe(3);
+      expect(overlap.sharedTestCases).toBe(3);
+      expect(overlap.partialTestCases).toBe(0);
+      expect(overlap.fullyOverlapping).toBe(true);
+      expect(overlap.perRun).toEqual([
+        { runId: 'a', runName: 'Run a', count: 3, uniqueCount: 0 },
+        { runId: 'b', runName: 'Run b', count: 3, uniqueCount: 0 },
+      ]);
+    });
+
+    it('computes intersection / union for partially-overlapping ad-hoc runs', () => {
+      // Two ad-hoc runs with no shared benchmark: A ran {1,2,3}, B ran {2,3,4}.
+      const overlap = computeTestCaseOverlap([
+        mkRun('a', ['tc-1', 'tc-2', 'tc-3']),
+        mkRun('b', ['tc-2', 'tc-3', 'tc-4']),
+      ]);
+      expect(overlap.totalTestCases).toBe(4);   // union {1,2,3,4}
+      expect(overlap.sharedTestCases).toBe(2);  // intersection {2,3}
+      expect(overlap.partialTestCases).toBe(2); // {1} only in A, {4} only in B
+      expect(overlap.fullyOverlapping).toBe(false);
+      expect(overlap.perRun).toEqual([
+        { runId: 'a', runName: 'Run a', count: 3, uniqueCount: 1 },
+        { runId: 'b', runName: 'Run b', count: 3, uniqueCount: 1 },
+      ]);
+    });
+
+    it('handles fully-disjoint runs (no overlap at all)', () => {
+      const overlap = computeTestCaseOverlap([
+        mkRun('a', ['tc-1', 'tc-2']),
+        mkRun('b', ['tc-3', 'tc-4']),
+      ]);
+      expect(overlap.totalTestCases).toBe(4);
+      expect(overlap.sharedTestCases).toBe(0);
+      expect(overlap.partialTestCases).toBe(4);
+      expect(overlap.fullyOverlapping).toBe(false);
+      expect(overlap.perRun.every(r => r.uniqueCount === r.count)).toBe(true);
+    });
+
+    it('counts a case shared across 3 runs only when ALL three ran it', () => {
+      const overlap = computeTestCaseOverlap([
+        mkRun('a', ['tc-1', 'tc-2']),
+        mkRun('b', ['tc-1', 'tc-2']),
+        mkRun('c', ['tc-1']), // tc-2 missing here
+      ]);
+      expect(overlap.runCount).toBe(3);
+      expect(overlap.totalTestCases).toBe(2);
+      expect(overlap.sharedTestCases).toBe(1);  // only tc-1 is in all three
+      expect(overlap.partialTestCases).toBe(1); // tc-2 in a,b but not c
+      expect(overlap.fullyOverlapping).toBe(false);
+    });
+
+    it('is empty/degenerate-safe', () => {
+      expect(computeTestCaseOverlap([])).toEqual({
+        runCount: 0,
+        totalTestCases: 0,
+        sharedTestCases: 0,
+        partialTestCases: 0,
+        perRun: [],
+        fullyOverlapping: false,
+      });
+      const single = computeTestCaseOverlap([mkRun('a', ['tc-1'])]);
+      expect(single.totalTestCases).toBe(1);
+      expect(single.sharedTestCases).toBe(1); // single run “shares” with itself
+      expect(single.fullyOverlapping).toBe(true);
     });
   });
 });

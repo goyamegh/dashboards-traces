@@ -362,7 +362,9 @@ export function calculateRowStatus(
  * "why is one agent better?" (compare) or
  * "is my agent improving?" (iterate).
  *
- * - 'compare':  ≥2 distinct agentKeys across the selected runs.
+ * - 'compare':  ≥2 distinct agentKeys OR ≥2 distinct modelIds (different
+ *               agents, or the same agent on different models — e.g. Sonnet
+ *               vs Opus).
  * - 'iterate':  all runs share one agentKey (a sequence of attempts).
  */
 export type ComparisonMode = 'compare' | 'iterate';
@@ -374,11 +376,17 @@ export type ComparisonMode = 'compare' | 'iterate';
  */
 export function detectComparisonMode(runs: ExperimentRun[]): ComparisonMode {
   if (runs.length < 2) return 'iterate';
+  // 'compare' the moment the runs differ by agent OR by model: comparing
+  // Sonnet vs Opus on the SAME agent (claude-code) is still a comparison, not
+  // an iteration of one config. Only truly-identical setups (same agent AND
+  // same model — e.g. re-runs of one config) default to 'iterate'.
   const agentKeys = new Set<string>();
+  const modelIds = new Set<string>();
   for (const run of runs) {
     if (run.agentKey) agentKeys.add(run.agentKey);
+    if (run.modelId) modelIds.add(run.modelId);
   }
-  return agentKeys.size >= 2 ? 'compare' : 'iterate';
+  return (agentKeys.size >= 2 || modelIds.size >= 2) ? 'compare' : 'iterate';
 }
 
 /**
@@ -401,4 +409,62 @@ export function countRowsByStatus(
   }
 
   return counts;
+}
+
+/**
+ * Test-level overlap between the selected runs.
+ *
+ * Comparison is a test-case-level primitive — it does NOT require the runs to
+ * belong to the same benchmark. Two ad-hoc runs (no benchmarkId) can be
+ * compared as long as we are honest about WHICH test cases they have in
+ * common. This computes that honesty surface:
+ *
+ *  - `totalTestCases`  — union of every test case any selected run executed.
+ *  - `sharedTestCases` — intersection: cases run by ALL selected runs (the
+ *                        only cases where an apples-to-apples verdict holds).
+ *  - `partialTestCases`— cases run by some-but-not-all runs (surfaced as
+ *                        "Not run" cells per run).
+ *  - `perRun`          — per-run executed count + how many were unique to it.
+ *  - `fullyOverlapping` — true when every run ran the exact same set.
+ */
+export interface TestCaseOverlap {
+  runCount: number;
+  totalTestCases: number;
+  sharedTestCases: number;
+  partialTestCases: number;
+  perRun: Array<{ runId: string; runName: string; count: number; uniqueCount: number }>;
+  fullyOverlapping: boolean;
+}
+
+export function computeTestCaseOverlap(runs: ExperimentRun[]): TestCaseOverlap {
+  const idsPerRun = runs.map(r => new Set(Object.keys(r.results || {})));
+  const union = new Set<string>();
+  idsPerRun.forEach(s => s.forEach(id => union.add(id)));
+
+  let shared = 0;
+  let partial = 0;
+  for (const id of union) {
+    const inCount = idsPerRun.reduce((n, s) => n + (s.has(id) ? 1 : 0), 0);
+    if (runs.length > 0 && inCount === runs.length) shared++;
+    else partial++;
+  }
+
+  const perRun = runs.map((run, i) => {
+    const s = idsPerRun[i];
+    let uniqueCount = 0;
+    for (const id of s) {
+      const inCount = idsPerRun.reduce((n, ss) => n + (ss.has(id) ? 1 : 0), 0);
+      if (inCount === 1) uniqueCount++;
+    }
+    return { runId: run.id, runName: run.name, count: s.size, uniqueCount };
+  });
+
+  return {
+    runCount: runs.length,
+    totalTestCases: union.size,
+    sharedTestCases: shared,
+    partialTestCases: partial,
+    perRun,
+    fullyOverlapping: union.size > 0 && shared === union.size,
+  };
 }
