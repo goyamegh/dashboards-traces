@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-AgentEval is an evaluation and observability framework for AI agents of any kind — coding assistants, ops/RCA agents, customer-support agents, data-analysis agents, retrieval/discovery agents, and multi-agent workflows. It uses "Golden Path" trajectory comparison where an LLM Judge (AWS Bedrock) evaluates agent actions against expected outcomes. The frontend streams agent execution via AG-UI protocol and visualizes trajectories in real-time.
+Agent Health is an evaluation and observability framework for AI agents of any kind — coding assistants, ops/RCA agents, customer-support agents, data-analysis agents, retrieval/discovery agents, and multi-agent workflows. It uses "Golden Path" trajectory comparison where an LLM Judge (AWS Bedrock) evaluates agent actions against expected outcomes. The frontend streams agent execution via AG-UI protocol and visualizes trajectories in real-time.
 
 **Key concepts:**
 - **Test Case** (UI: "Use Case"): A scenario with prompt, context, and expected outcomes

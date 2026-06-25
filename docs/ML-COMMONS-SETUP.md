@@ -1,11 +1,11 @@
 # ML-Commons Agent Setup
 
-This guide covers setting up the ML-Commons AG-UI agent for use with AgentEval.
+This guide covers setting up the ML-Commons AG-UI agent for use with Agent Health.
 
 ## Architecture
 
 ```
-AgentEval --> ML-Commons Agent (9200) --> MCP Server (3030) --> OpenSearch Data Cluster
+Agent Health --> ML-Commons Agent (9200) --> MCP Server (3030) --> OpenSearch Data Cluster
                     |
               Bedrock LLM (Claude)
 ```
@@ -46,7 +46,7 @@ export AWS_PROFILE=Bedrock
 | Command | Description |
 |---------|-------------|
 | `./scripts/setup.sh` | Register agent, update .env, start servers |
-| `./scripts/setup.sh --stop` | Stop MCP server and AgentEval (not ML-Commons) |
+| `./scripts/setup.sh --stop` | Stop MCP server and Agent Health (not ML-Commons) |
 | `./scripts/setup.sh --status` | Check which services are running |
 
 ### What the Script Does
@@ -58,7 +58,7 @@ export AWS_PROFILE=Bedrock
 5. Registers AG-UI agent with the model and MCP connector
 6. Tests agent execution to verify setup works
 7. Updates `.env` with new agent endpoint
-8. Starts AgentEval server (port 4001)
+8. Starts Agent Health server (port 4001)
 
 ---
 
@@ -200,7 +200,7 @@ curl 'http://localhost:9200/_plugins/_ml/agents/_register' \
   }'
 ```
 
-### Step 8: Configure AgentEval
+### Step 8: Configure Agent Health
 
 Update `.env` with your agent ID:
 ```bash
@@ -259,7 +259,7 @@ SigV4 uses the AWS credential provider chain (`AWS_PROFILE`, `~/.aws/credentials
 |---------|------|---------|---------|
 | ML-Commons | 9200 | `./gradlew run -Dstreaming=true` | AG-UI agent endpoint |
 | MCP Server | 3030 | `uvx opensearch-mcp-server-py@0.5.2` | OpenSearch tools for agent |
-| AgentEval | 4001 | `npm run server` | Evaluation UI and API |
+| Agent Health | 4001 | `npm run server` | Evaluation UI and API |
 
 ---
 
@@ -270,7 +270,7 @@ SigV4 uses the AWS credential provider chain (`AWS_PROFILE`, `~/.aws/credentials
 | Agent not responding | Check ML-Commons: `curl http://localhost:9200/_cat/health` |
 | MCP server issues | Verify: `curl http://localhost:3030/health`, check MCP env vars |
 | AWS profile invalid | Ensure profile exists: `aws sts get-caller-identity --profile $AWS_PROFILE` |
-| Port conflicts | Use `./scripts/setup.sh --stop` to stop MCP and AgentEval services |
+| Port conflicts | Use `./scripts/setup.sh --stop` to stop MCP and Agent Health services |
 
 ### Check Service Status
 ```bash

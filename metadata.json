@@ -1,5 +1,5 @@
 {
-  "name": "AgentEval RCA",
-  "description": "Observability Agent Evaluation Framework for Root Cause Analysis using LLM-as-a-Judge.",
+  "name": "Agent Health",
+  "description": "Observability and evaluation framework for AI agents using LLM-as-a-Judge.",
   "requestFramePermissions": []
 }

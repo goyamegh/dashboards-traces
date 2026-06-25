@@ -3,14 +3,14 @@
  * SPDX-License-Identifier: Apache-2.0
 -->
 
-# Plan: Non-AG-UI Agent Support in AgentEval
+# Plan: Non-AG-UI Agent Support in Agent Health
 
 > **Status: Implemented** via the connector system (not the separate adapter pattern originally proposed here).
 > See `services/connectors/strands/` and `services/connectors/langgraph/` for the Strands and LangGraph implementations.
 
 ## Problem Statement
 
-Currently, AgentEval only supports agents that emit AG-UI protocol SSE events. This excludes:
+Currently, Agent Health only supports agents that emit AG-UI protocol SSE events. This excludes:
 - **Claude Code** - CLI tool with its own execution model
 - **LangGraph non-AG-UI instances** - LangGraph without AG-UI endpoints
 - **Amazon Strands Agents** - AWS agent framework
@@ -51,7 +51,7 @@ Each agent type has an adapter that:
 
 ```
                          ┌──────────────────────┐
-                         │      AgentEval       │
+                         │      Agent Health       │
                          │   (Experiment Runner)│
                          └──────────┬───────────┘
                                     │ calls adapter.execute()

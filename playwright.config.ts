@@ -9,7 +9,7 @@ const backendPort = process.env.AH_PORT || process.env.AGENT_HEALTH_PORT || '400
 const devPort = process.env.AH_DEV_PORT || process.env.AGENT_HEALTH_DEV_PORT || '4000';
 
 /**
- * Playwright configuration for E2E testing of AgentEval UI
+ * Playwright configuration for E2E testing of Agent Health UI
  * @see https://playwright.dev/docs/test-configuration
  */
 export default defineConfig({

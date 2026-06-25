@@ -11,7 +11,7 @@ import { v4 as uuidv4 } from 'uuid';
 const COVERAGE_DIR = path.join(process.cwd(), '.nyc_output');
 
 /**
- * Custom test fixtures for AgentEval E2E tests
+ * Custom test fixtures for Agent Health E2E tests
  */
 
 // Sample test case data
