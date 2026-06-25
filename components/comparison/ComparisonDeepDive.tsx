@@ -23,6 +23,7 @@ import remarkGfm from 'remark-gfm';
 import { Sparkles, Loader2, RefreshCw, ArrowUpRight, AlertTriangle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { BenchmarkRun, EvaluationReport, TestCaseComparisonRow } from '@/types';
+import { sanitizeMarkdownUrl } from './sanitizeMarkdownUrl';
 
 export interface DeepDiveRunMeta {
   key: string;
@@ -192,9 +193,16 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
       );
     }
     return (
-      <a href={href} target="_blank" rel="noreferrer" className="text-opensearch-blue hover:underline">
-        {children}
-      </a>
+      // `href` is already sanitized by ReactMarkdown's urlTransform
+      // (sanitizeMarkdownUrl): dangerous schemes have been dropped to ''. Guard
+      // anyway — render unsafe/empty links as plain text, never a live anchor.
+      href ? (
+        <a href={href} target="_blank" rel="noreferrer noopener" className="text-opensearch-blue hover:underline">
+          {children}
+        </a>
+      ) : (
+        <span>{children}</span>
+      )
     );
   };
 
@@ -239,7 +247,7 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
       {status === 'done' && (
         <>
           <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed [&_p]:my-1.5 [&_ul]:my-1.5 [&_li]:my-0.5 [&_strong]:text-foreground">
-            <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={(u) => u} components={{ a: SpanAnchor }}>
+            <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={sanitizeMarkdownUrl} components={{ a: SpanAnchor }}>
               {markdown}
             </ReactMarkdown>
           </div>
