@@ -383,6 +383,45 @@ agent-health kill <target>      # target: sample-agent
 
 ---
 
+### mcp
+
+Run Agent Health as an [MCP](https://modelcontextprotocol.io) server over stdio, so MCP-compatible agents (Claude Desktop, Cursor, and other agentic IDEs) can natively list/run evaluations and inspect traces. The command boots (or reuses) the local backend and exposes Agent Health as MCP tools.
+
+```
+agent-health mcp [options]
+```
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `-p, --port <number>` | Backend server port | config / `AH_PORT` / `4001` |
+
+Claude Desktop / Cursor config (`mcpServers`):
+
+```json
+{
+  "mcpServers": {
+    "agent-health": {
+      "command": "npx",
+      "args": ["@opensearch-project/agent-health", "mcp"]
+    }
+  }
+}
+```
+
+Tools exposed:
+
+| Tool | Maps to |
+|------|---------|
+| `list_agents`, `list_models`, `list_test_cases`, `list_benchmarks`, `list_evaluators` | catalog reads |
+| `get_test_case`, `get_benchmark`, `get_report`, `export_benchmark` | single-resource reads |
+| `fetch_traces` | OpenTelemetry span search (by trace/run/service/time/text) |
+| `run_evaluation` | run one test case against an agent (blocks until complete) |
+| `run_benchmark` | execute a benchmark against an agent (blocks until complete) |
+
+> The server inherits the same environment, `.env`, and `agent-health.config.ts` as the rest of the CLI. `stdout` is reserved for the MCP JSON-RPC channel; logs go to `stderr`.
+
+---
+
 ## Environment Variables
 
 | Variable | Description |

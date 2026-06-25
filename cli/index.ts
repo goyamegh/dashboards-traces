@@ -37,6 +37,7 @@ import {
   createProfileCommand,
   createSetupCommand,
   createWorkflowCommand,
+  createMcpCommand,
 } from './commands/index.js';
 
 // Get package.json for version
@@ -159,6 +160,9 @@ ${chalk.cyan.bold('Agent Profiling:')}
   ${chalk.yellow('agent-health setup')}                   Install the agent-profiling hook + skill (Claude Code)
   ${chalk.yellow('agent-health profile')} ${chalk.gray('-e <evaluator>')}    Profile the current session, surface what to fix in the agent
 
+${chalk.cyan.bold('MCP / IDE Integration:')}
+  ${chalk.yellow('agent-health mcp')}                     Run as an MCP server (stdio) for Claude Desktop, Cursor, etc.
+
 ${chalk.cyan.bold('Maintenance:')}
   ${chalk.yellow('agent-health migrate')}                Migrate legacy benchmark data to current format
   ${chalk.yellow('agent-health kill')} ${chalk.gray('sample-agent')}       Stop a running sample agent by name
@@ -268,6 +272,7 @@ program.addCommand(createSkillCommand());
 program.addCommand(createSetupCommand());
 program.addCommand(createProfileCommand());
 program.addCommand(createWorkflowCommand());
+program.addCommand(createMcpCommand());
 
 // Add serve command as an alias for the default action
 program
