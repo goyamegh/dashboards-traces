@@ -186,6 +186,47 @@ describe('comparisonService', () => {
       // Accuracy over the two evaluable reports only: (80 + 60) / 2 = 70.
       expect(aggregates.avgAccuracy).toBe(70);
     });
+
+    // Copilot review (#345): pending/calculating reports must be bucketed as
+    // pending (like lib/runStats), NOT counted as failures or averaged in with
+    // placeholder zeros. Before the fix the no-stats `else` branch counted a
+    // pending report as failed and its 0-accuracy dragged the average down.
+    it('buckets pending/calculating runs as pending, not failed (no denormalized stats)', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        stats: undefined,
+        results: {
+          'tc-1': { reportId: 'report-1', status: 'completed' },
+          'tc-2': { reportId: 'report-pending', status: 'completed' },
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        'report-1': {
+          id: 'report-1',
+          testCaseId: 'tc-1',
+          passFailStatus: 'passed',
+          metrics: { accuracy: 90, faithfulness: 0, trajectory_alignment_score: 0, latency_score: 0 },
+        } as EvaluationReport,
+        'report-pending': {
+          id: 'report-pending',
+          testCaseId: 'tc-2',
+          passFailStatus: undefined,
+          metricsStatus: 'pending',
+          metrics: { accuracy: 0, faithfulness: 0, trajectory_alignment_score: 0, latency_score: 0 },
+        } as unknown as EvaluationReport,
+      };
+
+      const aggregates = calculateRunAggregates(run, reports);
+
+      // The pending case is NOT a failure.
+      expect(aggregates.passedCount).toBe(1);
+      expect(aggregates.failedCount).toBe(0);
+      // Accuracy averaged over the evaluable (non-pending) case only.
+      expect(aggregates.avgAccuracy).toBe(90);
+      // Pending stays in the denominator (total - errored = 2), matching
+      // lib/runStats: 1 passed / 2 = 50%.
+      expect(aggregates.passRatePercent).toBe(50);
+    });
   });
 
   describe('collectRunIdsFromReports', () => {

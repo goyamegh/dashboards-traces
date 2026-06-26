@@ -74,6 +74,15 @@ export function calculateRunAggregates(
           erroredCount++;
           continue;
         }
+        // The judge hasn't produced a verdict yet (trace mode still polling).
+        // Bucket as pending exactly like lib/runStats.calculateRunStats:
+        // exclude from the accuracy average AND from the pass/fail fallback so
+        // a not-yet-evaluated run is never counted as a failure or graphed
+        // with placeholder zeros. It stays in the pass-rate denominator
+        // (`total - errored`), matching the canonical pass rate.
+        if (report.metricsStatus === 'pending' || report.metricsStatus === 'calculating') {
+          continue;
+        }
         completedCount++;
         totalAccuracy += report.metrics?.accuracy ?? 0;
 
