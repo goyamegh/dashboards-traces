@@ -263,6 +263,7 @@ export async function fetchTraces(
     [
       !!traceId,
       !!(runIds && runIds.length > 0),
+      !!sessionId,
     ].filter(Boolean).length + (agents?.length ?? 0) > 1;
 
   const must: any[] = [];
@@ -354,7 +355,11 @@ export async function fetchTraces(
     // Match both the analyzed field and its `.keyword` exact sub-field — a
     // hyphenated UUID session.id is text-analyzed, so a plain `term` on
     // `attributes.session.id` matches nothing; `.keyword` is the exact field.
-    must.push({
+    // Push to `sink` (the UNION when other clauses exist) — NOT `must` — so a
+    // session.id that doesn't match the spans (e.g. Claude Code's span
+    // session.id differs from the session_id we captured on the report)
+    // can't zero out spans that traceId/runId already matched.
+    sink.push({
       bool: {
         should: [
           { term: { 'attributes.session.id': sessionId } },
