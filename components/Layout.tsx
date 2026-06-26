@@ -291,11 +291,13 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                   </Collapsible>
                 )}
 
-                {/* Evaluations icon only when collapsed */}
+                {/* Evaluations icon only when collapsed — the closed-navbar
+                    Evaluations button jumps straight to Evaluation Runs (the
+                    most-used evals3 surface), not the Benchmarks list. */}
                 {isCollapsed && (
                   <SidebarMenuItem>
                     <SidebarMenuButton asChild isActive={location.pathname.startsWith("/evaluations")} tooltip="Evaluations" data-testid="nav-evals3" className="h-9">
-                      <Link to="/evaluations/benchmarks" className="justify-center">
+                      <Link to="/evaluations/runs" className="justify-center">
                         <Gauge className="h-4 w-4" />
                       </Link>
                     </SidebarMenuButton>

@@ -55,4 +55,18 @@ test.describe('Sidebar collapse — persistence + run URLs', () => {
     await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
     await expect(page.locator(COLLAPSED)).toBeVisible();
   });
+
+  test('collapsed Evaluations button navigates to the Evaluation Runs page', async ({ page }) => {
+    // Start collapsed so the icon-only Evaluations button is the one rendered.
+    await page.addInitScript(() => localStorage.setItem('agent-health:sidebar:collapsed', 'true'));
+    await page.goto('/evaluations/runs');
+    await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
+    await expect(page.locator(COLLAPSED)).toBeVisible(); // confirm collapsed
+
+    // The closed-navbar Evaluations button points at Evaluation Runs, not Benchmarks.
+    const evalsBtn = page.locator('[data-testid="nav-evals3"]');
+    await expect(evalsBtn).toBeVisible();
+    await expect(evalsBtn.locator('a')).toHaveAttribute('href', /\/evaluations\/runs$/);
+    await expect(evalsBtn.locator('a')).not.toHaveAttribute('href', /benchmarks/);
+  });
 });
