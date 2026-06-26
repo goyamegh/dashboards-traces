@@ -64,9 +64,10 @@ test.describe('Sidebar collapse — persistence + run URLs', () => {
     await expect(page.locator(COLLAPSED)).toBeVisible(); // confirm collapsed
 
     // The closed-navbar Evaluations button points at Evaluation Runs, not Benchmarks.
-    const evalsBtn = page.locator('[data-testid="nav-evals3"]');
+    // SidebarMenuButton uses asChild, so the testid lands on the <a> itself.
+    const evalsBtn = page.locator('a[data-testid="nav-evals3"]');
     await expect(evalsBtn).toBeVisible();
-    await expect(evalsBtn.locator('a')).toHaveAttribute('href', /\/evaluations\/runs$/);
-    await expect(evalsBtn.locator('a')).not.toHaveAttribute('href', /benchmarks/);
+    await expect(evalsBtn).toHaveAttribute('href', /\/evaluations\/runs$/);
+    await expect(evalsBtn).not.toHaveAttribute('href', /benchmarks/);
   });
 });
