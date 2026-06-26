@@ -48,6 +48,7 @@ export function calculateRunAggregates(
   let passedCount = 0;
   let failedCount = 0;
   let completedCount = 0;
+  let erroredCount = 0;
 
   // Fast path: use denormalized stats if available
   const hasStats = run.stats && typeof run.stats.passed === 'number';
@@ -62,6 +63,26 @@ export function calculateRunAggregates(
     if (result.status === 'completed' || result.status === 'failed') {
       const report = reports[result.reportId];
       if (report) {
+        // Issue #242: an evaluator-error report carries placeholder zero
+        // metrics and is NOT a real pass or fail. Exclude it from both the
+        // accuracy average and the pass-rate denominator — exactly as the
+        // canonical lib/runStats.calculateRunStats does (passRate over
+        // `total - errored`). Counting it would deflate both metrics and can
+        // flip the comparison VerdictStrip's declared winner between two runs
+        // that merely have different numbers of errored cases.
+        if (report.metricsStatus === 'error') {
+          erroredCount++;
+          continue;
+        }
+        // The judge hasn't produced a verdict yet (trace mode still polling).
+        // Bucket as pending exactly like lib/runStats.calculateRunStats:
+        // exclude from the accuracy average AND from the pass/fail fallback so
+        // a not-yet-evaluated run is never counted as a failure or graphed
+        // with placeholder zeros. It stays in the pass-rate denominator
+        // (`total - errored`), matching the canonical pass rate.
+        if (report.metricsStatus === 'pending' || report.metricsStatus === 'calculating') {
+          continue;
+        }
         completedCount++;
         totalAccuracy += report.metrics?.accuracy ?? 0;
 
@@ -77,7 +98,13 @@ export function calculateRunAggregates(
     }
   }
 
-  const count = completedCount || 1; // Avoid division by zero
+  const count = completedCount || 1; // Avoid division by zero (accuracy: over evaluable)
+  // Pass rate is computed over the *evaluable* set (total minus errored), to
+  // match run.stats.passRate / the run report / the benchmark overview. When
+  // denormalized stats are present they already exclude errored from
+  // passed/failed, so prefer their authoritative errored count.
+  const erroredForRate = hasStats ? (run.stats!.errored ?? 0) : erroredCount;
+  const evaluable = Math.max(0, testCaseIds.length - erroredForRate);
 
   return {
     runId: run.id,
@@ -89,7 +116,7 @@ export function calculateRunAggregates(
     passedCount,
     failedCount,
     avgAccuracy: Math.round(totalAccuracy / count),
-    passRatePercent: testCaseIds.length > 0 ? Math.round((passedCount / testCaseIds.length) * 100) : 0,
+    passRatePercent: evaluable > 0 ? Math.round((passedCount / evaluable) * 100) : 0,
     // Trace metrics will be populated separately via fetchBatchMetrics
     totalTokens: undefined,
     totalInputTokens: undefined,

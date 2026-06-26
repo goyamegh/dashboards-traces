@@ -118,6 +118,116 @@ describe('comparisonService', () => {
       expect(aggregates.passedCount).toBe(0);
       expect(aggregates.failedCount).toBe(0);
     });
+
+    // Issue #242 regression: an evaluator-error report must NOT count as a
+    // fail in the comparison aggregate. Pass rate is computed over the
+    // evaluable set (total - errored), matching lib/runStats.calculateRunStats,
+    // the run report and the benchmark overview. Before the fix this divided
+    // by total, so 1 pass + 1 errored read 50% (and could flip VerdictStrip's
+    // declared winner) instead of the correct 100%.
+    it('excludes errored runs from pass rate and accuracy (no denormalized stats)', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        stats: undefined,
+        results: {
+          'tc-1': { reportId: 'report-1', status: 'completed' },
+          'tc-2': { reportId: 'report-err', status: 'completed' },
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        'report-1': {
+          id: 'report-1',
+          testCaseId: 'tc-1',
+          passFailStatus: 'passed',
+          metrics: { accuracy: 90, faithfulness: 85, trajectory_alignment_score: 80, latency_score: 75 },
+        } as EvaluationReport,
+        'report-err': {
+          id: 'report-err',
+          testCaseId: 'tc-2',
+          passFailStatus: null,
+          metricsStatus: 'error',
+          metrics: { accuracy: 0, faithfulness: 0, trajectory_alignment_score: 0, latency_score: 0 },
+        } as unknown as EvaluationReport,
+      };
+
+      const aggregates = calculateRunAggregates(run, reports);
+
+      expect(aggregates.passedCount).toBe(1);
+      expect(aggregates.failedCount).toBe(0);
+      // 1 passed / (2 total - 1 errored) = 100%, NOT 50%.
+      expect(aggregates.passRatePercent).toBe(100);
+      // Accuracy averaged over the evaluable case only (the 0 is excluded).
+      expect(aggregates.avgAccuracy).toBe(90);
+    });
+
+    // Same invariant via the denormalized fast path: when run.stats carries an
+    // `errored` count, the pass-rate denominator must use it.
+    it('excludes errored runs from pass rate using denormalized run.stats.errored', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        stats: { passed: 2, failed: 0, pending: 0, errored: 2, total: 4 },
+        results: {
+          'tc-1': { reportId: 'report-1', status: 'completed' },
+          'tc-2': { reportId: 'report-2', status: 'completed' },
+          'tc-3': { reportId: 'report-e1', status: 'completed' },
+          'tc-4': { reportId: 'report-e2', status: 'completed' },
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        'report-1': { id: 'report-1', testCaseId: 'tc-1', passFailStatus: 'passed', metrics: { accuracy: 80, faithfulness: 0, trajectory_alignment_score: 0, latency_score: 0 } } as EvaluationReport,
+        'report-2': { id: 'report-2', testCaseId: 'tc-2', passFailStatus: 'passed', metrics: { accuracy: 60, faithfulness: 0, trajectory_alignment_score: 0, latency_score: 0 } } as EvaluationReport,
+        'report-e1': { id: 'report-e1', testCaseId: 'tc-3', passFailStatus: null, metricsStatus: 'error', metrics: { accuracy: 0, faithfulness: 0, trajectory_alignment_score: 0, latency_score: 0 } } as unknown as EvaluationReport,
+        'report-e2': { id: 'report-e2', testCaseId: 'tc-4', passFailStatus: null, metricsStatus: 'error', metrics: { accuracy: 0, faithfulness: 0, trajectory_alignment_score: 0, latency_score: 0 } } as unknown as EvaluationReport,
+      };
+
+      const aggregates = calculateRunAggregates(run, reports);
+
+      // 2 passed / (4 total - 2 errored) = 100%.
+      expect(aggregates.passRatePercent).toBe(100);
+      // Accuracy over the two evaluable reports only: (80 + 60) / 2 = 70.
+      expect(aggregates.avgAccuracy).toBe(70);
+    });
+
+    // Copilot review (#345): pending/calculating reports must be bucketed as
+    // pending (like lib/runStats), NOT counted as failures or averaged in with
+    // placeholder zeros. Before the fix the no-stats `else` branch counted a
+    // pending report as failed and its 0-accuracy dragged the average down.
+    it('buckets pending/calculating runs as pending, not failed (no denormalized stats)', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        stats: undefined,
+        results: {
+          'tc-1': { reportId: 'report-1', status: 'completed' },
+          'tc-2': { reportId: 'report-pending', status: 'completed' },
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        'report-1': {
+          id: 'report-1',
+          testCaseId: 'tc-1',
+          passFailStatus: 'passed',
+          metrics: { accuracy: 90, faithfulness: 0, trajectory_alignment_score: 0, latency_score: 0 },
+        } as EvaluationReport,
+        'report-pending': {
+          id: 'report-pending',
+          testCaseId: 'tc-2',
+          passFailStatus: undefined,
+          metricsStatus: 'pending',
+          metrics: { accuracy: 0, faithfulness: 0, trajectory_alignment_score: 0, latency_score: 0 },
+        } as unknown as EvaluationReport,
+      };
+
+      const aggregates = calculateRunAggregates(run, reports);
+
+      // The pending case is NOT a failure.
+      expect(aggregates.passedCount).toBe(1);
+      expect(aggregates.failedCount).toBe(0);
+      // Accuracy averaged over the evaluable (non-pending) case only.
+      expect(aggregates.avgAccuracy).toBe(90);
+      // Pending stays in the denominator (total - errored = 2), matching
+      // lib/runStats: 1 passed / 2 = 50%.
+      expect(aggregates.passRatePercent).toBe(50);
+    });
   });
 
   describe('collectRunIdsFromReports', () => {

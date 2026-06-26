@@ -71,7 +71,10 @@ export async function fetchTracesByRunIds(runIds: string[]): Promise<TraceSearch
  * correlation strategies (see AGENTS.md → Trace correlation conventions):
  *
  *   A. traceId  — W3C-propagated agents share traceId with the eval span
- *   B. runId    — agents tag spans with `gen_ai.request.id == runId`
+ *   B. runId    — agents tag spans with `agent_health.run.id == runId` (or the
+ *                 OTEL-standard `gen_ai.conversation.id`); the server query
+ *                 unions both. NOT `gen_ai.request.id` — that is not a
+ *                 registered Gen AI semconv attribute. See AGENTS.md → Strategy B.
  *   C. agents   — service.name + time-window fallback (opt-in / `includeWindowFallback`)
  *
  * Strategies A and B are always safe (no false positives). Strategy C is
