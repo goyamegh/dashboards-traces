@@ -61,15 +61,27 @@ describe('Performance Measurement Utilities', () => {
     consoleGroupSpy = jest.spyOn(console, 'group').mockImplementation(() => {});
     consoleGroupEndSpy = jest.spyOn(console, 'groupEnd').mockImplementation(() => {});
 
-    // Deterministic performance.now() starting at 1000, incrementing by 100
+    // Deterministic performance.now() starting at 1000, incrementing by 100.
     let tick = 1000;
-    performanceNowSpy = jest
-      .spyOn(performance, 'now')
-      .mockImplementation(() => {
-        const value = tick;
-        tick += 100;
-        return value;
-      });
+    const nowImpl = () => {
+      const value = tick;
+      tick += 100;
+      return value;
+    };
+    try {
+      performanceNowSpy = jest.spyOn(performance, 'now').mockImplementation(nowImpl);
+    } catch {
+      // Node 18 makes `performance.now` a read-only property, so jest.spyOn()
+      // throws "Cannot assign to read only property 'now'". Define a
+      // configurable mock directly and expose a mockRestore() shim so the
+      // afterEach teardown stays uniform across Node 18/20/22.
+      const realNow = performance.now;
+      Object.defineProperty(performance, 'now', { configurable: true, writable: true, value: nowImpl });
+      performanceNowSpy = {
+        mockRestore: () =>
+          Object.defineProperty(performance, 'now', { configurable: true, writable: true, value: realNow }),
+      } as unknown as jest.SpyInstance;
+    }
   });
 
   afterEach(() => {
