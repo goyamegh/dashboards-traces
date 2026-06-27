@@ -181,7 +181,6 @@ describe('CLI --judge-model flag — end-to-end', () => {
           CLI_BUNDLE, 'run',
           '-t', testCaseId,
           '-a', 'demo',
-          '-m', 'demo-model',
           '--judge-model', 'us.anthropic.claude-opus-4-6-v1',
           '-o', 'json',
         ],
@@ -251,7 +250,6 @@ describe('CLI --judge-model flag — end-to-end', () => {
           CLI_BUNDLE, 'run',
           '-t', testCaseId,
           '-a', 'demo',
-          '-m', 'demo-model',
           // no --judge-model
           '-o', 'json',
         ],

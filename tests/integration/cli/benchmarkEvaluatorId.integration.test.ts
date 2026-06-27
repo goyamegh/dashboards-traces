@@ -203,7 +203,6 @@ describe('CLI: run-level evaluatorId binding (precedence rules end-to-end)', () 
       CLI_BUNDLE, 'benchmark',
       '-f', fixturePath,
       '-a', 'demo',
-      '-m', 'demo-model',
       // Pin the JUDGE model to the mock `demo` provider so matcher #1 (valid
       // evaluator) passes deterministically regardless of content/credentials
       // — this suite proves evaluatorId *binding precedence*, not judge scoring,
