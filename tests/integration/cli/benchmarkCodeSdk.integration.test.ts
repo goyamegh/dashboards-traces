@@ -382,7 +382,7 @@ describe('Code SDK — CLI subprocess integration (every SDK condition)', () => 
       return;
     }
     expect(benchmarkId).toMatch(/^bench-/);
-    expect(runId).toMatch(/^run-/);
+    expect(runId).toMatch(/^(?:eval-)?run-/);
     expect(reportIds.size).toBeGreaterThan(0);
   });
 

@@ -519,7 +519,14 @@ export async function executeEvaluationRun(
             // `capturedResult` was never set because `agent.run()` rejected) from
             // a deliberate gate failure. The former must surface as a clearly
             // labelled `errored` run, not a silent `failed` with an empty card.
-            const agentFailed = evalError !== undefined && capturedResult === undefined;
+            // BUT a no-prompt/deterministic test whose body threw a *recorded*
+            // gate failure (e.g. a failing chai `expect()` — which both records a
+            // code-assertion matcher AND throws) is a FAILED test, not an agent
+            // failure: a real agent crash produces no matcher (`anyGateFailed`
+            // is false). Without this guard such runs were bucketed as errored
+            // (metricsStatus:'error' → passFailStatus null), regressing #245.
+            const agentFailed =
+              evalError !== undefined && capturedResult === undefined && !anyGateFailed;
             const failed = anyGateFailed || evalError !== undefined;
             (report as any).evaluationType = 'deterministic';
             (report as any).matcherResults = matcherResults;
