@@ -477,7 +477,19 @@ async function runUnifiedMode(
   // Build sources from flags
   const sources: TestCaseSource[] = [];
 
-  if (options.name && !isFilePath(options.name)) {
+  // `-n/--name` is overloaded: alone it re-runs an *existing* benchmark (its
+  // test cases become a source); alongside -f/-d/-t/--label it just *names* the
+  // benchmark the resulting run is grouped under (created below if the name is
+  // new). Only require the benchmark to pre-exist (as a source) when it is the
+  // sole source — otherwise `benchmark -f foo.eval.js -n "New Name"` wrongly
+  // errored "Benchmark not found" for code-import (unified) runs.
+  const hasExplicitSources =
+    fileArray.length > 0 ||
+    (options.dir?.length ?? 0) > 0 ||
+    (options.testCase?.length ?? 0) > 0 ||
+    (options.label?.length ?? 0) > 0;
+
+  if (options.name && !isFilePath(options.name) && !hasExplicitSources) {
     // -n flag: will be resolved server-side
     const api = new ApiClient(`http://localhost:${serverConfig.port}`);
     const benchmark = await api.findBenchmark(options.name);
@@ -564,11 +576,23 @@ async function runUnifiedMode(
   const modelId = options.model || getDefaultModel(config);
   const concurrency = Math.max(1, Math.min(20, parseInt(options.concurrency, 10) || 1));
 
-  // Determine benchmark association
+  // Determine benchmark association. With explicit sources (-f/-d/-t/--label),
+  // `-n` names the benchmark the run is grouped under — create it when the name
+  // is new so the run is benchmark-associated (parity with JSON `-f` legacy mode
+  // and the documented `benchmark -f foo.eval.js -n "My Benchmark"` behavior).
   let benchmarkId: string | undefined;
   if (options.name && !isFilePath(options.name)) {
-    const benchmark = await api.findBenchmark(options.name);
-    benchmarkId = benchmark?.id;
+    const existing = await api.findBenchmark(options.name);
+    if (existing) {
+      benchmarkId = existing.id;
+    } else if (hasExplicitSources) {
+      const created = await api.createBenchmark({
+        name: options.name,
+        description: `CLI benchmark run from ${fileArray.join(', ') || 'sources'}`,
+        testCaseIds: [],
+      });
+      benchmarkId = created.id;
+    }
   }
 
   console.log(chalk.gray(`  Sources: ${sources.length} source(s)`));
@@ -667,7 +691,13 @@ async function runUnifiedMode(
       console.log(`    ${chalk.green('✓ Passed:')} ${passed}`);
       console.log(`    ${chalk.red('✗ Failed:')} ${failed}`);
       console.log(`    ${chalk.gray('Total:')} ${totalTestCases}`);
-      if (!benchmarkId) {
+      if (benchmarkId) {
+        console.log('');
+        console.log(chalk.cyan('  View results:'));
+        console.log(
+          chalk.gray(`  ${serverResult.baseUrl}/evaluations/benchmarks/${benchmarkId}/runs/${runId}`)
+        );
+      } else {
         console.log('');
         console.log(chalk.gray(`  This was an ad-hoc run (ID: ${runId}).`));
         console.log(chalk.gray('  Promote to benchmark with: -n "Benchmark Name"'));
