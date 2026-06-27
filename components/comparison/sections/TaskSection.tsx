@@ -21,17 +21,12 @@
 import React, { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { ClipboardList, ExternalLink, Loader2 } from 'lucide-react';
-import { Badge } from '@/components/ui/badge';
-import { cn } from '@/lib/utils';
 import { TestCase } from '@/types';
 import { asyncTestCaseStorage } from '@/services/storage';
 
 interface TaskSectionProps {
   testCaseId: string;
 }
-
-/** Drop the noisy `category:` / `difficulty:` prefixes for display. */
-const displayLabel = (l: string) => l.replace(/^(category|difficulty):/, '');
 
 export const TaskSection: React.FC<TaskSectionProps> = ({ testCaseId }) => {
   const [testCase, setTestCase] = useState<TestCase | null>(null);
@@ -70,8 +65,6 @@ export const TaskSection: React.FC<TaskSectionProps> = ({ testCaseId }) => {
   // Don't block the row if the test case couldn't be loaded.
   if (!testCase) return null;
 
-  const labels = testCase.labels || [];
-
   return (
     <div className="mb-3 rounded-lg border border-border bg-card/40 p-3">
       <div className="mb-1.5 flex items-center justify-between gap-3">
@@ -95,24 +88,6 @@ export const TaskSection: React.FC<TaskSectionProps> = ({ testCaseId }) => {
       {testCase.initialPrompt && (
         <div className="whitespace-pre-wrap break-words rounded border border-border border-l-2 border-l-opensearch-blue/40 bg-muted/30 p-2.5 text-[12.5px] leading-relaxed text-foreground/90">
           {testCase.initialPrompt}
-        </div>
-      )}
-
-      {labels.length > 0 && (
-        <div className="mt-2 flex flex-wrap gap-1.5">
-          {labels.map((label) => (
-            <Badge
-              key={label}
-              variant="outline"
-              className={cn(
-                'text-[10px]',
-                label.startsWith('category:') &&
-                  'border-opensearch-blue/30 bg-opensearch-blue/10 text-opensearch-blue'
-              )}
-            >
-              {displayLabel(label)}
-            </Badge>
-          ))}
         </div>
       )}
     </div>

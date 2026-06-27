@@ -105,7 +105,7 @@ export const MetricCell: React.FC<MetricCellProps> = ({
         {/* Accuracy — always shown */}
         {show('accuracy') && (
         <div className="flex items-center justify-between text-[10px]">
-          <span className="text-muted-foreground">Acc</span>
+          <span className="text-muted-foreground" title="Accuracy">Accuracy</span>
           <div className="flex items-center gap-1">
             <span className="font-medium">{accuracy}%</span>
             {accDelta !== undefined && accDelta !== 0 && (
@@ -128,14 +128,14 @@ export const MetricCell: React.FC<MetricCellProps> = ({
         <DeltaValue
           value={result.faithfulness}
           baseline={!isReference ? baselineFaithfulness : undefined}
-          label="Faith"
+          label="Faithfulness"
         />
         )}
 
         {/* Trajectory Alignment — show if available and visible */}
         {show('trajectory') && result.trajectoryAlignment !== undefined && (
           <div className="flex items-center justify-between text-[10px]">
-            <span className="text-muted-foreground">Traj</span>
+            <span className="text-muted-foreground" title="Trajectory alignment">Trajectory</span>
             <span className="font-medium">{result.trajectoryAlignment}%</span>
           </div>
         )}
@@ -143,7 +143,7 @@ export const MetricCell: React.FC<MetricCellProps> = ({
         {/* Latency Score — show if available and visible */}
         {show('latency') && result.latencyScore !== undefined && (
           <div className="flex items-center justify-between text-[10px]">
-            <span className="text-muted-foreground">Lat</span>
+            <span className="text-muted-foreground" title="Latency score">Latency</span>
             <span className="font-medium">{result.latencyScore}%</span>
           </div>
         )}

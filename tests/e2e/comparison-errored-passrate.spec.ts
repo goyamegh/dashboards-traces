@@ -128,6 +128,8 @@ test.describe('Comparison — errored runs excluded from pass rate', () => {
 
     const accuracy = page.locator(`[data-testid="run-accuracy-${runId}"]`);
     // Accuracy averaged over the evaluable case only: 90, NOT (90+0)/2 = 45.
-    await expect(accuracy).toHaveText('Acc 90%');
+    // (The consolidated metrics matrix labels the row "Avg Accuracy" and shows
+    // the bare value, so the cell reads "90%" rather than the old "Acc 90%".)
+    await expect(accuracy).toHaveText('90%');
   });
 });

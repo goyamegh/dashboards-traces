@@ -136,11 +136,9 @@ test.describe('Benchmark-free comparison (test-level primitive)', () => {
     await page.waitForSelector('[data-testid="comparison-page"]', { timeout: 30000 });
     await expect(page.locator('[data-testid="comparison-title"]')).toHaveText('Compare Runs');
 
-    // Benchmark selector is in the runs-first ("All runs") mode.
-    await expect(page.locator('[data-testid="comparison-benchmark-select"]')).toContainText('All runs');
-
-    // Both runs selected from the ?runs= param.
-    await expect(page.locator('[data-testid="run-multiselect-trigger"]')).toContainText('2 of');
+    // Both runs selected from the ?runs= param — shown in the unified search
+    // trigger, which replaced the benchmark-select + run-multiselect toolbar.
+    await expect(page.locator('[data-testid="comparison-search"]')).toContainText('2 of');
 
     // The honesty surface: partial overlap banner naming shared vs only-in-some.
     const banner = page.locator('[data-testid="comparison-overlap-banner"]');
