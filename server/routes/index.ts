@@ -30,6 +30,7 @@ import assistantRoutes from './assistant';
 import skillsRoutes from './skills';
 import comparisonClusterRoutes from './comparisonCluster';
 import comparisonRoutes from './comparison';
+import telemetryRoutes from './telemetry';
 
 const router = Router();
 
@@ -57,6 +58,7 @@ router.use(assistantRoutes);     // /api/assistant/*
 router.use(skillsRoutes);        // /api/skills/*
 router.use(comparisonClusterRoutes); // /api/comparison/cluster-failures
 router.use(comparisonRoutes);    // /api/comparison/deep-dive
+router.use(telemetryRoutes);     // /api/telemetry/ui-event
 
 // Coding Agent Analytics — only mount when feature is enabled
 if (codingAnalyticsEnabled) {
