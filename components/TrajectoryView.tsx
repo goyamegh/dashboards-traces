@@ -6,8 +6,7 @@
 import React, { useState } from 'react';
 import { TrajectoryStep, ToolCallStatus } from '@/types';
 import { ChevronDown, ChevronRight } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { Markdown, hasRealMarkdown } from '@/components/ui/markdown';
 import { truncate } from '@/lib/utils';
 
 interface TrajectoryViewProps {
@@ -131,12 +130,17 @@ export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }
                   </span>
                 </button>
                 {isExpanded && (
-                  <div className="mt-3 pl-5 text-sm whitespace-pre-wrap text-foreground/90 border-l-2 border-border/50 ml-1">
+                  <div className="mt-3 pl-5 text-sm text-foreground/90 border-l-2 border-border/50 ml-1">
                     <div className="pl-3">
-                      {step.type === 'tool_result' ? (
-                        <pre className="font-mono text-xs overflow-x-auto">{step.content}</pre>
+                      {/* tool_result is usually structured (JSON/log) — keep it
+                          monospace unless it actually looks like markdown.
+                          Everything else (assistant / response / thinking)
+                          renders as markdown so headings, bullets, and bold
+                          come through as structure, not raw `**`/`#`. */}
+                      {step.type === 'tool_result' && !hasRealMarkdown(step.content) ? (
+                        <pre className="font-mono text-xs overflow-x-auto whitespace-pre-wrap">{step.content}</pre>
                       ) : (
-                        step.content
+                        <Markdown>{step.content}</Markdown>
                       )}
                     </div>
                   </div>
@@ -147,11 +151,7 @@ export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }
                 {JSON.stringify(step.toolArgs, null, 2)}
               </pre>
             ) : (
-              <div className="text-sm text-foreground/90 prose prose-invert prose-sm max-w-none">
-                <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                  {step.content}
-                </ReactMarkdown>
-              </div>
+              <Markdown className="text-sm text-foreground/90">{step.content}</Markdown>
             )}
           </div>
         );

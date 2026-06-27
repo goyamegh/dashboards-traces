@@ -16,9 +16,8 @@
  */
 
 import React, { useState } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { CheckCircle2, XCircle, ChevronDown, ChevronRight, Brain, Code2, Activity, Wrench } from 'lucide-react';
+import { Markdown, hasRealMarkdown } from '@/components/ui/markdown';
 import type { MatcherResult, MatcherMethod } from '@/lib/matchers/types';
 import { Badge } from '@/components/ui/badge';
 
@@ -177,22 +176,7 @@ const MatcherRow: React.FC<RowProps> = ({ result }) => {
                 // Render as markdown so headers, bullets, and bold formatting
                 // from the Bedrock judge come through as structure rather than
                 // literal `**` / `-` characters in plain prose.
-                //
-                // Spacing notes:
-                //   prose-headings:first:mt-0  — first header sits flush with
-                //                                 the "reasoning" label so the
-                //                                 first row doesn't double-space.
-                //   prose-p:first:mt-0          — same for plain-prose responses.
-                //   prose-ul/ol pl-5            — lists indent enough to read
-                //                                 distinct from surrounding prose.
-                //   prose-li:my-0               — list items hug each other so
-                //                                 a 6-bullet rationale doesn't
-                //                                 tower over the row above.
-                <div className="prose prose-sm dark:prose-invert max-w-none prose-headings:text-sm prose-headings:font-semibold prose-headings:mt-3 prose-headings:mb-1 prose-headings:first:mt-0 prose-p:my-1 prose-p:first:mt-0 prose-p:leading-relaxed prose-strong:text-foreground prose-code:text-opensearch-blue prose-code:bg-muted prose-code:px-1 prose-code:py-0.5 prose-code:rounded prose-code:text-xs prose-ul:my-1 prose-ul:pl-5 prose-ol:my-1 prose-ol:pl-5 prose-li:my-0 prose-li:leading-relaxed text-muted-foreground">
-                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                    {result.reasoning}
-                  </ReactMarkdown>
-                </div>
+                <Markdown className="text-muted-foreground">{result.reasoning}</Markdown>
               ) : (
                 <div className="text-muted-foreground whitespace-pre-wrap">{result.reasoning}</div>
               )}
@@ -280,38 +264,4 @@ function formatValue(v: unknown): string {
   } catch {
     return String(v);
   }
-}
-
-/**
- * Heuristic: does this string contain syntax that the user wrote with the
- * intent of being formatted as Markdown (bold, headings, fenced code, real
- * bullet lists with multiple items, links)?
- *
- * The Bedrock judge often returns plain prose with one leading numbered
- * sentence (`1. 'X' - Fully achieved`) and a trailing summary paragraph.
- * Run through ReactMarkdown that becomes <p>…</p><ol><li>…</li></ol><p>…</p>
- * — the single-item indented <ol> visually fragments the reasoning into
- * what looks like "another box later". For prose-with-newlines like that
- * we'd rather render plain text (whitespace-pre-wrap) so it stays one
- * contiguous block.
- */
-function hasRealMarkdown(text: string): boolean {
-  if (!text) return false;
-  // Bold / italic markers
-  if (/\*\*[^*\n]+\*\*/.test(text)) return true;
-  if (/__[^_\n]+__/.test(text)) return true;
-  // Headings
-  if (/^#{1,6}\s+\S/m.test(text)) return true;
-  // Fenced code blocks or inline code
-  if (/```/.test(text)) return true;
-  if (/`[^`\n]+`/.test(text)) return true;
-  // Markdown links / images
-  if (/!?\[[^\]]+\]\([^)]+\)/.test(text)) return true;
-  // Real bullet list (>=2 consecutive lines starting with `- ` or `* `)
-  if (/(^|\n)[*\-]\s+\S.*\n[*\-]\s+/.test(text)) return true;
-  // Real numbered list (>=2 consecutive numbered lines)
-  if (/(^|\n)\d+\.\s+\S.*\n\d+\.\s+/.test(text)) return true;
-  // Block quote
-  if (/^>\s/m.test(text)) return true;
-  return false;
 }
