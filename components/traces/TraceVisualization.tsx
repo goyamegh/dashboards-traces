@@ -119,12 +119,19 @@ const TraceVisualization: React.FC<TraceVisualizationProps> = ({
     }
   }, [spanTree, externalExpandedSpans]);
 
-  // Auto-select first span when switching views or when no span is selected
+  // Auto-select the first span when switching views or when nothing is
+  // selected — but ONLY when this component owns its selection state
+  // (`externalSelectedSpan === undefined`, i.e. the standalone Traces page).
+  // When a parent CONTROLS selection (the comparison side-by-side shares ONE
+  // selectedSpan + onSelectSpan across BOTH run panels), each panel
+  // auto-selecting its own first span races through the shared setter — the
+  // second panel (run B) fires last and clobbers the deep-link span citation
+  // with run B's first span. The parent owns selection there, so leave it.
   useEffect(() => {
-    if (spanTree.length > 0 && !selectedSpan) {
+    if (externalSelectedSpan === undefined && spanTree.length > 0 && !selectedSpan) {
       setSelectedSpan(spanTree[0]);
     }
-  }, [viewMode, spanTree, selectedSpan, setSelectedSpan]);
+  }, [viewMode, spanTree, selectedSpan, setSelectedSpan, externalSelectedSpan]);
 
   // Sync view mode with external initial value when it changes
   useEffect(() => {

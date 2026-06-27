@@ -492,6 +492,7 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
       return {
         experimentRunId: run.id,
         runName: run.name,
+        reportId: result?.reportId || null,
         agentRunId: report?.runId || null,
         // Direct correlators (deep-dive-independent): an agent's own traceId
         // (Strategy A, e.g. pi) / session.id (Strategy D, e.g. Claude Code).
@@ -530,7 +531,9 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
         if (!info.agentRunId) return;
 
         try {
-          const wa = windowAgentsByRunId?.get(info.agentRunId);
+          // Look the Strategy-C window up by reportId first (stable across the
+          // runId/traceId mapping), falling back to the run id for safety.
+          const wa = windowAgentsByRunId?.get(info.reportId || '') || windowAgentsByRunId?.get(info.agentRunId);
           const result = await fetchTracesForRun({
             runId: info.agentRunId,
             // Strategy A / D: the run's own traceId / session.id correlate
@@ -599,14 +602,25 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
       }
       return null;
     };
+    // Resolve the cited span. The deep-dive cites a span by the AGENT's runId,
+    // but the client keys runs by `report.runId` — which toTestCaseRun maps to
+    // the OTel traceId, not the agent runId — so a direct runId match usually
+    // misses. spanIds are globally unique, so prefer the cited run when its id
+    // matches and otherwise fall back to locating the span in EITHER run's tree.
+    let hit: CategorizedSpan | null = null;
     for (const td of traceData.values()) {
-      if (td.runId !== highlight.runId) continue;
-      const hit = findById(td.spanTree);
-      if (hit) {
-        setSelectedSpan(hit);
-        break;
+      if (td.runId === highlight.runId) {
+        hit = findById(td.spanTree);
+        if (hit) break;
       }
     }
+    if (!hit) {
+      for (const td of traceData.values()) {
+        hit = findById(td.spanTree);
+        if (hit) break;
+      }
+    }
+    if (hit) setSelectedSpan(hit);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [highlight?.nonce, traceData]);
 

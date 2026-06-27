@@ -711,7 +711,16 @@ export const ComparisonPage: React.FC = () => {
                 onWindowAgents={(metaRuns: DeepDiveRunMeta[]) => {
                   const m = new Map<string, { serviceName?: string; startedAt: number; endedAt: number }>();
                   metaRuns.forEach((r) => {
-                    if (r.runId) m.set(r.runId, { serviceName: r.serviceName, startedAt: r.startedAt, endedAt: r.endedAt });
+                    const win = { serviceName: r.serviceName, startedAt: r.startedAt, endedAt: r.endedAt };
+                    // Key by reportId AND the deep-dive's (agent) runId. The
+                    // Traces tab looks the window up by the report's *client*
+                    // run id, which toTestCaseRun maps to the OTel traceId — not
+                    // the agent runId the deep-dive returns — so keying only by
+                    // runId missed, the Strategy-C window was never fetched, and
+                    // some cited spans couldn't be opened. reportId is stable on
+                    // both sides; the lookup tries it first.
+                    if (r.reportId) m.set(r.reportId, win);
+                    if (r.runId) m.set(r.runId, win);
                   });
                   setTraceWindowAgents(m);
                 }}
