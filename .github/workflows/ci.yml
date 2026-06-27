@@ -442,18 +442,25 @@ jobs:
       - name: Install Playwright browsers
         run: npx playwright install chromium --with-deps
 
-      - name: Build application with coverage instrumentation
+      - name: Build application
+        # NOTE: E2E istanbul instrumentation (vite-plugin-istanbul, E2E_COVERAGE)
+        # is intentionally OFF here. The honest unit-coverage fix requires
+        # test-exclude@8 (the only version compatible with the minimatch@^10.2.4
+        # security override); test-exclude@8 changes vite-plugin-istanbul's
+        # build-time instrumentation enough to double-mount the React root in the
+        # instrumented bundle, which surfaced as duplicate-render strict-mode
+        # failures in the assistant-chat e2e specs. E2E test *correctness* is
+        # unaffected by turning instrumentation off; only the (informational,
+        # non-gating) e2e coverage upload is paused until vite-plugin-istanbul
+        # supports test-exclude@8. See #339.
         run: |
           npm run build
           npm run build:server
-        env:
-          E2E_COVERAGE: 'true'
 
       - name: Run Playwright E2E tests
         run: npm run test:e2e 2>&1 | tee e2e-test-output.txt
         env:
           CI: true
-          E2E_COVERAGE: 'true'
 
       - name: Generate E2E coverage report
         if: always()
