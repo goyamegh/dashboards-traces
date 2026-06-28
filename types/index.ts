@@ -1160,6 +1160,8 @@ export interface RunAggregateMetrics {
   totalTestCases: number;
   passedCount: number;
   failedCount: number;
+  /** Test cases the evaluator couldn't verdict (#242); excluded from pass rate. */
+  erroredCount?: number;
   avgAccuracy: number;
   passRatePercent: number;
   // Trace metrics (optional - populated from metrics API)

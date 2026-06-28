@@ -92,6 +92,10 @@ export const ComparisonPage: React.FC = () => {
   // itself is a test-case-level primitive and does not require a benchmark.
   const [runPool, setRunPool] = useState<RunPoolEntry[]>([]);
   const [reports, setReports] = useState<Record<string, EvaluationReport>>({});
+  // True while the per-cell reports are still loading (phase 2, after the runs
+  // load). Without this the table renders every cell as 'missing' (empty) for
+  // the whole fetch window — the "no runs on each test case" symptom.
+  const [reportsLoading, setReportsLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [traceMetricsMap, setTraceMetricsMap] = useState<Map<string, TraceMetrics>>(new Map());
 
@@ -286,15 +290,16 @@ export const ComparisonPage: React.FC = () => {
       });
       const missing = Array.from(reportIds).filter(id => !reports[id]);
       if (missing.length === 0) return;
-      const fetched: Record<string, EvaluationReport> = {};
-      await Promise.all(
-        missing.map(async (reportId) => {
-          const report = await asyncRunStorage.getReportById(reportId);
-          if (report) fetched[reportId] = report;
-        })
-      );
-      if (Object.keys(fetched).length > 0) {
-        setReports(prev => ({ ...prev, ...fetched }));
+      setReportsLoading(true);
+      try {
+        // ONE batched request (server fans out in parallel) instead of N
+        // per-report round-trips — cells populate in a single OpenSearch hop.
+        const fetched = await asyncRunStorage.getReportsByIds(missing);
+        if (Object.keys(fetched).length > 0) {
+          setReports(prev => ({ ...prev, ...fetched }));
+        }
+      } finally {
+        setReportsLoading(false);
       }
     };
     loadReports();
@@ -914,6 +919,7 @@ export const ComparisonPage: React.FC = () => {
 
               {/* Comparison table */}
               <UseCaseComparisonTable
+                reportsLoading={reportsLoading}
                 rows={filteredRows}
                 runs={selectedRuns}
                 reports={reports}

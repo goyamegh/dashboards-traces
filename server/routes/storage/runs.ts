@@ -44,7 +44,26 @@ function getTimestampMs(run: { timestamp?: string; createdAt?: string }): number
 // GET /api/storage/runs - List all (paginated)
 router.get('/api/storage/runs', async (req: Request, res: Response) => {
   try {
-    const { size = '100', from = '0', fields } = req.query;
+    const { size = '100', from = '0', fields, ids } = req.query;
+
+    // Batch fetch by ids — collapses N per-report round-trips (e.g. the
+    // comparison page loading every cell's report) into ONE request; the
+    // server fans out getById in parallel. Mirrors GET /test-cases?ids=.
+    if (typeof ids === 'string' && ids.trim()) {
+      const idList = ids.split(',').map((s) => s.trim()).filter(Boolean);
+      const storage = getStorageModule();
+      const fetched = await Promise.all(idList.map((id) => storage.runs.getById(id).catch(() => null)));
+      // Drop rawEvents (the raw SSE event log — KBs to MBs each) from the batch
+      // payload. List/table consumers like the comparison page never read it;
+      // shipping it makes a 16-report fetch tens of MB. ponytail: strip in the
+      // route (server→browser win); add OS _source excludes if the server-side
+      // OS→server fetch ever matters.
+      const runs = fetched
+        .filter((r): r is TestCaseRun => r !== null)
+        .map((r) => { const { rawEvents, ...rest } = r as any; return rest as TestCaseRun; });
+      return res.json({ runs, total: runs.length });
+    }
+
     let realData: TestCaseRun[] = [];
 
     // Parse fields query param for _source projection

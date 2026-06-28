@@ -48,6 +48,42 @@ export interface RunStats {
 }
 
 /**
+ * Bucket a run's per-test-case results into passed/failed/errored/pending using
+ * ONLY the persisted result fields (status + passFailStatus) — no reports
+ * needed. This is the SINGLE source of truth for pass/fail/errored counts across
+ * the app (the runs list AND the comparison page), so the numbers can't
+ * diverge between views.
+ *
+ * The denormalized `run.stats` is NOT authoritative: its writer historically
+ * counted every 'completed' result as passed without checking the verdict, so
+ * an errored case (judge produced no verdict) was miscounted as a pass and
+ * `errored` was never tracked. Recompute from results instead.
+ *
+ * Errored (#242): a 'completed' result with no 'passed'/'failed' verdict means
+ * the evaluator couldn't produce one (judge validation error, trace timeout).
+ * Excluded from passed/failed — exactly as calculateRunStats does via the
+ * report's metricsStatus.
+ */
+export function bucketRunResults(
+  results: Record<string, { status?: string; passFailStatus?: string }> | undefined
+): Pick<RunStats, 'passed' | 'failed' | 'errored' | 'pending' | 'total'> {
+  let passed = 0, failed = 0, errored = 0, pending = 0, total = 0;
+  for (const r of Object.values(results || {})) {
+    total++;
+    if (r.status === 'pending' || r.status === 'running') { pending++; continue; }
+    if (r.status === 'failed' || r.status === 'cancelled') { failed++; continue; }
+    if (r.status === 'completed') {
+      if (r.passFailStatus === 'passed') passed++;
+      else if (r.passFailStatus === 'failed') failed++;
+      else errored++; // completed without a verdict = judge errored (#242)
+      continue;
+    }
+    pending++; // unknown / no status
+  }
+  return { passed, failed, errored, pending, total };
+}
+
+/**
  * Calculate statistics for a benchmark run.
  *
  * This function uses the same logic as the UI to count pass/fail status:

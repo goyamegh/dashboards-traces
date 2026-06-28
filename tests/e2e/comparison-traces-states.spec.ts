@@ -76,6 +76,15 @@ async function setupRoutes(page: import('@playwright/test').Page) {
     if (id === RUN_B) return json(r, evalRun(RUN_B, 'pulsar', 'rep-b'));
     return r.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
   });
+  // Batched report fetch (the comparison page now loads every cell's report in
+  // ONE request). Mirror the individual route below.
+  await page.route(/\/api\/storage\/runs\?ids=/, (r) => {
+    const ids = (new URL(r.request().url()).searchParams.get('ids') || '').split(',');
+    const runs: unknown[] = [];
+    if (ids.some((id) => id.includes('rep-a'))) runs.push(report('rep-a', 'demo', TRACE_A));
+    if (ids.some((id) => id.includes('rep-b'))) runs.push(report('rep-b', 'pulsar', TRACE_B));
+    return json(r, { runs, total: runs.length });
+  });
   await page.route('**/api/storage/runs/**', (r) => {
     const u = r.request().url();
     if (u.includes('rep-a')) return json(r, report('rep-a', 'demo', TRACE_A));

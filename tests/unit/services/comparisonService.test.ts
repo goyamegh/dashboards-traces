@@ -52,9 +52,9 @@ describe('comparisonService', () => {
       modelId: 'model-1',
       status: 'completed',
       results: {
-        'tc-1': { reportId: 'report-1', status: 'completed' },
-        'tc-2': { reportId: 'report-2', status: 'completed' },
-        'tc-3': { reportId: 'report-3', status: 'failed' },
+        'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' },
+        'tc-2': { reportId: 'report-2', status: 'completed', passFailStatus: 'passed' },
+        'tc-3': { reportId: 'report-3', status: 'failed', passFailStatus: 'failed' },
       },
     };
 
@@ -130,7 +130,7 @@ describe('comparisonService', () => {
         ...mockRun,
         stats: undefined,
         results: {
-          'tc-1': { reportId: 'report-1', status: 'completed' },
+          'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' },
           'tc-2': { reportId: 'report-err', status: 'completed' },
         },
       };
@@ -160,15 +160,17 @@ describe('comparisonService', () => {
       expect(aggregates.avgAccuracy).toBe(90);
     });
 
-    // Same invariant via the denormalized fast path: when run.stats carries an
-    // `errored` count, the pass-rate denominator must use it.
-    it('excludes errored runs from pass rate using denormalized run.stats.errored', () => {
+    // Errored cases are excluded from the pass-rate denominator (#242). The
+    // per-case verdict is the single source of truth: a 'completed' result with
+    // a 'passed' verdict counts; one with no verdict is errored (matching what
+    // the runner persists and lib/runStats.bucketRunResults computes).
+    it('excludes errored runs from pass rate (errored derived from per-case verdicts)', () => {
       const run: BenchmarkRun = {
         ...mockRun,
         stats: { passed: 2, failed: 0, pending: 0, errored: 2, total: 4 },
         results: {
-          'tc-1': { reportId: 'report-1', status: 'completed' },
-          'tc-2': { reportId: 'report-2', status: 'completed' },
+          'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { reportId: 'report-2', status: 'completed', passFailStatus: 'passed' },
           'tc-3': { reportId: 'report-e1', status: 'completed' },
           'tc-4': { reportId: 'report-e2', status: 'completed' },
         },
@@ -197,8 +199,11 @@ describe('comparisonService', () => {
         ...mockRun,
         stats: undefined,
         results: {
-          'tc-1': { reportId: 'report-1', status: 'completed' },
-          'tc-2': { reportId: 'report-pending', status: 'completed' },
+          'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' },
+          // Still being evaluated (metrics calculating) — a not-yet-done case is
+          // 'running', NOT 'completed'; a completed result always carries its
+          // final verdict (or is errored). Bucketed as pending, not failed.
+          'tc-2': { reportId: 'report-pending', status: 'running' },
         },
       };
       const reports: Record<string, EvaluationReport> = {

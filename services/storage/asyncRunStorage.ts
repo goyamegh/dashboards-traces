@@ -281,6 +281,20 @@ class AsyncRunStorage {
   }
 
   /**
+   * Batch-fetch reports by id in a SINGLE request (vs N getReportById calls).
+   * Returned map is keyed by the requested reportId (the storage doc id).
+   */
+  async getReportsByIds(reportIds: string[]): Promise<Record<string, EvaluationReport>> {
+    if (reportIds.length === 0) return {};
+    const stored = await opensearchRuns.getByIds(reportIds);
+    const out: Record<string, EvaluationReport> = {};
+    for (const s of stored) {
+      out[s.id] = toTestCaseRun(s);
+    }
+    return out;
+  }
+
+  /**
    * Delete a report and its annotations
    */
   async deleteReport(reportId: string): Promise<boolean> {

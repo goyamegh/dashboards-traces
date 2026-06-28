@@ -20,6 +20,7 @@ import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { ChevronDown, ChevronRight, GitCompare } from 'lucide-react';
 import { TestCaseComparisonRow, BenchmarkRun, EvaluationReport } from '@/types';
 import { MetricCell, EvaluatorType } from './MetricCell';
+import { Skeleton } from '@/components/ui/skeleton';
 import { VersionIndicator } from './VersionIndicator';
 import { UseCaseExpandedRow } from './UseCaseExpandedRow';
 import { cn, getLabelColor, getModelName, formatRelativeTime } from '@/lib/utils';
@@ -208,6 +209,8 @@ interface UseCaseComparisonTableProps {
   rows: TestCaseComparisonRow[];
   runs: BenchmarkRun[];
   reports: Record<string, EvaluationReport>;
+  /** Reports still loading (phase 2) — cells show a skeleton, not empty. */
+  reportsLoading?: boolean;
   referenceRunId?: string;
   visibleEvaluators?: Set<EvaluatorType>;
   /** Map of testCaseId → cluster index, used to draw a colored dot per row */
@@ -236,6 +239,7 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
   rows,
   runs,
   reports,
+  reportsLoading,
   referenceRunId: propReferenceRunId,
   visibleEvaluators,
   clusterByCaseId,
@@ -434,16 +438,29 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
                       const report = reportId ? reports[reportId] : undefined;
                       const annotationCount = report?.annotations?.length ?? 0;
 
+                      // The run DID run this case (its raw result carries a
+                      // reportId) but the report hasn't arrived yet — show a
+                      // skeleton instead of the empty 'missing' state.
+                      const isLoadingCell = !!reportsLoading && result.status === 'missing'
+                        && !!run.results?.[row.testCaseId]?.reportId;
+
                       return (
                         <TableCell key={run.id} className="p-0">
-                          <MetricCell
-                            result={result}
-                            isReference={isReference}
-                            baselineAccuracy={referenceAccuracy}
-                            baselineFaithfulness={referenceResult?.faithfulness}
-                            annotationCount={annotationCount}
-                            visibleEvaluators={visibleEvaluators}
-                          />
+                          {isLoadingCell ? (
+                            <div className="px-3 py-2 space-y-1" data-testid="metric-cell-loading">
+                              <Skeleton className="h-3 w-14" />
+                              <Skeleton className="h-3 w-10" />
+                            </div>
+                          ) : (
+                            <MetricCell
+                              result={result}
+                              isReference={isReference}
+                              baselineAccuracy={referenceAccuracy}
+                              baselineFaithfulness={referenceResult?.faithfulness}
+                              annotationCount={annotationCount}
+                              visibleEvaluators={visibleEvaluators}
+                            />
+                          )}
                         </TableCell>
                       );
                     })}

@@ -34,6 +34,7 @@ import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/
 import { listEvaluationRuns } from '@/services/client';
 import { Benchmark, TestCase, BenchmarkRun, EvaluationRun } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
+import { bucketRunResults } from '@/lib/runStats';
 import { formatRelativeTime, getModelName } from '@/lib/utils';
 import { Breadcrumbs } from './Breadcrumbs';
 
@@ -102,26 +103,25 @@ function SortHeader({ label, active, dir, onClick, className }: {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
+// Recompute pass/fail/errored from the persisted per-case verdicts
+// (run.results) — the single source of truth shared with the comparison page
+// via lib/runStats.bucketRunResults. The denormalized run.stats is naive (it
+// counts errored cases as passed and never tracks `errored`, #242), so it's
+// only a fallback when per-case results aren't present.
 function computeRunStats(run: BenchmarkRun): { passed: number; failed: number; errored: number; total: number } {
+  if (run.results && Object.keys(run.results).length > 0) {
+    const b = bucketRunResults(run.results as Record<string, { status?: string; passFailStatus?: string }>);
+    return { passed: b.passed, failed: b.failed, errored: b.errored, total: b.total };
+  }
   if (run.stats && run.stats.total > 0) {
     return {
       passed: run.stats.passed,
       failed: run.stats.failed,
-      // `errored` is optional on older stored runs (issue #242).
       errored: run.stats.errored ?? 0,
       total: run.stats.total,
     };
   }
-  const results = Object.values(run.results || {});
-  let passed = 0, failed = 0;
-  for (const r of results) {
-    if (r.status === 'completed') passed++;
-    else if (r.status === 'failed' || r.status === 'cancelled') failed++;
-  }
-  const total = results.length;
-  // Result-status fallback can't distinguish errored without the report;
-  // 0 is the safe default and stats refresh on next load will populate it.
-  return { passed, failed, errored: 0, total };
+  return { passed: 0, failed: 0, errored: 0, total: 0 };
 }
 
 // ─── Main Component ──────────────────────────────────────────────────────────
