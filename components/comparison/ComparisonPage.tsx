@@ -15,7 +15,7 @@ import {
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { GitCompare, ChevronDown, ChevronRight, X, Check, Loader2 } from 'lucide-react';
+import { GitCompare, ChevronDown, ChevronRight, X, Check, Loader2, RotateCcw } from 'lucide-react';
 import {
   Collapsible,
   CollapsibleContent,
@@ -33,7 +33,7 @@ import { extractFirstDivergence } from '@/services/trajectoryDiffService';
 import type { FailureCluster, FailureCaseEvidenceInput } from '@/services/client/comparisonClusterApi';
 import { Breadcrumbs } from '@/components/evals3/Breadcrumbs';
 import { asyncBenchmarkStorage, asyncRunStorage, asyncTestCaseStorage } from '@/services/storage';
-import { listEvaluationRuns, getEvaluationRun } from '@/services/client';
+import { listEvaluationRuns, getEvaluationRun, executeEvaluationRun } from '@/services/client';
 import {
   calculateRunAggregates,
   buildTestCaseComparisonRows,
@@ -434,6 +434,49 @@ export const ComparisonPage: React.FC = () => {
 
   const allComparisonRows = useMemo((): TestCaseComparisonRow[] => buildTestCaseComparisonRows(selectedRuns, reports, getTestCaseMeta), [selectedRuns, reports, getTestCaseMeta]);
 
+  // ── Re-run comparison ───────────────────────────────────────────────
+  // Re-execute every compared run's config on the SAME test cases, then open
+  // the fresh comparison. Enabled ONLY when the runs are fully comparable
+  // (identical test-case sets) — otherwise "re-run the comparison" is
+  // ill-defined. Each run keeps its own agent/model/evaluator/judge; only the
+  // test-case set is pinned to the shared intersection. Navigates as soon as
+  // both runs START (the runs finish server-side regardless of the client).
+  const [rerunning, setRerunning] = useState(false);
+  const handleRerunComparison = useCallback(() => {
+    if (!overlap.fullyOverlapping || rerunning) return;
+    const ids = allComparisonRows.map(r => r.testCaseId);
+    if (ids.length === 0) return;
+    if (!window.confirm(
+      `Re-run ${selectedRuns.length} agent config(s) on the same ${ids.length} test case${ids.length === 1 ? '' : 's'}? This launches fresh evaluation runs.`
+    )) return;
+    setRerunning(true);
+    const newRunId: Record<string, string> = {};
+    const openWhenAllStarted = () => {
+      if (selectedRuns.every(r => newRunId[r.id])) {
+        navigate(`/compare?runs=${selectedRuns.map(r => newRunId[r.id]).join(',')}`);
+      }
+    };
+    selectedRuns.forEach(run => {
+      executeEvaluationRun(
+        {
+          name: `Re-run: ${run.name || getAgentName(run.agentKey)}`,
+          sources: [{ type: 'test-case-ids', ids }] as any,
+          agentKey: run.agentKey,
+          modelId: (run as any).modelId ?? '',
+          evaluatorId: (run as any).evaluatorId,
+          judgeModelId: (run as any).judgeModelId,
+          benchmarkId: (run as any).benchmarkId,
+          trigger: 'ui',
+        },
+        () => {},
+        (started) => { newRunId[run.id] = started.runId; openWhenAllStarted(); },
+      ).catch(err => {
+        console.error('[ComparisonPage] re-run failed:', err);
+        setRerunning(false);
+      });
+    });
+  }, [overlap.fullyOverlapping, rerunning, allComparisonRows, selectedRuns, navigate]);
+
   const referenceRunId = useMemo(() => {
     const sorted = [...selectedRuns].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     return sorted[0]?.id ?? '';
@@ -684,6 +727,34 @@ export const ComparisonPage: React.FC = () => {
             {/* Test-level overlap — honest coverage across the selected runs
                 (benchmark or not). Shown for 2+ runs. */}
             {selectedRuns.length >= 2 && <ComparisonOverlapBanner overlap={overlap} />}
+
+            {/* Re-run the comparison: re-execute every compared config on the
+                same test cases. Disabled unless the runs are fully comparable
+                (identical test-case sets) — "differ by even one" falls out of
+                sharedTestCases < totalTestCases. */}
+            {selectedRuns.length >= 2 && (
+              <div className="flex items-center gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 text-xs"
+                  data-testid="rerun-comparison-btn"
+                  disabled={!overlap.fullyOverlapping || rerunning}
+                  onClick={handleRerunComparison}
+                  title={overlap.fullyOverlapping
+                    ? 'Re-run every compared agent on these exact test cases and open the fresh comparison'
+                    : `Re-run needs all runs to cover the same test cases — they differ by ${overlap.totalTestCases - overlap.sharedTestCases}.`}
+                >
+                  {rerunning ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
+                  {rerunning ? 'Launching…' : 'Re-run comparison'}
+                </Button>
+                {!overlap.fullyOverlapping && (
+                  <span className="text-[11px] text-muted-foreground">
+                    differ by {overlap.totalTestCases - overlap.sharedTestCases} test case{(overlap.totalTestCases - overlap.sharedTestCases) === 1 ? '' : 's'} — not re-runnable as a comparison
+                  </span>
+                )}
+              </div>
+            )}
 
             {/* A/B legend — make the comparison's A vs B mapping explicit (URL
                 order: A = first run, B = second). Shown for 2-run compares so
