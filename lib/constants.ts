@@ -253,7 +253,9 @@ export const DEFAULT_CONFIG: AppConfig = {
       max_output_tokens: 128000
     },
     "claude-opus-4.7": {
-      model_id: "us.anthropic.claude-opus-4-7-v1",
+      // `-v1` does not exist for 4.7 either (verified via list-inference-profiles
+      // — real id is `us.anthropic.claude-opus-4-7`). PR #347 fixed only 4.8.
+      model_id: "us.anthropic.claude-opus-4-7",
       display_name: "Claude Opus 4.7",
       provider: "bedrock",
       context_window: 200000,

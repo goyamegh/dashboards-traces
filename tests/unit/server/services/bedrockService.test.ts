@@ -375,6 +375,21 @@ describe('BedrockService', () => {
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
 
+    // Bedrock contract change 4.6 -> 4.7/4.8: extended-thinking models reject
+    // temperature != 1 ("temperature is deprecated for this model"). The judge
+    // defaults temperature to 1 — valid for those models AND for all earlier
+    // Claude models — so a default judge call never 500s on temperature.
+    it('defaults the judge temperature to 1 (valid for all Claude models incl. 4.7/4.8)', async () => {
+      mockSend.mockResolvedValue({
+        output: { message: { content: [{ text: '{"pass_fail_status": "passed", "accuracy": 1.0, "reasoning": "ok"}' }] } },
+      });
+      await evaluateTrajectory(
+        { trajectory: [createStep({ type: 'action', toolName: 'test' })], expectedOutcomes: ['x'] },
+        'us.anthropic.claude-opus-4-8',
+      );
+      expect((mockSend.mock.calls.at(-1)![0] as any).inferenceConfig.temperature).toBe(1);
+    });
+
     // Regression for the judge-truncation bug — from the *provider entry
     // point* perspective: the same end-to-end flow that POST /api/judge
     // exercises (evaluateTrajectory → buildEvaluationPrompt → ConverseCommand)

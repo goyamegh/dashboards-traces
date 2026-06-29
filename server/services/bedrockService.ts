@@ -344,8 +344,13 @@ export async function evaluateTrajectory(
 
   debug('JudgeAPI', 'Prompt built, length:', userPrompt.length, 'characters');
 
-  // Get inference config from evaluator with fallback defaults
-  const temperature = effectiveEvaluator.inferenceConfig?.temperature ?? 0.1;
+  // Default the judge temperature to 1. Claude extended-thinking models (Opus
+  // 4.7/4.8+) reject any value other than 1 (Bedrock `ValidationException:
+  // temperature is deprecated for this model`), and 1 is equally valid for all
+  // earlier Claude models — so 1 is a safe universal default. An evaluator may
+  // still set its own temperature via inferenceConfig (its responsibility to
+  // pick a value the chosen model accepts).
+  const temperature = effectiveEvaluator.inferenceConfig?.temperature ?? 1;
   const maxTokens = effectiveEvaluator.inferenceConfig?.maxTokens ?? 4096;
 
   debug('JudgeAPI', 'Inference config - temperature:', temperature, 'maxTokens:', maxTokens);
