@@ -152,7 +152,7 @@ describe('lib/constants', () => {
       it('should have claude-opus-4.7 model', () => {
         const model = DEFAULT_CONFIG.models['claude-opus-4.7'];
         expect(model).toBeDefined();
-        expect(model.model_id).toBe('us.anthropic.claude-opus-4-7-v1');
+        expect(model.model_id).toBe('us.anthropic.claude-opus-4-7');
         expect(model.display_name).toBe('Claude Opus 4.7');
         expect(model.max_output_tokens).toBe(128000);
       });
@@ -220,6 +220,16 @@ describe('lib/constants', () => {
     it('should have opensearch-prefixed tool names', () => {
       MOCK_TOOLS.forEach(tool => {
         expect(tool.name).toMatch(/^opensearch_/);
+      });
+    });
+
+    describe('judge models (Opus 4.7/4.8 Bedrock contract)', () => {
+      // The real Bedrock inference profiles have NO `-v1` for 4.7+ (verified via
+      // `aws bedrock list-inference-profiles`). `…-v1` 500s with "model
+      // identifier is invalid". PR #347 fixed 4.8; this guards 4.7 too.
+      it('maps Opus 4.7 and 4.8 to the real (no -v1) inference profiles', () => {
+        expect(DEFAULT_CONFIG.models['claude-opus-4.8'].model_id).toBe('us.anthropic.claude-opus-4-8');
+        expect(DEFAULT_CONFIG.models['claude-opus-4.7'].model_id).toBe('us.anthropic.claude-opus-4-7');
       });
     });
   });
