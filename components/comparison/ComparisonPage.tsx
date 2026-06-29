@@ -711,6 +711,25 @@ export const ComparisonPage: React.FC = () => {
                   <SelectItem value="mixed">Mixed</SelectItem>
                 </SelectContent>
               </Select>
+              {/* Re-run the comparison — lives in the header (after Status) so it's
+                  always reachable. Disabled unless the runs cover the identical
+                  test-case set; the tooltip explains why when disabled. */}
+              {selectedRuns.length >= 2 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 text-xs"
+                  data-testid="rerun-comparison-btn"
+                  disabled={!overlap.fullyOverlapping || rerunning}
+                  onClick={handleRerunComparison}
+                  title={overlap.fullyOverlapping
+                    ? 'Re-run every compared agent on these exact test cases and open the fresh comparison'
+                    : `Re-run needs all runs to cover the same test cases — they differ by ${overlap.totalTestCases - overlap.sharedTestCases}.`}
+                >
+                  {rerunning ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
+                  {rerunning ? 'Launching…' : 'Re-run comparison'}
+                </Button>
+              )}
             </>
           }
         />
@@ -732,34 +751,6 @@ export const ComparisonPage: React.FC = () => {
             {/* Test-level overlap — honest coverage across the selected runs
                 (benchmark or not). Shown for 2+ runs. */}
             {selectedRuns.length >= 2 && <ComparisonOverlapBanner overlap={overlap} />}
-
-            {/* Re-run the comparison: re-execute every compared config on the
-                same test cases. Disabled unless the runs are fully comparable
-                (identical test-case sets) — "differ by even one" falls out of
-                sharedTestCases < totalTestCases. */}
-            {selectedRuns.length >= 2 && (
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 gap-1.5 text-xs"
-                  data-testid="rerun-comparison-btn"
-                  disabled={!overlap.fullyOverlapping || rerunning}
-                  onClick={handleRerunComparison}
-                  title={overlap.fullyOverlapping
-                    ? 'Re-run every compared agent on these exact test cases and open the fresh comparison'
-                    : `Re-run needs all runs to cover the same test cases — they differ by ${overlap.totalTestCases - overlap.sharedTestCases}.`}
-                >
-                  {rerunning ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
-                  {rerunning ? 'Launching…' : 'Re-run comparison'}
-                </Button>
-                {!overlap.fullyOverlapping && (
-                  <span className="text-[11px] text-muted-foreground">
-                    differ by {overlap.totalTestCases - overlap.sharedTestCases} test case{(overlap.totalTestCases - overlap.sharedTestCases) === 1 ? '' : 's'} — not re-runnable as a comparison
-                  </span>
-                )}
-              </div>
-            )}
 
             {/* A/B legend — make the comparison's A vs B mapping explicit (URL
                 order: A = first run, B = second). Shown for 2-run compares so
