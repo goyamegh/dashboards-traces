@@ -10,6 +10,7 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ## [Unreleased]
 
 ### Added
+- **Sample evals in docs** ([docs/sample-evals/](docs/sample-evals/)): a new folder of runnable code-SDK eval examples, starting with `cc-vs-pi-redundant-apis.eval.js` (a public A/B: two coding agents audit the codebase for redundant customer APIs, graded by a custom evaluator + LLM judge) plus its evaluator and a README.
 - **Re-run (restart any run).** Every non-running evaluation run now has a **Re-run** button ([components/evals3/EvalRunDetailPage.tsx](components/evals3/EvalRunDetailPage.tsx)) that opens the New-Run composer pre-filled from the run's stored config — same test-case sources, agent, evaluator, judge model, and benchmark association ([components/evals3/NewRunPage.tsx](components/evals3/NewRunPage.tsx) seeds from router `state.restartFrom` and forwards `evaluatorId`). The agent's model is resolved from its config. e2e: [tests/e2e/restart-run.spec.ts](tests/e2e/restart-run.spec.ts).
 
 ### Fixed
