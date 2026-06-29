@@ -9,6 +9,10 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Fixed
+- **Fullscreen trace view: close (X) on the span-details drawer** ([components/traces/TraceFullScreenView.tsx](components/traces/TraceFullScreenView.tsx)): the bottom span-attributes drawer had no way to dismiss just the span (you had to exit fullscreen or re-click the row). Added an X that deselects the span (`onSelectSpan(null)`) — distinct from the fullscreen-exit X. `SimpleSpanAttributesTable` already reserved header space (`pr-10`) for it.
+
+
 ### Added
 - **Re-run (restart any run).** Every non-running evaluation run now has a **Re-run** button ([components/evals3/EvalRunDetailPage.tsx](components/evals3/EvalRunDetailPage.tsx)) that opens the New-Run composer pre-filled from the run's stored config — same test-case sources, agent, evaluator, judge model, and benchmark association ([components/evals3/NewRunPage.tsx](components/evals3/NewRunPage.tsx) seeds from router `state.restartFrom` and forwards `evaluatorId`). The agent's model is resolved from its config. e2e: [tests/e2e/restart-run.spec.ts](tests/e2e/restart-run.spec.ts).
 
