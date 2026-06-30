@@ -13,6 +13,7 @@ import { EvaluationReport, BenchmarkRun, ImprovementStrategy } from '@/types';
 import { cn } from '@/lib/utils';
 import { RunScore } from '@/components/RunScore';
 import { getJudgeMatcherResults } from '@/lib/matchers/judgeAccessor';
+import { Markdown } from '@/components/ui/markdown';
 
 interface JudgeSectionProps {
   runs: BenchmarkRun[];
@@ -138,17 +139,17 @@ const RunJudgeCard: React.FC<{
                       )}
                     </div>
                     {m.reasoning && (
-                      <p className="text-xs text-muted-foreground mt-1.5 leading-relaxed whitespace-pre-wrap break-words">
+                      <Markdown className="text-xs text-muted-foreground mt-1.5 leading-relaxed break-words">
                         {m.reasoning}
-                      </p>
+                      </Markdown>
                     )}
                   </div>
                 ))}
               </div>
             ) : (
-              <p className="text-xs text-muted-foreground bg-muted/30 p-2 rounded leading-relaxed whitespace-pre-wrap break-words">
+              <Markdown className="text-xs text-muted-foreground bg-muted/30 p-2 rounded leading-relaxed break-words">
                 {report.llmJudgeReasoning || 'No judge reasoning available.'}
-              </p>
+              </Markdown>
             )}
           </CollapsibleContent>
         </Collapsible>

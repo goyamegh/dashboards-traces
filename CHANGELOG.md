@@ -10,6 +10,7 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ## [Unreleased]
 
 ### Added
+- **Comparison page polish**: top **Evaluations** nav now opens Evaluation Runs (not Benchmarks); the AI deep-dive also compares the model each agent actually ran (`gen_ai.request.model`); judge reasoning and trajectory content are now markdown-rendered.
 - **Re-run (restart any run).** Every non-running evaluation run now has a **Re-run** button ([components/evals3/EvalRunDetailPage.tsx](components/evals3/EvalRunDetailPage.tsx)) that opens the New-Run composer pre-filled from the run's stored config — same test-case sources, agent, evaluator, judge model, and benchmark association ([components/evals3/NewRunPage.tsx](components/evals3/NewRunPage.tsx) seeds from router `state.restartFrom` and forwards `evaluatorId`). The agent's model is resolved from its config. e2e: [tests/e2e/restart-run.spec.ts](tests/e2e/restart-run.spec.ts).
 
 ### Fixed
