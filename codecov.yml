@@ -1,0 +1,3 @@
+# cli/** is subprocess-integration-tested (jest can't instrument subprocesses)
+ignore:
+  - "cli/**"
