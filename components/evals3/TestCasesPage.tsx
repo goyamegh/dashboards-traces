@@ -17,7 +17,7 @@ import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { usePersistedSet } from '@/hooks/usePersistedSet';
 import { PREFS_KEYS } from '@/lib/preferences';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   ChevronRight, ChevronDown, CheckCircle2, XCircle, AlertTriangle,
   Loader2, Clock, Search, RefreshCw, Activity, BarChart3,
@@ -120,6 +120,15 @@ export const TestCasesPage4: React.FC = () => {
   const [openPopoverId, setOpenPopoverId] = useState<string | null>(null);
   const [selectedBenchmark, setSelectedBenchmark] = usePersistedState<string>(PREFS_KEYS.benchmarkFilter, 'all');
   const [selectedLabel, setSelectedLabel] = usePersistedState<string>('test-cases:labelFilter', ALL_LABELS);
+  // A `?label=foo` URL param (e.g. from clicking a label on the comparison
+  // table) drives the existing label filter so the click "does something" —
+  // reusing the dropdown rather than introducing a second filter surface.
+  const [searchParams] = useSearchParams();
+  useEffect(() => {
+    const urlLabel = searchParams.get('label');
+    if (urlLabel && urlLabel !== selectedLabel) setSelectedLabel(urlLabel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
   const [isScrolled, setIsScrolled] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);

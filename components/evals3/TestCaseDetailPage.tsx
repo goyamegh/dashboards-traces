@@ -57,6 +57,17 @@ import { runServerEvaluation } from '@/services/client/evaluationApi';
 import { DEFAULT_CONFIG, getPreferredDefaultAgentKey } from '@/lib/constants';
 import { PREFS_KEYS } from '@/lib/preferences';
 import { ENV_CONFIG } from '@/lib/config';
+import { Markdown, hasRealMarkdown } from '@/components/ui/markdown';
+
+// Render a test-case prompt ("task definition"): as markdown when it actually
+// contains markdown (so headings / bullet lists indent instead of collapsing
+// flush-left), otherwise as plain text with newlines preserved.
+function renderPrompt(text?: string): React.ReactNode {
+  if (!text) return '—';
+  return hasRealMarkdown(text)
+    ? <Markdown>{text}</Markdown>
+    : <span className="whitespace-pre-wrap">{text}</span>;
+}
 
 type TimeRange = '1h' | '6h' | '1d' | '7d' | '30d' | 'all';
 const TIME_OPTIONS: { value: TimeRange; label: string }[] = [
@@ -425,7 +436,7 @@ export const TestCaseDetailPage: React.FC = () => {
                   <div>
                     <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Input</div>
                     <div className="text-[10px] bg-muted/40 rounded px-2 py-1.5 border border-border max-h-20 overflow-y-auto break-words leading-relaxed">
-                      {testCase.initialPrompt || '—'}
+                      {renderPrompt(testCase.initialPrompt)}
                     </div>
                   </div>
                   {/* Expected outcomes */}
@@ -671,7 +682,7 @@ export const TestCaseDetailPage: React.FC = () => {
               <div>
                 <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Input</div>
                 <div className="text-xs bg-muted/40 rounded px-3 py-2 border border-border break-words leading-relaxed">
-                  {testCase.initialPrompt || '—'}
+                  {renderPrompt(testCase.initialPrompt)}
                 </div>
               </div>
               {testCase.expectedOutcomes?.length > 0 && (
@@ -978,7 +989,7 @@ const LiveRunPanel: React.FC<LiveRunPanelProps> = ({
             <div className="mb-3">
               <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-1.5">Input</h3>
               <div className="text-xs bg-muted/40 rounded px-3 py-2 border border-border break-words leading-relaxed whitespace-pre-wrap">
-                {testCase.initialPrompt || '—'}
+                {renderPrompt(testCase.initialPrompt)}
               </div>
             </div>
             <h3 className="text-sm font-semibold text-muted-foreground uppercase tracking-wider mb-2">Test Case Output</h3>

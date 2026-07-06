@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { calculateRunStats, getReportIdsFromRun } from '@/lib/runStats';
+import { calculateRunStats, getReportIdsFromRun, bucketRunResults } from '@/lib/runStats';
 import type { BenchmarkRun, EvaluationReport } from '@/types';
 
 describe('runStats', () => {
@@ -355,6 +355,35 @@ describe('runStats', () => {
 
       expect(reportIds).toHaveLength(1);
       expect(reportIds).toContain('report-1');
+    });
+  });
+
+  describe('bucketRunResults', () => {
+    // The single source of truth for pass/fail/errored counts (runs list AND
+    // comparison), computed from persisted per-case verdicts — no reports.
+    it('counts a completed result with no verdict as errored, not passed (#242)', () => {
+      const b = bucketRunResults({
+        a: { status: 'completed', passFailStatus: 'passed' },
+        b: { status: 'completed', passFailStatus: 'passed' },
+        c: { status: 'completed' }, // judge errored — no verdict persisted
+      });
+      expect(b).toEqual({ passed: 2, failed: 0, errored: 1, pending: 0, total: 3 });
+    });
+
+    it('buckets failed/cancelled as failed and pending/running as pending', () => {
+      const b = bucketRunResults({
+        a: { status: 'completed', passFailStatus: 'passed' },
+        b: { status: 'failed', passFailStatus: 'failed' },
+        c: { status: 'cancelled' },
+        d: { status: 'running' },
+        e: { status: 'pending' },
+      });
+      expect(b).toEqual({ passed: 1, failed: 2, errored: 0, pending: 2, total: 5 });
+    });
+
+    it('handles empty/undefined results', () => {
+      expect(bucketRunResults({})).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
+      expect(bucketRunResults(undefined)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
     });
   });
 });

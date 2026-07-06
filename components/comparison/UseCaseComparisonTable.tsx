@@ -14,13 +14,16 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import { Badge } from '@/components/ui/badge';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { CopyButton } from '@/components/ui/copy-button';
 import { ScrollArea, ScrollBar } from '@/components/ui/scroll-area';
 import { ChevronDown, ChevronRight, GitCompare } from 'lucide-react';
 import { TestCaseComparisonRow, BenchmarkRun, EvaluationReport } from '@/types';
 import { MetricCell, EvaluatorType } from './MetricCell';
+import { Skeleton } from '@/components/ui/skeleton';
 import { VersionIndicator } from './VersionIndicator';
 import { UseCaseExpandedRow } from './UseCaseExpandedRow';
-import { cn, getLabelColor } from '@/lib/utils';
+import { cn, getLabelColor, getModelName, formatRelativeTime } from '@/lib/utils';
 import { calculateRowStatus, calculateCombinedScore, RowStatus } from '@/services/comparisonService';
 import { extractFirstDivergence } from '@/services/trajectoryDiffService';
 import { DEFAULT_CONFIG } from '@/lib/constants';
@@ -31,6 +34,59 @@ import { getClusterDotColor } from './FailureClusterPanel';
 const getAgentName = (agentKey: string): string => {
   const agent = DEFAULT_CONFIG.agents.find(a => a.key === agentKey);
   return agent?.name || agentKey;
+};
+
+/**
+ * LabelFilterBadge — a label rendered as a button that filters the comparison
+ * table to that label (in place), instead of navigating away. stopPropagation
+ * keeps the click from also expanding the row.
+ */
+const LabelFilterBadge: React.FC<{ label: string; active?: boolean; onFilter?: (l: string) => void; onAfter?: () => void }> = ({ label, active, onFilter, onAfter }) => (
+  <button
+    type="button"
+    onClick={(e) => { e.stopPropagation(); onFilter?.(label); onAfter?.(); }}
+    title={`Filter to “${label}”`}
+  >
+    <Badge
+      variant="outline"
+      className={cn('text-xs hover:ring-1 hover:ring-ring cursor-pointer', active && 'ring-1 ring-primary', getLabelColor(label))}
+    >
+      {label}
+    </Badge>
+  </button>
+);
+
+/**
+ * LabelOverflow — the clickable "+N" badge. Opens a popover listing ALL labels
+ * (each filters the table to that label). The wrapping span stops the click
+ * from also expanding the table row.
+ */
+const LabelOverflow: React.FC<{ labels: string[]; activeLabel?: string | null; onFilterLabel?: (l: string) => void }> = ({ labels, activeLabel, onFilterLabel }) => {
+  const [open, setOpen] = useState(false);
+  const hidden = labels.length - 2;
+  if (hidden <= 0) return null;
+  return (
+    <span onClick={(e) => e.stopPropagation()}>
+      <Popover open={open} onOpenChange={setOpen}>
+        <PopoverTrigger>
+          <button
+            type="button"
+            className="text-xs text-muted-foreground hover:text-foreground rounded px-1 hover:bg-muted/60 transition-colors cursor-pointer"
+            title="Show all labels"
+          >
+            +{hidden}
+          </button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-auto max-w-[280px] p-2">
+          <div className="flex flex-wrap gap-1.5">
+            {labels.map((label) => (
+              <LabelFilterBadge key={label} label={label} active={label === activeLabel} onFilter={onFilterLabel} onAfter={() => setOpen(false)} />
+            ))}
+          </div>
+        </PopoverContent>
+      </Popover>
+    </span>
+  );
 };
 
 interface DivergencePreviewRowProps {
@@ -153,10 +209,16 @@ interface UseCaseComparisonTableProps {
   rows: TestCaseComparisonRow[];
   runs: BenchmarkRun[];
   reports: Record<string, EvaluationReport>;
+  /** Reports still loading (phase 2) — cells show a skeleton, not empty. */
+  reportsLoading?: boolean;
   referenceRunId?: string;
   visibleEvaluators?: Set<EvaluatorType>;
   /** Map of testCaseId → cluster index, used to draw a colored dot per row */
   clusterByCaseId?: Map<string, number>;
+  /** Click a label to filter the table to test cases carrying it (in place). */
+  onFilterLabel?: (label: string) => void;
+  /** The currently-active label filter, for highlighting. */
+  activeLabel?: string | null;
   trajectoryRunPair?: [string, string] | null;
   trajectoryTargetTestCase?: string | null;
   onTrajectoryRequest?: (testCaseId: string) => void;
@@ -177,9 +239,12 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
   rows,
   runs,
   reports,
+  reportsLoading,
   referenceRunId: propReferenceRunId,
   visibleEvaluators,
   clusterByCaseId,
+  onFilterLabel,
+  activeLabel,
   onTrajectoryRequest,
   spanDeepLink,
   windowAgentsByRunId,
@@ -245,11 +310,23 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
               <TableHead className="w-72 sticky left-0 bg-background z-10">
                 Test Case
               </TableHead>
-              {runs.map((run) => (
-                <TableHead key={run.id} className="text-center min-w-32">
-                  <div className="truncate">{getAgentName(run.agentKey)}</div>
-                  <div className="text-[10px] text-muted-foreground font-normal truncate">
+              {runs.map((run, idx) => (
+                <TableHead key={run.id} className="text-center min-w-[140px] align-top">
+                  {/* Distinguishable header: index + run name, then agent·model,
+                      then relative date — so two runs with the same name (e.g.
+                      repeated "CLI Run") are still tellable apart. */}
+                  <div className="font-medium truncate" title={run.name}>
+                    <span className="text-muted-foreground mr-1">#{idx + 1}</span>
                     {run.name}
+                  </div>
+                  <div
+                    className="text-[10px] text-muted-foreground font-normal truncate"
+                    title={`${getAgentName(run.agentKey)} · ${getModelName(run.modelId)}`}
+                  >
+                    {getAgentName(run.agentKey)} · {getModelName(run.modelId)}
+                  </div>
+                  <div className="text-[10px] text-muted-foreground font-normal truncate">
+                    {formatRelativeTime(run.createdAt)}
                   </div>
                 </TableHead>
               ))}
@@ -297,7 +374,7 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
                               />
                             )}
                             <Link
-                              to={`/evals3/test-cases/${row.testCaseId}`}
+                              to={`/evaluations/test-cases/${row.testCaseId}`}
                               className="font-medium truncate max-w-48 hover:underline text-foreground"
                               onClick={(e) => e.stopPropagation()}
                             >
@@ -326,23 +403,24 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
                               )
                             )}
                           </div>
-                          <div className="text-[10px] text-muted-foreground font-mono truncate max-w-48">
-                            {row.testCaseId}
+                          <div className="text-[10px] text-muted-foreground font-mono truncate max-w-48 inline-flex items-center gap-1">
+                            <span className="truncate">{row.testCaseId}</span>
+                            <CopyButton value={row.testCaseId} title="Copy test case id" size={10} className="shrink-0" />
                           </div>
                           <div className="flex items-center gap-2 flex-wrap">
                             {(row.labels || []).slice(0, 2).map((label) => (
-                              <Badge
+                              // Clicking a label filters the comparison table to
+                              // test cases carrying it (in place); stopPropagation
+                              // keeps it from also expanding the row.
+                              <LabelFilterBadge
                                 key={label}
-                                variant="outline"
-                                className={cn('text-xs', getLabelColor(label))}
-                              >
-                                {label}
-                              </Badge>
+                                label={label}
+                                active={label === activeLabel}
+                                onFilter={onFilterLabel}
+                              />
                             ))}
                             {(row.labels || []).length > 2 && (
-                              <span className="text-xs text-muted-foreground">
-                                +{(row.labels || []).length - 2}
-                              </span>
+                              <LabelOverflow labels={row.labels || []} activeLabel={activeLabel} onFilterLabel={onFilterLabel} />
                             )}
                           </div>
                           {(rowStatus === 'regression' || rowStatus === 'mixed') && (
@@ -360,16 +438,29 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
                       const report = reportId ? reports[reportId] : undefined;
                       const annotationCount = report?.annotations?.length ?? 0;
 
+                      // The run DID run this case (its raw result carries a
+                      // reportId) but the report hasn't arrived yet — show a
+                      // skeleton instead of the empty 'missing' state.
+                      const isLoadingCell = !!reportsLoading && result.status === 'missing'
+                        && !!run.results?.[row.testCaseId]?.reportId;
+
                       return (
                         <TableCell key={run.id} className="p-0">
-                          <MetricCell
-                            result={result}
-                            isReference={isReference}
-                            baselineAccuracy={referenceAccuracy}
-                            baselineFaithfulness={referenceResult?.faithfulness}
-                            annotationCount={annotationCount}
-                            visibleEvaluators={visibleEvaluators}
-                          />
+                          {isLoadingCell ? (
+                            <div className="px-3 py-2 space-y-1" data-testid="metric-cell-loading">
+                              <Skeleton className="h-3 w-14" />
+                              <Skeleton className="h-3 w-10" />
+                            </div>
+                          ) : (
+                            <MetricCell
+                              result={result}
+                              isReference={isReference}
+                              baselineAccuracy={referenceAccuracy}
+                              baselineFaithfulness={referenceResult?.faithfulness}
+                              annotationCount={annotationCount}
+                              visibleEvaluators={visibleEvaluators}
+                            />
+                          )}
                         </TableCell>
                       );
                     })}

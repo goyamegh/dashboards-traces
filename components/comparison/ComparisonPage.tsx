@@ -15,18 +15,16 @@ import {
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { GitCompare, ChevronDown, ChevronRight, X, Check, Loader2 } from 'lucide-react';
+import { GitCompare, ChevronDown, ChevronRight, X, Check, Loader2, RotateCcw } from 'lucide-react';
 import {
   Collapsible,
   CollapsibleContent,
   CollapsibleTrigger,
 } from '@/components/ui/collapsible';
-import { RunSummaryTable } from './RunSummaryTable';
-import { AggregateMetricsChart } from './AggregateMetricsChart';
-import { MetricsTimeSeriesChart } from './MetricsTimeSeriesChart';
+import { MetricComparisonPanel } from './MetricComparisonPanel';
+import { ComparisonSearch } from './ComparisonSearch';
 import { UseCaseComparisonTable } from './UseCaseComparisonTable';
 import { RunPairSelector } from './RunPairSelector';
-import { ModeToggle } from './ModeToggle';
 import { VerdictStrip } from './VerdictStrip';
 import { ComparisonDeepDive, DeepDiveRunMeta } from './ComparisonDeepDive';
 import { FailureClusterPanel } from './FailureClusterPanel';
@@ -35,7 +33,7 @@ import { extractFirstDivergence } from '@/services/trajectoryDiffService';
 import type { FailureCluster, FailureCaseEvidenceInput } from '@/services/client/comparisonClusterApi';
 import { Breadcrumbs } from '@/components/evals3/Breadcrumbs';
 import { asyncBenchmarkStorage, asyncRunStorage, asyncTestCaseStorage } from '@/services/storage';
-import { listEvaluationRuns, getEvaluationRun } from '@/services/client';
+import { listEvaluationRuns, getEvaluationRun, executeEvaluationRun } from '@/services/client';
 import {
   calculateRunAggregates,
   buildTestCaseComparisonRows,
@@ -54,7 +52,7 @@ import {
 import { fetchBatchMetrics } from '@/services/metrics';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatRelativeTime, getModelName } from '@/lib/utils';
-import { Category, Benchmark, BenchmarkRun, EvaluationReport, RunAggregateMetrics, TestCaseComparisonRow, TraceMetrics, TestCase } from '@/types';
+import { Category, Benchmark, BenchmarkRun, EvaluationReport, EvaluationRun, RunAggregateMetrics, TestCaseComparisonRow, TraceMetrics, TestCase } from '@/types';
 
 type StatusFilter = 'all' | 'passed' | 'failed' | 'mixed';
 
@@ -70,130 +68,6 @@ interface RunPoolEntry {
 }
 
 
-// ─── Run Multi-Select Dropdown ───────────────────────────────────────────────
-
-function RunMultiSelect({
-  runs,
-  selectedIds,
-  onToggle,
-  onSelectAll,
-  getRunBenchmarkLabel,
-}: {
-  runs: BenchmarkRun[];
-  selectedIds: string[];
-  onToggle: (id: string) => void;
-  onSelectAll: (ids: string[]) => void;
-  getRunBenchmarkLabel?: (runId: string) => string | undefined;
-}) {
-  const [open, setOpen] = useState(false);
-  const [filter, setFilter] = useState('');
-  const selectedCount = selectedIds.length;
-  const allSelected = selectedCount === runs.length && runs.length > 0;
-
-  const visibleRuns = useMemo(() => {
-    const q = filter.trim().toLowerCase();
-    if (!q) return runs;
-    return runs.filter(run => {
-      const label = getRunBenchmarkLabel?.(run.id) ?? '';
-      return (
-        (run.name ?? '').toLowerCase().includes(q) ||
-        (run.id ?? '').toLowerCase().includes(q) ||
-        getAgentName(run.agentKey).toLowerCase().includes(q) ||
-        getModelName(run.modelId).toLowerCase().includes(q) ||
-        label.toLowerCase().includes(q)
-      );
-    });
-  }, [runs, filter, getRunBenchmarkLabel]);
-
-  return (
-    <div className="flex items-center gap-2 flex-wrap">
-      <Popover open={open} onOpenChange={setOpen}>
-        <PopoverTrigger asChild>
-          <Button variant="outline" size="sm" className="h-7 gap-2 text-xs font-normal w-[220px] justify-between" data-testid="run-multiselect-trigger">
-            <span>{selectedCount} of {runs.length} runs selected</span>
-            <ChevronDown size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
-          </Button>
-        </PopoverTrigger>
-        <PopoverContent className="w-[360px] p-0" align="start">
-          <div className="p-2 border-b flex items-center justify-between">
-            <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-wider">Select runs to compare</span>
-            <button
-              onClick={() => onSelectAll(allSelected ? [] : visibleRuns.map(r => r.id))}
-              className="text-[10px] text-primary hover:underline"
-            >
-              {allSelected ? 'Deselect all' : 'Select all'}
-            </button>
-          </div>
-          {runs.length > 6 && (
-            <div className="p-2 border-b">
-              <input
-                value={filter}
-                onChange={(e) => setFilter(e.target.value)}
-                placeholder="Filter runs by name, agent, benchmark…"
-                className="w-full h-7 px-2 text-xs rounded border border-border bg-background outline-none focus:border-primary"
-                data-testid="run-multiselect-filter"
-              />
-            </div>
-          )}
-          <div className="max-h-[260px] overflow-y-auto p-1">
-            {visibleRuns.length === 0 && (
-              <div className="px-2 py-3 text-[11px] text-muted-foreground text-center">No runs match “{filter}”</div>
-            )}
-            {visibleRuns.map(run => {
-              const isSelected = selectedIds.includes(run.id);
-              const canDeselect = selectedIds.length > 1;
-              const benchmarkLabel = getRunBenchmarkLabel?.(run.id);
-              return (
-                <button
-                  key={run.id}
-                  onClick={() => {
-                    if (isSelected && !canDeselect) return;
-                    onToggle(run.id);
-                  }}
-                  disabled={isSelected && !canDeselect}
-                  className={`w-full flex items-center gap-2 px-2 py-1.5 rounded text-xs hover:bg-muted/50 transition-colors text-left ${
-                    isSelected ? 'bg-primary/5' : ''
-                  } ${isSelected && !canDeselect ? 'opacity-60' : ''}`}
-                >
-                  <div className={`w-4 h-4 rounded border flex items-center justify-center shrink-0 ${
-                    isSelected ? 'bg-primary border-primary text-primary-foreground' : 'border-muted-foreground/40'
-                  }`}>
-                    {isSelected && <Check size={10} />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium truncate">{run.name}</div>
-                    <div className="text-[10px] text-muted-foreground truncate">
-                      {getAgentName(run.agentKey)} · {getModelName(run.modelId)} · {formatRelativeTime(run.createdAt)}
-                      {benchmarkLabel ? ` · ${benchmarkLabel}` : ''}
-                    </div>
-                  </div>
-                </button>
-              );
-            })}
-          </div>
-        </PopoverContent>
-      </Popover>
-      {runs.filter(r => selectedIds.includes(r.id)).map(run => (
-        <Badge
-          key={run.id}
-          variant="secondary"
-          className="text-[10px] gap-1 px-2 py-0.5 font-normal"
-        >
-          {run.name}
-          {selectedIds.length > 1 && (
-            <button
-              onClick={() => onToggle(run.id)}
-              className="hover:text-foreground ml-0.5"
-              aria-label={`Remove ${run.name}`}
-            >
-              <X size={10} />
-            </button>
-          )}
-        </Badge>
-      ))}
-    </div>
-  );
-}
 
 
 // ─── Main Component ──────────────────────────────────────────────────────────
@@ -218,6 +92,10 @@ export const ComparisonPage: React.FC = () => {
   // itself is a test-case-level primitive and does not require a benchmark.
   const [runPool, setRunPool] = useState<RunPoolEntry[]>([]);
   const [reports, setReports] = useState<Record<string, EvaluationReport>>({});
+  // True while the per-cell reports are still loading (phase 2, after the runs
+  // load). Without this the table renders every cell as 'missing' (empty) for
+  // the whole fetch window — the "no runs on each test case" symptom.
+  const [reportsLoading, setReportsLoading] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [traceMetricsMap, setTraceMetricsMap] = useState<Map<string, TraceMetrics>>(new Map());
 
@@ -233,8 +111,11 @@ export const ComparisonPage: React.FC = () => {
   const [selectedRunIds, setSelectedRunIds] = useState<string[]>([]);
 
   // State for filters
-  const [categoryFilter, setCategoryFilter] = useState<Category | 'all'>('all');
+  const [labelFilter, setLabelFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [testCaseFilter, setTestCaseFilter] = useState<string | null>(null);
+  // All standalone evaluation runs (for the run-search universe).
+  const [allEvalRuns, setAllEvalRuns] = useState<EvaluationRun[]>([]);
   // 'differences' means "show only the rows where the runs disagree" (regression
   // | improvement | mixed) — hides 'neutral' rows so failures stand out. Default
   // to it; the user came here for differences, not to scroll past green checkmarks.
@@ -297,6 +178,7 @@ export const ComparisonPage: React.FC = () => {
           listEvaluationRuns({ size: 500 }).then(r => r.evaluationRuns).catch(() => []),
         ]);
         setAllBenchmarks(bms);
+        setAllEvalRuns(evalRuns);
         const benchNameById = new Map(bms.map(b => [b.id, b.name] as const));
 
         const pool: RunPoolEntry[] = [];
@@ -408,15 +290,16 @@ export const ComparisonPage: React.FC = () => {
       });
       const missing = Array.from(reportIds).filter(id => !reports[id]);
       if (missing.length === 0) return;
-      const fetched: Record<string, EvaluationReport> = {};
-      await Promise.all(
-        missing.map(async (reportId) => {
-          const report = await asyncRunStorage.getReportById(reportId);
-          if (report) fetched[reportId] = report;
-        })
-      );
-      if (Object.keys(fetched).length > 0) {
-        setReports(prev => ({ ...prev, ...fetched }));
+      setReportsLoading(true);
+      try {
+        // ONE batched request (server fans out in parallel) instead of N
+        // per-report round-trips — cells populate in a single OpenSearch hop.
+        const fetched = await asyncRunStorage.getReportsByIds(missing);
+        if (Object.keys(fetched).length > 0) {
+          setReports(prev => ({ ...prev, ...fetched }));
+        }
+      } finally {
+        setReportsLoading(false);
       }
     };
     loadReports();
@@ -556,6 +439,49 @@ export const ComparisonPage: React.FC = () => {
 
   const allComparisonRows = useMemo((): TestCaseComparisonRow[] => buildTestCaseComparisonRows(selectedRuns, reports, getTestCaseMeta), [selectedRuns, reports, getTestCaseMeta]);
 
+  // ── Re-run comparison ───────────────────────────────────────────────
+  // Re-execute every compared run's config on the SAME test cases, then open
+  // the fresh comparison. Enabled ONLY when the runs are fully comparable
+  // (identical test-case sets) — otherwise "re-run the comparison" is
+  // ill-defined. Each run keeps its own agent/model/evaluator/judge; only the
+  // test-case set is pinned to the shared intersection. Navigates as soon as
+  // both runs START (the runs finish server-side regardless of the client).
+  const [rerunning, setRerunning] = useState(false);
+  const handleRerunComparison = useCallback(() => {
+    if (!overlap.fullyOverlapping || rerunning) return;
+    const ids = allComparisonRows.map(r => r.testCaseId);
+    if (ids.length === 0) return;
+    if (!window.confirm(
+      `Re-run ${selectedRuns.length} agent config(s) on the same ${ids.length} test case${ids.length === 1 ? '' : 's'}? This launches fresh evaluation runs.`
+    )) return;
+    setRerunning(true);
+    const newRunId: Record<string, string> = {};
+    const openWhenAllStarted = () => {
+      if (selectedRuns.every(r => newRunId[r.id])) {
+        navigate(`/compare?runs=${selectedRuns.map(r => newRunId[r.id]).join(',')}`);
+      }
+    };
+    selectedRuns.forEach(run => {
+      executeEvaluationRun(
+        {
+          name: `Re-run: ${run.name || getAgentName(run.agentKey)}`,
+          sources: [{ type: 'test-case-ids', ids }] as any,
+          agentKey: run.agentKey,
+          modelId: (run as any).modelId ?? '',
+          evaluatorId: (run as any).evaluatorId,
+          judgeModelId: (run as any).judgeModelId,
+          benchmarkId: (run as any).benchmarkId,
+          trigger: 'ui',
+        },
+        () => {},
+        (started) => { newRunId[run.id] = started.runId; openWhenAllStarted(); },
+      ).catch(err => {
+        console.error('[ComparisonPage] re-run failed:', err);
+        setRerunning(false);
+      });
+    });
+  }, [overlap.fullyOverlapping, rerunning, allComparisonRows, selectedRuns, navigate]);
+
   const referenceRunId = useMemo(() => {
     const sorted = [...selectedRuns].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
     return sorted[0]?.id ?? '';
@@ -565,7 +491,8 @@ export const ComparisonPage: React.FC = () => {
 
   const filteredRows = useMemo((): TestCaseComparisonRow[] => {
     let rows = allComparisonRows;
-    rows = filterRowsByCategory(rows, categoryFilter);
+    if (labelFilter !== 'all') rows = rows.filter(r => (r.labels || []).includes(labelFilter));
+    if (testCaseFilter) rows = rows.filter(r => r.testCaseId === testCaseFilter);
     rows = filterRowsByStatus(rows, statusFilter, selectedRunIds);
     if (rowStatusFilter === 'differences') {
       rows = rows.filter(row => calculateRowStatus(row, referenceRunId) !== 'neutral');
@@ -577,7 +504,7 @@ export const ComparisonPage: React.FC = () => {
       rows = rows.filter(row => allow.has(row.testCaseId));
     }
     return rows;
-  }, [allComparisonRows, categoryFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId, clusterCaseFilter]);
+  }, [allComparisonRows, labelFilter, testCaseFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId, clusterCaseFilter]);
 
   // If the filter is 'differences' but there are no differences (all-pass /
   // all-fail benchmark), automatically show everything so the user isn't
@@ -707,6 +634,37 @@ export const ComparisonPage: React.FC = () => {
   }, [benchmarkId, selectedRunIds.join(',')]);
 
   const categories = useMemo(() => Array.from(new Set(allComparisonRows.map(r => r.category))).sort(), [allComparisonRows]);
+  // Every label present across the compared rows — powers the "All Labels" filter.
+  const allLabels = useMemo(() => Array.from(new Set(allComparisonRows.flatMap(r => r.labels || []))).sort(), [allComparisonRows]);
+
+  // The run-search universe: every benchmark's runs + standalone eval runs +
+  // whatever is currently loaded, deduped by id — so the search reaches every
+  // run, not just the current benchmark's.
+  const runUniverse = useMemo((): BenchmarkRun[] => {
+    const map = new Map<string, BenchmarkRun>();
+    for (const b of allBenchmarks) for (const r of (b.runs || [])) if (!map.has(r.id)) map.set(r.id, r);
+    for (const er of allEvalRuns) if (!map.has(er.id)) map.set(er.id, er as unknown as BenchmarkRun);
+    for (const r of allRuns) if (!map.has(r.id)) map.set(r.id, r);
+    return Array.from(map.values());
+  }, [allBenchmarks, allEvalRuns, allRuns]);
+
+  // Apply a run selection from the search (can span benchmarks). If every run
+  // is in the current context keep it in place; otherwise switch to a
+  // run-centric comparison (/compare?runs=).
+  const composeSelection = (ids: string[]) => {
+    if (ids.length < 1) return;
+    if (!benchmarkId || ids.every(id => allRuns.some(r => r.id === id))) {
+      updateSelection(ids);
+    } else {
+      navigate(`/compare?runs=${ids.join(',')}`);
+    }
+  };
+  const toggleRunInSearch = (runId: string) => {
+    const next = selectedRunIds.includes(runId)
+      ? selectedRunIds.filter(id => id !== runId)
+      : [...selectedRunIds, runId];
+    composeSelection(next);
+  };
 
   // Collapsible state
   const [summaryOpen, setSummaryOpen] = useState(false);
@@ -724,55 +682,58 @@ export const ComparisonPage: React.FC = () => {
             { label: 'Evaluations', href: '/evaluations/benchmarks' },
             { label: 'Compare Runs' },
           ]}
+          actions={
+            <>
+              <ComparisonSearch
+                benchmarks={allBenchmarks}
+                runs={runUniverse}
+                selectedRunIds={selectedRunIds}
+                testCases={allComparisonRows.map(r => ({ id: r.testCaseId, name: r.testCaseName }))}
+                activeTestCaseId={testCaseFilter}
+                onSelectBenchmark={handleBenchmarkChange}
+                onToggleRun={toggleRunInSearch}
+                onSelectAllRuns={composeSelection}
+                onSelectTestCase={setTestCaseFilter}
+              />
+              <Select value={labelFilter} onValueChange={setLabelFilter}>
+                <SelectTrigger className="w-32 h-7 text-xs"><SelectValue placeholder="Labels" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Labels</SelectItem>
+                  {allLabels.map(l => <SelectItem key={l} value={l}>{l}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
+                <SelectTrigger className="w-24 h-7 text-xs"><SelectValue placeholder="Status" /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Status</SelectItem>
+                  <SelectItem value="passed">Passed</SelectItem>
+                  <SelectItem value="failed">Failed</SelectItem>
+                  <SelectItem value="mixed">Mixed</SelectItem>
+                </SelectContent>
+              </Select>
+              {/* Re-run the comparison — lives in the header (after Status) so it's
+                  always reachable. Disabled unless the runs cover the identical
+                  test-case set; the tooltip explains why when disabled. */}
+              {selectedRuns.length >= 2 && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="h-7 gap-1.5 text-xs"
+                  data-testid="rerun-comparison-btn"
+                  disabled={!overlap.fullyOverlapping || rerunning}
+                  onClick={handleRerunComparison}
+                  title={overlap.fullyOverlapping
+                    ? 'Re-run every compared agent on these exact test cases and open the fresh comparison'
+                    : `Re-run needs all runs to cover the same test cases — they differ by ${overlap.totalTestCases - overlap.sharedTestCases}.`}
+                >
+                  {rerunning ? <Loader2 size={12} className="animate-spin" /> : <RotateCcw size={12} />}
+                  {rerunning ? 'Launching…' : 'Re-run comparison'}
+                </Button>
+              )}
+            </>
+          }
         />
         <h1 className="sr-only" data-testid="comparison-title">Compare Runs</h1>
-        <div className="flex items-center gap-3 flex-wrap">
-          <Select value={benchmarkId || '__all__'} onValueChange={handleBenchmarkChange}>
-            <SelectTrigger className="w-[200px] h-7 text-xs" data-testid="comparison-benchmark-select"><SelectValue placeholder="Select benchmark" /></SelectTrigger>
-            <SelectContent>
-              <SelectItem value="__all__">
-                <span>All runs</span>
-                <span className="text-[10px] text-muted-foreground ml-1">(no benchmark)</span>
-              </SelectItem>
-              {allBenchmarks.map(bm => (
-                <SelectItem key={bm.id} value={bm.id}>
-                  <span>{bm.name}</span>
-                  <span className="text-[10px] text-muted-foreground ml-1">({bm.runs?.length || 0})</span>
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-          <RunMultiSelect
-            runs={allRuns}
-            selectedIds={selectedRunIds}
-            onToggle={toggleRun}
-            onSelectAll={(ids) => updateSelection(ids)}
-            getRunBenchmarkLabel={benchmark ? undefined : getRunBenchmarkLabel}
-          />
-          <ModeToggle
-            mode={mode}
-            detectedMode={detectedMode}
-            onChange={(m) => setModeOverride(m === detectedMode ? null : m)}
-          />
-          <div className="ml-auto flex items-center gap-2">
-            <Select value={categoryFilter} onValueChange={(v) => setCategoryFilter(v as Category | 'all')}>
-              <SelectTrigger className="w-32 h-7 text-xs"><SelectValue placeholder="Category" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Categories</SelectItem>
-                {categories.map(cat => <SelectItem key={cat} value={cat}>{cat}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as StatusFilter)}>
-              <SelectTrigger className="w-24 h-7 text-xs"><SelectValue placeholder="Status" /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Status</SelectItem>
-                <SelectItem value="passed">Passed</SelectItem>
-                <SelectItem value="failed">Failed</SelectItem>
-                <SelectItem value="mixed">Mixed</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
       </div>
 
       {/* ── Scrollable Results Area ─────────────────────────────── */}
@@ -817,7 +778,16 @@ export const ComparisonPage: React.FC = () => {
                 onWindowAgents={(metaRuns: DeepDiveRunMeta[]) => {
                   const m = new Map<string, { serviceName?: string; startedAt: number; endedAt: number }>();
                   metaRuns.forEach((r) => {
-                    if (r.runId) m.set(r.runId, { serviceName: r.serviceName, startedAt: r.startedAt, endedAt: r.endedAt });
+                    const win = { serviceName: r.serviceName, startedAt: r.startedAt, endedAt: r.endedAt };
+                    // Key by reportId AND the deep-dive's (agent) runId. The
+                    // Traces tab looks the window up by the report's *client*
+                    // run id, which toTestCaseRun maps to the OTel traceId — not
+                    // the agent runId the deep-dive returns — so keying only by
+                    // runId missed, the Strategy-C window was never fetched, and
+                    // some cited spans couldn't be opened. reportId is stable on
+                    // both sides; the lookup tries it first.
+                    if (r.reportId) m.set(r.reportId, win);
+                    if (r.runId) m.set(r.runId, win);
                   });
                   setTraceWindowAgents(m);
                 }}
@@ -855,28 +825,13 @@ export const ComparisonPage: React.FC = () => {
                   <span className="text-xs font-medium">Detailed metrics</span>
                   {!summaryOpen && (
                     <span className="text-[10px] text-muted-foreground ml-1">
-                      Full table, radar, and time-series breakdown
+                      Bar chart of quality metrics + full metrics matrix
                     </span>
                   )}
                 </button>
               </CollapsibleTrigger>
               <CollapsibleContent className="space-y-3 mt-2">
-                <RunSummaryTable runs={runAggregates} referenceRunId={referenceRunId} />
-                {mode === 'iterate' && (
-                  <div className="flex flex-col md:flex-row gap-4">
-                    <div className="w-full md:w-[400px] flex-shrink-0">
-                      <AggregateMetricsChart runs={runAggregates} height={240} referenceRunId={referenceRunId} />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <MetricsTimeSeriesChart runs={runAggregates} height={240} />
-                    </div>
-                  </div>
-                )}
-                {mode === 'compare' && (
-                  <div className="w-full md:w-[400px]">
-                    <AggregateMetricsChart runs={runAggregates} height={240} referenceRunId={referenceRunId} />
-                  </div>
-                )}
+                <MetricComparisonPanel runs={runAggregates} />
               </CollapsibleContent>
             </Collapsible>
 
@@ -955,11 +910,14 @@ export const ComparisonPage: React.FC = () => {
 
               {/* Comparison table */}
               <UseCaseComparisonTable
+                reportsLoading={reportsLoading}
                 rows={filteredRows}
                 runs={selectedRuns}
                 reports={reports}
                 referenceRunId={referenceRunId}
                 clusterByCaseId={clusterByCaseId}
+                onFilterLabel={setLabelFilter}
+                activeLabel={labelFilter === 'all' ? null : labelFilter}
                 trajectoryRunPair={trajectoryRunPair}
                 trajectoryTargetTestCase={trajectoryTargetTestCase}
                 spanDeepLink={spanDeepLink}
