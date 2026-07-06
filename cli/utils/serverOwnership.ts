@@ -27,8 +27,6 @@ export type OwnershipAction =
 
 export interface OwnershipDecision {
   action: OwnershipAction;
-  /** Whether the running server was determined to be a foreign instance. */
-  foreign: boolean;
 }
 
 /**
@@ -49,10 +47,10 @@ export function decideServerOwnership(params: {
   const foreign =
     typeof serverCwd === 'string' && serverCwd.length > 0 && serverCwd !== myCwd;
 
-  if (foreign && !allowForeign) return { action: 'refuse', foreign };
-  if (foreign && allowForeign) return { action: 'reuse-foreign', foreign };
+  if (foreign && !allowForeign) return { action: 'refuse' };
+  if (foreign && allowForeign) return { action: 'reuse-foreign' };
   // Same cwd, or no identity to compare → fall through to version/reuse logic.
-  return { action: 'proceed', foreign };
+  return { action: 'proceed' };
 }
 
 /**

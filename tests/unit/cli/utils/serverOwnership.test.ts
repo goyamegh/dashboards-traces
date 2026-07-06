@@ -25,32 +25,32 @@ const OTHER_CWD = '/home/me/agent-health-consolidated';
 describe('decideServerOwnership()', () => {
   it('REFUSES a foreign server (different cwd) when override is off', () => {
     const d = decideServerOwnership({ serverCwd: OTHER_CWD, myCwd: MY_CWD, allowForeign: false });
-    expect(d).toEqual({ action: 'refuse', foreign: true });
+    expect(d).toEqual({ action: 'refuse' });
   });
 
   it('REUSES a foreign server when AH_REUSE_FOREIGN_SERVER override is on', () => {
     const d = decideServerOwnership({ serverCwd: OTHER_CWD, myCwd: MY_CWD, allowForeign: true });
-    expect(d).toEqual({ action: 'reuse-foreign', foreign: true });
+    expect(d).toEqual({ action: 'reuse-foreign' });
   });
 
   it('PROCEEDS for our own server (same cwd) — normal version/reuse logic applies', () => {
     const d = decideServerOwnership({ serverCwd: MY_CWD, myCwd: MY_CWD, allowForeign: false });
-    expect(d).toEqual({ action: 'proceed', foreign: false });
+    expect(d).toEqual({ action: 'proceed' });
   });
 
   it('PROCEEDS when the server reports no instance identity (older build)', () => {
     const d = decideServerOwnership({ serverCwd: undefined, myCwd: MY_CWD, allowForeign: false });
-    expect(d).toEqual({ action: 'proceed', foreign: false });
+    expect(d).toEqual({ action: 'proceed' });
   });
 
   it('PROCEEDS when the reported cwd is an empty string (treated as unknown)', () => {
     const d = decideServerOwnership({ serverCwd: '', myCwd: MY_CWD, allowForeign: false });
-    expect(d).toEqual({ action: 'proceed', foreign: false });
+    expect(d).toEqual({ action: 'proceed' });
   });
 
   it('override does not change behaviour for our own server', () => {
     const d = decideServerOwnership({ serverCwd: MY_CWD, myCwd: MY_CWD, allowForeign: true });
-    expect(d).toEqual({ action: 'proceed', foreign: false });
+    expect(d).toEqual({ action: 'proceed' });
   });
 });
 
