@@ -21,7 +21,7 @@ export default defineConfig(({ mode }) => {
         include: ['components/*', 'hooks/*', 'lib/*', 'App.tsx', 'index.tsx'],
         exclude: ['node_modules', 'tests/', 'dist/', 'server/', 'cli/', '**/*.test.ts'],
         extension: ['.ts', '.tsx', '.js', '.jsx'],
-        requireEnv: true,
+        requireEnv: false,
         forceBuildInstrument: true,
       })
     );
