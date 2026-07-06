@@ -317,14 +317,30 @@ jobs:
           exit 1
 
       - name: Run integration tests with coverage
-        # Coverage is collected for the badge/summary below but NOT gated here:
-        # the global coverageThreshold in jest.config.cjs is a *unit*-coverage
-        # ratchet, and integration tests exercise a different (smaller) slice of
-        # the codebase (~40% lines), so `--coverageThreshold='{}'` disables the
-        # threshold for this run while still emitting the json-summary report.
-        run: npm run test:integration -- --coverage --coverageThreshold='{}' --coverageReporters=json-summary --coverageReporters=json --coverageDirectory=coverage-integration 2>&1 | tee integration-test-output.txt
+        # Coverage is collected for the badge/summary below AND uploaded to
+        # Codecov (flags: integration) so the patch check counts lines exercised
+        # by integration tests, not just unit tests (many CLI/runner paths are
+        # integration-tested by design). NOT gated here: the global
+        # coverageThreshold in jest.config.cjs is a *unit*-coverage ratchet, and
+        # integration tests exercise a different (smaller) slice (~40% lines), so
+        # `--coverageThreshold='{}'` disables the threshold for this run while
+        # still emitting lcov + json-summary.
+        run: npm run test:integration -- --coverage --coverageThreshold='{}' --coverageReporters=json-summary --coverageReporters=json --coverageReporters=lcov --coverageDirectory=coverage-integration 2>&1 | tee integration-test-output.txt
         env:
           AH_PORT: 4001
+
+      - name: Upload integration test coverage to Codecov
+        # Combined with the unit upload, this makes Codecov's patch coverage
+        # count lines hit by EITHER suite (no codecov.yml → default is all-flags
+        # combined). Fixes patch coverage undercounting integration-tested code.
+        uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4
+        with:
+          files: coverage-integration/lcov.info
+          flags: integration
+          name: integration-tests
+          fail_ci_if_error: true
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
       - name: Stop backend server
         if: always()

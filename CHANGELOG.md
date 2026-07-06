@@ -10,6 +10,7 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 ## [Unreleased]
 
 ### Added
+- **codecov patch coverage now counts integration-tested code** (`.github/workflows/ci.yml`): the integration job emitted coverage but never uploaded it, so Codecov's patch check saw only unit coverage and undercounted CLI/runner lines that are integration-tested (5.88% patch). Now emits `lcov` and uploads with `flags: integration`; Codecov combines flags for the patch %.
 - **Re-run (restart any run).** Every non-running evaluation run now has a **Re-run** button ([components/evals3/EvalRunDetailPage.tsx](components/evals3/EvalRunDetailPage.tsx)) that opens the New-Run composer pre-filled from the run's stored config — same test-case sources, agent, evaluator, judge model, and benchmark association ([components/evals3/NewRunPage.tsx](components/evals3/NewRunPage.tsx) seeds from router `state.restartFrom` and forwards `evaluatorId`). The agent's model is resolved from its config. e2e: [tests/e2e/restart-run.spec.ts](tests/e2e/restart-run.spec.ts).
 
 ### Fixed
