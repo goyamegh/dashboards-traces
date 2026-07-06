@@ -1,0 +1,102 @@
+name: cc-vs-pi-redundant-apis
+
+# A/B benchmark: run evals/cc-vs-pi-redundant-apis.eval.js against BOTH
+# claude-code and pi (matrix → separate runners, so no shared-worktree
+# contention), same prompt / judge / evaluator, and upload each agent's
+# scored result as an artifact to compare.
+#
+# Non-gating + expensive (real Bedrock LLM calls for the agent AND the
+# Opus-4.8 judge), so it is manual (workflow_dispatch) — never on push/PR.
+# Requires a Bedrock role secret; skips cleanly where that isn't configured.
+#
+# NOTE: pin actions to commit SHAs before sending upstream (repo convention);
+# version tags are used here for readability on the fork.
+
+on:
+  workflow_dispatch:
+    inputs:
+      published_version:
+        description: "@goyamegh/agent-health version to run with"
+        default: "0.5.21"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write   # AWS OIDC → Bedrock
+
+jobs:
+  benchmark:
+    # Bedrock creds only exist where BEDROCK_ROLE_ARN is set (skip on forks without it).
+    if: ${{ github.repository == 'goyamegh/dashboards-traces' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false           # one agent failing shouldn't cancel the other
+      matrix:
+        include:
+          - agent: claude-code
+            model: claude-sonnet-4.6
+          - agent: pi
+            model: amazon-bedrock/anthropic.claude-sonnet-4-6
+    env:
+      AH_VERSION: ${{ github.event.inputs.published_version || '0.5.21' }}
+      AH_PORT: "4191"                 # keep off the default :4001
+      AWS_REGION: us-east-1
+      AH_SUPPRESS_EXPERIMENTAL: "1"
+      CLAUDE_CODE_USE_BEDROCK: "1"    # claude-code agent → Bedrock, not the Anthropic API
+    steps:
+      # The eval audits its working directory (CODEBASE_PATH = process.cwd()),
+      # so the checked-out agent-health repo IS the codebase under audit.
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # Bedrock powers both the coding agent and the Opus-4.8 judge.
+      - name: Configure AWS credentials (Bedrock)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.BEDROCK_ROLE_ARN }}
+          aws-region: us-east-1
+
+      # The agent binary. Adjust the package if your agent CLI differs.
+      - name: Install Claude Code CLI
+        if: matrix.agent == 'claude-code'
+        run: npm i -g @anthropic-ai/claude-code
+
+      - name: Install pi CLI
+        if: matrix.agent == 'pi'
+        run: curl -fsSL https://pi.dev/install.sh | bash && echo "$HOME/.pi/bin" >> "$GITHUB_PATH"
+
+      # The eval judges with the custom `api-redundancy-correctness` evaluator.
+      # Seed it into file storage once (persists in .agent-health/data/) so the
+      # benchmark's ephemeral server resolves it. Embedded as base64 to keep this
+      # to exactly two files (the eval + this workflow) with no escaping issues.
+      - name: Seed custom evaluator
+        run: |
+          echo "ewogICJpZCI6ICJhcGktcmVkdW5kYW5jeS1jb3JyZWN0bmVzcyIsCiAgIm5hbWUiOiAiQVBJIFJlZHVuZGFuY3kgQ29ycmVjdG5lc3MiLAogICJkZXNjcmlwdGlvbiI6ICJPZmZsaW5lIExMTS1qdWRnZWQgZXZhbHVhdG9yIGZvciBhIGNvZGluZyBhZ2VudCBhc2tlZCB0byBnbyB0aHJvdWdoIGEgY29kZWJhc2UsIGZpbmQgcmVkdW5kYW50IGN1c3RvbWVyLWV4cG9zZWQgSFRUUCBBUElzLCBleHBsYWluIFdIWSB0aGUgcmVkdW5kYW5jeSBhcm9zZSwgYW5kIHN1Z2dlc3QgaW1wcm92ZW1lbnRzLiBJREVNUE9URU5UIGFuZCBub3QgdGllZCB0byBhIGZpeGVkIGFuc3dlciBrZXk6IGl0IGdyYWRlcyB0aGUgYWdlbnQgYWdhaW5zdCB0aGUgZXZpZGVuY2UgaXQgY2l0ZWQgZnJvbSB0aGUgY29kZSBhdCBydW4gdGltZSBhbmQgZ2VuZXJhbCBwcmluY2lwbGVzLCBub3QgYSBmcm96ZW4gZW5kcG9pbnQgbGlzdC4gVmVyaWZpZXMgZXZlcnkgcmVwb3J0ZWQgZW5kcG9pbnQgaXMgcmVhbCArIGNpdGVkIChubyBoYWxsdWNpbmF0aW9uIFx1MjAxNCBoYXJkIGdhdGUpLCB0aGUgcmVkdW5kYW5jeSBmb2xsb3dzIGZyb20gdGhlIGNvZGUsIHRoZSByb290LWNhdXNlIGV4cGxhbmF0aW9uIGlzIHBsYXVzaWJsZSwgYW5kIHRoZSBpbXByb3ZlbWVudCBzdWdnZXN0aW9ucyBhcmUgc291bmQuIFVzZWQgYnkgdGhlIENsYXVkZSBDb2RlIHZzIFBpIEEvQiAoY2MtdnMtcGktcmVkdW5kYW50LWFwaXMuZXZhbC5qcykuIiwKICAiaXNTeXN0ZW0iOiBmYWxzZSwKICAidGFncyI6IFsKICAgICJjb2RlLWF1ZGl0IiwKICAgICJhcGkiLAogICAgInJlZHVuZGFuY3kiLAogICAgImNsYXVkZS1jb2RlIiwKICAgICJwaSIsCiAgICAicHVibGljIiwKICAgICJpZGVtcG90ZW50IgogIF0sCiAgImN1cnJlbnRWZXJzaW9uIjogMSwKICAic3lzdGVtUHJvbXB0IjogIllvdSBhcmUgYW4gb2ZmbGluZSBldmFsdWF0b3IgZm9yIGEgQ09ESU5HIGFnZW50IHRoYXQgd2FzIHBvaW50ZWQgYXQgYSBjb2RlYmFzZVxuKEFnZW50IEhlYWx0aCkgYW5kIGFza2VkIHRvOiAoMSkgZmluZCBSRURVTkRBTlQgY3VzdG9tZXItZXhwb3NlZCBIVFRQIEFQSVxuZW5kcG9pbnRzLCAoMikgZXhwbGFpbiBXSFkgdGhlIHJlZHVuZGFuY3kgYXJvc2UgKGlmIGFueSksIGFuZCAoMykgc3VnZ2VzdFxud2F5cyB0byBpbXByb3ZlLlxuXG4jIyBHUkFERSBJREVNUE9URU5UTFkgXHUyMDE0IERPIE5PVCBVU0UgQSBGSVhFRCBBTlNXRVIgS0VZXG5UaGUgY29kZWJhc2UgY2hhbmdlcyBvdmVyIHRpbWUgKGVuZHBvaW50cyBnZXQgbWVyZ2VkLCByZW5hbWVkLCByZW1vdmVkKS4gWW91XG5tdXN0IE5PVCBncmFkZSBhZ2FpbnN0IGEgbWVtb3JpemVkIG9yIGhhcmQtY29kZWQgbGlzdCBvZiAndGhlIHJlZHVuZGFudFxuZW5kcG9pbnRzJy4gR3JhZGUgT05MWSBhZ2FpbnN0OlxuICAoYSkgdGhlIGV2aWRlbmNlIHRoZSBhZ2VudCBDSVRFRCBmcm9tIHRoZSBjb2RlIGluIGl0cyBvd24gdHJhamVjdG9yeVxuICAgICAgKGZpbGUgcGF0aHMgKyB0aGUgcm91dGUtZGVmaW5pdGlvbiBsaW5lcyBpdCBhY3R1YWxseSByZWFkKSwgYW5kXG4gIChiKSB0aGUgZ2VuZXJhbCBwcmluY2lwbGVzIGJlbG93LlxuQW4gYWdlbnQgdGhhdCByZXBvcnRzIEZFV0VSIGdyb3VwcywgZWFjaCByZWFsIGFuZCB3ZWxsLWp1c3RpZmllZCwgYmVhdHMgb25lXG50aGF0IGxpc3RzIE1PUkUgYnV0IGludmVudHMgZW5kcG9pbnRzIG9yIGhhbmQtd2F2ZXMuIElmIHRoZSBjb2RlYmFzZSBnZW51aW5lbHlcbmhhcyBsaXR0bGUgb3Igbm8gcmVkdW5kYW5jeSwgYSBzaG9ydCwgY29ycmVjdCwgd2VsbC1ldmlkZW5jZWQgJ25vIHNpZ25pZmljYW50XG5yZWR1bmRhbmN5IGZvdW5kLCBoZXJlIGlzIHdoYXQgSSBzdXJ2ZXllZCcgYW5zd2VyIGlzIEdPT0QgYW5kIHNob3VsZCBzY29yZVxud2VsbCAodHJlYXQgcmVkdW5kYW5jeS1zcGVjaWZpYyBkaW1lbnNpb25zIGFzIE4vQSBhbmQgcmVub3JtYWxpemUpLiBUaGUgc2FtZVxudHJhamVjdG9yeSBtdXN0IGFsd2F5cyBwcm9kdWNlIHRoZSBzYW1lIHZlcmRpY3QuXG5cbiMjIFdIQVQgJ1JFRFVOREFOVCcgTUVBTlNcblR3bysgZW5kcG9pbnRzIGFyZSByZWR1bmRhbnQgd2hlbiBvbmUgaXMgdW5uZWNlc3NhcnkgZ2l2ZW4gYW5vdGhlcjpcbiAgLSB0aGUgU0FNRSByZXNvdXJjZSBleHBvc2VkIHVuZGVyIHR3byBuYW1lcy9wYXRocywgb3JcbiAgLSBhIFNQRUNJQUwtQ0FTRSBlbmRwb2ludCBhIGZpbHRlcmFibGUgbGlzdC9zZWFyY2ggZW5kcG9pbnQgYWxyZWFkeSBjb3ZlcnMuXG5FbmRwb2ludHMgdGhhdCBkaWZmZXIgaW4gbWV0aG9kLCByZXNvdXJjZSwgb3IgYmVoYXZpb3IgYXJlIE5PVCByZWR1bmRhbnQgXHUyMDE0XG5jYWxsaW5nIHRoZW0gcmVkdW5kYW50IGlzIGEgZmFsc2UgcG9zaXRpdmUuXG5cbiMjIElOUFVUU1xuLSBgdHJhamVjdG9yeWA6IHRoZSBhZ2VudCdzIHN0ZXBzIFx1MjAxNCB0b29sIGNhbGxzIChmaWxlIHJlYWRzLCBncmVwcyksIHRoZVxuICBmaWxlcy9saW5lcyBpdCBxdW90ZWQsIGFuZCBpdHMgZmluYWwgYW5zd2VyLlxuLSBgZXhwZWN0ZWRgOiBvcHRpb25hbC4gSWYgcHJlc2VudCwgdHJlYXQgaXQgYXMgQURWSVNPUlkgb25seTsgbmV2ZXIgbGV0IGl0XG4gIG92ZXJyaWRlIHdoYXQgdGhlIGFnZW50J3MgY2l0ZWQgZXZpZGVuY2UgYWN0dWFsbHkgc2hvd3MuXG5cbiMjIERJTUVOU0lPTlMgKHNjb3JlIGVhY2ggMC0xMDA7IG51bGwgaWYgZ2VudWluZWx5IE4vQSwgdGhlbiByZW5vcm1hbGl6ZSlcblxuMS4gZXZpZGVuY2VfcHJvdmVuYW5jZSAgKFwidmVyaWZ5IGFnYWluc3QgdGhlIGNvZGViYXNlXCIpXG4gICBJcyBldmVyeSBlbmRwb2ludCB0aGUgYWdlbnQgcmVwb3J0ZWQgUkVBTCBhbmQgYmFja2VkIGJ5IGV2aWRlbmNlIGl0IGNpdGVkXG4gICBmcm9tIHRoZSBjb2RlIGR1cmluZyB0aGlzIHJ1biAoZmlsZSBwYXRoICsgdGhlIHJvdXRlci48dmVyYj4oLi4uKSBsaW5lKT9cbiAgIDEwMCBldmVyeSByZXBvcnRlZCBlbmRwb2ludCBjaXRlZCBmcm9tIGEgZmlsZSB0aGUgYWdlbnQgcmVhZDsgbm9uZSBpbnZlbnRlZC5cbiAgICA3NSByZWFsIGJ1dCBvbmUgb3IgdHdvIHN0YXRlZCB3aXRob3V0IGEgY2l0YXRpb24uXG4gICAgNTAgbW9zdGx5IHJlYWwgYnV0IGF0IGxlYXN0IG9uZSBjYW5ub3QgYmUgY29uZmlybWVkIGZyb20gdGhlIHRyYWplY3RvcnkuXG4gICAgIDAgZmFicmljYXRlZC9ndWVzc2VkL21pc3F1b3RlZCBhbiBlbmRwb2ludCBub3QgcHJlc2VudCBpbiBhbnkgZmlsZSBpdCByZWFkLlxuXG4yLiBoeXBvdGhlc2lzX3NvdW5kbmVzcyAgKFwiY29uZmlybSB0aGUgcmVkdW5kYW5jeSBoeXBvdGhlc2lzXCIpXG4gICBGb3IgZWFjaCBncm91cCwgZG9lcyB0aGUgcmVkdW5kYW5jeSBjbGFpbSBmb2xsb3cgZnJvbSB0aGUgY2l0ZWQgY29kZSwgd2l0aFxuICAgYSBjb3JyZWN0IGNhbm9uaWNhbC12cy1kdXBsaWNhdGUgKG9yIHNwZWNpYWwtY2FzZSkgY2FsbD9cbiAgIDEwMCBldmVyeSBncm91cCBoYXMgYSBjb3JyZWN0LCBzcGVjaWZpYyBkZWR1cCBoeXBvdGhlc2lzICsganVzdGlmaWVkIGNhbm9uaWNhbC5cbiAgICA3NSBtb3N0bHkgcmlnaHQgYnV0IG9uZSBpcyBzaGFsbG93IG9yIHBpY2tzIHRoZSB3cm9uZyBjYW5vbmljYWwuXG4gICAgNTAgYWJvdXQgaGFsZiBqdXN0aWZpZWQ7IHRoZSByZXN0IGJhcmUgbGlzdHMuXG4gICAgMjUgbGlzdHMgZW5kcG9pbnRzIHdpdGggbGl0dGxlIG9yIG5vIHJlYXNvbmluZy5cbiAgICAgMCByZWFzb25pbmcgYWJzZW50IG9yIHdyb25nIChmYWJyaWNhdGVkIG92ZXJsYXAgLyBmYWxzZSBwb3NpdGl2ZSkuXG5cbjMuIHJvb3RfY2F1c2VfaW5zaWdodCAgKFwidW5kZXJzdGFuZCBXSFkgaXQgaGFwcGVuZWRcIilcbiAgIERvZXMgdGhlIGFnZW50IGdpdmUgYSBwbGF1c2libGUsIGNvZGUtZ3JvdW5kZWQgZXhwbGFuYXRpb24gb2YgSE9XIHRoZVxuICAgcmVkdW5kYW5jeSBhcm9zZSBcdTIwMTQgcGFyYWxsZWwtZXZvbHZlZCByZXNvdXJjZXMsIGJhY2t3YXJkLWNvbXBhdCBhbGlhc2VzLCBhXG4gICByZW5hbWUgdGhhdCBrZXB0IHRoZSBvbGQgcGF0aCwgYSBjb3B5LXBhc3RlZCByb3V0ZSBmYW1pbHksIGV0Yy4/XG4gICAxMDAgYSBzcGVjaWZpYywgcGxhdXNpYmxlIGNhdXNlIHRpZWQgdG8gZXZpZGVuY2UgaW4gdGhlIGNvZGUgZm9yIGVhY2ggZ3JvdXAuXG4gICAgNzUgYSByZWFzb25hYmxlIGdlbmVyYWwgY2F1c2UgYnV0IHRoaW4gb24gZXZpZGVuY2UuXG4gICAgNTAgYSBnZW5lcmljIGd1ZXNzICgncHJvYmFibHkgbGVnYWN5Jykgd2l0aCBubyBncm91bmRpbmcuXG4gICAgMjUgbmFtZXMgcmVkdW5kYW5jeSBidXQgb2ZmZXJzIGVzc2VudGlhbGx5IG5vIHdoeS5cbiAgICAgMCBubyBhdHRlbXB0LCBvciBhbiBleHBsYW5hdGlvbiB0aGF0IGNvbnRyYWRpY3RzIHRoZSBjaXRlZCBjb2RlLlxuICAgTi9BIChudWxsKSBpZiB0aGUgYWdlbnQgY29ycmVjdGx5IGZvdW5kIG5vIHJlZHVuZGFuY3kuXG5cbjQuIGltcHJvdmVtZW50X3F1YWxpdHkgIChcInN1Z2dlc3Qgd2F5cyB0byBpbXByb3ZlXCIpXG4gICBBcmUgdGhlIHN1Z2dlc3RlZCBmaXhlcyBjb25jcmV0ZSwgc2FmZSwgYW5kIGFwcHJvcHJpYXRlIChjb25zb2xpZGF0ZSB0byBhXG4gICBjYW5vbmljYWwgZW5kcG9pbnQsIGRlcHJlY2F0ZSArIGFsaWFzLCByZXBsYWNlIHNwZWNpYWwtY2FzZSByb3V0ZXMgd2l0aFxuICAgcXVlcnkgZmlsdGVycywgZXRjLiksIHdpdGggYmFja3dhcmQtY29tcGF0aWJpbGl0eSBjYWxsZWQgb3V0IHdoZXJlIHJlbGV2YW50P1xuICAgMTAwIGNvbmNyZXRlLCBjb3JyZWN0IGZpeGVzIHBlciBncm91cCArIEJDIGF3YXJlbmVzcy5cbiAgICA3NSByZWFzb25hYmxlIGZpeGVzIGJ1dCBnZW5lcmljIG9yIG1pc3NpbmcgQkMgY29uc2lkZXJhdGlvbnMuXG4gICAgNTAgdmFndWUgYWR2aWNlICgnY2xlYW4gdGhlc2UgdXAnKSB3aXRoIGxpdHRsZSBzcGVjaWZpY2l0eS5cbiAgICAyNSBhIHRva2VuIHN1Z2dlc3Rpb24uXG4gICAgIDAgbm8gc3VnZ2VzdGlvbnMsIG9yIHVuc2FmZS9pbmNvcnJlY3Qgb25lcy5cbiAgIE4vQSAobnVsbCkgaWYgdGhlIGFnZW50IGNvcnJlY3RseSBmb3VuZCBubyByZWR1bmRhbmN5LlxuXG41LiBzY29wZV9jb3JyZWN0bmVzc1xuICAgRGlkIHRoZSBhZ2VudCByZXN0cmljdCBmaW5kaW5ncyB0byBjdXN0b21lci1mYWNpbmcgcm91dGVzIGFuZCBhdm9pZCBwYWRkaW5nXG4gICB3aXRoIGludGVybmFsL2FkbWluL2RlYnVnL2luZ2VzdGlvbiBlbmRwb2ludHMgKC9hcGkvc3RvcmFnZS9hZG1pbi8qLFxuICAgL2FwaS9kZWJ1ZywgL2hlYWx0aCwgKnRlc3QtY29ubmVjdGlvbiosIHRoZSBPVExQIHJlY2VpdmVyKT9cbiAgIDEwMCBjbGVhbiBjdXN0b21lci1mYWNpbmcgc2NvcGU7IG5vIG91dC1vZi1zY29wZSBmYWxzZSBwb3NpdGl2ZXMuXG4gICAgNzUgb25lIGludGVybmFsL2FkbWluIGVuZHBvaW50IHNsaXBwZWQgaW4uXG4gICAgNTAgc2V2ZXJhbCBvdXQtb2Ytc2NvcGUgZW5kcG9pbnRzIHByZXNlbnRlZCBhcyBjdXN0b21lci1BUEkgcmVkdW5kYW5jeS5cbiAgICAgMCB0aGUgYW5zd2VyIGlzIGRvbWluYXRlZCBieSBvdXQtb2Ytc2NvcGUgZW5kcG9pbnRzLlxuXG4jIyBIQVJEIEdBVEVTIChpbmRlcGVuZGVudCBvZiB3ZWlnaHRlZCBzY29yZSlcblNldCBgaGFyZF9nYXRlX2ZhaWxlZDogdHJ1ZWAgYW5kIGxpc3QgdGhlIGdhdGUgaWYgQU5ZIG9mOlxuICAtIGV2aWRlbmNlX3Byb3ZlbmFuY2UgPT0gMCAgKGhhbGx1Y2luYXRlZCAvIGd1ZXNzZWQgLyB1bmNpdGVkIGVuZHBvaW50KS5cbiAgLSBoeXBvdGhlc2lzX3NvdW5kbmVzcyA9PSAwIChmYWJyaWNhdGVkIG92ZXJsYXAgXHUyMDE0IGNhbGxlZCB0aGluZ3MgcmVkdW5kYW50XG4gICAgdGhhdCB0aGUgY2l0ZWQgY29kZSBkb2VzIG5vdCBzdXBwb3J0KS5cbkEgaGFyZC1nYXRlIGZhaWx1cmUgaXMgYSBgZmFpbGVkYCBydW4gcmVnYXJkbGVzcyBvZiB3ZWlnaHRlZF9zY29yZS5cblxuIyMgV0VJR0hURUQgU0NPUkVcbkRlZmF1bHQgd2VpZ2h0cyAoc3VtIHRvIDEuMDsgcmVub3JtYWxpemUgYWNyb3NzIG5vbi1udWxsIGRpbWVuc2lvbnMpOlxuICBldmlkZW5jZV9wcm92ZW5hbmNlICAgMC4zMFxuICBoeXBvdGhlc2lzX3NvdW5kbmVzcyAgMC4yNVxuICByb290X2NhdXNlX2luc2lnaHQgICAgMC4yMFxuICBpbXByb3ZlbWVudF9xdWFsaXR5ICAgMC4xNVxuICBzY29wZV9jb3JyZWN0bmVzcyAgICAgMC4xMFxuQ29tcHV0ZSB3ZWlnaHRlZF9zY29yZSBhcyB0aGUgd2VpZ2h0ZWQgc3VtIG92ZXIgc2NvcmVkIChub24tbnVsbCkgZGltZW5zaW9ucy5cblxucGFzc19mYWlsX3N0YXR1czpcbiAgLSBcImZhaWxlZFwiICAgICBpZiBoYXJkX2dhdGVfZmFpbGVkXG4gIC0gXCJmYWlsZWRcIiAgICAgaWYgd2VpZ2h0ZWRfc2NvcmUgPCA3MFxuICAtIFwiYm9yZGVybGluZVwiIGlmIDcwIDw9IHdlaWdodGVkX3Njb3JlIDwgODBcbiAgLSBcInBhc3NlZFwiICAgICBpZiB3ZWlnaHRlZF9zY29yZSA+PSA4MFxuXG4jIyBPVVRQVVQgRk9STUFUXG5SZXR1cm4gT05MWSBvbmUgSlNPTiBvYmplY3QuIGByZWFzb25pbmdgIGZpcnN0LiBJbiBgcmVhc29uaW5nYCwgbGlzdCBlYWNoIGdyb3VwXG50aGUgYWdlbnQgY2xhaW1lZCwgcXVvdGUgdGhlIGZpbGUvbGluZSBpdCBjaXRlZCAob3Igbm90ZSAnbm8gY2l0YXRpb24nKSwgYW5kXG5zdGF0ZSB3aGV0aGVyIHRoZSBncm91cCBpcyByZWFsLCB3aGV0aGVyIGl0cyBoeXBvdGhlc2lzIGhvbGRzLCB3aGV0aGVyIHRoZSBXSFlcbmlzIHBsYXVzaWJsZSwgYW5kIHdoZXRoZXIgdGhlIEZJWCBpcyBzb3VuZC4gRXhwbGljaXRseSBjYWxsIG91dCBhbnkgZmFicmljYXRlZFxuZW5kcG9pbnQgKHVuY2l0ZWQgLyBub24tZXhpc3RlbnQpIGFuZCBhbnkgZmFicmljYXRlZCBvdmVybGFwLiBEbyBOT1QgY29tcGFyZVxuYWdhaW5zdCBhIHJlbWVtYmVyZWQgbGlzdCBvZiBlbmRwb2ludHMuXG5cbntcbiAgXCJyZWFzb25pbmdcIjogXCI8cGVyLWdyb3VwOiBjaXRlZCBldmlkZW5jZSwgaXMtcmVhbCB2ZXJkaWN0LCBoeXBvdGhlc2lzLCB3aHksXG4gICAgICAgICAgICAgICAgZml4OyBsaXN0IGFueSBmYWJyaWNhdGVkIGVuZHBvaW50cyAvIGZhbHNlIHBvc2l0aXZlczsgbm90ZSBob3dcbiAgICAgICAgICAgICAgICBicm9hZCB0aGUgc3VydmV5IHdhcz5cIixcbiAgXCJzY29yZXNcIjoge1xuICAgIFwiZXZpZGVuY2VfcHJvdmVuYW5jZVwiOiA8MC0xMDA+LFxuICAgIFwiaHlwb3RoZXNpc19zb3VuZG5lc3NcIjogPDAtMTAwPixcbiAgICBcInJvb3RfY2F1c2VfaW5zaWdodFwiOiA8MC0xMDAgb3IgbnVsbD4sXG4gICAgXCJpbXByb3ZlbWVudF9xdWFsaXR5XCI6IDwwLTEwMCBvciBudWxsPixcbiAgICBcInNjb3BlX2NvcnJlY3RuZXNzXCI6IDwwLTEwMD5cbiAgfSxcbiAgXCJ3ZWlnaHRlZF9zY29yZVwiOiA8MC0xMDA+LFxuICBcImhhcmRfZ2F0ZV9mYWlsZWRcIjogPGJvb2w+LFxuICBcImdhdGVzX2ZhaWxlZFwiOiBbPHN0cmluZz4sIC4uLl0sXG4gIFwicGFzc19mYWlsX3N0YXR1c1wiOiBcInBhc3NlZFwiIHwgXCJib3JkZXJsaW5lXCIgfCBcImZhaWxlZFwiLFxuICBcImZhYnJpY2F0ZWRfZW5kcG9pbnRzXCI6IFs8XCJNRVRIT0QgL3BhdGggdGhlIGFnZW50IGludmVudGVkIG9yIGNvdWxkIG5vdCBjaXRlXCI+LCAuLi5dLFxuICBcImZhbHNlX3Bvc2l0aXZlX2dyb3Vwc1wiOiBbPHNob3J0IGxhYmVsIHBlciBncm91cCBpdCB3cm9uZ2x5IGNhbGxlZCByZWR1bmRhbnQ+XSxcbiAgXCJncm91cHNfZm91bmRcIjogWzxzaG9ydCBsYWJlbCBwZXIgcmVhbCwgY2l0ZWQgcmVkdW5kYW50IGdyb3VwPl1cbn1cblxuTm8gcHJvc2Ugb3V0c2lkZSB0aGlzIEpTT04uIiwKICAic2NvcmluZ0NvbmZpZyI6IHsKICAgICJtZXRyaWNzIjogWwogICAgICB7CiAgICAgICAgIm5hbWUiOiAiZXZpZGVuY2VfcHJvdmVuYW5jZSIsCiAgICAgICAgImRlc2NyaXB0aW9uIjogIkV2ZXJ5IHJlcG9ydGVkIGVuZHBvaW50IGlzIHJlYWwgYW5kIGNpdGVkIGZyb20gY29kZSByZWFkIHRoaXMgcnVuIChubyBoYWxsdWNpbmF0aW9ucykiLAogICAgICAgICJ3ZWlnaHQiOiAwLjMsCiAgICAgICAgInNjYWxlIjogMTAwCiAgICAgIH0sCiAgICAgIHsKICAgICAgICAibmFtZSI6ICJoeXBvdGhlc2lzX3NvdW5kbmVzcyIsCiAgICAgICAgImRlc2NyaXB0aW9uIjogIlJlZHVuZGFuY3kgZm9sbG93cyBmcm9tIHRoZSBjaXRlZCBjb2RlICsgY29ycmVjdCBjYW5vbmljYWwgcGljayAobm8gZmFicmljYXRlZCBvdmVybGFwKSIsCiAgICAgICAgIndlaWdodCI6IDAuMjUsCiAgICAgICAgInNjYWxlIjogMTAwCiAgICAgIH0sCiAgICAgIHsKICAgICAgICAibmFtZSI6ICJyb290X2NhdXNlX2luc2lnaHQiLAogICAgICAgICJkZXNjcmlwdGlvbiI6ICJQbGF1c2libGUsIGNvZGUtZ3JvdW5kZWQgZXhwbGFuYXRpb24gb2YgV0hZIHRoZSByZWR1bmRhbmN5IGFyb3NlIiwKICAgICAgICAid2VpZ2h0IjogMC4yLAogICAgICAgICJzY2FsZSI6IDEwMAogICAgICB9LAogICAgICB7CiAgICAgICAgIm5hbWUiOiAiaW1wcm92ZW1lbnRfcXVhbGl0eSIsCiAgICAgICAgImRlc2NyaXB0aW9uIjogIkNvbmNyZXRlLCBzYWZlIGltcHJvdmVtZW50IHN1Z2dlc3Rpb25zIHdpdGggYmFja3dhcmQtY29tcGF0IGF3YXJlbmVzcyIsCiAgICAgICAgIndlaWdodCI6IDAuMTUsCiAgICAgICAgInNjYWxlIjogMTAwCiAgICAgIH0sCiAgICAgIHsKICAgICAgICAibmFtZSI6ICJzY29wZV9jb3JyZWN0bmVzcyIsCiAgICAgICAgImRlc2NyaXB0aW9uIjogIkN1c3RvbWVyLWZhY2luZyBvbmx5OyBleGNsdWRlcyBhZG1pbi9kZWJ1Zy9pbmdlc3Rpb24gcm91dGVzIiwKICAgICAgICAid2VpZ2h0IjogMC4xLAogICAgICAgICJzY2FsZSI6IDEwMAogICAgICB9CiAgICBdLAogICAgInBhc3NUaHJlc2hvbGQiOiA4MCwKICAgICJzY2FsZSI6IDEwMAogIH0sCiAgImluZmVyZW5jZUNvbmZpZyI6IHsKICAgICJ0ZW1wZXJhdHVyZSI6IDEKICB9Cn0=" | base64 -d > /tmp/evaluator.json
+          npx -y @goyamegh/agent-health@${AH_VERSION} serve -p "$AH_PORT" --no-browser &
+          for i in $(seq 1 30); do curl -sf "localhost:${AH_PORT}/health" >/dev/null && break; sleep 2; done
+          curl -sf -X POST "localhost:${AH_PORT}/api/storage/evaluators" \
+            -H 'content-type: application/json' --data-binary @/tmp/evaluator.json
+
+      # Mirrors the run command documented in the eval header. -m avoids the
+      # demo-model mock; the eval itself pins the Opus-4.8 judge + evaluatorId
+      # per judge() call, so no --judge-model here (its alias is broken in the
+      # published pkg; the eval uses the raw profile id).
+      - name: Run cc-vs-pi-redundant-apis (${{ matrix.agent }})
+        run: |
+          npx -y @goyamegh/agent-health@${AH_VERSION} benchmark \
+            -f evals/cc-vs-pi-redundant-apis.eval.js \
+            -a ${{ matrix.agent }} -m "${{ matrix.model }}" \
+            --evaluator api-redundancy-correctness \
+            --export "results-${{ matrix.agent }}.json" --format json \
+            --stop-server -v
+
+      - name: Upload results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: redundant-apis-results-${{ matrix.agent }}
+          path: results-*.json
