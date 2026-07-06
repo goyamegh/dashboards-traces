@@ -248,7 +248,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                         className="h-9 w-full"
                       >
                         <div className="flex items-center w-full">
-                          <Link to="/evaluations/benchmarks" className="flex items-center gap-2 flex-1 min-w-0">
+                          <Link to="/evaluations/runs" className="flex items-center gap-2 flex-1 min-w-0">
                             <Gauge className="h-3.5 w-3.5" />
                             <span className="text-xs">Evaluations</span>
                           </Link>
