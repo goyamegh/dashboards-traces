@@ -54,6 +54,7 @@ import {
   groupSpansByTrace,
   calculateTimeRange,
   computeTraceSummary,
+  getInitialExpandedSpans,
 } from '@/services/traces';
 import { formatDuration, formatCompact } from '@/services/traces/utils';
 import TraceSummaryStrip from './TraceSummaryStrip';
@@ -294,8 +295,7 @@ const ExpandedTraceRow: React.FC<ExpandedTraceRowProps> = ({ trace, onClose }) =
   // toggles aren't reset if the parent happens to re-render with the same
   // logical trace.
   useEffect(() => {
-    const rootIds = new Set(spanTree.map(s => s.spanId));
-    setExpandedSpans(rootIds);
+    setExpandedSpans(getInitialExpandedSpans(spanTree));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [trace.traceId]);
 

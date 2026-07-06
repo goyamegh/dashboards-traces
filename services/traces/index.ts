@@ -255,6 +255,29 @@ export function getSpanColor(span: Span): string {
 }
 
 /**
+ * Compute the initial expanded-spans set for a trace: every root, plus
+ * every ancestor of any ERROR-status span so the failing span is visible
+ * on load instead of hidden behind collapsed parents (TraceTree and
+ * Timeline both key off this set).
+ */
+export function getInitialExpandedSpans(spanTree: Span[]): Set<string> {
+  const expanded = new Set<string>();
+  const walk = (spans: Span[], ancestors: string[]): void => {
+    for (const span of spans) {
+      if (!span.parentSpanId) expanded.add(span.spanId);
+      if (span.status === 'ERROR') {
+        for (const id of ancestors) expanded.add(id);
+      }
+      if (span.children?.length) {
+        walk(span.children, [...ancestors, span.spanId]);
+      }
+    }
+  };
+  walk(spanTree, []);
+  return expanded;
+}
+
+/**
  * Flatten tree into visible spans based on expanded state
  */
 export function flattenVisibleSpans(
