@@ -11,6 +11,12 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ### Added
 - **Claude Code: log user prompts to OTel by default** ([services/connectors/claude-code/ClaudeCodeConnector.ts](services/connectors/claude-code/ClaudeCodeConnector.ts)): when telemetry is enabled, `createBedrockClaudeCodeConnector` now sets `OTEL_LOG_USER_PROMPTS=1` in the child env so the user's prompt is captured on the `claude_code` OTel log records and is visible in the Traces view. Opt out with `OTEL_LOG_USER_PROMPTS=0` in the host env. Unit: [tests/unit/services/connectors/claude-code/ClaudeCodeConnector.test.ts](tests/unit/services/connectors/claude-code/ClaudeCodeConnector.test.ts).
+
+### Changed
+- **Traces: empty states now explain `OTEL_LOG_USER_PROMPTS` governs input/output visibility** ([components/traces/SpanInputOutput.tsx](components/traces/SpanInputOutput.tsx), [components/traces/MessageHistoryView.tsx](components/traces/MessageHistoryView.tsx)): since prompt/response capture is on by default (opt-out with `OTEL_LOG_USER_PROMPTS=0`), a user seeing no input/output previously had no way to know why. Both no-content empty states now name the env var, note it is on by default (so missing content reads as a deliberate opt-out rather than a bug), and show how to re-enable it. The `1` default is unchanged (env-driven). Source-guard unit: [tests/unit/components/traces/otelLogUserPromptsHint.test.ts](tests/unit/components/traces/otelLogUserPromptsHint.test.ts). Addresses the Code-Diff-Analyzer prompt-egress finding by surfacing the behavior in-product instead of flipping the default.
+
+### Security
+- **Pin the `test-exclude` override to an exact version** ([package.json](package.json)): the `minimatch@10` coverage-instrumentation fix added `"test-exclude": "^8.0.0"` to `overrides`; pinned to exact `8.0.0` so a future minor/patch bump of a build/coverage transitive can't land without a lock-file review (Code-Diff-Analyzer supply-chain finding).
 ## [0.5.2] - 2026-07-06
 
 Rolls up everything that landed on `main` between `0.5.1` (2026-06-17) and today. Ships all pending features/fixes below, plus test-drift repairs and CI-honesty fixes ([#339](https://github.com/opensearch-project/agent-health/pull/339)) that make the release workflow actually catch a broken `npm test` (`tee` was masking the pipe's exit code, so `0.5.0` and `0.5.1` both broke silently at publish while CI on `main` stayed green).

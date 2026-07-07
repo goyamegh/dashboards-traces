@@ -385,9 +385,14 @@ export const SpanInputOutput: React.FC<SpanInputOutputProps> = ({ spans }) => {
     return (
       <div className="flex flex-col items-center justify-center py-12 text-muted-foreground">
         <AlertCircle size={48} className="mb-4 opacity-20" />
-        <p>No input/output data found in span attributes</p>
-        <p className="text-xs mt-2">
-          Spans may not include OTEL GenAI semantic convention attributes
+        <p>No input/output content captured for these spans</p>
+        <p className="text-xs mt-2 text-center max-w-md">
+          Prompt &amp; response capture is controlled by{' '}
+          <code className="px-1 rounded bg-muted font-mono">OTEL_LOG_USER_PROMPTS</code>{' '}
+          &mdash; on by default for Claude Code. If inputs/outputs are missing it may be
+          disabled in the agent&apos;s environment (set to <code className="px-1 rounded bg-muted font-mono">0</code>);
+          re-enable with <code className="px-1 rounded bg-muted font-mono">export OTEL_LOG_USER_PROMPTS=1</code>.
+          Spans without OTEL GenAI semantic-convention attributes also show nothing here.
         </p>
       </div>
     );
