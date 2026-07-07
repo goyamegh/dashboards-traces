@@ -441,8 +441,8 @@ test.describe('Evaluation Storage Section', () => {
     // Wait for "Loading storage stats..." to disappear (stats API response)
     await expect(page.locator('text=Loading storage stats')).not.toBeVisible({ timeout: 30000 }).catch(() => {});
 
-    // Should show either Connected or Not connected
-    const statusText = page.locator('text=Connected to OpenSearch').or(page.locator('text=Not connected')).first();
+    // Should show either Connected (OpenSearch reachable) or the file-storage fallback
+    const statusText = page.locator('text=Connected to OpenSearch').or(page.locator('text=Using file storage')).first();
     await expect(statusText).toBeVisible({ timeout: 15000 });
   });
 

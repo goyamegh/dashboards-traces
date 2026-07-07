@@ -71,7 +71,9 @@ test.describe('Navigation', () => {
     const sidebar = page.locator('[data-testid="sidebar"]');
     const menuItems = sidebar.locator('[data-testid^="nav-"]');
 
-    // Expected order: Overview, Agent Traces, Evaluations, AI Dev Tools, Assistant, Settings
+    // Expected order: Overview, Agent Traces, Evaluations (benchmarks/test-cases/
+    // runs/evaluators), Skills, AI Dev Tools, Assistant, Settings.
+    // nav-skills was added with the skill evaluator feature (#206).
     const expectedOrder = [
       'nav-overview',
       'nav-agent-traces',
@@ -79,6 +81,7 @@ test.describe('Navigation', () => {
       'nav-evals3-test-cases',
       'nav-evals3-runs',
       'nav-evaluators',
+      'nav-skills',
       'nav-coding-agents',
       'nav-assistant',
       'nav-settings',

@@ -17,8 +17,9 @@ test.describe('Evals3 Benchmarks Page', () => {
   });
 
   test('should show benchmark count', async ({ page }) => {
-    // Stats section shows "N benchmarks"
-    await expect(page.locator('text=/\\d+ benchmarks?/')).toBeVisible();
+    // Stats section shows the count + "benchmarks" label (separate adjacent
+    // spans, so allow zero-or-more whitespace between number and word).
+    await expect(page.getByText(/\d+\s*benchmarks?/i).first()).toBeVisible();
   });
 
   test('should show New Benchmark button', async ({ page }) => {
