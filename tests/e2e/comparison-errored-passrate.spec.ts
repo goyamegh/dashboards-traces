@@ -90,7 +90,10 @@ test.describe('Comparison — errored runs excluded from pass rate', () => {
           benchmarkVersion: 1,
           testCaseSnapshots: [],
           results: {
-            [testCaseIds[0]]: { reportId: passId, status: 'completed' },
+            // bucketRunResults() reads passFailStatus off each run.result (not
+            // the report), so the verdict must live here: tc0 passed, tc1 has
+            // no verdict (completed-without-verdict = errored, #242).
+            [testCaseIds[0]]: { reportId: passId, status: 'completed', passFailStatus: 'passed' },
             [testCaseIds[1]]: { reportId: errId, status: 'completed' },
           },
           stats: { passed: 1, failed: 0, pending: 0, errored: 1, total: 2 },

@@ -141,6 +141,21 @@ test.describe('Evals3 Benchmark CRUD', () => {
     test.skip(!seededTestCaseId, 'Seed test case unavailable');
     test.setTimeout(120_000); // demo run + judge can take a while
 
+    // The e2e server runs in file-storage (sample-only) mode, where the real
+    // /execute endpoint returns 400 ("OpenSearch not configured"). This test's
+    // contract is the WIZARD WIRING (the Evals3 regression where the editor
+    // closed without firing save + execute) — not the execution engine. Stub
+    // /execute at the network edge (same philosophy integ tests use for
+    // Bedrock) so we still assert the wizard POSTs to it, without needing a
+    // real OpenSearch/agent backend.
+    await page.route('**/api/storage/benchmarks/*/execute', route =>
+      route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+        body: `data: ${JSON.stringify({ type: 'progress', status: 'completed', currentTestCaseIndex: 0, totalTestCases: 1 })}\n\n`,
+      })
+    );
+
     await page.goto('/evaluations/benchmarks');
     await page.waitForSelector('[data-testid="benchmarks-page"]', { timeout: 30_000 });
 
