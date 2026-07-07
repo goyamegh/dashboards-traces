@@ -54,6 +54,11 @@ git log origin/main..HEAD | grep "Signed-off-by"
 
 # 4. Verify changelog is updated
 grep -A5 "## \[Unreleased\]" CHANGELOG.md
+
+# 5. Renamed/moved a file? Repoint every markdown reference to it, or
+#    link-check (lychee over **/*.md) fails on the now-dead relative link.
+#    CHANGELOG.md links to source/test paths, so a rename there is the usual culprit.
+git grep -n "old/path/to/renamed-file" -- '*.md'   # must return nothing
 ```
 
 **Pre-PR Checklist:**
@@ -63,6 +68,7 @@ grep -A5 "## \[Unreleased\]" CHANGELOG.md
 - [ ] `npm run test:all` passes
 - [ ] `npm audit --audit-level=high` reports no vulnerabilities
 - [ ] New source files have SPDX license headers
+- [ ] Renamed/moved files: no `.md` (esp. `CHANGELOG.md`) still links the old path (`link-check` job fails otherwise)
 
 ### CLI: Import Test Cases from JSON
 

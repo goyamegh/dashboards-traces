@@ -119,5 +119,11 @@ describe('lib/portConfig', () => {
       const { isBackendPortExplicit } = await import('@/lib/portConfig');
       expect(isBackendPortExplicit()).toBe(true);
     });
+
+    it('is false for a non-numeric AH_PORT (getBackendUrl falls back, so warn-once must fire)', async () => {
+      process.env.AH_PORT = 'abc';
+      const { isBackendPortExplicit } = await import('@/lib/portConfig');
+      expect(isBackendPortExplicit()).toBe(false);
+    });
   });
 });

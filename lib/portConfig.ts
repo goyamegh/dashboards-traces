@@ -50,9 +50,14 @@ export function resolveDevPort(): number {
  * run outside the server lifecycle) use this to warn before defaulting to
  * 4001 — where a foreign instance (a live demo, another checkout) may be
  * listening. See AGENTS.md → server lifecycle.
+ *
+ * Only a value that parses to a valid integer counts as explicit — a
+ * garbage `AH_PORT=abc` silently falls back to the default in
+ * {@link resolveBackendPort}, so the warn-once must still fire for it.
  */
 export function isBackendPortExplicit(): boolean {
-  return !!readEnv('AH_PORT', 'AGENT_HEALTH_PORT');
+  const port = readEnv('AH_PORT', 'AGENT_HEALTH_PORT');
+  return !!port && !isNaN(parseInt(port, 10));
 }
 
 /**

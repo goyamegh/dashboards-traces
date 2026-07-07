@@ -93,7 +93,9 @@ describe('Port isolation — AH_PORT tracks the actual bound port', () => {
         {
           cwd: REPO_ROOT,
           detached: true,
-          stdio: ['ignore', 'pipe', 'pipe'],
+          // Ignore child output rather than pipe it: nothing consumes these
+          // streams, and an unconsumed full pipe buffer can hang the child.
+          stdio: 'ignore',
           env: { ...process.env, HOST: '127.0.0.1' },
         }
       );
