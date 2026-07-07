@@ -45,6 +45,7 @@ import { expect } from '@/lib/matchers/expect';
 import type { TrajectoryStep } from '@/types';
 import { createHookOrchestrator, type TestDescriptor } from './hookOrchestrator';
 import { loadConfigSync } from '@/lib/config/index';
+import { getBackendUrl } from '@/lib/portConfig';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { getCustomAgents } from '@/server/services/customAgentStore';
 import { debug } from '@/lib/debug';
@@ -490,7 +491,12 @@ export async function executeEvaluationRun(
                 // configured to use the same model as the agent. The server
                 // /api/judge resolves the actual judge model from the
                 // evaluator config when this is undefined.
-                judge: bindJudge({ evaluatorId: run.evaluatorId, model: run.judgeModelId }),
+                // Pin the judge fixture to *this* server's actual bound URL.
+                // The runner is in-process so AH_PORT is correct, but passing
+                // serverUrl explicitly stops the SDK judge from re-deriving
+                // (and possibly defaulting to 4001 / a foreign instance) if
+                // env is ever mutated mid-run. See AGENTS.md → server lifecycle.
+                judge: bindJudge({ evaluatorId: run.evaluatorId, model: run.judgeModelId, serverUrl: getBackendUrl() }),
                 evaluate: evaluateFixture,
               };
               const arg = Object.assign(emptyResult, { ...fixtures, result: emptyResult }) as any;

@@ -9,7 +9,7 @@
 
 import { Span, TimeRange, TraceQueryParams, TraceSearchResult } from '@/types';
 import { getSpanCategory } from './spanCategorization';
-import { readEnv } from '@/lib/envCompat';
+import { getBackendUrl } from '@/lib/portConfig';
 
 // Re-export trace grouping utilities
 export { groupSpansByTrace, getSpansForTrace } from './traceGrouping';
@@ -25,8 +25,9 @@ export { extractMessagesFromSpans } from './messageExtraction';
 function getApiBaseUrl(): string {
   const isServerSide = typeof window === 'undefined';
   if (isServerSide) {
-    const port = readEnv('AH_PORT', 'AGENT_HEALTH_PORT') || '4001';
-    return `http://localhost:${port}`;
+    // Server-side self-call — use the canonical backend URL (AH_PORT is kept
+    // in lockstep with the actual bound port; see server lifecycle).
+    return getBackendUrl();
   }
   return ''; // Relative URLs in browser
 }
