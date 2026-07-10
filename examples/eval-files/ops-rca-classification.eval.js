@@ -22,9 +22,9 @@
  * this file. Run:
  *
  *   npx @opensearch-project/agent-health benchmark \
- *     -f ./evals/ops-rca-classification.eval.js -a my-ops-agent
+ *     -f ./examples/eval-files/ops-rca-classification.eval.js -a my-ops-agent
  *
- * Docs: ../docs/SDK.md   Instrumentation: ../docs/INSTRUMENT_WITH_OTEL.md
+ * Docs: ../../docs/SDK.md   Instrumentation: ../../docs/INSTRUMENT_WITH_OTEL.md
  */
 
 const { test, expect } = require('@opensearch-project/agent-health');

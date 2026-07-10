@@ -515,8 +515,8 @@ emits, so you get one comparable number per run for progress tracking. Use the
 deterministic `expect(...)` matchers for the hard checks (exact classification,
 tool was called, budget cap) and the judge/evaluator + weighted `scoringConfig`
 for the aggregate score. See the ops-RCA worked example at
-[`evals/ops-rca-classification.eval.js`](../evals/ops-rca-classification.eval.js)
-and its companion [`evals/ops-rca-evaluator.json`](../evals/ops-rca-evaluator.json),
+[`examples/eval-files/ops-rca-classification.eval.js`](../examples/eval-files/ops-rca-classification.eval.js)
+and its companion [`examples/eval-files/ops-rca-evaluator.json`](../examples/eval-files/ops-rca-evaluator.json),
 and the evaluator reference in [docs/skills/AGENT_HEALTH.md](./skills/AGENT_HEALTH.md#custom-evaluators).
 
 ---
