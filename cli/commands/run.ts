@@ -212,7 +212,7 @@ export function createRunCommand(): Command {
     .requiredOption('-t, --test-case <id>', 'Test case ID or name')
     .option('-a, --agent <key>', 'Agent key (can be specified multiple times)', (val, arr: string[]) => [...arr, val], [])
     .option('-e, --evaluator <id>', 'Evaluator ID (uses RCA default if not specified)')
-    .option('--judge-model <id>', "Judge LLM model id, distinct from --model. Falls back to evaluator's inferenceConfig.modelId, then BEDROCK_MODEL_ID env. Ignored by agentic-provider judges (pi/agent/agentic/claude-code) which pick their own model.")
+    .option('--judge-model <id>', "Judge LLM model id (the agent's own model is owned by its config, not a flag). Falls back to evaluator's inferenceConfig.modelId, then BEDROCK_MODEL_ID env. Ignored by agentic-provider judges (pi/agent/agentic/claude-code) which pick their own model.")
     .option('-o, --output <format>', OUTPUT_FORMAT_DESCRIPTION, 'table')
     .option('-v, --verbose', 'Show detailed trajectory output')
     .option('--agent-path <path>', 'Path to the agent repository to use as judge grounding context (or set AH_AGENT_PATH)')
