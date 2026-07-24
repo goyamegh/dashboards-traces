@@ -120,7 +120,7 @@ async function runForAgent(
           spinner.text = `${agent.name}: Step ${event.stepIndex + 1} (${event.step.type})`;
         } else if (event.type === 'started') {
           spinner.text = `${agent.name}: Started evaluation...`;
-        } else if ((event as any).type === 'awaiting-judge' || (event as any).type === 'polling') {
+        } else if (event.type === 'awaiting-judge' || event.type === 'polling') {
           // Trace-mode agents: judge runs in the background after traces land
           spinner.text = `${agent.name}: Waiting for traces / judge verdict...`;
         }

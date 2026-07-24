@@ -156,6 +156,21 @@ describe('ensureTracePollingForReport', () => {
     expect(onUpdated).toHaveBeenCalledWith(serverVerdict);
   });
 
+  it('skips the judge when the persisted report is calculating (judge mid-flight elsewhere)', async () => {
+    let captured: any;
+    mockStartPolling.mockImplementation((_id, _runId, callbacks) => { captured = callbacks; });
+    mockGetReportById.mockResolvedValue(makeReport({ metricsStatus: 'calculating' }));
+    const onUpdated = jest.fn();
+
+    ensureTracePollingForReport(makeReport(), makeTc(), { onUpdated });
+    await captured.onTracesFound([], makeReport());
+
+    expect(mockCallBedrockJudge).not.toHaveBeenCalled();
+    expect(mockUpdateReport).not.toHaveBeenCalled();
+    // Calculating is NOT a final verdict — don't push it into the UI as one.
+    expect(onUpdated).not.toHaveBeenCalled();
+  });
+
   it('writes the canonical matcherResults surface (not just llmJudgeReasoning)', async () => {
     let captured: any;
     mockStartPolling.mockImplementation((_id, _runId, callbacks) => { captured = callbacks; });

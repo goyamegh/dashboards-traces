@@ -62,12 +62,16 @@ export function ensureTracePollingForReport(
 
           // TRUE-FALLBACK GUARD (issue #320): the server-side poller runs the
           // same judge in a different runtime, so the "already polling" check
-          // above cannot see it. Re-read the persisted report and bail if a
-          // verdict already landed — the browser recovery must never race or
+          // above cannot see it. Re-read the persisted report and bail unless
+          // it is still awaiting a judge ('pending'); 'calculating' means a
+          // judge is mid-flight elsewhere, and 'ready'/'error' mean a verdict
+          // already landed — the browser recovery must never race or
           // overwrite the server's judge result.
           const persisted = await asyncRunStorage.getReportById(report.id);
           if (persisted && persisted.metricsStatus !== 'pending') {
-            if (options?.onUpdated) options.onUpdated(persisted);
+            if (persisted.metricsStatus !== 'calculating' && options?.onUpdated) {
+              options.onUpdated(persisted);
+            }
             return;
           }
 
