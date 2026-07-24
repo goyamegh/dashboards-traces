@@ -18,7 +18,7 @@
  * when server-side recovery is also in flight.
  */
 
-import type { EvaluationReport, TestCase } from '@/types';
+import type { EvaluationReport, Span, TestCase } from '@/types';
 import { tracePollingManager } from '@/services/traces/tracePoller';
 import { asyncRunStorage } from '@/services/storage';
 import { callBedrockJudge } from '@/services/evaluation';
@@ -41,6 +41,9 @@ export function ensureTracePollingForReport(
   options?: {
     onUpdated?: (updated: EvaluationReport) => void;
     onError?: (err: Error) => void;
+    /** Fired as soon as spans land, before the judge runs — lets the caller
+     *  update trace-visualization state (issue #320 consolidation). */
+    onSpans?: (spans: Span[]) => void;
   }
 ): void {
   // Only valid for trace-mode pending reports with a runId and a test case.
@@ -53,10 +56,27 @@ export function ensureTracePollingForReport(
     report.id,
     report.runId,
     {
-      onTracesFound: async (_spans, updatedReport) => {
+      onTracesFound: async (spans, updatedReport) => {
         try {
-          const judgeModelId = report.modelId
-            ? (DEFAULT_CONFIG.models[report.modelId]?.model_id || report.modelId)
+          options?.onSpans?.(spans);
+
+          // TRUE-FALLBACK GUARD (issue #320): the server-side poller runs the
+          // same judge in a different runtime, so the "already polling" check
+          // above cannot see it. Re-read the persisted report and bail if a
+          // verdict already landed — the browser recovery must never race or
+          // overwrite the server's judge result.
+          const persisted = await asyncRunStorage.getReportById(report.id);
+          if (persisted && persisted.metricsStatus !== 'pending') {
+            if (options?.onUpdated) options.onUpdated(persisted);
+            return;
+          }
+
+          // Same priority as the server-side runner: report.judgeModelId
+          // (persisted at run-create time) > agent's modelId BC fallback.
+          // (BEDROCK_MODEL_ID env is server-only — not readable here.)
+          const judgeModelKey = report.judgeModelId || report.modelId;
+          const judgeModelId = judgeModelKey
+            ? (DEFAULT_CONFIG.models[judgeModelKey]?.model_id || judgeModelKey)
             : undefined;
 
           const judgment = await callBedrockJudge(

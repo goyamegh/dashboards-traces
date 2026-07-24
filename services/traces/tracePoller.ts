@@ -16,6 +16,7 @@ import { fetchTracesByRunIds } from './index';
 import { asyncRunStorage } from '../storage/asyncRunStorage';
 import { executeBuildTrajectoryHook } from '@/lib/hooks';
 import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
+import { spansToTrajectory } from './spansToTrajectory';
 
 // Polling configuration. Defaults are overridable via env vars so that
 // CI / E2E runs without a real OpenSearch trace backend can fail fast
@@ -353,9 +354,22 @@ class TracePollingManager {
       return { trajectory: [], shouldContinuePolling: false };
     }
 
-    // If no buildTrajectory hook, return empty trajectory (will use SSE trajectory)
+    // No buildTrajectory hook: fall back to the generic span→trajectory
+    // conversion so the judge grades what the traces actually show (tool
+    // calls included) instead of the tool-call-less AG-UI trajectory.
+    // Previously this returned [] and trace-only agents could not be judged
+    // from their traces without a custom hook (issue #320, root cause 2).
     if (!state.agentConfig?.hooks?.buildTrajectory) {
-      return { trajectory: [], shouldContinuePolling: false };
+      try {
+        const converted = spansToTrajectory(spans, state.agentConfig?.traceServiceName);
+        if (converted.length > 0) {
+          debug('TracePoller', `Default span→trajectory conversion produced ${converted.length} steps for trace ${traceId}`);
+        }
+        return { trajectory: converted, shouldContinuePolling: false };
+      } catch (err) {
+        console.error(`[TracePoller] Default span→trajectory conversion failed for ${traceId}:`, err);
+        return { trajectory: [], shouldContinuePolling: false };
+      }
     }
 
     try {

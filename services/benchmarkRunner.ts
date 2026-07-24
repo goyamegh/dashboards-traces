@@ -1025,7 +1025,11 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
     {
       onTracesFound: async (spans, updatedReport) => {
         try {
-          const finalTrajectory = agentConfig?.hooks?.buildTrajectory ? updatedReport.trajectory : report.trajectory;
+          // updatedReport.trajectory is the span-built trajectory (from the
+          // agent's buildTrajectory hook, or the default span→trajectory
+          // conversion — issue #320); the poller leaves the original SSE
+          // trajectory in place when no steps could be built from spans.
+          const finalTrajectory = updatedReport.trajectory;
           // Trace-mode polled judge — same priority chain as the standard
           // path: report.judgeModelId (persisted at run-create time) >
           // BEDROCK_MODEL_ID env > agent's modelId (last-resort BC
@@ -1155,7 +1159,8 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
     {
       onTracesFound: async (spans, updatedReport) => {
         try {
-          const finalTrajectory = agentConfig?.hooks?.buildTrajectory ? updatedReport.trajectory : report.trajectory;
+          // Span-built trajectory (hook or default conversion — issue #320).
+          const finalTrajectory = updatedReport.trajectory;
           // Trace-mode timeout judge (no spans found) — same priority as above.
           const judgeModelId =
             report.judgeModelId ||

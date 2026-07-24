@@ -858,9 +858,8 @@ async function waitForTracesAndJudge(
       {
         onTracesFound: async (_spans, updatedReport) => {
           try {
-            const finalTrajectory = agentConfig?.hooks?.buildTrajectory
-              ? updatedReport.trajectory
-              : report.trajectory;
+            // Span-built trajectory (hook or default conversion — issue #320).
+            const finalTrajectory = updatedReport.trajectory;
 
             const config = getConfig();
             const modelConfig = config.models[report.modelId || ''];

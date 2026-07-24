@@ -80,6 +80,13 @@ export interface EvaluationResult {
   id: string;
   status: string;
   passFailStatus?: 'passed' | 'failed';
+  /**
+   * Trace-mode judge state. For `useTraces` agents the report is saved
+   * `completed` with `metricsStatus: 'pending'` BEFORE the judge has run;
+   * the background trace poller later flips it to `'ready'` (or `'error'`)
+   * and fills in `passFailStatus`. Missing = judge ran synchronously.
+   */
+  metricsStatus?: 'pending' | 'calculating' | 'ready' | 'error';
   metrics?: {
     accuracy: number;
     faithfulness?: number;
@@ -723,6 +730,21 @@ export class ApiClient {
       throw new Error('No result received from evaluation');
     }
 
+    // Trace-mode agents: the server emits `completed` BEFORE the background
+    // trace poller has run the judge (metricsStatus stays 'pending' and
+    // passFailStatus is unset). Rendering that snapshot would misreport the
+    // run as FAILED (issue #333) — keep polling until the judge verdict lands.
+    if (result.metricsStatus === 'pending' || result.metricsStatus === 'calculating') {
+      onProgress?.({ type: 'awaiting-judge', reportId: result.id } as any);
+      const judged = await this.pollReportStatus(result.id, undefined, (report) => {
+        const awaiting = report.metricsStatus === 'pending' || report.metricsStatus === 'calculating';
+        onProgress?.({ type: 'polling', reportId: report.id, status: awaiting ? 'awaiting traces/judge' : report.status } as any);
+      });
+      if (judged) {
+        return judged;
+      }
+    }
+
     return result;
   }
 
@@ -741,7 +763,14 @@ export class ApiClient {
   ): Promise<EvaluationResult | null> {
     const report = await this.pollUntilTerminal(
       () => this.getReportById(reportId),
-      (r) => !!r.status && ['completed', 'failed', 'cancelled'].includes(r.status),
+      // A trace-mode report is saved `completed` with `metricsStatus:
+      // 'pending'`/'calculating' before the background judge runs — that
+      // snapshot is NOT terminal (issue #333). Wait for the judge verdict.
+      (r) =>
+        !!r.status &&
+        ['completed', 'failed', 'cancelled'].includes(r.status) &&
+        r.metricsStatus !== 'pending' &&
+        r.metricsStatus !== 'calculating',
       { timeoutMs, onPoll }
     );
 
@@ -750,6 +779,7 @@ export class ApiClient {
       id: report.id,
       status: report.status || 'unknown',
       passFailStatus: report.passFailStatus as 'passed' | 'failed' | undefined,
+      metricsStatus: report.metricsStatus,
       metrics: report.metrics as EvaluationResult['metrics'],
       trajectorySteps: report.trajectory?.length || 0,
       llmJudgeReasoning: report.llmJudgeReasoning,

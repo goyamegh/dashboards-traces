@@ -1326,7 +1326,7 @@ describe('Experiment Runner', () => {
       await callbacks.onTracesFound(spans, updatedReport);
 
       expect(mockCallBedrockJudge).toHaveBeenCalledWith(
-        [],
+        updatedReport.trajectory,
         expect.objectContaining({
           expectedOutcomes: testCase.expectedOutcomes,
         }),

@@ -120,16 +120,28 @@ async function runForAgent(
           spinner.text = `${agent.name}: Step ${event.stepIndex + 1} (${event.step.type})`;
         } else if (event.type === 'started') {
           spinner.text = `${agent.name}: Started evaluation...`;
+        } else if ((event as any).type === 'awaiting-judge' || (event as any).type === 'polling') {
+          // Trace-mode agents: judge runs in the background after traces land
+          spinner.text = `${agent.name}: Waiting for traces / judge verdict...`;
         }
       },
       evaluatorId,
       judgeModelId
     );
 
-    if (report.status === 'completed' && report.passFailStatus === 'passed') {
+    // Trace-mode reports can time out still awaiting the judge — that state
+    // is neither PASSED nor FAILED (issue #333): show it as pending.
+    const judgePending = report.metricsStatus === 'pending' || report.metricsStatus === 'calculating';
+    if (report.status === 'completed' && judgePending) {
+      spinner.warn(`${agent.name}: ${chalk.yellow('PENDING')} (judge has not run yet — check the report later)`);
+    } else if (report.status === 'completed' && report.passFailStatus === 'passed') {
       spinner.succeed(`${agent.name}: ${chalk.green('PASSED')}`);
+    } else if (report.status === 'completed' && report.passFailStatus === 'failed') {
+      spinner.fail(`${agent.name}: ${chalk.red('FAILED')}`);
     } else if (report.status === 'completed') {
-      spinner.succeed(`${agent.name}: ${chalk.red('FAILED')}`);
+      // Completed but no verdict recorded (e.g. judge errored) — don't
+      // misreport as FAILED.
+      spinner.warn(`${agent.name}: ${chalk.yellow('NO VERDICT')}`);
     } else {
       spinner.fail(`${agent.name}: ${chalk.yellow(report.status)}`);
     }
@@ -149,7 +161,9 @@ function buildResultRows(results: Array<{ agent: AgentConfig; report: Evaluation
     if (!r.report) {
       return [r.agent.name, 'ERROR', '-', '-', '-'];
     }
-    const status = r.report.passFailStatus === 'passed' ? 'PASSED'
+    const judgePending = r.report.metricsStatus === 'pending' || r.report.metricsStatus === 'calculating';
+    const status = judgePending ? 'PENDING'
+      : r.report.passFailStatus === 'passed' ? 'PASSED'
       : r.report.passFailStatus === 'failed' ? 'FAILED'
       : r.report.status;
     return [
@@ -185,11 +199,14 @@ function displayResults(results: Array<{ agent: AgentConfig; report: EvaluationR
       table.push([r.agent.name, chalk.red('ERROR'), '-', '-', '-']);
       continue;
     }
-    const statusStr = r.report.passFailStatus === 'passed'
-      ? chalk.green('PASSED')
-      : r.report.passFailStatus === 'failed'
-        ? chalk.red('FAILED')
-        : chalk.yellow(r.report.status);
+    const judgePending = r.report.metricsStatus === 'pending' || r.report.metricsStatus === 'calculating';
+    const statusStr = judgePending
+      ? chalk.yellow('PENDING')
+      : r.report.passFailStatus === 'passed'
+        ? chalk.green('PASSED')
+        : r.report.passFailStatus === 'failed'
+          ? chalk.red('FAILED')
+          : chalk.yellow(r.report.status);
     table.push([
       r.agent.name,
       statusStr,

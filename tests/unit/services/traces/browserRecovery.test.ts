@@ -119,7 +119,11 @@ describe('ensureTracePollingForReport', () => {
     mockUpdateReport.mockResolvedValue({} as any);
     const onUpdated = jest.fn();
     const fresh = makeReport({ metricsStatus: 'ready', passFailStatus: 'passed' });
-    mockGetReportById.mockResolvedValue(fresh);
+    // First read = the true-fallback guard (still pending → proceed);
+    // second read = post-update refresh handed to onUpdated.
+    mockGetReportById
+      .mockResolvedValueOnce(makeReport())
+      .mockResolvedValue(fresh);
 
     ensureTracePollingForReport(makeReport(), makeTc(), { onUpdated });
     await captured.onTracesFound([], makeReport());
@@ -132,12 +136,56 @@ describe('ensureTracePollingForReport', () => {
     expect(onUpdated).toHaveBeenCalledWith(fresh);
   });
 
+  // Issue #320: the browser recovery poller must be a TRUE fallback — when
+  // the server-side poller (a different runtime the local "already polling"
+  // guard cannot see) has already produced a verdict, the browser must not
+  // judge again or overwrite it.
+  it('skips the judge when the persisted report already has a verdict (server won the race)', async () => {
+    let captured: any;
+    mockStartPolling.mockImplementation((_id, _runId, callbacks) => { captured = callbacks; });
+    const serverVerdict = makeReport({ metricsStatus: 'ready', passFailStatus: 'failed' });
+    mockGetReportById.mockResolvedValue(serverVerdict);
+    const onUpdated = jest.fn();
+
+    ensureTracePollingForReport(makeReport(), makeTc(), { onUpdated });
+    await captured.onTracesFound([], makeReport());
+
+    expect(mockCallBedrockJudge).not.toHaveBeenCalled();
+    expect(mockUpdateReport).not.toHaveBeenCalled();
+    // The caller still gets refreshed with the server's verdict
+    expect(onUpdated).toHaveBeenCalledWith(serverVerdict);
+  });
+
+  it('writes the canonical matcherResults surface (not just llmJudgeReasoning)', async () => {
+    let captured: any;
+    mockStartPolling.mockImplementation((_id, _runId, callbacks) => { captured = callbacks; });
+    mockCallBedrockJudge.mockResolvedValue({
+      passFailStatus: 'passed',
+      metrics: { accuracy: 100 } as any,
+      llmJudgeReasoning: 'good',
+      improvementStrategies: [],
+    } as any);
+    mockUpdateReport.mockResolvedValue({} as any);
+    mockGetReportById
+      .mockResolvedValueOnce(makeReport())
+      .mockResolvedValue(makeReport({ metricsStatus: 'ready' }));
+
+    ensureTracePollingForReport(makeReport(), makeTc());
+    await captured.onTracesFound([], makeReport());
+
+    const patch = mockUpdateReport.mock.calls[0][1] as any;
+    expect(patch.matcherResults).toHaveLength(1);
+    expect(patch.matcherResults[0]).toEqual(expect.objectContaining({ method: 'llm-judge', pass: true }));
+  });
+
   it('writes error to storage when the judge throws', async () => {
     let captured: any;
     mockStartPolling.mockImplementation((_id, _runId, callbacks) => { captured = callbacks; });
     mockCallBedrockJudge.mockRejectedValue(new Error('bedrock down'));
     mockUpdateReport.mockResolvedValue({} as any);
-    mockGetReportById.mockResolvedValue(makeReport({ metricsStatus: 'error' }));
+    mockGetReportById
+      .mockResolvedValueOnce(makeReport())
+      .mockResolvedValue(makeReport({ metricsStatus: 'error' }));
     const onError = jest.fn();
     const onUpdated = jest.fn();
 
@@ -150,6 +198,25 @@ describe('ensureTracePollingForReport', () => {
     }));
     expect(onError).toHaveBeenCalledWith(expect.any(Error));
     expect(onUpdated).toHaveBeenCalled();
+  });
+
+  it('forwards spans to onSpans before judging', async () => {
+    let captured: any;
+    mockStartPolling.mockImplementation((_id, _runId, callbacks) => { captured = callbacks; });
+    mockCallBedrockJudge.mockResolvedValue({
+      passFailStatus: 'passed', metrics: {} as any, llmJudgeReasoning: '', improvementStrategies: [],
+    } as any);
+    mockUpdateReport.mockResolvedValue({} as any);
+    mockGetReportById
+      .mockResolvedValueOnce(makeReport())
+      .mockResolvedValue(makeReport({ metricsStatus: 'ready' }));
+    const onSpans = jest.fn();
+    const spans = [{ spanId: 's1', traceId: 't1', name: 'execute_tool x' }] as any;
+
+    ensureTracePollingForReport(makeReport(), makeTc(), { onSpans });
+    await captured.onTracesFound(spans, makeReport());
+
+    expect(onSpans).toHaveBeenCalledWith(spans);
   });
 
   it('forwards poller-level errors to onError', () => {

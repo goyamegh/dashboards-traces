@@ -778,6 +778,79 @@ describe('TracePollingManager', () => {
       );
     });
 
+    // Issue #320 (root cause 2): without a buildTrajectory hook the poller
+    // used to return [] and the judge graded the tool-call-less AG-UI
+    // trajectory — failing trace-only agents for "not invoking any tool".
+    // The default span→trajectory conversion must surface the tool calls.
+    it('builds a default trajectory from tool spans when no hook is configured', async () => {
+      const mockSpans: Span[] = [
+        {
+          traceId: 'trace-default',
+          spanId: 'span-tool-1',
+          name: 'execute_tool add_to_cart',
+          startTime: '2024-01-01T00:00:00Z',
+          endTime: '2024-01-01T00:00:01Z',
+          duration: 1000,
+          status: 'OK',
+          attributes: {
+            'gen_ai.operation.name': 'execute_tool',
+            'gen_ai.tool.name': 'add_to_cart',
+          },
+          events: [
+            {
+              name: 'gen_ai.tool.message',
+              time: '2024-01-01T00:00:00.5Z',
+              attributes: { role: 'tool', content: '{"product_id":"PROD-001"}' },
+            },
+            {
+              name: 'gen_ai.choice',
+              time: '2024-01-01T00:00:00.9Z',
+              attributes: { message: '{"cart_total":79.99}' },
+            },
+          ],
+        },
+      ];
+
+      const mockReport: EvaluationReport = {
+        id: 'report-default-traj',
+        timestamp: '2024-01-01T00:00:00Z',
+        testCaseId: 'test-1',
+        status: 'completed',
+        agentName: 'Trace Agent',
+        agentKey: 'trace-agent',
+        modelName: 'Test Model',
+        modelId: 'test-model',
+        trajectory: [{ type: 'response', content: 'Final answer only (AG-UI)' }],
+        metrics: { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 },
+        llmJudgeReasoning: '',
+      } as any;
+
+      const onTracesFound = jest.fn();
+      const callbacks: PollCallbacks = {
+        onTracesFound,
+        onError: jest.fn(),
+      };
+
+      mockFetchTracesByRunIds.mockResolvedValue({ spans: mockSpans, total: 1 });
+      mockUpdateReport.mockResolvedValue(undefined);
+      mockGetReportById.mockResolvedValue(mockReport);
+
+      tracePollingManager.startPolling('report-default-traj', 'run-default-traj', callbacks, {
+        agentConfig: { key: 'trace-agent', name: 'Trace Agent', endpoint: 'http://test.com' },
+      });
+
+      await jest.runAllTimersAsync();
+
+      expect(mockExecuteBuildTrajectoryHook).not.toHaveBeenCalled();
+      expect(onTracesFound).toHaveBeenCalledTimes(1);
+      const reportArg = onTracesFound.mock.calls[0][1];
+      // The judged trajectory must contain the tool call from the spans,
+      // not the tool-call-less AG-UI response.
+      const actionSteps = reportArg.trajectory.filter((s: any) => s.type === 'action');
+      expect(actionSteps.length).toBeGreaterThanOrEqual(1);
+      expect(actionSteps[0].toolName).toBe('add_to_cart');
+    });
+
     it('preserves existing trajectory when buildTrajectory hook throws', async () => {
       const mockSpans: Span[] = [
         {
