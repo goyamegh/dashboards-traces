@@ -20,6 +20,7 @@ module.exports = {
     '^@/lib/config$': '<rootDir>/__mocks__/@/lib/config.ts',
     // Mock packagePaths to avoid import.meta.url issues in Jest
     '^@/lib/packagePaths$': '<rootDir>/__mocks__/@/lib/packagePaths.ts',
+    '^\./packagePaths\.js$': '<rootDir>/__mocks__/@/lib/packagePaths.ts',
     '^\.\./packagePaths\.js$': '<rootDir>/__mocks__/@/lib/packagePaths.ts',
     '^\.\./\.\./packagePaths\.js$': '<rootDir>/__mocks__/@/lib/packagePaths.ts',
     // Mock configService to avoid import.meta.url issues in Jest
