@@ -16,6 +16,7 @@ import {
   clearRegistry,
 } from './define.js';
 import { getAuthoringSurface } from './authoringSurface.js';
+import { getOwnPackageName } from '../ownPackageName.js';
 
 const CODE_EXTENSIONS = ['.ts', '.js', '.mjs'];
 
@@ -106,11 +107,12 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
     // Intercept the published package name as well — fixtures generally
     // do `require('@opensearch-project/agent-health')` and Node's resolver
     // would otherwise hit the package's exports map (which only exposes
-    // 'import' for ESM consumers).
+    // 'import' for ESM consumers). Any-scope `@x/agent-health` is accepted
+    // so eval files written against a forked/renamed publish (e.g.
+    // `@myorg/agent-health`) still get the test() registrar; the own-name
+    // check covers forks renamed to something else entirely.
     const isPackageName = (id: string) =>
-      id === '@opensearch-project/agent-health' ||
-      id === '@opensearch/agent-health' ||
-      id === 'agent-health';
+      /^(@[^/]+\/)?agent-health$/.test(id) || id === getOwnPackageName();
     // The object handed back when a CJS eval file requires the SDK. Single
     // source of truth shared with the package exports (see authoringSurface)
     // so `.js` and `.ts`/`.mjs` files see the SAME surface — no drift (#232).
