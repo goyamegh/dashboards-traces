@@ -166,7 +166,7 @@ Key points:
 Hooks are a no-op when no test in the run uses them — the orchestrator
 is short-circuited to a noop variant and existing tests pay zero cost.
 
-See the demo at [`evals/sdk-hooks-demo.eval.js`](../evals/sdk-hooks-demo.eval.js).
+See the demo at [`examples/eval-files/sdk-hooks-demo.eval.js`](../examples/eval-files/sdk-hooks-demo.eval.js).
 
 ### 5. Matchers record structured verdicts
 
@@ -530,7 +530,7 @@ and the evaluator reference in [docs/skills/AGENT_HEALTH.md](./skills/AGENT_HEAL
 ### Via the CLI
 
 ```bash
-npx @opensearch-project/agent-health benchmark -f ./evals/demo.eval.js -a observio
+npx @opensearch-project/agent-health benchmark -f ./examples/eval-files/demo.eval.js -a observio
 ```
 
 ### Via the HTTP API
@@ -542,7 +542,7 @@ curl -sN -X POST http://localhost:4001/api/storage/evaluation-runs \
     "name": "Demo",
     "sources": [{
       "type": "code-import",
-      "filenames": ["evals/demo.eval.js"],
+      "filenames": ["examples/eval-files/demo.eval.js"],
       "testCaseIds": []
     }],
     "agentKey": "observio",
