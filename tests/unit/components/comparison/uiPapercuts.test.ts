@@ -81,8 +81,10 @@ describe('ComparisonPage detailed-metrics + run-badge fixes', () => {
     expect(src).not.toContain('<MetricsTimeSeriesChart');
   });
 
-  it('renders the MetricComparisonPanel (bar chart + matrix) as one unit', () => {
-    expect(src).toContain('<MetricComparisonPanel');
+  it('renders the ComparisonScoreboard which embeds MetricComparisonPanel', () => {
+    expect(src).toContain('<ComparisonScoreboard');
+    const scoreboard = read('components/comparison/ComparisonScoreboard.tsx');
+    expect(scoreboard).toContain('<MetricComparisonPanel');
     expect(src).not.toContain('RunComparisonBarChart');
     expect(src).not.toContain('MetricComparisonGrid');
   });

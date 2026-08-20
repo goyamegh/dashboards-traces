@@ -140,18 +140,20 @@ test.describe('Benchmark-free comparison (test-level primitive)', () => {
     // trigger, which replaced the benchmark-select + run-multiselect toolbar.
     await expect(page.locator('[data-testid="comparison-search"]')).toContainText('2 of');
 
-    // The honesty surface: partial overlap banner naming shared vs only-in-some.
+    // The honesty surface: the scoreboard's coverage cell carries the overlap
+    // contract (was a standalone banner). Partial overlap shows shared/total
+    // inline; the per-run "only here" breakdown lives in the tooltip.
     const banner = page.locator('[data-testid="comparison-overlap-banner"]');
     await expect(banner).toBeVisible();
     await expect(banner).toHaveAttribute('data-overlap', 'partial');
-    await expect(banner).toContainText('in common');
-    await expect(banner).toContainText('only in');
+    await expect(banner).toContainText('shared');
+    await expect(banner).toHaveAttribute('title', /only in some runs/);
 
-    // A/B legend: the comparison must make the A vs B mapping explicit
-    // (URL order — A = first run, B = second).
-    const legend = page.locator('[data-testid="comparison-ab-legend"]');
+    // A/B legend: the scoreboard IS the legend now — one row per run with the
+    // A/B badge and the full run name (URL order — A = first run, B = second).
+    const legend = page.locator('[data-testid="comparison-scoreboard"]');
     await expect(legend).toBeVisible();
-    await expect(legend).toContainText('A');
-    await expect(legend).toContainText('B');
+    await expect(legend.locator('[data-testid="scoreboard-row-A"]')).toBeVisible();
+    await expect(legend.locator('[data-testid="scoreboard-row-B"]')).toBeVisible();
   });
 });
