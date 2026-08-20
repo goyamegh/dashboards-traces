@@ -116,9 +116,12 @@ describe('Comparison table header + metric-label clarity', () => {
     expect(src).toContain('#{idx + 1}');
   });
 
-  it('MetricCell spells out "Accuracy" instead of "Acc"', () => {
+  it('MetricCell keeps "Accuracy" discoverable (tooltip) and never abbreviates to "Acc"', () => {
+    // The dense single-line cell dropped the visible "Accuracy" label to fit
+    // status + value + delta on one row; the full word must survive as the
+    // value's tooltip so the number stays identifiable.
     const src = read('components/comparison/MetricCell.tsx');
-    expect(src).toContain('>Accuracy<');
+    expect(src).toContain('title="Accuracy"');
     expect(src).not.toContain('>Acc<');
   });
 });

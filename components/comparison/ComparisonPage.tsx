@@ -773,22 +773,6 @@ export const ComparisonPage: React.FC = () => {
               />
             )}
 
-            {/* Diagnosis — failure pattern clustering across regressed cases */}
-            {regressedEvidence.cases.length > 0 && (
-              <FailureClusterPanel
-                loserLabel={regressedEvidence.loserLabel}
-                winnerLabel={regressedEvidence.winnerLabel}
-                cases={regressedEvidence.cases}
-                activeCaseFilter={clusterCaseFilter?.caseIds}
-                onClustersChange={setFailureClusters}
-                onFilterByCases={(caseIds, clusterName) => {
-                  setClusterCaseFilter(prev =>
-                    prev && prev.clusterName === clusterName ? null : { caseIds, clusterName }
-                  );
-                }}
-              />
-            )}
-
             {/* ── Table Compare — primary content ──────────────── */}
             <section>
               {/* Header with filter pills */}
@@ -851,6 +835,26 @@ export const ComparisonPage: React.FC = () => {
                     : 'Click a row to expand the side-by-side diff'}
                 </p>
               </div>
+
+              {/* Diagnosis — failure pattern clustering across regressed cases.
+                  Lives inside the Table Compare block (it acts on exactly the
+                  regressed rows below), not as a free-floating band. */}
+              {regressedEvidence.cases.length > 0 && (
+                <div className="mb-2">
+                  <FailureClusterPanel
+                    loserLabel={regressedEvidence.loserLabel}
+                    winnerLabel={regressedEvidence.winnerLabel}
+                    cases={regressedEvidence.cases}
+                    activeCaseFilter={clusterCaseFilter?.caseIds}
+                    onClustersChange={setFailureClusters}
+                    onFilterByCases={(caseIds, clusterName) => {
+                      setClusterCaseFilter(prev =>
+                        prev && prev.clusterName === clusterName ? null : { caseIds, clusterName }
+                      );
+                    }}
+                  />
+                </div>
+              )}
 
               {/* Run pair selector for trajectory comparison (shown when > 2 runs) */}
               {showRunPairSelector && trajectoryTargetTestCase && (
