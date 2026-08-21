@@ -51,7 +51,23 @@ export function calculateRunAggregates(
   // verdicts — NOT the naive denormalized run.stats (which counts errored cases
   // as passed and never tracks `errored`, #242). This keeps the comparison
   // panel, the per-cell Errored badges, and the runs list all in agreement.
-  const buckets = bucketRunResults(run.results as Record<string, { status?: string; passFailStatus?: string }>);
+  //
+  // Some writers (e.g. the CLI benchmark path) persist results entries with
+  // only { reportId, status } and leave the verdict on the report doc. Overlay
+  // the report's passFailStatus before bucketing — otherwise every completed
+  // case buckets as "errored" and the scoreboard renders a fabricated 0% pass
+  // rate while the per-case table below shows real Passed/Failed verdicts.
+  const resultsWithVerdicts = Object.fromEntries(
+    Object.entries(run.results).map(([id, r]) => {
+      const entry = r as { reportId?: string; status?: string; passFailStatus?: string };
+      return [id, {
+        status: entry.status,
+        passFailStatus: entry.passFailStatus
+          ?? (entry.reportId ? (reports[entry.reportId] as { passFailStatus?: string } | undefined)?.passFailStatus : undefined),
+      }];
+    })
+  );
+  const buckets = bucketRunResults(resultsWithVerdicts);
   const passedCount = buckets.passed;
   const failedCount = buckets.failed;
   const erroredCount = buckets.errored;

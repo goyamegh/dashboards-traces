@@ -384,14 +384,26 @@ export const ComparisonPage: React.FC = () => {
         const report = reports[result.reportId];
         if (report?.runId) {
           const tm = traceMetricsMap.get(report.runId);
-          if (tm) { totalTokens += tm.totalTokens || 0; totalInputTokens += tm.inputTokens || 0; totalOutputTokens += tm.outputTokens || 0; totalCostUsd += tm.costUsd || 0; totalDurationMs += tm.durationMs || 0; totalLlmCalls += tm.llmCalls || 0; totalToolCalls += tm.toolCalls || 0; mc++; }
+          // Skip zero-filled placeholders: the metrics API returns a
+          // status:'pending' all-zeros object when NO spans exist for a runId
+          // (computeMetricsFromSpans). Counting those as real data rendered
+          // "$0.00 / 0ms" for untraced agents — which reads as "free and
+          // instant" instead of "not captured".
+          if (tm && tm.status !== 'pending') { totalTokens += tm.totalTokens || 0; totalInputTokens += tm.inputTokens || 0; totalOutputTokens += tm.outputTokens || 0; totalCostUsd += tm.costUsd || 0; totalDurationMs += tm.durationMs || 0; totalLlmCalls += tm.llmCalls || 0; totalToolCalls += tm.toolCalls || 0; mc++; }
         }
       }
       // Fall back to the run-level performance metrics when no traces are
       // available — prefer real data we already have over showing "0ms" /
       // "$0.00" (which reads as "this agent costs nothing" in the verdict).
+      // Per-result performanceMetrics (written by the benchmark runner) are
+      // preferred over the coarse run-level fields.
+      const perResultDurations = Object.values(run.results)
+        .map(r => (r as { performanceMetrics?: { durationMs?: number } }).performanceMetrics?.durationMs)
+        .filter((d): d is number => typeof d === 'number' && d > 0);
       const perf = (run as BenchmarkRun & { performanceMetrics?: { avgTestCaseDurationMs?: number; durationMs?: number } }).performanceMetrics;
-      const fallbackAvgDurationMs = perf?.avgTestCaseDurationMs ?? (perf?.durationMs && base.totalTestCases ? Math.round(perf.durationMs / base.totalTestCases) : undefined);
+      const fallbackAvgDurationMs = perResultDurations.length > 0
+        ? Math.round(perResultDurations.reduce((a, b) => a + b, 0) / perResultDurations.length)
+        : perf?.avgTestCaseDurationMs ?? (perf?.durationMs && base.totalTestCases ? Math.round(perf.durationMs / base.totalTestCases) : undefined);
       return {
         ...base,
         totalTokens: mc > 0 ? totalTokens : undefined,

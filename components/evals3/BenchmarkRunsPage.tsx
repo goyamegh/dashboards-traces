@@ -136,7 +136,11 @@ export const BenchmarkRunsPage2: React.FC = () => {
     status: 'idle' | 'success' | 'error'; message: string;
   }>({ isDeleting: false, deletingId: null, status: 'idle', message: '' });
 
-  // Version state
+  // Version state.
+  // The run-version filter is persisted per benchmark — a global key leaked a
+  // version filter set on one benchmark (e.g. v8) into every other benchmark,
+  // where it matched nothing and rendered an empty "No runs for v8" page even
+  // though runs existed (see regression test in Evals3BenchmarkRunsPage.versionFilter.test.tsx).
   const [testCaseVersion, setTestCaseVersion] = useState<number | null>(null);
   const [runVersionFilter, setRunVersionFilter] = usePersistedState<number | 'all'>('benchmark-runs:runVersionFilter', 'all');
 
@@ -264,6 +268,17 @@ export const BenchmarkRunsPage2: React.FC = () => {
   const filteredRuns = useMemo(
     () => filterRunsByVersion(benchmark?.runs, runVersionFilter), [benchmark?.runs, runVersionFilter]
   );
+
+  // Self-heal a stale persisted version filter: if the filter names a version
+  // this benchmark doesn't have (carried over from an older localStorage key,
+  // or the version was deleted), reset to 'all' rather than rendering an
+  // empty "No runs for vN" page while runs exist.
+  useEffect(() => {
+    if (runVersionFilter === 'all' || versionData.length === 0) return;
+    if (!versionData.some(v => v.version === runVersionFilter)) {
+      setRunVersionFilter('all');
+    }
+  }, [runVersionFilter, versionData, setRunVersionFilter]);
 
   const hasMultipleVersions = versionData.length > 1;
 

@@ -1066,4 +1066,62 @@ describe('comparisonService', () => {
       expect(single.fullyOverlapping).toBe(true);
     });
   });
+
+  // Regression: CLI-written run docs persist results entries as
+  // { reportId, status } only — the verdict lives on the report doc. The
+  // scoreboard bucketed those as "errored" and rendered a fabricated 0%
+  // pass rate while the per-case table showed real Passed/Failed verdicts.
+  describe('calculateRunAggregates verdict overlay (results without passFailStatus)', () => {
+    const cliRun: BenchmarkRun = {
+      id: 'run-cli',
+      name: 'CLI Run',
+      createdAt: '2024-01-01T00:00:00Z',
+      agentKey: 'cc-agent',
+      modelId: 'model-1',
+      status: 'completed',
+      results: {
+        // No passFailStatus on any entry — mirrors the CLI benchmark path.
+        'tc-1': { reportId: 'report-1', status: 'completed' },
+        'tc-2': { reportId: 'report-2', status: 'completed' },
+        'tc-3': { reportId: 'report-3', status: 'completed' },
+      },
+    } as unknown as BenchmarkRun;
+
+    const cliReports: Record<string, EvaluationReport> = {
+      'report-1': { id: 'report-1', testCaseId: 'tc-1', passFailStatus: 'passed', metrics: { accuracy: 90 } } as EvaluationReport,
+      'report-2': { id: 'report-2', testCaseId: 'tc-2', passFailStatus: 'passed', metrics: { accuracy: 80 } } as EvaluationReport,
+      'report-3': { id: 'report-3', testCaseId: 'tc-3', passFailStatus: 'failed', metrics: { accuracy: 20 } } as EvaluationReport,
+    };
+
+    it('reads the verdict from the report when the results entry lacks it', () => {
+      const agg = calculateRunAggregates(cliRun, cliReports);
+      expect(agg.passedCount).toBe(2);
+      expect(agg.failedCount).toBe(1);
+      expect(agg.erroredCount).toBe(0);
+      expect(agg.passRatePercent).toBe(67); // 2/3, not 0%
+    });
+
+    it('still buckets completed-without-any-verdict as errored (#242)', () => {
+      const reportsMissingVerdict: Record<string, EvaluationReport> = {
+        'report-1': { id: 'report-1', testCaseId: 'tc-1', metrics: { accuracy: 0 } } as EvaluationReport,
+      };
+      const run = {
+        ...cliRun,
+        results: { 'tc-1': { reportId: 'report-1', status: 'completed' } },
+      } as unknown as BenchmarkRun;
+      const agg = calculateRunAggregates(run, reportsMissingVerdict);
+      expect(agg.erroredCount).toBe(1);
+      expect(agg.passRatePercent).toBe(0);
+    });
+
+    it('prefers the results-entry verdict when both exist', () => {
+      const run = {
+        ...cliRun,
+        results: { 'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'failed' } },
+      } as unknown as BenchmarkRun;
+      const agg = calculateRunAggregates(run, cliReports); // report says passed
+      expect(agg.failedCount).toBe(1);
+      expect(agg.passedCount).toBe(0);
+    });
+  });
 });
