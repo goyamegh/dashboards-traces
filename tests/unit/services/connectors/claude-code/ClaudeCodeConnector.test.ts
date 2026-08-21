@@ -977,4 +977,70 @@ describe('ClaudeCodeConnector', () => {
       expect(spawnArgs).toContain('--no-cache');
     });
   });
+
+  // Regression: the registry hands out a SINGLETON connector shared by all
+  // concurrent benchmark tasks. Building per-execution args by appending to
+  // this.config.args compounded another in-flight execution's config args —
+  // spawns were observed with --append-system-prompt / --allowed-tools
+  // duplicated up to 5x at benchmark concurrency 3.
+  describe('concurrent executions (shared singleton instance)', () => {
+    it('does not duplicate config args across overlapping executions', async () => {
+      const procs: any[] = [];
+      (spawn as jest.Mock).mockClear();
+      (spawn as jest.Mock).mockImplementation(() => {
+        const proc: any = new EventEmitter();
+        proc.stdout = new EventEmitter();
+        proc.stderr = new EventEmitter();
+        proc.stdin = { write: jest.fn(), end: jest.fn() };
+        proc.pid = 100 + procs.length;
+        proc.kill = jest.fn();
+        procs.push(proc);
+        return proc;
+      });
+
+      const connectorConfig: ClaudeCodeConnectorConfig = {
+        appendSystemPrompt: 'Answer from the corpus only.',
+        allowedTools: ['Read', 'Grep', 'Glob'],
+      };
+      const mkRequest = (id: string): ConnectorRequest => ({
+        testCase: { ...mockTestCase, id },
+        modelId: 'test-model',
+        connectorConfig: connectorConfig as any,
+      });
+
+      // Start three overlapping executions before any of them finishes.
+      const e1 = connector.execute('claude', mkRequest('tc-1'), mockAuth);
+      const e2 = connector.execute('claude', mkRequest('tc-2'), mockAuth);
+      const e3 = connector.execute('claude', mkRequest('tc-3'), mockAuth);
+
+      // Let them all spawn, then close in reverse order to exercise the
+      // finally-restore path interleaving.
+      await new Promise((r) => setTimeout(r, 10));
+      for (const proc of [...procs].reverse()) proc.emit('close', 0, null);
+      await Promise.all([e1, e2, e3]);
+
+      expect(procs.length).toBe(3);
+      const calls = (spawn as jest.Mock).mock.calls.slice(-3);
+      for (const [, args] of calls) {
+        const appendCount = (args as string[]).filter((a) => a === '--append-system-prompt').length;
+        const allowedCount = (args as string[]).filter((a) => a === '--allowed-tools').length;
+        expect(appendCount).toBe(1);
+        expect(allowedCount).toBe(1);
+      }
+    });
+
+    it('sequential executions also build args from the pristine base', async () => {
+      const connectorConfig: ClaudeCodeConnectorConfig = { appendSystemPrompt: 'p' };
+      for (let i = 0; i < 3; i++) {
+        setTimeout(() => mockProcess.emit('close', 0, null), 5);
+        await connector.execute('claude', {
+          testCase: mockTestCase,
+          modelId: 'test-model',
+          connectorConfig: connectorConfig as any,
+        }, mockAuth);
+      }
+      const lastArgs = (spawn as jest.Mock).mock.calls.at(-1)![1] as string[];
+      expect(lastArgs.filter((a) => a === '--append-system-prompt').length).toBe(1);
+    });
+  });
 });
