@@ -577,6 +577,7 @@ export async function runEvaluationWithConnector(
       testCaseId: testCase.id,
       testCaseVersion: testCase.currentVersion ?? 1,
       status: 'completed',
+      metricsStatus: 'ready', // eager judge ran — never leave the placeholder's 'pending' in place
       passFailStatus: judgment.passFailStatus,
       trajectory: fullTrajectory,
       metrics: judgment.metrics,
@@ -642,6 +643,7 @@ export async function runEvaluationWithConnector(
       testCaseId: testCase.id,
       testCaseVersion: testCase.currentVersion ?? 1,
       status: 'failed',
+      metricsStatus: 'error', // eval crashed — placeholder must not stay 'pending'
       trajectory: fullTrajectory,
       metrics: {
         accuracy: 0,
@@ -842,6 +844,7 @@ export async function runEvaluation(
       testCaseId: testCase.id,
       testCaseVersion: testCase.currentVersion ?? 1,
       status: 'completed',
+      metricsStatus: 'ready', // eager judge ran — never leave the placeholder's 'pending' in place
       passFailStatus: judgment.passFailStatus,
       trajectory: fullTrajectory,
       metrics: judgment.metrics,
@@ -874,6 +877,7 @@ export async function runEvaluation(
       testCaseId: testCase.id,
       testCaseVersion: testCase.currentVersion ?? 1,
       status: 'failed',
+      metricsStatus: 'error', // eval crashed — placeholder must not stay 'pending'
       trajectory: fullTrajectory,
       metrics: {
         accuracy: 0,

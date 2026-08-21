@@ -663,8 +663,13 @@ export async function executeEvaluationRun(
 
           // If trace mode (metricsStatus: 'pending'), poll for traces and run judge inline.
           // Skipped for deterministic runs (matcher session decided the verdict already).
+          // Guarded on agentConfig.useTraces: only trace-mode agents legitimately
+          // produce 'pending' — a stale placeholder 'pending' surviving a save-merge
+          // must never send an eagerly-judged report into 10-minute trace polling
+          // that clobbers its verdict (2026-08-21 EnterpriseRAG smoke bug).
           if (
             !hasDeterministicEval &&
+            agentConfig?.useTraces &&
             savedReport.metricsStatus === 'pending' &&
             savedReport.runId
           ) {
