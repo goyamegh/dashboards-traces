@@ -17,10 +17,13 @@ import { RunDetailsPage } from './components/RunDetailsPage';
 import { TestCasesPage } from './components/TestCasesPage';
 import { TestCaseRunsPage } from './components/TestCaseRunsPage';
 import { ComparisonPage } from './components/comparison/ComparisonPage';
-import { TracesPage } from './components/traces/TracesPage';
 import { AgentTracesPage } from './components/traces/AgentTracesPage';
 import { PerformanceOverlay } from './components/PerformanceOverlay';
 import { CodingAgentsPage } from './components/codingAgents/CodingAgentsPage';
+import { EvaluatorsPage } from './components/EvaluatorsPage';
+import { EvaluatorEditPage } from './components/EvaluatorEditPage';
+import { AssistantChat } from './components/assistant-ui/AssistantChat';
+import { SkillsPage } from './components/skills/SkillsPage';
 
 // Evals 3 — Evaluations
 import { BenchmarksPage4 as Evals3Benchmarks } from './components/evals3/BenchmarksPage';
@@ -29,6 +32,8 @@ import { BenchmarkRunsPage2 as Evals3BenchmarkRuns } from './components/evals3/B
 import { TestCaseDetailPage as Evals3TestCaseDetail } from './components/evals3/TestCaseDetailPage';
 import { EvalRunsPage as Evals3EvalRuns } from './components/evals3/EvalRunsPage';
 import { RunInspectorPage as Evals3RunInspector } from './components/evals3/RunInspectorPage';
+import { NewRunPage as Evals3NewRun } from './components/evals3/NewRunPage';
+import { EvalRunDetailPage as Evals3EvalRunDetail } from './components/evals3/EvalRunDetailPage';
 
 function ExperimentRunsRedirect() {
   const { experimentId } = useParams();
@@ -102,6 +107,10 @@ function App() {
             <Route path="/test-cases/:testCaseId/runs" element={<TestCaseRunsPage />} />
             <Route path="/benchmarks" element={<BenchmarksPage />} />
             <Route path="/benchmarks/:benchmarkId/runs" element={<BenchmarkRunsPage />} />
+            <Route path="/evaluators" element={<EvaluatorsPage />} />
+            <Route path="/evaluators/new" element={<EvaluatorEditPage />} />
+            <Route path="/evaluators/:evaluatorId" element={<EvaluatorEditPage />} />
+            <Route path="/evaluators/:evaluatorId/edit" element={<EvaluatorEditPage />} />
 
             {/* Unified run details page - works for both test case and benchmark runs */}
             <Route path="/runs/:runId" element={<RunDetailsPage />} />
@@ -116,9 +125,6 @@ function App() {
             <Route path="/compare" element={<ComparisonPage />} />
             <Route path="/compare/:benchmarkId" element={<ComparisonPage />} />
 
-            {/* Live Traces */}
-            <Route path="/traces" element={<TracesPage />} />
-
             {/* Agent Traces - Table View */}
             <Route path="/agent-traces" element={<AgentTracesPage />} />
 
@@ -127,12 +133,21 @@ function App() {
             <Route path="/evaluations/test-cases" element={<Evals3TestCases />} />
             <Route path="/evaluations/test-cases/:testCaseId" element={<Evals3TestCaseDetail />} />
             <Route path="/evaluations/runs" element={<Evals3EvalRuns />} />
+            <Route path="/evaluations/runs/new" element={<Evals3NewRun />} />
+            <Route path="/evaluations/runs/:runId" element={<Evals3EvalRunDetail />} />
+            <Route path="/evaluations/runs/:runId/inspect" element={<Evals3RunInspector />} />
             <Route path="/evaluations/benchmarks/:benchmarkId/runs" element={<Evals3BenchmarkRuns />} />
             <Route path="/evaluations/benchmarks/:benchmarkId/runs/:runId" element={<Navigate to="inspect" replace />} />
             <Route path="/evaluations/benchmarks/:benchmarkId/runs/:runId/inspect" element={<Evals3RunInspector />} />
 
+            {/* Skills Evaluator */}
+            <Route path="/skills" element={<SkillsPage />} />
+
             {/* Coding Agent Analytics */}
             <Route path="/coding-agents" element={<CodingAgentsPage />} />
+
+            {/* AI Assistant */}
+            <Route path="/assistant" element={<AssistantChat />} />
             {/* Redirects for deprecated routes */}
             <Route path="/evals" element={<Navigate to="/test-cases" replace />} />
             <Route path="/run" element={<Navigate to="/test-cases" replace />} />

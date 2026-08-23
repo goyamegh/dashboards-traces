@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, createContext, useContext } from "react";
+import React, { useState, useEffect, useRef, useMemo, createContext, useContext } from "react";
 import {
   LayoutDashboard,
   Settings,
@@ -13,11 +13,14 @@ import {
   Search,
   TestTube,
   BarChart3,
+  MessageSquare,
+  Wand2,
 } from "lucide-react";
 import OpenSearchLogoDark from "@/assets/opensearch-logo.svg";
 import OpenSearchLogoLight from "@/assets/opensearch-logo-light.svg";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useServerStatus } from "@/hooks/useServerStatus";
+import { usePersistedState } from "@/hooks/usePersistedState";
 import {
   Sidebar,
   SidebarContent,
@@ -40,6 +43,8 @@ import {
   CollapsibleTrigger,
 } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
+import { AssistantProvider } from "@/components/assistant-ui/AssistantProvider";
+import { AssistantModal } from "@/components/assistant-ui/AssistantModal";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -64,13 +69,14 @@ export const useSidebarCollapse = () => {
 const navItems = [
   { to: "/", icon: LayoutDashboard, label: "Overview", tooltip: "Dashboard and quick stats", testId: "nav-overview" },
   { to: "/agent-traces", icon: Activity, label: "Agent Traces", tooltip: "View and debug agent executions", testId: "nav-agent-traces" },
-  { to: "/coding-agents", icon: BarChart3, label: "Coding Agents", tooltip: "Claude Code, Kiro & Codex analytics", testId: "nav-coding-agents" },
 ];
 
-const testingSubItems = [
-  { to: "/benchmarks", label: "Benchmarks", tooltip: "Define success criteria and scoring", testId: "nav-benchmarks" },
-  { to: "/test-cases", label: "Test Cases", tooltip: "Create and manage test inputs", testId: "nav-test-cases" },
+const navItemsAfterEvaluation = [
+  { to: "/skills", icon: Wand2, label: "Skills", tooltip: "Evaluate and improve AgentSkills", testId: "nav-skills" },
+  { to: "/coding-agents", icon: BarChart3, label: "AI Dev Tools", tooltip: "Claude Code, Kiro & Codex analytics", testId: "nav-coding-agents" },
+  { to: "/assistant", icon: MessageSquare, label: "Assistant", tooltip: "AI assistant for help and analysis", testId: "nav-assistant" },
 ];
+
 
 export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const location = useLocation();
@@ -79,11 +85,31 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   // Determine if testing section should be open based on current path
   const isTestingPath = location.pathname.startsWith("/test-cases") ||
-                      location.pathname.startsWith("/benchmarks");
+                      location.pathname.startsWith("/benchmarks") ||
+                      location.pathname.startsWith("/evaluators");
   // Keep testing dropdown always open
   const [testingOpen, setTestingOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isCollapsed, setIsCollapsed] = usePersistedState<boolean>('sidebar:collapsed', false);
+
+  // Collapse the nav when landing on a *specific run* URL (single-run inspect /
+  // detail views are dense — no need to waste space on the global nav). Matches
+  // /runs/<id>[/inspect] and /evaluations/runs/<id> but NOT the bare run LISTS
+  // (…/runs) or /evaluations/runs/new. Fires on direct landing too (first mount
+  // with the ref still false). The collapsed/expanded state itself is persisted
+  // (usePersistedState above), so it's remembered across navigations/reloads and
+  // the user can re-expand — that choice sticks until the next run URL.
+  const isRunDetailRoute = useMemo(
+    () => /\/runs\/(?!new(?:\/|$))[^/]+/.test(location.pathname),
+    [location.pathname]
+  );
+  const wasRunDetailRoute = useRef(false);
+  useEffect(() => {
+    if (isRunDetailRoute && !wasRunDetailRoute.current) {
+      setIsCollapsed(true);
+    }
+    wasRunDetailRoute.current = isRunDetailRoute;
+  }, [isRunDetailRoute, setIsCollapsed]);
   
   // Detect theme for logo switching
   const [isDarkMode, setIsDarkMode] = useState(false);
@@ -117,7 +143,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         className="h-screen flex-shrink-0 transition-all duration-300"
         style={{
           width: isCollapsed ? '64px' : '180px',
-          background: isDarkMode ? '#1D1E24' : '#FFFFFF',
+          background: isDarkMode ? 'hsl(var(--background))' : '#FFFFFF',
           borderRight: isDarkMode ? '1px solid #343741' : '1px solid #D3DAE6',
           boxShadow: '0px 0px 12px rgba(0, 0, 0, 0.05), 0px 0px 4px rgba(0, 0, 0, 0.05), 0px 0px 2px rgba(0, 0, 0, 0.05)',
           borderRadius: '0px 24px 24px 0px',
@@ -193,7 +219,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           <SidebarGroup>
             <SidebarGroupContent>
               <SidebarMenu className="space-y-1">
-                {navItems.filter(item => item.to !== '/coding-agents' || features.codingAgentAnalytics).map((item) => (
+                {navItems.map((item) => (
                   <SidebarMenuItem key={item.to}>
                     <SidebarMenuButton
                       asChild
@@ -222,7 +248,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                         className="h-9 w-full"
                       >
                         <div className="flex items-center w-full">
-                          <Link to="/evaluations/benchmarks" className="flex items-center gap-2 flex-1 min-w-0">
+                          <Link to="/evaluations/runs" className="flex items-center gap-2 flex-1 min-w-0">
                             <Gauge className="h-3.5 w-3.5" />
                             <span className="text-xs">Evaluations</span>
                           </Link>
@@ -254,22 +280,46 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                               <Link to="/evaluations/runs" className="text-xs">Evaluation Runs</Link>
                             </SidebarMenuSubButton>
                           </SidebarMenuSubItem>
+                          <SidebarMenuSubItem>
+                            <SidebarMenuSubButton asChild isActive={location.pathname.startsWith("/evaluators")} data-testid="nav-evaluators" className="h-8">
+                              <Link to="/evaluators" className="text-xs">Evaluators</Link>
+                            </SidebarMenuSubButton>
+                          </SidebarMenuSubItem>
                         </SidebarMenuSub>
                       </CollapsibleContent>
                     </SidebarMenuItem>
                   </Collapsible>
                 )}
 
-                {/* Evaluations icon only when collapsed */}
+                {/* Evaluations icon only when collapsed — the closed-navbar
+                    Evaluations button jumps straight to Evaluation Runs (the
+                    most-used evals3 surface), not the Benchmarks list. */}
                 {isCollapsed && (
                   <SidebarMenuItem>
                     <SidebarMenuButton asChild isActive={location.pathname.startsWith("/evaluations")} tooltip="Evaluations" data-testid="nav-evals3" className="h-9">
-                      <Link to="/evaluations/benchmarks" className="justify-center">
+                      <Link to="/evaluations/runs" className="justify-center">
                         <Gauge className="h-4 w-4" />
                       </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
                 )}
+
+                {navItemsAfterEvaluation.filter(item => item.to !== '/coding-agents' || features.codingAgentAnalytics).map((item) => (
+                  <SidebarMenuItem key={item.to}>
+                    <SidebarMenuButton
+                      asChild
+                      isActive={location.pathname === item.to}
+                      tooltip={isCollapsed ? item.label : undefined}
+                      data-testid={item.testId}
+                      className="h-9"
+                    >
+                      <Link to={item.to} className={isCollapsed ? 'justify-center' : ''}>
+                        <item.icon className="h-3.5 w-3.5" />
+                        {!isCollapsed && <span className="text-xs">{item.label}</span>}
+                      </Link>
+                    </SidebarMenuButton>
+                  </SidebarMenuItem>
+                ))}
 
                 <SidebarMenuItem>
                   <SidebarMenuButton
@@ -336,7 +386,12 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         </SidebarFooter>
       </Sidebar>
 
-      <SidebarInset className="overflow-y-auto">{children}</SidebarInset>
+      <SidebarInset className="overflow-y-auto dashboard-gradient-bg">
+        <AssistantProvider>
+          {children}
+          <AssistantModal />
+        </AssistantProvider>
+      </SidebarInset>
       </SidebarProvider>
     </SidebarCollapseContext.Provider>
   );

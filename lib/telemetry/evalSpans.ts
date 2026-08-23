@@ -35,6 +35,7 @@ import {
   ATTR_TEST_CASE_RESULT_STATUS,
   ATTR_GEN_AI_OPERATION_NAME,
   ATTR_GEN_AI_EVALUATION_NAME,
+  ATTR_GEN_AI_CONVERSATION_ID,
   ATTR_GEN_AI_EVALUATION_SCORE_VALUE,
   ATTR_GEN_AI_EVALUATION_SCORE_LABEL,
   ATTR_GEN_AI_EVALUATION_EXPLANATION,
@@ -145,6 +146,10 @@ export function startTestCaseSpan(
   };
   if (agentRunId) {
     attributes[ATTR_AGENT_HEALTH_AGENT_RUN_ID] = agentRunId;
+    // OTEL-standard correlation id (incubating). Set to the same agent run id
+    // so trace queries correlating on `gen_ai.conversation.id` find this eval
+    // span alongside `agent_health.run.id` (Strategy B).
+    attributes[ATTR_GEN_AI_CONVERSATION_ID] = agentRunId;
   }
   attributes[ATTR_TEST_CASE_INPUT] = truncate(testCase.initialPrompt || '', MAX_ATTRIBUTE_LENGTH)!;
   const expected = truncate(
@@ -304,6 +309,7 @@ export function emitDeferredTestCaseSpan(
   };
   if (agentRunId) {
     attributes[ATTR_AGENT_HEALTH_AGENT_RUN_ID] = agentRunId;
+    attributes[ATTR_GEN_AI_CONVERSATION_ID] = agentRunId;
   }
   attributes[ATTR_TEST_CASE_INPUT] = truncate(testCase.initialPrompt || '', MAX_ATTRIBUTE_LENGTH)!;
   const expected = truncate(
@@ -315,13 +321,14 @@ export function emitDeferredTestCaseSpan(
   // If an agent traceId is provided, create the span within the same trace
   // so it appears as a sibling of the agent's root span in the trace tree.
   let parentCtx: Context | undefined;
-  if (agentTraceId) {
+  if (agentTraceId && /^[0-9a-f]{32}$/i.test(agentTraceId)) {
     const remoteSpanContext: SpanContext = {
       traceId: agentTraceId,
-      // Use a synthetic spanId — this is a "remote" context that only carries
-      // the traceId forward. The eval span becomes a root span in the trace
-      // (no parentSpanId) but shares the same traceId as the agent spans.
-      spanId: '0000000000000000',
+      // Use a valid synthetic spanId — an all-zero spanId is considered invalid
+      // by the OTel SDK and would cause it to ignore this context entirely.
+      // This "remote" context carries the traceId forward so the eval span
+      // shares the same trace as the agent spans.
+      spanId: 'eeee000000000001',
       traceFlags: TraceFlags.SAMPLED,
       isRemote: true,
     };

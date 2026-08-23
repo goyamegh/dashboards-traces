@@ -227,7 +227,7 @@ export function getStorageState(): StorageState {
 // ============================================================================
 
 /**
- * Default storage module: JSON files in agent-health-data/.
+ * Default storage module: JSON files in .agent-health/data/.
  * Always available, no configuration needed.
  */
 let storageModule: IStorageModule = new FileStorageModule();
@@ -278,6 +278,6 @@ export function isFileStorage(): boolean {
 // ============================================================================
 
 export { STORAGE_INDEXES, DEFAULT_OTEL_INDEXES };
-export { FileStorageModule } from './file/StorageModule.js';
+export { FileStorageModule, FileSessionMetadataOperations } from './file/StorageModule.js';
 export { OpenSearchStorageModule } from './opensearch/StorageModule.js';
-export type { IStorageModule } from './types.js';
+export type { IStorageModule, ISessionMetadataOperations } from './types.js';

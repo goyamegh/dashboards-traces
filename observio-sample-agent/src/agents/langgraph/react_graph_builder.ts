@@ -7,8 +7,8 @@ import { StateGraph, START, END, Annotation, MemorySaver } from '@langchain/lang
 import { Logger } from '../../utils/logger';
 import { ReactAgentState } from './react_agent';
 
-// Configuration constants
-const REACT_MAX_ITERATIONS = 100; // Maximum tool execution cycles before forcing final response
+// Configuration constants — configurable via REACT_MAX_ITERATIONS env var (useful in dev mode)
+const REACT_MAX_ITERATIONS = Math.max(1, parseInt(process.env.REACT_MAX_ITERATIONS || '100', 10) || 100);
 
 // Define state annotation for LangGraph
 const ReactStateAnnotation = Annotation.Root({

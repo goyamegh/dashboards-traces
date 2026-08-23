@@ -89,6 +89,26 @@ describe('tracesService', () => {
       expect(result.attributes['gen_ai.tool.name']).toBe('search');
     });
 
+    it('should read plain-raw nested attributes (literal dotted OTel keys) (#296)', () => {
+      const source: OpenSearchSpanSource = {
+        attributes: {
+          'agent_health.run.id': 'run-456',
+          'gen_ai.usage.input_tokens': 250,
+          'gen_ai.agent.name': 'retail-agent',
+        },
+        resource: { attributes: { 'service.name': 'retail-agent' } },
+        status: { code: 2 },
+      } as any;
+
+      const result = transformSpan(source);
+
+      expect(result.attributes['agent_health.run.id']).toBe('run-456');
+      expect(result.attributes['gen_ai.usage.input_tokens']).toBe(250);
+      expect(result.attributes['gen_ai.agent.name']).toBe('retail-agent');
+      expect(result.attributes['service.name']).toBe('retail-agent');
+      expect(result.status).toBe('ERROR');
+    });
+
     it('should convert resource.attributes with @ notation', () => {
       const source: OpenSearchSpanSource = {
         'resource.attributes.service@name': 'my-service',
@@ -156,7 +176,7 @@ describe('tracesService', () => {
     it('should throw error when no filter provided', async () => {
       const client = createMockClient();
       await expect(fetchTraces({}, client)).rejects.toThrow(
-        'Either traceId, runIds, or time range is required'
+        'Either traceId, runIds, sessionId, agents, or time range is required'
       );
     });
 
@@ -211,6 +231,78 @@ describe('tracesService', () => {
       const result = await fetchTraces({ runIds: ['run-1', 'run-2'] }, client);
 
       expect(result.spans).toHaveLength(2);
+    });
+
+    it('correlates runIds via the plain-raw attributes.agent_health.run.id field (#296)', async () => {
+      const search = jest.fn().mockResolvedValue({
+        body: { hits: { hits: [], total: { value: 0 } } },
+      });
+      const client = createMockClient({ search });
+
+      await fetchTraces({ runIds: ['run-1', 'run-2'] }, client);
+
+      const clause = JSON.stringify(search.mock.calls[0][0].body.query);
+      // The OTEL-faithful (Data Prepper trace-analytics-plain-raw) field path,
+      // NOT the legacy custom `span.attributes.gen_ai@request@id` shape.
+      expect(clause).toContain('attributes.agent_health.run.id');
+      expect(clause).not.toContain('gen_ai@request@id');
+    });
+
+    it('also correlates runIds via the OTEL-standard attributes.gen_ai.conversation.id (#313)', async () => {
+      const search = jest.fn().mockResolvedValue({
+        body: { hits: { hits: [], total: { value: 0 } } },
+      });
+      const client = createMockClient({ search });
+
+      await fetchTraces({ runIds: ['run-1', 'run-2'] }, client);
+
+      const query = search.mock.calls[0][0].body.query;
+      const clause = JSON.stringify(query);
+      // Strategy B is now an OR over our own attribute and the OTEL-standard one.
+      expect(clause).toContain('attributes.agent_health.run.id');
+      expect(clause).toContain('attributes.gen_ai.conversation.id');
+      // Both terms carry the same runIds.
+      const runIdClause = query.bool.must.find((c: any) => c?.bool?.should?.some(
+        (s: any) => s.terms?.['attributes.gen_ai.conversation.id']));
+      expect(runIdClause.bool.should).toEqual(expect.arrayContaining([
+        { terms: { 'attributes.agent_health.run.id': ['run-1', 'run-2'] } },
+        { terms: { 'attributes.gen_ai.conversation.id': ['run-1', 'run-2'] } },
+      ]));
+    });
+
+    it('Strategy D: correlates agents[].sessionId on attributes.session.id, unioned with the window (#313)', async () => {
+      const search = jest.fn().mockResolvedValue({
+        body: { hits: { hits: [], total: { value: 0 } } },
+      });
+      const client = createMockClient({ search });
+
+      await fetchTraces({
+        runIds: ['run-1'],
+        agents: [{ serviceName: 'claude-code-agent', startedAt: 1000, endedAt: 2000, sessionId: 'sess-abc' }],
+      }, client);
+
+      const query = search.mock.calls[0][0].body.query;
+      const clause = JSON.stringify(query);
+      // session.id is present as a precise per-run correlator.
+      expect(clause).toContain('attributes.session.id');
+      expect(clause).toContain('sess-abc');
+      // The agents clause is a should over (session.id) OR (serviceName+window),
+      // so a span matching EITHER correlates.
+      const agentClause = query.bool.should.find((c: any) => c?.bool?.should?.some(
+        (s: any) => s.term?.['attributes.session.id'] === 'sess-abc'));
+      expect(agentClause).toBeTruthy();
+      expect(agentClause.bool.minimum_should_match).toBe(1);
+    });
+
+    it('correlates sessionId via attributes.session.id (#296)', async () => {
+      const search = jest.fn().mockResolvedValue({
+        body: { hits: { hits: [], total: { value: 0 } } },
+      });
+      const client = createMockClient({ search });
+
+      await fetchTraces({ sessionId: 'sess-1' }, client);
+
+      expect(JSON.stringify(search.mock.calls[0][0].body.query)).toContain('attributes.session.id');
     });
 
     it('should fetch traces by time range', async () => {
@@ -349,7 +441,9 @@ describe('tracesService', () => {
       const result = await checkTracesHealth(client);
 
       expect(result.status).toBe('error');
-      expect(result.error).toBe('Connection refused');
+      expect(result.error).toBe('Cannot connect to OpenSearch: Connection refused');
+      expect(result.errorCategory).toBe('connection');
+      expect(result.suggestion).toBeDefined();
     });
 
     it('should use default index pattern when not provided', async () => {

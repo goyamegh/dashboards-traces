@@ -191,6 +191,24 @@ describe('Evaluation Span Helpers', () => {
         expect.anything() // parent context
       );
     });
+
+    it('stamps both agent_health.run.id and the OTEL-standard gen_ai.conversation.id when agentRunId is set (#313)', () => {
+      const { context } = require('@opentelemetry/api');
+      const testCase = createTestCase({ id: 'tc-99', name: 'Corr' });
+
+      startTestCaseSpan(context.active(), testCase, createTestBenchmark(), createTestRun(), 'subprocess-123');
+
+      expect(mockTracer.startSpan).toHaveBeenCalledWith(
+        'test_case',
+        expect.objectContaining({
+          attributes: expect.objectContaining({
+            'agent_health.run.id': 'subprocess-123',
+            'gen_ai.conversation.id': 'subprocess-123',
+          }),
+        }),
+        expect.anything()
+      );
+    });
   });
 
   describe('addEvaluationResultEvents', () => {
@@ -450,7 +468,7 @@ describe('Evaluation Span Helpers', () => {
         expect.objectContaining({
           attributes: expect.objectContaining({
             'test.case.id': 'tc-linked',
-            'gen_ai.request.id': 'agent-run-id',
+            'agent_health.run.id': 'agent-run-id',
           }),
         }),
         expect.anything() // parent context carrying agentTraceId

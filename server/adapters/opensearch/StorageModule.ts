@@ -22,16 +22,22 @@ import type {
   TestCase,
   Benchmark,
   BenchmarkRun,
+  EvaluationRun,
   TestCaseRun,
   RunAnnotation,
   HealthStatus,
+  Evaluator,
+  RunResultStatus,
 } from '../../../types/index.js';
 import type {
   IStorageModule,
   ITestCaseOperations,
   IBenchmarkOperations,
+  IEvaluationRunOperations,
   IRunOperations,
   IAnalyticsOperations,
+  IEvaluatorOperations,
+  ISessionMetadataOperations,
   PaginationOptions,
   TestCaseSearchFilters,
   RunSearchFilters,
@@ -278,6 +284,40 @@ class OpenSearchTestCaseOperations implements ITestCaseOperations {
       }
     }
     return { created, errors, testCases: createdTestCases };
+  }
+
+  async bulkUpsert(testCases: Partial<TestCase>[]): Promise<{ created: number; updated: number; unchanged: number; testCases: TestCase[] }> {
+    const { items: all } = await this.getAll({ size: 10000 });
+    let created = 0;
+    let updated = 0;
+    let unchanged = 0;
+    const results: TestCase[] = [];
+
+    for (const tc of testCases) {
+      const existing = all.find(
+        e => e.name === tc.name && (tc.sourceFile ? e.sourceFile === tc.sourceFile : true)
+      );
+
+      if (existing) {
+        if (existing.sourceHash === tc.sourceHash) {
+          unchanged++;
+          results.push(existing);
+        } else {
+          const updatedTc = await this.update(existing.id, {
+            ...tc,
+            sourceHash: tc.sourceHash,
+          });
+          updated++;
+          results.push(updatedTc);
+        }
+      } else {
+        const newTc = await this.create(tc);
+        created++;
+        results.push(newTc);
+      }
+    }
+
+    return { created, updated, unchanged, testCases: results };
   }
 }
 
@@ -528,7 +568,13 @@ class OpenSearchRunOperations implements IRunOperations {
   async getById(id: string): Promise<TestCaseRun | null> {
     try {
       const result = await this.client.get({ index: this.index, id });
-      return result.body.found ? result.body._source as TestCaseRun : null;
+      if (!result.body.found) return null;
+      const doc = result.body._source as any;
+      // Normalize: storage uses 'traceId' but app layer expects 'runId'
+      if (doc.traceId && !doc.runId) {
+        doc.runId = doc.traceId;
+      }
+      return doc as TestCaseRun;
     } catch (error: any) {
       if (error.meta?.statusCode === 404) return null;
       throw error;
@@ -878,20 +924,401 @@ class OpenSearchAnalyticsOperations implements IAnalyticsOperations {
 }
 
 // ============================================================================
+// Evaluator Operations
+// ============================================================================
+
+class OpenSearchEvaluatorOperations implements IEvaluatorOperations {
+  constructor(private client: Client) {}
+
+  private get index() { return STORAGE_INDEXES.evaluators; }
+
+  async getAll(options?: PaginationOptions): Promise<{ items: Evaluator[]; total: number }> {
+    const size = options?.size ?? 10000;
+    const from = options?.from ?? 0;
+
+    let result;
+    try {
+      // Fetch all docs, then group by ID to return latest version of each
+      result = await this.client.search({
+        index: this.index,
+        body: {
+          size,
+          from,
+          sort: [{ createdAt: { order: 'desc' } }],
+          query: { match_all: {} },
+        },
+      });
+    } catch (error: any) {
+      if (isIndexNotFound(error)) return { items: [], total: 0 };
+      throw error;
+    }
+
+    const hits = result.body.hits?.hits || [];
+    const allDocs = hitsToSources<Evaluator & { version?: number }>(hits);
+    const total = typeof result.body.hits?.total === 'object'
+      ? result.body.hits.total.value
+      : result.body.hits?.total ?? 0;
+
+    // Group by ID, keep latest version
+    const byId = new Map<string, Evaluator>();
+    for (const doc of allDocs) {
+      const existing = byId.get(doc.id);
+      const docVer = (doc as any).version ?? (doc as any).currentVersion ?? 0;
+      const existVer = existing ? ((existing as any).version ?? (existing as any).currentVersion ?? 0) : -1;
+      if (!existing || docVer > existVer) {
+        byId.set(doc.id, doc);
+      }
+    }
+
+    const items = Array.from(byId.values()).sort(
+      (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+    );
+
+    return { items, total: items.length };
+  }
+
+  async getById(id: string): Promise<Evaluator | null> {
+    // Search for latest version of this evaluator
+    try {
+      const result = await this.client.search({
+        index: this.index,
+        body: {
+          size: 1,
+          sort: [{ currentVersion: { order: 'desc' } }],
+          query: { term: { id } },
+        },
+      });
+
+      const hits = result.body.hits?.hits || [];
+      return hits.length > 0 ? hits[0]._source as Evaluator : null;
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return null;
+      throw error;
+    }
+  }
+
+  async getVersions(id: string): Promise<Evaluator[]> {
+    try {
+      const result = await this.client.search({
+        index: this.index,
+        body: {
+          size: 100,
+          sort: [{ currentVersion: { order: 'desc' } }],
+          query: { term: { id } },
+        },
+      });
+
+      return hitsToSources<Evaluator>(result.body.hits?.hits || []);
+    } catch (error: any) {
+      if (isIndexNotFound(error)) return [];
+      throw error;
+    }
+  }
+
+  async getVersion(id: string, version: number): Promise<Evaluator | null> {
+    const docId = `${id}-v${version}`;
+    try {
+      const result = await this.client.get({ index: this.index, id: docId });
+      return result.body.found ? result.body._source as Evaluator : null;
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return null;
+      throw error;
+    }
+  }
+
+  async create(evaluator: Partial<Evaluator>): Promise<Evaluator> {
+    assertNotMigrating(this.index);
+    if (!evaluator.name) throw new Error('Evaluator name is required');
+    if (!evaluator.systemPrompt) throw new Error('Evaluator system prompt is required');
+    if (!evaluator.scoringConfig) throw new Error('Evaluator scoring config is required');
+
+    const now = new Date().toISOString();
+    const id = evaluator.id || generateId('eval');
+    const version = 1;
+    const docId = `${id}-v${version}`;
+
+    const doc: Evaluator = {
+      ...evaluator,
+      id,
+      currentVersion: version,
+      createdAt: now,
+      updatedAt: now,
+      isSystem: evaluator.isSystem ?? false,
+      versions: [
+        {
+          version,
+          createdAt: now,
+          systemPrompt: evaluator.systemPrompt,
+          scoringConfig: evaluator.scoringConfig,
+          inferenceConfig: evaluator.inferenceConfig || {},
+        },
+      ],
+    } as Evaluator;
+
+    await this.client.index({
+      index: this.index,
+      id: docId,
+      body: doc,
+      refresh: 'wait_for',
+    });
+
+    return doc;
+  }
+
+  async update(id: string, updates: Partial<Evaluator>): Promise<Evaluator> {
+    assertNotMigrating(this.index);
+    const current = await this.getById(id);
+    if (!current) throw new Error(`Evaluator ${id} not found`);
+
+    // Prevent editing system evaluators
+    if (current.isSystem) {
+      throw new Error('Cannot edit system evaluators. Duplicate them to create a custom version.');
+    }
+
+    const currentVer = current.currentVersion ?? 1;
+    const newVer = currentVer + 1;
+    const now = new Date().toISOString();
+    const docId = `${id}-v${newVer}`;
+
+    const newVersion = {
+      version: newVer,
+      createdAt: now,
+      systemPrompt: updates.systemPrompt ?? current.systemPrompt,
+      scoringConfig: updates.scoringConfig ?? current.scoringConfig,
+      inferenceConfig: updates.inferenceConfig ?? current.inferenceConfig,
+    };
+
+    const doc: Evaluator = {
+      ...current,
+      ...updates,
+      id,
+      currentVersion: newVer,
+      updatedAt: now,
+      systemPrompt: newVersion.systemPrompt,
+      scoringConfig: newVersion.scoringConfig,
+      inferenceConfig: newVersion.inferenceConfig,
+      versions: [...(current.versions || []), newVersion],
+    };
+
+    await this.client.index({
+      index: this.index,
+      id: docId,
+      body: doc,
+      refresh: 'wait_for',
+    });
+
+    return doc;
+  }
+
+  async delete(id: string): Promise<{ deleted: number }> {
+    assertNotMigrating(this.index);
+    const evaluator = await this.getById(id);
+    if (!evaluator) return { deleted: 0 };
+
+    // Prevent deleting system evaluators
+    if (evaluator.isSystem) {
+      throw new Error('Cannot delete system evaluators');
+    }
+
+    // Delete all versions
+    try {
+      const result = await this.client.deleteByQuery({
+        index: this.index,
+        body: {
+          query: { term: { id } },
+        },
+        refresh: true,
+      });
+
+      return { deleted: (result.body as any).deleted || 0 };
+    } catch (error: any) {
+      if (isIndexNotFound(error)) return { deleted: 0 };
+      throw error;
+    }
+  }
+}
+
+// ============================================================================
+// Evaluation Run Operations (same index as benchmarks, filtered by docType)
+// ============================================================================
+
+class OpenSearchEvaluationRunOperations implements IEvaluationRunOperations {
+  constructor(private client: Client) {}
+
+  // Uses same index as benchmarks — discriminated by docType field
+  private get index() { return STORAGE_INDEXES.benchmarks; }
+
+  async create(run: EvaluationRun): Promise<EvaluationRun> {
+    assertNotMigrating(this.index);
+    const now = new Date().toISOString();
+    const id = run.id || generateId('evalrun');
+
+    const doc: EvaluationRun = {
+      ...run,
+      id,
+      docType: 'evaluation-run',
+      createdAt: run.createdAt || now,
+      status: run.status || 'pending',
+      results: run.results || {},
+      sources: run.sources || [],
+      testCaseSnapshots: run.testCaseSnapshots || [],
+    };
+
+    await this.client.index({
+      index: this.index,
+      id,
+      body: doc,
+      refresh: 'wait_for',
+    });
+
+    return doc;
+  }
+
+  async getById(id: string): Promise<EvaluationRun | null> {
+    try {
+      const result = await this.client.get({ index: this.index, id });
+      if (!result.body.found) return null;
+      const doc = result.body._source as any;
+      // Only return if it's actually an evaluation-run doc
+      if (doc.docType !== 'evaluation-run') return null;
+      return doc as EvaluationRun;
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return null;
+      throw error;
+    }
+  }
+
+  async update(id: string, updates: Partial<EvaluationRun>): Promise<EvaluationRun> {
+    assertNotMigrating(this.index);
+    const existing = await this.getById(id);
+    if (!existing) throw new Error(`Evaluation run ${id} not found`);
+
+    const updated = { ...existing, ...updates };
+    await this.client.index({
+      index: this.index,
+      id,
+      body: updated,
+      refresh: 'wait_for',
+    });
+
+    return updated as EvaluationRun;
+  }
+
+  async delete(id: string): Promise<{ deleted: boolean }> {
+    assertNotMigrating(this.index);
+    try {
+      await this.client.delete({ index: this.index, id, refresh: 'wait_for' });
+      return { deleted: true };
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return { deleted: false };
+      throw error;
+    }
+  }
+
+  async list(options?: PaginationOptions & {
+    benchmarkId?: string;
+    agentKey?: string;
+    status?: string;
+    testCaseId?: string;
+    trigger?: string;
+    sort?: 'createdAt' | 'completedAt';
+    order?: 'asc' | 'desc';
+  }): Promise<{ items: EvaluationRun[]; total: number }> {
+    const size = options?.size ?? 100;
+    const from = options?.from ?? 0;
+    const sortField = options?.sort || 'createdAt';
+    const order = options?.order || 'desc';
+
+    // NOTE: docType/benchmarkId/agentKey/status/trigger are dynamically mapped
+    // as `text` (with a `.keyword` sub-field), so `term` queries MUST target
+    // `<field>.keyword` — a `term` on the analyzed `text` field never matches a
+    // hyphenated value like 'evaluation-run' (it's tokenized), which silently
+    // returned 0 results and made every evaluation run invisible in the UI
+    // lists even though getById (a direct _id GET) found them.
+    const must: any[] = [{ term: { 'docType.keyword': 'evaluation-run' } }];
+
+    if (options?.benchmarkId) must.push({ term: { 'benchmarkId.keyword': options.benchmarkId } });
+    if (options?.agentKey) must.push({ term: { 'agentKey.keyword': options.agentKey } });
+    if (options?.status) must.push({ term: { 'status.keyword': options.status } });
+    if (options?.trigger) must.push({ term: { 'trigger.keyword': options.trigger } });
+    if (options?.testCaseId) {
+      must.push({ nested: {
+        path: 'testCaseSnapshots',
+        query: { term: { 'testCaseSnapshots.id.keyword': options.testCaseId } },
+      }});
+    }
+
+    try {
+      const result = await this.client.search({
+        index: this.index,
+        body: {
+          size,
+          from,
+          sort: [{ [sortField]: { order } }],
+          query: { bool: { must } },
+        },
+      });
+
+      const items = hitsToSources<EvaluationRun>(result.body.hits?.hits || []);
+      const total = typeof result.body.hits?.total === 'object'
+        ? result.body.hits.total.value
+        : result.body.hits?.total ?? 0;
+
+      return { items, total };
+    } catch (error: any) {
+      if (isIndexNotFound(error)) return { items: [], total: 0 };
+      throw error;
+    }
+  }
+
+  async updateResult(runId: string, testCaseId: string, result: {
+    reportId: string;
+    status: RunResultStatus;
+    error?: string;
+  }): Promise<boolean> {
+    assertNotMigrating(this.index);
+    try {
+      await this.client.update({
+        index: this.index,
+        id: runId,
+        body: {
+          script: {
+            source: `ctx._source.results.put(params.testCaseId, params.result)`,
+            lang: 'painless',
+            params: { testCaseId, result },
+          },
+        },
+        refresh: 'wait_for',
+      });
+      return true;
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return false;
+      throw error;
+    }
+  }
+}
+
+// ============================================================================
 // OpenSearch Storage Module
 // ============================================================================
 
 export class OpenSearchStorageModule implements IStorageModule {
   readonly testCases: ITestCaseOperations;
   readonly benchmarks: IBenchmarkOperations;
+  readonly evaluationRuns: IEvaluationRunOperations;
   readonly runs: IRunOperations;
   readonly analytics: IAnalyticsOperations;
+  readonly evaluators: IEvaluatorOperations;
+  readonly sessionMetadata: ISessionMetadataOperations;
 
-  constructor(private client: Client) {
+  constructor(private client: Client, sessionMetadata: ISessionMetadataOperations) {
     this.testCases = new OpenSearchTestCaseOperations(client);
     this.benchmarks = new OpenSearchBenchmarkOperations(client);
+    this.evaluationRuns = new OpenSearchEvaluationRunOperations(client);
     this.runs = new OpenSearchRunOperations(client);
     this.analytics = new OpenSearchAnalyticsOperations(client);
+    this.evaluators = new OpenSearchEvaluatorOperations(client);
+    this.sessionMetadata = sessionMetadata;
   }
 
   async health(): Promise<HealthStatus> {

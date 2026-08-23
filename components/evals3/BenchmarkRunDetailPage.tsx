@@ -18,21 +18,20 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  CheckCircle2, XCircle, Loader2, Clock, ChevronDown,
-  ChevronRight, Calendar, Ban,
+  Loader2, ChevronDown, ChevronRight, Calendar, Ban, AlertTriangle,
 } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
 import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
 import { Benchmark, BenchmarkRun, TestCase, EvaluationReport } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
-import { getLabelColor, formatDate, getModelName } from '@/lib/utils';
+import { getLabelColor, formatDate, getModelName, getRunOverallScore } from '@/lib/utils';
+import { RunScore } from '@/components/RunScore';
 import { RunDetailsFlyout } from './RunDetailsFlyout';
+import { ResultStatus, getResultStatus, StatusIcon, StatusLabel } from './ResultStatus';
 import { Breadcrumbs } from './Breadcrumbs';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-type ResultStatus = 'passed' | 'failed' | 'running' | 'pending';
 
 interface TestCaseResult {
   testCaseId: string;
@@ -40,37 +39,13 @@ interface TestCaseResult {
   reportId: string | null;
   report: EvaluationReport | null;
   status: ResultStatus;
-  accuracy: number | null;
-}
-
-function getResultStatus(runResult: { status: string }, report: EvaluationReport | null): ResultStatus {
-  if (runResult.status === 'running') return 'running';
-  if (runResult.status === 'pending') return 'pending';
-  if (report?.passFailStatus === 'passed') return 'passed';
-  if (report?.passFailStatus === 'failed') return 'failed';
-  if (runResult.status === 'completed') return report ? 'passed' : 'failed';
-  return 'failed';
-}
-
-
-function StatusIcon({ status }: { status: ResultStatus }) {
-  switch (status) {
-    case 'passed': return <CheckCircle2 size={14} className="text-green-500" />;
-    case 'failed': return <XCircle size={14} className="text-red-500" />;
-    case 'running': return <Loader2 size={14} className="text-blue-600 dark:text-blue-400 animate-spin" />;
-    case 'pending': return <Clock size={14} className="text-muted-foreground" />;
-  }
-}
-
-function StatusLabel({ status }: { status: ResultStatus }) {
-  const config: Record<ResultStatus, { label: string; cls: string }> = {
-    passed: { label: 'PASS', cls: 'text-green-500' },
-    failed: { label: 'FAIL', cls: 'text-red-500' },
-    running: { label: 'RUNNING', cls: 'text-blue-600 dark:text-blue-400' },
-    pending: { label: 'PENDING', cls: 'text-muted-foreground' },
-  };
-  const c = config[status];
-  return <span className={`text-[11px] font-semibold ${c.cls}`}>{c.label}</span>;
+  /**
+   * Overall score for this run (mean of every metric the evaluator emitted),
+   * not just `accuracy`. Previously this row stored `metrics.accuracy` which
+   * was always `null` for non-RCA-Default evaluators — making the per-row
+   * score column blank and the table-wide "Avg Accuracy" stat misleading.
+   */
+  score: number | null;
 }
 
 // ─── Main Component ──────────────────────────────────────────────────────────
@@ -119,7 +94,9 @@ export const BenchmarkRunDetailPage: React.FC = () => {
           reportId: runResult?.reportId || null,
           report,
           status: getResultStatus(runResult, report),
-          accuracy: report?.metrics?.accuracy ?? null,
+          // Mean of every populated metric on this report. Works for any
+          // evaluator without per-evaluator config lookup.
+          score: getRunOverallScore(report?.metrics as Record<string, number | undefined> | undefined),
         };
       });
 
@@ -136,10 +113,15 @@ export const BenchmarkRunDetailPage: React.FC = () => {
   // Stats
   const passCount = results.filter(r => r.status === 'passed').length;
   const failCount = results.filter(r => r.status === 'failed').length;
+  // Issue #242: errored runs (evaluator could not produce a verdict) are
+  // bucketed separately and excluded from the pass-rate denominator so a
+  // misconfigured judge can't drag the score to 0%.
+  const erroredCount = results.filter(r => r.status === 'errored').length;
   const totalCount = results.length;
-  const passRate = totalCount > 0 ? Math.round((passCount / totalCount) * 100) : 0;
-  const avgAccuracy = results.filter(r => r.accuracy !== null).length > 0
-    ? Math.round(results.reduce((s, r) => s + (r.accuracy ?? 0), 0) / results.filter(r => r.accuracy !== null).length)
+  const judgedCount = passCount + failCount;
+  const passRate = judgedCount > 0 ? Math.round((passCount / judgedCount) * 100) : 0;
+  const avgScore = results.filter(r => r.score !== null).length > 0
+    ? Math.round(results.reduce((s, r) => s + (r.score ?? 0), 0) / results.filter(r => r.score !== null).length)
     : null;
 
   if (loading) {
@@ -211,14 +193,29 @@ export const BenchmarkRunDetailPage: React.FC = () => {
                   <div className="text-lg font-bold text-red-500">{failCount}</div>
                   <div className="text-[10px] text-muted-foreground">Failed</div>
                 </div>
+                {erroredCount > 0 && (
+                  <div
+                    className="text-center"
+                    title="Evaluator could not produce a verdict (e.g. judge validation error). Excluded from pass-rate."
+                  >
+                    <div className="text-lg font-bold text-amber-500 flex items-center gap-1 justify-center">
+                      <AlertTriangle size={14} />
+                      {erroredCount}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">Errored</div>
+                  </div>
+                )}
                 <div className="text-center">
                   <div className="text-lg font-bold">{passRate}%</div>
                   <div className="text-[10px] text-muted-foreground">Pass Rate</div>
                 </div>
-                {avgAccuracy !== null && (
+                {avgScore !== null && (
                   <div className="text-center">
-                    <div className="text-lg font-bold text-blue-600 dark:text-blue-400">{avgAccuracy}%</div>
-                    <div className="text-[10px] text-muted-foreground">Avg Accuracy</div>
+                    <div className="text-lg font-bold text-blue-600 dark:text-blue-400">{avgScore}%</div>
+                    {/* "Avg Score" not "Avg Accuracy" — individual rows can be
+                        scored under different evaluators emitting different
+                        metrics, so the aggregate is a generic mean of means. */}
+                    <div className="text-[10px] text-muted-foreground">Avg Score</div>
                   </div>
                 )}
               </div>
@@ -293,8 +290,12 @@ export const BenchmarkRunDetailPage: React.FC = () => {
                   ))}
                 </div>
                 <div className="w-20 shrink-0 text-right">
-                  {r.accuracy !== null
-                    ? <span className={`text-sm font-semibold tabular-nums ${r.accuracy >= 50 ? 'text-green-500' : 'text-red-500'}`}>{r.accuracy}%</span>
+                  {r.report
+                    ? <RunScore
+                        metrics={r.report.metrics as Record<string, number | undefined>}
+                        showLabel={false}
+                        className={`text-sm font-semibold tabular-nums ${r.score !== null && r.score >= 50 ? 'text-green-500' : 'text-red-500'}`}
+                      />
                     : <span className="text-xs text-muted-foreground">—</span>}
                 </div>
                 <div className="w-16 shrink-0 text-right">

@@ -1,6 +1,6 @@
 # Performance Optimization Guide
 
-This document details the performance optimizations implemented in the AgentEval dashboard, specifically for the Benchmark Runs Overview page - the most data-intensive view in the application.
+This document details the performance optimizations implemented in the Agent Health dashboard, specifically for the Benchmark Runs Overview page - the most data-intensive view in the application.
 
 ## Overview
 

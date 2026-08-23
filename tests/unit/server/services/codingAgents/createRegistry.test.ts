@@ -18,18 +18,23 @@ describe('createRegistry', () => {
     jest.resetModules();
     jest.clearAllMocks();
     process.env = { ...originalEnv };
+    delete process.env.AH_DISABLE_CODING_ANALYTICS;
     delete process.env.AGENT_HEALTH_DISABLE_CODING_ANALYTICS;
+    process.env.AH_QUIET_DEPRECATIONS = '1';
   });
 
   afterEach(() => {
     process.env = originalEnv;
   });
 
-  function setupMocks(remotes: Array<{ name: string; url: string }> = []) {
+  function setupMocks(remotes: Array<{ name: string; url: string }> = [], state: Record<string, unknown> = {}) {
     jest.doMock('@/server/services/codingAgents/registry');
     jest.doMock('@/server/services/codingAgents/remoteAggregator');
     jest.doMock('@/server/services/codingAgents/remoteConfig', () => ({
       getRemoteServers: jest.fn().mockReturnValue(remotes),
+    }));
+    jest.doMock('@/lib/config/statePaths', () => ({
+      readLayeredState: jest.fn().mockReturnValue(state),
     }));
   }
 
@@ -64,7 +69,7 @@ describe('createRegistry', () => {
   });
 
   it('should return null when feature is disabled via env var', () => {
-    process.env.AGENT_HEALTH_DISABLE_CODING_ANALYTICS = 'true';
+    process.env.AH_DISABLE_CODING_ANALYTICS = 'true';
     setupMocks([]);
 
     const { CodingAgentRegistry } = require('@/server/services/codingAgents/registry');
@@ -77,22 +82,23 @@ describe('createRegistry', () => {
     expect(RemoteAggregator).not.toHaveBeenCalled();
   });
 
-  it('should return null when feature is disabled via config file', () => {
-    const fs = require('fs');
-    const existsSpy = jest.spyOn(fs, 'existsSync').mockReturnValue(true);
-    const readSpy = jest.spyOn(fs, 'readFileSync').mockReturnValue(
-      JSON.stringify({ codingAgentAnalytics: false })
-    );
-
+  it('still accepts legacy AGENT_HEALTH_DISABLE_CODING_ANALYTICS', () => {
+    process.env.AGENT_HEALTH_DISABLE_CODING_ANALYTICS = 'true';
     setupMocks([]);
 
     const mod = require('@/server/services/codingAgents/createRegistry');
 
     expect(mod.codingAnalyticsEnabled).toBe(false);
     expect(mod.codingAgentRegistry).toBeNull();
+  });
 
-    existsSpy.mockRestore();
-    readSpy.mockRestore();
+  it('should return null when feature is disabled via runtime state', () => {
+    setupMocks([], { codingAgentAnalytics: false });
+
+    const mod = require('@/server/services/codingAgents/createRegistry');
+
+    expect(mod.codingAnalyticsEnabled).toBe(false);
+    expect(mod.codingAgentRegistry).toBeNull();
   });
 
   it('should log when remote aggregation is enabled', () => {
@@ -107,7 +113,7 @@ describe('createRegistry', () => {
   });
 
   it('should log when feature is disabled', () => {
-    process.env.AGENT_HEALTH_DISABLE_CODING_ANALYTICS = 'true';
+    process.env.AH_DISABLE_CODING_ANALYTICS = 'true';
     setupMocks([]);
 
     require('@/server/services/codingAgents/createRegistry');

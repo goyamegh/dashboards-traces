@@ -12,13 +12,13 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { getStorageModule } from '../adapters/index.js';
-import { SAMPLE_TEST_CASES } from '../../cli/demo/sampleTestCases.js';
-import { runSingleUseCase } from '../../services/benchmarkRunner.js';
-import { loadConfigSync } from '../../lib/config/index.js';
+import { getStorageModule } from '@/server/adapters';
+import { SAMPLE_TEST_CASES } from '../../cli/demo/sampleTestCases';
+import { runSingleUseCase } from '@/services/benchmarkRunner';
+import { loadConfigSync } from '@/lib/config/index';
 import { getCustomAgents } from '@/server/services/customAgentStore';
 import { debug } from '@/lib/debug';
-import type { BenchmarkRun, TestCase } from '../../types/index.js';
+import type { BenchmarkRun, TestCase, TestCaseRun } from '@/types';
 
 const router = Router();
 
@@ -93,7 +93,8 @@ function toTestCase(sample: typeof SAMPLE_TEST_CASES[0]): TestCase {
  * }
  *
  * SSE events:
- * - { type: 'started', testCase, agent }
+ * - { type: 'started', testCase, agent, reportId }
+ * - { type: 'heartbeat' }
  * - { type: 'step', stepIndex, step: { type, content, toolName?, toolArgs? } }
  * - { type: 'completed', report: { id, status, passFailStatus, metrics, ... }, reportId }
  * - { type: 'error', error }
@@ -109,9 +110,9 @@ router.post('/api/evaluate', async (req: Request, res: Response) => {
     return res.status(400).json({ error: validationError });
   }
 
-  const { testCaseId, agentKey, modelId, agentEndpoint } = req.body;
+  const { testCaseId, agentKey, modelId, judgeModelId, agentEndpoint, evaluatorId, runName, runDescription } = req.body;
   const inlineTestCase = req.body.testCase as TestCase | undefined;
-  debug('EvalAPI', 'testCaseId:', testCaseId, 'agentKey:', agentKey, 'modelId:', modelId, 'inline:', !!inlineTestCase);
+  debug('EvalAPI', 'testCaseId:', testCaseId, 'agentKey:', agentKey, 'modelId:', modelId, 'judgeModelId:', judgeModelId || '(default)', 'inline:', !!inlineTestCase);
 
   // Validate agent exists (check both built-in and custom agents)
   const config = loadConfigSync();
@@ -179,11 +180,102 @@ router.post('/api/evaluate', async (req: Request, res: Response) => {
     createdAt: new Date().toISOString(),
     agentKey: agent.key,
     modelId: modelId,
+    // Customer-supplied judge model id (separate from agent's `modelId`).
+    // Forwarded into runSingleUseCase → runEvaluationWithConnector → the
+    // judge call. Falls back to BEDROCK_MODEL_ID env at the runner level.
+    judgeModelId: typeof judgeModelId === 'string' && judgeModelId ? judgeModelId : undefined,
+    // Customer-supplied evaluator id. The runner reads this via
+    // `run.evaluatorId` and forwards it to (a) bindJudge for SDK matchers,
+    // (b) the standard-mode judge call, and (c) the trace-mode polled
+    // judge after spans land. Pre-fix this was missing from the runConfig
+    // here, so the trace-mode polled judge silently fell back to
+    // `system-rca-default` even when /api/evaluate was called with the
+    // correct evaluatorId on the request body.
+    evaluatorId: typeof evaluatorId === 'string' && evaluatorId ? evaluatorId : undefined,
     agentEndpoint: agentEndpoint || agent.endpoint,
     results: {},
   };
 
   const storage = getStorageModule();
+
+  // Pre-persist a placeholder run so the client can poll if SSE disconnects.
+  // We use the same field shape as `saveReportWithModule` (storage-layer names like
+  // agentId/traceId) so the placeholder is forward-compatible with the final update.
+  // This is also the shape that the listing pages and pollReportStatus expect.
+  //
+  // We resolve the run's display name here so it's persisted on the placeholder
+  // and survives both SSE disconnects and the eventual final update. Falling
+  // back to `Run <short-id>` ensures every run has a recognizable label in
+  // the runs list — historically only BenchmarkRun had a `name` field, but
+  // single test case runs deserve one too (otherwise the UI is forced to
+  // show a meaningless id slice).
+  const trimmedRunName = typeof runName === 'string' ? runName.trim() : '';
+  let preCreatedReportId: string | null = null;
+  let resolvedRunName: string = trimmedRunName;
+  try {
+    const placeholder = await storage.runs.create({
+      // `name` is set after we know the generated id (so the auto-generated
+      // fallback can include the short id). We patch it back below.
+      name: trimmedRunName || undefined,
+      description: typeof runDescription === 'string' && runDescription.trim() ? runDescription.trim() : undefined,
+      testCaseId: testCase.id,
+      testCaseVersion: testCase.currentVersion,
+      // Both names so app-side and storage-side queries can find the record
+      agentKey: agent.key,
+      agentName: agent.name,
+      agentId: agent.key,
+      agentEndpoint: agentEndpoint || agent.endpoint,
+      modelId: modelId,
+      modelName: model.display_name || modelId,
+      // Persist the run-level judge model so the run-detail UI can show
+      // "judge model: <whatever the customer picked>" as part of the audit
+      // trail. Optional — absent runs were graded by the server default.
+      judgeModelId: typeof judgeModelId === 'string' && judgeModelId ? judgeModelId : undefined,
+      evaluatorId,
+      status: 'running',
+      trajectory: [],
+      metrics: {},
+      llmJudgeReasoning: '',
+      timestamp: new Date().toISOString(),
+    } as Partial<TestCaseRun>);
+    preCreatedReportId = placeholder.id;
+    if (!resolvedRunName) {
+      // Auto-generate using the trailing 6 chars of the id, mirroring
+      // `getRunDisplayName` on the client. Patch the placeholder so list
+      // pages reflect the generated name immediately (rather than only
+      // after the run completes).
+      const shortId = placeholder.id.length > 6 ? placeholder.id.slice(-6) : placeholder.id;
+      resolvedRunName = `Run ${shortId}`;
+      try {
+        await storage.runs.update(placeholder.id, { name: resolvedRunName } as Partial<TestCaseRun>);
+      } catch (patchErr: any) {
+        console.warn('[EvaluationAPI] Failed to patch placeholder name:', patchErr.message);
+      }
+    }
+    debug('EvalAPI', 'Pre-created placeholder run:', preCreatedReportId, 'name:', resolvedRunName);
+  } catch (e: any) {
+    // Storage may not be configured — disconnect recovery will be unavailable
+    // but the evaluation can still proceed. Surface this clearly.
+    console.warn(
+      '[EvaluationAPI] Could not pre-create placeholder run — ' +
+      'SSE disconnect recovery will be unavailable for this request. ' +
+      `Reason: ${e.message}`
+    );
+  }
+
+  let heartbeatInterval: ReturnType<typeof setInterval> | null = null;
+  let clientDisconnected = false;
+  let cleanupDone = false;
+
+  // Single cleanup path — idempotent so it's safe to call from any branch.
+  const cleanup = () => {
+    if (cleanupDone) return;
+    cleanupDone = true;
+    if (heartbeatInterval) {
+      clearInterval(heartbeatInterval);
+      heartbeatInterval = null;
+    }
+  };
 
   try {
     // Set up SSE streaming for progress updates
@@ -192,8 +284,22 @@ router.post('/api/evaluate', async (req: Request, res: Response) => {
     res.setHeader('Connection', 'keep-alive');
     res.flushHeaders();
 
-    // Send started event
-    res.write(`data: ${JSON.stringify({ type: 'started', testCase: testCase.name, agent: agent.name })}\n\n`);
+    // Heartbeat to keep connection alive during long-running evaluations
+    heartbeatInterval = setInterval(() => {
+      if (!res.writableEnded && !clientDisconnected) {
+        res.write(`data: ${JSON.stringify({ type: 'heartbeat' })}\n\n`);
+      }
+    }, 15000);
+
+    // Track client disconnect — but don't abort the evaluation.
+    // The server keeps running so the report still gets persisted.
+    req.on('close', () => {
+      clientDisconnected = true;
+      cleanup();
+    });
+
+    // Send started event with reportId for polling fallback
+    res.write(`data: ${JSON.stringify({ type: 'started', testCase: testCase.name, agent: agent.name, reportId: preCreatedReportId })}\n\n`);
 
     // Run the evaluation with step progress
     let stepCount = 0;
@@ -203,21 +309,25 @@ router.post('/api/evaluate', async (req: Request, res: Response) => {
       storage,
       (step) => {
         stepCount++;
-        // Send full step content for UI rendering
-        res.write(`data: ${JSON.stringify({
-          type: 'step',
-          stepIndex: stepCount - 1,
-          step: {
-            id: step.id,
-            type: step.type,
-            content: step.content,
-            toolName: step.toolName,
-            toolArgs: step.toolArgs,
-            status: step.status,
-            timestamp: step.timestamp,
-          },
-        })}\n\n`);
-      }
+        if (!clientDisconnected && !res.writableEnded) {
+          res.write(`data: ${JSON.stringify({
+            type: 'step',
+            stepIndex: stepCount - 1,
+            step: {
+              id: step.id,
+              type: step.type,
+              content: step.content,
+              toolName: step.toolName,
+              toolArgs: step.toolArgs,
+              status: step.status,
+              timestamp: step.timestamp,
+            },
+          })}\n\n`);
+        }
+      },
+      evaluatorId,
+      preCreatedReportId || undefined,
+      { awaitTraces: false } // UI mode: don't block, let UI poll for trace status
     );
 
     // Fetch the completed report via adapter
@@ -227,31 +337,45 @@ router.post('/api/evaluate', async (req: Request, res: Response) => {
       throw new Error('Report not found after save');
     }
 
-    // Send completed event with reportId for navigation
-    res.write(`data: ${JSON.stringify({
-      type: 'completed',
-      reportId,
-      report: {
-        id: report.id,
-        status: report.status,
-        passFailStatus: report.passFailStatus,
-        metricsStatus: report.metricsStatus,
-        metrics: report.metrics,
-        trajectorySteps: report.trajectory?.length || 0,
-        llmJudgeReasoning: report.llmJudgeReasoning,
-        improvementStrategies: report.improvementStrategies,
-      },
-    })}\n\n`);
+    cleanup();
 
-    res.end();
+    // Send completed event (only if client is still connected)
+    if (!clientDisconnected && !res.writableEnded) {
+      res.write(`data: ${JSON.stringify({
+        type: 'completed',
+        reportId,
+        report: {
+          id: report.id,
+          status: report.status,
+          passFailStatus: report.passFailStatus,
+          metricsStatus: report.metricsStatus,
+          metrics: report.metrics,
+          trajectorySteps: report.trajectory?.length || 0,
+          llmJudgeReasoning: report.llmJudgeReasoning,
+          improvementStrategies: report.improvementStrategies,
+        },
+      })}\n\n`);
+      res.end();
+    }
   } catch (error: any) {
     console.error('[EvaluationAPI] Evaluation failed:', error.message);
+    cleanup();
+
+    // Update placeholder run with failed status so the UI/polling can see it
+    if (preCreatedReportId) {
+      try {
+        await storage.runs.update(preCreatedReportId, {
+          status: 'failed',
+          llmJudgeReasoning: `Evaluation error: ${error.message}`,
+        } as Partial<TestCaseRun>);
+      } catch { /* best-effort */ }
+    }
 
     // If headers already sent, send error as SSE event
-    if (res.headersSent) {
+    if (res.headersSent && !clientDisconnected && !res.writableEnded) {
       res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
       res.end();
-    } else {
+    } else if (!res.headersSent) {
       res.status(500).json({ error: error.message });
     }
   }

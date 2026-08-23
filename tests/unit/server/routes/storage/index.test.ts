@@ -12,6 +12,7 @@ const mockRouter = {
   get: jest.fn(),
   post: jest.fn(),
   put: jest.fn(),
+  patch: jest.fn(),
   delete: jest.fn(),
 };
 
@@ -26,6 +27,8 @@ jest.mock('@/server/routes/storage/benchmarks', () => ({ __esModule: true, defau
 jest.mock('@/server/routes/storage/runs', () => ({ __esModule: true, default: 'runsRoutes' }));
 jest.mock('@/server/routes/storage/analytics', () => ({ __esModule: true, default: 'analyticsRoutes' }));
 jest.mock('@/server/routes/storage/reports', () => ({ __esModule: true, default: 'reportsRoutes' }));
+jest.mock('@/server/routes/storage/evaluators', () => ({ __esModule: true, default: 'evaluatorsRoutes' }));
+jest.mock('@/server/routes/storage/evaluationRuns', () => ({ __esModule: true, default: 'evaluationRunsRoutes' }));
 
 describe('Storage Routes Aggregator', () => {
   beforeEach(() => {
@@ -43,9 +46,11 @@ describe('Storage Routes Aggregator', () => {
     expect(mockUse).toHaveBeenCalledWith('adminRoutes');
     expect(mockUse).toHaveBeenCalledWith('testCasesRoutes');
     expect(mockUse).toHaveBeenCalledWith('benchmarksRoutes');
+    expect(mockUse).toHaveBeenCalledWith('evaluationRunsRoutes');
     expect(mockUse).toHaveBeenCalledWith('runsRoutes');
     expect(mockUse).toHaveBeenCalledWith('analyticsRoutes');
     expect(mockUse).toHaveBeenCalledWith('reportsRoutes');
+    expect(mockUse).toHaveBeenCalledWith('evaluatorsRoutes');
   });
 
   it('should mount routes in the correct order', () => {
@@ -56,14 +61,25 @@ describe('Storage Routes Aggregator', () => {
 
     const calls = mockUse.mock.calls.map((call) => call[0]);
 
-    expect(calls).toEqual([
+    // Note: an inline no-silent-fallback guard middleware (Finding 1) is mounted
+    // between adminRoutes (config/recovery — must stay reachable) and the entity
+    // CRUD routes. It surfaces as an anonymous function.
+    const named = calls.filter((c) => typeof c === 'string');
+    const guards = calls.filter((c) => typeof c === 'function');
+
+    expect(named).toEqual([
       'adminRoutes',
       'testCasesRoutes',
       'benchmarksRoutes',
+      'evaluationRunsRoutes',
       'runsRoutes',
       'analyticsRoutes',
       'reportsRoutes',
+      'evaluatorsRoutes',
     ]);
+    // exactly one guard, and it sits right after adminRoutes (index 1)
+    expect(guards).toHaveLength(1);
+    expect(typeof calls[1]).toBe('function');
   });
 
   it('should export the router as default', () => {

@@ -37,7 +37,7 @@ const API_BASE = ENV_CONFIG.backendUrl;
 export interface ConfigStatus {
   storage: {
     configured: boolean;
-    source: 'file' | 'environment' | 'none';
+    source: 'file' | 'typescript' | 'environment' | 'none';
     endpoint?: string;
     authType?: ClusterAuthType;
     username?: string;
@@ -48,7 +48,7 @@ export interface ConfigStatus {
   };
   observability: {
     configured: boolean;
-    source: 'file' | 'environment' | 'none';
+    source: 'file' | 'typescript' | 'environment' | 'none';
     endpoint?: string;
     authType?: ClusterAuthType;
     username?: string;

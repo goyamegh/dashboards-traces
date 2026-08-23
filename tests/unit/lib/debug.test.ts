@@ -152,6 +152,7 @@ describe('Debug Utility', () => {
         existsSync: jest.fn().mockReturnValue(false),
         readFileSync: realFs.readFileSync,
         writeFileSync: jest.fn(),
+        mkdirSync: jest.fn(),
       }));
     }
 
@@ -227,7 +228,7 @@ describe('Debug Utility', () => {
       expect(consoleDebugSpy).not.toHaveBeenCalled();
     });
 
-    it('should skip file write when existing config has non-object content (clobber prevention)', () => {
+    it('should skip file write when existing state has non-object content (clobber prevention)', () => {
       // @ts-ignore
       delete global.window;
       jest.resetModules();
@@ -237,9 +238,11 @@ describe('Debug Utility', () => {
       const mockWriteFileSync = jest.fn();
       jest.mock('fs', () => ({
         ...realFs,
-        existsSync: jest.fn().mockReturnValue(true),
+        // No authored config (not code-first); state file exists but is corrupt.
+        existsSync: jest.fn((p: string) => p.endsWith('state.json')),
         readFileSync: jest.fn().mockReturnValue('["an", "array"]'),
         writeFileSync: mockWriteFileSync,
+        mkdirSync: jest.fn(),
       }));
 
       const mod = require('@/lib/debug');

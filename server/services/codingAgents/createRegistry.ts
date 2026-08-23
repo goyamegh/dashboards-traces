@@ -14,26 +14,23 @@
 import { CodingAgentRegistry } from './registry';
 import { RemoteAggregator } from './remoteAggregator';
 import { getRemoteServers } from './remoteConfig';
+import { readEnv } from '@/lib/envCompat';
+import { readLayeredState } from '@/lib/config/statePaths';
 
 /**
  * Check whether Coding Agent Analytics is enabled.
  * Disabled when:
- *   - env AGENT_HEALTH_DISABLE_CODING_ANALYTICS=true
+ *   - env AH_DISABLE_CODING_ANALYTICS=true (legacy: AGENT_HEALTH_DISABLE_CODING_ANALYTICS)
  *   - config codingAgentAnalytics === false
  */
 function isCodingAnalyticsEnabled(): boolean {
-  if (process.env.AGENT_HEALTH_DISABLE_CODING_ANALYTICS === 'true') return false;
+  if (readEnv('AH_DISABLE_CODING_ANALYTICS', 'AGENT_HEALTH_DISABLE_CODING_ANALYTICS') === 'true') return false;
 
-  // Check JSON config file (same file remoteConfig reads)
+  // Check runtime state file (same source remoteConfig reads). In code-first
+  // mode this is {} — the .ts's codingAgentAnalytics is honored via loadConfig.
   try {
-    const fs = require('fs');
-    const path = require('path');
-    const filePath = path.join(process.cwd(), 'agent-health.config.json');
-    if (fs.existsSync(filePath)) {
-      const config = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-      if (config.codingAgentAnalytics === false) return false;
-    }
-  } catch { /* config not available — default enabled */ }
+    if (readLayeredState().codingAgentAnalytics === false) return false;
+  } catch { /* state not available — default enabled */ }
 
   return true;
 }

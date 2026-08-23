@@ -31,6 +31,7 @@ export interface EnvConfig {
   mlcommonsHeaderAwsSecretAccessKey: string;
   mlcommonsHeaderAwsSessionToken: string;
   travelPlannerEndpoint: string;
+  observioEndpoint: string;
   openaiCompatibleApiKey: string;
   openaiCompatibleEndpoint: string;
   claudeCodeTelemetryEnabled: boolean;
@@ -40,7 +41,9 @@ export interface EnvConfig {
   otelExporterHeaders: string;
 }
 
-const BACKEND_URL = 'http://localhost:4001';
+import { DEFAULT_BACKEND_PORT } from '@/lib/portConfig';
+
+const BACKEND_URL = `http://localhost:${DEFAULT_BACKEND_PORT}`;
 
 export const ENV_CONFIG: EnvConfig = {
   backendUrl: BACKEND_URL,
@@ -65,6 +68,7 @@ export const ENV_CONFIG: EnvConfig = {
   mlcommonsHeaderAwsSecretAccessKey: '',
   mlcommonsHeaderAwsSessionToken: '',
   travelPlannerEndpoint: 'http://localhost:3000',
+  observioEndpoint: 'http://localhost:3001/run-agent',
   openaiCompatibleApiKey: '',
   openaiCompatibleEndpoint: 'http://localhost:4000/v1/chat/completions',
   claudeCodeTelemetryEnabled: false,

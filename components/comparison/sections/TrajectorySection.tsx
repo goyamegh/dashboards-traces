@@ -12,6 +12,7 @@ import { ChevronDown, ChevronRight, Wrench, Brain, MessageSquare, CheckCircle2, 
 import { EvaluationReport, BenchmarkRun, TrajectoryStep, ToolCallStatus } from '@/types';
 import { calculateTotalLatency } from '@/data/mockComparisonData';
 import { cn } from '@/lib/utils';
+import { Markdown } from '@/components/ui/markdown';
 
 interface TrajectorySectionProps {
   runs: BenchmarkRun[];
@@ -69,7 +70,7 @@ const TrajectoryStepItem: React.FC<{ step: TrajectoryStep }> = ({ step }) => {
           {step.content && (
             <div>
               <p className="text-xs text-muted-foreground mb-1">Content:</p>
-              <p className="text-xs bg-muted/30 p-2 rounded">{step.content}</p>
+              <Markdown className="text-xs bg-muted/30 p-2 rounded">{step.content}</Markdown>
             </div>
           )}
           {step.toolArgs && (
@@ -117,7 +118,7 @@ const RunTrajectory: React.FC<{
   }
 
   return (
-    <Card className="bg-card/50">
+    <Card className="bg-card/50 min-w-0">
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium">{run.name}</CardTitle>

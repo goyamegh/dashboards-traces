@@ -78,10 +78,19 @@ export class ClaudeCodeConnector extends SubprocessConnector {
   readonly type = 'claude-code' as const;
   override readonly name = 'Claude Code CLI';
 
+  override traceContext = { propagateEnv: true, serviceName: 'claude-code-agent' };
+
   private outputBuffer = '';
   private thinkingBuffer = '';
   private textBuffer = '';
   private isInThinking = false;
+  /**
+   * Claude Code's `session_id` (present on every stream-json event). Captured
+   * for Strategy D trace correlation — it equals the `session.id` attribute
+   * Claude Code stamps on its OTel spans. Surfaced to the report via
+   * {@link extraResultMetadata}.
+   */
+  private sessionId?: string;
 
   constructor(config?: Partial<SubprocessConfig>) {
     super({ ...CLAUDE_CODE_DEFAULT_CONFIG, ...config });
@@ -154,6 +163,12 @@ export class ClaudeCodeConnector extends SubprocessConnector {
   private parseJsonEvent(event: any): TrajectoryStep[] {
     const steps: TrajectoryStep[] = [];
 
+    // Capture the session id (present on system/init, assistant, user, result
+    // events). Used for Strategy D trace correlation (attributes.session.id).
+    if (typeof event.session_id === 'string' && event.session_id) {
+      this.sessionId = event.session_id;
+    }
+
     // Handle different event types from Claude Code stream-json
     if (event.type === 'assistant' && event.message?.content) {
       for (const block of event.message.content) {
@@ -166,6 +181,27 @@ export class ClaudeCodeConnector extends SubprocessConnector {
             toolName: block.name,
             toolArgs: block.input,
           }));
+        }
+      }
+    } else if (event.type === 'user' && event.message?.content) {
+      // Claude Code emits tool results as user-role messages with tool_result
+      // content blocks (referenced back to the assistant's tool_use_id).
+      // Without this branch, tool outputs are silently dropped — the trajectory
+      // shows the tool calls but not their results.
+      for (const block of event.message.content) {
+        if (block.type === 'tool_result') {
+          const content =
+            typeof block.content === 'string'
+              ? block.content
+              : JSON.stringify(block.content);
+          steps.push(
+            this.createStep('tool_result', content, {
+              status: block.is_error ? ToolCallStatus.FAILURE : ToolCallStatus.SUCCESS,
+            })
+          );
+        } else if (block.type === 'text' && block.text) {
+          // Rare: plain text in a user message (e.g., tool-orchestrator follow-ups)
+          steps.push(this.createStep('assistant', block.text));
         }
       }
     } else if (event.type === 'content_block_delta') {
@@ -191,11 +227,6 @@ export class ClaudeCodeConnector extends SubprocessConnector {
       // Final result message
       steps.push(this.createStep('response',
         typeof event.result === 'string' ? event.result : JSON.stringify(event.result)
-      ));
-    } else if (event.type === 'tool_result') {
-      steps.push(this.createStep('tool_result',
-        typeof event.content === 'string' ? event.content : JSON.stringify(event.content),
-        { status: event.is_error ? ToolCallStatus.FAILURE : ToolCallStatus.SUCCESS }
       ));
     }
 
@@ -386,11 +417,10 @@ export class ClaudeCodeConnector extends SubprocessConnector {
       this.debug('Bedrock mode: cleared ANTHROPIC_API_KEY to bypass credit check');
     }
 
-    // Pass --model flag so Claude Code uses the requested model
-    if (request.modelId) {
-      this.config.args = [...this.config.args || [], '--model', request.modelId];
-      this.debug('Model flag added:', request.modelId);
-    }
+    // The agent's model is owned by its agent-health.config.ts connector
+    // config (env.ANTHROPIC_MODEL, or a `--model` flag in connectorConfig.args)
+    // — there is no run-level / user-selected agent model. We intentionally do
+    // NOT inject a model from the run here.
 
     // Append config-driven args
     if (ccConfig) {
@@ -403,6 +433,7 @@ export class ClaudeCodeConnector extends SubprocessConnector {
 
     try {
       this.debug('State reset, calling super.execute()...');
+      this.sessionId = undefined;
       const result = await super.execute(endpoint, request, auth, onProgress, onRawEvent);
       this.debug('super.execute() returned with', result.trajectory.length, 'steps');
       this.debug('========== execute() COMPLETED ==========');
@@ -423,6 +454,14 @@ export class ClaudeCodeConnector extends SubprocessConnector {
    */
   override async healthCheck(endpoint: string, auth: ConnectorAuth): Promise<boolean> {
     return super.healthCheck(endpoint || 'claude', auth);
+  }
+
+  /**
+   * Surface the captured Claude Code `session_id` so the runner can persist it
+   * as `report.sessionId` for Strategy D trace correlation.
+   */
+  protected override extraResultMetadata(): Record<string, any> {
+    return this.sessionId ? { sessionId: this.sessionId } : {};
   }
 }
 
@@ -447,6 +486,9 @@ export function createBedrockClaudeCodeConnector(): ClaudeCodeConnector {
     env.OTEL_TRACES_EXPORTER = 'otlp';
     env.OTEL_METRICS_EXPORTER = 'otlp';
     env.OTEL_LOGS_EXPORTER = 'otlp';
+    // Log the user prompt as a log record attribute so the run's prompt is
+    // visible in the Traces view. Opt-out via OTEL_LOG_USER_PROMPTS=0.
+    env.OTEL_LOG_USER_PROMPTS = process.env.OTEL_LOG_USER_PROMPTS ?? '1';
     if (process.env.OTEL_SERVICE_NAME) env.OTEL_SERVICE_NAME = process.env.OTEL_SERVICE_NAME;
     if (process.env.OTEL_EXPORTER_OTLP_PROTOCOL) env.OTEL_EXPORTER_OTLP_PROTOCOL = process.env.OTEL_EXPORTER_OTLP_PROTOCOL;
     if (process.env.OTEL_EXPORTER_OTLP_HEADERS) env.OTEL_EXPORTER_OTLP_HEADERS = process.env.OTEL_EXPORTER_OTLP_HEADERS;

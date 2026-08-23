@@ -31,18 +31,22 @@ const mockClient = {} as any;
 
 // Mock storage module (used for runSingleUseCase path)
 const mockRunsCreate = jest.fn();
+const mockRunsUpdate = jest.fn();
 const mockTestCasesUpdate = jest.fn().mockResolvedValue(undefined);
 const mockTestCasesGetById = jest.fn().mockResolvedValue({ id: 'tc-1', name: 'Test' });
 const mockStorageModule = {
-  runs: { create: mockRunsCreate },
+  runs: { create: mockRunsCreate, update: mockRunsUpdate },
   testCases: { update: mockTestCasesUpdate, getById: mockTestCasesGetById },
 } as any;
 
 const mockRunEvaluationWithConnector = jest.fn();
+const mockInvokeAgent = jest.fn();
 const mockCallBedrockJudge = jest.fn();
 
 jest.mock('@/services/evaluation', () => ({
+  ...jest.requireActual('@/services/evaluation'),
   runEvaluationWithConnector: (...args: any[]) => mockRunEvaluationWithConnector(...args),
+  invokeAgent: (...args: any[]) => mockInvokeAgent(...args),
   callBedrockJudge: (...args: any[]) => mockCallBedrockJudge(...args),
 }));
 
@@ -54,10 +58,12 @@ jest.mock('@/services/connectors/server', () => ({
 }));
 
 const mockStartPolling = jest.fn();
+const mockStartPollingAsync = jest.fn().mockResolvedValue(undefined);
 
 jest.mock('@/services/traces/tracePoller', () => ({
   tracePollingManager: {
     startPolling: (...args: any[]) => mockStartPolling(...args),
+    startPollingAsync: (...args: any[]) => mockStartPollingAsync(...args),
   },
 }));
 
@@ -172,6 +178,7 @@ describe('Experiment Runner', () => {
     mockUpdateRunWithClient.mockReset();
     mockGetCustomAgents.mockReturnValue([]);
     mockRunsCreate.mockReset();
+    mockRunsUpdate.mockReset();
     mockTestCasesUpdate.mockResolvedValue(undefined);
     mockTestCasesGetById.mockResolvedValue({ id: 'tc-1', name: 'Test' });
   });
@@ -215,6 +222,78 @@ describe('Experiment Runner', () => {
       expect(result.results['tc-1'].status).toBe('completed');
       expect(result.results['tc-2'].status).toBe('completed');
       expect(progressUpdates.length).toBeGreaterThan(0);
+    });
+
+    it('forwards run-level judgeModelId to the judge and stamps it on the saved report (classic path)', async () => {
+      // Regression: the classic path passed { evaluatorId, skipJudge } but
+      // dropped judgeModelId, so --judge-model / the run-config judge model
+      // never reached the judge via POST /benchmarks/:id/execute — the judge
+      // silently fell back to BEDROCK_MODEL_ID or the agent's own model.
+      const testCase1 = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run = { ...createBenchmarkRun('run-1'), judgeModelId: 'judge-model-xyz', evaluatorId: 'eval-abc' };
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1]);
+      mockRunEvaluationWithConnector.mockResolvedValue({
+        id: 'report-1',
+        trajectory: [],
+        metrics: { accuracy: 0.9 },
+      });
+      mockSaveReportWithClient.mockImplementation((_c: any, report: any) =>
+        Promise.resolve({ ...report, id: 'saved-report-1', metricsStatus: 'ready' }));
+
+      await executeRun(experiment, run, jest.fn(), { client: mockClient });
+
+      // 1) The judge options carry the run-level judgeModelId.
+      const options = mockRunEvaluationWithConnector.mock.calls[0][4];
+      expect(options.judgeModelId).toBe('judge-model-xyz');
+      expect(options.evaluatorId).toBe('eval-abc');
+
+      // 2) The report saved to storage is stamped with both (audit trail +
+      //    trace-mode polled judge inputs).
+      const savedReportArg = mockSaveReportWithClient.mock.calls[0][1];
+      expect(savedReportArg.judgeModelId).toBe('judge-model-xyz');
+      expect(savedReportArg.evaluatorId).toBe('eval-abc');
+    });
+
+    it('control inversion: deterministic body drives the agent via agent.run() (not the eager judge path)', async () => {
+      const testCase1 = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run = createBenchmarkRun('run-1');
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1]);
+      // invokeAgent is the primitive the agent fixture calls.
+      mockInvokeAgent.mockResolvedValue({
+        trajectory: [{ type: 'response', content: 'Agent output' }],
+        rawEvents: [],
+        runId: null,
+        agentDurationMs: 100,
+        connector: { type: 'mock' },
+      });
+      mockSaveReportWithClient.mockImplementation((_c: any, report: any) =>
+        Promise.resolve({ ...report, id: 'saved-report-1' }));
+
+      let captured: any;
+      const evaluateFnMap = new Map<string, (f: any) => Promise<void>>([
+        ['tc-1', async (fixtures: any) => {
+          captured = await fixtures.agent.run('Test prompt');
+        }],
+      ]);
+
+      const result = await executeRun(experiment, run, jest.fn(), {
+        client: mockClient,
+        evaluateFnMap,
+      });
+
+      // The classic eager judge path must NOT run for code tests.
+      expect(mockRunEvaluationWithConnector).not.toHaveBeenCalled();
+      expect(mockInvokeAgent).toHaveBeenCalledTimes(1);
+      expect(captured.agentOutput).toBe('Agent output');
+      expect(result.results['tc-1'].status).toBe('completed');
+      // Report records the deterministic verdict.
+      const savedReport = mockSaveReportWithClient.mock.calls[0][1];
+      expect(savedReport.evaluationType).toBe('deterministic');
+      expect(savedReport.passFailStatus).toBe('passed');
     });
 
     it('should handle cancellation', async () => {
@@ -353,7 +432,7 @@ describe('Experiment Runner', () => {
 
       await executeRun(experiment, run, jest.fn(), { client: mockClient });
 
-      expect(mockStartPolling).toHaveBeenCalledWith(
+      expect(mockStartPollingAsync).toHaveBeenCalledWith(
         'saved-report-1',
         'trace-run-id',
         expect.objectContaining({
@@ -877,7 +956,32 @@ describe('Experiment Runner', () => {
 
       await runSingleUseCase(run, testCase, mockStorageModule);
 
-      expect(mockStartPolling).toHaveBeenCalled();
+      expect(mockStartPollingAsync).toHaveBeenCalled();
+    });
+
+    it('should not await trace polling when awaitTraces is false (UI mode)', async () => {
+      const testCase = createTestCase('tc-1');
+      const run = createBenchmarkRun('run-1');
+
+      // Track if startPollingAsync was called, but resolve eventually to not hang Jest
+      let pollingCalled = false;
+      mockStartPollingAsync.mockImplementation(() => {
+        pollingCalled = true;
+        // Resolve after a delay — but runSingleUseCase should NOT wait for it
+        return new Promise<void>((resolve) => setTimeout(resolve, 100));
+      });
+
+      mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [], metrics: {}, runId: 'trace-run-id', metricsStatus: 'pending' });
+      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1' });
+
+      // Measure time — with awaitTraces: false, should return nearly instantly
+      const start = Date.now();
+      const reportId = await runSingleUseCase(run, testCase, mockStorageModule, undefined, undefined, undefined, { awaitTraces: false });
+      const elapsed = Date.now() - start;
+
+      expect(reportId).toBe('saved-report-1');
+      expect(pollingCalled).toBe(true); // Polling was started (fire-and-forget)
+      expect(elapsed).toBeLessThan(50); // Should return immediately, not wait 100ms
     });
 
     it('should resolve model key to model ID', async () => {
@@ -1023,6 +1127,37 @@ describe('Experiment Runner', () => {
         expect.any(Function),
         expect.objectContaining({ registry: expect.any(Object) })
       );
+    });
+
+    it('should update existing report when existingReportId is provided', async () => {
+      const testCase = createTestCase('tc-1');
+      const run = createBenchmarkRun('run-1');
+
+      mockRunEvaluationWithConnector.mockResolvedValue({
+        id: 'report-1',
+        status: 'completed',
+        passFailStatus: 'passed',
+        trajectory: [{ type: 'response', content: 'Done' }],
+        metrics: { accuracy: 0.9 },
+        llmJudgeReasoning: 'Good job',
+        runId: 'trace-123',
+      });
+      mockRunsUpdate.mockResolvedValue({ id: 'existing-report-id', timestamp: '2024-01-01T00:00:00Z' });
+
+      const reportId = await runSingleUseCase(run, testCase, mockStorageModule, undefined, undefined, 'existing-report-id');
+
+      expect(reportId).toBe('existing-report-id');
+      expect(mockRunsUpdate).toHaveBeenCalledWith('existing-report-id', expect.objectContaining({
+        status: 'completed',
+        passFailStatus: 'passed',
+        llmJudgeReasoning: 'Good job',
+        // The connector's runId is now persisted as `runId` (Strategy B
+        // trace correlation), NOT mis-stamped into `traceId`. `traceId`
+        // stays undefined until a real W3C trace id is available from
+        // polled spans. See #190 / #264.
+        runId: 'trace-123',
+      }));
+      expect(mockRunsCreate).not.toHaveBeenCalled();
     });
   });
 
@@ -1209,8 +1344,8 @@ describe('Experiment Runner', () => {
 
       await executeRun(experiment, run, jest.fn(), { client: mockClient });
 
-      // Get the callbacks passed to startPolling
-      const startPollingCall = mockStartPolling.mock.calls[0];
+      // Get the callbacks passed to startPollingAsync
+      const startPollingCall = mockStartPollingAsync.mock.calls[0];
       const callbacks = startPollingCall[2];
 
       // Simulate traces being found
@@ -1223,13 +1358,19 @@ describe('Experiment Runner', () => {
       await callbacks.onTracesFound(spans, updatedReport);
 
       expect(mockCallBedrockJudge).toHaveBeenCalledWith(
-        [],
+        updatedReport.trajectory,
         expect.objectContaining({
           expectedOutcomes: testCase.expectedOutcomes,
         }),
         [],
         expect.any(Function),
-        'anthropic.claude-3-sonnet-20240229-v1:0'
+        'anthropic.claude-3-sonnet-20240229-v1:0',
+        // evaluatorId (undefined in this fixture), runId, and the Strategy C
+        // `agents` hints are now forwarded so the agent (trace) judge can
+        // scope its query_spans/query_logs tools. See #264.
+        undefined,
+        expect.any(String),
+        expect.any(Array)
       );
 
       expect(mockUpdateRunWithClient).toHaveBeenCalledWith(mockClient, 'saved-report-1', expect.objectContaining({
@@ -1255,7 +1396,7 @@ describe('Experiment Runner', () => {
       await executeRun(experiment, run, jest.fn(), { client: mockClient });
 
       // Get the callbacks
-      const callbacks = mockStartPolling.mock.calls[0][2];
+      const callbacks = mockStartPollingAsync.mock.calls[0][2];
 
       // Simulate traces being found
       await callbacks.onTracesFound([], { id: 'saved-report-1', trajectory: [] });
@@ -1275,7 +1416,7 @@ describe('Experiment Runner', () => {
 
       await runSingleUseCase(run, testCase, mockStorageModule);
 
-      expect(mockStartPolling).not.toHaveBeenCalled();
+      expect(mockStartPollingAsync).not.toHaveBeenCalled();
     });
 
     it('should call onAttempt callback during polling', async () => {
@@ -1294,7 +1435,7 @@ describe('Experiment Runner', () => {
       await executeRun(experiment, run, jest.fn(), { client: mockClient });
 
       // Get the callbacks
-      const callbacks = mockStartPolling.mock.calls[0][2];
+      const callbacks = mockStartPollingAsync.mock.calls[0][2];
 
       // Simulate attempt callback - now a no-op (no verbose logging)
       callbacks.onAttempt(1, 10);
@@ -1319,13 +1460,69 @@ describe('Experiment Runner', () => {
       await executeRun(experiment, run, jest.fn(), { client: mockClient });
 
       // Get the callbacks
-      const callbacks = mockStartPolling.mock.calls[0][2];
+      const callbacks = mockStartPollingAsync.mock.calls[0][2];
 
       // Simulate error callback
       callbacks.onError(new Error('Polling failed'));
 
       // Verify console.error was called
       expect(console.error).toHaveBeenCalled();
+    });
+
+    it('should wait for trace polling to complete before returning from executeRun', async () => {
+      const testCase = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run = createBenchmarkRun('run-1');
+
+      // Track execution order
+      const executionOrder: string[] = [];
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase]);
+      mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [] });
+      mockSaveReportWithClient.mockResolvedValue({
+        id: 'saved-report-1',
+        runId: 'trace-run-id',
+        metricsStatus: 'pending',
+      });
+
+      // Make startPollingAsync take some time to resolve
+      mockStartPollingAsync.mockImplementation(() => {
+        return new Promise<void>((resolve) => {
+          setTimeout(() => {
+            executionOrder.push('polling-resolved');
+            resolve();
+          }, 50);
+        });
+      });
+
+      const resultPromise = executeRun(experiment, run, jest.fn(), { client: mockClient });
+      await resultPromise;
+      executionOrder.push('executeRun-returned');
+
+      // executeRun should have waited for polling to resolve
+      expect(executionOrder).toEqual(['polling-resolved', 'executeRun-returned']);
+    });
+
+    it('should handle trace polling rejection gracefully in executeRun', async () => {
+      const testCase = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run = createBenchmarkRun('run-1');
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase]);
+      mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [] });
+      mockSaveReportWithClient.mockResolvedValue({
+        id: 'saved-report-1',
+        runId: 'trace-run-id',
+        metricsStatus: 'pending',
+      });
+
+      // Make startPollingAsync reject
+      mockStartPollingAsync.mockRejectedValue(new Error('Traces unavailable'));
+
+      // executeRun should NOT throw — it uses Promise.allSettled
+      const result = await executeRun(experiment, run, jest.fn(), { client: mockClient });
+      expect(result).toBeDefined();
+      expect(result.results['tc-1'].status).toBe('completed');
     });
   });
 

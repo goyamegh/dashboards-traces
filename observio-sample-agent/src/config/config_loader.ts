@@ -56,7 +56,7 @@ export class ConfigLoader {
   }
 
   static loadServerConfig(): BaseAGUIConfig {
-    return {
+    const config: BaseAGUIConfig = {
       port: parseInt(process.env.AG_UI_PORT || '3001', 10),
       host: process.env.AG_UI_HOST || 'localhost',
       cors: {
@@ -64,5 +64,14 @@ export class ConfigLoader {
         credentials: process.env.AG_UI_CORS_CREDENTIALS === 'true',
       },
     };
+
+    const maxIterations = process.env.REACT_MAX_ITERATIONS || '100';
+    this.logger.info('Server config loaded', {
+      port: config.port,
+      host: config.host,
+      maxIterations,
+    });
+
+    return config;
   }
 }

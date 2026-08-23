@@ -12,8 +12,13 @@
 
 import config from '../config';
 import { buildEvaluationPrompt, JudgeRequest, JudgeResponse } from './bedrockService';
-import { JUDGE_SYSTEM_PROMPT } from '../prompts/judgePrompt';
 import { debug } from '@/lib/debug';
+import type { Evaluator } from '@/types';
+import { getDefaultEvaluator } from '@/server/prompts/evaluatorTemplates';
+import { AGENT_PATH_SYSTEM_ADDENDUM } from '@/server/prompts/judgePrompt';
+import { parseJudgeResponse } from '@/server/services/judgeResponseParser';
+import { buildJudgeDebug } from '@/server/services/judgeDebug';
+import { getAgentSourceForPrompt, isAgentPathConfigured } from '@/server/services/agentPath';
 
 // ============================================================================
 // Main Evaluation Function
@@ -23,30 +28,49 @@ import { debug } from '@/lib/debug';
  * Evaluate agent trajectory using any OpenAI-compatible LLM endpoint
  * @param request - The judge request containing trajectory and expected outcomes
  * @param modelId - Model name forwarded to the endpoint (e.g. "gpt-4o", "ollama/llama3")
+ * @param evaluator - Optional evaluator to use (falls back to default RCA evaluator)
  */
 export async function evaluateWithOpenAICompatible(
   request: JudgeRequest,
-  modelId: string
+  modelId: string,
+  evaluator?: Evaluator
 ): Promise<JudgeResponse> {
   const { trajectory, expectedOutcomes, expectedTrajectory, logs } = request;
 
+  // Use default evaluator if none provided (backward compatibility)
+  const effectiveEvaluator = evaluator || getDefaultEvaluator();
+
   debug('JudgeService', '========== OPENAI-COMPATIBLE JUDGE REQUEST ==========');
+  debug('JudgeService', 'Evaluator:', effectiveEvaluator.name, `(${effectiveEvaluator.id})`);
   debug('JudgeService', 'Trajectory steps:', trajectory.length);
   debug('JudgeService', 'Expected outcomes:', expectedOutcomes?.length || 0);
   debug('JudgeService', 'Model:', modelId);
   debug('JudgeService', 'Endpoint:', config.OPENAI_COMPATIBLE_ENDPOINT);
 
-  const userPrompt = buildEvaluationPrompt(trajectory, expectedOutcomes, expectedTrajectory, logs);
+  const agentSource = isAgentPathConfigured()
+    ? await getAgentSourceForPrompt({ trajectory, expectedOutcomes, modelId })
+    : null;
+  const userPrompt = buildEvaluationPrompt(
+    trajectory,
+    expectedOutcomes,
+    expectedTrajectory,
+    logs,
+    agentSource,
+  );
   debug('JudgeService', 'Prompt built, length:', userPrompt.length, 'characters');
+
+  // Get inference config from evaluator with fallback defaults
+  const temperature = effectiveEvaluator.inferenceConfig?.temperature ?? 0.1;
+  const maxTokens = effectiveEvaluator.inferenceConfig?.maxTokens ?? 4096;
 
   const body = {
     model: modelId,
     messages: [
-      { role: 'system', content: JUDGE_SYSTEM_PROMPT },
+      { role: 'system', content: effectiveEvaluator.systemPrompt + (agentSource ? AGENT_PATH_SYSTEM_ADDENDUM : '') },
       { role: 'user', content: userPrompt },
     ],
-    temperature: 0.1,
-    max_tokens: 4096,
+    temperature,
+    max_tokens: maxTokens,
   };
 
   const headers: Record<string, string> = { 'Content-Type': 'application/json' };
@@ -77,43 +101,24 @@ export async function evaluateWithOpenAICompatible(
   debug('JudgeService', '--- Raw Response ---');
   debug('JudgeService', responseText.substring(0, 500) + (responseText.length > 500 ? '...' : ''));
 
-  // Extract JSON — handles markdown code blocks and bare JSON
-  let jsonText = responseText.trim();
-  const jsonMatch = jsonText.match(/```json\s*([\s\S]*?)\s*```/);
-  if (jsonMatch) {
-    jsonText = jsonMatch[1];
-    debug('JudgeService', 'Extracted JSON from markdown code block');
-  } else {
-    const startIdx = jsonText.indexOf('{');
-    const endIdx = jsonText.lastIndexOf('}');
-    if (startIdx !== -1 && endIdx !== -1) {
-      jsonText = jsonText.slice(startIdx, endIdx + 1);
-      debug('JudgeService', 'Extracted JSON from text');
-    }
-  }
-
-  const result = JSON.parse(jsonText);
-
   debug('JudgeService', '========== OPENAI-COMPATIBLE JUDGE RESPONSE ==========');
-  debug('JudgeService', 'Pass/Fail Status:', result.pass_fail_status?.toUpperCase() || 'MISSING');
 
-  // Handle both simplified format (accuracy at top level) and legacy format (accuracy in metrics)
-  const accuracy = result.accuracy ?? result.metrics?.accuracy ?? 0;
-  debug('JudgeService', 'Accuracy:', accuracy);
-  debug('JudgeService', 'Improvement Strategies:', result.improvement_strategies?.length ?? 0, 'items');
-
-  return {
-    passFailStatus: (result.pass_fail_status || 'failed') as 'passed' | 'failed',
-    metrics: {
-      accuracy,
-      faithfulness: result.metrics?.faithfulness,
-      latency_score: result.metrics?.latency_score,
-      trajectory_alignment_score: result.metrics?.trajectory_alignment_score,
-    },
-    llmJudgeReasoning: result.reasoning,
-    improvementStrategies: result.improvement_strategies || [],
+  // Delegate JSON parse + metric extraction + extra-field capture to the
+  // shared parser — single implementation across all providers.
+  const parsed = parseJudgeResponse(responseText, {
+    evaluator: effectiveEvaluator,
     duration,
-  };
+    source: 'JudgeService',
+  });
+  const judgeDebug = buildJudgeDebug({
+    provider: 'openai-compatible',
+    modelId,
+    evaluatorId: effectiveEvaluator.id,
+    systemPrompt: effectiveEvaluator.systemPrompt,
+    userPrompt,
+  });
+  if (judgeDebug) parsed.judgeDebug = judgeDebug;
+  return parsed;
 }
 
 // ============================================================================

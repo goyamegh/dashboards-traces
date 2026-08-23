@@ -15,6 +15,9 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { usePersistedSet } from '@/hooks/usePersistedSet';
+import { PREFS_KEYS } from '@/lib/preferences';
 import { useNavigate } from 'react-router-dom';
 import {
   CheckCircle2, XCircle, Loader2, Clock, Search, RefreshCw,
@@ -28,8 +31,10 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
-import { Benchmark, TestCase, BenchmarkRun } from '@/types';
+import { listEvaluationRuns } from '@/services/client';
+import { Benchmark, TestCase, BenchmarkRun, EvaluationRun } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
+import { bucketRunResults } from '@/lib/runStats';
 import { formatRelativeTime, getModelName } from '@/lib/utils';
 import { Breadcrumbs } from './Breadcrumbs';
 
@@ -54,14 +59,31 @@ function getTimeThreshold(range: TimeRange): Date | null {
 
 type ViewMode = 'flat' | 'grouped';
 
-/** One benchmark run with its parent benchmark context */
+/** Run rows revealed per infinite-scroll page in the runs table. */
+const RUNS_PER_PAGE = 50;
+
+/** One run with its parent benchmark context.
+ *
+ * NOTE (run-model convergence, RFC 004 single-engine): there are currently
+ * TWO disjoint run records — legacy benchmark-embedded runs (`run-…` inside
+ * `benchmark.runs[]`) and top-level evaluation-runs (`eval-run-…`, created by
+ * the unified /api/storage/evaluation-runs path: code-import, run-prioritizer,
+ * `benchmark -f`). This page MERGES both so neither is invisible. The merge is
+ * intentionally TEMPORARY: the long-term goal is to converge on the
+ * evaluation-run model (converge the benchmark write path → eval-runs, migrate
+ * embedded runs via `agent-health migrate evaluation-runs`, then drop
+ * `benchmark.runs[]` and this merge). `kind` records which model a row came
+ * from so the inspector link can target the right route. */
 interface RunRow {
   run: BenchmarkRun;
+  kind: 'benchmark' | 'eval-run';
   benchmarkId: string;
   benchmarkName: string;
   agentName: string;
   passed: number;
   failed: number;
+  /** Issue #242: evaluator-error runs counted separately from `failed`. */
+  errored: number;
   total: number;
 }
 
@@ -84,18 +106,25 @@ function SortHeader({ label, active, dir, onClick, className }: {
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
-function computeRunStats(run: BenchmarkRun): { passed: number; failed: number; total: number } {
+// Recompute pass/fail/errored from the persisted per-case verdicts
+// (run.results) — the single source of truth shared with the comparison page
+// via lib/runStats.bucketRunResults. The denormalized run.stats is naive (it
+// counts errored cases as passed and never tracks `errored`, #242), so it's
+// only a fallback when per-case results aren't present.
+function computeRunStats(run: BenchmarkRun): { passed: number; failed: number; errored: number; total: number } {
+  if (run.results && Object.keys(run.results).length > 0) {
+    const b = bucketRunResults(run.results as Record<string, { status?: string; passFailStatus?: string }>);
+    return { passed: b.passed, failed: b.failed, errored: b.errored, total: b.total };
+  }
   if (run.stats && run.stats.total > 0) {
-    return { passed: run.stats.passed, failed: run.stats.failed, total: run.stats.total };
+    return {
+      passed: run.stats.passed,
+      failed: run.stats.failed,
+      errored: run.stats.errored ?? 0,
+      total: run.stats.total,
+    };
   }
-  const results = Object.values(run.results || {});
-  let passed = 0, failed = 0;
-  for (const r of results) {
-    if (r.status === 'completed') passed++;
-    else if (r.status === 'failed' || r.status === 'cancelled') failed++;
-  }
-  const total = results.length;
-  return { passed, failed, total };
+  return { passed: 0, failed: 0, errored: 0, total: 0 };
 }
 
 // ─── Main Component ──────────────────────────────────────────────────────────
@@ -104,25 +133,28 @@ export const EvalRunsPage: React.FC = () => {
   const navigate = useNavigate();
 
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
+  // Top-level evaluation-runs (eval-run-…), merged with benchmark-embedded runs
+  // below. See the RunRow convergence note.
+  const [evalRuns, setEvalRuns] = useState<EvaluationRun[]>([]);
   const [loading, setLoading] = useState(true);
 
-  // Filters
-  const [search, setSearch] = useState('');
-  const [timeRange, setTimeRange] = useState<TimeRange>('30d');
-  const [selectedAgent, setSelectedAgent] = useState(() => DEFAULT_CONFIG.agents.find(a => a.enabled !== false)?.key || 'all');
+  // Filters (persisted)
+  const [search, setSearch] = usePersistedState<string>('eval-runs:search', '');
+  const [timeRange, setTimeRange] = usePersistedState<TimeRange>(PREFS_KEYS.timeRange, '30d');
+  const [selectedAgent, setSelectedAgent] = usePersistedState(PREFS_KEYS.agentFilter, 'all');
 
-  // View
-  const [viewMode, setViewMode] = useState<ViewMode>('flat');
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const [sort, setSort] = useState<{ field: string; dir: 'asc' | 'desc' }>({ field: 'timestamp', dir: 'desc' });
-  const [showRegressionsOnly, setShowRegressionsOnly] = useState(false);
+  // View (persisted)
+  const [viewMode, setViewMode] = usePersistedState<ViewMode>(PREFS_KEYS.viewMode, 'flat');
+  const [collapsedGroups, setCollapsedGroups] = usePersistedSet<string>('eval-runs:collapsedGroups');
+  const [sort, setSort] = usePersistedState<{ field: string; dir: 'asc' | 'desc' }>('eval-runs:sort', { field: 'timestamp', dir: 'desc' });
+  const [showRegressionsOnly, setShowRegressionsOnly] = usePersistedState('eval-runs:showRegressionsOnly', false);
 
-  // Advanced filters
-  const [filterStatus, setFilterStatus] = useState<'all' | 'passed' | 'failed' | 'mixed'>('all');
-  const [filterBenchmarks, setFilterBenchmarks] = useState<Set<string>>(new Set());
-  const [filterModels, setFilterModels] = useState<Set<string>>(new Set());
-  const [filterPassRateMin, setFilterPassRateMin] = useState<number>(0);
-  const [filterPassRateMax, setFilterPassRateMax] = useState<number>(100);
+  // Advanced filters (persisted)
+  const [filterStatus, setFilterStatus] = usePersistedState<'all' | 'passed' | 'failed' | 'mixed'>('eval-runs:filterStatus', 'all');
+  const [filterBenchmarks, setFilterBenchmarks] = usePersistedSet<string>('eval-runs:filterBenchmarks');
+  const [filterModels, setFilterModels] = usePersistedSet<string>('eval-runs:filterModels');
+  const [filterPassRateMin, setFilterPassRateMin] = usePersistedState<number>('eval-runs:filterPassRateMin', 0);
+  const [filterPassRateMax, setFilterPassRateMax] = usePersistedState<number>('eval-runs:filterPassRateMax', 100);
   const [filterOpen, setFilterOpen] = useState(false);
 
   // Scroll
@@ -135,11 +167,26 @@ export const EvalRunsPage: React.FC = () => {
   // Annotation counts: runId → { totalAnnotations, testCasesWithAnnotations, firstTestCaseId }
   const [annotationMap, setAnnotationMap] = useState<Map<string, { total: number; tcCount: number; firstTcId: string }>>(new Map());
 
+  // Infinite scroll: number of run rows revealed in the table. Reset whenever
+  // the underlying row set changes (filters/search/sort/view toggles).
+  const [visibleRunCount, setVisibleRunCount] = useState(RUNS_PER_PAGE);
+  const loadMoreSentinelRef = useRef<HTMLTableRowElement | null>(null);
+
   const loadData = useCallback(async () => {
     setLoading(true);
     try {
-      const bms = await asyncBenchmarkStorage.getAll();
+      // Fetch both run models in parallel (see RunRow convergence note). The
+      // eval-runs fetch is best-effort so a failure there still shows
+      // benchmark-embedded runs.
+      const [bms, er] = await Promise.all([
+        asyncBenchmarkStorage.getAll(),
+        listEvaluationRuns({ size: 500 }).then(r => r.evaluationRuns).catch(err => {
+          console.error('Failed to load evaluation-runs:', err);
+          return [] as EvaluationRun[];
+        }),
+      ]);
       setBenchmarks(bms);
+      setEvalRuns(er);
     } catch (err) {
       console.error('Failed to load:', err);
     } finally {
@@ -178,9 +225,9 @@ export const EvalRunsPage: React.FC = () => {
         if (search) {
           const q = search.toLowerCase();
           if (
-            !run.name.toLowerCase().includes(q) &&
-            !run.id.toLowerCase().includes(q) &&
-            !bm.name.toLowerCase().includes(q) &&
+            !(run.name ?? '').toLowerCase().includes(q) &&
+            !(run.id ?? '').toLowerCase().includes(q) &&
+            !(bm.name ?? '').toLowerCase().includes(q) &&
             !agentName.toLowerCase().includes(q)
           ) continue;
         }
@@ -188,6 +235,7 @@ export const EvalRunsPage: React.FC = () => {
         const stats = computeRunStats(run);
         rows.push({
           run,
+          kind: 'benchmark',
           benchmarkId: bm.id,
           benchmarkName: bm.name,
           agentName,
@@ -196,8 +244,47 @@ export const EvalRunsPage: React.FC = () => {
       }
     }
 
+    // Merge top-level evaluation-runs (eval-run-…). Disjoint from the
+    // benchmark-embedded runs above (see RunRow convergence note); de-duped by
+    // id defensively. Same time/agent/search filters applied for consistency.
+    const seen = new Set(rows.map(r => r.run.id));
+    const benchNameById = new Map(benchmarks.map(b => [b.id, b.name] as const));
+    for (const er of evalRuns) {
+      if (seen.has(er.id)) continue;
+      if (threshold && new Date(er.createdAt) < threshold) continue;
+      if (selectedAgent !== 'all' && er.agentKey !== selectedAgent) continue;
+
+      const agentName = DEFAULT_CONFIG.agents.find(a => a.key === er.agentKey)?.name || er.agentKey || 'Unknown';
+      const benchmarkName = er.benchmarkId
+        ? (benchNameById.get(er.benchmarkId) ?? er.benchmarkId)
+        : '(ad-hoc)';
+
+      if (search) {
+        const q = search.toLowerCase();
+        if (
+          !(er.name ?? '').toLowerCase().includes(q) &&
+          !(er.id ?? '').toLowerCase().includes(q) &&
+          !benchmarkName.toLowerCase().includes(q) &&
+          !agentName.toLowerCase().includes(q)
+        ) continue;
+      }
+
+      // EvaluationRun is shape-compatible with BenchmarkRun for the fields this
+      // page reads (id, name, agentKey, modelId, createdAt, results, stats).
+      const run = er as unknown as BenchmarkRun;
+      const stats = computeRunStats(run);
+      rows.push({
+        run,
+        kind: 'eval-run',
+        benchmarkId: er.benchmarkId ?? '',
+        benchmarkName,
+        agentName,
+        ...stats,
+      });
+    }
+
     return rows;
-  }, [benchmarks, timeRange, selectedAgent, search]);
+  }, [benchmarks, evalRuns, timeRange, selectedAgent, search]);
 
   // Available filter options (derived from data)
   const availableBenchmarks = useMemo(() => {
@@ -274,59 +361,11 @@ export const EvalRunsPage: React.FC = () => {
     ? Math.round(filteredRunRows.reduce((sum, r) => sum + (r.total > 0 ? (r.passed / r.total) * 100 : 0), 0) / totalRuns)
     : 0;
 
-  // Load annotation counts lazily for visible runs only (avoids N+1 on mount)
+  // Load annotation counts lazily — only for the run rows actually rendered
+  // by the infinite-scroll window, and via ONE lightweight batch request
+  // (annotations field only) instead of a full-report fetch per test case.
+  // (Effect lives below, after the rendered-row memos it depends on.)
   const loadedAnnotationRuns = useRef(new Set<string>());
-
-  useEffect(() => {
-    if (benchmarks.length === 0) return;
-
-    const toLoad: { runId: string; run: any; bmId: string }[] = [];
-    for (const rr of filteredRunRows.slice(0, 100)) {
-      if (loadedAnnotationRuns.current.has(rr.run.id)) continue;
-      toLoad.push({ runId: rr.run.id, run: rr.run, bmId: rr.benchmarkId });
-    }
-    if (toLoad.length === 0) return;
-
-    let cancelled = false;
-
-    // Load in batches of 10 to limit concurrency
-    (async () => {
-      const BATCH_SIZE = 10;
-      for (let i = 0; i < toLoad.length; i += BATCH_SIZE) {
-        if (cancelled) return;
-        const batch = toLoad.slice(i, i + BATCH_SIZE);
-        const batchResults = await Promise.all(batch.map(async ({ runId, run }) => {
-          let totalAnnotations = 0;
-          let tcWithAnnotations = 0;
-          let firstTcId = '';
-          for (const [tcId, result] of Object.entries(run.results || {} as Record<string, any>)) {
-            if (!(result as any).reportId) continue;
-            try {
-              const report = await asyncRunStorage.getReportById((result as any).reportId);
-              if (report?.annotations && report.annotations.length > 0) {
-                totalAnnotations += report.annotations.length;
-                tcWithAnnotations++;
-                if (!firstTcId) firstTcId = tcId;
-              }
-            } catch { /* skip */ }
-          }
-          return { runId, total: totalAnnotations, tcCount: tcWithAnnotations, firstTcId };
-        }));
-
-        if (cancelled) return;
-        setAnnotationMap(prev => {
-          const next = new Map(prev);
-          for (const r of batchResults) {
-            loadedAnnotationRuns.current.add(r.runId);
-            if (r.total > 0) next.set(r.runId, { total: r.total, tcCount: r.tcCount, firstTcId: r.firstTcId });
-          }
-          return next;
-        });
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [filteredRunRows, benchmarks]);
 
   // Regressions — computed after groupedByBenchmark
 
@@ -424,6 +463,104 @@ export const EvalRunsPage: React.FC = () => {
   }, [groupedByBenchmark]);
   const regressionCountReal = regressionData.count;
 
+  // ─── Infinite scroll windowing ─────────────────────────────────────
+
+  // Flat mode: sorted rows, windowed to visibleRunCount.
+  const flatSortedRows = useMemo(
+    () => sortRows(showRegressionsOnly ? filteredRunRows.filter(rr => regressionData.runIds.has(rr.run.id)) : filteredRunRows),
+    [sortRows, showRegressionsOnly, filteredRunRows, regressionData],
+  );
+
+  // Grouped mode: distribute the row budget across expanded groups in order.
+  const groupedRenderPlan = useMemo(() => {
+    let budget = visibleRunCount;
+    return groupedByBenchmark.map(group => {
+      const isCollapsed = collapsedGroups.has(group.id);
+      const sorted = sortRows(group.rows);
+      const shown = isCollapsed ? [] : sorted.slice(0, Math.max(0, budget));
+      if (!isCollapsed) budget -= shown.length;
+      return { group, isCollapsed, shown };
+    });
+  }, [groupedByBenchmark, collapsedGroups, sortRows, visibleRunCount]);
+
+  // The run rows currently rendered — drives lazy annotation loading.
+  const renderedRunRows = useMemo<RunRow[]>(
+    () => viewMode === 'flat'
+      ? flatSortedRows.slice(0, visibleRunCount)
+      : groupedRenderPlan.flatMap(p => p.shown),
+    [viewMode, flatSortedRows, visibleRunCount, groupedRenderPlan],
+  );
+
+  const totalRenderableRows = viewMode === 'flat'
+    ? flatSortedRows.length
+    : groupedRenderPlan.reduce((sum, p) => sum + (p.isCollapsed ? 0 : p.group.rows.length), 0);
+  const hasMoreRows = renderedRunRows.length < totalRenderableRows;
+
+  // Reset the window when the row universe changes (filters/search/sort).
+  useEffect(() => { setVisibleRunCount(RUNS_PER_PAGE); }, [filteredRunRows, viewMode, sort]);
+
+  // Reveal the next page when the sentinel row scrolls into view.
+  useEffect(() => {
+    const el = loadMoreSentinelRef.current;
+    if (!el || !hasMoreRows) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some(e => e.isIntersecting)) {
+        setVisibleRunCount(c => c + RUNS_PER_PAGE);
+      }
+    }, { root: scrollRef.current });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMoreRows, renderedRunRows.length]);
+
+  // Load annotation counts for rendered rows only, via one lightweight
+  // summary batch (annotations field, no trajectories) per newly revealed set.
+  useEffect(() => {
+    const toLoad = renderedRunRows.filter(rr => !loadedAnnotationRuns.current.has(rr.run.id));
+    if (toLoad.length === 0) return;
+    let cancelled = false;
+
+    (async () => {
+      const perRun = toLoad.map(rr => ({
+        runId: rr.run.id,
+        entries: Object.entries(rr.run.results || {})
+          .filter(([, r]) => (r as any).reportId)
+          .map(([tcId, r]) => ({ tcId, reportId: (r as any).reportId as string })),
+      }));
+      let summaries: Record<string, { annotations?: unknown[] }> = {};
+      try {
+        summaries = await asyncRunStorage.getReportSummariesByIds(perRun.flatMap(p => p.entries.map(e => e.reportId)));
+      } catch { return; /* retry on next render pass */ }
+      if (cancelled) return;
+
+      setAnnotationMap(prev => {
+        const next = new Map(prev);
+        for (const { runId, entries } of perRun) {
+          loadedAnnotationRuns.current.add(runId);
+          let total = 0, tcCount = 0, firstTcId = '';
+          for (const { tcId, reportId } of entries) {
+            const anns = summaries[reportId]?.annotations;
+            if (anns && anns.length > 0) {
+              total += anns.length;
+              tcCount++;
+              if (!firstTcId) firstTcId = tcId;
+            }
+          }
+          if (total > 0) next.set(runId, { total, tcCount, firstTcId });
+        }
+        return next;
+      });
+    })();
+
+    return () => { cancelled = true; };
+  }, [renderedRunRows]);
+
+  // Inspector route differs per run model (convergence note): eval-runs use
+  // the top-level route, benchmark-embedded runs the nested one.
+  const inspectPath = (rr: RunRow) =>
+    rr.kind === 'eval-run'
+      ? `/evaluations/runs/${rr.run.id}/inspect`
+      : `/evaluations/benchmarks/${rr.benchmarkId}/runs/${rr.run.id}/inspect`;
+
   // Render a run row
   const renderRunRow = (rr: RunRow, showBenchmark: boolean) => {
     const isAllPassed = rr.failed === 0 && rr.passed > 0;
@@ -431,8 +568,9 @@ export const EvalRunsPage: React.FC = () => {
     return (
       <tr
         key={`${rr.benchmarkId}-${rr.run.id}`}
+        data-testid="run-row"
         className={`border-b hover:bg-muted/50 cursor-pointer transition-colors ${isChecked ? 'bg-primary/5' : ''}`}
-        onClick={() => navigate(`/evaluations/benchmarks/${rr.benchmarkId}/runs/${rr.run.id}/inspect`)}
+        onClick={() => navigate(inspectPath(rr))}
       >
         <td className="px-2 py-1.5 align-middle text-center w-8" onClick={e => e.stopPropagation()}>
           <button
@@ -467,12 +605,16 @@ export const EvalRunsPage: React.FC = () => {
         </td>
         {showBenchmark && (
           <td className="px-2 py-1.5 align-middle">
-            <button
-              className="text-[10px] text-purple-600 hover:text-purple-700 dark:text-purple-400 dark:hover:text-purple-300 hover:underline transition-colors"
-              onClick={e => { e.stopPropagation(); navigate(`/evaluations/benchmarks/${rr.benchmarkId}/runs`); }}
-            >
-              {rr.benchmarkName}
-            </button>
+            {rr.benchmarkId ? (
+              <button
+                className="text-[10px] text-purple-600 hover:text-purple-700 dark:text-purple-400 dark:hover:text-purple-300 hover:underline transition-colors"
+                onClick={e => { e.stopPropagation(); navigate(`/evaluations/benchmarks/${rr.benchmarkId}/runs`); }}
+              >
+                {rr.benchmarkName}
+              </button>
+            ) : (
+              <span className="text-[10px] text-muted-foreground">{rr.benchmarkName}</span>
+            )}
           </td>
         )}
         <td className="px-2 py-1.5 align-middle text-[11px]">{rr.agentName}</td>
@@ -485,7 +627,7 @@ export const EvalRunsPage: React.FC = () => {
               return (
                 <button
                   className="text-[10px] text-amber-600 hover:text-amber-700 dark:text-amber-400 dark:hover:text-amber-300 hover:underline"
-                  onClick={e => { e.stopPropagation(); navigate(`/evaluations/benchmarks/${rr.benchmarkId}/runs/${rr.run.id}/inspect`); }}
+                  onClick={e => { e.stopPropagation(); navigate(inspectPath(rr)); }}
                 >
                   {ann.total} in {ann.tcCount} TC{ann.tcCount !== 1 ? 's' : ''}
                 </button>
@@ -499,6 +641,15 @@ export const EvalRunsPage: React.FC = () => {
             <span className="text-green-500 font-medium">{rr.passed}</span>
             <span className="text-muted-foreground">/</span>
             <span className="text-red-500 font-medium">{rr.failed}</span>
+            {rr.errored > 0 && (
+              <span
+                className="flex items-center gap-0.5 text-amber-500 font-medium ml-0.5"
+                title="Evaluator could not run on these (e.g. judge validation error). Excluded from pass-rate aggregation."
+              >
+                <AlertTriangle size={10} />
+                {rr.errored}
+              </span>
+            )}
             <span className="text-muted-foreground">/</span>
             <span className="text-muted-foreground">{rr.total}</span>
           </div>
@@ -637,30 +788,47 @@ export const EvalRunsPage: React.FC = () => {
               {TIME_OPTIONS.map(o => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
             </SelectContent>
           </Select>
+          {/* View mode toggle (Grouped first — default mental model) */}
+          <div className="flex items-center border border-border rounded-md overflow-hidden h-7" data-testid="viewmode-toggle">
+            <button data-testid="viewmode-grouped" onClick={() => setViewMode('grouped')} className={`px-2 h-full text-xs flex items-center gap-1 transition-colors ${viewMode === 'grouped' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+              <Layers size={11} /> Grouped
+            </button>
+            <button data-testid="viewmode-flat" onClick={() => setViewMode('flat')} className={`px-2 h-full text-xs flex items-center gap-1 transition-colors ${viewMode === 'flat' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+              <List size={11} /> Flat
+            </button>
+          </div>
           <Button variant="outline" size="sm" onClick={loadData} disabled={loading} className="h-7">
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
           </Button>
           {(() => {
             const selectedRows = allRunRows.filter(rr => selectedRuns.has(rr.run.id));
-            const benchmarkIds = new Set(selectedRows.map(rr => rr.benchmarkId));
-            const multiBenchmark = benchmarkIds.size > 1;
+            const benchmarkIds = new Set(selectedRows.map(rr => rr.benchmarkId).filter(Boolean));
+            // Comparison is a test-case-level primitive — it does NOT require a
+            // shared benchmark. If every selected run came from the SAME
+            // benchmark we keep the scoped URL (nicer context); otherwise (mixed
+            // benchmarks, or ad-hoc runs with no benchmarkId) we fall back to the
+            // benchmark-free `/compare?runs=…` view.
+            const singleBenchmark = benchmarkIds.size === 1;
             return (
               <Button
                 variant="outline"
                 size="sm"
                 className={`h-7 gap-1.5 text-xs ${selectedRuns.size > 0 ? 'border-primary/50' : ''}`}
-                disabled={multiBenchmark || selectedRuns.size < 1}
+                disabled={selectedRuns.size < 1}
                 onClick={() => {
-                  if (multiBenchmark || selectedRuns.size < 1) return;
-                  const bmId = [...benchmarkIds][0];
+                  if (selectedRuns.size < 1) return;
                   const ids = selectedRows.map(rr => rr.run.id).join(',');
-                  navigate(`/compare/${bmId}?runs=${ids}`);
+                  if (singleBenchmark) {
+                    const bmId = [...benchmarkIds][0];
+                    navigate(`/compare/${bmId}?runs=${ids}`);
+                  } else {
+                    navigate(`/compare?runs=${ids}`);
+                  }
                 }}
-                title={multiBenchmark ? 'Select runs from a single benchmark to compare' : selectedRuns.size < 1 ? 'Select at least one run to compare' : 'Compare runs'}
+                title={selectedRuns.size < 1 ? 'Select at least one run to compare' : 'Compare runs'}
               >
                 <GitCompare size={12} />
                 Compare
-                {multiBenchmark && <span className="text-amber-500 text-[9px]">⚠</span>}
               </Button>
             );
           })()}
@@ -710,13 +878,18 @@ export const EvalRunsPage: React.FC = () => {
         </TooltipProvider>
       </div>
 
-      {/* ── Multi-benchmark warning banner ──────────────────────────── */}
+      {/* ── Cross-benchmark info banner ─────────────────────────────
+          Comparison is now a test-case-level primitive, so selecting runs from
+          different benchmarks is valid — Compare routes to the benchmark-free
+          `/compare?runs=…` view and surfaces a per-test overlap summary. This
+          banner is informational (not a blocker) so users know the cross-
+          benchmark comparison is intentional. */}
       {isMultiBenchmark && (
-        <div className="flex items-center gap-2 px-3 py-2 mb-3 rounded-lg border border-amber-300 dark:border-amber-500/30 bg-amber-50 dark:bg-amber-500/10 text-amber-800 dark:text-amber-300 text-xs">
-          <AlertTriangle size={14} className="shrink-0" />
-          <span>Compare requires runs from the same benchmark. Deselect runs from other benchmarks or use "Group by Benchmark" to select within one.</span>
+        <div className="flex items-center gap-2 px-3 py-2 mb-3 rounded-lg border border-blue-300 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-blue-800 dark:text-blue-300 text-xs">
+          <GitCompare size={14} className="shrink-0" />
+          <span>Comparing runs across different benchmarks. Comparison happens at the test-case level — the summary shows which test cases overlap and which were only run by some runs.</span>
           <button
-            className="ml-auto text-[10px] underline text-amber-600 dark:text-amber-400 hover:text-amber-800 dark:hover:text-amber-200 shrink-0"
+            className="ml-auto text-[10px] underline text-blue-600 dark:text-blue-400 hover:text-blue-800 dark:hover:text-blue-200 shrink-0"
             onClick={() => setSelectedRuns(new Set())}
           >
             Clear selection
@@ -756,17 +929,8 @@ export const EvalRunsPage: React.FC = () => {
         </div>
       )}
 
-      {/* ── Inline Metrics Bar ──────────────────────────────────── */}
-      {/* ── View Toggle ────────────────────────────────────────────── */}
-      <div className="flex items-center justify-between mb-2">
-        <div className="flex items-center border border-border rounded-md overflow-hidden">
-          <button onClick={() => setViewMode('grouped')} className={`px-2 py-1 text-xs flex items-center gap-1 transition-colors ${viewMode === 'grouped' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
-            <Layers size={11} /> Grouped
-          </button>
-          <button onClick={() => setViewMode('flat')} className={`px-2 py-1 text-xs flex items-center gap-1 transition-colors ${viewMode === 'flat' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
-            <List size={11} /> Flat
-          </button>
-        </div>
+      {/* ── Inline Metrics Bar (view toggle moved into header) ── */}
+      <div className="flex items-center justify-end mb-2">
         <span className="text-[10px] text-muted-foreground">{totalRuns} run{totalRuns !== 1 ? 's' : ''}</span>
       </div>
 
@@ -796,11 +960,9 @@ export const EvalRunsPage: React.FC = () => {
                 </td>
               </tr>
             ) : viewMode === 'flat' ? (
-              sortRows(showRegressionsOnly ? filteredRunRows.filter(rr => regressionData.runIds.has(rr.run.id)) : filteredRunRows).map(rr => renderRunRow(rr, true))
+              flatSortedRows.slice(0, visibleRunCount).map(rr => renderRunRow(rr, true))
             ) : (
-              groupedByBenchmark.map(group => {
-                const isCollapsed = collapsedGroups.has(group.id);
-                const sorted = sortRows(group.rows);
+              groupedRenderPlan.map(({ group, isCollapsed, shown }) => {
                 const groupPassed = group.rows.filter(r => r.failed === 0 && r.passed > 0).length;
                 const groupRunIds = group.rows.map(r => r.run.id);
                 const allGroupSelected = groupRunIds.length > 0 && groupRunIds.every(id => selectedRuns.has(id));
@@ -848,10 +1010,17 @@ export const EvalRunsPage: React.FC = () => {
                         </div>
                       </td>
                     </tr>
-                    {!isCollapsed && sorted.map(rr => renderRunRow(rr, false))}
+                    {!isCollapsed && shown.map(rr => renderRunRow(rr, false))}
                   </React.Fragment>
                 );
               })
+            )}
+            {hasMoreRows && (
+              <tr ref={loadMoreSentinelRef} data-testid="runs-table-sentinel">
+                <td colSpan={viewMode === 'flat' ? 9 : 8} className="py-3 text-center">
+                  <Loader2 size={14} className="animate-spin text-muted-foreground inline-block" />
+                </td>
+              </tr>
             )}
           </tbody>
         </table>

@@ -50,7 +50,33 @@ export default {
     //   useTraces: false,
     // },
 
-    // Example 4: Agent with authentication hook
+    // Example 4: LangGraph REST connector (non-streaming invoke)
+    // {
+    //   key: "my-langgraph-agent",
+    //   name: "My LangGraph Agent",
+    //   endpoint: "http://localhost:8123",
+    //   connectorType: "langgraph",
+    //   connectorConfig: {
+    //     graphId: "agent",        // Assistant/graph ID (defaults to "agent")
+    //     // threadId: "...",      // Optional thread ID for multi-turn
+    //   },
+    //   useTraces: true,
+    // },
+
+    // Example 5: Amazon Strands connector (Bedrock Agent Runtime)
+    // {
+    //   key: "my-strands-agent",
+    //   name: "My Strands Agent",
+    //   endpoint: "ABCDEF1234",     // Bedrock Agent ID
+    //   connectorType: "strands",
+    //   connectorConfig: {
+    //     agentAliasId: "TSTALIASID",  // Agent alias ID
+    //     region: "us-west-2",          // AWS region (defaults to AWS_REGION)
+    //   },
+    //   useTraces: false,
+    // },
+
+    // Example 6: Agent with authentication hook
     // {
     //   key: "authenticated-agent",
     //   name: "Authenticated Agent",
@@ -71,7 +97,7 @@ export default {
     //   },
     // },
 
-    // Example 5: Claude Code with MCP servers (competitive evaluation)
+    // Example 7: Claude Code with MCP servers (competitive evaluation)
     // Uses a standard MCP config JSON file (same format as ~/.claude.json mcpServers)
     // {
     //   key: "claude-code-eval",
@@ -89,6 +115,43 @@ export default {
     //   },
     // },
   ],
+
+  // --- Data sources (OpenSearch clusters) ----------------------------------
+  // storage:       where eval results (test cases, benchmarks, runs,
+  //                analytics) are persisted. Omit for zero-config file-based
+  //                storage.
+  // observability: where agent traces/logs/metrics are read from (Traces tab).
+  //
+  // Resolution precedence (highest wins):
+  //   agent-health.config.json (written by the Settings UI at runtime)
+  //     -> these TS fields -> OPENSEARCH_STORAGE_*/OPENSEARCH_LOGS_* env
+  //     -> file-based fallback (storage only).
+  //
+  // Read environment-specific values and secrets from process.env so the
+  // committed config carries no credentials.
+  //
+  // storage: {
+  //   endpoint: process.env.OPENSEARCH_STORAGE_ENDPOINT,
+  //   authType: 'sigv4',            // 'none' | 'basic' | 'sigv4'
+  //   awsRegion: 'us-east-1',
+  //   awsService: 'es',             // 'es' (managed) | 'aoss' (serverless)
+  //   awsProfile: process.env.AWS_PROFILE,
+  //   // For basic auth instead of SigV4:
+  //   // username: process.env.OPENSEARCH_STORAGE_USERNAME,
+  //   // password: process.env.OPENSEARCH_STORAGE_PASSWORD,
+  // },
+  //
+  // observability: {
+  //   endpoint: process.env.OPENSEARCH_LOGS_ENDPOINT,
+  //   authType: 'sigv4',
+  //   awsRegion: 'us-east-1',
+  //   awsService: 'es',
+  //   awsProfile: process.env.AWS_PROFILE,
+  //   indexes: {
+  //     traces: 'otel-v1-apm-span-*',
+  //     logs: 'ml-commons-logs-*',
+  //   },
+  // },
 
   // Custom models (merged with built-in models by default)
   // models: [

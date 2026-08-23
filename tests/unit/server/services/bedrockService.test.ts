@@ -23,6 +23,7 @@ jest.mock('@/server/config', () => ({
 import {
   truncateString,
   compactTrajectory,
+  getJudgeContentCaps,
   buildEvaluationPrompt,
   evaluateTrajectory,
   parseBedrockError,
@@ -80,19 +81,22 @@ describe('BedrockService', () => {
 
   describe('compactTrajectory', () => {
     it('should truncate long content fields', () => {
+      // Use 60_000 chars so it crosses the new default cap (50_000) without
+      // depending on the env-var override path.
       const trajectory: TrajectoryStep[] = [
-        createStep({ type: 'action', content: 'a'.repeat(1000) }),
+        createStep({ type: 'action', content: 'a'.repeat(60_000) }),
       ];
 
       const result = compactTrajectory(trajectory);
 
       expect(result[0].content).toContain('[truncated');
-      expect((result[0].content as string).length).toBeLessThan(1000);
+      expect((result[0].content as string).length).toBeLessThan(60_000);
     });
 
     it('should truncate long string toolOutput', () => {
+      // Cross the new default toolOutput cap (100_000).
       const trajectory: TrajectoryStep[] = [
-        createStep({ type: 'tool_result', content: '', toolOutput: 'b'.repeat(2000) }),
+        createStep({ type: 'tool_result', content: '', toolOutput: 'b'.repeat(120_000) }),
       ];
 
       const result = compactTrajectory(trajectory);
@@ -101,7 +105,7 @@ describe('BedrockService', () => {
     });
 
     it('should truncate object toolOutput as JSON', () => {
-      const largeObject = { data: 'x'.repeat(2000) };
+      const largeObject = { data: 'x'.repeat(120_000) };
       const trajectory: TrajectoryStep[] = [
         createStep({ type: 'tool_result', content: '', toolOutput: largeObject as any }),
       ];
@@ -124,13 +128,121 @@ describe('BedrockService', () => {
 
     it('should not modify original trajectory', () => {
       const trajectory: TrajectoryStep[] = [
-        createStep({ type: 'action', content: 'a'.repeat(1000) }),
+        createStep({ type: 'action', content: 'a'.repeat(60_000) }),
       ];
       const originalLength = (trajectory[0].content as string).length;
 
       compactTrajectory(trajectory);
 
       expect(trajectory[0].content).toHaveLength(originalLength);
+    });
+
+    // ─── New post-fix coverage: cap is configurable, default is generous ───
+    //
+    // Until 0.5.21 the cap was hardcoded at 500 chars / 1000 chars and the
+    // judge graded from a SLICE of every assistant message ("truncated at
+    // 7465 chars... from what is visible..."). These cases pin the new
+    // contract so it can't silently regress.
+
+    it('should preserve content of typical post-thinking assistant messages (8KB) at the default cap', () => {
+      // 8KB is the size of a typical opus-4.x first-turn answer with
+      // a brief diagnosis + a couple of [READ] command groups. The pre-fix
+      // cap (500) sliced these down to a single sentence; the post-fix cap
+      // (50_000) preserves them whole.
+      const eightKb = 'q'.repeat(8 * 1024);
+      const trajectory: TrajectoryStep[] = [
+        createStep({ type: 'response', content: eightKb }),
+      ];
+
+      const result = compactTrajectory(trajectory);
+
+      expect(result[0].content).toBe(eightKb);
+      expect(result[0].content).not.toContain('[truncated');
+    });
+
+    it('honors AH_JUDGE_CONTENT_CAP env override', () => {
+      const original = process.env.AH_JUDGE_CONTENT_CAP;
+      process.env.AH_JUDGE_CONTENT_CAP = '100';
+      try {
+        const trajectory: TrajectoryStep[] = [
+          createStep({ type: 'action', content: 'a'.repeat(500) }),
+        ];
+        const result = compactTrajectory(trajectory);
+        // 100 chars + truncation marker
+        expect((result[0].content as string).startsWith('a'.repeat(100))).toBe(true);
+        expect(result[0].content).toContain('[truncated 400 chars]');
+      } finally {
+        if (original === undefined) delete process.env.AH_JUDGE_CONTENT_CAP;
+        else process.env.AH_JUDGE_CONTENT_CAP = original;
+      }
+    });
+
+    it('honors AH_JUDGE_TOOL_OUTPUT_CAP env override', () => {
+      const original = process.env.AH_JUDGE_TOOL_OUTPUT_CAP;
+      process.env.AH_JUDGE_TOOL_OUTPUT_CAP = '200';
+      try {
+        const trajectory: TrajectoryStep[] = [
+          createStep({ type: 'tool_result', content: '', toolOutput: 'b'.repeat(1_000) }),
+        ];
+        const result = compactTrajectory(trajectory);
+        expect((result[0].toolOutput as string).startsWith('b'.repeat(200))).toBe(true);
+        expect(result[0].toolOutput).toContain('[truncated 800 chars]');
+      } finally {
+        if (original === undefined) delete process.env.AH_JUDGE_TOOL_OUTPUT_CAP;
+        else process.env.AH_JUDGE_TOOL_OUTPUT_CAP = original;
+      }
+    });
+
+    it('AH_JUDGE_NO_TRUNCATE=1 disables truncation entirely', () => {
+      const original = process.env.AH_JUDGE_NO_TRUNCATE;
+      process.env.AH_JUDGE_NO_TRUNCATE = '1';
+      try {
+        const huge = 'a'.repeat(200_000);
+        const trajectory: TrajectoryStep[] = [
+          createStep({ type: 'response', content: huge }),
+        ];
+        const result = compactTrajectory(trajectory);
+        expect(result[0].content).toBe(huge);
+        expect(result[0].content).not.toContain('[truncated');
+      } finally {
+        if (original === undefined) delete process.env.AH_JUDGE_NO_TRUNCATE;
+        else process.env.AH_JUDGE_NO_TRUNCATE = original;
+      }
+    });
+
+    it('explicit opts override env vars', () => {
+      const original = process.env.AH_JUDGE_CONTENT_CAP;
+      process.env.AH_JUDGE_CONTENT_CAP = '50';
+      try {
+        const trajectory: TrajectoryStep[] = [
+          createStep({ type: 'action', content: 'a'.repeat(300) }),
+        ];
+        // Caller forces a higher cap than the env var.
+        const result = compactTrajectory(trajectory, { contentCap: 1_000 });
+        expect(result[0].content).toBe('a'.repeat(300));
+        expect(result[0].content).not.toContain('[truncated');
+      } finally {
+        if (original === undefined) delete process.env.AH_JUDGE_CONTENT_CAP;
+        else process.env.AH_JUDGE_CONTENT_CAP = original;
+      }
+    });
+
+    it('rejects bogus env-var values and falls back to defaults', () => {
+      const a = process.env.AH_JUDGE_CONTENT_CAP;
+      const b = process.env.AH_JUDGE_TOOL_OUTPUT_CAP;
+      process.env.AH_JUDGE_CONTENT_CAP = 'not-a-number';
+      process.env.AH_JUDGE_TOOL_OUTPUT_CAP = '-7';
+      try {
+        const caps = getJudgeContentCaps();
+        // 50_000 / 100_000 defaults from bedrockService.
+        expect(caps.contentCap).toBe(50_000);
+        expect(caps.toolOutputCap).toBe(100_000);
+      } finally {
+        if (a === undefined) delete process.env.AH_JUDGE_CONTENT_CAP;
+        else process.env.AH_JUDGE_CONTENT_CAP = a;
+        if (b === undefined) delete process.env.AH_JUDGE_TOOL_OUTPUT_CAP;
+        else process.env.AH_JUDGE_TOOL_OUTPUT_CAP = b;
+      }
     });
   });
 
@@ -201,6 +313,46 @@ describe('BedrockService', () => {
 
       expect(result).toContain('No logs available');
     });
+
+    // Regression for the judge-truncation bug: a 20KB assistant response
+    // (≈12k tokens worth of reasoning) flowing through compactTrajectory →
+    // buildEvaluationPrompt MUST appear intact in the prompt the judge sees.
+    // Pre-fix, the prompt contained a 500-char SLICE plus the substring
+    // `[truncated 19,756 chars]` and the judge graded "from what is visible".
+    it('should preserve a 20KB step content in the prompt the judge sees', () => {
+      const big = 'q'.repeat(20_000);
+      const trajectory: TrajectoryStep[] = [
+        createStep({ type: 'response', content: big }),
+      ];
+      const result = buildEvaluationPrompt(trajectory, ['identifies the cause']);
+
+      // Full content present — the judge sees the whole assistant message.
+      expect(result).toContain(big);
+      // No truncation marker leaked.
+      expect(result).not.toContain('[truncated 19500 chars]');
+      expect(result).not.toContain('[truncated 19,500 chars]');
+    });
+
+    // Same regression, on the toolOutput side: a 20KB Logs-Insights query
+    // result (the typical `query_spans` payload a trace-grounded judge
+    // needs to grade tool correctness) MUST flow through intact.
+    it('should preserve a 20KB toolOutput in the prompt the judge sees', () => {
+      const bigOutput = 'log-line\n'.repeat(2_500); // ~22.5KB
+      const trajectory: TrajectoryStep[] = [
+        createStep({
+          type: 'tool_result',
+          content: '',
+          toolOutput: bigOutput,
+        }),
+      ];
+      const result = buildEvaluationPrompt(trajectory, ['picks the right SOP']);
+      expect(result).toContain('log-line');
+      // The string repeats 2,500 times — every occurrence is present, not
+      // just the head.
+      const matches = result.match(/log-line/g) ?? [];
+      expect(matches.length).toBe(2_500);
+      expect(result).not.toContain('[truncated');
+    });
   });
 
   describe('evaluateTrajectory', () => {
@@ -221,6 +373,71 @@ describe('BedrockService', () => {
       await evaluateTrajectory(request);
 
       expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+
+    // Bedrock contract change 4.6 -> 4.7/4.8: newer models reject ANY explicit
+    // temperature ("temperature is deprecated for this model"). The judge must
+    // omit the field entirely for those models — issue #299.
+    it('omits temperature for models that have deprecated it (Opus 4.7/4.8+)', async () => {
+      mockSend.mockResolvedValue({
+        output: { message: { content: [{ text: '{"pass_fail_status": "passed", "accuracy": 1.0, "reasoning": "ok"}' }] } },
+      });
+      await evaluateTrajectory(
+        { trajectory: [createStep({ type: 'action', toolName: 'test' })], expectedOutcomes: ['x'] },
+        'us.anthropic.claude-opus-4-8',
+      );
+      const cfg = (mockSend.mock.calls.at(-1)![0] as any).inferenceConfig;
+      expect(cfg.temperature).toBeUndefined();
+      expect(cfg.maxTokens).toBe(4096);
+    });
+
+    it('still sends the evaluator temperature to models that accept it', async () => {
+      mockSend.mockResolvedValue({
+        output: { message: { content: [{ text: '{"pass_fail_status": "passed", "accuracy": 1.0, "reasoning": "ok"}' }] } },
+      });
+      await evaluateTrajectory(
+        { trajectory: [createStep({ type: 'action', toolName: 'test' })], expectedOutcomes: ['x'] },
+        'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+      );
+      expect((mockSend.mock.calls.at(-1)![0] as any).inferenceConfig.temperature).toBe(0.1);
+    });
+
+    // Regression for the judge-truncation bug — from the *provider entry
+    // point* perspective: the same end-to-end flow that POST /api/judge
+    // exercises (evaluateTrajectory → buildEvaluationPrompt → ConverseCommand)
+    // must hand the full assistant content to the model. Pre-fix, every
+    // ConverseCommand contained `[truncated 19500 chars]` in the user message
+    // and the judge graded a 500-char slice. This locks the post-fix contract
+    // at the boundary that customer requests actually traverse.
+    it('should send full trajectory content to Bedrock for a 20KB step (judge-truncation regression)', async () => {
+      mockSend.mockResolvedValue({
+        output: {
+          message: {
+            content: [{ text: '{"pass_fail_status": "passed", "accuracy": 1.0, "reasoning": "ok"}' }],
+          },
+        },
+      });
+
+      const big = 'q'.repeat(20_000);
+      const request: JudgeRequest = {
+        trajectory: [
+          createStep({ type: 'response', content: big }),
+        ],
+        expectedOutcomes: ['identifies the cause'],
+      };
+
+      await evaluateTrajectory(request);
+
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const calledWith = mockSend.mock.calls[0][0];
+      // Model receives the trajectory in the user message text. Walk the
+      // ConverseCommand input shape and assert the 20KB content is present
+      // intact (not sliced, no truncation marker).
+      const userText: string = calledWith.messages?.[0]?.content?.[0]?.text || '';
+      expect(userText.length).toBeGreaterThan(20_000);
+      expect(userText).toContain(big);
+      expect(userText).not.toContain('[truncated 19500 chars]');
+      expect(userText).not.toContain('[truncated 19,500 chars]');
     });
 
     it('should use provided model ID', async () => {
@@ -300,10 +517,11 @@ describe('BedrockService', () => {
       const result = await evaluateTrajectory(request);
 
       expect(result.metrics.accuracy).toBe(0.8);
-      expect(result.metrics.faithfulness).toBe(0.9);
+      // faithfulness is not extracted because it's not in the default evaluator's scoringConfig
+      expect(result.metrics.faithfulness).toBeUndefined();
     });
 
-    it('should default accuracy to 0 when missing', async () => {
+    it('should omit accuracy when missing from judge response', async () => {
       mockSend.mockResolvedValue({
         output: {
           message: {
@@ -318,7 +536,8 @@ describe('BedrockService', () => {
 
       const result = await evaluateTrajectory(request);
 
-      expect(result.metrics.accuracy).toBe(0);
+      // With dynamic metrics, missing metrics are omitted (not defaulted to 0)
+      expect(result.metrics.accuracy).toBeUndefined();
     });
 
     it('should default passFailStatus to failed when missing', async () => {

@@ -390,6 +390,32 @@ describe('Evaluation Service Index', () => {
       expect(result.llmJudgeReasoning).toContain('Waiting for traces');
     });
 
+    it('persists connector metadata.sessionId onto the report for Strategy D (#313)', async () => {
+      const traceAgent = { ...mockAgent, useTraces: true };
+      const mockConnector = {
+        type: 'claude-code',
+        execute: jest.fn().mockResolvedValue({
+          trajectory: [{ type: 'response', content: 'Done', timestamp: new Date().toISOString() }],
+          runId: 'subprocess-789',
+          rawEvents: [],
+          // ClaudeCodeConnector surfaces the captured session_id here.
+          metadata: { sessionId: 'sess-strategy-d', exitCode: 0 },
+        }),
+      };
+      const mockRegistry = { getForAgent: jest.fn().mockReturnValue(mockConnector) };
+
+      const result = await runEvaluationWithConnector(
+        traceAgent,
+        'claude-3-sonnet',
+        mockTestCase,
+        jest.fn(),
+        { registry: mockRegistry }
+      );
+
+      expect(result.runId).toBe('subprocess-789');
+      expect(result.sessionId).toBe('sess-strategy-d');
+    });
+
     it('should handle connector execution errors', async () => {
       const mockConnector = {
         type: 'rest',
@@ -715,7 +741,7 @@ describe('Evaluation Service Index', () => {
       );
     });
 
-    it('should continue with pre-hook result when afterResponse hook throws', async () => {
+    it('should propagate error when afterResponse hook throws', async () => {
       const agentWithAfterHook = {
         ...mockAgent,
         hooks: {
@@ -749,14 +775,67 @@ describe('Evaluation Service Index', () => {
         { registry: mockRegistry }
       );
 
-      // Should succeed with original trajectory, not fail
-      expect(result.status).toBe('completed');
-      expect(result.trajectory).toEqual(originalTrajectory);
-      // Should have logged the hook error
-      expect(consoleErrorSpy).toHaveBeenCalledWith(
-        expect.stringContaining('afterResponse hook failed'),
-        expect.stringContaining('Hook exploded')
-      );
+      // Should fail with the hook error surfaced
+      expect(result.status).toBe('failed');
+      expect(result.llmJudgeReasoning).toContain('Hook exploded');
+    });
+  });
+
+  describe('invokeAgent env forwarding (RFC 004 AgentRunOptions.env)', () => {
+    let invokeAgent: any;
+
+    beforeEach(async () => {
+      jest.resetModules();
+      const module = await import('@/services/evaluation');
+      invokeAgent = module.invokeAgent;
+    });
+
+    const makeRegistry = () => {
+      let capturedRequest: any;
+      const connector = {
+        type: 'mock',
+        execute: jest.fn().mockImplementation(async (_endpoint, request) => {
+          capturedRequest = request;
+          return {
+            trajectory: [{ type: 'response', content: 'ok', timestamp: new Date().toISOString() }],
+            runId: 'run-env',
+            rawEvents: [],
+          };
+        }),
+      };
+      const registry = { getForAgent: jest.fn().mockReturnValue(connector) };
+      return { registry, connector, getRequest: () => capturedRequest };
+    };
+
+    it('merges per-call env into connectorConfig.env so subprocess connectors forward it', async () => {
+      const { registry, getRequest } = makeRegistry();
+      const agentWithConfig = {
+        ...mockAgent,
+        connectorConfig: { command: 'my-agent', env: { BASE: 'base', SHARED: 'config' } },
+      } as any;
+
+      await invokeAgent(agentWithConfig, 'claude-3-sonnet', mockTestCase, {
+        registry,
+        env: { RUNTIME: 'value', SHARED: 'runtime-wins' },
+      });
+
+      expect(getRequest().connectorConfig.env).toEqual({
+        BASE: 'base',
+        RUNTIME: 'value',
+        SHARED: 'runtime-wins', // per-call env wins over static config env
+      });
+      // Other connectorConfig fields are preserved.
+      expect(getRequest().connectorConfig.command).toBe('my-agent');
+    });
+
+    it('leaves connectorConfig untouched when no per-call env is supplied', async () => {
+      const { registry, getRequest } = makeRegistry();
+      const baseConfig = { command: 'my-agent', env: { BASE: 'base' } };
+      const agentWithConfig = { ...mockAgent, connectorConfig: baseConfig } as any;
+
+      await invokeAgent(agentWithConfig, 'claude-3-sonnet', mockTestCase, { registry });
+
+      expect(getRequest().connectorConfig).toBe(baseConfig); // same reference, no clone
     });
   });
 });

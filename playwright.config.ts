@@ -5,8 +5,11 @@
 
 import { defineConfig, devices } from '@playwright/test';
 
+const backendPort = process.env.AH_PORT || process.env.AGENT_HEALTH_PORT || '4001';
+const devPort = process.env.AH_DEV_PORT || process.env.AGENT_HEALTH_DEV_PORT || '4000';
+
 /**
- * Playwright configuration for E2E testing of AgentEval UI
+ * Playwright configuration for E2E testing of Agent Health UI
  * @see https://playwright.dev/docs/test-configuration
  */
 export default defineConfig({
@@ -28,10 +31,10 @@ export default defineConfig({
   /* Shared settings for all the projects below. See https://playwright.dev/docs/api/class-testoptions. */
   use: {
     /* Base URL to use in actions like `await page.goto('/')`. */
-    /* In CI, use production server on 4001; in local dev, use Vite dev server on 4000 */
+    /* In CI, use production server; in local dev, use Vite dev server */
     baseURL: process.env.CI
-      ? 'http://localhost:4001'
-      : (process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:4000'),
+      ? `http://127.0.0.1:${backendPort}`
+      : (process.env.PLAYWRIGHT_BASE_URL || `http://127.0.0.1:${devPort}`),
 
     /* Collect trace when retrying the failed test. See https://playwright.dev/docs/trace-viewer */
     trace: 'on-first-retry',
@@ -53,23 +56,37 @@ export default defineConfig({
 
   /* Run your local dev server before starting the tests */
   /* In CI, use single production server; in local dev, use separate dev servers */
-  webServer: process.env.CI
+  /* Set PLAYWRIGHT_SKIP_WEBSERVER=1 to run tests against an already-running server */
+  webServer: process.env.PLAYWRIGHT_SKIP_WEBSERVER
+    ? undefined
+    : process.env.CI
     ? {
         command: 'npm run server',
-        url: 'http://localhost:4001',
+        url: `http://127.0.0.1:${backendPort}`,
         reuseExistingServer: false,
         timeout: 120000,
+        env: {
+          // E2E runs don't have a real OpenSearch trace backend, so the
+          // default 5-minute trace poll per test case (30 attempts × 10s)
+          // is wasted wall time. Fail fast instead.
+          TRACE_POLL_MAX_ATTEMPTS: process.env.TRACE_POLL_MAX_ATTEMPTS ?? '2',
+          TRACE_POLL_INTERVAL_MS: process.env.TRACE_POLL_INTERVAL_MS ?? '1000',
+        },
       }
     : [
         {
           command: 'npm run dev:server',
-          url: 'http://localhost:4001/health',
+          url: `http://127.0.0.1:${backendPort}/health`,
           reuseExistingServer: true,
           timeout: 120000,
+          env: {
+            TRACE_POLL_MAX_ATTEMPTS: process.env.TRACE_POLL_MAX_ATTEMPTS ?? '2',
+            TRACE_POLL_INTERVAL_MS: process.env.TRACE_POLL_INTERVAL_MS ?? '1000',
+          },
         },
         {
           command: 'npm run dev',
-          url: 'http://localhost:4000',
+          url: `http://127.0.0.1:${devPort}`,
           reuseExistingServer: true,
           timeout: 120000,
         },

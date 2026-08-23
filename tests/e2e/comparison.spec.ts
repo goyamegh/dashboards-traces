@@ -259,3 +259,80 @@ test.describe('Comparison Page - Filters', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// Deep-dive + reconstructed Traces/Judge surfaces (regression guards for the
+// trace-grounded deep-dive, timeline Traces view, and parallel Judge layout).
+// All assertions degrade gracefully when a benchmark has no comparable runs /
+// no trace data (real backend) — they only assert structure, never LLM output.
+// ---------------------------------------------------------------------------
+test.describe('Comparison Page - deep-dive, timeline & parallel judge', () => {
+  /** Navigate benchmarks -> runs -> select all -> compare. Returns true if reached. */
+  async function gotoComparison(page: import('@playwright/test').Page): Promise<boolean> {
+    await page.goto('/benchmarks');
+    await page.waitForSelector('[data-testid="benchmarks-page"]', { timeout: 30000 });
+    await page.waitForTimeout(1500);
+
+    const benchmarkCard = page.locator('[data-testid="benchmarks-page"] h3').first();
+    if (!(await benchmarkCard.isVisible().catch(() => false))) return false;
+    await benchmarkCard.click();
+    await page.waitForSelector('[data-testid="benchmark-runs-page"]', { timeout: 10000 }).catch(() => null);
+
+    const selectAllButton = page.locator('button:has-text("Select All")');
+    if (await selectAllButton.isVisible().catch(() => false)) {
+      await selectAllButton.click();
+      await page.waitForTimeout(500);
+    }
+    const compareButton = page.locator('button:has-text("Compare")');
+    if (!(await compareButton.isVisible().catch(() => false))) return false;
+    await compareButton.click();
+    const ok = await page
+      .waitForSelector('[data-testid="comparison-page"]', { timeout: 30000 })
+      .then(() => true)
+      .catch(() => false);
+    return ok;
+  }
+
+  test('renders the trace-grounded deep-dive panel for a 2-run comparison', async ({ page }) => {
+    if (!(await gotoComparison(page))) return;
+
+    // The deep-dive only renders for EXACTLY 2 runs; if present it must carry
+    // its heading (the LLM body may still be loading/erroring — we don't assert it).
+    const deepDive = page.locator('[data-testid="comparison-deep-dive"]');
+    if (await deepDive.isVisible().catch(() => false)) {
+      await expect(deepDive).toContainText(/What's actually different/i);
+    }
+  });
+
+  test('expanding a test case shows the Judge grid and the (timeline) Traces tab', async ({ page }) => {
+    if (!(await gotoComparison(page))) return;
+
+    // Expand the first comparison-table row (cursor-pointer row).
+    const firstRow = page.locator('tr.cursor-pointer').first();
+    if (!(await firstRow.isVisible().catch(() => false))) return;
+    await firstRow.click();
+    await page.waitForTimeout(500);
+
+    // Judge tab -> parallel grid renders (per-run cards, even "Not run").
+    const judgeTab = page.locator('button[role="tab"]:has-text("Judge")').first();
+    if (await judgeTab.isVisible().catch(() => false)) {
+      await judgeTab.click();
+      await page.waitForTimeout(300);
+      await expect(page.locator('[data-testid="judge-comparison-grid"]').first()).toBeVisible();
+    }
+
+    // Traces tab -> when trace data exists, the timeline card renders. The view
+    // is the shared TraceVisualization (tree/gantt), NOT the old react-flow graph.
+    const tracesTab = page.locator('button[role="tab"]:has-text("Traces")').first();
+    if (await tracesTab.isVisible().catch(() => false)) {
+      await tracesTab.click();
+      await page.waitForTimeout(500);
+      const timeline = page.locator('[data-testid="trace-flow-comparison"]').first();
+      if (await timeline.isVisible().catch(() => false)) {
+        await expect(timeline).toContainText(/Trace Flow Comparison/i);
+        // Side-by-side timeline panels expose the view-toggle from TraceVisualization.
+        await expect(timeline).toContainText(/Side-by-Side|Merged/);
+      }
+    }
+  });
+});

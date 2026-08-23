@@ -149,6 +149,32 @@ describe('TracePollingManager', () => {
       // Verify complete cleanup - getState should return undefined
       expect(tracePollingManager.getState('report-mem-1')).toBeUndefined();
     });
+
+    it('rejects completion promise when stopPolling is called on async poll', async () => {
+      mockFetchTracesByRunIds.mockResolvedValue({ spans: [] });
+      mockUpdateReport.mockResolvedValue(undefined);
+
+      const callbacks: PollCallbacks = {
+        onTracesFound: jest.fn(),
+        onError: jest.fn(),
+      };
+
+      const promise = tracePollingManager.startPollingAsync(
+        'report-stop-async', 'run-stop', callbacks,
+        { intervalMs: 10000, maxAttempts: 30 }
+      );
+
+      // Catch rejection before stopping
+      let rejectedError: Error | undefined;
+      const handled = promise.catch((err) => { rejectedError = err; });
+
+      // Stop polling - should reject the promise
+      tracePollingManager.stopPolling('report-stop-async');
+      await handled;
+
+      expect(rejectedError).toBeDefined();
+      expect(rejectedError!.message).toContain('Polling stopped');
+    });
   });
 
   describe('getState', () => {
@@ -752,6 +778,79 @@ describe('TracePollingManager', () => {
       );
     });
 
+    // Issue #320 (root cause 2): without a buildTrajectory hook the poller
+    // used to return [] and the judge graded the tool-call-less AG-UI
+    // trajectory — failing trace-only agents for "not invoking any tool".
+    // The default span→trajectory conversion must surface the tool calls.
+    it('builds a default trajectory from tool spans when no hook is configured', async () => {
+      const mockSpans: Span[] = [
+        {
+          traceId: 'trace-default',
+          spanId: 'span-tool-1',
+          name: 'execute_tool add_to_cart',
+          startTime: '2024-01-01T00:00:00Z',
+          endTime: '2024-01-01T00:00:01Z',
+          duration: 1000,
+          status: 'OK',
+          attributes: {
+            'gen_ai.operation.name': 'execute_tool',
+            'gen_ai.tool.name': 'add_to_cart',
+          },
+          events: [
+            {
+              name: 'gen_ai.tool.message',
+              time: '2024-01-01T00:00:00.5Z',
+              attributes: { role: 'tool', content: '{"product_id":"PROD-001"}' },
+            },
+            {
+              name: 'gen_ai.choice',
+              time: '2024-01-01T00:00:00.9Z',
+              attributes: { message: '{"cart_total":79.99}' },
+            },
+          ],
+        },
+      ];
+
+      const mockReport: EvaluationReport = {
+        id: 'report-default-traj',
+        timestamp: '2024-01-01T00:00:00Z',
+        testCaseId: 'test-1',
+        status: 'completed',
+        agentName: 'Trace Agent',
+        agentKey: 'trace-agent',
+        modelName: 'Test Model',
+        modelId: 'test-model',
+        trajectory: [{ type: 'response', content: 'Final answer only (AG-UI)' }],
+        metrics: { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 },
+        llmJudgeReasoning: '',
+      } as any;
+
+      const onTracesFound = jest.fn();
+      const callbacks: PollCallbacks = {
+        onTracesFound,
+        onError: jest.fn(),
+      };
+
+      mockFetchTracesByRunIds.mockResolvedValue({ spans: mockSpans, total: 1 });
+      mockUpdateReport.mockResolvedValue(undefined);
+      mockGetReportById.mockResolvedValue(mockReport);
+
+      tracePollingManager.startPolling('report-default-traj', 'run-default-traj', callbacks, {
+        agentConfig: { key: 'trace-agent', name: 'Trace Agent', endpoint: 'http://test.com' },
+      });
+
+      await jest.runAllTimersAsync();
+
+      expect(mockExecuteBuildTrajectoryHook).not.toHaveBeenCalled();
+      expect(onTracesFound).toHaveBeenCalledTimes(1);
+      const reportArg = onTracesFound.mock.calls[0][1];
+      // The judged trajectory must contain the tool call from the spans,
+      // not the tool-call-less AG-UI response.
+      const actionSteps = reportArg.trajectory.filter((s: any) => s.type === 'action');
+      expect(actionSteps.length).toBeGreaterThanOrEqual(1);
+      expect(actionSteps[0].toolName).toBe('add_to_cart');
+    });
+
     it('preserves existing trajectory when buildTrajectory hook throws', async () => {
       const mockSpans: Span[] = [
         {
@@ -819,6 +918,79 @@ describe('TracePollingManager', () => {
       );
 
       consoleErrorSpy.mockRestore();
+    });
+  });
+
+  describe('startPollingAsync', () => {
+    it('resolves when traces are found and callback succeeds', async () => {
+      const mockSpans = [{ traceId: 'trace-1', spanId: 'span-1', name: 'test' }] as unknown as Span[];
+      const mockReport = { id: 'report-1', trajectory: [] } as unknown as EvaluationReport;
+
+      (fetchTracesByRunIds as jest.Mock).mockResolvedValue({ spans: mockSpans });
+      (asyncRunStorage.getReportById as jest.Mock).mockResolvedValue(mockReport);
+      (asyncRunStorage.updateReport as jest.Mock).mockResolvedValue(undefined);
+
+      const onTracesFound = jest.fn().mockResolvedValue(undefined);
+      const callbacks: PollCallbacks = {
+        onTracesFound,
+        onError: jest.fn(),
+      };
+
+      await tracePollingManager.startPollingAsync('report-async-1', 'run-1', callbacks, {
+        intervalMs: 10,
+        maxAttempts: 3,
+      });
+
+      expect(onTracesFound).toHaveBeenCalledWith(mockSpans, mockReport);
+    });
+
+    it('rejects when max attempts reached without traces', async () => {
+      (fetchTracesByRunIds as jest.Mock).mockResolvedValue({ spans: [] });
+      (asyncRunStorage.updateReport as jest.Mock).mockResolvedValue(undefined);
+
+      const onError = jest.fn();
+      const callbacks: PollCallbacks = {
+        onTracesFound: jest.fn(),
+        onError,
+      };
+
+      const promise = tracePollingManager.startPollingAsync('report-async-2', 'run-2', callbacks, {
+        intervalMs: 1000,
+        maxAttempts: 2,
+      });
+
+      // Attach rejection handler before advancing timers to avoid unhandled rejection
+      let rejectedError: Error | undefined;
+      const settled = promise.catch((err) => { rejectedError = err; });
+
+      // Run all timers to completion
+      await jest.runAllTimersAsync();
+      await settled;
+
+      expect(rejectedError).toBeDefined();
+      expect(rejectedError!.message).toContain('Traces not available after 2 attempts');
+      expect(onError).toHaveBeenCalled();
+    });
+
+    it('rejects when onTracesFound callback throws', async () => {
+      const mockSpans = [{ traceId: 'trace-1', spanId: 'span-1', name: 'test' }] as unknown as Span[];
+      const mockReport = { id: 'report-1', trajectory: [] } as unknown as EvaluationReport;
+
+      (fetchTracesByRunIds as jest.Mock).mockResolvedValue({ spans: mockSpans });
+      (asyncRunStorage.getReportById as jest.Mock).mockResolvedValue(mockReport);
+      (asyncRunStorage.updateReport as jest.Mock).mockResolvedValue(undefined);
+
+      const callbacks: PollCallbacks = {
+        onTracesFound: jest.fn().mockRejectedValue(new Error('Judge failed')),
+        onError: jest.fn(),
+      };
+
+      await expect(
+        tracePollingManager.startPollingAsync('report-async-3', 'run-3', callbacks, {
+          intervalMs: 10,
+          maxAttempts: 3,
+        })
+      ).rejects.toThrow('Judge failed');
     });
   });
 });

@@ -19,8 +19,8 @@ interface BreadcrumbsProps {
 
 export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({ items, actions }) => {
   return (
-    <div className="flex items-center justify-between mb-2">
-      <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-xs text-muted-foreground">
+    <div className="flex items-center justify-between gap-2 mb-2 flex-wrap">
+      <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-xs text-muted-foreground min-w-0">
         <Link to="/" className="hover:text-foreground transition-colors">
           <Home size={12} />
         </Link>
@@ -37,7 +37,7 @@ export const Breadcrumbs: React.FC<BreadcrumbsProps> = ({ items, actions }) => {
           </React.Fragment>
         ))}
       </nav>
-      {actions && <div className="flex items-center gap-3">{actions}</div>}
+      {actions && <div className="flex items-center gap-3 flex-wrap justify-end">{actions}</div>}
     </div>
   );
 };

@@ -13,22 +13,26 @@ import routes from './routes/index.js';
 import { setupMiddleware, setupSpaFallback } from './middleware/index.js';
 import { loadConfig } from '@/lib/config/index';
 import { migrateYamlToJsonIfNeeded } from './services/configMigration.js';
-import { getStorageConfigFromFile, getObservabilityConfigFromFile } from './services/configService.js';
+import { getStorageConfigFromFile, getObservabilityConfigFromFile, getStorageConfigFromTs, getObservabilityConfigFromTs, setTsClusterConfig } from './services/configService.js';
 import { getStorageConfigFromEnv, getObservabilityConfigFromEnv } from './middleware/dataSourceConfig.js';
 import { initializeStorageFromConfig } from './services/storageInitializer.js';
+import { runColdStartMigrations } from './services/coldStartMigrations.js';
+import { getStorageModule } from './adapters/index.js';
 import { initEvalTracerProvider, resolveEvalTelemetryConfig, shutdownEvalTracer } from '@/lib/telemetry';
 import type { OpenSearchExporterConfig } from '@/lib/telemetry';
 
 // Register server-side connectors (subprocess, claude-code)
 // This import has side effects that register connectors with the registry
 import '@/services/connectors/server';
+import { connectorRegistry } from '@/services/connectors/registry';
 
 /**
  * Resolve storage config at startup (no request context available).
- * Priority: file config > environment variables > null.
+ * Priority: agent-health.config.json (file) > agent-health.config.ts (TS) >
+ * OPENSEARCH_STORAGE_* env vars > null.
  */
 function resolveStorageConfigAtStartup() {
-  return getStorageConfigFromFile() ?? getStorageConfigFromEnv() ?? null;
+  return getStorageConfigFromFile() ?? getStorageConfigFromTs() ?? getStorageConfigFromEnv() ?? null;
 }
 
 /**
@@ -54,15 +58,30 @@ async function initializeStorageBackend(): Promise<void> {
  * @returns Configured Express app
  */
 export async function createApp(): Promise<Express> {
-  // Migrate agent-health.yaml → agent-health.config.json if needed (one-time)
+  // Migrate legacy agent-health.yaml / agent-health.config.json → .agent-health/state.json (one-time)
   await migrateYamlToJsonIfNeeded();
 
   const config = await loadConfig();
 
+  // Bridge cluster config authored in agent-health.config.ts into the server's
+  // runtime resolution chain (#271). In code-first mode (a .ts is present) the
+  // .ts wins and the runtime state file is ignored; otherwise the state file is
+  // used. Pass `null` (not undefined) for absent fields so each createApp()
+  // fully resets the bridge (undefined means "leave previous value").
+  setTsClusterConfig({ storage: config.storage ?? null, observability: config.observability ?? null });
+
+  // Register user-defined connectors from config (so they work in benchmark execution)
+  if (config.connectors?.length) {
+    for (const connector of config.connectors) {
+      connectorRegistry.register(connector);
+    }
+    console.log(`[app] Registered ${config.connectors.length} user connector(s) from config`);
+  }
+
   // Initialize evaluation telemetry (OTel span emission).
   // Prefer the observability data source for direct OpenSearch export — this
   // ensures eval spans land in the same cluster/index as agent spans.
-  const obsConfig = getObservabilityConfigFromFile() ?? getObservabilityConfigFromEnv();
+  const obsConfig = getObservabilityConfigFromFile() ?? getObservabilityConfigFromTs() ?? getObservabilityConfigFromEnv();
   let opensearchExporterConfig: OpenSearchExporterConfig | undefined;
   if (obsConfig?.endpoint) {
     opensearchExporterConfig = {
@@ -81,6 +100,18 @@ export async function createApp(): Promise<Express> {
 
   // Swap to OpenSearch storage when configured and reachable
   await initializeStorageBackend();
+
+  // Run idempotent cold-start migrations against whatever storage backend
+  // is now active. Failures here are logged but never fatal — the server
+  // can still serve requests against unmigrated data.
+  try {
+    const storage = getStorageModule();
+    if (storage) {
+      await runColdStartMigrations(storage);
+    }
+  } catch (err: any) {
+    console.warn(`[app] Cold-start migrations failed: ${err?.message || err}`);
+  }
 
   const app = express();
 

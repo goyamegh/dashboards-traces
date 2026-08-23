@@ -1,6 +1,6 @@
 {
   "name": "@opensearch-project/agent-health",
-  "version": "0.4.0",
+  "version": "0.5.2",
   "type": "module",
   "description": "Agent Evaluation and Observability Framework",
   "license": "Apache-2.0",
@@ -23,15 +23,19 @@
     "traces"
   ],
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=20.0.0"
   },
   "bin": {
     "agent-health": "./bin/cli.js"
   },
-  "main": "./lib/dist/index.js",
+  "main": "./lib/dist/lib/index.js",
+  "types": "./lib/dist/lib/index.d.ts",
   "exports": {
     ".": {
-      "import": "./lib/dist/index.js"
+      "types": "./lib/dist/lib/index.d.ts",
+      "import": "./lib/dist/lib/index.js",
+      "require": "./lib/dist/lib/index.js",
+      "default": "./lib/dist/lib/index.js"
     }
   },
   "files": [
@@ -39,7 +43,12 @@
     "cli/dist/",
     "server/dist/",
     "lib/dist/",
-    "dist/"
+    "dist/",
+    "deployment/cloudformation/",
+    "docs/",
+    "examples/",
+    "tsconfig.lib.json",
+    "observio-sample-agent/pi-package/"
   ],
   "scripts": {
     "dev": "vite",
@@ -63,19 +72,26 @@
     "test:e2e:report": "playwright show-report",
     "test:all": "npm run test:unit && npm run test:integration && npm run test:e2e",
     "build:cli": "esbuild cli/index.ts --bundle --platform=node --format=esm --outdir=cli/dist --packages=external --external:inquirer",
-    "build:lib": "esbuild lib/index.ts lib/config/index.ts --bundle --platform=node --format=esm --outdir=lib/dist --packages=external",
+    "build:lib": "rm -rf lib/dist && tsc -p tsconfig.lib.json && tsc-alias -p tsconfig.lib.json --resolve-full-paths",
+    "build:lib:legacy": "esbuild lib/index.ts lib/config/index.ts --bundle --platform=node --format=esm --outdir=lib/dist --packages=external",
     "build:all": "npm run build && npm run build:server && npm run build:cli && npm run build:lib",
+    "start:observio": "cd observio-sample-agent && npm install --legacy-peer-deps --silent && npm run start:ag-ui",
+    "dev:all": "npm run dev:server",
     "demo": "npm run build:all && node cli/dist/index.js",
     "prepublishOnly": "npm run build:all"
   },
   "dependencies": {
     "@ag-ui/core": "^0.0.41",
+    "@assistant-ui/react": "^0.14.0",
     "@aws-sdk/client-bedrock": "^3.1000.0",
+    "@aws-sdk/client-bedrock-agent": "^3.1038.0",
+    "@aws-sdk/client-bedrock-agent-runtime": "^3.1038.0",
     "@aws-sdk/client-bedrock-runtime": "^3.1000.0",
     "@aws-sdk/credential-providers": "^3.1000.0",
     "@opensearch-project/opensearch": "^3.5.1",
     "@opentelemetry/api": "^1.9.1",
-    "@opentelemetry/exporter-trace-otlp-http": "^0.214.0",
+    "@opentelemetry/exporter-trace-otlp-http": "^0.217.0",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.216.0",
     "@opentelemetry/resources": "^2.6.1",
     "@opentelemetry/sdk-trace-node": "^2.6.1",
     "@opentelemetry/semantic-conventions": "^1.38.0",
@@ -94,6 +110,7 @@
     "@radix-ui/react-tabs": "^1.1.13",
     "@radix-ui/react-tooltip": "^1.2.8",
     "@xyflow/react": "^12.0.0",
+    "chai": "^5.3.3",
     "chalk": "^5.3.0",
     "class-variance-authority": "^0.7.1",
     "cli-table3": "^0.6.5",
@@ -105,6 +122,7 @@
     "echarts": "^6.0.0",
     "execa": "^9.5.2",
     "express": "^5.1.0",
+    "fast-glob": "^3.3.3",
     "inquirer": "^12.4.2",
     "js-yaml": "^4.1.1",
     "lucide-react": "^0.554.0",
@@ -115,16 +133,19 @@
     "react-is": "^19.2.4",
     "react-markdown": "^10.1.0",
     "react-resizable-panels": "^3.0.6",
-    "react-router-dom": "^7.12.0",
+    "react-router-dom": "^7.17.0",
     "recharts": "^3.4.1",
     "remark-gfm": "^4.0.1",
     "tailwind-merge": "^3.4.0",
     "tailwindcss-animate": "^1.0.7",
+    "typebox": "^1.1.38",
+    "typescript": "^5.3.3",
     "uuid": "^14.0.0",
     "yaml": "^2.8.2",
     "zod": "^3.24.0"
   },
   "optionalDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.80.2",
     "puppeteer": "^24.37.4"
   },
   "devDependencies": {
@@ -132,6 +153,7 @@
     "@tailwindcss/typography": "^0.5.19",
     "@testing-library/dom": "^10.4.1",
     "@testing-library/react": "^16.3.2",
+    "@types/chai": "^5.2.3",
     "@types/cors": "^2.8.19",
     "@types/dagre": "^0.7.52",
     "@types/express": "^4.17.21",
@@ -144,6 +166,7 @@
     "@types/uuid": "^11.0.0",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.16",
+    "chai4": "npm:chai@^4.5.0",
     "esbuild": "^0.27.2",
     "fast-check": "^4.7.0",
     "husky": "^9.1.7",
@@ -158,16 +181,32 @@
     "ts-node": "^10.9.2",
     "tsc-alias": "^1.8.16",
     "tsx": "^4.19.0",
-    "typescript": "^5.3.3",
     "vite": "^7.3.1",
     "vite-plugin-istanbul": "^8.0.0"
   },
   "overrides": {
     "minimatch": "^10.2.4",
+    "test-exclude": "8.0.0",
     "fast-xml-parser": ">=5.7.2",
+    "fast-xml-builder": ">=1.2.0",
+    "basic-ftp": ">=5.3.1",
+    "lodash": ">=4.18.0",
+    "path-to-regexp": ">=8.4.0",
+    "picomatch": ">=4.0.4",
     "uuid": "$uuid",
+    "protobufjs": ">=8.5.1",
+    "undici": ">=8.5.0",
+    "@google/genai": {
+      "protobufjs": ">=7.6.3"
+    },
     "@anthropic-ai/claude-agent-sdk": {
       "zod": "$zod"
-    }
+    },
+    "hono": ">=4.12.25",
+    "fast-uri": ">=3.1.2",
+    "ip-address": ">=10.1.1",
+    "ws": ">=8.21.0",
+    "@babel/runtime": ">=7.26.10",
+    "qs": ">=6.15.2"
   }
 }

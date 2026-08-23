@@ -210,6 +210,7 @@ export async function saveReportWithClient(
     status: report.status,
     passFailStatus: report.passFailStatus,
     traceId: report.runId,
+    sessionId: report.sessionId,
     tags: [],
     actualOutcomes: [],
     llmJudgeReasoning: report.llmJudgeReasoning,
@@ -218,6 +219,15 @@ export async function saveReportWithClient(
     rawEvents: report.rawEvents || [], // Ensure empty array if null/undefined
     logs: report.logs || report.openSearchLogs,
     improvementStrategies: report.improvementStrategies,
+    // Judge audit trail: which model/evaluator judged this report. Set by the
+    // runner from the run-level cx input; without persisting them the
+    // run-detail UI can't show "agent: <m1> judge: <m2>" and the trace-mode
+    // polled judge loses its inputs (same fields saveReportWithModule keeps).
+    judgeModelId: report.judgeModelId,
+    evaluatorId: report.evaluatorId,
+    // SDK matcher verdicts: persist alongside the report so the inspect
+    // page can render the per-matcher breakdown.
+    ...(report.matcherResults !== undefined ? { matcherResults: report.matcherResults } : {}),
   };
 
   // Add trace-mode fields if present
@@ -420,7 +430,7 @@ export async function updateBenchmarkRunStatsForReport(
 async function computeStatsForRunWithClient(
   client: Client,
   run: any
-): Promise<{ passed: number; failed: number; pending: number; total: number }> {
+): Promise<{ passed: number; failed: number; pending: number; errored: number; total: number }> {
   // Collect report IDs from run results
   const reportIds = Object.values(run.results || {})
     .map((r: any) => r.reportId)
@@ -429,6 +439,7 @@ async function computeStatsForRunWithClient(
   let passed = 0;
   let failed = 0;
   let pending = 0;
+  let errored = 0;
   const total = Object.keys(run.results || {}).length;
 
   // Fetch reports to get passFailStatus
@@ -476,6 +487,12 @@ async function computeStatsForRunWithClient(
             return;
           }
 
+          // Evaluator could not produce a verdict (issue #242).
+          if (report.metricsStatus === 'error') {
+            errored++;
+            return;
+          }
+
           if (report.passFailStatus === 'passed') {
             passed++;
           } else {
@@ -504,5 +521,5 @@ async function computeStatsForRunWithClient(
     pending = total;
   }
 
-  return { passed, failed, pending, total };
+  return { passed, failed, pending, errored, total };
 }

@@ -9,6 +9,7 @@ import {
   calculateTimeRange,
   getSpanColor,
   flattenVisibleSpans,
+  getInitialExpandedSpans,
   fetchTraces,
   fetchTraceById,
   fetchTracesByRunIds,
@@ -176,24 +177,24 @@ describe('Traces Service Index', () => {
       expect(getSpanColor(span)).toBe('#ef4444');
     });
 
-    it('should return indigo for agent run spans', () => {
+    it('should return indigo for agent spans', () => {
       expect(getSpanColor(createSpan({ name: 'agent.run' }))).toBe('#6366f1');
-      expect(getSpanColor(createSpan({ name: 'run-operation' }))).toBe('#6366f1');
+      expect(getSpanColor(createSpan({ name: 'invoke_agent' }))).toBe('#6366f1');
     });
 
-    it('should return purple for LLM/bedrock spans', () => {
+    it('should return purple for LLM spans', () => {
       expect(getSpanColor(createSpan({ name: 'bedrock-invoke' }))).toBe('#a855f7');
       expect(getSpanColor(createSpan({ name: 'llm-call' }))).toBe('#a855f7');
       expect(getSpanColor(createSpan({ name: 'converse-api' }))).toBe('#a855f7');
     });
 
     it('should return amber for tool spans', () => {
-      expect(getSpanColor(createSpan({ name: 'tool-execution' }))).toBe('#f59e0b');
+      expect(getSpanColor(createSpan({ name: 'executetool-search' }))).toBe('#f59e0b');
+      expect(getSpanColor(createSpan({ name: 'tool.execute' }))).toBe('#f59e0b');
     });
 
-    it('should return blue for node/process spans', () => {
-      expect(getSpanColor(createSpan({ name: 'node-processing' }))).toBe('#3b82f6');
-      expect(getSpanColor(createSpan({ name: 'process-step' }))).toBe('#3b82f6');
+    it('should return emerald for eval spans', () => {
+      expect(getSpanColor(createSpan({ name: 'test_case' }))).toBe('#10b981');
     });
 
     it('should return gray for default spans', () => {
@@ -254,6 +255,40 @@ describe('Traces Service Index', () => {
       const result = flattenVisibleSpans(spans, new Set());
 
       expect(result[0].hasChildren).toBe(false);
+    });
+  });
+
+  describe('getInitialExpandedSpans', () => {
+    it('expands roots but not children when no errors', () => {
+      const child = createSpan({ spanId: 'child', parentSpanId: 'root' });
+      const root = createSpan({ spanId: 'root', children: [child] });
+      expect(getInitialExpandedSpans([root])).toEqual(new Set(['root']));
+    });
+
+    it('expands every ancestor of an ERROR span so it is visible on load', () => {
+      const errored = createSpan({ spanId: 'err', parentSpanId: 'mid', status: 'ERROR' });
+      const mid = createSpan({ spanId: 'mid', parentSpanId: 'root', children: [errored] });
+      const root = createSpan({ spanId: 'root', children: [mid] });
+
+      const result = getInitialExpandedSpans([root]);
+
+      // Every ancestor of the ERROR span must be expanded so the red span is
+      // visible in the tree/timeline on initial load.
+      expect(result.has('root')).toBe(true);
+      expect(result.has('mid')).toBe(true);
+    });
+
+    it('leaves unrelated branches collapsed', () => {
+      const errChild = createSpan({ spanId: 'err', parentSpanId: 'a', status: 'ERROR' });
+      const okChild = createSpan({ spanId: 'ok', parentSpanId: 'b' });
+      const a = createSpan({ spanId: 'a', parentSpanId: 'root', children: [errChild] });
+      const b = createSpan({ spanId: 'b', parentSpanId: 'root', children: [okChild] });
+      const root = createSpan({ spanId: 'root', children: [a, b] });
+
+      const result = getInitialExpandedSpans([root]);
+
+      expect(result.has('a')).toBe(true);   // path to error
+      expect(result.has('b')).toBe(false);  // unrelated branch stays collapsed
     });
   });
 

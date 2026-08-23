@@ -17,7 +17,9 @@ import chalk from 'chalk';
 import ora from 'ora';
 import Table from 'cli-table3';
 import { loadConfig, type ResolvedConfig } from '@/lib/config/index.js';
+import { resolveAgentModel } from '@/lib/resolveAgentModel.js';
 import { ensureServer, createServerCleanup } from '@/cli/utils/serverLifecycle.js';
+import { applyAgentPathOption } from '@/cli/utils/agentPathOption.js';
 import { ApiClient, type EvaluationResult, type EvaluationProgressEvent } from '@/cli/utils/apiClient.js';
 import type { AgentConfig, TrajectoryStep } from '@/types/index.js';
 import { formatJson, formatMarkdownTable, parseOutputFormat, OUTPUT_FORMAT_DESCRIPTION, type OutputFormat } from '@/cli/utils/formatOutput.js';
@@ -28,6 +30,14 @@ import { connectorRegistry } from '@/services/connectors/server.js';
 interface RunOptions {
   agent: string[];
   model?: string;
+  evaluator?: string;
+  /**
+   * Optional judge model id, distinct from `model` (the agent's LLM).
+   * Wired via `--judge-model <id>`. Forwarded as `judgeModelId` on the
+   * `/api/evaluate` request body. Falls back server-side to the
+   * evaluator's `inferenceConfig.modelId`, then `BEDROCK_MODEL_ID` env.
+   */
+  judgeModel?: string;
   output: string;
   verbose?: boolean;
 }
@@ -94,7 +104,9 @@ async function runForAgent(
   testCaseId: string,
   agent: AgentConfig,
   modelId: string,
-  verbose: boolean
+  verbose: boolean,
+  evaluatorId?: string,
+  judgeModelId?: string
 ): Promise<EvaluationResult | null> {
   const spinner = ora(`Running ${agent.name}...`).start();
 
@@ -108,14 +120,28 @@ async function runForAgent(
           spinner.text = `${agent.name}: Step ${event.stepIndex + 1} (${event.step.type})`;
         } else if (event.type === 'started') {
           spinner.text = `${agent.name}: Started evaluation...`;
+        } else if (event.type === 'awaiting-judge' || event.type === 'polling') {
+          // Trace-mode agents: judge runs in the background after traces land
+          spinner.text = `${agent.name}: Waiting for traces / judge verdict...`;
         }
-      }
+      },
+      evaluatorId,
+      judgeModelId
     );
 
-    if (report.status === 'completed' && report.passFailStatus === 'passed') {
+    // Trace-mode reports can time out still awaiting the judge — that state
+    // is neither PASSED nor FAILED (issue #333): show it as pending.
+    const judgePending = report.metricsStatus === 'pending' || report.metricsStatus === 'calculating';
+    if (report.status === 'completed' && judgePending) {
+      spinner.warn(`${agent.name}: ${chalk.yellow('PENDING')} (judge has not run yet — check the report later)`);
+    } else if (report.status === 'completed' && report.passFailStatus === 'passed') {
       spinner.succeed(`${agent.name}: ${chalk.green('PASSED')}`);
+    } else if (report.status === 'completed' && report.passFailStatus === 'failed') {
+      spinner.fail(`${agent.name}: ${chalk.red('FAILED')}`);
     } else if (report.status === 'completed') {
-      spinner.succeed(`${agent.name}: ${chalk.red('FAILED')}`);
+      // Completed but no verdict recorded (e.g. judge errored) — don't
+      // misreport as FAILED.
+      spinner.warn(`${agent.name}: ${chalk.yellow('NO VERDICT')}`);
     } else {
       spinner.fail(`${agent.name}: ${chalk.yellow(report.status)}`);
     }
@@ -135,7 +161,9 @@ function buildResultRows(results: Array<{ agent: AgentConfig; report: Evaluation
     if (!r.report) {
       return [r.agent.name, 'ERROR', '-', '-', '-'];
     }
-    const status = r.report.passFailStatus === 'passed' ? 'PASSED'
+    const judgePending = r.report.metricsStatus === 'pending' || r.report.metricsStatus === 'calculating';
+    const status = judgePending ? 'PENDING'
+      : r.report.passFailStatus === 'passed' ? 'PASSED'
       : r.report.passFailStatus === 'failed' ? 'FAILED'
       : r.report.status;
     return [
@@ -171,11 +199,14 @@ function displayResults(results: Array<{ agent: AgentConfig; report: EvaluationR
       table.push([r.agent.name, chalk.red('ERROR'), '-', '-', '-']);
       continue;
     }
-    const statusStr = r.report.passFailStatus === 'passed'
-      ? chalk.green('PASSED')
-      : r.report.passFailStatus === 'failed'
-        ? chalk.red('FAILED')
-        : chalk.yellow(r.report.status);
+    const judgePending = r.report.metricsStatus === 'pending' || r.report.metricsStatus === 'calculating';
+    const statusStr = judgePending
+      ? chalk.yellow('PENDING')
+      : r.report.passFailStatus === 'passed'
+        ? chalk.green('PASSED')
+        : r.report.passFailStatus === 'failed'
+          ? chalk.red('FAILED')
+          : chalk.yellow(r.report.status);
     table.push([
       r.agent.name,
       statusStr,
@@ -197,11 +228,14 @@ export function createRunCommand(): Command {
     .description('Run a test case against agents')
     .requiredOption('-t, --test-case <id>', 'Test case ID or name')
     .option('-a, --agent <key>', 'Agent key (can be specified multiple times)', (val, arr: string[]) => [...arr, val], [])
-    .option('-m, --model <id>', 'Model ID (uses agent default if not specified)')
+    .option('-e, --evaluator <id>', 'Evaluator ID (uses RCA default if not specified)')
+    .option('--judge-model <id>', "Judge LLM model id (the agent's own model is owned by its config, not a flag). Falls back to evaluator's inferenceConfig.modelId, then BEDROCK_MODEL_ID env. Ignored by agentic-provider judges (pi/agent/agentic/claude-code) which pick their own model.")
     .option('-o, --output <format>', OUTPUT_FORMAT_DESCRIPTION, 'table')
     .option('-v, --verbose', 'Show detailed trajectory output')
-    .action(async (options: RunOptions & { testCase: string }) => {
+    .option('--agent-path <path>', 'Path to the agent repository to use as judge grounding context (or set AH_AGENT_PATH)')
+    .action(async (options: RunOptions & { testCase: string; agentPath?: string }) => {
       console.log(chalk.bold('\nAgent Health - Test Case Runner\n'));
+      applyAgentPathOption(options);
 
       // Load config (registers custom connectors)
       const config = await loadConfig();
@@ -257,7 +291,10 @@ export function createRunCommand(): Command {
         const results: Array<{ agent: AgentConfig; report: EvaluationResult | null }> = [];
 
         for (const agent of agents) {
-          const modelId = options.model || getDefaultModel(config);
+          // The agent's model is owned by its agent-health.config.ts
+          // connectorConfig; there is no --model flag. getDefaultModel is a
+          // last-resort fallback for agents that don't configure one.
+          const modelId = resolveAgentModel(agent, getDefaultModel(config));
 
           // Validate agent requirements before running
           const validationError = await validateAgentRequirements(agent);
@@ -268,7 +305,7 @@ export function createRunCommand(): Command {
           }
 
           try {
-            const report = await runForAgent(client, testCase.id, agent, modelId, options.verbose || false);
+            const report = await runForAgent(client, testCase.id, agent, modelId, options.verbose || false, options.evaluator, options.judgeModel);
             results.push({ agent, report });
           } catch (error) {
             const errorMsg = error instanceof Error ? error.message : String(error);

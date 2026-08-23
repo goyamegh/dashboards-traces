@@ -9,6 +9,7 @@ import {
   BenchmarkProgress,
   AgentConfig,
   TestCase,
+  TestCaseRun,
   EvaluationReport,
   RunConfigInput,
   RunPerformanceMetrics,
@@ -22,11 +23,35 @@ import {
 } from '@/server/services/storage';
 import type { Client } from '@opensearch-project/opensearch';
 import type { IStorageModule } from '@/server/adapters/types';
-import { runEvaluationWithConnector, callBedrockJudge } from './evaluation';
+import { runEvaluationWithConnector, callBedrockJudge, invokeAgent, computeSdkMatcherSessionMetrics } from './evaluation';
+import { buildEvaluatorErrorPatch } from './evaluation/evaluatorError';
 import { connectorRegistry } from '@/services/connectors/server';
+import { readEnv } from '@/lib/envCompat';
+import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
+import {
+  runInSession,
+  recordVerdict,
+  emptyTracesAccessor,
+  unavailableTracesAccessor,
+  buildTracesAccessor,
+  buildJudgeMatcherEntry,
+  formatExpectedOutcomesAsClaim,
+} from '@/lib/matchers/index';
+import type { TracesAccessor } from '@/lib/matchers/index';
+import type { EvalResult, TrajectoryAccessor, TestFixtures, RegisteredHook } from '@/lib/testCases/types';
+import { createAgentFixture } from '@/lib/testCases/agentFixture';
+import type { AgentRunOptions } from '@/lib/testCases/agentFixture';
+import { evaluate as evaluateFixture } from '@/lib/testCases/evaluators';
+import { judge as judgeFn, bindJudge, clearJudgeCache } from '@/lib/testCases/judge';
+import { expect as ahExpect } from '@/lib/matchers/expect';
+import type { TrajectoryStep } from '@/types';
+import { createHookOrchestrator, type TestDescriptor } from './hookOrchestrator';
+import { v4 as uuidv4 } from 'uuid';
 import { loadConfigSync } from '@/lib/config/index';
+import { getBackendUrl } from '@/lib/portConfig';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { tracePollingManager } from './traces/tracePoller';
+import { fetchSpansForRun, type TraceWindowAgent } from './traces/fetchSpansForRun';
 import { getCustomAgents } from '@/server/services/customAgentStore';
 import { debug } from '@/lib/debug';
 import { RunResultStatus } from '@/types';
@@ -38,7 +63,8 @@ import {
   finalizeTestSuiteRunSpan,
   emitDeferredTestCaseSpan,
 } from '@/lib/telemetry';
-import { SpanStatusCode } from '@opentelemetry/api';
+import { SpanStatusCode, context, trace } from '@opentelemetry/api';
+import { ATTR_AGENT_HEALTH_AGENT_RUN_ID } from '@/lib/telemetry/constants';
 
 /**
  * Safely load config with fallback to defaults.
@@ -93,6 +119,22 @@ export interface ExecuteRunOptions {
   storageModule?: IStorageModule;
   /** Callback invoked after each test case completes (for persisting intermediate progress) */
   onTestCaseComplete?: OnTestCaseCompleteCallback;
+  /**
+   * Per-test-case deterministic evaluate functions keyed by test case ID.
+   * Set when the SDK's code-import path resolves a .eval.js/.eval.ts file
+   * into runnable test bodies. When the runner sees a test case in this
+   * map it skips the LLM-judge path and runs the body inside a matcher
+   * session, recording per-matcher verdicts on the report.
+   */
+  evaluateFnMap?: Map<string, (fixtures: any) => Promise<void> | void>;
+  /**
+   * SDK lifecycle hooks (`beforeAll`/`afterAll`/`beforeEach`/`afterEach`)
+   * registered by code-imported eval files, keyed by absolute file path.
+   * Empty / undefined => no-op orchestrator (existing tests unaffected).
+   */
+  hooksByFile?: Map<string, RegisteredHook[]>;
+  /** Per-test-case scope info (sourceFile + describePath) for hook lookup. */
+  testHookScopes?: Map<string, { sourceFile?: string; describePath?: string }>;
 }
 
 /**
@@ -165,7 +207,9 @@ export async function executeRun(
   options: ExecuteRunOptions
 ): Promise<BenchmarkRun> {
   const totalTestCases = benchmark.testCaseIds.length;
-  const { cancellationToken, client, storageModule, onTestCaseComplete } = options;
+  const { cancellationToken, client, storageModule, onTestCaseComplete, evaluateFnMap, hooksByFile, testHookScopes } = options;
+  // Fresh judge verdict cache per run (see evaluationRunner for rationale).
+  clearJudgeCache();
   const concurrency = run.concurrency ?? 1;
   const runStartTime = Date.now();
 
@@ -193,6 +237,36 @@ export async function executeRun(
   }
   const testCaseMap = new Map(allTestCases.map((tc: any) => [tc.id, tc]));
 
+  // Build the hook orchestrator once per run. Returns a no-op when no
+  // hooks were registered (the common case for existing tests). The
+  // factory passed here is a fresh-skeleton builder — the runner
+  // overwrites `result` with the real EvalResult inside the matcher
+  // session block, and the orchestrator stamps `testInfo`/`provisioned`.
+  const benchmarkTestCases = benchmark.testCaseIds
+    .map(id => testCaseMap.get(id))
+    .filter((tc): tc is TestCase => !!tc);
+  const hookDescriptors: TestDescriptor[] = benchmarkTestCases.map(tc => {
+    const scope = testHookScopes?.get(tc.id);
+    return {
+      testCaseId: tc.id,
+      name: tc.name,
+      sourceFile: scope?.sourceFile,
+      describePath: scope?.describePath,
+    };
+  });
+  const hookOrchestrator = createHookOrchestrator(
+    hooksByFile,
+    hookDescriptors,
+    () => ({
+      result: {} as any,
+      judge: judgeFn,
+      traces: emptyTracesAccessor(),
+      expect: ahExpect,
+      testInfo: { name: '' },
+      provisioned: {},
+    }),
+  );
+
   // Mutable counters for tracking progress across concurrent tasks.
   // SAFETY: JavaScript is single-threaded — the ++ operator and variable reads
   // are atomic within each synchronous block (between await points). With
@@ -204,6 +278,11 @@ export async function executeRun(
   // The final completedCount always equals the number of completed tasks.
   let completedCount = 0;
   let startedCount = 0;
+
+  // Track pending trace polling promises so we can await them before returning.
+  // This ensures trace-mode runs (useTraces: true) have their judge evaluation
+  // complete before the benchmark reports results (fixes #184).
+  const pendingTracePolls: Promise<void>[] = [];
 
   // Shared throttle signal: when any task hits a rate-limit error,
   // subsequent task starts wait until this timestamp expires.
@@ -258,8 +337,19 @@ export async function executeRun(
         debug('BenchmarkRunner', `[${testCaseId}] Starting evaluation (${completedCount}/${totalTestCases} completed)`);
         const testCaseStartTime = Date.now();
 
-        // OTel case span will be started after evaluation (when we know the agentRunId)
+        // Start the OTel `test_case` span BEFORE running the agent so the eval
+        // span is the active OTel context when the connector spawns/calls the
+        // agent. Connectors with `traceContext.propagateEnv/Header` inject
+        // TRACEPARENT, making the agent's root span a child of this eval span
+        // (single trace tree). agentRunId is unknown at this point — set as
+        // attribute later when the report comes back.
         let caseSpan: import('@opentelemetry/api').Span | undefined;
+        let caseSpanContext: import('@opentelemetry/api').Context | undefined;
+        if (suiteContext) {
+          const r = startTestCaseSpan(suiteContext, testCase, benchmark, run);
+          caseSpan = r?.span;
+          caseSpanContext = r?.context;
+        }
 
         // Set status to running
         run.results[testCaseId] = { reportId: '', status: 'running' };
@@ -269,14 +359,256 @@ export async function executeRun(
           const agentConfig = buildAgentConfigForRun(run);
           const bedrockModelId = getBedrockModelId(run.modelId);
 
-          // Run the evaluation using connector
-          const report = await runEvaluationWithConnector(
-            agentConfig,
-            bedrockModelId,
-            testCase,
-            () => {}, // No debug callback needed
-            { registry: connectorRegistry }
-          );
+          // SDK code-import: when this test case has a registered
+          // evaluate function we either skip agent invocation entirely
+          // (no prompt) or invoke the agent and run the body inside a
+          // matcher session afterwards. Mirrors evaluationRunner.ts.
+          const hasDeterministicEval = evaluateFnMap?.has(testCaseId) ?? false;
+          const hasPrompt = !!(testCase.initialPrompt && testCase.initialPrompt.trim().length > 0);
+
+          let report;
+          if (hasDeterministicEval) {
+            // CONTROL INVERSION (RFC 004 §4.1, #256): the body drives the agent
+            // via the `agent` fixture instead of the framework invoking eagerly.
+            // Mirrors evaluationRunner.ts. The caseSpanContext OTel wrap moves
+            // inside the invoke callback so the connector still sees the eval
+            // span as active and propagates W3C trace context to the agent.
+            const evalFn = evaluateFnMap!.get(testCaseId)!;
+            report = synthesizeEmptyReport(testCase, agentConfig.key, bedrockModelId);
+
+            // Traces are only meaningful after the agent runs. This view
+            // forwards to the accessor loaded inside the invoke callback;
+            // reading before agent.run() fails loudly (#230 semantics).
+            let loadedTraces: TracesAccessor = unavailableTracesAccessor(
+              'traces are only available after agent.run() has been called'
+            );
+            const tracesView: TracesAccessor = {
+              get totalTokens() { return loadedTraces.totalTokens; },
+              get totalCost() { return loadedTraces.totalCost; },
+              get toolCalls() { return loadedTraces.toolCalls; },
+              get spans() { return loadedTraces.spans; },
+              spanDuration: (name: string) => loadedTraces.spanDuration(name),
+            };
+
+            // Captured result from agent.run(), reflected into fixtures.result
+            // before afterEach/afterAll so hooks that read `result` see the
+            // real run (not the empty placeholder). See #248.
+            let capturedResult: EvalResult | undefined;
+            const invoke = async (prompt: string, opts?: AgentRunOptions): Promise<EvalResult> => {
+              const invocationTestCase: TestCase = {
+                ...testCase,
+                initialPrompt: prompt,
+                ...(opts?.context ? { context: opts.context as any } : {}),
+              };
+              const doInvoke = () => invokeAgent(agentConfig, bedrockModelId, invocationTestCase, {
+                registry: connectorRegistry,
+                ...(opts?.env ? { env: opts.env } : {}),
+              });
+              const inv = caseSpanContext
+                ? await context.with(caseSpanContext, doInvoke)
+                : await doInvoke();
+              const agentOutput = inv.trajectory
+                .filter((s: any) => s.type === 'response' || s.type === 'assistant')
+                .map((s: any) => s.content)
+                .join('\n');
+              const evalResult = buildEvalResult({
+                trajectory: inv.trajectory,
+                agentOutput,
+                rawEvents: inv.rawEvents,
+                runId: inv.runId ?? undefined,
+                durationMs: inv.agentDurationMs,
+              });
+              (report as any).trajectory = inv.trajectory;
+              (report as any).rawEvents = inv.rawEvents;
+              (report as any).runId = inv.runId ?? undefined;
+              (report as any).sessionId = inv.metadata?.sessionId ?? undefined;
+              (report as any).performanceMetrics = {
+                durationMs: inv.agentDurationMs,
+                agentDurationMs: inv.agentDurationMs,
+              };
+              (report as any).connectorProtocol = inv.connector.type;
+              // Strategy-C correlation: many agents (Claude Code, any subprocess
+              // agent) emit OTel under their own traceId + service.name and never
+              // tag our connector runId. Pass the connector's service.name + the
+              // run's wall-clock window so trace correlation (and therefore the
+              // judge + `traces` fixture) finds those spans, not just runId-tagged ones.
+              const traceServiceName = (inv.connector as any)?.traceContext?.serviceName as
+                | string
+                | undefined;
+              const traceWindow: TraceWindowAgent[] | undefined = traceServiceName
+                ? [{
+                    serviceName: traceServiceName,
+                    startedAt: Date.now() - (inv.agentDurationMs || 0) - 60_000,
+                    endedAt: Date.now() + 60_000,
+                  }]
+                : undefined;
+              loadedTraces = await loadTracesAccessor(agentConfig, inv.runId ?? undefined, traceWindow);
+              // Expose traces on the result too (RFC 004 §4.6).
+              (evalResult as any).traces = loadedTraces;
+              // Parity with the classic trace-judge path: forward the
+              // Strategy-C correlation window so an inline `judge()` reaches
+              // the agent (trace) judge with `agents` hints (#264).
+              (evalResult as any).judgeAgents = traceWindow;
+              capturedResult = evalResult;
+              return evalResult;
+            };
+
+            const agentFixture = createAgentFixture(invoke, {
+              defaultPrompt: hasPrompt ? testCase.initialPrompt : undefined,
+            });
+            const emptyResult = buildEvalResult({
+              trajectory: [], agentOutput: '', rawEvents: [], durationMs: 0,
+            });
+
+            const scope = testHookScopes?.get(testCaseId);
+            const desc: TestDescriptor = {
+              testCaseId,
+              name: testCase.name,
+              sourceFile: scope?.sourceFile,
+              describePath: scope?.describePath,
+            };
+            // Run the body inside a per-test matcher session (ALS-scoped,
+            // concurrency-safe — RFC 004). Hook outcomes are recorded into
+            // the same session so they show up next to body assertions.
+            // The judge fixture is pre-bound to the run-level evaluator +
+            // judge model (#257); per-call evaluatorId still wins.
+            let fixtures: TestFixtures | undefined;
+            const { results: matcherResults, error: evalError } = await runInSession(async () => {
+              const before = await hookOrchestrator.beforeTest(desc);
+              for (const r of before.matcherResults) recordVerdict(r);
+              fixtures = {
+                ...before.fixtures,
+                result: emptyResult,
+                agent: agentFixture,
+                traces: tracesView,
+                // See the matching comment in services/evaluationRunner.ts.
+                // Customer-supplied `run.judgeModelId` becomes the bound
+                // judge model; the agent's `bedrockModelId` no longer
+                // leaks into the judge call. serverUrl is pinned to this
+                // server's actual bound URL so the SDK judge never defaults
+                // to 4001 / a foreign instance.
+                judge: bindJudge({ evaluatorId: run.evaluatorId, model: run.judgeModelId, serverUrl: getBackendUrl() }),
+                evaluate: evaluateFixture,
+              };
+              try {
+                if (!before.aborted) {
+                  await evalFn(Object.assign(emptyResult, { ...fixtures, result: emptyResult }));
+                }
+              } finally {
+                if (fixtures && capturedResult) {
+                  fixtures.result = capturedResult;
+                }
+                const after = await hookOrchestrator.afterTest(desc, fixtures);
+                for (const r of after) recordVerdict(r);
+              }
+            });
+
+            // observe-role signals never gate; errored signals are bucketed
+            // separately as `errored` (excluded from pass-rate), not `failed`.
+            const erroredMatchers = matcherResults.filter(m => m.errored);
+            const anyErrored = erroredMatchers.length > 0;
+            const anyGateFailed = matcherResults.some(
+              m => !m.pass && m.role !== 'observe' && !m.errored,
+            );
+            // #335: an *agent* failure (subprocess timeout / crash — `agent.run()`
+            // rejected so `capturedResult` was never set) must surface as a clearly
+            // labelled `errored` run, not a silent `failed` with an empty card.
+            const agentFailed = evalError !== undefined && capturedResult === undefined;
+            const failed = anyGateFailed || evalError !== undefined;
+            (report as any).evaluationType = 'deterministic';
+            (report as any).matcherResults = matcherResults;
+            if (evalError !== undefined) {
+              (report as any).assertionError =
+                (evalError as any)?.message ?? String(evalError);
+            }
+
+            if (anyErrored) {
+              // At least one judge/evaluator could not run. Bucket as `errored`
+              // via the canonical #247 patch instead of a misleading score-0
+              // `failed` — errored runs are excluded from pass-rate.
+              Object.assign(
+                report,
+                buildEvaluatorErrorPatch('judge_failed', erroredMatchers[0].errorMessage ?? 'judge errored'),
+              );
+              (report as any).skipJudge = true;
+            } else if (agentFailed) {
+              // #335: agent never produced a trajectory (timeout/crash) — surface
+              // the underlying message instead of a silent empty `failed`.
+              Object.assign(
+                report,
+                buildEvaluatorErrorPatch('agent_failed', (evalError as any)?.message ?? String(evalError)),
+              );
+              (report as any).skipJudge = true;
+            } else {
+              (report as any).passFailStatus = failed ? 'failed' : 'passed';
+              // Option B BC shim: legacy field empty for SDK runs;
+              // canonical judge data lives in `matcherResults`.
+              (report as any).llmJudgeReasoning = '';
+              // Report-level metrics: pass-rate aggregate (and dimensional
+              // pass-through when matchers carry per-claim `judgeMetrics`).
+              // Pre-fix this was hardcoded {0,0,0,0}/{100,100,100,100}, which
+              // erased partial credit AND silently dropped any custom-evaluator
+              // dimensions a multi-claim run produced. See
+              // computeSdkMatcherSessionMetrics() in services/evaluation/index.ts.
+              (report as any).metrics = computeSdkMatcherSessionMetrics(
+                matcherResults,
+                { hasEvalError: evalError !== undefined },
+              );
+              // Mark the report as final so trace-mode polling below skips
+              // the Bedrock judge fallback (which would error with empty
+              // expectedOutcomes for SDK-loaded test cases).
+              (report as any).metricsStatus = 'completed';
+              (report as any).skipJudge = true;
+            }
+
+            // #334: attach the run's OTel traceId + spans to the report so the
+            // run-report Traces tab renders the tree for code-eval runs (the
+            // classic path does this via waitForTracesAndJudge; the deterministic
+            // path skipped it). Reuse the spans the pre-poll already fetched from
+            // OpenSearch. Guarded: reading an `unavailable` accessor throws.
+            try {
+              const fetchedSpans = (capturedResult as any)?.traces?.spans;
+              if (Array.isArray(fetchedSpans) && fetchedSpans.length > 0) {
+                (report as any).spans = fetchedSpans;
+                if (!(report as any).traceId) {
+                  (report as any).traceId = fetchedSpans[0]?.traceId;
+                }
+              }
+            } catch { /* traces fixture unavailable — leave traceId/spans unset */ }
+          } else {
+            // CLASSIC PATH: no code body. Eagerly invoke + Bedrock judge.
+            // Wrap in context.with(caseSpanContext) so the connector sees the
+            // eval span as active and propagates W3C trace context.
+            const runEval = () => runEvaluationWithConnector(
+              agentConfig,
+              bedrockModelId,
+              testCase,
+              () => {},
+              {
+                registry: connectorRegistry,
+                evaluatorId: run.evaluatorId,
+                skipJudge: false,
+                // Forward the run-level judge model so the judge call uses what
+                // the customer picked in the run config dialog / CLI / API — not
+                // the agent's own model. Without this the benchmark-execute path
+                // silently fell back to BEDROCK_MODEL_ID / the agent's modelId
+                // (→ mock judge for demo-modeled agents) while runSingleUseCase
+                // forwarded it correctly.
+                judgeModelId: run.judgeModelId,
+              }
+            );
+            report = caseSpanContext
+              ? await context.with(caseSpanContext, runEval)
+              : await runEval();
+          }
+
+          // Stamp run-level judge inputs onto the report BEFORE saving — the
+          // connector return path doesn't carry them, and both the persisted
+          // audit trail (report.judgeModelId) and the trace-mode polled judge
+          // (which reads report.judgeModelId / report.evaluatorId) depend on
+          // them. Mirrors the same stamp in runSingleUseCase.
+          (report as any).judgeModelId = (report as any).judgeModelId ?? run.judgeModelId;
+          (report as any).evaluatorId = (report as any).evaluatorId ?? run.evaluatorId;
 
           // Save the report to OpenSearch and get the actual stored ID
           const savedReport = await saveReportWithClient(client, report, {
@@ -288,21 +620,26 @@ export async function executeRun(
           updateTestCaseLastRunAt(client, testCaseId, new Date().toISOString())
             .catch(err => console.warn(`[BenchmarkRunner] Failed to update lastRunAt for ${testCaseId}:`, err.message));
 
-          // Start trace polling for trace-mode runs (metricsStatus: 'pending')
-          if (savedReport.metricsStatus === 'pending' && savedReport.runId) {
-            startTracePollingForReport(savedReport, testCase, client, benchmark, run);
+          // Start trace polling for trace-mode runs (metricsStatus: 'pending').
+          // Deterministic SDK runs already populated the report with their own
+          // verdict in the matcher session above, so skip this path.
+          if (!hasDeterministicEval && savedReport.metricsStatus === 'pending' && savedReport.runId) {
+            const pollPromise = startTracePollingForReport(savedReport, testCase, client, benchmark, run);
+            // Attach .catch to prevent unhandled rejection if cancelled/errored before allSettled
+            pendingTracePolls.push(pollPromise.catch(() => {}));
           }
 
-          // Start and finalize OTel case span (now that we know the agentRunId)
-          if (suiteContext) {
-            const caseSpanResult = startTestCaseSpan(
-              suiteContext, testCase, benchmark, run, savedReport.runId
-            );
-            caseSpan = caseSpanResult?.span;
-            if (caseSpan && savedReport.metricsStatus !== 'pending') {
+          // Finalize the eval test_case span. agentRunId is now known (it
+          // wasn't when we started the span before invoking the agent).
+          if (caseSpan) {
+            caseSpan.setAttribute(ATTR_AGENT_HEALTH_AGENT_RUN_ID, savedReport.runId || '');
+            if (savedReport.metricsStatus !== 'pending') {
               addEvaluationResultEvents(caseSpan, savedReport);
               finalizeTestCaseSpan(caseSpan, savedReport);
-            } else if (caseSpan) {
+            } else {
+              // Trace-mode: judge runs later when polled spans arrive. End span
+              // as-is so the trace tree is closed; the late-completion path at
+              // line ~832 emits a separate span with the final metrics.
               caseSpan.end();
             }
           }
@@ -366,6 +703,20 @@ export async function executeRun(
         currentTestCaseId: benchmark.testCaseIds[lastIndex],
         status: 'cancelled',
       });
+    }
+
+    // Wait for all pending trace polls to complete before reporting final results.
+    // This ensures trace-mode runs (useTraces: true) have their judge evaluation
+    // finish before the benchmark reports pass/fail stats (fixes #184).
+    if (pendingTracePolls.length > 0 && !cancellationToken?.isCancelled) {
+      console.log(`[BenchmarkRunner] Waiting for ${pendingTracePolls.length} trace-mode evaluations to complete...`);
+      const traceResults = await Promise.allSettled(pendingTracePolls);
+      const traceFailures = traceResults.filter(r => r.status === 'rejected');
+      if (traceFailures.length > 0) {
+        console.warn(`[BenchmarkRunner] ${traceFailures.length}/${pendingTracePolls.length} trace polling tasks failed`);
+      } else {
+        console.log(`[BenchmarkRunner] All ${pendingTracePolls.length} trace-mode evaluations completed`);
+      }
     }
 
     // Report final progress
@@ -463,15 +814,36 @@ async function saveReportWithModule(storage: IStorageModule, report: any): Promi
     testCaseId: report.testCaseId,
     agentId: report.agentKey || report.agentName,
     modelId: report.modelId || report.modelName,
+    // Persist the agent's runId (Strategy B trace correlation key). Without
+    // it the run-detail Traces tab can't scope to the run's eval span and
+    // a null runId even rejected the whole trace query. See #264.
+    runId: report.runId,
+    // Agent-emitted session id (Strategy D trace correlation, e.g. Claude Code).
+    sessionId: report.sessionId,
+    // Persist judgeModelId on the report so the run-detail UI can show
+    // "agent: <m1> judge: <m2>" and the audit trail is intact. Inherits
+    // from the run-level cx input (BenchmarkRun.judgeModelId).
+    judgeModelId: report.judgeModelId,
+    evaluatorId: report.evaluatorId,
     status: report.status,
     passFailStatus: report.passFailStatus,
-    traceId: report.runId,
+    // Real W3C OTel trace id when we have it (extracted from polled spans),
+    // else undefined. Pre-fix this was set to `report.runId` — i.e. the
+    // connector's subprocess id (`subprocess-<timestamp>`) was being
+    // mis-stamped as a 32-hex W3C traceId, which broke trace-tab
+    // correlation that prefers `traceId` over `runId`. The runner's
+    // `runId` field is preserved separately as `traceId: report.traceId`
+    // here only when a real OTel traceId is available. See #190 / #264.
+    traceId: report.traceId || (report.spans?.[0] as any)?.traceId,
     llmJudgeReasoning: report.llmJudgeReasoning,
     metrics: report.metrics,
     trajectory: report.trajectory,
     rawEvents: report.rawEvents || [],
     logs: report.logs || report.openSearchLogs,
     improvementStrategies: report.improvementStrategies,
+    // Same fix as the placeholder-update path: pass through the full
+    // judge sidecar (rawResponse, extraFields, judgeDebug, parsedMetrics).
+    llmJudgeResponse: report.llmJudgeResponse,
     metricsStatus: report.metricsStatus,
     traceFetchAttempts: report.traceFetchAttempts,
     lastTraceFetchAt: report.lastTraceFetchAt,
@@ -486,26 +858,123 @@ async function saveReportWithModule(storage: IStorageModule, report: any): Promi
  * Run a single use case with a single configuration (for quick testing).
  * Uses the storage adapter — works with both file and OpenSearch backends.
  */
+export interface RunSingleUseCaseOptions {
+  /** Whether to await trace polling completion before returning (default: true for CLI, false for UI) */
+  awaitTraces?: boolean;
+}
+
 export async function runSingleUseCase(
   run: BenchmarkRun,
   testCase: TestCase,
   storage: IStorageModule,
-  onStep?: (step: any) => void
+  onStep?: (step: any) => void,
+  evaluatorId?: string,
+  existingReportId?: string,
+  options?: RunSingleUseCaseOptions
 ): Promise<string> {
   const agentConfig = buildAgentConfigForRun(run);
   const bedrockModelId = getBedrockModelId(run.modelId);
   const startTime = new Date();
 
-  // Run the evaluation using connector
-  const report = await runEvaluationWithConnector(
+  // Start the OTel `test_case` span BEFORE running the agent so the eval span
+  // is the active OTel context when the connector spawns/calls the agent.
+  // Connectors with `traceContext.propagateEnv/Header` inject TRACEPARENT,
+  // making the agent's root span a child of this eval span (single trace tree).
+  const standaloneBenchmark = { name: `standalone:${agentConfig.name || agentConfig.key}` } as Benchmark;
+  const caseSpanResult = startTestCaseSpan(context.active(), testCase, standaloneBenchmark, run);
+  const caseSpan = caseSpanResult?.span;
+  const caseSpanContext = caseSpanResult?.context;
+
+  // Run the evaluation using connector, with the eval span as active context.
+  const runEval = () => runEvaluationWithConnector(
     agentConfig,
     bedrockModelId,
     testCase,
     onStep || (() => {}),
-    { registry: connectorRegistry }
+    {
+      registry: connectorRegistry,
+      evaluatorId,
+      // Forward the run-level judge model so the judge call uses what the
+      // customer picked in the run config dialog / CLI / API — not the
+      // agent's own model. See {@link RunEvaluationWithConnectorOptions.judgeModelId}.
+      judgeModelId: run.judgeModelId,
+    }
   );
+  const report = caseSpanContext
+    ? await context.with(caseSpanContext, runEval)
+    : await runEval();
 
-  const savedReport = await saveReportWithModule(storage, report);
+  // Stamp `judgeModelId` onto the report BEFORE saving so both code
+  // paths (placeholder-update and create) persist the run-level cx
+  // input. The connector return path doesn't carry it, but `run` does.
+  (report as any).judgeModelId = (report as any).judgeModelId ?? run.judgeModelId;
+  // Same fix for `evaluatorId`. The connector return path doesn't carry
+  // it either, so without this stamp the trace-mode polled judge (which
+  // reads `report.evaluatorId` to forward to /api/judge) silently falls
+  // back to the default RCA evaluator — the bug that surfaced when
+  // running the AES Oncall test case with `useTraces: true` + the
+  // agent (trace) judge.
+  (report as any).evaluatorId = (report as any).evaluatorId ?? run.evaluatorId;
+
+  // If a placeholder run was pre-created, update it instead of creating a new one.
+  // We use the storage-layer field names (traceId, etc.) to match `saveReportWithModule`
+  // for consistency — the IStorageModule operations accept Partial<TestCaseRun> nominally
+  // but the codebase convention is to pass the storage-shaped doc directly.
+  let savedReport: any;
+  if (existingReportId) {
+    const updates = {
+      status: report.status,
+      passFailStatus: report.passFailStatus,
+      // Persist the agent's runId on the placeholder-update path. The
+      // placeholder was created at run-start before the agent ran, so it
+      // had no runId; without re-stamping it here the doc keeps runId
+      // undefined. That broke the run-detail Traces tab: with no runId,
+      // its trace query degraded (and a `[null]` runIds clause even
+      // rejected the whole query). Strategy B correlation + the eval-span
+      // match both depend on this being present. See #264.
+      runId: report.runId,
+      // Agent-emitted session id (Strategy D trace correlation, e.g. Claude Code).
+      sessionId: report.sessionId,
+      // Same fix as saveReportWithModule above — only stamp a real W3C
+      // trace id, not the subprocess connector's run id.
+      traceId: report.traceId || (report.spans?.[0] as any)?.traceId,
+      // Same reason as the report-level stamp above — the placeholder
+      // doc was created with judgeModelId set, but on update we re-stamp
+      // it from the run config in case the placeholder pre-creation skipped
+      // the field (storage transient failures during /api/evaluate).
+      judgeModelId: run.judgeModelId,
+      // Re-stamp evaluatorId for the same reason. /api/evaluate sets it
+      // on the placeholder, but if that step failed silently the doc has
+      // no evaluatorId — and the trace-mode polled judge then reads it
+      // off the report and falls back to the default. Belt-and-braces.
+      evaluatorId: run.evaluatorId,
+      llmJudgeReasoning: report.llmJudgeReasoning,
+      metrics: report.metrics,
+      trajectory: report.trajectory,
+      rawEvents: report.rawEvents || [],
+      logs: report.logs || report.openSearchLogs,
+      improvementStrategies: report.improvementStrategies,
+      // The full judge response (rawResponse, parsedMetrics, extraFields,
+      // judgeDebug, ...) lives on `llmJudgeResponse` and was previously
+      // dropped by the placeholder-update path — callers using
+      // /api/evaluate (UI "Run Test", CLI `agent-health run`) lost the
+      // detailed judge breadcrumbs even though the connector returned
+      // them. Forwarding both top-level pieces (`improvementStrategies`,
+      // `llmJudgeReasoning`) plus the full sidecar so the run-detail
+      // "Judge Debug" surface and `extraFields` rendering work end-to-end.
+      llmJudgeResponse: report.llmJudgeResponse,
+      metricsStatus: report.metricsStatus,
+      traceFetchAttempts: report.traceFetchAttempts,
+      lastTraceFetchAt: report.lastTraceFetchAt,
+      traceError: report.traceError,
+      spans: report.spans,
+      connectorProtocol: report.connectorProtocol,
+    } as Partial<TestCaseRun>;
+    const updated = await storage.runs.update(existingReportId, updates);
+    savedReport = { ...report, id: updated.id, timestamp: updated.timestamp };
+  } else {
+    savedReport = await saveReportWithModule(storage, report);
+  }
 
   // Denormalize lastRunAt onto the test case (only for persisted test cases)
   storage.testCases.getById(testCase.id)
@@ -518,20 +987,34 @@ export async function runSingleUseCase(
 
   // Start trace polling for trace-mode runs
   if (savedReport.metricsStatus === 'pending' && savedReport.runId) {
-    startTracePollingForReportWithModule(savedReport, testCase, storage);
+    if (options?.awaitTraces !== false) {
+      // CLI/batch mode: block until traces arrive and judge evaluates
+      try {
+        await startTracePollingForReportWithModule(savedReport, testCase, storage);
+      } catch (err) {
+        // Trace polling failed (timeout, auth, etc.) — don't crash.
+        // The report is already saved with metricsStatus: 'error' by the poller.
+        console.warn(`[BenchmarkRunner] Trace polling failed for ${savedReport.id}: ${err instanceof Error ? err.message : err}`);
+      }
+    } else {
+      // UI mode: fire-and-forget, let the UI poll for status updates
+      startTracePollingForReportWithModule(savedReport, testCase, storage)
+        .catch(err => console.warn(`[BenchmarkRunner] Background trace polling failed for ${savedReport.id}:`, err.message));
+    }
   }
 
-  // Emit OTel eval span for this standalone test run (if telemetry enabled and not pending judge)
-  if (savedReport.metricsStatus !== 'pending') {
-    emitDeferredTestCaseSpan(
-      testCase,
-      savedReport,
-      { name: `standalone:${agentConfig.name || agentConfig.key}` },
-      run.id,
-      savedReport.runId,
-      startTime,
-      new Date()
-    );
+  // Finalize the eval test_case span. agentRunId is now known.
+  // For trace-mode runs (metricsStatus='pending'), judge runs later when
+  // polled spans arrive — we end the span as-is here so its trace tree is
+  // closed; the late-completion path emits a separate span with final metrics.
+  if (caseSpan) {
+    caseSpan.setAttribute(ATTR_AGENT_HEALTH_AGENT_RUN_ID, savedReport.runId || '');
+    if (savedReport.metricsStatus !== 'pending') {
+      addEvaluationResultEvents(caseSpan, savedReport);
+      finalizeTestCaseSpan(caseSpan, savedReport);
+    } else {
+      caseSpan.end();
+    }
   }
 
   return savedReport.id;
@@ -540,11 +1023,14 @@ export async function runSingleUseCase(
 /**
  * Start trace polling for a report that has metricsStatus: 'pending'.
  * Uses the storage adapter — works with both file and OpenSearch backends.
+ *
+ * Exported so server-side boot recovery (`server/services/traceRecoveryOnBoot.ts`)
+ * can re-attach polling for reports that were orphaned by a server restart.
  */
-function startTracePollingForReportWithModule(report: EvaluationReport, testCase: TestCase, storage: IStorageModule): void {
+export function startTracePollingForReportWithModule(report: EvaluationReport, testCase: TestCase, storage: IStorageModule): Promise<void> {
   if (!report.runId) {
     console.warn(`[BenchmarkRunner] No runId for report ${report.id}, cannot start trace polling`);
-    return;
+    return Promise.resolve();
   }
 
   // Pass agent config to trace poller for hooks
@@ -552,15 +1038,25 @@ function startTracePollingForReportWithModule(report: EvaluationReport, testCase
   const allAgents = [...config.agents, ...getCustomAgents()];
   const agentConfig = allAgents.find(a => a.key === report.agentKey);
 
-  tracePollingManager.startPolling(
+  return tracePollingManager.startPollingAsync(
     report.id,
     report.runId,
     {
       onTracesFound: async (spans, updatedReport) => {
         try {
-          const finalTrajectory = agentConfig?.hooks?.buildTrajectory ? updatedReport.trajectory : report.trajectory;
-          // Call the Bedrock judge with the trajectory and expectedOutcomes
-          const judgeModelId = report.modelId ? getBedrockModelId(report.modelId) : undefined;
+          // updatedReport.trajectory is the span-built trajectory (from the
+          // agent's buildTrajectory hook, or the default span→trajectory
+          // conversion — issue #320); the poller leaves the original SSE
+          // trajectory in place when no steps could be built from spans.
+          const finalTrajectory = updatedReport.trajectory;
+          // Trace-mode polled judge — same priority chain as the standard
+          // path: report.judgeModelId (persisted at run-create time) >
+          // BEDROCK_MODEL_ID env > agent's modelId (last-resort BC
+          // fallback for runs that didn't carry the new field).
+          const judgeModelId =
+            report.judgeModelId ||
+            readEnv('BEDROCK_MODEL_ID', 'AGENT_HEALTH_BEDROCK_MODEL_ID') ||
+            (report.modelId ? getBedrockModelId(report.modelId) : undefined);
 
           const judgment = await callBedrockJudge(
             finalTrajectory,
@@ -570,7 +1066,12 @@ function startTracePollingForReportWithModule(report: EvaluationReport, testCase
             },
             [], // No logs for trace-mode - traces are the source of truth
             () => {}, // No progress callback needed
-            judgeModelId
+            judgeModelId,
+            report.evaluatorId,
+            // Forward report.runId so the agent (trace) judge can scope.
+            report.runId,
+            // Strategy C correlation hints (#264).
+            buildJudgeAgentsHints(report, agentConfig?.traceServiceName)
           );
 
           // Update report with judge results
@@ -580,7 +1081,32 @@ function startTracePollingForReportWithModule(report: EvaluationReport, testCase
             passFailStatus: judgment.passFailStatus,
             metrics: judgment.metrics,
             llmJudgeReasoning: judgment.llmJudgeReasoning,
+            // Unified judge surface (issue #230 follow-up).
+            matcherResults: [
+              buildJudgeMatcherEntry(judgment, {
+                claim: formatExpectedOutcomesAsClaim(testCase.expectedOutcomes),
+                model: judgeModelId,
+              }),
+            ],
             improvementStrategies: judgment.improvementStrategies,
+            // Persist the full judge sidecar (rawResponse, parsedMetrics,
+            // extraFields, judgeDebug, ...) so the run-detail Judge
+            // Output card has all the breadcrumbs even on the trace-mode
+            // polled-judge code path. Pre-fix this update silently
+            // dropped llmJudgeResponse, mirroring the placeholder-update
+            // bug fixed earlier in this PR for the standard path.
+            llmJudgeResponse: {
+              modelId: judgeModelId || '',
+              timestamp: new Date().toISOString(),
+              promptTokens: 0,
+              completionTokens: 0,
+              latencyMs: judgment.judgeDurationMs ?? 0,
+              rawResponse: judgment.rawResponse ?? judgment.llmJudgeReasoning,
+              parsedMetrics: judgment.metrics as any,
+              improvementStrategies: judgment.improvementStrategies,
+              ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
+              ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
+            },
           } as any);
 
           // Emit deferred OTel eval span now that judge is complete
@@ -590,7 +1116,6 @@ function startTracePollingForReportWithModule(report: EvaluationReport, testCase
             metrics: judgment.metrics,
             llmJudgeReasoning: judgment.llmJudgeReasoning,
           } as EvaluationReport;
-          const agentTraceId = spans[0]?.traceId;
           emitDeferredTestCaseSpan(
             testCase,
             completedReport,
@@ -599,7 +1124,7 @@ function startTracePollingForReportWithModule(report: EvaluationReport, testCase
             report.runId,
             undefined, // startTime
             undefined, // endTime
-            agentTraceId
+            spans[0]?.traceId
           );
 
           // Update parent benchmark run stats now that this report is complete
@@ -609,10 +1134,10 @@ function startTracePollingForReportWithModule(report: EvaluationReport, testCase
         } catch (error) {
           console.error(`[BenchmarkRunner] Failed to judge report ${report.id}:`, error instanceof Error ? error.message : error);
           // Still mark as error
-          await storage.runs.update(report.id, {
-            metricsStatus: 'error',
-            traceError: `Judge evaluation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          } as any);
+          await storage.runs.update(report.id, buildEvaluatorErrorPatch(
+            'judge_failed',
+            error,
+          ) as any);
 
           // Update parent benchmark run stats (error counts as failed)
           if (report.experimentId) {
@@ -627,6 +1152,8 @@ function startTracePollingForReportWithModule(report: EvaluationReport, testCase
     },
     {
       agentConfig, // Pass agent config for hooks
+      intervalMs: agentConfig?.tracePolling?.intervalMs,
+      maxAttempts: agentConfig?.tracePolling?.maxAttempts,
     }
   );
 }
@@ -634,10 +1161,10 @@ function startTracePollingForReportWithModule(report: EvaluationReport, testCase
 /**
  * Start trace polling for the batch benchmark execution path (uses raw OpenSearch client).
  */
-function startTracePollingForReport(report: EvaluationReport, testCase: TestCase, client: Client, benchmark?: Benchmark, run?: BenchmarkRun): void {
+function startTracePollingForReport(report: EvaluationReport, testCase: TestCase, client: Client, benchmark?: Benchmark, run?: BenchmarkRun): Promise<void> {
   if (!report.runId) {
     console.warn(`[BenchmarkRunner] No runId for report ${report.id}, cannot start trace polling`);
-    return;
+    return Promise.resolve();
   }
 
   // Pass agent config to trace poller for hooks
@@ -645,20 +1172,28 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
   const allAgents = [...config.agents, ...getCustomAgents()];
   const agentConfig = allAgents.find(a => a.key === report.agentKey);
 
-  tracePollingManager.startPolling(
+  return tracePollingManager.startPollingAsync(
     report.id,
     report.runId,
     {
       onTracesFound: async (spans, updatedReport) => {
         try {
-          const finalTrajectory = agentConfig?.hooks?.buildTrajectory ? updatedReport.trajectory : report.trajectory;
-          const judgeModelId = report.modelId ? getBedrockModelId(report.modelId) : undefined;
+          // Span-built trajectory (hook or default conversion — issue #320).
+          const finalTrajectory = updatedReport.trajectory;
+          // Trace-mode timeout judge (no spans found) — same priority as above.
+          const judgeModelId =
+            report.judgeModelId ||
+            readEnv('BEDROCK_MODEL_ID', 'AGENT_HEALTH_BEDROCK_MODEL_ID') ||
+            (report.modelId ? getBedrockModelId(report.modelId) : undefined);
           const judgment = await callBedrockJudge(
             finalTrajectory,
             { expectedOutcomes: testCase.expectedOutcomes, expectedTrajectory: testCase.expectedTrajectory },
             [],
             () => {},
-            judgeModelId
+            judgeModelId,
+            report.evaluatorId,
+            report.runId,
+            buildJudgeAgentsHints(report, agentConfig?.traceServiceName)
           );
           await updateRunWithClient(client, report.id, {
             trajectory: finalTrajectory,
@@ -666,7 +1201,30 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
             passFailStatus: judgment.passFailStatus,
             metrics: judgment.metrics,
             llmJudgeReasoning: judgment.llmJudgeReasoning,
+            // Unified judge surface (issue #230 follow-up).
+            matcherResults: [
+              buildJudgeMatcherEntry(judgment, {
+                claim: formatExpectedOutcomesAsClaim(testCase.expectedOutcomes),
+                model: judgeModelId,
+              }),
+            ],
             improvementStrategies: judgment.improvementStrategies,
+            // Same fix as the storage-module path above — persist the
+            // full judge sidecar (rawResponse, parsedMetrics, extraFields,
+            // judgeDebug, ...) so the legacy OpenSearch-client path also
+            // surfaces the complete judge output on the run document.
+            llmJudgeResponse: {
+              modelId: judgeModelId || '',
+              timestamp: new Date().toISOString(),
+              promptTokens: 0,
+              completionTokens: 0,
+              latencyMs: judgment.judgeDurationMs ?? 0,
+              rawResponse: judgment.rawResponse ?? judgment.llmJudgeReasoning,
+              parsedMetrics: judgment.metrics as any,
+              improvementStrategies: judgment.improvementStrategies,
+              ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
+              ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
+            },
           });
           if (report.experimentId) {
             await updateBenchmarkRunStatsForReport(client, report.experimentId, report.id);
@@ -685,10 +1243,10 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
           }
         } catch (error) {
           console.error(`[BenchmarkRunner] Failed to judge report ${report.id}:`, error instanceof Error ? error.message : error);
-          await updateRunWithClient(client, report.id, {
-            metricsStatus: 'error',
-            traceError: `Judge evaluation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          });
+          await updateRunWithClient(client, report.id, buildEvaluatorErrorPatch(
+            'judge_failed',
+            error,
+          ) as any);
           if (report.experimentId) {
             await updateBenchmarkRunStatsForReport(client, report.experimentId, report.id);
           }
@@ -701,6 +1259,8 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
     },
     {
       agentConfig, // Pass agent config for hooks
+      intervalMs: agentConfig?.tracePolling?.intervalMs,
+      maxAttempts: agentConfig?.tracePolling?.maxAttempts,
     }
   );
 }
@@ -727,15 +1287,19 @@ async function refreshBenchmarkRunStats(
       .map((r: any) => r.reportId)
       .filter(Boolean) as string[];
 
-    let passed = 0, failed = 0, pending = 0;
+    let passed = 0, failed = 0, pending = 0, errored = 0;
     const total = Object.keys(targetRun.results || {}).length;
 
     for (const rid of reportIds) {
       try {
         const report = await storage.runs.getById(rid);
         if (!report) { pending++; continue; }
-        if ((report as any).metricsStatus === 'pending' || (report as any).metricsStatus === 'calculating') {
+        const ms = (report as any).metricsStatus;
+        if (ms === 'pending' || ms === 'calculating') {
           pending++;
+        } else if (ms === 'error') {
+          // Evaluator failed to produce a verdict (issue #242).
+          errored++;
         } else if (report.passFailStatus === 'passed') {
           passed++;
         } else {
@@ -748,7 +1312,7 @@ async function refreshBenchmarkRunStats(
     pending += total - reportIds.length;
 
     await storage.benchmarks.updateRun(benchmarkId, targetRun.id, {
-      stats: { passed, failed, pending, total },
+      stats: { passed, failed, pending, errored, total },
     } as any);
   } catch (err) {
     console.warn(`[BenchmarkRunner] Failed to refresh stats for benchmark ${benchmarkId}:`, err instanceof Error ? err.message : err);
@@ -758,3 +1322,137 @@ async function refreshBenchmarkRunStats(
 // Backwards compatibility aliases
 /** @deprecated Use runBenchmark instead */
 export const runExperiment = runBenchmark;
+
+// ─── SDK code-import helpers (mirrored from evaluationRunner.ts) ────────────
+//
+// These helpers let us run a deterministic test body against a synthetic
+// EvalResult shape, recording per-matcher verdicts on the resulting report.
+
+function makeTrajectoryAccessor(steps: TrajectoryStep[]): TrajectoryAccessor {
+  const arr = steps as TrajectoryAccessor;
+  Object.defineProperties(arr, {
+    stepsOfType: {
+      value(type: string) { return arr.filter((s: any) => s?.type === type); },
+      enumerable: false,
+    },
+    toolCalls: {
+      value(name?: string, argsPartial?: Record<string, unknown>) {
+        return arr.filter((s: any) => {
+          if (s?.type !== 'action') return false;
+          if (name && s.toolName !== name) return false;
+          if (argsPartial) return supersetOf(s.toolArgs ?? s.input, argsPartial);
+          return true;
+        });
+      },
+      enumerable: false,
+    },
+    firstToolCall: {
+      value(name?: string, argsPartial?: Record<string, unknown>) {
+        for (let i = 0; i < arr.length; i++) {
+          const s: any = arr[i];
+          if (s?.type !== 'action') continue;
+          if (name && s.toolName !== name) continue;
+          if (argsPartial && !supersetOf(s.toolArgs ?? s.input, argsPartial)) continue;
+          return Object.assign({}, s, { index: i });
+        }
+        return null;
+      },
+      enumerable: false,
+    },
+  });
+  return arr;
+}
+
+function supersetOf(actual: any, expected: Record<string, unknown>): boolean {
+  if (typeof actual !== 'object' || actual === null) return false;
+  for (const [k, v] of Object.entries(expected)) {
+    if (!(k in actual)) return false;
+    if (typeof v === 'object' && v !== null) {
+      if (!supersetOf((actual as any)[k], v as Record<string, unknown>)) return false;
+    } else if ((actual as any)[k] !== v) return false;
+  }
+  return true;
+}
+
+function buildEvalResult(input: {
+  trajectory: TrajectoryStep[];
+  agentOutput: string;
+  rawEvents: any[];
+  runId?: string;
+  durationMs: number;
+  tokenUsage?: { prompt: number; completion: number; total: number };
+}): EvalResult {
+  const trajectory = makeTrajectoryAccessor(input.trajectory);
+  return {
+    trajectory,
+    agentOutput: input.agentOutput,
+    finalResponse: () => input.agentOutput,
+    parsedOutput: () => {
+      try { return JSON.parse(input.agentOutput); } catch { return undefined; }
+    },
+    rawEvents: input.rawEvents,
+    runId: input.runId,
+    durationMs: input.durationMs,
+    tokenUsage: input.tokenUsage,
+  };
+}
+
+/**
+ * Construct the appropriate `TracesAccessor` for a deterministic eval body.
+ * See {@link loadTracesAccessor} in `services/evaluationRunner.ts` for the
+ * canonical doc — issue #230. Kept as a sibling helper here to avoid a
+ * circular import between the two runners.
+ */
+async function loadTracesAccessor(
+  agentConfig: AgentConfig,
+  runId: string | undefined,
+  windowAgents?: TraceWindowAgent[]
+): Promise<TracesAccessor> {
+  if (!agentConfig.useTraces) {
+    return emptyTracesAccessor();
+  }
+  const hasWindow = !!(windowAgents && windowAgents.length > 0);
+  if (!runId && !hasWindow) {
+    return unavailableTracesAccessor(
+      'agent has useTraces=true but produced neither a runId nor a service-name window for trace correlation'
+    );
+  }
+  const polling = agentConfig.tracePolling ?? {};
+  const result = await fetchSpansForRun(runId, {
+    maxAttempts: polling.maxAttempts,
+    intervalMs: polling.intervalMs,
+    windowAgents,
+  });
+  if (result.spans.length === 0) {
+    const target = runId ? `runId=${runId}` : 'service-name window';
+    const reason = result.lastError
+      ? `fetch failed for ${target}: ${result.lastError}`
+      : `no spans found for ${target} after polling — verify the agent's OTel exporter is reachable`;
+    return unavailableTracesAccessor(reason);
+  }
+  return buildTracesAccessor(result.spans);
+}
+
+function synthesizeEmptyReport(testCase: TestCase, agentKey: string, modelId: string): EvaluationReport {
+  const now = new Date().toISOString();
+  return {
+    id: uuidv4(),
+    testCaseId: testCase.id,
+    testCaseVersion: testCase.currentVersion,
+    timestamp: now,
+    agentName: agentKey,
+    agentKey,
+    modelName: modelId,
+    modelId,
+    status: 'completed',
+    trajectory: [],
+    rawEvents: [],
+    metrics: { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 },
+    performanceMetrics: { durationMs: 0 },
+    metricsStatus: 'completed',
+    skipJudge: true,
+    llmJudgeReasoning: '',
+    passFailStatus: 'passed',
+    evaluationType: 'deterministic',
+  } as unknown as EvaluationReport;
+}

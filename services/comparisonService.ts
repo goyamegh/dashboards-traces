@@ -12,6 +12,7 @@ import {
   Category,
 } from '@/types';
 import { TEST_CASES } from '@/data/testCases';
+import { bucketRunResults } from '@/lib/runStats';
 import {
   MockTestCaseMeta,
   getMockTestCaseMeta,
@@ -44,40 +45,32 @@ export function calculateRunAggregates(
   reports: Record<string, EvaluationReport>
 ): RunAggregateMetrics {
   const testCaseIds = Object.keys(run.results);
+
+  // Pass/fail/errored counts: the SINGLE source of truth shared with the runs
+  // list (lib/runStats.bucketRunResults), computed from the persisted per-case
+  // verdicts — NOT the naive denormalized run.stats (which counts errored cases
+  // as passed and never tracks `errored`, #242). This keeps the comparison
+  // panel, the per-cell Errored badges, and the runs list all in agreement.
+  const buckets = bucketRunResults(run.results as Record<string, { status?: string; passFailStatus?: string }>);
+  const passedCount = buckets.passed;
+  const failedCount = buckets.failed;
+  const erroredCount = buckets.errored;
+
+  // Accuracy is averaged over the *evaluated* reports only (exclude errored and
+  // not-yet-evaluated / trace-pending), so placeholder zeros never drag it down.
   let totalAccuracy = 0;
-  let passedCount = 0;
-  let failedCount = 0;
   let completedCount = 0;
-
-  // Fast path: use denormalized stats if available
-  const hasStats = run.stats && typeof run.stats.passed === 'number';
-  if (hasStats) {
-    passedCount = run.stats!.passed;
-    failedCount = run.stats!.failed;
-  }
-
-  // Always calculate accuracy from reports (not stored in run.stats)
   for (const testCaseId of testCaseIds) {
     const result = run.results[testCaseId];
-    if (result.status === 'completed' || result.status === 'failed') {
-      const report = reports[result.reportId];
-      if (report) {
-        completedCount++;
-        totalAccuracy += report.metrics?.accuracy ?? 0;
-
-        // Fallback: count pass/fail from reports if stats not available
-        if (!hasStats) {
-          if (report.passFailStatus === 'passed') {
-            passedCount++;
-          } else {
-            failedCount++;
-          }
-        }
-      }
-    }
+    const report = reports[result.reportId];
+    if (!report) continue;
+    if (report.metricsStatus === 'error' || report.metricsStatus === 'pending' || report.metricsStatus === 'calculating') continue;
+    completedCount++;
+    totalAccuracy += report.metrics?.accuracy ?? 0;
   }
 
-  const count = completedCount || 1; // Avoid division by zero
+  const count = completedCount || 1; // Avoid division by zero (accuracy: over evaluable)
+  const evaluable = Math.max(0, testCaseIds.length - erroredCount);
 
   return {
     runId: run.id,
@@ -88,8 +81,9 @@ export function calculateRunAggregates(
     totalTestCases: testCaseIds.length,
     passedCount,
     failedCount,
+    erroredCount,
     avgAccuracy: Math.round(totalAccuracy / count),
-    passRatePercent: testCaseIds.length > 0 ? Math.round((passedCount / testCaseIds.length) * 100) : 0,
+    passRatePercent: evaluable > 0 ? Math.round((passedCount / evaluable) * 100) : 0,
     // Trace metrics will be populated separately via fetchBatchMetrics
     totalTokens: undefined,
     totalInputTokens: undefined,
@@ -166,6 +160,10 @@ export function buildTestCaseComparisonRows(
         reportId: report.id,
         status: runResult.status === 'completed' ? 'completed' : 'failed',
         passFailStatus: report.passFailStatus,
+        // Issue #242: surface evaluator-error reports so the comparison
+        // surface (MetricCell) can light up the amber `Errored` chip
+        // instead of conflating with `Failed`.
+        errored: report.metricsStatus === 'error',
         accuracy: report.metrics.accuracy,
         faithfulness: report.metrics.faithfulness,
         trajectoryAlignment: report.metrics.trajectory_alignment_score,
@@ -307,7 +305,13 @@ export function calculateCombinedScore(result: TestCaseRunResult): number {
 
 /**
  * Determine if a row represents a regression, improvement, or mixed result
- * compared to the reference run (oldest run)
+ * compared to the reference run (oldest run).
+ *
+ * The primary signal is pass/fail — if the baseline passed and any other
+ * run failed, that's a regression, regardless of how close the scores are.
+ * Score-delta is a secondary tiebreaker for cases where pass/fail is the
+ * same but accuracy moved meaningfully (e.g., both passed but one is much
+ * weaker).
  */
 export function calculateRowStatus(
   row: TestCaseComparisonRow,
@@ -318,8 +322,9 @@ export function calculateRowStatus(
     return 'neutral';
   }
 
+  const SCORE_THRESHOLD = 5; // Only flag pure score moves above this delta.
   const baselineScore = calculateCombinedScore(baselineResult);
-  const THRESHOLD = 2; // 2-point difference threshold to avoid noise
+  const baselinePassed = baselineResult.passFailStatus === 'passed';
 
   let hasRegression = false;
   let hasImprovement = false;
@@ -327,15 +332,55 @@ export function calculateRowStatus(
   for (const [runId, result] of Object.entries(row.results)) {
     if (runId === baselineRunId || result.status !== 'completed') continue;
 
+    // Primary signal: pass/fail crossover.
+    if (result.passFailStatus) {
+      const otherPassed = result.passFailStatus === 'passed';
+      if (baselinePassed && !otherPassed) { hasRegression = true; continue; }
+      if (!baselinePassed && otherPassed) { hasImprovement = true; continue; }
+    }
+
+    // Secondary signal: meaningful score move when pass/fail agrees.
     const score = calculateCombinedScore(result);
-    if (score < baselineScore - THRESHOLD) hasRegression = true;
-    if (score > baselineScore + THRESHOLD) hasImprovement = true;
+    if (score < baselineScore - SCORE_THRESHOLD) hasRegression = true;
+    if (score > baselineScore + SCORE_THRESHOLD) hasImprovement = true;
   }
 
   if (hasRegression && hasImprovement) return 'mixed';
   if (hasRegression) return 'regression';
   if (hasImprovement) return 'improvement';
   return 'neutral';
+}
+
+/**
+ * Comparison mode — drives whether the page asks
+ * "why is one agent better?" (compare) or
+ * "is my agent improving?" (iterate).
+ *
+ * - 'compare':  ≥2 distinct agentKeys OR ≥2 distinct modelIds (different
+ *               agents, or the same agent on different models — e.g. Sonnet
+ *               vs Opus).
+ * - 'iterate':  all runs share one agentKey (a sequence of attempts).
+ */
+export type ComparisonMode = 'compare' | 'iterate';
+
+/**
+ * Detect the comparison mode from the selected runs.
+ * Empty / single-run selections fall back to 'iterate' so that downstream
+ * components have a deterministic mode to render against.
+ */
+export function detectComparisonMode(runs: ExperimentRun[]): ComparisonMode {
+  if (runs.length < 2) return 'iterate';
+  // 'compare' the moment the runs differ by agent OR by model: comparing
+  // Sonnet vs Opus on the SAME agent (claude-code) is still a comparison, not
+  // an iteration of one config. Only truly-identical setups (same agent AND
+  // same model — e.g. re-runs of one config) default to 'iterate'.
+  const agentKeys = new Set<string>();
+  const modelIds = new Set<string>();
+  for (const run of runs) {
+    if (run.agentKey) agentKeys.add(run.agentKey);
+    if (run.modelId) modelIds.add(run.modelId);
+  }
+  return (agentKeys.size >= 2 || modelIds.size >= 2) ? 'compare' : 'iterate';
 }
 
 /**
@@ -358,4 +403,62 @@ export function countRowsByStatus(
   }
 
   return counts;
+}
+
+/**
+ * Test-level overlap between the selected runs.
+ *
+ * Comparison is a test-case-level primitive — it does NOT require the runs to
+ * belong to the same benchmark. Two ad-hoc runs (no benchmarkId) can be
+ * compared as long as we are honest about WHICH test cases they have in
+ * common. This computes that honesty surface:
+ *
+ *  - `totalTestCases`  — union of every test case any selected run executed.
+ *  - `sharedTestCases` — intersection: cases run by ALL selected runs (the
+ *                        only cases where an apples-to-apples verdict holds).
+ *  - `partialTestCases`— cases run by some-but-not-all runs (surfaced as
+ *                        "Not run" cells per run).
+ *  - `perRun`          — per-run executed count + how many were unique to it.
+ *  - `fullyOverlapping` — true when every run ran the exact same set.
+ */
+export interface TestCaseOverlap {
+  runCount: number;
+  totalTestCases: number;
+  sharedTestCases: number;
+  partialTestCases: number;
+  perRun: Array<{ runId: string; runName: string; count: number; uniqueCount: number }>;
+  fullyOverlapping: boolean;
+}
+
+export function computeTestCaseOverlap(runs: ExperimentRun[]): TestCaseOverlap {
+  const idsPerRun = runs.map(r => new Set(Object.keys(r.results || {})));
+  const union = new Set<string>();
+  idsPerRun.forEach(s => s.forEach(id => union.add(id)));
+
+  let shared = 0;
+  let partial = 0;
+  for (const id of union) {
+    const inCount = idsPerRun.reduce((n, s) => n + (s.has(id) ? 1 : 0), 0);
+    if (runs.length > 0 && inCount === runs.length) shared++;
+    else partial++;
+  }
+
+  const perRun = runs.map((run, i) => {
+    const s = idsPerRun[i];
+    let uniqueCount = 0;
+    for (const id of s) {
+      const inCount = idsPerRun.reduce((n, ss) => n + (ss.has(id) ? 1 : 0), 0);
+      if (inCount === 1) uniqueCount++;
+    }
+    return { runId: run.id, runName: run.name, count: s.size, uniqueCount };
+  });
+
+  return {
+    runCount: runs.length,
+    totalTestCases: union.size,
+    sharedTestCases: shared,
+    partialTestCases: partial,
+    perRun,
+    fullyOverlapping: union.size > 0 && shared === union.size,
+  };
 }

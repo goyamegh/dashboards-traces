@@ -13,6 +13,7 @@
 import { Router, Request, Response } from 'express';
 import { debug } from '@/lib/debug';
 import { getStorageModule } from '../../adapters/index.js';
+import { refreshBenchmarkRunStatsByReportId } from '../../services/benchmarkRunStats.js';
 import {
   SAMPLE_RUNS,
   getSampleRun,
@@ -43,7 +44,48 @@ function getTimestampMs(run: { timestamp?: string; createdAt?: string }): number
 // GET /api/storage/runs - List all (paginated)
 router.get('/api/storage/runs', async (req: Request, res: Response) => {
   try {
-    const { size = '100', from = '0', fields } = req.query;
+    const { size = '100', from = '0', fields, ids } = req.query;
+
+    // Batch fetch by ids — collapses N per-report round-trips (e.g. the
+    // comparison page loading every cell's report) into ONE request; the
+    // server fans out getById in parallel. Mirrors GET /test-cases?ids=.
+    if (typeof ids === 'string' && ids.trim()) {
+      const idList = ids.split(',').map((s) => s.trim()).filter(Boolean);
+      const storage = getStorageModule();
+      // Resolve demo-* ids from the bundled sample data (mirrors GET /runs/:id)
+      // so sample benchmarks keep their real statuses on the batch path too.
+      const fetched = await Promise.all(idList.map((id) =>
+        isSampleId(id)
+          ? Promise.resolve(getSampleRun(id) as TestCaseRun | null)
+          : storage.runs.getById(id).catch(() => null),
+      ));
+      // Drop rawEvents (the raw SSE event log — KBs to MBs each) from the batch
+      // payload. List/table consumers like the comparison page never read it;
+      // shipping it makes a 16-report fetch tens of MB. ponytail: strip in the
+      // route (server→browser win); add OS _source excludes if the server-side
+      // OS→server fetch ever matters.
+      // Optional `fields` projection on the batch path: `?ids=…&fields=a,b`
+      // returns only the requested top-level fields (id always included).
+      // Lets status/badge consumers (run inspector, runs-list annotation
+      // counts) fetch 80+ reports in one request measured in KBs, not MBs.
+      // `rawEvents` is never projectable — the batch path's contract is that
+      // the raw SSE log (KBs–MBs per report) stays out of batch payloads.
+      const pick = typeof fields === 'string' && fields.trim()
+        ? fields.split(',').map((f) => f.trim()).filter((f) => f && f !== 'rawEvents')
+        : null;
+      const runs = fetched
+        .filter((r): r is TestCaseRun => r !== null)
+        .map((r) => {
+          if (pick) {
+            const out: Record<string, unknown> = { id: (r as any).id };
+            for (const f of pick) if (f in (r as any)) out[f] = (r as any)[f];
+            return out as unknown as TestCaseRun;
+          }
+          const { rawEvents, ...rest } = r as any; return rest as TestCaseRun;
+        });
+      return res.json({ runs, total: runs.length });
+    }
+
     let realData: TestCaseRun[] = [];
 
     // Parse fields query param for _source projection
@@ -206,7 +248,7 @@ router.patch('/api/storage/runs/:id', async (req: Request, res: Response) => {
     if (isMetricsStatusUpdate && experimentId) {
       debug('StorageAPI', `[StatsUpdate] Triggering stats refresh for benchmark ${experimentId} after report ${id} completion`);
       // Fire-and-forget stats refresh
-      refreshBenchmarkRunStats(storage, experimentId, id).catch(err => {
+      refreshBenchmarkRunStatsByReportId(storage, experimentId, id).catch(err => {
         console.warn(`[StorageAPI] Failed to update benchmark stats after report update:`, err);
       }).then(() => {
         debug('StorageAPI', `[StatsUpdate] Successfully refreshed stats for benchmark ${experimentId}`);
@@ -545,54 +587,5 @@ router.post('/api/storage/runs/bulk', async (req: Request, res: Response) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-/**
- * Refresh benchmark run stats after a report status change.
- * Adapter-agnostic version of updateBenchmarkRunStatsForReport.
- */
-async function refreshBenchmarkRunStats(
-  storage: ReturnType<typeof getStorageModule>,
-  benchmarkId: string,
-  reportId: string,
-): Promise<void> {
-  const benchmark = await storage.benchmarks.getById(benchmarkId);
-  if (!benchmark) return;
-
-  const targetRun = benchmark.runs?.find((run: any) =>
-    Object.values(run.results || {}).some((result: any) => result.reportId === reportId)
-  );
-  if (!targetRun) return;
-
-  // Recompute stats from reports
-  const reportIds = Object.values(targetRun.results || {})
-    .map((r: any) => r.reportId)
-    .filter(Boolean);
-
-  let passed = 0, failed = 0, pending = 0;
-  const total = Object.keys(targetRun.results || {}).length;
-
-  for (const rid of reportIds) {
-    try {
-      const report = await storage.runs.getById(rid);
-      if (!report) { pending++; continue; }
-      if ((report as any).metricsStatus === 'pending' || (report as any).metricsStatus === 'calculating') {
-        pending++;
-      } else if (report.passFailStatus === 'passed') {
-        passed++;
-      } else {
-        failed++;
-      }
-    } catch {
-      pending++;
-    }
-  }
-
-  // Count results without reports as pending
-  pending += total - reportIds.length;
-
-  await storage.benchmarks.updateRun(benchmarkId, targetRun.id, {
-    stats: { passed, failed, pending, total },
-  } as any);
-}
 
 export default router;

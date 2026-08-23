@@ -9,6 +9,7 @@
  * Ported from NovaLanggraphApplication/scripts/experiment/metrics.ts
  */
 
+import { Client } from '@opensearch-project/opensearch';
 import { MetricsResult, AggregateMetrics, OpenSearchConfig, Span } from '@/types';
 import { getSampleSpansForRunIds } from '../../cli/demo/sampleTraces.js';
 
@@ -69,13 +70,11 @@ interface OpenSearchSpanSource {
   startTime?: string;
   endTime?: string;
   durationInNanos?: number;
-  'status.code'?: number;
-  'span.attributes.gen_ai@request@id'?: string;
-  'span.attributes.gen_ai@usage@input_tokens'?: number;
-  'span.attributes.gen_ai@usage@output_tokens'?: number;
-  'span.attributes.gen_ai@request@model'?: string;
-  'span.attributes.gen_ai@tool@name'?: string;
-  'span.attributes.tool.name'?: string;
+  status?: { code?: number; message?: string };
+  // Plain-raw (OTEL-faithful) schema: span attributes are a nested object
+  // keyed by the literal dotted OTel attribute name, e.g.
+  // attributes['agent_health.run.id'] for the runId. (Data Prepper trace-analytics-plain-raw.)
+  attributes?: Record<string, any>;
 }
 
 interface OpenSearchResponse {
@@ -164,24 +163,22 @@ export function computeMetricsFromSampleSpans(runId: string): MetricsResult | nu
 /**
  * Compute metrics from OpenSearch traces for a run
  *
- * @param runId - The run ID (gen_ai@request@id)
+ * @param runId - The run ID (stored as the agent_health.run.id span attribute)
  * @param osConfig - OpenSearch configuration
  * @returns Computed metrics
  */
-// Fields needed for metrics computation (used for _source projection in bulk queries)
+// Fields needed for metrics computation (used for _source projection in bulk
+// queries). We pull the whole nested `attributes` object: in the plain-raw
+// schema its keys are literal dotted OTel names (e.g. "gen_ai.usage.input_tokens")
+// which _source field-filtering cannot address individually.
 const METRICS_SOURCE_FIELDS = [
-  'span.attributes.gen_ai@request@id',
-  'span.attributes.gen_ai@usage@input_tokens',
-  'span.attributes.gen_ai@usage@output_tokens',
-  'span.attributes.gen_ai@request@model',
-  'span.attributes.gen_ai@tool@name',
-  'span.attributes.tool.name',
+  'attributes',
   'name',
   'traceId',
   'startTime',
   'endTime',
   'durationInNanos',
-  'status.code',
+  'status',
 ];
 
 /**
@@ -219,20 +216,21 @@ export function computeMetricsFromSpans(
   let modelId = 'default';
 
   for (const span of spans) {
-    const inTokens = Number(span['span.attributes.gen_ai@usage@input_tokens']) || 0;
-    const outTokens = Number(span['span.attributes.gen_ai@usage@output_tokens']) || 0;
+    const attrs = span.attributes || {};
+    const inTokens = Number(attrs['gen_ai.usage.input_tokens']) || 0;
+    const outTokens = Number(attrs['gen_ai.usage.output_tokens']) || 0;
     inputTokens += inTokens;
     outputTokens += outTokens;
 
-    const spanModel = span['span.attributes.gen_ai@request@model'];
+    const spanModel = attrs['gen_ai.request.model'];
     if (spanModel) {
       llmCalls++;
       modelId = spanModel;
     }
 
     if (span.name === 'agent.tool.execute' || span.name?.includes('tool')) {
-      const toolName = span['span.attributes.gen_ai@tool@name'] ||
-                       span['span.attributes.tool.name'] ||
+      const toolName = attrs['gen_ai.tool.name'] ||
+                       attrs['tool.name'] ||
                        span.name;
       if (toolName && toolName !== 'agent.tool.execute') {
         toolsUsed.add(toolName);
@@ -256,10 +254,10 @@ export function computeMetricsFromSpans(
 
   let status: 'pending' | 'success' | 'error' = 'pending';
   if (rootSpan) {
-    status = rootSpan['status.code'] === 2 ? 'error' :
-             rootSpan['status.code'] === 1 ? 'success' : 'success';
+    status = rootSpan.status?.code === 2 ? 'error' :
+             rootSpan.status?.code === 1 ? 'success' : 'success';
   } else if (spans.length > 0) {
-    const hasError = spans.some(s => s['status.code'] === 2);
+    const hasError = spans.some(s => s.status?.code === 2);
     status = hasError ? 'error' : 'success';
   }
 
@@ -283,8 +281,32 @@ export function computeMetricsFromSpans(
  */
 export async function computeMetrics(
   runId: string,
-  osConfig: OpenSearchConfig
+  osConfig: OpenSearchConfig | { client: Client; indexPattern?: string }
 ): Promise<MetricsResult> {
+  if ('client' in osConfig) {
+    const indexPattern = osConfig.indexPattern || 'otel-v1-apm-span-*';
+    const response = await osConfig.client.search({
+      index: indexPattern,
+      body: {
+        size: 500,
+        sort: [{ startTime: { order: 'asc' } }],
+        query: {
+          bool: {
+            must: [
+              { bool: { should: [
+                { term: { 'attributes.agent_health.run.id': runId } },
+                { term: { 'attributes.gen_ai.conversation.id': runId } },
+              ], minimum_should_match: 1 } }
+            ]
+          }
+        }
+      }
+    });
+    const spans = response.body.hits?.hits?.map((h: any) => h._source) || [];
+    return computeMetricsFromSpans(runId, spans);
+  }
+
+  // Legacy: raw fetch with Basic auth
   const { endpoint, username, password, indexPattern = 'otel-v1-apm-span-*' } = osConfig;
 
   const query = {
@@ -293,7 +315,10 @@ export async function computeMetrics(
     query: {
       bool: {
         must: [
-          { term: { 'span.attributes.gen_ai@request@id': runId } }
+          { bool: { should: [
+            { term: { 'attributes.agent_health.run.id': runId } },
+            { term: { 'attributes.gen_ai.conversation.id': runId } },
+          ], minimum_should_match: 1 } }
         ]
       }
     }
@@ -325,19 +350,77 @@ export async function computeMetrics(
  */
 export async function computeBatchMetrics(
   runIds: string[],
-  osConfig: OpenSearchConfig
+  osConfig: OpenSearchConfig | { client: Client; indexPattern?: string }
 ): Promise<MetricsResult[]> {
   if (runIds.length === 0) return [];
 
-  const { endpoint, username, password, indexPattern = 'otel-v1-apm-span-*' } = osConfig;
   const CHUNK_SIZE = 50;
   const allResults: MetricsResult[] = [];
 
-  // Process in chunks to stay under OpenSearch max_result_window (10,000 hits)
   const chunks: string[][] = [];
   for (let i = 0; i < runIds.length; i += CHUNK_SIZE) {
     chunks.push(runIds.slice(i, i + CHUNK_SIZE));
   }
+
+  if ('client' in osConfig) {
+    const indexPattern = osConfig.indexPattern || 'otel-v1-apm-span-*';
+    const chunkResults = await Promise.all(chunks.map(async (chunk) => {
+      try {
+        const response = await osConfig.client.search({
+          index: indexPattern,
+          body: {
+            size: 10000,
+            sort: [{ startTime: { order: 'asc' } }],
+            _source: METRICS_SOURCE_FIELDS,
+            query: {
+              bool: {
+                must: [
+                  { bool: { should: [
+                    { terms: { 'attributes.agent_health.run.id': chunk } },
+                    { terms: { 'attributes.gen_ai.conversation.id': chunk } },
+                  ], minimum_should_match: 1 } }
+                ]
+              }
+            }
+          }
+        });
+
+        const allSpans = response.body.hits?.hits?.map((h: any) => h._source) || [];
+        const total = response.body.hits?.total;
+        const totalHits = (typeof total === 'object' ? total?.value : total) ?? allSpans.length;
+        if (totalHits > 10000) {
+          console.warn(
+            `OpenSearch batch metrics query returned ${allSpans.length} of ${totalHits} spans ` +
+            `for chunk of ${chunk.length} run IDs. Metrics may be incomplete.`
+          );
+        }
+
+        const spansByRunId = new Map<string, OpenSearchSpanSource[]>();
+        for (const rid of chunk) spansByRunId.set(rid, []);
+        for (const span of allSpans) {
+          const rid = span.attributes?.['agent_health.run.id'] as string | undefined;
+          if (rid && spansByRunId.has(rid)) {
+            spansByRunId.get(rid)!.push(span);
+          }
+        }
+
+        return chunk.map(runId => computeMetricsFromSpans(runId, spansByRunId.get(runId) || []));
+      } catch (e: any) {
+        console.warn(
+          `OpenSearch metrics query failed for chunk (${chunk.length} run IDs): ${e.message}`
+        );
+        return chunk.map(runId => computeMetricsFromSpans(runId, []));
+      }
+    }));
+
+    for (const results of chunkResults) {
+      allResults.push(...results);
+    }
+    return allResults;
+  }
+
+  // Legacy: raw fetch with Basic auth
+  const { endpoint, username, password, indexPattern = 'otel-v1-apm-span-*' } = osConfig;
 
   const chunkResults = await Promise.all(chunks.map(async (chunk) => {
     const query = {
@@ -347,7 +430,10 @@ export async function computeBatchMetrics(
       query: {
         bool: {
           must: [
-            { terms: { 'span.attributes.gen_ai@request@id': chunk } }
+            { bool: { should: [
+              { terms: { 'attributes.agent_health.run.id': chunk } },
+              { terms: { 'attributes.gen_ai.conversation.id': chunk } },
+            ], minimum_should_match: 1 } }
           ]
         }
       }
@@ -368,14 +454,12 @@ export async function computeBatchMetrics(
         `OpenSearch metrics query failed for chunk (${chunk.length} run IDs): ` +
         `${response.status} ${response.statusText}. Response body: ${responseBody}`
       );
-      // On failure, return pending results for all IDs in this chunk
       return chunk.map(runId => computeMetricsFromSpans(runId, []));
     }
 
     const data: OpenSearchResponse = await response.json();
     const allSpans = data.hits?.hits?.map(h => h._source) || [];
 
-    // Warn if results were truncated (more spans exist than size limit)
     const totalHits = (data.hits as any)?.total?.value ?? allSpans.length;
     if (totalHits > 10000) {
       console.warn(
@@ -384,11 +468,10 @@ export async function computeBatchMetrics(
       );
     }
 
-    // Group spans by run ID
     const spansByRunId = new Map<string, OpenSearchSpanSource[]>();
     for (const rid of chunk) spansByRunId.set(rid, []);
     for (const span of allSpans) {
-      const rid = span['span.attributes.gen_ai@request@id'] as unknown as string;
+      const rid = span.attributes?.['agent_health.run.id'] as string | undefined;
       if (rid && spansByRunId.has(rid)) {
         spansByRunId.get(rid)!.push(span);
       }

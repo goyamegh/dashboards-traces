@@ -4,7 +4,7 @@
  */
 
 import React from 'react';
-import { TrendingUp, TrendingDown, Minus, MessageSquare } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, MessageSquare, AlertTriangle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { TestCaseRunResult } from '@/types';
 
@@ -61,6 +61,31 @@ export const MetricCell: React.FC<MetricCellProps> = ({
     );
   }
 
+  // Issue #242: evaluator-error result — distinct visual from Failed.
+  // The result.errored flag is set by comparisonService when the report's
+  // `metricsStatus === 'error'` (judge couldn't produce a verdict). Render
+  // it as the amber `Errored` chip so misconfigured evaluators don't
+  // visually masquerade as agent failures in side-by-side comparisons.
+  if (result.errored) {
+    return (
+      <div
+        className="py-2 px-2.5 group relative"
+        title="Evaluator could not run (e.g. judge validation error). Excluded from pass-rate aggregation."
+      >
+        <div className="flex items-center justify-center gap-1.5">
+          <span className="w-2.5 h-2.5 rounded-full flex-shrink-0 bg-amber-500" />
+          <span className="text-xs font-medium text-amber-600 dark:text-amber-500">
+            <AlertTriangle size={10} className="inline-block mr-0.5 -mt-0.5" />
+            Errored
+          </span>
+        </div>
+        {/* Metrics intentionally omitted: an errored run has zeroed metrics
+            that the comparison cell would otherwise render as a real 0%
+            score, defeating the whole point of the distinct bucket. */}
+      </div>
+    );
+  }
+
   const isPassed = result.passFailStatus === 'passed';
   const accuracy = result.accuracy ?? 0;
   const accDelta = !isReference && baselineAccuracy !== undefined ? accuracy - baselineAccuracy : undefined;
@@ -80,7 +105,7 @@ export const MetricCell: React.FC<MetricCellProps> = ({
         {/* Accuracy — always shown */}
         {show('accuracy') && (
         <div className="flex items-center justify-between text-[10px]">
-          <span className="text-muted-foreground">Acc</span>
+          <span className="text-muted-foreground" title="Accuracy">Accuracy</span>
           <div className="flex items-center gap-1">
             <span className="font-medium">{accuracy}%</span>
             {accDelta !== undefined && accDelta !== 0 && (
@@ -103,14 +128,14 @@ export const MetricCell: React.FC<MetricCellProps> = ({
         <DeltaValue
           value={result.faithfulness}
           baseline={!isReference ? baselineFaithfulness : undefined}
-          label="Faith"
+          label="Faithfulness"
         />
         )}
 
         {/* Trajectory Alignment — show if available and visible */}
         {show('trajectory') && result.trajectoryAlignment !== undefined && (
           <div className="flex items-center justify-between text-[10px]">
-            <span className="text-muted-foreground">Traj</span>
+            <span className="text-muted-foreground" title="Trajectory alignment">Trajectory</span>
             <span className="font-medium">{result.trajectoryAlignment}%</span>
           </div>
         )}
@@ -118,7 +143,7 @@ export const MetricCell: React.FC<MetricCellProps> = ({
         {/* Latency Score — show if available and visible */}
         {show('latency') && result.latencyScore !== undefined && (
           <div className="flex items-center justify-between text-[10px]">
-            <span className="text-muted-foreground">Lat</span>
+            <span className="text-muted-foreground" title="Latency score">Latency</span>
             <span className="font-medium">{result.latencyScore}%</span>
           </div>
         )}

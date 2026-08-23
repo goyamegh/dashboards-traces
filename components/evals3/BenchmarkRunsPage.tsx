@@ -4,23 +4,26 @@
  */
 
 /*
- * BenchmarkRunsPage V2 — Evals 3: Tabbed layout (Option B)
+ * BenchmarkRunsPage V2 — Evals 3
  *
- * Replaces the confusing two-panel resizable split with two tabs:
- *   - "Runs" (default) — full-width runs list with version filter
- *   - "Test Cases" — full-width test case list with version selector
+ * Layout-aware: the user can choose between
+ *   - "split" (default, restored)  : Test Cases (left)  |  Runs (right)
+ *                                     resizable two-panel view (legacy /benchmarks/:id/runs)
+ *   - "tabs"                       : two-tab view ("Runs" / "Test Cases")
+ *                                     introduced by Evals3 "Option B"
  *
- * Benchmark summary header stays above both tabs.
- * Same data model + backend as V1 (asyncBenchmarkStorage).
- * Wired to Evals 3 only.
+ * Choice is persisted in localStorage under `benchmark-runs:layoutMode`.
+ * Same data model + backend as before (asyncBenchmarkStorage). Wired to Evals 3 only.
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { PREFS_KEYS } from '@/lib/preferences';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   GitCompare, Calendar, CheckCircle2, XCircle, Play,
   Trash2, Plus, X, Loader2, Circle, Check, ChevronRight, Clock,
-  StopCircle, Ban,
+  StopCircle, Ban, Columns2, LayoutPanelTop, Pencil, AlertTriangle,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -30,15 +33,18 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { JudgeModelSelect } from '@/components/JudgeModelSelect';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { asyncBenchmarkStorage, asyncTestCaseStorage } from '@/services/storage';
 import { executeBenchmarkRun } from '@/services/client';
 import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
-import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, RunStats } from '@/types';
+import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, RunStats, Evaluator } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
+import { ENV_CONFIG } from '@/lib/config';
 import { getLabelColor, formatDate, getModelName } from '@/lib/utils';
-import { Breadcrumbs } from './Breadcrumbs';
+import { Breadcrumbs } from '@/components/evals3/Breadcrumbs';
 import {
   computeVersionData,
   getSelectedVersionData,
@@ -46,7 +52,8 @@ import {
   filterRunsByVersion,
   VersionData,
 } from '@/lib/benchmarkVersionUtils';
-import { RunConfigForExecution } from '../BenchmarkEditor';
+import { RunConfigForExecution } from '@/components/BenchmarkEditor';
+import { BenchmarkEditor } from '@/components/BenchmarkEditor';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -94,6 +101,26 @@ export const BenchmarkRunsPage2: React.FC = () => {
     name: '', description: '', agentKey: '', modelId: '',
   });
 
+  // Evaluators for the run config dialog. Loaded once on mount so the
+  // "Evaluator" dropdown can show human-readable names. Mirrors
+  // TestCaseDetailPage so both "Configure Run" entry points expose the
+  // same evaluator selection.
+  const [evaluators, setEvaluators] = useState<Evaluator[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(`${ENV_CONFIG.backendUrl}/api/storage/evaluators`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!cancelled) setEvaluators(data.evaluators || []);
+      } catch (error) {
+        console.error('Failed to load evaluators:', error);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
   // Running state
   const [isRunning, setIsRunning] = useState(false);
   const [runProgress, setRunProgress] = useState<BenchmarkProgress | null>(null);
@@ -111,10 +138,27 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
   // Version state
   const [testCaseVersion, setTestCaseVersion] = useState<number | null>(null);
-  const [runVersionFilter, setRunVersionFilter] = useState<number | 'all'>('all');
+  const [runVersionFilter, setRunVersionFilter] = usePersistedState<number | 'all'>('benchmark-runs:runVersionFilter', 'all');
 
-  // Tab state
-  const [activeTab, setActiveTab] = useState<string>('runs');
+  // Layout state — the legacy /benchmarks/:id/runs page used a side-by-side
+  // resizable split (Test Cases left, Runs right). The Evals3 "Option B" rewrite
+  // collapsed that into tabs (https://.../components/evals3/BenchmarkRunsPage.tsx,
+  // pre-restoration). Users relied on the split view to spot which test case a
+  // run touched without losing the runs context, so we restore it as the
+  // default and keep the tabs available behind a toggle.
+  const [layoutMode, setLayoutMode] = usePersistedState<'split' | 'tabs'>(
+    'benchmark-runs:layoutMode',
+    'split',
+  );
+
+  // Tab state (only used when layoutMode === 'tabs')
+  const [activeTab, setActiveTab] = usePersistedState<string>('benchmark-runs:activeTab', 'runs');
+
+  // Editor state — Edit Benchmark lives on this page (per user feedback the
+  // pencil button on the list page was unexpected; users land on the benchmark
+  // detail page when they want to add/remove test cases).
+  const [showEditor, setShowEditor] = useState(false);
+  const [editorError, setEditorError] = useState<string | null>(null);
 
   const { isCancelling, handleCancelRun } = useBenchmarkCancellation();
 
@@ -144,7 +188,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
       if (!isPolling) {
         try {
-          const benchmarkTcs = await asyncTestCaseStorage.getByIds(exp.testCaseIds);
+          const benchmarkTcs = await asyncTestCaseStorage.getByIds(exp.testCaseIds || []);
           setTestCases(benchmarkTcs);
         } catch (error) {
           console.error('Failed to load test cases:', error);
@@ -185,10 +229,23 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
   useEffect(() => { loadBenchmark(); }, [loadBenchmark]);
 
+  // Infinite scroll: auto-click "Load More Runs" when its sentinel container
+  // scrolls into view. The button stays as an explicit fallback.
+  const loadMoreRunsSentinelRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    const el = loadMoreRunsSentinelRef.current;
+    if (!el || !hasMoreRuns || isLoadingMoreRuns) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some(e => e.isIntersecting)) loadMoreRuns();
+    });
+    observer.observe(el);
+    return () => observer.disconnect();
+  }, [hasMoreRuns, isLoadingMoreRuns, loadMoreRuns]);
+
   // ─── Derived Data ────────────────────────────────────────────────────────
 
   const benchmarkTestCases = useMemo(() =>
-    testCases.filter(tc => benchmark?.testCaseIds.includes(tc.id)),
+    testCases.filter(tc => (benchmark?.testCaseIds || []).includes(tc.id)),
     [testCases, benchmark]
   );
 
@@ -212,7 +269,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
   // ─── Run Stats ───────────────────────────────────────────────────────────
 
-  const getRunStats = useCallback((run: BenchmarkRun): RunStats & { running: number } => {
+  const getRunStats = useCallback((run: BenchmarkRun): RunStats & { running: number; errored: number } => {
     let running = 0;
     Object.values(run.results || {}).forEach(r => { if (r.status === 'running') running++; });
 
@@ -220,6 +277,9 @@ export const BenchmarkRunsPage2: React.FC = () => {
       return {
         passed: run.stats.passed, failed: run.stats.failed,
         pending: Math.max(0, run.stats.pending - running), running,
+        // `errored` is optional on older stored runs (issue #242 added it).
+        // Fall back to 0 so existing benchmarks render without a NaN badge.
+        errored: run.stats.errored ?? 0,
         total: run.stats.total,
       };
     }
@@ -230,7 +290,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
       else if (r.status === 'failed' || r.status === 'cancelled') failed++;
       else pending++;
     });
-    return { passed, failed, pending, running, total: Object.keys(run.results || {}).length };
+    return { passed, failed, pending, running, errored: 0, total: Object.keys(run.results || {}).length };
   }, []);
 
   const hasPendingEvaluations = useMemo(() => {
@@ -268,10 +328,27 @@ export const BenchmarkRunsPage2: React.FC = () => {
     if (isRunning) { alert('A run is already in progress.'); return; }
     const latestRun = getLatestRun(benchmark);
     const runNumber = (benchmark.runs?.length || 0) + 1;
+    // Use latest run's config, fall back to persisted preferences, then defaults
+    let defaultAgent = DEFAULT_CONFIG.agents[0]?.key || '';
+    let defaultModel = Object.keys(DEFAULT_CONFIG.models)[0] || '';
+    try {
+      const storedAgent = localStorage.getItem('agent-health:' + PREFS_KEYS.agentKey);
+      const storedModel = localStorage.getItem('agent-health:' + PREFS_KEYS.modelId);
+      if (storedAgent) defaultAgent = JSON.parse(storedAgent);
+      if (storedModel) defaultModel = JSON.parse(storedModel);
+    } catch { /* use defaults */ }
     setRunConfigValues({
       name: `Run ${runNumber}`, description: '',
-      agentKey: latestRun?.agentKey || DEFAULT_CONFIG.agents[0]?.key || '',
-      modelId: latestRun?.modelId || Object.keys(DEFAULT_CONFIG.models)[0] || '',
+      agentKey: latestRun?.agentKey || defaultAgent,
+      modelId: latestRun?.modelId || defaultModel,
+      // Carry over the customer-supplied judge model + evaluator from the
+      // latest run so iterative runs default to the same evaluation setup
+      // (matches TestCaseDetailPage's seeding). Both are optional — the
+      // server resolves judgeModelId via
+      // evaluator.inferenceConfig.modelId → BEDROCK_MODEL_ID when undefined,
+      // and undefined evaluatorId means "RCA Default".
+      judgeModelId: latestRun?.judgeModelId,
+      evaluatorId: latestRun?.evaluatorId,
       headers: latestRun?.headers,
     });
     setIsRunConfigOpen(true);
@@ -280,7 +357,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
   const handleStartRun = async () => {
     if (!benchmark) return;
     setIsRunConfigOpen(false);
-    const initialStatuses: UseCaseRunStatus[] = benchmark.testCaseIds.map(id => {
+    const initialStatuses: UseCaseRunStatus[] = (benchmark.testCaseIds || []).map(id => {
       const testCase = testCases.find(tc => tc.id === id);
       return { id, name: testCase?.name || id, status: 'pending' as const };
     });
@@ -393,6 +470,17 @@ export const BenchmarkRunsPage2: React.FC = () => {
               </Button>
             </>
           )}
+          <Button
+            data-testid="edit-benchmark-button"
+            variant="outline"
+            size="sm"
+            className="h-7 text-xs"
+            onClick={() => { setEditorError(null); setShowEditor(true); }}
+            disabled={isRunning}
+            title="Edit benchmark (changing test cases creates a new version)"
+          >
+            <Pencil size={12} className="mr-1" />Edit
+          </Button>
           <Button size="sm" className="h-7 text-xs bg-opensearch-blue hover:bg-blue-600" onClick={handleAddRun} disabled={isRunning}>
             {isRunning
               ? <><Loader2 size={12} className="mr-1 animate-spin" />Running...</>
@@ -416,58 +504,17 @@ export const BenchmarkRunsPage2: React.FC = () => {
         </p>
       </div>
 
-      {/* ── Tabs ───────────────────────────────────────────────────────── */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
-        <div className="flex items-center justify-between mb-3">
-          <TabsList>
-            <TabsTrigger value="runs" className="text-xs">
-              Runs {filteredRuns.length > 0 && <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5 py-0">{filteredRuns.length}</Badge>}
-            </TabsTrigger>
-            <TabsTrigger value="test-cases" className="text-xs">
-              Test Cases {versionTestCases.length > 0 && <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5 py-0">{versionTestCases.length}</Badge>}
-            </TabsTrigger>
-          </TabsList>
-
-          {/* Version filter — context-aware per tab */}
-          {hasMultipleVersions && activeTab === 'runs' && (
-            <Select
-              value={runVersionFilter === 'all' ? 'all' : String(runVersionFilter)}
-              onValueChange={val => setRunVersionFilter(val === 'all' ? 'all' : Number(val))}
-            >
-              <SelectTrigger className="w-[160px] h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Versions ({runs.length})</SelectItem>
-                {versionData.map(v => (
-                  <SelectItem key={v.version} value={String(v.version)}>
-                    v{v.version} ({v.runCount} run{v.runCount !== 1 ? 's' : ''})
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-          {hasMultipleVersions && activeTab === 'test-cases' && (
-            <Select
-              value={testCaseVersion === null ? 'latest' : String(testCaseVersion)}
-              onValueChange={val => setTestCaseVersion(val === 'latest' ? null : Number(val))}
-            >
-              <SelectTrigger className="w-[140px] h-8 text-xs">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                {versionData.map(v => (
-                  <SelectItem key={v.version} value={v.isLatest ? 'latest' : String(v.version)}>
-                    v{v.version}{v.isLatest ? ' (latest)' : ''}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          )}
-        </div>
-
-        {/* ── Runs Tab ─────────────────────────────────────────────────── */}
-        <TabsContent value="runs" className="flex-1 overflow-y-auto mt-0">
+      {/* ── Layout-aware body (split | tabs) ──────────────────────────────
+         The legacy `/benchmarks/:id/runs` page used a side-by-side resizable
+         split (Test Cases left, Runs right) so users could see which test case
+         a run touched without losing the runs context. The Evals3 "Option B"
+         rewrite collapsed that into tabs and several users asked for the
+         split view back. We restore split as the default and keep tabs
+         available behind a toggle (persisted via `benchmark-runs:layoutMode`). */}
+      {(() => {
+        // ── Reusable body fragments — identical in both layouts ──────────
+        const runsBody = (
+          <>
           {/* Running Progress */}
           {isRunning && useCaseStatuses.length > 0 && (
             <Card className="mb-4 border-blue-500/50">
@@ -629,6 +676,14 @@ export const BenchmarkRunsPage2: React.FC = () => {
                               <span className="flex items-center gap-1 text-red-700 dark:text-red-400">
                                 <XCircle size={14} /> {stats.failed}
                               </span>
+                              {stats.errored > 0 && (
+                                <span
+                                  className="flex items-center gap-1 text-amber-600 dark:text-amber-500"
+                                  title="Evaluator could not run (e.g. judge validation error). Excluded from pass-rate aggregation."
+                                >
+                                  <AlertTriangle size={14} /> {stats.errored}
+                                </span>
+                              )}
                               <span className="text-muted-foreground">/ {stats.total}</span>
                             </div>
                           )}
@@ -663,9 +718,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
             )}
           </div>
 
-          {/* Load More */}
+          {/* Load More — auto-triggers via infinite scroll; button kept as a
+              no-JS/observer fallback */}
           {hasMoreRuns && !isLoadingMoreRuns && (
-            <div className="flex justify-center pt-4">
+            <div ref={loadMoreRunsSentinelRef} data-testid="load-more-runs-sentinel" className="flex justify-center pt-4">
               <Button variant="outline" onClick={loadMoreRuns}>Load More Runs</Button>
             </div>
           )}
@@ -677,15 +733,15 @@ export const BenchmarkRunsPage2: React.FC = () => {
           {runs.length === 1 && (
             <p className="text-xs text-muted-foreground text-center mt-4">Add more runs to enable comparison</p>
           )}
-        </TabsContent>
+          </>
+        );
 
-
-        {/* ── Test Cases Tab ───────────────────────────────────────────── */}
-        <TabsContent value="test-cases" className="flex-1 overflow-y-auto mt-0">
+        const testCasesBody = (
+          <>
           {/* Version Metadata */}
           {selectedVersionData && (
             <div className="mb-4 p-3 rounded-lg border border-border bg-muted/20">
-              <div className="flex items-center gap-4 text-xs text-muted-foreground">
+              <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
                 <span className="flex items-center gap-1"><Calendar size={12} /> Created {formatDate(selectedVersionData.createdAt)}</span>
                 <span className="font-medium text-foreground">
                   {versionTestCases.length} test case{versionTestCases.length !== 1 ? 's' : ''}
@@ -705,7 +761,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
             </div>
           )}
 
-          {/* Test Cases List — full width */}
+          {/* Test Cases List */}
           <div className="space-y-2">
             {versionTestCases.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
@@ -759,13 +815,207 @@ export const BenchmarkRunsPage2: React.FC = () => {
               })
             )}
           </div>
-        </TabsContent>
-      </Tabs>
+          </>
+        );
+
+        const runsVersionSelect = hasMultipleVersions ? (
+          <Select
+            value={runVersionFilter === 'all' ? 'all' : String(runVersionFilter)}
+            onValueChange={val => setRunVersionFilter(val === 'all' ? 'all' : Number(val))}
+          >
+            <SelectTrigger className="w-[160px] h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">All Versions ({runs.length})</SelectItem>
+              {versionData.map(v => (
+                <SelectItem key={v.version} value={String(v.version)}>
+                  v{v.version} ({v.runCount} run{v.runCount !== 1 ? 's' : ''})
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : null;
+
+        const testCasesVersionSelect = hasMultipleVersions ? (
+          <Select
+            value={testCaseVersion === null ? 'latest' : String(testCaseVersion)}
+            onValueChange={val => setTestCaseVersion(val === 'latest' ? null : Number(val))}
+          >
+            <SelectTrigger className="w-[140px] h-8 text-xs">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {versionData.map(v => (
+                <SelectItem key={v.version} value={v.isLatest ? 'latest' : String(v.version)}>
+                  v{v.version}{v.isLatest ? ' (latest)' : ''}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        ) : null;
+
+        const layoutToggle = (
+          <div className="inline-flex items-center rounded border border-border overflow-hidden" data-testid="layout-toggle">
+            <Button
+              type="button"
+              variant={layoutMode === 'split' ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-8 px-2 rounded-none border-0"
+              aria-label="Split view (Test Cases left, Runs right)"
+              aria-pressed={layoutMode === 'split'}
+              data-testid="layout-mode-split"
+              onClick={() => setLayoutMode('split')}
+              title="Split view"
+            >
+              <Columns2 size={14} />
+            </Button>
+            <Button
+              type="button"
+              variant={layoutMode === 'tabs' ? 'secondary' : 'ghost'}
+              size="sm"
+              className="h-8 px-2 rounded-none border-0"
+              aria-label="Tabbed view"
+              aria-pressed={layoutMode === 'tabs'}
+              data-testid="layout-mode-tabs"
+              onClick={() => setLayoutMode('tabs')}
+              title="Tabbed view"
+            >
+              <LayoutPanelTop size={14} />
+            </Button>
+          </div>
+        );
+
+        if (layoutMode === 'split') {
+          return (
+            <div className="flex-1 flex flex-col overflow-hidden" data-testid="benchmark-runs-split">
+              <div className="flex items-center justify-end mb-3">
+                {layoutToggle}
+              </div>
+              <ResizablePanelGroup direction="horizontal" className="flex-1 overflow-hidden">
+                {/* Left Panel — Test Cases */}
+                <ResizablePanel defaultSize={35} minSize={25} maxSize={55}>
+                  <div className="h-full overflow-y-auto pr-3">
+                    <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3 flex items-center justify-between">
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center">
+                        Test Cases
+                        {versionTestCases.length > 0 && (
+                          <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5 py-0">{versionTestCases.length}</Badge>
+                        )}
+                      </h3>
+                      {testCasesVersionSelect}
+                    </div>
+                    {testCasesBody}
+                  </div>
+                </ResizablePanel>
+                <ResizableHandle withHandle />
+                {/* Right Panel — Runs */}
+                <ResizablePanel defaultSize={65} minSize={45}>
+                  <div className="h-full overflow-y-auto pl-3">
+                    <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3 flex items-center justify-between">
+                      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center">
+                        Runs
+                        {filteredRuns.length > 0 && (
+                          <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5 py-0">{filteredRuns.length}</Badge>
+                        )}
+                      </h3>
+                      {runsVersionSelect}
+                    </div>
+                    {runsBody}
+                  </div>
+                </ResizablePanel>
+              </ResizablePanelGroup>
+            </div>
+          );
+        }
+
+        // ── Tabs layout (legacy Evals3 "Option B") ──────────────────────
+        return (
+          <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
+            <div className="flex items-center justify-between mb-3">
+              <TabsList>
+                <TabsTrigger value="runs" className="text-xs">
+                  Runs {filteredRuns.length > 0 && <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5 py-0">{filteredRuns.length}</Badge>}
+                </TabsTrigger>
+                <TabsTrigger value="test-cases" className="text-xs">
+                  Test Cases {versionTestCases.length > 0 && <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5 py-0">{versionTestCases.length}</Badge>}
+                </TabsTrigger>
+              </TabsList>
+              <div className="flex items-center gap-2">
+                {activeTab === 'runs' ? runsVersionSelect : testCasesVersionSelect}
+                {layoutToggle}
+              </div>
+            </div>
+            <TabsContent value="runs" className="flex-1 overflow-y-auto mt-0">{runsBody}</TabsContent>
+            <TabsContent value="test-cases" className="flex-1 overflow-y-auto mt-0">{testCasesBody}</TabsContent>
+          </Tabs>
+        );
+      })()}
+
+      {/* Edit Benchmark Modal
+           Lives on the detail page (not the list page) per user feedback.
+           Save flow:
+             - asyncBenchmarkStorage.save() persists
+             - if test cases changed, the backend bumps currentVersion (v2, v3, ...)
+             - we reload the benchmark in place so the version badge in the
+               header and the version dropdowns flip immediately. */}
+      {showEditor && (
+        <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm">
+          <div className="fixed inset-4 z-50 overflow-auto bg-background border rounded-lg shadow-lg">
+            {editorError && (
+              <div
+                role="alert"
+                data-testid="benchmark-editor-error"
+                className="sticky top-0 z-10 bg-red-500/10 border-b border-red-500/30 text-red-400 px-4 py-2 text-sm flex items-center justify-between"
+              >
+                <span>Failed to save benchmark: {editorError}</span>
+                <button
+                  onClick={() => setEditorError(null)}
+                  className="ml-4 text-red-400 hover:text-red-300"
+                  aria-label="dismiss error"
+                >×</button>
+              </div>
+            )}
+            <BenchmarkEditor
+              benchmark={benchmark}
+              onSave={async (bm) => {
+                try {
+                  await asyncBenchmarkStorage.save(bm);
+                } catch (err: any) {
+                  setEditorError(err?.message || String(err));
+                  return;
+                }
+                setEditorError(null);
+                setShowEditor(false);
+                await loadBenchmark();
+              }}
+              onSaveAndRun={async (bm, runConfigs: RunConfigForExecution[]) => {
+                try {
+                  await asyncBenchmarkStorage.save(bm);
+                } catch (err: any) {
+                  setEditorError(err?.message || String(err));
+                  return;
+                }
+                setEditorError(null);
+                setShowEditor(false);
+                await loadBenchmark();
+                // Fire each configured run in the background; the runs list polls
+                // and surfaces in-progress runs as they start.
+                for (const rc of runConfigs) {
+                  executeBenchmarkRun(bm.id, rc, () => { /* progress shown on this page */ })
+                    .catch(e => console.error('[BenchmarkRunsPage] background run failed:', e));
+                }
+              }}
+              onCancel={() => { setEditorError(null); setShowEditor(false); }}
+            />
+          </div>
+        </div>
+      )}
 
       {/* ── Run Configuration Dialog ───────────────────────────────────── */}
       {isRunConfigOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <Card className="w-full max-w-md">
+          <Card className="w-full max-w-md" data-testid="run-config-dialog">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-lg">Configure Run</CardTitle>
               <Button variant="ghost" size="icon" onClick={() => setIsRunConfigOpen(false)}>
@@ -792,28 +1042,64 @@ export const BenchmarkRunsPage2: React.FC = () => {
                   rows={2}
                 />
               </div>
+              <div className="space-y-2">
+                <Label>Agent</Label>
+                {/* The agent's LLM is owned by its agent-health.config.ts
+                    connectorConfig — there is no agent-model picker. */}
+                <Select
+                  value={runConfigValues.agentKey}
+                  onValueChange={val => setRunConfigValues(prev => ({ ...prev, agentKey: val }))}
+                >
+                  <SelectTrigger data-testid="run-config-agent-trigger"><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    {DEFAULT_CONFIG.agents.map(agent => (
+                      <SelectItem key={agent.key} value={agent.key}>{agent.name}</SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>Agent</Label>
-                  <Select value={runConfigValues.agentKey} onValueChange={val => setRunConfigValues(prev => ({ ...prev, agentKey: val }))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
+                  {/* Evaluator — picks the scoring config + (default)
+                      judge prompt and judge model. "RCA Default" maps to
+                      undefined; the server resolves the built-in default. */}
+                  <Label>Evaluator</Label>
+                  <Select
+                    value={runConfigValues.evaluatorId || '__default__'}
+                    onValueChange={val => setRunConfigValues(prev => ({
+                      ...prev,
+                      evaluatorId: val === '__default__' ? undefined : val,
+                    }))}
+                  >
+                    <SelectTrigger data-testid="run-config-evaluator-trigger">
+                      <SelectValue placeholder="RCA Default" />
+                    </SelectTrigger>
                     <SelectContent>
-                      {DEFAULT_CONFIG.agents.map(agent => (
-                        <SelectItem key={agent.key} value={agent.key}>{agent.name}</SelectItem>
+                      <SelectItem value="__default__">RCA Default</SelectItem>
+                      {evaluators.map(evaluator => (
+                        <SelectItem key={evaluator.id} value={evaluator.id}>
+                          {evaluator.name} {evaluator.isSystem ? '(System)' : ''}
+                        </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
                 </div>
                 <div className="space-y-2">
+                  {/* Judge Model — customer-supplied LLM for the judge,
+                      distinct from the agent's model. "Use evaluator
+                      default" maps to undefined; the server resolves
+                      from evaluator.inferenceConfig.modelId then
+                      BEDROCK_MODEL_ID. Includes ALL providers since
+                      this dropdown controls the judge LLM only. */}
                   <Label>Judge Model</Label>
-                  <Select value={runConfigValues.modelId} onValueChange={val => setRunConfigValues(prev => ({ ...prev, modelId: val }))}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(DEFAULT_CONFIG.models).map(([key, model]) => (
-                        <SelectItem key={key} value={key}>{model.display_name}</SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <JudgeModelSelect
+                    value={runConfigValues.judgeModelId ?? ''}
+                    onValueChange={val => setRunConfigValues(prev => ({
+                      ...prev,
+                      judgeModelId: val || undefined,
+                    }))}
+                    allowDefault={true}
+                  />
                 </div>
               </div>
               <div className="flex justify-end gap-2 pt-2">

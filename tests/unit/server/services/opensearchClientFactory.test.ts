@@ -156,6 +156,36 @@ describe('opensearchClientFactory', () => {
       );
     });
 
+    // ---- Finding 2: authType validation / inference (no silent basic-auth) ----
+    it('infers sigv4 when authType is omitted but awsProfile/awsRegion are present', () => {
+      const config = {
+        endpoint: 'https://search-domain.us-east-1.es.amazonaws.com',
+        awsProfile: 'default',
+        awsRegion: 'us-east-1',
+        awsService: 'es',
+      } as ClusterConfig;
+
+      createOpenSearchClient(config);
+
+      // SigV4 path taken (not basic auth) even though authType was absent.
+      expect(mockAwsSigv4Signer).toHaveBeenCalledWith(
+        expect.objectContaining({ region: 'us-east-1', service: 'es' })
+      );
+    });
+
+    it('throws a clear error on an unrecognized authType instead of silently using basic auth', () => {
+      const config = {
+        endpoint: 'https://search-domain.us-east-1.es.amazonaws.com',
+        authType: 'aws', // the real footgun: 'aws' is not a valid authType
+        awsProfile: 'default',
+        awsRegion: 'us-east-1',
+      } as unknown as ClusterConfig;
+
+      expect(() => createOpenSearchClient(config)).toThrow(/Invalid storage\/observability authType 'aws'.*sigv4/);
+      // and it must NOT have silently constructed a (doomed) basic-auth client
+      expect(mockClientConstructor).not.toHaveBeenCalled();
+    });
+
     it('should create a client with no auth when authType is none', () => {
       const config: ClusterConfig = {
         endpoint: 'https://localhost:9200',
@@ -234,6 +264,28 @@ describe('opensearchClientFactory', () => {
       });
 
       expect(key).toBe('sigv4|https://collection.aoss.amazonaws.com|us-west-2||aoss');
+    });
+
+    // Finding-2 follow-up: the cache key MUST reflect the same authType the client
+    // is actually built with, including inferred SigV4 (omitted authType + AWS
+    // fields). Otherwise inferred-SigV4 configs collide on a 'basic|...' key.
+    it('uses a sigv4 key (not basic) when authType is inferred from AWS fields', () => {
+      const key = configToCacheKey({
+        endpoint: 'https://search-domain.us-east-1.es.amazonaws.com',
+        awsProfile: 'default',
+        awsRegion: 'us-east-1',
+        awsService: 'es',
+      } as any);
+
+      expect(key).toBe('sigv4|https://search-domain.us-east-1.es.amazonaws.com|us-east-1|default|es');
+      expect(key.startsWith('basic|')).toBe(false);
+    });
+
+    it('throws on an unrecognized authType (consistent with createOpenSearchClient)', () => {
+      expect(() => configToCacheKey({
+        endpoint: 'https://x',
+        authType: 'aws',
+      } as any)).toThrow(/Invalid storage\/observability authType 'aws'/);
     });
 
     it('should generate none auth cache key', () => {

@@ -14,9 +14,12 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { usePersistedSet } from '@/hooks/usePersistedSet';
+import { PREFS_KEYS } from '@/lib/preferences';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  ChevronRight, ChevronDown, CheckCircle2, XCircle,
+  ChevronRight, ChevronDown, CheckCircle2, XCircle, AlertTriangle,
   Loader2, Clock, Search, RefreshCw, Activity, BarChart3,
   SlidersHorizontal, Layers, List, ChevronsDownUp, ChevronsUpDown, Upload, Plus,
   Pencil, Play, Calendar,
@@ -29,10 +32,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { asyncTestCaseStorage, asyncRunStorage, asyncBenchmarkStorage } from '@/services/storage';
 import { TestCase, TestCaseRun, Benchmark } from '@/types';
 import { formatRelativeTime } from '@/lib/utils';
-import { TestCaseEditor } from '../TestCaseEditor';
-import { QuickRunModal } from '../QuickRunModal';
-import { Breadcrumbs } from './Breadcrumbs';
+import { TestCaseEditor } from '@/components/TestCaseEditor';
+import { useClusterContext } from '@/hooks/useClusterContext';
+import { ClusterContextBanner } from '@/components/comparison/ClusterContextBanner';
+import { QuickRunModal } from '@/components/QuickRunModal';
+import { Breadcrumbs } from '@/components/evals3/Breadcrumbs';
 import { validateTestCasesArrayJson } from '@/lib/testCaseValidation';
+import { collectLabels, matchesLabelFilter, ALL_LABELS } from '@/lib/labels';
 
 // ─── Time Filter ─────────────────────────────────────────────────────────────
 
@@ -54,19 +60,31 @@ function truncate(s: string | undefined, max: number): string {
   if (!s) return '—';
   return s.length > max ? s.slice(0, max) + '…' : s;
 }
-function getPassFail(run: TestCaseRun): 'pass' | 'fail' | 'running' | 'unknown' {
+function getPassFail(run: TestCaseRun): 'pass' | 'fail' | 'errored' | 'running' | 'unknown' {
   if (run.status === 'running') return 'running';
+  // Issue #242: a run whose evaluator could not produce a verdict
+  // (`metricsStatus: 'error'`) is bucketed as `errored`, NOT `fail`. The
+  // agent may have completed normally; the judge / trace pipeline
+  // failed before scoring. Surfacing it as 'fail' here would defeat the
+  // distinct bucket the rest of the run-stats pipeline preserves.
+  if (run.metricsStatus === 'error') return 'errored';
   if (run.passFailStatus === 'passed') return 'pass';
   if (run.passFailStatus === 'failed') return 'fail';
-  if (run.status === 'completed') return run.metrics?.accuracy >= 50 ? 'pass' : 'fail';
+  // No verdict from the judge — don't fabricate one from a single metric
+  // value. The previous fallback of `accuracy >= 50` only worked under the
+  // RCA Default evaluator (the only one that emits a metric named
+  // `accuracy`), so for runs scored by any other evaluator it always
+  // returned 'fail' regardless of how the judge actually scored the run.
+  // 'unknown' is the honest answer.
   return 'unknown';
 }
 
 
-function PassFailBadge({ result }: { result: 'pass' | 'fail' | 'running' | 'unknown' }) {
+function PassFailBadge({ result }: { result: 'pass' | 'fail' | 'errored' | 'running' | 'unknown' }) {
   const c = {
     pass: { icon: <CheckCircle2 size={12} />, label: 'Pass', cls: 'text-green-600 dark:text-green-400 bg-green-100 dark:bg-green-500/10 border-green-300 dark:border-green-500/20' },
     fail: { icon: <XCircle size={12} />, label: 'Fail', cls: 'text-red-600 dark:text-red-400 bg-red-100 dark:bg-red-500/10 border-red-300 dark:border-red-500/20' },
+    errored: { icon: <AlertTriangle size={12} />, label: 'Errored', cls: 'text-amber-600 dark:text-amber-400 bg-amber-100 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/20' },
     running: { icon: <Loader2 size={12} className="animate-spin" />, label: 'Running', cls: 'text-blue-600 dark:text-blue-400 bg-blue-100 dark:bg-blue-500/10 border-blue-300 dark:border-blue-500/20' },
     unknown: { icon: <Clock size={12} />, label: '—', cls: 'text-muted-foreground bg-muted/50 border-border' },
   }[result];
@@ -95,12 +113,22 @@ export const TestCasesPage4: React.FC = () => {
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
   const [runCounts, setRunCounts] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [viewMode, setViewMode] = useState<'flat' | 'grouped'>('flat');
-  const [collapsedGroups, setCollapsedGroups] = useState<Set<string>>(new Set());
-  const [timeRange, setTimeRange] = useState<TimeRange>('7d');
+  const [search, setSearch] = usePersistedState<string>('test-cases:search', '');
+  const [viewMode, setViewMode] = usePersistedState<'flat' | 'grouped'>(PREFS_KEYS.viewMode, 'flat');
+  const [collapsedGroups, setCollapsedGroups] = usePersistedSet<string>('test-cases:collapsedGroups');
+  const [timeRange, setTimeRange] = usePersistedState<TimeRange>(PREFS_KEYS.timeRange, '7d');
   const [openPopoverId, setOpenPopoverId] = useState<string | null>(null);
-  const [selectedBenchmark, setSelectedBenchmark] = useState<string>('all');
+  const [selectedBenchmark, setSelectedBenchmark] = usePersistedState<string>(PREFS_KEYS.benchmarkFilter, 'all');
+  const [selectedLabel, setSelectedLabel] = usePersistedState<string>('test-cases:labelFilter', ALL_LABELS);
+  // A `?label=foo` URL param (e.g. from clicking a label on the comparison
+  // table) drives the existing label filter so the click "does something" —
+  // reusing the dropdown rather than introducing a second filter surface.
+  const [searchParams] = useSearchParams();
+  useEffect(() => {
+    const urlLabel = searchParams.get('label');
+    if (urlLabel && urlLabel !== selectedLabel) setSelectedLabel(urlLabel);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
   const [isScrolled, setIsScrolled] = useState(false);
   const scrollRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -110,19 +138,33 @@ export const TestCasesPage4: React.FC = () => {
   const [showEditor, setShowEditor] = useState(false);
   const [editingTestCase, setEditingTestCase] = useState<TestCase | null>(null);
   const [runningTestCase, setRunningTestCase] = useState<TestCase | null>(null);
+  const [showSampleData, setShowSampleData] = useState<boolean | undefined>(undefined);
+
+  // Cluster context — when present, render a banner + auto-open the New
+  // Test Case modal so the user lands in the authoring flow they came
+  // here for (e.g. expanding test coverage for a cluster of failures).
+  const { context: clusterContext } = useClusterContext();
+  const hasOpenedFromCluster = useRef(false);
+  useEffect(() => {
+    if (!clusterContext) return;
+    if (hasOpenedFromCluster.current) return;
+    hasOpenedFromCluster.current = true;
+    setEditingTestCase(null);
+    setShowEditor(true);
+  }, [clusterContext]);
 
   // Sort
-  const [sort, setSort] = useState<{ field: SortField; dir: SortDir }>({ field: 'created', dir: 'desc' });
+  const [sort, setSort] = usePersistedState<{ field: SortField; dir: SortDir }>('test-cases:sort', { field: 'created', dir: 'desc' });
 
   const loadDefinitions = useCallback(async () => {
     try {
       const [tcs, counts, bms] = await Promise.all([
-        asyncTestCaseStorage.getAll(), asyncRunStorage.getRunCountsByTestCase(), asyncBenchmarkStorage.getAll(),
+        asyncTestCaseStorage.getAll({ includeSample: showSampleData === true ? true : undefined }), asyncRunStorage.getRunCountsByTestCase(), asyncBenchmarkStorage.getAll({ includeSample: showSampleData === true ? true : undefined }),
       ]);
       setTestCases(tcs as TestCase[]); setRunCounts(counts); setBenchmarks(bms);
     } catch (err) { console.error('Failed:', err); }
     finally { setLoading(false); }
-  }, []);
+  }, [showSampleData]);
 
   useEffect(() => { loadDefinitions(); }, [loadDefinitions]);
 
@@ -138,7 +180,7 @@ export const TestCasesPage4: React.FC = () => {
   // Reverse map: tcId → benchmarks
   const tcBenchmarkMap = useMemo(() => {
     const map = new Map<string, { id: string; name: string }[]>();
-    for (const bm of benchmarks) for (const tcId of bm.testCaseIds) {
+    for (const bm of benchmarks) for (const tcId of (bm.testCaseIds || [])) {
       if (!map.has(tcId)) map.set(tcId, []);
       map.get(tcId)!.push({ id: bm.id, name: bm.name });
     }
@@ -149,19 +191,27 @@ export const TestCasesPage4: React.FC = () => {
   const latestRunByTc: Record<string, { timestamp: string; passed: boolean | null; id: string }> = {};
   const passRateByTc: Record<string, { passed: number; total: number }> = {};
 
+  // Distinct labels across all test cases, sorted. Labels are the unified
+  // tagging system (e.g. `category:RCA`, `difficulty:Hard`, `agent:aos-oncall`);
+  // surfacing them as a filter is how a team categorizes and slices its suite.
+  const allLabels = useMemo(() => collectLabels(testCases), [testCases]);
+
   // Filtered test cases
   const filteredTcs = useMemo(() => {
     let list = testCases;
-    if (search) { const q = search.toLowerCase(); list = list.filter(tc => tc.name.toLowerCase().includes(q) || tc.initialPrompt?.toLowerCase().includes(q) || tc.description?.toLowerCase().includes(q)); }
+    if (search) { const q = search.toLowerCase(); list = list.filter(tc => (tc.name ?? '').toLowerCase().includes(q) || tc.initialPrompt?.toLowerCase().includes(q) || tc.description?.toLowerCase().includes(q)); }
     if (selectedBenchmark !== 'all') {
       const bm = benchmarks.find(b => b.id === selectedBenchmark);
       if (bm) {
-        const bmTcIds = new Set(bm.testCaseIds);
+        const bmTcIds = new Set(bm.testCaseIds || []);
         list = list.filter(tc => bmTcIds.has(tc.id));
       }
     }
+    if (selectedLabel !== 'all') {
+      list = list.filter(tc => matchesLabelFilter(tc.labels, selectedLabel));
+    }
     return list;
-  }, [testCases, search, selectedBenchmark, benchmarks]);
+  }, [testCases, search, selectedBenchmark, selectedLabel, benchmarks]);
 
   // Sort test cases within groups (lastRun, runs)
   const sortTcsWithinGroup = useCallback((tcs: TestCase[]): TestCase[] => {
@@ -219,7 +269,7 @@ export const TestCasesPage4: React.FC = () => {
     const assignedTcIds = new Set<string>();
     const groups: { id: string; name: string; testCases: TestCase[] }[] = [];
     for (const bm of benchmarks) {
-      const tcs = bm.testCaseIds.map(id => filteredTcs.find(tc => tc.id === id)).filter((tc): tc is TestCase => !!tc);
+      const tcs = (bm.testCaseIds || []).map(id => filteredTcs.find(tc => tc.id === id)).filter((tc): tc is TestCase => !!tc);
       if (tcs.length > 0) {
         groups.push({ id: bm.id, name: bm.name, testCases: sortTcsWithinGroup(tcs) });
         tcs.forEach(tc => assignedTcIds.add(tc.id));
@@ -321,6 +371,7 @@ export const TestCasesPage4: React.FC = () => {
         <td className="px-2 py-1.5 align-middle text-right">
           <div className="inline-flex items-center gap-0.5">
             <Button variant="ghost" size="icon" className="h-6 w-6" title="Run"
+              data-testid="test-case-run-button"
               onClick={e => { e.stopPropagation(); setRunningTestCase(tc); }}>
               <Play size={11} />
             </Button>
@@ -335,7 +386,12 @@ export const TestCasesPage4: React.FC = () => {
   };
 
   return (
-    <div className="p-4 h-full flex flex-col">
+    <div className="p-4 h-full flex flex-col" data-testid="test-cases-page">
+      {clusterContext && (
+        <div className="mb-3">
+          <ClusterContextBanner context={clusterContext} />
+        </div>
+      )}
       <Breadcrumbs
         items={[
           { label: 'Evaluations', href: '/evaluations/benchmarks' },
@@ -354,6 +410,44 @@ export const TestCasesPage4: React.FC = () => {
               {benchmarks.map(bm => <SelectItem key={bm.id} value={bm.id}>{bm.name}</SelectItem>)}
             </SelectContent>
           </Select>
+          {/* Label filter — categorize / slice the suite by label */}
+          {allLabels.length > 0 && (
+            <Select value={selectedLabel} onValueChange={setSelectedLabel}>
+              <SelectTrigger className="w-[160px] h-7 text-xs" data-testid="label-filter"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="all">All Labels</SelectItem>
+                {allLabels.map(label => <SelectItem key={label} value={label}>{label}</SelectItem>)}
+              </SelectContent>
+            </Select>
+          )}
+          {/* View mode toggle (Grouped first — it's the default mental model) */}
+          <div className="flex items-center border border-border rounded-md overflow-hidden h-7" data-testid="viewmode-toggle">
+            <button data-testid="viewmode-grouped" onClick={() => setViewMode('grouped')} className={`px-2 h-full text-xs flex items-center gap-1 transition-colors ${viewMode === 'grouped' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+              <Layers size={12} /> Grouped
+            </button>
+            <button data-testid="viewmode-flat" onClick={() => setViewMode('flat')} className={`px-2 h-full text-xs flex items-center gap-1 transition-colors ${viewMode === 'flat' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
+              <List size={12} /> Flat
+            </button>
+          </div>
+          {/* Expand/Collapse All — only in grouped mode */}
+          {viewMode === 'grouped' && (
+            <div className="flex items-center border border-border rounded-md overflow-hidden h-7">
+              <button
+                onClick={() => setCollapsedGroups(new Set())}
+                className="px-2 h-full text-xs flex items-center gap-1 transition-colors text-muted-foreground hover:text-foreground"
+                title="Expand all"
+              >
+                <ChevronsUpDown size={12} />
+              </button>
+              <button
+                onClick={() => setCollapsedGroups(new Set(groupedData.map(g => g.id)))}
+                className="px-2 h-full text-xs flex items-center gap-1 transition-colors text-muted-foreground hover:text-foreground"
+                title="Collapse all"
+              >
+                <ChevronsDownUp size={12} />
+              </button>
+            </div>
+          )}
           <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImportFile} />
           <Button variant="outline" size="sm" onClick={() => fileInputRef.current?.click()} disabled={isImporting} className="h-7 gap-1.5 text-xs font-normal">
             <Upload size={12} /> {isImporting ? 'Importing...' : 'Import JSON'}
@@ -361,46 +455,32 @@ export const TestCasesPage4: React.FC = () => {
           <Button size="sm" onClick={() => { setEditingTestCase(null); setShowEditor(true); }} className="h-7 gap-1.5 text-xs">
             <Plus size={12} /> New Test Case
           </Button>
+          {/* Sample data toggle */}
+          {showSampleData === true ? (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowSampleData(false)}
+              className="h-7 text-xs text-muted-foreground"
+            >
+              Hide sample data
+            </Button>
+          ) : (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => setShowSampleData(true)}
+              className="h-7 text-xs text-muted-foreground"
+            >
+              Show sample data
+            </Button>
+          )}
         </>}
       />
       {/* ── Header ────────────────────────────────────── */}
       <div className="mb-4">
-        <h2 className="text-xl font-bold">Test Cases</h2>
+        <h2 className="text-xl font-bold" data-testid="test-cases-title">Test Cases</h2>
         <p className="text-[11px] text-muted-foreground mt-0.5">{testCases.length} test cases · Define prompts and expected outcomes</p>
-      </div>
-
-      {/* ── View Toggle ──────────────────────────────────────────── */}
-      <div className="flex items-center justify-between mb-3">
-        <div className="flex items-center gap-2">
-          {/* View mode toggle */}
-          <div className="flex items-center border border-border rounded-md overflow-hidden">
-            <button onClick={() => setViewMode('flat')} className={`px-2 py-1 text-xs flex items-center gap-1 transition-colors ${viewMode === 'flat' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
-              <List size={12} /> Flat
-            </button>
-            <button onClick={() => setViewMode('grouped')} className={`px-2 py-1 text-xs flex items-center gap-1 transition-colors ${viewMode === 'grouped' ? 'bg-muted text-foreground' : 'text-muted-foreground hover:text-foreground'}`}>
-              <Layers size={12} /> Grouped
-            </button>
-          </div>
-          {/* Expand/Collapse All — separate group, only in grouped mode */}
-          {viewMode === 'grouped' && (
-            <div className="flex items-center border border-border rounded-md overflow-hidden">
-              <button
-                onClick={() => setCollapsedGroups(new Set())}
-                className="px-2 py-1 text-xs flex items-center gap-1 transition-colors text-muted-foreground hover:text-foreground"
-                title="Expand all"
-              >
-                <ChevronsUpDown size={12} />
-              </button>
-              <button
-                onClick={() => setCollapsedGroups(new Set(groupedData.map(g => g.id)))}
-                className="px-2 py-1 text-xs flex items-center gap-1 transition-colors text-muted-foreground hover:text-foreground"
-                title="Collapse all"
-              >
-                <ChevronsDownUp size={12} />
-              </button>
-            </div>
-          )}
-        </div>
       </div>
 
       {/* ── Table ──────────────────────────────────────────────────── */}

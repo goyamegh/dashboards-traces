@@ -10,6 +10,7 @@
 
 import { TrajectoryStep, EvaluationMetrics, ImprovementStrategy, OpenSearchLog, PassFailStatus } from '@/types';
 import { ENV_CONFIG } from '@/lib/config';
+import { getBackendUrl } from '@/lib/portConfig';
 
 interface JudgeResult {
   passFailStatus: PassFailStatus;
@@ -18,6 +19,18 @@ interface JudgeResult {
   improvementStrategies: ImprovementStrategy[];
   judgeDurationMs?: number;
   judgeAttempts?: number;
+  /** Raw text the judge model emitted (forwarded from /api/judge). */
+  rawResponse?: string;
+  /** Extra JSON keys the model emitted that weren't typed wire fields. */
+  extraFields?: Record<string, unknown>;
+  /** System/user prompts the judge actually saw (when AH_JUDGE_DEBUG=1). */
+  judgeDebug?: {
+    provider?: string;
+    modelId?: string;
+    evaluatorId?: string;
+    systemPrompt?: string;
+    userPrompt?: string;
+  };
 }
 
 /**
@@ -41,17 +54,32 @@ interface ExpectedBehavior {
  * @param logs - Optional OpenSearch logs
  * @param onProgress - Optional progress callback
  * @param modelId - Model ID for judge evaluation (determines provider routing)
+ * @param evaluatorId - Optional saved evaluator id (resolves the system prompt server-side)
+ * @param runId - Agent run id. Forwarded so the `agent` (trace) judge provider's
+ *   read-only `query_spans` / `query_logs` tools can scope to this single run.
+ *   Without it the route 400s with `runId is required for the agent (trace)
+ *   judge provider`. For other providers it's ignored. Pre-fix the runner
+ *   never forwarded this even when known on the report, so picking the
+ *   `agent-trace-judge` model from the UI Judge Model dropdown always
+ *   failed at the route layer.
+ * @param agents - Optional Strategy C correlation hints (service.name +
+ *   time-window) for the agent (trace) judge. The trace tool unions
+ *   Strategy B (`runIds`) with these so spans the agent emits under its
+ *   own correlation (claude-code's session id, etc.) are findable. See #264.
  */
 export async function callBedrockJudge(
   trajectory: TrajectoryStep[],
   expected: ExpectedBehavior,
   logs?: OpenSearchLog[],
   onProgress?: (chunk: string) => void,
-  modelId?: string
+  modelId?: string,
+  evaluatorId?: string,
+  runId?: string,
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number; sessionId?: string }>
 ): Promise<JudgeResult> {
   const maxRetries = 10;
   const baseDelay = 1000; // 1 second
-  const judgeApiUrl = ENV_CONFIG.judgeApiUrl || 'http://localhost:4001/api/judge';
+  const judgeApiUrl = ENV_CONFIG.judgeApiUrl || `${getBackendUrl()}/api/judge`;
 
   console.log('[BedrockJudge] Sending request to backend proxy...');
   console.log('[BedrockJudge] Trajectory steps:', trajectory.length);
@@ -79,12 +107,27 @@ export async function callBedrockJudge(
           expectedTrajectory: expected.expectedTrajectory,
           logs,
           modelId,
+          ...(evaluatorId ? { evaluatorId } : {}),
+          // Forward runId so /api/judge can route to the `agent` (trace)
+          // provider — its tools require this to scope. Other providers
+          // ignore it.
+          ...(runId ? { runId } : {}),
+          // Forward Strategy C correlation hints (#264) so the agent (trace)
+          // judge tool can find spans the agent emits under its OWN
+          // correlation (claude-code's session id, etc.), not just spans
+          // that share agent-health's runId via gen_ai.request.id.
+          ...(agents && agents.length > 0 ? { agents } : {}),
         }),
       });
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || `API request failed with status ${response.status}`);
+        const errorMessage = errorData.error || `API request failed with status ${response.status}`;
+        // 4xx client errors are validation failures — retrying won't help
+        if (response.status >= 400 && response.status < 500) {
+          throw Object.assign(new Error(`Bedrock Judge validation error (not retryable): ${errorMessage}`), { nonRetryable: true });
+        }
+        throw new Error(errorMessage);
       }
 
       const result = await response.json();
@@ -107,6 +150,12 @@ export async function callBedrockJudge(
         improvementStrategies: result.improvementStrategies || [],
         judgeDurationMs: Date.now() - judgeStartTime,
         judgeAttempts: attempt,
+        // Forward debug breadcrumbs from the route so the runner can persist
+        // them on the run document. These are absent in older /api/judge
+        // responses (back-compat) and in production unless AH_JUDGE_DEBUG=1.
+        rawResponse: result.rawResponse,
+        extraFields: result.extraFields,
+        judgeDebug: result.judgeDebug,
       };
     } catch (error) {
       const isLastAttempt = attempt === maxRetries;
@@ -122,6 +171,11 @@ export async function callBedrockJudge(
       }
 
       console.error(`[BedrockJudge] Attempt ${attempt} failed:`, errorMessage);
+
+      // Fail fast on non-retryable errors (4xx validation failures)
+      if ((error as any)?.nonRetryable) {
+        throw error;
+      }
 
       // If this is the last attempt, throw the error
       if (isLastAttempt) {

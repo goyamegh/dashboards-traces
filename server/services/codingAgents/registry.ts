@@ -43,14 +43,15 @@ import { ClaudeCodeReader } from './readers/claudeCode';
 import { KiroReader } from './readers/kiro';
 import { CodexReader } from './readers/codex';
 import { SessionCacheManager } from './cache';
+import { readEnv } from '@/lib/envCompat';
 
 /**
  * Extract unix username from a project path.
  * Handles macOS (/Users/X/...) and Linux (/home/X/...).
- * Returns AGENT_HEALTH_USERNAME env var if set, overriding detection.
+ * Returns AH_USERNAME env var if set (legacy: AGENT_HEALTH_USERNAME), overriding detection.
  */
 export function extractUsername(projectPath: string): string {
-  const override = process.env.AGENT_HEALTH_USERNAME;
+  const override = readEnv('AH_USERNAME', 'AGENT_HEALTH_USERNAME');
   if (override) return override;
 
   const parts = projectPath.split('/');
@@ -69,11 +70,11 @@ function localDateStr(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
-/** Filter sessions by date range */
+/** Filter sessions by date range (uses local timezone to match frontend) */
 function filterByDate(sessions: AgentSession[], range?: DateRange): AgentSession[] {
   if (!range?.from && !range?.to) return sessions;
   return sessions.filter(s => {
-    const date = s.start_time.slice(0, 10);
+    const date = localDateStr(new Date(s.start_time));
     if (range.from && date < range.from) return false;
     if (range.to && date > range.to) return false;
     return true;
@@ -103,7 +104,7 @@ function computeStatsFromSessions(sessions: AgentSession[], agent: AgentKind): A
     const toolCallCount = Object.values(s.tool_counts).reduce((a, b) => a + b, 0);
     totalToolCalls += toolCallCount;
 
-    const date = s.start_time.slice(0, 10);
+    const date = localDateStr(new Date(s.start_time));
     if (/^\d{4}-\d{2}-\d{2}$/.test(date)) {
       const existing = dailyMap.get(date) ?? { date, messageCount: 0, sessionCount: 0, toolCallCount: 0 };
       existing.messageCount += s.user_message_count + s.assistant_message_count;
@@ -302,7 +303,7 @@ export class CodingAgentRegistry {
     // Daily cost breakdown by agent
     const dailyCostMap = new Map<string, DailyCost>();
     for (const s of sessions) {
-      const date = s.start_time.slice(0, 10);
+      const date = localDateStr(new Date(s.start_time));
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
       const key = `${date}:${s.agent}`;
       const existing = dailyCostMap.get(key) ?? { date, cost: 0, agent: s.agent };
@@ -337,7 +338,7 @@ export class CodingAgentRegistry {
       if (!s.start_time) continue;
       const d = new Date(s.start_time);
       if (isNaN(d.getTime())) continue;
-      activeDates.add(s.start_time.slice(0, 10));
+      activeDates.add(localDateStr(new Date(s.start_time)));
       dowCounts[d.getDay()]++;
       hourCounts[d.getHours()]++;
     }
@@ -369,7 +370,7 @@ export class CodingAgentRegistry {
     // Build daily activity from sessions
     const dailyMap = new Map<string, DailyActivity>();
     for (const s of sessions) {
-      const date = s.start_time.slice(0, 10);
+      const date = localDateStr(new Date(s.start_time));
       if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
       const existing = dailyMap.get(date) ?? { date, messageCount: 0, sessionCount: 0, toolCallCount: 0 };
       existing.messageCount += s.user_message_count + s.assistant_message_count;
@@ -517,7 +518,7 @@ export class CodingAgentRegistry {
         // Daily cost for this project
         const dailyCostMap = new Map<string, DailyCost>();
         for (const s of data.sessions) {
-          const date = s.start_time.slice(0, 10);
+          const date = localDateStr(new Date(s.start_time));
           if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) continue;
           const key = `${date}:${s.agent}`;
           const existing = dailyCostMap.get(key) ?? { date, cost: 0, agent: s.agent };
@@ -761,7 +762,7 @@ export class CodingAgentRegistry {
       const totalToolErrors = userSessions.reduce((s, sess) => s + sess.total_tool_errors, 0);
       const totalDuration = userSessions.reduce((s, sess) => s + sess.duration_minutes, 0);
       const agents = [...new Set(userSessions.map(s => s.agent))];
-      const activeDates = new Set(userSessions.map(s => s.start_time.slice(0, 10)));
+      const activeDates = new Set(userSessions.map(s => localDateStr(new Date(s.start_time))));
 
       // Top 3 projects by session count
       const projectCounts = new Map<string, number>();

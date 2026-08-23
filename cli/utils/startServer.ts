@@ -41,9 +41,11 @@ const MAX_PORT_ATTEMPTS = 10;
  * Start the Express server, auto-incrementing port if already in use
  */
 export async function startServer(options: StartOptions): Promise<number> {
-  process.env.VITE_BACKEND_PORT = String(options.port);
-  if (options.headless) process.env.AGENT_HEALTH_HEADLESS = '1';
-  if (options.apiKey) process.env.AGENT_HEALTH_API_KEY = options.apiKey;
+  // Set environment variables for the server (use new AH_* names; legacy
+  // AGENT_HEALTH_* names are still read by the readEnv compatibility shim).
+  process.env.AH_PORT = String(options.port);
+  if (options.headless) process.env.AH_HEADLESS = '1';
+  if (options.apiKey) process.env.AH_API_KEY = options.apiKey;
 
   const packageRoot = findPackageRoot();
   const serverPath = join(packageRoot, 'server', 'dist', 'app.js');
@@ -72,6 +74,12 @@ export async function startServer(options: StartOptions): Promise<number> {
   };
 
   const actualPort = await tryListen(options.port);
+  // Keep AH_PORT in lockstep with the port we actually bound. Without this,
+  // an auto-incremented server (e.g. 4001 busy → bound 4002) leaves
+  // AH_PORT=4001, so every self-call (judge proxy, assistant, traces, pi
+  // agentic judge) dials the *original* port — which may be a foreign
+  // instance such as the live demo. See AGENTS.md → server lifecycle.
+  process.env.AH_PORT = String(actualPort);
   if (actualPort !== options.port) {
     process.env.VITE_BACKEND_PORT = String(actualPort);
   }

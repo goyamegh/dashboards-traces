@@ -15,6 +15,7 @@ jest.mock('@/services/storage/opensearchClient', () => ({
     getByTestCase: jest.fn(),
     getAll: jest.fn(),
     getById: jest.fn(),
+    getByIds: jest.fn(),
     delete: jest.fn(),
     partialUpdate: jest.fn(),
     count: jest.fn(),
@@ -122,6 +123,16 @@ describe('AsyncRunStorage', () => {
         })
       );
     });
+
+    it('persists sessionId (Strategy D) through toStorageFormat (#313)', async () => {
+      mockOsRuns.create.mockResolvedValue(createMockStorageRun('run-sd'));
+      const report = createMockReport();
+      (report as any).sessionId = 'sess-roundtrip';
+      await asyncRunStorage.saveReport(report);
+      expect(mockOsRuns.create).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: 'sess-roundtrip' })
+      );
+    });
   });
 
   describe('getReportsByTestCase', () => {
@@ -144,6 +155,42 @@ describe('AsyncRunStorage', () => {
       await asyncRunStorage.getReportsByTestCase('tc-1', { limit: 50 });
 
       expect(mockOsRuns.getByTestCase).toHaveBeenCalledWith('tc-1', 50, 0);
+    });
+
+    // The runs list on the Test Case detail page reads runs through this
+    // method; if `name` / `description` / `evaluatorId` aren't carried
+    // through `toTestCaseRun`, the page renders every row with the
+    // generated `Run <short-id>` fallback even when the user supplied a
+    // custom name in the Configure Run dialog. These three fields are the
+    // ones the *Configure Run* form lets the user fill in, so they're the
+    // ones that have to round-trip cleanly.
+    it('preserves name, description, and evaluatorId from the stored run', async () => {
+      const stored = {
+        ...createMockStorageRun('run-named-1'),
+        name: 'Baseline',
+        description: 'Smoke test of the v2 prompt',
+        evaluatorId: 'system-rca',
+      };
+      mockOsRuns.getByTestCase.mockResolvedValue({ runs: [stored as any], total: 1 });
+
+      const result = await asyncRunStorage.getReportsByTestCase('tc-1');
+
+      expect(result.reports[0].name).toBe('Baseline');
+      expect(result.reports[0].description).toBe('Smoke test of the v2 prompt');
+      expect(result.reports[0].evaluatorId).toBe('system-rca');
+    });
+
+    it('leaves name/description undefined for legacy runs that pre-date the fields', async () => {
+      // Older stored runs simply don't have these keys — the read mapper
+      // must not invent values; the UI's `getRunDisplayName` fallback
+      // handles the missing-name case by synthesising `Run <short-id>`.
+      const stored = createMockStorageRun('run-legacy-1');
+      mockOsRuns.getByTestCase.mockResolvedValue({ runs: [stored], total: 1 });
+
+      const result = await asyncRunStorage.getReportsByTestCase('tc-1');
+
+      expect(result.reports[0].name).toBeUndefined();
+      expect(result.reports[0].description).toBeUndefined();
     });
 
     it('passes offset to opensearch client', async () => {
@@ -188,12 +235,66 @@ describe('AsyncRunStorage', () => {
       expect(result?.id).toBe('run-1');
     });
 
+    it('reads back sessionId from storage for Strategy D (#313)', async () => {
+      const mockRun = { ...createMockStorageRun('run-1'), sessionId: 'sess-read' } as any;
+      mockOsRuns.getById.mockResolvedValue(mockRun);
+
+      const result = await asyncRunStorage.getReportById('run-1');
+
+      expect(result?.sessionId).toBe('sess-read');
+    });
+
+    it('maps judgeModelId from storage so recovery judges with the configured model', async () => {
+      const mockRun = { ...createMockStorageRun('run-1'), judgeModelId: 'claude-sonnet-4-6' } as any;
+      mockOsRuns.getById.mockResolvedValue(mockRun);
+
+      const result = await asyncRunStorage.getReportById('run-1');
+
+      expect(result?.judgeModelId).toBe('claude-sonnet-4-6');
+    });
+
     it('returns null when not found', async () => {
       mockOsRuns.getById.mockResolvedValue(null);
 
       const result = await asyncRunStorage.getReportById('non-existent');
 
       expect(result).toBeNull();
+    });
+  });
+
+  describe('getReportSummariesByIds', () => {
+    it('returns an empty map for no ids without hitting the API', async () => {
+      const result = await asyncRunStorage.getReportSummariesByIds([]);
+      expect(result).toEqual({});
+      expect(mockOsRuns.getByIds).not.toHaveBeenCalled();
+    });
+
+    it('requests only lightweight status fields and maps traceId → runId', async () => {
+      mockOsRuns.getByIds.mockResolvedValue([
+        { id: 'r-1', status: 'completed', passFailStatus: 'passed', metricsStatus: 'ready', traceId: 'otel-1', createdAt: '2024-01-01T00:00:00Z' },
+      ]);
+
+      const result = await asyncRunStorage.getReportSummariesByIds(['r-1']);
+
+      expect(mockOsRuns.getByIds).toHaveBeenCalledTimes(1);
+      const [ids, options] = mockOsRuns.getByIds.mock.calls[0];
+      expect(ids).toEqual(['r-1']);
+      expect(options.fields).toEqual(expect.arrayContaining(['status', 'passFailStatus', 'metricsStatus', 'traceId', 'annotations']));
+      expect(result['r-1'].passFailStatus).toBe('passed');
+      expect(result['r-1'].metricsStatus).toBe('ready');
+      expect(result['r-1'].runId).toBe('otel-1');
+    });
+
+    it('chunks large id lists into batches of 100', async () => {
+      const ids = Array.from({ length: 250 }, (_, i) => `r-${i}`);
+      mockOsRuns.getByIds.mockResolvedValue([]);
+
+      await asyncRunStorage.getReportSummariesByIds(ids);
+
+      expect(mockOsRuns.getByIds).toHaveBeenCalledTimes(3);
+      expect(mockOsRuns.getByIds.mock.calls[0][0]).toHaveLength(100);
+      expect(mockOsRuns.getByIds.mock.calls[1][0]).toHaveLength(100);
+      expect(mockOsRuns.getByIds.mock.calls[2][0]).toHaveLength(50);
     });
   });
 

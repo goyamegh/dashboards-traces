@@ -11,7 +11,7 @@ import { v4 as uuidv4 } from 'uuid';
 const COVERAGE_DIR = path.join(process.cwd(), '.nyc_output');
 
 /**
- * Custom test fixtures for AgentEval E2E tests
+ * Custom test fixtures for Agent Health E2E tests
  */
 
 // Sample test case data
@@ -51,15 +51,15 @@ export async function navigateToPage(
 ): Promise<void> {
   const sidebarLinks: Record<string, string> = {
     'Overview': 'nav-overview',
-    'Test Cases': 'nav-test-cases',
-    'Benchmarks': 'nav-benchmarks',
+    'Test Cases': 'nav-evals3-test-cases',
+    'Benchmarks': 'nav-evals3-benchmarks',
     'Agent Traces': 'nav-agent-traces',
     'Settings': 'nav-settings',
   };
 
   const testId = sidebarLinks[pageName];
   await page.click(`[data-testid="${testId}"]`);
-  await page.waitForLoadState('networkidle');
+  await page.waitForLoadState('domcontentloaded');
 }
 
 // Helper to clear test data

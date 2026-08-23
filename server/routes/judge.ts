@@ -10,13 +10,57 @@
 import { Request, Response, Router } from 'express';
 import { BedrockClient, ListInferenceProfilesCommand } from '@aws-sdk/client-bedrock';
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
-import { evaluateTrajectory, parseBedrockError } from '../services/bedrockService';
-import { evaluateWithOpenAICompatible, parseOpenAICompatibleError } from '../services/judgeService';
-import { loadConfigSync } from '../../lib/config/index';
-import serverConfig from '../config';
+import { evaluateTrajectory, parseBedrockError } from '@/server/services/bedrockService';
+import { evaluateWithOpenAICompatible, parseOpenAICompatibleError } from '@/server/services/judgeService';
+import { evaluateWithLiteLLM, parseLiteLLMError } from '@/server/services/litellmJudgeService';
+import { evaluateWithClaudeCode, parseClaudeCodeError } from '@/server/services/claudeCodeJudgeService';
+import { evaluateWithPi, parsePiError } from '@/server/services/piJudgeService';
+import { evaluateWithPiAgenticTrace } from '@/server/services/piAgenticJudgeService';
+import { evaluateWithAgenticJudge, parseAgenticJudgeError } from '@/server/services/agenticJudgeService';
+import { loadConfigSync } from '@/lib/config/index';
+import serverConfig from '@/server/config';
 import { debug } from '@/lib/debug';
+import { readEnv } from '@/lib/envCompat';
+import { getStorageModule } from '@/server/adapters';
+import { getDefaultEvaluator, getSystemEvaluatorById, isSystemEvaluatorId } from '@/server/prompts/evaluatorTemplates';
+import type { Evaluator } from '@/types';
 
 const router = Router();
+
+/**
+ * SSRF guard for model-discovery endpoints that forward a provider credential
+ * (Anthropic API key, GitHub token) to an operator-configurable base URL.
+ *
+ * Both URLs are env-driven (`ANTHROPIC_BASE_URL`, `GITHUB_MODELS_URL`) so an
+ * operator can point them at a proxy/gateway — but a credential must never be
+ * sent to an arbitrary host. We require https and an allowlisted hostname
+ * (the provider's own hosts, plus localhost for test proxies). Operators who
+ * genuinely need a different host must opt in explicitly via
+ * `AH_ALLOW_CUSTOM_MODEL_ENDPOINTS=1`, which is the documented escape hatch.
+ *
+ * Returns `null` when the URL is safe to call; otherwise an error string
+ * (the caller returns 400 and does NOT forward the credential).
+ */
+function validateDiscoveryUrl(rawUrl: string, allowedHosts: string[]): string | null {
+  let u: URL;
+  try {
+    u = new URL(rawUrl);
+  } catch {
+    return `Invalid discovery URL: ${rawUrl}`;
+  }
+  if (u.protocol !== 'https:' && u.hostname !== 'localhost' && u.hostname !== '127.0.0.1') {
+    return `Refusing to send credential over non-https URL: ${u.protocol}//${u.hostname}`;
+  }
+  const optIn = readEnv('AH_ALLOW_CUSTOM_MODEL_ENDPOINTS', 'AGENT_HEALTH_ALLOW_CUSTOM_MODEL_ENDPOINTS') === '1';
+  if (optIn) return null;
+  const host = u.hostname.toLowerCase();
+  const ok = allowedHosts.some(h => host === h || host.endsWith(`.${h}`)) || host === 'localhost' || host === '127.0.0.1';
+  if (!ok) {
+    return `Refusing to forward credential to non-allowlisted host '${host}'. ` +
+      `Allowed: ${allowedHosts.join(', ')}. Set AH_ALLOW_CUSTOM_MODEL_ENDPOINTS=1 to override.`;
+  }
+  return null;
+}
 
 /**
  * Generate mock evaluation result for demo mode
@@ -162,11 +206,130 @@ router.get('/api/judge/bedrock-models', async (_req: Request, res: Response) => 
 });
 
 /**
+ * GET /api/judge/anthropic-models
+ * Discover available models from the Anthropic direct API (GET /v1/models).
+ * Anthropic ids (e.g. `claude-opus-4-1-20250805`) differ from the Bedrock
+ * inference-profile ids and the Copilot slugs for the same model — each
+ * provider names the same model differently, so discovery per provider is
+ * the only reliable way to get usable ids.
+ * Returns { models: Array<{id, name}>, configured: boolean }
+ */
+router.get('/api/judge/anthropic-models', async (_req: Request, res: Response) => {
+  const configured = !!serverConfig.ANTHROPIC_API_KEY;
+  const modelsUrl = `${serverConfig.ANTHROPIC_BASE_URL.replace(/\/$/, '')}/v1/models`;
+  debug('JudgeAPI', 'Fetching Anthropic models from:', modelsUrl);
+  if (!configured) {
+    return res.status(503).json({
+      error: 'Anthropic API not configured — set ANTHROPIC_API_KEY.',
+      endpoint: modelsUrl,
+      configured,
+    });
+  }
+  // SSRF guard: never forward ANTHROPIC_API_KEY to a non-allowlisted host.
+  const anthropicUrlError = validateDiscoveryUrl(modelsUrl, ['api.anthropic.com']);
+  if (anthropicUrlError) {
+    return res.status(400).json({ error: anthropicUrlError, endpoint: modelsUrl, configured });
+  }
+  try {
+    const response = await fetch(modelsUrl, {
+      headers: {
+        'x-api-key': serverConfig.ANTHROPIC_API_KEY,
+        'anthropic-version': '2023-06-01',
+      },
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      return res.status(response.status).json({
+        error: `Anthropic /v1/models returned ${response.status}`,
+        details: body,
+        endpoint: modelsUrl,
+        configured,
+      });
+    }
+    const data = await response.json();
+    // Anthropic /v1/models returns { data: [{ id, display_name, ... }] }
+    const models = (data.data || []).map((m: any) => ({
+      id: m.id,
+      name: m.display_name || m.id,
+    })).filter((m: any) => m.id);
+    debug('JudgeAPI', 'Discovered', models.length, 'Anthropic models');
+    return res.json({ models, endpoint: modelsUrl, configured });
+  } catch (err: any) {
+    return res.status(503).json({
+      error: `Cannot reach Anthropic API: ${err.message}`,
+      endpoint: modelsUrl,
+      configured,
+    });
+  }
+});
+
+/**
+ * GET /api/judge/github-models
+ * Discover models from the GitHub Models catalog (and, by extension, the
+ * Copilot model surface). Returns the vendor-prefixed ids GitHub uses
+ * (e.g. `openai/gpt-4o`, `anthropic/claude-3.5-sonnet`) — these are the
+ * ids you'd reference when judging via Copilot/GitHub Models, distinct from
+ * the Anthropic-direct and Bedrock ids for the same underlying model.
+ * Returns { models: Array<{id, name}>, configured: boolean }
+ */
+router.get('/api/judge/github-models', async (_req: Request, res: Response) => {
+  const configured = !!serverConfig.GITHUB_TOKEN;
+  const url = serverConfig.GITHUB_MODELS_URL;
+  debug('JudgeAPI', 'Fetching GitHub Models catalog from:', url);
+  if (!configured) {
+    return res.status(503).json({
+      error: 'GitHub Models not configured — set GITHUB_TOKEN (a PAT with models:read).',
+      endpoint: url,
+      configured,
+    });
+  }
+  // SSRF guard: never forward GITHUB_TOKEN to a non-allowlisted host.
+  const githubUrlError = validateDiscoveryUrl(url, ['models.github.ai', 'api.githubcopilot.com', 'github.com']);
+  if (githubUrlError) {
+    return res.status(400).json({ error: githubUrlError, endpoint: url, configured });
+  }
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${serverConfig.GITHUB_TOKEN}`,
+        'Accept': 'application/vnd.github+json',
+        'X-GitHub-Api-Version': '2022-11-28',
+      },
+    });
+    if (!response.ok) {
+      const body = await response.text();
+      return res.status(response.status).json({
+        error: `GitHub Models catalog returned ${response.status}`,
+        details: body,
+        endpoint: url,
+        configured,
+      });
+    }
+    const data = await response.json();
+    // GitHub Models catalog returns an array of { id, name, publisher, ... }
+    // (older shape) or { models: [...] }. Handle both.
+    const list: any[] = Array.isArray(data) ? data : (data.models || data.data || []);
+    const models = list.map((m: any) => ({
+      id: m.id || m.name,
+      name: m.friendly_name || m.name || m.id,
+    })).filter((m: any) => m.id);
+    debug('JudgeAPI', 'Discovered', models.length, 'GitHub Models');
+    return res.json({ models, endpoint: url, configured });
+  } catch (err: any) {
+    return res.status(503).json({
+      error: `Cannot reach GitHub Models catalog: ${err.message}`,
+      endpoint: url,
+      configured,
+    });
+  }
+});
+
+/**
  * POST /api/judge - Evaluate agent trajectory
  */
 router.post('/api/judge', async (req: Request, res: Response) => {
   try {
-    const { trajectory, expectedOutcomes, expectedTrajectory, logs, modelId } = req.body;
+    const { trajectory, expectedOutcomes, expectedTrajectory, logs, modelId, evaluatorId, runId, agents } = req.body;
 
     // Validate required fields
     if (!trajectory || !Array.isArray(trajectory) || trajectory.length === 0) {
@@ -181,19 +344,47 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       });
     }
 
-    // Determine provider from model config
-    // Look up by model key first, then by model_id for full Bedrock model IDs
+    // Load evaluator if specified, otherwise use default
+    let evaluator: Evaluator;
+    if (evaluatorId) {
+      debug('JudgeAPI', 'Loading evaluator:', evaluatorId);
+      // Check system evaluators first (they aren't stored in the storage backend)
+      if (isSystemEvaluatorId(evaluatorId)) {
+        const systemEval = getSystemEvaluatorById(evaluatorId);
+        if (!systemEval) {
+          return res.status(400).json({
+            error: `System evaluator not found: ${evaluatorId}`
+          });
+        }
+        evaluator = systemEval;
+      } else {
+        const storage = getStorageModule();
+        const loadedEvaluator = await storage.evaluators.getById(evaluatorId);
+        if (!loadedEvaluator) {
+          return res.status(400).json({
+            error: `Evaluator not found: ${evaluatorId}`
+          });
+        }
+        evaluator = loadedEvaluator;
+      }
+    } else {
+      debug('JudgeAPI', 'Using default evaluator (backward compatible)');
+      evaluator = getDefaultEvaluator();
+    }
+
+    // Determine provider from evaluator's inferenceConfig or model config
+    // Priority: evaluator.inferenceConfig.provider > modelConfig.provider > 'bedrock'
     const config = loadConfigSync();
     let modelConfig = config.models[modelId];
     if (!modelConfig) {
       // Try to find by model_id (in case full Bedrock ID was passed)
       modelConfig = Object.values(config.models).find(m => m.model_id === modelId);
     }
-    const provider = modelConfig?.provider || 'bedrock';
+    const provider = evaluator.inferenceConfig?.provider || modelConfig?.provider || 'bedrock';
 
-    // Use the resolved model_id from config, not the key
-    const resolvedModelId = modelConfig?.model_id || modelId;
-    debug('JudgeAPI', 'Using provider:', provider, 'model:', resolvedModelId);
+    // Use the resolved model_id: evaluator override > config > provided
+    const resolvedModelId = evaluator.inferenceConfig?.modelId || modelConfig?.model_id || modelId;
+    debug('JudgeAPI', 'Using provider:', provider, 'model:', resolvedModelId, 'evaluator:', evaluator.name);
 
     // Route to appropriate provider
     if (provider === 'demo') {
@@ -202,11 +393,108 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       return res.json(mockResult);
     }
 
+    if (provider === 'claude-code') {
+      debug('JudgeAPI', 'Claude Code provider - spawning claude CLI');
+      // Pass the resolved evaluator so its `systemPrompt` replaces the
+      // hardcoded baseline (and `scoringConfig.metrics` drives dynamic metric
+      // extraction). Pre-fix this was the silent-prompt-drop bug.
+      const result = await evaluateWithClaudeCode(
+        { trajectory, expectedOutcomes, expectedTrajectory, logs },
+        evaluator
+      );
+      return res.json(result);
+    }
+
+    if (provider === 'pi') {
+      debug('JudgeAPI', 'Pi provider - spawning pi CLI');
+      // Pass the resolved evaluator so its `systemPrompt` is forwarded to
+      // the pi CLI via `--system-prompt` instead of the hardcoded baseline.
+      const result = await evaluateWithPi(
+        { trajectory, expectedOutcomes, expectedTrajectory, logs },
+        evaluator
+      );
+      return res.json(result);
+    }
+
+    if (provider === 'agent') {
+      // Agent trace judge: an LLM judge with read-only, run-scoped trace tools
+      // (query_spans/query_logs) so it can verify claims against the run's real
+      // OTel spans/logs instead of trusting the trajectory text. runId is the
+      // scoping invariant for those tools — without it they have nothing to
+      // read, so fail loudly rather than spawn a judge that can only report
+      // "no run id" (see piAgenticJudgeService).
+      if (!runId) {
+        return res.status(400).json({
+          error: 'runId is required for the agent (trace) judge provider — its trace tools scope to it'
+        });
+      }
+      // Defense in depth against cross-run/cross-tenant exfiltration: the trace
+      // tools will happily read spans/logs for whatever runId they're given, so
+      // a direct caller could pass a benign trajectory but a *different* run's
+      // runId and leak that run's data through the judge's reasoning text. Bind
+      // the runId to the trajectory the request also carries: when the
+      // trajectory steps carry runId(s) (the SDK path always derives runId from
+      // the judged result, so they match), the requested runId MUST be one of
+      // them. When the trajectory carries no runId we cannot corroborate it —
+      // this provider then trusts the caller and is single-tenant-only (see
+      // AGENTS.md "Trace correlation"; gate it behind auth in shared clusters).
+      const trajectoryRunIds = new Set(
+        (trajectory as any[])
+          .map((s) => s?.runId)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0)
+      );
+      if (trajectoryRunIds.size > 0 && !trajectoryRunIds.has(runId)) {
+        return res.status(403).json({
+          error:
+            'runId does not match the submitted trajectory — the agent (trace) judge ' +
+            'may only inspect the run that produced its trajectory',
+        });
+      }
+      debug('JudgeAPI', 'Agent trace judge - evaluating with run-scoped trace tools (runId=' + runId + ')');
+      // Pass the resolved evaluator so a saved `systemPrompt` replaces the
+      // default base prompt (the trace-tool addendum is still appended
+      // inside the service so the judge always knows query_spans/query_logs
+      // exist).
+      const result = await evaluateWithPiAgenticTrace(
+        { trajectory, expectedOutcomes, expectedTrajectory, logs, runId, modelId: resolvedModelId, agents },
+        evaluator
+      );
+      return res.json(result);
+    }
+
+    if (provider === 'agentic') {
+      debug('JudgeAPI', 'Agentic judge provider - running agent-based evaluation');
+      const judgeConfig = config.judge || {};
+      const backend = resolvedModelId === 'agentic-custom' ? 'custom' : 'claude-code';
+      // Pass the resolved evaluator so its `systemPrompt` replaces the
+      // baseline (the AGENTIC_JUDGE_ADDENDUM stays appended).
+      const result = await evaluateWithAgenticJudge(
+        { trajectory, expectedOutcomes, expectedTrajectory, logs, runId },
+        {
+          backend,
+          endpoint: judgeConfig.endpoint,
+        },
+        evaluator
+      );
+      return res.json(result);
+    }
+
     if (provider === 'openai-compatible') {
       debug('JudgeAPI', 'OpenAI-compatible provider - calling endpoint');
       const result = await evaluateWithOpenAICompatible(
         { trajectory, expectedOutcomes, expectedTrajectory, logs },
-        resolvedModelId
+        resolvedModelId,
+        evaluator
+      );
+      return res.json(result);
+    }
+
+    if (provider === 'litellm') {
+      debug('JudgeAPI', 'LiteLLM provider - calling OpenAI-compatible endpoint');
+      const result = await evaluateWithLiteLLM(
+        { trajectory, expectedOutcomes, expectedTrajectory, logs },
+        resolvedModelId,
+        evaluator
       );
       return res.json(result);
     }
@@ -217,7 +505,7 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       expectedOutcomes,
       expectedTrajectory,
       logs
-    }, resolvedModelId);
+    }, resolvedModelId, evaluator);
 
     res.json(result);
 
@@ -236,9 +524,17 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       }
     })();
 
-    const errorMessage = provider === 'openai-compatible'
-      ? parseOpenAICompatibleError(error)
-      : parseBedrockError(error);
+    const errorMessage = provider === 'agentic'
+      ? parseAgenticJudgeError(error)
+      : provider === 'pi' || provider === 'agent'
+        ? parsePiError(error)
+        : provider === 'claude-code'
+          ? parseClaudeCodeError(error)
+          : provider === 'litellm'
+            ? parseLiteLLMError(error)
+            : provider === 'openai-compatible'
+              ? parseOpenAICompatibleError(error)
+              : parseBedrockError(error);
 
     res.status(500).json({
       error: `Judge evaluation failed: ${errorMessage}`,

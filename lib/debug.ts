@@ -17,19 +17,38 @@ import path from 'path';
 
 const isBrowser = typeof window !== 'undefined';
 
-const CONFIG_FILENAME = 'agent-health.config.json';
+// Config v2: debug lives in the project runtime state file
+// (<cwd>/.agent-health/state.json). In code-first mode (an
+// agent-health.config.ts is present) it is in-memory only (DEBUG env still honored).
+// Kept fs/path-only here because this module is isomorphic (browser + server);
+// statePaths.ts is server-only.
+const STATE_DIR = '.agent-health';
+const STATE_FILE = 'state.json';
+const AUTHORED_CONFIG_NAMES = ['agent-health.config.ts', 'agent-health.config.js', 'agent-health.config.mjs'];
 
-// Server-side: persist debug state in agent-health.config.json
+function debugIsCodeFirst(): boolean {
+  // Mirror statePaths.isCodeFirstMode: an authored config at project OR user
+  // scope (~/.agent-health/) means code-first. os.homedir() is avoided so this
+  // isomorphic module stays browser-safe; this path only runs server-side.
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  return AUTHORED_CONFIG_NAMES.some((n) =>
+    fs.existsSync(path.join(process.cwd(), n)) ||
+    (!!home && fs.existsSync(path.join(home, STATE_DIR, n)))
+  );
+}
+function debugStatePath(): string {
+  return path.join(process.cwd(), STATE_DIR, STATE_FILE);
+}
+
+// Server-side: persist debug state in the runtime state file
 let serverDebugEnabled = false;
 
-// Initialize server debug state from agent-health.config.json or env var
+// Initialize server debug state from the state file (ui-first) or env var
 if (!isBrowser) {
   try {
-    const configPath = path.join(process.cwd(), CONFIG_FILENAME);
-
-    if (fs.existsSync(configPath)) {
-      const content = fs.readFileSync(configPath, 'utf-8');
-      const config = JSON.parse(content) || {};
+    const statePath = debugStatePath();
+    if (!debugIsCodeFirst() && fs.existsSync(statePath)) {
+      const config = JSON.parse(fs.readFileSync(statePath, 'utf-8')) || {};
       serverDebugEnabled = config.debug === true;
     } else if (process.env?.DEBUG === 'true') {
       serverDebugEnabled = true;
@@ -73,18 +92,24 @@ export function setDebugEnabled(enabled: boolean): void {
     return;
   }
 
-  // Server-side: update memory + persist to JSON config
+  // Server-side: update memory + persist to the runtime state file
   serverDebugEnabled = enabled;
 
+  // Code-first mode: the state file is ignored; keep debug in-memory only.
+  if (debugIsCodeFirst()) {
+    console.info(`[Debug] code-first mode (agent-health.config.ts present): debug ${enabled ? 'enabled' : 'disabled'} in-memory only (not persisted)`);
+    return;
+  }
+
   try {
-    const configPath = path.join(process.cwd(), CONFIG_FILENAME);
+    const dir = path.join(process.cwd(), STATE_DIR);
+    const statePath = debugStatePath();
 
     let config: any = {};
-    if (fs.existsSync(configPath)) {
-      const content = fs.readFileSync(configPath, 'utf-8');
-      const parsed = JSON.parse(content);
+    if (fs.existsSync(statePath)) {
+      const parsed = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
       if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-        console.warn(`[Debug] Config file contains non-object content, skipping write to avoid clobber`);
+        console.warn(`[Debug] State file contains non-object content, skipping write to avoid clobber`);
         return;
       }
       config = parsed;
@@ -92,10 +117,11 @@ export function setDebugEnabled(enabled: boolean): void {
 
     config.debug = enabled;
 
-    fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
-    console.info(`[Debug] Debug mode ${enabled ? 'enabled' : 'disabled'}, persisted to ${CONFIG_FILENAME}`);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(statePath, JSON.stringify(config, null, 2) + '\n', 'utf-8');
+    console.info(`[Debug] Debug mode ${enabled ? 'enabled' : 'disabled'}, persisted to ${STATE_DIR}/${STATE_FILE}`);
   } catch (err) {
-    console.warn(`[Debug] Failed to persist debug state to ${CONFIG_FILENAME}:`, err);
+    console.warn(`[Debug] Failed to persist debug state:`, err);
   }
 }
 

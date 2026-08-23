@@ -22,6 +22,7 @@
  */
 
 import * as dotenv from 'dotenv';
+import * as path from 'path';
 import { BaseAGUIAdapter, BaseAGUIConfig } from './ag_ui/base_ag_ui_adapter';
 import { AgentFactory } from './agents/agent_factory';
 import { MCPServerConfig } from './types/mcp_types';
@@ -29,9 +30,19 @@ import { Logger } from './utils/logger';
 import { AGUIAuditLogger } from './utils/ag_ui_audit_logger';
 import { ConfigLoader } from './config/config_loader';
 import { HTTPServer } from './server/http_server';
+import { initTelemetry, shutdownTelemetry } from './telemetry/provider';
 
-// Load environment variables
-dotenv.config();
+// Load environment variables — own dir first, then parent project .env
+// (so observio inherits the agent-health config when run as a built-in
+// agent and falls back to its own .env when standalone). Both paths resolve
+// via __dirname so they work regardless of process.cwd() — launching from
+// the repo root via an npm script would otherwise resolve `'../.env'`
+// relative to that root.
+dotenv.config({ path: path.join(__dirname, '..', '.env') });
+dotenv.config({ path: path.join(__dirname, '..', '..', '.env') });
+
+// Initialize OTel telemetry (reads OPENSEARCH_LOGS_* env vars)
+initTelemetry();
 
 class BaseAGUIServer {
   private adapter: BaseAGUIAdapter;
@@ -114,6 +125,7 @@ async function main() {
     process.on('SIGINT', async () => {
       logger.info('Received SIGINT, shutting down gracefully');
       console.log('\n🛑 Shutting down HTTP server...');
+      await shutdownTelemetry();
       await server.stop();
       process.exit(0);
     });

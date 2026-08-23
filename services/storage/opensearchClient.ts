@@ -70,6 +70,13 @@ export interface StorageTestCase {
   createdAt: string;
   updatedAt: string;
   lastRunAt?: string;
+  /** Source provenance for SDK / code-imported test cases. Used by the
+   *  CollapsibleTestCaseDefinition UI to distinguish SDK tests (path is
+   *  the source of truth) from JSON tests (the row itself is the source
+   *  of truth). Already round-trips through OpenSearch — the storage
+   *  layer was just dropping it on read. */
+  sourceFile?: string;
+  sourceHash?: string;
 }
 
 export interface StorageBenchmarkRunConfig {
@@ -85,7 +92,7 @@ export interface StorageBenchmarkRunConfig {
   results?: Record<string, { reportId: string; status: string; error?: string }>;
   status?: string;
   error?: string;
-  stats?: { passed: number; failed: number; pending: number; total: number };
+  stats?: { passed: number; failed: number; pending: number; total: number; errored?: number };
 }
 
 export interface StorageBenchmark {
@@ -181,7 +188,26 @@ export const storageAdmin = {
   /**
    * Check storage health/connectivity
    */
-  async health(): Promise<{ status: string; cluster?: unknown; error?: string }> {
+  async health(): Promise<{
+    status: string;
+    cluster?: unknown;
+    error?: string;
+    /** Active storage backend. 'file' means OpenSearch is unavailable / not configured; 'error' means configured-but-unreachable. */
+    backend?: 'file' | 'opensearch' | 'error';
+    /**
+     * Real OpenSearch connectivity, present when OpenSearch is configured but
+     * the active backend fell back to file storage. Top-level `status` reflects
+     * the active (possibly file) backend, NOT OpenSearch — use this to report
+     * true OpenSearch connectivity. Shape mirrors testStorageConnection().
+     */
+    opensearch?: {
+      status: string;
+      message?: string;
+      latencyMs?: number;
+      clusterName?: string;
+      clusterStatus?: string;
+    };
+  }> {
     return request('GET', '/health');
   },
 
@@ -208,8 +234,9 @@ export const testCaseStorage = {
    * @param options.fields - 'summary' for lightweight list-view payload
    * @param options.size - page size for pagination
    * @param options.after - cursor token for next page
+   * @param options.includeSample - whether to include sample/demo data
    */
-  async getAll(options?: { fields?: 'summary'; size?: number; after?: string }): Promise<{
+  async getAll(options?: { fields?: 'summary'; size?: number; after?: string; includeSample?: boolean }): Promise<{
     testCases: StorageTestCase[];
     total: number;
     after?: string | null;
@@ -219,6 +246,7 @@ export const testCaseStorage = {
     if (options?.fields) params.append('fields', options.fields);
     if (options?.size) params.append('size', options.size.toString());
     if (options?.after) params.append('after', options.after);
+    if (options?.includeSample !== undefined) params.append('includeSample', String(options.includeSample));
     const query = params.toString() ? `?${params.toString()}` : '';
     return request('GET', `/test-cases${query}`);
   },
@@ -306,9 +334,13 @@ export const testCaseStorage = {
 export const benchmarkStorage = {
   /**
    * Get all benchmarks
+   * @param options.includeSample - whether to include sample/demo data
    */
-  async getAll(): Promise<StorageBenchmark[]> {
-    const result = await request<{ benchmarks: StorageBenchmark[]; total: number }>('GET', '/benchmarks');
+  async getAll(options?: { includeSample?: boolean }): Promise<StorageBenchmark[]> {
+    const params = new URLSearchParams();
+    if (options?.includeSample !== undefined) params.append('includeSample', String(options.includeSample));
+    const query = params.toString() ? `?${params.toString()}` : '';
+    const result = await request<{ benchmarks: StorageBenchmark[]; total: number }>('GET', `/benchmarks${query}`);
     return result.benchmarks;
   },
 
@@ -409,6 +441,17 @@ export const runStorage = {
     }
     const query = params.toString() ? `?${params.toString()}` : '';
     return request('GET', `/runs${query}`);
+  },
+
+  /**
+   * Batch-get runs by ID in one request (server fans out in parallel).
+   * Used by the comparison page to load every cell's report at once.
+   */
+  async getByIds(ids: string[], options?: { fields?: string[] }): Promise<StorageRun[]> {
+    if (ids.length === 0) return [];
+    const fieldsParam = options?.fields?.length ? `&fields=${options.fields.map(encodeURIComponent).join(',')}` : '';
+    const result = await request<{ runs: StorageRun[]; total: number }>('GET', `/runs?ids=${ids.map(encodeURIComponent).join(',')}${fieldsParam}`);
+    return result.runs;
   },
 
   /**

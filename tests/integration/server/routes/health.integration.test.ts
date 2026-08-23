@@ -18,19 +18,15 @@
  *   - Backend server running: npm run dev:server
  */
 
-const TEST_TIMEOUT = 30000;
+import { getTestBackendUrl } from '@/tests/integration/testConfig';
 
-// Test configuration
-const getTestConfig = () => {
-  return {
-    backendUrl: process.env.TEST_BACKEND_URL || 'http://localhost:4001',
-  };
-};
+const TEST_TIMEOUT = 30000;
+const BASE_URL = getTestBackendUrl();
 
 // Helper to check if backend is available
-const checkBackend = async (backendUrl: string): Promise<boolean> => {
+const checkBackend = async (): Promise<boolean> => {
   try {
-    const response = await fetch(`${backendUrl}/health`);
+    const response = await fetch(`${BASE_URL}/health`);
     return response.ok;
   } catch {
     return false;
@@ -39,15 +35,13 @@ const checkBackend = async (backendUrl: string): Promise<boolean> => {
 
 describe('Health Endpoint Integration Tests', () => {
   let backendAvailable = false;
-  let config: ReturnType<typeof getTestConfig>;
 
   beforeAll(async () => {
-    config = getTestConfig();
-    backendAvailable = await checkBackend(config.backendUrl);
+    backendAvailable = await checkBackend();
     if (!backendAvailable) {
       console.warn(
         'Backend not available at',
-        config.backendUrl,
+        BASE_URL,
         '- skipping integration tests'
       );
     }
@@ -59,7 +53,7 @@ describe('Health Endpoint Integration Tests', () => {
       async () => {
         if (!backendAvailable) return;
 
-        const response = await fetch(`${config.backendUrl}/health`);
+        const response = await fetch(`${BASE_URL}/health`);
 
         expect(response.ok).toBe(true);
         expect(response.status).toBe(200);
@@ -75,7 +69,7 @@ describe('Health Endpoint Integration Tests', () => {
       async () => {
         if (!backendAvailable) return;
 
-        const response = await fetch(`${config.backendUrl}/health`);
+        const response = await fetch(`${BASE_URL}/health`);
         const data = await response.json();
 
         // Version should be a valid semver string
@@ -91,7 +85,7 @@ describe('Health Endpoint Integration Tests', () => {
       async () => {
         if (!backendAvailable) return;
 
-        const response = await fetch(`${config.backendUrl}/health`);
+        const response = await fetch(`${BASE_URL}/health`);
         const data = await response.json();
 
         expect(data.service).toBe('agent-health');
@@ -104,18 +98,53 @@ describe('Health Endpoint Integration Tests', () => {
       async () => {
         if (!backendAvailable) return;
 
-        const response = await fetch(`${config.backendUrl}/health`);
+        const response = await fetch(`${BASE_URL}/health`);
         const data = await response.json();
 
         // Verify complete response structure
-        expect(data).toEqual({
-          status: 'ok',
-          version: expect.stringMatching(/^\d+\.\d+\.\d+/),
-          service: 'agent-health',
-          features: {
-            codingAgentAnalytics: true,
-          },
-        });
+        expect(data).toEqual(
+          expect.objectContaining({
+            status: 'ok',
+            version: expect.stringMatching(/^\d+\.\d+\.\d+/),
+            service: 'agent-health',
+            features: {
+              codingAgentAnalytics: true,
+            },
+          })
+        );
+      },
+      TEST_TIMEOUT
+    );
+
+    it(
+      'should expose an instance identity block (pid / cwd / port / startedAt)',
+      async () => {
+        if (!backendAvailable) return;
+
+        const response = await fetch(`${BASE_URL}/health`);
+        const data = await response.json();
+
+        // Backward-compatible: older backends predate the identity block. Only
+        // assert its shape when present (a fresh build always includes it; the
+        // authoritative end-to-end proof is portIsolation.integration.test.ts,
+        // which boots a known-fresh server).
+        if (!data.instance) {
+          console.warn(
+            'Backend at',
+            BASE_URL,
+            'reports no instance block (older build) — skipping identity assertions'
+          );
+          return;
+        }
+
+        expect(typeof data.instance.pid).toBe('number');
+        expect(typeof data.instance.cwd).toBe('string');
+        expect(data.instance.cwd.length).toBeGreaterThan(0);
+        // port may be undefined only if AH_PORT is unset; the running server
+        // always has it (CLI/serve set it), so assert it's a number here.
+        expect(typeof data.instance.port).toBe('number');
+        expect(typeof data.instance.startedAt).toBe('string');
+        expect(Number.isNaN(Date.parse(data.instance.startedAt))).toBe(false);
       },
       TEST_TIMEOUT
     );
@@ -126,7 +155,7 @@ describe('Health Endpoint Integration Tests', () => {
         if (!backendAvailable) return;
 
         const startTime = Date.now();
-        const response = await fetch(`${config.backendUrl}/health`);
+        const response = await fetch(`${BASE_URL}/health`);
         const endTime = Date.now();
 
         expect(response.ok).toBe(true);
@@ -141,9 +170,9 @@ describe('Health Endpoint Integration Tests', () => {
         if (!backendAvailable) return;
 
         const responses = await Promise.all([
-          fetch(`${config.backendUrl}/health`).then((r) => r.json()),
-          fetch(`${config.backendUrl}/health`).then((r) => r.json()),
-          fetch(`${config.backendUrl}/health`).then((r) => r.json()),
+          fetch(`${BASE_URL}/health`).then((r) => r.json()),
+          fetch(`${BASE_URL}/health`).then((r) => r.json()),
+          fetch(`${BASE_URL}/health`).then((r) => r.json()),
         ]);
 
         // All responses should be identical

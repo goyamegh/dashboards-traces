@@ -7,6 +7,7 @@ import { Request, Response } from 'express';
 import configRoutes from '@/server/routes/config';
 import { loadConfigSync } from '@/lib/config/index';
 import { addCustomAgent, removeCustomAgent, getCustomAgents, clearCustomAgents } from '@/server/services/customAgentStore';
+import { VALID_CONNECTOR_TYPES, BUILT_IN_AGENT_KEYS } from '@/lib/constants';
 
 // Mock config loader
 jest.mock('@/lib/config/index', () => ({
@@ -21,14 +22,20 @@ jest.mock('@/server/services/customAgentStore', () => ({
   clearCustomAgents: jest.fn(),
 }));
 
+// Mock observio agent service
+jest.mock('@/server/services/observioAgent', () => ({
+  waitForObservioReady: jest.fn().mockResolvedValue(undefined),
+  getObservioPort: jest.fn().mockReturnValue(3001),
+}));
+
 const mockLoadConfigSync = loadConfigSync as jest.MockedFunction<typeof loadConfigSync>;
 const mockGetCustomAgents = getCustomAgents as jest.MockedFunction<typeof getCustomAgents>;
 const mockAddCustomAgent = addCustomAgent as jest.MockedFunction<typeof addCustomAgent>;
 const mockRemoveCustomAgent = removeCustomAgent as jest.MockedFunction<typeof removeCustomAgent>;
 
 // Helper to create mock request/response
-function createMocks(body?: any, params?: any) {
-  const req = { body, params } as unknown as Request;
+function createMocks(body?: any, params?: any, query?: any) {
+  const req = { body, params, query: query || {} } as unknown as Request;
   const res = {
     json: jest.fn().mockReturnThis(),
     status: jest.fn().mockReturnThis(),
@@ -56,7 +63,7 @@ describe('Config Routes', () => {
   });
 
   describe('GET /api/agents', () => {
-    it('returns agents from config', () => {
+    it('returns agents from config', async () => {
       mockLoadConfigSync.mockReturnValue({
         agents: [
           { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
@@ -66,16 +73,16 @@ describe('Config Routes', () => {
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      handler(req, res);
+      await handler(req, res);
 
       expect(res.json).toHaveBeenCalledWith({
-        agents: [{ key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' }],
+        agents: [{ key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo', builtIn: true }],
         total: 1,
-        meta: { source: 'config' },
+        meta: { source: 'config', hasCustomAgents: false, customCount: 0, builtInCount: 1 },
       });
     });
 
-    it('strips hooks from serialized agent configs', () => {
+    it('strips hooks from serialized agent configs', async () => {
       const mockHook = jest.fn();
       mockLoadConfigSync.mockReturnValue({
         agents: [
@@ -92,7 +99,7 @@ describe('Config Routes', () => {
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      handler(req, res);
+      await handler(req, res);
 
       const response = (res.json as jest.Mock).mock.calls[0][0];
       expect(response.agents).toHaveLength(1);
@@ -101,7 +108,7 @@ describe('Config Routes', () => {
       expect(response.agents[0].name).toBe('Pulsar');
     });
 
-    it('handles agents without hooks gracefully', () => {
+    it('handles agents without hooks gracefully', async () => {
       mockLoadConfigSync.mockReturnValue({
         agents: [
           { key: 'basic', name: 'Basic Agent', endpoint: 'http://localhost:3000' },
@@ -112,7 +119,7 @@ describe('Config Routes', () => {
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      handler(req, res);
+      await handler(req, res);
 
       const response = (res.json as jest.Mock).mock.calls[0][0];
       expect(response.agents).toHaveLength(2);
@@ -120,7 +127,7 @@ describe('Config Routes', () => {
       expect(response.agents[1]).not.toHaveProperty('hooks');
     });
 
-    it('returns 500 when config loading fails', () => {
+    it('returns 500 when config loading fails', async () => {
       mockLoadConfigSync.mockImplementation(() => {
         throw new Error('Config load error');
       });
@@ -129,13 +136,13 @@ describe('Config Routes', () => {
       const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
 
       jest.spyOn(console, 'error').mockImplementation(() => {});
-      handler(req, res);
+      await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith({ error: 'Config load error' });
     });
 
-    it('returns merged built-in and custom agents', () => {
+    it('returns merged built-in and custom agents', async () => {
       mockLoadConfigSync.mockReturnValue({
         agents: [
           { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
@@ -149,7 +156,7 @@ describe('Config Routes', () => {
 
       const { req, res } = createMocks();
       const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      handler(req, res);
+      await handler(req, res);
 
       const response = (res.json as jest.Mock).mock.calls[0][0];
       expect(response.agents).toHaveLength(2);
@@ -290,11 +297,11 @@ describe('Config Routes', () => {
       expect(mockAddCustomAgent).not.toHaveBeenCalled();
     });
 
-    it('accepts all valid connectorType values', () => {
-      const validTypes = ['agui-streaming', 'rest', 'openai-compatible', 'subprocess', 'claude-code', 'mock'] as const;
+    it('accepts all valid connectorType values from VALID_CONNECTOR_TYPES', () => {
       const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
 
-      for (const connectorType of validTypes) {
+      // Use the shared constant — ensures test stays in sync with code
+      for (const connectorType of VALID_CONNECTOR_TYPES) {
         jest.clearAllMocks();
         const { req, res } = createMocks({
           name: 'Agent',
@@ -306,6 +313,34 @@ describe('Config Routes', () => {
         const addedAgent = mockAddCustomAgent.mock.calls[0][0];
         expect(addedAgent.connectorType).toBe(connectorType);
       }
+    });
+
+    it('accepts strands connector type', () => {
+      const { req, res } = createMocks({
+        name: 'Strands Agent',
+        endpoint: 'http://localhost:9000',
+        connectorType: 'strands',
+      });
+      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
+      handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
+      expect(addedAgent.connectorType).toBe('strands');
+    });
+
+    it('accepts langgraph connector type', () => {
+      const { req, res } = createMocks({
+        name: 'LangGraph Agent',
+        endpoint: 'http://localhost:8000',
+        connectorType: 'langgraph',
+      });
+      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
+      handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(201);
+      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
+      expect(addedAgent.connectorType).toBe('langgraph');
     });
 
     it('coerces non-boolean useTraces to false (truthy non-true values)', () => {
@@ -346,6 +381,158 @@ describe('Config Routes', () => {
 
       expect(res.status).toHaveBeenCalledWith(404);
       expect(res.json).toHaveBeenCalledWith({ error: 'Custom agent not found' });
+    });
+  });
+
+  describe('GET /api/agents - builtIn field and filter param', () => {
+    it('marks built-in agents with builtIn: true', async () => {
+      mockLoadConfigSync.mockReturnValue({
+        agents: [
+          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
+          { key: 'observio', name: 'Observio Sample Agent', endpoint: 'http://localhost:3001' },
+        ],
+        models: {},
+      } as any);
+
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
+      await handler(req, res);
+
+      const response = (res.json as jest.Mock).mock.calls[0][0];
+      const demoAgent = response.agents.find((a: any) => a.key === 'demo');
+      const observioAgent = response.agents.find((a: any) => a.key === 'observio');
+
+      expect(demoAgent.builtIn).toBe(true);
+      expect(observioAgent.builtIn).toBe(true);
+    });
+
+    it('marks config-file agents (non-built-in keys) with builtIn: false', async () => {
+      mockLoadConfigSync.mockReturnValue({
+        agents: [
+          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
+          { key: 'kiro', name: 'Kiro', endpoint: '/usr/local/bin/kiro' },
+          { key: 'pi-opus48', name: 'Pi (Opus 4.8)', endpoint: '/usr/local/bin/pi' },
+        ],
+        models: {},
+      } as any);
+
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
+      await handler(req, res);
+
+      const response = (res.json as jest.Mock).mock.calls[0][0];
+      expect(response.agents.find((a: any) => a.key === 'demo').builtIn).toBe(true);
+      expect(response.agents.find((a: any) => a.key === 'kiro').builtIn).toBe(false);
+      expect(response.agents.find((a: any) => a.key === 'pi-opus48').builtIn).toBe(false);
+      expect(response.meta.builtInCount).toBe(1);
+    });
+
+    it('marks custom agents with builtIn: false', async () => {
+      mockLoadConfigSync.mockReturnValue({
+        agents: [
+          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
+        ],
+        models: {},
+      } as any);
+
+      mockGetCustomAgents.mockReturnValue([
+        { key: 'custom-abc', name: 'My Custom Agent', endpoint: 'http://custom.example.com', isCustom: true, headers: {}, connectorType: 'agui-streaming' as const },
+      ]);
+
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
+      await handler(req, res);
+
+      const response = (res.json as jest.Mock).mock.calls[0][0];
+      const customAgent = response.agents.find((a: any) => a.key === 'custom-abc');
+
+      expect(customAgent).toBeDefined();
+      expect(customAgent.builtIn).toBe(false);
+    });
+
+    it('?filter=custom returns only custom agents', async () => {
+      mockLoadConfigSync.mockReturnValue({
+        agents: [
+          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
+          { key: 'observio', name: 'Observio', endpoint: 'http://localhost:3001' },
+        ],
+        models: {},
+      } as any);
+
+      mockGetCustomAgents.mockReturnValue([
+        { key: 'custom-xyz', name: 'My Custom', endpoint: 'http://custom.example.com', isCustom: true, headers: {}, connectorType: 'rest' as const },
+      ]);
+
+      const { req, res } = createMocks(undefined, undefined, { filter: 'custom' });
+      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
+      await handler(req, res);
+
+      const response = (res.json as jest.Mock).mock.calls[0][0];
+      // Should only contain custom agents
+      expect(response.agents).toHaveLength(1);
+      expect(response.agents[0].key).toBe('custom-xyz');
+      expect(response.agents.every((a: any) => a.builtIn === false)).toBe(true);
+    });
+
+    it('?filter=builtin returns only built-in agents', async () => {
+      mockLoadConfigSync.mockReturnValue({
+        agents: [
+          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
+          { key: 'claude-code', name: 'Claude Code', endpoint: 'claude' },
+        ],
+        models: {},
+      } as any);
+
+      mockGetCustomAgents.mockReturnValue([
+        { key: 'custom-xyz', name: 'My Custom', endpoint: 'http://custom.example.com', isCustom: true, headers: {}, connectorType: 'rest' as const },
+      ]);
+
+      const { req, res } = createMocks(undefined, undefined, { filter: 'builtin' });
+      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
+      await handler(req, res);
+
+      const response = (res.json as jest.Mock).mock.calls[0][0];
+      // Should only contain built-in agents, no custom agents
+      const customAgents = response.agents.filter((a: any) => a.key === 'custom-xyz');
+      expect(customAgents).toHaveLength(0);
+      expect(response.agents.every((a: any) => a.builtIn === true)).toBe(true);
+      expect(response.agents.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('returns meta.hasCustomAgents correctly', async () => {
+      mockLoadConfigSync.mockReturnValue({
+        agents: [
+          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
+        ],
+        models: {},
+      } as any);
+
+      // Test with no custom agents
+      mockGetCustomAgents.mockReturnValue([]);
+      const { req: req1, res: res1 } = createMocks();
+      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
+      await handler(req1, res1);
+
+      const response1 = (res1.json as jest.Mock).mock.calls[0][0];
+      expect(response1.meta.hasCustomAgents).toBe(false);
+
+      // Test with custom agents present
+      jest.clearAllMocks();
+      mockLoadConfigSync.mockReturnValue({
+        agents: [
+          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
+        ],
+        models: {},
+      } as any);
+      mockGetCustomAgents.mockReturnValue([
+        { key: 'custom-1', name: 'Custom', endpoint: 'http://example.com', isCustom: true, headers: {}, connectorType: 'agui-streaming' as const },
+      ]);
+
+      const { req: req2, res: res2 } = createMocks();
+      await handler(req2, res2);
+
+      const response2 = (res2.json as jest.Mock).mock.calls[0][0];
+      expect(response2.meta.hasCustomAgents).toBe(true);
     });
   });
 });

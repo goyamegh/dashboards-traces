@@ -14,8 +14,10 @@ import type {
   TestCase,
   Benchmark,
   BenchmarkRun,
+  EvaluationRun,
   TestCaseRun,
   RunAnnotation,
+  SessionMetadata,
   OpenSearchLog,
   Span,
   HealthStatus,
@@ -23,6 +25,8 @@ import type {
   DataSourceConfig,
   StorageClusterConfig,
   ObservabilityClusterConfig,
+  Evaluator,
+  RunResultStatus,
 } from '../../types/index.js';
 
 // ============================================================================
@@ -71,11 +75,16 @@ export interface LogsQueryOptions {
 export interface TracesQueryOptions {
   traceId?: string;
   runIds?: string[];
+  sessionId?: string;
   startTime?: number;
   endTime?: number;
   size?: number;
   serviceName?: string;
   textSearch?: string;
+  cursor?: string;
+  /** Strategy C (opt-in): service.name + time-window correlation. See AGENTS.md. */
+  /** Strategy D: per-agent `sessionId` correlates on `attributes.session.id`. */
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number; sessionId?: string }>;
 }
 
 // ============================================================================
@@ -101,6 +110,7 @@ export interface ITestCaseOperations {
    * See cli/commands/benchmark.ts for usage.
    */
   bulkCreate(testCases: Partial<TestCase>[]): Promise<{ created: number; errors: number; testCases: TestCase[] }>;
+  bulkUpsert(testCases: Partial<TestCase>[]): Promise<{ created: number; updated: number; unchanged: number; testCases: TestCase[] }>;
 }
 
 /**
@@ -116,6 +126,30 @@ export interface IBenchmarkOperations {
   updateRun(benchmarkId: string, runId: string, updates: Partial<BenchmarkRun>): Promise<boolean>;
   deleteRun(benchmarkId: string, runId: string): Promise<boolean>;
   bulkCreate(benchmarks: Partial<Benchmark>[]): Promise<{ created: number; errors: number }>;
+}
+
+/**
+ * Evaluation Run operations (stored in same index as benchmarks with docType discriminator)
+ */
+export interface IEvaluationRunOperations {
+  create(run: EvaluationRun): Promise<EvaluationRun>;
+  getById(id: string): Promise<EvaluationRun | null>;
+  update(id: string, updates: Partial<EvaluationRun>): Promise<EvaluationRun>;
+  delete(id: string): Promise<{ deleted: boolean }>;
+  list(options?: PaginationOptions & {
+    benchmarkId?: string;
+    agentKey?: string;
+    status?: string;
+    testCaseId?: string;
+    trigger?: string;
+    sort?: 'createdAt' | 'completedAt';
+    order?: 'asc' | 'desc';
+  }): Promise<{ items: EvaluationRun[]; total: number }>;
+  updateResult(runId: string, testCaseId: string, result: {
+    reportId: string;
+    status: RunResultStatus;
+    error?: string;
+  }): Promise<boolean>;
 }
 
 // Backwards compatibility alias
@@ -159,6 +193,19 @@ export interface IAnalyticsOperations {
 }
 
 /**
+ * Evaluator CRUD operations
+ */
+export interface IEvaluatorOperations {
+  getAll(options?: PaginationOptions): Promise<{ items: Evaluator[]; total: number }>;
+  getById(id: string): Promise<Evaluator | null>;
+  getVersions(id: string): Promise<Evaluator[]>;
+  getVersion(id: string, version: number): Promise<Evaluator | null>;
+  create(evaluator: Partial<Evaluator>): Promise<Evaluator>;
+  update(id: string, updates: Partial<Evaluator>): Promise<Evaluator>;
+  delete(id: string): Promise<{ deleted: number }>;
+}
+
+/**
  * Logs query operations
  */
 export interface ILogsOperations {
@@ -169,7 +216,7 @@ export interface ILogsOperations {
  * Traces query operations
  */
 export interface ITracesOperations {
-  query(options: TracesQueryOptions): Promise<{ spans: Span[]; total: number }>;
+  query(options: TracesQueryOptions): Promise<{ spans: Span[]; total: number; nextCursor?: string | null; hasMore?: boolean }>;
   getByTraceId(traceId: string): Promise<Span[]>;
   getByRunIds(runIds: string[]): Promise<Span[]>;
 }
@@ -181,18 +228,30 @@ export interface IMetricsOperations {
   // Future: Add metrics query operations
 }
 
+/**
+ * @experimental Session metadata operations (generic sidecar for coding agent sessions)
+ */
+export interface ISessionMetadataOperations {
+  get(agentKind: string, sessionId: string): Promise<SessionMetadata | null>;
+  put(agentKind: string, sessionId: string, data: Record<string, unknown>): Promise<SessionMetadata>;
+  list(options?: PaginationOptions): Promise<{ items: SessionMetadata[]; total: number }>;
+}
+
 // ============================================================================
 // Storage Module Interface
 // ============================================================================
 
 /**
- * Storage module - handles test cases, benchmarks, runs, and analytics
+ * Storage module - handles test cases, benchmarks, runs, analytics, and evaluators
  */
 export interface IStorageModule {
   testCases: ITestCaseOperations;
   benchmarks: IBenchmarkOperations;
+  evaluationRuns: IEvaluationRunOperations;
   runs: IRunOperations;
   analytics: IAnalyticsOperations;
+  evaluators: IEvaluatorOperations;
+  sessionMetadata: ISessionMetadataOperations;
   health(): Promise<HealthStatus>;
   isConfigured(): boolean;
 }

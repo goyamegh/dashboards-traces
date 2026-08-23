@@ -103,12 +103,15 @@ router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
     if (storageConfigured) {
       try {
         if (filterIds) {
-          // Filter by specific IDs - get latest version of each
+          // Filter by specific IDs - get latest version of each. Fan out in
+          // PARALLEL — this used to await each id sequentially, which at
+          // ~80ms/OpenSearch round-trip made an 84-case benchmark inspect
+          // page block ~7s on this request alone.
           const nonSampleIds = filterIds.filter(id => !isSampleId(id));
-          for (const id of nonSampleIds) {
-            const tc = await storage.testCases.getById(id);
-            if (tc) realData.push(tc);
-          }
+          const fetched = await Promise.all(
+            nonSampleIds.map(id => storage.testCases.getById(id).catch(() => null)),
+          );
+          realData = fetched.filter((tc): tc is TestCase => tc !== null);
         } else {
           // Get all test cases (adapter returns latest versions)
           const result = await storage.testCases.getAll();
@@ -145,6 +148,14 @@ router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
       realData = realData.map(toSummary);
     }
 
+    // Determine whether to include sample data
+    // Use totalCount (overall storage count) rather than realData.length (current page)
+    const includeSampleParam = req.query.includeSample as string | undefined;
+    const hasRealData = totalCount != null ? totalCount > 0 : realData.length > 0;
+    const shouldIncludeSample = includeSampleParam === 'true' ? true
+      : includeSampleParam === 'false' ? false
+      : !hasRealData;
+
     // Sort real data by lastActivity (max of lastRunAt, updatedAt, createdAt) descending
     const lastActivity = (tc: any): number => Math.max(
       tc.lastRunAt ? new Date(tc.lastRunAt).getTime() : 0,
@@ -153,18 +164,21 @@ router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
     );
     const sortedRealData = realData.sort((a, b) => lastActivity(b) - lastActivity(a));
 
-    // Get sample data (filtered by IDs if specified)
-    let sampleData = getSampleTestCases();
-    if (filterIds) {
-      const sampleIds = filterIds.filter(id => isSampleId(id));
-      sampleData = sampleData.filter(tc => sampleIds.includes(tc.id));
+    // Get sample data (filtered by IDs if specified), conditionally included
+    let sampleData: TestCase[] = [];
+    if (shouldIncludeSample) {
+      sampleData = getSampleTestCases();
+      if (filterIds) {
+        const sampleIds = filterIds.filter(id => isSampleId(id));
+        sampleData = sampleData.filter(tc => sampleIds.includes(tc.id));
+      }
+      // Apply summary transformation to sample data
+      if (isSummary) {
+        sampleData = sampleData.map(toSummary);
+      }
+      // Sort sample data by lastActivity descending
+      sampleData = sampleData.sort((a, b) => lastActivity(b) - lastActivity(a));
     }
-    // Apply summary transformation to sample data
-    if (isSummary) {
-      sampleData = sampleData.map(toSummary);
-    }
-    // Sort sample data by lastActivity descending
-    sampleData = sampleData.sort((a, b) => lastActivity(b) - lastActivity(a));
 
     // User data first, then sample data
     let allData = [...sortedRealData, ...sampleData];
@@ -191,6 +205,7 @@ router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
       storageReachable,
       realDataCount: realData.length,
       sampleDataCount: sampleData.length,
+      sampleDataIncluded: shouldIncludeSample,
       ...(warnings.length > 0 && { warnings }),
     };
 
@@ -358,7 +373,20 @@ router.delete('/api/storage/test-cases/:id', async (req: Request, res: Response)
   }
 });
 
-// POST /api/storage/test-cases/bulk - Bulk create
+// POST /api/storage/test-cases/bulk - Bulk import
+//
+// Auto-routes based on `sourceFile`:
+//  - Any incoming test case has `sourceFile` set (SDK / code-imported) →
+//    `bulkUpsert` semantics: dedup by `(name, sourceFile)`, version-bump on
+//    `sourceHash` drift, reuse existing TestCase IDs across runs of the same
+//    .eval.js file. This is what stops `benchmark.testCaseIds` from growing
+//    unbounded when a user re-runs the same SDK file via `npx agent-health
+//    benchmark -f file.eval.js`.
+//  - Otherwise (JSON imports / UI uploads) → strict `bulkCreate`. Pre-existing
+//    callers don't carry `sourceFile`, so behaviour is unchanged for them.
+//
+// The response shape is a superset of both modes: `created` is always present,
+// `updated` and `unchanged` are present only on the upsert path.
 router.post('/api/storage/test-cases/bulk', async (req: Request, res: Response) => {
   try {
     const { testCases } = req.body;
@@ -373,12 +401,49 @@ router.post('/api/storage/test-cases/bulk', async (req: Request, res: Response) 
     }
 
     const storage = getStorageModule();
-    const result = await storage.testCases.bulkCreate(testCases);
 
+    // Provenance gate. Reject mixed batches — in `bulkUpsert` an item without
+    // `sourceFile` matches an existing record by `name` ALONE
+    // (`e.name === tc.name && (tc.sourceFile ? e.sourceFile === tc.sourceFile : true)`),
+    // which can silently overwrite an unrelated SDK TestCase that happens to
+    // share a name and clear its `sourceHash` (the update payload sets
+    // `sourceHash: tc.sourceHash`, which is `undefined` for JSON items). The
+    // CLI never sends mixed batches — it imports either an SDK file (all
+    // items carry `sourceFile`) or a JSON file (no items carry it) — so the
+    // 400 is a hard contract, not a UX paper-cut. Callers wanting both must
+    // split into two requests.
+    const withSource = testCases.filter(tc => typeof tc?.sourceFile === 'string' && tc.sourceFile.length > 0);
+    const withoutSource = testCases.length - withSource.length;
+    if (withSource.length > 0 && withoutSource > 0) {
+      return res.status(400).json({
+        error:
+          'Mixed batch rejected: every test case must either set `sourceFile` ' +
+          '(SDK / code-import upsert path) or omit it (JSON strict-create path); ' +
+          `received ${withSource.length} with sourceFile and ${withoutSource} without.`,
+      });
+    }
+
+    if (withSource.length > 0) {
+      const result = await storage.testCases.bulkUpsert(testCases);
+      debug(
+        'StorageAPI',
+        `Bulk upserted: ${result.created} created, ${result.updated} updated, ${result.unchanged} unchanged`
+      );
+      res.json({
+        created: result.created,
+        updated: result.updated,
+        unchanged: result.unchanged,
+        errors: 0,
+        testCases: result.testCases,
+      });
+      return;
+    }
+
+    const result = await storage.testCases.bulkCreate(testCases);
     debug('StorageAPI', `Bulk created ${result.created} test cases`);
     res.json({ created: result.created, errors: result.errors, testCases: result.testCases });
   } catch (error: any) {
-    console.error('[StorageAPI] Bulk create test cases failed:', error.message);
+    console.error('[StorageAPI] Bulk import test cases failed:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

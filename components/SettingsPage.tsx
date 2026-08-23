@@ -5,6 +5,8 @@
 
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useLocation } from 'react-router-dom';
+import { useClusterContext } from '@/hooks/useClusterContext';
+import { ClusterContextBanner } from '@/components/comparison/ClusterContextBanner';
 import { AlertTriangle, Trash2, Database, CheckCircle2, XCircle, Upload, Download, Loader2, Server, Plus, Edit2, X, Save, ExternalLink, Eye, EyeOff, ChevronDown, ChevronRight, RefreshCw, Palette, Circle } from 'lucide-react';
 import { getTheme, setTheme, type Theme } from '@/lib/theme';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -15,7 +17,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@/components/ui/dialog';
-import type { ConnectorProtocol, ClusterAuthType } from '@/types';
+import type { AgentConfig, ConnectorProtocol, ClusterAuthType } from '@/types';
 import { storageAdmin } from '@/services/storage/opensearchClient';
 import {
   hasLocalStorageData,
@@ -34,7 +36,7 @@ import {
   type ConfigStatus,
   type SaveStorageConfigResult,
 } from '@/lib/dataSourceConfig';
-import { DEFAULT_CONFIG, refreshConfig } from '@/lib/constants';
+import { DEFAULT_CONFIG, refreshConfig, isBuiltInAgent, CONNECTOR_TYPE_INFO, type ConnectorTypeInfo } from '@/lib/constants';
 import { ENV_CONFIG } from '@/lib/config';
 
 interface StorageStats {
@@ -42,7 +44,14 @@ interface StorageStats {
   experiments: number;
   runs: number;
   analytics: number;
+  /** True only when the configured OpenSearch cluster is actually reachable. */
   isConnected: boolean;
+  /** Active storage backend. 'file' = OpenSearch unavailable / not configured. */
+  backend?: string;
+  /** OpenSearch configured but unreachable — we fell back to file storage. */
+  osConfiguredButUnreachable?: boolean;
+  /** Underlying OpenSearch error message, surfaced to the user when present. */
+  osError?: string;
 }
 
 interface AgentEndpoint {
@@ -70,10 +79,43 @@ function getCustomEndpointsFromConfig(): AgentEndpoint[] {
     }));
 }
 
+/**
+ * Read-only agent card with a source badge ("built-in" for shipped agents,
+ * "config" for agents authored in agent-health.config.ts).
+ */
+const AgentInfoCard: React.FC<{ agent: AgentConfig; badge: 'built-in' | 'config' }> = ({ agent, badge }) => (
+  <div
+    data-testid={`agent-card-${agent.key}`}
+    className="p-3 border rounded-lg bg-muted/5 flex items-start justify-between gap-3"
+  >
+    <div className="flex-1 min-w-0">
+      <div className="font-medium text-sm flex items-center gap-2">
+        {agent.name}
+        <span className={`text-xs px-2 py-1 rounded inline-block border ${
+          badge === 'built-in'
+            ? 'bg-blue-100 text-blue-900 border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50'
+            : 'bg-amber-100 text-amber-900 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-700/50'
+        }`}>
+          {badge}
+        </span>
+      </div>
+      <div className="text-xs text-muted-foreground truncate flex items-center gap-1 mt-1">
+        <ExternalLink size={10} />
+        {agent.endpoint || <span className="italic">Not configured</span>}
+      </div>
+      {agent.description && (
+        <div className="text-xs text-muted-foreground mt-1">{agent.description}</div>
+      )}
+    </div>
+  </div>
+);
+
 export const SettingsPage: React.FC = () => {
 
   const [debugMode, setDebugMode] = useState(false);
   const [currentTheme, setCurrentTheme] = useState<Theme>('dark');
+  const [showBuiltInAgents, setShowBuiltInAgents] = useState(false);
+  const [showConfigAgents, setShowConfigAgents] = useState(false);
   const [storageStats, setStorageStats] = useState<StorageStats | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
@@ -84,15 +126,38 @@ export const SettingsPage: React.FC = () => {
   const [migrationStatus, setMigrationStatus] = useState<string>('');
   const [migrationResult, setMigrationResult] = useState<MigrationStats | null>(null);
 
+  // Cluster context — when present, render a banner and auto-scroll to the
+  // Custom Endpoints panel + open the Add form so the user lands on the
+  // exact action the comparison page suggested.
+  const { context: clusterContext } = useClusterContext();
+  const customEndpointsRef = useRef<HTMLDivElement>(null);
+
   // Agent endpoints state
   const [customEndpoints, setCustomEndpoints] = useState<AgentEndpoint[]>([]);
   const [isAddingEndpoint, setIsAddingEndpoint] = useState(false);
+  const hasOpenedFromCluster = useRef(false);
   const [editingEndpointId, setEditingEndpointId] = useState<string | null>(null);
   const [newEndpointName, setNewEndpointName] = useState('');
   const [newEndpointUrl, setNewEndpointUrl] = useState('');
   const [newConnectorType, setNewConnectorType] = useState<ConnectorProtocol>('agui-streaming');
   const [newUseTraces, setNewUseTraces] = useState(false);
   const [endpointUrlError, setEndpointUrlError] = useState<string | null>(null);
+
+  // When the user arrives from a tool_gap cluster, scroll to the Custom
+  // Endpoints panel and open the Add form so they land on the exact action.
+  useEffect(() => {
+    if (!clusterContext) return;
+    if (hasOpenedFromCluster.current) return;
+    if (clusterContext.clusterType !== 'tool_gap' && clusterContext.clusterType !== 'other') return;
+    hasOpenedFromCluster.current = true;
+    // Pre-fill the name with the cluster name so the user has context.
+    setNewEndpointName(clusterContext.name);
+    setIsAddingEndpoint(true);
+    // Scroll the panel into view next tick so the form is mounted.
+    setTimeout(() => {
+      customEndpointsRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 100);
+  }, [clusterContext]);
 
   // Data source configuration state (form inputs - not stored values)
   const [storageConfig, setStorageConfigState] = useState({
@@ -125,6 +190,11 @@ export const SettingsPage: React.FC = () => {
   const [showAdvancedIndexes, setShowAdvancedIndexes] = useState(false);
   const [storageTestStatus, setStorageTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [storageTestMessage, setStorageTestMessage] = useState('');
+  // Ref mirror of storageTestStatus so loadStorageStats (a stable useCallback)
+  // can read the latest value without taking it as a dep and re-rendering on
+  // every status change.
+  const storageTestStatusRef = useRef<typeof storageTestStatus>('idle');
+  useEffect(() => { storageTestStatusRef.current = storageTestStatus; }, [storageTestStatus]);
   const [observabilityTestStatus, setObservabilityTestStatus] = useState<'idle' | 'testing' | 'success' | 'error'>('idle');
   const [observabilityTestMessage, setObservabilityTestMessage] = useState('');
 
@@ -151,13 +221,59 @@ export const SettingsPage: React.FC = () => {
       const health = await storageAdmin.health();
       const stats = await storageAdmin.stats();
 
+      // The top-level `status` reflects the ACTIVE backend (which may be the
+      // file fallback), not OpenSearch. When OpenSearch is configured but
+      // unreachable the server returns { status: 'ok', backend: 'file',
+      // opensearch: { status: 'error', ... } }. Report true OpenSearch
+      // connectivity so the UI never shows a green "Connected to OpenSearch"
+      // while silently running on file storage.
+      const osOk = (s?: string) => s === 'ok' || s === 'connected';
+      const backend = health.backend;
+      let isConnected: boolean;
+      let osConfiguredButUnreachable = false;
+      let osError: string | undefined;
+      if (backend === 'opensearch') {
+        // OpenSearch is the ACTIVE backend — genuinely connected.
+        isConnected = true;
+      } else if (backend === 'file') {
+        // File storage is the active backend. Never "connected", even if
+        // OpenSearch is reachable (e.g. explicit file-storage override). Only
+        // surface an error when OpenSearch is configured AND unreachable.
+        isConnected = false;
+        if (health.opensearch && !osOk(health.opensearch.status)) {
+          osConfiguredButUnreachable = true;
+          osError = health.opensearch.message;
+        }
+      } else if (health.opensearch) {
+        // Unknown active backend, but OpenSearch state is reported.
+        isConnected = osOk(health.opensearch.status);
+        osConfiguredButUnreachable = !isConnected;
+        osError = isConnected ? undefined : health.opensearch.message;
+      } else {
+        // Legacy response shape (no backend field).
+        isConnected = osOk(health.status);
+      }
+
       setStorageStats({
         testCases: stats.stats.evals_test_cases?.count || 0,
         experiments: stats.stats.evals_experiments?.count || 0,
         runs: stats.stats.evals_runs?.count || 0,
         analytics: stats.stats.evals_analytics?.count || 0,
-        isConnected: health.status === 'connected' || health.status === 'ok',
+        isConnected,
+        backend: health.backend,
+        osConfiguredButUnreachable,
+        osError,
       });
+      // If live health check confirms a real OpenSearch connection, clear any
+      // stale "Test Connection" error from earlier in the session (e.g. expired
+      // creds that have since been refreshed). Only clear errors — don't stomp
+      // a fresh success/testing message.
+      if (isConnected) {
+        setStorageTestStatus(prev => (prev === 'error' ? 'idle' : prev));
+        setStorageTestMessage(prev =>
+          prev && storageTestStatusRef.current === 'error' ? '' : prev
+        );
+      }
     } catch (error) {
       console.error('Failed to load storage stats:', error);
       setStorageStats({
@@ -854,10 +970,19 @@ export const SettingsPage: React.FC = () => {
     }
   };
 
+  const builtInAgents = DEFAULT_CONFIG.agents.filter(isBuiltInAgent);
+  const configAgents = DEFAULT_CONFIG.agents.filter(a => !isBuiltInAgent(a) && !a.isCustom);
+
   return (
     <>
     <div className="p-6 max-w-4xl mx-auto" data-testid="settings-page">
       <h2 className="text-2xl font-bold mb-6" data-testid="settings-title">Settings</h2>
+
+      {clusterContext && (
+        <div className="mb-4">
+          <ClusterContextBanner context={clusterContext} />
+        </div>
+      )}
 
       {/* Preferences */}
       <Card className="mb-6">
@@ -964,37 +1089,42 @@ export const SettingsPage: React.FC = () => {
         <CardContent className="space-y-4">
           {/* Built-in Agents */}
           <div className="space-y-2">
-            <Label className="text-xs text-muted-foreground uppercase tracking-wide">Built-in Agents</Label>
+            <button
+              type="button"
+              data-testid="builtin-agents-toggle"
+              onClick={() => setShowBuiltInAgents(!showBuiltInAgents)}
+              className="flex items-center gap-1 text-xs text-muted-foreground uppercase tracking-wide hover:text-foreground"
+            >
+              {showBuiltInAgents ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+              Built-in Agents ({builtInAgents.length})
+            </button>
 
-            {DEFAULT_CONFIG.agents.filter(a => !a.isCustom).map((agent) => {
-
-              return (
-                <div
-                  key={agent.key}
-                  className="p-3 border rounded-lg bg-muted/5 flex items-start justify-between gap-3"
-                >
-                  <div className="flex-1 min-w-0">
-                    <div className="font-medium text-sm flex items-center gap-2">
-                      {agent.name}
-                      <span className="text-xs px-2 py-1 rounded inline-block bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50">
-                        built-in
-                      </span>
-                    </div>
-                    <div className="text-xs text-muted-foreground truncate flex items-center gap-1 mt-1">
-                      <ExternalLink size={10} />
-                      {agent.endpoint || <span className="italic">Not configured</span>}
-                    </div>
-                    {agent.description && (
-                      <div className="text-xs text-muted-foreground mt-1">{agent.description}</div>
-                    )}
-                  </div>
-                </div>
-              );
-            })}
+            {showBuiltInAgents && builtInAgents.map((agent) => (
+              <AgentInfoCard key={agent.key} agent={agent} badge="built-in" />
+            ))}
           </div>
 
+          {/* Custom agents authored in agent-health.config.ts — not built-in, not UI-added */}
+          {configAgents.length > 0 && (
+            <div className="space-y-2">
+              <button
+                type="button"
+                data-testid="config-agents-toggle"
+                onClick={() => setShowConfigAgents(!showConfigAgents)}
+                className="flex items-center gap-1 text-xs text-muted-foreground uppercase tracking-wide hover:text-foreground"
+              >
+                {showConfigAgents ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+                Custom Agents — agent-health.config.ts ({configAgents.length})
+              </button>
+
+              {showConfigAgents && configAgents.map((agent) => (
+                <AgentInfoCard key={agent.key} agent={agent} badge="config" />
+              ))}
+            </div>
+          )}
+
           {/* Custom Endpoints Section */}
-          <div className="border-t pt-4 mt-4">
+          <div ref={customEndpointsRef} className="border-t pt-4 mt-4">
             <div className="flex items-center justify-between mb-3">
               <Label className="text-xs text-muted-foreground uppercase tracking-wide">Custom Endpoints</Label>
               {!isAddingEndpoint && (
@@ -1048,14 +1178,17 @@ export const SettingsPage: React.FC = () => {
                     <SelectValue />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="agui-streaming">agui-streaming (default)</SelectItem>
-                    <SelectItem value="rest">rest</SelectItem>
-                    <SelectItem value="litellm">litellm</SelectItem>
-                    <SelectItem value="subprocess">subprocess</SelectItem>
-                    <SelectItem value="claude-code">claude-code</SelectItem>
-                    <SelectItem value="mock">mock</SelectItem>
+                    {(Object.entries(CONNECTOR_TYPE_INFO) as [ConnectorProtocol, ConnectorTypeInfo][]).map(([type]) => (
+                      <SelectItem key={type} value={type}>
+                        {type === 'agui-streaming' ? `${type} (default)` : type}
+                      </SelectItem>
+                    ))}
                   </SelectContent>
                 </Select>
+                <p className="text-xs text-muted-foreground mt-1">{CONNECTOR_TYPE_INFO[newConnectorType]?.description}</p>
+                {CONNECTOR_TYPE_INFO[newConnectorType]?.serverOnly && (
+                  <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">Server-only — runs via CLI or benchmark runner, not from the browser UI.</p>
+                )}
               </div>
               <div className="flex items-center gap-2">
                 <Switch
@@ -1116,14 +1249,17 @@ export const SettingsPage: React.FC = () => {
                             <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                            <SelectItem value="agui-streaming">agui-streaming (default)</SelectItem>
-                            <SelectItem value="rest">rest</SelectItem>
-                            <SelectItem value="litellm">litellm</SelectItem>
-                            <SelectItem value="subprocess">subprocess</SelectItem>
-                            <SelectItem value="claude-code">claude-code</SelectItem>
-                            <SelectItem value="mock">mock</SelectItem>
+                            {(Object.entries(CONNECTOR_TYPE_INFO) as [ConnectorProtocol, ConnectorTypeInfo][]).map(([type]) => (
+                              <SelectItem key={type} value={type}>
+                                {type === 'agui-streaming' ? `${type} (default)` : type}
+                              </SelectItem>
+                            ))}
                           </SelectContent>
                         </Select>
+                        <p className="text-xs text-muted-foreground mt-1">{CONNECTOR_TYPE_INFO[newConnectorType]?.description}</p>
+                        {CONNECTOR_TYPE_INFO[newConnectorType]?.serverOnly && (
+                          <p className="text-xs text-amber-600 dark:text-amber-400 mt-0.5">Server-only — runs via CLI or benchmark runner, not from the browser UI.</p>
+                        )}
                       </div>
                       <div className="flex items-center gap-2">
                         <Switch
@@ -1486,11 +1622,14 @@ export const SettingsPage: React.FC = () => {
               <span className={`px-2 py-0.5 rounded ${
                 configStatus.storage.source === 'file' 
                   ? 'bg-green-100 text-green-900 border border-green-300 dark:bg-green-950/50 dark:text-green-300 dark:border-green-700/50'
+                  : configStatus.storage.source === 'typescript'
+                  ? 'bg-purple-100 text-purple-900 border border-purple-300 dark:bg-purple-950/50 dark:text-purple-300 dark:border-purple-700/50'
                   : configStatus.storage.source === 'environment' 
                   ? 'bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50'
                   : 'bg-gray-100 text-gray-900 border border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700/50'
               }`}>
-                {configStatus.storage.source === 'file' ? 'Config file (agent-health.config.json)' :
+                {configStatus.storage.source === 'file' ? 'Runtime state (.agent-health/state.json)' :
+                 configStatus.storage.source === 'typescript' ? 'Config file (agent-health.config.ts)' :
                  configStatus.storage.source === 'environment' ? 'Environment variables' :
                  'Not configured'}
               </span>
@@ -1558,6 +1697,18 @@ export const SettingsPage: React.FC = () => {
                         <CheckCircle2 size={16} className="text-opensearch-blue" />
                         <span className="text-sm text-opensearch-blue">Connected to OpenSearch</span>
                       </>
+                    ) : storageStats.osConfiguredButUnreachable ? (
+                      <>
+                        <AlertTriangle size={16} className="text-amber-400" />
+                        <span className="text-sm text-amber-400">
+                          OpenSearch unreachable — using file storage fallback
+                        </span>
+                      </>
+                    ) : storageStats.backend === 'file' ? (
+                      <>
+                        <Database size={16} className="text-muted-foreground" />
+                        <span className="text-sm text-muted-foreground">Using file storage</span>
+                      </>
                     ) : (
                       <>
                         <XCircle size={16} className="text-red-400" />
@@ -1576,6 +1727,13 @@ export const SettingsPage: React.FC = () => {
                     Refresh
                   </Button>
                 </div>
+
+                {/* OpenSearch unreachable detail */}
+                {storageStats.osConfiguredButUnreachable && storageStats.osError && (
+                  <div className="text-xs text-amber-400/80 break-words rounded-md border border-amber-400/20 bg-amber-400/5 p-2">
+                    {storageStats.osError}
+                  </div>
+                )}
 
                 {/* Index Stats */}
                 {storageStats.isConnected && (
@@ -1813,11 +1971,14 @@ export const SettingsPage: React.FC = () => {
               <span className={`px-2 py-0.5 rounded ${
                 configStatus.observability.source === 'file' 
                   ? 'bg-green-100 text-green-900 border border-green-300 dark:bg-green-950/50 dark:text-green-300 dark:border-green-700/50'
+                  : configStatus.observability.source === 'typescript'
+                  ? 'bg-purple-100 text-purple-900 border border-purple-300 dark:bg-purple-950/50 dark:text-purple-300 dark:border-purple-700/50'
                   : configStatus.observability.source === 'environment' 
                   ? 'bg-blue-100 text-blue-900 border border-blue-300 dark:bg-blue-950/50 dark:text-blue-300 dark:border-blue-700/50'
                   : 'bg-gray-100 text-gray-900 border border-gray-300 dark:bg-gray-800/50 dark:text-gray-400 dark:border-gray-700/50'
               }`}>
-                {configStatus.observability.source === 'file' ? 'Config file (agent-health.config.json)' :
+                {configStatus.observability.source === 'file' ? 'Runtime state (.agent-health/state.json)' :
+                 configStatus.observability.source === 'typescript' ? 'Config file (agent-health.config.ts)' :
                  configStatus.observability.source === 'environment' ? 'Environment variables' :
                  'Not configured'}
               </span>

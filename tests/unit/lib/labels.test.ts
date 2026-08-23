@@ -18,6 +18,9 @@ import {
   groupByPrefix,
   isDifficultyLabel,
   parseLabels,
+  collectLabels,
+  matchesLabelFilter,
+  ALL_LABELS,
   buildLabels,
   DIFFICULTY_VALUES,
 } from '@/lib/labels';
@@ -258,5 +261,51 @@ describe('buildLabels', () => {
 
   it('returns empty array for empty input', () => {
     expect(buildLabels({})).toEqual([]);
+  });
+});
+
+describe('collectLabels', () => {
+  it('returns distinct labels across items, sorted alphabetically', () => {
+    const items = [
+      { labels: ['category:RCA', 'difficulty:Hard'] },
+      { labels: ['category:RCA', 'agent:aos-oncall'] },
+      { labels: ['difficulty:Easy'] },
+    ];
+    expect(collectLabels(items)).toEqual([
+      'agent:aos-oncall',
+      'category:RCA',
+      'difficulty:Easy',
+      'difficulty:Hard',
+    ]);
+  });
+
+  it('tolerates items with missing/empty labels', () => {
+    expect(collectLabels([{}, { labels: [] }, { labels: ['x'] }])).toEqual(['x']);
+  });
+
+  it('returns an empty array for no items', () => {
+    expect(collectLabels([])).toEqual([]);
+  });
+});
+
+describe('matchesLabelFilter', () => {
+  it('matches everything when the filter is the ALL sentinel', () => {
+    expect(matchesLabelFilter(['category:RCA'], ALL_LABELS)).toBe(true);
+    expect(matchesLabelFilter(undefined, ALL_LABELS)).toBe(true);
+    expect(matchesLabelFilter([], ALL_LABELS)).toBe(true);
+  });
+
+  it('matches everything when the filter is empty', () => {
+    expect(matchesLabelFilter(['category:RCA'], '')).toBe(true);
+  });
+
+  it('matches only items carrying the selected label', () => {
+    expect(matchesLabelFilter(['category:RCA', 'difficulty:Hard'], 'category:RCA')).toBe(true);
+    expect(matchesLabelFilter(['category:RCA'], 'difficulty:Hard')).toBe(false);
+  });
+
+  it('does not match when item has no labels', () => {
+    expect(matchesLabelFilter(undefined, 'category:RCA')).toBe(false);
+    expect(matchesLabelFilter([], 'category:RCA')).toBe(false);
   });
 });

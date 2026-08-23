@@ -82,6 +82,9 @@ jest.mock('@/server/services/configMigration', () => ({
 jest.mock('@/server/services/configService', () => ({
   getStorageConfigFromFile: jest.fn().mockReturnValue(null),
   getObservabilityConfigFromFile: jest.fn().mockReturnValue(null),
+  getStorageConfigFromTs: jest.fn().mockReturnValue(null),
+  getObservabilityConfigFromTs: jest.fn().mockReturnValue(null),
+  setTsClusterConfig: jest.fn(),
   getConfigStatus: jest.fn(),
   saveStorageConfig: jest.fn(),
   saveObservabilityConfig: jest.fn(),
@@ -99,11 +102,18 @@ jest.mock('@/server/middleware/dataSourceConfig', () => ({
     benchmarks: 'evals_experiments',
     runs: 'evals_runs',
     analytics: 'evals_analytics',
+    evaluators: 'evals_evaluators',
   },
   DEFAULT_OTEL_INDEXES: {
     traces: 'otel-v1-apm-span-*',
     logs: 'otel-v1-apm-log-*',
   },
+}));
+
+jest.mock('@/lib/telemetry', () => ({
+  initEvalTracerProvider: jest.fn(),
+  resolveEvalTelemetryConfig: jest.fn().mockReturnValue({}),
+  shutdownEvalTracer: jest.fn().mockResolvedValue(undefined),
 }));
 
 jest.mock('@/server/services/storageInitializer', () => ({

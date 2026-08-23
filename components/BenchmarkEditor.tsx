@@ -4,6 +4,8 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
+import { usePersistedState } from '@/hooks/usePersistedState';
+import { PREFS_KEYS } from '@/lib/preferences';
 import { X, ChevronRight, ChevronLeft, Plus, Trash2, Check, Loader2, AlertTriangle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -12,11 +14,13 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { JudgeModelSelect } from '@/components/JudgeModelSelect';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Benchmark, TestCase, RunConfigInput } from '@/types';
+import { Benchmark, TestCase, RunConfigInput, Evaluator } from '@/types';
 import { asyncBenchmarkStorage, asyncTestCaseStorage } from '@/services/storage';
 import { DEFAULT_CONFIG } from '@/lib/constants';
+import { ENV_CONFIG } from '@/lib/config';
 
 interface BenchmarkEditorProps {
   benchmark: Benchmark | null;
@@ -37,6 +41,7 @@ interface RunConfig {
   description?: string;
   agentKey: string;
   modelId: string;
+  evaluatorId?: string;
   headers?: Record<string, string>;
 }
 
@@ -61,6 +66,8 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
   const [allTestCases, setAllTestCases] = useState<TestCase[]>([]);
   const [categories, setCategories] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [evaluators, setEvaluators] = useState<Evaluator[]>([]);
+  const [showBuiltInAgents, setShowBuiltInAgents] = useState(false);
 
   // Track if test cases changed from original (will create new version)
   const testCasesChanged = useMemo(() => {
@@ -95,13 +102,38 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
     loadTestCases();
   }, []);
 
+  // Load evaluators
+  useEffect(() => {
+    const loadEvaluators = async () => {
+      try {
+        const response = await fetch(`${ENV_CONFIG.backendUrl}/api/storage/evaluators`);
+        if (response.ok) {
+          const data = await response.json();
+          setEvaluators(data.evaluators || []);
+        }
+      } catch (error) {
+        console.error('Failed to load evaluators:', error);
+      }
+    };
+    loadEvaluators();
+  }, []);
+
   function createDefaultRun(): RunConfig {
     const defaultAgent = DEFAULT_CONFIG.agents[1] || DEFAULT_CONFIG.agents[0];
+    // Read last-used preferences from localStorage (shared with QuickRunModal/NewRunPage)
+    let agentKey = defaultAgent.key;
+    let modelId = Object.keys(DEFAULT_CONFIG.models)[0] || 'claude-sonnet-4.5';
+    try {
+      const storedAgent = localStorage.getItem('agent-health:' + PREFS_KEYS.agentKey);
+      const storedModel = localStorage.getItem('agent-health:' + PREFS_KEYS.modelId);
+      if (storedAgent) agentKey = JSON.parse(storedAgent);
+      if (storedModel) modelId = JSON.parse(storedModel);
+    } catch { /* use defaults */ }
     return {
       id: asyncBenchmarkStorage.generateRunId(),
       name: 'Baseline',
-      agentKey: defaultAgent.key,
-      modelId: Object.keys(DEFAULT_CONFIG.models)[0] || 'claude-sonnet-4.5',
+      agentKey,
+      modelId,
     };
   }
 
@@ -161,7 +193,7 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
     ));
   };
 
-  const handleSave = async () => {
+  const handleSave = async (runAfterSave = true) => {
     // For new benchmarks, we don't include runs - they'll be created during execution
     // For existing benchmarks, we keep the runs
     const isNewBenchmark = !benchmark;
@@ -184,7 +216,7 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
         runs: [],
       };
 
-      if (onSaveAndRun && runs.length > 0) {
+      if (runAfterSave && onSaveAndRun && runs.length > 0) {
         // For new benchmarks, save and immediately trigger all configured runs
         const runConfigs: RunConfigForExecution[] = runs.map(run => ({
           name: run.name,
@@ -206,8 +238,11 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
       });
 
       if (updated) {
-        // If test cases changed (new version), run the new version with configured runs
-        if (testCasesChanged && onSaveAndRun && runs.length > 0) {
+        // If test cases changed (new version), run the new version with
+        // configured runs — but only when the caller asked to run. The
+        // "Save Changes" (save-without-run) button passes runAfterSave=false
+        // so editing test cases never silently fires an evaluation /execute.
+        if (runAfterSave && testCasesChanged && onSaveAndRun && runs.length > 0) {
           const runConfigs: RunConfigForExecution[] = runs.map(run => ({
             name: run.name,
             description: run.description,
@@ -225,7 +260,13 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
 
   const canProceedFromInfo = name.trim().length > 0;
   const canProceedFromUseCases = selectedUseCaseIds.size > 0;
-  const canSave = canProceedFromInfo && canProceedFromUseCases && runs.length > 0;
+  // In *edit* mode, Step 3 ("Define Runs") is optional — users may want to add
+  // or remove test cases (which still bumps currentVersion via the backend)
+  // without being forced to also configure a fresh run. They can run the new
+  // version later from the detail page. In *create* mode we still require at
+  // least one run config so a brand-new benchmark surfaces with results.
+  const isEditMode = !!benchmark;
+  const canSave = canProceedFromInfo && canProceedFromUseCases && (isEditMode || runs.length > 0);
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
@@ -258,7 +299,7 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
             <ChevronRight size={16} className="text-muted-foreground" />
             <StepIndicator
               step={2}
-              label="Use Cases"
+              label="Test Cases"
               isActive={step === 'useCases'}
               isComplete={step === 'runs'}
             />
@@ -299,7 +340,7 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
               </div>
             )}
 
-            {/* Step 2: Select Use Cases */}
+            {/* Step 2: Select Test Cases */}
             {step === 'useCases' && (
               <div className="space-y-4">
                 <div className="flex items-center justify-between">
@@ -329,7 +370,7 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
 
                 <div className="flex items-center justify-between">
                   <div className="text-sm text-muted-foreground">
-                    Selected: {selectedUseCaseIds.size} use case{selectedUseCaseIds.size !== 1 ? 's' : ''}
+                    Selected: {selectedUseCaseIds.size} test case{selectedUseCaseIds.size !== 1 ? 's' : ''}
                   </div>
                   {benchmark && testCasesChanged && (
                     <div className="flex items-center gap-2 text-sm text-yellow-500">
@@ -426,33 +467,63 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
                                 <SelectValue />
                               </SelectTrigger>
                               <SelectContent>
-                                {DEFAULT_CONFIG.agents.map(agent => (
-                                  <SelectItem key={agent.key} value={agent.key}>
-                                    {agent.name}
-                                  </SelectItem>
-                                ))}
+                                {/* Custom agents first (if any exist) */}
+                                {DEFAULT_CONFIG.agents.filter(a => a.builtIn === false).length > 0 && (
+                                  <SelectGroup>
+                                    <SelectLabel className="text-xs">Your Agents</SelectLabel>
+                                    {DEFAULT_CONFIG.agents.filter(a => a.builtIn === false).map(agent => (
+                                      <SelectItem key={agent.key} value={agent.key}>{agent.name}</SelectItem>
+                                    ))}
+                                  </SelectGroup>
+                                )}
+                                {/* Built-in agents (collapsed by default) */}
+                                <SelectGroup>
+                                  <button
+                                    type="button"
+                                    className="flex items-center gap-1 px-2 py-1.5 text-xs text-muted-foreground hover:text-foreground w-full"
+                                    onClick={(e) => { e.preventDefault(); e.stopPropagation(); setShowBuiltInAgents(!showBuiltInAgents); }}
+                                  >
+                                    <ChevronRight size={12} className={showBuiltInAgents ? 'rotate-90 transition-transform' : 'transition-transform'} />
+                                    Built-in ({DEFAULT_CONFIG.agents.filter(a => a.builtIn !== false).length})
+                                  </button>
+                                  {showBuiltInAgents && DEFAULT_CONFIG.agents.filter(a => a.builtIn !== false).map(agent => (
+                                    <SelectItem key={agent.key} value={agent.key}>{agent.name}</SelectItem>
+                                  ))}
+                                </SelectGroup>
                               </SelectContent>
                             </Select>
                           </div>
 
                           <div className="space-y-2">
                             <Label>Judge Model</Label>
-                            <Select
+                            <JudgeModelSelect
                               value={run.modelId}
                               onValueChange={val => handleUpdateRun(run.id, { modelId: val })}
-                            >
-                              <SelectTrigger>
-                                <SelectValue />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {Object.entries(DEFAULT_CONFIG.models).map(([key, model]) => (
-                                  <SelectItem key={key} value={key}>
-                                    {model.display_name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
+                            />
                           </div>
+                        </div>
+
+                        <div className="space-y-2">
+                          <Label>Evaluator (Optional)</Label>
+                          <Select
+                            value={run.evaluatorId || '__default__'}
+                            onValueChange={val => handleUpdateRun(run.id, { evaluatorId: val === '__default__' ? undefined : val })}
+                          >
+                            <SelectTrigger>
+                              <SelectValue placeholder="RCA Default" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="__default__">RCA Default</SelectItem>
+                              {evaluators.map(evaluator => (
+                                <SelectItem key={evaluator.id} value={evaluator.id}>
+                                  {evaluator.name} {evaluator.isSystem ? '(System)' : ''}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                          <p className="text-xs text-muted-foreground">
+                            Choose evaluation criteria for judging agent performance
+                          </p>
                         </div>
                       </div>
                     </CardContent>
@@ -490,20 +561,43 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
                 onClick={() => setStep('useCases')}
                 disabled={!canProceedFromInfo}
               >
-                Next: Select Use Cases
+                Next: Select Test Cases
                 <ChevronRight size={16} className="ml-1" />
               </Button>
             )}
             {step === 'useCases' && (
               benchmark && !testCasesChanged ? (
                 <Button
-                  onClick={handleSave}
+                  onClick={() => handleSave(false)}
                   disabled={!canProceedFromUseCases}
                   className="bg-opensearch-blue hover:bg-blue-600"
                 >
                   <Check size={16} className="mr-1" />
                   Save Changes
                 </Button>
+              ) : benchmark && testCasesChanged ? (
+                // Edit mode with test-case changes: offer BOTH "Save Changes"
+                // (persist v{n+1} without running) AND "Next: Define Runs"
+                // (persist + configure a run). User feedback: editing should
+                // not force a run.
+                <>
+                  <Button
+                    data-testid="editor-save-without-run"
+                    variant="outline"
+                    onClick={() => handleSave(false)}
+                    disabled={!canProceedFromUseCases}
+                  >
+                    <Check size={16} className="mr-1" />
+                    Save Changes (v{benchmark.currentVersion + 1})
+                  </Button>
+                  <Button
+                    onClick={() => setStep('runs')}
+                    disabled={!canProceedFromUseCases}
+                  >
+                    Next: Define Runs
+                    <ChevronRight size={16} className="ml-1" />
+                  </Button>
+                </>
               ) : (
                 <Button
                   onClick={() => setStep('runs')}
@@ -516,7 +610,7 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
             )}
             {step === 'runs' && (
               <Button
-                onClick={handleSave}
+                onClick={() => handleSave(true)}
                 disabled={!canSave}
                 className="bg-opensearch-blue hover:bg-blue-600"
               >
@@ -524,7 +618,9 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
                 {!benchmark
                   ? 'Create & Run Benchmark'
                   : testCasesChanged
-                    ? `Save & Run v${benchmark.currentVersion + 1}`
+                    ? (runs.length > 0
+                        ? `Save & Run v${benchmark.currentVersion + 1}`
+                        : `Save Changes (v${benchmark.currentVersion + 1})`)
                     : 'Save Changes'}
               </Button>
             )}

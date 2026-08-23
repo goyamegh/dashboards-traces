@@ -1,12 +1,12 @@
 # Configuration Guide
 
-Agent Health uses a unified configuration system with multiple tiers:
+Agent Health has **one file you author** plus state the app manages:
 
-1. **`agent-health.config.json`** - Unified JSON config file (primary, auto-created)
-2. **Environment Variables** - for quick overrides and secrets
-3. **TypeScript Config File** - for power users with custom agents/connectors (optional)
+1. **`agent-health.config.ts`** — the config you write (agents, connectors, models, judge, reporters, telemetry, and optionally storage/observability). Optional; only for customization.
+2. **`.agent-health/state.json`** — runtime state the app writes (storage/observability/custom agents/debug). You don't hand-edit this; the Settings UI manages it.
+3. **Environment variables** — secrets and quick overrides (`process.env` / `.env`).
 
-Settings are consolidated into `agent-health.config.json`, which is created automatically on first startup. Priority: **file config > env vars > defaults**.
+Which is authoritative depends on the mode (below). Zero config also works — file-based storage and built-in demo agents need nothing.
 
 ## Quick Start (Zero Config)
 
@@ -23,39 +23,116 @@ This works because:
 - File-based storage is used by default (no OpenSearch needed)
 - Results shown in terminal
 
-## Unified Config File (`agent-health.config.json`)
+## Two modes: code-first vs UI-first
 
-On first startup, Agent Health creates `agent-health.config.json` in your working directory. This file consolidates all settings that were previously scattered across environment variables and YAML files.
+Which file is authoritative depends on whether you author an `agent-health.config.ts`:
+
+| Mode | Trigger | Source of truth | Settings UI (data sources) |
+|------|---------|-----------------|----------------------------|
+| **Code-first** | an `agent-health.config.{ts,js,mjs}` exists (project **or** user scope) | the `.ts` + `.env` | read-only — edit the file and restart |
+| **UI-first** | no authored config file anywhere | `.agent-health/state.json` + `.env` | writable — the UI persists here |
+
+**The rule:** if an authored config file is present, the runtime state file is
+**ignored entirely** and the `.ts` wins. Otherwise the state file (written by the
+Settings UI) is used. Exactly one plane is active — no merging, no precedence puzzle.
+
+`.agent-health/` resolves at both **user** (`~/.agent-health/`) and **project**
+(`<cwd>/.agent-health/`) scope, project overriding user — so you can set clusters
+once globally and override per project.
+
+Resolution for storage/observability (each tier overrides the one below):
+
+```
+Code-first:  project agent-health.config.ts → user ~/.agent-health/*.ts → OPENSEARCH_* env
+UI-first:    project .agent-health/state.json → user ~/.agent-health/state.json → OPENSEARCH_* env → file-storage fallback
+```
+
+A single committed `agent-health.config.ts` (reading secrets from `process.env`)
+is all most projects need — no state file required.
+
+## Runtime state file (`.agent-health/state.json`)
+
+In **UI-first** mode (no authored config), configuring storage/observability via
+the **Settings page** writes `.agent-health/state.json` (project scope by
+default; gitignored). Don't hand-edit it — treat it as app-managed state:
 
 ```json
 {
-  "storage": {
-    "type": "file",
-    "dataDir": ".agent-health-data"
-  },
-  "server": {
-    "port": 4001
-  },
+  "storage": { "endpoint": "https://...", "authType": "sigv4", "awsRegion": "us-east-1", "awsService": "es", "awsProfile": "default" },
+  "observability": { "endpoint": "https://...", "authType": "sigv4", "awsRegion": "us-east-1", "indexes": { "traces": "otel-v1-apm-span-*", "logs": "ml-commons-logs-*" } },
   "debug": false
 }
 ```
 
-Settings saved through the UI (e.g., from the Settings page) are persisted to this file automatically.
+In **code-first** mode (an `agent-health.config.ts` exists) this file is
+**ignored**, and the Settings data-source panels are read-only — set
+storage/observability in the `.ts` (see [TypeScript Config File](#typescript-config-file-optional)).
 
-### YAML to JSON Auto-Migration
+### What gets written, and when
 
-If you have an existing `agent-health.yaml` configuration file, it will be automatically migrated to `agent-health.config.json` on the first startup. The migration is handled by `configMigration.ts` and preserves all your existing settings. The original YAML file is left in place for reference but is no longer read.
+The app **never writes your `agent-health.config.ts`** — you author it by hand.
+UI writes only ever target `.agent-health/state.json`, and only in ui-first mode:
+
+| Action | UI-first (no `.ts`) | Code-first (a `.ts` exists) |
+|--------|---------------------|------------------------------|
+| **Test Connection** | nothing written — connectivity probe only | nothing written — probe only |
+| **Save** (storage / observability / remote server) | writes `.agent-health/state.json` (project scope) | **`409 "managed by agent-health.config.ts"`** — nothing written |
+| **Change a value for real** | Save in the UI | edit `agent-health.config.ts` + restart |
+
+So if you edit the endpoint field and hit **Test Connection**, it only probes
+that endpoint (falling back to stored credentials *only* when the endpoint
+matches the configured one); the typed value is **not persisted** until you
+**Save** — and in code-first mode Save is rejected with a `409`. To actually
+switch clusters in code-first mode, edit the `.ts` and restart.
+
+### Auto-migration from legacy files
+
+Existing `agent-health.yaml` and `agent-health.config.json` files are migrated
+once to `.agent-health/state.json` on first startup (handled by
+`configMigration.ts`); the originals are renamed to `*.backup`. If you also have
+an `agent-health.config.ts`, the migrated storage/observability are ignored
+(code-first) — a startup warning tells you to move them into the `.ts`.
+
+## Where things live: settings vs data vs your test files
+
+Three locations are easy to confuse — they hold different things and have
+different lifecycles:
+
+| Location | Plane | Holds | Lifecycle |
+|----------|-------|-------|-----------|
+| `.agent-health/` | **Settings + Data** (control plane + file storage backend) | `state.json` (which storage/observability cluster, custom agents, debug flag — UI-first mode only) and `data/` (`test-cases/`, `benchmarks/`, `runs/`, `analytics/`, `evaluators/`, `traces/`, `skill-evals/` — the records Agent Health produces when no OpenSearch cluster is configured) | app-managed, gitignored, grows with use |
+| `evals/` *(or wherever you keep them)* | **Your source code** | the `.eval.js` / `.eval.ts` test files **you author** with the code SDK | you own it, version-controlled |
+
+Rules of thumb:
+
+- **`.agent-health/`** answers *"how is Agent Health configured?"* (`state.json`)
+  and *"what has Agent Health stored?"* (`data/`). `state.json` is like
+  `.vscode/settings.json` and is **ignored entirely** in code-first mode (when an
+  `agent-health.config.ts` is present); `data/` is like a local `./data` database
+  directory, used only when the storage backend is **file** (set
+  `OPENSEARCH_STORAGE_*` or `storage` in your config to use a cluster instead).
+- **`evals/`** is **your test source** — `.eval.js` / `.eval.ts` files you write
+  with the [code SDK](./SDK.md) and run with
+  `agent-health benchmark -f ./examples/eval-files/demo.eval.js`. They are **not** stored under
+  `.agent-health/data/`; *running* them produces run records that land there (or
+  in OpenSearch).
+
+`.agent-health/` is **gitignored** — runtime state, not source. Your `evals/` and
+any committed `agent-health.config.ts` are the parts you version-control.
 
 ## File-Based Storage (Default)
 
-By default, Agent Health uses **file-based storage** that requires no external services. Data is stored as JSON files in a `.agent-health-data/` directory:
+By default, Agent Health uses **file-based storage** that requires no external services. Data is stored as JSON files under the app-managed `.agent-health/data/` directory — combined with `state.json` so there is **one** gitignored, app-managed folder:
 
 ```
-.agent-health-data/
-├── test-cases/       # Test case definitions
-├── benchmarks/       # Benchmark configurations
-├── runs/             # Evaluation run results
-└── analytics/        # Analytics data
+.agent-health/
+├── state.json        # config-v2 runtime state (UI-managed)
+└── data/             # generated, disposable
+    ├── test-cases/   # Test case definitions
+    ├── benchmarks/   # Benchmark configurations
+    ├── runs/         # Evaluation run results
+    ├── analytics/    # Analytics data
+    └── evaluators/   # Evaluator (judge) definitions
 ```
 
 This means you can start using Agent Health immediately without setting up OpenSearch. To switch to OpenSearch storage, configure the `OPENSEARCH_STORAGE_*` environment variables (see below).
@@ -94,7 +171,7 @@ Override the default file-based storage with an OpenSearch cluster for shared, p
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `OPENSEARCH_STORAGE_ENDPOINT` | Storage cluster URL | - |
-| `OPENSEARCH_STORAGE_AUTH_TYPE` | Set to `sigv4` to enable SigV4 | - |
+| `OPENSEARCH_STORAGE_AUTH_TYPE` | Auth type: `none` \| `basic` \| `sigv4` (defaults to `basic` when a username/password is set) | - |
 | `OPENSEARCH_STORAGE_AWS_REGION` | AWS region (required for SigV4) | - |
 | `OPENSEARCH_STORAGE_AWS_PROFILE` | AWS profile name (uses default credential chain if omitted) | - |
 | `OPENSEARCH_STORAGE_AWS_SERVICE` | `es` for managed OpenSearch, `aoss` for Serverless | `es` |
@@ -121,7 +198,7 @@ View agent traces and logs. Only needed for ML-Commons agent.
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `OPENSEARCH_LOGS_ENDPOINT` | Logs cluster URL | - |
-| `OPENSEARCH_LOGS_AUTH_TYPE` | Set to `sigv4` to enable SigV4 | - |
+| `OPENSEARCH_LOGS_AUTH_TYPE` | Auth type: `none` \| `basic` \| `sigv4` (defaults to `basic` when a username/password is set) | - |
 | `OPENSEARCH_LOGS_AWS_REGION` | AWS region (required for SigV4) | - |
 | `OPENSEARCH_LOGS_AWS_PROFILE` | AWS profile name (uses default credential chain if omitted) | - |
 | `OPENSEARCH_LOGS_AWS_SERVICE` | `es` for managed OpenSearch, `aoss` for Serverless | `es` |
@@ -185,23 +262,39 @@ export default defineConfig({
     {
       key: 'my-agent',
       name: 'My Custom Agent',
-      connectorType: 'rest', // or 'agui', 'subprocess'
+      connectorType: 'rest', // or 'agui-streaming', 'langgraph', 'strands', 'subprocess'
       endpoint: 'http://localhost:8080/chat',
-      models: ['claude-sonnet-4'],
+      useTraces: true,
     },
   ],
 
-  // Override storage (can also use env vars)
+  // Optional: OpenSearch storage for eval results (can also use env vars / the
+  // Settings UI). Read secrets from process.env so this file stays committable.
   storage: {
-    endpoint: process.env.OPENSEARCH_STORAGE_ENDPOINT,
-    username: 'admin',
-    password: process.env.OPENSEARCH_STORAGE_PASSWORD,
+    endpoint: process.env.OPENSEARCH_STORAGE_ENDPOINT!,
+    authType: 'sigv4',          // 'none' | 'basic' | 'sigv4'
+    awsRegion: 'us-east-1',
+    awsService: 'es',           // 'es' (managed) | 'aoss' (serverless)
+    awsProfile: process.env.AWS_PROFILE,
+  },
+
+  // Optional: OpenSearch observability cluster for traces/logs (Traces tab).
+  observability: {
+    endpoint: process.env.OPENSEARCH_LOGS_ENDPOINT!,
+    authType: 'sigv4',
+    awsRegion: 'us-east-1',
+    indexes: { traces: 'otel-v1-apm-span-*', logs: 'ml-commons-logs-*' },
   },
 
   // Custom test cases location
   testCases: './my-tests/*.yaml',
 });
 ```
+
+> **Precedence:** an authored `agent-health.config.ts` (above) **wins** and the
+> runtime state file is ignored (code-first). Without a `.ts`, the Settings UI's
+> `.agent-health/state.json` is used, then `OPENSEARCH_*` env, then file-based
+> fallback. See [Two modes: code-first vs UI-first](#two-modes-code-first-vs-ui-first).
 
 ### Config File Options
 
@@ -210,11 +303,12 @@ export default defineConfig({
 | `agents` | `UserAgentConfig[]` | Custom agents (merged with defaults) |
 | `models` | `UserModelConfig[]` | Custom models (merged with defaults) |
 | `connectors` | `AgentConnector[]` | Custom connectors |
-| `storage` | `StorageConfig` | OpenSearch storage config |
-| `observability` | `ObservabilityConfig` | OpenSearch logs config |
+| `storage` | `StorageClusterConfig` | OpenSearch storage cluster (endpoint + auth) |
+| `observability` | `ObservabilityClusterConfig` | OpenSearch traces/logs cluster (endpoint + auth + index patterns) |
 | `testCases` | `string \| string[]` | Test case file patterns |
 | `reporters` | `ReporterConfig[]` | Output reporters |
 | `judge` | `JudgeConfig` | Judge model configuration |
+| `telemetry` | `TelemetryConfig` | OTel evaluation span emission |
 | `extends` | `boolean` | Extend defaults (`true`) or replace (`false`) |
 
 ### Agent Config Options
@@ -224,13 +318,13 @@ interface UserAgentConfig {
   key: string;              // Unique identifier
   name: string;             // Display name
   endpoint: string;         // URL or command name
-  connectorType?: string;   // 'agui', 'rest', 'subprocess', 'claude-code', 'mock'
-  models: string[];         // Supported model keys
+  connectorType?: string;   // 'agui-streaming', 'rest', 'langgraph', 'strands', 'subprocess', 'claude-code', 'mock'
   headers?: Record<string, string>;  // HTTP headers
   useTraces?: boolean;      // Enable trace collection
-  connectorConfig?: any;    // Connector-specific config
+  connectorConfig?: Record<string, any>;  // Connector-specific config
+  hooks?: AgentHooks;       // beforeRequest hook, etc.
   description?: string;     // Description
-  enabled?: boolean;        // Enable/disable agent
+  enabled?: boolean;        // Enable/disable agent (default true)
 }
 ```
 
@@ -242,15 +336,18 @@ These agents work out of the box:
 |-------|-----|-----------|-------|
 | Demo Agent | `demo` | `mock` | Simulated responses for testing |
 | Claude Code | `claude-code` | `claude-code` | Requires `claude` CLI installed |
-| Langgraph | `langgraph` | `agui-streaming` | AG-UI protocol |
-| HolmesGPT | `holmesgpt` | `agui-streaming` | AI investigation agent |
+| Amazon Strands | `strands` | `strands` | Bedrock Agent Runtime (disabled by default) |
+| LangGraph (REST) | `langgraph-rest` | `langgraph` | Direct REST API (disabled by default) |
 
 ## Built-in Connectors
 
 | Type | Protocol | Use Case |
 |------|----------|----------|
-| `agui-streaming` | AG-UI SSE | ML-Commons, Langgraph, HolmesGPT |
+| `agui-streaming` | AG-UI SSE | ML-Commons and AG-UI compatible agents |
 | `rest` | HTTP POST | Simple REST APIs |
+| `openai-compatible` | OpenAI Chat Completions | LiteLLM, Ollama, vLLM |
+| `langgraph` | LangGraph REST `/invoke` | Non-AG-UI LangGraph instances |
+| `strands` | Bedrock Agent Runtime | Amazon Strands agents (server-only) |
 | `subprocess` | CLI | Generic CLI tools |
 | `claude-code` | CLI | Claude Code CLI specifically |
 | `mock` | In-memory | Testing and demos |
@@ -262,14 +359,19 @@ Settings are loaded in this order (later overrides earlier):
 ```
 1. Built-in defaults (lib/constants.ts)
       ↓
-2. Environment variables (.env file)
+2. Environment variables (.env / OPENSEARCH_*)
       ↓
-3. JSON config file (agent-health.config.json) - auto-created
+3. Runtime state (.agent-health/state.json) — UI-written; used only in ui-first mode
       ↓
-4. TypeScript config file (agent-health.config.ts) - OPTIONAL, for custom agents/connectors
+4. agent-health.config.ts — authored; in code-first mode it WINS and the state file is ignored
 ```
 
-**Note:** `agent-health.config.json` is the primary config file for runtime settings (storage, server, debug). The TypeScript config file (`agent-health.config.ts`) is used for advanced customization like custom agents, connectors, and models.
+**Note:** For **agents/models/connectors/judge/reporters/telemetry**, the
+TypeScript config (`agent-health.config.ts`) is always authoritative. For
+**storage and observability** the order depends on mode — code-first: `.ts` >
+`OPENSEARCH_*` env > file fallback (state ignored); ui-first:
+`.agent-health/state.json` > `OPENSEARCH_*` env > file fallback. See
+[Two modes: code-first vs UI-first](#two-modes-code-first-vs-ui-first).
 
 ## Validation
 

@@ -5,7 +5,7 @@
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { ArrowLeft, GitCompare, Calendar, CheckCircle2, XCircle, Play, Trash2, Plus, X, Loader2, Circle, Check, ChevronRight, ChevronDown, Clock, StopCircle, Ban, Timer } from 'lucide-react';
+import { ArrowLeft, GitCompare, Calendar, CheckCircle2, XCircle, Play, Trash2, Plus, X, Loader2, Circle, Check, ChevronRight, ChevronDown, Clock, StopCircle, Ban, Timer, AlertTriangle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -14,13 +14,15 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Progress } from '@/components/ui/progress';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { JudgeModelSelect } from '@/components/JudgeModelSelect';
 import { Checkbox } from '@/components/ui/checkbox';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { asyncBenchmarkStorage, asyncTestCaseStorage } from '@/services/storage';
 import { executeBenchmarkRun } from '@/services/client';
 import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
-import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, RunStats } from '@/types';
+import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, RunStats, Evaluator } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
+import { ENV_CONFIG } from '@/lib/config';
 import { getLabelColor, formatDate, getModelName } from '@/lib/utils';
 import { formatDuration } from '@/services/metrics';
 import {
@@ -103,6 +105,26 @@ export const BenchmarkRunsPage: React.FC = () => {
     modelId: '',
     concurrency: 1,
   });
+
+  // Evaluators for the run config dialog. Loaded once on mount so the
+  // "Evaluator" dropdown can show human-readable names. Mirrors the
+  // evals3 BenchmarkRunsPage and TestCaseDetailPage so all three
+  // "Configure Run" entry points expose the same evaluator selection.
+  const [evaluators, setEvaluators] = useState<Evaluator[]>([]);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(`${ENV_CONFIG.backendUrl}/api/storage/evaluators`);
+        if (!response.ok) return;
+        const data = await response.json();
+        if (!cancelled) setEvaluators(data.evaluators || []);
+      } catch (error) {
+        console.error('Failed to load evaluators:', error);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, []);
 
   // Running state
   const [isRunning, setIsRunning] = useState(false);
@@ -290,6 +312,8 @@ export const BenchmarkRunsPage: React.FC = () => {
         passed: run.stats.passed,
         failed: run.stats.failed,
         pending: run.stats.pending - running, // Adjust pending to exclude running
+        // `errored` (issue #242) is optional on older stored runs.
+        errored: run.stats.errored ?? 0,
         running,
         total: run.stats.total,
       };
@@ -392,6 +416,13 @@ export const BenchmarkRunsPage: React.FC = () => {
       description: '',
       agentKey: latestRun?.agentKey || DEFAULT_CONFIG.agents[0]?.key || '',
       modelId: latestRun?.modelId || Object.keys(DEFAULT_CONFIG.models)[0] || '',
+      // Carry over the customer-supplied judge model + evaluator from the
+      // latest run so iterative runs default to the same evaluation setup.
+      // Both are optional — the server resolves judgeModelId via
+      // evaluator.inferenceConfig.modelId → BEDROCK_MODEL_ID when
+      // undefined, and undefined evaluatorId means "RCA Default".
+      judgeModelId: latestRun?.judgeModelId,
+      evaluatorId: latestRun?.evaluatorId,
       headers: latestRun?.headers,
       concurrency: latestRun?.concurrency ?? 1,
     });
@@ -929,6 +960,15 @@ export const BenchmarkRunsPage: React.FC = () => {
                                   <XCircle size={14} />
                                   {stats.failed}
                                 </span>
+                                {(stats as any).errored > 0 && (
+                                  <span
+                                    className="flex items-center gap-1 text-amber-600 dark:text-amber-500"
+                                    title="Evaluator could not run (e.g. judge validation error). Excluded from pass-rate aggregation."
+                                  >
+                                    <AlertTriangle size={14} />
+                                    {(stats as any).errored}
+                                  </span>
+                                )}
                                 <span className="text-muted-foreground">
                                   / {stats.total}
                                 </span>
@@ -1007,7 +1047,7 @@ export const BenchmarkRunsPage: React.FC = () => {
       {/* Run Configuration Dialog */}
       {isRunConfigOpen && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <Card className="w-full max-w-md">
+          <Card className="w-full max-w-md" data-testid="run-config-dialog">
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-lg">Configure Run</CardTitle>
               <Button
@@ -1040,23 +1080,51 @@ export const BenchmarkRunsPage: React.FC = () => {
                 />
               </div>
 
+              <div className="space-y-2">
+                {/* The agent's LLM is owned by its agent-health.config.ts
+                    connectorConfig — there is no agent-model picker. */}
+                <Label>Agent</Label>
+                <Select
+                  value={runConfigValues.agentKey}
+                  onValueChange={val => setRunConfigValues(prev => ({ ...prev, agentKey: val }))}
+                >
+                  <SelectTrigger>
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {DEFAULT_CONFIG.agents.map(agent => (
+                      <SelectItem
+                        key={agent.key}
+                        value={agent.key}
+                      >
+                        {agent.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>Agent</Label>
+                  {/* Evaluator — picks the scoring config + (default)
+                      judge prompt and judge model. "RCA Default" maps to
+                      undefined; the server resolves the built-in default. */}
+                  <Label>Evaluator</Label>
                   <Select
-                    value={runConfigValues.agentKey}
-                    onValueChange={val => setRunConfigValues(prev => ({ ...prev, agentKey: val }))}
+                    value={runConfigValues.evaluatorId || '__default__'}
+                    onValueChange={val => setRunConfigValues(prev => ({
+                      ...prev,
+                      evaluatorId: val === '__default__' ? undefined : val,
+                    }))}
                   >
-                    <SelectTrigger>
-                      <SelectValue />
+                    <SelectTrigger data-testid="run-config-evaluator-trigger">
+                      <SelectValue placeholder="RCA Default" />
                     </SelectTrigger>
                     <SelectContent>
-                      {DEFAULT_CONFIG.agents.map(agent => (
-                        <SelectItem
-                          key={agent.key}
-                          value={agent.key}
-                        >
-                          {agent.name}
+                      <SelectItem value="__default__">RCA Default</SelectItem>
+                      {evaluators.map(evaluator => (
+                        <SelectItem key={evaluator.id} value={evaluator.id}>
+                          {evaluator.name} {evaluator.isSystem ? '(System)' : ''}
                         </SelectItem>
                       ))}
                     </SelectContent>
@@ -1064,22 +1132,20 @@ export const BenchmarkRunsPage: React.FC = () => {
                 </div>
 
                 <div className="space-y-2">
+                  {/* Judge Model — customer-supplied LLM for the judge,
+                      distinct from the agent's model. "Use evaluator
+                      default" maps to undefined; the server resolves
+                      from evaluator.inferenceConfig.modelId then
+                      BEDROCK_MODEL_ID. */}
                   <Label>Judge Model</Label>
-                  <Select
-                    value={runConfigValues.modelId}
-                    onValueChange={val => setRunConfigValues(prev => ({ ...prev, modelId: val }))}
-                  >
-                    <SelectTrigger>
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      {Object.entries(DEFAULT_CONFIG.models).map(([key, model]) => (
-                        <SelectItem key={key} value={key}>
-                          {model.display_name}
-                        </SelectItem>
-                      ))}
-                    </SelectContent>
-                  </Select>
+                  <JudgeModelSelect
+                    value={runConfigValues.judgeModelId ?? ''}
+                    onValueChange={val => setRunConfigValues(prev => ({
+                      ...prev,
+                      judgeModelId: val || undefined,
+                    }))}
+                    allowDefault={true}
+                  />
                 </div>
               </div>
 

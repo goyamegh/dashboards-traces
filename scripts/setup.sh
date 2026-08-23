@@ -3,8 +3,8 @@
 # Copyright OpenSearch Contributors
 # SPDX-License-Identifier: Apache-2.0
 
-# AgentEval Setup Script
-# Automates the complete setup of AgentEval environment with ML-Commons AG-UI agent
+# Agent Health Setup Script
+# Automates the complete setup of Agent Health environment with ML-Commons AG-UI agent
 #
 # Prerequisites:
 #   - ML-Commons must be running on port 9200
@@ -34,7 +34,7 @@ AWS_REGION="${AWS_REGION:-us-east-1}"
 BEDROCK_MODEL="${BEDROCK_MODEL:-us.anthropic.claude-sonnet-4-20250514-v1:0}"
 MCP_SERVER_PORT="${MCP_SERVER_PORT:-3030}"
 MLCOMMONS_PORT=9200
-SERVER_PORT="${SERVER_PORT:-4001}"  # Unified server port (serves both API and UI)
+SERVER_PORT="${AH_PORT:-${AGENT_HEALTH_PORT:-4001}}"  # Unified server port (serves both API and UI)
 
 # Script directory (where this script lives)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -128,7 +128,7 @@ cleanup_ports() {
 
 cleanup_on_exit() {
     echo ""
-    log_info "Shutting down AgentEval services (MCP + server)..."
+    log_info "Shutting down Agent Health services (MCP + server)..."
 
     # Kill MCP server (port 3030) - only python/uvx processes
     for pid in $(lsof -ti:$MCP_SERVER_PORT 2>/dev/null || true); do
@@ -139,16 +139,16 @@ cleanup_on_exit() {
         fi
     done
 
-    # Kill AgentEval server (port 4001) - only node processes
+    # Kill Agent Health server (port 4001) - only node processes
     for pid in $(lsof -ti:$SERVER_PORT 2>/dev/null || true); do
         local cmd=$(ps -p "$pid" -o comm= 2>/dev/null || true)
         if [[ "$cmd" == *"node"* ]]; then
-            log_info "Stopping AgentEval server (PID: $pid)..."
+            log_info "Stopping Agent Health server (PID: $pid)..."
             kill "$pid" 2>/dev/null || true
         fi
     done
 
-    log_success "AgentEval services stopped"
+    log_success "Agent Health services stopped"
 }
 
 # Only run cleanup on interrupt (Ctrl+C) or terminate signal, not on normal exit
@@ -190,7 +190,7 @@ show_status() {
 }
 
 stop_services() {
-    log_info "Stopping AgentEval services (not ML-Commons)..."
+    log_info "Stopping Agent Health services (not ML-Commons)..."
 
     for port in $MCP_SERVER_PORT $SERVER_PORT; do
         # Get PIDs and handle each one separately (lsof can return multiple)
@@ -203,7 +203,7 @@ stop_services() {
         fi
     done
 
-    log_success "AgentEval services stopped (ML-Commons still running)"
+    log_success "Agent Health services stopped (ML-Commons still running)"
 }
 
 # ============================================================================
@@ -460,7 +460,7 @@ configure_mlcommons() {
         -d '{
             "name": "AG-UI chat agent",
             "type": "AG_UI",
-            "description": "AgentEval AG-UI agent",
+            "description": "Agent Health AG-UI agent",
             "llm": {
                 "model_id": "'"$MODEL_ID"'",
                 "parameters": {
@@ -590,7 +590,7 @@ update_env_file() {
 # ============================================================================
 
 start_agenteval_services() {
-    log_step "5" "Starting AgentEval Services"
+    log_step "5" "Starting Agent Health Services"
 
     cd "$PROJECT_ROOT"
 
@@ -612,7 +612,7 @@ start_agenteval_services() {
     echo ""
 
     # Export port for the server to use
-    export VITE_BACKEND_PORT="$SERVER_PORT"
+    export AH_PORT="$SERVER_PORT"
 
     # Start unified server (builds UI + serves everything from one port)
     # Runs in FOREGROUND so logs are visible
@@ -625,7 +625,7 @@ start_agenteval_services() {
 
 main() {
     echo -e "\n${GREEN}================================================${NC}"
-    echo -e "${GREEN}      AgentEval Setup Script${NC}"
+    echo -e "${GREEN}      Agent Health Setup Script${NC}"
     echo -e "${GREEN}================================================${NC}\n"
 
     # Load .env file to get AWS_BEDROCK_ACCOUNT and other config

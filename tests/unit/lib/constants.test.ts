@@ -3,9 +3,39 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { MODEL_PRICING, DEFAULT_CONFIG, MOCK_TOOLS } from '@/lib/constants';
+import { MODEL_PRICING, DEFAULT_CONFIG, MOCK_TOOLS, isBuiltInAgent } from '@/lib/constants';
 
 describe('lib/constants', () => {
+  describe('isBuiltInAgent', () => {
+    it('trusts the server-computed builtIn flag when present', () => {
+      expect(isBuiltInAgent({ key: 'demo', builtIn: true })).toBe(true);
+      // Config-file agent with a non-built-in key — the original Settings bug
+      expect(isBuiltInAgent({ key: 'kiro', builtIn: false })).toBe(false);
+      expect(isBuiltInAgent({ key: 'aos-oncall-cc', builtIn: false })).toBe(false);
+    });
+
+    it('falls back to BUILT_IN_AGENT_KEYS before refreshConfig() populates builtIn', () => {
+      expect(isBuiltInAgent({ key: 'demo' })).toBe(true);
+      expect(isBuiltInAgent({ key: 'observio' })).toBe(true);
+      expect(isBuiltInAgent({ key: 'my-config-agent' })).toBe(false);
+    });
+
+    it('never treats UI-added custom agents as built-in', () => {
+      expect(isBuiltInAgent({ key: 'demo', builtIn: true, isCustom: true })).toBe(false);
+      expect(isBuiltInAgent({ key: 'custom-1', isCustom: true })).toBe(false);
+    });
+
+    it('every shipped DEFAULT_CONFIG agent is registered as built-in (drift guard)', () => {
+      // A default agent missing from BUILT_IN_AGENT_KEYS gets builtIn: false
+      // from /api/agents and would render under "Config File Agents"
+      // (this happened to `pi`).
+      for (const agent of DEFAULT_CONFIG.agents) {
+        expect({ key: agent.key, builtIn: isBuiltInAgent(agent) })
+          .toEqual({ key: agent.key, builtIn: true });
+      }
+    });
+  });
+
   describe('MODEL_PRICING', () => {
     it('should have Claude Opus 4.6 pricing', () => {
       expect(MODEL_PRICING['us.anthropic.claude-opus-4-6-v1']).toEqual({
@@ -141,37 +171,20 @@ describe('lib/constants', () => {
         expect(model.max_output_tokens).toBe(64000);
       });
 
-      it('should have claude-opus-4.5 model', () => {
-        const model = DEFAULT_CONFIG.models['claude-opus-4.5'];
+      it('should have claude-opus-4.8 model', () => {
+        const model = DEFAULT_CONFIG.models['claude-opus-4.8'];
         expect(model).toBeDefined();
-        expect(model.model_id).toBe('us.anthropic.claude-opus-4-5-20251101-v1:0');
-        expect(model.display_name).toBe('Claude Opus 4.5');
-        expect(model.max_output_tokens).toBe(64000);
+        expect(model.model_id).toBe('us.anthropic.claude-opus-4-8');
+        expect(model.display_name).toBe('Claude Opus 4.8');
+        expect(model.max_output_tokens).toBe(128000);
       });
 
-      it('should have claude-opus-4.1 model', () => {
-        const model = DEFAULT_CONFIG.models['claude-opus-4.1'];
+      it('should have claude-opus-4.7 model', () => {
+        const model = DEFAULT_CONFIG.models['claude-opus-4.7'];
         expect(model).toBeDefined();
-        expect(model.model_id).toBe('us.anthropic.claude-opus-4-1-20250805-v1:0');
-        expect(model.display_name).toBe('Claude Opus 4.1');
-        expect(model.max_output_tokens).toBe(32000);
-      });
-
-      it('should have claude-opus-4 model', () => {
-        const model = DEFAULT_CONFIG.models['claude-opus-4'];
-        expect(model).toBeDefined();
-        expect(model.model_id).toBe('us.anthropic.claude-opus-4-20250514-v1:0');
-        expect(model.display_name).toBe('Claude Opus 4');
-        expect(model.max_output_tokens).toBe(32000);
-      });
-
-      it('should have claude-sonnet-4 model', () => {
-        const model = DEFAULT_CONFIG.models['claude-sonnet-4'];
-        expect(model).toBeDefined();
-        expect(model.model_id).toContain('claude-sonnet-4');
-        expect(model.display_name).toBe('Claude Sonnet 4');
-        expect(model.context_window).toBe(200000);
-        expect(model.max_output_tokens).toBeGreaterThan(0);
+        expect(model.model_id).toBe('us.anthropic.claude-opus-4-7');
+        expect(model.display_name).toBe('Claude Opus 4.7');
+        expect(model.max_output_tokens).toBe(128000);
       });
 
       it('should have claude-sonnet-4.5 model', () => {
@@ -180,11 +193,11 @@ describe('lib/constants', () => {
         expect(model.display_name).toBe('Claude Sonnet 4.5');
       });
 
-      it('should have claude-haiku-3.5 model', () => {
-        const model = DEFAULT_CONFIG.models['claude-haiku-3.5'];
-        expect(model).toBeDefined();
-        expect(model.display_name).toBe('Claude Haiku 3.5');
-      });
+      // Note: claude-opus-4.5 / 4.1 / 4, claude-sonnet-4, and claude-haiku-3.5
+      // were removed from the default catalog (trimmed list — newest tiers
+      // only). Discovery still surfaces any Bedrock model the account has
+      // access to via /api/judge/bedrock-models; the static catalog just
+      // seeds the dropdown with current models.
 
       it('should have valid model structure', () => {
         Object.entries(DEFAULT_CONFIG.models).forEach(([key, model]) => {
@@ -237,6 +250,16 @@ describe('lib/constants', () => {
     it('should have opensearch-prefixed tool names', () => {
       MOCK_TOOLS.forEach(tool => {
         expect(tool.name).toMatch(/^opensearch_/);
+      });
+    });
+
+    describe('judge models (Opus 4.7/4.8 Bedrock contract)', () => {
+      // The real Bedrock inference profiles have NO `-v1` for 4.7+ (verified via
+      // `aws bedrock list-inference-profiles`). `…-v1` 500s with "model
+      // identifier is invalid". PR #347 fixed 4.8; this guards 4.7 too.
+      it('maps Opus 4.7 and 4.8 to the real (no -v1) inference profiles', () => {
+        expect(DEFAULT_CONFIG.models['claude-opus-4.8'].model_id).toBe('us.anthropic.claude-opus-4-8');
+        expect(DEFAULT_CONFIG.models['claude-opus-4.7'].model_id).toBe('us.anthropic.claude-opus-4-7');
       });
     });
   });

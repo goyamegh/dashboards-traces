@@ -49,14 +49,16 @@ import {
 } from '@/types';
 import {
   fetchTracesByRunIds,
+  fetchTracesForRun,
   processSpansIntoTree,
   calculateTimeRange,
   compareTraces,
   categorizeSpanTree,
 } from '@/services/traces';
-import { spansToFlow, applyDagreLayout } from '@/services/traces/flowTransform';
+import { applyDagreLayout } from '@/services/traces/flowTransform';
 import { nodeTypes } from '@/components/traces/flow/nodeTypes';
 import SpanDetailsPanel from '@/components/traces/SpanDetailsPanel';
+import TraceVisualization from '@/components/traces/TraceVisualization';
 
 type ComparisonMode = 'side-by-side' | 'merged';
 type DiffType = 'matched' | 'added' | 'removed' | 'modified';
@@ -65,6 +67,10 @@ interface TraceFlowComparisonProps {
   runs: BenchmarkRun[];
   reports: Record<string, EvaluationReport>;
   useCaseId: string;
+  /** Trace-window hints per agent runId (Strategy C) so closed-source spans render. */
+  windowAgentsByRunId?: Map<string, { serviceName?: string; startedAt: number; endedAt: number }>;
+  /** A span citation clicked in the deep-dive → select/highlight that span. */
+  highlight?: { runId: string; spanId: string; nonce: number } | null;
 }
 
 interface TraceData {
@@ -174,107 +180,6 @@ const ModeToggle: React.FC<{
 };
 
 /**
- * Inner Flow panel content (must be inside ReactFlowProvider)
- */
-const FlowPanelInner: React.FC<{
-  spanTree: CategorizedSpan[];
-  timeRange: TimeRange;
-  selectedSpan: CategorizedSpan | null;
-  onSelectSpan: (span: CategorizedSpan | null) => void;
-}> = ({ spanTree, timeRange, selectedSpan, onSelectSpan }) => {
-  const [nodes, setNodes, onNodesChange] = useNodesState([]);
-  const [edges, setEdges, onEdgesChange] = useEdgesState([]);
-  const reactFlowInstance = useRef<ReactFlowInstance | null>(null);
-
-  useEffect(() => {
-    if (spanTree.length === 0) {
-      setNodes([]);
-      setEdges([]);
-      return;
-    }
-
-    const { nodes: flowNodes, edges: flowEdges } = spansToFlow(
-      spanTree,
-      timeRange.duration,
-      { direction: 'TB' }
-    );
-
-    setNodes(flowNodes);
-    setEdges(flowEdges);
-
-    // Fit view after nodes are set (with small delay to ensure render)
-    setTimeout(() => {
-      if (reactFlowInstance.current) {
-        reactFlowInstance.current.fitView({ padding: 0.2, maxZoom: 1 });
-      }
-    }, 100);
-  }, [spanTree, timeRange.duration, setNodes, setEdges]);
-
-  const onInit = useCallback((instance: ReactFlowInstance) => {
-    reactFlowInstance.current = instance;
-    setTimeout(() => {
-      instance.fitView({ padding: 0.2, maxZoom: 1 });
-    }, 100);
-  }, []);
-
-  const onNodeClick = useCallback(
-    (_event: React.MouseEvent, node: Node<SpanNodeData>) => {
-      onSelectSpan(node.data.span);
-    },
-    [onSelectSpan]
-  );
-
-  const onPaneClick = useCallback(() => {
-    onSelectSpan(null);
-  }, [onSelectSpan]);
-
-  const minimapNodeColor = (node: Node<SpanNodeData>): string => {
-    const category = node.data?.span?.category;
-    switch (category) {
-      case 'AGENT': return '#6366f1';
-      case 'LLM': return '#a855f7';
-      case 'TOOL': return '#f59e0b';
-      case 'ERROR': return '#ef4444';
-      default: return '#64748b';
-    }
-  };
-
-  return (
-    <ReactFlow
-      nodes={nodes}
-      edges={edges}
-      onNodesChange={onNodesChange}
-      onEdgesChange={onEdgesChange}
-      onNodeClick={onNodeClick}
-      onPaneClick={onPaneClick}
-      onInit={onInit}
-      nodeTypes={nodeTypes}
-      fitView
-      fitViewOptions={{ padding: 0.2, maxZoom: 1 }}
-      minZoom={0.1}
-      maxZoom={2}
-      defaultEdgeOptions={{ type: 'smoothstep' }}
-      proOptions={{ hideAttribution: true }}
-    >
-      <Background
-        variant={BackgroundVariant.Dots}
-        gap={16}
-        size={1}
-        color="#334155"
-      />
-      <MiniMap
-        nodeColor={minimapNodeColor}
-        maskColor="rgba(15, 23, 42, 0.8)"
-        className="!bg-slate-900/50 !border-slate-700 !bottom-2 !right-2"
-        style={{ width: 100, height: 60 }}
-        pannable
-        zoomable
-      />
-    </ReactFlow>
-  );
-};
-
-/**
  * Single Flow panel for side-by-side view.
  * Each panel gets its own ReactFlowProvider to isolate internal stores.
  */
@@ -287,20 +192,25 @@ const FlowPanel: React.FC<{
   onSelectSpan: (span: CategorizedSpan | null) => void;
 }> = ({ spanTree, timeRange, runName, spanCount, selectedSpan, onSelectSpan }) => {
   return (
-    <div className="flex-1 flex flex-col min-h-0 border-r last:border-r-0">
+    <div className="flex-1 flex flex-col min-h-0 min-w-0 border-r last:border-r-0">
       <div className="px-3 py-2 bg-muted/50 border-b text-xs font-medium text-center shrink-0">
         {runName}
         <span className="text-muted-foreground ml-2">({spanCount} spans)</span>
       </div>
-      <div className="flex-1 min-h-0 relative">
-        <ReactFlowProvider>
-          <FlowPanelInner
-            spanTree={spanTree}
-            timeRange={timeRange}
-            selectedSpan={selectedSpan}
-            onSelectSpan={onSelectSpan}
-          />
-        </ReactFlowProvider>
+      {/* Render each run's spans as a TIMELINE (tree/gantt waterfall) via the
+          shared TraceVisualization instead of the react-flow DAG — the DAG hid
+          individual spans and the user couldn't reach them. Selection is
+          controlled by the parent so deep-dive span citations highlight here
+          and surface the SpanDetailsPanel. */}
+      <div className="flex-1 min-h-0 min-w-0 relative overflow-auto">
+        <TraceVisualization
+          spanTree={spanTree as Span[]}
+          timeRange={timeRange}
+          initialViewMode="tree"
+          showViewToggle
+          selectedSpan={selectedSpan as Span | null}
+          onSelectSpan={(s) => onSelectSpan(s as CategorizedSpan | null)}
+        />
       </div>
     </div>
   );
@@ -560,11 +470,18 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
   runs,
   reports,
   useCaseId,
+  windowAgentsByRunId,
+  highlight,
 }) => {
   const [mode, setMode] = useState<ComparisonMode>('side-by-side');
   const [traceData, setTraceData] = useState<Map<string, TraceData>>(new Map());
   const [selectedSpan, setSelectedSpan] = useState<CategorizedSpan | null>(null);
+  const detailPanelRef = useRef<HTMLDivElement>(null);
   const [isLoading, setIsLoading] = useState(false);
+  // When the most recent fetch completed (null = never fetched). Lets the empty
+  // state say "checked at HH:MM:SS" so the user can tell "no traces present"
+  // (terminal) apart from "still loading" (the spinner).
+  const [lastFetchedAt, setLastFetchedAt] = useState<number | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
 
   // Get run IDs from reports
@@ -575,7 +492,12 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
       return {
         experimentRunId: run.id,
         runName: run.name,
+        reportId: result?.reportId || null,
         agentRunId: report?.runId || null,
+        // Direct correlators (deep-dive-independent): an agent's own traceId
+        // (Strategy A, e.g. pi) / session.id (Strategy D, e.g. Claude Code).
+        traceId: report?.traceId || null,
+        sessionId: report?.sessionId || null,
       };
     }).filter(info => info.agentRunId);
   }, [runs, reports, useCaseId]);
@@ -609,7 +531,20 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
         if (!info.agentRunId) return;
 
         try {
-          const result = await fetchTracesByRunIds([info.agentRunId]);
+          // Look the Strategy-C window up by reportId first (stable across the
+          // runId/traceId mapping), falling back to the run id for safety.
+          const wa = windowAgentsByRunId?.get(info.reportId || '') || windowAgentsByRunId?.get(info.agentRunId);
+          const result = await fetchTracesForRun({
+            runId: info.agentRunId,
+            // Strategy A / D: the run's own traceId / session.id correlate
+            // immediately, without waiting for the deep-dive's window hints.
+            traceId: info.traceId || undefined,
+            sessionId: info.sessionId || undefined,
+            includeWindowFallback: true,
+            windowAgents: wa?.serviceName
+              ? [{ serviceName: wa.serviceName, startedAt: wa.startedAt, endedAt: wa.endedAt, sessionId: info.sessionId || undefined }]
+              : undefined,
+          });
           const spanTree = processSpansIntoTree(result.spans);
           const categorizedTree = categorizeSpanTree(spanTree);
           const timeRange = calculateTimeRange(result.spans);
@@ -646,12 +581,61 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
     );
 
     setIsLoading(false);
-  }, [runInfos]);
+    setLastFetchedAt(Date.now());
+  }, [runInfos, windowAgentsByRunId]);
 
   // Fetch traces on mount
   useEffect(() => {
     fetchAllTraces();
   }, [fetchAllTraces]);
+
+  // Deep-link: a span citation was clicked in the deep-dive → select that span
+  // in its run's trace so its details/evidence surface for the user.
+  useEffect(() => {
+    if (!highlight) return;
+    const findById = (nodes: CategorizedSpan[]): CategorizedSpan | null => {
+      for (const n of nodes) {
+        if (n.spanId === highlight.spanId) return n;
+        const kids = (n.children as CategorizedSpan[] | undefined) || [];
+        const hit = kids.length ? findById(kids) : null;
+        if (hit) return hit;
+      }
+      return null;
+    };
+    // Resolve the cited span. The deep-dive cites a span by the AGENT's runId,
+    // but the client keys runs by `report.runId` — which toTestCaseRun maps to
+    // the OTel traceId, not the agent runId — so a direct runId match usually
+    // misses. spanIds are globally unique, so prefer the cited run when its id
+    // matches and otherwise fall back to locating the span in EITHER run's tree.
+    let hit: CategorizedSpan | null = null;
+    for (const td of traceData.values()) {
+      if (td.runId === highlight.runId) {
+        hit = findById(td.spanTree);
+        if (hit) break;
+      }
+    }
+    if (!hit) {
+      for (const td of traceData.values()) {
+        hit = findById(td.spanTree);
+        if (hit) break;
+      }
+    }
+    if (hit) setSelectedSpan(hit);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlight?.nonce, traceData]);
+
+  // After a deep-link selects a span, scroll its details panel into view. The
+  // panel renders to the RIGHT of the side-by-side flow inside a horizontally
+  // scrolling table, so without this the user lands on the Traces tab but the
+  // span they clicked is off-screen to the right.
+  useEffect(() => {
+    if (!highlight || !selectedSpan) return;
+    const t = setTimeout(() => {
+      detailPanelRef.current?.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+    }, 300);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [highlight?.nonce, selectedSpan?.spanId]);
 
   // Get first two traces for comparison
   const traceArray = Array.from(traceData.values());
@@ -687,9 +671,9 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
   if (isLoading || !leftTrace || !rightTrace || leftTrace.loading || rightTrace.loading) {
     return (
       <Card className="bg-card/50">
-        <CardContent className="py-8 text-center">
+        <CardContent className="py-8 text-center" data-testid="trace-flow-loading">
           <RefreshCw size={24} className="mx-auto mb-2 animate-spin text-muted-foreground" />
-          <p className="text-sm text-muted-foreground">Loading traces...</p>
+          <p className="text-sm text-muted-foreground">Loading traces… <span className="opacity-70">querying spans for both runs</span></p>
         </CardContent>
       </Card>
     );
@@ -725,20 +709,30 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
     );
   }
 
-  // Show empty state
+  // Show empty state — TERMINAL: the fetch completed and matched no spans. This
+  // is deliberately distinct from the loading spinner above so "not present"
+  // can't be mistaken for "still loading". We stamp when we last checked, and
+  // name the per-run span counts (an errored run that produced 0 spans reads as
+  // "0 spans", not a perpetual "propagating…").
   if (!comparisonResult || comparisonResult.alignedTree.length === 0) {
+    const leftN = leftTrace?.spans?.length ?? 0;
+    const rightN = rightTrace?.spans?.length ?? 0;
+    const checked = lastFetchedAt ? new Date(lastFetchedAt).toLocaleTimeString() : null;
     return (
       <Card className="bg-card/50">
-        <CardContent className="py-8 text-center">
+        <CardContent className="py-8 text-center" data-testid="trace-flow-empty">
           <Activity size={32} className="mx-auto mb-2 text-muted-foreground opacity-50" />
-          <p className="text-sm text-muted-foreground">
-            No trace data available for comparison
-          </p>
+          <p className="text-sm text-foreground">No traces found for these runs</p>
           <p className="text-xs text-muted-foreground mt-1">
-            Traces may take a few minutes to propagate after agent execution
+            {checked ? `Checked ${checked} — ` : ''}
+            <span data-testid="trace-flow-empty-counts">{leftTrace?.runName ?? 'A'}: {leftN} spans · {rightTrace?.runName ?? 'B'}: {rightN} spans</span>.
+            This is final — not still loading.
+          </p>
+          <p className="text-[0.7rem] text-muted-foreground/70 mt-1">
+            A run that errored emits no trace. If a run just finished, spans can lag a few seconds while indexing — Refresh to re-check.
           </p>
           <div className="mt-4">
-            <Button variant="outline" size="sm" onClick={fetchAllTraces}>
+            <Button variant="outline" size="sm" onClick={fetchAllTraces} data-testid="trace-flow-refresh">
               <RefreshCw size={14} className="mr-1.5" />
               Refresh
             </Button>
@@ -752,7 +746,7 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
   const maxDuration = Math.max(leftTrace.timeRange.duration, rightTrace.timeRange.duration);
 
   return (
-    <Card className="bg-card/50 overflow-hidden">
+    <Card className="bg-card/50 overflow-hidden" data-testid="trace-flow-comparison">
       <CardHeader className="py-2 px-4 border-b">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium flex items-center gap-2">
@@ -812,7 +806,11 @@ export const TraceFlowComparison: React.FC<TraceFlowComparisonProps> = ({
 
         {/* Details panel */}
         {selectedSpan && (
-          <div className="w-80 border-l overflow-auto">
+          <div
+            ref={detailPanelRef}
+            className="w-80 border-l overflow-auto ring-1 ring-inset ring-opensearch-blue/40"
+            data-selected-span-id={selectedSpan.spanId}
+          >
             <SpanDetailsPanel
               span={selectedSpan}
               onClose={() => setSelectedSpan(null)}

@@ -18,6 +18,7 @@ import { config as loadDotenv } from 'dotenv';
 import open from 'open';
 import ora from 'ora';
 import { startServer } from './utils/startServer.js';
+import { readEnv } from '../lib/envCompat.js';
 import {
   createListCommand,
   createRunCommand,
@@ -29,6 +30,13 @@ import {
   createMigrateCommand,
   createCompareServicesCommand,
   createRemoteCommand,
+  createConfigureCommand,
+  createKillCommand,
+  createSetupTelemetryCommand,
+  createSkillCommand,
+  createProfileCommand,
+  createSetupCommand,
+  createWorkflowCommand,
   createImportCommand,
 } from './commands/index.js';
 
@@ -58,7 +66,7 @@ function loadEnvFile(envPath: string): void {
     process.exit(1);
   }
 
-  const result = loadDotenv({ path: absolutePath });
+  const result = loadDotenv({ path: absolutePath, quiet: true });
 
   if (result.error) {
     console.error(chalk.red(`\n  Error loading environment file: ${result.error.message}\n`));
@@ -71,7 +79,7 @@ function loadEnvFile(envPath: string): void {
 // Auto-load .env file BEFORE parsing commands (so all subcommands get env vars)
 const defaultEnvPath = resolve(process.cwd(), '.env');
 if (existsSync(defaultEnvPath)) {
-  loadDotenv({ path: defaultEnvPath });
+  loadDotenv({ path: defaultEnvPath, quiet: true });
 }
 
 // Create the CLI program
@@ -143,12 +151,22 @@ ${chalk.cyan.bold('Remote Servers:')}
   ${chalk.yellow('agent-health remote list')}             List configured remote servers
   ${chalk.yellow('agent-health remote test')}             Test connectivity to all remotes
 
+${chalk.cyan.bold('Infrastructure:')}
+  ${chalk.yellow('agent-health configure')} ${chalk.gray('--from-stack <name>')}  Import config from a CloudFormation stack
+  ${chalk.yellow('agent-health setup-telemetry')}            Configure Claude Code → Agent Health telemetry
+  ${chalk.yellow('agent-health setup-telemetry')} ${chalk.gray('--status')}  Check current telemetry status
+
+${chalk.cyan.bold('Agent Profiling:')}
+  ${chalk.yellow('agent-health setup')}                   Install the agent-profiling hook + skill (Claude Code)
+  ${chalk.yellow('agent-health profile')} ${chalk.gray('-e <evaluator>')}    Profile the current session, surface what to fix in the agent
+
 ${chalk.cyan.bold('Importing:')}
   ${chalk.yellow('agent-health import')} ${chalk.gray('--from holmesgpt')}     Import HolmesGPT test cases from GitHub
   ${chalk.yellow('agent-health import')} ${chalk.gray('--from holmesgpt --source <path>')}  Import from local fixtures
 
 ${chalk.cyan.bold('Maintenance:')}
   ${chalk.yellow('agent-health migrate')}                Migrate legacy benchmark data to current format
+  ${chalk.yellow('agent-health kill')} ${chalk.gray('sample-agent')}       Stop a running sample agent by name
   ${chalk.yellow('agent-health serve')}                  Start the server (same as default, explicit command)
 
 ${chalk.cyan.bold('Examples:')}
@@ -163,11 +181,12 @@ ${chalk.cyan.bold('Examples:')}
 
 // CLI options for default action (when no subcommand is specified)
 program
-  .option('-p, --port <number>', 'Server port', '4001')
+  .option('-p, --port <number>', 'Server port (or set AH_PORT env var)', readEnv('AH_PORT', 'AGENT_HEALTH_PORT') || '4001')
   .option('-e, --env-file <path>', 'Load environment variables from file (e.g., .env)')
   .option('--no-browser', 'Do not open browser automatically')
   .option('--headless', 'Run API server only (no frontend, no browser)')
-  .option('--api-key <key>', 'Require API key for coding-agents endpoints');
+  .option('--api-key <key>', 'Require API key for coding-agents endpoints')
+  .option('--agent-path <path>', 'Path to the agent repository the judge and assistant should use as grounding context (or set AH_AGENT_PATH)');
 
 program.action(async (options) => {
   console.log(chalk.cyan.bold(`\n  Agent Health v${version} - AI Agent Evaluation Framework\n`));
@@ -181,6 +200,18 @@ program.action(async (options) => {
     loadEnvFile(options.envFile);
   } else if (existsSync(defaultEnvPath)) {
     console.log(chalk.gray('  Auto-loaded .env from current directory'));
+  }
+
+  // Apply --agent-path: set AH_AGENT_PATH on process.env before booting the
+  // server. The runtime resolver (server/services/agentPath/path.ts) only
+  // reads from env, so this single write covers both the in-process server
+  // and any subprocesses we later spawn.
+  if (options.agentPath) {
+    const abs = resolve(options.agentPath);
+    process.env.AH_AGENT_PATH = abs;
+    console.log(chalk.gray(`  Agent path: ${abs}`));
+  } else if (process.env.AH_AGENT_PATH) {
+    console.log(chalk.gray(`  Agent path: ${process.env.AH_AGENT_PATH} (from AH_AGENT_PATH)`));
   }
 
   const port = parseInt(options.port, 10);
@@ -235,18 +266,34 @@ program.addCommand(createInitCommand());
 program.addCommand(createMigrateCommand());
 program.addCommand(createCompareServicesCommand());
 program.addCommand(createRemoteCommand());
+program.addCommand(createConfigureCommand());
+program.addCommand(createKillCommand());
+program.addCommand(createSetupTelemetryCommand());
+program.addCommand(createSkillCommand());
+program.addCommand(createSetupCommand());
+program.addCommand(createProfileCommand());
+program.addCommand(createWorkflowCommand());
 program.addCommand(createImportCommand());
 
 // Add serve command as an alias for the default action
 program
   .command('serve')
   .description('Start the Agent Health server (same as default action)')
-  .option('-p, --port <number>', 'Server port', '4001')
+  .option('-p, --port <number>', 'Server port (or set AH_PORT env var)', readEnv('AH_PORT', 'AGENT_HEALTH_PORT') || '4001')
   .option('--no-browser', 'Do not open browser automatically')
   .option('--headless', 'Run API server only (no frontend, no browser)')
   .option('--api-key <key>', 'Require API key for coding-agents endpoints')
+  .option('--agent-path <path>', 'Path to the agent repository the judge and assistant should use as grounding context (or set AH_AGENT_PATH)')
   .action(async (options) => {
     console.log(chalk.cyan.bold(`\n  Agent Health v${version} - AI Agent Evaluation Framework\n`));
+
+    if (options.agentPath) {
+      const abs = resolve(options.agentPath);
+      process.env.AH_AGENT_PATH = abs;
+      console.log(chalk.gray(`  Agent path: ${abs}`));
+    } else if (process.env.AH_AGENT_PATH) {
+      console.log(chalk.gray(`  Agent path: ${process.env.AH_AGENT_PATH} (from AH_AGENT_PATH)`));
+    }
 
     const port = parseInt(options.port, 10);
     const headless = options.headless || false;

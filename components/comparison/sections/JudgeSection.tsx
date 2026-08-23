@@ -11,6 +11,9 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { ChevronDown, ChevronRight, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
 import { EvaluationReport, BenchmarkRun, ImprovementStrategy } from '@/types';
 import { cn } from '@/lib/utils';
+import { RunScore } from '@/components/RunScore';
+import { getJudgeMatcherResults } from '@/lib/matchers/judgeAccessor';
+import { Markdown } from '@/components/ui/markdown';
 
 interface JudgeSectionProps {
   runs: BenchmarkRun[];
@@ -48,7 +51,7 @@ const RunJudgeCard: React.FC<{
   run: BenchmarkRun;
   report: EvaluationReport | null;
 }> = ({ run, report }) => {
-  const [reasoningOpen, setReasoningOpen] = useState(false);
+  const [reasoningOpen, setReasoningOpen] = useState(true);
 
   if (!report) {
     return (
@@ -65,6 +68,9 @@ const RunJudgeCard: React.FC<{
 
   const isPassed = report.passFailStatus === 'passed';
   const improvements = report.improvementStrategies || [];
+  // Canonical per-checkpoint judge verdicts (llm-judge matcherResults), with a
+  // fallback to the legacy llmJudgeReasoning blob for older RCA-Default reports.
+  const judgeMatchers = getJudgeMatcherResults(report as Parameters<typeof getJudgeMatcherResults>[0]);
 
   // Sort improvements by priority
   const sortedImprovements = [...improvements].sort((a, b) => {
@@ -73,7 +79,7 @@ const RunJudgeCard: React.FC<{
   });
 
   return (
-    <Card className="bg-card/50">
+    <Card className="bg-card/50 min-w-0">
       <CardHeader className="pb-2">
         <div className="flex items-center justify-between">
           <CardTitle className="text-sm font-medium">{run.name}</CardTitle>
@@ -93,24 +99,58 @@ const RunJudgeCard: React.FC<{
           </Badge>
         </div>
         <div className="flex items-center gap-2 mt-1">
-          <span className="text-xs text-muted-foreground">
-            Accuracy: {report.metrics.accuracy}%
+          <span className="text-xs text-muted-foreground inline-flex items-center gap-1">
+            {/* Generic "Score: X%" with hover-tooltip listing each metric.
+                Replaces the hardcoded `Accuracy: X%` which was misleading
+                for runs scored by non-RCA-Default evaluators. */}
+            <RunScore metrics={report.metrics as Record<string, number | undefined>} />
           </span>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        {/* Reasoning */}
+        {/* Judge verdicts — per-checkpoint matcherResults (canonical surface),
+            each with its reasoning. Falls back to the legacy single blob. */}
         <Collapsible open={reasoningOpen} onOpenChange={setReasoningOpen}>
           <CollapsibleTrigger className="w-full">
             <div className="flex items-center gap-2 py-1 rounded hover:bg-muted/50 transition-colors">
               {reasoningOpen ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-              <span className="text-xs font-medium">LLM Judge Reasoning</span>
+              <span className="text-xs font-medium">Judge Evaluation</span>
+              {judgeMatchers.length > 0 && (
+                <Badge variant="outline" className="text-[10px]">
+                  {judgeMatchers.filter((m) => m.pass).length}/{judgeMatchers.length} checks passed
+                </Badge>
+              )}
             </div>
           </CollapsibleTrigger>
           <CollapsibleContent>
-            <p className="text-xs text-muted-foreground bg-muted/30 p-2 rounded leading-relaxed whitespace-pre-wrap break-words">
-              {report.llmJudgeReasoning}
-            </p>
+            {judgeMatchers.length > 0 ? (
+              <div className="space-y-2">
+                {judgeMatchers.map((m, i) => (
+                  <div key={i} className="bg-muted/30 p-2 rounded">
+                    <div className="flex items-start gap-2 text-xs font-medium">
+                      {m.pass ? (
+                        <CheckCircle2 size={12} className="text-opensearch-blue flex-shrink-0 mt-0.5" />
+                      ) : (
+                        <XCircle size={12} className="text-red-400 flex-shrink-0 mt-0.5" />
+                      )}
+                      <span className="flex-1 break-words">{m.description.replace(/^judge:\s*/i, '')}</span>
+                      {typeof m.score === 'number' && (
+                        <Badge variant="outline" className="text-[10px] flex-shrink-0">{Math.round(m.score * 100)}%</Badge>
+                      )}
+                    </div>
+                    {m.reasoning && (
+                      <Markdown className="text-xs text-muted-foreground mt-1.5 leading-relaxed break-words">
+                        {m.reasoning}
+                      </Markdown>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Markdown className="text-xs text-muted-foreground bg-muted/30 p-2 rounded leading-relaxed break-words">
+                {report.llmJudgeReasoning || 'No judge reasoning available.'}
+              </Markdown>
+            )}
           </CollapsibleContent>
         </Collapsible>
 
@@ -161,7 +201,7 @@ export const JudgeSection: React.FC<JudgeSectionProps> = ({
   useCaseId,
 }) => {
   return (
-    <div className="grid grid-cols-1 gap-4">
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" data-testid="judge-comparison-grid">
       {runs.map((run) => {
         const result = run.results[useCaseId];
         const report = result?.reportId ? reports[result.reportId] : null;

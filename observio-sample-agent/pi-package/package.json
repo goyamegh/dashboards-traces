@@ -1,0 +1,17 @@
+{
+  "name": "@opensearch-project/agent-health-pi",
+  "version": "0.1.0",
+  "description": "Pi.dev coding agent for Agent Health — helps instrument agents with OTel and contribute to the project",
+  "keywords": ["pi-package"],
+  "license": "Apache-2.0",
+  "pi": {
+    "extensions": ["./extensions"],
+    "skills": ["./skills"],
+    "prompts": ["./prompts"]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  }
+}

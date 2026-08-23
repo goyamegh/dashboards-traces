@@ -1287,4 +1287,500 @@ describe('ApiClient', () => {
       );
     });
   });
+
+  describe('updateBenchmark', () => {
+    it('should PUT to the correct endpoint with updated fields', async () => {
+      const updatedBenchmark = { id: 'bench-1', name: 'Benchmark 1', testCaseIds: ['tc-new-1', 'tc-new-2'] };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue(updatedBenchmark),
+      });
+
+      const result = await client.updateBenchmark('bench-1', {
+        testCaseIds: ['tc-new-1', 'tc-new-2'],
+      });
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        `${baseUrl}/api/storage/benchmarks/bench-1`,
+        expect.objectContaining({
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ testCaseIds: ['tc-new-1', 'tc-new-2'] }),
+        })
+      );
+      expect(result).toEqual(updatedBenchmark);
+    });
+
+    it('should throw error on failure', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        text: jest.fn().mockResolvedValue('Not found'),
+      });
+
+      await expect(client.updateBenchmark('bench-1', { name: 'New Name' })).rejects.toThrow(
+        'Failed to update benchmark: Not found'
+      );
+    });
+  });
+
+  describe('findBenchmark', () => {
+    it('should return benchmark when found by ID', async () => {
+      const benchmark = { id: 'bench-1', name: 'Benchmark 1', runs: [] };
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: jest.fn().mockResolvedValue(benchmark),
+      });
+
+      const result = await client.findBenchmark('bench-1');
+
+      expect(result).toEqual(benchmark);
+    });
+
+    it('should fall back to name match when ID not found', async () => {
+      const benchmarks = [
+        { id: 'bench-1', name: 'My Benchmark' },
+        { id: 'bench-2', name: 'Other Benchmark' },
+      ];
+      // First call (getBenchmark by ID) returns 404
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+      });
+      // Second call (listBenchmarks) returns list
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ benchmarks }),
+      });
+
+      const result = await client.findBenchmark('My Benchmark');
+
+      expect(result).toEqual(benchmarks[0]);
+    });
+
+    it('should return null when not found by ID or name', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 404,
+      });
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: jest.fn().mockResolvedValue({ benchmarks: [] }),
+      });
+
+      const result = await client.findBenchmark('nonexistent');
+
+      expect(result).toBeNull();
+    });
+  });
+
+  describe('pollReportStatus', () => {
+    it('should poll until report reaches completed status', async () => {
+      let callCount = 0;
+      mockFetch.mockImplementation(() => {
+        callCount++;
+        const status = callCount >= 3 ? 'completed' : 'running';
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            id: 'report-123',
+            status,
+            passFailStatus: status === 'completed' ? 'passed' : undefined,
+            metrics: status === 'completed' ? { accuracy: 85 } : undefined,
+            trajectory: [{ type: 'action', content: 'test' }],
+            llmJudgeReasoning: status === 'completed' ? 'Good job' : undefined,
+          }),
+        });
+      });
+
+      const result = await client.pollReportStatus('report-123', 30000);
+
+      expect(result).toBeDefined();
+      expect(result!.id).toBe('report-123');
+      expect(result!.status).toBe('completed');
+      expect(result!.passFailStatus).toBe('passed');
+      expect(callCount).toBeGreaterThanOrEqual(3);
+    });
+
+    it('should return null if report is not found', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 404,
+      });
+
+      const result = await client.pollReportStatus('nonexistent', 10000);
+      expect(result).toBeNull();
+    });
+
+    it('should return report on failed status', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          id: 'report-fail',
+          status: 'failed',
+          trajectory: [],
+          llmJudgeReasoning: 'Execution failed',
+        }),
+      });
+
+      const result = await client.pollReportStatus('report-fail', 10000);
+      expect(result).toBeDefined();
+      expect(result!.status).toBe('failed');
+    });
+
+    it('should call onPoll callback on every poll cycle while waiting', async () => {
+      let callCount = 0;
+      mockFetch.mockImplementation(() => {
+        callCount++;
+        const status = callCount >= 3 ? 'completed' : 'running';
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            id: 'report-poll',
+            status,
+            passFailStatus: status === 'completed' ? 'passed' : undefined,
+            metrics: { accuracy: 90 },
+            trajectory: [],
+            llmJudgeReasoning: status === 'completed' ? 'done' : undefined,
+          }),
+        });
+      });
+
+      const observed: string[] = [];
+      const result = await client.pollReportStatus('report-poll', 30000, (r) => {
+        observed.push(r.status as string);
+      });
+
+      expect(result).toBeDefined();
+      expect(result!.status).toBe('completed');
+      // Should have observed the running→completed transition
+      expect(observed.length).toBeGreaterThanOrEqual(2);
+      expect(observed[0]).toBe('running');
+      expect(observed[observed.length - 1]).toBe('completed');
+    }, 30000);
+  });
+
+  describe('runEvaluation - SSE disconnect recovery', () => {
+    function createSSEStream(events: any[], disconnectAfter?: number) {
+      const encoder = new TextEncoder();
+      let eventIndex = 0;
+
+      return new ReadableStream({
+        pull(controller) {
+          if (disconnectAfter !== undefined && eventIndex >= disconnectAfter) {
+            controller.error(new Error('network disconnect'));
+            return;
+          }
+          if (eventIndex < events.length) {
+            const data = `data: ${JSON.stringify(events[eventIndex])}\n\n`;
+            controller.enqueue(encoder.encode(data));
+            eventIndex++;
+          } else {
+            controller.close();
+          }
+        },
+      });
+    }
+
+    it('should fall back to polling when SSE stream disconnects after started event', async () => {
+      const sseEvents = [
+        { type: 'started', testCase: 'Test', agent: 'Agent', reportId: 'report-poll-1' },
+        { type: 'step', stepIndex: 0, step: { type: 'action', content: 'doing stuff' } },
+      ];
+
+      // First call: SSE eval endpoint — disconnects after 2 events
+      mockFetch.mockImplementationOnce(() => Promise.resolve({
+        ok: true,
+        body: createSSEStream(sseEvents, 2),
+      }));
+
+      // Subsequent calls: polling for report status
+      let pollCount = 0;
+      mockFetch.mockImplementation(() => {
+        pollCount++;
+        const status = pollCount >= 2 ? 'completed' : 'running';
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            id: 'report-poll-1',
+            status,
+            passFailStatus: status === 'completed' ? 'passed' : undefined,
+            metrics: { accuracy: 90 },
+            trajectory: [{ type: 'action', content: 'test' }],
+            llmJudgeReasoning: 'Recovered via polling',
+          }),
+        });
+      });
+
+      const result = await client.runEvaluation('tc-1', 'observio', 'claude-sonnet-4');
+
+      expect(result).toBeDefined();
+      expect(result.id).toBe('report-poll-1');
+      expect(result.status).toBe('completed');
+    });
+
+    it('should ignore heartbeat events and complete normally', async () => {
+      const sseEvents = [
+        { type: 'started', testCase: 'Test', agent: 'Agent', reportId: 'report-hb-1' },
+        { type: 'heartbeat' },
+        { type: 'step', stepIndex: 0, step: { type: 'action', content: 'working' } },
+        { type: 'heartbeat' },
+        { type: 'completed', report: { id: 'report-hb-1', status: 'completed', passFailStatus: 'passed', metrics: { accuracy: 95 }, trajectorySteps: 1, llmJudgeReasoning: 'Good' } },
+      ];
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        body: createSSEStream(sseEvents),
+      });
+
+      const progressEvents: any[] = [];
+      const result = await client.runEvaluation('tc-1', 'observio', 'claude-sonnet-4', (e) => progressEvents.push(e));
+
+      expect(result.status).toBe('completed');
+      // Heartbeat events should NOT be forwarded to onProgress
+      expect(progressEvents.some(e => e.type === 'heartbeat')).toBe(false);
+      // But started, step, completed should be
+      expect(progressEvents.some(e => e.type === 'started')).toBe(true);
+      expect(progressEvents.some(e => e.type === 'step')).toBe(true);
+    });
+
+    it('should throw ServerError without polling fallback', async () => {
+      const sseEvents = [
+        { type: 'started', testCase: 'Test', agent: 'Agent', reportId: 'report-err-1' },
+        { type: 'error', error: 'Agent endpoint unreachable' },
+      ];
+
+      mockFetch.mockResolvedValue({
+        ok: true,
+        body: createSSEStream(sseEvents),
+      });
+
+      await expect(
+        client.runEvaluation('tc-1', 'observio', 'claude-sonnet-4')
+      ).rejects.toThrow('Agent endpoint unreachable');
+    });
+
+    it('should poll when stream ends without completed event', async () => {
+      const sseEvents = [
+        { type: 'started', testCase: 'Test', agent: 'Agent', reportId: 'report-noend-1' },
+        { type: 'step', stepIndex: 0, step: { type: 'action', content: 'working' } },
+        // Stream ends without 'completed' event
+      ];
+
+      // First call: SSE
+      mockFetch.mockImplementationOnce(() => Promise.resolve({
+        ok: true,
+        body: createSSEStream(sseEvents),
+      }));
+
+      // Polling calls
+      mockFetch.mockImplementation(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          id: 'report-noend-1',
+          status: 'completed',
+          passFailStatus: 'failed',
+          metrics: { accuracy: 40 },
+          trajectory: [{ type: 'action', content: 'test' }],
+          llmJudgeReasoning: 'Incomplete execution',
+        }),
+      }));
+
+      const result = await client.runEvaluation('tc-1', 'observio', 'claude-sonnet-4');
+      expect(result.id).toBe('report-noend-1');
+      expect(result.status).toBe('completed');
+    });
+
+    it('should emit synthetic reconnecting + polling events through onProgress on disconnect', async () => {
+      // SSE drops after 2 events; client should emit:
+      //   1. The original started/step events
+      //   2. A synthetic { type: 'reconnecting', reportId } once polling starts
+      //   3. One or more { type: 'polling', reportId, status } events per poll cycle
+      const sseEvents = [
+        { type: 'started', testCase: 'Test', agent: 'Agent', reportId: 'report-syn-1' },
+        { type: 'step', stepIndex: 0, step: { type: 'action', content: 'x' } },
+      ];
+      mockFetch.mockImplementationOnce(() => Promise.resolve({
+        ok: true,
+        body: createSSEStream(sseEvents, 2),
+      }));
+
+      let pollCount = 0;
+      mockFetch.mockImplementation(() => {
+        pollCount++;
+        const status = pollCount >= 2 ? 'completed' : 'running';
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            id: 'report-syn-1',
+            status,
+            passFailStatus: status === 'completed' ? 'passed' : undefined,
+            metrics: { accuracy: 80 },
+            trajectory: [{ type: 'action' }],
+            llmJudgeReasoning: status === 'completed' ? 'ok' : undefined,
+          }),
+        });
+      });
+
+      const progressEvents: any[] = [];
+      const result = await client.runEvaluation(
+        'tc-1', 'observio', 'claude-sonnet-4',
+        (e) => progressEvents.push(e),
+      );
+
+      expect(result.status).toBe('completed');
+      // The original SSE events should be forwarded
+      expect(progressEvents.some(e => e.type === 'started')).toBe(true);
+      expect(progressEvents.some(e => e.type === 'step')).toBe(true);
+      // The synthetic reconnect + polling lifecycle events must also appear
+      const reconnect = progressEvents.find(e => e.type === 'reconnecting');
+      expect(reconnect).toBeDefined();
+      expect(reconnect.reportId).toBe('report-syn-1');
+      const polling = progressEvents.filter(e => e.type === 'polling');
+      expect(polling.length).toBeGreaterThanOrEqual(1);
+      expect(polling[0].reportId).toBe('report-syn-1');
+      expect(polling.map(e => e.status)).toEqual(
+        expect.arrayContaining(['running']),
+      );
+    }, 30000);
+
+    it('should emit reconnecting event when stream ends without completion', async () => {
+      const sseEvents = [
+        { type: 'started', testCase: 'Test', agent: 'Agent', reportId: 'report-noend-2' },
+        // No completed, no error — stream just ends.
+      ];
+      mockFetch.mockImplementationOnce(() => Promise.resolve({
+        ok: true,
+        body: createSSEStream(sseEvents),
+      }));
+      mockFetch.mockImplementation(() => Promise.resolve({
+        ok: true,
+        status: 200,
+        json: () => Promise.resolve({
+          id: 'report-noend-2',
+          status: 'completed',
+          passFailStatus: 'passed',
+          metrics: { accuracy: 100 },
+          trajectory: [],
+          llmJudgeReasoning: 'fine',
+        }),
+      }));
+
+      const progressEvents: any[] = [];
+      await client.runEvaluation(
+        'tc-1', 'observio', 'claude-sonnet-4',
+        (e) => progressEvents.push(e),
+      );
+      expect(progressEvents.some(e => e.type === 'reconnecting' && e.reportId === 'report-noend-2')).toBe(true);
+    });
+  });
+
+  // Issue #333: for trace-mode agents the server emits `completed` with
+  // metricsStatus 'pending' BEFORE the background judge runs. The CLI must
+  // not treat that snapshot as a final verdict.
+  describe('runEvaluation - trace-mode pending judge (issue #333)', () => {
+    function createSSEStream(events: any[]) {
+      const encoder = new TextEncoder();
+      let eventIndex = 0;
+      return new ReadableStream({
+        pull(controller) {
+          if (eventIndex < events.length) {
+            controller.enqueue(encoder.encode(`data: ${JSON.stringify(events[eventIndex])}\n\n`));
+            eventIndex++;
+          } else {
+            controller.close();
+          }
+        },
+      });
+    }
+
+    it('polls until the judge verdict lands when completed arrives with metricsStatus pending', async () => {
+      const sseEvents = [
+        { type: 'started', testCase: 'Test', agent: 'TraceAgent', reportId: 'report-trace-1' },
+        {
+          type: 'completed',
+          reportId: 'report-trace-1',
+          report: {
+            id: 'report-trace-1',
+            status: 'completed',
+            metricsStatus: 'pending',
+            // no passFailStatus yet — judge hasn't run
+            metrics: { accuracy: 0 },
+            trajectorySteps: 1,
+            llmJudgeReasoning: 'Waiting for traces to become available...',
+          },
+        },
+      ];
+      mockFetch.mockImplementationOnce(() => Promise.resolve({
+        ok: true,
+        body: createSSEStream(sseEvents),
+      }));
+
+      // Poll 1: still pending. Poll 2: judge finished, run passed.
+      let pollCount = 0;
+      mockFetch.mockImplementation(() => {
+        pollCount++;
+        const ready = pollCount >= 2;
+        return Promise.resolve({
+          ok: true,
+          status: 200,
+          json: () => Promise.resolve({
+            id: 'report-trace-1',
+            status: 'completed',
+            metricsStatus: ready ? 'ready' : 'pending',
+            passFailStatus: ready ? 'passed' : undefined,
+            metrics: { accuracy: ready ? 95 : 0 },
+            trajectory: [{ type: 'action', content: 'tool call' }],
+            llmJudgeReasoning: ready ? 'All expected outcomes met' : 'Waiting for traces...',
+          }),
+        });
+      });
+
+      const progressEvents: any[] = [];
+      const result = await client.runEvaluation(
+        'tc-1', 'trace-agent', 'claude-sonnet-4',
+        (e) => progressEvents.push(e),
+      );
+
+      // The CLI must see the judged verdict, not the pending snapshot
+      expect(result.passFailStatus).toBe('passed');
+      expect(result.metricsStatus).toBe('ready');
+      expect(result.metrics?.accuracy).toBe(95);
+      // And it should have signaled that it was waiting on the judge
+      expect(progressEvents.some(e => e.type === 'awaiting-judge')).toBe(true);
+    }, 30000);
+
+    it('returns the final report directly when the judge ran synchronously (no metricsStatus)', async () => {
+      const sseEvents = [
+        { type: 'started', testCase: 'Test', agent: 'Agent', reportId: 'report-sync-1' },
+        {
+          type: 'completed',
+          reportId: 'report-sync-1',
+          report: {
+            id: 'report-sync-1',
+            status: 'completed',
+            passFailStatus: 'failed',
+            metrics: { accuracy: 30 },
+            trajectorySteps: 2,
+            llmJudgeReasoning: 'Missed expected outcome',
+          },
+        },
+      ];
+      mockFetch.mockResolvedValue({
+        ok: true,
+        body: createSSEStream(sseEvents),
+      });
+
+      const result = await client.runEvaluation('tc-1', 'observio', 'claude-sonnet-4');
+
+      // Non-trace agents keep the synchronous behavior: no extra polling
+      expect(result.passFailStatus).toBe('failed');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+  });
 });

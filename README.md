@@ -11,7 +11,7 @@
 <h2 align="center" style="border-bottom: none">Open-source AI Agent Evaluation & Observability</h2>
 
 <p align="center">
-Agent Health helps you evaluate, monitor, and optimize AI agents. From autonomous RCA agents to coding assistants, it provides real-time execution streaming, LLM-based evaluation with trajectory comparison, batch experiments, and deep observability through OpenTelemetry traces — all backed by OpenSearch.
+Agent Health helps you evaluate, monitor, and optimize AI agents of any kind — coding assistants, ops/RCA agents, customer-support agents, data-analysis agents, retrieval/discovery agents, and multi-agent workflows. It provides real-time execution streaming, LLM-based evaluation with trajectory comparison, batch experiments, and deep observability through OpenTelemetry traces — stored locally out of the box, or in OpenSearch when you want a shared cluster.
 </p>
 
 <div align="center">
@@ -19,6 +19,7 @@ Agent Health helps you evaluate, monitor, and optimize AI agents. From autonomou
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE.txt)
 [![npm version](https://img.shields.io/npm/v/@opensearch-project/agent-health.svg)](https://www.npmjs.com/package/@opensearch-project/agent-health)
 [![Build](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml/badge.svg)](https://github.com/opensearch-project/agent-health/actions/workflows/ci.yml)
+[![SDK Status](https://img.shields.io/badge/Code--Based%20SDK-Experimental-orange.svg)](docs/SDK.md)
 
 </div>
 
@@ -33,6 +34,7 @@ Agent Health helps you evaluate, monitor, and optimize AI agents. From autonomou
 
 <div align="center" style="margin-top: 1em; margin-bottom: 1em;">
 <a href="#what-is-agent-health">What is Agent Health?</a> &bull;
+<a href="#ai-skills">AI Skills</a> &bull;
 <a href="#installation">Installation</a> &bull;
 <a href="#features">Features</a> &bull;
 <a href="#quick-configuration">Configuration</a> &bull;
@@ -59,12 +61,33 @@ Agent Health helps you evaluate, monitor, and optimize AI agents. From autonomou
 Agent Health is an evaluation and observability framework for AI agents, built on [OpenSearch](https://opensearch.org). It helps you measure agent performance through **"Golden Path" trajectory comparison** — where an LLM judge evaluates agent actions against expected outcomes — and provides deep observability into agent execution via OpenTelemetry traces.
 
 **Who uses Agent Health:**
-- AI teams building autonomous agents (RCA, customer support, data analysis)
+- AI teams building autonomous agents (RCA, customer support, data analysis, retrieval/discovery)
+- Teams comparing coding agents and multi-agent workflows across models, prompts, and context strategies
 - QA engineers testing agent behavior across scenarios
 - Platform teams monitoring agent performance in production
 - Developers using AI coding agents who want visibility into usage, costs, and productivity
 
 > **See it in action:** Watch the [demo video on YouTube](https://www.youtube.com/watch?v=MU3tTv4lKtc)
+
+---
+
+<a id="ai-skills"></a>
+## AI Agent Skills
+
+Agent Health ships with built-in skill files for *Claude Code* and *Kiro* that teach your AI coding agent how to work with this project effectively. Copy the relevant directory into your workspace to unlock project-aware assistance:
+
+| Skill | Claude Code | Kiro | What it does |
+|-------|-------------|------|--------------|
+| **Add Connector** | [`.claude/skills/add-connector/SKILL.md`](./.claude/skills/add-connector/SKILL.md) | [`.kiro/steering/add-connector.md`](./.kiro/steering/add-connector.md) | Guides creation of custom agent connectors |
+| **Write Test** | [`.claude/skills/write-test/SKILL.md`](./.claude/skills/write-test/SKILL.md) | [`.kiro/steering/write-test.md`](./.kiro/steering/write-test.md) | Project test conventions, mocking patterns, coverage thresholds |
+| **Create PR** | [`.claude/skills/create-pr/SKILL.md`](./.claude/skills/create-pr/SKILL.md) | [`.kiro/steering/create-pr.md`](./.kiro/steering/create-pr.md) | PR workflow with DCO signoff and CI compliance |
+| **Config & Auth** | [`.claude/skills/config-auth/SKILL.md`](./.claude/skills/config-auth/SKILL.md) | — | Config loading, AWS auth, multi-profile setup |
+| **Instrument with OTel** | [`.claude/skills/instrument-otel/SKILL.md`](./.claude/skills/instrument-otel/SKILL.md) | — | OpenTelemetry GenAI span structure + config for Agent Health |
+| **Agent Health** | [`.claude/skills/agent-health/SKILL.md`](./.claude/skills/agent-health/SKILL.md) | [`.kiro/steering/agent-health.md`](./.kiro/steering/agent-health.md) | Evaluate, benchmark & improve agents with the agent-health CLI/APIs |
+
+**To use these skills:**
+- *Claude Code* — Skills in `.claude/skills/` are auto-discovered when the directory exists in your workspace root. No extra setup needed.
+- *Kiro* — Copy `.kiro/steering/` to your workspace root. Kiro loads steering files automatically.
 
 ---
 
@@ -82,9 +105,20 @@ npx @opensearch-project/agent-health
 
 Opens http://localhost:4001 with pre-loaded sample data for exploration. If port 4001 is already in use, the server automatically tries the next available port (4002, 4003, etc., up to 10 attempts).
 
-### Option 2: Docker Compose (with OpenSearch Observability Stack)
+### Option 2: Docker Compose
 
 For the full observability stack with OpenSearch, OpenTelemetry Collector, and Data Prepper for trace ingestion:
+
+**Quick start (one command):**
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/opensearch-project/agent-health/main/scripts/install.sh | bash
+```
+
+This clones the repo, starts the Docker stack, waits for OpenSearch, auto-configures `agent-health.config.json`, and launches Agent Health.
+
+<details>
+<summary><b>Or step-by-step:</b></summary>
 
 ```bash
 # Clone the repository
@@ -100,6 +134,7 @@ cp .env.docker .env
 # Start Agent Health (connects to local OpenSearch automatically)
 npx @opensearch-project/agent-health
 ```
+</details>
 
 This brings up:
 - **OpenSearch** — Stores traces, test cases, benchmarks, and evaluation results
@@ -107,6 +142,32 @@ This brings up:
 - **Data Prepper** — Transforms and enriches traces before OpenSearch ingestion
 
 > **Prerequisites:** Docker Desktop with 4GB+ memory allocated. See [docker-compose.yml](./docker-compose.yml) for configuration options.
+
+### Option 3: AWS CloudFormation (Managed OpenSearch)
+
+Deploy a fully managed observability backend using the included CloudFormation template:
+
+```bash
+aws cloudformation create-stack \
+  --stack-name AgentHealthObservability \
+  --template-body file://deployment/cloudformation/agent-health-observability.yaml \
+  --capabilities CAPABILITY_NAMED_IAM
+```
+
+This deploys:
+- **Amazon OpenSearch Service** domain or **OpenSearch Serverless** collection for trace storage
+- **OpenSearch Ingestion (OSIS)** pipeline for OTLP data collection
+- **IAM roles** for pipeline execution and agent telemetry ingestion
+
+> **Both Amazon OpenSearch Service domains and OpenSearch Serverless collections are supported.** Set `OPENSEARCH_STORAGE_AWS_SERVICE=es` for managed domains or `OPENSEARCH_STORAGE_AWS_SERVICE=aoss` for Serverless collections. Both use SigV4 authentication (`OPENSEARCH_STORAGE_AUTH_TYPE=sigv4`). See [docs/CONFIGURATION.md](./docs/CONFIGURATION.md) for details.
+
+After deployment, connect it to Agent Health:
+
+```bash
+npx @opensearch-project/agent-health configure --from-stack AgentHealthObservability
+```
+
+Or manually copy the `AgentHealthConfigJSON` stack output into your `agent-health.config.json`. See [deployment/cloudformation/](./deployment/cloudformation/) for details and regional Launch Stack URLs.
 
 ### Next Steps
 
@@ -150,8 +211,13 @@ A unified dashboard for monitoring AI coding agent usage across **Claude Code**,
 |-----------|----------|-------------|
 | `agui-streaming` | AG-UI SSE | ML-Commons agents (default) |
 | `rest` | HTTP POST | Non-streaming REST APIs |
+| `openai-compatible` | OpenAI Chat | LiteLLM, Ollama, vLLM |
+| `strands` | Bedrock Agent Runtime | Amazon Strands agents (server-only) |
+| `langgraph` | LangGraph REST | Non-AG-UI LangGraph instances |
 | `subprocess` | CLI | Command-line tools |
 | `claude-code` | Claude CLI | Claude Code agent comparison |
+| `kiro` | Kiro CLI | Kiro coding agent |
+| `pi` | Pi CLI | Pi coding agent |
 | `mock` | In-memory | Demo and testing |
 
 For creating custom connectors, see [docs/CONNECTORS.md](./docs/CONNECTORS.md).
@@ -200,9 +266,9 @@ export default {
       key: "my-agent",
       name: "My Agent",
       endpoint: "http://localhost:8000/agent",
-      connectorType: "rest",  // or "agui-streaming", "subprocess"
+      connectorType: "rest",  // or "agui-streaming", "langgraph", "strands", "subprocess"
       models: ["claude-sonnet-4"],
-      useTraces: true,        // Enable OpenTelemetry trace collection
+      useTraces: true,        // Enable OpenTelemetry trace collection (default: false)
     }
   ],
 };
@@ -258,6 +324,9 @@ For detailed development setup, testing, CI pipeline, debugging, and troubleshoo
 | [Getting Started](./GETTING_STARTED.md) | Step-by-step walkthrough from install to first evaluation |
 | [Configuration](./docs/CONFIGURATION.md) | Connect your agent and configure the environment |
 | [CLI Reference](./docs/CLI.md) | Command-line interface documentation |
+| [Code-Based SDK](./docs/SDK.md) | Write evaluations as `.eval.js` / `.eval.ts` test files (experimental) |
+| [Skill Evaluator](./docs/SKILLS.md) | A/B-benchmark and improve a `SKILL.md` |
+| [Instrument with OTel](./docs/INSTRUMENT_WITH_OTEL.md) | OpenTelemetry instrumentation for Agent Health |
 | [Coding Agent Analytics](./docs/CODING_AGENT_ANALYTICS.md) | Multi-agent dashboard and remote server monitoring |
 | [Observio Sample Agent](./observio-sample-agent/) | Reference agent for practicing evaluations |
 | [Developer Guide](./DEVELOPER_GUIDE.md) | Development setup, testing, CI, debugging |

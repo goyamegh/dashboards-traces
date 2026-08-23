@@ -8,20 +8,26 @@
  */
 
 import { Span, TimeRange, TraceQueryParams, TraceSearchResult } from '@/types';
+import { getSpanCategory } from './spanCategorization';
+import { getBackendUrl } from '@/lib/portConfig';
 
 // Re-export trace grouping utilities
 export { groupSpansByTrace, getSpansForTrace } from './traceGrouping';
 
+// Re-export message extraction
+export { extractMessagesFromSpans } from './messageExtraction';
+
 /**
  * Get API base URL dynamically
- * Server-side (Node.js): Use localhost with PORT env var
+ * Server-side (Node.js): Use localhost with AH_PORT env var (legacy: AGENT_HEALTH_PORT)
  * Client-side (browser): Use relative URLs
  */
 function getApiBaseUrl(): string {
   const isServerSide = typeof window === 'undefined';
   if (isServerSide) {
-    const port = process.env?.PORT || '4001';
-    return `http://localhost:${port}`;
+    // Server-side self-call — use the canonical backend URL (AH_PORT is kept
+    // in lockstep with the actual bound port; see server lifecycle).
+    return getBackendUrl();
   }
   return ''; // Relative URLs in browser
 }
@@ -62,16 +68,82 @@ export async function fetchTracesByRunIds(runIds: string[]): Promise<TraceSearch
 }
 
 /**
+ * Fetch traces correlated with a single test-case run, using all available
+ * correlation strategies (see AGENTS.md → Trace correlation conventions):
+ *
+ *   A. traceId  — W3C-propagated agents share traceId with the eval span
+ *   B. runId    — agents tag spans with `agent_health.run.id == runId` (or the
+ *                 OTEL-standard `gen_ai.conversation.id`); the server query
+ *                 unions both. NOT `gen_ai.request.id` — that is not a
+ *                 registered Gen AI semconv attribute. See AGENTS.md → Strategy B.
+ *   C. agents   — service.name + time-window fallback (opt-in / `includeWindowFallback`)
+ *
+ * Strategies A and B are always safe (no false positives). Strategy C is
+ * opt-in because it can surface concurrent runs of the same agent and
+ * cross-team noise on a shared cluster.
+ */
+export async function fetchTracesForRun(params: {
+  /**
+   * Agent run id (Strategy B correlation). Optional — runs persisted via the
+   * deferred trace-mode path may not carry one; in that case correlation
+   * falls back to the time-window `windowAgents` clause (Strategy C).
+   */
+  runId?: string;
+  evalTraceId?: string;
+  /**
+   * Strategy A (direct): the report's own `traceId`. Agents that emit their
+   * own OTel trace (e.g. pi) carry it on every span but NOT our connector
+   * `runId`, so a direct `traceId` lookup returns the run's spans immediately
+   * — independent of the deep-dive's window hints.
+   */
+  traceId?: string;
+  /**
+   * Strategy D (direct): the report's `session.id`. Claude Code stamps it on
+   * every span; a direct `sessionId` lookup correlates without needing a
+   * window. (Server matches both the analyzed field and its `.keyword`.)
+   */
+  sessionId?: string;
+  includeWindowFallback?: boolean;
+  windowAgents?: Array<{ serviceName: string; startedAt: number; endedAt: number; sessionId?: string }>;
+  size?: number;
+}): Promise<TraceSearchResult> {
+  const { runId, evalTraceId, traceId, sessionId, includeWindowFallback, windowAgents, size = 1000 } = params;
+  // Only include the runIds clause when runId is a non-empty string. A
+  // `[undefined]` array makes the server build a `terms: [null]` query that
+  // OpenSearch rejects wholesale (taking the Strategy C window fallback down
+  // with it). Runs persisted via the deferred trace-mode path may not carry
+  // a runId, so this guard is load-bearing for the Traces tab. See #264.
+  const query: TraceQueryParams = { size };
+  if (typeof runId === 'string' && runId.length > 0) {
+    query.runIds = [runId];
+  }
+  // traceId: explicit param wins, else the eval-span traceId (both → query.traceId).
+  if (traceId || evalTraceId) query.traceId = traceId || evalTraceId;
+  if (typeof sessionId === 'string' && sessionId.length > 0) query.sessionId = sessionId;
+  if (includeWindowFallback && windowAgents && windowAgents.length > 0) {
+    query.agents = windowAgents;
+  }
+  return fetchTraces(query);
+}
+
+/**
  * Fetch recent traces for live tailing
  */
 export async function fetchRecentTraces(options: {
   minutesAgo?: number;
+  sessionId?: string;
   serviceName?: string;
   textSearch?: string;
   size?: number;
   cursor?: string;
 }): Promise<TraceSearchResult> {
-  const { minutesAgo = 5, serviceName, textSearch, size = 100, cursor } = options;
+  const { minutesAgo = 5, sessionId, serviceName, textSearch, size = 100, cursor } = options;
+
+  // Session queries don't need a time range — fetch all spans for the session
+  if (sessionId) {
+    return fetchTraces({ sessionId, serviceName, textSearch, size, cursor });
+  }
+
   const now = Date.now();
   const startTime = now - (minutesAgo * 60 * 1000);
 
@@ -83,6 +155,13 @@ export async function fetchRecentTraces(options: {
     size,
     cursor,
   });
+}
+
+/**
+ * Fetch all traces for a Claude Code session by session ID
+ */
+export async function fetchTracesBySessionId(sessionId: string): Promise<TraceSearchResult> {
+  return fetchTraces({ sessionId, size: 1000 });
 }
 
 /**
@@ -162,26 +241,41 @@ export function calculateTimeRange(spans: Span[]): TimeRange {
  * Get color for a span based on its type/name
  */
 export function getSpanColor(span: Span): string {
-  const name = span.name?.toLowerCase() || '';
-  const status = span.status;
+  const category = getSpanCategory(span);
 
-  // Error spans are always red
-  if (status === 'ERROR') return '#ef4444';
+  const CATEGORY_HEX: Record<string, string> = {
+    AGENT: '#6366f1',  // indigo
+    LLM: '#a855f7',    // purple
+    TOOL: '#f59e0b',   // amber
+    EVAL: '#10b981',   // emerald
+    ERROR: '#ef4444',  // red
+    OTHER: '#64748b',  // slate
+  };
 
-  // Agent run root spans
-  if (name.includes('agent.run') || name.includes('run')) return '#6366f1';
+  return CATEGORY_HEX[category] || CATEGORY_HEX.OTHER;
+}
 
-  // LLM/Bedrock calls
-  if (name.includes('bedrock') || name.includes('llm') || name.includes('converse')) return '#a855f7';
-
-  // Tool executions
-  if (name.includes('tool')) return '#f59e0b';
-
-  // Graph nodes
-  if (name.includes('node') || name.includes('process')) return '#3b82f6';
-
-  // Default
-  return '#64748b';
+/**
+ * Compute the initial expanded-spans set for a trace: every root, plus
+ * every ancestor of any ERROR-status span so the failing span is visible
+ * on load instead of hidden behind collapsed parents (TraceTree and
+ * Timeline both key off this set).
+ */
+export function getInitialExpandedSpans(spanTree: Span[]): Set<string> {
+  const expanded = new Set<string>();
+  const walk = (spans: Span[], ancestors: string[]): void => {
+    for (const span of spans) {
+      if (!span.parentSpanId) expanded.add(span.spanId);
+      if (span.status === 'ERROR') {
+        for (const id of ancestors) expanded.add(id);
+      }
+      if (span.children?.length) {
+        walk(span.children, [...ancestors, span.spanId]);
+      }
+    }
+  };
+  walk(spanTree, []);
+  return expanded;
 }
 
 /**
@@ -275,3 +369,11 @@ export {
   type CategoryStats,
   type ToolInfo,
 } from './traceStats';
+
+// Trace-level summary (category counts + tokens + models) reused by both
+// the inline expansion header and the fullscreen header.
+export {
+  computeTraceSummary,
+  isEmptyTraceSummary,
+  type TraceSummary,
+} from './traceSummary';

@@ -15,6 +15,9 @@ import { AGUIToTrajectoryConverter, consumeSSEStream, buildAgentPayload } from '
 import { AGUIEvent } from '@/types/agui';
 import { generateMockTrajectory } from './mockTrajectory';
 import { callBedrockJudge } from './bedrockJudge';
+import { buildJudgeMatcherEntry, formatExpectedOutcomesAsClaim } from '@/lib/matchers/judgeAccessor';
+import type { MatcherResult } from '@/lib/matchers/types';
+import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 
 // Re-export for use by experimentRunner when calling judge after trace polling
 export { callBedrockJudge };
@@ -50,6 +53,7 @@ import type {
   ConnectorRequest,
   AgentConfigWithConnector,
   ConnectorRegistry,
+  AgentConnector,
 } from '@/services/connectors';
 
 // Toggle between mock and real agent
@@ -100,6 +104,94 @@ function buildConnectorAuth(agent: AgentConfig): ConnectorAuth {
   };
 }
 
+// ─── SDK matcher-session report-level metrics shim ─────────────────────────────
+//
+// SDK runs (.bench.js / .eval.js with a code body) collect per-matcher
+// verdicts in `report.matcherResults` and the runner then writes a
+// report-level `report.metrics` with the legacy 4-key shape
+// `{accuracy, faithfulness, latency_score, trajectory_alignment_score}` so
+// older list/aggregate UIs keep working.
+//
+// Pre-fix this shim was a hardcoded `{0,0,0,0}` (failed) / `{100,100,100,100}`
+// (passed). Two consequences:
+//   1. A 5-of-6-passing run was indistinguishable from a 0-of-6 run — every
+//      failing run looked identical in the metrics tile. (Only meaningful
+//      for `judge()` matchers, which are non-throwing per RFC 004 §4.4 —
+//      `expect()` is fail-fast and chai-throw goes through the evalError
+//      branch below.)
+//   2. A custom evaluator that emits per-claim dimensional scores via
+//      `MatcherResult.judgeMetrics` (e.g. a multi-dimensional RCA rubric with
+//      `routing_accuracy` / `tool_correctness` / `diagnostic_completeness`)
+//      had its dimensions silently dropped at the report-level boundary.
+//
+// Post-fix:
+//   - Aggregate `accuracy` is the percentage of GATE matchers that passed
+//     (rounded to integer 0..100). `observe`-role matchers and `errored`
+//     matchers are excluded from the denominator (RFC 004 §4.8).
+//   - The other three legacy keys mirror `accuracy` (BC; consumers reading
+//     them historically got 0/100, they now get a meaningful integer).
+//   - If any matcher emitted `judgeMetrics` (per-claim dimensions, see
+//     `lib/matchers/types.ts`), each dimension's MEAN across emitting gate
+//     matchers overrides the BC stub for THAT key. So a 9-dimension custom
+//     rubric ends up on `report.metrics` with `routing_accuracy: 87`,
+//     `tool_correctness: 92`, etc., not flattened to `accuracy: <yes/no>`.
+//
+// `evalError` (the bench body itself threw — includes a chai `expect()`
+// fail-fast assertion) bypasses the aggregate and returns `{0,0,0,0}` — the
+// run never reached its conclusion so a partial aggregate is misleading.
+export function computeSdkMatcherSessionMetrics(
+  matcherResults: MatcherResult[],
+  opts?: { hasEvalError?: boolean },
+): Record<string, number> {
+  if (opts?.hasEvalError) {
+    return {
+      accuracy: 0,
+      faithfulness: 0,
+      latency_score: 0,
+      trajectory_alignment_score: 0,
+    };
+  }
+
+  const gates = matcherResults.filter(m => m.role !== 'observe' && !m.errored);
+  const total = gates.length;
+  const passing = gates.filter(m => m.pass).length;
+  // Vacuous pass when there are no gates (e.g. body just calls the agent
+  // without any judge/expect claims, or every matcher is `observe`-role).
+  // The pre-fix code returned 100 here via the `!failed` branch; keep that.
+  // When some gates DID fail, return the pass-rate percentage — the actual
+  // post-fix improvement, since pre-fix this collapsed to a flat 0.
+  const passRatePct =
+    total === 0 ? 100 : Math.round((passing / total) * 100);
+
+  // BC stub — same number for all four legacy keys.
+  const out: Record<string, number> = {
+    accuracy: passRatePct,
+    faithfulness: passRatePct,
+    latency_score: passRatePct,
+    trajectory_alignment_score: passRatePct,
+  };
+
+  // Dimensional pass-through: aggregate any per-matcher `judgeMetrics`
+  // dimensions across emitting gates. Each dimension's mean (rounded) wins
+  // over the BC stub for the same key.
+  const sums: Record<string, number> = Object.create(null);
+  const counts: Record<string, number> = Object.create(null);
+  for (const m of gates) {
+    const dims = (m as any).judgeMetrics as Record<string, number | undefined> | undefined;
+    if (!dims) continue;
+    for (const [k, v] of Object.entries(dims)) {
+      if (typeof v === 'number' && Number.isFinite(v)) {
+        sums[k] = (sums[k] ?? 0) + v;
+        counts[k] = (counts[k] ?? 0) + 1;
+      }
+    }
+  }
+  for (const k of Object.keys(sums)) {
+    out[k] = Math.round(sums[k] / counts[k]);
+  }
+  return out;
+}
+
 /**
  * Options for running evaluation with connector
  */
@@ -108,6 +200,26 @@ export interface RunEvaluationWithConnectorOptions {
   registry: ConnectorRegistry;
   /** Callback for raw events from the connector */
   onRawEvent?: (event: any) => void;
+  /** Optional evaluator ID for custom evaluation criteria */
+  evaluatorId?: string;
+  /**
+   * Optional judge model id, distinct from the agent's `modelId` argument.
+   * When set, this is the judge LLM (the model the LLM judge uses to grade
+   * the trajectory). When unset the judge falls back to the evaluator's
+   * `inferenceConfig.modelId` (resolved server-side in `/api/judge`),
+   * then the server-default `BEDROCK_MODEL_ID` env var — NEVER to the
+   * agent's `modelId`. Customer input via UI dropdown / CLI
+   * `--judge-model` / API `judgeModelId` field.
+   *
+   * Pre-fix the agent's `modelId` was reused as the judge model id, which
+   * meant picking a judge-only pseudo-model like `pi-judge` from the UI
+   * dropdown ALSO got passed to the agent and broke the agent's Bedrock
+   * call (Bedrock doesn't know what `pi-judge` is). Now the two are
+   * fully decoupled.
+   */
+  judgeModelId?: string;
+  /** When true, skip the LLM judge (caller will handle evaluation) */
+  skipJudge?: boolean;
 }
 
 /**
@@ -120,6 +232,174 @@ export interface RunEvaluationWithConnectorOptions {
  * @param onStep - Callback for trajectory steps
  * @param options - Options including the connector registry
  */
+/**
+ * Result of a single agent invocation — the pure, report-agnostic output of
+ * driving a connector once. This is the primitive behind both the legacy
+ * {@link runEvaluationWithConnector} (which then runs the judge + builds a
+ * report) and the RFC-004 `agent.run()` fixture (which hands it to the test
+ * body as a `RunResult`). It performs NO judging and builds NO report.
+ */
+export interface InvokeAgentResult {
+  /** Final trajectory after the afterResponse hook (if any). */
+  trajectory: TrajectoryStep[];
+  /** Agent-supplied run id for log/trace correlation, or null. */
+  runId: string | null;
+  /** Protocol-specific raw events for debugging. */
+  rawEvents: any[];
+  /** Wall-clock duration of the connector.execute() call in ms. */
+  agentDurationMs: number;
+  /** Connector-supplied metadata (e.g. Claude Code `sessionId`, exitCode). */
+  metadata?: Record<string, any>;
+  /** The connector that handled the request (for protocol metadata). */
+  connector: AgentConnector;
+}
+
+export interface InvokeAgentOptions {
+  /** Connector registry (required for CLI/server execution). */
+  registry: ConnectorRegistry;
+  /** Streaming step callback. */
+  onStep?: (step: TrajectoryStep) => void;
+  /** Raw event callback (debugging). */
+  onRawEvent?: (event: any) => void;
+  /**
+   * Per-invocation environment variables forwarded to the connector. Merged
+   * into `connectorConfig.env` so subprocess connectors inherit them on the
+   * spawned child (the lowest common denominator every subprocess connector
+   * already honours). Sourced from the SDK's `AgentRunOptions.env`.
+   */
+  env?: Record<string, string>;
+}
+
+/**
+ * Drive a single agent invocation through its connector and return the raw
+ * trajectory/runId/rawEvents — no judge, no report synthesis.
+ *
+ * Owns the connector resolution, request building, auth, the
+ * `beforeRequest`/`afterResponse` hooks, and execution timing. Extracted from
+ * {@link runEvaluationWithConnector} so the RFC-004 engine can offer an
+ * `agent.run()` fixture that captures exactly the same trajectory/trace
+ * correlation the legacy path produces (see RFC 004 §4.1, #256).
+ */
+export async function invokeAgent(
+  agent: AgentConfig,
+  modelId: string,
+  testCase: TestCase,
+  options: InvokeAgentOptions
+): Promise<InvokeAgentResult> {
+  const { registry: connectorRegistry, onStep, onRawEvent, env: runEnv } = options;
+
+  // Get connector for this agent
+  const agentWithConnector = agent as AgentConfigWithConnector;
+  const connector = connectorRegistry.getForAgent(agentWithConnector);
+
+  // Merge any per-invocation env (from the SDK's AgentRunOptions.env) into the
+  // connector config so subprocess connectors forward it to the spawned child.
+  // Static config env stays the base; per-call env wins on key collisions.
+  const baseConnectorConfig = agentWithConnector.connectorConfig as Record<string, any> | undefined;
+  const mergedConnectorConfig: Record<string, any> | undefined =
+    runEnv && Object.keys(runEnv).length > 0
+      ? {
+          ...(baseConnectorConfig || {}),
+          env: { ...((baseConnectorConfig?.env as Record<string, string>) || {}), ...runEnv },
+        }
+      : baseConnectorConfig;
+
+  // Build connector request
+  let request: ConnectorRequest = {
+    testCase,
+    modelId,
+    connectorConfig: mergedConnectorConfig,
+  };
+
+  // Build auth from agent config
+  const auth = buildConnectorAuth(agent);
+
+  // Execute beforeRequest hook if defined
+  let effectiveEndpoint = agent.endpoint;
+  if (agent.hooks?.beforeRequest) {
+    const previewPayload = connector.buildPayload(request);
+
+    const hookContext: BeforeRequestContext = {
+      endpoint: agent.endpoint,
+      payload: previewPayload,
+      headers: auth.headers || agent.headers || {},
+    };
+    const hookResult = await executeBeforeRequestHook(agent.hooks, hookContext, agent.key);
+    effectiveEndpoint = hookResult.endpoint;
+
+    // Pass the hook-modified payload through to the connector so it skips
+    // its internal buildPayload() call. This preserves ALL modifications the
+    // hook made to the payload (threadId, runId, custom fields, etc.)
+    request = {
+      ...request,
+      payload: hookResult.payload,
+    };
+
+    // Merge any hook-modified headers into auth
+    if (hookResult.headers) {
+      auth.headers = { ...auth.headers, ...hookResult.headers };
+    }
+  }
+
+  // Execute via connector (with timing)
+  const agentStartTime = Date.now();
+  let result = await connector.execute(
+    effectiveEndpoint,
+    request,
+    auth,
+    onStep,
+    onRawEvent
+  );
+  const agentDurationMs = Date.now() - agentStartTime;
+
+  // Execute afterResponse hook if defined
+  if (agent.hooks?.afterResponse) {
+    debug('Eval', `Executing afterResponse hook for agent "${agent.key}"`);
+    try {
+      const hookContext: AfterResponseContext = {
+        response: (result.rawEvents?.length ? result.rawEvents[result.rawEvents.length - 1] : null) || result.metadata || {},
+        trajectory: result.trajectory,
+        runId: result.runId || undefined,
+        rawEvents: result.rawEvents || [],
+        metadata: result.metadata,
+      };
+      const hookResult = await executeAfterResponseHook(agent.hooks, hookContext, agent.key);
+
+      // Apply hook modifications
+      result = {
+        ...result,
+        trajectory: hookResult.trajectory,
+        runId: hookResult.runId || result.runId,
+      };
+
+      debug('Eval', 'afterResponse hook applied:', {
+        trajectorySteps: hookResult.trajectory.length,
+        runId: hookResult.runId
+      });
+    } catch (hookError: any) {
+      const errorMsg = hookError instanceof Error ? hookError.message : String(hookError);
+      console.error(`[Eval] afterResponse hook failed for agent "${agent.key}":`, errorMsg);
+      debug('Eval', `afterResponse hook error details:`, {
+        agent: agent.key,
+        error: errorMsg,
+        rawEventsCount: result.rawEvents?.length ?? 0,
+        hasMetadata: !!result.metadata,
+      });
+      // Re-throw so the caller knows the hook failed — don't silently swallow
+      throw hookError instanceof Error ? hookError : new Error(errorMsg);
+    }
+  }
+
+  return {
+    trajectory: result.trajectory,
+    runId: result.runId,
+    rawEvents: result.rawEvents || [],
+    agentDurationMs,
+    metadata: result.metadata,
+    connector,
+  };
+}
+
 export async function runEvaluationWithConnector(
   agent: AgentConfig,
   modelId: string,
@@ -127,101 +407,37 @@ export async function runEvaluationWithConnector(
   onStep: (step: TrajectoryStep) => void,
   options: RunEvaluationWithConnectorOptions
 ): Promise<EvaluationReport> {
-  const { registry: connectorRegistry, onRawEvent } = options;
+  const { registry: connectorRegistry, onRawEvent, evaluatorId, skipJudge } = options;
+  // Pull `judgeModelId` once so the closure inside the standard-mode call
+  // below uses the run-level value rather than the agent's `modelId`.
+  const optionsJudgeModelId = options.judgeModelId;
 
   const reportId = uuidv4();
   let fullTrajectory: TrajectoryStep[] = [];
   let rawEvents: any[] = [];
   let agentRunId: string | null = null;
+  let agentSessionId: string | undefined;
 
   debug('Eval', 'Config:', { agent: agent.name, model: modelId, testCase: testCase.id });
 
   const evalStartTime = Date.now();
 
   try {
-    // Get connector for this agent
-    const agentWithConnector = agent as AgentConfigWithConnector;
-    const connector = connectorRegistry.getForAgent(agentWithConnector);
-
-    // Build connector request
-    let request: ConnectorRequest = {
-      testCase,
-      modelId,
-      connectorConfig: agentWithConnector.connectorConfig as Record<string, any>,
-    };
-
-    // Build auth from agent config
-    const auth = buildConnectorAuth(agent);
-
-    // Execute beforeRequest hook if defined
-    let effectiveEndpoint = agent.endpoint;
-    if (agent.hooks?.beforeRequest) {
-      const previewPayload = connector.buildPayload(request);
-
-      const hookContext: BeforeRequestContext = {
-        endpoint: agent.endpoint,
-        payload: previewPayload,
-        headers: auth.headers || agent.headers || {},
-      };
-      const hookResult = await executeBeforeRequestHook(agent.hooks, hookContext, agent.key);
-      effectiveEndpoint = hookResult.endpoint;
-
-      // Pass the hook-modified payload through to the connector so it skips
-      // its internal buildPayload() call. This preserves ALL modifications the
-      // hook made to the payload (threadId, runId, custom fields, etc.)
-      request = {
-        ...request,
-        payload: hookResult.payload,
-      };
-
-      // Merge any hook-modified headers into auth
-      if (hookResult.headers) {
-        auth.headers = { ...auth.headers, ...hookResult.headers };
-      }
-    }
-
-    // Execute via connector (with timing)
-    const agentStartTime = Date.now();
-    let result = await connector.execute(
-      effectiveEndpoint,
-      request,
-      auth,
+    // Drive the agent through its connector (connector resolution, request
+    // building, auth, before/afterResponse hooks, timing) via the shared
+    // primitive. Judge + report synthesis stay here in the legacy path.
+    const invocation = await invokeAgent(agent, modelId, testCase, {
+      registry: connectorRegistry,
       onStep,
-      onRawEvent
-    );
-    const agentDurationMs = Date.now() - agentStartTime;
+      onRawEvent,
+    });
+    const connector = invocation.connector;
+    const agentDurationMs = invocation.agentDurationMs;
 
-    // Execute afterResponse hook if defined
-    if (agent.hooks?.afterResponse) {
-      try {
-        const hookContext: AfterResponseContext = {
-          response: result.rawEvents?.[0] || {},
-          trajectory: result.trajectory,
-          runId: result.runId || undefined,
-        };
-        const hookResult = await executeAfterResponseHook(agent.hooks, hookContext, agent.key);
-
-        // Apply hook modifications
-        result = {
-          ...result,
-          trajectory: hookResult.trajectory,
-          runId: hookResult.runId || result.runId,
-        };
-
-        debug('Eval', 'afterResponse hook applied:', {
-          trajectorySteps: hookResult.trajectory.length,
-          runId: hookResult.runId
-        });
-      } catch (hookError: any) {
-        console.error(`[Eval] afterResponse hook failed for agent ${agent.key}:`, hookError.message);
-        debug('Eval', `afterResponse hook error, using pre-hook result`);
-        // Continue with pre-hook result — don't let hook failure kill the evaluation
-      }
-    }
-
-    fullTrajectory = result.trajectory;
-    agentRunId = result.runId;
-    rawEvents = result.rawEvents || [];
+    fullTrajectory = invocation.trajectory;
+    agentRunId = invocation.runId;
+    agentSessionId = invocation.metadata?.sessionId ?? undefined;
+    rawEvents = invocation.rawEvents;
 
     debug('Eval', 'Trajectory captured:', fullTrajectory.length, 'steps');
     debug('Eval', 'Raw events captured:', rawEvents.length);
@@ -249,6 +465,34 @@ export async function runEvaluationWithConnector(
         llmJudgeReasoning: 'Waiting for traces to become available...',
         improvementStrategies: [],
         runId: agentRunId || undefined,
+        sessionId: agentSessionId || undefined,
+        rawEvents,
+        connectorProtocol: connector.type as ConnectorProtocol,
+        performanceMetrics: {
+          durationMs: Date.now() - evalStartTime,
+          agentDurationMs,
+        },
+      };
+    }
+
+    // SKIP JUDGE MODE: Return report without judge evaluation (caller handles it)
+    if (skipJudge) {
+      return {
+        id: reportId,
+        timestamp: new Date().toISOString(),
+        agentName: agent.name,
+        agentKey: agent.key,
+        modelName: modelId,
+        modelId,
+        testCaseId: testCase.id,
+        testCaseVersion: testCase.currentVersion ?? 1,
+        status: 'completed',
+        trajectory: fullTrajectory,
+        metrics: { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 },
+        llmJudgeReasoning: '',
+        improvementStrategies: [],
+        runId: agentRunId || undefined,
+        sessionId: agentSessionId || undefined,
         rawEvents,
         connectorProtocol: connector.type as ConnectorProtocol,
         performanceMetrics: {
@@ -261,7 +505,21 @@ export async function runEvaluationWithConnector(
     // STANDARD MODE: Call judge
     const models = getModels();
     const modelConfig = models[modelId];
-    const judgeModelId = modelConfig?.model_id || modelId;
+    // Judge model resolution — SEPARATE from the agent's `modelId`. Priority:
+    //   1. options.judgeModelId  (run-level customer input)
+    //   2. server default `BEDROCK_MODEL_ID`  (env, falls back to a recent Claude)
+    //   3. agent's modelId  (last-resort BC fallback for old callers that didn't
+    //                       split agent vs judge model; tolerated for one release
+    //                       so behavior of pre-existing benchmark runs is
+    //                       preserved when neither cx input nor server default
+    //                       is available)
+    // Anything else (evaluator's own `inferenceConfig.modelId`, agentic-provider
+    // model picking) is resolved server-side in /api/judge from the evaluator.
+    const judgeModelId =
+      optionsJudgeModelId ||
+      process.env.BEDROCK_MODEL_ID ||
+      modelConfig?.model_id ||
+      modelId;
     const judgment = await callBedrockJudge(
       fullTrajectory,
       {
@@ -270,7 +528,24 @@ export async function runEvaluationWithConnector(
       },
       undefined, // No logs in direct connector mode
       (chunk) => debug('Eval', 'Judge progress:', chunk.slice(0, 100)),
-      judgeModelId
+      judgeModelId,
+      evaluatorId,
+      // Forward agent runId so the `agent` (trace) judge provider can
+      // scope its query_spans/query_logs tools. See callBedrockJudge.
+      agentRunId || undefined,
+      // Strategy C correlation hints (#264) so the trace judge tool can
+      // find spans the agent emits under its OWN correlation (claude-code
+      // session ids etc.), not just spans matching agent-health's runId
+      // via gen_ai.request.id.
+      buildJudgeAgentsHints(
+        {
+          agentKey: agent.key,
+          connectorProtocol: (agent.connectorType as any),
+          timestamp: new Date().toISOString(),
+          performanceMetrics: { durationMs: Date.now() - evalStartTime, agentDurationMs },
+        },
+        agent.traceServiceName
+      )
     );
 
     debug('Eval', 'Metrics:', judgment.metrics);
@@ -281,14 +556,15 @@ export async function runEvaluationWithConnector(
       promptTokens: 0,
       completionTokens: 0,
       latencyMs: judgment.judgeDurationMs ?? 0,
-      rawResponse: judgment.llmJudgeReasoning,
-      parsedMetrics: {
-        accuracy: judgment.metrics.accuracy,
-        faithfulness: judgment.metrics.faithfulness,
-        latency_score: judgment.metrics.latency_score,
-        trajectory_alignment_score: judgment.metrics.trajectory_alignment_score,
-      },
+      // Prefer the actual unparsed model output when present (post
+      // evaluator-prompt-plumbing). Pre-fix code stuffed the parsed
+      // reasoning here — fall back to that for back-compat with judges
+      // that don't yet forward the raw text.
+      rawResponse: judgment.rawResponse ?? judgment.llmJudgeReasoning,
+      parsedMetrics: judgment.metrics as any,
       improvementStrategies: judgment.improvementStrategies,
+      ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
+      ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
     };
 
     return {
@@ -305,9 +581,17 @@ export async function runEvaluationWithConnector(
       trajectory: fullTrajectory,
       metrics: judgment.metrics,
       llmJudgeReasoning: judgment.llmJudgeReasoning,
+      // Unified judge surface (Option-B BC: legacy field above kept).
+      matcherResults: [
+        buildJudgeMatcherEntry(judgment, {
+          claim: formatExpectedOutcomesAsClaim(testCase.expectedOutcomes),
+          model: judgeModelId,
+        }),
+      ],
       improvementStrategies: judgment.improvementStrategies,
       llmJudgeResponse,
       runId: agentRunId || undefined,
+      sessionId: agentSessionId || undefined,
       rawEvents,
       connectorProtocol: connector.type as ConnectorProtocol,
       performanceMetrics: {
@@ -444,6 +728,7 @@ export async function runEvaluation(
   let fullTrajectory: TrajectoryStep[] = [];
   let rawEvents: AGUIEvent[] = [];
   let agentRunId: string | null = null;
+  let agentSessionId: string | undefined;
 
   debug('Eval', 'Config:', { agent: agent.name, model: modelId, testCase: testCase.id });
 
@@ -490,6 +775,7 @@ export async function runEvaluation(
         llmJudgeReasoning: 'Waiting for traces to become available...',
         improvementStrategies: [],
         runId: agentRunId || undefined,
+        sessionId: agentSessionId || undefined,
         rawEvents,
       };
     }
@@ -507,7 +793,13 @@ export async function runEvaluation(
     // Call judge
     const models = getModels();
     const modelConfig = models[modelId];
-    const judgeModelId = modelConfig?.model_id || modelId;
+    // Deprecated path — mirror the standard-mode judgeModelId resolution
+    // chain so this stays consistent if anyone still hits this code path.
+    // The agent's `modelId` is NOT used as the judge model here either.
+    const judgeModelId =
+      process.env.BEDROCK_MODEL_ID ||
+      modelConfig?.model_id ||
+      modelId;
     const judgment = await callBedrockJudge(
       fullTrajectory,
       {
@@ -516,7 +808,10 @@ export async function runEvaluation(
       },
       logs,
       (chunk) => debug('Eval', 'Judge progress:', chunk.slice(0, 100)),
-      judgeModelId
+      judgeModelId,
+      undefined, // evaluatorId not threaded on the legacy path
+      // Same forwarding as the standard branch above.
+      agentRunId || undefined
     );
 
     debug('Eval', 'Metrics:', judgment.metrics);
@@ -527,14 +822,14 @@ export async function runEvaluation(
       promptTokens: 0,
       completionTokens: 0,
       latencyMs: judgment.judgeDurationMs ?? 0,
-      rawResponse: judgment.llmJudgeReasoning,
-      parsedMetrics: {
-        accuracy: judgment.metrics.accuracy,
-        faithfulness: judgment.metrics.faithfulness,
-        latency_score: judgment.metrics.latency_score,
-        trajectory_alignment_score: judgment.metrics.trajectory_alignment_score,
-      },
+      // Prefer the actual unparsed model output when present (post
+      // evaluator-prompt-plumbing). Pre-fix code stuffed the parsed
+      // reasoning here — fall back to that for back-compat.
+      rawResponse: judgment.rawResponse ?? judgment.llmJudgeReasoning,
+      parsedMetrics: judgment.metrics as any,
       improvementStrategies: judgment.improvementStrategies,
+      ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
+      ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
     };
 
     return {
@@ -551,10 +846,18 @@ export async function runEvaluation(
       trajectory: fullTrajectory,
       metrics: judgment.metrics,
       llmJudgeReasoning: judgment.llmJudgeReasoning,
+      // Unified judge surface (Option-B BC: legacy field above kept).
+      matcherResults: [
+        buildJudgeMatcherEntry(judgment, {
+          claim: formatExpectedOutcomesAsClaim(testCase.expectedOutcomes),
+          model: judgeModelId,
+        }),
+      ],
       improvementStrategies: judgment.improvementStrategies,
       llmJudgeResponse,
       openSearchLogs: logs,
       runId: agentRunId || undefined,
+      sessionId: agentSessionId || undefined,
       logs: logs || undefined,
       rawEvents,
     };

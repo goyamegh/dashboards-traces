@@ -17,7 +17,7 @@ import * as path from 'path';
 const ROOT_DIR = path.resolve(__dirname, '../..');
 
 const SOURCE_EXTENSIONS = ['.ts', '.tsx', '.js', '.jsx', '.cjs', '.mjs', '.css'];
-const EXCLUDED_DIRS = ['node_modules', 'dist', 'build', 'coverage', '.git', 'server/dist', 'cli/dist', 'lib/dist', 'observio-sample-agent'];
+const EXCLUDED_DIRS = ['node_modules', 'dist', 'build', 'coverage', '.git', 'server/dist', 'cli/dist', 'lib/dist', 'observio-sample-agent', 'playwright-report', 'test-results'];
 
 const SPDX_IDENTIFIER = 'SPDX-License-Identifier: Apache-2.0';
 const COPYRIGHT_NOTICE = 'Copyright OpenSearch Contributors';
@@ -32,9 +32,14 @@ function findSourceFiles(dir: string, files: string[] = []): string[] {
     const fullPath = path.join(dir, entry.name);
     const relativePath = path.relative(ROOT_DIR, fullPath);
 
-    // Skip excluded directories
+    // Skip excluded directories, and all dot-directories: the walk is
+    // filesystem-based (not git-aware), so git-ignored local scratch dirs
+    // (.pi/, .agent-health/, editor caches, ...) would otherwise fail the
+    // scan on files that are not part of the project. No tracked source
+    // file lives under a dot-directory.
     if (entry.isDirectory()) {
-      if (!EXCLUDED_DIRS.some((excluded) => relativePath.startsWith(excluded))) {
+      const isDotDir = entry.name.startsWith('.');
+      if (!isDotDir && !EXCLUDED_DIRS.some((excluded) => relativePath.startsWith(excluded))) {
         findSourceFiles(fullPath, files);
       }
       continue;

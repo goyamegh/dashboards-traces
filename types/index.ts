@@ -12,10 +12,33 @@ export type Difficulty = 'Easy' | 'Medium' | 'Hard';
 export type DateFormatVariant = 'date' | 'datetime' | 'detailed';
 
 // Judge provider determines which backend service handles evaluation
-export type JudgeProvider = 'demo' | 'bedrock' | 'openai-compatible';
+export type JudgeProvider = 'demo' | 'bedrock' | 'openai-compatible' | 'litellm' | 'claude-code' | 'agentic' | 'pi' | 'agent';
+
+// ============ AI Assistant Types ============
+
+export interface AssistantMessage {
+  role: 'user' | 'assistant';
+  content: string;
+  timestamp: string;
+}
+
+export interface AssistantContext {
+  currentUrl?: string;
+  benchmarkId?: string;
+  runId?: string;
+  traceId?: string;
+  testCaseId?: string;
+  /**
+   * On comparison pages (`/compare/:benchmarkId?runs=a,b,…`), the list of run
+   * IDs the user is currently comparing. The assistant pre-loads these into
+   * the grounded snapshot so it can answer cross-run questions even before
+   * reaching for tools.
+   */
+  comparisonRunIds?: string[];
+}
 
 // Connector protocol for agent communication
-export type ConnectorProtocol = 'agui-streaming' | 'rest' | 'openai-compatible' | 'subprocess' | 'claude-code' | 'mock';
+export type ConnectorProtocol = 'agui-streaming' | 'rest' | 'openai-compatible' | 'subprocess' | 'claude-code' | 'pi' | 'strands' | 'langgraph' | 'mock';
 
 export interface ModelConfig {
   model_id: string;
@@ -37,11 +60,46 @@ export interface AfterResponseContext {
   response: any;
   trajectory: TrajectoryStep[];
   runId?: string;
+  /** Full array of raw events from the connector (protocol-specific) */
+  rawEvents?: any[];
+  /** Connector metadata (e.g., threadId, sessionId, exitCode) */
+  metadata?: Record<string, any>;
 }
 
 export interface BuildTrajectoryContext {
   spans: Span[];
   runId: string;
+}
+
+/**
+ * Context passed to a custom judge hook.
+ * Contains all data needed for evaluation: trajectory, traces, and expected outcomes.
+ * Also provides fetchTraces as an SDK utility for additional trace fetching.
+ */
+export interface JudgeContext {
+  trajectory: TrajectoryStep[];
+  traces: Span[];
+  expectedOutcomes: string[];
+  expectedTrajectory?: string[];
+  runId: string;
+  /** SDK utility: fetch traces by run IDs from OpenSearch */
+  fetchTraces: (runIds: string[]) => Promise<{ spans: Span[] }>;
+}
+
+/**
+ * Result returned by a custom judge hook.
+ */
+export interface JudgeResult {
+  passFailStatus: 'passed' | 'failed';
+  metrics: {
+    accuracy: number;
+    faithfulness?: number;
+    latency_score?: number;
+    trajectory_alignment_score?: number;
+    [key: string]: number | undefined;
+  };
+  llmJudgeReasoning: string;
+  improvementStrategies?: string[];
 }
 
 export interface AgentHooks {
@@ -62,6 +120,27 @@ export interface AgentHooks {
    * Use to customize trajectory extraction for agents with custom span formats.
    */
   buildTrajectory?: (context: BuildTrajectoryContext) => Promise<TrajectoryStep[]>;
+
+  /**
+   * Custom judge hook. When defined, replaces the built-in Bedrock judge.
+   * Receives trajectory + traces + expected outcomes, returns pass/fail evaluation.
+   *
+   * @example
+   * ```typescript
+   * hooks: {
+   *   judge: async ({ trajectory, traces, expectedOutcomes, fetchTraces }) => {
+   *     // Custom evaluation logic using traces
+   *     const relevantSpans = traces.filter(s => s.attributes?.['gen_ai.system']);
+   *     return {
+   *       passFailStatus: relevantSpans.length > 0 ? 'passed' : 'failed',
+   *       metrics: { accuracy: 85 },
+   *       llmJudgeReasoning: 'Custom evaluation based on trace analysis',
+   *     };
+   *   }
+   * }
+   * ```
+   */
+  judge?: (context: JudgeContext) => Promise<JudgeResult>;
 }
 
 export interface AgentConfig {
@@ -73,10 +152,51 @@ export interface AgentConfig {
   headers?: Record<string, string>; // Custom headers for agent endpoint (e.g., AWS credentials)
   auth?: ConnectorAuthConfig; // Explicit auth config (preferred over headers inference)
   useTraces?: boolean; // When true, fetch traces instead of logs for evaluation
+  /**
+   * Configurable trace polling settings (used when `useTraces: true`).
+   *
+   * Two distinct polling paths honour these values, with different defaults
+   * because they have different ergonomic constraints:
+   *
+   *   - **Judge poller** (`services/traces/tracePoller.ts`, runs in the
+   *     background after the agent finishes, before the LLM judge fires)
+   *     defaults to `intervalMs: 10000` and `maxAttempts: 60` — a 10-minute
+   *     total budget that's fine because the user already sees a "pending"
+   *     badge while it polls.
+   *   - **SDK pre-load** (`services/traces/fetchSpansForRun.ts`, runs
+   *     synchronously inside a deterministic test body before the body's
+   *     first assertion) defaults to `intervalMs: 1000` and `maxAttempts:
+   *     10` — a ~10-second total budget so the test isn't blocked.
+   *
+   * Both paths additionally honour `TRACE_POLL_INTERVAL_MS` and
+   * `TRACE_POLL_MAX_ATTEMPTS` env vars (the env vars override the
+   * code defaults), and both enforce a hard ceiling of 60 attempts so
+   * a misconfigured agent can't lock a test for an unbounded time.
+   *
+   * Setting either field on this object overrides the path's own default
+   * for that specific agent on both paths.
+   */
+  tracePolling?: {
+    intervalMs?: number;
+    maxAttempts?: number;
+  };
+  /**
+   * OTel `service.name` resource attribute that this agent reports under.
+   * Defaults to {@link AgentConfig.key} when not set, which is correct for
+   * agents whose OTel SDK uses the same identifier as the config key (e.g.
+   * `claude-code`). Override only when the agent's OTel service name differs
+   * from its config key, e.g. `observio` -> `observio-sample-agent`.
+   *
+   * Used by the Agent Traces page to translate the user's cross-page agent
+   * filter (`agent-health:prefs:agentFilter`, which stores agent keys) into
+   * the actual `service.name` to filter by in OpenSearch queries.
+   */
+  traceServiceName?: string;
   connectorType?: ConnectorProtocol; // Connector protocol (defaults to 'agui-streaming')
   connectorConfig?: Record<string, any>; // Connector-specific configuration
   hooks?: AgentHooks; // Lifecycle hooks for custom setup/transform logic
   isCustom?: boolean; // True for user-added custom endpoints (not from config file)
+  builtIn?: boolean; // True for built-in agents shipped with the tool
 }
 
 /**
@@ -120,11 +240,13 @@ export interface TrajectoryStep {
 }
 
 export interface EvaluationMetrics {
-  accuracy: number; // 0-100
+  accuracy?: number; // 0-100
   // Legacy metrics - kept for backwards compatibility with old reports
   faithfulness?: number; // 0-100 (deprecated)
   latency_score?: number; // 0-100 (deprecated)
   trajectory_alignment_score?: number; // 0-100 (deprecated)
+  // Dynamic metrics - populated based on evaluator's scoring config
+  [key: string]: number | undefined;
 }
 
 export interface ImprovementStrategy {
@@ -132,6 +254,80 @@ export interface ImprovementStrategy {
   issue: string;
   recommendation: string;
   priority: 'high' | 'medium' | 'low';
+}
+
+// ============ Evaluator Types (Pluggable Judge System) ============
+
+/**
+ * Scoring metric definition for evaluators
+ */
+export interface ScoringMetric {
+  name: string;              // Metric name (e.g., 'accuracy', 'factual_accuracy')
+  description?: string;      // Human-readable description
+  weight: number;            // Weight in overall score (0-1)
+  scale: number;             // Max value (e.g., 100 for 0-100 scale)
+}
+
+/**
+ * Scoring configuration for an evaluator
+ */
+export interface ScoringConfig {
+  metrics: ScoringMetric[];  // Metrics to evaluate
+  passThreshold: number;     // Minimum score to pass (0-100)
+  scale: number;             // Overall scale (typically 100)
+}
+
+/**
+ * Inference configuration for an evaluator
+ */
+export interface InferenceConfig {
+  provider?: JudgeProvider;  // Judge provider (bedrock, openai-compatible, demo)
+  modelId?: string;          // Model ID override
+  temperature?: number;      // Temperature for LLM
+  maxTokens?: number;        // Max output tokens
+}
+
+/**
+ * Evaluator version - immutable snapshot of evaluator configuration
+ */
+export interface EvaluatorVersion {
+  version: number;
+  createdAt: string;
+
+  // Content fields (snapshot)
+  systemPrompt: string;
+  scoringConfig: ScoringConfig;
+  inferenceConfig: InferenceConfig;
+}
+
+/**
+ * Evaluator - pluggable judge configuration
+ * Defines how agent performance is evaluated
+ */
+export interface Evaluator {
+  id: string;
+  name: string;
+  description: string;
+
+  // System flag - built-in evaluators that can't be deleted
+  isSystem: boolean;
+
+  // Tags for categorization
+  tags?: string[];
+
+  // Versioning (follows TestCase pattern)
+  currentVersion: number;
+  versions: EvaluatorVersion[];
+
+  // Metadata
+  createdAt: string;
+  updatedAt: string;
+  author?: string;
+
+  // Current version content (convenience accessors - mirrors latest version)
+  systemPrompt: string;
+  scoringConfig: ScoringConfig;
+  inferenceConfig: InferenceConfig;
 }
 
 export type PassFailStatus = 'passed' | 'failed';
@@ -143,15 +339,56 @@ export interface LLMJudgeResponse {
   promptTokens: number;
   completionTokens: number;
   latencyMs: number;
+  /**
+   * Raw judge text exactly as the model returned it (pre-JSON-parse). Set
+   * by the routing layer from `JudgeResponse.rawResponse`. Older callers
+   * stuffed the parsed `llmJudgeReasoning` into this field as a fallback;
+   * post evaluator-prompt-plumbing the field carries the actual unparsed
+   * model output for debugging "prompt edited but output didn't change"
+   * scenarios.
+   */
   rawResponse: string;
-  parsedMetrics?: {
-    accuracy: number;
-    faithfulness: number;
-    latency_score: number;
-    trajectory_alignment_score: number;
-  };
+  /**
+   * Parsed numeric metrics. Open-ended `[key: string]: number` so a saved
+   * evaluator can declare arbitrary metric names in its `scoringConfig.metrics`
+   * and they flow through here unchanged. Legacy keys (`accuracy`,
+   * `faithfulness`, `latency_score`, `trajectory_alignment_score`) remain
+   * conventional but are no longer required — evaluators are pluggable.
+   */
+  parsedMetrics?: { [key: string]: number | undefined };
   improvementStrategies?: ImprovementStrategy[];
   error?: string;
+  /**
+   * Any JSON keys the judge emitted that did NOT map onto a typed wire
+   * field or a declared metric. Captured by
+   * {@link parseJudgeResponse} (server/services/judgeResponseParser) so the
+   * run-detail "Judge debug" surface can show prompt-iteration output (e.g.
+   * `improvement_candidates`, `failure_tags`, `confidence`) without a code
+   * change. Empty/undefined when the model emitted only typed fields.
+   */
+  extraFields?: Record<string, unknown>;
+  /**
+   * Optional debug breadcrumbs persisted when `AH_JUDGE_DEBUG=1` (or in dev
+   * mode). Captures exactly what the run-detail UI needs to confirm "the
+   * prompt I saved is the prompt that ran" — the system prompt the model
+   * received, the user prompt, and which provider executed the call. The
+   * raw response itself is on the parent {@link rawResponse}.
+   *
+   * Disabled by default to keep persisted run docs lean (system prompts
+   * can be 10–20 KB).
+   */
+  judgeDebug?: {
+    /** Provider that executed the call: 'bedrock' | 'claude-code' | 'pi' | 'agent' | 'agentic' | 'openai-compatible' | 'litellm'. */
+    provider?: string;
+    /** Effective model id passed to the provider (post-resolution). */
+    modelId?: string;
+    /** Evaluator id used (system or user). */
+    evaluatorId?: string;
+    /** The full system prompt the model received. */
+    systemPrompt?: string;
+    /** The user-message prompt the model received. */
+    userPrompt?: string;
+  };
 }
 
 // Storage feature - User annotations on runs
@@ -164,6 +401,19 @@ export interface RunAnnotation {
   author?: string;
 }
 
+/**
+ * @experimental Generic sidecar metadata for coding agent sessions.
+ * One document per session — stores annotations, status, tags, or any
+ * user-defined fields. The shape is intentionally open so callers can
+ * store whatever debug/analysis data they need.
+ */
+export interface SessionMetadata {
+  agentKind: string;
+  sessionId: string;
+  /** Open-ended — callers define the schema. */
+  [key: string]: unknown;
+}
+
 // Metrics status for trace-mode runs (traces take ~5 min to propagate)
 export type MetricsStatus = 'pending' | 'calculating' | 'ready' | 'error';
 
@@ -171,6 +421,16 @@ export type MetricsStatus = 'pending' | 'calculating' | 'ready' | 'error';
 export interface TestCaseRun {
   id: string;
   timestamp: string;
+  /**
+   * Human-readable name for this run (e.g. "Baseline", "Claude_02").
+   * Set from the user-supplied value in the run config dialog, or auto-generated
+   * server-side as `Run <short-id>` if not provided. Optional for backwards
+   * compatibility with runs created before the field existed — UI consumers
+   * should fall back to a generated label (see `getRunDisplayName`).
+   */
+  name?: string;
+  /** Optional human-readable description of what this run was testing. */
+  description?: string;
   testCaseId: string;
   testCaseVersion?: number;          // Which version was run (optional for backwards compatibility)
   experimentId?: string;             // ID of the benchmark (field name preserved for storage compatibility)
@@ -181,22 +441,67 @@ export interface TestCaseRun {
   agentKey?: string;
   modelName: string;
   modelId?: string;
+  /**
+   * Optional judge model id, separate from {@link modelId} (which is the
+   * agent's LLM). Set explicitly via the run config (UI dropdown / CLI
+   * `--judge-model` / API `judgeModelId` field) or left unset to fall back
+   * to the evaluator's `inferenceConfig.modelId`, then the server-default
+   * Bedrock judge model. For agentic providers (`pi`, `agent`, `agentic`,
+   * `claude-code`) the value is informational — the provider picks its own
+   * model from its credentialed registry. Stored on the run document so the
+   * "Judge debug" surface and audit trail show which judge model was used.
+   */
+  judgeModelId?: string;
   agentEndpoint?: string;
+  evaluatorId?: string;              // Which evaluator was used (optional for backwards compatibility)
 
   // Results
   status: 'running' | 'completed' | 'failed';
   passFailStatus?: PassFailStatus; // LLM judge determination of pass/fail
   trajectory: TrajectoryStep[];
   metrics: EvaluationMetrics;
+  /**
+   * @deprecated Use `getJudgeReasoningText(report)` /
+   * `getJudgeMatcherResults(report)` from `lib/matchers/judgeAccessor`.
+   * The canonical judge surface is now `matcherResults[]` with
+   * `method: 'llm-judge'`. This flat-string field is kept as an
+   * Option-B backward-compat shim — it carries the most recent judge
+   * reasoning so old direct readers keep working, but new code MUST
+   * use the accessor.
+   */
   llmJudgeReasoning: string;
   improvementStrategies?: ImprovementStrategy[];
   llmJudgeResponse?: LLMJudgeResponse; // Storage: Raw Bedrock judge response
+  /**
+   * W3C OTel trace id (32 hex). Stamped onto the run document at save time
+   * when polled spans expose one, used as the strongest correlation key for
+   * the run-detail Traces tab and the agent (trace) judge's `query_spans`
+   * tool. See #190 (this field as a top-level shortcut over re-extracting
+   * from `spans[0]`) and #264 (unified trace correlation strategies).
+   *
+   * Distinct from {@link runId} (the connector's run id, e.g.
+   * `subprocess-<timestamp>`); pre-fix the runner mis-stamped runId here
+   * which broke `traceId`-based queries.
+   */
+  traceId?: string;
   openSearchLogs?: OpenSearchLog[]; // Storage: Persisted logs (alternative to logs)
   annotations?: RunAnnotation[]; // Storage: User notes on this run
   runId?: string; // Agent's run ID from AG UI events (for log correlation)
+  /**
+   * Agent-emitted session id (e.g. Claude Code stamps `session.id` on every
+   * span of a run). Captured from the connector result and used as a precise
+   * per-run trace correlator (Strategy D) for agents that emit it but don't
+   * propagate W3C context or tag our `agent_health.run.id`.
+   */
+  sessionId?: string;
   logs?: OpenSearchLog[]; // OpenSearch logs for the run (master version)
   rawEvents?: any[]; // Raw AG UI events for debugging
   connectorProtocol?: ConnectorProtocol; // Protocol used to execute this run (for trajectory parsing)
+
+  // Per-matcher verdicts captured by the SDK during the test body
+  // execution. One entry per `expect(...).to.X(...)`, `judge(...)`, or
+  // traces helper invocation. UI consumers render this as a breakdown.
+  matcherResults?: import('../lib/matchers/types.js').MatcherResult[];
 
   // Server-side performance metrics (timing data from evaluation execution)
   performanceMetrics?: TestCasePerformanceMetrics;
@@ -241,7 +546,9 @@ export interface TestCaseVersion {
   createdAt: string;
 
   // Content fields (snapshot)
-  initialPrompt: string;
+  // initialPrompt is optional: code-based test cases without a prompt cause
+  // the runner to skip agent invocation entirely (deterministic-only tests).
+  initialPrompt?: string;
   context: AgentContextItem[];
   tools?: AgentToolDefinition[];
   expectedPPL?: string;
@@ -280,6 +587,10 @@ export interface TestCase {
   currentVersion: number;           // Latest version number
   versions: TestCaseVersion[];      // All versions (immutable history)
 
+  // Source provenance (code-imported test cases)
+  sourceFile?: string;              // Relative path: "evals/cybergym.eval.ts"
+  sourceHash?: string;              // SHA-256 of per-test-case content (for drift detection)
+
   // Metadata
   isPromoted: boolean;              // Available for experiments
   createdAt: string;
@@ -287,7 +598,9 @@ export interface TestCase {
   lastRunAt?: string;               // Timestamp of the most recent evaluation run
 
   // Current version content (convenience accessors - mirrors latest version)
-  initialPrompt: string;
+  // Optional because code-based test cases may have no prompt at all
+  // (deterministic-only tests where the runner skips agent invocation).
+  initialPrompt?: string;
   context: AgentContextItem[]; // AG-UI format context passed to agent
   tools?: AgentToolDefinition[]; // Tools available to the agent (client-provided)
   expectedPPL?: string; // Expected PPL query for validation
@@ -369,18 +682,49 @@ export interface TimeRange {
 export interface TraceQueryParams {
   traceId?: string;
   runIds?: string[];
+  sessionId?: string;  // Claude Code session.id — fetches all traces in a session
   startTime?: number;  // Unix timestamp ms
   endTime?: number;    // Unix timestamp ms
   size?: number;
   serviceName?: string;
   textSearch?: string;
   cursor?: string; // For pagination
+  /**
+   * Strategy C (opt-in): include any spans where `serviceName` matches AND
+   * `startTime` falls within `[startedAt, endedAt]`. Used by the run-report
+   * Traces tab as a fallback for agents that don't propagate W3C trace context
+   * (TRACEPARENT) and don't tag spans with `gen_ai.request.id` matching our
+   * runId. May surface unrelated spans (concurrent runs, cross-team noise).
+   * See AGENTS.md → Trace correlation conventions.
+   *
+   * Strategy D: when `sessionId` is set on an entry, correlate precisely on
+   * `attributes.session.id` (unioned with the service.name + window fallback).
+   */
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number; sessionId?: string }>;
+}
+
+export interface ConversationMessage {
+  id: string;
+  timestamp: string;
+  role: 'user' | 'assistant' | 'tool_call' | 'tool_result' | 'system';
+  content: string;
+  metadata?: {
+    spanId?: string;
+    spanName?: string;
+    toolName?: string;
+    model?: string;
+    inputTokens?: number;
+    outputTokens?: number;
+    durationMs?: number;
+  };
 }
 
 export interface TraceSearchResult {
   spans: Span[];
   total: number;
   warning?: string;
+  warningCategory?: 'auth' | 'connection' | 'index_not_found' | 'not_configured' | 'unknown';
+  suggestion?: string;
   nextCursor?: string | null;
   hasMore?: boolean;
 }
@@ -551,6 +895,8 @@ export interface StorageMetadata {
   realDataCount: number;
   /** Count of items from built-in sample data */
   sampleDataCount: number;
+  /** Whether sample/demo data was included in this response */
+  sampleDataIncluded?: boolean;
   /** Optional warning messages (e.g., connection errors) */
   warnings?: string[];
 }
@@ -593,6 +939,16 @@ export interface RunStats {
   failed: number;
   /** Number of test cases still pending (running, or report not yet available) */
   pending: number;
+  /**
+   * Number of test cases where the *evaluator* could not produce a verdict
+   * (e.g. judge validation error, trace polling timeout, post-trace callback
+   * failed). Excluded from `passed` and `failed` so a misconfigured evaluator
+   * doesn't silently poison aggregate pass rates.
+   *
+   * Optional for backward-compat: older stored runs predate this field and
+   * read as 0.
+   */
+  errored?: number;
   /** Total number of test cases in the run */
   total: number;
 }
@@ -632,7 +988,16 @@ export interface BenchmarkRun {
   // Configuration snapshot
   agentKey: string;                // Reference to AgentConfig.key
   agentEndpoint?: string;          // Override agent endpoint (optional)
-  modelId: string;                 // Model to use (also determines judge provider)
+  modelId: string;                 // Agent's LLM (passed to the connector)
+  /**
+   * Optional judge model id, distinct from {@link modelId} (the agent's
+   * LLM). Customer input via the run config dialog / CLI `--judge-model` /
+   * API. Falls back to `evaluator.inferenceConfig.modelId`, then the
+   * server-default Bedrock judge model. Ignored by agentic providers
+   * (`pi`, `agent`, `agentic`, `claude-code`) which pick their own model.
+   */
+  judgeModelId?: string;
+  evaluatorId?: string;            // Evaluator to use for judging (optional, defaults to RCA Default)
   headers?: Record<string, string>; // Custom headers
   concurrency?: number;              // Parallel test case execution limit (1 = sequential, default)
 
@@ -702,6 +1067,80 @@ export type ExperimentProgress = BenchmarkProgress;
 /** @deprecated Use BenchmarkStartedEvent instead */
 export type ExperimentStartedEvent = BenchmarkStartedEvent;
 
+// ============ Evaluation Run Types (Unified Run Architecture) ============
+
+/**
+ * Discriminator for documents in evals_benchmarks index.
+ * Legacy docs without this field default to 'benchmark' via normalization.
+ */
+export type EvalDocType = 'benchmark' | 'evaluation-run';
+
+/**
+ * Describes where test cases came from for an evaluation run.
+ * Multiple sources can be combined (union, deduplicated by test case ID).
+ */
+export type TestCaseSource =
+  | { type: 'benchmark'; benchmarkId: string; benchmarkVersion?: number }
+  | { type: 'test-case-ids'; ids: string[] }
+  | { type: 'file-import'; filenames: string[]; testCaseIds: string[] }
+  | { type: 'code-import'; filenames: string[]; testCaseIds: string[] }
+  | { type: 'directory-import'; dirPaths: string[]; testCaseIds: string[] }
+  | { type: 'label-filter'; labels: string[] };
+
+/**
+ * EvaluationRun — first-class execution record.
+ * Stored as top-level doc in evals_benchmarks index with docType: 'evaluation-run'.
+ * Replaces embedded BenchmarkRun as primary execution entity.
+ */
+export interface EvaluationRun {
+  id: string;
+  docType: 'evaluation-run';
+  name: string;
+  description?: string;
+  createdAt: string;
+  completedAt?: string;
+  status: BenchmarkRunStatus;
+  error?: string;
+
+  // Execution config
+  agentKey: string;
+  agentEndpoint?: string;
+  modelId: string;
+  /**
+   * Optional judge model id, distinct from {@link modelId} (the agent's
+   * LLM). Same precedence rules as on {@link BenchmarkRun.judgeModelId}.
+   */
+  judgeModelId?: string;
+  evaluatorId?: string;
+  headers?: Record<string, string>;
+  concurrency?: number;
+
+  // Provenance — where did the test cases come from?
+  sources: TestCaseSource[];
+  trigger: 'ui' | 'cli' | 'api' | 'schedule';
+
+  // Resolved test cases (snapshotted at execution time for reproducibility)
+  testCaseSnapshots: TestCaseSnapshot[];
+
+  // Results (testCaseId → individual result)
+  results: Record<string, {
+    reportId: string;
+    status: RunResultStatus;
+    error?: string;
+    performanceMetrics?: TestCasePerformanceMetrics;
+  }>;
+
+  // Denormalized stats
+  stats?: RunStats;
+
+  // Performance metrics
+  performanceMetrics?: RunPerformanceMetrics;
+
+  // Benchmark association (undefined for ad-hoc runs, set for benchmark runs)
+  benchmarkId?: string;
+  benchmarkVersion?: number;
+}
+
 // ============ Comparison Types ============
 
 // Test case version reference for detecting changes between runs in comparisons
@@ -721,6 +1160,8 @@ export interface RunAggregateMetrics {
   totalTestCases: number;
   passedCount: number;
   failedCount: number;
+  /** Test cases the evaluator couldn't verdict (#242); excluded from pass rate. */
+  erroredCount?: number;
   avgAccuracy: number;
   passRatePercent: number;
   // Trace metrics (optional - populated from metrics API)
@@ -738,6 +1179,15 @@ export interface TestCaseRunResult {
   reportId?: string;
   status: 'completed' | 'failed' | 'missing';
   passFailStatus?: PassFailStatus;
+  /**
+   * Issue #242: when the evaluator could not produce a verdict
+   * (`metricsStatus: 'error'` on the report), the comparison row carries
+   * this flag so MetricCell can render an amber `Errored` chip distinct
+   * from `Failed`. The legacy `passFailStatus` field on these reports is
+   * cleared (`null`), so without this flag the cell would silently fall
+   * through to `Failed` styling.
+   */
+  errored?: boolean;
   accuracy?: number;
   faithfulness?: number;
   trajectoryAlignment?: number;
@@ -765,7 +1215,7 @@ export interface TestCaseComparisonRow {
 
 // Derived type for creating new benchmark runs - stays in sync with BenchmarkRun
 export type RunConfigInput = Pick<BenchmarkRun,
-  'name' | 'description' | 'agentKey' | 'modelId' | 'agentEndpoint' | 'headers' | 'concurrency'
+  'name' | 'description' | 'agentKey' | 'modelId' | 'judgeModelId' | 'agentEndpoint' | 'headers' | 'concurrency' | 'evaluatorId'
 >;
 
 // ============ Server/API Types ============
@@ -791,7 +1241,10 @@ export interface ExpectedStep {
 export interface JudgeRequest {
   trajectory: TrajectoryStep[];
   expectedTrajectory: ExpectedStep[];
+  expectedOutcomes?: string[];
   logs?: OpenSearchLog[];
+  modelId?: string;                // Model to use for judging
+  evaluatorId?: string;            // Evaluator to use (optional, defaults to RCA Default)
 }
 
 export interface JudgeResponse {
@@ -817,6 +1270,7 @@ export interface StorageConfig {
     benchmarks: string;
     runs: string;
     analytics: string;
+    evaluators: string;
   };
 }
 
@@ -844,6 +1298,8 @@ export interface LogsResponse {
 export interface HealthStatus {
   status: 'ok' | 'error' | 'not_configured';
   error?: string;
+  errorCategory?: 'auth' | 'connection' | 'index_not_found' | 'unknown';
+  suggestion?: string;
   index?: string;
   cluster?: any;
 }
@@ -934,8 +1390,11 @@ export interface DataSourceConfig {
 
 /**
  * Adapter type for data sources
- * 'file' is the default (JSON files in agent-health-data/)
+ * 'file' is the default (JSON files in .agent-health/data/)
  * 'opensearch' when storage cluster is configured
  * 'memory' is for testing/demo
  */
 export type DataSourceAdapterType = 'file' | 'opensearch' | 'memory';
+
+// Skill evaluator types
+export * from './skills';

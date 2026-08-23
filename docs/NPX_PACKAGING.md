@@ -2,7 +2,7 @@
 
 ## Overview
 
-Package the AgentEval application as an NPX-runnable CLI tool. Agent and judge model selection is done in the UI.
+Package the Agent Health application as an NPX-runnable CLI tool. Agent and judge model selection is done in the UI.
 
 **Package name**: `@opensearch-project/agent-health`
 

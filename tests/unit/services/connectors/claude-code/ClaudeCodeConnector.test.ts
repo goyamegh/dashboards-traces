@@ -158,6 +158,24 @@ describe('ClaudeCodeConnector', () => {
       expect(progressSteps.length).toBeGreaterThan(0);
     });
 
+    it('captures session_id from stream-json and surfaces it as metadata.sessionId (#313)', async () => {
+      const request: ConnectorRequest = { testCase: mockTestCase, modelId: 'test-model' };
+
+      setTimeout(() => {
+        // Claude Code emits the session_id on its system/init event (and every
+        // subsequent event). It equals the `session.id` attribute on its OTel
+        // spans — captured for Strategy D trace correlation.
+        mockProcess.stdout.emit('data', Buffer.from(
+          '{"type":"system","subtype":"init","session_id":"sess-abc-123"}\n' +
+          '{"type":"assistant","message":{"content":[{"type":"text","text":"Hi"}]},"session_id":"sess-abc-123"}\n'
+        ));
+        mockProcess.emit('close', 0, null);
+      }, 10);
+
+      const result = await connector.execute('claude', request, mockAuth);
+      expect(result.metadata?.sessionId).toBe('sess-abc-123');
+    });
+
     it('should handle thinking blocks', async () => {
       const request: ConnectorRequest = {
         testCase: mockTestCase,
@@ -242,8 +260,10 @@ describe('ClaudeCodeConnector', () => {
       const progressSteps: TrajectoryStep[] = [];
 
       setTimeout(() => {
+        // Claude Code emits tool results as user-role messages with
+        // tool_result content blocks (not top-level tool_result events).
         mockProcess.stdout.emit('data', Buffer.from(
-          '{"type":"tool_result","content":"File contents here","is_error":false}\n'
+          '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"File contents here","is_error":false}]}}\n'
         ));
         mockProcess.emit('close', 0, null);
       }, 10);
@@ -269,7 +289,7 @@ describe('ClaudeCodeConnector', () => {
 
       setTimeout(() => {
         mockProcess.stdout.emit('data', Buffer.from(
-          '{"type":"tool_result","content":"Error message","is_error":true}\n'
+          '{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"Error message","is_error":true}]}}\n'
         ));
         mockProcess.emit('close', 0, null);
       }, 10);
@@ -607,6 +627,33 @@ describe('ClaudeCodeConnector', () => {
       const bedrockConnector = createBedrockClaudeCodeConnector();
 
       expect(bedrockConnector).toBeInstanceOf(ClaudeCodeConnector);
+    });
+
+    it('sets OTEL_LOG_USER_PROMPTS=1 by default when telemetry is enabled', () => {
+      const prev = { ...process.env };
+      process.env.CLAUDE_CODE_TELEMETRY_ENABLED = 'true';
+      process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://otlp.example/v1/traces';
+      delete process.env.OTEL_LOG_USER_PROMPTS;
+      try {
+        const env = (createBedrockClaudeCodeConnector() as any).config.env;
+        expect(env.CLAUDE_CODE_ENABLE_TELEMETRY).toBe('1');
+        expect(env.OTEL_LOG_USER_PROMPTS).toBe('1');
+      } finally {
+        process.env = prev;
+      }
+    });
+
+    it('honors an explicit OTEL_LOG_USER_PROMPTS opt-out', () => {
+      const prev = { ...process.env };
+      process.env.CLAUDE_CODE_TELEMETRY_ENABLED = 'true';
+      process.env.OTEL_EXPORTER_OTLP_ENDPOINT = 'https://otlp.example/v1/traces';
+      process.env.OTEL_LOG_USER_PROMPTS = '0';
+      try {
+        const env = (createBedrockClaudeCodeConnector() as any).config.env;
+        expect(env.OTEL_LOG_USER_PROMPTS).toBe('0');
+      } finally {
+        process.env = prev;
+      }
     });
   });
 

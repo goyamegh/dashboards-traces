@@ -7,7 +7,7 @@
  * TraceVisualization - Shared component for trace visualization
  *
  * Provides unified view switching between Timeline and Flow views.
- * Used by both TracesPage and RunDetailsContent.
+ * Used by AgentTracesPage and RunDetailsContent.
  */
 
 import React, { useState, useCallback, useEffect } from 'react';
@@ -21,6 +21,7 @@ import AgentMapView from './AgentMapView';
 import SpanDetailsPanel from './SpanDetailsPanel';
 import TraceInfoView from './TraceInfoView';
 import TraceStatsView from './TraceStatsView';
+import MessageHistoryView from './MessageHistoryView';
 
 interface TraceVisualizationProps {
   spanTree: Span[];
@@ -40,6 +41,10 @@ interface TraceVisualizationProps {
   onToggleExpand?: (spanId: string) => void;
   /** Optional Run ID to display in info view */
   runId?: string;
+  /** Flat spans for message extraction (messages view) */
+  flatSpans?: Span[];
+  /** Service name for message extraction heuristics */
+  serviceName?: string;
 }
 
 const TraceVisualization: React.FC<TraceVisualizationProps> = ({
@@ -55,6 +60,8 @@ const TraceVisualization: React.FC<TraceVisualizationProps> = ({
   expandedSpans: externalExpandedSpans,
   onToggleExpand: externalOnToggleExpand,
   runId,
+  flatSpans,
+  serviceName,
 }) => {
   // Internal state for view mode
   const [viewMode, setViewMode] = useState<ViewMode>(initialViewMode);
@@ -112,12 +119,19 @@ const TraceVisualization: React.FC<TraceVisualizationProps> = ({
     }
   }, [spanTree, externalExpandedSpans]);
 
-  // Auto-select first span when switching views or when no span is selected
+  // Auto-select the first span when switching views or when nothing is
+  // selected — but ONLY when this component owns its selection state
+  // (`externalSelectedSpan === undefined`, i.e. the standalone Traces page).
+  // When a parent CONTROLS selection (the comparison side-by-side shares ONE
+  // selectedSpan + onSelectSpan across BOTH run panels), each panel
+  // auto-selecting its own first span races through the shared setter — the
+  // second panel (run B) fires last and clobbers the deep-link span citation
+  // with run B's first span. The parent owns selection there, so leave it.
   useEffect(() => {
-    if (spanTree.length > 0 && !selectedSpan) {
+    if (externalSelectedSpan === undefined && spanTree.length > 0 && !selectedSpan) {
       setSelectedSpan(spanTree[0]);
     }
-  }, [viewMode, spanTree, selectedSpan, setSelectedSpan]);
+  }, [viewMode, spanTree, selectedSpan, setSelectedSpan, externalSelectedSpan]);
 
   // Sync view mode with external initial value when it changes
   useEffect(() => {
@@ -187,7 +201,9 @@ const TraceVisualization: React.FC<TraceVisualizationProps> = ({
 
       {/* View Content */}
       <div className="flex-1 overflow-hidden">
-        {viewMode === 'info' ? (
+        {viewMode === 'messages' ? (
+          <MessageHistoryView spans={flatSpans || spanTree} serviceName={serviceName} />
+        ) : viewMode === 'info' ? (
           /* Info view - trace overview and statistics */
           <div className="h-full w-full overflow-auto">
             <TraceInfoView spanTree={spanTree} runId={runId} />
@@ -271,6 +287,7 @@ const TraceVisualization: React.FC<TraceVisualizationProps> = ({
               ) : (
                 <TraceTreeTable
                   spanTree={spanTree}
+                  timeRange={timeRange}
                   selectedSpan={selectedSpan}
                   onSelect={setSelectedSpan}
                   expandedSpans={expandedSpans}
@@ -333,6 +350,7 @@ const TraceVisualization: React.FC<TraceVisualizationProps> = ({
             ) : (
               <TraceTreeTable
                 spanTree={spanTree}
+                timeRange={timeRange}
                 selectedSpan={selectedSpan}
                 onSelect={setSelectedSpan}
                 expandedSpans={expandedSpans}

@@ -23,6 +23,7 @@ import {
   CancellationToken,
 } from '../../../services/benchmarkRunner.js';
 import { convertTestCasesToExportFormat, generateExportFilename } from '../../../lib/benchmarkExport.js';
+import { resolveCodeFnMapForStoredTestCases } from '../../../services/sourceResolver.js';
 
 /**
  * Normalize benchmark data for legacy documents without version fields.
@@ -138,6 +139,7 @@ async function computeStatsForRun(
   let passed = 0;
   let failed = 0;
   let pending = 0;
+  let errored = 0;
   const total = Object.keys(run.results || {}).length;
 
   // Fetch reports to get passFailStatus
@@ -195,6 +197,14 @@ async function computeStatsForRun(
             return;
           }
 
+          // Evaluator could not produce a verdict (issue #242). Excluded
+          // from passed/failed so misconfigured evaluators don't poison
+          // aggregate pass rates.
+          if (report.metricsStatus === 'error') {
+            errored++;
+            return;
+          }
+
           if (report.passFailStatus === 'passed') {
             passed++;
           } else {
@@ -228,7 +238,7 @@ async function computeStatsForRun(
     });
   }
 
-  return { passed, failed, pending, total };
+  return { passed, failed, pending, errored, total };
 }
 
 /**
@@ -269,6 +279,16 @@ async function updateTestCaseResult(
 // Registry of active cancellation tokens for in-progress runs
 const activeRuns = new Map<string, CancellationToken>();
 
+/**
+ * Read-only accessor for the in-memory active-run registry. Used by
+ * `server/services/benchmarkRunRecoveryOnBoot.ts` to distinguish runs that
+ * are *actually* in-flight in this process from runs whose `status: 'running'`
+ * was orphaned by a previous restart.
+ */
+export function isRunActiveInThisProcess(runId: string): boolean {
+  return activeRuns.has(runId);
+}
+
 function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
@@ -294,8 +314,10 @@ function validateRunConfig(config: any): string | null {
   if (!config.agentKey || typeof config.agentKey !== 'string') {
     return 'agentKey is required and must be a string';
   }
-  if (!config.modelId || typeof config.modelId !== 'string') {
-    return 'modelId is required and must be a string';
+  // No `modelId` requirement: the agent's LLM comes from the agent's own
+  // connectorConfig (agent-health.config.ts), resolved by the runner.
+  if (config.modelId !== undefined && typeof config.modelId !== 'string') {
+    return 'modelId must be a string when provided';
   }
   if (config.concurrency !== undefined) {
     const c = Number(config.concurrency);
@@ -351,6 +373,12 @@ router.get('/api/storage/benchmarks', async (req: Request, res: Response) => {
       }
     }
 
+    // Determine whether to include sample data
+    const includeSampleParam = req.query.includeSample as string | undefined;
+    const shouldIncludeSample = includeSampleParam === 'true' ? true
+      : includeSampleParam === 'false' ? false
+      : realData.length === 0;
+
     // Sort real data by updatedAt descending (most recently modified first)
     // Falls back to createdAt if updatedAt is missing
     const sortedRealData = realData.sort((a, b) => {
@@ -360,11 +388,13 @@ router.get('/api/storage/benchmarks', async (req: Request, res: Response) => {
     });
 
     // Sort and normalize sample data by updatedAt descending
-    const sortedSampleData = [...SAMPLE_BENCHMARKS].map(normalizeBenchmark).sort((a, b) => {
-      const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime();
-      const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime();
-      return bTime - aTime;
-    });
+    const sortedSampleData = shouldIncludeSample
+      ? [...SAMPLE_BENCHMARKS].map(normalizeBenchmark).sort((a, b) => {
+          const aTime = new Date(a.updatedAt || a.createdAt || 0).getTime();
+          const bTime = new Date(b.updatedAt || b.createdAt || 0).getTime();
+          return bTime - aTime;
+        })
+      : [];
 
     // User data first, then sample data
     const allData = [...sortedRealData, ...sortedSampleData];
@@ -375,6 +405,7 @@ router.get('/api/storage/benchmarks', async (req: Request, res: Response) => {
       storageReachable,
       realDataCount: realData.length,
       sampleDataCount: sortedSampleData.length,
+      sampleDataIncluded: shouldIncludeSample,
       ...(warnings.length > 0 && { warnings }),
     };
 
@@ -968,6 +999,30 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
     // Handle client disconnect - execution continues in background
     req.on('close', () => {});
 
+    // SDK code-import: re-materialize the code test bodies (+ hooks/scopes)
+    // for any of this benchmark's test cases that came from a .eval.js/.ts
+    // file. Centralized in sourceResolver (#245/#246) so this route and the
+    // evaluation-runs route share one code-import resolution path.
+    let evaluateFnMap: Map<string, (fixtures: any) => Promise<void> | void> | undefined;
+    let hooksByFile: Map<string, import('../../../lib/testCases/types.js').RegisteredHook[]> | undefined;
+    let testHookScopes: Map<string, { sourceFile?: string; describePath?: string }> | undefined;
+    try {
+      // Re-fetch full test cases (incl. sourceFile) — the testCaseMap built
+      // earlier only carries (id, name) for performance.
+      const allFull = await getStorageModule().testCases.getAll({ size: 10000 });
+      const requested = new Set(benchmark.testCaseIds);
+      const fullTestCases = allFull.items.filter(tc => requested.has(tc.id));
+      const resolved = await resolveCodeFnMapForStoredTestCases(fullTestCases);
+      if (resolved.evaluateFnMap.size > 0) {
+        evaluateFnMap = resolved.evaluateFnMap;
+        console.log(`[StorageAPI] SDK fnMap built with ${resolved.evaluateFnMap.size} entries`);
+      }
+      if (resolved.hooksByFile.size > 0) hooksByFile = resolved.hooksByFile;
+      if (resolved.testHookScopes.size > 0) testHookScopes = resolved.testHookScopes;
+    } catch (err: any) {
+      console.warn(`[StorageAPI] SDK fn-map re-resolution failed (non-fatal): ${err.message}`);
+    }
+
     try {
       // Execute the run
       debug('StorageAPI', 'Starting executeRun for run:', run.id);
@@ -984,6 +1039,9 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
           cancellationToken,
           client,
           storageModule: storage,
+          evaluateFnMap,
+          hooksByFile,
+          testHookScopes,
           onTestCaseComplete: async (testCaseId, result) => {
             // Stream per-test-case result to the client
             const tc = testCaseMap.get(testCaseId);
@@ -993,6 +1051,7 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
             res.write(`data: ${JSON.stringify({
               type: 'progress',
               currentTestCaseIndex: completedCount - 1,
+              completedCount,
               totalTestCases: benchmark.testCaseIds.length,
               currentTestCase: { id: testCaseId, name: tc?.name || testCaseId },
               result: { status: result.status, error: result.error },

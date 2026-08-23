@@ -3,11 +3,15 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-jest.mock('fs');
+// Config v2: remoteConfig reads from layered runtime state, not a JSON file.
+jest.mock('@/lib/config/statePaths', () => ({
+  readLayeredState: jest.fn(() => ({})),
+}));
 
 import { getRemoteServers } from '@/server/services/codingAgents/remoteConfig';
+import { readLayeredState } from '@/lib/config/statePaths';
 
-const mockFs = jest.requireMock('fs') as jest.Mocked<typeof import('fs')>;
+const mockReadLayeredState = readLayeredState as jest.Mock;
 
 describe('remoteConfig', () => {
   beforeAll(() => {
@@ -21,95 +25,60 @@ describe('remoteConfig', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockReadLayeredState.mockReturnValue({});
   });
 
   describe('getRemoteServers', () => {
-    it('should return empty array when config file does not exist', () => {
-      mockFs.existsSync.mockReturnValue(false);
-
-      const result = getRemoteServers();
-
-      expect(result).toEqual([]);
-      expect(mockFs.readFileSync).not.toHaveBeenCalled();
+    it('returns empty array when there is no runtime state (or code-first → {})', () => {
+      mockReadLayeredState.mockReturnValue({});
+      expect(getRemoteServers()).toEqual([]);
     });
 
-    it('should return empty array when config has no remoteServers key', () => {
-      mockFs.existsSync.mockReturnValue(true);
-      mockFs.readFileSync.mockReturnValue(JSON.stringify({ agents: [] }));
-
-      const result = getRemoteServers();
-
-      expect(result).toEqual([]);
+    it('returns empty array when state has no remoteServers key', () => {
+      mockReadLayeredState.mockReturnValue({ agents: [] });
+      expect(getRemoteServers()).toEqual([]);
     });
 
-    it('should return servers when config has valid remoteServers', () => {
+    it('returns servers when state has valid remoteServers', () => {
       const servers = [
         { name: 'server-1', url: 'http://localhost:4002' },
         { name: 'server-2', url: 'http://localhost:4003' },
       ];
-      mockFs.existsSync.mockReturnValue(true);
-      mockFs.readFileSync.mockReturnValue(
-        JSON.stringify({ remoteServers: servers })
-      );
-
-      const result = getRemoteServers();
-
-      expect(result).toEqual(servers);
+      mockReadLayeredState.mockReturnValue({ remoteServers: servers });
+      expect(getRemoteServers()).toEqual(servers);
     });
 
-    it('should filter out entries missing name', () => {
-      const servers = [
-        { url: 'http://localhost:4002' },
-        { name: 'valid', url: 'http://localhost:4003' },
-      ];
-      mockFs.existsSync.mockReturnValue(true);
-      mockFs.readFileSync.mockReturnValue(
-        JSON.stringify({ remoteServers: servers })
-      );
-
-      const result = getRemoteServers();
-
-      expect(result).toEqual([{ name: 'valid', url: 'http://localhost:4003' }]);
+    it('filters out entries missing name', () => {
+      mockReadLayeredState.mockReturnValue({
+        remoteServers: [
+          { url: 'http://localhost:4002' },
+          { name: 'valid', url: 'http://localhost:4003' },
+        ],
+      });
+      expect(getRemoteServers()).toEqual([{ name: 'valid', url: 'http://localhost:4003' }]);
     });
 
-    it('should filter out entries missing url', () => {
-      const servers = [
-        { name: 'no-url' },
-        { name: 'valid', url: 'http://localhost:4003' },
-      ];
-      mockFs.existsSync.mockReturnValue(true);
-      mockFs.readFileSync.mockReturnValue(
-        JSON.stringify({ remoteServers: servers })
-      );
-
-      const result = getRemoteServers();
-
-      expect(result).toEqual([{ name: 'valid', url: 'http://localhost:4003' }]);
+    it('filters out entries missing url', () => {
+      mockReadLayeredState.mockReturnValue({
+        remoteServers: [
+          { name: 'no-url' },
+          { name: 'valid', url: 'http://localhost:4003' },
+        ],
+      });
+      expect(getRemoteServers()).toEqual([{ name: 'valid', url: 'http://localhost:4003' }]);
     });
 
-    it('should return empty array on JSON parse error', () => {
-      mockFs.existsSync.mockReturnValue(true);
-      mockFs.readFileSync.mockReturnValue('not valid json {{{');
-
-      const result = getRemoteServers();
-
-      expect(result).toEqual([]);
+    it('returns empty array when remoteServers is not an array', () => {
+      mockReadLayeredState.mockReturnValue({ remoteServers: 'nope' });
+      expect(getRemoteServers()).toEqual([]);
     });
 
-    it('should include apiKey when present', () => {
+    it('includes apiKey when present', () => {
       const servers = [
         { name: 'secure-server', url: 'http://localhost:4002', apiKey: 'secret-token' },
       ];
-      mockFs.existsSync.mockReturnValue(true);
-      mockFs.readFileSync.mockReturnValue(
-        JSON.stringify({ remoteServers: servers })
-      );
-
-      const result = getRemoteServers();
-
-      expect(result).toEqual([
-        { name: 'secure-server', url: 'http://localhost:4002', apiKey: 'secret-token' },
-      ]);
+      mockReadLayeredState.mockReturnValue({ remoteServers: servers });
+      expect(getRemoteServers()).toEqual(servers);
     });
   });
 });

@@ -14,7 +14,7 @@
 import { Router, Request, Response } from 'express';
 import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middleware/storageClient.js';
 import { INDEX_MAPPINGS } from '../../constants/indexMappings';
-import { getStorageModule, testStorageConnection, isFileStorage, setStorageModule, getStorageState, OpenSearchStorageModule, FileStorageModule } from '../../adapters/index.js';
+import { getStorageModule, testStorageConnection, isFileStorage, setStorageModule, getStorageState, OpenSearchStorageModule, FileStorageModule, FileSessionMetadataOperations } from '../../adapters/index.js';
 import type { StorageState } from '../../adapters/index.js';
 import { resolveStorageConfig } from '../../middleware/dataSourceConfig.js';
 import { createOpenSearchClient, configToCacheKey } from '../../services/opensearchClientFactory.js';
@@ -25,12 +25,14 @@ import { initializeStorageFromConfig } from '../../services/storageInitializer.j
 import {
   getConfigStatus,
   getStorageConfigFromFile,
+  getStorageConfigFromTs,
   saveStorageConfig,
   saveObservabilityConfig,
   clearStorageConfig,
   clearObservabilityConfig,
 } from '../../services/configService.js';
 import { getStorageConfigFromEnv } from '../../middleware/dataSourceConfig.js';
+import { isCodeFirstMode } from '@/lib/config/statePaths';
 
 const router = Router();
 
@@ -81,10 +83,27 @@ router.get('/api/storage/health', async (req: Request, res: Response) => {
 // ============================================================================
 
 /**
+ * Normalize an endpoint URL for safe comparison: trims trailing slashes and
+ * lowercases the value. Returns undefined for empty/missing inputs.
+ */
+function normalizeEndpoint(value: string | undefined | null): string | undefined {
+  if (!value) return undefined;
+  return value.trim().replace(/\/+$/, '').toLowerCase();
+}
+
+/**
  * POST /api/storage/test-connection
- * Test connection to a storage cluster with provided credentials
- * Falls back to env vars for any missing fields
- * Body: { endpoint, username?, password?, tlsSkipVerify? }
+ * Test connection to a storage cluster with provided credentials.
+ *
+ * Credential resolution order: request body → file config → TS config → env vars.
+ *
+ * Stored credentials (file config / TS config / env vars) are only used as fallbacks when
+ * the request `endpoint` matches the corresponding configured endpoint. This
+ * prevents sending saved credentials to an arbitrary endpoint specified in the
+ * request body (credential exfiltration). Callers wanting to test a different
+ * endpoint must provide credentials explicitly in the request body.
+ *
+ * Body: { endpoint, username?, password?, tlsSkipVerify?, authType?, awsProfile?, awsRegion?, awsService? }
  */
 router.post('/api/storage/test-connection', async (req: Request, res: Response) => {
   try {
@@ -94,15 +113,29 @@ router.post('/api/storage/test-connection', async (req: Request, res: Response) 
       return res.status(400).json({ status: 'error', message: 'Endpoint is required' });
     }
 
+    // Only fall back to stored credentials when the request endpoint matches
+    // the configured endpoint, to avoid forwarding saved creds to other hosts.
+    const fileConfig = getStorageConfigFromFile();
+    const tsConfig = getStorageConfigFromTs();
+    const envEndpoint = process.env.OPENSEARCH_STORAGE_ENDPOINT;
+    const reqNorm = normalizeEndpoint(endpoint);
+    const fileMatches = !!(fileConfig?.endpoint && normalizeEndpoint(fileConfig.endpoint) === reqNorm);
+    const tsMatches = !!(tsConfig?.endpoint && normalizeEndpoint(tsConfig.endpoint) === reqNorm);
+    const envMatches = !!(envEndpoint && normalizeEndpoint(envEndpoint) === reqNorm);
+
+    const safeFile = fileMatches ? fileConfig : null;
+    const safeTs = tsMatches ? tsConfig : null;
+    const useEnv = envMatches;
+
     const result = await testStorageConnection({
       endpoint,
-      authType: authType ?? process.env.OPENSEARCH_STORAGE_AUTH_TYPE,
-      username: username ?? process.env.OPENSEARCH_STORAGE_USERNAME,
-      password: password ?? process.env.OPENSEARCH_STORAGE_PASSWORD,
-      awsProfile: awsProfile ?? process.env.OPENSEARCH_STORAGE_AWS_PROFILE,
-      awsRegion: awsRegion ?? process.env.OPENSEARCH_STORAGE_AWS_REGION,
-      awsService: awsService ?? process.env.OPENSEARCH_STORAGE_AWS_SERVICE,
-      tlsSkipVerify: tlsSkipVerify ?? (process.env.OPENSEARCH_STORAGE_TLS_SKIP_VERIFY === 'true'),
+      authType: authType ?? safeFile?.authType ?? safeTs?.authType ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AUTH_TYPE : undefined),
+      username: username ?? safeFile?.username ?? safeTs?.username ?? (useEnv ? process.env.OPENSEARCH_STORAGE_USERNAME : undefined),
+      password: password ?? safeFile?.password ?? safeTs?.password ?? (useEnv ? process.env.OPENSEARCH_STORAGE_PASSWORD : undefined),
+      awsProfile: awsProfile ?? safeFile?.awsProfile ?? safeTs?.awsProfile ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_PROFILE : undefined),
+      awsRegion: awsRegion ?? safeFile?.awsRegion ?? safeTs?.awsRegion ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_REGION : undefined),
+      awsService: awsService ?? safeFile?.awsService ?? safeTs?.awsService ?? (useEnv ? process.env.OPENSEARCH_STORAGE_AWS_SERVICE : undefined),
+      tlsSkipVerify: tlsSkipVerify ?? safeFile?.tlsSkipVerify ?? safeTs?.tlsSkipVerify ?? (useEnv ? (process.env.OPENSEARCH_STORAGE_TLS_SKIP_VERIFY === 'true') : undefined),
     });
     res.json(result);
   } catch (error: any) {
@@ -287,10 +320,22 @@ router.get('/api/storage/config/status', (req: Request, res: Response) => {
  */
 router.post('/api/storage/config/storage', async (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
     const { endpoint, username, password, tlsSkipVerify, authType, awsProfile, awsRegion, awsService } = req.body;
 
     if (!endpoint) {
       return res.status(400).json({ error: 'Endpoint is required' });
+    }
+
+    // Finding-2 guard: reject an unrecognized authType up front with a clear
+    // 400 (instead of a deferred opaque connection error) so the Settings UI
+    // gives immediate, actionable feedback.
+    if (authType !== undefined && authType !== 'none' && authType !== 'basic' && authType !== 'sigv4') {
+      return res.status(400).json({
+        error: `Invalid authType '${authType}'. Expected 'sigv4', 'basic', or 'none' (use 'sigv4' for AWS OpenSearch).`,
+      });
     }
 
     saveStorageConfig({ endpoint, username, password, tlsSkipVerify, authType, awsProfile, awsRegion, awsService });
@@ -315,7 +360,7 @@ router.post('/api/storage/config/storage', async (req: Request, res: Response) =
       error: null,
       configuredEndpoint: endpoint,
     };
-    setStorageModule(new OpenSearchStorageModule(client), state);
+    setStorageModule(new OpenSearchStorageModule(client, new FileSessionMetadataOperations()), state);
 
     const hasFixFailures = setupResult.fixResults?.some((f) => f.status === 'failed') ?? false;
     const hadIssues = setupResult.validationResults.some((r) => r.status === 'needs_reindex');
@@ -397,10 +442,21 @@ router.post(
  */
 router.post('/api/storage/config/observability', (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
     const { endpoint, username, password, tlsSkipVerify, indexes, authType, awsProfile, awsRegion, awsService } = req.body;
 
     if (!endpoint) {
       return res.status(400).json({ error: 'Endpoint is required' });
+    }
+
+    // Same authType guard as the storage route — reject an unrecognized value
+    // up front (400) instead of persisting it and failing later as a 500.
+    if (authType !== undefined && authType !== 'none' && authType !== 'basic' && authType !== 'sigv4') {
+      return res.status(400).json({
+        error: `Invalid authType '${authType}'. Expected 'sigv4', 'basic', or 'none' (use 'sigv4' for AWS OpenSearch).`,
+      });
     }
 
     saveObservabilityConfig({ endpoint, username, password, tlsSkipVerify, indexes, authType, awsProfile, awsRegion, awsService });
@@ -417,6 +473,9 @@ router.post('/api/storage/config/observability', (req: Request, res: Response) =
  */
 router.delete('/api/storage/config/storage', (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
     clearStorageConfig();
     const state: StorageState = {
       backend: 'file',
@@ -439,7 +498,7 @@ router.delete('/api/storage/config/storage', (req: Request, res: Response) => {
  */
 router.post('/api/storage/config/retry', async (req: Request, res: Response) => {
   try {
-    const config = getStorageConfigFromFile() ?? getStorageConfigFromEnv() ?? null;
+    const config = getStorageConfigFromFile() ?? getStorageConfigFromTs() ?? getStorageConfigFromEnv() ?? null;
     const state = await initializeStorageFromConfig(config);
     res.json({
       success: state.backend !== 'error',
@@ -478,10 +537,65 @@ router.post('/api/storage/config/use-file-storage', (req: Request, res: Response
  */
 router.delete('/api/storage/config/observability', (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      return res.status(409).json({ error: 'Data sources are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+    }
     clearObservabilityConfig();
     res.json({ success: true, message: 'Observability configuration cleared' });
   } catch (error: any) {
     console.error('[StorageAPI] Failed to clear observability config:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/storage/admin/recover-orphan-benchmark-runs
+ *
+ * Test-only endpoint: invokes the same boot-recovery logic that runs in
+ * `server/index.ts` after `app.listen()`. Used by integration tests to
+ * exercise the recovery path against the real storage backend without
+ * needing to restart the server (or to dynamically import the OpenSearch
+ * client from inside Jest, which fails under CJS transform).
+ *
+ * Gated behind `AGENT_HEALTH_TEST_ENDPOINTS=1` so it cannot be triggered
+ * accidentally in production.
+ */
+router.post('/api/storage/admin/recover-orphan-benchmark-runs', async (req: Request, res: Response) => {
+  if (process.env.AGENT_HEALTH_TEST_ENDPOINTS !== '1') {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  try {
+    const storage = getStorageModule();
+    if (!storage) {
+      return res.status(503).json({ error: 'Storage not initialized' });
+    }
+    const { recoverOrphanBenchmarkRuns } = await import('../../services/benchmarkRunRecoveryOnBoot.js');
+    const stat = await recoverOrphanBenchmarkRuns(storage);
+    res.json(stat);
+  } catch (error: any) {
+    console.error('[StorageAPI] recover-orphan-benchmark-runs failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * POST /api/storage/admin/resume-pending-trace-polls
+ * Sister test-only endpoint for the trace-recovery boot hook.
+ */
+router.post('/api/storage/admin/resume-pending-trace-polls', async (req: Request, res: Response) => {
+  if (process.env.AGENT_HEALTH_TEST_ENDPOINTS !== '1') {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  try {
+    const storage = getStorageModule();
+    if (!storage) {
+      return res.status(503).json({ error: 'Storage not initialized' });
+    }
+    const { resumePendingTracePolls } = await import('../../services/traceRecoveryOnBoot.js');
+    const stat = await resumePendingTracePolls(storage);
+    res.json(stat);
+  } catch (error: any) {
+    console.error('[StorageAPI] resume-pending-trace-polls failed:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

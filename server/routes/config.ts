@@ -13,11 +13,12 @@
 
 import { Router, Request, Response } from 'express';
 import { loadConfigSync } from '@/lib/config/index';
-import type { AgentConfig, ModelConfig, ConnectorProtocol } from '@/types/index.js';
+import type { AgentConfig, ModelConfig } from '@/types/index.js';
+import { VALID_CONNECTOR_TYPES, BUILT_IN_AGENT_KEYS } from '@/lib/constants';
 import { addCustomAgent, removeCustomAgent, getCustomAgents } from '@/server/services/customAgentStore';
 import { getRemoteServers } from '@/server/services/codingAgents/remoteConfig';
-import fs from 'fs';
-import path from 'path';
+import { getObservioPort, waitForObservioReady } from '@/server/services/observioAgent';
+import { readLayeredState, writeStateScope, isCodeFirstMode } from '@/lib/config/statePaths';
 
 const router = Router();
 
@@ -44,17 +45,54 @@ function validateEndpointUrl(url: string): string | null {
  * with any custom agents added via the UI.
  * Used by CLI `list agents` command and frontend refreshConfig().
  */
-router.get('/api/agents', (req: Request, res: Response) => {
+router.get('/api/agents', async (req: Request, res: Response) => {
   try {
     const config = loadConfigSync();
-    // Strip hooks (functions can't be serialized to JSON)
-    const configAgents = config.agents.map(({ hooks, ...rest }) => rest);
-    const customAgents = getCustomAgents();
-    const agents = [...configAgents, ...customAgents];
+    // Wait for observio to report its port (non-blocking if already known, 10s timeout)
+    await waitForObservioReady();
+    // Strip hooks (functions can't be serialized to JSON) and mark builtIn
+    const configAgents = config.agents.map(({ hooks, ...rest }) => {
+      // Patch observio endpoint with actual port (may have auto-incremented)
+      // Only patch when endpoint points to localhost — respect explicit remote overrides
+      if (rest.key === 'observio' && rest.endpoint) {
+        try {
+          const url = new URL(rest.endpoint);
+          if (url.hostname === 'localhost' || url.hostname === '127.0.0.1') {
+            const actualPort = getObservioPort();
+            url.port = String(actualPort);
+            return { ...rest, endpoint: url.toString(), builtIn: BUILT_IN_AGENT_KEYS.has(rest.key) && !rest.isCustom };
+          }
+        } catch { /* invalid URL — leave endpoint unchanged */ }
+      }
+      return { ...rest, builtIn: BUILT_IN_AGENT_KEYS.has(rest.key) && !rest.isCustom };
+    });
+    const customAgents = getCustomAgents().map(agent => ({
+      ...agent,
+      builtIn: false,
+    }));
+
+    let agents = [...configAgents, ...customAgents];
+
+    // Support optional ?filter=custom|builtin query param
+    const filter = req.query?.filter as string | undefined;
+    if (filter === 'custom') {
+      agents = agents.filter(a => !a.builtIn);
+    } else if (filter === 'builtin') {
+      agents = agents.filter(a => a.builtIn);
+    }
+
+    const allAgents = [...configAgents, ...customAgents];
+    const builtInCount = allAgents.filter(a => a.builtIn).length;
+    const customCount = allAgents.filter(a => !a.builtIn).length;
     res.json({
       agents,
       total: agents.length,
-      meta: { source: 'config' },
+      meta: {
+        source: 'config',
+        hasCustomAgents: customCount > 0,
+        customCount,
+        builtInCount,
+      },
     });
   } catch (error: any) {
     console.error('[ConfigAPI] List agents failed:', error.message);
@@ -62,14 +100,7 @@ router.get('/api/agents', (req: Request, res: Response) => {
   }
 });
 
-const VALID_CONNECTOR_TYPES: ConnectorProtocol[] = [
-  'agui-streaming',
-  'rest',
-  'openai-compatible',
-  'subprocess',
-  'claude-code',
-  'mock',
-];
+// VALID_CONNECTOR_TYPES imported from @/lib/constants (single source of truth)
 
 /**
  * POST /api/agents/custom - Add a custom agent endpoint
@@ -170,24 +201,14 @@ router.get('/api/models', (req: Request, res: Response) => {
 // Remote Servers
 // ============================================================================
 
-const CONFIG_FILENAME = 'agent-health.config.json';
-
+/** Read layered runtime state (project over user; {} in code-first mode). */
 function readJsonConfig(): Record<string, unknown> {
-  const filePath = path.join(process.cwd(), CONFIG_FILENAME);
-  if (!fs.existsSync(filePath)) return {};
-  try {
-    return JSON.parse(fs.readFileSync(filePath, 'utf-8'));
-  } catch {
-    return {};
-  }
+  return readLayeredState();
 }
 
+/** Persist remoteServers to the project state file. Throws in code-first mode. */
 function writeJsonConfig(config: Record<string, unknown>): void {
-  fs.writeFileSync(
-    path.join(process.cwd(), CONFIG_FILENAME),
-    JSON.stringify(config, null, 2) + '\n',
-    'utf-8',
-  );
+  writeStateScope({ remoteServers: config.remoteServers }, 'project');
 }
 
 /**
@@ -214,6 +235,10 @@ router.get('/api/remote-servers', (_req: Request, res: Response) => {
  */
 router.post('/api/remote-servers', (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      res.status(409).json({ error: 'Remote servers are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+      return;
+    }
     const { name, url, apiKey } = req.body || {};
     if (!name || typeof name !== 'string' || !name.trim()) {
       res.status(400).json({ error: 'name is required' });
@@ -256,6 +281,10 @@ router.post('/api/remote-servers', (req: Request, res: Response) => {
  */
 router.delete('/api/remote-servers/:name', (req: Request, res: Response) => {
   try {
+    if (isCodeFirstMode()) {
+      res.status(409).json({ error: 'Remote servers are managed by agent-health.config.ts (code-first mode). Edit the config file and restart.' });
+      return;
+    }
     const { name } = req.params;
     const config = readJsonConfig();
     const servers = Array.isArray(config.remoteServers) ? config.remoteServers as any[] : [];

@@ -10,10 +10,13 @@
 
 import { existsSync } from 'fs';
 import { resolve, join } from 'path';
+import { projectStatePath, userStatePath } from './statePaths.js';
+import { logStartupDiagnostic } from '@/lib/diagnostics';
 import { pathToFileURL } from 'url';
 import type { AgentConfig, ModelConfig } from '@/types';
 import type { AgentConnector } from '@/services/connectors/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
+import { DEFAULT_BACKEND_PORT, resolveBackendPort } from '@/lib/portConfig';
 import type {
   UserConfig,
   UserAgentConfig,
@@ -31,7 +34,7 @@ import type {
  * Follows Playwright's webServer pattern
  */
 export const DEFAULT_SERVER_CONFIG: ResolvedServerConfig = {
-  port: 4001,
+  port: resolveBackendPort(),
   reuseExistingServer: !process.env.CI,
   startTimeout: 30000,
 };
@@ -44,6 +47,17 @@ const CONFIG_FILE_NAMES = [
   'agent-health.config.js',
   'agent-health.config.mjs',
 ];
+
+/**
+ * Runtime state file (config v2: `.agent-health/state.json`, user or project
+ * scope). Loaded by the *server services* (configService, customAgentStore,
+ * dataSourceConfig), not by this loader. We only probe for it so the startup
+ * log can tell the user whether on-disk runtime state is in effect (ui-first
+ * mode) instead of saying "No config file found".
+ */
+export function hasServerJsonConfig(cwd: string = process.cwd()): boolean {
+  return existsSync(projectStatePath(cwd)) || existsSync(userStatePath());
+}
 
 /**
  * Find config file in the given directory
@@ -172,6 +186,10 @@ function mergeConfigs(
     reporters,
     judge,
     telemetry,
+    // Cluster config authored in TS. Passed through verbatim; the server
+    // resolves it against JSON/env at startup (see resolveStorageConfig).
+    storage: userConfig.storage,
+    observability: userConfig.observability,
   };
 }
 
@@ -220,11 +238,20 @@ export async function loadConfig(
   let userConfig: UserConfig = {};
 
   if (configFile) {
-    console.log(`[Config] Loading ${configFile.path}`);
+    logStartupDiagnostic(`[Config] Loading ${configFile.path}`);
     userConfig = await loadUserConfig(configFile.path);
+  } else if (hasServerJsonConfig(cwd)) {
+    // Code config absent, but server-side JSON config present — it's loaded
+    // by separate server services (storage / observability / custom agents).
+    // Be explicit so the user doesn't think *no* config is in effect.
+    logStartupDiagnostic(
+      `[Config] No code config (agent-health.config.{ts,js,mjs}); ` +
+      `runtime state (.agent-health/state.json) detected and loaded by server ` +
+      `services (ui-first mode). Using built-in defaults for agents/models.`,
+    );
   } else {
-    // No config file is fine - env vars and defaults are used
-    console.log('[Config] No config file found, using defaults + environment variables');
+    // Truly no config file — env vars and built-in defaults only.
+    logStartupDiagnostic('[Config] No config file found, using defaults + environment variables');
   }
 
   // Merge with defaults
@@ -234,7 +261,7 @@ export async function loadConfig(
   cachedConfig = resolved;
   cachedConfigPath = configFile?.path ?? null;
 
-  console.log(`[Config] Loaded ${resolved.agents.length} agents, ${Object.keys(resolved.models).length} models`);
+  logStartupDiagnostic(`[Config] Loaded ${resolved.agents.length} agents, ${Object.keys(resolved.models).length} models`);
 
   return resolved;
 }
@@ -259,6 +286,8 @@ export function loadConfigSync(cwd: string = process.cwd()): ResolvedConfig {
     reporters: [['console']],
     judge: { provider: 'bedrock', model: 'claude-sonnet-4' },
     telemetry: {},
+    storage: undefined,
+    observability: undefined,
   };
 }
 

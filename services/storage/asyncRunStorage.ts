@@ -60,6 +60,35 @@ interface TraceModeFields {
 }
 
 /**
+ * Coerce a stored metrics object — which may contain any subset of dynamic
+ * metric names (driven by the evaluator's `scoringConfig.metrics`) — into
+ * the app-side `EvaluationMetrics` shape.
+ *
+ * Two important guarantees:
+ *   1. **Preserves all numeric metric names**, not just the four legacy ones
+ *      (accuracy / faithfulness / latency_score / trajectory_alignment_score).
+ *      Custom and non-RCA system evaluators emit names like
+ *      `tool_selection_accuracy`, `reasoning_coherence`, `bias_detection`, etc.
+ *   2. **Distinguishes "missing" from "zero"**. Previously the read-side
+ *      whitelist defaulted every missing field to `0`, which made the runs
+ *      list show `0%` for every run that didn't happen to have an `accuracy`
+ *      metric — even runs the judge had passed. Missing entries are now
+ *      simply absent (so UI consumers can render `—` instead of fabricated 0).
+ */
+function storedMetricsToApp(
+  raw: Record<string, unknown> | undefined,
+): TestCaseRun['metrics'] {
+  const out: Record<string, number> = {};
+  if (!raw || typeof raw !== 'object') return out;
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+/**
  * Convert OpenSearch storage format to app TestCaseRun format
  */
 function toTestCaseRun(stored: StorageRun): TestCaseRun {
@@ -75,24 +104,38 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
 
   return {
     id: stored.id,
+    name: (stored as any).name,
+    description: (stored as any).description,
     timestamp: stored.createdAt,
     testCaseId: stored.testCaseId,
     testCaseVersion: parseInt(stored.testCaseVersionId?.split('-v')[1] || '1'),
     experimentId: stored.experimentId || undefined,
     experimentRunId: stored.experimentRunId || undefined,
-    agentName: stored.agentId,
+    agentName: (stored as any).agentName || stored.agentId,
     agentKey: stored.agentId,
     modelName: stored.modelId,
     modelId: stored.modelId,
+    // Judge model used for this run (PR #390 persists it). Without this
+    // mapping, browser-side trace-recovery judging silently fell back to the
+    // agent's modelId even when a distinct judge model was configured.
+    judgeModelId: (stored as any).judgeModelId,
     status: stored.status,
     passFailStatus: stored.passFailStatus as 'passed' | 'failed' | undefined,
+    evaluatorId: (stored as any).evaluatorId,
     trajectory: (stored.trajectory || []) as TrajectoryStep[],
-    metrics: {
-      accuracy: stored.metrics?.accuracy || 0,
-      faithfulness: stored.metrics?.faithfulness || 0,
-      latency_score: stored.metrics?.latency_score || 0,
-      trajectory_alignment_score: stored.metrics?.trajectory_alignment_score || 0,
-    },
+    // Preserve every metric the judge emitted, not just the four legacy keys.
+    // Custom evaluators (and even system evaluators other than RCA Default)
+    // produce dynamic metric names like `tool_selection_accuracy` or
+    // `reasoning_coherence`; the previous shape whitelisted only
+    // accuracy/faithfulness/latency_score/trajectory_alignment_score and
+    // — worse — collapsed missing values to `0` via `|| 0`, which made
+    // every run look like it had scored zero in the runs list.
+    //
+    // We spread the stored object directly and only filter out non-numeric
+    // entries so the resulting shape matches `EvaluationMetrics`'s
+    // `[key: string]: number | undefined` index signature without leaking
+    // surprise types into downstream consumers.
+    metrics: storedMetricsToApp(stored.metrics as Record<string, unknown> | undefined),
     llmJudgeReasoning: stored.llmJudgeReasoning || '',
     annotations: (stored.annotations || []).map(ann => ({
       id: ann.id,
@@ -103,9 +146,17 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
       author: ann.author,
     })),
     runId: stored.traceId || (stored as any).runId,
+    // Preserve the OTel traceId as its OWN field (distinct from runId). The
+    // comparison Traces tab correlates spans by report.traceId (Strategy A);
+    // without this it was always undefined here — mapped into runId only — so
+    // agents that emit their own trace (pi) / Claude Code never showed traces.
+    traceId: (stored as any).traceId,
+    sessionId: (stored as any).sessionId,
     rawEvents: stored.rawEvents as any[] | undefined,
     logs: (stored.logs || []) as OpenSearchLog[],
     improvementStrategies: stored.improvementStrategies as any[] | undefined,
+    // Per-matcher verdicts captured by the SDK during the test body
+    matcherResults: (stored as any).matcherResults as any[] | undefined,
     // Trace-mode fields
     metricsStatus: storedAny.metricsStatus as 'pending' | 'calculating' | 'ready' | 'error' | undefined,
     traceFetchAttempts: storedAny.traceFetchAttempts,
@@ -121,6 +172,8 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
  */
 function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'createdAt' | 'annotations'> & Partial<TraceModeFields> {
   const base: Omit<StorageRun, 'id' | 'createdAt' | 'annotations'> & Partial<TraceModeFields> = {
+    name: report.name,
+    description: report.description,
     experimentId: '', // Storage field for benchmarkId (name preserved for data compatibility)
     experimentRunId: '', // Storage field for benchmarkRunId (name preserved for data compatibility)
     testCaseId: report.testCaseId,
@@ -134,12 +187,13 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
     tags: [],
     actualOutcomes: [],
     llmJudgeReasoning: report.llmJudgeReasoning,
-    metrics: {
-      accuracy: report.metrics.accuracy,
-      faithfulness: report.metrics.faithfulness,
-      latency_score: report.metrics.latency_score,
-      trajectory_alignment_score: report.metrics.trajectory_alignment_score,
-    },
+    // Pass the full dynamic metrics object through. Whitelisting fixed names
+    // here used to silently drop any metric the evaluator emitted that wasn't
+    // one of the four legacy keys (accuracy/faithfulness/latency_score/
+    // trajectory_alignment_score), making per-evaluator scores invisible in
+    // listing pages. The OpenSearch index uses dynamic mapping under
+    // `metrics`, so arbitrary numeric fields are accepted by the cluster.
+    metrics: report.metrics as StorageRun['metrics'],
     trajectory: report.trajectory,
     rawEvents: report.rawEvents,
     logs: report.logs || report.openSearchLogs,
@@ -148,11 +202,14 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
 
   // Add trace-mode fields if present
   if (report.metricsStatus !== undefined) base.metricsStatus = report.metricsStatus;
+  if ((report as any).sessionId !== undefined) (base as any).sessionId = (report as any).sessionId;
   if (report.traceFetchAttempts !== undefined) base.traceFetchAttempts = report.traceFetchAttempts;
   if (report.lastTraceFetchAt !== undefined) base.lastTraceFetchAt = report.lastTraceFetchAt;
   if (report.traceError !== undefined) base.traceError = report.traceError;
   if (report.spans !== undefined) base.spans = report.spans;
   if (report.connectorProtocol !== undefined) base.connectorProtocol = report.connectorProtocol;
+  // SDK matcher verdicts: persist alongside the report
+  if (report.matcherResults !== undefined) (base as any).matcherResults = report.matcherResults;
 
   return base;
 }
@@ -228,6 +285,44 @@ class AsyncRunStorage {
   }
 
   /**
+   * Batch-fetch reports by id in a SINGLE request (vs N getReportById calls).
+   * Returned map is keyed by the requested reportId (the storage doc id).
+   */
+  async getReportsByIds(reportIds: string[]): Promise<Record<string, EvaluationReport>> {
+    if (reportIds.length === 0) return {};
+    const stored = await opensearchRuns.getByIds(reportIds);
+    const out: Record<string, EvaluationReport> = {};
+    for (const s of stored) {
+      out[s.id] = toTestCaseRun(s);
+    }
+    return out;
+  }
+
+  /**
+   * Lightweight batch fetch: status/verdict fields only (KBs for ~100
+   * reports vs MBs for the full documents). Enough for status badges
+   * (getResultStatus), pass/fail tallies, annotation counts, and
+   * trace-polling recovery (runId/metricsStatus/judgeModelId/modelId).
+   * Full reports stay on-demand via getReportById for the selected row.
+   */
+  async getReportSummariesByIds(reportIds: string[]): Promise<Record<string, EvaluationReport>> {
+    if (reportIds.length === 0) return {};
+    // Stored-doc field names (the projection runs server-side on the stored
+    // shape): `traceId` maps to app-level `runId` in toTestCaseRun.
+    const fields = [
+      'status', 'passFailStatus', 'metricsStatus', 'traceId', 'sessionId',
+      'judgeModelId', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations',
+    ];
+    const out: Record<string, EvaluationReport> = {};
+    // Chunk to keep the URL well under practical limits for large benchmarks.
+    for (let i = 0; i < reportIds.length; i += 100) {
+      const stored = await opensearchRuns.getByIds(reportIds.slice(i, i + 100), { fields });
+      for (const s of stored) out[s.id] = toTestCaseRun(s);
+    }
+    return out;
+  }
+
+  /**
    * Delete a report and its annotations
    */
   async deleteReport(reportId: string): Promise<boolean> {
@@ -248,13 +343,20 @@ class AsyncRunStorage {
 
     // Map fields from EvaluationReport to StorageRun format
     if (updates.status !== undefined) storageUpdates.status = updates.status;
-    if (updates.passFailStatus !== undefined) storageUpdates.passFailStatus = updates.passFailStatus;
+    // `passFailStatus` accepts an explicit `null` to clear a stale verdict
+    // on a run that just transitioned to `metricsStatus: 'error'` (issue
+    // #242). Without this, `buildEvaluatorErrorPatch`'s `passFailStatus: null`
+    // would still be filtered out by a strict `!== undefined` check and the
+    // persisted document would keep its previous 'passed'/'failed' value.
+    if ((updates as any).passFailStatus !== undefined) storageUpdates.passFailStatus = (updates as any).passFailStatus;
     if (updates.llmJudgeReasoning !== undefined) storageUpdates.llmJudgeReasoning = updates.llmJudgeReasoning;
     if (updates.trajectory !== undefined) storageUpdates.trajectory = updates.trajectory;
     if (updates.rawEvents !== undefined) storageUpdates.rawEvents = updates.rawEvents;
     if (updates.logs !== undefined) storageUpdates.logs = updates.logs;
     if (updates.runId !== undefined) storageUpdates.traceId = updates.runId;
+    if ((updates as any).sessionId !== undefined) (storageUpdates as any).sessionId = (updates as any).sessionId;
     if (updates.improvementStrategies !== undefined) storageUpdates.improvementStrategies = updates.improvementStrategies;
+    if ((updates as any).matcherResults !== undefined) (storageUpdates as any).matcherResults = (updates as any).matcherResults;
 
     // Map metrics
     if (updates.metrics) {

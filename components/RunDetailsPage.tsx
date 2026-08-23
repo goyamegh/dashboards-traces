@@ -5,7 +5,8 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
-import { ArrowLeft, Calendar, CheckCircle2, XCircle, BarChart3, PanelLeftClose, PanelLeft, Clock, Loader2, StopCircle, Ban, Timer, Download, GitCompare } from 'lucide-react';
+import { ArrowLeft, Calendar, CheckCircle2, XCircle, BarChart3, PanelLeftClose, PanelLeft, Clock, Loader2, StopCircle, Ban, Timer, Download, GitCompare, AlertTriangle } from 'lucide-react';
+import { getResultStatus, StatusIcon, StatusLabel } from '@/components/evals3/ResultStatus';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -24,6 +25,7 @@ import { cancelExperimentRun } from '@/services/client';
 import { Experiment, ExperimentRun, EvaluationReport, TestCase } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { getDifficultyColor, formatDate, getModelName } from '@/lib/utils';
+import { RunScore } from '@/components/RunScore';
 import { formatDuration } from '@/services/metrics';
 import { ENV_CONFIG } from '@/lib/config';
 import { RunDetailsContent } from './RunDetailsContent';
@@ -134,8 +136,7 @@ const Sidebar = ({ context, selectedItem, onSelectItem, onToggleCollapse, isColl
           const testCase = getTestCase(testCaseId);
           const isSelected = selectedItem === testCaseId;
 
-          const isPassed = report?.passFailStatus === 'passed';
-          const isFailed = report?.passFailStatus === 'failed' || result.status === 'failed';
+          const resultStatus = getResultStatus(result, report);
 
           return (
             <Card
@@ -153,20 +154,7 @@ const Sidebar = ({ context, selectedItem, onSelectItem, onToggleCollapse, isColl
                 <div className="flex items-start gap-3">
                   {/* Status Icon */}
                   <div className="mt-0.5">
-                    {isPassed && <CheckCircle2 size={18} className="text-green-700 dark:text-green-400" />}
-                    {isFailed && <XCircle size={18} className="text-red-700 dark:text-red-400" />}
-                    {!isPassed && !isFailed && result.status === 'running' && (
-                      <Loader2 size={18} className="text-blue-700 dark:text-blue-400 animate-spin" />
-                    )}
-                    {!isPassed && !isFailed && result.status === 'pending' && (
-                      <Clock size={18} className="text-yellow-700 dark:text-yellow-400" />
-                    )}
-                    {!isPassed && !isFailed && result.status === 'cancelled' && (
-                      <Ban size={18} className="text-orange-700 dark:text-orange-400" />
-                    )}
-                    {!isPassed && !isFailed && result.status !== 'running' && result.status !== 'pending' && result.status !== 'cancelled' && (
-                      <div className="w-[18px] h-[18px] rounded-full border-2 border-muted-foreground/30" />
-                    )}
+                    <StatusIcon status={resultStatus} size={18} />
                   </div>
 
                   {/* Content */}
@@ -185,11 +173,13 @@ const Sidebar = ({ context, selectedItem, onSelectItem, onToggleCollapse, isColl
                           {testCase.difficulty}
                         </Badge>
                       )}
-                      {/* Metrics */}
+                      {/* Run score — always labeled "Score: X%" with a
+                          tooltip listing each metric contribution. */}
                       {report && (
-                        <span className="text-xs text-muted-foreground">
-                          {report.metrics.accuracy}%
-                        </span>
+                        <RunScore
+                          metrics={report.metrics as Record<string, number | undefined>}
+                          className="text-xs text-muted-foreground"
+                        />
                       )}
                     </div>
 
@@ -418,34 +408,26 @@ export const RunDetailsPage: React.FC = () => {
     const { experimentRun, reportsMap } = experimentContext;
     let passed = 0;
     let failed = 0;
+    let errored = 0;
     let pending = 0;
     let running = 0;
     let total = 0;
 
     Object.values(experimentRun.results || {}).forEach(result => {
       total++;
+      const report = result.reportId ? reportsMap[result.reportId] : null;
+      const status = getResultStatus(result, report || null);
 
-      if (result.status === 'pending') {
-        pending++;
-      } else if (result.status === 'running') {
-        running++;
-      } else if (result.status === 'completed' && result.reportId) {
-        const rep = reportsMap[result.reportId];
-        if (rep) {
-          if (rep.passFailStatus === 'passed') {
-            passed++;
-          } else {
-            failed++;
-          }
-        } else {
-          pending++; // Report not loaded yet
-        }
-      } else if (result.status === 'failed') {
-        failed++;
+      switch (status) {
+        case 'passed': passed++; break;
+        case 'failed': failed++; break;
+        case 'errored': errored++; break;
+        case 'running': running++; break;
+        default: pending++; break;
       }
     });
 
-    return { passed, failed, pending, running, total };
+    return { passed, failed, errored, pending, running, total };
   };
 
   // Download report in specified format (JSON/HTML/PDF) via server API
@@ -544,6 +526,12 @@ export const RunDetailsPage: React.FC = () => {
                 <span>Model: {getModelName(report.modelName)}</span>
                 <span className="text-muted-foreground/50">·</span>
                 <span>Agent: {report.agentName}</span>
+                {report.evaluatorId && (
+                  <>
+                    <span className="text-muted-foreground/50">·</span>
+                    <span>Evaluator: {report.evaluatorId.replace('system-', '').replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
+                  </>
+                )}
               </div>
             </div>
           </div>
@@ -588,6 +576,12 @@ export const RunDetailsPage: React.FC = () => {
               </span>
               <span className="text-muted-foreground/50">·</span>
               <span>Model: {getModelName(report?.modelName || experimentContext.experimentRun.modelId)}</span>
+              {(report?.evaluatorId || experimentContext.experimentRun.evaluatorId) && (
+                <>
+                  <span className="text-muted-foreground/50">·</span>
+                  <span>Evaluator: {(report?.evaluatorId || experimentContext.experimentRun.evaluatorId)?.replace('system-', '').replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
+                </>
+              )}
               {experimentContext.experimentRun.performanceMetrics?.durationMs != null && (
                 <>
                   <span className="text-muted-foreground/50">·</span>
@@ -632,6 +626,15 @@ export const RunDetailsPage: React.FC = () => {
                 <XCircle size={16} />
                 {stats.failed}
               </span>
+              {(stats as any).errored > 0 && (
+                <span
+                  className="flex items-center gap-1 text-amber-600 dark:text-amber-500"
+                  title="Evaluator could not run (e.g. judge validation error). Excluded from pass-rate aggregation."
+                >
+                  <AlertTriangle size={16} />
+                  {(stats as any).errored}
+                </span>
+              )}
               <span className="text-muted-foreground">/ {stats.total}</span>
             </div>
           )}

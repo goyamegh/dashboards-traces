@@ -1,4 +1,4 @@
-/node_modules
+node_modules
 /dist
 server/dist
 cli/dist
@@ -50,9 +50,16 @@ tokens.json
 # Development artifacts
 *.local.json
 
-# File-based storage backend (runtime data, not source)
-agent-health-data/
+# App-managed (runtime, not source): config-v2 state + generated data,
+# combined under .agent-health/ (state.json + data/).
+.agent-health/
 
 # AI-agent generated specification files (keep steering shared)
 .kiro/*
 !.kiro/steering/
+# pi-web local agent state (artifacts, uploads)
+.pi/
+
+# V-suffixed cp-oncall evals are local sandboxes / SDK feature tours;
+# they pollute storage with throwaway test cases on every run.
+evals/cp-oncall-V*.eval.js

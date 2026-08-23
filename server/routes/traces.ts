@@ -11,7 +11,7 @@
  */
 
 import { Request, Response, Router } from 'express';
-import { fetchTraces, checkTracesHealth } from '../services/tracesService.js';
+import { classifyOpenSearchError, validateAwsCredentials, type ErrorCategory } from '../services/tracesService.js';
 import {
   getSampleSpansForRunIds,
   getSampleSpansByTraceId,
@@ -19,8 +19,8 @@ import {
   getAllSampleTraceSpansWithRecentTimestamps,
   isSampleTraceId,
 } from '../../cli/demo/sampleTraces.js';
-import { resolveObservabilityConfig, DEFAULT_OTEL_INDEXES } from '../middleware/dataSourceConfig.js';
-import { createOpenSearchClient } from '../services/opensearchClientFactory.js';
+import { resolveObservabilityConfig } from '../middleware/dataSourceConfig.js';
+import { getObservabilityModule } from '../services/observabilityClient.js';
 import type { Span } from '../../types/index.js';
 
 const router = Router();
@@ -30,11 +30,23 @@ const router = Router();
  */
 router.post('/api/traces', async (req: Request, res: Response) => {
   try {
-    const { traceId, runIds, startTime, endTime, size = 100, serviceName, textSearch, cursor } = req.body;
+    const { traceId, runIds, sessionId, startTime, endTime, size = 100, serviceName, textSearch, cursor, agents } = req.body;
+
+    if (sessionId !== undefined && typeof sessionId !== 'string') {
+      return res.status(400).json({ error: 'sessionId must be a string' });
+    }
+    if (agents !== undefined && (!Array.isArray(agents) || agents.some((a: any) =>
+        !a || typeof a.serviceName !== 'string' ||
+        typeof a.startedAt !== 'number' || typeof a.endedAt !== 'number' ||
+        (a.sessionId !== undefined && typeof a.sessionId !== 'string')))) {
+      return res.status(400).json({
+        error: 'agents must be an array of { serviceName: string, startedAt: number, endedAt: number, sessionId?: string }'
+      });
+    }
 
     // Validate request - allow time range queries for live tailing
     const hasTimeRange = startTime || endTime;
-    const hasIdFilter = traceId || (runIds && runIds.length > 0);
+    const hasIdFilter = traceId || (runIds && runIds.length > 0) || sessionId || (agents && agents.length > 0);
 
     if (!hasIdFilter && !hasTimeRange) {
       return res.status(400).json({
@@ -51,58 +63,54 @@ router.post('/api/traces', async (req: Request, res: Response) => {
       sampleSpans = getSampleSpansForRunIds(runIds);
     }
 
-    // 2. Query live OpenSearch traces (independent of sample logic)
+    // 2. Query the active observability backend (OpenSearch cluster or file store).
+    //    Precedence: a configured cluster is authoritative; otherwise the file
+    //    backend is the zero-config default (local runs work out of the box).
     let realSpans: Span[] = [];
     let warning: string | undefined;
+    let warningCategory: ErrorCategory | undefined;
+    let suggestion: string | undefined;
     let nextCursor: string | null = null;
     let hasMore: boolean = false;
-    const config = resolveObservabilityConfig(req);
+    const backend: 'opensearch' | 'file' = resolveObservabilityConfig(req) ? 'opensearch' : 'file';
+    const obs = getObservabilityModule(req);
 
-    if (config && (traceId || (runIds && runIds.length > 0) || startTime || endTime)) {
-      let client;
+    if (traceId || (runIds && runIds.length > 0) || sessionId || startTime || endTime || (agents && agents.length > 0)) {
       try {
-        client = createOpenSearchClient(config);
-        const indexPattern = config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces;
-
-        const result = await fetchTraces(
-          { traceId, runIds, startTime, endTime, size, serviceName, textSearch, cursor },
-          client,
-          indexPattern
+        const result = await obs.traces.query(
+          { traceId, runIds, sessionId, startTime, endTime, size, serviceName, textSearch, cursor, agents }
         );
 
         realSpans = (result.spans || []) as Span[];
         nextCursor = result.nextCursor || null;
         hasMore = result.hasMore || false;
       } catch (e: any) {
-        console.warn('[TracesAPI] OpenSearch query failed:', e.message);
-        warning = e.message;
-      } finally {
-        if (client) {
-          await client.close().catch(() => {});
-        }
+        const classified = classifyOpenSearchError(e);
+        console.warn(`[TracesAPI] ${backend} query failed (${classified.category}):`, classified.message);
+        warning = classified.message;
+        warningCategory = classified.category;
+        suggestion = classified.suggestion;
       }
-    } else if (!config) {
-      // No observability cluster configured
-      if (hasTimeRange && !hasIdFilter) {
-        // Time-range browse query: show demo traces as fallback
-        sampleSpans = getAllSampleTraceSpansWithRecentTimestamps();
+    }
 
-        if (serviceName) {
-          sampleSpans = sampleSpans.filter(
-            s => s.attributes['service.name'] === serviceName
-          );
-        }
-        if (textSearch) {
-          const searchLower = textSearch.toLowerCase();
-          sampleSpans = sampleSpans.filter(s => {
-            if (s.name.toLowerCase().includes(searchLower)) return true;
-            return Object.values(s.attributes).some(
-              v => typeof v === 'string' && v.toLowerCase().includes(searchLower)
-            );
-          });
-        }
+    // File backend with no stored matches on a time-range browse → show demo
+    // traces so first-run users can explore without a live agent (parity with
+    // the old not-configured experience).
+    if (backend === 'file' && realSpans.length === 0 && hasTimeRange && !hasIdFilter) {
+      let demoSpans = getAllSampleTraceSpansWithRecentTimestamps();
+      if (serviceName) {
+        demoSpans = demoSpans.filter(s => s.attributes['service.name'] === serviceName);
       }
-      warning = 'Observability data source not configured';
+      if (textSearch) {
+        const searchLower = textSearch.toLowerCase();
+        demoSpans = demoSpans.filter(s => {
+          if (s.name.toLowerCase().includes(searchLower)) return true;
+          return Object.values(s.attributes).some(
+            v => typeof v === 'string' && v.toLowerCase().includes(searchLower)
+          );
+        });
+      }
+      sampleSpans = [...sampleSpans, ...demoSpans];
     }
 
     // Merge: sample spans first, then real spans
@@ -113,7 +121,10 @@ router.post('/api/traces', async (req: Request, res: Response) => {
       total: allSpans.length,
       nextCursor,
       hasMore,
-      warning
+      backend,
+      warning,
+      warningCategory,
+      suggestion,
     });
 
   } catch (error: any) {
@@ -127,31 +138,36 @@ router.post('/api/traces', async (req: Request, res: Response) => {
  */
 router.get('/api/traces/health', async (req: Request, res: Response) => {
   try {
-    // Get observability configuration from headers or env vars
     const config = resolveObservabilityConfig(req);
 
-    // If observability not configured, return sample-only status
     if (!config) {
+      // File backend (zero-config default): traces are stored locally on disk.
+      const fileObs = getObservabilityModule(req);
+      const health = await fileObs.health();
       return res.json({
-        status: 'sample_only',
-        message: 'Observability data source not configured. Sample trace data available.',
+        ...health,
+        backend: 'file',
+        message: 'Using local filesystem trace storage (.agent-health/data/traces). Connect an OpenSearch observability cluster to scale.',
         sampleTraceCount: getAllSampleTraceSpans().length,
       });
     }
 
-    let client;
-    try {
-      client = createOpenSearchClient(config);
-      const indexPattern = config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces;
-
-      // Call traces service to check health
-      const result = await checkTracesHealth(client, indexPattern);
-      res.json(result);
-    } finally {
-      if (client) {
-        await client.close().catch(() => {});
+    // Proactive credential check for SigV4 auth
+    if (config.authType === 'sigv4') {
+      const credError = await validateAwsCredentials(config.awsProfile);
+      if (credError) {
+        return res.json({
+          status: 'error',
+          error: credError,
+          errorCategory: 'auth' as ErrorCategory,
+          suggestion: `Run \`aws sso login --profile ${config.awsProfile || 'default'}\` or refresh your AWS credentials.`,
+        });
       }
     }
+
+    const obs = getObservabilityModule(req);
+    const result = await obs.health();
+    res.json({ ...result, backend: 'opensearch' });
   } catch (error: any) {
     res.json({ status: 'error', error: error.message });
   }

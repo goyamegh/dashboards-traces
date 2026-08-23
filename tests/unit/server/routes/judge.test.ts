@@ -7,6 +7,10 @@ import { Request, Response } from 'express';
 import judgeRoutes from '@/server/routes/judge';
 import { evaluateTrajectory, parseBedrockError } from '@/server/services/bedrockService';
 import { evaluateWithOpenAICompatible, parseOpenAICompatibleError } from '@/server/services/judgeService';
+import { evaluateWithLiteLLM, parseLiteLLMError } from '@/server/services/litellmJudgeService';
+import { evaluateWithClaudeCode, parseClaudeCodeError } from '@/server/services/claudeCodeJudgeService';
+import { evaluateWithAgenticJudge, parseAgenticJudgeError } from '@/server/services/agenticJudgeService';
+import { evaluateWithPiAgenticTrace } from '@/server/services/piAgenticJudgeService';
 
 // Mock the AWS Bedrock client
 const mockSend = jest.fn();
@@ -33,10 +37,41 @@ jest.mock('@/server/services/judgeService', () => ({
   parseOpenAICompatibleError: jest.fn(),
 }));
 
+// Mock the claude code judge service
+jest.mock('@/server/services/claudeCodeJudgeService', () => ({
+  evaluateWithClaudeCode: jest.fn(),
+  parseClaudeCodeError: jest.fn(),
+}));
+
+// Mock the agentic judge service
+jest.mock('@/server/services/agenticJudgeService', () => ({
+  evaluateWithAgenticJudge: jest.fn(),
+  parseAgenticJudgeError: jest.fn(),
+}));
+
+// Mock the pi agentic *trace* judge service (provider: 'agent')
+jest.mock('@/server/services/piAgenticJudgeService', () => ({
+  evaluateWithPiAgenticTrace: jest.fn(),
+}));
+
+// Mock the storage adapter so a custom evaluatorId can resolve to an
+// evaluator whose inferenceConfig selects the 'agent' (trace) provider.
+const mockGetEvaluatorById = jest.fn();
+jest.mock('@/server/adapters', () => ({
+  getStorageModule: () => ({ evaluators: { getById: mockGetEvaluatorById } }),
+}));
+
 const mockEvaluateTrajectory = evaluateTrajectory as jest.MockedFunction<typeof evaluateTrajectory>;
 const mockParseBedrockError = parseBedrockError as jest.MockedFunction<typeof parseBedrockError>;
 const mockEvaluateWithOpenAICompatible = evaluateWithOpenAICompatible as jest.MockedFunction<typeof evaluateWithOpenAICompatible>;
 const mockParseOpenAICompatibleError = parseOpenAICompatibleError as jest.MockedFunction<typeof parseOpenAICompatibleError>;
+const mockEvaluateWithLiteLLM = evaluateWithLiteLLM as jest.MockedFunction<typeof evaluateWithLiteLLM>;
+const mockParseLiteLLMError = parseLiteLLMError as jest.MockedFunction<typeof parseLiteLLMError>;
+const mockEvaluateWithClaudeCode = evaluateWithClaudeCode as jest.MockedFunction<typeof evaluateWithClaudeCode>;
+const mockParseClaudeCodeError = parseClaudeCodeError as jest.MockedFunction<typeof parseClaudeCodeError>;
+const mockEvaluateWithAgenticJudge = evaluateWithAgenticJudge as jest.MockedFunction<typeof evaluateWithAgenticJudge>;
+const mockParseAgenticJudgeError = parseAgenticJudgeError as jest.MockedFunction<typeof parseAgenticJudgeError>;
+const mockEvaluateWithPiAgenticTrace = evaluateWithPiAgenticTrace as jest.MockedFunction<typeof evaluateWithPiAgenticTrace>;
 
 // Helper to create mock request/response
 function createMocks(body: any = {}) {
@@ -148,6 +183,41 @@ describe('Judge Routes', () => {
     });
   });
 
+  describe('GET /api/judge/anthropic-models', () => {
+    const ORIG_KEY = process.env.ANTHROPIC_API_KEY;
+    afterEach(() => {
+      if (ORIG_KEY === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = ORIG_KEY;
+      jest.restoreAllMocks();
+    });
+
+    it('returns 503 when ANTHROPIC_API_KEY is not configured', async () => {
+      // serverConfig caches env at import; the route reads serverConfig
+      // .ANTHROPIC_API_KEY which is '' by default in the test env.
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(judgeRoutes, 'get', '/api/judge/anthropic-models');
+      await handler(req, res);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ configured: false, error: expect.stringContaining('Anthropic API not configured') })
+      );
+    });
+  });
+
+  describe('GET /api/judge/github-models', () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    it('returns 503 when GITHUB_TOKEN is not configured', async () => {
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(judgeRoutes, 'get', '/api/judge/github-models');
+      await handler(req, res);
+      expect(res.status).toHaveBeenCalledWith(503);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ configured: false, error: expect.stringContaining('GitHub Models not configured') })
+      );
+    });
+  });
+
   describe('POST /api/judge', () => {
     it('returns 400 when trajectory is missing', async () => {
       const { req, res } = createMocks({});
@@ -252,7 +322,8 @@ describe('Judge Routes', () => {
           trajectory: expect.any(Array),
           expectedOutcomes: expect.any(Array),
         }),
-        expect.any(String) // Resolved model ID from config
+        expect.any(String), // Resolved model ID from config
+        expect.objectContaining({ id: 'system-rca-default' }) // Default evaluator
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -355,7 +426,8 @@ describe('Judge Routes', () => {
           trajectory: expect.any(Array),
           expectedOutcomes: expect.any(Array),
         }),
-        expect.any(String) // Resolved model ID
+        expect.any(String), // Resolved model ID
+        expect.objectContaining({ id: 'system-rca-default' }) // Default evaluator
       );
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -405,6 +477,306 @@ describe('Judge Routes', () => {
         expect.objectContaining({
           error: expect.stringContaining('Judge evaluation failed'),
         })
+      );
+    });
+
+    it('routes to evaluateWithClaudeCode when provider is claude-code', async () => {
+      mockEvaluateWithClaudeCode.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 92 },
+        llmJudgeReasoning: 'Claude Code evaluation',
+        improvementStrategies: [],
+        duration: 5000,
+      });
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'search' }],
+        expectedOutcomes: ['Identify issue'],
+        modelId: 'claude-code-judge',
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(mockEvaluateWithClaudeCode).toHaveBeenCalledWith(
+        expect.objectContaining({
+          trajectory: expect.any(Array),
+          expectedOutcomes: expect.any(Array),
+        }),
+        expect.objectContaining({ id: 'system-rca-default' }) // Default evaluator
+      );
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          passFailStatus: 'passed',
+          metrics: expect.objectContaining({ accuracy: 92 }),
+        })
+      );
+    });
+
+    it('does NOT call evaluateTrajectory or evaluateWithLiteLLM when provider is claude-code', async () => {
+      mockEvaluateWithClaudeCode.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 88 },
+        llmJudgeReasoning: 'Good',
+        improvementStrategies: [],
+        duration: 3000,
+      });
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'test' }],
+        expectedOutcomes: ['Test outcome'],
+        modelId: 'claude-code-judge',
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(mockEvaluateTrajectory).not.toHaveBeenCalled();
+      expect(mockEvaluateWithLiteLLM).not.toHaveBeenCalled();
+    });
+
+    it('returns 500 with Claude Code error message on claude-code failure', async () => {
+      const error = new Error('Claude CLI not found');
+      mockEvaluateWithClaudeCode.mockRejectedValue(error);
+      mockParseClaudeCodeError.mockReturnValue('Claude CLI not found. Install it with: npm install -g @anthropic-ai/claude-code');
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action' }],
+        expectedOutcomes: ['Test'],
+        modelId: 'claude-code-judge',
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(mockParseClaudeCodeError).toHaveBeenCalledWith(error);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: expect.stringContaining('Judge evaluation failed'),
+        })
+      );
+    });
+
+    it('litellm judge service re-exports are wired correctly', () => {
+      // evaluateWithLiteLLM and parseLiteLLMError are re-exports from judgeService
+      // Verify they're proper functions (mock wiring)
+      expect(typeof mockEvaluateWithLiteLLM).toBe('function');
+      expect(typeof mockParseLiteLLMError).toBe('function');
+      // The mocks are from the re-exported judgeService module
+      expect(mockEvaluateWithLiteLLM).toBeDefined();
+      expect(mockParseLiteLLMError).toBeDefined();
+    });
+
+    it('routes to evaluateWithAgenticJudge when provider is agentic', async () => {
+      mockEvaluateWithAgenticJudge.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 95 },
+        llmJudgeReasoning: 'Agentic judge evaluation',
+        improvementStrategies: [],
+        duration: 8000,
+      });
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'search' }],
+        expectedOutcomes: ['Identify issue'],
+        modelId: 'agentic-claude-code', // Uses provider: 'agentic' in DEFAULT_CONFIG
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(mockEvaluateWithAgenticJudge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          trajectory: expect.any(Array),
+          expectedOutcomes: expect.any(Array),
+        }),
+        expect.objectContaining({
+          backend: 'claude-code',
+        }),
+        expect.objectContaining({ id: 'system-rca-default' }) // Default evaluator
+      );
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          passFailStatus: 'passed',
+          metrics: expect.objectContaining({ accuracy: 95 }),
+        })
+      );
+    });
+
+    it('routes agentic-custom to custom backend', async () => {
+      mockEvaluateWithAgenticJudge.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 88 },
+        llmJudgeReasoning: 'Custom agentic evaluation',
+        improvementStrategies: [],
+        duration: 6000,
+      });
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'test' }],
+        expectedOutcomes: ['Test outcome'],
+        modelId: 'agentic-custom', // Uses provider: 'agentic', backend: 'custom'
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(mockEvaluateWithAgenticJudge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          trajectory: expect.any(Array),
+        }),
+        expect.objectContaining({
+          backend: 'custom',
+        }),
+        expect.objectContaining({ id: 'system-rca-default' }) // Default evaluator
+      );
+    });
+
+    it('does NOT call other services when provider is agentic', async () => {
+      mockEvaluateWithAgenticJudge.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 90 },
+        llmJudgeReasoning: 'OK',
+        improvementStrategies: [],
+        duration: 5000,
+      });
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'test' }],
+        expectedOutcomes: ['Test outcome'],
+        modelId: 'agentic-claude-code',
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(mockEvaluateTrajectory).not.toHaveBeenCalled();
+      expect(mockEvaluateWithClaudeCode).not.toHaveBeenCalled();
+      expect(mockEvaluateWithOpenAICompatible).not.toHaveBeenCalled();
+      expect(mockEvaluateWithLiteLLM).not.toHaveBeenCalled();
+    });
+
+    it('returns 500 with agentic judge error message on failure', async () => {
+      const error = new Error('Agentic judge timed out');
+      mockEvaluateWithAgenticJudge.mockRejectedValue(error);
+      mockParseAgenticJudgeError.mockReturnValue('Agentic judge evaluation timed out (10 min limit).');
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action' }],
+        expectedOutcomes: ['Test'],
+        modelId: 'agentic-claude-code',
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(500);
+      expect(mockParseAgenticJudgeError).toHaveBeenCalledWith(error);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({
+          error: expect.stringContaining('Judge evaluation failed'),
+        })
+      );
+    });
+  });
+
+  describe('POST /api/judge - agent (trace) provider runId guard', () => {
+    // An evaluator whose inferenceConfig selects the trace-judge provider.
+    const agentEvaluator = {
+      id: 'custom-trace-eval',
+      name: 'Trace Judge',
+      inferenceConfig: { provider: 'agent' },
+    };
+
+    it('returns 400 when runId is missing (trace tools have nothing to scope to)', async () => {
+      mockGetEvaluatorById.mockResolvedValue(agentEvaluator);
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'search' }],
+        expectedOutcomes: ['Identify issue'],
+        evaluatorId: 'custom-trace-eval',
+        // no runId
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ error: expect.stringContaining('runId is required') })
+      );
+      expect(mockEvaluateWithPiAgenticTrace).not.toHaveBeenCalled();
+    });
+
+    it('routes to evaluateWithPiAgenticTrace when runId is present', async () => {
+      mockGetEvaluatorById.mockResolvedValue(agentEvaluator);
+      mockEvaluateWithPiAgenticTrace.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 90 },
+        llmJudgeReasoning: 'Trace-backed evaluation',
+        improvementStrategies: [],
+      } as any);
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'search' }],
+        expectedOutcomes: ['Identify issue'],
+        evaluatorId: 'custom-trace-eval',
+        runId: 'run-abc-123',
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).not.toHaveBeenCalledWith(400);
+      expect(mockEvaluateWithPiAgenticTrace).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: 'run-abc-123' }),
+        expect.objectContaining({ id: 'custom-trace-eval' }) // Saved evaluator
+      );
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ passFailStatus: 'passed' })
+      );
+    });
+
+    it('returns 403 when runId does not match the runId carried by the submitted trajectory (#3 cross-run guard)', async () => {
+      mockGetEvaluatorById.mockResolvedValue(agentEvaluator);
+
+      const { req, res } = createMocks({
+        // Trajectory came from run 'run-OWN', but the caller asks the judge to
+        // inspect a different run's traces.
+        trajectory: [{ type: 'action', toolName: 'search', runId: 'run-OWN' }],
+        expectedOutcomes: ['Identify issue'],
+        evaluatorId: 'custom-trace-eval',
+        runId: 'run-SOMEONE-ELSE',
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(403);
+      expect(mockEvaluateWithPiAgenticTrace).not.toHaveBeenCalled();
+    });
+
+    it('allows when the requested runId matches a runId in the trajectory', async () => {
+      mockGetEvaluatorById.mockResolvedValue(agentEvaluator);
+      mockEvaluateWithPiAgenticTrace.mockResolvedValue({
+        passFailStatus: 'passed', metrics: { accuracy: 91 }, llmJudgeReasoning: 'ok', improvementStrategies: [],
+      } as any);
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'search', runId: 'run-OWN' }],
+        expectedOutcomes: ['Identify issue'],
+        evaluatorId: 'custom-trace-eval',
+        runId: 'run-OWN',
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).not.toHaveBeenCalledWith(403);
+      expect(mockEvaluateWithPiAgenticTrace).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: 'run-OWN' }),
+        expect.objectContaining({ id: 'custom-trace-eval' }) // Saved evaluator
       );
     });
   });

@@ -131,6 +131,7 @@ export function getIndexMappings(): IndexMappings {
           status: { type: 'keyword' },
           passFailStatus: { type: 'keyword' },
           traceId: { type: 'keyword' },
+          sessionId: { type: 'keyword' },
           tags: { type: 'keyword' },
           actualOutcomes: { type: 'object', enabled: false },
           llmJudgeReasoning: { type: 'text' },
@@ -157,6 +158,44 @@ export function getIndexMappings(): IndexMappings {
           logs: { type: 'object', enabled: false },
           rawEvents: { type: 'object', enabled: false },
           improvementStrategies: { type: 'object', enabled: false },
+          // Per-matcher verdicts captured by the SDK during the test body.
+          // Stored as a nested array so we can filter / aggregate by
+          // matcher.method or matcher.pass when needed.
+          matcherResults: {
+            type: 'nested',
+            properties: {
+              description: { type: 'text' },
+              pass: { type: 'boolean' },
+              method: { type: 'keyword' },
+              durationMs: { type: 'integer' },
+              actual: { type: 'object', enabled: false },
+              expected: { type: 'object', enabled: false },
+              errorMessage: { type: 'text' },
+              score: { type: 'float' },
+              reasoning: { type: 'text' },
+              model: { type: 'keyword' },
+              // llm-judge enriched fields (per-call equivalents of the
+              // legacy report-level `improvementStrategies` and the rest
+              // of `metrics`). See lib/matchers/types.ts.
+              improvementStrategies: {
+                type: 'nested',
+                properties: {
+                  category: { type: 'keyword' },
+                  issue: { type: 'text' },
+                  recommendation: { type: 'text' },
+                  priority: { type: 'keyword' },
+                },
+              },
+              judgeMetrics: {
+                properties: {
+                  accuracy: { type: 'float' },
+                  faithfulness: { type: 'float' },
+                  latency_score: { type: 'float' },
+                  trajectory_alignment_score: { type: 'float' },
+                },
+              },
+            },
+          },
           spans: { type: 'object', enabled: false },
           metricsStatus: { type: 'keyword' },
           traceFetchAttempts: { type: 'integer' },
@@ -202,6 +241,59 @@ export function getIndexMappings(): IndexMappings {
           author: { type: 'keyword' },
           inputsSnapshot: { type: 'object', enabled: false },
           outputsSnapshot: { type: 'object', enabled: false },
+        },
+      },
+    },
+    [STORAGE_CONFIG.indexes.evaluators]: {
+      settings: {
+        number_of_shards: 1,
+        number_of_replicas: 1,
+      },
+      mappings: {
+        properties: {
+          id: { type: 'keyword' },
+          name: { type: 'text', fields: { keyword: { type: 'keyword' } } },
+          description: { type: 'text' },
+          isSystem: { type: 'boolean' },
+          tags: { type: 'keyword' },
+          currentVersion: { type: 'integer' },
+          author: { type: 'keyword' },
+          createdAt: { type: 'date' },
+          updatedAt: { type: 'date' },
+          systemPrompt: { type: 'text' },
+          scoringConfig: {
+            properties: {
+              metrics: {
+                type: 'nested',
+                properties: {
+                  name: { type: 'keyword' },
+                  description: { type: 'text' },
+                  weight: { type: 'float' },
+                  scale: { type: 'float' },
+                },
+              },
+              passThreshold: { type: 'float' },
+              scale: { type: 'float' },
+            },
+          },
+          inferenceConfig: {
+            properties: {
+              provider: { type: 'keyword' },
+              modelId: { type: 'keyword' },
+              temperature: { type: 'float' },
+              maxTokens: { type: 'integer' },
+            },
+          },
+          versions: {
+            type: 'nested',
+            properties: {
+              version: { type: 'integer' },
+              createdAt: { type: 'date' },
+              systemPrompt: { type: 'text' },
+              scoringConfig: { type: 'object', enabled: false },
+              inferenceConfig: { type: 'object', enabled: false },
+            },
+          },
         },
       },
     },

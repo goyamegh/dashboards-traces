@@ -363,7 +363,11 @@ describe('Sample Traces', () => {
     it('should have root spans without parent', () => {
       const spans = getSampleSpansByTraceId('demo-trace-001');
       const rootSpans = spans.filter((s) => !s.parentSpanId);
-      expect(rootSpans.length).toBe(1);
+      // Two roots are expected on this trace: the agent root span and the
+      // independent eval root span (test_suite_run) added in PR #204. Both
+      // share the same traceId but form separate sub-trees in the trace viewer.
+      const rootIds = rootSpans.map((s) => s.spanId).sort();
+      expect(rootIds).toEqual(['span-001-eval-suite', 'span-001-root']);
     });
 
     it('should have consistent parent references', () => {

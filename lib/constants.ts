@@ -42,6 +42,21 @@ export const CONNECTOR_TYPE_INFO: Record<ConnectorProtocol, ConnectorTypeInfo> =
     description: 'Invokes the Claude Code CLI. Server-only — use the CLI or benchmark runner.',
     serverOnly: true,
   },
+  'pi': {
+    label: 'Pi (pi.dev)',
+    description: 'Invokes the pi.dev coding agent CLI. Server-only — use the CLI or benchmark runner.',
+    serverOnly: true,
+  },
+  'strands': {
+    label: 'Amazon Strands',
+    description: 'Amazon Strands agent framework via Bedrock Agent Runtime API. Server-only — requires AWS SDK.',
+    serverOnly: true,
+  },
+  'langgraph': {
+    label: 'LangGraph (REST)',
+    description: 'LangGraph agent via direct REST API. Use for non-AG-UI LangGraph instances.',
+    serverOnly: false,
+  },
   'mock': {
     label: 'Mock',
     description: 'Built-in demo agent for testing. No real endpoint needed.',
@@ -56,6 +71,50 @@ export const VALID_CONNECTOR_TYPES = Object.keys(CONNECTOR_TYPE_INFO) as Connect
 export const BROWSER_SAFE_CONNECTORS = (Object.entries(CONNECTOR_TYPE_INFO) as [ConnectorProtocol, ConnectorTypeInfo][])
   .filter(([, info]) => !info.serverOnly)
   .map(([type]) => type);
+
+/** Keys of built-in agents shipped with the tool. */
+export const BUILT_IN_AGENT_KEYS = new Set(['demo', 'observio', 'claude-code', 'strands', 'pi', 'langgraph-rest']);
+
+/**
+ * True when an agent is one of the tool's shipped built-ins — as opposed to an
+ * agent authored in agent-health.config.ts or a UI-added custom endpoint.
+ * Prefers the server-computed `builtIn` flag (from /api/agents); falls back to
+ * BUILT_IN_AGENT_KEYS for the hardcoded defaults used before refreshConfig().
+ */
+export function isBuiltInAgent(a: { key: string; builtIn?: boolean; isCustom?: boolean }): boolean {
+  return (a.builtIn ?? BUILT_IN_AGENT_KEYS.has(a.key)) && !a.isCustom;
+}
+
+/**
+ * Ordered list of preferred default agent keys, used when picking an initial
+ * agent for popups/forms (e.g. QuickRunModal). The first entry that exists in
+ * `DEFAULT_CONFIG.agents` (and is enabled) wins.
+ *
+ * `observio` is preferred because it's a fully-featured local sample agent
+ * users can run end-to-end without external infra.
+ */
+export const PREFERRED_DEFAULT_AGENT_KEYS = ['observio', 'demo'] as const;
+
+/**
+ * Pick a sensible default agent key.
+ *
+ * Resolution order:
+ *  1. First entry in PREFERRED_DEFAULT_AGENT_KEYS that exists and is enabled
+ *  2. First enabled agent in DEFAULT_CONFIG.agents
+ *  3. First agent in DEFAULT_CONFIG.agents (even if disabled)
+ *  4. Empty string
+ */
+export function getPreferredDefaultAgentKey(): string {
+  const agents = DEFAULT_CONFIG.agents || [];
+  const isEnabled = (a: { enabled?: boolean }) => a.enabled !== false;
+  for (const preferred of PREFERRED_DEFAULT_AGENT_KEYS) {
+    const found = agents.find(a => a.key === preferred && isEnabled(a));
+    if (found) return found.key;
+  }
+  const firstEnabled = agents.find(isEnabled);
+  if (firstEnabled) return firstEnabled.key;
+  return agents[0]?.key || '';
+}
 
 /**
  * Get Claude Code connector environment variables at runtime.
@@ -117,14 +176,70 @@ export const DEFAULT_CONFIG: AppConfig = {
       useTraces: false,
     },
     {
+      key: "observio",
+      name: "Observio Sample Agent",
+      endpoint: ENV_CONFIG.observioEndpoint || "http://localhost:3001/run-agent",
+      description: "Observio sample agent — ReAct pattern with LangGraph and Bedrock. Start with: cd observio-sample-agent && npm run start:ag-ui",
+      connectorType: "agui-streaming",
+      headers: {},
+      useTraces: true,
+      // OTel `service.name` differs from the agent key for the observio sample
+      // agent (see observio-sample-agent/src/telemetry/provider.ts), so the
+      // Agent Traces page translates `prefs:agentFilter == 'observio'` to a
+      // service-name filter of 'observio-sample-agent' at query time.
+      traceServiceName: "observio-sample-agent",
+    },
+    {
       key: "claude-code",
       name: "Claude Code",
       endpoint: "claude",
       description: "Claude Code CLI agent (requires claude command installed)",
       connectorType: "claude-code",
       headers: {},
+      // OTel `service.name` for claude-code is OTEL_SERVICE_NAME (default
+      // 'claude-code-agent'), which differs from the agent key — so the Agent
+      // Traces filter must translate key 'claude-code' to this service name,
+      // otherwise filtering by Claude Code matches no spans.
+      traceServiceName: ENV_CONFIG.otelServiceName,
       useTraces: ENV_CONFIG.claudeCodeTelemetryEnabled && !!ENV_CONFIG.otelExporterEndpoint,
       connectorConfig: { env: getClaudeCodeConnectorEnv() },
+    },
+    {
+      key: "strands",
+      name: "Amazon Strands",
+      endpoint: "${STRANDS_AGENT_ID}",
+      description: "Amazon Strands agent framework (Bedrock Agent Runtime)",
+      connectorType: "strands",
+      headers: {},
+      useTraces: false,
+      connectorConfig: {
+        agentAliasId: "${STRANDS_ALIAS_ID:-TSTALIASID}",
+        region: "${AWS_REGION:-us-east-1}",
+      },
+      enabled: false,
+    },
+    {
+      key: "pi",
+      name: "Pi (pi.dev)",
+      endpoint: "pi",
+      description: "Pi.dev coding agent with Agent Health package (requires pi CLI installed)",
+      connectorType: "pi",
+      headers: {},
+      useTraces: false,
+      connectorConfig: {
+        packagePath: './observio-sample-agent/pi-package',
+      },
+      enabled: false,
+    },
+    {
+      key: "langgraph-rest",
+      name: "LangGraph (REST)",
+      endpoint: "${LANGGRAPH_API_ENDPOINT:-http://localhost:8000}",
+      description: "LangGraph agent via direct REST API",
+      connectorType: "langgraph",
+      headers: {},
+      useTraces: false,
+      enabled: false,
     },
   ],
   models: {
@@ -134,6 +249,27 @@ export const DEFAULT_CONFIG: AppConfig = {
       provider: "demo",
       context_window: 200000,
       max_output_tokens: 4096
+    },
+    "claude-opus-4.8": {
+      // Real Bedrock inference profile id is `us.anthropic.claude-opus-4-8`. The
+      // `-v1` suffix does not exist for 4.7+ (verified via
+      // `aws bedrock list-inference-profiles --region us-west-2`); Bedrock
+      // returns `ValidationException: The provided model identifier is invalid`
+      // for `us.anthropic.claude-opus-4-8-v1`. 4.6 keeps the `-v1` suffix.
+      model_id: "us.anthropic.claude-opus-4-8",
+      display_name: "Claude Opus 4.8",
+      provider: "bedrock",
+      context_window: 200000,
+      max_output_tokens: 128000
+    },
+    "claude-opus-4.7": {
+      // `-v1` does not exist for 4.7 either (verified via list-inference-profiles
+      // — real id is `us.anthropic.claude-opus-4-7`). PR #347 fixed only 4.8.
+      model_id: "us.anthropic.claude-opus-4-7",
+      display_name: "Claude Opus 4.7",
+      provider: "bedrock",
+      context_window: 200000,
+      max_output_tokens: 128000
     },
     "claude-opus-4.6": {
       model_id: "us.anthropic.claude-opus-4-6-v1",
@@ -149,34 +285,6 @@ export const DEFAULT_CONFIG: AppConfig = {
       context_window: 200000,
       max_output_tokens: 64000
     },
-    "claude-haiku-4.5": {
-      model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
-      display_name: "Claude Haiku 4.5",
-      provider: "bedrock",
-      context_window: 200000,
-      max_output_tokens: 64000
-    },
-    "claude-opus-4.5": {
-      model_id: "us.anthropic.claude-opus-4-5-20251101-v1:0",
-      display_name: "Claude Opus 4.5",
-      provider: "bedrock",
-      context_window: 200000,
-      max_output_tokens: 64000
-    },
-    "claude-opus-4.1": {
-      model_id: "us.anthropic.claude-opus-4-1-20250805-v1:0",
-      display_name: "Claude Opus 4.1",
-      provider: "bedrock",
-      context_window: 200000,
-      max_output_tokens: 32000
-    },
-    "claude-opus-4": {
-      model_id: "us.anthropic.claude-opus-4-20250514-v1:0",
-      display_name: "Claude Opus 4",
-      provider: "bedrock",
-      context_window: 200000,
-      max_output_tokens: 32000
-    },
     "claude-sonnet-4.5": {
       model_id: "us.anthropic.claude-sonnet-4-5-20250929-v1:0",
       display_name: "Claude Sonnet 4.5",
@@ -184,19 +292,33 @@ export const DEFAULT_CONFIG: AppConfig = {
       context_window: 200000,
       max_output_tokens: 4096
     },
-    "claude-sonnet-4": {
-      model_id: "us.anthropic.claude-sonnet-4-20250514-v1:0",
-      display_name: "Claude Sonnet 4",
+    "claude-haiku-4.5": {
+      model_id: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+      display_name: "Claude Haiku 4.5",
       provider: "bedrock",
       context_window: 200000,
-      max_output_tokens: 4096
+      max_output_tokens: 64000
     },
-    "claude-haiku-3.5": {
-      model_id: "us.anthropic.claude-3-5-haiku-20241022-v1:0",
-      display_name: "Claude Haiku 3.5",
-      provider: "bedrock",
+    "claude-code-judge": {
+      model_id: "claude-code-judge",
+      display_name: "Claude Code (Judge)",
+      provider: "claude-code",
       context_window: 200000,
-      max_output_tokens: 4096
+      max_output_tokens: 16384
+    },
+    "agentic-claude-code": {
+      model_id: "agentic-claude-code",
+      display_name: "Claude Code (Agentic)",
+      provider: "agentic",
+      context_window: 200000,
+      max_output_tokens: 16384
+    },
+    "agentic-custom": {
+      model_id: "agentic-custom",
+      display_name: "Custom Agentic Judge",
+      provider: "agentic",
+      context_window: 200000,
+      max_output_tokens: 16384
     },
     "gpt-4o": {
       model_id: "gpt-4o",
@@ -204,20 +326,6 @@ export const DEFAULT_CONFIG: AppConfig = {
       provider: "openai-compatible",
       context_window: 128000,
       max_output_tokens: 4096
-    },
-    "deepseek-r1:8b": {
-      model_id: "deepseek-r1:8b",
-      display_name: "DeepSeek R1 8B (Ollama)",
-      provider: "openai-compatible",
-      context_window: 128000,
-      max_output_tokens: 8192
-    },
-    "gemma3:12b": {
-      model_id: "gemma3:12b",
-      display_name: "Gemma 3 12B (Ollama)",
-      provider: "openai-compatible",
-      context_window: 128000,
-      max_output_tokens: 8192
     },
   },
   defaults: {
@@ -236,6 +344,13 @@ export const MOCK_TOOLS = [
   { name: 'opensearch_cluster_allocation_explain', description: 'Explain shard allocation' },
   { name: 'opensearch_list_indices', description: 'List all indices with detailed information' },
 ];
+
+/**
+ * Metadata about agents, updated when refreshConfig() succeeds.
+ */
+export let agentsMeta: { hasCustomAgents: boolean; customCount: number; builtInCount: number } = {
+  hasCustomAgents: false, customCount: 0, builtInCount: 0,
+};
 
 /**
  * Config change listeners.
@@ -264,8 +379,15 @@ export async function refreshConfig(): Promise<void> {
       fetch('/api/models'),
     ]);
     if (agentsRes.ok) {
-      const { agents } = await agentsRes.json();
+      const { agents, meta } = await agentsRes.json();
       DEFAULT_CONFIG.agents = agents;
+      if (meta) {
+        agentsMeta = {
+          hasCustomAgents: meta.hasCustomAgents ?? false,
+          customCount: meta.customCount ?? 0,
+          builtInCount: meta.builtInCount ?? 0,
+        };
+      }
     }
     if (modelsRes.ok) {
       const { models: modelsArray } = await modelsRes.json();

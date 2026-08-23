@@ -306,15 +306,43 @@ export class HTTPServer {
   }
 
   async start(): Promise<void> {
-    return new Promise((resolve) => {
-      this.server.listen(this.config.port, this.config.host, () => {
+    const maxAttempts = 10;
+    const basePort = this.config.port || 3001;
+
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const port = basePort + attempt;
+      try {
+        await this.listenOnPort(port);
+        return;
+      } catch (err: any) {
+        if (err.code === 'EADDRINUSE' && attempt < maxAttempts - 1) {
+          this.logger.info(`Port ${port} is in use, trying ${port + 1}...`);
+          console.log(`  Port ${port} is in use, trying ${port + 1}...`);
+          // Remove any remaining listeners and create a fresh instance for the next attempt
+          this.server.removeAllListeners();
+          this.server.close();
+          this.server = http.createServer(this.app);
+        } else {
+          throw err;
+        }
+      }
+    }
+  }
+
+  private listenOnPort(port: number): Promise<void> {
+    return new Promise((resolve, reject) => {
+      this.server.once('error', reject);
+
+      this.server.listen(port, this.config.host, () => {
+        this.server.removeListener('error', reject);
+        this.config.port = port;
         this.logger.info('AI Agent AG UI HTTP Server started', {
           host: this.config.host,
-          port: this.config.port,
-          httpEndpoint: `http://${this.config.host}:${this.config.port}`,
+          port,
+          httpEndpoint: `http://${this.config.host}:${port}`,
         });
         console.log(
-          `🚀 AI Agent AG UI Server running at http://${this.config.host}:${this.config.port}`
+          `🚀 AI Agent AG UI Server running at http://${this.config.host}:${port}`
         );
         resolve();
       });
