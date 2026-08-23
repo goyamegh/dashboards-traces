@@ -12,7 +12,12 @@
  * the flyout acts as "pin open" and persists.
  */
 
-import { test, expect } from '@playwright/test';
+// Import the local fixtures (not the raw '@playwright/test' module) so this
+// spec's page interactions are captured by the E2E Istanbul coverage
+// collector (see tests/e2e/fixtures/test-fixtures.ts) — this spec exercises
+// most of Layout.tsx's hover-flyout logic and was previously invisible to
+// coverage reporting entirely.
+import { test, expect } from './fixtures/test-fixtures';
 
 test.describe('Sidebar hover flyout', () => {
   test('collapsed rail expands on hover as an overlay and collapses on leave', async ({ page }) => {
