@@ -23,7 +23,7 @@ test.describe('Resume interrupted evaluation run', () => {
     const res = await request.put(`/api/storage/evaluation-runs/${runId}`, {
       data: {
         name: 'resume-e2e-run',
-        sources: [{ type: 'test-case-ids', testCaseIds: tcIds }],
+        sources: [{ type: 'test-case-ids', ids: tcIds }],
         agentKey: 'demo',
         modelId: 'demo-model',
         trigger: 'api',
@@ -75,7 +75,7 @@ test.describe('Resume interrupted evaluation run', () => {
     const res = await request.put(`/api/storage/evaluation-runs/${doneRunId}`, {
       data: {
         name: 'resume-e2e-run-done',
-        sources: [{ type: 'test-case-ids', testCaseIds: [tcIds[0]] }],
+        sources: [{ type: 'test-case-ids', ids: [tcIds[0]] }],
         agentKey: 'demo',
         modelId: 'demo-model',
         trigger: 'api',
