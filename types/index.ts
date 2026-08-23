@@ -1099,6 +1099,20 @@ export interface EvaluationRun {
   description?: string;
   createdAt: string;
   completedAt?: string;
+  /**
+   * Set when the run was resumed via POST /api/storage/evaluation-runs/:id/resume
+   * (RedKite-style checkpoint resume — completed test cases are skipped, only
+   * those without a persisted report are re-executed). Last resume wins.
+   */
+  resumedAt?: string;
+  /**
+   * Liveness heartbeat stamped periodically by the server executing this run.
+   * Lets sibling servers sharing the same storage cluster distinguish an
+   * actively-executing run from an orphan (process died mid-run) — boot
+   * recovery and the resume endpoint treat a run as stale only when the
+   * heartbeat stops.
+   */
+  heartbeatAt?: string;
   status: BenchmarkRunStatus;
   error?: string;
 
