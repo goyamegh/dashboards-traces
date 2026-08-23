@@ -403,11 +403,23 @@ export async function fetchTraces(
   // timestamped session.id. Session file basenames carry a `<ts>_` prefix, so
   // a bare-UUID search only works as a substring — hence the leading wildcard.
   if (textSearch) {
-    const pattern = `*${textSearch}*`;
+    const trimmed = textSearch.trim();
+    const pattern = `*${trimmed}*`;
     const wc = (field: string) => ({ wildcard: { [field]: { value: pattern, case_insensitive: true } } });
-    must.push({
-      bool: {
-        should: [
+    // Leading-wildcard queries (`*x*`) can't use the field's index to narrow
+    // the scan — OpenSearch has to walk the WHOLE terms dictionary for that
+    // field. The search box re-fires this on every debounced keystroke, so a
+    // 1-2 character query is the worst case: on a high-cardinality keyword
+    // field (traceId, session.id) nearly every value contains any single
+    // common character, turning a cheap lookup into a full-dictionary scan
+    // for a query that wasn't selective enough to be useful anyway. Gate the
+    // id/wildcard clauses on a minimum length; `name` still gets a cheap,
+    // index-backed `match` at any length so a short search isn't a dead
+    // no-op, just narrower (matches span name only) until it's long enough
+    // to be worth the wildcard scan.
+    const MIN_WILDCARD_LENGTH = 3;
+    const idClauses = trimmed.length >= MIN_WILDCARD_LENGTH
+      ? [
           // session.id lives under different field names per index schema:
           //  - Data Prepper `otel-v1-apm-span-*`: `span.attributes.session@id` (@ = dot)
           //  - ss4o / nested attributes: `attributes.session.id[.keyword]`
@@ -418,8 +430,11 @@ export async function fetchTraces(
           wc('attributes.session.id'),
           wc('traceId'),
           wc('serviceName'),
-          { match: { 'name': textSearch } },
-        ],
+        ]
+      : [];
+    must.push({
+      bool: {
+        should: [...idClauses, { match: { 'name': textSearch } }],
         minimum_should_match: 1,
       },
     });

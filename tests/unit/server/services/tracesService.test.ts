@@ -371,6 +371,30 @@ describe('tracesService', () => {
       );
     });
 
+    it('skips the expensive id/wildcard fan-out for a too-short query, but still matches by name', async () => {
+      const client = createMockClient();
+
+      await fetchTraces({ startTime: Date.now() - 86400000, endTime: Date.now(), textSearch: 'ab' }, client);
+
+      const body = client.search.mock.calls[0][0].body;
+      const clauses = JSON.stringify(body.query);
+      // No leading-wildcard clauses on the high-cardinality id/service fields
+      // for a 2-character query — that's a full terms-dictionary scan for a
+      // query too short to be selective.
+      expect(clauses).not.toContain('wildcard');
+      expect(clauses).not.toContain('span.attributes.session@id');
+      // The cheap `name` match still runs, so short input isn't a dead no-op.
+      expect(body.query.bool.must).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            bool: expect.objectContaining({
+              should: [{ match: { name: 'ab' } }],
+            }),
+          }),
+        ])
+      );
+    });
+
     it('should use custom size', async () => {
       const client = createMockClient();
 
