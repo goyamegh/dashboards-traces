@@ -16,8 +16,9 @@
  * confirm `fetchTraces({ textSearch })` finds it.
  *
  * Cluster: connects directly to http://localhost:9200 (no security), the same
- * ephemeral OpenSearch the CI integration job runs. SKIPS when unreachable so
- * local runs without a cluster (and file-mode CI) stay green. To run locally:
+ * ephemeral OpenSearch the CI integration job runs. Each assertion bails out
+ * (passes trivially, with a console warning) when the cluster is unreachable,
+ * so local runs without a cluster (and file-mode CI) stay green. To run locally:
  *
  *   docker run -d --rm -p 9200:9200 -e discovery.type=single-node \
  *     -e DISABLE_SECURITY_PLUGIN=true -e DISABLE_INSTALL_DEMO_CONFIG=true \
@@ -111,9 +112,25 @@ describe('trace text-search against real OpenSearch (Data Prepper span schema)',
     await client.close().catch(() => {});
   });
 
-  const maybe = () => (available ? it : it.skip);
+  // `available` is only known once `beforeAll` resolves, but Jest collects
+  // `it`/`it.skip` synchronously while this `describe` body runs — BEFORE
+  // `beforeAll` has executed. Deciding `it` vs `it.skip` up front (e.g.
+  // `(available ? it : it.skip)('...', ...)`) would always see the
+  // `available = false` initial value and skip unconditionally, even with a
+  // live cluster reachable. So: always register a real `it`, and bail out
+  // at runtime once `available` has its real value.
+  function itIfAvailable(name: string, fn: () => Promise<void>, timeout: number) {
+    it(name, async () => {
+      if (!available) {
+        // eslint-disable-next-line no-console
+        console.warn(`[skip] OpenSearch not reachable at ${ENDPOINT} — skipping "${name}"`);
+        return;
+      }
+      await fn();
+    }, timeout);
+  }
 
-  maybe()('finds spans by the BARE UUID substring (the original failing case)', async () => {
+  itIfAvailable('finds spans by the BARE UUID substring (the original failing case)', async () => {
     const now = Date.now();
     const res = await fetchTraces(
       { textSearch: BARE_UUID, startTime: now - 3600_000, endTime: now + 60_000, size: 10 },
@@ -126,7 +143,7 @@ describe('trace text-search against real OpenSearch (Data Prepper span schema)',
     }
   }, 30000);
 
-  maybe()('finds spans by the full timestamped session.id', async () => {
+  itIfAvailable('finds spans by the full timestamped session.id', async () => {
     const now = Date.now();
     const res = await fetchTraces(
       { textSearch: FULL_SESSION_ID, startTime: now - 3600_000, endTime: now + 60_000, size: 10 },
@@ -136,7 +153,7 @@ describe('trace text-search against real OpenSearch (Data Prepper span schema)',
     expect(res.spans.length).toBe(2);
   }, 30000);
 
-  maybe()('a dashed query does not error out (query_string would have)', async () => {
+  itIfAvailable('a dashed query does not error out (query_string would have)', async () => {
     const now = Date.now();
     // No throw = the wildcard path handled reserved chars as literals.
     const res = await fetchTraces(
@@ -147,7 +164,7 @@ describe('trace text-search against real OpenSearch (Data Prepper span schema)',
     expect(res.spans.length).toBe(0);
   }, 30000);
 
-  maybe()('still matches on serviceName substring', async () => {
+  itIfAvailable('still matches on serviceName substring', async () => {
     const now = Date.now();
     const res = await fetchTraces(
       { textSearch: 'pi-age', startTime: now - 3600_000, endTime: now + 60_000, size: 10 },
@@ -157,7 +174,7 @@ describe('trace text-search against real OpenSearch (Data Prepper span schema)',
     expect(res.spans.length).toBe(2);
   }, 30000);
 
-  maybe()('exact sessionId param matches span.attributes.session@id (Strategy D / run-report path)', async () => {
+  itIfAvailable('exact sessionId param matches span.attributes.session@id (Strategy D / run-report path)', async () => {
     const res = await fetchTraces({ sessionId: FULL_SESSION_ID, size: 10 }, client, INDEX);
     expect(res.spans.length).toBe(2);
     for (const s of res.spans) {
