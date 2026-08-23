@@ -23,6 +23,65 @@ const router = Router();
 const activeCancellationTokens = new Map<string, CancellationToken>();
 
 /**
+ * Compute which test cases of a run are resumable: every snapshot test case
+ * whose result has no persisted report. Covers `pending` (never started),
+ * `running` (interrupted mid-flight), and `failed`-without-report (crash /
+ * cancellation) entries — anything WITH a reportId is preserved as-is.
+ *
+ * Checkpoint semantics: the per-test-case reports persisted in
+ * storage ARE the checkpoint; resume skips whatever already checkpointed.
+ */
+export function computeResumableTestCaseIds(run: Pick<EvaluationRun, 'testCaseSnapshots' | 'results'>): string[] {
+  const results = run.results || {};
+  return (run.testCaseSnapshots || [])
+    .map((s) => s.id)
+    .filter((id) => !results[id]?.reportId);
+}
+
+/**
+ * Is this evaluation run actively executing in the current server process?
+ * Used by boot recovery to avoid failing runs owned by this process.
+ */
+export function isEvaluationRunActiveInThisProcess(runId: string): boolean {
+  return activeCancellationTokens.has(runId);
+}
+
+/** Heartbeat cadence while a run executes (liveness signal on shared storage). */
+const RUN_HEARTBEAT_INTERVAL_MS = 60_000;
+
+/**
+ * How long a `running` run may go without a heartbeat before another server
+ * may treat it as orphaned (resume it / recover it). Shared-cluster safety:
+ * multiple agent-health servers point at the same storage, and "active" is
+ * only known per-process — the heartbeat is the cross-server liveness signal.
+ */
+export function runStaleAfterMs(): number {
+  const raw = process.env.EVALUATION_RUN_STALE_AFTER_MS;
+  const parsed = raw ? parseInt(raw, 10) : NaN;
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60 * 60 * 1000; // 1h
+}
+
+/** Age of the run's most recent liveness signal (heartbeat > resumed > created). */
+export function runLivenessAgeMs(run: Pick<EvaluationRun, 'createdAt' | 'resumedAt' | 'heartbeatAt'>, now = Date.now()): number {
+  const last = new Date(run.heartbeatAt || run.resumedAt || run.createdAt || 0).getTime();
+  return Number.isFinite(last) && last > 0 ? now - last : Infinity;
+}
+
+/**
+ * Stamp `heartbeatAt` on the run doc every RUN_HEARTBEAT_INTERVAL_MS until the
+ * returned stop function is called. Failures are non-fatal (next beat retries).
+ */
+function startRunHeartbeat(storage: ReturnType<typeof getStorageModule>, runId: string): () => void {
+  const timer = setInterval(() => {
+    storage.evaluationRuns.update(runId, { heartbeatAt: new Date().toISOString() })
+      .catch((err: any) => console.warn(`[StorageAPI] Run heartbeat failed for ${runId}: ${err?.message || err}`));
+  }, RUN_HEARTBEAT_INTERVAL_MS);
+  // Don't hold the process open for a heartbeat timer.
+  (timer as any).unref?.();
+  return () => clearInterval(timer);
+}
+
+/**
  * Send an SSE event to the client.
  */
 function sendSSE(res: Response, event: string, data: any): void {
@@ -174,6 +233,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
     // Store cancellation token
     const cancellationToken = createCancellationToken();
     activeCancellationTokens.set(runId, cancellationToken);
+    const stopHeartbeat = startRunHeartbeat(storage, runId);
 
     try {
       // Execute the evaluation run
@@ -219,6 +279,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       sendSSE(res, 'error', { error: error.message, runId });
     } finally {
       // Clean up cancellation token
+      stopHeartbeat();
       activeCancellationTokens.delete(runId);
       res.end();
     }
@@ -265,6 +326,160 @@ router.post('/api/storage/evaluation-runs/:id/cancel', async (req: Request, res:
   } catch (error: any) {
     console.error('[StorageAPI] Cancel evaluation run failed:', error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/storage/evaluation-runs/:id/resume - Resume an interrupted run (SSE streaming)
+//
+// Checkpoint-based resume: re-executes ONLY the test cases that
+// have no persisted report (pending / interrupted / failed-without-report).
+// Completed test cases keep their existing reports and verdicts. The run
+// document is reused — no new run id — so history and stats stay coherent.
+router.post('/api/storage/evaluation-runs/:id/resume', async (req: Request, res: Response) => {
+  const { id } = req.params;
+  try {
+    const storage = getStorageModule();
+
+    const run = await storage.evaluationRuns.getById(id);
+    if (!run) {
+      return res.status(404).json({ error: 'Evaluation run not found' });
+    }
+    if (activeCancellationTokens.has(id)) {
+      return res.status(409).json({ error: 'Run is currently executing — cannot resume an active run' });
+    }
+    // Shared-cluster guard: a `running` run may be executing on ANOTHER
+    // agent-health server pointed at the same storage. Only treat it as an
+    // orphan (resumable) once its liveness heartbeat has gone stale.
+    if (run.status === 'running') {
+      const ageMs = runLivenessAgeMs(run);
+      const staleMs = runStaleAfterMs();
+      if (ageMs < staleMs) {
+        return res.status(409).json({
+          error: `Run appears to be executing (last liveness signal ${Math.round(ageMs / 1000)}s ago, stale threshold ${Math.round(staleMs / 1000)}s). ` +
+            'If the owning server died, retry after the threshold or wait for boot recovery to mark it resumable.',
+        });
+      }
+    }
+
+    const resumableIds = computeResumableTestCaseIds(run);
+    if (resumableIds.length === 0) {
+      return res.status(400).json({ error: 'Nothing to resume — every test case already has a persisted report' });
+    }
+
+    // Set SSE headers (mirrors the create route)
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    // Re-resolve test cases from the run's stored sources, then narrow to the
+    // resumable subset. Code-import (.eval.ts) fn maps are re-materialized by
+    // the same resolution path the create route uses.
+    let resolved;
+    try {
+      resolved = await resolveTestCaseSources(run.sources, storage);
+    } catch (resolveError: any) {
+      console.error('[StorageAPI] Resume source resolution failed:', resolveError.message);
+      sendSSE(res, 'error', { error: resolveError.message, runId: id });
+      res.end();
+      return;
+    }
+    const resumableSet = new Set(resumableIds);
+    const testCases = resolved.testCases.filter((tc) => resumableSet.has(tc.id));
+    if (testCases.length === 0) {
+      sendSSE(res, 'error', {
+        error: 'The run sources no longer contain the pending test cases — nothing to resume',
+        runId: id,
+      });
+      res.end();
+      return;
+    }
+
+    // Reset the resumable results to pending and flip the run back to running.
+    const now = new Date().toISOString();
+    const results = { ...(run.results || {}) };
+    for (const tcId of resumableIds) {
+      results[tcId] = { reportId: '', status: 'pending' };
+    }
+    await storage.evaluationRuns.update(id, {
+      status: 'running',
+      error: '',
+      results,
+      resumedAt: now,
+    });
+    run.status = 'running';
+    run.results = results;
+    run.resumedAt = now;
+    delete run.error;
+
+    sendSSE(res, 'started', {
+      runId: id,
+      resumed: true,
+      testCases: run.testCaseSnapshots,
+      pendingCount: testCases.length,
+      skippedCount: (run.testCaseSnapshots?.length || 0) - testCases.length,
+    });
+
+    const cancellationToken = createCancellationToken();
+    activeCancellationTokens.set(id, cancellationToken);
+    const stopHeartbeat = startRunHeartbeat(storage, id);
+
+    try {
+      const completedRun = await executeEvaluationRun(run, testCases, {
+        storageModule: storage,
+        cancellationToken,
+        evaluateFnMap: resolved.evaluateFnMap,
+        hooksByFile: resolved.hooksByFile,
+        testHookScopes: resolved.testHookScopes,
+        onProgress: (progress: any) => {
+          sendSSE(res, 'progress', progress);
+        },
+        onTestCaseComplete: async (testCaseId: string, result: any) => {
+          await storage.evaluationRuns.updateResult(id, testCaseId, result);
+          sendSSE(res, 'testCaseComplete', { testCaseId, result });
+        },
+      });
+
+      const finalStatus = cancellationToken.isCancelled ? 'cancelled' : 'completed';
+      // executeEvaluationRun computed stats.total from the resumed SUBSET —
+      // correct it to the full run size (preserved + resumed results).
+      const stats = completedRun.stats
+        ? { ...completedRun.stats, total: run.testCaseSnapshots?.length || Object.keys(completedRun.results || {}).length }
+        : undefined;
+      const updatedRun = await storage.evaluationRuns.update(id, {
+        status: finalStatus,
+        stats,
+        completedAt: new Date().toISOString(),
+        results: completedRun.results,
+      });
+
+      sendSSE(res, 'completed', updatedRun);
+    } catch (error: any) {
+      console.error(`[StorageAPI] Evaluation run resume failed: ${id}`, error.message);
+      try {
+        await storage.evaluationRuns.update(id, {
+          status: 'failed',
+          completedAt: new Date().toISOString(),
+          error: error.message,
+        });
+      } catch (updateError: any) {
+        console.error(`[StorageAPI] Failed to update run status: ${updateError.message}`);
+      }
+      sendSSE(res, 'error', { error: error.message, runId: id });
+    } finally {
+      stopHeartbeat();
+      activeCancellationTokens.delete(id);
+      res.end();
+    }
+  } catch (error: any) {
+    console.error('[StorageAPI] Resume evaluation run failed:', error.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    } else {
+      try { sendSSE(res, 'error', { error: error.message, runId: id }); } catch { /* stream broken */ }
+      try { res.end(); } catch { /* already ended */ }
+    }
   }
 });
 
