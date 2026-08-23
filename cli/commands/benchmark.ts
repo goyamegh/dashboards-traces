@@ -22,6 +22,7 @@ import { resolveAgentModel } from '@/lib/resolveAgentModel.js';
 import { ensureServer, createServerCleanup, isServerRunning, type EnsureServerResult } from '@/cli/utils/serverLifecycle.js';
 import { applyAgentPathOption } from '@/cli/utils/agentPathOption.js';
 import { ApiClient, ServerError, type BenchmarkExecutionEvent } from '@/cli/utils/apiClient.js';
+import { resolveUnifiedRunOutcome } from '@/cli/utils/evaluationRunOutcome.js';
 import { validateTestCasesArrayJson, type ValidatedTestCaseInput } from '@/lib/testCaseValidation.js';
 import { calculateRunStats, getReportIdsFromRun } from '@/lib/runStats.js';
 import { formatJson, formatMarkdownTable, parseOutputFormat, OUTPUT_FORMAT_DESCRIPTION, type OutputFormat } from '@/cli/utils/formatOutput.js';
@@ -710,7 +711,25 @@ async function runUnifiedMode(
       run = await api.getEvaluationRun(runId);
     }
 
-    spinner.succeed(`Evaluation run completed (${completedCount}/${totalTestCases} test cases)`);
+    // The run object we now hold may not actually be terminal: a poll can give
+    // up after its (generous, but finite) timeout while the server is still
+    // working, and 'failed'/'cancelled' are legitimate distinct terminal
+    // states from 'completed'. Report each case honestly instead of always
+    // succeeding — this is the same class of bug this fix addresses, one
+    // layer up. See cli/utils/evaluationRunOutcome.ts for the (unit-tested)
+    // decision logic.
+    const outcome = resolveUnifiedRunOutcome(run, completedCount);
+    if (outcome.kind === 'failed') {
+      spinner.fail(outcome.message);
+      process.exit(1);
+    }
+    if (outcome.kind === 'timeout') {
+      spinner.warn('Timed out waiting for the run to finish server-side — it may still be in progress.');
+      console.log(chalk.gray(`  Check status: ${serverResult.baseUrl}/api/storage/evaluation-runs/${runId}`));
+      process.exit(1);
+    }
+
+    spinner.succeed(`Evaluation run completed (${outcome.doneCount}/${totalTestCases} test cases)`);
 
     if (run) {
       const passed = Object.values(run.results || {}).filter((r: any) => r.status === 'completed').length;
