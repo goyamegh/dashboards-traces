@@ -137,7 +137,7 @@ describe('POST /api/storage/evaluation-runs/:id/resume — checkpoint resume', (
       const now = new Date().toISOString();
       const seeded = await httpJson<any>('PUT', `${BASE_URL}/api/storage/evaluation-runs/${runId}`, {
         name: 'resume-int-run',
-        sources: [{ type: 'test-case-ids', testCaseIds: createdTestCaseIds }],
+        sources: [{ type: 'test-case-ids', ids: createdTestCaseIds }],
         agentKey: 'demo',
         modelId: 'demo-model',
         judgeModelId: 'demo-model',
