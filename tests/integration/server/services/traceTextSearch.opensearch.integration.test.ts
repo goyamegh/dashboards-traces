@@ -57,23 +57,18 @@ describe('trace text-search against real OpenSearch (Data Prepper span schema)',
     client = new Client({ node: ENDPOINT, ssl: { rejectUnauthorized: false } });
     available = await clusterUp(client);
     if (!available) {
-      if (process.env.CI) {
-        // CI's `integration-tests` job provisions a real OpenSearch service
-        // container on :9200 and already blocks on it reporting healthy
-        // BEFORE any test runs (see the "Wait for OpenSearch to be healthy"
-        // step in .github/workflows/ci.yml, which itself fails the job after
-        // ~120s if it never comes up). So on CI, unreachable here never means
-        // "no cluster was provisioned" — it means the cluster we were already
-        // promised has gone away mid-job. Fail loudly instead of silently
-        // passing, so a real infra regression can't hide behind a green run.
-        throw new Error(
-          `OpenSearch not reachable at ${ENDPOINT} while running in CI, but ci.yml's ` +
-          `integration-tests job provisions and health-checks an OpenSearch service ` +
-          `container before any test runs — this indicates the cluster died mid-job, ` +
-          `not that none was provisioned. Failing loudly instead of skipping.`
-        );
-      }
-      // Local/dev convenience only: no cluster running on this machine.
+      // No cluster reachable — degrade gracefully rather than failing the
+      // whole suite. (Earlier revision of this file tried making this throw
+      // when `process.env.CI` was set, reasoning that ci.yml's dedicated
+      // `integration-tests` job provisions and health-checks a real
+      // OpenSearch service container before any test runs. That's true for
+      // THAT job, but GitHub Actions sets `CI=true` for every job, including
+      // `release-rehearsal` ("npm test exactly as the Release Workflow runs
+      // it"), which runs the full suite on a plain runner with no OpenSearch
+      // service at all — so the CI-only throw broke that job outright.
+      // There's no env var this file can see that reliably means "a cluster
+      // was specifically promised for this job" without ci.yml adding one,
+      // so: skip-with-warning unconditionally, as before.)
       // eslint-disable-next-line no-console
       console.warn(`[skip] OpenSearch not reachable at ${ENDPOINT} — skipping real-cluster trace search tests`);
       return;
