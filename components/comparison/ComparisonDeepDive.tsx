@@ -71,24 +71,32 @@ function formatChartValue(v: number): string {
  * tokens, error counts, ...). Units differ per row, so each row is normalized
  * to its OWN max(a, b) rather than sharing one axis — a paired "bullet chart"
  * rather than a grouped bar chart, which is the right shape when the rows are
- * not on a common scale.
+ * not on a common scale. The bar is a quick visual scan aid only — the PRINTED
+ * number (not bar length) is what carries precision, since values come from an
+ * LLM's tool call and are not independently re-validated against the spans it
+ * cited. Defensively guards against non-finite/negative values (e.g. a
+ * malformed tool call slipping past the schema) so a bad value degrades to an
+ * empty bar instead of a broken `NaN%`/negative CSS width.
  */
 const CompareBars: React.FC<{ chart: DeepDiveChartSpec; nameA: string; nameB: string }> = ({ chart, nameA, nameB }) => (
   <div className="rounded-lg border border-border bg-card/60 p-3 mb-3" data-testid="deep-dive-chart">
     <div className="text-xs font-semibold text-foreground/90 mb-2">{chart.title}</div>
     <div className="space-y-2.5">
       {chart.series.map((s, i) => {
-        const max = Math.max(Math.abs(s.a), Math.abs(s.b), 1e-9);
-        const pctA = Math.max((Math.abs(s.a) / max) * 100, s.a === 0 ? 0 : 3);
-        const pctB = Math.max((Math.abs(s.b) / max) * 100, s.b === 0 ? 0 : 3);
+        const safe = (v: number) => (Number.isFinite(v) ? Math.max(v, 0) : 0);
+        const a = safe(s.a);
+        const b = safe(s.b);
+        const max = Math.max(a, b, 1e-9);
+        const pctA = Math.max((a / max) * 100, a === 0 ? 0 : 3);
+        const pctB = Math.max((b / max) * 100, b === 0 ? 0 : 3);
         const unit = s.unit ? ` ${s.unit}` : '';
         return (
           <div key={i}>
             <div className="text-[11px] text-muted-foreground mb-1">{s.label}</div>
             <div className="space-y-1">
               {[
-                { ab: 'A' as const, value: s.a, pct: pctA, name: nameA, bar: 'bg-opensearch-blue', text: 'text-opensearch-blue' },
-                { ab: 'B' as const, value: s.b, pct: pctB, name: nameB, bar: 'bg-purple-400', text: 'text-purple-300' },
+                { ab: 'A' as const, raw: s.a, value: a, pct: pctA, name: nameA, bar: 'bg-opensearch-blue', text: 'text-opensearch-blue' },
+                { ab: 'B' as const, raw: s.b, value: b, pct: pctB, name: nameB, bar: 'bg-purple-400', text: 'text-purple-300' },
               ].map((row) => (
                 <div key={row.ab} className="flex items-center gap-2">
                   <span className={`w-3 text-[10px] font-bold flex-shrink-0 ${row.text}`} title={row.name}>{row.ab}</span>
@@ -96,7 +104,7 @@ const CompareBars: React.FC<{ chart: DeepDiveChartSpec; nameA: string; nameB: st
                     <div className={`h-full rounded ${row.bar}`} style={{ width: `${row.pct}%` }} />
                   </div>
                   <span className="w-16 text-right text-[11px] tabular-nums text-foreground/80 flex-shrink-0">
-                    {formatChartValue(row.value)}{unit}
+                    {Number.isFinite(row.raw) ? `${formatChartValue(row.raw)}${unit}` : '—'}
                   </span>
                 </div>
               ))}

@@ -6,10 +6,12 @@
 /**
  * Unit tests for the comparison deep-dive's in-process tools:
  *   - query_spans / query_logs: read-only, run-scoped to the two runs (A/B).
- *   - record_metric_chart / record_experiment_suggestions: structured-output
- *     "recorder" tools the agent calls as side effects; their results are
- *     written into the shared `DeepDiveCapture` sink rather than parsed out
- *     of the agent's free-form markdown answer.
+ *   - record_deepdive_extras: a single structured-output "recorder" tool the
+ *     agent calls (at most once, both fields optional) as a side effect; its
+ *     result is written into the shared `DeepDiveCapture` sink rather than
+ *     parsed out of the agent's free-form markdown answer. A single combined
+ *     tool (rather than two separate ones) keeps the chart + experiment ideas
+ *     atomic in one call.
  */
 
 import {
@@ -38,57 +40,65 @@ function collectTools(capture: DeepDiveCapture = {}): { tools: Map<string, Captu
 const parseText = (res: any) => JSON.parse(res.content[0].text);
 
 describe('createComparisonTraceExtension', () => {
-  it('registers query_spans, query_logs, record_metric_chart, record_experiment_suggestions', () => {
+  it('registers query_spans, query_logs, record_deepdive_extras', () => {
     const { tools } = collectTools();
-    expect([...tools.keys()].sort()).toEqual([
-      'query_logs',
-      'query_spans',
-      'record_experiment_suggestions',
-      'record_metric_chart',
-    ]);
+    expect([...tools.keys()].sort()).toEqual(['query_logs', 'query_spans', 'record_deepdive_extras']);
   });
 
-  describe('record_metric_chart', () => {
-    it('writes the chart into the capture sink and acks', async () => {
+  describe('record_deepdive_extras', () => {
+    it('writes both chart and experiments into the capture sink from ONE call and acks', async () => {
       const { tools, capture } = collectTools();
       const params = {
-        title: 'Tool usage & retries',
-        series: [
-          { label: 'Tool calls', a: 12, b: 7 },
-          { label: 'Retries', a: 3, b: 0, unit: 'calls' },
+        chart: {
+          title: 'Tool usage & retries',
+          series: [
+            { label: 'Tool calls', a: 12, b: 7 },
+            { label: 'Retries', a: 3, b: 0, unit: 'calls' },
+          ],
+        },
+        experiments: [
+          { title: 'Force a mid-task tool failure', rationale: 'A retried 3x on [span](span:run-A:sp1) but B never hit this path.' },
         ],
       };
-      const res = await tools.get('record_metric_chart')!.execute('t1', params);
-      expect(capture.chart).toEqual(params);
-      expect(parseText(res)).toEqual({ recorded: true, seriesCount: 2 });
+      const res = await tools.get('record_deepdive_extras')!.execute('t1', params);
+      expect(capture.chart).toEqual(params.chart);
+      expect(capture.experiments).toEqual(params.experiments);
+      expect(parseText(res)).toEqual({ recorded: true, chart: true, experimentsCount: 1 });
+    });
+
+    it('records chart only when experiments is omitted, and vice versa', async () => {
+      const { tools, capture } = collectTools();
+      await tools.get('record_deepdive_extras')!.execute('t1', {
+        chart: { title: 'x', series: [{ label: 'a', a: 1, b: 2 }] },
+      });
+      expect(capture.chart).toBeDefined();
+      expect(capture.experiments).toBeUndefined();
+
+      const { tools: tools2, capture: capture2 } = collectTools();
+      await tools2.get('record_deepdive_extras')!.execute('t2', {
+        experiments: [{ title: 'idea', rationale: 'why' }],
+      });
+      expect(capture2.chart).toBeUndefined();
+      expect(capture2.experiments).toHaveLength(1);
+    });
+
+    it('acks recorded:true even when called with neither chart nor experiments', async () => {
+      const { tools, capture } = collectTools();
+      const res = await tools.get('record_deepdive_extras')!.execute('t1', {});
+      expect(parseText(res)).toEqual({ recorded: true, chart: false, experimentsCount: 0 });
+      expect(capture.chart).toBeUndefined();
+      expect(capture.experiments).toBeUndefined();
     });
 
     it('overwrites a previous chart if called again (agent is instructed to call once)', async () => {
       const { tools, capture } = collectTools();
-      await tools.get('record_metric_chart')!.execute('t1', {
-        title: 'first',
-        series: [{ label: 'x', a: 1, b: 2 }],
+      await tools.get('record_deepdive_extras')!.execute('t1', {
+        chart: { title: 'first', series: [{ label: 'x', a: 1, b: 2 }] },
       });
-      await tools.get('record_metric_chart')!.execute('t2', {
-        title: 'second',
-        series: [{ label: 'y', a: 3, b: 4 }],
+      await tools.get('record_deepdive_extras')!.execute('t2', {
+        chart: { title: 'second', series: [{ label: 'y', a: 3, b: 4 }] },
       });
       expect(capture.chart?.title).toBe('second');
-    });
-  });
-
-  describe('record_experiment_suggestions', () => {
-    it('writes the suggestions into the capture sink and acks', async () => {
-      const { tools, capture } = collectTools();
-      const params = {
-        suggestions: [
-          { title: 'Force a mid-task tool failure', rationale: 'A retried 3x on [span](span:run-A:sp1) but B never hit this path.' },
-          { title: 'Add a second related ticket', rationale: 'Neither run explored cross-ticket linkage.' },
-        ],
-      };
-      const res = await tools.get('record_experiment_suggestions')!.execute('t1', params);
-      expect(capture.experiments).toEqual(params.suggestions);
-      expect(parseText(res)).toEqual({ recorded: true, count: 2 });
     });
   });
 
