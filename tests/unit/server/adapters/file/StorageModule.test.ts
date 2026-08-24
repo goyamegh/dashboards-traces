@@ -78,6 +78,29 @@ describe('FileStorageModule', () => {
     });
   });
 
+  describe('benchmarks', () => {
+    it('excludes co-located evaluation-run documents from getAll', async () => {
+      await mod.benchmarks.create({ id: 'bench-1', name: 'Suite', testCaseIds: [], runs: [] });
+      await mod.evaluationRuns.create({
+        id: 'eval-run-1',
+        docType: 'evaluation-run',
+        name: 'CLI Run',
+        createdAt: new Date().toISOString(),
+        status: 'completed',
+        agentKey: 'demo',
+        modelId: 'demo-model',
+        sources: [],
+        trigger: 'cli',
+        testCaseSnapshots: [],
+        results: {},
+      });
+
+      const result = await mod.benchmarks.getAll();
+      expect(result.total).toBe(1);
+      expect(result.items.map(item => item.id)).toEqual(['bench-1']);
+    });
+  });
+
   describe('sessionMetadata', () => {
     it('should return null for nonexistent session', async () => {
       const result = await mod.sessionMetadata.get('claude-code', 'nonexistent');
