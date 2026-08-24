@@ -9,6 +9,8 @@
  * POST /api/comparison/deep-dive
  *   body: { reportIds: [reportIdA, reportIdB], modelId? }
  *   resp: { markdown, modelId, durationMs,
+ *           chart?: { title, series: [{ label, a, b, unit? }] },
+ *           experiments?: [{ title, rationale }],
  *           runs: [{ key, reportId, runId, serviceName, startedAt, endedAt }] }
  *
  * Resolves each run's trace identity SERVER-SIDE (serviceName from the live

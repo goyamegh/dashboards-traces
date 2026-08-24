@@ -23,7 +23,12 @@
  * This is the engine behind `POST /api/comparison/deep-dive`.
  */
 
-import { createComparisonTraceExtension } from './comparisonTraceTools';
+import {
+  createComparisonTraceExtension,
+  type DeepDiveCapture,
+  type DeepDiveChartSpec,
+  type DeepDiveExperimentSuggestion,
+} from './comparisonTraceTools';
 import {
   findRequestedModel,
   pickJudgeModel,
@@ -58,6 +63,10 @@ export interface ComparisonDeepDiveResult {
   markdown: string;
   modelId: string;
   durationMs: number;
+  /** A-vs-B compare-bars chart, when the agent found numbers worth charting. */
+  chart?: DeepDiveChartSpec;
+  /** Concrete follow-up experiment ideas grounded in this comparison. */
+  experiments?: DeepDiveExperimentSuggestion[];
 }
 
 /** Dynamically load the pi SDK (optionalDependency) with an actionable error. */
@@ -84,6 +93,7 @@ WORKFLOW:
 2. Compare along the axes that actually differ for THIS pair — e.g. the model each agent actually ran (from gen_ai.request.model / gen_ai.response.model in the spans), correctness/outcome, thoroughness vs. speed, tool economy (how many/which tools, structured API vs. scraping), unique discoveries (a related ticket, a code path), investigation approach (direct vs. delegated to sub-agents), evidence volume, wasted/retry calls. Do NOT force a fixed rubric; surface what's interesting and real for these two.
 3. ERRORS — explicitly hunt for failures in EACH run: spans carrying an error/exception status or error attributes (e.g. otel.status_code=ERROR, status=ERROR, error=true, exception.message / exception.type, an HTTP/result status >= 400, a non-zero exit code), tool calls that failed or were retried repeatedly, timeouts, and error-/warn-level entries from query_logs. For every error you find, note WHICH run, WHAT failed, and HOW that agent handled it — recovered, retried, worked around it, or failed outright.
 4. If a run has NO spans (traces unavailable), say so plainly and compare on the trajectory instead — never invent spans.
+5. Before writing your final answer, call \`record_metric_chart\` ONCE with 2-6 real numeric dimensions where A and B genuinely differ (skip if nothing numeric stood out) and call \`record_experiment_suggestions\` ONCE with 1-4 concrete follow-up test-case ideas grounded in what you actually found in this pair.
 
 OUTPUT — a tight markdown deep-dive (NOT a multi-question report). Structure:
   - A one-line **headline verdict** (e.g. "Both resolved it correctly — A was thorough, B was ~30% faster"; mention errors here if they materially changed the outcome).
@@ -149,12 +159,13 @@ export async function generateComparisonDeepDive(opts: {
   }
   debug('CompareDeepDive', 'model:', `${model.provider}/${model.id}`, 'runs:', runs.map((r) => r.key).join(','));
 
+  const capture: DeepDiveCapture = {};
   const resourceLoader = new DefaultResourceLoader({
     cwd: process.cwd(),
     agentDir: getAgentDir(),
     systemPromptOverride: () => SYSTEM_PROMPT,
     appendSystemPromptOverride: () => [],
-    extensionFactories: [createComparisonTraceExtension(runs, serverUrl)],
+    extensionFactories: [createComparisonTraceExtension(runs, serverUrl, capture)],
     // Full isolation for a HEADLESS in-process session. Without noExtensions
     // the loader auto-loads the user's global ~/.pi/agent extensions (e.g.
     // midway-status) whose interactive theme/status `tick` timer throws
@@ -173,15 +184,31 @@ export async function generateComparisonDeepDive(opts: {
     authStorage,
     modelRegistry,
     resourceLoader,
-    // Only the run-scoped trace tools — no filesystem/bash access.
-    tools: ['query_spans', 'query_logs'],
+    // Only the run-scoped trace tools + the two structured-output recorders — no filesystem/bash access.
+    tools: ['query_spans', 'query_logs', 'record_metric_chart', 'record_experiment_suggestions'],
     sessionManager: SessionManager.inMemory(),
   });
 
   await session.prompt(buildUserPrompt(runs));
   const markdown = extractFinalAssistantText(session.messages).trim();
   const durationMs = Date.now() - startTime;
-  debug('CompareDeepDive', 'done in', durationMs, 'ms, markdown len', markdown.length);
+  debug(
+    'CompareDeepDive',
+    'done in',
+    durationMs,
+    'ms, markdown len',
+    markdown.length,
+    'chart:',
+    !!capture.chart,
+    'experiments:',
+    capture.experiments?.length ?? 0
+  );
 
-  return { markdown, modelId: `${model.provider}/${model.id}`, durationMs };
+  return {
+    markdown,
+    modelId: `${model.provider}/${model.id}`,
+    durationMs,
+    chart: capture.chart,
+    experiments: capture.experiments,
+  };
 }

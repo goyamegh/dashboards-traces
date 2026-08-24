@@ -26,9 +26,42 @@ function textResult(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj, null, 2) }], details: obj };
 }
 
+/** One A-vs-B numeric dimension the deep-dive agent found worth charting. */
+export interface DeepDiveChartSeriesPoint {
+  label: string;
+  a: number;
+  b: number;
+  unit?: string;
+}
+
+/** The small A-vs-B compare-bars chart recorded by `record_metric_chart`. */
+export interface DeepDiveChartSpec {
+  title: string;
+  series: DeepDiveChartSeriesPoint[];
+}
+
+/** One follow-up experiment idea recorded by `record_experiment_suggestions`. */
+export interface DeepDiveExperimentSuggestion {
+  title: string;
+  rationale: string;
+}
+
+/**
+ * Mutable sink the two "recorder" tools below write into. The comparison agent
+ * calls them (at most once each) as SIDE EFFECTS of its investigation — their
+ * tool results are just acks; the actual structured data is read back from
+ * this object by the caller after `session.prompt()` resolves. This avoids
+ * parsing structured JSON out of the agent's free-form markdown final answer.
+ */
+export interface DeepDiveCapture {
+  chart?: DeepDiveChartSpec;
+  experiments?: DeepDiveExperimentSuggestion[];
+}
+
 export function createComparisonTraceExtension(
   runs: ComparisonRunInput[],
-  serverUrl: string
+  serverUrl: string,
+  capture: DeepDiveCapture = {}
 ): PiExtensionFactory {
   const byKey = new Map(runs.map((r) => [r.key.toUpperCase(), r]));
   const keys = runs.map((r) => `"${r.key.toUpperCase()}"`).join(' or ');
@@ -136,6 +169,69 @@ export function createComparisonTraceExtension(
         } catch (err: any) {
           return textResult({ run: r.key, error: `logs query error: ${err?.message ?? String(err)}` });
         }
+      },
+    });
+
+    pi.registerTool({
+      name: 'record_metric_chart',
+      label: 'Record a small chart comparing A vs B on real numbers you found',
+      description:
+        'Call this ONCE, after querying spans/logs, with 2-6 numeric dimensions where A and B genuinely ' +
+        'differ (e.g. tool-call count, retries, tokens, error count, duration) — real numbers you actually ' +
+        'saw via query_spans/query_logs, never invented. The UI renders this as a small compare-bars chart ' +
+        "above your narrative. Skip this call entirely if you didn't find anything worth charting numerically.",
+      promptSnippet: 'Record a small A-vs-B chart of real numeric findings',
+      promptGuidelines: [
+        'Call at most once, after you have queried both runs',
+        'Only include numbers you actually observed via query_spans/query_logs — never invent one',
+        '2 to 6 series entries; each needs a short label and a value for both A and B',
+      ],
+      parameters: Type.Object({
+        title: Type.String({ description: 'Short chart title, e.g. "Tool usage & retries"' }),
+        series: Type.Array(
+          Type.Object({
+            label: Type.String({ description: 'Short dimension label, e.g. "Tool calls"' }),
+            a: Type.Number({ description: 'Value for run A' }),
+            b: Type.Number({ description: 'Value for run B' }),
+            unit: Type.Optional(Type.String({ description: 'Unit suffix, e.g. "s", "tokens", "calls"' })),
+          }),
+          { minItems: 2, maxItems: 6 }
+        ),
+      }),
+      async execute(_toolCallId: string, params: { title: string; series: DeepDiveChartSeriesPoint[] }) {
+        capture.chart = { title: params.title, series: params.series };
+        return textResult({ recorded: true, seriesCount: params.series.length });
+      },
+    });
+
+    pi.registerTool({
+      name: 'record_experiment_suggestions',
+      label: 'Record concrete follow-up experiment ideas grounded in this comparison',
+      description:
+        'Call this ONCE, near the end of your investigation, with 1-4 concrete follow-up test-case ideas ' +
+        'suggested by what you actually observed in THIS pair (e.g. a failure mode only one agent handled, a ' +
+        'tool one agent never tried, an edge case neither run exercised). Each idea should be something a human ' +
+        'could turn directly into a new test case. Ground the rationale in what you saw — cite a span with the ' +
+        'same [label](span:<runId>:<spanId>) syntax used in your narrative when relevant. Prefer ideas that probe ' +
+        'a difference, gap or failure you actually found — never generic advice.',
+      promptSnippet: 'Record 1-4 concrete follow-up experiment ideas',
+      promptGuidelines: [
+        'Call at most once, near the end of your investigation',
+        'Each suggestion needs a short, actionable title and a 1-2 sentence grounded rationale',
+        'Prefer ideas that probe a difference, gap or failure you actually found — not generic advice',
+      ],
+      parameters: Type.Object({
+        suggestions: Type.Array(
+          Type.Object({
+            title: Type.String({ description: 'Short, actionable idea, e.g. "Force a mid-task tool failure"' }),
+            rationale: Type.String({ description: 'Why this is worth trying, grounded in this comparison' }),
+          }),
+          { minItems: 1, maxItems: 4 }
+        ),
+      }),
+      async execute(_toolCallId: string, params: { suggestions: DeepDiveExperimentSuggestion[] }) {
+        capture.experiments = params.suggestions;
+        return textResult({ recorded: true, count: params.suggestions.length });
       },
     });
   };

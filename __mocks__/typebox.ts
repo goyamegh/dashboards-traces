@@ -14,4 +14,5 @@ export const Type = {
   String: (opts: Record<string, unknown> = {}) => ({ type: 'string', ...opts }),
   Number: (opts: Record<string, unknown> = {}) => ({ type: 'number', ...opts }),
   Boolean: (opts: Record<string, unknown> = {}) => ({ type: 'boolean', ...opts }),
+  Array: (items: unknown, opts: Record<string, unknown> = {}) => ({ type: 'array', items, ...opts }),
 };

@@ -43,6 +43,12 @@ describe('comparisonDeepDiveService — SYSTEM_PROMPT', () => {
     expect(SYSTEM_PROMPT).toMatch(/span:<runId>:<spanId>/);
     expect(SYSTEM_PROMPT).toMatch(/headline verdict/i);
   });
+
+  it('instructs the agent to record a chart and follow-up experiment suggestions before writing', () => {
+    expect(SYSTEM_PROMPT).toMatch(/record_metric_chart` ONCE/);
+    expect(SYSTEM_PROMPT).toMatch(/record_experiment_suggestions` ONCE/);
+    expect(SYSTEM_PROMPT).toMatch(/grounded in what you actually found/i);
+  });
 });
 
 describe('comparisonDeepDiveService — buildUserPrompt', () => {
