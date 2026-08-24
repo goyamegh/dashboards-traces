@@ -50,6 +50,7 @@ import {
   getSelectedVersionData,
   getVersionTestCases,
   filterRunsByVersion,
+  effectiveRunVersionFilter,
   VersionData,
 } from '@/lib/benchmarkVersionUtils';
 import { RunConfigForExecution } from '@/components/BenchmarkEditor';
@@ -138,7 +139,16 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
   // Version state
   const [testCaseVersion, setTestCaseVersion] = useState<number | null>(null);
-  const [runVersionFilter, setRunVersionFilter] = usePersistedState<number | 'all'>('benchmark-runs:runVersionFilter', 'all');
+  // Persisted PER BENCHMARK — a single global key leaked a version filter set
+  // on one benchmark (e.g. v8) onto every other benchmark, where it matched
+  // nothing and rendered a bogus "No runs for v8" empty state that looked
+  // like data loss (hit on EnterpriseRAG-Bench, 2026-08-24).
+  const [rawRunVersionFilter, setRunVersionFilter] = usePersistedState<number | 'all'>(
+    `benchmark-runs:runVersionFilter:${benchmarkId ?? 'unknown'}`, 'all'
+  );
+  // Self-heal any stale persisted value: a version the benchmark doesn't have
+  // behaves as 'all' instead of filtering everything out.
+  const runVersionFilter = effectiveRunVersionFilter(rawRunVersionFilter, benchmark?.currentVersion);
 
   // Layout state — the legacy /benchmarks/:id/runs page used a side-by-side
   // resizable split (Test Cases left, Runs right). The Evals3 "Option B" rewrite
