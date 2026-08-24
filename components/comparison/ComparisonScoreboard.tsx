@@ -4,6 +4,7 @@
  */
 
 import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { Link } from 'react-router-dom';
 import { ChevronRight, ChevronUp, Copy, ExternalLink, X, ArrowUpDown, Grid2x2 } from 'lucide-react';
 import { cn, formatRelativeTime, getModelName } from '@/lib/utils';
 import { formatCost, formatDuration } from '@/services/metrics';
@@ -75,7 +76,12 @@ const RunDetailDrawer: React.FC<RunDetailDrawerProps> = ({ run, selectedRun, lab
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(run.runId);
+    // Best-effort: writeText() can reject (insecure context, missing
+    // permission, unsupported browser). The "Copied" affordance is a nice-to-
+    // have hint, not a critical action, so we swallow the rejection rather
+    // than surface it — but it must be caught, or a failed copy becomes an
+    // unhandled promise rejection.
+    navigator.clipboard.writeText(run.runId).catch(() => {});
     setCopied(true);
     setTimeout(() => setCopied(false), 1500);
   };
@@ -99,12 +105,12 @@ const RunDetailDrawer: React.FC<RunDetailDrawerProps> = ({ run, selectedRun, lab
         {copied && <span className="text-[10px] text-green-400">Copied</span>}
       </div>
       <div className="flex items-center gap-2 pt-1">
-        <a
-          href={`/evaluations/runs/${run.runId}`}
+        <Link
+          to={`/evaluations/runs/${run.runId}`}
           className="inline-flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300"
         >
           <ExternalLink size={10} /> Open run
-        </a>
+        </Link>
         <button
           onClick={onRemove}
           className="inline-flex items-center gap-1 text-[10px] text-red-400 hover:text-red-300 ml-auto"
@@ -218,7 +224,13 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
   }, []);
 
   const handleScrollTop = useCallback(() => {
-    bandRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Scroll the SENTINEL (which sits just above the sticky band), not the
+    // band itself — the band is already pinned in view while condensed, so
+    // scrollIntoView on it is a no-op. Scrolling the sentinel back into view
+    // moves the page past the sticky breakpoint, which is what actually
+    // un-condenses the band (the IntersectionObserver picks up the sentinel
+    // re-entering the viewport).
+    sentinelRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }, []);
 
   // Single-run selections still get the scoreboard (run row + "All metrics"
