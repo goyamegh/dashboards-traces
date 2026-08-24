@@ -623,6 +623,17 @@ expected_output:
       );
     });
 
+    it('URL-encodes a branch name containing a slash', async () => {
+      const mockFetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ tree: [] }) });
+      global.fetch = mockFetch as any;
+
+      await fetchTestCasePathsFromGitHub('robusta-dev/holmesgpt', 'feature/import-fixtures');
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.github.com/repos/robusta-dev/holmesgpt/git/trees/feature%2Fimport-fixtures?recursive=1',
+        expect.anything()
+      );
+    });
+
     it('throws when the GitHub API responds with a non-ok status', async () => {
       global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 404, statusText: 'Not Found' }) as any;
 

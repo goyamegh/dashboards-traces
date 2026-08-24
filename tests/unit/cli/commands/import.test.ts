@@ -279,7 +279,7 @@ describe('createImportCommand', () => {
     expect(mockWriteFileSync).toHaveBeenCalledWith('holmesgpt-test-cases.json', '[]\n', 'utf-8');
   });
 
-  it('prints skipped and per-file error details in the summary', async () => {
+  it('prints skipped and per-file error details in the summary, and exits non-zero on partial failure', async () => {
     mockConvertLocal.mockReturnValue({
       testCases: [],
       skipped: [{ path: '/path/skip/test_case.yaml', reason: 'Marked as skip' }],
@@ -292,6 +292,32 @@ describe('createImportCommand', () => {
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Skipped:'));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Errors:'));
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('/path/bad/test_case.yaml: Invalid YAML'));
+    // A partial import still writes the file (for inspection) but must not report success.
+    expect(mockWriteFileSync).toHaveBeenCalled();
+    expect(process.exit).toHaveBeenCalledWith(1);
+  });
+
+  it('exits 0 (does not call process.exit) when there are no conversion errors', async () => {
+    mockConvertLocal.mockReturnValue({
+      testCases: [
+        {
+          name: 'test',
+          description: 'Test',
+          category: 'General',
+          difficulty: 'Medium',
+          initialPrompt: 'test',
+          expectedOutcomes: ['result'],
+          context: [],
+        },
+      ],
+      skipped: [],
+      errors: [],
+    });
+
+    const cmd = createImportCommand();
+    await cmd.parseAsync(['node', 'test', '--from', 'holmesgpt', '--source', '/path']);
+
+    expect(process.exit).not.toHaveBeenCalled();
   });
 
   it('prints a sample test case in dry-run mode when results are present', async () => {

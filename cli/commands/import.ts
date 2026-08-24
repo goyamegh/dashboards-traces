@@ -131,4 +131,13 @@ function outputResults(
         `    ${chalk.cyan(`agent-health benchmark -f ${options.output} -a holmesgpt -n "HolmesGPT Evaluations"`)}\n`
     )
   );
+
+  // A partial import (some fixtures failed to convert/validate) should not
+  // report success to CI or scripting callers — the output file is still
+  // written (best-effort partial corpus for inspection), but the process
+  // exits non-zero so automation notices instead of silently benchmarking
+  // an incomplete set.
+  if (errors.length > 0) {
+    process.exit(1);
+  }
 }

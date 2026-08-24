@@ -26,7 +26,7 @@ export async function fetchTestCasePathsFromGitHub(
   repo: string = DEFAULT_REPO,
   branch: string = DEFAULT_BRANCH
 ): Promise<string[]> {
-  const url = `https://api.github.com/repos/${repo}/git/trees/${branch}?recursive=1`;
+  const url = `https://api.github.com/repos/${repo}/git/trees/${encodeURIComponent(branch)}?recursive=1`;
   const response = await fetch(url, {
     headers: { 'User-Agent': 'agent-health-cli' },
   });
@@ -54,7 +54,7 @@ export async function fetchFileFromGitHub(
   repo: string = DEFAULT_REPO,
   branch: string = DEFAULT_BRANCH
 ): Promise<string> {
-  const url = `https://raw.githubusercontent.com/${repo}/${branch}/${filePath}`;
+  const url = `https://raw.githubusercontent.com/${repo}/${encodeURIComponent(branch)}/${filePath}`;
   const response = await fetch(url, {
     headers: { 'User-Agent': 'agent-health-cli' },
   });
