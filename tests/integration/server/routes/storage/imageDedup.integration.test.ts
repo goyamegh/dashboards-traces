@@ -72,7 +72,7 @@ describe('Benchmark image digest stamping (integration)', () => {
   }, TEST_TIMEOUT);
 
   it(
-    'two identical runs share ONE image; a different judge model forks a second image',
+    'two identical runs share ONE image; changing the test-case set forks a second image',
     async () => {
       if (!backendAvailable) return;
 
@@ -87,15 +87,14 @@ describe('Benchmark image digest stamping (integration)', () => {
       ]);
       createdTestCaseIds.push(...bulk.testCases.map((tc) => tc.id));
 
-      const createRun = async (i: number, judgeModelId?: string) => {
+      const createRun = async (i: number, sourceIds: string[] = createdTestCaseIds) => {
         const run = await client.createEvaluationRun(
           {
             name: `image-dedup-run-${Date.now()}-${i}`,
-            sources: [{ type: 'test-case-ids', ids: createdTestCaseIds }],
+            sources: [{ type: 'test-case-ids', ids: sourceIds }],
             agentKey: 'demo',
             modelId: 'demo-model',
             trigger: 'cli',
-            ...(judgeModelId ? { judgeModelId } : {}),
           } as any,
           () => {}
         );
@@ -116,13 +115,23 @@ describe('Benchmark image digest stamping (integration)', () => {
       expect(imageRes.status).toBe(200);
       const imageBody = await imageRes.json();
       expect(imageBody.image.digest).toBe(digest);
-      expect(imageBody.image.testCaseCount).toBe(1);
-      const runIds = imageBody.runs.map((r: any) => r.id);
+      expect(imageBody.image.testCaseCount).toBe(1);      const runIds = imageBody.runs.map((r: any) => r.id);
       expect(runIds).toEqual(expect.arrayContaining([run1!.id, run2!.id]));
 
-      // Changing a control (judge model) forks a NEW image — correctly, because
-      // the runs are no longer comparable.
-      const run3 = await createRun(3, 'us.anthropic.claude-sonnet-4-20250514-v1:0');
+      // Changing a control (the test-case set) forks a NEW image — correctly,
+      // because the runs are no longer comparable. (Judge-model/evaluator
+      // forking is covered at the unit level in benchmarkImage.test.ts.)
+      const bulk2 = await client.bulkCreateTestCases([
+        {
+          name: `image-dedup-tc2-${Date.now()}`,
+          category: 'General',
+          difficulty: 'Easy',
+          initialPrompt: 'Say goodbye.',
+          expectedOutcomes: ['Bids farewell'],
+        },
+      ]);
+      createdTestCaseIds.push(...bulk2.testCases.map((tc) => tc.id));
+      const run3 = await createRun(3, createdTestCaseIds);
       expect(run3?.imageDigest).toBeTruthy();
       expect(run3?.imageDigest).not.toBe(digest);
       if (run3?.imageDigest) createdImageDigests.push(run3.imageDigest);

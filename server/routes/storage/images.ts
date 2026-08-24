@@ -14,8 +14,45 @@
 
 import { Router, Request, Response } from 'express';
 import { getStorageModule } from '../../adapters/index.js';
+import { buildImageDoc } from '../../../lib/benchmarkImage.js';
 
 const router = Router();
+
+// POST /api/storage/images - Build an image from stored test cases (find-or-create)
+// Body: { testCaseIds: string[], evalConditions?: { evaluatorId?, judgeModelId? }, tags?: string[] }
+// Used by `benchmark doctor --migrate-images` to convert legacy benchmarks into
+// tagged images. Content-addressed: posting the same content returns the same image.
+router.post('/api/storage/images', async (req: Request, res: Response) => {
+  try {
+    const { testCaseIds, evalConditions, tags } = req.body;
+    if (!Array.isArray(testCaseIds) || testCaseIds.length === 0) {
+      return res.status(400).json({ error: 'testCaseIds is required and must be a non-empty array' });
+    }
+    const storage = getStorageModule();
+    const testCases = [];
+    const missing: string[] = [];
+    for (const id of testCaseIds) {
+      const tc = await storage.testCases.getById(id);
+      if (tc) testCases.push(tc);
+      else missing.push(id);
+    }
+    if (testCases.length === 0) {
+      return res.status(400).json({ error: `None of the test cases exist: ${missing.join(', ')}` });
+    }
+    const doc = buildImageDoc({ testCases, evalConditions });
+    const image = await storage.images.create(doc);
+    // Union requested tags onto the (possibly pre-existing) image
+    const wantTags = Array.isArray(tags) ? tags.map((t: string) => String(t).trim()).filter(Boolean) : [];
+    const newTags = wantTags.filter((t) => !image.tags.includes(t));
+    const finalImage = newTags.length > 0
+      ? await storage.images.update(image.digest, { tags: [...image.tags, ...newTags] })
+      : image;
+    res.status(201).json({ image: finalImage, ...(missing.length > 0 ? { missingTestCaseIds: missing } : {}) });
+  } catch (error: any) {
+    console.error('[StorageAPI] Create image failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
 
 // GET /api/storage/images - List benchmark images
 router.get('/api/storage/images', async (req: Request, res: Response) => {
