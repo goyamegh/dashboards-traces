@@ -15,6 +15,9 @@ import {
   parseTestCaseYaml,
   discoverLocalTestCases,
   convertAllFromLocal,
+  fetchTestCasePathsFromGitHub,
+  fetchFileFromGitHub,
+  convertAllFromGitHub,
 } from '@/cli/converters/holmesgpt';
 import { testCaseSchema } from '@/lib/testCaseValidation';
 import type { HolmesGPTTestCase } from '@/cli/converters/types';
@@ -561,6 +564,187 @@ expected_output: []
       const result = convertAllFromLocal('/fixtures');
       expect(result.testCases).toHaveLength(0);
       expect(result.errors).toHaveLength(1);
+    });
+
+    it('falls back to walking basePath itself when no known subdirectories exist', () => {
+      mockExistsSync.mockReturnValue(false);
+
+      mockReaddirSync.mockImplementation((dir: any) => {
+        if (dir === '/fixtures') return ['weird_dir'] as any;
+        if (dir === '/fixtures/weird_dir') return ['test_case.yaml'] as any;
+        return [] as any;
+      });
+
+      mockStatSync.mockImplementation((path: any) => {
+        const p = path as string;
+        return { isDirectory: () => p.endsWith('weird_dir') } as any;
+      });
+
+      mockReadFileSync.mockReturnValue(`
+user_prompt: "Ping"
+expected_output:
+  - "pong"
+`);
+
+      const result = convertAllFromLocal('/fixtures');
+      expect(result.testCases).toHaveLength(1);
+      // extractPathParts derives parentDir from the path *relative to basePath*,
+      // so a file directly under basePath has '.' as its parentDir.
+      expect(result.testCases[0].name).toBe('holmesgpt/./weird_dir');
+    });
+  });
+
+  describe('fetchTestCasePathsFromGitHub', () => {
+    const originalFetch = global.fetch;
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it('filters the repo tree for test_case.yaml files under the fixtures path', async () => {
+      const mockFetch = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({
+          tree: [
+            { path: 'tests/llm/fixtures/test_ask_holmes/01_pods/test_case.yaml', type: 'blob' },
+            { path: 'tests/llm/fixtures/test_ask_holmes/01_pods/README.md', type: 'blob' },
+            { path: 'tests/llm/fixtures/test_ask_holmes/01_pods', type: 'tree' },
+            { path: 'other/unrelated/test_case.yaml', type: 'blob' },
+          ],
+        }),
+      });
+      global.fetch = mockFetch as any;
+
+      const paths = await fetchTestCasePathsFromGitHub('robusta-dev/holmesgpt', 'master');
+      expect(paths).toEqual(['tests/llm/fixtures/test_ask_holmes/01_pods/test_case.yaml']);
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://api.github.com/repos/robusta-dev/holmesgpt/git/trees/master?recursive=1',
+        expect.objectContaining({ headers: expect.objectContaining({ 'User-Agent': 'agent-health-cli' }) })
+      );
+    });
+
+    it('throws when the GitHub API responds with a non-ok status', async () => {
+      global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 404, statusText: 'Not Found' }) as any;
+
+      await expect(fetchTestCasePathsFromGitHub('robusta-dev/holmesgpt', 'master')).rejects.toThrow(
+        'GitHub API error: 404 Not Found'
+      );
+    });
+  });
+
+  describe('fetchFileFromGitHub', () => {
+    const originalFetch = global.fetch;
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it('fetches raw file content', async () => {
+      const mockFetch = jest.fn().mockResolvedValue({ ok: true, text: async () => 'user_prompt: hi' });
+      global.fetch = mockFetch as any;
+
+      const content = await fetchFileFromGitHub(
+        'tests/llm/fixtures/test_ask_holmes/01_pods/test_case.yaml',
+        'robusta-dev/holmesgpt',
+        'master'
+      );
+      expect(content).toBe('user_prompt: hi');
+      expect(mockFetch).toHaveBeenCalledWith(
+        'https://raw.githubusercontent.com/robusta-dev/holmesgpt/master/tests/llm/fixtures/test_ask_holmes/01_pods/test_case.yaml',
+        expect.objectContaining({ headers: expect.objectContaining({ 'User-Agent': 'agent-health-cli' }) })
+      );
+    });
+
+    it('throws when the raw file fetch responds with a non-ok status', async () => {
+      global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 500 }) as any;
+
+      await expect(fetchFileFromGitHub('some/path/test_case.yaml')).rejects.toThrow(
+        'Failed to fetch some/path/test_case.yaml: 500'
+      );
+    });
+  });
+
+  describe('convertAllFromGitHub', () => {
+    const originalFetch = global.fetch;
+
+    afterEach(() => {
+      global.fetch = originalFetch;
+    });
+
+    it('fetches, converts, skips, and reports errors across the repo', async () => {
+      const treeResponse = {
+        ok: true,
+        json: async () => ({
+          tree: [
+            { path: 'tests/llm/fixtures/test_ask_holmes/01_pods/test_case.yaml', type: 'blob' },
+            { path: 'tests/llm/fixtures/test_ask_holmes/02_skipped/test_case.yaml', type: 'blob' },
+            { path: 'tests/llm/fixtures/test_ask_holmes/03_bad/test_case.yaml', type: 'blob' },
+          ],
+        }),
+      };
+
+      const fileContents: Record<string, string> = {
+        'tests/llm/fixtures/test_ask_holmes/01_pods/test_case.yaml': `
+user_prompt: "How many pods?"
+expected_output:
+  - "3 pods"
+tags:
+  - kubernetes
+`,
+        'tests/llm/fixtures/test_ask_holmes/02_skipped/test_case.yaml': `
+user_prompt: "Skipped"
+expected_output:
+  - "result"
+skip: true
+skip_reason: "Flaky upstream"
+`,
+        'tests/llm/fixtures/test_ask_holmes/03_bad/test_case.yaml': 'not: [valid, yaml, :::',
+      };
+
+      const onProgress = jest.fn();
+      const mockFetch = jest.fn().mockImplementation((url: string) => {
+        if (url.includes('api.github.com')) {
+          return Promise.resolve(treeResponse);
+        }
+        const match = Object.keys(fileContents).find((path) => url.includes(path));
+        return Promise.resolve({ ok: true, text: async () => fileContents[match!] });
+      });
+      global.fetch = mockFetch as any;
+
+      const result = await convertAllFromGitHub('robusta-dev/holmesgpt', 'master', onProgress);
+
+      expect(result.testCases).toHaveLength(1);
+      expect(result.testCases[0].name).toBe('holmesgpt/test_ask_holmes/01_pods');
+      expect(result.skipped).toHaveLength(1);
+      expect(result.skipped[0].reason).toBe('Flaky upstream');
+      expect(result.errors).toHaveLength(1);
+      expect(onProgress).toHaveBeenCalledWith(1, 3);
+      expect(onProgress).toHaveBeenCalledWith(3, 3);
+    });
+
+    it('propagates a fetch failure for an individual file as a per-path error', async () => {
+      const treeResponse = {
+        ok: true,
+        json: async () => ({
+          tree: [{ path: 'tests/llm/fixtures/test_ask_holmes/01_pods/test_case.yaml', type: 'blob' }],
+        }),
+      };
+
+      global.fetch = jest.fn().mockImplementation((url: string) => {
+        if (url.includes('api.github.com')) return Promise.resolve(treeResponse);
+        return Promise.resolve({ ok: false, status: 503 });
+      }) as any;
+
+      const result = await convertAllFromGitHub('robusta-dev/holmesgpt', 'master');
+      expect(result.testCases).toHaveLength(0);
+      expect(result.errors).toHaveLength(1);
+      expect(result.errors[0].error).toContain('503');
+    });
+
+    it('propagates a top-level failure (e.g. tree fetch error) by rejecting', async () => {
+      global.fetch = jest.fn().mockResolvedValue({ ok: false, status: 403, statusText: 'Forbidden' }) as any;
+
+      await expect(convertAllFromGitHub('robusta-dev/holmesgpt', 'master')).rejects.toThrow('GitHub API error');
     });
   });
 });

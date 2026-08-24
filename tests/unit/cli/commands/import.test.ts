@@ -218,4 +218,103 @@ describe('createImportCommand', () => {
       'utf-8'
     );
   });
+
+  it('is case-insensitive for --from and treats HOLMESGPT as supported', async () => {
+    mockConvertLocal.mockReturnValue({ testCases: [], skipped: [], errors: [] });
+
+    const cmd = createImportCommand();
+    await cmd.parseAsync(['node', 'test', '--from', 'HOLMESGPT', '--source', '/path']);
+
+    expect(process.exit).not.toHaveBeenCalled();
+    expect(mockConvertLocal).toHaveBeenCalledWith('/path');
+  });
+
+  it('passes custom --repo and --branch through to the GitHub converter', async () => {
+    mockConvertGitHub.mockResolvedValue({ testCases: [], skipped: [], errors: [] });
+
+    const cmd = createImportCommand();
+    await cmd.parseAsync([
+      'node',
+      'test',
+      '--from',
+      'holmesgpt',
+      '--repo',
+      'someone/fork',
+      '--branch',
+      'dev',
+    ]);
+
+    expect(mockConvertGitHub).toHaveBeenCalledWith('someone/fork', 'dev', expect.any(Function));
+  });
+
+  it('exits with an error when the local converter throws (malformed input / bad path)', async () => {
+    mockConvertLocal.mockImplementation(() => {
+      throw new Error('ENOENT: no such file or directory');
+    });
+
+    const cmd = createImportCommand();
+    await cmd.parseAsync(['node', 'test', '--from', 'holmesgpt', '--source', '/does-not-exist']);
+
+    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('ENOENT'));
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+  });
+
+  it('exits with an error when the GitHub converter rejects (network failure)', async () => {
+    mockConvertGitHub.mockRejectedValue(new Error('GitHub API error: 403 Forbidden'));
+
+    const cmd = createImportCommand();
+    await cmd.parseAsync(['node', 'test', '--from', 'holmesgpt']);
+
+    expect(process.exit).toHaveBeenCalledWith(1);
+    expect(console.error).toHaveBeenCalledWith(expect.stringContaining('GitHub API error'));
+  });
+
+  it('handles an empty result set (empty fixtures directory) without writing an empty summary crash', async () => {
+    mockConvertLocal.mockReturnValue({ testCases: [], skipped: [], errors: [] });
+
+    const cmd = createImportCommand();
+    await cmd.parseAsync(['node', 'test', '--from', 'holmesgpt', '--source', '/empty']);
+
+    expect(mockWriteFileSync).toHaveBeenCalledWith('holmesgpt-test-cases.json', '[]\n', 'utf-8');
+  });
+
+  it('prints skipped and per-file error details in the summary', async () => {
+    mockConvertLocal.mockReturnValue({
+      testCases: [],
+      skipped: [{ path: '/path/skip/test_case.yaml', reason: 'Marked as skip' }],
+      errors: [{ path: '/path/bad/test_case.yaml', error: 'Invalid YAML' }],
+    });
+
+    const cmd = createImportCommand();
+    await cmd.parseAsync(['node', 'test', '--from', 'holmesgpt', '--source', '/path']);
+
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Skipped:'));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Errors:'));
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('/path/bad/test_case.yaml: Invalid YAML'));
+  });
+
+  it('prints a sample test case in dry-run mode when results are present', async () => {
+    mockConvertLocal.mockReturnValue({
+      testCases: [
+        {
+          name: 'holmesgpt/test_ask_holmes/01_pods',
+          description: 'Pods',
+          category: 'Kubernetes',
+          difficulty: 'Medium',
+          initialPrompt: 'How many pods?',
+          expectedOutcomes: ['3 pods'],
+          context: [],
+        },
+      ],
+      skipped: [],
+      errors: [],
+    });
+
+    const cmd = createImportCommand();
+    await cmd.parseAsync(['node', 'test', '--from', 'holmesgpt', '--source', '/path', '--dry-run']);
+
+    expect(mockWriteFileSync).not.toHaveBeenCalled();
+    expect(console.log).toHaveBeenCalledWith(expect.stringContaining('Sample test case'));
+  });
 });
