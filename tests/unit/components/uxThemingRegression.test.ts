@@ -173,8 +173,12 @@ describe('Scope B theming regressions', () => {
     const src = read('components/RunDetailsContent.tsx');
 
     it('ERROR/WARN log levels use both light and dark color variants', () => {
-      expect(src).toMatch(/log\.level === 'ERROR' \? 'text-red-600 dark:text-red-400'/);
-      expect(src).toMatch(/log\.level === 'WARN' \? 'text-amber-600 dark:text-amber-400'/);
+      // Extracted to getLogLevelColor() (see tests/unit/components/RunDetailsContent.test.ts
+      // for direct unit coverage of the mapping) so it's testable without
+      // rendering the unreachable isTraceMode===false branch. The regex
+      // guard here still pins the source-level color mapping.
+      expect(src).toMatch(/if \(level === 'ERROR'\) return 'text-red-600 dark:text-red-400'/);
+      expect(src).toMatch(/if \(level === 'WARN'\) return 'text-amber-600 dark:text-amber-400'/);
     });
   });
 
