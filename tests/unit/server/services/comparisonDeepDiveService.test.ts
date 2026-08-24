@@ -45,9 +45,9 @@ describe('comparisonDeepDiveService — SYSTEM_PROMPT', () => {
   });
 
   it('instructs the agent to record a chart and follow-up experiment suggestions before writing', () => {
-    expect(SYSTEM_PROMPT).toMatch(/record_metric_chart` ONCE/);
-    expect(SYSTEM_PROMPT).toMatch(/record_experiment_suggestions` ONCE/);
+    expect(SYSTEM_PROMPT).toMatch(/record_deepdive_extras` AT MOST ONCE/);
     expect(SYSTEM_PROMPT).toMatch(/grounded in what you actually found/i);
+    expect(SYSTEM_PROMPT).toMatch(/omit either or both rather than fabricating/i);
   });
 });
 

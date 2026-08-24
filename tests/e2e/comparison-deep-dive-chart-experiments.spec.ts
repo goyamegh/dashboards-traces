@@ -154,4 +154,39 @@ test.describe('Comparison deep-dive — on-the-fly chart + suggested experiments
     await expect(page.locator('[data-testid="deep-dive-chart"]')).toHaveCount(0);
     await expect(page.locator('[data-testid="deep-dive-experiments"]')).toHaveCount(0);
   });
+
+  test('degrades gracefully (no crash, no NaN%/negative width) when a chart value is malformed', async ({ page }) => {
+    // Simulates a value that survived JSON as `null` (e.g. a NaN a model tool
+    // call produced got serialized to null) and a negative value that slipped
+    // past the schema's `minimum: 0` — defense-in-depth on the RENDER side,
+    // since chart values come from an LLM tool call that is never independently
+    // re-validated against the spans it cited.
+    const malformed = {
+      ...deepDiveBodyWithExtras,
+      chart: {
+        title: 'Malformed values',
+        series: [
+          { label: 'Null value', a: null, b: 4 },
+          { label: 'Negative value', a: -5, b: 3 },
+        ],
+      },
+    };
+    await setupRoutes(page, malformed);
+    await page.goto(`/compare?runs=${RUN_A},${RUN_B}`);
+    await page.waitForSelector('[data-testid="comparison-page"]', { timeout: 30000 });
+
+    const chart = page.locator('[data-testid="deep-dive-chart"]');
+    await expect(chart).toBeVisible({ timeout: 20000 });
+    // Null renders as an explicit dash rather than "NaN" or a crash.
+    await expect(chart).toContainText('—');
+    // Negative value is still shown as text (not silently dropped)…
+    await expect(chart).toContainText('-5');
+    // …but no bar element was given an invalid negative or NaN CSS width.
+    const badWidths = await page.locator('[data-testid="deep-dive-chart"] [style*="width"]').evaluateAll((els) =>
+      els
+        .map((el) => (el as HTMLElement).style.width)
+        .filter((w) => w.includes('NaN') || w.includes('-'))
+    );
+    expect(badWidths).toEqual([]);
+  });
 });
