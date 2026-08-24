@@ -22,6 +22,7 @@ import type {
   TestCase,
   Benchmark,
   BenchmarkRun,
+  BenchmarkImage,
   EvaluationRun,
   TestCaseRun,
   RunAnnotation,
@@ -33,6 +34,7 @@ import type {
   IStorageModule,
   ITestCaseOperations,
   IBenchmarkOperations,
+  IBenchmarkImageOperations,
   IEvaluationRunOperations,
   IRunOperations,
   IAnalyticsOperations,
@@ -355,12 +357,12 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
           size,
           from,
           sort: [{ createdAt: { order: 'desc' } }],
-          // Benchmark and evaluation-run documents share this index. Legacy
-          // benchmarks have no docType, while evaluation runs are explicitly
-          // discriminated, so exclude only the latter.
+          // Benchmarks share this index with evaluation-runs and
+          // benchmark-images. Legacy benchmarks have no docType; exclude both
+          // non-benchmark discriminators so they don't surface as empty rows.
           query: {
             bool: {
-              must_not: [docTypeIs('evaluation-run')],
+              must_not: [docTypeIs('evaluation-run'), docTypeIs('benchmark-image')],
             },
           },
         },
@@ -383,9 +385,9 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
       const result = await this.client.get({ index: this.index, id });
       if (!result.body.found) return null;
       const doc = result.body._source as Benchmark & { docType?: string };
-      // Shared index with evaluation-runs — an eval-run id is NOT a benchmark, so
-      // the benchmark detail route must not render it as an empty benchmark.
-      return doc.docType === 'evaluation-run' ? null : doc;
+      // Shared index — an eval-run / image id is NOT a benchmark, so the
+      // benchmark detail route must not render it as an empty benchmark.
+      return doc.docType === undefined || doc.docType === 'benchmark' ? doc : null;
     } catch (error: any) {
       if (error.meta?.statusCode === 404) return null;
       throw error;
@@ -1252,6 +1254,7 @@ class OpenSearchEvaluationRunOperations implements IEvaluationRunOperations {
     status?: string;
     testCaseId?: string;
     trigger?: string;
+    imageDigest?: string;
     sort?: 'createdAt' | 'completedAt';
     order?: 'asc' | 'desc';
   }): Promise<{ items: EvaluationRun[]; total: number }> {
@@ -1269,6 +1272,7 @@ class OpenSearchEvaluationRunOperations implements IEvaluationRunOperations {
     if (options?.agentKey) must.push({ term: { 'agentKey.keyword': options.agentKey } });
     if (options?.status) must.push({ term: { 'status.keyword': options.status } });
     if (options?.trigger) must.push({ term: { 'trigger.keyword': options.trigger } });
+    if (options?.imageDigest) must.push({ term: { 'imageDigest.keyword': options.imageDigest } });
     // NOTE: `testCaseSnapshots` on EvaluationRun docs is a plain dynamically-
     // mapped `object` array (see indexMappings.ts — it's intentionally left
     // out of the explicit top-level mapping since it's a bounded 3-property
@@ -1334,6 +1338,112 @@ class OpenSearchEvaluationRunOperations implements IEvaluationRunOperations {
 }
 
 // ============================================================================
+// OpenSearch Benchmark Image Operations (same index as benchmarks, docType
+// 'benchmark-image', content-addressed by digest — doc id is `img-<digest>`)
+// ============================================================================
+
+class OpenSearchBenchmarkImageOperations implements IBenchmarkImageOperations {
+  constructor(private client: Client) {}
+
+  private get index() { return STORAGE_INDEXES.benchmarks; }
+
+  private docId(digest: string): string { return `img-${digest}`; }
+
+  async create(image: BenchmarkImage): Promise<BenchmarkImage> {
+    assertNotMigrating(this.index);
+    // Find-or-create: an existing digest IS the same image by definition —
+    // never overwrite (preserves tags/createdAt).
+    const existing = await this.getByDigest(image.digest);
+    if (existing) return existing;
+    const doc: BenchmarkImage = {
+      ...image,
+      id: this.docId(image.digest),
+      docType: 'benchmark-image',
+      tags: image.tags || [],
+      createdAt: image.createdAt || new Date().toISOString(),
+    };
+    await this.client.index({
+      index: this.index,
+      id: doc.id,
+      body: doc,
+      refresh: 'wait_for',
+    });
+    return doc;
+  }
+
+  async getByDigest(digest: string): Promise<BenchmarkImage | null> {
+    try {
+      const result = await this.client.get({ index: this.index, id: this.docId(digest) });
+      if (!result.body.found) return null;
+      const doc = result.body._source as any;
+      if (doc.docType !== 'benchmark-image') return null;
+      return doc as BenchmarkImage;
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return null;
+      throw error;
+    }
+  }
+
+  async getAll(options?: PaginationOptions): Promise<{ items: BenchmarkImage[]; total: number }> {
+    const size = options?.size ?? 1000;
+    const from = options?.from ?? 0;
+    try {
+      const result = await this.client.search({
+        index: this.index,
+        body: {
+          size,
+          from,
+          sort: [{ createdAt: { order: 'desc' } }],
+          // See evaluation-run list note: dynamic mapping → term on .keyword.
+          query: { term: { 'docType.keyword': 'benchmark-image' } },
+        },
+      });
+      const items = hitsToSources<BenchmarkImage>(result.body.hits?.hits || []);
+      const total = typeof result.body.hits?.total === 'object'
+        ? result.body.hits.total.value
+        : result.body.hits?.total ?? 0;
+      return { items, total };
+    } catch (error: any) {
+      if (isIndexNotFound(error)) return { items: [], total: 0 };
+      throw error;
+    }
+  }
+
+  async update(
+    digest: string,
+    updates: Partial<Pick<BenchmarkImage, 'tags' | 'lastRunAt'>>
+  ): Promise<BenchmarkImage> {
+    assertNotMigrating(this.index);
+    const existing = await this.getByDigest(digest);
+    if (!existing) throw new Error(`Benchmark image ${digest} not found`);
+    // Only mutable metadata may change — the content fields ARE the identity.
+    const updated: BenchmarkImage = {
+      ...existing,
+      ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
+      ...(updates.lastRunAt !== undefined ? { lastRunAt: updates.lastRunAt } : {}),
+    };
+    await this.client.index({
+      index: this.index,
+      id: this.docId(digest),
+      body: updated,
+      refresh: 'wait_for',
+    });
+    return updated;
+  }
+
+  async delete(digest: string): Promise<{ deleted: boolean }> {
+    assertNotMigrating(this.index);
+    try {
+      await this.client.delete({ index: this.index, id: this.docId(digest), refresh: 'wait_for' });
+      return { deleted: true };
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return { deleted: false };
+      throw error;
+    }
+  }
+}
+
+// ============================================================================
 // OpenSearch Storage Module
 // ============================================================================
 
@@ -1341,6 +1451,7 @@ export class OpenSearchStorageModule implements IStorageModule {
   readonly testCases: ITestCaseOperations;
   readonly benchmarks: IBenchmarkOperations;
   readonly evaluationRuns: IEvaluationRunOperations;
+  readonly images: IBenchmarkImageOperations;
   readonly runs: IRunOperations;
   readonly analytics: IAnalyticsOperations;
   readonly evaluators: IEvaluatorOperations;
@@ -1350,6 +1461,7 @@ export class OpenSearchStorageModule implements IStorageModule {
     this.testCases = new OpenSearchTestCaseOperations(client);
     this.benchmarks = new OpenSearchBenchmarkOperations(client);
     this.evaluationRuns = new OpenSearchEvaluationRunOperations(client);
+    this.images = new OpenSearchBenchmarkImageOperations(client);
     this.runs = new OpenSearchRunOperations(client);
     this.analytics = new OpenSearchAnalyticsOperations(client);
     this.evaluators = new OpenSearchEvaluatorOperations(client);

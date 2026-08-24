@@ -13,6 +13,7 @@ import adminRoutes from './admin';
 import testCasesRoutes from './testCases';
 import benchmarksRoutes from './benchmarks';
 import evaluationRunsRoutes from './evaluationRuns';
+import imagesRoutes from './images';
 import runsRoutes from './runs';
 import analyticsRoutes from './analytics';
 import reportsRoutes from './reports';
@@ -56,6 +57,7 @@ router.use((req: Request, res: Response, next: NextFunction) => {
 router.use(testCasesRoutes);
 router.use(benchmarksRoutes);
 router.use(evaluationRunsRoutes);
+router.use(imagesRoutes);
 router.use(runsRoutes);
 router.use(analyticsRoutes);
 router.use(reportsRoutes);
