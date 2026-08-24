@@ -832,7 +832,7 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
 
 // ─── Session Detail Panel ────────────────────────────────────────────────────
 
-function SessionDetailPanel({ session, onClose }: { session: Session; onClose: () => void }) {
+export function SessionDetailPanel({ session, onClose }: { session: Session; onClose: () => void }) {
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [msgSearch, setMsgSearch] = useState('');
