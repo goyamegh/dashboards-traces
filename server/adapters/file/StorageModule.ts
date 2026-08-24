@@ -299,9 +299,11 @@ class FileBenchmarkOperations implements IBenchmarkOperations {
   }
 
   async getAll(options?: PaginationOptions): Promise<{ items: Benchmark[]; total: number }> {
-    const all = readAllFromDir<Benchmark>(this.dir).sort(
-      (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
-    );
+    const all = readAllFromDir<Benchmark & { docType?: string }>(this.dir)
+      .filter(doc => doc.docType !== 'evaluation-run')
+      .sort(
+        (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+      );
     return paginate(all, options);
   }
 

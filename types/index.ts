@@ -980,6 +980,7 @@ export interface BenchmarkRun {
   name: string;                    // e.g., "Baseline", "With Fix v1", "Claude 4 Test"
   description?: string;            // Optional description of what this run tests
   createdAt: string;               // When this run was created
+  completedAt?: string;            // When execution reached a terminal state
 
   // Execution status (tracks server-side execution progress)
   status?: BenchmarkRunStatus;     // Overall run status (undefined = legacy data, treat as completed)
