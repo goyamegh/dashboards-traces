@@ -26,7 +26,15 @@ const activeCancellationTokens = new Map<string, CancellationToken>();
  * Send an SSE event to the client.
  */
 function sendSSE(res: Response, event: string, data: any): void {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  // The HTTP stream is only an observer of the durable run. A browser close,
+  // proxy timeout, or failed socket write must never reject runner callbacks
+  // (which would prematurely finalize the run and remove its cancel token).
+  if (res.destroyed || res.writableEnded) return;
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  } catch {
+    // Execution continues and persists progress/results for polling clients.
+  }
 }
 
 // GET /api/storage/evaluation-runs - List evaluation runs
@@ -84,7 +92,7 @@ router.get('/api/storage/evaluation-runs/:id', async (req: Request, res: Respons
 // POST /api/storage/evaluation-runs - Create and execute an evaluation run (SSE streaming)
 router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) => {
   try {
-    const { sources, agentKey, modelId, judgeModelId, name, evaluatorId, concurrency, benchmarkId, trigger } = req.body;
+    const { sources, agentKey, modelId, judgeModelId, name, description, evaluatorId, concurrency, benchmarkId, trigger, agentEndpoint, headers } = req.body;
 
     // Validate required fields
     if (!sources || !Array.isArray(sources) || sources.length === 0) {
@@ -167,9 +175,12 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
     const run: any = {
       id: runId,
       name: name || `Evaluation Run ${new Date().toLocaleDateString()}`,
+      description,
       sources: resolved.sources,
       agentKey,
       modelId: resolvedModelId,
+      agentEndpoint,
+      headers,
       // Customer-supplied judge model id (separate from agent's `modelId`).
       // Forwarded onto the run document so the runner reads it and the UI
       // can show which judge model graded each test case in this run.
