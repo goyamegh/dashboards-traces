@@ -355,7 +355,7 @@ export const TestCaseDetailPage: React.FC = () => {
       <div className="px-4 py-3 border-b bg-card shrink-0">
         <Breadcrumbs
           items={[
-            { label: 'Evaluations', href: '/evaluations/benchmarks' },
+            { label: 'Evaluations', href: '/evaluations/runs' },
             { label: 'Test Cases', href: '/evaluations/test-cases' },
             { label: testCase.name },
           ]}

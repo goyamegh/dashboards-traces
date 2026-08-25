@@ -163,7 +163,7 @@ export const BenchmarkRunDetailPage: React.FC = () => {
     <div className="p-6 h-full overflow-y-auto">
       <Breadcrumbs
         items={[
-          { label: 'Evaluations', href: '/evaluations/benchmarks' },
+          { label: 'Evaluations', href: '/evaluations/runs' },
           { label: 'Benchmarks', href: '/evaluations/benchmarks' },
           { label: benchmark.name, href: `/evaluations/benchmarks/${benchmark.id}/runs` },
           { label: run.name },
