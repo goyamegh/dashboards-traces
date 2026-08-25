@@ -4,17 +4,22 @@
  */
 
 /**
- * ComparisonDeepDive — the top-level "what's actually different" panel for a
- * 2-run comparison.
+ * ComparisonDeepDive — the top-level "what's actually different" panel for an
+ * N-run (2–4) comparison.
  *
- * Calls POST /api/comparison/deep-dive, which runs an in-process pi agent with
- * read-only trace tools over BOTH runs and returns a concise markdown deep-dive
- * citing specific spans as `[label](span:<runId>:<spanId>)`. We render the
- * markdown and turn those span citations into clickable pills that deep-link
- * into the Traces tab of the relevant run on the same page (via onSpanLink).
+ * Calls POST /api/comparison/deep-dive with one representative report per run
+ * PLUS the shared-case verdict matrix (id, name, per-run verdicts + durations
+ * + report ids). The server compresses the matrix into a deterministic prompt
+ * prefix (agreement partition, per-category pass rates, split/all-fail
+ * one-liners) and runs an in-process pi agent with read-only trace tools over
+ * ALL runs, returning a concise markdown deep-dive citing specific spans as
+ * `[label](span:<runId>:<spanId>)`. We render the markdown and turn those span
+ * citations into clickable pills that deep-link into the Traces tab of the
+ * relevant run + test case on the same page (via onSpanLink).
  *
  * The agent run is ~30-60s and costs tokens, so results are cached in-memory by
- * report-id pair; the panel auto-runs once per pair and offers a regenerate.
+ * the report-id tuple; the panel auto-runs once per tuple and offers a
+ * regenerate.
  */
 
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
@@ -32,6 +37,8 @@ export interface DeepDiveRunMeta {
   serviceName?: string;
   startedAt: number;
   endedAt: number;
+  /** Which test case this report belongs to (representative or focus case). */
+  testCaseId?: string;
 }
 interface DeepDiveResponse {
   markdown: string;
@@ -42,11 +49,12 @@ interface DeepDiveResponse {
 
 interface CacheEntry { markdown: string; meta: DeepDiveResponse; }
 
-// The agentic deep-dive is expensive (runs an in-process agent over both runs'
-// spans/logs), so we cache the result. Reports are immutable, so the key (the
-// two report ids) is stable forever — the cache is backed by localStorage so a
-// page reload / re-navigation shows the prior result INSTANTLY instead of
-// re-running the agent and showing the loading spinner every single time.
+// The agentic deep-dive is expensive (runs an in-process agent over the
+// compared runs' spans/logs), so we cache the result. Reports are immutable,
+// so the key (the report-id tuple) is stable forever — the cache is backed by
+// localStorage so a page reload / re-navigation shows the prior result
+// INSTANTLY instead of re-running the agent and showing the loading spinner
+// every single time.
 const DEEPDIVE_CACHE_PREFIX = 'agent-health:deepdive:';
 const deepDiveMemCache = new Map<string, CacheEntry>();
 
@@ -83,6 +91,17 @@ interface ComparisonDeepDiveProps {
   onWindowAgents: (meta: DeepDiveRunMeta[]) => void;
 }
 
+export const MAX_DEEPDIVE_RUNS = 4;
+
+/** Badge palette per run key (A/B/C/D). */
+const KEY_BADGE_CLASSES = [
+  'bg-opensearch-blue/15 text-opensearch-blue border-opensearch-blue/40',
+  'bg-purple-500/20 text-purple-300 border-purple-400/40',
+  'bg-emerald-500/20 text-emerald-300 border-emerald-400/40',
+  'bg-amber-500/20 text-amber-300 border-amber-400/40',
+];
+const keyIndex = (key: string) => Math.max(0, key.toUpperCase().charCodeAt(0) - 65);
+
 export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
   runs,
   rows,
@@ -91,24 +110,48 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
   onSpanLink,
   onWindowAgents,
 }) => {
-  // Representative pair: the first test case both runs executed.
-  const pair = useMemo(() => {
-    if (runs.length !== 2) return null;
+  // Representative tuple: the first test case ALL compared runs executed.
+  const group = useMemo(() => {
+    if (runs.length < 2 || runs.length > MAX_DEEPDIVE_RUNS) return null;
     for (const row of rows) {
-      const a = row.results[runs[0].id]?.reportId;
-      const b = row.results[runs[1].id]?.reportId;
-      if (a && b) {
+      const ids = runs.map((run) => row.results[run.id]?.reportId);
+      if (ids.every((id): id is string => Boolean(id))) {
         return {
           testCaseId: row.testCaseId,
           testCaseName: row.testCaseName,
-          reportIdA: a,
-          reportIdB: b,
-          cacheKey: `${a}|${b}`,
+          reportIds: ids,
+          cacheKey: ids.join('|'),
         };
       }
     }
     return null;
   }, [runs, rows]);
+
+  // Shared-case verdict matrix — the server compresses this into the
+  // deterministic prompt prefix (partition / category rates / focus cases).
+  const casesPayload = useMemo(() => {
+    if (runs.length < 2) return [];
+    return rows
+      .filter((row) => runs.every((run) => row.results[run.id]?.reportId))
+      .map((row) => ({
+        id: row.testCaseId,
+        name: row.testCaseName,
+        verdicts: runs.map((run) => {
+          const result = row.results[run.id];
+          if (!result || result.status === 'missing') return 'missing';
+          if (result.errored || result.status === 'failed') return 'error';
+          if (result.passFailStatus === 'passed') return 'pass';
+          if (result.passFailStatus === 'failed') return 'fail';
+          return 'error';
+        }),
+        durationsMs: runs.map((run) => {
+          const reportId = row.results[run.id]?.reportId;
+          const duration = reportId ? reports[reportId]?.performanceMetrics?.durationMs : undefined;
+          return typeof duration === 'number' ? duration : null;
+        }),
+        reportIds: runs.map((run) => row.results[run.id]?.reportId ?? null),
+      }));
+  }, [rows, runs, reports]);
 
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [markdown, setMarkdown] = useState<string>('');
@@ -117,9 +160,9 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
 
   const generate = useCallback(
     async (force = false) => {
-      if (!pair) return;
-      if (!force && deepDiveCache.has(pair.cacheKey)) {
-        const c = deepDiveCache.get(pair.cacheKey)!;
+      if (!group) return;
+      if (!force && deepDiveCache.has(group.cacheKey)) {
+        const c = deepDiveCache.get(group.cacheKey)!;
         setMarkdown(c.markdown);
         setMeta(c.meta);
         setStatus('done');
@@ -132,14 +175,14 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
         const res = await fetch('/api/comparison/deep-dive', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ reportIds: [pair.reportIdA, pair.reportIdB] }),
+          body: JSON.stringify({ reportIds: group.reportIds, cases: casesPayload }),
         });
         if (!res.ok) {
           const e = await res.json().catch(() => ({}));
           throw new Error(e.error || `HTTP ${res.status}`);
         }
         const data: DeepDiveResponse = await res.json();
-        deepDiveCache.set(pair.cacheKey, { markdown: data.markdown, meta: data });
+        deepDiveCache.set(group.cacheKey, { markdown: data.markdown, meta: data });
         setMarkdown(data.markdown);
         setMeta(data);
         setStatus('done');
@@ -149,36 +192,38 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
         setStatus('error');
       }
     },
-    [pair, onWindowAgents]
+    [group, casesPayload, onWindowAgents]
   );
 
-  // Auto-run once per report-pair.
+  // Auto-run once per report tuple.
   useEffect(() => {
-    if (pair) generate(false);
+    if (group) generate(false);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pair?.cacheKey]);
+  }, [group?.cacheKey]);
 
   // Map a cited runId → which agent label (for nicer pill titles).
   const labelByRunId = useMemo(() => {
     const m = new Map<string, string>();
-    (meta?.runs || []).forEach((r, i) => {
-      if (r.runId) m.set(r.runId, getAgentName(runs[i]?.agentKey) || r.key);
+    (meta?.runs || []).forEach((r) => {
+      if (r.runId) m.set(r.runId, getAgentName(runs[keyIndex(r.key)]?.agentKey) || r.key);
     });
     return m;
   }, [meta, runs, getAgentName]);
 
-  if (!pair) return null;
+  if (!group) return null;
 
-  const nameA = getAgentName(runs[0].agentKey);
-  const nameB = getAgentName(runs[1].agentKey);
-
-  // A = runs[0], B = runs[1] (the URL order). Surface the A/B mapping
-  // everywhere — header + span-citation pills — so a `span:subprocess-…`
-  // citation is unambiguous about which run it belongs to.
-  const abByRunId = new Map<string, 'A' | 'B'>();
-  (meta?.runs || []).forEach((r, i) => { if (r.runId) abByRunId.set(r.runId, i === 0 ? 'A' : 'B'); });
-  const AbBadge = ({ ab, className = '' }: { ab: 'A' | 'B'; className?: string }) => (
-    <span className={`inline-flex items-center justify-center h-4 min-w-[1rem] px-1 rounded text-[0.7rem] font-bold border ${ab === 'A' ? 'bg-opensearch-blue/15 text-opensearch-blue border-opensearch-blue/40' : 'bg-purple-500/20 text-purple-300 border-purple-400/40'} ${className}`}>{ab}</span>
+  // Key → run mapping follows the URL order (A = runs[0], B = runs[1], …).
+  // Surface it everywhere — header + span-citation pills — so a
+  // `span:subprocess-…` citation is unambiguous about which run it belongs to.
+  const keyByRunId = new Map<string, string>();
+  const caseByRunId = new Map<string, string>();
+  (meta?.runs || []).forEach((r) => {
+    if (!r.runId) return;
+    keyByRunId.set(r.runId, r.key);
+    if (r.testCaseId) caseByRunId.set(r.runId, r.testCaseId);
+  });
+  const KeyBadge = ({ k, className = '' }: { k: string; className?: string }) => (
+    <span className={`inline-flex items-center justify-center h-4 min-w-[1rem] px-1 rounded text-[0.7rem] font-bold border ${KEY_BADGE_CLASSES[keyIndex(k) % KEY_BADGE_CLASSES.length]} ${className}`}>{k}</span>
   );
 
   // Custom anchor: `span:<runId>:<spanId>` → deep-link pill; others → normal link.
@@ -192,11 +237,11 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
           type="button"
           data-span-id={spanId}
           data-run-id={runId}
-          onClick={() => onSpanLink(pair.testCaseId, runId, spanId)}
+          onClick={() => onSpanLink(caseByRunId.get(runId) ?? group.testCaseId, runId, spanId)}
           title={`Open this span in the Traces tab${who ? ` (${who})` : ''}`}
           className="inline-flex items-center gap-0.5 align-baseline rounded bg-opensearch-blue/10 px-1.5 py-0.5 text-[0.85em] font-medium text-opensearch-blue hover:bg-opensearch-blue/20 transition-colors"
         >
-          {abByRunId.get(runId) && <span className="font-bold opacity-80">{abByRunId.get(runId)}·</span>}
+          {keyByRunId.get(runId) && <span className="font-bold opacity-80">{keyByRunId.get(runId)}·</span>}
           {children}
           <ArrowUpRight size={11} className="flex-shrink-0" />
         </button>
@@ -224,7 +269,13 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
           <div className="min-w-0">
             <h3 className="text-sm font-semibold text-foreground">What's actually different</h3>
             <p className="text-xs text-muted-foreground truncate flex items-center gap-1">
-              <AbBadge ab="A" /> {nameA} <span className="opacity-60">vs</span> <AbBadge ab="B" /> {nameB} <span className="opacity-60">· grounded in both runs' traces</span>
+              {runs.map((run, i) => (
+                <React.Fragment key={run.id}>
+                  {i > 0 && <span className="opacity-60">vs</span>}
+                  <KeyBadge k={String.fromCharCode(65 + i)} /> {getAgentName(run.agentKey)}
+                </React.Fragment>
+              ))}
+              <span className="opacity-60">· grounded in all {runs.length} runs' traces</span>
             </p>
           </div>
         </div>
@@ -238,7 +289,7 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
       {status === 'loading' && (
         <div className="flex items-center gap-2 py-6 justify-center text-sm text-muted-foreground">
           <Loader2 size={15} className="animate-spin" />
-          Inspecting both runs' spans &amp; logs…
+          Inspecting all {runs.length} runs' spans &amp; logs…
         </div>
       )}
 

@@ -4,19 +4,30 @@
  */
 
 /**
- * Comparison Routes — agentic deep-dive over two runs.
+ * Comparison Routes — agentic deep-dive over 2–4 runs.
  *
  * POST /api/comparison/deep-dive
- *   body: { reportIds: [reportIdA, reportIdB], modelId? }
+ *   body: { reportIds: [reportIdA, reportIdB, ...],   // 2–4, one representative-case report per run
+ *           cases?: [{ id, name, verdicts, durationsMs?, reportIds? }, ...],  // shared-case matrix
+ *           modelId? }
  *   resp: { markdown, modelId, durationMs,
- *           runs: [{ key, reportId, runId, serviceName, startedAt, endedAt }] }
+ *           runs: [{ key, reportId, runId, serviceName, startedAt, endedAt, testCaseId }] }
  *
  * Resolves each run's trace identity SERVER-SIDE (serviceName from the live
  * agent config, wall-clock window from the saved report) — the frontend
  * DEFAULT_CONFIG is static and wouldn't know dynamically-added agents — then
  * runs the in-process comparison agent (pi SDK + run-scoped trace tools).
+ *
+ * When the shared-case matrix is supplied, a DETERMINISTIC prompt prefix is
+ * computed in code (agreement partition, per-category pass rates, split /
+ * all-fail one-liners — comparisonContextBuilder.ts) and a handful of "focus"
+ * cases (split first, then all-fail) get their per-run reports resolved so the
+ * agent can drill into their spans via query_spans({ run, caseId }).
+ *
  * The returned `runs[]` give the frontend exactly the window-agent hints it
- * needs to deep-link span citations into the Traces tab.
+ * needs to deep-link span citations into the Traces tab — one entry per
+ * resolved report (representative + focus cases), each tagged with its
+ * testCaseId.
  */
 
 import { Router, Request, Response } from 'express';
@@ -24,8 +35,16 @@ import { loadConfigSync } from '@/lib/config/index';
 import { getStorageModule } from '@/server/adapters';
 import {
   generateComparisonDeepDive,
+  MIN_COMPARED_RUNS,
+  MAX_COMPARED_RUNS,
   type ComparisonRunInput,
+  type ComparisonCaseScope,
 } from '@/server/services/comparisonDeepDiveService';
+import {
+  buildComparisonContext,
+  type CaseVerdict,
+  type ComparisonCaseInput,
+} from '@/server/services/comparisonContextBuilder';
 import { debug } from '@/lib/debug';
 
 const router = Router();
@@ -97,10 +116,49 @@ function extractFinalOutput(report: any): string | undefined {
   return undefined;
 }
 
+const VALID_VERDICTS = new Set<CaseVerdict>(['pass', 'fail', 'error', 'missing']);
+const MAX_CASES = 1000;
+
+/** Lenient parse of the optional shared-case matrix; drops malformed rows. */
+function parseCases(raw: unknown, runCount: number): ComparisonCaseInput[] {
+  if (!Array.isArray(raw)) return [];
+  const cases: ComparisonCaseInput[] = [];
+  for (const c of raw.slice(0, MAX_CASES)) {
+    if (!c || typeof c !== 'object') continue;
+    const { id, name, verdicts, durationsMs, reportIds } = c as Record<string, unknown>;
+    if (typeof id !== 'string' || typeof name !== 'string') continue;
+    if (!Array.isArray(verdicts) || verdicts.length !== runCount) continue;
+    if (!verdicts.every((v) => VALID_VERDICTS.has(v as CaseVerdict))) continue;
+    cases.push({
+      id,
+      name,
+      verdicts: verdicts as CaseVerdict[],
+      durationsMs: Array.isArray(durationsMs)
+        ? durationsMs.map((d) => (typeof d === 'number' ? d : null)).slice(0, runCount)
+        : undefined,
+      reportIds: Array.isArray(reportIds)
+        ? reportIds.map((r) => (typeof r === 'string' ? r : null)).slice(0, runCount)
+        : undefined,
+    });
+  }
+  return cases;
+}
+
 router.post('/api/comparison/deep-dive', async (req: Request, res: Response) => {
-  const { reportIds, modelId } = (req.body || {}) as { reportIds?: unknown; modelId?: string };
-  if (!Array.isArray(reportIds) || reportIds.length !== 2 || !reportIds.every((x) => typeof x === 'string')) {
-    return res.status(400).json({ error: 'reportIds must be an array of exactly 2 report id strings' });
+  const { reportIds, modelId, cases: rawCases } = (req.body || {}) as {
+    reportIds?: unknown;
+    modelId?: string;
+    cases?: unknown;
+  };
+  if (
+    !Array.isArray(reportIds) ||
+    reportIds.length < MIN_COMPARED_RUNS ||
+    reportIds.length > MAX_COMPARED_RUNS ||
+    !reportIds.every((x) => typeof x === 'string')
+  ) {
+    return res.status(400).json({
+      error: `reportIds must be an array of ${MIN_COMPARED_RUNS}-${MAX_COMPARED_RUNS} report id strings`,
+    });
   }
 
   try {
@@ -111,9 +169,17 @@ router.post('/api/comparison/deep-dive', async (req: Request, res: Response) => 
       return res.status(404).json({ error: `report(s) not found: ${missing.join(', ')}` });
     }
 
-    const keys = ['A', 'B'];
+    const keys = ['A', 'B', 'C', 'D'].slice(0, reportIds.length);
     const runInputs: ComparisonRunInput[] = [];
-    const runMeta: Array<{ key: string; reportId: string; runId?: string; serviceName?: string; startedAt: number; endedAt: number }> = [];
+    const runMeta: Array<{
+      key: string;
+      reportId: string;
+      runId?: string;
+      serviceName?: string;
+      startedAt: number;
+      endedAt: number;
+      testCaseId?: string;
+    }> = [];
 
     reports.forEach((report: any, i) => {
       const win = resolveWindow(report);
@@ -135,12 +201,68 @@ router.post('/api/comparison/deep-dive', async (req: Request, res: Response) => 
         serviceName: win.serviceName,
         startedAt: win.startedAt,
         endedAt: win.endedAt,
+        testCaseId: report.testCaseId,
       });
     });
 
-    debug('CompareDeepDiveAPI', 'reports:', reportIds.join(','), 'services:', runMeta.map((m) => m.serviceName).join(','));
+    // Deterministic context prefix + focus-case nomination (code, not LLM).
+    const cases = parseCases(rawCases, reportIds.length);
+    const context = buildComparisonContext(
+      runInputs.map((r) => ({ key: r.key, label: r.label })),
+      cases
+    );
 
-    const result = await generateComparisonDeepDive({ runs: runInputs, modelId });
+    // Resolve the focus cases' per-run reports so the agent can drill into
+    // their spans via query_spans({ run, caseId }). Bounded: ≤ maxFocusCases
+    // × runCount report fetches.
+    const focusCases = cases.filter((c) => context.focusCaseIds.includes(c.id));
+    await Promise.all(
+      focusCases.map(async (c) => {
+        await Promise.all(
+          runInputs.map(async (input, i) => {
+            const focusReportId = c.reportIds?.[i];
+            if (!focusReportId) return;
+            try {
+              const focusReport: any = await storage.runs.getById(focusReportId);
+              if (!focusReport) return;
+              const win = resolveWindow(focusReport);
+              const scope: ComparisonCaseScope = {
+                caseId: c.id,
+                name: c.name,
+                runId: focusReport.runId,
+                agents: win.agents,
+              };
+              input.cases = [...(input.cases || []), scope];
+              runMeta.push({
+                key: input.key,
+                reportId: focusReportId,
+                runId: focusReport.runId,
+                serviceName: win.serviceName,
+                startedAt: win.startedAt,
+                endedAt: win.endedAt,
+                testCaseId: focusReport.testCaseId ?? c.id,
+              });
+            } catch (err) {
+              debug('CompareDeepDiveAPI', 'focus-case report fetch failed:', focusReportId, err);
+            }
+          })
+        );
+      })
+    );
+
+    debug(
+      'CompareDeepDiveAPI',
+      'reports:', reportIds.join(','),
+      'services:', runMeta.map((m) => m.serviceName).join(','),
+      'cases:', cases.length,
+      'focus:', context.focusCaseIds.join(',')
+    );
+
+    const result = await generateComparisonDeepDive({
+      runs: runInputs,
+      modelId,
+      contextPrefix: context.prefixText,
+    });
     return res.json({ ...result, runs: runMeta });
   } catch (err: any) {
     console.error('[CompareDeepDiveAPI] error:', err);

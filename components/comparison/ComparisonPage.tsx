@@ -751,8 +751,8 @@ export const ComparisonPage: React.FC = () => {
               />
             )}
 
-            {/* What's actually different — agentic, trace-grounded deep-dive */}
-            {selectedRuns.length === 2 && runAggregates.length === 2 && (
+            {/* What's actually different — agentic, trace-grounded deep-dive (2–4 runs) */}
+            {selectedRuns.length >= 2 && selectedRuns.length <= 4 && runAggregates.length === selectedRuns.length && (
               <ComparisonDeepDive
                 runs={selectedRuns}
                 rows={allComparisonRows}

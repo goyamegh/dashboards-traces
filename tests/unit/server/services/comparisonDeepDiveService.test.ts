@@ -6,12 +6,13 @@
 /**
  * Unit tests for the comparison deep-dive service.
  *
- * Guards the two things most likely to silently regress:
+ * Guards the things most likely to silently regress:
  *   1. the SYSTEM_PROMPT actually instructs the agent to hunt + report ERRORS
- *      in either/both runs (this content was lost once and re-added);
+ *      in every run (this content was lost once and re-added);
  *   2. buildUserPrompt threads each run's identity (key, runId, label) so the
- *      agent can cite spans with the correct runId.
- * Plus the exactly-2-runs guard on the public entry point.
+ *      agent can cite spans with the correct runId — for 2 AND for 3–4 runs —
+ *      and prepends the deterministic context prefix when supplied.
+ * Plus the 2–4-runs guard on the public entry point.
  */
 
 import {
@@ -31,9 +32,9 @@ describe('comparisonDeepDiveService — SYSTEM_PROMPT', () => {
     expect(SYSTEM_PROMPT).toMatch(/failed or were retried/i);
   });
 
-  it('requires an always-present Errors bullet covering run A, B, or both', () => {
+  it('requires an always-present Errors bullet covering every run', () => {
     expect(SYSTEM_PROMPT).toMatch(/\*\*Errors\*\* bullet that is ALWAYS present/);
-    expect(SYSTEM_PROMPT).toMatch(/run A, run B, or both/);
+    expect(SYSTEM_PROMPT).toMatch(/ANY run \(run A, run B, or both\/all\)/);
     // And an explicit per-run "no errors observed" when clean (never omitted).
     expect(SYSTEM_PROMPT).toMatch(/no errors observed/);
     expect(SYSTEM_PROMPT).toMatch(/never silently omit/i);
@@ -42,6 +43,17 @@ describe('comparisonDeepDiveService — SYSTEM_PROMPT', () => {
   it('still asks for span citations + a tight markdown deep-dive', () => {
     expect(SYSTEM_PROMPT).toMatch(/span:<runId>:<spanId>/);
     expect(SYSTEM_PROMPT).toMatch(/headline verdict/i);
+  });
+
+  it('teaches the N-run tool surface: run keys and per-case drill-down', () => {
+    expect(SYSTEM_PROMPT).toMatch(/"A", "B", "C", "D"/);
+    expect(SYSTEM_PROMPT).toMatch(/query_spans\(\{ run, caseId\?, nameFilter\? \}\)/);
+    // Deterministic prefix is authoritative — the model must not recount.
+    expect(SYSTEM_PROMPT).toMatch(/TRUST those numbers/);
+    expect(SYSTEM_PROMPT).toMatch(/never recount/i);
+    // One global narrative, not per-pair sections.
+    expect(SYSTEM_PROMPT).toMatch(/ONE tight global markdown deep-dive/);
+    expect(SYSTEM_PROMPT).toMatch(/NOT per-pair sections/);
   });
 });
 
@@ -84,24 +96,38 @@ describe('comparisonDeepDiveService — buildUserPrompt', () => {
     expect(prompt).toMatch(/266\.0s/);
   });
 
-  it('tells the agent to inspect BOTH runs before writing', () => {
-    expect(buildUserPrompt(runs)).toMatch(/query_spans \/ query_logs on BOTH/);
+  it('tells the agent to inspect EVERY run before writing', () => {
+    expect(buildUserPrompt(runs)).toMatch(/query_spans \/ query_logs on EVERY run \("A", "B"\)/);
+  });
+
+  it('labels a third run and lists all keys for 3-run comparisons', () => {
+    const three = [...runs, { key: 'C', label: 'logos (pi)', runId: 'subprocess-CCC' }];
+    const prompt = buildUserPrompt(three);
+    expect(prompt).toMatch(/Compare these 3 runs/);
+    expect(prompt).toMatch(/EVERY run \("A", "B", "C"\)/);
+    expect(prompt).toMatch(/## Run C — logos \(pi\)/);
+    expect(prompt).toContain('subprocess-CCC');
+  });
+
+  it('prepends the deterministic context prefix before the per-run sections', () => {
+    const prefix = '## Shared results overview\nAgreement across 84 shared cases: 59 all-pass · 5 all-fail · 20 split';
+    const prompt = buildUserPrompt(runs, prefix);
+    expect(prompt).toContain(prefix);
+    expect(prompt.indexOf('Shared results overview')).toBeLessThan(prompt.indexOf('## Run A'));
+    // Without a prefix the prompt is unchanged in shape.
+    expect(buildUserPrompt(runs)).not.toContain('Shared results overview');
   });
 });
 
 describe('comparisonDeepDiveService — generateComparisonDeepDive guard', () => {
-  it('rejects when not exactly 2 runs (before any SDK/model work)', async () => {
+  it('rejects fewer than 2 or more than 4 runs (before any SDK/model work)', async () => {
     await expect(
       generateComparisonDeepDive({ runs: [{ key: 'A', label: 'only one' }] })
-    ).rejects.toThrow(/exactly 2 runs/);
+    ).rejects.toThrow(/2-4 runs/);
     await expect(
       generateComparisonDeepDive({
-        runs: [
-          { key: 'A', label: 'a' },
-          { key: 'B', label: 'b' },
-          { key: 'C', label: 'c' },
-        ],
+        runs: ['A', 'B', 'C', 'D', 'E'].map((key) => ({ key, label: key.toLowerCase() })),
       })
-    ).rejects.toThrow(/exactly 2 runs/);
+    ).rejects.toThrow(/2-4 runs/);
   });
 });

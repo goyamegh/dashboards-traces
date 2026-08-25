@@ -53,7 +53,7 @@ describe('Comparison Deep-Dive Route Integration Tests', () => {
       ['reportIds missing', {}],
       ['reportIds not an array', { reportIds: 'a,b' }],
       ['reportIds has 1 id', { reportIds: ['only-one'] }],
-      ['reportIds has 3 ids', { reportIds: ['a', 'b', 'c'] }],
+      ['reportIds has 5 ids', { reportIds: ['a', 'b', 'c', 'd', 'e'] }],
       ['reportIds elements not strings', { reportIds: [1, 2] }],
     ];
 
@@ -65,7 +65,7 @@ describe('Comparison Deep-Dive Route Integration Tests', () => {
         expect(res.status).toBe(400);
         const data = await res.json();
         expect(data.error).toMatch(/reportIds/);
-        expect(data.error).toMatch(/exactly 2/);
+        expect(data.error).toMatch(/2-4/);
       },
       TEST_TIMEOUT
     );
@@ -84,6 +84,20 @@ describe('Comparison Deep-Dive Route Integration Tests', () => {
         expect(data.error).toMatch(/not found/i);
         // Echoes which id(s) were missing so the caller can debug.
         expect(data.error).toMatch(/report-does-not-exist-aaaa/);
+      },
+      TEST_TIMEOUT
+    );
+
+    it(
+      '3-run bodies pass validation (N-run support): nonexistent ids reach the 404 path, not a 400',
+      async () => {
+        if (!backendAvailable) return;
+        const res = await post({
+          reportIds: ['report-nope-a', 'report-nope-b', 'report-nope-c'],
+        });
+        expect(res.status).toBe(404);
+        const data = await res.json();
+        expect(data.error).toMatch(/not found/i);
       },
       TEST_TIMEOUT
     );
