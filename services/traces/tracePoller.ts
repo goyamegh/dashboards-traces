@@ -350,20 +350,22 @@ class TracePollingManager {
         includeWindowFallback: windowAgents.length > 0,
       });
 
-      // EXACT-MATCH FILTER: the window clause (Strategy C) is a discovery
-      // fallback and can return spans from CONCURRENT runs of the same agent
-      // (same service.name, overlapping time window — e.g. 4 parallel test
-      // cases of one benchmark). When the report carries a precise correlator
-      // and any fetched spans match it, judge ONLY those spans:
+      // EXACT-MATCH FILTER (fail-closed): the window clause (Strategy C) is a
+      // discovery fallback and can return spans from CONCURRENT runs of the
+      // same agent — or from unrelated emitters sharing the service name
+      // (observed live: a pi-web session's spans were fetched for a pi eval
+      // run). When the report carries a precise correlator, judge ONLY spans
+      // matching it — and if none match yet, treat the attempt as "traces
+      // not available" and keep polling rather than judging foreign spans:
       //   session.id (Claude Code)  >  eval traceId (traceparent adopters).
       let spans = result.spans || [];
       if (spans.length > 0) {
         if (sessionId) {
-          const bySession = spans.filter(sp => (sp.attributes as any)?.['session.id'] === sessionId);
-          if (bySession.length > 0) spans = bySession;
+          spans = spans.filter(sp => (sp.attributes as any)?.['session.id'] === sessionId);
+          if (spans.length === 0) debug('TracePoller', `Fetched ${result.spans!.length} spans but none match session ${sessionId} — waiting`);
         } else if (evalTraceId) {
-          const byTrace = spans.filter(sp => sp.traceId === evalTraceId);
-          if (byTrace.length > 0) spans = byTrace;
+          spans = spans.filter(sp => sp.traceId === evalTraceId);
+          if (spans.length === 0) debug('TracePoller', `Fetched ${result.spans!.length} spans but none match eval traceId ${evalTraceId} — waiting`);
         }
       }
       const filteredResult = { ...result, spans };
@@ -380,7 +382,7 @@ class TracePollingManager {
         }
 
         // Build trajectory from trace spans
-        const { trajectory, shouldContinuePolling } = await this.buildTrajectory(filteredResult.spans, state);
+        const { trajectory, shouldContinuePolling, fromHook } = await this.buildTrajectory(filteredResult.spans, state);
         // Check if we should continue polling
         if (shouldContinuePolling) {
           if (state.attempts >= state.maxAttempts) {
@@ -402,9 +404,32 @@ class TracePollingManager {
           return;
         }
 
-        // Trajectory is ready - only overwrite if the hook produced steps
+        // Trajectory replacement policy:
+        //  - an agent's explicit buildTrajectory HOOK is intentional — its
+        //    output always wins (issue #320);
+        //  - the DEFAULT span→trajectory conversion replaces the connector
+        //    trajectory so tool calls are visible to the judge (#320) — BUT
+        //    if the span-built steps carry no response content (e.g. Claude
+        //    Code tool spans: prompts/responses live in OTel LOGS, not span
+        //    attributes), the connector trajectory's response steps are
+        //    appended so the judge still sees the agent's actual answer.
+        //    Replacing wholesale with content-less span stubs made the judge
+        //    fail every case of a live benchmark.
         if (trajectory.length > 0) {
-          report.trajectory = trajectory;
+          if (fromHook) {
+            report.trajectory = trajectory;
+          } else {
+            const hasResponseContent = trajectory.some(
+              (st: any) => st?.type === 'response' && typeof st.content === 'string' && st.content.trim().length > 0
+            );
+            const originalResponses = (report.trajectory || []).filter(
+              (st: any) => (st?.type === 'response' || st?.type === 'assistant') &&
+                typeof st.content === 'string' && st.content.trim().length > 0
+            );
+            report.trajectory = !hasResponseContent && originalResponses.length > 0
+              ? [...trajectory, ...originalResponses]
+              : trajectory;
+          }
         }
 
         // Stop polling and notify success
@@ -483,11 +508,11 @@ class TracePollingManager {
   /**
    * Build trajectory from spans with proper error handling
    */
-  private async buildTrajectory(spans: Span[], state: PollState): Promise<{ trajectory: any[], shouldContinuePolling: boolean }> {
+  private async buildTrajectory(spans: Span[], state: PollState): Promise<{ trajectory: any[], shouldContinuePolling: boolean, fromHook: boolean }> {
     const traceId = spans[0]?.traceId;
     if (!traceId) {
       console.warn(`[TracePoller] No traceId found in spans`);
-      return { trajectory: [], shouldContinuePolling: false };
+      return { trajectory: [], shouldContinuePolling: false, fromHook: false };
     }
 
     // No buildTrajectory hook: fall back to the generic span→trajectory
@@ -501,10 +526,10 @@ class TracePollingManager {
         if (converted.length > 0) {
           debug('TracePoller', `Default span→trajectory conversion produced ${converted.length} steps for trace ${traceId}`);
         }
-        return { trajectory: converted, shouldContinuePolling: false };
+        return { trajectory: converted, shouldContinuePolling: false, fromHook: false };
       } catch (err) {
         console.error(`[TracePoller] Default span→trajectory conversion failed for ${traceId}:`, err);
-        return { trajectory: [], shouldContinuePolling: false };
+        return { trajectory: [], shouldContinuePolling: false, fromHook: false };
       }
     }
 
@@ -518,14 +543,14 @@ class TracePollingManager {
       
       if (hookResult !== null) {
         console.log(`[TracePoller] Hook returned ${hookResult.length} trajectory steps`);
-        return { trajectory: hookResult, shouldContinuePolling: false };
+        return { trajectory: hookResult, shouldContinuePolling: false, fromHook: true };
       } else {
         console.log(`[TracePoller] Hook returned null - trace not ready yet`);
-        return { trajectory: [], shouldContinuePolling: true };
+        return { trajectory: [], shouldContinuePolling: true, fromHook: true };
       }
     } catch (err) {
       console.error(`[TracePoller] Failed to build trajectory for ${traceId}:`, err);
-      return { trajectory: [], shouldContinuePolling: false };
+      return { trajectory: [], shouldContinuePolling: false, fromHook: true };
     }
   }
 }
