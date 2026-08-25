@@ -1113,6 +1113,12 @@ export interface EvaluationRun {
    * heartbeat stops.
    */
   heartbeatAt?: string;
+  /**
+   * Claim token written by the server that most recently claimed this run
+   * for resume. Written-then-re-read to detect two servers racing to resume
+   * the same orphan (the storage interface has no cross-server CAS).
+   */
+  resumeToken?: string;
   status: BenchmarkRunStatus;
   error?: string;
 

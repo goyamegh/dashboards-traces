@@ -196,4 +196,41 @@ describe('POST /api/storage/evaluation-runs/:id/resume — checkpoint resume', (
     const res = await httpJson('POST', `${BASE_URL}/api/storage/evaluation-runs/does-not-exist-xyz/resume`);
     expect(res.status).toBe(404);
   }, TEST_TIMEOUT);
+
+  it('409s a second resume while the first is still executing (codex #2 — double-resume guard)', async () => {
+    if (!backendAvailable) return;
+
+    // Seed a second interrupted run over the same test cases.
+    const raceRunId = `eval-run-resume-race-${Date.now()}`;
+    const seeded = await httpJson<any>('PUT', `${BASE_URL}/api/storage/evaluation-runs/${raceRunId}`, {
+      name: 'resume-race-run',
+      sources: [{ type: 'test-case-ids', ids: createdTestCaseIds }],
+      agentKey: 'demo',
+      modelId: 'demo-model',
+      judgeModelId: 'demo-model',
+      trigger: 'api',
+      status: 'failed',
+      createdAt: new Date().toISOString(),
+      testCaseSnapshots: createdTestCaseIds.map((id, i) => ({ id, version: 1, name: `race-tc${i + 1}` })),
+      results: {},
+    });
+    expect(seeded.status).toBeLessThan(300);
+
+    // Fire the first resume WITHOUT awaiting completion, then a second one.
+    const first = httpJson<any>('POST', `${BASE_URL}/api/storage/evaluation-runs/${raceRunId}/resume`);
+    await new Promise((r) => setTimeout(r, 1500)); // let the first claim + start
+    const second = await httpJson<any>(`POST`, `${BASE_URL}/api/storage/evaluation-runs/${raceRunId}/resume`);
+    expect(second.status).toBe(409);
+    expect(second.body.error).toMatch(/currently executing/i);
+
+    // First resume runs to completion; collect its reports for cleanup.
+    const firstRes = await first;
+    expect(firstRes.status).toBe(200);
+    const completed = parseSSE(firstRes.raw).find((e) => e.event === 'completed');
+    expect(completed).toBeDefined();
+    for (const v of Object.values<any>(completed!.data.results || {})) {
+      if (v.reportId) createdReportIds.push(v.reportId);
+    }
+    await httpJson('DELETE', `${BASE_URL}/api/storage/evaluation-runs/${raceRunId}`).catch(() => {});
+  }, TEST_TIMEOUT);
 });
