@@ -38,6 +38,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { asyncBenchmarkStorage, asyncTestCaseStorage } from '@/services/storage';
+import { computeRunStats } from '@/lib/runStats';
 import { executeBenchmarkRun } from '@/services/client';
 import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
 import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, RunStats, Evaluator } from '@/types';
@@ -273,24 +274,13 @@ export const BenchmarkRunsPage2: React.FC = () => {
     let running = 0;
     Object.values(run.results || {}).forEach(r => { if (r.status === 'running') running++; });
 
-    if (run.stats && typeof run.stats.passed === 'number') {
-      return {
-        passed: run.stats.passed, failed: run.stats.failed,
-        pending: Math.max(0, run.stats.pending - running), running,
-        // `errored` is optional on older stored runs (issue #242 added it).
-        // Fall back to 0 so existing benchmarks render without a NaN badge.
-        errored: run.stats.errored ?? 0,
-        total: run.stats.total,
-      };
-    }
-    let passed = 0, failed = 0, pending = 0;
-    Object.values(run.results || {}).forEach(r => {
-      if (r.status === 'running') return;
-      else if (r.status === 'completed') passed++;
-      else if (r.status === 'failed' || r.status === 'cancelled') failed++;
-      else pending++;
-    });
-    return { passed, failed, pending, running, errored: 0, total: Object.keys(run.results || {}).length };
+    // Recompute from run.results (single source of truth, issue #242) rather
+    // than trusting the denormalized run.stats, which historically counted
+    // errored cases as passed. Falls back to run.stats only when per-case
+    // results aren't present (e.g. very old runs).
+    const { passed, failed, errored, total } = computeRunStats(run);
+    const pending = Math.max(0, total - passed - failed - errored - running);
+    return { passed, failed, pending, running, errored, total };
   }, []);
 
   const hasPendingEvaluations = useMemo(() => {
@@ -453,7 +443,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
     <div className="p-4 sm:p-6 h-full max-md:h-auto max-md:min-h-full flex flex-col">
       <Breadcrumbs
         items={[
-          { label: 'Evaluations', href: '/evaluations/benchmarks' },
+          { label: 'Evaluations', href: '/evaluations/runs' },
           { label: 'Benchmarks', href: '/evaluations/benchmarks' },
           { label: benchmark.name },
         ]}
