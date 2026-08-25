@@ -149,7 +149,17 @@ export const BenchmarkRunsPage2: React.FC = () => {
   );
   // Self-heal any stale persisted value: a version the benchmark doesn't have
   // behaves as 'all' instead of filtering everything out.
-  const runVersionFilter = effectiveRunVersionFilter(rawRunVersionFilter, benchmark?.currentVersion);
+  const runVersionFilter = effectiveRunVersionFilter(
+    rawRunVersionFilter,
+    benchmark ? (benchmark.versions ?? []).map(v => v.version) : undefined
+  );
+  // Repair the persisted value too (not just mask it at render time), so
+  // localStorage doesn't keep serving a corrupt filter to every consumer.
+  useEffect(() => {
+    if (benchmark && runVersionFilter !== rawRunVersionFilter) {
+      setRunVersionFilter(runVersionFilter);
+    }
+  }, [benchmark, runVersionFilter, rawRunVersionFilter, setRunVersionFilter]);
 
   // Layout state — the legacy /benchmarks/:id/runs page used a side-by-side
   // resizable split (Test Cases left, Runs right). The Evals3 "Option B" rewrite
@@ -573,12 +583,12 @@ export const BenchmarkRunsPage2: React.FC = () => {
                 <CardContent className="flex flex-col items-center justify-center py-12 text-muted-foreground">
                   <Play size={48} className="mb-4 opacity-20" />
                   <p className="text-lg font-medium">
-                    {runVersionFilter === 'all'
+                    {runVersionFilter === 'all' || runs.length === 0
                       ? 'No runs yet'
                       : `0 of ${runs.length} run${runs.length !== 1 ? 's' : ''} match v${runVersionFilter}`}
                   </p>
                   <p className="text-sm">
-                    {runVersionFilter === 'all'
+                    {runVersionFilter === 'all' || runs.length === 0
                       ? 'Run this benchmark to see results here'
                       : 'Runs exist on other versions of this benchmark'}
                   </p>

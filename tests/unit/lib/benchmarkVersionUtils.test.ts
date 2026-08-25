@@ -432,29 +432,36 @@ describe('benchmarkVersionUtils', () => {
 
   describe('effectiveRunVersionFilter', () => {
     it("passes 'all' through", () => {
-      expect(effectiveRunVersionFilter('all', 3)).toBe('all');
+      expect(effectiveRunVersionFilter('all', [1, 2, 3])).toBe('all');
       expect(effectiveRunVersionFilter('all', undefined)).toBe('all');
     });
 
     it('keeps versions the benchmark actually has', () => {
-      expect(effectiveRunVersionFilter(1, 3)).toBe(1);
-      expect(effectiveRunVersionFilter(3, 3)).toBe(3);
+      expect(effectiveRunVersionFilter(1, [1, 2, 3])).toBe(1);
+      expect(effectiveRunVersionFilter(3, [1, 2, 3])).toBe(3);
     });
 
     it("self-heals a stale persisted version to 'all' (the v8 empty-state bug)", () => {
       // Regression: a filter persisted while viewing another benchmark (v8)
       // leaked onto a v1 benchmark and rendered "No runs for v8" over 8
       // perfectly good runs.
-      expect(effectiveRunVersionFilter(8, 1)).toBe('all');
+      expect(effectiveRunVersionFilter(8, [1])).toBe('all');
     });
 
-    it("treats invalid numbers as 'all'", () => {
-      expect(effectiveRunVersionFilter(0, 3)).toBe('all');
-      expect(effectiveRunVersionFilter(-2, 3)).toBe('all');
-      expect(effectiveRunVersionFilter(NaN as unknown as number, 3)).toBe('all');
+    it("self-heals versions missing from a SPARSE version list (codex #3)", () => {
+      // currentVersion alone is not enough: v3 < v8 but doesn't exist here.
+      expect(effectiveRunVersionFilter(3, [1, 4, 8])).toBe('all');
+      expect(effectiveRunVersionFilter(4, [1, 4, 8])).toBe(4);
     });
 
-    it('keeps the value while the benchmark is still loading (currentVersion unknown)', () => {
+    it("treats invalid numbers as 'all' — including non-integers (codex #5)", () => {
+      expect(effectiveRunVersionFilter(0, [1, 2, 3])).toBe('all');
+      expect(effectiveRunVersionFilter(-2, [1, 2, 3])).toBe('all');
+      expect(effectiveRunVersionFilter(1.5, [1, 2, 3])).toBe('all');
+      expect(effectiveRunVersionFilter(NaN as unknown as number, [1, 2, 3])).toBe('all');
+    });
+
+    it('keeps the value while the benchmark is still loading (versions unknown)', () => {
       expect(effectiveRunVersionFilter(2, undefined)).toBe(2);
     });
   });
