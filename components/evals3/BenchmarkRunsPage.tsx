@@ -570,13 +570,26 @@ export const BenchmarkRunsPage2: React.FC = () => {
                 <CardContent className="flex flex-col items-center justify-center py-12 text-muted-foreground">
                   <Play size={48} className="mb-4 opacity-20" />
                   <p className="text-lg font-medium">
-                    {runVersionFilter === 'all' ? 'No runs yet' : `No runs for v${runVersionFilter}`}
+                    {runVersionFilter === 'all'
+                      ? 'No runs yet'
+                      : `0 of ${runs.length} run${runs.length !== 1 ? 's' : ''} match v${runVersionFilter}`}
                   </p>
                   <p className="text-sm">
                     {runVersionFilter === 'all'
                       ? 'Run this benchmark to see results here'
-                      : 'Try selecting a different version or "All Versions"'}
+                      : 'Runs exist on other versions of this benchmark'}
                   </p>
+                  {runVersionFilter !== 'all' && runs.length > 0 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-4"
+                      data-testid="show-all-versions-btn"
+                      onClick={() => setRunVersionFilter('all')}
+                    >
+                      Show all versions ({runs.length})
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
             ) : (
@@ -826,7 +839,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
               <SelectItem value="all">All Versions ({runs.length})</SelectItem>
               {versionData.map(v => (
                 <SelectItem key={v.version} value={String(v.version)}>
-                  v{v.version} ({v.runCount} run{v.runCount !== 1 ? 's' : ''})
+                  v{v.version}{v.isLatest ? ' (latest)' : ''} · {v.runCount === 0 ? 'no runs' : `${v.runCount} run${v.runCount !== 1 ? 's' : ''}`}
                 </SelectItem>
               ))}
             </SelectContent>
