@@ -558,6 +558,15 @@ describe('OpenSearchStorageModule', () => {
         expect(result).toBeNull();
       });
 
+      it('should return null for an evaluation-run doc (eval-run rendered as empty benchmark)', async () => {
+        const evalRun = { id: 'eval-run-1', name: 'CLI eval-run', docType: 'evaluation-run' };
+        mockClient.get.mockResolvedValue(makeGetResponse(evalRun));
+
+        const result = await mod.benchmarks.getById('eval-run-1');
+
+        expect(result).toBeNull();
+      });
+
       it('should throw non-404 errors', async () => {
         mockClient.get.mockRejectedValue(new Error('Cluster down'));
 
