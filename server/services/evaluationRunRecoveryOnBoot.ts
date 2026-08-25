@@ -77,6 +77,10 @@ export async function recoverOrphanEvaluationRuns(storage: IStorageModule): Prom
   const maxPages = envInt('EVALUATION_RUN_RECOVERY_MAX_PAGES', 50);
   const now = Date.now();
 
+  // Two-phase: SCAN everything first, MUTATE afterwards. The list query
+  // filters on status:'running' — mutating docs to 'failed' while paging
+  // with from/size shrinks the result set under the cursor and skips runs.
+  const candidates: EvaluationRun[] = [];
   let from = 0;
   for (let page = 0; page < maxPages; page++) {
     let runs: EvaluationRun[];
@@ -89,54 +93,54 @@ export async function recoverOrphanEvaluationRuns(storage: IStorageModule): Prom
       break;
     }
     if (!runs || runs.length === 0) break;
+    candidates.push(...runs);
+    if (runs.length < pageSize) break;
+    from += pageSize;
+  }
 
-    for (const run of runs) {
-      stat.scannedRuns++;
-      if (run.status !== 'running') continue;
+  for (const run of candidates) {
+    stat.scannedRuns++;
+    if (run.status !== 'running') continue;
 
-      // Age from the most recent liveness signal (heartbeat > resumed > created).
-      // Executing servers stamp `heartbeatAt` every minute, so a run on a
-      // sibling server sharing this storage cluster never looks stale.
-      const ageMs = runLivenessAgeMs(run, now);
-      if (ageMs < staleAfterMs) continue;
+    // Age from the most recent liveness signal (heartbeat / resumed / created).
+    // Executing servers stamp `heartbeatAt` every minute, so a run on a
+    // sibling server sharing this storage cluster never looks stale.
+    const ageMs = runLivenessAgeMs(run, now);
+    if (ageMs < staleAfterMs) continue;
 
-      if (isEvaluationRunActiveInThisProcess(run.id)) continue;
+    if (isEvaluationRunActiveInThisProcess(run.id)) continue;
 
-      stat.staleRuns++;
-      const reason =
-        `Evaluation runner did not complete this test case ` +
-        `(stale 'running' run found during boot recovery; original process likely died). ` +
-        `Use Resume to re-execute the unfinished test cases.`;
+    stat.staleRuns++;
+    const reason =
+      `Evaluation runner did not complete this test case ` +
+      `(stale 'running' run found during boot recovery; original process likely died). ` +
+      `Use Resume to re-execute the unfinished test cases.`;
 
-      const newResults: Record<string, any> = {};
-      for (const [tcId, res] of Object.entries(run.results || {})) {
-        const r: any = res;
-        const isUnfinished = (r?.status === 'pending' || r?.status === 'running') && !r?.reportId;
-        if (isUnfinished) {
-          newResults[tcId] = { reportId: '', status: 'failed', error: reason };
-          stat.resultsMarkedFailed++;
-        } else {
-          newResults[tcId] = r;
-        }
-      }
-
-      try {
-        await storage.evaluationRuns.update(run.id, {
-          status: 'failed',
-          error: 'Run interrupted (server restarted mid-run). Completed test cases are preserved — use Resume to finish the rest.',
-          results: newResults,
-          completedAt: new Date().toISOString(),
-        });
-        stat.runsMarkedFailed++;
-        console.log(`[evaluationRunRecovery] Marked stale run ${run.id} as failed (resumable)`);
-      } catch (err: any) {
-        stat.errors++;
-        console.warn(`[evaluationRunRecovery] Failed to update run ${run.id}: ${err?.message || err}`);
+    const newResults: Record<string, any> = {};
+    for (const [tcId, res] of Object.entries(run.results || {})) {
+      const r: any = res;
+      const isUnfinished = (r?.status === 'pending' || r?.status === 'running') && !r?.reportId;
+      if (isUnfinished) {
+        newResults[tcId] = { reportId: '', status: 'failed', error: reason };
+        stat.resultsMarkedFailed++;
+      } else {
+        newResults[tcId] = r;
       }
     }
 
-    if (runs.length < pageSize) break;
-    from += pageSize;
+    try {
+      await storage.evaluationRuns.update(run.id, {
+        status: 'failed',
+        error: 'Run interrupted (server restarted mid-run). Completed test cases are preserved — use Resume to finish the rest.',
+        results: newResults,
+        completedAt: new Date().toISOString(),
+      });
+      stat.runsMarkedFailed++;
+      console.log(`[evaluationRunRecovery] Marked stale run ${run.id} as failed (resumable)`);
+    } catch (err: any) {
+      stat.errors++;
+      console.warn(`[evaluationRunRecovery] Failed to update run ${run.id}: ${err?.message || err}`);
+    }
   }
 
   stat.durationMs = Date.now() - startedAt;

@@ -61,9 +61,18 @@ export function runStaleAfterMs(): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 60 * 60 * 1000; // 1h
 }
 
-/** Age of the run's most recent liveness signal (heartbeat > resumed > created). */
+/**
+ * Age of the run's most recent liveness signal. Uses the MOST RECENT of
+ * heartbeat/resumed/created (not a priority order): after a resume claims an
+ * orphan, `resumedAt` is newer than the dead server's last `heartbeatAt`, and
+ * the claim must count as liveness immediately.
+ */
 export function runLivenessAgeMs(run: Pick<EvaluationRun, 'createdAt' | 'resumedAt' | 'heartbeatAt'>, now = Date.now()): number {
-  const last = new Date(run.heartbeatAt || run.resumedAt || run.createdAt || 0).getTime();
+  const last = Math.max(
+    ...[run.heartbeatAt, run.resumedAt, run.createdAt]
+      .map((t) => (t ? new Date(t).getTime() : NaN))
+      .filter((t) => Number.isFinite(t) && t > 0)
+  );
   return Number.isFinite(last) && last > 0 ? now - last : Infinity;
 }
 
@@ -396,21 +405,49 @@ router.post('/api/storage/evaluation-runs/:id/resume', async (req: Request, res:
       return;
     }
 
-    // Reset the resumable results to pending and flip the run back to running.
+    // Reset ONLY the test cases we will actually execute. Resumable ids the
+    // sources no longer resolve (test case deleted, benchmark membership
+    // changed) keep their existing failed-with-note entry instead of being
+    // flipped to an eternally-pending state on a "completed" run.
+    const executableIds = new Set(testCases.map((tc) => tc.id));
+    const missingIds = resumableIds.filter((tcId) => !executableIds.has(tcId));
+
+    // Claim the run. There is no cross-server CAS primitive in the storage
+    // interface, so we use a claim token: write it, re-read, and abort if
+    // another claimer overwrote ours in the window. Same-process double
+    // resumes are already excluded by activeCancellationTokens above.
     const now = new Date().toISOString();
+    const resumeToken = `${process.pid}-${Math.random().toString(36).slice(2, 10)}`;
     const results = { ...(run.results || {}) };
     for (const tcId of resumableIds) {
-      results[tcId] = { reportId: '', status: 'pending' };
+      if (executableIds.has(tcId)) {
+        results[tcId] = { reportId: '', status: 'pending' };
+      }
     }
     await storage.evaluationRuns.update(id, {
       status: 'running',
       error: '',
       results,
       resumedAt: now,
-    });
+      // The claim itself is a liveness signal — without this, the dead
+      // server's stale heartbeatAt would leave the freshly-resumed run
+      // looking orphaned until the first 60s heartbeat tick.
+      heartbeatAt: now,
+      resumeToken,
+    } as Partial<EvaluationRun>);
+    const claimed = await storage.evaluationRuns.getById(id);
+    if ((claimed as any)?.resumeToken !== resumeToken) {
+      sendSSE(res, 'error', {
+        error: 'Another server claimed this run for resume at the same time — aborting this attempt',
+        runId: id,
+      });
+      res.end();
+      return;
+    }
     run.status = 'running';
     run.results = results;
     run.resumedAt = now;
+    run.heartbeatAt = now;
     delete run.error;
 
     sendSSE(res, 'started', {
@@ -418,7 +455,12 @@ router.post('/api/storage/evaluation-runs/:id/resume', async (req: Request, res:
       resumed: true,
       testCases: run.testCaseSnapshots,
       pendingCount: testCases.length,
-      skippedCount: (run.testCaseSnapshots?.length || 0) - testCases.length,
+      skippedCount: (run.testCaseSnapshots?.length || 0) - resumableIds.length,
+      // Resumable ids the run's sources no longer resolve — left as failed,
+      // not re-executed. Surfaced so callers can warn instead of silently
+      // "completing" past them.
+      missingCount: missingIds.length,
+      ...(missingIds.length > 0 ? { missingTestCaseIds: missingIds } : {}),
     });
 
     const cancellationToken = createCancellationToken();
@@ -492,8 +534,12 @@ router.put('/api/storage/evaluation-runs/:id', async (req: Request, res: Respons
     const run = { ...req.body, id, docType: 'evaluation-run' as const };
     const existing = await storage.evaluationRuns.getById(id);
     if (existing) {
-      const updated = await storage.evaluationRuns.update(id, run);
-      res.json(updated);
+      // Full-document REPLACE, not merge: `update()` doc-merges partial
+      // updates (so omitted nested keys — e.g. removed results entries —
+      // would survive). This route's contract is upsert-with-replace, so
+      // re-create the doc wholesale.
+      await storage.evaluationRuns.create(run);
+      res.json(run);
     } else {
       await storage.evaluationRuns.create(run);
       res.status(201).json(run);

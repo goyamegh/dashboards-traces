@@ -74,7 +74,7 @@ describe('computeResumableTestCaseIds', () => {
 describe('run liveness (shared-cluster safety)', () => {
   const T0 = Date.parse('2026-01-01T00:00:00Z');
 
-  it('prefers heartbeatAt over resumedAt over createdAt', () => {
+  it('uses the most recent of heartbeat/resumed/created', () => {
     const run = {
       createdAt: new Date(T0 - 3_600_000).toISOString(),
       resumedAt: new Date(T0 - 600_000).toISOString(),
@@ -83,6 +83,18 @@ describe('run liveness (shared-cluster safety)', () => {
     expect(runLivenessAgeMs(run, T0)).toBe(30_000);
     expect(runLivenessAgeMs({ ...run, heartbeatAt: undefined }, T0)).toBe(600_000);
     expect(runLivenessAgeMs({ createdAt: run.createdAt }, T0)).toBe(3_600_000);
+  });
+
+  it('a fresh resume claim counts as liveness even when the dead server\'s heartbeat is stale (codex #1)', () => {
+    // After claiming an orphan, resumedAt is NEWER than the dead server's
+    // last heartbeatAt. A priority order (heartbeat first) would leave the
+    // just-resumed run looking stale — max() must win here.
+    const run = {
+      createdAt: new Date(T0 - 7_200_000).toISOString(),
+      heartbeatAt: new Date(T0 - 3_600_000).toISOString(), // dead server, 1h ago
+      resumedAt: new Date(T0 - 1_000).toISOString(),       // claimed 1s ago
+    };
+    expect(runLivenessAgeMs(run, T0)).toBe(1_000);
   });
 
   it('treats missing/invalid timestamps as infinitely stale', () => {
