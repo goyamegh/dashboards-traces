@@ -14,21 +14,13 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { GitCompare, ChevronDown, ChevronRight, X, Check, Loader2, RotateCcw } from 'lucide-react';
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from '@/components/ui/collapsible';
-import { MetricComparisonPanel } from './MetricComparisonPanel';
+import { GitCompare, X, Loader2, RotateCcw } from 'lucide-react';
 import { ComparisonSearch } from './ComparisonSearch';
 import { UseCaseComparisonTable } from './UseCaseComparisonTable';
 import { RunPairSelector } from './RunPairSelector';
-import { VerdictStrip } from './VerdictStrip';
+import { ComparisonScoreboard } from './ComparisonScoreboard';
 import { ComparisonDeepDive, DeepDiveRunMeta } from './ComparisonDeepDive';
 import { FailureClusterPanel } from './FailureClusterPanel';
-import { ComparisonOverlapBanner } from './ComparisonOverlapBanner';
 import { extractFirstDivergence } from '@/services/trajectoryDiffService';
 import type { FailureCluster, FailureCaseEvidenceInput } from '@/services/client/comparisonClusterApi';
 import { Breadcrumbs } from '@/components/evals3/Breadcrumbs';
@@ -37,22 +29,18 @@ import { listEvaluationRuns, getEvaluationRun, executeEvaluationRun } from '@/se
 import {
   calculateRunAggregates,
   buildTestCaseComparisonRows,
-  filterRowsByCategory,
   filterRowsByStatus,
   getRealTestCaseMeta,
   countRowsByStatus,
   calculateRowStatus,
   collectRunIdsFromReports,
   calculateCombinedScore,
-  detectComparisonMode,
   computeTestCaseOverlap,
-  ComparisonMode,
   RowStatus,
 } from '@/services/comparisonService';
 import { fetchBatchMetrics } from '@/services/metrics';
 import { DEFAULT_CONFIG } from '@/lib/constants';
-import { formatRelativeTime, getModelName } from '@/lib/utils';
-import { Category, Benchmark, BenchmarkRun, EvaluationReport, EvaluationRun, RunAggregateMetrics, TestCaseComparisonRow, TraceMetrics, TestCase } from '@/types';
+import { Benchmark, BenchmarkRun, EvaluationReport, EvaluationRun, RunAggregateMetrics, TestCaseComparisonRow, TraceMetrics, TestCase } from '@/types';
 
 type StatusFilter = 'all' | 'passed' | 'failed' | 'mixed';
 
@@ -133,8 +121,6 @@ export const ComparisonPage: React.FC = () => {
   const [showRunPairSelector, setShowRunPairSelector] = useState(false);
   const [trajectoryRunPair, setTrajectoryRunPair] = useState<[string, string] | null>(null);
 
-  // User-overridden mode (null means use detected mode)
-  const [modeOverride, setModeOverride] = useState<ComparisonMode | null>(null);
 
   // Failure-cluster state — populated by the FailureClusterPanel after analysis.
   // Drives row dot-coloring and the cluster-driven case filter below.
@@ -389,8 +375,6 @@ export const ComparisonPage: React.FC = () => {
   // benchmark-free comparison (which cases overlap, which don't).
   const overlap = useMemo(() => computeTestCaseOverlap(selectedRuns), [selectedRuns]);
 
-  const detectedMode = useMemo((): ComparisonMode => detectComparisonMode(selectedRuns), [selectedRuns]);
-  const mode: ComparisonMode = modeOverride ?? detectedMode;
 
   const runAggregates = useMemo((): RunAggregateMetrics[] => {
     return selectedRuns.map(run => {
@@ -666,8 +650,6 @@ export const ComparisonPage: React.FC = () => {
     composeSelection(next);
   };
 
-  // Collapsible state
-  const [summaryOpen, setSummaryOpen] = useState(false);
 
   if (isLoading) {
     return <div className="p-6 flex items-center justify-center h-full"><Loader2 size={24} className="animate-spin text-muted-foreground" /></div>;
@@ -739,7 +721,7 @@ export const ComparisonPage: React.FC = () => {
       {/* ── Scrollable Results Area ─────────────────────────────── */}
       <div className="flex-1 overflow-y-auto rounded-lg">
         {selectedRuns.length >= 1 ? (
-          <div className="p-4 space-y-3">
+          <div className="p-4 space-y-2.5">
             {/* Info banner when only 1 run selected */}
             {selectedRuns.length === 1 && (
               <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-blue-300 dark:border-blue-500/30 bg-blue-50 dark:bg-blue-500/10 text-blue-800 dark:text-blue-300 text-xs">
@@ -748,28 +730,29 @@ export const ComparisonPage: React.FC = () => {
               </div>
             )}
 
-            {/* Test-level overlap — honest coverage across the selected runs
-                (benchmark or not). Shown for 2+ runs. */}
-            {selectedRuns.length >= 2 && <ComparisonOverlapBanner overlap={overlap} />}
-
-            {/* A/B legend — make the comparison's A vs B mapping explicit (URL
-                order: A = first run, B = second). Shown for 2-run compares so
-                the deep-dive, span citations and trace panes are unambiguous. */}
-            {mode === 'compare' && selectedRuns.length === 2 && (
-              <div className="flex flex-wrap items-center gap-2 text-xs" data-testid="comparison-ab-legend">
-                {(['A', 'B'] as const).map((ab, i) => (
-                  <span key={ab} className={`inline-flex items-center gap-1.5 rounded-md border px-2 py-1 ${i === 0 ? 'bg-opensearch-blue/10 border-opensearch-blue/40' : 'bg-purple-500/10 border-purple-400/40'}`}>
-                    <span className={`inline-flex items-center justify-center h-4 min-w-[1rem] px-1 rounded font-bold ${i === 0 ? 'text-opensearch-blue' : 'text-purple-300'}`}>{ab}</span>
-                    <span className="font-medium text-foreground">{getAgentName(selectedRuns[i].agentKey)}</span>
-                    <span className="text-muted-foreground">· {getModelName(selectedRuns[i].modelId)}</span>
-                  </span>
-                ))}
-              </div>
+            {/* Comparison Scoreboard — replaces VerdictStrip + ComparisonOverlapBanner + MetricComparisonPanel Collapsible.
+                Renders for single-run views too (run row + "All metrics"), like
+                the old standalone Detailed-metrics panel did. */}
+            {selectedRuns.length >= 1 && (
+              <ComparisonScoreboard
+                runs={runAggregates}
+                selectedRuns={selectedRuns}
+                overlap={overlap}
+                onRemoveRun={(id) => {
+                  const next = selectedRunIds.filter(rid => rid !== id);
+                  if (next.length >= 1) updateSelection(next);
+                }}
+                onSwapRuns={() => {
+                  if (selectedRunIds.length >= 2) {
+                    updateSelection([selectedRunIds[1], selectedRunIds[0], ...selectedRunIds.slice(2)]);
+                  }
+                }}
+                getAgentName={getAgentName}
+              />
             )}
 
-            {/* What's actually different — agentic, trace-grounded deep-dive
-                for 2-run compares; classic VerdictStrip otherwise. */}
-            {mode === 'compare' && runAggregates.length === 2 ? (
+            {/* What's actually different — agentic, trace-grounded deep-dive */}
+            {selectedRuns.length === 2 && runAggregates.length === 2 && (
               <ComparisonDeepDive
                 runs={selectedRuns}
                 rows={allComparisonRows}
@@ -779,13 +762,6 @@ export const ComparisonPage: React.FC = () => {
                   const m = new Map<string, { serviceName?: string; startedAt: number; endedAt: number }>();
                   metaRuns.forEach((r) => {
                     const win = { serviceName: r.serviceName, startedAt: r.startedAt, endedAt: r.endedAt };
-                    // Key by reportId AND the deep-dive's (agent) runId. The
-                    // Traces tab looks the window up by the report's *client*
-                    // run id, which toTestCaseRun maps to the OTel traceId — not
-                    // the agent runId the deep-dive returns — so keying only by
-                    // runId missed, the Strategy-C window was never fetched, and
-                    // some cited spans couldn't be opened. reportId is stable on
-                    // both sides; the lookup tries it first.
                     if (r.reportId) m.set(r.reportId, win);
                     if (r.runId) m.set(r.runId, win);
                   });
@@ -795,45 +771,7 @@ export const ComparisonPage: React.FC = () => {
                   setSpanDeepLink({ testCaseId, runId, spanId, nonce: Date.now() })
                 }
               />
-            ) : (
-              <VerdictStrip mode={mode} runs={runAggregates} />
             )}
-
-            {/* Diagnosis — failure pattern clustering across regressed cases.
-                Renders only when there are regressed rows to analyze. */}
-            {regressedEvidence.cases.length > 0 && (
-              <FailureClusterPanel
-                loserLabel={regressedEvidence.loserLabel}
-                winnerLabel={regressedEvidence.winnerLabel}
-                cases={regressedEvidence.cases}
-                activeCaseFilter={clusterCaseFilter?.caseIds}
-                onClustersChange={setFailureClusters}
-                onFilterByCases={(caseIds, clusterName) => {
-                  // Toggle off if the same cluster is clicked twice.
-                  setClusterCaseFilter(prev =>
-                    prev && prev.clusterName === clusterName ? null : { caseIds, clusterName }
-                  );
-                }}
-              />
-            )}
-
-            {/* Detailed metrics — power-user surface, collapsed by default */}
-            <Collapsible open={summaryOpen} onOpenChange={setSummaryOpen}>
-              <CollapsibleTrigger asChild>
-                <button className="flex items-center gap-2 w-full text-left px-3 py-2 rounded-lg border border-border/50 hover:bg-muted/30 transition-colors">
-                  <ChevronRight size={14} className={`text-muted-foreground transition-transform ${summaryOpen ? 'rotate-90' : ''}`} />
-                  <span className="text-xs font-medium">Detailed metrics</span>
-                  {!summaryOpen && (
-                    <span className="text-[10px] text-muted-foreground ml-1">
-                      Bar chart of quality metrics + full metrics matrix
-                    </span>
-                  )}
-                </button>
-              </CollapsibleTrigger>
-              <CollapsibleContent className="space-y-3 mt-2">
-                <MetricComparisonPanel runs={runAggregates} />
-              </CollapsibleContent>
-            </Collapsible>
 
             {/* ── Table Compare — primary content ──────────────── */}
             <section>
@@ -897,6 +835,26 @@ export const ComparisonPage: React.FC = () => {
                     : 'Click a row to expand the side-by-side diff'}
                 </p>
               </div>
+
+              {/* Diagnosis — failure pattern clustering across regressed cases.
+                  Lives inside the Table Compare block (it acts on exactly the
+                  regressed rows below), not as a free-floating band. */}
+              {regressedEvidence.cases.length > 0 && (
+                <div className="mb-2">
+                  <FailureClusterPanel
+                    loserLabel={regressedEvidence.loserLabel}
+                    winnerLabel={regressedEvidence.winnerLabel}
+                    cases={regressedEvidence.cases}
+                    activeCaseFilter={clusterCaseFilter?.caseIds}
+                    onClustersChange={setFailureClusters}
+                    onFilterByCases={(caseIds, clusterName) => {
+                      setClusterCaseFilter(prev =>
+                        prev && prev.clusterName === clusterName ? null : { caseIds, clusterName }
+                      );
+                    }}
+                  />
+                </div>
+              )}
 
               {/* Run pair selector for trajectory comparison (shown when > 2 runs) */}
               {showRunPairSelector && trajectoryTargetTestCase && (
