@@ -63,6 +63,13 @@ export interface PollCallbacks {
   onTracesFound: (spans: Span[], report: EvaluationReport) => Promise<void>;
   onAttempt?: (attempt: number, maxAttempts: number) => void;
   onError: (error: Error) => void;
+  /**
+   * Fired when polling stops WITHOUT a verdict from this poller — e.g. the
+   * report reached a terminal metricsStatus through another path (eager
+   * judge, sibling server). Callers that wrap `startPolling` in a promise
+   * (evaluationRunner.waitForTracesAndJudge) MUST resolve here or they hang.
+   */
+  onStopped?: () => void;
 }
 
 /**
@@ -232,7 +239,10 @@ class TracePollingManager {
   private async patchErrorIfStillPending(reportId: string, patch: any): Promise<void> {
     try {
       const fresh = await this.safeGetReport(reportId);
-      if (fresh && fresh.metricsStatus === 'ready') {
+      if (fresh && (fresh.metricsStatus === 'ready' || fresh.metricsStatus === 'error')) {
+        // 'ready': a real verdict landed — never overwrite it.
+        // 'error': another path already wrote a (likely more specific) error
+        //          cause — don't stomp it with a generic timeout.
         debug('TracePoller', `Skipping error patch for ${reportId} — already '${fresh.metricsStatus}'`);
         return;
       }
@@ -291,27 +301,76 @@ class TracePollingManager {
         this.callbacks.delete(reportId);
         this.polls.delete(reportId);
         // Resolve (not reject) any completion promise — the report reached a
-        // terminal state through another path; nothing is owed here.
+        // terminal state through another path; nothing is owed here. Plain
+        // startPolling callers are notified via onStopped (promise wrappers
+        // like waitForTracesAndJudge resolve there — otherwise they'd hang).
         this.completionPromises.get(reportId)?.resolve();
         this.completionPromises.delete(reportId);
+        try { callbacks?.onStopped?.(); } catch { /* notification only */ }
         return;
       }
 
       const windowAgents = currentReport
         ? buildJudgeAgentsHints(currentReport as any, state.agentConfig?.traceServiceName)
         : [];
+      const sessionId = currentReport?.sessionId;
+      // The run's own OTel traceId (test_case eval span) — stamped by the
+      // runners at case start. Agents that adopt the propagated traceparent
+      // (REST via header, pi via TRACEPARENT env — both verified) emit their
+      // spans under this exact traceId (Strategy A).
+      const evalTraceId = currentReport?.traceId;
 
-      // Try to fetch traces — union of Strategy B (runId), C (service.name +
-      // time window) and D (session.id inside the window hint).
+      if (!state.runId && !sessionId && !evalTraceId && windowAgents.length === 0) {
+        // No correlator at all this attempt (report fetch may have failed
+        // transiently, or the report carries no correlation fields yet).
+        // An unfiltered query would be rejected by the traces API anyway —
+        // skip the fetch and let the attempt budget advance.
+        debug('TracePoller', `No correlator available for report ${reportId} (attempt ${state.attempts}) — skipping fetch`);
+        if (state.attempts >= state.maxAttempts) {
+          state.running = false;
+          callbacks?.onError(new Error(`Traces not available after ${state.maxAttempts} attempts (no correlation keys on report)`));
+          await this.patchErrorIfStillPending(reportId, buildEvaluatorErrorPatch(
+            'trace_timeout',
+            `no correlation keys (runId/sessionId/traceId/service-window) available after ${state.maxAttempts} attempts`,
+          ) as any);
+          this.callbacks.delete(reportId);
+          this.polls.delete(reportId);
+        } else {
+          state.timerId = setTimeout(() => this.poll(reportId), state.intervalMs);
+        }
+        return;
+      }
+
+      // Try to fetch traces — union of Strategy A (eval traceId), B (runId),
+      // C (service.name + time window) and D (session.id inside the window hint).
       const result = await fetchTracesForRun({
         runId: state.runId,
+        evalTraceId,
         windowAgents,
         includeWindowFallback: windowAgents.length > 0,
       });
 
-      if (result.spans && result.spans.length > 0) {
+      // EXACT-MATCH FILTER: the window clause (Strategy C) is a discovery
+      // fallback and can return spans from CONCURRENT runs of the same agent
+      // (same service.name, overlapping time window — e.g. 4 parallel test
+      // cases of one benchmark). When the report carries a precise correlator
+      // and any fetched spans match it, judge ONLY those spans:
+      //   session.id (Claude Code)  >  eval traceId (traceparent adopters).
+      let spans = result.spans || [];
+      if (spans.length > 0) {
+        if (sessionId) {
+          const bySession = spans.filter(sp => (sp.attributes as any)?.['session.id'] === sessionId);
+          if (bySession.length > 0) spans = bySession;
+        } else if (evalTraceId) {
+          const byTrace = spans.filter(sp => sp.traceId === evalTraceId);
+          if (byTrace.length > 0) spans = byTrace;
+        }
+      }
+      const filteredResult = { ...result, spans };
+
+      if (filteredResult.spans && filteredResult.spans.length > 0) {
         // Traces found!
-        debug('TracePoller', `Found ${result.spans.length} spans for report ${reportId}`);
+        debug('TracePoller', `Found ${filteredResult.spans.length} spans for report ${reportId} (fetched ${result.spans?.length ?? 0})`);
 
         // Get the current report (reuse the top-of-poll fetch when it
         // succeeded — one storage read per attempt).
@@ -321,7 +380,7 @@ class TracePollingManager {
         }
 
         // Build trajectory from trace spans
-        const { trajectory, shouldContinuePolling } = await this.buildTrajectory(result.spans, state);
+        const { trajectory, shouldContinuePolling } = await this.buildTrajectory(filteredResult.spans, state);
         // Check if we should continue polling
         if (shouldContinuePolling) {
           if (state.attempts >= state.maxAttempts) {
@@ -331,7 +390,7 @@ class TracePollingManager {
             
             await this.patchErrorIfStillPending(reportId, buildEvaluatorErrorPatch(
               'trace_incomplete',
-              `found ${result.spans.length} spans but no root span after ${state.maxAttempts} attempts`,
+              `found ${filteredResult.spans.length} spans but no root span after ${state.maxAttempts} attempts`,
             ) as any);
             
             this.callbacks.delete(reportId);
@@ -351,8 +410,17 @@ class TracePollingManager {
         // Stop polling and notify success
         state.running = false;
 
+        // Claim the report before judging (pending -> calculating). Not an
+        // atomic lease — the storage layer has no CAS — but it makes the
+        // browser recovery's "someone else is judging" guard effective and
+        // narrows the double-judge window between sibling pollers to the
+        // fetch-to-claim gap.
         try {
-          await callbacks?.onTracesFound(result.spans, report);
+          await asyncRunStorage.updateReport(reportId, { metricsStatus: 'calculating' } as any);
+        } catch { /* best-effort claim — proceed to judge regardless */ }
+
+        try {
+          await callbacks?.onTracesFound(filteredResult.spans, report);
         } catch (callbackErr) {
           // onTracesFound failed (e.g., judge + error recovery both failed).
           // Write error status so the report doesn't stay stuck in 'pending'.

@@ -609,6 +609,9 @@ export async function executeRun(
           // them. Mirrors the same stamp in runSingleUseCase.
           (report as any).judgeModelId = (report as any).judgeModelId ?? run.judgeModelId;
           (report as any).evaluatorId = (report as any).evaluatorId ?? run.evaluatorId;
+          // Eval test_case span traceId — Strategy A correlator for the trace
+          // poller (see evaluationRunner for details).
+          (report as any).traceId = (report as any).traceId ?? caseSpan?.spanContext().traceId;
 
           // Save the report to OpenSearch and get the actual stored ID
           const savedReport = await saveReportWithClient(client, report, {
@@ -623,7 +626,10 @@ export async function executeRun(
           // Start trace polling for trace-mode runs (metricsStatus: 'pending').
           // Deterministic SDK runs already populated the report with their own
           // verdict in the matcher session above, so skip this path.
-          if (!hasDeterministicEval && savedReport.metricsStatus === 'pending' && savedReport.runId) {
+          // No runId requirement: the poller correlates via the report's
+          // sessionId / eval traceId / service-window hints when Strategy B
+          // is unavailable (REST-connector reports never carry a runId).
+          if (!hasDeterministicEval && savedReport.metricsStatus === 'pending') {
             const pollPromise = startTracePollingForReport(savedReport, testCase, client, benchmark, run);
             // Attach .catch to prevent unhandled rejection if cancelled/errored before allSettled
             pendingTracePolls.push(pollPromise.catch(() => {}));
@@ -915,6 +921,8 @@ export async function runSingleUseCase(
   // running the AES Oncall test case with `useTraces: true` + the
   // agent (trace) judge.
   (report as any).evaluatorId = (report as any).evaluatorId ?? run.evaluatorId;
+  // Eval test_case span traceId — Strategy A correlator for the trace poller.
+  (report as any).traceId = (report as any).traceId ?? caseSpan?.spanContext().traceId;
 
   // If a placeholder run was pre-created, update it instead of creating a new one.
   // We use the storage-layer field names (traceId, etc.) to match `saveReportWithModule`
@@ -985,8 +993,9 @@ export async function runSingleUseCase(
     })
     .catch(err => console.warn(`[BenchmarkRunner] Failed to update lastRunAt for ${testCase.id}:`, err.message));
 
-  // Start trace polling for trace-mode runs
-  if (savedReport.metricsStatus === 'pending' && savedReport.runId) {
+  // Start trace polling for trace-mode runs. No runId requirement — see
+  // startTracePollingForReportWithModule.
+  if (savedReport.metricsStatus === 'pending') {
     if (options?.awaitTraces !== false) {
       // CLI/batch mode: block until traces arrive and judge evaluates
       try {

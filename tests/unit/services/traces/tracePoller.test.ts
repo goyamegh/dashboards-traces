@@ -548,8 +548,10 @@ describe('TracePollingManager', () => {
 
       mockFetchTracesForRun.mockResolvedValueOnce({ spans: mockSpans, total: mockSpans.length });
       mockGetReportById.mockResolvedValueOnce(mockReport);
-      // First updateReport call (attempt count) succeeds, second (error status) fails
+      // updateReport calls: attempt count OK, claim (calculating) OK, then
+      // the error-status write fails
       mockUpdateReport
+        .mockResolvedValueOnce(undefined)
         .mockResolvedValueOnce(undefined)
         .mockRejectedValueOnce(new Error('Storage down'));
 
@@ -991,6 +993,109 @@ describe('TracePollingManager', () => {
           maxAttempts: 3,
         })
       ).rejects.toThrow('Judge failed');
+    });
+  });
+
+  describe('clobber guards + exact-match correlation (2026-08-25 fixes)', () => {
+    const pendingReport = (over: Partial<EvaluationReport> = {}): EvaluationReport => ({
+      id: 'r-guard',
+      timestamp: '2024-01-01T00:00:00Z',
+      testCaseId: 'tc-1',
+      status: 'completed',
+      agentName: 'A',
+      agentKey: 'a',
+      modelName: 'M',
+      modelId: 'm',
+      trajectory: [],
+      metrics: { accuracy: 0 },
+      llmJudgeReasoning: '',
+      metricsStatus: 'pending',
+      ...over,
+    } as EvaluationReport);
+
+    const span = (over: Partial<Span> = {}): Span => ({
+      traceId: 't1', spanId: 's1', name: 'sp', startTime: '2024-01-01T00:00:00Z',
+      endTime: '2024-01-01T00:00:01Z', duration: 1000, status: 'OK', attributes: {},
+      ...over,
+    } as Span);
+
+    it('stops without judging (and fires onStopped) when the report is already terminal', async () => {
+      mockGetReportById.mockResolvedValue(pendingReport({ metricsStatus: 'ready' }));
+      mockUpdateReport.mockResolvedValue(undefined);
+      const onTracesFound = jest.fn();
+      const onStopped = jest.fn();
+
+      tracePollingManager.startPolling('r-guard', 'run-x', { onTracesFound, onError: jest.fn(), onStopped });
+      await jest.runAllTimersAsync();
+
+      expect(onTracesFound).not.toHaveBeenCalled();
+      expect(onStopped).toHaveBeenCalledTimes(1);
+      expect(mockFetchTracesForRun).not.toHaveBeenCalled();
+      expect(tracePollingManager.getState('r-guard')).toBeUndefined();
+    });
+
+    it('filters fetched spans to the report sessionId (concurrent same-service runs)', async () => {
+      const mine = span({ spanId: 'mine', attributes: { 'session.id': 'sess-A' } });
+      const other = span({ spanId: 'other', attributes: { 'session.id': 'sess-B' } });
+      mockGetReportById.mockResolvedValue(pendingReport({ sessionId: 'sess-A' }));
+      mockUpdateReport.mockResolvedValue(undefined);
+      mockFetchTracesForRun.mockResolvedValue({ spans: [mine, other], total: 2 } as any);
+      const onTracesFound = jest.fn().mockResolvedValue(undefined);
+
+      tracePollingManager.startPolling('r-guard', 'run-x', { onTracesFound, onError: jest.fn() });
+      await jest.runAllTimersAsync();
+
+      expect(onTracesFound).toHaveBeenCalledTimes(1);
+      const judgedSpans = onTracesFound.mock.calls[0][0] as Span[];
+      expect(judgedSpans.map(sp => sp.spanId)).toEqual(['mine']);
+    });
+
+    it('filters fetched spans to the eval traceId when no sessionId is present', async () => {
+      const mine = span({ spanId: 'mine', traceId: 'eval-trace-1' });
+      const other = span({ spanId: 'other', traceId: 'other-trace' });
+      mockGetReportById.mockResolvedValue(pendingReport({ traceId: 'eval-trace-1' }));
+      mockUpdateReport.mockResolvedValue(undefined);
+      mockFetchTracesForRun.mockResolvedValue({ spans: [mine, other], total: 2 } as any);
+      const onTracesFound = jest.fn().mockResolvedValue(undefined);
+
+      tracePollingManager.startPolling('r-guard', 'run-x', { onTracesFound, onError: jest.fn() });
+      await jest.runAllTimersAsync();
+
+      const judgedSpans = onTracesFound.mock.calls[0][0] as Span[];
+      expect(judgedSpans.map(sp => sp.spanId)).toEqual(['mine']);
+    });
+
+    it('claims the report (calculating) before invoking the judge callback', async () => {
+      mockGetReportById.mockResolvedValue(pendingReport());
+      mockUpdateReport.mockResolvedValue(undefined);
+      mockFetchTracesForRun.mockResolvedValue({ spans: [span()], total: 1 } as any);
+      const calls: string[] = [];
+      const onTracesFound = jest.fn().mockImplementation(async () => { calls.push('judge'); });
+      mockUpdateReport.mockImplementation(async (_id: string, patch: any) => {
+        if (patch?.metricsStatus === 'calculating') calls.push('claim');
+        return undefined as any;
+      });
+
+      tracePollingManager.startPolling('r-guard', 'run-x', { onTracesFound, onError: jest.fn() });
+      await jest.runAllTimersAsync();
+
+      expect(calls).toEqual(['claim', 'judge']);
+    });
+
+    it('does not overwrite an existing error verdict with a generic timeout', async () => {
+      // First poll: report pending, no spans; maxAttempts=1 so timeout fires.
+      // By the time the timeout patch runs, another path wrote 'error'.
+      mockGetReportById
+        .mockResolvedValueOnce(pendingReport())                       // top-of-poll
+        .mockResolvedValueOnce(pendingReport({ metricsStatus: 'error' })); // patch guard
+      mockUpdateReport.mockResolvedValue(undefined);
+      mockFetchTracesForRun.mockResolvedValue({ spans: [], total: 0 } as any);
+
+      tracePollingManager.startPolling('r-guard', 'run-x', { onTracesFound: jest.fn(), onError: jest.fn() }, { maxAttempts: 1 });
+      await jest.runAllTimersAsync();
+
+      const errorPatches = mockUpdateReport.mock.calls.filter(c => (c[1] as any)?.metricsStatus === 'error');
+      expect(errorPatches).toHaveLength(0);
     });
   });
 });

@@ -641,6 +641,11 @@ export async function executeEvaluationRun(
           // (the connector path predates the cross-surface parity work),
           // so we stamp it onto the doc here.
           (report as any).evaluatorId = (report as any).evaluatorId ?? run.evaluatorId;
+          // Stamp the eval test_case span's traceId (Strategy A correlator).
+          // Agents that adopt the propagated traceparent (REST via header,
+          // pi via TRACEPARENT env) emit their spans under this exact
+          // traceId, giving the trace poller a precise, window-free match.
+          (report as any).traceId = (report as any).traceId ?? caseSpan?.spanContext().traceId;
           // Same fallback for judgeModelId — the connector return path
           // doesn't carry it, but `run.judgeModelId` is the cx input so
           // we stamp it onto the report on save.
@@ -862,6 +867,10 @@ async function waitForTracesAndJudge(
       report.id,
       report.runId,
       {
+        // The poller stops without a verdict when the report reached a
+        // terminal state through another path — resolve or this hangs the
+        // run's test-case worker forever.
+        onStopped: () => resolve(),
         onTracesFound: async (_spans, updatedReport) => {
           try {
             // Span-built trajectory (hook or default conversion — issue #320).
