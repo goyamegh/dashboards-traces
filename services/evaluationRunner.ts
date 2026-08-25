@@ -663,12 +663,18 @@ export async function executeEvaluationRun(
 
           // If trace mode (metricsStatus: 'pending'), poll for traces and run judge inline.
           // Skipped for deterministic runs (matcher session decided the verdict already).
+          // Guarded on agentConfig.useTraces: only trace-mode agents legitimately
+          // produce 'pending' — a stale placeholder 'pending' surviving a save-merge
+          // must never send an eagerly-judged report into trace polling that
+          // clobbers its verdict. No runId requirement: the poller correlates
+          // via sessionId/service-window hints when Strategy B is unavailable
+          // (REST agents never get a runId; Claude Code spans carry only session.id).
           if (
             !hasDeterministicEval &&
-            savedReport.metricsStatus === 'pending' &&
-            savedReport.runId
+            agentConfig?.useTraces &&
+            savedReport.metricsStatus === 'pending'
           ) {
-            debug('EvaluationRunner', `[${testCaseId}] Trace mode: polling for traces (runId=${savedReport.runId})`);
+            debug('EvaluationRunner', `[${testCaseId}] Trace mode: polling for traces (runId=${savedReport.runId ?? 'none — window/session correlation'})`);
             await waitForTracesAndJudge(savedReport, testCase, storageModule, agentConfig);
           }
 
@@ -854,7 +860,7 @@ async function waitForTracesAndJudge(
   return new Promise<void>((resolve) => {
     tracePollingManager.startPolling(
       report.id,
-      report.runId!,
+      report.runId,
       {
         onTracesFound: async (_spans, updatedReport) => {
           try {

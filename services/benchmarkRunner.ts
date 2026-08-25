@@ -1028,9 +1028,11 @@ export async function runSingleUseCase(
  * can re-attach polling for reports that were orphaned by a server restart.
  */
 export function startTracePollingForReportWithModule(report: EvaluationReport, testCase: TestCase, storage: IStorageModule): Promise<void> {
+  // No runId (e.g. REST-connector agents) is fine now: the poller derives
+  // sessionId / service-window correlation hints from the report itself
+  // (Strategies C/D), so polling can proceed without Strategy B.
   if (!report.runId) {
-    console.warn(`[BenchmarkRunner] No runId for report ${report.id}, cannot start trace polling`);
-    return Promise.resolve();
+    debug('BenchmarkRunner', `No runId for report ${report.id} — polling via sessionId/service-window hints`);
   }
 
   // Pass agent config to trace poller for hooks
@@ -1162,9 +1164,10 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
  * Start trace polling for the batch benchmark execution path (uses raw OpenSearch client).
  */
 function startTracePollingForReport(report: EvaluationReport, testCase: TestCase, client: Client, benchmark?: Benchmark, run?: BenchmarkRun): Promise<void> {
+  // See startTracePollingForReportWithModule: no runId → the poller falls
+  // back to sessionId/service-window correlation hints from the report.
   if (!report.runId) {
-    console.warn(`[BenchmarkRunner] No runId for report ${report.id}, cannot start trace polling`);
-    return Promise.resolve();
+    debug('BenchmarkRunner', `No runId for report ${report.id} — polling via sessionId/service-window hints`);
   }
 
   // Pass agent config to trace poller for hooks

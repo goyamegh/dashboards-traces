@@ -12,7 +12,8 @@
 
 import { Span, EvaluationReport, AgentConfig, BuildTrajectoryContext } from '@/types';
 import { debug } from '@/lib/debug';
-import { fetchTracesByRunIds } from './index';
+import { fetchTracesForRun } from './index';
+import { buildJudgeAgentsHints } from './judgeAgentsHints';
 import { asyncRunStorage } from '../storage/asyncRunStorage';
 import { executeBuildTrajectoryHook } from '@/lib/hooks';
 import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
@@ -35,11 +36,20 @@ const envInt = (name: string, fallback: number): number => {
 };
 const DEFAULT_POLL_INTERVAL_MS = envInt('TRACE_POLL_INTERVAL_MS', 10000); // 10 seconds
 const DEFAULT_MAX_ATTEMPTS = envInt('TRACE_POLL_MAX_ATTEMPTS', 60); // 10 minutes total at default interval
-const MAX_POLL_CEILING = 60; // Hard ceiling: never exceed 60 attempts regardless of agent config or env override
+// Hard ceiling: never exceed this many attempts regardless of agent config or
+// env override. Raised 60 → 240 (40 min at the default interval): the old
+// ceiling silently clamped explicit agent `tracePolling.maxAttempts` overrides
+// (e.g. 180 for slow OTLP→API-Gateway→cluster ingestion) back down to 10 min.
+const MAX_POLL_CEILING = 240;
 
 export interface PollState {
   reportId: string;
-  runId: string;
+  /**
+   * Connector runId (Strategy B). OPTIONAL — REST-connector reports never
+   * get one; correlation then relies on the sessionId/service-window hints
+   * derived from the report (Strategies C/D).
+   */
+  runId?: string;
   attempts: number;
   maxAttempts: number;
   intervalMs: number;
@@ -75,7 +85,7 @@ class TracePollingManager {
    */
   startPolling(
     reportId: string,
-    runId: string,
+    runId: string | undefined,
     callbacks: PollCallbacks,
     options?: { intervalMs?: number; maxAttempts?: number; agentConfig?: AgentConfig }
   ): void {
@@ -157,7 +167,7 @@ class TracePollingManager {
    */
   startPollingAsync(
     reportId: string,
-    runId: string,
+    runId: string | undefined,
     callbacks: PollCallbacks,
     options?: { intervalMs?: number; maxAttempts?: number; agentConfig?: AgentConfig }
   ): Promise<void> {
@@ -202,6 +212,37 @@ class TracePollingManager {
   }
 
   /**
+   * Fetch a report defensively: storage failures and missing docs both
+   * resolve to null (callers treat null as "unknown — proceed").
+   */
+  private async safeGetReport(reportId: string): Promise<EvaluationReport | null> {
+    try {
+      return (await asyncRunStorage.getReportById(reportId)) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Write an evaluator-error patch ONLY if the report is still pending /
+   * calculating. A report judged through another path (eager judge, another
+   * server's poller) must never have its verdict clobbered by this poller's
+   * timeout/error bookkeeping.
+   */
+  private async patchErrorIfStillPending(reportId: string, patch: any): Promise<void> {
+    try {
+      const fresh = await this.safeGetReport(reportId);
+      if (fresh && fresh.metricsStatus === 'ready') {
+        debug('TracePoller', `Skipping error patch for ${reportId} — already '${fresh.metricsStatus}'`);
+        return;
+      }
+      await asyncRunStorage.updateReport(reportId, patch);
+    } catch (updateErr) {
+      console.error(`[TracePoller] CRITICAL: Failed to update report ${reportId} error status. Report may be stuck in pending state.`, updateErr);
+    }
+  }
+
+  /**
    * Execute a single poll attempt
    */
   private async poll(reportId: string): Promise<void> {
@@ -231,15 +272,50 @@ class TracePollingManager {
     }
 
     try {
-      // Try to fetch traces
-      const result = await fetchTracesByRunIds([state.runId]);
+      // Fetch the current report FIRST. Two reasons:
+      //  1. Clobber guard: if the report was already judged (eager path — a
+      //     browser fan-out can start polls for transiently-pending eager
+      //     reports), STOP instead of racing the verdict. A trace_timeout
+      //     patch 10 minutes later must never overwrite a real judgment
+      //     (2026-08-25: run-inspector fan-out clobbered a full run's early
+      //     verdicts this way).
+      //  2. Correlation hints: the report carries sessionId / timestamp /
+      //     connectorProtocol, from which we derive the service-window +
+      //     sessionId hints (Strategies C/D). Claude Code spans carry only
+      //     `session.id` (no runId tag), pi/REST spans carry neither —
+      //     runId-only polling (Strategy B) can never find them.
+      const currentReport = await this.safeGetReport(reportId);
+      if (currentReport && (currentReport.metricsStatus === 'ready' || currentReport.metricsStatus === 'error')) {
+        debug('TracePoller', `Report ${reportId} is already '${currentReport.metricsStatus}' — stopping poll (no clobber)`);
+        state.running = false;
+        this.callbacks.delete(reportId);
+        this.polls.delete(reportId);
+        // Resolve (not reject) any completion promise — the report reached a
+        // terminal state through another path; nothing is owed here.
+        this.completionPromises.get(reportId)?.resolve();
+        this.completionPromises.delete(reportId);
+        return;
+      }
+
+      const windowAgents = currentReport
+        ? buildJudgeAgentsHints(currentReport as any, state.agentConfig?.traceServiceName)
+        : [];
+
+      // Try to fetch traces — union of Strategy B (runId), C (service.name +
+      // time window) and D (session.id inside the window hint).
+      const result = await fetchTracesForRun({
+        runId: state.runId,
+        windowAgents,
+        includeWindowFallback: windowAgents.length > 0,
+      });
 
       if (result.spans && result.spans.length > 0) {
         // Traces found!
         debug('TracePoller', `Found ${result.spans.length} spans for report ${reportId}`);
 
-        // Get the current report
-        const report = await asyncRunStorage.getReportById(reportId);
+        // Get the current report (reuse the top-of-poll fetch when it
+        // succeeded — one storage read per attempt).
+        const report = currentReport ?? await asyncRunStorage.getReportById(reportId);
         if (!report) {
           throw new Error(`Report ${reportId} not found`);
         }
@@ -253,10 +329,10 @@ class TracePollingManager {
             state.running = false;
             callbacks?.onError(new Error(`Trace incomplete after ${state.maxAttempts} attempts`));
             
-            await asyncRunStorage.updateReport(reportId, buildEvaluatorErrorPatch(
+            await this.patchErrorIfStillPending(reportId, buildEvaluatorErrorPatch(
               'trace_incomplete',
               `found ${result.spans.length} spans but no root span after ${state.maxAttempts} attempts`,
-            ) as any).catch(err => console.error(`[TracePoller] Failed to update report error status:`, err));
+            ) as any);
             
             this.callbacks.delete(reportId);
             this.polls.delete(reportId);
@@ -302,14 +378,10 @@ class TracePollingManager {
           callbacks?.onError(new Error(`Traces not available after ${state.maxAttempts} attempts`));
 
           // Update report with error status - critical as report will remain stuck otherwise
-          try {
-            await asyncRunStorage.updateReport(reportId, buildEvaluatorErrorPatch(
-              'trace_timeout',
-              `traces not available after ${state.maxAttempts} attempts (${state.maxAttempts * state.intervalMs / 60000} minutes)`,
-            ) as any);
-          } catch (updateErr) {
-            console.error(`[TracePoller] CRITICAL: Failed to update report ${reportId} error status. Report may be stuck in pending state.`, updateErr);
-          }
+          await this.patchErrorIfStillPending(reportId, buildEvaluatorErrorPatch(
+            'trace_timeout',
+            `traces not available after ${state.maxAttempts} attempts (${state.maxAttempts * state.intervalMs / 60000} minutes)`,
+          ) as any);
 
           this.callbacks.delete(reportId);
           this.polls.delete(reportId);
@@ -326,14 +398,10 @@ class TracePollingManager {
         callbacks?.onError(error as Error);
 
         // Update report with error status - critical as report will remain stuck otherwise
-        try {
-          await asyncRunStorage.updateReport(reportId, buildEvaluatorErrorPatch(
-            'trace_fetch_failed',
-            error,
-          ) as any);
-        } catch (updateErr) {
-          console.error(`[TracePoller] CRITICAL: Failed to update report ${reportId} error status. Report may be stuck in pending state.`, updateErr);
-        }
+        await this.patchErrorIfStillPending(reportId, buildEvaluatorErrorPatch(
+          'trace_fetch_failed',
+          error,
+        ) as any);
 
         this.callbacks.delete(reportId);
         this.polls.delete(reportId);

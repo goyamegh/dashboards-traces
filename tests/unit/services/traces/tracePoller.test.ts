@@ -5,13 +5,13 @@
 
 import { EvaluationReport, Span } from '@/types';
 import { tracePollingManager, PollCallbacks } from '@/services/traces/tracePoller';
-import { fetchTracesByRunIds } from '@/services/traces';
+import { fetchTracesForRun } from '@/services/traces';
 import { asyncRunStorage } from '@/services/storage/asyncRunStorage';
 import { executeBuildTrajectoryHook } from '@/lib/hooks';
 
 // Mock dependencies
 jest.mock('@/services/traces/index', () => ({
-  fetchTracesByRunIds: jest.fn(),
+  fetchTracesForRun: jest.fn(),
 }));
 
 jest.mock('@/services/storage/asyncRunStorage', () => ({
@@ -25,7 +25,7 @@ jest.mock('@/lib/hooks', () => ({
   executeBuildTrajectoryHook: jest.fn(),
 }));
 
-const mockFetchTracesByRunIds = fetchTracesByRunIds as jest.MockedFunction<typeof fetchTracesByRunIds>;
+const mockFetchTracesForRun = fetchTracesForRun as jest.MockedFunction<typeof fetchTracesForRun>;
 const mockUpdateReport = asyncRunStorage.updateReport as jest.MockedFunction<typeof asyncRunStorage.updateReport>;
 const mockGetReportById = asyncRunStorage.getReportById as jest.MockedFunction<typeof asyncRunStorage.getReportById>;
 const mockExecuteBuildTrajectoryHook = executeBuildTrajectoryHook as jest.MockedFunction<typeof executeBuildTrajectoryHook>;
@@ -57,7 +57,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: [], total: 0 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: [], total: 0 });
       mockUpdateReport.mockResolvedValue(undefined);
 
       tracePollingManager.startPolling('report-1', 'run-1', callbacks);
@@ -77,7 +77,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: [], total: 0 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: [], total: 0 });
       mockUpdateReport.mockResolvedValue(undefined);
 
       tracePollingManager.startPolling('report-1', 'run-1', callbacks);
@@ -94,7 +94,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: [], total: 0 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: [], total: 0 });
       mockUpdateReport.mockResolvedValue(undefined);
 
       tracePollingManager.startPolling('report-2', 'run-2', callbacks, {
@@ -115,7 +115,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: [], total: 0 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: [], total: 0 });
       mockUpdateReport.mockResolvedValue(undefined);
 
       tracePollingManager.startPolling('report-3', 'run-3', callbacks);
@@ -138,7 +138,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: [], total: 0 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: [], total: 0 });
       mockUpdateReport.mockResolvedValue(undefined);
 
       tracePollingManager.startPolling('report-mem-1', 'run-mem-1', callbacks);
@@ -151,7 +151,7 @@ describe('TracePollingManager', () => {
     });
 
     it('rejects completion promise when stopPolling is called on async poll', async () => {
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: [] });
+      mockFetchTracesForRun.mockResolvedValue({ spans: [] });
       mockUpdateReport.mockResolvedValue(undefined);
 
       const callbacks: PollCallbacks = {
@@ -188,7 +188,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: [], total: 0 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: [], total: 0 });
       mockUpdateReport.mockResolvedValue(undefined);
 
       tracePollingManager.startPolling('report-4', 'run-4', callbacks);
@@ -206,7 +206,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: [], total: 0 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: [], total: 0 });
       mockUpdateReport.mockResolvedValue(undefined);
 
       tracePollingManager.startPolling('report-5', 'run-5', callbacks);
@@ -261,7 +261,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValueOnce({ spans: mockSpans, total: mockSpans.length });
+      mockFetchTracesForRun.mockResolvedValueOnce({ spans: mockSpans, total: mockSpans.length });
       mockUpdateReport.mockResolvedValue(undefined);
       mockGetReportById.mockResolvedValueOnce(mockReport);
 
@@ -281,7 +281,7 @@ describe('TracePollingManager', () => {
         onAttempt,
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: [], total: 0 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: [], total: 0 });
       mockUpdateReport.mockResolvedValue(undefined);
 
       tracePollingManager.startPolling('report-8', 'run-8', callbacks, {
@@ -308,7 +308,7 @@ describe('TracePollingManager', () => {
         onError,
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: [], total: 0 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: [], total: 0 });
       mockUpdateReport.mockResolvedValue(undefined);
 
       tracePollingManager.startPolling('report-9', 'run-9', callbacks, {
@@ -331,7 +331,7 @@ describe('TracePollingManager', () => {
         onError,
       };
 
-      mockFetchTracesByRunIds.mockRejectedValue(new Error('Network error'));
+      mockFetchTracesForRun.mockRejectedValue(new Error('Network error'));
       mockUpdateReport.mockResolvedValue(undefined);
 
       tracePollingManager.startPolling('report-10', 'run-10', callbacks, {
@@ -354,7 +354,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: [], total: 0 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: [], total: 0 });
       mockUpdateReport.mockResolvedValue(undefined);
 
       tracePollingManager.startPolling('report-11', 'run-11', callbacks, {
@@ -408,7 +408,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValueOnce({ spans: mockSpans, total: mockSpans.length });
+      mockFetchTracesForRun.mockResolvedValueOnce({ spans: mockSpans, total: mockSpans.length });
       mockUpdateReport.mockResolvedValue(undefined);
       mockGetReportById.mockResolvedValueOnce(mockReport);
 
@@ -428,7 +428,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: [], total: 0 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: [], total: 0 });
       mockUpdateReport.mockResolvedValue(undefined);
 
       tracePollingManager.startPolling('report-mem-max', 'run-mem-max', callbacks, {
@@ -483,7 +483,7 @@ describe('TracePollingManager', () => {
         onError,
       };
 
-      mockFetchTracesByRunIds.mockResolvedValueOnce({ spans: mockSpans, total: mockSpans.length });
+      mockFetchTracesForRun.mockResolvedValueOnce({ spans: mockSpans, total: mockSpans.length });
       mockUpdateReport.mockResolvedValue(undefined);
       mockGetReportById.mockResolvedValueOnce(mockReport);
 
@@ -546,7 +546,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValueOnce({ spans: mockSpans, total: mockSpans.length });
+      mockFetchTracesForRun.mockResolvedValueOnce({ spans: mockSpans, total: mockSpans.length });
       mockGetReportById.mockResolvedValueOnce(mockReport);
       // First updateReport call (attempt count) succeeds, second (error status) fails
       mockUpdateReport
@@ -575,7 +575,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockRejectedValue(new Error('Network error'));
+      mockFetchTracesForRun.mockRejectedValue(new Error('Network error'));
       mockUpdateReport.mockResolvedValue(undefined);
 
       tracePollingManager.startPolling('report-mem-error', 'run-mem-error', callbacks, {
@@ -625,7 +625,7 @@ describe('TracePollingManager', () => {
         onAttempt,
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: mockSpans, total: 1 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: mockSpans, total: 1 });
       mockExecuteBuildTrajectoryHook.mockResolvedValue(null);
       mockUpdateReport.mockResolvedValue(undefined);
 
@@ -695,7 +695,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: mockSpans, total: 1 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: mockSpans, total: 1 });
       mockExecuteBuildTrajectoryHook.mockResolvedValue(mockTrajectory);
       mockUpdateReport.mockResolvedValue(undefined);
       mockGetReportById.mockResolvedValue(mockReport);
@@ -761,7 +761,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: mockSpans, total: 1 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: mockSpans, total: 1 });
       mockUpdateReport.mockResolvedValue(undefined);
       mockGetReportById.mockResolvedValue(mockReport);
 
@@ -831,7 +831,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: mockSpans, total: 1 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: mockSpans, total: 1 });
       mockUpdateReport.mockResolvedValue(undefined);
       mockGetReportById.mockResolvedValue(mockReport);
 
@@ -898,7 +898,7 @@ describe('TracePollingManager', () => {
         onError: jest.fn(),
       };
 
-      mockFetchTracesByRunIds.mockResolvedValue({ spans: mockSpans, total: 1 });
+      mockFetchTracesForRun.mockResolvedValue({ spans: mockSpans, total: 1 });
       mockExecuteBuildTrajectoryHook.mockRejectedValue(new Error('Hook script failed'));
       mockUpdateReport.mockResolvedValue(undefined);
       mockGetReportById.mockResolvedValue(mockReport);
@@ -926,7 +926,7 @@ describe('TracePollingManager', () => {
       const mockSpans = [{ traceId: 'trace-1', spanId: 'span-1', name: 'test' }] as unknown as Span[];
       const mockReport = { id: 'report-1', trajectory: [] } as unknown as EvaluationReport;
 
-      (fetchTracesByRunIds as jest.Mock).mockResolvedValue({ spans: mockSpans });
+      (fetchTracesForRun as jest.Mock).mockResolvedValue({ spans: mockSpans });
       (asyncRunStorage.getReportById as jest.Mock).mockResolvedValue(mockReport);
       (asyncRunStorage.updateReport as jest.Mock).mockResolvedValue(undefined);
 
@@ -945,7 +945,7 @@ describe('TracePollingManager', () => {
     });
 
     it('rejects when max attempts reached without traces', async () => {
-      (fetchTracesByRunIds as jest.Mock).mockResolvedValue({ spans: [] });
+      (fetchTracesForRun as jest.Mock).mockResolvedValue({ spans: [] });
       (asyncRunStorage.updateReport as jest.Mock).mockResolvedValue(undefined);
 
       const onError = jest.fn();
@@ -976,7 +976,7 @@ describe('TracePollingManager', () => {
       const mockSpans = [{ traceId: 'trace-1', spanId: 'span-1', name: 'test' }] as unknown as Span[];
       const mockReport = { id: 'report-1', trajectory: [] } as unknown as EvaluationReport;
 
-      (fetchTracesByRunIds as jest.Mock).mockResolvedValue({ spans: mockSpans });
+      (fetchTracesForRun as jest.Mock).mockResolvedValue({ spans: mockSpans });
       (asyncRunStorage.getReportById as jest.Mock).mockResolvedValue(mockReport);
       (asyncRunStorage.updateReport as jest.Mock).mockResolvedValue(undefined);
 
