@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { calculateRunStats, getReportIdsFromRun, bucketRunResults } from '@/lib/runStats';
+import { calculateRunStats, getReportIdsFromRun, bucketRunResults, computeRunStats } from '@/lib/runStats';
 import type { BenchmarkRun, EvaluationReport } from '@/types';
 
 describe('runStats', () => {
@@ -384,6 +384,55 @@ describe('runStats', () => {
     it('handles empty/undefined results', () => {
       expect(bucketRunResults({})).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
       expect(bucketRunResults(undefined)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
+    });
+  });
+
+  describe('computeRunStats', () => {
+    it('prefers recomputing from run.results over a stale/wrong denormalized run.stats (#242)', () => {
+      // run.stats.passed is stale/wrong (e.g. written by the old naive
+      // aggregator that counted every "completed" result as passed) — one
+      // case has no verdict (judge errored) so the true passed count is 1,
+      // not 2.
+      const run: BenchmarkRun = {
+        id: 'run-1',
+        name: 'Test Run',
+        createdAt: '2024-01-01T00:00:00Z',
+        agentKey: 'mock',
+        modelId: 'claude-sonnet',
+        results: {
+          a: { status: 'completed', passFailStatus: 'passed' },
+          b: { status: 'completed' }, // judge errored, no verdict
+        },
+        stats: { passed: 2, failed: 0, pending: 0, errored: 0, total: 2 },
+      } as BenchmarkRun;
+
+      expect(computeRunStats(run)).toEqual({ passed: 1, failed: 0, errored: 1, total: 2 });
+    });
+
+    it('falls back to the denormalized run.stats when run.results is empty (old runs)', () => {
+      const run: BenchmarkRun = {
+        id: 'run-2',
+        name: 'Old Run',
+        createdAt: '2024-01-01T00:00:00Z',
+        agentKey: 'mock',
+        modelId: 'claude-sonnet',
+        results: {},
+        stats: { passed: 3, failed: 1, pending: 0, errored: 0, total: 4 },
+      } as BenchmarkRun;
+
+      expect(computeRunStats(run)).toEqual({ passed: 3, failed: 1, errored: 0, total: 4 });
+    });
+
+    it('returns all-zero stats when neither results nor stats are present', () => {
+      const run: BenchmarkRun = {
+        id: 'run-3',
+        name: 'Empty Run',
+        createdAt: '2024-01-01T00:00:00Z',
+        agentKey: 'mock',
+        modelId: 'claude-sonnet',
+      } as BenchmarkRun;
+
+      expect(computeRunStats(run)).toEqual({ passed: 0, failed: 0, errored: 0, total: 0 });
     });
   });
 });

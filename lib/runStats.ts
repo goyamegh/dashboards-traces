@@ -84,6 +84,35 @@ export function bucketRunResults(
 }
 
 /**
+ * Recompute pass/fail/errored/total from a run's persisted results
+ * (run.results — the single source of truth), falling back to the
+ * denormalized run.stats only when per-case results aren't present.
+ *
+ * The denormalized run.stats is NOT authoritative: its writer historically
+ * counted every 'completed' result as passed without checking the verdict,
+ * so an errored case (judge produced no verdict) could be miscounted as a
+ * pass (issue #242). Shared by the runs list and the benchmark-runs list so
+ * the passed count can't diverge between the two views.
+ */
+export function computeRunStats(
+  run: BenchmarkRun
+): { passed: number; failed: number; errored: number; total: number } {
+  if (run.results && Object.keys(run.results).length > 0) {
+    const b = bucketRunResults(run.results as Record<string, { status?: string; passFailStatus?: string }>);
+    return { passed: b.passed, failed: b.failed, errored: b.errored, total: b.total };
+  }
+  if (run.stats && run.stats.total > 0) {
+    return {
+      passed: run.stats.passed,
+      failed: run.stats.failed,
+      errored: run.stats.errored ?? 0,
+      total: run.stats.total,
+    };
+  }
+  return { passed: 0, failed: 0, errored: 0, total: 0 };
+}
+
+/**
  * Calculate statistics for a benchmark run.
  *
  * This function uses the same logic as the UI to count pass/fail status:
