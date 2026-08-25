@@ -92,17 +92,22 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [searchQuery, setSearchQuery] = useState("");
   const [isCollapsed, setIsCollapsed] = usePersistedState<boolean>('sidebar:collapsed', false);
 
-  // Chrome-vertical-tabs-style flyout: when the sidebar is collapsed to the
-  // icon rail, hovering the rail temporarily expands it as an OVERLAY — the
-  // content area keeps the rail width and never reflows; leaving the sidebar
-  // collapses it again. `isCollapsed` stays the persisted pin preference; the
-  // expand button while flying out acts as "pin open".
+  // Chrome-vertical-tabs-style hover-open: when the sidebar is pinned
+  // collapsed to the icon rail, hovering (or keyboard-focusing) it temporarily
+  // expands the FULL sidebar as an OVERLAY — the layout area keeps reserving
+  // the rail width so content never reflows — and leaving/blurring it
+  // collapses it again. `isCollapsed` stays the persisted PIN preference (only
+  // the collapse/expand button and setIsCollapsed touch it); every visual
+  // conditional below reads `collapsed`, which folds in the momentary hover
+  // state. Mouse uses short intent delays (150ms open / 250ms close) to avoid
+  // flicker when crossing the rail; keyboard focus opens immediately (no
+  // delay) and closes on blur so Tab users get the same reveal without
+  // relying on a mouse gesture.
   const [isHoverExpanded, setIsHoverExpanded] = useState(false);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverZoneRef = useRef<HTMLDivElement>(null);
   useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); }, []);
   useEffect(() => { setIsHoverExpanded(false); }, [isCollapsed]);
-  // What the sidebar visually renders as (rail vs full) — every label/layout
-  // conditional below reads this; only the pin controls read `isCollapsed`.
   const collapsed = isCollapsed && !isHoverExpanded;
 
   // Collapse the nav when landing on a *specific run* URL (single-run inspect /
@@ -151,9 +156,11 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   return (
     <SidebarCollapseContext.Provider value={{ isCollapsed, setIsCollapsed }}>
       <SidebarProvider className="h-screen overflow-hidden">
-        {/* Hover zone reserves the LAYOUT width (rail when pinned collapsed) so
-            the flyout overlays content instead of reflowing it. */}
+        {/* Hover zone reserves the LAYOUT width (rail when pinned collapsed)
+            so the flyout overlays content instead of reflowing it. Mouse and
+            keyboard-focus both drive the same isHoverExpanded state. */}
         <div
+          ref={hoverZoneRef}
           className="relative h-screen flex-shrink-0 transition-[width] duration-200"
           style={{ width: isCollapsed ? '64px' : '180px' }}
           data-testid="sidebar-hover-zone"
@@ -167,6 +174,18 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
             if (!isCollapsed) return;
             hoverTimer.current = setTimeout(() => setIsHoverExpanded(false), 250);
           }}
+          onFocus={() => {
+            if (!isCollapsed) return;
+            if (hoverTimer.current) clearTimeout(hoverTimer.current);
+            setIsHoverExpanded(true);
+          }}
+          onBlur={(e) => {
+            if (!isCollapsed) return;
+            const next = e.relatedTarget as Node | null;
+            if (next && hoverZoneRef.current?.contains(next)) return;
+            if (hoverTimer.current) clearTimeout(hoverTimer.current);
+            setIsHoverExpanded(false);
+          }}
         >
         <Sidebar
         collapsible="none"
@@ -178,8 +197,8 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           left: 0,
           height: '100%',
           zIndex: isHoverExpanded ? 50 : undefined,
-          background: isDarkMode ? 'hsl(var(--background))' : '#FFFFFF',
-          borderRight: isDarkMode ? '1px solid #343741' : '1px solid #D3DAE6',
+          background: 'hsl(var(--background))',
+          borderRight: '1px solid hsl(var(--border))',
           boxShadow: isHoverExpanded
             ? '0px 12px 40px rgba(0, 0, 0, 0.45), 0px 0px 12px rgba(0, 0, 0, 0.15)'
             : '0px 0px 12px rgba(0, 0, 0, 0.05), 0px 0px 4px rgba(0, 0, 0, 0.05), 0px 0px 2px rgba(0, 0, 0, 0.05)',
@@ -237,7 +256,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               <img src={OpenSearchLogo} alt="OpenSearch" className="w-7 h-7" />
             </div>
           )}
-
+          
           {/* Search bar - only show when expanded */}
           {!collapsed && (
             <div className="relative">
@@ -285,10 +304,10 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                         className="h-9 w-full"
                       >
                         <div className="flex items-center w-full">
-                          {/* Same testid as the rail variant: hovering the rail
-                              to click Evaluations swaps in this expanded row
-                              (flyout) mid-click — a stable testid lets the click
-                              retarget to the same destination. */}
+                          {/* Same testid as the collapsed rail's icon button: hovering
+                              the rail to click Evaluations swaps in this expanded
+                              row (hover-open) mid-click — a stable testid lets the
+                              click retarget to the same destination. */}
                           <Link to="/evaluations/runs" className="flex items-center gap-2 flex-1 min-w-0" data-testid="nav-evals3">
                             <Gauge className="h-3.5 w-3.5" />
                             <span className="text-xs">Evaluations</span>
