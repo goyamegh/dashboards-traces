@@ -87,6 +87,13 @@ describe('createImportCommand', () => {
     expect(optionNames).toContain('--dry-run');
   });
 
+  it('registers an optional [source] positional argument', () => {
+    const cmd = createImportCommand();
+    expect(cmd.registeredArguments).toHaveLength(1);
+    expect(cmd.registeredArguments[0].name()).toBe('source');
+    expect(cmd.registeredArguments[0].required).toBe(false);
+  });
+
   it('rejects unsupported format', async () => {
     const cmd = createImportCommand();
     await cmd.parseAsync(['node', 'test', '--from', 'unknown']);
@@ -190,6 +197,48 @@ describe('createImportCommand', () => {
       expect.any(String),
       'utf-8'
     );
+  });
+
+  it('derives the default output filename from --from when -o is omitted', async () => {
+    mockConvertLocal.mockReturnValue({ testCases: [], skipped: [], errors: [] });
+
+    const cmd = createImportCommand();
+    // Case-normalized: --from HOLMESGPT should still default to the
+    // lowercased 'holmesgpt-test-cases.json', not 'HOLMESGPT-test-cases.json'.
+    await cmd.parseAsync(['node', 'test', '--from', 'HOLMESGPT', '--source', '/path']);
+
+    expect(mockWriteFileSync).toHaveBeenCalledWith(
+      'holmesgpt-test-cases.json',
+      expect.any(String),
+      'utf-8'
+    );
+  });
+
+  it('accepts a positional [source] argument as an alias for --source', async () => {
+    mockConvertLocal.mockReturnValue({ testCases: [], skipped: [], errors: [] });
+
+    const cmd = createImportCommand();
+    await cmd.parseAsync(['node', 'test', '/positional/path', '--from', 'holmesgpt']);
+
+    expect(mockConvertLocal).toHaveBeenCalledWith('/positional/path');
+    expect(mockConvertGitHub).not.toHaveBeenCalled();
+  });
+
+  it('prefers the positional [source] over --source when both are given', async () => {
+    mockConvertLocal.mockReturnValue({ testCases: [], skipped: [], errors: [] });
+
+    const cmd = createImportCommand();
+    await cmd.parseAsync([
+      'node',
+      'test',
+      '/positional/path',
+      '--from',
+      'holmesgpt',
+      '--source',
+      '/flag/path',
+    ]);
+
+    expect(mockConvertLocal).toHaveBeenCalledWith('/positional/path');
   });
 
   it('respects custom --output path', async () => {

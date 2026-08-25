@@ -25,21 +25,29 @@ type SupportedFormat = (typeof SUPPORTED_FORMATS)[number];
  */
 export function createImportCommand(): Command {
   const command = new Command('import')
-    .description('Import test cases from external evaluation frameworks')
+    .description(
+      'Convert test cases from an external evaluation framework (e.g. holmesgpt) into ' +
+        "agent-health's format. For test cases already in agent-health's native JSON " +
+        "format, use 'benchmark -f <file>' directly instead."
+    )
+    .argument('[source]', 'Local path to fixtures directory (alias for --source; positional wins if both given)')
     .requiredOption('--from <format>', `Source format (${SUPPORTED_FORMATS.join(', ')})`)
     .option('--source <path>', 'Local path to fixtures directory (fetches from GitHub if omitted)')
-    .option('-o, --output <file>', 'Output JSON file path', 'holmesgpt-test-cases.json')
+    .option('-o, --output <file>', 'Output JSON file path (default: <format>-test-cases.json)')
     .option('--dry-run', 'Show conversion summary without writing files')
-    .option('--repo <owner/name>', 'GitHub repository (default: robusta-dev/holmesgpt)')
-    .option('--branch <name>', 'GitHub branch (default: master)')
-    .action(async (options: {
-      from: string;
-      source?: string;
-      output: string;
-      dryRun?: boolean;
-      repo?: string;
-      branch?: string;
-    }) => {
+    .option('--repo <owner/name>', 'GitHub repository, GitHub-fetching formats only (e.g. holmesgpt) (default: robusta-dev/holmesgpt)')
+    .option('--branch <name>', 'GitHub branch, GitHub-fetching formats only (e.g. holmesgpt) (default: master)')
+    .action(async (
+      sourceArg: string | undefined,
+      options: {
+        from: string;
+        source?: string;
+        output?: string;
+        dryRun?: boolean;
+        repo?: string;
+        branch?: string;
+      }
+    ) => {
       const format = options.from.toLowerCase();
 
       if (!SUPPORTED_FORMATS.includes(format as SupportedFormat)) {
@@ -48,10 +56,16 @@ export function createImportCommand(): Command {
         process.exit(1);
       }
 
+      // Positional [source] is an alias for --source; the positional wins if both
+      // are given (rather than erroring), since it's unambiguous which one the
+      // caller meant to be authoritative.
+      const source = sourceArg ?? options.source;
+      const output = options.output ?? `${format}-test-cases.json`;
+
       console.log(chalk.cyan.bold('\n  Agent Health - Import Test Cases\n'));
 
       if (format === 'holmesgpt') {
-        await importHolmesGPT(options);
+        await importHolmesGPT({ ...options, source, output });
       }
     });
 
