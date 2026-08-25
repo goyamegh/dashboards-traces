@@ -19,6 +19,8 @@ import { ComparisonSearch } from './ComparisonSearch';
 import { UseCaseComparisonTable } from './UseCaseComparisonTable';
 import { RunPairSelector } from './RunPairSelector';
 import { ComparisonScoreboard } from './ComparisonScoreboard';
+import { ComparisonInsightsBand } from './ComparisonInsightsBand';
+import { bucketRow, extractRowCategory, type AgreementBucket } from '@/lib/comparisonInsights';
 import { ComparisonDeepDive, DeepDiveRunMeta } from './ComparisonDeepDive';
 import { FailureClusterPanel } from './FailureClusterPanel';
 import { extractFirstDivergence } from '@/services/trajectoryDiffService';
@@ -101,6 +103,10 @@ export const ComparisonPage: React.FC = () => {
   // State for filters
   const [labelFilter, setLabelFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  // Insights-band filters: agreement bucket (all-pass / all-fail / split) and
+  // category (parsed from the test-case name tag). Both narrow the table.
+  const [agreementFilter, setAgreementFilter] = useState<AgreementBucket | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   const [testCaseFilter, setTestCaseFilter] = useState<string | null>(null);
   // All standalone evaluation runs (for the run-search universe).
   const [allEvalRuns, setAllEvalRuns] = useState<EvaluationRun[]>([]);
@@ -478,9 +484,18 @@ export const ComparisonPage: React.FC = () => {
     if (labelFilter !== 'all') rows = rows.filter(r => (r.labels || []).includes(labelFilter));
     if (testCaseFilter) rows = rows.filter(r => r.testCaseId === testCaseFilter);
     rows = filterRowsByStatus(rows, statusFilter, selectedRunIds);
-    if (rowStatusFilter === 'differences') {
+    // Insights-band filters. Agreement narrows to one bucket; when active it
+    // bypasses the 'differences' default below (an agreement bucket IS a
+    // difference statement — stacking both would hide all-pass/all-fail rows).
+    if (agreementFilter) {
+      rows = rows.filter(row => bucketRow(row, selectedRunIds) === agreementFilter);
+    }
+    if (categoryFilter) {
+      rows = rows.filter(row => extractRowCategory(row) === categoryFilter);
+    }
+    if (!agreementFilter && rowStatusFilter === 'differences') {
       rows = rows.filter(row => calculateRowStatus(row, referenceRunId) !== 'neutral');
-    } else if (rowStatusFilter !== 'all') {
+    } else if (!agreementFilter && rowStatusFilter !== 'all') {
       rows = rows.filter(row => calculateRowStatus(row, referenceRunId) === rowStatusFilter);
     }
     if (clusterCaseFilter) {
@@ -488,7 +503,7 @@ export const ComparisonPage: React.FC = () => {
       rows = rows.filter(row => allow.has(row.testCaseId));
     }
     return rows;
-  }, [allComparisonRows, labelFilter, testCaseFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId, clusterCaseFilter]);
+  }, [allComparisonRows, labelFilter, testCaseFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId, clusterCaseFilter, agreementFilter, categoryFilter]);
 
   // If the filter is 'differences' but there are no differences (all-pass /
   // all-fail benchmark), automatically show everything so the user isn't
@@ -748,6 +763,22 @@ export const ComparisonPage: React.FC = () => {
                   }
                 }}
                 getAgentName={getAgentName}
+              />
+            )}
+
+            {/* Agreement + category insights — deterministic, no LLM */}
+            {selectedRuns.length >= 2 && (
+              <ComparisonInsightsBand
+                rows={allComparisonRows}
+                runIds={selectedRunIds}
+                getRunName={(id) => {
+                  const run = selectedRuns.find(r => r.id === id);
+                  return run ? getAgentName(run.agentKey) || run.name : id;
+                }}
+                agreementFilter={agreementFilter}
+                onAgreementFilter={setAgreementFilter}
+                categoryFilter={categoryFilter}
+                onCategoryFilter={setCategoryFilter}
               />
             )}
 
