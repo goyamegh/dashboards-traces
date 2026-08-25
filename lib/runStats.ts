@@ -91,7 +91,11 @@ export function bucketRunResults(
  * The denormalized run.stats is NOT authoritative: its writer historically
  * counted every 'completed' result as passed without checking the verdict,
  * so an errored case (judge produced no verdict) could be miscounted as a
- * pass (issue #242). Shared by the runs list and the benchmark-runs list so
+ * pass (issue #242). Note the run.stats fallback branch below inherits this
+ * same untrustworthiness for old runs that predate per-case run.results
+ * persistence — there is no per-case data left to recompute from for those,
+ * so this is a best-effort display value, not a corrected one. Shared by the
+ * runs list and the benchmark-runs list so
  * the passed count can't diverge between the two views.
  */
 export function computeRunStats(
