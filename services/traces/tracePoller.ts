@@ -102,12 +102,19 @@ class TracePollingManager {
       return;
     }
 
+    // Explicit options win; otherwise fall back to the agent's configured
+    // tracePolling budget (callers like evaluationRunner pass agentConfig but
+    // not the numbers — per-agent overrides were silently ignored there).
+    const cfgPolling = options?.agentConfig?.tracePolling;
+    const requestedMax = Number.isFinite(options?.maxAttempts)
+      ? options!.maxAttempts!
+      : Number.isFinite(cfgPolling?.maxAttempts) ? cfgPolling!.maxAttempts! : DEFAULT_MAX_ATTEMPTS;
     const state: PollState = {
       reportId,
       runId,
       attempts: 0,
-      maxAttempts: Math.min(Number.isFinite(options?.maxAttempts) ? options!.maxAttempts : DEFAULT_MAX_ATTEMPTS, MAX_POLL_CEILING),
-      intervalMs: options?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS,
+      maxAttempts: Math.min(requestedMax, MAX_POLL_CEILING),
+      intervalMs: options?.intervalMs ?? cfgPolling?.intervalMs ?? DEFAULT_POLL_INTERVAL_MS,
       lastAttempt: null,
       running: true,
       agentConfig: options?.agentConfig,
