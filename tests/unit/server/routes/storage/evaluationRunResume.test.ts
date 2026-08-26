@@ -274,4 +274,50 @@ describe('linkCompletedRunToBenchmark', () => {
       'Failed to link completed run to benchmark: bm-1'
     );
   });
+
+  it(
+    'KNOWN LIMITATION (codex_review): read-then-branch-then-write is not atomic — two ' +
+      'truly concurrent links of the SAME run id can both observe "not yet linked" and both ' +
+      'addRun, producing a duplicate this helper cannot repair on its own (a later updateRun ' +
+      'only replaces ONE matching entry). Documented, not silently "fixed" by this PR — closing ' +
+      'it needs an atomic upsert-by-id primitive in the storage adapters, tracked as a follow-up.',
+    async () => {
+      const benchmark = { id: 'bm-1', runs: [] as any[] };
+      // Simulate two callers racing: both read the SAME pre-write snapshot
+      // (an unresolved getById lets both branches decide "not linked yet")
+      // before either write lands.
+      let readCount = 0;
+      const reads: Array<() => void> = [];
+      const storage = {
+        benchmarks: {
+          getById: jest.fn().mockImplementation(
+            () =>
+              new Promise((resolve) => {
+                readCount += 1;
+                reads.push(() => resolve({ ...benchmark, runs: [...benchmark.runs] }));
+                // Release both reads together once the second caller has
+                // also reached this point.
+                if (readCount === 2) reads.forEach((release) => release());
+              })
+          ),
+          addRun: jest.fn().mockImplementation(async (_id: string, run: any) => {
+            benchmark.runs.push(run);
+            return true;
+          }),
+          updateRun: jest.fn(),
+        },
+      } as any;
+
+      await Promise.all([
+        linkCompletedRunToBenchmark(storage, 'bm-1', benchmarkRun('run-1')),
+        linkCompletedRunToBenchmark(storage, 'bm-1', benchmarkRun('run-1')),
+      ]);
+
+      // Both calls saw an empty `runs` array and both chose addRun — the
+      // race this test documents. If storage ever gains an atomic
+      // upsert-by-id primitive and this helper is switched to use it, this
+      // assertion should be tightened to `toHaveLength(1)`.
+      expect(benchmark.runs.filter((r) => r.id === 'run-1')).toHaveLength(2);
+    }
+  );
 });

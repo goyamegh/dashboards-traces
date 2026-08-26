@@ -396,4 +396,61 @@ describe('POST .../resume — benchmark.runs linking (production bug regression)
     },
     TEST_TIMEOUT
   );
+
+  it(
+    'a benchmark-linking failure never corrupts the canonical run status (codex_review finding)',
+    async () => {
+      if (!backendAvailable) return;
+
+      // A run whose test cases will genuinely complete, but whose
+      // `benchmarkId` points at a benchmark that does not exist —
+      // deterministically forces linkCompletedRunToBenchmark's "not found"
+      // path on the resume completion path.
+      const orphanRunId = `eval-run-resume-link-orphan-${Date.now()}`;
+      const tc = await httpJson<any>('POST', `${BASE_URL}/api/storage/test-cases`, {
+        name: `resume-link-orphan-tc-${Date.now()}`,
+        category: 'Diagnostics',
+        difficulty: 'Easy',
+        initialPrompt: 'Say hello',
+        expectedOutcomes: ['Agent responds'],
+        labels: [],
+      });
+      expect(tc.status).toBeLessThan(300);
+      const orphanTcId = tc.body.id;
+
+      const seeded = await httpJson<any>('PUT', `${BASE_URL}/api/storage/evaluation-runs/${orphanRunId}`, {
+        name: 'resume-link-orphan-run',
+        sources: [{ type: 'test-case-ids', ids: [orphanTcId] }],
+        agentKey: 'demo',
+        modelId: 'demo-model',
+        judgeModelId: 'demo-model',
+        trigger: 'api',
+        benchmarkId: 'benchmark-does-not-exist-orphan',
+        status: 'failed',
+        error: 'simulated crash',
+        createdAt: new Date().toISOString(),
+        testCaseSnapshots: [{ id: orphanTcId, version: 1, name: 'resume-link-orphan-tc' }],
+        results: { [orphanTcId]: { reportId: '', status: 'pending' } },
+      });
+      expect(seeded.status).toBeLessThan(300);
+
+      const resume = await httpJson<any>('POST', `${BASE_URL}/api/storage/evaluation-runs/${orphanRunId}/resume`);
+      expect(resume.status).toBe(200);
+      const completed = parseSSE(resume.raw).find((e) => e.event === 'completed');
+      expect(completed).toBeDefined();
+
+      // THE FIX: even though linking into the (nonexistent) benchmark threw,
+      // the run itself — whose test case genuinely completed — is still
+      // reported 'completed', never falsely flipped to 'failed'.
+      expect(completed!.data.status).toBe('completed');
+      const persisted = await httpJson<any>('GET', `${BASE_URL}/api/storage/evaluation-runs/${orphanRunId}`);
+      expect(persisted.body.status).toBe('completed');
+
+      const reportId = completed!.data.results?.[orphanTcId]?.reportId;
+      if (reportId) await httpJson('DELETE', `${BASE_URL}/api/storage/runs/${encodeURIComponent(reportId)}`).catch(() => {});
+      await httpJson('DELETE', `${BASE_URL}/api/storage/evaluation-runs/${orphanRunId}`).catch(() => {});
+      await httpJson('DELETE', `${BASE_URL}/api/storage/test-cases/${orphanTcId}`).catch(() => {});
+    },
+    TEST_TIMEOUT
+  );
 });
