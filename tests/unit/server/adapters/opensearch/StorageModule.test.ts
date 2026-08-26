@@ -162,6 +162,17 @@ describe('OpenSearchStorageModule', () => {
         error: 'Response Error (HTTP 403)',
       });
     });
+
+    it('falls back to "Unknown error" instead of an empty string when the error has neither a message nor a status code', async () => {
+      mockClient.cluster.health.mockRejectedValue({});
+
+      const result = await mod.health();
+
+      expect(result).toEqual({
+        status: 'error',
+        error: 'Unknown error',
+      });
+    });
   });
 
   // ==========================================================================

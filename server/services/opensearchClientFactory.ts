@@ -67,15 +67,28 @@ import type { ClusterConfig } from '../../types/index.js';
  * we build a fresh provider chain on every call below - re-reads whatever
  * is on disk/in the environment right now.
  */
-export const SIGV4_CREDENTIAL_REFRESH_WINDOW_MS = 15 * 60 * 1000; // 15 minutes
+// 5 minutes: bounds the worst-case "still signing with a rotated-out key"
+// window to something short (opensearch-js re-checks ~30s before this
+// elapses, per its own `expiryBufferMs`) without forcing excessive re-reads
+// for credential sources that DO update in place cheaply (a profile file
+// re-read, or an already-cached IMDS/SSO provider call).
+export const SIGV4_CREDENTIAL_REFRESH_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
 
 /**
  * Resolve fresh AWS credentials for the SigV4 signer via the standard node
  * credential provider chain, honoring an explicit `expiration` from the
- * provider (e.g. real STS temporary credentials) or falling back to a
- * synthetic near-term expiration so opensearch-js re-resolves periodically
- * even for long-lived/session credentials that don't self-report expiry
- * (see SIGV4_CREDENTIAL_REFRESH_WINDOW_MS above).
+ * provider (e.g. real STS temporary credentials, which are AWS SDK v3
+ * objects and therefore only ever signal freshness via `.expiration` — the
+ * `needsRefresh()`/`.expired`/`.expireTime` fields opensearch-js also checks
+ * are AWS SDK v2-only and never present on anything `fromNodeProviderChain`
+ * returns) or falling back to a synthetic near-term expiration so
+ * opensearch-js re-resolves periodically even for long-lived/session
+ * credentials that don't self-report expiry (see
+ * SIGV4_CREDENTIAL_REFRESH_WINDOW_MS above). Returns a new object rather
+ * than mutating the one handed back by the provider, since AWS SDK
+ * credential providers may cache/memoize and hand out the same object
+ * instance across calls — mutating it in place would leak our synthetic
+ * expiration into other consumers of that provider.
  *
  * Exported for direct unit testing.
  */
@@ -84,12 +97,13 @@ export async function resolveSigv4Credentials(awsProfile?: string) {
     ...(awsProfile && { profile: awsProfile }),
   });
   const credentials = await provider();
-  if (!credentials.expiration) {
-    (credentials as { expiration?: Date }).expiration = new Date(
-      Date.now() + SIGV4_CREDENTIAL_REFRESH_WINDOW_MS
-    );
+  if (credentials.expiration) {
+    return credentials;
   }
-  return credentials;
+  return {
+    ...credentials,
+    expiration: new Date(Date.now() + SIGV4_CREDENTIAL_REFRESH_WINDOW_MS),
+  };
 }
 
 /**

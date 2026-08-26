@@ -1341,7 +1341,7 @@ export class OpenSearchStorageModule implements IStorageModule {
       // rotated SigV4 credentials) reads differently in the UI/logs than a 5xx
       // (cluster-side failure) — this is the exact endpoint used to diagnose a
       // wedged storage client.
-      return { status: 'error', error: describeOpenSearchError(error) };
+      return { status: 'error', error: describeOpenSearchError(error) || 'Unknown error' };
     }
   }
 
