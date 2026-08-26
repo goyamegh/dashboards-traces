@@ -27,7 +27,7 @@ import {
 } from '@/components/ui/dialog';
 import { EvaluationRun, TestCaseSnapshot } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
-import { getDisplayStats } from '@/lib/runStats';
+import { computeRunStats } from '@/lib/runStats';
 import { formatRelativeTime, getModelName } from '@/lib/utils';
 import {
   getEvaluationRun,
@@ -164,7 +164,7 @@ export const EvalRunDetailPage: React.FC = () => {
   // runs (the writer historically counted 'completed' as 'passed' without
   // checking the verdict, e.g. showing 84/84 passed when only 66/84 actually
   // passed judgment).
-  const stats = getDisplayStats(run);
+  const stats = computeRunStats(run);
   const errored = stats.errored ?? 0;
   // Pass rate ignores errored runs entirely (issue #242): they had no
   // verdict, so neither numerator nor denominator should include them.

@@ -198,18 +198,23 @@ export function getReportIdsFromRun(run: BenchmarkRun): string[] {
  * @returns Denormalized stats object (passed, failed, pending, total)
  */
 /**
- * Effective display stats for a run detail/list view: prefer recomputing
+ * Canonical "display" stats for a run detail/list view: prefer recomputing
  * from the persisted per-test-case verdicts (`run.results`) via
  * {@link bucketRunResults} — the single source of truth — and only fall
  * back to the denormalized `run.stats` when `results` is empty (e.g. a run
  * that hasn't started, or legacy data with no results map at all).
  *
- * Extracted from EvalRunsPage's local `computeRunStats` so EvalRunDetailPage
- * (which previously trusted the denormalized `run.stats` directly, and could
- * therefore show inflated numbers for trace-judged runs — see #<trace-judge-stats>)
- * uses the exact same logic as the runs list.
+ * This is THE single shared helper for pass/fail/errored/pending/total
+ * across every surface that renders run stats (runs list, benchmark runs
+ * list, run detail page, comparison page) — do not reimplement this logic
+ * locally in a component or add a differently-named twin. Historically this
+ * logic was duplicated per-page (each with its own subtly different bugs,
+ * e.g. `errored` not tracked, or `run.stats` trusted directly even when
+ * stale/inflated for trace-judged runs — a 66/84-real-passed run displaying
+ * as 84/84). Callers that only need `{passed, failed, errored, total}` can
+ * simply ignore the extra `pending` field.
  */
-export function getDisplayStats(
+export function computeRunStats(
   run: {
     results?: Record<string, { status?: string; passFailStatus?: string }>;
     stats?: Partial<RunStatsType> | null;
