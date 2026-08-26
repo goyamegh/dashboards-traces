@@ -88,6 +88,18 @@ interface RunRow {
   total: number;
 }
 
+/**
+ * Column counts for the flat/grouped table — named constants (not magic
+ * numbers) so the three `colSpan` sites (empty state, infinite-scroll
+ * sentinel, group-header row) stay in sync when a column is added/removed.
+ * FLAT = checkbox, status, Run, Benchmark, Agent, Model, Judge, Evaluator,
+ * Timestamp, Annotations, Pass/Fail/Total. GROUPED drops the Benchmark
+ * column. The group-header row's own colSpan is GROUPED_COLUMN_COUNT - 1
+ * (the checkbox cell is rendered as its own separate <td> before it).
+ */
+const FLAT_COLUMN_COUNT = 11;
+const GROUPED_COLUMN_COUNT = 10;
+
 function SortHeader({ label, active, dir, onClick, className }: {
   label: string; active: boolean; dir: 'asc' | 'desc'; onClick: () => void; className?: string;
 }) {
@@ -192,7 +204,7 @@ export const EvalRunsPage: React.FC = () => {
         }),
         fetch(`${ENV_CONFIG.backendUrl}/api/storage/evaluators`)
           .then(r => r.ok ? r.json() : { evaluators: [] })
-          .then(d => (d.evaluators || []) as { id: string; name: string }[])
+          .then(d => (Array.isArray(d?.evaluators) ? d.evaluators : []) as { id: string; name: string }[])
           .catch(err => {
             console.error('Failed to load evaluators:', err);
             return [] as { id: string; name: string }[];
@@ -986,7 +998,7 @@ export const EvalRunsPage: React.FC = () => {
           <tbody className="[&_tr:last-child]:border-0">
             {filteredRunRows.length === 0 ? (
               <tr>
-                <td colSpan={viewMode === 'flat' ? 11 : 10} className="py-16 text-center text-sm text-muted-foreground">
+                <td colSpan={viewMode === 'flat' ? FLAT_COLUMN_COUNT : GROUPED_COLUMN_COUNT} className="py-16 text-center text-sm text-muted-foreground">
                   {activeFilterCount > 0 ? 'No runs match the current filters' : timeRange === 'all' ? 'No evaluation runs found' : `No runs in ${TIME_OPTIONS.find(o => o.value === timeRange)?.label}`}
                 </td>
               </tr>
@@ -1027,7 +1039,7 @@ export const EvalRunsPage: React.FC = () => {
                         </button>
                       </td>
                       {/* Rest of group header content */}
-                      <td colSpan={9} className="px-1 py-1.5 align-middle">
+                      <td colSpan={GROUPED_COLUMN_COUNT - 1} className="px-1 py-1.5 align-middle">
                         <div className="flex items-center gap-2">
                           <span className="text-muted-foreground">
                             {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
@@ -1048,7 +1060,7 @@ export const EvalRunsPage: React.FC = () => {
             )}
             {hasMoreRows && (
               <tr ref={loadMoreSentinelRef} data-testid="runs-table-sentinel">
-                <td colSpan={viewMode === 'flat' ? 11 : 10} className="py-3 text-center">
+                <td colSpan={viewMode === 'flat' ? FLAT_COLUMN_COUNT : GROUPED_COLUMN_COUNT} className="py-3 text-center">
                   <Loader2 size={14} className="animate-spin text-muted-foreground inline-block" />
                 </td>
               </tr>
