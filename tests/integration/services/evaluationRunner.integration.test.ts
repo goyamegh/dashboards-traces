@@ -609,6 +609,64 @@ describe('executeEvaluationRun', () => {
         expect.objectContaining({ agentConfig: expect.any(Object) })
       );
       expect(result.results['tc-1'].status).toBe('completed');
+      // Regression: the resolved judge verdict must land on run.results AND
+      // run.stats, not just leave the caller's stale savedReport untouched.
+      expect((result.results['tc-1'] as any).passFailStatus).toBe('passed');
+      expect(result.stats).toEqual({ passed: 1, failed: 0, pending: 0, errored: 0, total: 1 });
+    });
+
+    it('REGRESSION (trace-judged stats inflation): run.stats reflects real mixed verdicts, not "every completed = passed"', async () => {
+      // Reproduces the reported bug at scale: N trace-judged test cases with
+      // a MIX of judge verdicts must produce run.stats matching the real
+      // pass/fail split (e.g. 2 passed / 2 failed), never "all N passed"
+      // just because every report reached status 'completed'.
+      const testCaseIds = ['tc-1', 'tc-2', 'tc-3', 'tc-4'];
+      const verdictByTestCase: Record<string, 'passed' | 'failed'> = {
+        'tc-1': 'passed',
+        'tc-2': 'passed',
+        'tc-3': 'failed',
+        'tc-4': 'failed',
+      };
+
+      mockRunEvaluationWithConnector.mockImplementation((_agentConfig: any, _model: any, testCase: any) => Promise.resolve({
+        id: `report-${testCase.id}`,
+        testCaseId: testCase.id,
+        runId: `run-abc-${testCase.id}`,
+        metricsStatus: 'pending',
+        trajectory: [],
+      }));
+
+      // Each test case's trace poll resolves to ITS OWN verdict via the
+      // report id (encoded above as report-<testCaseId>).
+      mockStartPolling.mockImplementation((reportId: string, _runId: string, callbacks: any) => {
+        callbacks.onTracesFound([], { trajectory: [{ type: 'response', content: `traced ${reportId}` }] });
+      });
+      mockCallBedrockJudge.mockImplementation((_trajectory: any, _expected: any, _spans: any, _cb: any, _model: any, _evaluatorId: any, runId: string) => {
+        const testCaseId = String(runId).replace('run-abc-', '');
+        return Promise.resolve({
+          passFailStatus: verdictByTestCase[testCaseId],
+          metrics: { accuracy: verdictByTestCase[testCaseId] === 'passed' ? 1 : 0 },
+          llmJudgeReasoning: verdictByTestCase[testCaseId],
+          improvementStrategies: [],
+        });
+      });
+
+      const run = createEvaluationRun({ concurrency: 1 });
+      const testCases = testCaseIds.map(id => createTestCase(id));
+      const storage = createMockStorageModule();
+
+      const result = await executeEvaluationRun(run, testCases, {
+        storageModule: storage,
+        onProgress: jest.fn(),
+      });
+
+      for (const id of testCaseIds) {
+        expect((result.results[id] as any).passFailStatus).toBe(verdictByTestCase[id]);
+      }
+      // The bug: pre-fix, ALL FOUR would be counted `passed` here because the
+      // caller never saw the resolved judgment (savedReport stayed at its
+      // pre-judge 'pending' state). Post-fix: real 2/2 split.
+      expect(result.stats).toEqual({ passed: 2, failed: 2, pending: 0, errored: 0, total: 4 });
     });
   });
 });

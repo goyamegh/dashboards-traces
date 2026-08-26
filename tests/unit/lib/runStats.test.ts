@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { calculateRunStats, getReportIdsFromRun, bucketRunResults } from '@/lib/runStats';
+import { calculateRunStats, getReportIdsFromRun, bucketRunResults, getDisplayStats } from '@/lib/runStats';
 import type { BenchmarkRun, EvaluationReport } from '@/types';
 
 describe('runStats', () => {
@@ -384,6 +384,41 @@ describe('runStats', () => {
     it('handles empty/undefined results', () => {
       expect(bucketRunResults({})).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
       expect(bucketRunResults(undefined)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
+    });
+  });
+
+  describe('getDisplayStats', () => {
+    // Regression for the trace-judged run.stats inflation bug: a run whose
+    // denormalized `stats` says everything passed, but whose `results`
+    // (the real source of truth) carry mixed verdicts, must display the
+    // REAL numbers — never the stale denormalized ones.
+    it('prefers results-derived verdicts over a stale/inflated run.stats blob', () => {
+      const run = {
+        results: {
+          'tc-1': { status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { status: 'completed', passFailStatus: 'passed' },
+          'tc-3': { status: 'completed', passFailStatus: 'failed' },
+          'tc-4': { status: 'completed', passFailStatus: 'failed' },
+        },
+        // Buggy denormalized stats as written by the pre-fix trace-judged
+        // path: every 'completed' result counted as passed.
+        stats: { passed: 4, failed: 0, pending: 0, errored: 0, total: 4 },
+      };
+
+      expect(getDisplayStats(run)).toEqual({ passed: 2, failed: 2, errored: 0, pending: 0, total: 4 });
+    });
+
+    it('falls back to run.stats when results is empty (run has not started / legacy data)', () => {
+      const run = {
+        results: {},
+        stats: { passed: 3, failed: 1, pending: 0, errored: 0, total: 4 },
+      };
+
+      expect(getDisplayStats(run)).toEqual({ passed: 3, failed: 1, errored: 0, pending: 0, total: 4 });
+    });
+
+    it('returns all-zero stats when neither results nor stats are present', () => {
+      expect(getDisplayStats({})).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
     });
   });
 });

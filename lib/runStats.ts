@@ -197,6 +197,39 @@ export function getReportIdsFromRun(run: BenchmarkRun): string[] {
  * @param reports - Array of reports for this run
  * @returns Denormalized stats object (passed, failed, pending, total)
  */
+/**
+ * Effective display stats for a run detail/list view: prefer recomputing
+ * from the persisted per-test-case verdicts (`run.results`) via
+ * {@link bucketRunResults} — the single source of truth — and only fall
+ * back to the denormalized `run.stats` when `results` is empty (e.g. a run
+ * that hasn't started, or legacy data with no results map at all).
+ *
+ * Extracted from EvalRunsPage's local `computeRunStats` so EvalRunDetailPage
+ * (which previously trusted the denormalized `run.stats` directly, and could
+ * therefore show inflated numbers for trace-judged runs — see #<trace-judge-stats>)
+ * uses the exact same logic as the runs list.
+ */
+export function getDisplayStats(
+  run: {
+    results?: Record<string, { status?: string; passFailStatus?: string }>;
+    stats?: Partial<RunStatsType> | null;
+  }
+): Pick<RunStatsType, 'passed' | 'failed' | 'errored' | 'pending' | 'total'> {
+  if (run.results && Object.keys(run.results).length > 0) {
+    return bucketRunResults(run.results);
+  }
+  if (run.stats && (run.stats.total ?? 0) > 0) {
+    return {
+      passed: run.stats.passed ?? 0,
+      failed: run.stats.failed ?? 0,
+      errored: run.stats.errored ?? 0,
+      pending: run.stats.pending ?? 0,
+      total: run.stats.total ?? 0,
+    };
+  }
+  return { passed: 0, failed: 0, errored: 0, pending: 0, total: 0 };
+}
+
 export function computeRunStatsFromReports(
   run: BenchmarkRun,
   reports: EvaluationReport[]

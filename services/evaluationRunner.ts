@@ -14,6 +14,7 @@ import {
   EvaluationReport,
   Benchmark,
   BenchmarkRun,
+  PassFailStatus,
 } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
 import { runEvaluationWithConnector, callBedrockJudge, invokeAgent, computeSdkMatcherSessionMetrics } from '@/services/evaluation';
@@ -44,6 +45,7 @@ import { judge, bindJudge, clearJudgeCache } from '@/lib/testCases/judge';
 import { expect } from '@/lib/matchers/expect';
 import type { TrajectoryStep } from '@/types';
 import { createHookOrchestrator, type TestDescriptor } from './hookOrchestrator';
+import { bucketRunResults } from '@/lib/runStats';
 import { loadConfigSync } from '@/lib/config/index';
 import { getBackendUrl } from '@/lib/portConfig';
 import { DEFAULT_CONFIG } from '@/lib/constants';
@@ -663,21 +665,37 @@ export async function executeEvaluationRun(
 
           // If trace mode (metricsStatus: 'pending'), poll for traces and run judge inline.
           // Skipped for deterministic runs (matcher session decided the verdict already).
+          //
+          // `waitForTracesAndJudge` writes the final verdict to STORAGE but
+          // previously returned void, leaving `savedReport` (the in-memory
+          // object below) stuck at its pre-judge `metricsStatus: 'pending'` /
+          // undefined `passFailStatus`. That caused every trace-judged test
+          // case to be recorded as a bare 'completed' with no verdict, which
+          // the stats loop below then silently counted as "passed" — e.g. a
+          // run with 66/84 real verdicts displaying 84/84 passed. Capture the
+          // resolved judgment here and use IT (not the stale `savedReport`)
+          // to decide the outcome.
+          let judgeOutcome: { passFailStatus: PassFailStatus | null; metricsStatus: 'ready' | 'error' } | undefined;
           if (
             !hasDeterministicEval &&
             savedReport.metricsStatus === 'pending' &&
             savedReport.runId
           ) {
             debug('EvaluationRunner', `[${testCaseId}] Trace mode: polling for traces (runId=${savedReport.runId})`);
-            await waitForTracesAndJudge(savedReport, testCase, storageModule, agentConfig);
+            judgeOutcome = await waitForTracesAndJudge(savedReport, testCase, storageModule, agentConfig);
           }
 
           // Update result with success. The run-level status mirrors the
           // report's verdict so aggregate stats (run.stats.passed/failed)
           // reflect what actually happened rather than just "the runner
           // didn't crash". Reports that finished but failed assertions are
-          // marked 'failed' here too.
-          const reportPassFail = (savedReport as any).passFailStatus;
+          // marked 'failed' here too. When the trace-judged path ran above,
+          // prefer its resolved outcome over the (now stale) `savedReport`.
+          // A null/undefined passFailStatus (judge/evaluator error) is left
+          // OFF the result on purpose — `bucketRunResults` (lib/runStats)
+          // treats a 'completed' result with no passFailStatus as `errored`,
+          // never as a silent pass.
+          const reportPassFail = judgeOutcome ? judgeOutcome.passFailStatus : (savedReport as any).passFailStatus;
           const status: RunResultStatus = reportPassFail === 'failed' ? 'failed' : 'completed';
           run.results[testCaseId] = {
             reportId: savedReport.id,
@@ -769,29 +787,15 @@ export async function executeEvaluationRun(
     const wasCancelled = cancellationToken?.isCancelled ?? false;
     const finalStatus: BenchmarkRunStatus = wasCancelled ? 'cancelled' : 'completed';
 
-    // Compute stats from results
-    let passed = 0;
-    let failed = 0;
-    let pending = 0;
-    for (const result of Object.values(run.results)) {
-      if (result.status === 'completed') {
-        // Check if the underlying report passed
-        // For now, count completed as needing further resolution
-        // We'll check passFailStatus from saved reports
-        passed++; // Will be refined by caller if needed
-      } else if (result.status === 'failed') {
-        failed++;
-      } else {
-        pending++;
-      }
-    }
-
-    run.stats = {
-      passed,
-      failed,
-      pending,
-      total: totalTestCases,
-    };
+    // Compute stats from *verdicts*, not raw completion status, reusing the
+    // SAME canonical bucketing (`lib/runStats.bucketRunResults`) the UI uses
+    // for the runs list and comparison page. A 'completed' result with no
+    // resolved passFailStatus (e.g. the trace-judged path before the fix
+    // above landed, or a judge/evaluator error) is bucketed `errored` — it
+    // must NOT silently inflate `passed`. See run.results[testCaseId]
+    // assignment above for how passFailStatus/metricsStatus land here.
+    const bucketed = bucketRunResults(run.results as Record<string, { status?: string; passFailStatus?: string }>);
+    run.stats = { ...bucketed, total: totalTestCases };
 
     // Compute performance metrics
     const totalDuration = Date.now() - runStartTime;
@@ -850,8 +854,8 @@ async function waitForTracesAndJudge(
   testCase: TestCase,
   storage: IStorageModule,
   agentConfig: AgentConfig
-): Promise<void> {
-  return new Promise<void>((resolve) => {
+): Promise<{ passFailStatus: PassFailStatus | null; metricsStatus: 'ready' | 'error' }> {
+  return new Promise<{ passFailStatus: PassFailStatus | null; metricsStatus: 'ready' | 'error' }>((resolve) => {
     tracePollingManager.startPolling(
       report.id,
       report.runId!,
@@ -926,14 +930,18 @@ async function waitForTracesAndJudge(
             } as any);
 
             debug('EvaluationRunner', `[${testCase.id}] Trace judge complete: ${judgment.passFailStatus}`);
-            resolve();
+            // Resolve with the JUDGMENT we just computed rather than making
+            // the caller re-read `report.id` from storage — this is the fix
+            // for the stale-`savedReport` bug (trace-judged runs displaying
+            // inflated pass counts because the caller never saw the verdict).
+            resolve({ passFailStatus: judgment.passFailStatus, metricsStatus: 'ready' });
           } catch (error) {
             console.error(`[EvaluationRunner] Failed to judge report ${report.id}:`, error instanceof Error ? error.message : error);
             await storage.runs.update(report.id, buildEvaluatorErrorPatch(
               'judge_failed',
               error,
             ) as any).catch(() => {});
-            resolve(); // Don't fail the whole run, just mark metrics as error
+            resolve({ passFailStatus: null, metricsStatus: 'error' }); // Don't fail the whole run, just mark metrics as error
           }
         },
         onAttempt: (attempt, max) => {
@@ -941,7 +949,7 @@ async function waitForTracesAndJudge(
         },
         onError: (error) => {
           console.error(`[EvaluationRunner] Trace polling failed for report ${report.id}:`, error.message);
-          resolve(); // Don't fail the whole run — report already has error status from tracePoller
+          resolve({ passFailStatus: null, metricsStatus: 'error' }); // Don't fail the whole run — report already has error status from tracePoller
         },
       },
       { agentConfig }
