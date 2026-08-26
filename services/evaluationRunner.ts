@@ -675,7 +675,11 @@ export async function executeEvaluationRun(
           // run with 66/84 real verdicts displaying 84/84 passed. Capture the
           // resolved judgment here and use IT (not the stale `savedReport`)
           // to decide the outcome.
-          let judgeOutcome: { passFailStatus: PassFailStatus | null; metricsStatus: 'ready' | 'error' } | undefined;
+          // `judgeOutcome` is `undefined` when the trace-judged branch below
+          // never ran (deterministic test, or a report that was already
+          // fully judged) — in that case we fall back to the (fresh, not
+          // stale) `savedReport.passFailStatus` from the synchronous path.
+          let judgeOutcome: PassFailStatus | null | undefined;
           if (
             !hasDeterministicEval &&
             savedReport.metricsStatus === 'pending' &&
@@ -695,7 +699,7 @@ export async function executeEvaluationRun(
           // OFF the result on purpose — `bucketRunResults` (lib/runStats)
           // treats a 'completed' result with no passFailStatus as `errored`,
           // never as a silent pass.
-          const reportPassFail = judgeOutcome ? judgeOutcome.passFailStatus : (savedReport as any).passFailStatus;
+          const reportPassFail = judgeOutcome !== undefined ? judgeOutcome : (savedReport as any).passFailStatus;
           const status: RunResultStatus = reportPassFail === 'failed' ? 'failed' : 'completed';
           run.results[testCaseId] = {
             reportId: savedReport.id,
@@ -854,8 +858,8 @@ async function waitForTracesAndJudge(
   testCase: TestCase,
   storage: IStorageModule,
   agentConfig: AgentConfig
-): Promise<{ passFailStatus: PassFailStatus | null; metricsStatus: 'ready' | 'error' }> {
-  return new Promise<{ passFailStatus: PassFailStatus | null; metricsStatus: 'ready' | 'error' }>((resolve) => {
+): Promise<PassFailStatus | null> {
+  return new Promise<PassFailStatus | null>((resolve) => {
     tracePollingManager.startPolling(
       report.id,
       report.runId!,
@@ -934,14 +938,14 @@ async function waitForTracesAndJudge(
             // the caller re-read `report.id` from storage — this is the fix
             // for the stale-`savedReport` bug (trace-judged runs displaying
             // inflated pass counts because the caller never saw the verdict).
-            resolve({ passFailStatus: judgment.passFailStatus, metricsStatus: 'ready' });
+            resolve(judgment.passFailStatus);
           } catch (error) {
             console.error(`[EvaluationRunner] Failed to judge report ${report.id}:`, error instanceof Error ? error.message : error);
             await storage.runs.update(report.id, buildEvaluatorErrorPatch(
               'judge_failed',
               error,
             ) as any).catch(() => {});
-            resolve({ passFailStatus: null, metricsStatus: 'error' }); // Don't fail the whole run, just mark metrics as error
+            resolve(null); // Don't fail the whole run, just mark metrics as error
           }
         },
         onAttempt: (attempt, max) => {
@@ -949,7 +953,7 @@ async function waitForTracesAndJudge(
         },
         onError: (error) => {
           console.error(`[EvaluationRunner] Trace polling failed for report ${report.id}:`, error.message);
-          resolve({ passFailStatus: null, metricsStatus: 'error' }); // Don't fail the whole run — report already has error status from tracePoller
+          resolve(null); // Don't fail the whole run — report already has error status from tracePoller
         },
       },
       { agentConfig }
