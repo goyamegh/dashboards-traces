@@ -11,7 +11,13 @@
  * and must be preserved.
  */
 
-import { computeResumableTestCaseIds, runLivenessAgeMs, runStaleAfterMs } from '@/server/routes/storage/evaluationRuns';
+import {
+  computeResumableTestCaseIds,
+  runLivenessAgeMs,
+  runStaleAfterMs,
+  buildBenchmarkRunProjection,
+  linkCompletedRunToBenchmark,
+} from '@/server/routes/storage/evaluationRuns';
 
 const snap = (id: string) => ({ id, version: 1, name: id });
 
@@ -112,5 +118,160 @@ describe('run liveness (shared-cluster safety)', () => {
     expect(runStaleAfterMs()).toBe(3_600_000);
     if (prev === undefined) delete process.env.EVALUATION_RUN_STALE_AFTER_MS;
     else process.env.EVALUATION_RUN_STALE_AFTER_MS = prev;
+  });
+});
+
+/**
+ * Unit tests for the benchmark.runs linking helpers (the "resumed run
+ * missing from benchmark.runs" bug — hit twice in production).
+ *
+ * `buildBenchmarkRunProjection` is the pure projection also used by the
+ * create route's success path; `linkCompletedRunToBenchmark` must upsert by
+ * run id so a run that was already linked (e.g. by the create route, or by
+ * an earlier resume) never ends up duplicated in `benchmark.runs`.
+ */
+describe('buildBenchmarkRunProjection', () => {
+  const baseRun = {
+    id: 'eval-run-1',
+    name: 'My Run',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    status: 'completed',
+    agentKey: 'demo',
+    modelId: 'demo-model',
+    results: { tc1: { reportId: 'r1', status: 'completed' } },
+    stats: { total: 1, passed: 1, failed: 0 },
+    testCaseSnapshots: [{ id: 'tc1', version: 1, name: 'tc1' }],
+  } as any;
+
+  it('projects the required BenchmarkRun fields plus completedAt', () => {
+    const projection = buildBenchmarkRunProjection(baseRun, '2026-01-01T00:05:00.000Z');
+    expect(projection).toMatchObject({
+      id: 'eval-run-1',
+      name: 'My Run',
+      createdAt: '2026-01-01T00:00:00.000Z',
+      completedAt: '2026-01-01T00:05:00.000Z',
+      status: 'completed',
+      agentKey: 'demo',
+      modelId: 'demo-model',
+      results: baseRun.results,
+      stats: baseRun.stats,
+      testCaseSnapshots: baseRun.testCaseSnapshots,
+    });
+  });
+
+  it('omits optional fields the run does not have (no undefined keys leaking in)', () => {
+    const projection = buildBenchmarkRunProjection(baseRun, '2026-01-01T00:05:00.000Z') as any;
+    expect('description' in projection).toBe(false);
+    expect('evaluatorId' in projection).toBe(false);
+    expect('headers' in projection).toBe(false);
+    expect('concurrency' in projection).toBe(false);
+  });
+
+  it('includes optional fields when present on the run', () => {
+    const projection = buildBenchmarkRunProjection(
+      { ...baseRun, description: 'desc', evaluatorId: 'ev-1', headers: { X: '1' }, concurrency: 3 },
+      '2026-01-01T00:05:00.000Z'
+    ) as any;
+    expect(projection.description).toBe('desc');
+    expect(projection.evaluatorId).toBe('ev-1');
+    expect(projection.headers).toEqual({ X: '1' });
+    expect(projection.concurrency).toBe(3);
+  });
+});
+
+describe('linkCompletedRunToBenchmark', () => {
+  const benchmarkRun = (id: string) => ({
+    id,
+    name: 'r',
+    createdAt: '2026-01-01T00:00:00.000Z',
+    completedAt: '2026-01-01T00:05:00.000Z',
+    agentKey: 'demo',
+    modelId: 'demo-model',
+    results: {},
+  } as any);
+
+  it('adds a new run via addRun when the benchmark has no entry for this run id', async () => {
+    const storage = {
+      benchmarks: {
+        getById: jest.fn().mockResolvedValue({ id: 'bm-1', runs: [] }),
+        addRun: jest.fn().mockResolvedValue(true),
+        updateRun: jest.fn(),
+      },
+    } as any;
+
+    await linkCompletedRunToBenchmark(storage, 'bm-1', benchmarkRun('run-1'));
+
+    expect(storage.benchmarks.addRun).toHaveBeenCalledWith('bm-1', expect.objectContaining({ id: 'run-1' }));
+    expect(storage.benchmarks.updateRun).not.toHaveBeenCalled();
+  });
+
+  it('upserts via updateRun (not addRun) when the run id is already linked — no duplicate entries', async () => {
+    const storage = {
+      benchmarks: {
+        getById: jest.fn().mockResolvedValue({ id: 'bm-1', runs: [{ id: 'run-1', name: 'stale' }] }),
+        addRun: jest.fn(),
+        updateRun: jest.fn().mockResolvedValue(true),
+      },
+    } as any;
+
+    await linkCompletedRunToBenchmark(storage, 'bm-1', benchmarkRun('run-1'));
+
+    expect(storage.benchmarks.updateRun).toHaveBeenCalledWith('bm-1', 'run-1', expect.objectContaining({ id: 'run-1' }));
+    expect(storage.benchmarks.addRun).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op regression guard: repeated calls with the same run id never grow the entry count (real array semantics)', async () => {
+    // Mimic the real file/opensearch adapters' semantics against a plain array.
+    const benchmark = { id: 'bm-1', runs: [] as any[] };
+    const storage = {
+      benchmarks: {
+        getById: jest.fn().mockImplementation(async () => benchmark),
+        addRun: jest.fn().mockImplementation(async (_id: string, run: any) => {
+          benchmark.runs.push(run);
+          return true;
+        }),
+        updateRun: jest.fn().mockImplementation(async (_id: string, runId: string, updates: any) => {
+          const idx = benchmark.runs.findIndex((r) => r.id === runId);
+          if (idx === -1) return false;
+          benchmark.runs[idx] = { ...benchmark.runs[idx], ...updates };
+          return true;
+        }),
+      },
+    } as any;
+
+    await linkCompletedRunToBenchmark(storage, 'bm-1', benchmarkRun('run-1'));
+    await linkCompletedRunToBenchmark(storage, 'bm-1', benchmarkRun('run-1'));
+    await linkCompletedRunToBenchmark(storage, 'bm-1', benchmarkRun('run-1'));
+
+    expect(benchmark.runs).toHaveLength(1);
+    expect(benchmark.runs.filter((r) => r.id === 'run-1')).toHaveLength(1);
+  });
+
+  it('throws when the benchmark does not exist (surfaces as a 500 up the route, matching the create-route behavior)', async () => {
+    const storage = {
+      benchmarks: {
+        getById: jest.fn().mockResolvedValue(null),
+        addRun: jest.fn(),
+        updateRun: jest.fn(),
+      },
+    } as any;
+
+    await expect(linkCompletedRunToBenchmark(storage, 'missing-bm', benchmarkRun('run-1'))).rejects.toThrow(
+      'Benchmark not found while linking completed run: missing-bm'
+    );
+  });
+
+  it('throws when addRun reports failure (e.g. a race where the benchmark was deleted mid-request)', async () => {
+    const storage = {
+      benchmarks: {
+        getById: jest.fn().mockResolvedValue({ id: 'bm-1', runs: [] }),
+        addRun: jest.fn().mockResolvedValue(false),
+        updateRun: jest.fn(),
+      },
+    } as any;
+
+    await expect(linkCompletedRunToBenchmark(storage, 'bm-1', benchmarkRun('run-1'))).rejects.toThrow(
+      'Failed to link completed run to benchmark: bm-1'
+    );
   });
 });

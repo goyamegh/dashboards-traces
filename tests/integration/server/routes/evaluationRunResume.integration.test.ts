@@ -234,3 +234,166 @@ describe('POST /api/storage/evaluation-runs/:id/resume — checkpoint resume', (
     await httpJson('DELETE', `${BASE_URL}/api/storage/evaluation-runs/${raceRunId}`).catch(() => {});
   }, TEST_TIMEOUT);
 });
+
+/**
+ * Integration test: resumed runs must appear in `benchmark.runs`.
+ *
+ * Bug (production, hit twice): the create route's success path links a
+ * completed run into the benchmark's embedded `runs` array via
+ * `storage.benchmarks.addRun`. The resume route's completion path never did
+ * this — so a run whose *original* create-route execution crashed BEFORE
+ * reaching that success branch stayed invisible in `benchmark.runs` forever,
+ * even after a later resume finished it successfully. `GET
+ * .../evaluation-runs/:id` looked fine (it reads the evaluation-run document
+ * directly); only benchmark-scoped views (benchmark detail page, scoped
+ * comparison pool) were missing the run.
+ */
+describe('POST .../resume — benchmark.runs linking (production bug regression)', () => {
+  let backendAvailable = false;
+  const createdTestCaseIds: string[] = [];
+  const createdReportIds: string[] = [];
+  let benchmarkId: string | undefined;
+  let runId: string | undefined;
+
+  beforeAll(async () => {
+    try {
+      const health = await httpJson('GET', `${BASE_URL}/api/agents`);
+      backendAvailable = health.status === 200;
+    } catch {
+      backendAvailable = false;
+    }
+    if (!backendAvailable) {
+      console.warn('[evaluationRunResume:benchmarkLink] Backend not reachable — skipping');
+    }
+  }, TEST_TIMEOUT);
+
+  afterAll(async () => {
+    for (const id of createdReportIds) {
+      await httpJson('DELETE', `${BASE_URL}/api/storage/runs/${encodeURIComponent(id)}`).catch(() => {});
+    }
+    if (runId) {
+      await httpJson('DELETE', `${BASE_URL}/api/storage/evaluation-runs/${encodeURIComponent(runId)}`).catch(() => {});
+    }
+    if (benchmarkId) {
+      await httpJson('DELETE', `${BASE_URL}/api/storage/benchmarks/${encodeURIComponent(benchmarkId)}`).catch(() => {});
+    }
+    for (const id of createdTestCaseIds) {
+      await httpJson('DELETE', `${BASE_URL}/api/storage/test-cases/${encodeURIComponent(id)}`).catch(() => {});
+    }
+  }, TEST_TIMEOUT);
+
+  it(
+    'links a resumed run into benchmark.runs exactly once, even though its create-route execution never reached addRun',
+    async () => {
+      if (!backendAvailable) return;
+
+      // 1. A benchmark with two test cases.
+      for (let i = 1; i <= 2; i++) {
+        const tc = await httpJson<any>('POST', `${BASE_URL}/api/storage/test-cases`, {
+          name: `resume-link-tc${i}`,
+          category: 'Diagnostics',
+          difficulty: 'Easy',
+          initialPrompt: `Say hello (${i})`,
+          expectedOutcomes: ['Agent responds'],
+          labels: [],
+        });
+        expect(tc.status).toBeLessThan(300);
+        createdTestCaseIds.push(tc.body.id);
+      }
+      const benchmark = await httpJson<any>('POST', `${BASE_URL}/api/storage/benchmarks`, {
+        name: 'resume-link-benchmark',
+        description: 'Regression test: resumed runs must appear in benchmark.runs',
+        testCaseIds: createdTestCaseIds,
+        runs: [],
+        currentVersion: 1,
+        versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: createdTestCaseIds }],
+      });
+      expect(benchmark.status).toBeLessThan(300);
+      benchmarkId = benchmark.body.id;
+
+      // 2. Seed an evaluation run whose original create-route execution
+      //    crashed BEFORE its success branch ever ran `addRun` — i.e. it is
+      //    associated with the benchmark (`benchmarkId` set) but the
+      //    benchmark's `runs` array has nothing for it. One test case has a
+      //    persisted report (a completed test case before the crash), the
+      //    other has none.
+      const [tc1, tc2] = createdTestCaseIds;
+      runId = `eval-run-resume-link-${Date.now()}`;
+      const now = new Date().toISOString();
+      const seeded = await httpJson<any>('PUT', `${BASE_URL}/api/storage/evaluation-runs/${runId}`, {
+        name: 'resume-link-run',
+        sources: [{ type: 'test-case-ids', ids: createdTestCaseIds }],
+        agentKey: 'demo',
+        modelId: 'demo-model',
+        judgeModelId: 'demo-model',
+        trigger: 'api',
+        benchmarkId,
+        status: 'failed',
+        error: 'simulated crash before create route reached addRun',
+        createdAt: now,
+        testCaseSnapshots: createdTestCaseIds.map((id, i) => ({ id, version: 1, name: `resume-link-tc${i + 1}` })),
+        results: {
+          [tc1]: { reportId: 'preserved-report-link-tc1', status: 'completed' },
+          [tc2]: { reportId: '', status: 'pending' },
+        },
+      });
+      expect(seeded.status).toBeLessThan(300);
+
+      // Sanity check: before the resume, the benchmark has NO runs — this is
+      // exactly the "invisible on the benchmark detail page" symptom.
+      const beforeResume = await httpJson<any>('GET', `${BASE_URL}/api/storage/benchmarks/${benchmarkId}`);
+      expect(beforeResume.status).toBe(200);
+      expect(beforeResume.body.runs || []).toHaveLength(0);
+
+      // 3. Resume to completion.
+      const resume = await httpJson<any>('POST', `${BASE_URL}/api/storage/evaluation-runs/${runId}/resume`);
+      expect(resume.status).toBe(200);
+      const events = parseSSE(resume.raw);
+      const completed = events.find((e) => e.event === 'completed');
+      expect(completed).toBeDefined();
+      expect(completed!.data.status).toBe('completed');
+      for (const v of Object.values<any>(completed!.data.results || {})) {
+        if (v.reportId && v.reportId !== 'preserved-report-link-tc1') createdReportIds.push(v.reportId);
+      }
+
+      // 4. THE BUG: the completed run must now show up in benchmark.runs,
+      //    exactly once, with matching id/status/results.
+      const afterResume = await httpJson<any>('GET', `${BASE_URL}/api/storage/benchmarks/${benchmarkId}`);
+      expect(afterResume.status).toBe(200);
+      const linkedRuns = (afterResume.body.runs || []).filter((r: any) => r.id === runId);
+      expect(linkedRuns).toHaveLength(1);
+      expect(linkedRuns[0].status).toBe('completed');
+      expect(linkedRuns[0].results[tc1].reportId).toBe('preserved-report-link-tc1');
+      expect(linkedRuns[0].results[tc2].reportId).toBeTruthy();
+      expect(linkedRuns[0].completedAt).toBeTruthy();
+
+      // 5. Idempotency: put the SAME run back into a resumable state and
+      //    resume it again — must REPLACE the existing benchmark.runs entry,
+      //    never duplicate it.
+      const reseed = await httpJson<any>('PUT', `${BASE_URL}/api/storage/evaluation-runs/${runId}`, {
+        ...completed!.data,
+        results: {
+          ...completed!.data.results,
+          [tc2]: { reportId: '', status: 'pending' },
+        },
+        status: 'failed',
+      });
+      expect(reseed.status).toBeLessThan(300);
+
+      const resume2 = await httpJson<any>('POST', `${BASE_URL}/api/storage/evaluation-runs/${runId}/resume`);
+      expect(resume2.status).toBe(200);
+      const completed2 = parseSSE(resume2.raw).find((e) => e.event === 'completed');
+      expect(completed2).toBeDefined();
+      for (const v of Object.values<any>(completed2!.data.results || {})) {
+        if (v.reportId && v.reportId !== 'preserved-report-link-tc1' && !createdReportIds.includes(v.reportId)) {
+          createdReportIds.push(v.reportId);
+        }
+      }
+
+      const afterSecondResume = await httpJson<any>('GET', `${BASE_URL}/api/storage/benchmarks/${benchmarkId}`);
+      const linkedRunsAfterSecond = (afterSecondResume.body.runs || []).filter((r: any) => r.id === runId);
+      expect(linkedRunsAfterSecond).toHaveLength(1); // still exactly one — never duplicated
+    },
+    TEST_TIMEOUT
+  );
+});
