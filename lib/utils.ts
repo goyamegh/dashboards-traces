@@ -124,6 +124,36 @@ export const getModelName = (modelId: string): string => {
   return model?.display_name || modelId;
 };
 
+/**
+ * Display label for the judge model column on the Evaluation Runs page.
+ * Judge model ids share the same registry as agent model ids
+ * (DEFAULT_CONFIG.models), so this reuses {@link getModelName} for the
+ * shortened display name. Runs created before `judgeModelId` was tracked
+ * (or agentic-provider judges that pick their own model) have no value —
+ * render an em dash rather than a blank cell so the missing-field state is
+ * visually distinct from a zero-width label.
+ */
+export const getJudgeModelLabel = (judgeModelId?: string | null): string => {
+  if (!judgeModelId) return '—';
+  return getModelName(judgeModelId);
+};
+
+/**
+ * Display label for the evaluator column on the Evaluation Runs page.
+ * `nameById` is a lightweight id→name lookup (built once from
+ * GET /api/storage/evaluators, not per-row) so this stays a pure function of
+ * already-fetched data. Falls back to the raw id if the evaluator was
+ * deleted/renamed since the run executed, and to an em dash if the run has
+ * no `evaluatorId` at all (legacy runs, or providers that don't record one).
+ */
+export const getEvaluatorLabel = (
+  evaluatorId: string | undefined | null,
+  nameById: Map<string, string>
+): string => {
+  if (!evaluatorId) return '—';
+  return nameById.get(evaluatorId) || evaluatorId;
+};
+
 // ==================== Run Utilities ====================
 
 /**
