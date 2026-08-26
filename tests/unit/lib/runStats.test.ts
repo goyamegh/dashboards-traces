@@ -420,5 +420,25 @@ describe('runStats', () => {
     it('returns all-zero stats when neither results nor stats are present', () => {
       expect(getDisplayStats({})).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
     });
+
+    it('treats an explicit empty results object the same as absent results (falls back to stats)', () => {
+      const run = { results: {}, stats: { passed: 2, failed: 0, pending: 0, errored: 0, total: 2 } };
+      expect(getDisplayStats(run)).toEqual({ passed: 2, failed: 0, errored: 0, pending: 0, total: 2 });
+    });
+
+    it('falls through to all-zero when results is empty and stats.total is 0 (run not started)', () => {
+      const run = { results: {}, stats: { passed: 0, failed: 0, pending: 0, errored: 0, total: 0 } };
+      expect(getDisplayStats(run)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
+    });
+
+    it('falls through to all-zero when results is empty and stats is entirely absent', () => {
+      const run = { results: {} };
+      expect(getDisplayStats(run)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
+    });
+
+    it('defaults missing individual stats fields to 0 (partial/legacy stats blob)', () => {
+      const run = { results: {}, stats: { total: 5 } as any };
+      expect(getDisplayStats(run)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 5 });
+    });
   });
 });

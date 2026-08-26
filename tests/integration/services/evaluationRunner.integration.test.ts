@@ -668,5 +668,69 @@ describe('executeEvaluationRun', () => {
       // pre-judge 'pending' state). Post-fix: real 2/2 split.
       expect(result.stats).toEqual({ passed: 2, failed: 2, pending: 0, errored: 0, total: 4 });
     });
+
+    it('judge failure during trace-judged polling is bucketed errored, not passed (does not crash the run)', async () => {
+      // Covers waitForTracesAndJudge's catch(judge_failed) path: the judge
+      // call itself throws (e.g. Bedrock error) after traces were found.
+      // The run must not crash, the result must carry NO passFailStatus, and
+      // the canonical bucketing must call it 'errored' rather than a silent
+      // pass.
+      mockRunEvaluationWithConnector.mockResolvedValue({
+        id: 'report-tc-1',
+        testCaseId: 'tc-1',
+        runId: 'run-abc-123',
+        metricsStatus: 'pending',
+        trajectory: [],
+      });
+
+      mockStartPolling.mockImplementation((_reportId: string, _runId: string, callbacks: any) => {
+        callbacks.onTracesFound([], { trajectory: [{ type: 'response', content: 'traced' }] });
+      });
+      mockCallBedrockJudge.mockRejectedValue(new Error('Bedrock judge exploded'));
+
+      const run = createEvaluationRun({ concurrency: 1 });
+      const testCases = [createTestCase('tc-1')];
+      const storage = createMockStorageModule();
+
+      const result = await executeEvaluationRun(run, testCases, {
+        storageModule: storage,
+        onProgress: jest.fn(),
+      });
+
+      expect(result.results['tc-1'].status).toBe('completed');
+      expect((result.results['tc-1'] as any).passFailStatus).toBeUndefined();
+      expect(result.stats).toEqual({ passed: 0, failed: 0, pending: 0, errored: 1, total: 1 });
+    });
+
+    it('trace polling failure (onError) is bucketed errored, not passed', async () => {
+      // Covers waitForTracesAndJudge's onError callback: trace polling itself
+      // fails (e.g. traces never arrive / poller error) before the judge is
+      // ever called.
+      mockRunEvaluationWithConnector.mockResolvedValue({
+        id: 'report-tc-1',
+        testCaseId: 'tc-1',
+        runId: 'run-abc-123',
+        metricsStatus: 'pending',
+        trajectory: [],
+      });
+
+      mockStartPolling.mockImplementation((_reportId: string, _runId: string, callbacks: any) => {
+        callbacks.onError(new Error('trace polling timed out'));
+      });
+
+      const run = createEvaluationRun({ concurrency: 1 });
+      const testCases = [createTestCase('tc-1')];
+      const storage = createMockStorageModule();
+
+      const result = await executeEvaluationRun(run, testCases, {
+        storageModule: storage,
+        onProgress: jest.fn(),
+      });
+
+      expect(result.results['tc-1'].status).toBe('completed');
+      expect((result.results['tc-1'] as any).passFailStatus).toBeUndefined();
+      expect(result.stats).toEqual({ passed: 0, failed: 0, pending: 0, errored: 1, total: 1 });
+      expect(mockCallBedrockJudge).not.toHaveBeenCalled();
+    });
   });
 });
