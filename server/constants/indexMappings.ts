@@ -96,9 +96,15 @@ export function getIndexMappings(): IndexMappings {
           // still stored/returned in _source (reads/writes/painless partial
           // updates via `ctx._source.results.put(...)` are unaffected — see
           // OpenSearchEvaluationRunOperations.updateResult), just never
-          // parsed into the mapping. Safe here because no query anywhere
-          // filters/sorts/aggregates on `results.*` subfields — all consumers
-          // read the whole `results` object out of `_source` in JS.
+          // parsed into the mapping. This is a real trade-off, not a free
+          // lunch: it permanently forfeits OpenSearch-side filter/sort/
+          // aggregate on any `results.*` subfield for this index — that's
+          // fine *today* because no query anywhere does that (all consumers
+          // read the whole `results` object out of `_source` in JS and
+          // filter/aggregate in application code), but a future feature
+          // that wants to e.g. search across reportIds would need a
+          // different field (or a reindex to a `flattened`/nested shape),
+          // not a query against this one.
           //
           // Existing installs: OpenSearch rejects `enabled` changes on a
           // field that was already dynamically mapped with real sub-properties
