@@ -583,6 +583,7 @@ describe('executeEvaluationRun', () => {
           'test-model': { model_id: 'anthropic.claude-test', display_name: 'Test Model', context_window: 200000, max_output_tokens: 4096 },
         },
       });
+
       mockRunEvaluationWithConnector.mockResolvedValue({
         id: 'report-tc-1',
         testCaseId: 'tc-1',
@@ -621,6 +622,30 @@ describe('executeEvaluationRun', () => {
         expect.objectContaining({ agentConfig: expect.any(Object) })
       );
       expect(result.results['tc-1'].status).toBe('completed');
+    });
+
+    it('does NOT start trace polling for a non-trace agent, even when the report is pending', async () => {
+      // Regression for the eager-judge clobber: the default test-agent has
+      // useTraces unset (false), so a transiently/erroneously 'pending'
+      // report must never enter trace polling.
+      mockRunEvaluationWithConnector.mockResolvedValue({
+        id: 'report-tc-1',
+        testCaseId: 'tc-1',
+        runId: 'run-abc-123',
+        metricsStatus: 'pending',
+        trajectory: [],
+      });
+
+      const run = createEvaluationRun({ concurrency: 1 });
+      const testCases = [createTestCase('tc-1')];
+      const storage = createMockStorageModule();
+
+      await executeEvaluationRun(run, testCases, {
+        storageModule: storage,
+        onProgress: jest.fn(),
+      });
+
+      expect(mockStartPolling).not.toHaveBeenCalled();
     });
   });
 });
