@@ -8,9 +8,11 @@ import {
   getSelectedVersionData,
   getVersionTestCases,
   filterRunsByVersion,
+  mergeEvalRunsIntoBenchmarkRuns,
+  runInspectPath,
   VersionData,
 } from '@/lib/benchmarkVersionUtils';
-import type { Benchmark, BenchmarkRun, TestCase } from '@/types';
+import type { Benchmark, BenchmarkRun, EvaluationRun, TestCase } from '@/types';
 
 describe('benchmarkVersionUtils', () => {
   // Helper to create a mock benchmark
@@ -426,6 +428,83 @@ describe('benchmarkVersionUtils', () => {
 
       expect(runs[0].id).toBe(originalFirstId);
       expect(runs.length).toBe(originalRuns.length);
+    });
+  });
+
+  describe('mergeEvalRunsIntoBenchmarkRuns', () => {
+    const embeddedRun: BenchmarkRun = {
+      id: 'run-1',
+      name: 'Embedded Run',
+      createdAt: '2026-01-01T00:00:00Z',
+      agentKey: 'agent-a',
+      modelId: 'model-a',
+      results: {},
+    } as BenchmarkRun;
+
+    const evalRun: EvaluationRun = {
+      id: 'eval-run-1',
+      docType: 'evaluation-run',
+      name: 'CLI Run',
+      createdAt: '2026-01-02T00:00:00Z',
+      status: 'completed',
+      agentKey: 'agent-b',
+      modelId: 'model-b',
+      sources: [],
+      trigger: 'cli',
+      testCaseSnapshots: [],
+      results: {},
+      benchmarkId: 'bench-1',
+    } as unknown as EvaluationRun;
+
+    it('tags embedded runs with __kind: benchmark', () => {
+      const merged = mergeEvalRunsIntoBenchmarkRuns([embeddedRun], []);
+      expect(merged).toEqual([{ ...embeddedRun, __kind: 'benchmark' }]);
+    });
+
+    it('tags run-first evaluation runs with __kind: eval-run and includes them', () => {
+      const merged = mergeEvalRunsIntoBenchmarkRuns([], [evalRun]);
+      expect(merged).toHaveLength(1);
+      expect(merged[0].id).toBe('eval-run-1');
+      expect(merged[0].__kind).toBe('eval-run');
+    });
+
+    it('unions both without duplicating (regression: run-first CLI runs must appear on the benchmark page)', () => {
+      const merged = mergeEvalRunsIntoBenchmarkRuns([embeddedRun], [evalRun]);
+      expect(merged.map(r => r.id).sort()).toEqual(['eval-run-1', 'run-1']);
+    });
+
+    it('de-dupes by id, preferring the embedded copy on a collision', () => {
+      const collidingEvalRun = { ...evalRun, id: 'run-1' } as unknown as EvaluationRun;
+      const merged = mergeEvalRunsIntoBenchmarkRuns([embeddedRun], [collidingEvalRun]);
+      expect(merged).toHaveLength(1);
+      expect(merged[0].__kind).toBe('benchmark');
+      expect(merged[0].name).toBe('Embedded Run');
+    });
+
+    it('handles undefined embedded/eval-run arrays', () => {
+      expect(mergeEvalRunsIntoBenchmarkRuns(undefined, undefined)).toEqual([]);
+      expect(mergeEvalRunsIntoBenchmarkRuns(undefined, [evalRun])).toHaveLength(1);
+      expect(mergeEvalRunsIntoBenchmarkRuns([embeddedRun], undefined)).toHaveLength(1);
+    });
+  });
+
+  describe('runInspectPath', () => {
+    it('routes embedded (benchmark) runs to the benchmark-scoped inspect route', () => {
+      expect(runInspectPath('bench-1', { id: 'run-1', __kind: 'benchmark' }))
+        .toBe('/evaluations/benchmarks/bench-1/runs/run-1/inspect');
+    });
+
+    it('routes run-first (eval-run) runs to the SDK eval-run inspect route (no benchmarkId lookup)', () => {
+      // Regression: RunInspectorPage's benchmark mode does
+      // `bm.runs.find(r => r.id === runId)`, which never contains run-first
+      // runs — they must route to /evaluations/runs/:runId/inspect instead.
+      expect(runInspectPath('bench-1', { id: 'eval-run-1', __kind: 'eval-run' }))
+        .toBe('/evaluations/runs/eval-run-1/inspect');
+    });
+
+    it('defaults to the benchmark-scoped route when __kind is absent (legacy embedded run objects)', () => {
+      expect(runInspectPath('bench-1', { id: 'run-1' }))
+        .toBe('/evaluations/benchmarks/bench-1/runs/run-1/inspect');
     });
   });
 });

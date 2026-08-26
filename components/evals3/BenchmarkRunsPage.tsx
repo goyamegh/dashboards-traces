@@ -38,7 +38,7 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { asyncBenchmarkStorage, asyncTestCaseStorage } from '@/services/storage';
-import { executeBenchmarkRun } from '@/services/client';
+import { executeBenchmarkRun, listEvaluationRuns } from '@/services/client';
 import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
 import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, RunStats, Evaluator } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
@@ -50,6 +50,8 @@ import {
   getSelectedVersionData,
   getVersionTestCases,
   filterRunsByVersion,
+  mergeEvalRunsIntoBenchmarkRuns,
+  runInspectPath,
   VersionData,
 } from '@/lib/benchmarkVersionUtils';
 import { RunConfigForExecution } from '@/components/BenchmarkEditor';
@@ -171,7 +173,17 @@ export const BenchmarkRunsPage2: React.FC = () => {
       const options = isPolling
         ? { fields: 'polling' as const, runsSize: 100 }
         : { runsSize: 100 };
-      const exp = await asyncBenchmarkStorage.getById(benchmarkId, options);
+      const [exp, evalRunsResult] = await Promise.all([
+        asyncBenchmarkStorage.getById(benchmarkId, options),
+        // Run-first EvaluationRun docs (created by `benchmark -f foo.eval.js`
+        // and other unified-mode CLI/API sources) that reference this
+        // benchmark but never got embedded into benchmark.runs[]. Best-effort:
+        // a failure here still shows the embedded runs.
+        listEvaluationRuns({ benchmarkId, size: 200 }).catch(err => {
+          console.error('Failed to load run-first evaluation runs:', err);
+          return { evaluationRuns: [], total: 0 };
+        }),
+      ]);
       if (!exp) { navigate(parentPath); return; }
 
       const expAny = exp as any;
@@ -184,6 +196,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
       } else {
         cachedVersions.current = exp.versions;
       }
+      exp.runs = mergeEvalRunsIntoBenchmarkRuns(exp.runs, evalRunsResult.evaluationRuns);
       setBenchmark(exp);
 
       if (!isPolling) {
@@ -212,7 +225,11 @@ export const BenchmarkRunsPage2: React.FC = () => {
       if (exp) {
         setBenchmark(prev => {
           if (!prev) return exp;
-          return { ...prev, runs: [...(prev.runs || []), ...(exp.runs || [])] };
+          const existingIds = new Set((prev.runs || []).map(r => r.id));
+          const newRuns = (exp.runs || [])
+            .filter(r => !existingIds.has(r.id))
+            .map(r => ({ ...r, __kind: 'benchmark' as const }));
+          return { ...prev, runs: [...(prev.runs || []), ...newRuns] };
         });
         const expAny = exp as any;
         if (expAny.totalRuns !== undefined) {
@@ -595,8 +612,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
                       isSelected ? 'border-primary bg-primary/5' : 'hover:border-primary/50'
                     }`}
                     onClick={() => {
-                      const runDetailPath = `/evaluations/benchmarks/${benchmarkId}/runs/${run.id}/inspect`;
-                      navigate(runDetailPath);
+                      navigate(runInspectPath(benchmarkId!, run));
                     }}
                   >
                     <CardContent className="p-4">
@@ -687,7 +703,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
                               <span className="text-muted-foreground">/ {stats.total}</span>
                             </div>
                           )}
-                          {getEffectiveRunStatus(run) === 'running' && (
+                          {getEffectiveRunStatus(run) === 'running' && (run as any).__kind !== 'eval-run' && (
                             <Button
                               variant="outline" size="sm"
                               disabled={isCancelling(run.id)}
@@ -699,11 +715,11 @@ export const BenchmarkRunsPage2: React.FC = () => {
                             </Button>
                           )}
                           <Button
-                            variant="ghost" size="icon"
+                            variant='ghost' size='icon'
                             onClick={e => { e.stopPropagation(); handleDeleteRun(run); }}
-                            disabled={deleteState.isDeleting && deleteState.deletingId === run.id}
-                            className="text-red-700 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 hover:bg-red-500/10"
-                            title="Delete run"
+                            disabled={(deleteState.isDeleting && deleteState.deletingId === run.id) || (run as any).__kind === 'eval-run'}
+                            className='text-red-700 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 hover:bg-red-500/10'
+                            title={(run as any).__kind === 'eval-run' ? 'Run-first evaluation runs are deleted via /evaluations/runs' : 'Delete run'}
                           >
                             {deleteState.isDeleting && deleteState.deletingId === run.id
                               ? <Loader2 size={14} className="animate-spin" />

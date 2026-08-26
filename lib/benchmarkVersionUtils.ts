@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import type { Benchmark, BenchmarkVersion, BenchmarkRun, TestCase } from '@/types';
+import type { Benchmark, BenchmarkVersion, BenchmarkRun, EvaluationRun, TestCase } from '@/types';
 
 /**
  * Enhanced version data with diff information
@@ -96,4 +96,60 @@ export function filterRunsByVersion(
   return sorted.filter(run =>
     (run.benchmarkVersion || 1) === versionFilter
   );
+}
+
+/**
+ * A benchmark run tagged with which storage model it came from.
+ *
+ * There are two disjoint run record shapes today: legacy benchmark-embedded
+ * runs (`benchmark.runs[]`) and top-level evaluation-runs (`eval-run-…`,
+ * created by the unified `/api/storage/evaluation-runs` path — code-import,
+ * `benchmark -f`, run-prioritizer). `__kind` records which model a row came
+ * from so callers (e.g. the run-inspector link) can target the right route.
+ * Mirrors the merge already done in `EvalRunsPage.tsx`'s `RunRow`.
+ */
+export type RunWithKind = BenchmarkRun & { __kind: 'benchmark' | 'eval-run' };
+
+/**
+ * Union embedded `benchmark.runs[]` with run-first `EvaluationRun` documents
+ * that reference this benchmark (`evaluationRun.benchmarkId`), de-duplicated
+ * by id (embedded wins on a collision, though the two id spaces never
+ * actually collide — `run-…` vs `eval-run-…`).
+ *
+ * Without this, a benchmark run started via `agent-health benchmark -f
+ * foo.eval.js -n "My Benchmark"` (which creates a run-first EvaluationRun,
+ * not an embedded run) never appears on `/evaluations/benchmarks/:id/runs`
+ * even though `GET /api/storage/evaluation-runs?benchmarkId=...` returns it
+ * correctly — the benchmark-runs page only ever read `benchmark.runs[]`.
+ *
+ * `EvaluationRun` is shape-compatible with `BenchmarkRun` for every field
+ * the runs list/inspector reads (id, name, agentKey, modelId, createdAt,
+ * results, stats, benchmarkVersion, testCaseSnapshots) — same cast used by
+ * `EvalRunsPage.tsx`.
+ */
+export function mergeEvalRunsIntoBenchmarkRuns(
+  embeddedRuns: BenchmarkRun[] | undefined,
+  evalRuns: EvaluationRun[] | undefined,
+): RunWithKind[] {
+  const merged: RunWithKind[] = (embeddedRuns || []).map(r => ({ ...r, __kind: 'benchmark' as const }));
+  const seen = new Set(merged.map(r => r.id));
+  for (const er of evalRuns || []) {
+    if (seen.has(er.id)) continue;
+    seen.add(er.id);
+    merged.push({ ...(er as unknown as BenchmarkRun), __kind: 'eval-run' as const });
+  }
+  return merged;
+}
+
+/**
+ * Path to the run inspector for a run that may be embedded or run-first.
+ * Run-first (`__kind === 'eval-run'`) rows must route to the SDK eval-run
+ * mode (`/evaluations/runs/:runId/inspect`, no `benchmarkId` param) — the
+ * benchmark-scoped route looks the run up via `bm.runs.find(...)`, which
+ * never contains run-first runs.
+ */
+export function runInspectPath(benchmarkId: string, run: { id: string; __kind?: 'benchmark' | 'eval-run' }): string {
+  return run.__kind === 'eval-run'
+    ? `/evaluations/runs/${run.id}/inspect`
+    : `/evaluations/benchmarks/${benchmarkId}/runs/${run.id}/inspect`;
 }
