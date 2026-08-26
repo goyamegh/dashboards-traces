@@ -161,6 +161,31 @@ describe('Skills API Integration Tests', () => {
     );
 
     it(
+      'expands ~ against the home directory (discover emits ~/.claude/skills/… paths)',
+      async () => {
+        if (!backendAvailable) return;
+
+        // Regression: resolveSkillPath used to resolve '~/…' against cwd,
+        // producing '<cwd>/~/…' — so every user-scope skill the discover
+        // endpoint returned failed validation with "Directory does not exist".
+        const response = await fetch(`${BASE_URL}/api/skills/validate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ path: '~/nonexistent-skill-dir-e2e-xyz' }),
+        });
+
+        expect(response.ok).toBe(true);
+        const data = await response.json();
+        expect(data.valid).toBe(false);
+        // The echoed path must be home-expanded — never a literal '/~' under cwd.
+        const message = (data.errors || []).join(' ');
+        expect(message).not.toContain('/~');
+        expect(message).toContain('nonexistent-skill-dir-e2e-xyz');
+      },
+      TEST_TIMEOUT
+    );
+
+    it(
       'should include evals info when evals.json exists',
       async () => {
         if (!backendAvailable) return;
