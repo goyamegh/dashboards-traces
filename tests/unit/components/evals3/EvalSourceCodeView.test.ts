@@ -86,8 +86,8 @@ describe('EvalSourceCodeView — render conditions', () => {
     });
     render(h(EvalSourceCodeView, { testCase: tc }));
     expect(screen.getByTestId('eval-source-code-view')).toBeTruthy();
-    // Collapsed by default: header (filename/badge) visible, code body NOT.
-    expect(screen.getByText('rca.eval.ts')).toBeTruthy();
+    // Collapsed by default: header (full source path/badge) visible, code body NOT.
+    expect(screen.getByText('evals/rca.eval.ts')).toBeTruthy();
     expect(screen.getByText('TypeScript')).toBeTruthy();
     expect(screen.queryByTestId('eval-source-code-body')).toBeNull();
     expect(screen.getByTestId('eval-source-toggle').getAttribute('aria-expanded')).toBe('false');

@@ -59,9 +59,11 @@ export const CollapsibleTestCaseDefinition: React.FC<CollapsibleTestCaseDefiniti
   // versions, untruncated.
   const json = isSdk ? '' : JSON.stringify(testCase, null, 2);
 
+  // JSON branch only — the SDK branch's copy affordance lives inside
+  // EvalSourceCodeView's header (copies the full source, not just the path).
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    const text = isSdk ? testCase.sourceFile! : json;
+    const text = json;
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -102,39 +104,11 @@ export const CollapsibleTestCaseDefinition: React.FC<CollapsibleTestCaseDefiniti
       {open && (
         <div className="px-4 pb-3">
           {isSdk ? (
-            // SDK test: show the source path. We can't render the evaluate()
-            // function body because it's only available at runtime as a JS
-            // closure, but the path lets the user jump to it.
-            <div className="space-y-2">
-              <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider">
-                Source File
-              </div>
-              <div className="flex items-center gap-2 bg-card rounded border border-border px-3 py-2">
-                <FileCode2 size={12} className="text-muted-foreground shrink-0" />
-                <code className="text-[11px] font-mono break-all flex-1">
-                  {testCase.sourceFile}
-                </code>
-                <button
-                  type="button"
-                  onClick={handleCopy}
-                  className="p-1 rounded hover:bg-muted shrink-0"
-                  title="Copy path"
-                >
-                  {copied ? <Check size={11} className="text-green-600" /> : <Copy size={11} className="text-muted-foreground" />}
-                </button>
-              </div>
-              {testCase.sourceHash && (
-                <div className="text-[9px] text-muted-foreground font-mono">
-                  sha256: {testCase.sourceHash.slice(0, 16)}…
-                </div>
-              )}
-              {/* Full eval-file source, captured at import time — the
-                  `evaluate()` body itself still can't be shown (it's a JS
-                  closure at runtime), but the surrounding file — test()
-                  options, describe() structure, imports — is now
-                  persisted and rendered here as an IDE-style view. */}
-              <EvalSourceCodeView testCase={testCase} maxHeight="360px" />
-            </div>
+            // SDK test: EvalSourceCodeView IS the whole surface — its own
+            // header already shows the source path + language badge + line
+            // count + copy button, so the old standalone "Source File" row
+            // and sha256 line were redundant duplicates (owner feedback).
+            <EvalSourceCodeView testCase={testCase} maxHeight="360px" />
           ) : (
             // JSON test: full untruncated pretty-print, copyable.
             <div className="space-y-2">

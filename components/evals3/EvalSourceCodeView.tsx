@@ -102,7 +102,16 @@ export const EvalSourceCodeView: React.FC<EvalSourceCodeViewProps> = ({
 
   if (!testCase || !isCodeSdk) return null;
 
-  const fileName = testCase.sourceFileName || testCase.sourceFile || 'source file';
+  // Show the full relative path, not just the basename — this header is now
+  // the ONLY place the source path appears (the old standalone "Source
+  // File" row in CollapsibleTestCaseDefinition was removed as redundant),
+  // and `dist/wixqa.eval.js` is more useful than `wixqa.eval.js` when a
+  // repo has several eval dirs. Tooltip carries the sha256 drift hash the
+  // removed row used to show.
+  const fileName = testCase.sourceFile || testCase.sourceFileName || 'source file';
+  const headerTitle = testCase.sourceHash
+    ? `${testCase.sourceFile}\nsha256: ${testCase.sourceHash.slice(0, 16)}…`
+    : testCase.sourceFile;
 
   const handleCopy = async (e: React.MouseEvent) => {
     // The copy button sits next to (not inside) the toggle button, but keep
@@ -138,7 +147,7 @@ export const EvalSourceCodeView: React.FC<EvalSourceCodeViewProps> = ({
             ? <ChevronDown size={12} className="text-muted-foreground shrink-0" />
             : <ChevronRight size={12} className="text-muted-foreground shrink-0" />}
           <FileCode2 size={12} className="text-muted-foreground shrink-0" />
-          <span className="text-[11px] font-mono font-medium truncate flex-1" title={testCase.sourceFile}>
+          <span className="text-[11px] font-mono font-medium truncate flex-1" title={headerTitle}>
             {fileName}
           </span>
         </button>
