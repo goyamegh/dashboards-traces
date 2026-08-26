@@ -18,6 +18,7 @@ jest.mock('path', () => ({
   join: jest.fn((...args: string[]) => args.join('/')),
   resolve: jest.fn((p: string) => p),
   relative: jest.fn((_from: string, to: string) => to),
+  basename: jest.fn((p: string) => p.split('/').pop() || p),
 }));
 
 jest.mock('@/lib/testCaseValidation', () => ({
@@ -30,6 +31,10 @@ jest.mock('@/lib/debug', () => ({
 
 jest.mock('@/lib/testCases/loader', () => ({
   loadTestCasesFromModule: jest.fn(),
+  detectSourceLanguage: jest.fn((fileName: string) => {
+    const lower = fileName.toLowerCase();
+    return lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs') ? 'javascript' : 'typescript';
+  }),
 }));
 
 import * as fs from 'fs';
@@ -173,6 +178,45 @@ describe('resolveTestCaseSources - code-import', () => {
         initialPrompt: 'Analyze',
         sourceFile: '/abs/path/tests.eval.ts',
         sourceHash: 'sha256hash',
+      }),
+    ]);
+  });
+
+  // Eval-source IDE view feature: the loader's fileSource (whole-file text)
+  // must be forwarded as sourceCode on this import path too, not just the
+  // CLI's file-mode path (cli/commands/benchmark.ts) -- resolveCodeImport is
+  // a second, independent producer of upsert input for the same TestCase
+  // shape (used by the server-side code-import job type).
+  it('forwards sourceCode/sourceFileName/sourceLanguage from loader.fileSource to bulkUpsert', async () => {
+    const tc1 = makeTestCase('upserted-source-1');
+    mockLoadModule.mockResolvedValue({
+      testCases: [{
+        name: 'Test',
+        options: { prompt: 'Analyze', category: 'RCA', difficulty: 'Medium' },
+        evaluate: jest.fn(),
+        hash: 'sha256hash',
+      }],
+      filePath: '/abs/path/tests.eval.ts',
+      fileSource: "import { test } from '@opensearch-project/agent-health';\ntest('Test', () => {});\n",
+    });
+
+    (storage.testCases.bulkUpsert as jest.Mock).mockResolvedValue({
+      created: 1,
+      updated: 0,
+      unchanged: 0,
+      testCases: [tc1],
+    });
+
+    const sources: TestCaseSource[] = [
+      { type: 'code-import', filenames: ['/abs/path/tests.eval.ts'], testCaseIds: [] },
+    ];
+    await resolveTestCaseSources(sources, storage);
+
+    expect(storage.testCases.bulkUpsert).toHaveBeenCalledWith([
+      expect.objectContaining({
+        sourceCode: "import { test } from '@opensearch-project/agent-health';\ntest('Test', () => {});\n",
+        sourceFileName: 'tests.eval.ts',
+        sourceLanguage: 'typescript',
       }),
     ]);
   });

@@ -58,6 +58,7 @@ import { DEFAULT_CONFIG, getPreferredDefaultAgentKey } from '@/lib/constants';
 import { PREFS_KEYS } from '@/lib/preferences';
 import { ENV_CONFIG } from '@/lib/config';
 import { Markdown, hasRealMarkdown } from '@/components/ui/markdown';
+import { EvalSourceCodeView } from '@/components/evals3/EvalSourceCodeView';
 
 // Render a test-case prompt ("task definition"): as markdown when it actually
 // contains markdown (so headings / bullet lists indent instead of collapsing
@@ -467,6 +468,10 @@ export const TestCaseDetailPage: React.FC = () => {
                       </div>
                     </div>
                   )}
+                  {/* Eval source (code-SDK test cases only) -- full eval file
+                      as an IDE-style code view. Narrow panel, so cap the
+                      height a bit tighter than the full-width layout below. */}
+                  <EvalSourceCodeView testCase={testCase} maxHeight="320px" />
                 </div>
             </div>
 
@@ -698,6 +703,7 @@ export const TestCaseDetailPage: React.FC = () => {
                   </ul>
                 </div>
               )}
+              <EvalSourceCodeView testCase={testCase} maxHeight="600px" />
             </div>
             {/* Runs list */}
             <div className="px-4 pt-3 pb-1 flex items-center justify-between">

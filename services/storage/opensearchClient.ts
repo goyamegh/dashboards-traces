@@ -77,6 +77,9 @@ export interface StorageTestCase {
    *  layer was just dropping it on read. */
   sourceFile?: string;
   sourceHash?: string;
+  sourceCode?: string;
+  sourceFileName?: string;
+  sourceLanguage?: 'javascript' | 'typescript';
 }
 
 export interface StorageBenchmarkRunConfig {

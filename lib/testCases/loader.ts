@@ -24,6 +24,14 @@ export function isCodeFile(filename: string): boolean {
   return CODE_EXTENSIONS.some(ext => lower.endsWith(ext));
 }
 
+// Re-exported so CLI/server importers keep a single import path
+// (`@/lib/testCases/loader`) for both the loader and the language
+// detector, while the browser-side EvalSourceCodeView component imports
+// the same isomorphic implementation directly from `@/lib/utils` (this
+// module pulls in `fs`/`module`, which are Node-only and unsafe to bundle
+// into the browser).
+export { detectSourceLanguage } from '@/lib/utils.js';
+
 export function computeTestCaseHash(tc: CodeTestCase): string {
   const content = JSON.stringify({
     name: tc.name,
@@ -58,6 +66,15 @@ export interface LoadResult {
    */
   benchmarks: Map<string, string[]>;
   /**
+   * Raw text of the eval file, read once up front (before execution) for
+   * BOTH .js and .ts/.mjs paths. Persisted verbatim as `sourceCode` on each
+   * imported TestCase (see cli/commands/benchmark.ts) so the Test Case
+   * detail page can render the whole file as an IDE-style code view --
+   * without this we'd only have the parsed `initialPrompt`/`expectedOutcomes`
+   * fields, not the `evaluate()` body that produced them.
+   */
+  fileSource: string;
+  /**
    * All lifecycle hooks (`beforeEach`/`afterEach`/`beforeAll`/`afterAll`)
    * registered while loading this file. Empty when the file declares none.
    * The orchestrator filters by `(sourceFile, describePath)` at run time.
@@ -68,6 +85,13 @@ export interface LoadResult {
 export async function loadTestCasesFromModule(filePath: string): Promise<LoadResult> {
   const absPath = resolve(filePath);
 
+  // Read the raw file text up front, before any execution path below --
+  // both the .js (already needed its own read for the CJS wrapper) and the
+  // .ts/.mjs (dynamic `import()`, which never touches the raw text) paths
+  // reuse this single read so `fileSource` always reflects exactly what got
+  // executed.
+  const fileSource = readFileSync(absPath, 'utf-8');
+
   // Clear any prior registration for this file and set it as active
   clearRegistry(absPath);
   setActiveFile(absPath);
@@ -77,7 +101,7 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
   if (absPath.endsWith('.js')) {
     // For CJS .js files, execute in a fresh context with our test() function
     // injected. This avoids module caching issues across multiple loads.
-    const code = readFileSync(absPath, 'utf-8');
+    const code = fileSource;
     const fileDir = dirname(absPath);
     // NOTE: do not call require('module') here — this file is bundled as ESM
     // by esbuild for the server, and Dynamic require of built-ins is unsupported
@@ -194,5 +218,5 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
   // is a no-op in that case so existing tests are unaffected.
   const hooks = getRegisteredHooks(absPath);
 
-  return { testCases: loaded, filePath: absPath, benchmarks, hooks };
+  return { testCases: loaded, filePath: absPath, benchmarks, hooks, fileSource };
 }

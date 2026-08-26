@@ -110,6 +110,9 @@ function toTestCase(stored: StorageTestCase): TestCase {
     // test cases from JSON ones (CollapsibleTestCaseDefinition keys off these).
     sourceFile: stored.sourceFile,
     sourceHash: stored.sourceHash,
+    sourceCode: stored.sourceCode,
+    sourceFileName: stored.sourceFileName,
+    sourceLanguage: stored.sourceLanguage,
     isPromoted: stored.tags?.includes('promoted') ?? false,
     createdAt: stored.createdAt,
     updatedAt: stored.updatedAt,

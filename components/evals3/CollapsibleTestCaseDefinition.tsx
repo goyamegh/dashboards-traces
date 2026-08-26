@@ -14,9 +14,10 @@
  * Two shapes depending on provenance:
  *
  *   • SDK / code-imported tests (`testCase.sourceFile` set) — show the
- *     file path. We can't render the `evaluate` function body because
- *     it's a JS function reference at runtime, but the path is enough
- *     for the user to jump to the source in their editor.
+ *     file path plus the full eval-file source as an IDE-style code view
+ *     (EvalSourceCodeView). We still can't render the `evaluate` function
+ *     body in isolation (it's a JS closure at runtime), but the whole file
+ *     that defines it is captured at import time and rendered here.
  *
  *   • JSON tests (no sourceFile) — show the full TestCase object as
  *     pretty-printed JSON. **No truncation** — the whole point of
@@ -32,6 +33,7 @@ import React, { useState } from 'react';
 import { ChevronRight, ChevronDown, FileCode2, Braces, Copy, Check } from 'lucide-react';
 import { TestCase } from '@/types';
 import { Badge } from '@/components/ui/badge';
+import { EvalSourceCodeView } from '@/components/evals3/EvalSourceCodeView';
 
 interface CollapsibleTestCaseDefinitionProps {
   testCase: TestCase | null;
@@ -126,9 +128,12 @@ export const CollapsibleTestCaseDefinition: React.FC<CollapsibleTestCaseDefiniti
                   sha256: {testCase.sourceHash.slice(0, 16)}…
                 </div>
               )}
-              <div className="text-[10px] text-muted-foreground italic">
-                The <code className="font-mono">evaluate()</code> body lives in the source file above and isn't serializable from runtime state.
-              </div>
+              {/* Full eval-file source, captured at import time — the
+                  `evaluate()` body itself still can't be shown (it's a JS
+                  closure at runtime), but the surrounding file — test()
+                  options, describe() structure, imports — is now
+                  persisted and rendered here as an IDE-style view. */}
+              <EvalSourceCodeView testCase={testCase} maxHeight="360px" />
             </div>
           ) : (
             // JSON test: full untruncated pretty-print, copyable.
