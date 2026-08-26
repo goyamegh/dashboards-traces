@@ -62,6 +62,9 @@ export const BenchmarkRunDetailPage: React.FC = () => {
 
   // Flyout state
   const [flyoutResult, setFlyoutResult] = useState<TestCaseResult | null>(null);
+  // Full TestCase for the flyout (including sourceCode), fetched
+  // lazily when the flyout opens -- the bulk load above is summary-only.
+  const [flyoutTestCase, setFlyoutTestCase] = useState<TestCase | null>(null);
 
   const loadData = useCallback(async () => {
     if (!benchmarkId || !runId) return;
@@ -75,10 +78,14 @@ export const BenchmarkRunDetailPage: React.FC = () => {
       if (!bmRun) { navigate(`/evaluations/benchmarks/${benchmarkId}/runs`); return; }
       setRun(bmRun);
 
-      // Load test cases and reports for this run
+      // Load test cases and reports for this run. Summary fetch for test
+      // cases (no sourceCode/context/expectedOutcomes) -- every test case in
+      // a code-SDK file shares the SAME sourceCode, so a full fetch here
+      // would duplicate it once per row just to paint the results table.
+      // The flyout's full TestCase (sourceCode included) loads lazily below.
       const tcIds = Object.keys(bmRun.results || {});
       const [testCases, reports] = await Promise.all([
-        asyncTestCaseStorage.getByIds(tcIds),
+        asyncTestCaseStorage.getByIds(tcIds, { summary: true }),
         asyncRunStorage.getByBenchmarkRun(benchmarkId, runId),
       ]);
 
@@ -109,6 +116,18 @@ export const BenchmarkRunDetailPage: React.FC = () => {
   }, [benchmarkId, runId, navigate]);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Load the full test case (including sourceCode) when the flyout opens.
+  // Keyed on testCaseId so re-opening the same row doesn't re-fetch.
+  const flyoutTcId = flyoutResult?.testCaseId ?? null;
+  useEffect(() => {
+    if (!flyoutTcId) { setFlyoutTestCase(null); return; }
+    let cancelled = false;
+    asyncTestCaseStorage.getById(flyoutTcId)
+      .then(tc => { if (!cancelled) setFlyoutTestCase(tc); })
+      .catch(() => { if (!cancelled) setFlyoutTestCase(null); });
+    return () => { cancelled = true; };
+  }, [flyoutTcId]);
 
   // Stats
   const passCount = results.filter(r => r.status === 'passed').length;
@@ -311,7 +330,7 @@ export const BenchmarkRunDetailPage: React.FC = () => {
       {flyoutResult?.report && (
         <RunDetailsFlyout
           report={flyoutResult.report}
-          testCase={flyoutResult.testCase}
+          testCase={flyoutTestCase || flyoutResult.testCase}
           onClose={() => setFlyoutResult(null)}
         />
       )}

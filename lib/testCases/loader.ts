@@ -32,7 +32,7 @@ export function isCodeFile(filename: string): boolean {
 // into the browser).
 export { detectSourceLanguage } from '@/lib/utils.js';
 
-export function computeTestCaseHash(tc: CodeTestCase): string {
+export function computeTestCaseHash(tc: CodeTestCase, fileSource?: string): string {
   const content = JSON.stringify({
     name: tc.name,
     prompt: tc.options.prompt,
@@ -46,6 +46,15 @@ export function computeTestCaseHash(tc: CodeTestCase): string {
     // would never reach storage.
     expectedOutcomes: tc.options.expectedOutcomes,
     expectedTrajectory: tc.options.expectedTrajectory,
+    // Fold in the WHOLE file's raw text (optional -- omitted by callers that
+    // don't have it, e.g. existing unit tests exercising this function in
+    // isolation). Without this, editing ONLY the evaluate() body, a helper
+    // function, an import, or even just a comment would leave every
+    // options-derived field above unchanged, `sourceHash` would stay put,
+    // `bulkUpsert` would classify the row as unchanged, and the persisted
+    // `sourceCode` -- the entire point of the eval-source viewer -- would
+    // silently go stale relative to the real file on disk.
+    fileSource,
   });
   return createHash('sha256').update(content).digest('hex');
 }
@@ -87,9 +96,14 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
 
   // Read the raw file text up front, before any execution path below --
   // both the .js (already needed its own read for the CJS wrapper) and the
-  // .ts/.mjs (dynamic `import()`, which never touches the raw text) paths
-  // reuse this single read so `fileSource` always reflects exactly what got
-  // executed.
+  // .ts/.mjs (dynamic `import()`) paths reuse this single read. For .js this
+  // read IS the executed source (the CJS wrapper below runs this exact
+  // string). For .ts/.mjs, `import()` reads the file independently via
+  // Node's own module loader a few lines later -- in the extremely narrow
+  // window where the file is edited between this read and that import
+  // resolving, `fileSource` could theoretically diverge from what actually
+  // ran. That's an accepted, practically negligible risk (same file, same
+  // synchronous-ish call, no network hop) rather than a guarantee.
   const fileSource = readFileSync(absPath, 'utf-8');
 
   // Clear any prior registration for this file and set it as active
@@ -195,10 +209,13 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
     );
   }
 
-  // Compute per-test-case hash
+  // Compute per-test-case hash. Includes fileSource (see
+  // computeTestCaseHash) so ANY change to the file -- not just the
+  // options fields already tracked -- invalidates the hash and triggers a
+  // re-persist, keeping the stored sourceCode in sync with disk.
   const loaded: LoadedTestCase[] = testCases.map(tc => ({
     ...tc,
-    hash: computeTestCaseHash(tc),
+    hash: computeTestCaseHash(tc, fileSource),
   }));
 
   // Derive describe-group → test names mapping. Tests outside any
