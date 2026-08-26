@@ -84,16 +84,22 @@ module.exports = {
     // hooks/** and components/** are intentionally NOT globbed in wholesale —
     // most are React UI that this (node-environment) jest config can't
     // meaningfully instrument, and their coverage comes from the e2e/nyc
-    // pipeline (see .nycrc.json) instead. The two files below are opted in
+    // pipeline (see .nycrc.json) instead. The files below are opted in
     // individually because each now has a focused jsdom/RTL render-test suite
-    // that exercises the exact lines this PR's diff touches (codecov/patch
-    // #430 fix): ComparisonScoreboard's zero/non-zero delta branches and
-    // EvalRunsPage's view-mode colSpan ternaries. Neither file is large
-    // enough to meaningfully move the global threshold below (unlike e.g.
-    // components/codingAgents/CodingAgentsPage.tsx at ~3.3k lines, which
-    // stays excluded for that reason — see PR #219's codecov notes).
+    // that exercises the exact lines this PR's diff touches:
+    // - ComparisonScoreboard.tsx & EvalRunsPage.tsx (codecov/patch #430 fix):
+    //   ComparisonScoreboard's zero/non-zero delta branches and EvalRunsPage's
+    //   view-mode colSpan ternaries. Neither file is large enough to
+    //   meaningfully move the global threshold below (unlike e.g.
+    //   components/codingAgents/CodingAgentsPage.tsx at ~3.3k lines, which
+    //   stays excluded for that reason — see PR #219's codecov notes).
+    // - usePersistedState.ts (codecov/patch #415 fix): a plain hook with
+    //   100% line/functions coverage in its isolated unit suite, so it's safe
+    //   to fold its coverage into unit-test numbers rather than rely solely
+    //   on e2e coverage (was reporting 0% despite being thoroughly tested).
     'components/comparison/ComparisonScoreboard.tsx',
     'components/evals3/EvalRunsPage.tsx',
+    'hooks/usePersistedState.ts',
     '!**/__tests__/**',
     '!**/*.test.ts',
     '!**/dist/**',
