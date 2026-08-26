@@ -44,6 +44,7 @@ import type {
 } from '../types.js';
 import { STORAGE_INDEXES } from '../../middleware/dataSourceConfig.js';
 import { assertNotMigrating } from '../../services/migrationLock.js';
+import { describeOpenSearchError } from '../../services/opensearchClientFactory.js';
 
 // ============================================================================
 // Helpers
@@ -1336,7 +1337,11 @@ export class OpenSearchStorageModule implements IStorageModule {
         },
       };
     } catch (error: any) {
-      return { status: 'error', error: error.message };
+      // describeOpenSearchError() appends the HTTP status code so a 403 (stale/
+      // rotated SigV4 credentials) reads differently in the UI/logs than a 5xx
+      // (cluster-side failure) — this is the exact endpoint used to diagnose a
+      // wedged storage client.
+      return { status: 'error', error: describeOpenSearchError(error) };
     }
   }
 
