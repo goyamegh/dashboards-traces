@@ -4,8 +4,9 @@
  */
 
 import { Router, Request, Response } from 'express';
-import { EvaluationRun, TestCaseSource, TestCaseSnapshot } from '../../../types/index.js';
+import { BenchmarkRun, EvaluationRun, TestCaseSource, TestCaseSnapshot } from '../../../types/index.js';
 import { getStorageModule } from '../../adapters/index.js';
+import type { IStorageModule } from '../../adapters/types.js';
 import { resolveTestCaseSources } from '../../../services/sourceResolver.js';
 import {
   executeEvaluationRun,
@@ -44,6 +45,72 @@ export function computeResumableTestCaseIds(run: Pick<EvaluationRun, 'testCaseSn
  */
 export function isEvaluationRunActiveInThisProcess(runId: string): boolean {
   return activeCancellationTokens.has(runId);
+}
+
+/**
+ * Project a finished EvaluationRun into the embedded BenchmarkRun shape that
+ * `benchmark.runs` stores. Both the create route's success path and the
+ * resume route's completion path must produce byte-identical projections for
+ * the same run id, or the benchmark detail page / scoped comparison pool see
+ * different data depending on which path last completed the run.
+ */
+export function buildBenchmarkRunProjection(run: EvaluationRun, completedAt: string): BenchmarkRun {
+  return {
+    id: run.id,
+    name: run.name,
+    createdAt: run.createdAt,
+    completedAt,
+    status: run.status,
+    agentKey: run.agentKey,
+    modelId: run.modelId,
+    judgeModelId: run.judgeModelId,
+    results: run.results,
+    stats: run.stats,
+    ...(run.description ? { description: run.description } : {}),
+    ...(run.evaluatorId ? { evaluatorId: run.evaluatorId } : {}),
+    ...(run.headers ? { headers: run.headers } : {}),
+    ...(run.concurrency ? { concurrency: run.concurrency } : {}),
+    testCaseSnapshots: run.testCaseSnapshots,
+  } as BenchmarkRun;
+}
+
+/**
+ * Keep `benchmark.runs` (the embedded projection both the benchmark detail
+ * page and the scoped comparison pool read) in sync with a just-completed
+ * evaluation run, without ever producing two entries for the same run id.
+ *
+ * Bug this guards against (found in production, hit twice): the create
+ * route's success path calls this on every completion, but until this fix
+ * the resume route's completion path never did — so a run whose *original*
+ * create-route execution crashed before reaching its success branch (no
+ * `addRun` ever happened) stayed invisible in `benchmark.runs` forever, even
+ * after a later `POST .../resume` finished it successfully. `GET
+ * /api/storage/evaluation-runs/:id` and the Evaluation Runs page read the
+ * evaluation-run document directly, so they looked fine — only the
+ * benchmark-scoped views were missing the run.
+ *
+ * Idempotent by run id: if `benchmark.runs` already has an entry for this run
+ * (e.g. the create route's `addRun` DID land, and the run was resumed again
+ * later for some other reason — cancellation, a second interruption, etc.),
+ * this REPLACES that entry via `updateRun` instead of appending a duplicate
+ * via `addRun`.
+ */
+export async function linkCompletedRunToBenchmark(
+  storage: IStorageModule,
+  benchmarkId: string,
+  benchmarkRun: BenchmarkRun
+): Promise<void> {
+  const benchmark = await storage.benchmarks.getById(benchmarkId);
+  if (!benchmark) {
+    throw new Error(`Benchmark not found while linking completed run: ${benchmarkId}`);
+  }
+  const alreadyLinked = (benchmark.runs || []).some((r) => r.id === benchmarkRun.id);
+  const linked = alreadyLinked
+    ? await storage.benchmarks.updateRun(benchmarkId, benchmarkRun.id, benchmarkRun)
+    : await storage.benchmarks.addRun(benchmarkId, benchmarkRun);
+  if (!linked) {
+    throw new Error(`Failed to link completed run to benchmark: ${benchmarkId}`);
+  }
 }
 
 /** Heartbeat cadence while a run executes (liveness signal on shared storage). */
@@ -489,12 +556,23 @@ router.post('/api/storage/evaluation-runs/:id/resume', async (req: Request, res:
       const stats = completedRun.stats
         ? { ...completedRun.stats, total: run.testCaseSnapshots?.length || Object.keys(completedRun.results || {}).length }
         : undefined;
+      const completedAt = new Date().toISOString();
       const updatedRun = await storage.evaluationRuns.update(id, {
         status: finalStatus,
         stats,
-        completedAt: new Date().toISOString(),
+        completedAt,
         results: completedRun.results,
       });
+
+      // Keep the benchmark's embedded run history in sync, same as the
+      // create route's success path — otherwise a run whose original create
+      // execution crashed before ever linking (no benchmarkId success path
+      // reached) stays permanently invisible on the benchmark detail page /
+      // scoped comparison pool even after a later resume completes it.
+      if (run.benchmarkId) {
+        const benchmarkRun = buildBenchmarkRunProjection(updatedRun, completedAt);
+        await linkCompletedRunToBenchmark(storage, run.benchmarkId, benchmarkRun);
+      }
 
       sendSSE(res, 'completed', updatedRun);
     } catch (error: any) {
