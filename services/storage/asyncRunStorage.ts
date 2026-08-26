@@ -290,10 +290,33 @@ class AsyncRunStorage {
    */
   async getReportsByIds(reportIds: string[]): Promise<Record<string, EvaluationReport>> {
     if (reportIds.length === 0) return {};
-    const stored = await opensearchRuns.getByIds(reportIds);
+    // Chunk into batches so the request stays well under practical
+    // URL/header-size limits. A multi-run comparison over a large benchmark
+    // can ask for thousands of ids in one call — with 4 runs x 400 reports
+    // the single unchunked GET /api/storage/runs?ids=<all> URL blew past the
+    // server's header/URL size limit and failed with HTTP 431 (Request
+    // Header Fields Too Large), which the comparison page's loader treated
+    // as "no reports" and rendered every cell as "Not run".
+    //
+    // Chunked + fired in parallel with a modest fan-out (same pattern as
+    // getReportSummariesByIds's chunking below, and computeBatchMetrics's
+    // Promise.all-over-chunks in server/services/metricsService.ts).
+    //
+    // Deliberately no per-chunk try/catch here: a genuine failure (network
+    // error, 431, 5xx) must propagate to the caller so it can surface a real
+    // error instead of quietly returning a partial/empty map that renders
+    // every cell as "Not run".
+    const CHUNK_SIZE = 100;
+    const chunks: string[][] = [];
+    for (let i = 0; i < reportIds.length; i += CHUNK_SIZE) {
+      chunks.push(reportIds.slice(i, i + CHUNK_SIZE));
+    }
+    const chunkResults = await Promise.all(chunks.map(chunk => opensearchRuns.getByIds(chunk)));
     const out: Record<string, EvaluationReport> = {};
-    for (const s of stored) {
-      out[s.id] = toTestCaseRun(s);
+    for (const stored of chunkResults) {
+      for (const s of stored) {
+        out[s.id] = toTestCaseRun(s);
+      }
     }
     return out;
   }
