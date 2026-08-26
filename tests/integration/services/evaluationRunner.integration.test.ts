@@ -571,6 +571,18 @@ describe('executeEvaluationRun', () => {
 
   describe('trace polling integration', () => {
     it('triggers trace polling when report has metricsStatus pending', async () => {
+      // The polling gate requires a TRACE-MODE agent (agentConfig.useTraces)
+      // — only trace-mode agents legitimately produce 'pending'. A stale
+      // placeholder 'pending' on a non-trace agent must NOT trigger polling
+      // (that was the 10-minute trace-detour bug).
+      mockLoadConfigSync.mockReturnValue({
+        agents: [
+          { key: 'test-agent', name: 'Test Agent', endpoint: 'http://localhost:3000/agent', connectorType: 'mock', useTraces: true },
+        ],
+        models: {
+          'test-model': { model_id: 'anthropic.claude-test', display_name: 'Test Model', context_window: 200000, max_output_tokens: 4096 },
+        },
+      });
       mockRunEvaluationWithConnector.mockResolvedValue({
         id: 'report-tc-1',
         testCaseId: 'tc-1',
