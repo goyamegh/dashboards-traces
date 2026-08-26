@@ -878,7 +878,7 @@ async function waitForTracesAndJudge(
         // The poller stops without a verdict when the report reached a
         // terminal state through another path — resolve or this hangs the
         // run's test-case worker forever.
-        onStopped: () => resolve(),
+        onStopped: () => resolve(null),
         onTracesFound: async (_spans, updatedReport) => {
           try {
             // Span-built trajectory (hook or default conversion — issue #320).

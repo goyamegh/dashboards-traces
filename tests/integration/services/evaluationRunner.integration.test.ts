@@ -641,6 +641,16 @@ describe('executeEvaluationRun', () => {
         'tc-4': 'failed',
       };
 
+      // The polling gate requires a TRACE-MODE agent (agentConfig.useTraces).
+      mockLoadConfigSync.mockReturnValue({
+        agents: [
+          { key: 'test-agent', name: 'Test Agent', endpoint: 'http://localhost:3000/agent', connectorType: 'mock', useTraces: true },
+        ],
+        models: {
+          'test-model': { model_id: 'anthropic.claude-test', display_name: 'Test Model', context_window: 200000, max_output_tokens: 4096 },
+        },
+      });
+
       mockRunEvaluationWithConnector.mockImplementation((_agentConfig: any, _model: any, testCase: any) => Promise.resolve({
         id: `report-${testCase.id}`,
         testCaseId: testCase.id,
@@ -688,6 +698,16 @@ describe('executeEvaluationRun', () => {
       // The run must not crash, the result must carry NO passFailStatus, and
       // the canonical bucketing must call it 'errored' rather than a silent
       // pass.
+      // The polling gate requires a TRACE-MODE agent (agentConfig.useTraces).
+      mockLoadConfigSync.mockReturnValue({
+        agents: [
+          { key: 'test-agent', name: 'Test Agent', endpoint: 'http://localhost:3000/agent', connectorType: 'mock', useTraces: true },
+        ],
+        models: {
+          'test-model': { model_id: 'anthropic.claude-test', display_name: 'Test Model', context_window: 200000, max_output_tokens: 4096 },
+        },
+      });
+
       mockRunEvaluationWithConnector.mockResolvedValue({
         id: 'report-tc-1',
         testCaseId: 'tc-1',
@@ -719,6 +739,16 @@ describe('executeEvaluationRun', () => {
       // Covers waitForTracesAndJudge's onError callback: trace polling itself
       // fails (e.g. traces never arrive / poller error) before the judge is
       // ever called.
+      // The polling gate requires a TRACE-MODE agent (agentConfig.useTraces).
+      mockLoadConfigSync.mockReturnValue({
+        agents: [
+          { key: 'test-agent', name: 'Test Agent', endpoint: 'http://localhost:3000/agent', connectorType: 'mock', useTraces: true },
+        ],
+        models: {
+          'test-model': { model_id: 'anthropic.claude-test', display_name: 'Test Model', context_window: 200000, max_output_tokens: 4096 },
+        },
+      });
+
       mockRunEvaluationWithConnector.mockResolvedValue({
         id: 'report-tc-1',
         testCaseId: 'tc-1',
