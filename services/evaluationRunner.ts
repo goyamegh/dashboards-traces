@@ -641,6 +641,11 @@ export async function executeEvaluationRun(
           // (the connector path predates the cross-surface parity work),
           // so we stamp it onto the doc here.
           (report as any).evaluatorId = (report as any).evaluatorId ?? run.evaluatorId;
+          // Stamp the eval test_case span's traceId (Strategy A correlator).
+          // Agents that adopt the propagated traceparent (REST via header,
+          // pi via TRACEPARENT env) emit their spans under this exact
+          // traceId, giving the trace poller a precise, window-free match.
+          (report as any).traceId = (report as any).traceId ?? caseSpan?.spanContext().traceId;
           // Same fallback for judgeModelId — the connector return path
           // doesn't carry it, but `run.judgeModelId` is the cx input so
           // we stamp it onto the report on save.
@@ -663,12 +668,18 @@ export async function executeEvaluationRun(
 
           // If trace mode (metricsStatus: 'pending'), poll for traces and run judge inline.
           // Skipped for deterministic runs (matcher session decided the verdict already).
+          // Guarded on agentConfig.useTraces: only trace-mode agents legitimately
+          // produce 'pending' — a stale placeholder 'pending' surviving a save-merge
+          // must never send an eagerly-judged report into trace polling that
+          // clobbers its verdict. No runId requirement: the poller correlates
+          // via sessionId/service-window hints when Strategy B is unavailable
+          // (REST agents never get a runId; Claude Code spans carry only session.id).
           if (
             !hasDeterministicEval &&
-            savedReport.metricsStatus === 'pending' &&
-            savedReport.runId
+            agentConfig?.useTraces &&
+            savedReport.metricsStatus === 'pending'
           ) {
-            debug('EvaluationRunner', `[${testCaseId}] Trace mode: polling for traces (runId=${savedReport.runId})`);
+            debug('EvaluationRunner', `[${testCaseId}] Trace mode: polling for traces (runId=${savedReport.runId ?? 'none — window/session correlation'})`);
             await waitForTracesAndJudge(savedReport, testCase, storageModule, agentConfig);
           }
 
@@ -854,8 +865,12 @@ async function waitForTracesAndJudge(
   return new Promise<void>((resolve) => {
     tracePollingManager.startPolling(
       report.id,
-      report.runId!,
+      report.runId,
       {
+        // The poller stops without a verdict when the report reached a
+        // terminal state through another path — resolve or this hangs the
+        // run's test-case worker forever.
+        onStopped: () => resolve(),
         onTracesFound: async (_spans, updatedReport) => {
           try {
             // Span-built trajectory (hook or default conversion — issue #320).
