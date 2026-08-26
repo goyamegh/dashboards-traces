@@ -49,10 +49,12 @@ export function isEvaluationRunActiveInThisProcess(runId: string): boolean {
 
 /**
  * Project a finished EvaluationRun into the embedded BenchmarkRun shape that
- * `benchmark.runs` stores. Both the create route's success path and the
- * resume route's completion path must produce byte-identical projections for
- * the same run id, or the benchmark detail page / scoped comparison pool see
- * different data depending on which path last completed the run.
+ * `benchmark.runs` stores. Used today by the resume completion path only —
+ * the create route's success path has its own separate (not yet unified)
+ * copy of this projection, added by the still-open, unmerged PR #399. Once
+ * that lands, the create route should switch to this helper so both paths
+ * can't drift again; until then this is NOT a single source of truth, just
+ * the resume path's own copy kept honest by tests.
  */
 export function buildBenchmarkRunProjection(run: EvaluationRun, completedAt: string): BenchmarkRun {
   return {
@@ -66,10 +68,14 @@ export function buildBenchmarkRunProjection(run: EvaluationRun, completedAt: str
     judgeModelId: run.judgeModelId,
     results: run.results,
     stats: run.stats,
-    ...(run.description ? { description: run.description } : {}),
-    ...(run.evaluatorId ? { evaluatorId: run.evaluatorId } : {}),
-    ...(run.headers ? { headers: run.headers } : {}),
-    ...(run.concurrency ? { concurrency: run.concurrency } : {}),
+    // Explicit `!= null` (not truthy) checks: a truthy check would silently
+    // drop legitimately-meaningful falsy values, e.g. `concurrency: 0`
+    // (sequential execution, a real configured value) or an intentionally
+    // empty `description`/`evaluatorId` string (codex_review finding).
+    ...(run.description != null ? { description: run.description } : {}),
+    ...(run.evaluatorId != null ? { evaluatorId: run.evaluatorId } : {}),
+    ...(run.headers != null ? { headers: run.headers } : {}),
+    ...(run.concurrency != null ? { concurrency: run.concurrency } : {}),
     testCaseSnapshots: run.testCaseSnapshots,
   } as BenchmarkRun;
 }
@@ -77,23 +83,43 @@ export function buildBenchmarkRunProjection(run: EvaluationRun, completedAt: str
 /**
  * Keep `benchmark.runs` (the embedded projection both the benchmark detail
  * page and the scoped comparison pool read) in sync with a just-completed
- * evaluation run, without ever producing two entries for the same run id.
+ * evaluation run, without ever producing two entries for the same run id in
+ * the common case.
  *
  * Bug this guards against (found in production, hit twice): the create
- * route's success path calls this on every completion, but until this fix
- * the resume route's completion path never did — so a run whose *original*
- * create-route execution crashed before reaching its success branch (no
- * `addRun` ever happened) stayed invisible in `benchmark.runs` forever, even
- * after a later `POST .../resume` finished it successfully. `GET
- * /api/storage/evaluation-runs/:id` and the Evaluation Runs page read the
- * evaluation-run document directly, so they looked fine — only the
- * benchmark-scoped views were missing the run.
+ * route's success path calls its own equivalent of this on every completion,
+ * but until this fix the resume route's completion path never did — so a run
+ * whose *original* create-route execution crashed before reaching its
+ * success branch (no `addRun` ever happened) stayed invisible in
+ * `benchmark.runs` forever, even after a later `POST .../resume` finished it
+ * successfully. `GET /api/storage/evaluation-runs/:id` and the Evaluation
+ * Runs page read the evaluation-run document directly, so they looked fine —
+ * only the benchmark-scoped views were missing the run.
  *
- * Idempotent by run id: if `benchmark.runs` already has an entry for this run
- * (e.g. the create route's `addRun` DID land, and the run was resumed again
- * later for some other reason — cancellation, a second interruption, etc.),
- * this REPLACES that entry via `updateRun` instead of appending a duplicate
- * via `addRun`.
+ * Idempotent by run id in the common case: if `benchmark.runs` already has
+ * an entry for this run (e.g. the create route's `addRun` DID land, and the
+ * run was resumed again later for some other reason — cancellation, a second
+ * interruption, etc.), this REPLACES that entry via `updateRun` instead of
+ * appending a duplicate via `addRun`.
+ *
+ * KNOWN LIMITATION (codex_review, not fixed here — see PR discussion): this
+ * is read-then-branch-then-write, not an atomic storage-level upsert. Two
+ * TRULY concurrent completions of the *same* run id (e.g. this resume path
+ * racing the create route's own linking of the same id) could both observe
+ * "not yet linked" and both call `addRun`, producing a duplicate that a
+ * later `updateRun` call can't repair (it only replaces ONE matching entry).
+ * In practice this window is narrow: same-process double resume is already
+ * blocked by `activeCancellationTokens`, and cross-process double resume of
+ * the same run is already blocked by the `resumeToken` claim above — so the
+ * only way to hit this is the *original* create-route execution finishing
+ * its OWN linking at the exact moment another server independently decides
+ * the run is stale enough to resume, which requires a live heartbeat gap
+ * bigger than `EVALUATION_RUN_STALE_AFTER_MS` (default 1h) while the process
+ * is actually still alive and about to succeed — pathological, not
+ * impossible. Closing this fully requires an atomic upsert-by-id primitive
+ * in the storage adapters (OpenSearch + file), which is a bigger, separate
+ * change touching both the create and resume paths uniformly; tracked as a
+ * follow-up rather than bundled into this bug fix.
  */
 export async function linkCompletedRunToBenchmark(
   storage: IStorageModule,
@@ -569,9 +595,31 @@ router.post('/api/storage/evaluation-runs/:id/resume', async (req: Request, res:
       // execution crashed before ever linking (no benchmarkId success path
       // reached) stays permanently invisible on the benchmark detail page /
       // scoped comparison pool even after a later resume completes it.
+      //
+      // Deliberately its OWN try/catch, NOT allowed to bubble into the outer
+      // catch below: the evaluation run itself (test cases executed, reports
+      // persisted, `updatedRun` already written as completed above) is the
+      // source of truth and has already genuinely succeeded at this point.
+      // Letting a secondary bookkeeping failure (e.g. the benchmark was
+      // deleted mid-resume) rewrite `status` to 'failed' would corrupt that
+      // canonical record and falsely report a real, successful evaluation as
+      // failed — strictly worse than the bug this fix addresses (codex_review
+      // finding: don't let denormalized-view bookkeeping lie about the
+      // primary record). Best-effort: log loudly and keep going; the run
+      // stays 'completed' with results intact even if this link failed, and
+      // the benchmark-linkage gap it leaves behind is exactly the same,
+      // already-visible-and-tracked symptom this PR fixes (re-resuming later,
+      // if the benchmark comes back, repairs it — see idempotent upsert
+      // above).
       if (run.benchmarkId) {
-        const benchmarkRun = buildBenchmarkRunProjection(updatedRun, completedAt);
-        await linkCompletedRunToBenchmark(storage, run.benchmarkId, benchmarkRun);
+        try {
+          const benchmarkRun = buildBenchmarkRunProjection(updatedRun, completedAt);
+          await linkCompletedRunToBenchmark(storage, run.benchmarkId, benchmarkRun);
+        } catch (linkError: any) {
+          console.error(
+            `[StorageAPI] Resumed run ${id} completed successfully but failed to link into benchmark ${run.benchmarkId}: ${linkError.message}`
+          );
+        }
       }
 
       sendSSE(res, 'completed', updatedRun);
