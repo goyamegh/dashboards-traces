@@ -12,7 +12,7 @@ import {
   createCancellationToken,
   CancellationToken,
 } from '../../../services/evaluationRunner.js';
-import { promoteRunToBenchmark } from '../../../services/benchmarkPromotion.js';
+import { promoteRunToBenchmark, linkTestCaseIdsToBenchmark } from '../../../services/benchmarkPromotion.js';
 import { loadConfigSync } from '../../../lib/config/index.js';
 import { getCustomAgents } from '../../services/customAgentStore.js';
 import { resolveAgentModel } from '../../../lib/resolveAgentModel.js';
@@ -130,6 +130,21 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       version: (tc as any).version || 1,
       name: tc.name,
     }));
+
+    // Link the resolved test case ids into the referenced benchmark's
+    // testCaseIds immediately — independent of whether the run itself
+    // succeeds. Without this, a code-import/file-import run against a
+    // fresh `benchmarkId` (created with testCaseIds: [] by the CLI) leaves
+    // the benchmark a permanent shell: its testCaseIds never grows even
+    // though run-first EvaluationRun docs keep referencing it. Best-effort:
+    // a failure here must not abort the run.
+    if (benchmarkId && snapshots.length > 0) {
+      try {
+        await linkTestCaseIdsToBenchmark(benchmarkId, snapshots.map(s => s.id), storage);
+      } catch (linkError: any) {
+        console.error(`[StorageAPI] Failed to link test cases into benchmark ${benchmarkId}:`, linkError.message);
+      }
+    }
 
     // Create the evaluation run document
     const runId = `eval-run-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
