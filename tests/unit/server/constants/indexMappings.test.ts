@@ -162,14 +162,16 @@ describe('indexMappings', () => {
       expect(props.results).toEqual({ type: 'object', enabled: false });
     });
 
-    it('should not disable docType/testCaseSnapshots at the top level (still queried via term/nested queries)', () => {
+    it('should not disable docType/testCaseSnapshots at the top level (still queried via term queries)', () => {
       const mappings = getIndexMappings();
       const key = Object.keys(mappings).find((k) => k.includes('experiments'))!;
       const props = mappings[key].mappings.properties;
 
       // These are deliberately left to dynamic mapping: OpenSearchEvaluationRunOperations.list()
-      // filters on docType.keyword/benchmarkId.keyword/etc. and nested testCaseSnapshots.id.keyword,
-      // so they must stay real, queryable fields, not become part of an opaque enabled:false blob.
+      // filters on docType.keyword/benchmarkId.keyword/etc. and testCaseSnapshots.id.keyword (a
+      // plain term query — testCaseSnapshots is a dynamically-inferred `object` array, NOT
+      // `nested`, so they must stay real, queryable fields, not become part of an opaque
+      // enabled:false blob.
       expect(props.docType).toBeUndefined();
       expect(props.testCaseSnapshots).toBeUndefined();
     });
