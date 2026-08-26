@@ -19,7 +19,7 @@ import { ComparisonSearch } from './ComparisonSearch';
 import { UseCaseComparisonTable } from './UseCaseComparisonTable';
 import { RunPairSelector } from './RunPairSelector';
 import { ComparisonScoreboard } from './ComparisonScoreboard';
-import { ComparisonInsightsBand } from './ComparisonInsightsBand';
+import { ComparisonInsightsBand, type CategorySelection } from './ComparisonInsightsBand';
 import { bucketRow, extractRowCategory, type AgreementBucket } from '@/lib/comparisonInsights';
 import { ComparisonDeepDive, DeepDiveRunMeta } from './ComparisonDeepDive';
 import { FailureClusterPanel } from './FailureClusterPanel';
@@ -104,9 +104,10 @@ export const ComparisonPage: React.FC = () => {
   const [labelFilter, setLabelFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   // Insights-band filters: agreement bucket (all-pass / all-fail / split) and
-  // category (parsed from the test-case name tag). Both narrow the table.
+  // category (the raw-category set behind a matrix column, so the `(other)`
+  // rollup filters exactly the rows its cell counted). Both narrow the table.
   const [agreementFilter, setAgreementFilter] = useState<AgreementBucket | null>(null);
-  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<CategorySelection | null>(null);
   const [testCaseFilter, setTestCaseFilter] = useState<string | null>(null);
   // All standalone evaluation runs (for the run-search universe).
   const [allEvalRuns, setAllEvalRuns] = useState<EvaluationRun[]>([]);
@@ -479,23 +480,33 @@ export const ComparisonPage: React.FC = () => {
 
   const rowStatusCounts = useMemo(() => countRowsByStatus(allComparisonRows, referenceRunId), [allComparisonRows, referenceRunId]);
 
+  // Insights-band filters are defined relative to the CURRENT run selection
+  // (an agreement bucket over runs A,B means something else over A,B,C — and
+  // the band disappears entirely below 2 runs while its filters would keep
+  // narrowing the table invisibly). Reset them whenever the selection changes.
+  const selectionKey = selectedRunIds.join(',');
+  useEffect(() => {
+    setAgreementFilter(null);
+    setCategoryFilter(null);
+  }, [selectionKey]);
+
   const filteredRows = useMemo((): TestCaseComparisonRow[] => {
     let rows = allComparisonRows;
     if (labelFilter !== 'all') rows = rows.filter(r => (r.labels || []).includes(labelFilter));
     if (testCaseFilter) rows = rows.filter(r => r.testCaseId === testCaseFilter);
     rows = filterRowsByStatus(rows, statusFilter, selectedRunIds);
-    // Insights-band filters. Agreement narrows to one bucket; when active it
-    // bypasses the 'differences' default below (an agreement bucket IS a
-    // difference statement — stacking both would hide all-pass/all-fail rows).
+    // Insights-band filters compose with everything else. (Activating an
+    // agreement chip explicitly flips the row-status pill to 'all' in the
+    // handler below — a visible state change, never a silent bypass.)
     if (agreementFilter) {
       rows = rows.filter(row => bucketRow(row, selectedRunIds) === agreementFilter);
     }
     if (categoryFilter) {
-      rows = rows.filter(row => extractRowCategory(row) === categoryFilter);
+      rows = rows.filter(row => categoryFilter.categories.includes(extractRowCategory(row)));
     }
-    if (!agreementFilter && rowStatusFilter === 'differences') {
+    if (rowStatusFilter === 'differences') {
       rows = rows.filter(row => calculateRowStatus(row, referenceRunId) !== 'neutral');
-    } else if (!agreementFilter && rowStatusFilter !== 'all') {
+    } else if (rowStatusFilter !== 'all') {
       rows = rows.filter(row => calculateRowStatus(row, referenceRunId) === rowStatusFilter);
     }
     if (clusterCaseFilter) {
@@ -776,7 +787,14 @@ export const ComparisonPage: React.FC = () => {
                   return run ? getAgentName(run.agentKey) || run.name : id;
                 }}
                 agreementFilter={agreementFilter}
-                onAgreementFilter={setAgreementFilter}
+                onAgreementFilter={(bucket) => {
+                  setAgreementFilter(bucket);
+                  // The default 'differences' pill hides all-pass/all-fail rows,
+                  // which would empty the Both-pass / Both-fail buckets. Flip
+                  // the pill to 'Show all' VISIBLY instead of overriding it
+                  // silently; the user can re-narrow afterwards.
+                  if (bucket) setRowStatusFilter('all');
+                }}
                 categoryFilter={categoryFilter}
                 onCategoryFilter={setCategoryFilter}
               />

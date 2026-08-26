@@ -37,6 +37,16 @@ import {
 // Same palette as AggregateMetricsChart so run identity is consistent.
 const RUN_COLORS = ['#3b82f6', '#015aa3', '#f59e0b', '#8b5cf6', '#ef4444', '#06b6d4'];
 
+/**
+ * Category selection: `label` is the displayed column; `categories` is the
+ * exact raw-category set that column counted (union for the `(other)`
+ * rollup), so the table filter matches the cell math one-to-one.
+ */
+export interface CategorySelection {
+  label: string;
+  categories: string[];
+}
+
 export interface ComparisonInsightsBandProps {
   rows: TestCaseComparisonRow[];
   /** Selected run ids, in scoreboard order (#1, #2, …). */
@@ -45,8 +55,8 @@ export interface ComparisonInsightsBandProps {
   getRunName: (runId: string) => string;
   agreementFilter: AgreementBucket | null;
   onAgreementFilter: (bucket: AgreementBucket | null) => void;
-  categoryFilter: string | null;
-  onCategoryFilter: (category: string | null) => void;
+  categoryFilter: CategorySelection | null;
+  onCategoryFilter: (selection: CategorySelection | null) => void;
 }
 
 /** Heatmap cell background from a pass-rate percent (works on light + dark). */
@@ -133,8 +143,8 @@ export const ComparisonInsightsBand: React.FC<ComparisonInsightsBandProps> = ({
         )}
         <span className="text-[11px] text-muted-foreground ml-1">
           {covered} covered by every run
-          {partition.uncovered.length > 0 && ` · ${partition.uncovered.length} partial`}
-          {' · click to filter the table'}
+          {partition.uncovered.length > 0 && ` · ${partition.uncovered.length} without a verdict everywhere`}
+          {' · counts are for all shared cases · click to filter the table'}
         </span>
       </div>
 
@@ -170,11 +180,17 @@ export const ComparisonInsightsBand: React.FC<ComparisonInsightsBandProps> = ({
                     {breakdown.categories.map(cat => (
                       <th key={cat} className="px-1 py-0.5 font-normal">
                         <button
-                          onClick={() => onCategoryFilter(categoryFilter === cat ? null : cat)}
+                          onClick={() =>
+                            onCategoryFilter(
+                              categoryFilter?.label === cat
+                                ? null
+                                : { label: cat, categories: breakdown.members[cat] || [cat] }
+                            )
+                          }
                           className={cn(
                             'px-1.5 rounded hover:bg-muted transition-colors',
                             weakness?.category === cat && 'text-red-500 font-semibold',
-                            categoryFilter === cat && 'bg-primary/20 text-primary'
+                            categoryFilter?.label === cat && 'bg-primary/20 text-primary'
                           )}
                           title={`Filter the table to ${cat} cases`}
                         >
@@ -207,19 +223,23 @@ export const ComparisonInsightsBand: React.FC<ComparisonInsightsBandProps> = ({
                           );
                         }
                         const pct = Math.round((cell.passed / cell.total) * 100);
+                        // Cells are deliberately NOT interactive: a cell is a
+                        // run × category slice, but the only filter we can
+                        // apply is category-wide — a clickable cell would
+                        // advertise more precision than it delivers. Column
+                        // headers carry the filter.
                         return (
                           <td key={cat} className="px-1 py-0.5">
-                            <button
-                              onClick={() => onCategoryFilter(categoryFilter === cat ? null : cat)}
-                              className="w-full min-w-[52px] text-center rounded px-1.5 py-0.5 transition-transform hover:scale-105"
+                            <div
+                              className="w-full min-w-[52px] text-center rounded px-1.5 py-0.5"
                               style={{ background: rateBackground(pct) }}
-                              title={`${cell.passed}/${cell.total} passed — click to filter`}
+                              title={`${cell.passed}/${cell.total} passed`}
                             >
                               <span className="font-semibold text-foreground">{pct}%</span>{' '}
                               <span className="text-muted-foreground text-[10px]">
                                 {cell.passed}/{cell.total}
                               </span>
-                            </button>
+                            </div>
                           </td>
                         );
                       })}

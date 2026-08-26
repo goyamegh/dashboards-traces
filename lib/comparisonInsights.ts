@@ -35,12 +35,22 @@ function isPass(r: { passFailStatus?: string | null } | undefined): boolean {
   return r?.passFailStatus === 'passed';
 }
 
-/** True when the run produced *some* verdict we can bucket (pass OR fail). */
+/**
+ * True when the run produced *some verdict* we can bucket (pass OR fail).
+ * Three shapes count:
+ *   - a judge verdict (`passFailStatus` passed/failed);
+ *   - a run-level failure (`status: 'failed'` — the agent errored/crashed on
+ *     this case, which IS a fail verdict for agreement purposes).
+ * NOT a verdict (→ uncovered): missing results, and evaluator-errored
+ * reports (`errored: true`, `passFailStatus` cleared — issue #242 keeps
+ * "the judge broke" distinct from "the agent failed"; bucketing them as
+ * fails would poison All-fail with infrastructure noise).
+ */
 function hasVerdict(r: { status?: string; passFailStatus?: string | null; errored?: boolean } | undefined): boolean {
   if (!r || r.status === 'missing') return false;
-  // Errored evaluations and failed-status runs count as non-pass verdicts —
-  // they represent "did not pass", which is what agreement cares about.
-  return true;
+  if (r.passFailStatus === 'passed' || r.passFailStatus === 'failed') return true;
+  if (r.errored) return false;
+  return r.status === 'failed';
 }
 
 /**
@@ -79,10 +89,14 @@ export function bucketRow(row: TestCaseComparisonRow, runIds: string[]): Agreeme
   return 'split';
 }
 
-/** Category label used for rows with no recognizable category. */
-export const UNCATEGORIZED = 'uncategorized';
+/**
+ * Synthetic bucket names. Parentheses are deliberately outside the
+ * name-tag charset (`[\w-]`), so a real benchmark category can never
+ * collide with these rollup buckets.
+ */
+export const UNCATEGORIZED = '(uncategorized)';
 /** Rollup bucket for categories with too few cases to be meaningful. */
-export const OTHER_CATEGORY = 'other';
+export const OTHER_CATEGORY = '(other)';
 
 /**
  * Extract a row's category.
@@ -115,6 +129,13 @@ export interface CategoryBreakdown {
   perRun: Record<string, Record<string, CategoryCell>>;
   /** Overall case count per category (across rows, not per run). */
   totals: Record<string, number>;
+  /**
+   * Raw categories each displayed column represents. Identity for real
+   * categories; the union of rolled-up raw categories for `(other)`.
+   * Filtering MUST use this mapping so clicking `(other)` matches exactly
+   * the rows its cell counted.
+   */
+  members: Record<string, string[]>;
 }
 
 /**
@@ -141,6 +162,12 @@ export function buildCategoryBreakdown(
   const keep = new Set(Object.keys(rawTotals).filter(c => rawTotals[c] >= minCases));
   const resolve = (cat: string) => (keep.has(cat) ? cat : OTHER_CATEGORY);
 
+  const members: Record<string, string[]> = {};
+  for (const raw of Object.keys(rawTotals)) {
+    const col = resolve(raw);
+    (members[col] = members[col] || []).push(raw);
+  }
+
   const perRun: Record<string, Record<string, CategoryCell>> = {};
   const totals: Record<string, number> = {};
   for (const row of rows) {
@@ -162,7 +189,7 @@ export function buildCategoryBreakdown(
     return (totals[b] || 0) - (totals[a] || 0);
   });
 
-  return { categories, perRun, totals };
+  return { categories, perRun, totals, members };
 }
 
 export interface SharedWeakness {
@@ -173,8 +200,13 @@ export interface SharedWeakness {
   allFailShare: number;
 }
 
-/** A category only counts as each run's weakest within this tolerance (pp). */
-const WEAKEST_TOLERANCE_PP = 5;
+/**
+ * Tie tolerance (pp) for the "weakest" claim. Kept at rounding-error level
+ * on purpose: the callout says "weakest category", so another category may
+ * not be meaningfully lower for any run — a 5pp allowance here would make
+ * the copy dishonest.
+ */
+const WEAKEST_TOLERANCE_PP = 1;
 /** Don't flag a shared weakness unless the mean rate is actually weak. */
 const WEAKNESS_MAX_MEAN_RATE = 75;
 

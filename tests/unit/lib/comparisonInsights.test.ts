@@ -62,15 +62,31 @@ describe('partitionByAgreement', () => {
     expect(p.uncovered.map(r => r.testCaseId)).toEqual(['t5']);
   });
 
-  it('treats errored evaluations as non-pass verdicts (not uncovered)', () => {
+  it('treats evaluator-errored results as NO verdict (uncovered), not as fails (#242 semantics)', () => {
+    // "The judge broke" must not be conflated with "the agent failed" —
+    // otherwise infrastructure noise poisons the All-fail bucket.
     const rows = [
       row('t1', 't1', { [RUN_A]: 'errored', [RUN_B]: 'failed' }),
       row('t2', 't2', { [RUN_A]: 'errored', [RUN_B]: 'passed' }),
     ];
     const p = partitionByAgreement(rows, [RUN_A, RUN_B]);
-    expect(p.allFail.map(r => r.testCaseId)).toEqual(['t1']);
-    expect(p.split.map(r => r.testCaseId)).toEqual(['t2']);
-    expect(p.uncovered).toHaveLength(0);
+    expect(p.uncovered.map(r => r.testCaseId)).toEqual(['t1', 't2']);
+    expect(p.allFail).toHaveLength(0);
+    expect(p.split).toHaveLength(0);
+  });
+
+  it('treats a run-level failure (status failed, no judge verdict) as a fail verdict', () => {
+    const r1: TestCaseComparisonRow = row('t1', 't1', { [RUN_B]: 'passed' });
+    r1.results[RUN_A] = { status: 'failed' };
+    const p = partitionByAgreement([r1], [RUN_A, RUN_B]);
+    expect(p.split.map(r => r.testCaseId)).toEqual(['t1']);
+  });
+
+  it('treats a completed result with NO verdict at all as uncovered', () => {
+    const r1: TestCaseComparisonRow = row('t1', 't1', { [RUN_B]: 'passed' });
+    r1.results[RUN_A] = { status: 'completed' }; // no passFailStatus, not errored
+    const p = partitionByAgreement([r1], [RUN_A, RUN_B]);
+    expect(p.uncovered.map(r => r.testCaseId)).toEqual(['t1']);
   });
 
   it('generalizes to 3 runs: split = any mix of pass and fail', () => {
@@ -117,13 +133,26 @@ describe('buildCategoryBreakdown', () => {
     row('m1', 'q [misc] 1', { [RUN_A]: 'passed', [RUN_B]: 'passed' }),
   ];
 
-  it('computes per-run rates and rolls small categories into other', () => {
+  it('computes per-run rates and rolls small categories into (other)', () => {
     const b = buildCategoryBreakdown(rows, [RUN_A, RUN_B], 5);
     expect(b.categories).toEqual(['basic', 'semantic', OTHER_CATEGORY]);
     expect(b.perRun[RUN_A].basic).toEqual({ passed: 4, total: 5 });
     expect(b.perRun[RUN_A].semantic).toEqual({ passed: 2, total: 5 });
     expect(b.perRun[RUN_B].semantic).toEqual({ passed: 3, total: 5 });
     expect(b.perRun[RUN_A][OTHER_CATEGORY]).toEqual({ passed: 1, total: 1 });
+  });
+
+  it('exposes members so the (other) rollup is filterable with the same semantics it was computed with', () => {
+    const b = buildCategoryBreakdown(rows, [RUN_A, RUN_B], 5);
+    expect(b.members.basic).toEqual(['basic']);
+    expect(b.members[OTHER_CATEGORY]).toEqual(['misc']);
+  });
+
+  it('a real [other] name tag cannot collide with the synthetic (other) bucket', () => {
+    // extractRowCategory only matches [\w-]+ — parentheses in the sentinel
+    // names are outside that charset by construction.
+    expect(extractRowCategory(row('t', 'q [other] real category', {}))).toBe('other');
+    expect('other').not.toBe(OTHER_CATEGORY);
   });
 
   it('skips runs with missing verdicts in the cell totals', () => {
@@ -171,6 +200,15 @@ describe('detectSharedWeakness', () => {
   it('returns null when runs disagree about their weakest category', () => {
     // semantic weak for A only; basic weak for B only
     const w = scenario({ a: 5, b: 9 }, { a: 9, b: 5 });
+    expect(w).toBeNull();
+  });
+
+  it('returns null when another category is meaningfully lower for one run (honest "weakest" claim)', () => {
+    // For B, basic (40%) is far below semantic (60%) — semantic is NOT B's
+    // weakest, so no shared-weakness claim even though semantic has the
+    // lower mean? (means: semantic 60, basic 65) — semantic IS mean-weakest
+    // but fails the per-run weakest check.
+    const w = scenario({ a: 6, b: 6 }, { a: 9, b: 4 });
     expect(w).toBeNull();
   });
 
