@@ -305,6 +305,29 @@ describe('AsyncRunStorage', () => {
       ids.forEach(id => expect(result[id]).toBeDefined());
     });
 
+    // A very large comparison (many runs x a large benchmark) can produce far
+    // more than a handful of chunks. Fan-out must stay capped — firing all
+    // chunks at once would turn a single oversized request into an unbounded
+    // burst of parallel ones, just moving the stampede risk elsewhere.
+    it('never runs more than a modest number of chunk requests concurrently', async () => {
+      const ids = Array.from({ length: 1600 }, (_, i) => `r-${i}`); // 16 chunks of 100
+      let inFlight = 0;
+      let maxInFlight = 0;
+      mockOsRuns.getByIds.mockImplementation(async (chunk: string[]) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        inFlight--;
+        return chunk.map(id => createMockStorageRun(id));
+      });
+
+      await asyncRunStorage.getReportsByIds(ids);
+
+      expect(mockOsRuns.getByIds).toHaveBeenCalledTimes(16);
+      expect(maxInFlight).toBeGreaterThan(0);
+      expect(maxInFlight).toBeLessThanOrEqual(8);
+    });
+
     // A URL-length regression guard: at CHUNK_SIZE=100, even a 1600-id
     // request (the exact 4-run x 400-report shape that triggered the 431)
     // never issues a single request whose id list could blow the header

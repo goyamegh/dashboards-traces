@@ -89,6 +89,11 @@ export const ComparisonPage: React.FC = () => {
   // "Not run" (the pre-fix symptom when getReportsByIds' single unchunked
   // request blew past the server's URL/header size limit).
   const [reportsError, setReportsError] = useState<string | null>(null);
+  // Guards against a stale in-flight report fetch clobbering newer state —
+  // e.g. the user swaps the selected runs while a slow/failing request for
+  // the PREVIOUS selection is still in flight; that response (success or
+  // error) must be discarded, not applied on top of the new selection.
+  const reportsRequestIdRef = useRef(0);
   const [isLoading, setIsLoading] = useState(true);
   const [traceMetricsMap, setTraceMetricsMap] = useState<Map<string, TraceMetrics>>(new Map());
 
@@ -281,24 +286,28 @@ export const ComparisonPage: React.FC = () => {
       });
       const missing = Array.from(reportIds).filter(id => !reports[id]);
       if (missing.length === 0) return;
+      const requestId = ++reportsRequestIdRef.current;
       setReportsLoading(true);
       setReportsError(null);
       try {
-        // Batched + chunked request (server fans out in parallel per chunk)
-        // instead of N per-report round-trips — cells populate in a small,
-        // bounded number of OpenSearch hops regardless of how many reports
-        // are being compared.
+        // Batched request chunked into at most a handful of bounded-size
+        // hops (never one unbounded request) instead of N per-report
+        // round-trips — see asyncRunStorage.getReportsByIds for why.
         const fetched = await asyncRunStorage.getReportsByIds(missing);
+        if (requestId !== reportsRequestIdRef.current) return; // superseded — discard
         if (Object.keys(fetched).length > 0) {
           setReports(prev => ({ ...prev, ...fetched }));
         }
       } catch (err) {
+        if (requestId !== reportsRequestIdRef.current) return; // superseded — discard
         // A real failure must be visible — never let it fall through as an
-        // empty result that renders every cell as "Not run".
+        // empty result that renders every cell as "Not run". Log the real
+        // error for diagnosis; keep the user-facing message stable (avoid
+        // leaking transport-specific text like a raw "431 ..." into the UI).
         console.error('[ComparisonPage] Failed to load reports:', err);
-        setReportsError(err instanceof Error ? err.message : 'Failed to load test case reports.');
+        setReportsError('Failed to load test case reports. Please retry.');
       } finally {
-        setReportsLoading(false);
+        if (requestId === reportsRequestIdRef.current) setReportsLoading(false);
       }
     };
     loadReports();
