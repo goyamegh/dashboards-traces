@@ -93,6 +93,31 @@ describe('extractMessagesFromSpans — Claude Code tool.output events', () => {
     expect(results[0].content).toBe('from event');
   });
 
+  it('dedupes even when the tool.execution span sorts BEFORE the tool span (clock skew / out-of-order spans)', () => {
+    const spans: Span[] = [
+      // Earlier startTime than its own `tool` call — an unusual but possible
+      // ordering. Dedup must be symmetric so whichever span is processed
+      // first "wins", regardless of which shape that happens to be.
+      span({
+        spanId: 'e1',
+        name: 'tool.execution',
+        startTime: '2026-01-01T00:00:00.000Z',
+        attributes: { 'service.name': 'claude-code', tool_name: 'Bash', tool_use_id: 'tu1', 'gen_ai.tool.output': 'from execution attrs' },
+      }),
+      span({
+        spanId: 't1',
+        name: 'tool',
+        startTime: '2026-01-01T00:00:00.500Z',
+        attributes: { 'service.name': 'claude-code', tool_name: 'Bash', tool_use_id: 'tu1' },
+        events: [{ name: 'tool.output', time: '2026-01-01T00:00:01.000Z', attributes: { output: 'from event' } }],
+      }),
+    ];
+    const messages = extractMessagesFromSpans(spans, 'claude-code');
+    const results = messages.filter(m => m.role === 'tool_result');
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe('from execution attrs'); // execution processed first (earlier startTime), wins
+  });
+
   it('still emits from tool.execution attrs when its sibling tool span has no tool.output event', () => {
     const spans: Span[] = [
       span({

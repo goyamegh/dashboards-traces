@@ -138,12 +138,18 @@ function claudeNativeTrajectory(spans: Span[]): TrajectoryStep[] {
 
       // Some Claude Code tool spans carry the result inline as a `tool.output`
       // span event instead of a separate `tool.execution` span — surface it as
-      // a tool_result so it isn't silently dropped from the trajectory.
+      // a tool_result so it isn't silently dropped from the trajectory. Guard
+      // against the (unusual, but possible under clock skew) case where the
+      // sibling `tool.execution` span was already PROCESSED first (i.e. it
+      // sorted before this `tool` span) and already emitted a result for the
+      // same tool_use_id — the dedup Set is checked/marked symmetrically by
+      // both branches so whichever one runs first "wins" and the other skips.
       const toolOutputEvent = (s.events || []).find(e => e.name === 'tool.output');
       const eventOutput = toolOutputEvent?.attributes?.['output'] || toolOutputEvent?.attributes?.['result'];
-      if (eventOutput) {
-        const id = a['tool_use_id'] || a['gen_ai.tool.call.id'];
-        if (id) resultEmittedForToolUseId.add(String(id));
+      const toolUseId = a['tool_use_id'] || a['gen_ai.tool.call.id'];
+      const alreadyEmittedForThisId = toolUseId != null && resultEmittedForToolUseId.has(String(toolUseId));
+      if (eventOutput && !alreadyEmittedForThisId) {
+        if (toolUseId != null) resultEmittedForToolUseId.add(String(toolUseId));
         const eventTs = toolOutputEvent?.time ? new Date(toolOutputEvent.time).getTime() : NaN;
         steps.push({
           ...base,
@@ -164,6 +170,7 @@ function claudeNativeTrajectory(spans: Span[]): TrajectoryStep[] {
       if (id && resultEmittedForToolUseId.has(String(id))) {
         // Already emitted from the sibling `tool` span's tool.output event — skip duplicate.
       } else {
+        if (id) resultEmittedForToolUseId.add(String(id));
         steps.push({
           ...base,
           type: 'tool_result',

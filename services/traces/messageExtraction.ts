@@ -123,13 +123,19 @@ function extractClaudeCodeMessages(
       });
     }
 
-    // tool.output event on the tool span (Claude Code emits output here)
+    // tool.output event on the tool span (Claude Code emits output here).
+    // Dedup is symmetric with the tool.execution branch below: whichever one
+    // is processed first (normally this one, but a sibling tool.execution
+    // span could sort first under clock skew) marks the tool_use_id, and the
+    // other skips — so a tool call with both result shapes present never
+    // produces two tool_result messages regardless of span order.
     const toolOutputEvent = events.find(e => e.name === 'tool.output');
     if (toolOutputEvent) {
       const output = toolOutputEvent.attributes?.['output'] ||
         toolOutputEvent.attributes?.['result'] || '';
-      if (output) {
-        const toolUseId = attrs['tool_use_id'] || attrs['gen_ai.tool.call.id'];
+      const toolUseId = attrs['tool_use_id'] || attrs['gen_ai.tool.call.id'];
+      const alreadyEmitted = toolUseId != null && resultEmittedForToolUseId.has(String(toolUseId));
+      if (output && !alreadyEmitted) {
         if (toolUseId) resultEmittedForToolUseId.add(String(toolUseId));
         messages.push({
           id: `${span.spanId}-tool-output-ev`,
@@ -172,6 +178,7 @@ function extractClaudeCodeMessages(
     const alreadyEmitted = execToolUseId != null && resultEmittedForToolUseId.has(String(execToolUseId));
     const output = attrs['gen_ai.tool.output'] || attrs['tool.output'] || attrs['output'];
     if (output && !alreadyEmitted && !events.some(e => e.name === 'tool_result')) {
+      if (execToolUseId != null) resultEmittedForToolUseId.add(String(execToolUseId));
       messages.push({
         id: `${span.spanId}-tool-output`,
         timestamp: span.endTime,

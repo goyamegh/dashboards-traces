@@ -313,6 +313,25 @@ describe('Claude Code native (attribute-based) spans', () => {
     expect(results[0].content).toBe('from event'); // event-based result wins, execution's is skipped
   });
 
+  it('dedupes even when the tool.execution span sorts BEFORE the tool span (clock skew / out-of-order spans)', () => {
+    const spans: Span[] = [
+      // tool.execution has an earlier startTime than its own `tool` call —
+      // an unusual but possible ordering (clock skew across processes). The
+      // dedup Set must be checked/marked symmetrically by both branches so
+      // whichever one is processed first "wins", regardless of which span
+      // shape that happens to be.
+      ccSpan('e1', 'tool.execution', { tool_use_id: 'tu1', success: true, 'gen_ai.tool.output': 'from execution attrs' }, '2026-01-01T00:00:00.000Z'),
+      {
+        ...ccSpan('t1', 'tool', { tool_name: 'Bash', tool_use_id: 'tu1' }, '2026-01-01T00:00:00.500Z'),
+        events: [{ name: 'tool.output', time: '2026-01-01T00:00:01.000Z', attributes: { output: 'from event' } }],
+      },
+    ];
+    const traj = spansToTrajectory(spans);
+    const results = traj.filter(t => t.type === 'tool_result');
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe('from execution attrs'); // execution processed first (earlier startTime), wins
+  });
+
   it('still emits from tool.execution when its sibling tool span has no tool.output event', () => {
     const spans: Span[] = [
       ccSpan('t1', 'tool', { tool_name: 'Bash', tool_use_id: 'tu1' }, '2026-01-01T00:00:00.000Z'),
