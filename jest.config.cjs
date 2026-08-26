@@ -76,6 +76,17 @@ module.exports = {
     'lib/**/*.ts',
     'cli/**/*.ts',
     'types/**/*.ts',
+    // hooks/** and components/** are intentionally NOT globbed in wholesale —
+    // most are React UI that this (node-environment) jest config can't
+    // meaningfully instrument, and their coverage comes from the e2e/nyc
+    // pipeline (see .nycrc.json) instead. usePersistedState.ts is a plain
+    // hook with a full jsdom-based unit suite (tests/unit/hooks/) that
+    // exercises 100% of its lines/functions today, so it's safe (and
+    // accurate) to fold its coverage into the unit-test numbers rather than
+    // rely solely on e2e coverage for a pure-logic file (#415 patch-coverage
+    // fix — codecov was reporting 0% for this file's new branch because it
+    // wasn't instrumented here at all, despite being thoroughly unit tested).
+    'hooks/usePersistedState.ts',
     '!**/__tests__/**',
     '!**/*.test.ts',
     '!**/dist/**',
