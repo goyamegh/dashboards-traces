@@ -58,6 +58,11 @@ test.describe('Sidebar hover-open', () => {
     await page.getByLabel('Collapse sidebar').click();
     await expect(zone).toHaveCSS('width', '64px');
 
+    // Move the mouse off the rail so this stays a pure keyboard-only
+    // scenario — clicking the collapse button above moved the real cursor
+    // onto the rail, and a keyboard user wouldn't have it resting there.
+    await page.mouse.move(700, 400);
+
     // Focusing a link inside the collapsed rail opens the full sidebar
     // immediately (no hover-intent delay needed for keyboard users).
     const overviewLink = page.locator('[data-testid="nav-overview"]');
@@ -71,6 +76,56 @@ test.describe('Sidebar hover-open', () => {
 
     // Moving focus away entirely collapses it back to the rail.
     await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await expect(sidebar).toHaveCSS('width', '64px');
+  });
+
+  test('mouse-leave does not collapse the sidebar while a keyboard user still has focus inside (mixed modality)', async ({ page }) => {
+    await page.goto('/settings');
+    const zone = page.locator('[data-testid="sidebar-hover-zone"]');
+    const sidebar = page.locator('[data-testid="sidebar"]');
+
+    await page.getByLabel('Collapse sidebar').click();
+    await expect(zone).toHaveCSS('width', '64px');
+
+    // Open via mouse hover, then move keyboard focus onto a link inside —
+    // now both the pointer and focus are "in" the zone.
+    await zone.hover();
+    await expect(sidebar).toHaveCSS('width', '180px');
+    await page.locator('[data-testid="nav-overview"]').focus();
+
+    // Mouse leaves, but focus is still inside — must NOT collapse (a naive
+    // mouseleave timer with no focus check would close it out from under
+    // the focused link after the 250ms grace).
+    await page.mouse.move(700, 400);
+    await page.waitForTimeout(400);
+    await expect(sidebar).toHaveCSS('width', '180px');
+
+    // Moving focus away too now collapses it.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await expect(sidebar).toHaveCSS('width', '64px');
+  });
+
+  test('blur does not collapse the sidebar while the mouse is still hovering it (mixed modality)', async ({ page }) => {
+    await page.goto('/settings');
+    const zone = page.locator('[data-testid="sidebar-hover-zone"]');
+    const sidebar = page.locator('[data-testid="sidebar"]');
+
+    await page.getByLabel('Collapse sidebar').click();
+    await expect(zone).toHaveCSS('width', '64px');
+
+    // Open via mouse hover, then focus a link inside without moving the mouse.
+    await zone.hover();
+    await expect(sidebar).toHaveCSS('width', '180px');
+    await page.locator('[data-testid="nav-overview"]').focus();
+
+    // Blur the focused link WITHOUT moving the mouse away — the mouse still
+    // owns the open state (no fresh mouseenter will ever fire since the
+    // cursor never moved), so it must stay open.
+    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    await expect(sidebar).toHaveCSS('width', '180px');
+
+    // Actually moving the mouse away now collapses it.
+    await page.mouse.move(700, 400);
     await expect(sidebar).toHaveCSS('width', '64px');
   });
 

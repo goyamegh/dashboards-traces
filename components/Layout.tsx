@@ -106,6 +106,20 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [isHoverExpanded, setIsHoverExpanded] = useState(false);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const hoverZoneRef = useRef<HTMLDivElement>(null);
+  // Tracks whether the pointer is currently over the hover zone, independent
+  // of focus — lets the blur handler know the mouse still "owns" the open
+  // state (so it doesn't collapse under a stationary cursor).
+  const isMouseOverRef = useRef(false);
+  // Tracks whether OUR OWN onFocus handler opened the overlay for a genuine
+  // keyboard-focus reason (set only when `isCollapsed` was already true at
+  // focus time, i.e. it actually drove an open). Deliberately NOT derived
+  // from raw `document.activeElement` containment: the collapse/expand
+  // toggle button is the same DOM node across renders (React reuses it —
+  // same element type/position in the ternary), so it keeps native DOM focus
+  // after a mouse *click* on it even though no keyboard interaction happened
+  // — containment alone would wrongly treat that residual click-focus as
+  // "keyboard is holding this open" and block the mouse-leave collapse.
+  const isKeyboardOpenRef = useRef(false);
   useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); }, []);
   useEffect(() => { setIsHoverExpanded(false); }, [isCollapsed]);
   const collapsed = isCollapsed && !isHoverExpanded;
@@ -165,17 +179,33 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           style={{ width: isCollapsed ? '64px' : '180px' }}
           data-testid="sidebar-hover-zone"
           onMouseEnter={() => {
+            isMouseOverRef.current = true;
             if (!isCollapsed) return;
             if (hoverTimer.current) clearTimeout(hoverTimer.current);
             hoverTimer.current = setTimeout(() => setIsHoverExpanded(true), 150);
           }}
           onMouseLeave={() => {
+            isMouseOverRef.current = false;
             if (hoverTimer.current) clearTimeout(hoverTimer.current);
             if (!isCollapsed) return;
-            hoverTimer.current = setTimeout(() => setIsHoverExpanded(false), 250);
+            hoverTimer.current = setTimeout(() => {
+              // A keyboard user may still hold it open via focus (mouse left
+              // but Tab hasn't) — don't collapse the overlay out from under
+              // them. `isKeyboardOpenRef` (set only by our own onFocus below,
+              // gated on isCollapsed) intentionally does NOT fire for the
+              // collapse/expand toggle button retaining native DOM focus
+              // after a mouse click on it — that button is the same DOM node
+              // across renders (React reuses it: same element type/position
+              // in the ternary), so raw focus-containment alone would
+              // wrongly treat residual click-focus as "keyboard is holding
+              // this open".
+              if (isKeyboardOpenRef.current) return;
+              setIsHoverExpanded(false);
+            }, 250);
           }}
           onFocus={() => {
             if (!isCollapsed) return;
+            isKeyboardOpenRef.current = true;
             if (hoverTimer.current) clearTimeout(hoverTimer.current);
             setIsHoverExpanded(true);
           }}
@@ -183,6 +213,11 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
             if (!isCollapsed) return;
             const next = e.relatedTarget as Node | null;
             if (next && hoverZoneRef.current?.contains(next)) return;
+            isKeyboardOpenRef.current = false;
+            // The mouse may still be hovering the zone (e.g. focus moved out
+            // via a non-Tab path while the cursor never moved) — mouse
+            // ownership of the open state continues until it actually leaves.
+            if (isMouseOverRef.current) return;
             if (hoverTimer.current) clearTimeout(hoverTimer.current);
             setIsHoverExpanded(false);
           }}
@@ -197,8 +232,8 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           left: 0,
           height: '100%',
           zIndex: isHoverExpanded ? 50 : undefined,
-          background: 'hsl(var(--background))',
-          borderRight: '1px solid hsl(var(--border))',
+          background: isDarkMode ? 'hsl(var(--background))' : '#FFFFFF',
+          borderRight: isDarkMode ? '1px solid #343741' : '1px solid #D3DAE6',
           boxShadow: isHoverExpanded
             ? '0px 12px 40px rgba(0, 0, 0, 0.45), 0px 0px 12px rgba(0, 0, 0, 0.15)'
             : '0px 0px 12px rgba(0, 0, 0, 0.05), 0px 0px 4px rgba(0, 0, 0, 0.05), 0px 0px 2px rgba(0, 0, 0, 0.05)',
