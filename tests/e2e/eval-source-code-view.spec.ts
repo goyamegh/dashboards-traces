@@ -81,9 +81,18 @@ test.describe('Test Case Detail — Eval source code view', () => {
       const codeView = page.getByTestId('eval-source-code-view');
       await expect(codeView).toBeVisible();
 
-      // Filename header + language badge.
+      // Filename header + language badge are visible even while collapsed.
       await expect(codeView).toContainText('rca-outage.eval.ts');
       await expect(codeView).toContainText('TypeScript');
+
+      // COLLAPSED BY DEFAULT: the code body must not render until the
+      // header toggle is clicked (matches the pre-existing collapsible
+      // Test Case Definition behavior).
+      await expect(page.getByTestId('eval-source-code-body')).toHaveCount(0);
+      const toggle = page.getByTestId('eval-source-toggle');
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      await toggle.click();
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true');
 
       // Line-number gutter: CODE_SOURCE has 6 lines, so the gutter's last
       // rendered number must be 6 and it must contain every number 1..6
@@ -132,6 +141,7 @@ test.describe('Test Case Detail — Eval source code view', () => {
       await page.goto(`/evaluations/test-cases/${tc.id}`);
       const codeView = page.getByTestId('eval-source-code-view');
       await expect(codeView).toBeVisible();
+      await page.getByTestId('eval-source-toggle').click();
       await expect(codeView).toContainText(/source not captured at import/i);
       // No code body / line-number gutter when there's nothing to render.
       await expect(page.getByTestId('eval-source-code-body')).toHaveCount(0);

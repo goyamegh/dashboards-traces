@@ -32,6 +32,11 @@ import type { TestCase } from '@/types';
 
 const h = React.createElement;
 
+/** Expand the collapsed-by-default panel via its header toggle. */
+function expandPanel() {
+  fireEvent.click(screen.getByTestId('eval-source-toggle'));
+}
+
 function baseTestCase(overrides: Partial<TestCase> = {}): TestCase {
   return {
     id: 'tc-1',
@@ -65,6 +70,7 @@ describe('EvalSourceCodeView — render conditions', () => {
   it('renders a "source not captured" placeholder for a code-SDK test case with no sourceCode', () => {
     const tc = baseTestCase({ sourceFile: 'evals/legacy.eval.js', sourceHash: 'abc123' });
     render(h(EvalSourceCodeView, { testCase: tc }));
+    expandPanel();
     expect(screen.getByText(/source not captured at import/i)).toBeTruthy();
     expect(screen.getAllByText('evals/legacy.eval.js').length).toBeGreaterThan(0);
     // No code body / line-number gutter when there's nothing to show.
@@ -80,9 +86,52 @@ describe('EvalSourceCodeView — render conditions', () => {
     });
     render(h(EvalSourceCodeView, { testCase: tc }));
     expect(screen.getByTestId('eval-source-code-view')).toBeTruthy();
-    expect(screen.getByTestId('eval-source-code-body')).toBeTruthy();
+    // Collapsed by default: header (filename/badge) visible, code body NOT.
     expect(screen.getByText('rca.eval.ts')).toBeTruthy();
     expect(screen.getByText('TypeScript')).toBeTruthy();
+    expect(screen.queryByTestId('eval-source-code-body')).toBeNull();
+    expect(screen.getByTestId('eval-source-toggle').getAttribute('aria-expanded')).toBe('false');
+    // Expanding reveals the full code body.
+    expandPanel();
+    expect(screen.getByTestId('eval-source-code-body')).toBeTruthy();
+    expect(screen.getByTestId('eval-source-toggle').getAttribute('aria-expanded')).toBe('true');
+  });
+});
+
+describe('EvalSourceCodeView — collapse/expand', () => {
+  it('starts expanded when defaultOpen is passed', () => {
+    const tc = baseTestCase({
+      sourceFile: 'evals/open.eval.js',
+      sourceCode: 'const x = 1;',
+    });
+    render(h(EvalSourceCodeView, { testCase: tc, defaultOpen: true }));
+    expect(screen.getByTestId('eval-source-code-body')).toBeTruthy();
+  });
+
+  it('toggles closed again on a second header click', () => {
+    const tc = baseTestCase({
+      sourceFile: 'evals/toggle.eval.js',
+      sourceCode: 'const x = 1;',
+    });
+    render(h(EvalSourceCodeView, { testCase: tc }));
+    expandPanel();
+    expect(screen.getByTestId('eval-source-code-body')).toBeTruthy();
+    expandPanel(); // second click collapses
+    expect(screen.queryByTestId('eval-source-code-body')).toBeNull();
+  });
+
+  it('copy button works while collapsed (header is always visible)', async () => {
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
+    const sourceCode = 'const collapsedCopy = true;';
+    const tc = baseTestCase({ sourceFile: 'evals/cc.eval.js', sourceCode });
+    render(h(EvalSourceCodeView, { testCase: tc }));
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: /copy source/i }));
+      await Promise.resolve();
+    });
+    expect(writeText).toHaveBeenCalledWith(sourceCode);
   });
 });
 
@@ -95,6 +144,7 @@ describe('EvalSourceCodeView — line numbers', () => {
       sourceCode,
     });
     render(h(EvalSourceCodeView, { testCase: tc }));
+    expandPanel();
     const gutter = screen.getByTestId('eval-source-line-numbers');
     expect(gutter.textContent).toBe('1\n2\n3');
   });
@@ -105,6 +155,7 @@ describe('EvalSourceCodeView — line numbers', () => {
       sourceCode: 'test("a", () => {});',
     });
     render(h(EvalSourceCodeView, { testCase: tc }));
+    expandPanel();
     expect(screen.getByTestId('eval-source-line-numbers').textContent).toBe('1');
   });
 });
@@ -117,6 +168,7 @@ describe('EvalSourceCodeView — syntax highlighting', () => {
       sourceCode: "const x: number = 1;\nfunction f() { return x; }\n",
     });
     render(h(EvalSourceCodeView, { testCase: tc }));
+    expandPanel();
     const body = screen.getByTestId('eval-source-code-body');
     const keywordTokens = within(body).getAllByText((_text, el) =>
       !!el?.classList.contains('token') && el.classList.contains('keyword')
