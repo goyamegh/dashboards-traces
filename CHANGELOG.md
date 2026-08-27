@@ -9,6 +9,8 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-27
+
 ### Added
 - **Comparison page: agreement + category insights band** ([components/comparison/ComparisonInsightsBand.tsx](components/comparison/ComparisonInsightsBand.tsx), [lib/comparisonInsights.ts](lib/comparisonInsights.ts), [components/comparison/ComparisonPage.tsx](components/comparison/ComparisonPage.tsx)): a deterministic band between the scoreboard and Table Compare that answers "where do these runs agree, and what is weak for everyone" without an LLM call. (1) **Agreement chips** — All/Both pass, All/Both fail, Split counts across the selected runs (N-run generalized); each chip filters the table to its bucket. (2) A **collapsible (open by default) category × run pass-rate matrix**, parsed from the bracketed tag benchmarks embed in test-case names (`qst_0011 [basic] …`), with small categories rolled into `other` and click-to-filter cells. (3) A **shared-weakness callout** when one category is the weakest for every run — separating "benchmark/corpus gap" from "agent choice" (e.g. `semantic` at 60–67% across all agents on a RAG benchmark). Unit: [tests/unit/lib/comparisonInsights.test.ts](tests/unit/lib/comparisonInsights.test.ts); e2e: [tests/e2e/comparison-insights-band.spec.ts](tests/e2e/comparison-insights-band.spec.ts).
 
