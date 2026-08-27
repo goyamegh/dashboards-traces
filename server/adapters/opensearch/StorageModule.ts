@@ -44,6 +44,7 @@ import type {
 } from '../types.js';
 import { STORAGE_INDEXES } from '../../middleware/dataSourceConfig.js';
 import { assertNotMigrating } from '../../services/migrationLock.js';
+import { describeOpenSearchError } from '../../services/opensearchClientFactory.js';
 
 // ============================================================================
 // Helpers
@@ -1245,11 +1246,18 @@ class OpenSearchEvaluationRunOperations implements IEvaluationRunOperations {
     if (options?.agentKey) must.push({ term: { 'agentKey.keyword': options.agentKey } });
     if (options?.status) must.push({ term: { 'status.keyword': options.status } });
     if (options?.trigger) must.push({ term: { 'trigger.keyword': options.trigger } });
+    // NOTE: `testCaseSnapshots` on EvaluationRun docs is a plain dynamically-
+    // mapped `object` array (see indexMappings.ts — it's intentionally left
+    // out of the explicit top-level mapping since it's a bounded 3-property
+    // shape regardless of array length, not a growth vector), NOT `nested`.
+    // A `nested` query against a non-nested field 400s with
+    // "query_shard_exception: nested object under path [testCaseSnapshots] is
+    // not of nested type" — verified against a real OpenSearch 2.17.0
+    // instance. A plain `term` on the array's flattened `.keyword` multi-field
+    // matches if ANY element has that id, which is exactly the filter this
+    // needs; no `nested`/`inner_hits` semantics are required here.
     if (options?.testCaseId) {
-      must.push({ nested: {
-        path: 'testCaseSnapshots',
-        query: { term: { 'testCaseSnapshots.id.keyword': options.testCaseId } },
-      }});
+      must.push({ term: { 'testCaseSnapshots.id.keyword': options.testCaseId } });
     }
 
     try {
@@ -1336,7 +1344,11 @@ export class OpenSearchStorageModule implements IStorageModule {
         },
       };
     } catch (error: any) {
-      return { status: 'error', error: error.message };
+      // describeOpenSearchError() appends the HTTP status code so a 403 (stale/
+      // rotated SigV4 credentials) reads differently in the UI/logs than a 5xx
+      // (cluster-side failure) — this is the exact endpoint used to diagnose a
+      // wedged storage client.
+      return { status: 'error', error: describeOpenSearchError(error) || 'Unknown error' };
     }
   }
 
