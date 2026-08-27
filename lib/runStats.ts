@@ -84,39 +84,6 @@ export function bucketRunResults(
 }
 
 /**
- * Recompute pass/fail/errored/total from a run's persisted results
- * (run.results — the single source of truth), falling back to the
- * denormalized run.stats only when per-case results aren't present.
- *
- * The denormalized run.stats is NOT authoritative: its writer historically
- * counted every 'completed' result as passed without checking the verdict,
- * so an errored case (judge produced no verdict) could be miscounted as a
- * pass (issue #242). Note the run.stats fallback branch below inherits this
- * same untrustworthiness for old runs that predate per-case run.results
- * persistence — there is no per-case data left to recompute from for those,
- * so this is a best-effort display value, not a corrected one. Shared by the
- * runs list and the benchmark-runs list so
- * the passed count can't diverge between the two views.
- */
-export function computeRunStats(
-  run: BenchmarkRun
-): { passed: number; failed: number; errored: number; total: number } {
-  if (run.results && Object.keys(run.results).length > 0) {
-    const b = bucketRunResults(run.results as Record<string, { status?: string; passFailStatus?: string }>);
-    return { passed: b.passed, failed: b.failed, errored: b.errored, total: b.total };
-  }
-  if (run.stats && run.stats.total > 0) {
-    return {
-      passed: run.stats.passed,
-      failed: run.stats.failed,
-      errored: run.stats.errored ?? 0,
-      total: run.stats.total,
-    };
-  }
-  return { passed: 0, failed: 0, errored: 0, total: 0 };
-}
-
-/**
  * Calculate statistics for a benchmark run.
  *
  * This function uses the same logic as the UI to count pass/fail status:
@@ -230,6 +197,44 @@ export function getReportIdsFromRun(run: BenchmarkRun): string[] {
  * @param reports - Array of reports for this run
  * @returns Denormalized stats object (passed, failed, pending, total)
  */
+/**
+ * Canonical "display" stats for a run detail/list view: prefer recomputing
+ * from the persisted per-test-case verdicts (`run.results`) via
+ * {@link bucketRunResults} — the single source of truth — and only fall
+ * back to the denormalized `run.stats` when `results` is empty (e.g. a run
+ * that hasn't started, or legacy data with no results map at all).
+ *
+ * This is THE single shared helper for pass/fail/errored/pending/total
+ * across every surface that renders run stats (runs list, benchmark runs
+ * list, run detail page, comparison page) — do not reimplement this logic
+ * locally in a component or add a differently-named twin. Historically this
+ * logic was duplicated per-page (each with its own subtly different bugs,
+ * e.g. `errored` not tracked, or `run.stats` trusted directly even when
+ * stale/inflated for trace-judged runs — a 66/84-real-passed run displaying
+ * as 84/84). Callers that only need `{passed, failed, errored, total}` can
+ * simply ignore the extra `pending` field.
+ */
+export function computeRunStats(
+  run: {
+    results?: Record<string, { status?: string; passFailStatus?: string }>;
+    stats?: Partial<RunStatsType> | null;
+  }
+): Pick<RunStatsType, 'passed' | 'failed' | 'errored' | 'pending' | 'total'> {
+  if (run.results && Object.keys(run.results).length > 0) {
+    return bucketRunResults(run.results);
+  }
+  if (run.stats && (run.stats.total ?? 0) > 0) {
+    return {
+      passed: run.stats.passed ?? 0,
+      failed: run.stats.failed ?? 0,
+      errored: run.stats.errored ?? 0,
+      pending: run.stats.pending ?? 0,
+      total: run.stats.total ?? 0,
+    };
+  }
+  return { passed: 0, failed: 0, errored: 0, pending: 0, total: 0 };
+}
+
 export function computeRunStatsFromReports(
   run: BenchmarkRun,
   reports: EvaluationReport[]

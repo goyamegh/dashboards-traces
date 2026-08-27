@@ -223,6 +223,7 @@ export const EvalRunsPage: React.FC = () => {
           benchmarkName: bm.name,
           agentName,
           ...stats,
+          errored: stats.errored ?? 0,
         });
       }
     }
@@ -263,6 +264,7 @@ export const EvalRunsPage: React.FC = () => {
         benchmarkName,
         agentName,
         ...stats,
+        errored: stats.errored ?? 0,
       });
     }
 
