@@ -285,6 +285,76 @@ describe('applyDoctorPlan — error branches', () => {
     expect(result.runsRepointed).toBe(0);
   });
 
+  it('never deletes a husk whose re-point failed — the eval-run still points at it', async () => {
+    const canonical = bench({ id: 'canon-1', name: 'Canon' });
+    const husk = bench({ id: 'husk-1', name: 'Husk' });
+    const getBenchmark = jest.fn().mockImplementation(async (id: string) => (id === 'canon-1' ? canonical : husk));
+    const deleteBenchmark = jest.fn().mockResolvedValue(true);
+    const api = mockApi({
+      getBenchmark,
+      updateEvaluationRun: jest.fn().mockResolvedValue(null), // re-point fails
+      deleteBenchmark,
+    });
+    const plan = emptyPlan({
+      contentDupGroups: [
+        {
+          key: 'k',
+          canonicalId: 'canon-1',
+          canonicalName: 'Canon',
+          husks: [{ id: 'husk-1', name: 'Husk', embeddedRunCount: 0 }],
+          runRepoints: [{ runId: 'er-1', fromBenchmarkId: 'husk-1', toBenchmarkId: 'canon-1' }],
+        },
+      ],
+    });
+    const result = await applyDoctorPlan(api, plan);
+    expect(result.runsRepointed).toBe(0);
+    expect(result.husksDeleted).toBe(0);
+    expect(deleteBenchmark).not.toHaveBeenCalledWith('husk-1');
+    expect(result.errors).toEqual([
+      'failed to re-point run er-1',
+      'skipped deleting husk husk-1: a run re-point to it failed',
+    ]);
+  });
+
+  it('still deletes OTHER husks in the same group whose re-point succeeded', async () => {
+    const canonical = bench({ id: 'canon-1', name: 'Canon' });
+    const huskOk = bench({ id: 'husk-ok', name: 'HuskOk' });
+    const huskFail = bench({ id: 'husk-fail', name: 'HuskFail' });
+    const getBenchmark = jest.fn().mockImplementation(async (id: string) => {
+      if (id === 'canon-1') return canonical;
+      if (id === 'husk-ok') return huskOk;
+      if (id === 'husk-fail') return huskFail;
+      return null;
+    });
+    const updateEvaluationRun = jest.fn().mockImplementation(async (id: string) =>
+      id === 'er-ok' ? run('er-ok') : null
+    );
+    const api = mockApi({ getBenchmark, updateEvaluationRun });
+    const plan = emptyPlan({
+      contentDupGroups: [
+        {
+          key: 'k',
+          canonicalId: 'canon-1',
+          canonicalName: 'Canon',
+          husks: [
+            { id: 'husk-ok', name: 'HuskOk', embeddedRunCount: 0 },
+            { id: 'husk-fail', name: 'HuskFail', embeddedRunCount: 0 },
+          ],
+          runRepoints: [
+            { runId: 'er-ok', fromBenchmarkId: 'husk-ok', toBenchmarkId: 'canon-1' },
+            { runId: 'er-fail', fromBenchmarkId: 'husk-fail', toBenchmarkId: 'canon-1' },
+          ],
+        },
+      ],
+    });
+    const result = await applyDoctorPlan(api, plan);
+    expect(result.husksDeleted).toBe(1);
+    expect(result.errors).toEqual([
+      'failed to re-point run er-fail',
+      'skipped deleting husk husk-fail: a run re-point to it failed',
+    ]);
+  });
+
   it('records a husk-delete failure when deleteBenchmark returns false', async () => {
     const canonical = bench({ id: 'canon-1', name: 'Canon' });
     const husk = bench({ id: 'husk-1', name: 'Husk' });
@@ -397,5 +467,24 @@ describe('migrateBenchmarksToImages', () => {
     });
     const result = await migrateBenchmarksToImages(api, BASE_URL);
     expect(result.errors).toEqual(['Keep: network down']);
+  });
+
+  it('surfaces a partial migration (missing test-case ids) as migrated-with-a-loud-warning, not a silent success', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ image: { digest: 'sha256:partial' }, missingTestCaseIds: ['tc-gone'] }),
+    });
+    const api = mockApi({
+      listBenchmarks: jest.fn().mockResolvedValue([
+        bench({ id: 'b1', name: 'Partial', testCaseIds: ['tc-1', 'tc-gone'] }),
+      ]),
+    });
+    const result = await migrateBenchmarksToImages(api, BASE_URL);
+    expect(result.migrated).toEqual([
+      { benchmarkId: 'b1', name: 'Partial', digest: 'sha256:partial', missingTestCaseIds: ['tc-gone'] },
+    ]);
+    expect(result.errors).toEqual([
+      'Partial: migrated from a PARTIAL test-case set — missing 1 id(s): tc-gone',
+    ]);
   });
 });

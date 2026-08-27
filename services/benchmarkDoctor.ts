@@ -226,16 +226,27 @@ export async function applyDoctorPlan(api: DoctorStorageOps, plan: DoctorPlan): 
       }
 
       // Re-point eval-runs at the canonical
+      const failedRepointSources = new Set<string>();
       for (const repoint of group.runRepoints) {
         const updated = await api.updateEvaluationRun(repoint.runId, {
           benchmarkId: repoint.toBenchmarkId,
         });
-        if (updated) result.runsRepointed++;
-        else result.errors.push(`failed to re-point run ${repoint.runId}`);
+        if (updated) {
+          result.runsRepointed++;
+        } else {
+          result.errors.push(`failed to re-point run ${repoint.runId}`);
+          failedRepointSources.add(repoint.fromBenchmarkId);
+        }
       }
 
-      // Delete husks (only after merge + re-point succeeded)
+      // Delete husks (only after merge + re-point succeeded). A husk with a
+      // failed re-point is skipped — deleting it would strand the still-
+      // pointing eval-run on a dangling benchmarkId.
       for (const husk of huskDocs) {
+        if (failedRepointSources.has(husk.id)) {
+          result.errors.push(`skipped deleting husk ${husk.id}: a run re-point to it failed`);
+          continue;
+        }
         const ok = await api.deleteBenchmark(husk.id);
         if (ok) result.husksDeleted++;
         else result.errors.push(`failed to delete husk ${husk.id}`);
@@ -260,7 +271,7 @@ export async function applyDoctorPlan(api: DoctorStorageOps, plan: DoctorPlan): 
 }
 
 export interface MigrateImagesResult {
-  migrated: Array<{ benchmarkId: string; name: string; digest: string }>;
+  migrated: Array<{ benchmarkId: string; name: string; digest: string; missingTestCaseIds?: string[] }>;
   skipped: Array<{ benchmarkId: string; name: string; reason: string }>;
   errors: string[];
 }
@@ -303,7 +314,23 @@ export async function migrateBenchmarksToImages(
         continue;
       }
       const body = await res.json();
-      result.migrated.push({ benchmarkId: b.id, name: b.name, digest: body.image.digest });
+      const missingTestCaseIds: string[] | undefined = body.missingTestCaseIds;
+      result.migrated.push({
+        benchmarkId: b.id,
+        name: b.name,
+        digest: body.image.digest,
+        ...(missingTestCaseIds && missingTestCaseIds.length > 0 ? { missingTestCaseIds } : {}),
+      });
+      // A partial migration (some testCaseIds no longer resolve to a stored
+      // test case) still produces a valid image from the survivors, but the
+      // resulting digest covers LESS content than the source benchmark —
+      // surface that loudly rather than silently blessing it as a clean
+      // migration.
+      if (missingTestCaseIds && missingTestCaseIds.length > 0) {
+        result.errors.push(
+          `${b.name}: migrated from a PARTIAL test-case set — missing ${missingTestCaseIds.length} id(s): ${missingTestCaseIds.join(', ')}`
+        );
+      }
     } catch (e: any) {
       result.errors.push(`${b.name}: ${e?.message ?? e}`);
     }

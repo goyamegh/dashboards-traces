@@ -149,14 +149,14 @@ agent-health benchmark -n "Baseline" --export report.html --format html
 Detect and clean up duplicated / debris benchmarks (dry-run by default).
 
 ```
-agent-health benchmark doctor [--apply] [--migrate-images] [-o text|json]
+agent-health benchmark doctor [--apply] [--migrate-images] [--json]
 ```
 
 | Option | Description |
 |--------|-------------|
 | `--apply` | Execute the plan (default: dry-run report only) |
 | `--migrate-images` | Convert remaining benchmarks into tagged benchmark images |
-| `-o, --output <fmt>` | Output: `text`, `json` |
+| `--json` | Output as JSON instead of the human-readable report |
 
 What it detects:
 - **Timestamped debris** — `quick-<ts>` / `*-<epoch-ms>` benchmarks with no
