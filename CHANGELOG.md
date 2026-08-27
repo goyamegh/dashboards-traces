@@ -9,6 +9,9 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Fixed
+- **Run-selector popover (`/compare`, filter panels) rendered detached from its trigger** ([components/ui/popover.tsx](components/ui/popover.tsx), [components/comparison/ComparisonSearch.tsx](components/comparison/ComparisonSearch.tsx)): the shared `Popover` primitive positioned its panel with hand-rolled `position: absolute; top-full` CSS relative to a wrapper div living inside a `position: sticky` toolbar — a fragile combination with no collision detection or viewport-flip that could render the run-selector panel ("N of M runs" trigger, Benchmark/Run/Test Case tabs) floating over the scoreboard table instead of anchored beneath the trigger. Replaced the manual CSS with Radix's `@radix-ui/react-popover` (already used transitively via the app's `radix-ui` deps for Select/DropdownMenu) — portaled and positioned via Floating UI, so the panel tracks its trigger regardless of ancestor scroll/sticky context, and nested Radix portals (e.g. the `<Select>`s inside AgentTracesPage's filter popover) are now dismissed-correctly natively instead of via a manual click-outside exception list. Same public API (`Popover`/`PopoverTrigger`/`PopoverContent`), no call-site changes needed. e2e: [tests/e2e/comparison-search-popover-anchor.spec.ts](tests/e2e/comparison-search-popover-anchor.spec.ts) (panel geometry — top within 12px of the trigger's bottom, never above it — and click-outside-closes); regression-checked against [tests/e2e/traces-error-filtering.spec.ts](tests/e2e/traces-error-filtering.spec.ts), [tests/e2e/comparison.spec.ts](tests/e2e/comparison.spec.ts), [tests/e2e/comparison-eval-runs.spec.ts](tests/e2e/comparison-eval-runs.spec.ts).
+
 ## [0.6.0] - 2026-08-27
 
 ### Added
