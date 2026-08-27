@@ -239,6 +239,110 @@ describe('Claude Code native (attribute-based) spans', () => {
     expect(scanSessionSignals(clean).find(s => s.id === 'user_redirect')).toBeUndefined();
   });
 
+  it('emits a tool_result from a `tool` span\'s own tool.output event (no separate tool.execution span)', () => {
+    const spans: Span[] = [
+      {
+        ...ccSpan('t1', 'tool', { tool_name: 'Bash', tool_use_id: 'tu1' }, '2026-01-01T00:00:00.000Z'),
+        events: [{ name: 'tool.output', time: '2026-01-01T00:00:01.500Z', attributes: { output: 'file contents' } }],
+      },
+    ];
+    const traj = spansToTrajectory(spans);
+    expect(traj.map(t => t.type)).toEqual(['action', 'tool_result']);
+    const result = traj[1];
+    expect(result.toolName).toBe('Bash');
+    expect(result.content).toBe('file contents');
+    expect(result.toolOutput).toBe('file contents');
+    expect(result.status).toBe(ToolCallStatus.SUCCESS);
+    // Ordered by the event's own timestamp, not the tool span's start time.
+    expect(result.timestamp).toBe(new Date('2026-01-01T00:00:01.500Z').getTime());
+  });
+
+  it('marks a tool.output-event result FAILURE when the tool span itself errored', () => {
+    const spans: Span[] = [
+      {
+        ...ccSpan('t1', 'tool', { tool_name: 'Bash', tool_use_id: 'tu1' }, '2026-01-01T00:00:00.000Z'),
+        status: 'ERROR',
+        events: [{ name: 'tool.output', time: '2026-01-01T00:00:01.000Z', attributes: { output: 'boom' } }],
+      },
+    ];
+    const result = spansToTrajectory(spans).find(t => t.type === 'tool_result')!;
+    expect(result.status).toBe(ToolCallStatus.FAILURE);
+  });
+
+  it('reads output from the `result` event attribute when `output` is absent', () => {
+    const spans: Span[] = [
+      {
+        ...ccSpan('t1', 'tool', { tool_name: 'Grep', tool_use_id: 'tu1' }, '2026-01-01T00:00:00.000Z'),
+        events: [{ name: 'tool.output', time: '2026-01-01T00:00:01.000Z', attributes: { result: 'match found' } }],
+      },
+    ];
+    const result = spansToTrajectory(spans).find(t => t.type === 'tool_result')!;
+    expect(result.content).toBe('match found');
+  });
+
+  it('does NOT emit a tool_result when the tool span has no tool.output event (unchanged fallback behavior)', () => {
+    const spans: Span[] = [
+      ccSpan('t1', 'tool', { tool_name: 'Bash', tool_use_id: 'tu1' }, '2026-01-01T00:00:00.000Z'),
+    ];
+    const traj = spansToTrajectory(spans);
+    expect(traj.map(t => t.type)).toEqual(['action']);
+  });
+
+  it('does NOT emit a tool_result when the tool.output event carries no usable output/result', () => {
+    const spans: Span[] = [
+      {
+        ...ccSpan('t1', 'tool', { tool_name: 'Bash', tool_use_id: 'tu1' }, '2026-01-01T00:00:00.000Z'),
+        events: [{ name: 'tool.output', time: '2026-01-01T00:00:01.000Z', attributes: {} }],
+      },
+    ];
+    const traj = spansToTrajectory(spans);
+    expect(traj.map(t => t.type)).toEqual(['action']);
+  });
+
+  it('dedupes: a tool span with a tool.output event plus a sibling tool.execution span → only one tool_result', () => {
+    const spans: Span[] = [
+      {
+        ...ccSpan('t1', 'tool', { tool_name: 'Bash', tool_use_id: 'tu1' }, '2026-01-01T00:00:00.000Z'),
+        events: [{ name: 'tool.output', time: '2026-01-01T00:00:01.000Z', attributes: { output: 'from event' } }],
+      },
+      ccSpan('e1', 'tool.execution', { tool_use_id: 'tu1', success: true, 'gen_ai.tool.output': 'from execution attrs' }, '2026-01-01T00:00:02.000Z'),
+    ];
+    const traj = spansToTrajectory(spans);
+    const results = traj.filter(t => t.type === 'tool_result');
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe('from event'); // event-based result wins, execution's is skipped
+  });
+
+  it('dedupes even when the tool.execution span sorts BEFORE the tool span (clock skew / out-of-order spans)', () => {
+    const spans: Span[] = [
+      // tool.execution has an earlier startTime than its own `tool` call —
+      // an unusual but possible ordering (clock skew across processes). The
+      // dedup Set must be checked/marked symmetrically by both branches so
+      // whichever one is processed first "wins", regardless of which span
+      // shape that happens to be.
+      ccSpan('e1', 'tool.execution', { tool_use_id: 'tu1', success: true, 'gen_ai.tool.output': 'from execution attrs' }, '2026-01-01T00:00:00.000Z'),
+      {
+        ...ccSpan('t1', 'tool', { tool_name: 'Bash', tool_use_id: 'tu1' }, '2026-01-01T00:00:00.500Z'),
+        events: [{ name: 'tool.output', time: '2026-01-01T00:00:01.000Z', attributes: { output: 'from event' } }],
+      },
+    ];
+    const traj = spansToTrajectory(spans);
+    const results = traj.filter(t => t.type === 'tool_result');
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe('from execution attrs'); // execution processed first (earlier startTime), wins
+  });
+
+  it('still emits from tool.execution when its sibling tool span has no tool.output event', () => {
+    const spans: Span[] = [
+      ccSpan('t1', 'tool', { tool_name: 'Bash', tool_use_id: 'tu1' }, '2026-01-01T00:00:00.000Z'),
+      ccSpan('e1', 'tool.execution', { tool_use_id: 'tu1', success: true, 'gen_ai.tool.output': 'from execution attrs' }, '2026-01-01T00:00:01.000Z'),
+    ];
+    const traj = spansToTrajectory(spans);
+    const results = traj.filter(t => t.type === 'tool_result');
+    expect(results).toHaveLength(1);
+    expect(results[0].content).toBe('from execution attrs');
+  });
+
   it('detects native repeated_tool_calls only when args are identical', () => {
     const repeated: Span[] = [
       ccSpan('t1', 'tool', { tool_name: 'grep', tool_input: '{"q":"foo"}', tool_use_id: 'a' }, '2026-01-01T00:00:00.000Z'),
