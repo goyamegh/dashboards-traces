@@ -15,12 +15,15 @@ import {
   BarChart3,
   MessageSquare,
   Wand2,
+  Menu,
+  X,
 } from "lucide-react";
 import OpenSearchLogoDark from "@/assets/opensearch-logo.svg";
 import OpenSearchLogoLight from "@/assets/opensearch-logo-light.svg";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useServerStatus } from "@/hooks/useServerStatus";
 import { usePersistedState } from "@/hooks/usePersistedState";
+import { cn } from "@/lib/utils";
 import {
   Sidebar,
   SidebarContent,
@@ -91,6 +94,10 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [testingOpen, setTestingOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [isCollapsed, setIsCollapsed] = usePersistedState<boolean>('sidebar:collapsed', false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  // Route changes close the off-canvas navigation after a mobile selection.
+  useEffect(() => setMobileNavOpen(false), [location.pathname]);
 
   // Chrome-vertical-tabs-style hover-open: when the sidebar is pinned
   // collapsed to the icon rail, hovering (or keyboard-focusing) it temporarily
@@ -170,13 +177,33 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   return (
     <SidebarCollapseContext.Provider value={{ isCollapsed, setIsCollapsed }}>
       <SidebarProvider className="h-screen overflow-hidden">
-        {/* Hover zone reserves the LAYOUT width (rail when pinned collapsed)
-            so the flyout overlays content instead of reflowing it. Mouse and
-            keyboard-focus both drive the same isHoverExpanded state. */}
+        {/* Mobile off-canvas backdrop (#400): dims the page behind the drawer
+            when it's open on small screens; tapping it closes the drawer.
+            Desktop hover-open has no backdrop (the rail keeps reserving its
+            width so content never needs dimming). */}
+        {mobileNavOpen && (
+          <button
+            type="button"
+            className="fixed inset-0 z-40 bg-black/40 lg:hidden"
+            aria-label="Close navigation"
+            onClick={() => setMobileNavOpen(false)}
+          />
+        )}
+        {/* Hover zone reserves the LAYOUT width on desktop (rail when pinned
+            collapsed) so the hover-open overlay never reflows content — the
+            gutter tracks the PIN preference (isCollapsed), not `collapsed`
+            (which folds in the momentary hover/focus state), otherwise
+            hovering the rail would widen the gutter too and reflow content.
+            Zero width on mobile (<lg) — there the sidebar is a `fixed`
+            off-canvas drawer (#400) with no reserved gutter; hover/focus
+            handlers are desktop-only anyway (no hover on touch, and
+            isCollapsed only gates them). */}
         <div
           ref={hoverZoneRef}
-          className="relative h-screen flex-shrink-0 transition-[width] duration-200"
-          style={{ width: isCollapsed ? '64px' : '180px' }}
+          className={cn(
+            'relative h-screen flex-shrink-0 transition-[width] duration-200 w-0',
+            isCollapsed ? 'lg:w-16' : 'lg:w-[180px]'
+          )}
           data-testid="sidebar-hover-zone"
           onMouseEnter={() => {
             isMouseOverRef.current = true;
@@ -224,14 +251,13 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         >
         <Sidebar
         collapsible="none"
-        className="transition-all duration-200"
+        className={cn(
+          'fixed inset-y-0 left-0 z-50 transition-[width,transform] duration-300 lg:absolute lg:translate-x-0 lg:duration-200',
+          mobileNavOpen ? 'translate-x-0' : '-translate-x-full'
+        )}
         style={{
           width: collapsed ? '64px' : '180px',
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          height: '100%',
-          zIndex: isHoverExpanded ? 50 : undefined,
+          zIndex: (isHoverExpanded || mobileNavOpen) ? 50 : undefined,
           background: 'hsl(var(--background))',
           borderRight: '1px solid hsl(var(--border))',
           boxShadow: isHoverExpanded
@@ -482,7 +508,20 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
       </Sidebar>
       </div>
 
-      <SidebarInset className="overflow-y-auto dashboard-gradient-bg">
+      <SidebarInset className="overflow-y-auto dashboard-gradient-bg mobile-responsive-content">
+        <div className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between border-b bg-background/95 px-3 backdrop-blur lg:hidden">
+          <button
+            type="button"
+            className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-md hover:bg-accent"
+            aria-label={mobileNavOpen ? 'Close navigation' : 'Open navigation'}
+            aria-expanded={mobileNavOpen}
+            onClick={() => setMobileNavOpen(open => !open)}
+          >
+            {mobileNavOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
+          <span className="text-sm font-semibold">AgentHealth</span>
+          <span className="w-10" aria-hidden="true" />
+        </div>
         <AssistantProvider>
           {children}
           <AssistantModal />

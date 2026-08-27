@@ -536,7 +536,7 @@ export const BenchmarkRunsPage: React.FC = () => {
   const hasMultipleRuns = runs.length >= 2;
 
   return (
-    <div className="p-6 h-full flex flex-col" data-testid="benchmark-runs-page">
+    <div className="p-6 h-full flex flex-col max-md:h-auto max-md:overflow-visible" data-testid="benchmark-runs-page">
       {/* Header */}
       <div className="flex items-center justify-between mb-6">
         <div className="flex items-center gap-4">
@@ -610,10 +610,10 @@ export const BenchmarkRunsPage: React.FC = () => {
       </div>
 
       {/* Main Content - Two-Panel Resizable Layout */}
-      <ResizablePanelGroup direction="horizontal" className="flex-1 overflow-hidden">
+      <ResizablePanelGroup direction="horizontal" className="flex-1 overflow-hidden max-md:!h-auto max-md:!overflow-visible max-md:!flex-col">
         {/* Left Panel - Test Cases (Version-Aware) */}
-        <ResizablePanel defaultSize={35} minSize={25} maxSize={50}>
-          <div className="h-full overflow-y-auto pr-4">
+        <ResizablePanel defaultSize={35} minSize={25} maxSize={50} className="max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible">
+          <div className="h-full overflow-y-auto pr-4 max-md:h-auto max-md:overflow-visible max-md:pr-0">
             {/* Panel Header with Version Dropdown */}
             <div className="sticky top-0 bg-background pb-3 border-b border-border mb-3">
               <div className="flex items-center justify-between mb-2">
@@ -742,11 +742,11 @@ export const BenchmarkRunsPage: React.FC = () => {
           </div>
         </ResizablePanel>
 
-        <ResizableHandle withHandle />
+        <ResizableHandle withHandle className="max-md:hidden" />
 
         {/* Right Panel - Runs (Filterable by Version) */}
-        <ResizablePanel defaultSize={65} minSize={40}>
-          <div className="h-full overflow-y-auto pl-4 flex flex-col">
+        <ResizablePanel defaultSize={65} minSize={40} className="max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible max-md:mt-5">
+          <div className="h-full overflow-y-auto pl-4 flex flex-col max-md:h-auto max-md:overflow-visible max-md:pl-0">
             {/* Panel Header with Version Filter */}
             <div className="sticky top-0 bg-background pb-3 border-b border-border mb-3">
               <div className="flex items-center justify-between">
