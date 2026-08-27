@@ -80,8 +80,15 @@ router.get('/api/storage/images/:digest', async (req: Request, res: Response) =>
       return res.status(404).json({ error: `Image not found: ${digest}` });
     }
     // All runs sharing this digest ran under identical conditions —
-    // this IS the comparable set.
-    const runs = await storage.evaluationRuns.list({ imageDigest: digest, size: 500 });
+    // this IS the comparable set. Pageable via `size`/`from` (default 500/0)
+    // so an image with >500 runs isn't silently truncated with no way to
+    // fetch the rest — `runsTotal` always reflects the true count.
+    const { from, size } = req.query;
+    const runs = await storage.evaluationRuns.list({
+      imageDigest: digest,
+      from: from ? parseInt(from as string, 10) : 0,
+      size: size ? parseInt(size as string, 10) : 500,
+    });
     res.json({ image, runs: runs.items, runsTotal: runs.total });
   } catch (error: any) {
     console.error('[StorageAPI] Get image failed:', error.message);

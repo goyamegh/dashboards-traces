@@ -73,8 +73,18 @@ export function createBenchmarkDoctorCommand(): Command {
     .description('Detect and clean up duplicated / debris benchmarks (dry-run by default)')
     .option('--apply', 'Execute the plan (default: dry-run report only)')
     .option('--migrate-images', 'Also convert remaining benchmarks into tagged benchmark images')
-    .option('-o, --output <format>', 'Output format: text, json', 'text')
-    .action(async (options: { apply?: boolean; migrateImages?: boolean; output: string }) => {
+    // NOT `-o/--output <format>`: the parent `benchmark` command already owns
+    // `-o/--output` (and `--format`) for ITS OWN options, and commander
+    // resolves a parent command's registered options against the full argv
+    // before dispatching to a subcommand — so `benchmark doctor -o json`
+    // silently gets consumed by the PARENT's `-o` and this subcommand never
+    // sees it (verified: parent.opts().output ends up 'json', this
+    // subcommand's options.output stays its own default). A boolean flag
+    // with a name that collides with nothing on `benchmark` sidesteps the
+    // whole class of bug (and there are only two output shapes, so a
+    // string enum was unnecessary anyway).
+    .option('--json', 'Output as JSON instead of the human-readable report', false)
+    .action(async (options: { apply?: boolean; migrateImages?: boolean; json?: boolean }) => {
       const config = await loadConfig();
       const serverResult: EnsureServerResult = await ensureServer(config.server);
       const cleanup = createServerCleanup(serverResult, false);
@@ -86,17 +96,20 @@ export function createBenchmarkDoctorCommand(): Command {
           api.listEvaluationRuns({ size: 1000 }),
         ]);
         const plan = buildDoctorPlan(benchmarks, evalRuns);
+        const isJson = options.json === true;
+        // Accumulated and printed once at the end so `-o json` produces a
+        // single valid JSON document instead of separate top-level
+        // {plan}/{result}/{migration} lines.
+        const jsonOutput: { plan: DoctorPlan; result?: unknown; migration?: unknown } = { plan };
 
-        if (options.output === 'json') {
-          console.log(JSON.stringify({ plan }, null, 2));
-        } else {
+        if (!isJson) {
           printPlan(plan);
         }
 
         if (options.apply) {
           const result = await applyDoctorPlan(api, plan);
-          if (options.output === 'json') {
-            console.log(JSON.stringify({ result }, null, 2));
+          if (isJson) {
+            jsonOutput.result = result;
           } else {
             console.log(chalk.green(
               `  Applied: ${result.debrisDeleted} debris deleted, ${result.husksDeleted} husks merged+deleted, ` +
@@ -105,14 +118,14 @@ export function createBenchmarkDoctorCommand(): Command {
             for (const err of result.errors) console.log(chalk.red(`  ! ${err}`));
             console.log();
           }
-        } else if (plan.debrisDeletions.length > 0 || plan.contentDupGroups.length > 0) {
+        } else if (!isJson && (plan.debrisDeletions.length > 0 || plan.contentDupGroups.length > 0)) {
           console.log(chalk.gray('  Dry-run only. Re-run with --apply to execute.\n'));
         }
 
         if (options.migrateImages) {
           const migration = await migrateBenchmarksToImages(api, serverResult.baseUrl);
-          if (options.output === 'json') {
-            console.log(JSON.stringify({ migration }, null, 2));
+          if (isJson) {
+            jsonOutput.migration = migration;
           } else {
             console.log(chalk.bold('  Image migration:'));
             for (const m of migration.migrated) {
@@ -124,6 +137,10 @@ export function createBenchmarkDoctorCommand(): Command {
             for (const err of migration.errors) console.log(chalk.red(`    ! ${err}`));
             console.log();
           }
+        }
+
+        if (isJson) {
+          console.log(JSON.stringify(jsonOutput, null, 2));
         }
       } catch (error: any) {
         console.error(chalk.red(`\n  Error: ${error.message}`));
