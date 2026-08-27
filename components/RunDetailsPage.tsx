@@ -33,8 +33,8 @@ import { RunSummaryPanel } from './RunSummaryPanel';
 
 // ==================== Skeleton Components ====================
 
-const PageSkeleton = () => (
-  <div className="h-full flex flex-col">
+const PageSkeleton = ({ label }: { label?: string | null }) => (
+  <div className="h-full flex flex-col" data-testid="run-details-loading">
     <div className="flex items-center justify-between p-4 border-b">
       <div className="flex items-center gap-4">
         <Skeleton className="h-10 w-10 rounded" />
@@ -43,6 +43,12 @@ const PageSkeleton = () => (
           <Skeleton className="h-4 w-[300px]" />
         </div>
       </div>
+    </div>
+    {/* Explicit progress text so a large run never sits on a silent void -
+        the reported bug had no indication anything was happening at all. */}
+    <div className="flex items-center gap-2 px-6 pt-4 text-sm text-muted-foreground" data-testid="run-details-loading-label">
+      <Loader2 size={14} className="animate-spin" />
+      <span>{label || 'Loading run\u2026'}</span>
     </div>
     <div className="flex-1 p-6">
       <Skeleton className="h-full w-full" />
@@ -216,6 +222,22 @@ export const RunDetailsPage: React.FC = () => {
   // Core state
   const [report, setReport] = useState<EvaluationReport | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // Human-readable progress for the initial skeleton ("Loading N cases…") so a
+  // large run never sits on a silent blank pane while summaries load (#regression
+  // repro: 84-case run, ~168MB unscoped test-case fetch + N sequential report
+  // fetches, indefinite blank content pane).
+  const [loadingLabel, setLoadingLabel] = useState<string | null>(null);
+  // Set when loadRunData's try/catch catches a genuine fetch failure (as opposed
+  // to a legitimate "not found" which still redirects). Rendered as an inline
+  // error + Retry instead of silently returning null (a permanent blank pane).
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // True while the FULL report for the currently selected test case is being
+  // fetched on-demand (summaries alone don't include trajectory/messages).
+  const [reportLoading, setReportLoading] = useState(false);
+  // Full report bodies fetched on demand, keyed by reportId. `reportsMap` on
+  // ExperimentContext stays summary-only (status/verdict fields) for the fast
+  // initial paint; this cache is populated lazily as the user selects rows.
+  const [fullReports, setFullReports] = useState<Record<string, EvaluationReport>>({});
   const [testCase, setTestCase] = useState<TestCase | null>(null);
 
   // Experiment context (only set if run is part of an experiment)
@@ -239,10 +261,12 @@ export const RunDetailsPage: React.FC = () => {
     }
 
     setIsLoading(true);
+    setLoadError(null);
 
     try {
       // Case 1: Benchmark/Experiment run (with benchmarkId or experimentId)
       if (routeExperimentId) {
+        setLoadingLabel('Loading benchmark\u2026');
         const exp = await asyncExperimentStorage.getById(routeExperimentId);
 
         if (!exp) {
@@ -260,27 +284,30 @@ export const RunDetailsPage: React.FC = () => {
           return;
         }
 
-        // Load all reports for this experiment run by report ID
-        const reportIds = Object.values(expRun.results || {}).map(r => r.reportId).filter(Boolean);
-        const siblingReports: EvaluationReport[] = [];
-        for (const reportId of reportIds) {
-          const report = await asyncRunStorage.getReportById(reportId);
-          if (report) {
-            siblingReports.push(report);
-          }
-        }
+        const testCaseIds = Object.keys(expRun.results || {});
+        const reportIds = Object.values(expRun.results || {}).map(r => r.reportId).filter(Boolean) as string[];
 
-        // Load all test cases referenced in this run
-        const allTestCases = await asyncTestCaseStorage.getAll();
-        const relevantTestCases = allTestCases.filter(tc =>
-          Object.keys(expRun.results || {}).includes(tc.id)
-        );
+        // Regression/gap fix: this used to (a) fetch every FULL report one at a
+        // time (N sequential ~0.3-2MB requests) and (b) fetch *every* test case
+        // in the whole corpus via getAll() just to filter down to the ~N relevant
+        // to this run (168MB observed on an 84-case run against the shared
+        // cluster) - see #393/#429 for the same class of fix applied to the
+        // evals3 RunInspectorPage, never ported to this legacy page. Now: one
+        // lightweight status-only batch for reports, one id-scoped batch for
+        // test cases. Full per-case report bodies are fetched lazily on
+        // selection (see the effect below keyed on `selectedItem`).
+        setLoadingLabel(`Loading ${testCaseIds.length} test case${testCaseIds.length === 1 ? '' : 's'}\u2026`);
+        const [reportSummaries, relevantTestCases] = await Promise.all([
+          asyncRunStorage.getReportSummariesByIds(reportIds),
+          asyncTestCaseStorage.getByIds(testCaseIds),
+        ]);
+        const siblingReports: EvaluationReport[] = Object.values(reportSummaries);
 
         // Build reports map by reportId
         const reportsMap: Record<string, EvaluationReport | null> = {};
         Object.values(expRun.results || {}).forEach(result => {
           if (result.reportId) {
-            const found = siblingReports.find(r => r.id === result.reportId);
+            const found = reportSummaries[result.reportId];
             reportsMap[result.reportId] = found || null;
           }
         });
@@ -295,7 +322,6 @@ export const RunDetailsPage: React.FC = () => {
 
         // Check URL param for selected test case, default to summary
         const testCaseFromUrl = searchParams.get('testCase');
-        const testCaseIds = Object.keys(expRun.results || {});
         if (testCaseFromUrl && testCaseIds.includes(testCaseFromUrl)) {
           setSelectedItem(testCaseFromUrl);
           // Collapse main sidebar when loading with a test case selected
@@ -342,16 +368,45 @@ export const RunDetailsPage: React.FC = () => {
         setTestCase(tc);
       }
     } catch (error) {
+      // Genuine fetch failure (network error, 5xx, etc.) - surface an inline
+      // error + Retry instead of silently navigating away or leaving a
+      // permanent blank pane (the reported bug: "doesn't even tell me if it
+      // is loading"). Legitimate not-found cases are handled above via
+      // their own explicit navigate() calls, not this catch.
       console.error('Failed to load run:', error);
-      navigate('/test-cases');
+      setLoadError(error instanceof Error ? error.message : 'Failed to load run.');
     } finally {
       setIsLoading(false);
+      setLoadingLabel(null);
     }
   }, [runId, routeExperimentId, navigate, searchParams, setMainSidebarOpen]);
 
   useEffect(() => {
     loadRunData();
   }, [loadRunData]);
+
+  // Lazy full-report fetch: the initial load only fetches lightweight
+  // status summaries for every case in the run (fast, bounded size even for
+  // large runs). The FULL report body (trajectory, messages, logs) for the
+  // currently selected test case is fetched on demand here, exactly once per
+  // reportId, mirroring the pattern in evals3/RunInspectorPage.tsx (#393).
+  useEffect(() => {
+    if (!experimentContext || !selectedItem || selectedItem === 'summary') return;
+    const reportId = experimentContext.experimentRun.results?.[selectedItem]?.reportId;
+    if (!reportId || fullReports[reportId]) return;
+
+    let cancelled = false;
+    setReportLoading(true);
+    asyncRunStorage.getReportById(reportId)
+      .then(full => {
+        if (cancelled || !full) return;
+        setFullReports(prev => ({ ...prev, [reportId]: full }));
+      })
+      .catch(err => console.error('[RunDetailsPage] Failed to load full report:', reportId, err))
+      .finally(() => { if (!cancelled) setReportLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [experimentContext, selectedItem, fullReports]);
 
   // Poll for updates when there are pending/running results
   useEffect(() => {
@@ -469,7 +524,21 @@ export const RunDetailsPage: React.FC = () => {
   const hasSidebar = experimentContext && Object.keys(experimentContext.experimentRun.results || {}).length > 1;
 
   if (isLoading) {
-    return <PageSkeleton />;
+    return <PageSkeleton label={loadingLabel} />;
+  }
+
+  // Genuine fetch failure: inline error + Retry, never a silent blank pane.
+  if (loadError) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-3 p-6 text-center" data-testid="run-details-error">
+        <AlertTriangle size={40} className="text-red-600 dark:text-red-400" />
+        <p className="text-lg font-medium">Failed to load run</p>
+        <p className="text-sm text-muted-foreground max-w-md">{loadError}</p>
+        <Button variant="outline" size="sm" onClick={() => loadRunData()} data-testid="run-details-retry">
+          Retry
+        </Button>
+      </div>
+    );
   }
 
   // Handle case where neither experiment context nor standalone report is available
@@ -494,7 +563,9 @@ export const RunDetailsPage: React.FC = () => {
 
       const result = experimentContext.experimentRun.results?.[selectedItem];
       if (result?.reportId) {
-        return experimentContext.reportsMap[result.reportId] || null;
+        // Full body is fetched lazily (see the effect above); until it lands,
+        // the summary alone isn't enough to render RunDetailsContent.
+        return fullReports[result.reportId] || null;
       }
     }
 
@@ -502,6 +573,13 @@ export const RunDetailsPage: React.FC = () => {
   };
 
   const displayReport = getDisplayReport();
+  // Distinguishes "selected case has no report at all" (pending/running/never
+  // ran) from "report exists, full body still loading" so the content pane
+  // shows a spinner instead of a misleading "No report available".
+  const selectedReportId = experimentContext && selectedItem !== 'summary'
+    ? experimentContext.experimentRun.results?.[selectedItem]?.reportId
+    : undefined;
+  const isDisplayReportLoading = !!selectedReportId && !displayReport;
 
   // For standalone runs, render a simpler view
   if (!experimentContext && report) {
@@ -755,6 +833,12 @@ export const RunDetailsPage: React.FC = () => {
                             <p className="text-lg font-medium">Test case pending</p>
                             <p className="text-sm mt-1">Waiting for execution...</p>
                           </>
+                        ) : isDisplayReportLoading ? (
+                          <>
+                            <Loader2 size={48} className="mx-auto mb-4 text-muted-foreground animate-spin" />
+                            <p className="text-lg font-medium">Loading report\u2026</p>
+                            <p className="text-sm mt-1">Fetching the full test case report</p>
+                          </>
                         ) : (
                           <>
                             <XCircle size={48} className="mx-auto mb-4 opacity-20" />
@@ -802,6 +886,12 @@ export const RunDetailsPage: React.FC = () => {
                         <Clock size={48} className="mx-auto mb-4 text-yellow-700 dark:text-yellow-400 animate-pulse" />
                         <p className="text-lg font-medium">Test case pending</p>
                         <p className="text-sm mt-1">Waiting for execution...</p>
+                      </>
+                    ) : isDisplayReportLoading ? (
+                      <>
+                        <Loader2 size={48} className="mx-auto mb-4 text-muted-foreground animate-spin" />
+                        <p className="text-lg font-medium">Loading report\u2026</p>
+                        <p className="text-sm mt-1">Fetching the full test case report</p>
                       </>
                     ) : (
                       <>
