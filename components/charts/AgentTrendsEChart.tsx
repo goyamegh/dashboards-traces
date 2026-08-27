@@ -32,8 +32,12 @@ export interface AgentTrendsEChartProps {
   metric: TrendMetricKey;
   height?: number;
   onSelectRun?: (point: AgentRunPoint) => void;
-  rollingWindow?: number;
 }
+
+// Trailing-window size for the rolling-average line. Not exposed as a prop
+// — no caller has ever needed a different value, and a one-off approved
+// visualization doesn't need speculative configurability.
+const ROLLING_WINDOW = 3;
 
 const METRIC_LABEL: Record<TrendMetricKey, string> = {
   accuracy: 'Accuracy',
@@ -59,12 +63,9 @@ export const AgentTrendsEChart: React.FC<AgentTrendsEChartProps> = ({
   metric,
   height = 280,
   onSelectRun,
-  rollingWindow = 3,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
-  const pointsRef = useRef<AgentRunPoint[]>(points);
-  pointsRef.current = points;
 
   const isDarkMode = getTheme() === 'dark';
   const axisColor = isDarkMode ? 'rgb(71, 85, 105)' : 'rgb(203, 213, 225)';
@@ -84,7 +85,7 @@ export const AgentTrendsEChart: React.FC<AgentTrendsEChartProps> = ({
       const color = colorMap.get(agentKey)!;
       const rawValues = agentPoints.map(p => metricValue(p, metric));
       if (rawValues.some(v => v != null)) hasAnyValue = true;
-      const rolling = rollingAverage(rawValues, rollingWindow);
+      const rolling = rollingAverage(rawValues, ROLLING_WINDOW);
 
       const lineData = agentPoints
         .map((p, i) => (rolling[i] != null ? [p.timestamp, rolling[i]] : null))
@@ -122,7 +123,7 @@ export const AgentTrendsEChart: React.FC<AgentTrendsEChartProps> = ({
     }
 
     return { series, colorMap, hasAnyValue };
-  }, [points, metric, rollingWindow]);
+  }, [points, metric]);
 
   const showPlaceholder = points.length === 0 || !hasAnyValue;
 

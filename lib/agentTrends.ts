@@ -18,9 +18,12 @@
  * `Benchmark.runs[]` (already loaded by the Dashboard for the runs list —
  * no extra fetch). Cost/tokens are trace-derived and only available for
  * runs whose reports were resolved in the caller's `metricsMap` (see
- * services/metrics.ts#fetchBatchMetrics); runs without a match report
- * `costUsd`/`tokens` as `null` rather than 0, so callers can render an
- * honest "—" instead of a misleading zero.
+ * services/metrics.ts#fetchBatchMetrics); a run reports `costUsd`/`tokens`
+ * only when EVERY one of its reports resolved a match — a partial sum
+ * would understate the run's true cost while looking complete, which is
+ * worse than admitting "unknown" — so partially- or fully-unmatched runs
+ * get `null` rather than a fabricated or partial total, and callers render
+ * an honest "—" instead.
  */
 
 import type { Benchmark, BenchmarkRun, EvaluationReport } from '@/types';
@@ -168,6 +171,11 @@ export function buildAgentRunPoints(
         tokenSum += lookup.tokens;
         matched++;
       }
+      // Only expose a run-level cost/token total when EVERY report for this
+      // run resolved trace metrics. A partial sum (some test cases matched,
+      // some didn't) would silently understate the run's true cost/tokens
+      // while looking like a complete total — worse than admitting "unknown".
+      const isComplete = runReports.length > 0 && matched === runReports.length;
 
       points.push({
         runDocId: run.id,
@@ -182,8 +190,8 @@ export function buildAgentRunPoints(
         failed,
         total,
         accuracyPct,
-        costUsd: matched > 0 ? costSum : null,
-        tokens: matched > 0 ? tokenSum : null,
+        costUsd: isComplete ? costSum : null,
+        tokens: isComplete ? tokenSum : null,
       });
     }
   }

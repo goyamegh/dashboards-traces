@@ -149,6 +149,23 @@ describe('agentTrends', () => {
       expect(point.tokens).toBe(1500);
     });
 
+    it('nulls out cost/tokens when only SOME of a run\'s reports resolved trace metrics (no partial totals presented as complete)', () => {
+      const bm = makeBenchmark('bm-1', 'B', [
+        makeRun({ id: 'run-1', stats: { passed: 2, failed: 0, pending: 0, total: 2 } }),
+      ]);
+      const reports: EvaluationReport[] = [
+        makeReport({ id: 'r1', experimentRunId: 'run-1', runId: 'agent-run-1' }),
+        makeReport({ id: 'r2', experimentRunId: 'run-1', runId: 'agent-run-2' }), // no trace match
+      ];
+      const metricsMap = new Map<string, RunMetricsLookup>([
+        ['agent-run-1', { costUsd: 0.5, tokens: 1000 }],
+        // agent-run-2 intentionally has no entry
+      ]);
+      const [point] = buildAgentRunPoints([bm], reports, metricsMap);
+      expect(point.costUsd).toBeNull();
+      expect(point.tokens).toBeNull();
+    });
+
     it('uses the agentDisplayName callback when provided', () => {
       const bm = makeBenchmark('bm-1', 'B', [makeRun({ agentKey: 'agent-a', stats: { passed: 1, failed: 0, pending: 0, total: 1 } })]);
       const points = buildAgentRunPoints([bm], [], new Map(), { agentDisplayName: k => `Pretty ${k}` });
