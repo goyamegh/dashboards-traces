@@ -244,6 +244,70 @@ export function metricValue(point: AgentRunPoint, metric: TrendMetricKey): numbe
   }
 }
 
+/** One plottable dot for the trend chart's scatter series. */
+export interface AgentSeriesPoint {
+  point: AgentRunPoint;
+  value: number;
+  /**
+   * True for the last (most recent) plotted point of this agent's series.
+   * The chart always pins a "name: value" label on this point regardless
+   * of label-overlap decluttering, per the approved design.
+   */
+  isLatest: boolean;
+}
+
+/** One agent's line (rolling average) + dots (individual runs) for the trend chart. */
+export interface AgentSeriesData {
+  agentKey: string;
+  agentName: string;
+  /** Rolling-average line, [timestamp, value] pairs, gaps (nulls) omitted. */
+  lineData: Array<[number, number]>;
+  scatterData: AgentSeriesPoint[];
+}
+
+/**
+ * Group `points` by agent and shape them into per-agent line/scatter series
+ * data for the trend chart, honoring per-agent visibility (the agents
+ * drawer's checkboxes) by omitting hidden agents entirely — this is the
+ * shared, framework-free logic that decides what the chart draws, kept
+ * separate from AgentTrendsEChart's echarts-specific option wiring so it's
+ * cheaply unit testable.
+ */
+export function buildAgentTrendSeries(
+  points: AgentRunPoint[],
+  metric: TrendMetricKey,
+  hiddenAgentKeys: ReadonlySet<string> = new Set(),
+  rollingWindow: number = 3,
+): AgentSeriesData[] {
+  const grouped = groupPointsByAgent(points);
+  const out: AgentSeriesData[] = [];
+
+  for (const [agentKey, agentPoints] of grouped) {
+    if (hiddenAgentKeys.has(agentKey)) continue;
+
+    const rawValues = agentPoints.map(p => metricValue(p, metric));
+    const rolling = rollingAverage(rawValues, rollingWindow);
+    const lineData = agentPoints
+      .map((p, i) => (rolling[i] != null ? ([p.timestamp, rolling[i] as number] as [number, number]) : null))
+      .filter((d): d is [number, number] => d != null);
+
+    const valued = agentPoints
+      .map((p, i) => ({ p, v: rawValues[i] }))
+      .filter((d): d is { p: AgentRunPoint; v: number } => d.v != null);
+    const lastValuedIndex = valued.length - 1;
+
+    const scatterData: AgentSeriesPoint[] = valued.map(({ p, v }, i) => ({
+      point: p,
+      value: v,
+      isLatest: i === lastValuedIndex,
+    }));
+
+    out.push({ agentKey, agentName: agentPoints[0].agentName, lineData, scatterData });
+  }
+
+  return out;
+}
+
 /**
  * Per-agent chip summary: latest accuracy + week-over-week delta (avg
  * accuracy of runs in the trailing 7 days vs the 7 days before that) +

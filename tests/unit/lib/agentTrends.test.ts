@@ -6,6 +6,7 @@
 import {
   buildAgentRunPoints,
   buildAgentColorMap,
+  buildAgentTrendSeries,
   computeAgentChipSummaries,
   getMostRecentlyActiveBenchmarkId,
   getRunAccuracy,
@@ -15,6 +16,7 @@ import {
   timeRangeToSinceMs,
   type RunMetricsLookup,
 } from '@/lib/agentTrends';
+import { formatMetricValue } from '@/components/charts/AgentTrendsEChart';
 import type { Benchmark, BenchmarkRun, EvaluationReport } from '@/types';
 
 function makeRun(overrides: Partial<BenchmarkRun>): BenchmarkRun {
@@ -302,6 +304,80 @@ describe('agentTrends', () => {
       const map2 = buildAgentColorMap(['agent-a', 'agent-b']);
       expect(map2.get('agent-a')).toBe(map.get('agent-a'));
       expect(map2.get('agent-b')).toBe(map.get('agent-b'));
+    });
+  });
+
+  describe('buildAgentTrendSeries', () => {
+    function twoAgentBenchmark() {
+      return makeBenchmark('bm-1', 'B', [
+        makeRun({ id: 'a1', agentKey: 'agent-a', createdAt: '2024-06-01T00:00:00Z', stats: { passed: 6, failed: 4, pending: 0, total: 10 } }),
+        makeRun({ id: 'a2', agentKey: 'agent-a', createdAt: '2024-06-05T00:00:00Z', stats: { passed: 8, failed: 2, pending: 0, total: 10 } }),
+        makeRun({ id: 'b1', agentKey: 'agent-b', createdAt: '2024-06-02T00:00:00Z', stats: { passed: 7, failed: 3, pending: 0, total: 10 } }),
+      ]);
+    }
+
+    it('builds one series per agent with its line + scatter data', () => {
+      const points = buildAgentRunPoints([twoAgentBenchmark()], [], new Map());
+      const series = buildAgentTrendSeries(points, 'accuracy');
+      expect(series.map(s => s.agentKey).sort()).toEqual(['agent-a', 'agent-b']);
+      const a = series.find(s => s.agentKey === 'agent-a')!;
+      expect(a.scatterData).toHaveLength(2);
+      expect(a.lineData.length).toBeGreaterThan(0);
+    });
+
+    it('omits series entirely for hidden agent keys (visibility toggling filters series)', () => {
+      const points = buildAgentRunPoints([twoAgentBenchmark()], [], new Map());
+      const visible = buildAgentTrendSeries(points, 'accuracy', new Set(['agent-b']));
+      expect(visible.map(s => s.agentKey)).toEqual(['agent-a']);
+
+      const noneHidden = buildAgentTrendSeries(points, 'accuracy', new Set());
+      expect(noneHidden.map(s => s.agentKey).sort()).toEqual(['agent-a', 'agent-b']);
+
+      const allHidden = buildAgentTrendSeries(points, 'accuracy', new Set(['agent-a', 'agent-b']));
+      expect(allHidden).toEqual([]);
+    });
+
+    it('marks only the last plotted point of each agent as isLatest', () => {
+      const points = buildAgentRunPoints([twoAgentBenchmark()], [], new Map());
+      const series = buildAgentTrendSeries(points, 'accuracy');
+      for (const s of series) {
+        const latestFlags = s.scatterData.map(d => d.isLatest);
+        expect(latestFlags.filter(Boolean)).toHaveLength(1);
+        expect(latestFlags[latestFlags.length - 1]).toBe(true);
+      }
+    });
+
+    it('skips points whose metric value is null (e.g. cost/tokens with no trace match) when picking the latest', () => {
+      const bm = makeBenchmark('bm-1', 'B', [
+        makeRun({ id: 'r1', agentKey: 'agent-a', createdAt: '2024-06-01T00:00:00Z', stats: { passed: 1, failed: 0, pending: 0, total: 1 } }),
+        makeRun({ id: 'r2', agentKey: 'agent-a', createdAt: '2024-06-02T00:00:00Z', stats: { passed: 1, failed: 0, pending: 0, total: 1 } }),
+      ]);
+      const points = buildAgentRunPoints([bm], [], new Map()); // no trace metrics resolved -> cost/tokens null
+      const series = buildAgentTrendSeries(points, 'cost');
+      // The agent still gets an entry (so the chart can e.g. keep a stable
+      // legend), but with no plottable line/scatter data for this metric.
+      expect(series).toHaveLength(1);
+      expect(series[0].lineData).toEqual([]);
+      expect(series[0].scatterData).toEqual([]);
+    });
+
+    it('defaults hiddenAgentKeys to empty when omitted', () => {
+      const points = buildAgentRunPoints([twoAgentBenchmark()], [], new Map());
+      expect(buildAgentTrendSeries(points, 'accuracy').length).toBe(2);
+    });
+  });
+
+  describe('formatMetricValue (chart label formatting per metric)', () => {
+    it('formats accuracy as a percentage with 1 decimal', () => {
+      expect(formatMetricValue('accuracy', 83.456)).toBe('83.5%');
+    });
+
+    it('formats cost via formatCost', () => {
+      expect(formatMetricValue('cost', 0.5)).toMatch(/\$/);
+    });
+
+    it('formats tokens via formatTokens', () => {
+      expect(formatMetricValue('tokens', 15000)).toMatch(/k|K|\d/);
     });
   });
 });

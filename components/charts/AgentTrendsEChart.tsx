@@ -22,9 +22,8 @@ import {
   AgentRunPoint,
   TrendMetricKey,
   buildAgentColorMap,
+  buildAgentTrendSeries,
   groupPointsByAgent,
-  metricValue,
-  rollingAverage,
 } from '@/lib/agentTrends';
 
 export interface AgentTrendsEChartProps {
@@ -32,6 +31,8 @@ export interface AgentTrendsEChartProps {
   metric: TrendMetricKey;
   height?: number;
   onSelectRun?: (point: AgentRunPoint) => void;
+  /** Agent keys whose line + dots should be excluded from the chart (legend visibility). */
+  hiddenAgentKeys?: Set<string>;
 }
 
 // Trailing-window size for the rolling-average line. Not exposed as a prop
@@ -45,7 +46,7 @@ const METRIC_LABEL: Record<TrendMetricKey, string> = {
   tokens: 'Tokens / run',
 };
 
-function formatMetricValue(metric: TrendMetricKey, value: number): string {
+export function formatMetricValue(metric: TrendMetricKey, value: number): string {
   switch (metric) {
     case 'accuracy':
       return `${value.toFixed(1)}%`;
@@ -63,6 +64,7 @@ export const AgentTrendsEChart: React.FC<AgentTrendsEChartProps> = ({
   metric,
   height = 280,
   onSelectRun,
+  hiddenAgentKeys,
 }) => {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartRef = useRef<echarts.ECharts | null>(null);
@@ -78,30 +80,34 @@ export const AgentTrendsEChart: React.FC<AgentTrendsEChartProps> = ({
   const { series, colorMap, hasAnyValue } = useMemo(() => {
     const grouped = groupPointsByAgent(points);
     const colorMap = buildAgentColorMap([...grouped.keys()]);
+    const agentSeries = buildAgentTrendSeries(points, metric, hiddenAgentKeys ?? new Set(), ROLLING_WINDOW);
     const series: echarts.SeriesOption[] = [];
     let hasAnyValue = false;
 
-    for (const [agentKey, agentPoints] of grouped) {
+    for (const { agentKey, agentName, lineData, scatterData } of agentSeries) {
       const color = colorMap.get(agentKey)!;
-      const rawValues = agentPoints.map(p => metricValue(p, metric));
-      if (rawValues.some(v => v != null)) hasAnyValue = true;
-      const rolling = rollingAverage(rawValues, ROLLING_WINDOW);
+      if (scatterData.length > 0) hasAnyValue = true;
 
-      const lineData = agentPoints
-        .map((p, i) => (rolling[i] != null ? [p.timestamp, rolling[i]] : null))
-        .filter((d): d is [number, number] => d != null);
-
-      const scatterData = agentPoints
-        .map((p, i) => ({ p, v: rawValues[i] }))
-        .filter((d): d is { p: AgentRunPoint; v: number } => d.v != null)
-        .map(({ p, v }) => ({
-          value: [p.timestamp, v],
-          point: p,
-        }));
+      const scatterOptionData = scatterData.map(({ point, value, isLatest }) => ({
+        value: [point.timestamp, value],
+        point,
+        // Item-level label overrides the series-level one: every dot gets its
+        // plain value; only the agent's latest dot is pinned with "name: value"
+        // and marked `__pinned` so labelLayout below never hides it, even when
+        // it overlaps a neighboring point's label.
+        __pinned: isLatest,
+        label: isLatest
+          ? {
+            show: true,
+            formatter: () => `${agentName}: ${formatMetricValue(metric, value)}`,
+            fontWeight: 600,
+          }
+          : undefined,
+      }));
 
       series.push({
         id: `line-${agentKey}`,
-        name: agentPoints[0].agentName,
+        name: agentName,
         type: 'line',
         data: lineData,
         color,
@@ -112,18 +118,29 @@ export const AgentTrendsEChart: React.FC<AgentTrendsEChartProps> = ({
       });
       series.push({
         id: `scatter-${agentKey}`,
-        name: agentPoints[0].agentName,
+        name: agentName,
         type: 'scatter',
-        data: scatterData,
+        data: scatterOptionData,
         color,
         symbolSize: 9,
         legendHoverLink: true,
+        // Per-dot value label; hidden on crowded points via the labelLayout
+        // callback below (except the pinned latest-point label, which is
+        // never hidden).
+        label: {
+          show: true,
+          position: 'top',
+          distance: 6,
+          fontSize: 9,
+          color,
+          formatter: (params: any) => formatMetricValue(metric, params.value[1]),
+        },
         z: 3,
       });
     }
 
     return { series, colorMap, hasAnyValue };
-  }, [points, metric]);
+  }, [points, metric, hiddenAgentKeys]);
 
   const showPlaceholder = points.length === 0 || !hasAnyValue;
 
@@ -144,7 +161,11 @@ export const AgentTrendsEChart: React.FC<AgentTrendsEChartProps> = ({
     if (showPlaceholder) return;
     if (!containerRef.current) return;
     if (!chartRef.current) {
-      chartRef.current = echarts.init(containerRef.current);
+      // SVG renderer (vs. the canvas default) so per-dot value labels are
+      // real DOM <text> nodes — this chart is on a public dashboard and gets
+      // e2e-asserted on label content/visibility, which a canvas bitmap
+      // can't expose to Playwright.
+      chartRef.current = echarts.init(containerRef.current, undefined, { renderer: 'svg' });
     }
     const chart = chartRef.current;
 
@@ -190,7 +211,15 @@ export const AgentTrendsEChart: React.FC<AgentTrendsEChartProps> = ({
         },
       },
       legend: {
-        show: false, // chips row above already carries per-agent identity + color
+        show: false, // agents drawer above already carries per-agent identity + color
+      },
+      // Declutter per-dot labels when runs are dense, but the pinned
+      // "latest point: value" label (marked __pinned on its data item) must
+      // always render regardless of overlap, per the approved design.
+      labelLayout: (params: any) => {
+        const seriesData = (series[params.seriesIndex] as any)?.data;
+        const pinned = Boolean(seriesData?.[params.dataIndex]?.__pinned);
+        return { hideOverlap: !pinned };
       },
       series,
     };
