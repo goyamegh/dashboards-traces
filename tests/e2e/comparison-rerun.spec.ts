@@ -14,7 +14,8 @@
  * test just varies which test-case ids each run covers.
  */
 
-import { test, expect, Route } from '@playwright/test';
+import { test, expect } from './fixtures/test-fixtures';
+import type { Route } from '@playwright/test';
 
 const RUN_A = 'eval-run-rrA';
 const RUN_B = 'eval-run-rrB';
