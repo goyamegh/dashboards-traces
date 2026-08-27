@@ -126,6 +126,49 @@ describe('buildTracesAccessor', () => {
     expect(t.totalTokens).toBe(15);
   });
 
+  it('reads bare (non-namespaced) input_tokens / output_tokens attrs (Claude Code shape)', () => {
+    const t = buildTracesAccessor([
+      span({
+        name: 'claude_code.llm_request',
+        attributes: {
+          input_tokens: 204_817,
+          output_tokens: 2_508,
+        },
+      }),
+    ]);
+    expect(t.totalTokens).toBe(207_325);
+  });
+
+  it('includes bare cache_read_tokens / cache_creation_tokens in totalTokens', () => {
+    const t = buildTracesAccessor([
+      span({
+        name: 'claude_code.llm_request',
+        attributes: {
+          input_tokens: 1000,
+          output_tokens: 100,
+          cache_read_tokens: 500,
+          cache_creation_tokens: 250,
+        },
+      }),
+    ]);
+    expect(t.totalTokens).toBe(1850);
+  });
+
+  it('includes gen_ai.usage.cache_read_input_tokens / cache_creation_input_tokens aliases', () => {
+    const t = buildTracesAccessor([
+      span({
+        name: 'llm',
+        attributes: {
+          'gen_ai.usage.prompt_tokens': 100,
+          'gen_ai.usage.completion_tokens': 20,
+          'gen_ai.usage.cache_read_input_tokens': 40,
+          'gen_ai.usage.cache_creation_input_tokens': 10,
+        },
+      }),
+    ]);
+    expect(t.totalTokens).toBe(170);
+  });
+
   it('parses string numeric attribute values', () => {
     const t = buildTracesAccessor([
       span({
@@ -192,5 +235,146 @@ describe('buildTracesAccessor', () => {
     const t = buildTracesAccessor(spans);
     expect(t.spans).toHaveLength(2);
     expect(t.spans[0].name).toBe('s1');
+  });
+
+  it('costSource is "reported" when spans carry a real cost attribute', () => {
+    const t = buildTracesAccessor([
+      span({ name: 'a', attributes: { 'gen_ai.usage.cost_usd': 0.01 } }),
+    ]);
+    expect(t.costSource).toBe('reported');
+  });
+
+  it('computes totalCost from tokens + model pricing when no cost attr is reported (Claude Code shape)', () => {
+    const t = buildTracesAccessor([
+      span({
+        name: 'claude_code.llm_request',
+        attributes: {
+          input_tokens: 1_000_000,
+          output_tokens: 1_000_000,
+          cache_read_tokens: 1_000_000,
+          cache_creation_tokens: 1_000_000,
+          'gen_ai.request.model': 'claude-sonnet-4-6',
+        },
+      }),
+    ]);
+    // Sonnet estimate: $3 in / $15 out / $0.30 cache-read / $3.75 cache-write per MTok
+    expect(t.totalCost).toBeCloseTo(3 + 15 + 0.3 + 3.75, 5);
+    expect(t.costSource).toBe('computed');
+  });
+
+  it('resolves model id from gen_ai.response.model or bare "model" as fallbacks', () => {
+    const viaResponseModel = buildTracesAccessor([
+      span({
+        name: 'llm',
+        attributes: {
+          input_tokens: 1_000_000,
+          output_tokens: 0,
+          'gen_ai.response.model': 'claude-haiku-4-5',
+        },
+      }),
+    ]);
+    expect(viaResponseModel.totalCost).toBeCloseTo(0.8, 5);
+
+    const viaBareModel = buildTracesAccessor([
+      span({
+        name: 'llm',
+        attributes: { input_tokens: 1_000_000, output_tokens: 0, model: 'claude-opus-4-6' },
+      }),
+    ]);
+    expect(viaBareModel.totalCost).toBeCloseTo(15, 5);
+  });
+
+  it('costSource is "mixed" when some spans report cost and others are computed', () => {
+    const t = buildTracesAccessor([
+      span({ name: 'a', attributes: { 'gen_ai.usage.cost_usd': 0.01 } }),
+      span({
+        name: 'b',
+        attributes: {
+          input_tokens: 1_000_000,
+          output_tokens: 0,
+          'gen_ai.request.model': 'claude-sonnet-4-6',
+        },
+      }),
+    ]);
+    expect(t.costSource).toBe('mixed');
+    expect(t.totalCost).toBeCloseTo(0.01 + 3, 5);
+  });
+
+  it('genuine zero-value token attrs do not throw on totalTokens or totalCost', () => {
+    const t = buildTracesAccessor([
+      span({
+        name: 'llm',
+        attributes: { 'gen_ai.usage.prompt_tokens': 0, 'gen_ai.usage.completion_tokens': 0 },
+      }),
+    ]);
+    expect(t.totalTokens).toBe(0);
+    expect(t.totalCost).toBe(0);
+    expect(t.costSource).toBe('none');
+  });
+
+  it('fail-loud: throws reading totalTokens when spans exist but none carry a recognized token attribute', () => {
+    const t = buildTracesAccessor([
+      span({ name: 'tool.search_logs', attributes: { 'gen_ai.tool.name': 'search_logs' } }),
+    ]);
+    expect(() => t.totalTokens).toThrow(/none carried a recognized/);
+  });
+
+  it('fail-loud: throws reading totalCost when spans exist but neither tokens nor cost are recognized', () => {
+    const t = buildTracesAccessor([
+      span({ name: 'tool.search_logs', attributes: { 'gen_ai.tool.name': 'search_logs' } }),
+    ]);
+    expect(() => t.totalCost).toThrow(/none carried a recognized/);
+  });
+
+  it('does NOT throw on totalCost when tokens are absent but a real cost attribute is reported', () => {
+    const t = buildTracesAccessor([
+      span({ name: 'a', attributes: { 'gen_ai.usage.cost_usd': 0.05 } }),
+      span({ name: 'b', attributes: { 'gen_ai.usage.cost_usd': 0.02 } }),
+    ]);
+    expect(t.totalCost).toBeCloseTo(0.07, 5);
+    expect(() => t.totalTokens).toThrow(/none carried a recognized/);
+  });
+
+  it('fail-loud: throws reading totalCost when tokens matched but the model is unpriced and no cost attr exists', () => {
+    const t = buildTracesAccessor([
+      span({
+        name: 'llm',
+        attributes: { input_tokens: 500, output_tokens: 100, 'gen_ai.request.model': 'some-unknown-model-xyz' },
+      }),
+    ]);
+    // Tokens themselves are known and must not throw.
+    expect(t.totalTokens).toBe(600);
+    expect(() => t.totalCost).toThrow(/pricing table/);
+  });
+
+  it('fail-loud: throws reading totalCost when tokens matched but no model attr is present at all', () => {
+    const t = buildTracesAccessor([
+      span({ name: 'llm', attributes: { input_tokens: 500, output_tokens: 100 } }),
+    ]);
+    expect(t.totalTokens).toBe(600);
+    expect(() => t.totalCost).toThrow(/pricing table/);
+  });
+
+  it('regression: the exact dogfood shape (bare tokens, no cost attr) surfaces nonzero totals, not a vacuous pass', () => {
+    // Mirrors the redkite-cost.eval.js dogfood finding: 5 claude_code.llm_request
+    // spans with bare token attrs and NO cost attribute anywhere. Pre-fix this
+    // read totalTokens=0 / totalCost=0, so `expect(traces.totalCost).lessThan(2)`
+    // passed vacuously.
+    const spans = [
+      span({
+        name: 'claude_code.llm_request',
+        attributes: {
+          input_tokens: 40_000,
+          output_tokens: 500,
+          cache_read_tokens: 1000,
+          cache_creation_tokens: 200,
+          'gen_ai.request.model': 'claude-sonnet-4-6',
+        },
+      }),
+    ];
+    const t = buildTracesAccessor(spans);
+    expect(t.totalTokens).toBeGreaterThan(0);
+    expect(t.totalCost).toBeGreaterThan(0);
+    expect(t.costSource).toBe('computed');
   });
 });
