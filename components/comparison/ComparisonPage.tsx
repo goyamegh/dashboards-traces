@@ -71,8 +71,10 @@ export const ComparisonPage: React.FC = () => {
   // All benchmarks for the selector
   const [allBenchmarks, setAllBenchmarks] = useState<Benchmark[]>([]);
 
-  // All test cases for name lookup
-  const [allTestCases, setAllTestCases] = useState<TestCase[]>([]);
+  // Test-case metadata for name lookup, keyed by id — fetched ONLY for the
+  // ids referenced by the currently selected runs (see the effect below;
+  // never the whole storage backend's test-case corpus).
+  const [testCaseMetaById, setTestCaseMetaById] = useState<Record<string, TestCase>>({});
 
   // State for benchmark and data
   const [benchmark, setBenchmark] = useState<Benchmark | null>(null);
@@ -164,18 +166,53 @@ export const ComparisonPage: React.FC = () => {
   const [failureClusters, setFailureClusters] = useState<FailureCluster[]>([]);
   const [clusterCaseFilter, setClusterCaseFilter] = useState<{ caseIds: string[]; clusterName: string } | null>(null);
 
-  // Load all test cases (name lookup). Benchmarks list is loaded by the pool
-  // loader below and stored in allBenchmarks for the selector.
+  // Load test-case metadata (name lookup) for the SELECTED runs only.
+  //
+  // This used to call asyncTestCaseStorage.getAll() unconditionally on mount —
+  // every test case in the whole storage backend, full body included
+  // (sourceCode/context/expectedOutcomes), unpaginated. On a real deployment
+  // that is thousands of documents and can be 100+ MB; over a slow link it
+  // can take far longer than a user will wait, or fail outright — and a
+  // failure was swallowed by a bare console.error with no retry, silently
+  // leaving `testCaseMetaById` empty forever. Because the category matrix in
+  // ComparisonInsightsBand extracts each row's category from the test-case
+  // NAME's "[category]" tag, a permanently-empty lookup means every row
+  // resolves to `(uncategorized)` and the matrix never renders — while the
+  // agreement chips above it (which don't need names) render fine. That
+  // mismatch is exactly the reported symptom.
+  //
+  // Fetch only the ids the current selection actually needs, chunked +
+  // request-id guarded the same way the reports effect below is (a run
+  // selection change while a fetch for the PREVIOUS selection is still in
+  // flight must not clobber the new selection's state).
+  const testCaseMetaRequestIdRef = useRef(0);
   useEffect(() => {
+    const selected = runPool.filter(p => selectedRunIds.includes(p.run.id));
+    const testCaseIds = new Set<string>();
+    selected.forEach(({ run }) => {
+      Object.keys(run.results || {}).forEach(id => testCaseIds.add(id));
+    });
+    const missing = Array.from(testCaseIds).filter(id => !testCaseMetaById[id]);
+    if (missing.length === 0) return;
+    const requestId = ++testCaseMetaRequestIdRef.current;
     (async () => {
       try {
-        const tcs = await asyncTestCaseStorage.getAll();
-        setAllTestCases(tcs);
+        const fetched = await asyncTestCaseStorage.getByIds(missing, { summary: true });
+        if (requestId !== testCaseMetaRequestIdRef.current) return; // superseded — discard
+        if (fetched.length > 0) {
+          setTestCaseMetaById(prev => {
+            const next = { ...prev };
+            for (const tc of fetched) next[tc.id] = tc;
+            return next;
+          });
+        }
       } catch (err) {
-        console.error('Failed to load test cases:', err);
+        if (requestId !== testCaseMetaRequestIdRef.current) return; // superseded — discard
+        console.error('[ComparisonPage] Failed to load test case metadata:', err);
       }
     })();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runPool, selectedRunIds]);
 
   // Helper: pick latest runs by date (up to 2 if available)
   const pickLatestRuns = (runs: BenchmarkRun[]) => {
@@ -434,7 +471,7 @@ export const ComparisonPage: React.FC = () => {
 
   // Test case name lookup — checks loaded test cases first, falls back to getRealTestCaseMeta (static data)
   const getTestCaseMeta = useCallback((testCaseId: string) => {
-    const tc = allTestCases.find(t => t.id === testCaseId);
+    const tc = testCaseMetaById[testCaseId];
     if (tc) {
       return {
         id: tc.id,
@@ -446,7 +483,7 @@ export const ComparisonPage: React.FC = () => {
       };
     }
     return getRealTestCaseMeta(testCaseId);
-  }, [allTestCases]);
+  }, [testCaseMetaById]);
 
   const allComparisonRows = useMemo((): TestCaseComparisonRow[] => buildTestCaseComparisonRows(selectedRuns, reports, getTestCaseMeta), [selectedRuns, reports, getTestCaseMeta]);
 
