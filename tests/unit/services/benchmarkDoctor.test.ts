@@ -3,7 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { buildDoctorPlan } from '@/services/benchmarkDoctor';
+import { buildDoctorPlan, applyDoctorPlan, migrateBenchmarksToImages } from '@/services/benchmarkDoctor';
+import type { DoctorStorageOps, DoctorPlan } from '@/services/benchmarkDoctor';
 import type { Benchmark, EvaluationRun } from '@/types';
 
 const NOW = new Date('2026-06-01T00:00:00.000Z');
@@ -175,5 +176,226 @@ describe('buildDoctorPlan — clean state', () => {
       husksToMerge: 0,
       runsToRepoint: 0,
     });
+  });
+});
+
+function mockApi(overrides: Partial<DoctorStorageOps> = {}): DoctorStorageOps {
+  return {
+    getBenchmark: jest.fn().mockResolvedValue(null),
+    updateBenchmark: jest.fn().mockResolvedValue(bench({ id: 'x', name: 'x' })),
+    deleteBenchmark: jest.fn().mockResolvedValue(true),
+    updateEvaluationRun: jest.fn().mockResolvedValue(run('er-x')),
+    listBenchmarks: jest.fn().mockResolvedValue([]),
+    ...overrides,
+  };
+}
+
+function emptyPlan(overrides: Partial<DoctorPlan> = {}): DoctorPlan {
+  return {
+    debrisDeletions: [],
+    contentDupGroups: [],
+    summary: { totalBenchmarks: 0, debrisCount: 0, dupGroupCount: 0, husksToMerge: 0, runsToRepoint: 0 },
+    ...overrides,
+  };
+}
+
+describe('applyDoctorPlan — error branches', () => {
+  it('records an error and skips the group when the canonical is already gone', async () => {
+    const api = mockApi({ getBenchmark: jest.fn().mockResolvedValue(null) });
+    const plan = emptyPlan({
+      contentDupGroups: [
+        { key: 'k', canonicalId: 'canon-1', canonicalName: 'Canon', husks: [], runRepoints: [] },
+      ],
+    });
+    const result = await applyDoctorPlan(api, plan);
+    expect(result.errors).toEqual(['canonical not found: canon-1']);
+    expect(result.husksDeleted).toBe(0);
+    expect(api.updateBenchmark).not.toHaveBeenCalled();
+  });
+
+  it('merges embedded runs from husks, re-points eval-runs, then deletes husks', async () => {
+    const canonical = bench({ id: 'canon-1', name: 'Canon', runs: [{ id: 'run-shared' } as any] });
+    const husk = bench({ id: 'husk-1', name: 'Husk', runs: [{ id: 'run-shared' } as any, { id: 'run-only-husk' } as any] });
+    const getBenchmark = jest.fn().mockImplementation(async (id: string) => {
+      if (id === 'canon-1') return canonical;
+      if (id === 'husk-1') return husk;
+      return null;
+    });
+    const api = mockApi({ getBenchmark });
+    const plan = emptyPlan({
+      contentDupGroups: [
+        {
+          key: 'k',
+          canonicalId: 'canon-1',
+          canonicalName: 'Canon',
+          husks: [{ id: 'husk-1', name: 'Husk', embeddedRunCount: 2 }],
+          runRepoints: [{ runId: 'er-1', fromBenchmarkId: 'husk-1', toBenchmarkId: 'canon-1' }],
+        },
+      ],
+    });
+    const result = await applyDoctorPlan(api, plan);
+    expect(result.embeddedRunsMerged).toBe(1); // only 'run-only-husk' is new
+    expect(api.updateBenchmark).toHaveBeenCalledWith('canon-1', {
+      runs: [{ id: 'run-shared' }, { id: 'run-only-husk' }],
+    });
+    expect(result.runsRepointed).toBe(1);
+    expect(result.husksDeleted).toBe(1);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('skips a husk that is already gone without error', async () => {
+    const canonical = bench({ id: 'canon-1', name: 'Canon' });
+    const getBenchmark = jest.fn().mockImplementation(async (id: string) => (id === 'canon-1' ? canonical : null));
+    const api = mockApi({ getBenchmark });
+    const plan = emptyPlan({
+      contentDupGroups: [
+        {
+          key: 'k',
+          canonicalId: 'canon-1',
+          canonicalName: 'Canon',
+          husks: [{ id: 'husk-gone', name: 'Gone', embeddedRunCount: 0 }],
+          runRepoints: [],
+        },
+      ],
+    });
+    const result = await applyDoctorPlan(api, plan);
+    expect(result.husksDeleted).toBe(0);
+    expect(result.errors).toEqual([]);
+  });
+
+  it('records a re-point failure when updateEvaluationRun returns null', async () => {
+    const canonical = bench({ id: 'canon-1', name: 'Canon' });
+    const api = mockApi({
+      getBenchmark: jest.fn().mockResolvedValue(canonical),
+      updateEvaluationRun: jest.fn().mockResolvedValue(null),
+    });
+    const plan = emptyPlan({
+      contentDupGroups: [
+        {
+          key: 'k',
+          canonicalId: 'canon-1',
+          canonicalName: 'Canon',
+          husks: [],
+          runRepoints: [{ runId: 'er-1', fromBenchmarkId: 'husk-1', toBenchmarkId: 'canon-1' }],
+        },
+      ],
+    });
+    const result = await applyDoctorPlan(api, plan);
+    expect(result.errors).toEqual(['failed to re-point run er-1']);
+    expect(result.runsRepointed).toBe(0);
+  });
+
+  it('records a husk-delete failure when deleteBenchmark returns false', async () => {
+    const canonical = bench({ id: 'canon-1', name: 'Canon' });
+    const husk = bench({ id: 'husk-1', name: 'Husk' });
+    const getBenchmark = jest.fn().mockImplementation(async (id: string) => (id === 'canon-1' ? canonical : husk));
+    const api = mockApi({ getBenchmark, deleteBenchmark: jest.fn().mockResolvedValue(false) });
+    const plan = emptyPlan({
+      contentDupGroups: [
+        {
+          key: 'k',
+          canonicalId: 'canon-1',
+          canonicalName: 'Canon',
+          husks: [{ id: 'husk-1', name: 'Husk', embeddedRunCount: 0 }],
+          runRepoints: [],
+        },
+      ],
+    });
+    const result = await applyDoctorPlan(api, plan);
+    expect(result.errors).toEqual(['failed to delete husk husk-1']);
+    expect(result.husksDeleted).toBe(0);
+  });
+
+  it('catches a thrown error mid-group and records it without aborting the whole plan', async () => {
+    const api = mockApi({ getBenchmark: jest.fn().mockRejectedValue(new Error('storage down')) });
+    const plan = emptyPlan({
+      contentDupGroups: [
+        { key: 'k', canonicalId: 'canon-1', canonicalName: 'Canon', husks: [], runRepoints: [] },
+      ],
+    });
+    const result = await applyDoctorPlan(api, plan);
+    expect(result.errors).toEqual(['group Canon: storage down']);
+  });
+
+  it('deletes debris and records both successes and failures', async () => {
+    const deleteBenchmark = jest.fn().mockImplementation(async (id: string) => id !== 'debris-fail');
+    const api = mockApi({ deleteBenchmark });
+    const plan = emptyPlan({
+      debrisDeletions: [
+        { id: 'debris-ok', name: 'OK debris', reason: 'quick-mode' },
+        { id: 'debris-fail', name: 'Stubborn debris', reason: 'quick-mode' },
+      ],
+    });
+    const result = await applyDoctorPlan(api, plan);
+    expect(result.debrisDeleted).toBe(1);
+    expect(result.errors).toEqual(['failed to delete debris debris-fail']);
+  });
+
+  it('catches a thrown error deleting debris', async () => {
+    const api = mockApi({ deleteBenchmark: jest.fn().mockRejectedValue(new Error('boom')) });
+    const plan = emptyPlan({ debrisDeletions: [{ id: 'd1', name: 'D1', reason: 'quick-mode' }] });
+    const result = await applyDoctorPlan(api, plan);
+    expect(result.errors).toEqual(['debris D1: boom']);
+  });
+});
+
+describe('migrateBenchmarksToImages', () => {
+  const BASE_URL = 'http://localhost:9999';
+  let fetchMock: jest.Mock;
+
+  beforeEach(() => {
+    fetchMock = jest.fn();
+    (global as any).fetch = fetchMock;
+  });
+
+  it('skips sample (demo-) and empty-test-case benchmarks without calling the API', async () => {
+    const api = mockApi({
+      listBenchmarks: jest.fn().mockResolvedValue([
+        bench({ id: 'demo-1', name: 'Sample', testCaseIds: ['tc-1'] }),
+        bench({ id: 'b-empty', name: 'Empty', testCaseIds: [] }),
+      ]),
+    });
+    const result = await migrateBenchmarksToImages(api, BASE_URL);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(result.skipped).toEqual([
+      { benchmarkId: 'demo-1', name: 'Sample', reason: 'sample data' },
+      { benchmarkId: 'b-empty', name: 'Empty', reason: 'no test cases' },
+    ]);
+    expect(result.migrated).toEqual([]);
+  });
+
+  it('migrates real benchmarks and filters by opts.benchmarkIds', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ image: { digest: 'sha256:abc' } }),
+    });
+    const api = mockApi({
+      listBenchmarks: jest.fn().mockResolvedValue([
+        bench({ id: 'b1', name: 'Keep', testCaseIds: ['tc-1'] }),
+        bench({ id: 'b2', name: 'Drop', testCaseIds: ['tc-2'] }),
+      ]),
+    });
+    const result = await migrateBenchmarksToImages(api, BASE_URL, { benchmarkIds: ['b1'] });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(result.migrated).toEqual([{ benchmarkId: 'b1', name: 'Keep', digest: 'sha256:abc' }]);
+  });
+
+  it('records an error when the images API responds non-ok', async () => {
+    fetchMock.mockResolvedValue({ ok: false, text: async () => 'boom from server' });
+    const api = mockApi({
+      listBenchmarks: jest.fn().mockResolvedValue([bench({ id: 'b1', name: 'Keep', testCaseIds: ['tc-1'] })]),
+    });
+    const result = await migrateBenchmarksToImages(api, BASE_URL);
+    expect(result.errors).toEqual(['Keep: boom from server']);
+    expect(result.migrated).toEqual([]);
+  });
+
+  it('records an error when fetch throws', async () => {
+    fetchMock.mockRejectedValue(new Error('network down'));
+    const api = mockApi({
+      listBenchmarks: jest.fn().mockResolvedValue([bench({ id: 'b1', name: 'Keep', testCaseIds: ['tc-1'] })]),
+    });
+    const result = await migrateBenchmarksToImages(api, BASE_URL);
+    expect(result.errors).toEqual(['Keep: network down']);
   });
 });
