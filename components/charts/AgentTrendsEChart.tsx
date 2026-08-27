@@ -124,7 +124,23 @@ export const AgentTrendsEChart: React.FC<AgentTrendsEChartProps> = ({
     return { series, colorMap, hasAnyValue };
   }, [points, metric, rollingWindow]);
 
+  const showPlaceholder = points.length === 0 || !hasAnyValue;
+
+  // When switching into a placeholder state, the chart's container div is
+  // replaced by a plain text div at the same JSX position — React reuses
+  // the host node and patches its children, but it doesn't know about (and
+  // won't clean up) the canvas echarts imperatively appended underneath.
+  // Dispose explicitly so the old chart doesn't visually persist under the
+  // placeholder message, and so switching back re-initializes cleanly.
   useEffect(() => {
+    if (showPlaceholder && chartRef.current) {
+      chartRef.current.dispose();
+      chartRef.current = null;
+    }
+  }, [showPlaceholder]);
+
+  useEffect(() => {
+    if (showPlaceholder) return;
     if (!containerRef.current) return;
     if (!chartRef.current) {
       chartRef.current = echarts.init(containerRef.current);
@@ -198,7 +214,7 @@ export const AgentTrendsEChart: React.FC<AgentTrendsEChartProps> = ({
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [series, metric, isDarkMode]);
+  }, [series, metric, isDarkMode, showPlaceholder]);
 
   useEffect(() => {
     return () => {
@@ -214,6 +230,7 @@ export const AgentTrendsEChart: React.FC<AgentTrendsEChartProps> = ({
   if (points.length === 0) {
     return (
       <div
+        key="no-runs"
         className="flex items-center justify-center text-muted-foreground text-sm"
         style={{ height }}
         data-testid="agent-trends-chart-empty"
@@ -226,6 +243,7 @@ export const AgentTrendsEChart: React.FC<AgentTrendsEChartProps> = ({
   if (!hasAnyValue) {
     return (
       <div
+        key="no-value"
         className="flex flex-col items-center justify-center text-muted-foreground text-sm gap-1"
         style={{ height }}
         data-testid="agent-trends-chart-empty"
@@ -242,6 +260,7 @@ export const AgentTrendsEChart: React.FC<AgentTrendsEChartProps> = ({
 
   return (
     <div
+      key="chart"
       ref={containerRef}
       style={{ height, width: '100%' }}
       data-testid="agent-trends-chart"
