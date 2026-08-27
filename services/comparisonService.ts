@@ -10,6 +10,7 @@ import {
   TestCaseComparisonRow,
   TestCaseRunResult,
   Category,
+  TraceMetrics,
 } from '@/types';
 import { TEST_CASES } from '@/data/testCases';
 import { bucketRunResults } from '@/lib/runStats';
@@ -51,7 +52,23 @@ export function calculateRunAggregates(
   // verdicts — NOT the naive denormalized run.stats (which counts errored cases
   // as passed and never tracks `errored`, #242). This keeps the comparison
   // panel, the per-cell Errored badges, and the runs list all in agreement.
-  const buckets = bucketRunResults(run.results as Record<string, { status?: string; passFailStatus?: string }>);
+  //
+  // Some writers (e.g. the CLI benchmark path) persist results entries with
+  // only { reportId, status } and leave the verdict on the report doc. Overlay
+  // the report's passFailStatus before bucketing — otherwise every completed
+  // case buckets as "errored" and the scoreboard renders a fabricated 0% pass
+  // rate while the per-case table below shows real Passed/Failed verdicts.
+  const resultsWithVerdicts = Object.fromEntries(
+    Object.entries(run.results).map(([id, r]) => {
+      const entry = r as { reportId?: string; status?: string; passFailStatus?: string };
+      return [id, {
+        status: entry.status,
+        passFailStatus: entry.passFailStatus
+          ?? (entry.reportId ? (reports[entry.reportId] as { passFailStatus?: string } | undefined)?.passFailStatus : undefined),
+      }];
+    })
+  );
+  const buckets = bucketRunResults(resultsWithVerdicts);
   const passedCount = buckets.passed;
   const failedCount = buckets.failed;
   const erroredCount = buckets.errored;
@@ -92,6 +109,69 @@ export function calculateRunAggregates(
     avgDurationMs: undefined,
     totalLlmCalls: undefined,
     totalToolCalls: undefined,
+  };
+}
+
+/**
+ * Overlay trace-derived metrics (tokens/cost/duration/calls) onto a run's
+ * base aggregate (from {@link calculateRunAggregates}), which deliberately
+ * leaves these fields undefined since they come from a separate trace
+ * metrics fetch. Two honesty fixes live here, both found comparing
+ * EnterpriseRAG-Bench runs:
+ *
+ * 1. The batch metrics API returns a zero-filled `status: 'pending'`
+ *    placeholder when a runId has no spans at all (no tracing configured, or
+ *    traces not yet ingested) — summing those as real data rendered
+ *    "$0.00 / 0ms" for an untraced agent, which reads as "this run cost
+ *    nothing and took no time" instead of "not captured". Pending
+ *    placeholders are skipped entirely.
+ * 2. When no trace metrics are available at all (mc === 0), fall back to
+ *    the per-result `performanceMetrics.durationMs` the benchmark runner
+ *    already persists (averaged across cases with a real value) before the
+ *    coarser run-level `performanceMetrics` fields — real data we already
+ *    have beats another "0ms".
+ */
+export function mergeTraceMetrics(
+  base: RunAggregateMetrics,
+  run: ExperimentRun,
+  reports: Record<string, EvaluationReport>,
+  traceMetricsMap: Map<string, TraceMetrics>
+): RunAggregateMetrics {
+  let totalTokens = 0, totalInputTokens = 0, totalOutputTokens = 0, totalCostUsd = 0, totalDurationMs = 0, totalLlmCalls = 0, totalToolCalls = 0, mc = 0;
+  for (const result of Object.values(run.results)) {
+    const report = reports[result.reportId];
+    if (report?.runId) {
+      const tm = traceMetricsMap.get(report.runId);
+      if (tm && tm.status !== 'pending') {
+        totalTokens += tm.totalTokens || 0;
+        totalInputTokens += tm.inputTokens || 0;
+        totalOutputTokens += tm.outputTokens || 0;
+        totalCostUsd += tm.costUsd || 0;
+        totalDurationMs += tm.durationMs || 0;
+        totalLlmCalls += tm.llmCalls || 0;
+        totalToolCalls += tm.toolCalls || 0;
+        mc++;
+      }
+    }
+  }
+
+  const perResultDurations = Object.values(run.results)
+    .map(r => (r as { performanceMetrics?: { durationMs?: number } }).performanceMetrics?.durationMs)
+    .filter((d): d is number => typeof d === 'number' && d > 0);
+  const perf = (run as ExperimentRun & { performanceMetrics?: { avgTestCaseDurationMs?: number; durationMs?: number } }).performanceMetrics;
+  const fallbackAvgDurationMs = perResultDurations.length > 0
+    ? Math.round(perResultDurations.reduce((a, b) => a + b, 0) / perResultDurations.length)
+    : perf?.avgTestCaseDurationMs ?? (perf?.durationMs && base.totalTestCases ? Math.round(perf.durationMs / base.totalTestCases) : undefined);
+
+  return {
+    ...base,
+    totalTokens: mc > 0 ? totalTokens : undefined,
+    totalInputTokens: mc > 0 ? totalInputTokens : undefined,
+    totalOutputTokens: mc > 0 ? totalOutputTokens : undefined,
+    totalCostUsd: mc > 0 ? totalCostUsd : undefined,
+    avgDurationMs: mc > 0 ? Math.round(totalDurationMs / mc) : fallbackAvgDurationMs,
+    totalLlmCalls: mc > 0 ? totalLlmCalls : undefined,
+    totalToolCalls: mc > 0 ? totalToolCalls : undefined,
   };
 }
 
