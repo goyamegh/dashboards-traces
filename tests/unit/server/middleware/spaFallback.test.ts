@@ -11,16 +11,21 @@
  *   "Failed to load module script: Expected a JavaScript-or-Wasm module
  *    script but the server responded with a MIME type of \"text/html\"."
  *
- * Cause: a stale cached `index.html` references `/assets/index-OLDHASH.js`,
- * the asset no longer exists, the SPA fallback used to return `index.html`
- * (text/html) for ANY non-/api path, and strict MIME enforcement in
- * browsers refuses to execute it as a module — leaving the user with a
- * blank page after every deploy.
+ * Cause #1 (fixed earlier): a stale cached `index.html` references
+ * `/assets/index-OLDHASH.js`, the asset no longer exists, the SPA fallback
+ * used to return `index.html` (text/html) for ANY non-/api path, and strict
+ * MIME enforcement in browsers refuses to execute it as a module — leaving
+ * the user with a blank page after every deploy.
  *
- * The fallback now returns 404 for any path under `/assets/` or `/static/`
- * and for any path with a typical web-asset extension. Real client-side
- * routes (extension-less paths like `/evaluations/...`) still receive the
- * SPA index.html.
+ * Cause #2 (this file's new coverage): even with the asset-extension 404s
+ * above, `makeSpaFallbackMiddleware` used to be handed a pre-read HTML
+ * *string* once at process boot. Rebuilding `dist/` in the same long-lived
+ * process (e.g. re-running `npm run build` in a live worktree) rehashes
+ * `dist/assets/*`, but the cached string still references the old,
+ * now-deleted hashes — so index.html itself goes stale and every SPA route
+ * serves broken asset references until a restart. The fix: the middleware
+ * now takes a file *path* and re-reads it whenever its mtime changes,
+ * falling back to the last-good cached copy if a read fails mid-rebuild.
  *
  * The middleware factory is in `server/middleware/spaFallback.ts` so this
  * test file can import it without dragging `server/middleware/index.ts`'s
@@ -29,6 +34,9 @@
 
 import express, { Express } from 'express';
 import http from 'http';
+import fs from 'fs';
+import os from 'os';
+import path from 'path';
 import { makeSpaFallbackMiddleware, ASSET_EXT_RE } from '@/server/middleware/spaFallback';
 
 const FAKE_INDEX_HTML =
@@ -69,19 +77,40 @@ function probe(app: Express, urlPath: string, method = 'GET'): Promise<ProbeResu
   });
 }
 
-function buildApp(): Express {
+// Bump mtime forward by `ms` (and beyond) to guarantee a detectable change
+// even on filesystems with coarse mtime resolution.
+function touchWithContent(filePath: string, content: string, mtimeOffsetMs: number): void {
+  fs.writeFileSync(filePath, content, 'utf-8');
+  const stat = fs.statSync(filePath);
+  const newMtime = new Date(stat.mtimeMs + mtimeOffsetMs);
+  fs.utimesSync(filePath, newMtime, newMtime);
+}
+
+function buildApp(indexPath: string): Express {
   const app = express();
   // Real API routes registered ahead of the fallback to verify the fallback
   // doesn't shadow them.
   app.get('/api/storage/health', (_req, res) => res.json({ status: 'ok' }));
   app.get('/health', (_req, res) => res.json({ status: 'ok' }));
-  app.use(makeSpaFallbackMiddleware(FAKE_INDEX_HTML));
+  app.use(makeSpaFallbackMiddleware(indexPath));
   return app;
 }
 
 describe('makeSpaFallbackMiddleware', () => {
+  let tmpDir: string;
+  let indexPath: string;
   let app: Express;
-  beforeAll(() => { app = buildApp(); });
+
+  beforeAll(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spa-fallback-test-'));
+    indexPath = path.join(tmpDir, 'index.html');
+    fs.writeFileSync(indexPath, FAKE_INDEX_HTML, 'utf-8');
+    app = buildApp(indexPath);
+  });
+
+  afterAll(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
 
   it('serves index.html (text/html) for the root path', async () => {
     const r = await probe(app, '/');
@@ -185,6 +214,103 @@ describe('makeSpaFallbackMiddleware', () => {
     // Default Express 404 is text/html "Cannot POST /assets/foo.js" — we just
     // assert it's NOT the SPA shell (which contains '<div id="root">').
     expect(r.body).not.toContain('<div id="root">');
+  });
+});
+
+describe('makeSpaFallbackMiddleware — live index.html refresh (rebuild-without-restart bug)', () => {
+  let tmpDir: string;
+  let indexPath: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'spa-fallback-refresh-test-'));
+    indexPath = path.join(tmpDir, 'index.html');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('serves the NEW html after the file changes and its mtime advances (no restart needed)', async () => {
+    const oldHtml = '<html><body><script src="/assets/index-OLDHASH.js"></script></body></html>';
+    const newHtml = '<html><body><script src="/assets/index-NEWHASH.js"></script></body></html>';
+
+    fs.writeFileSync(indexPath, oldHtml, 'utf-8');
+    const app = buildApp(indexPath);
+
+    const before = await probe(app, '/app');
+    expect(before.body).toBe(oldHtml);
+
+    // Simulate an in-place rebuild: new content, mtime strictly advanced.
+    touchWithContent(indexPath, newHtml, 1000);
+
+    const after = await probe(app, '/app');
+    expect(after.body).toBe(newHtml);
+    expect(after.body).not.toContain('OLDHASH');
+  });
+
+  it('keeps serving the cached html when the mtime has NOT changed (no redundant re-read)', async () => {
+    const html = '<html><body>stable</body></html>';
+    fs.writeFileSync(indexPath, html, 'utf-8');
+    const app = buildApp(indexPath);
+
+    const readSpy = jest.spyOn(fs, 'readFileSync');
+    readSpy.mockClear();
+
+    const r1 = await probe(app, '/one');
+    const r2 = await probe(app, '/two');
+    expect(r1.body).toBe(html);
+    expect(r2.body).toBe(html);
+
+    // Two requests, unchanged mtime: readFileSync must not be called again
+    // beyond the middleware's own initial synchronous load (which happened
+    // in buildApp(), before the spy was installed). Both probed requests
+    // should be served purely from the mtime-checked cache.
+    expect(readSpy).not.toHaveBeenCalled();
+
+    readSpy.mockRestore();
+  });
+
+  it('serves the last-good cached html if a later read fails (mid-rebuild transient error)', async () => {
+    const goodHtml = '<html><body>good</body></html>';
+    fs.writeFileSync(indexPath, goodHtml, 'utf-8');
+    const app = buildApp(indexPath);
+
+    // Warm the cache with a real, successful request.
+    const warm = await probe(app, '/warm');
+    expect(warm.body).toBe(goodHtml);
+
+    // Force the *next* stat to look like a changed file (so a re-read is
+    // attempted) but make the read itself throw, simulating a rebuild tool
+    // truncating/replacing the file mid-write.
+    const realStat = fs.statSync;
+    const statSpy = jest.spyOn(fs, 'statSync').mockImplementationOnce(((p: Parameters<typeof fs.statSync>[0]) => {
+      const real = realStat(p);
+      return { ...real, mtimeMs: real.mtimeMs + 999999 } as fs.Stats;
+    }) as typeof fs.statSync);
+    const readSpy = jest.spyOn(fs, 'readFileSync').mockImplementationOnce(() => {
+      throw new Error('EBUSY: file is being rewritten');
+    });
+
+    const duringRebuild = await probe(app, '/during-rebuild');
+    expect(duringRebuild.status).toBe(200);
+    expect(duringRebuild.body).toBe(goodHtml); // last-good, not a 500/blank
+
+    statSpy.mockRestore();
+    readSpy.mockRestore();
+
+    // Once the rebuild tool finishes and mtime genuinely differs again, a
+    // normal request should pick up the fresh content.
+    touchWithContent(indexPath, '<html><body>after rebuild</body></html>', 2000);
+    const after = await probe(app, '/after-rebuild');
+    expect(after.body).toBe('<html><body>after rebuild</body></html>');
+  });
+
+  it('returns 503 (never a blank 200) if the file never successfully reads at all', async () => {
+    // Never created — index.html does not exist at any point.
+    const app = buildApp(indexPath);
+    const r = await probe(app, '/anything');
+    expect(r.status).toBe(503);
+    expect(r.contentType).not.toMatch(/text\/html/);
   });
 });
 
