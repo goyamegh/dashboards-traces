@@ -38,7 +38,8 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { asyncBenchmarkStorage, asyncTestCaseStorage } from '@/services/storage';
-import { executeBenchmarkRun } from '@/services/client';
+import { computeRunStats } from '@/lib/runStats';
+import { executeBenchmarkRun, listEvaluationRuns } from '@/services/client';
 import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
 import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, RunStats, Evaluator } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
@@ -50,6 +51,9 @@ import {
   getSelectedVersionData,
   getVersionTestCases,
   filterRunsByVersion,
+  effectiveRunVersionFilter,
+  mergeEvalRunsIntoBenchmarkRuns,
+  runInspectPath,
   VersionData,
 } from '@/lib/benchmarkVersionUtils';
 import { RunConfigForExecution } from '@/components/BenchmarkEditor';
@@ -138,7 +142,26 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
   // Version state
   const [testCaseVersion, setTestCaseVersion] = useState<number | null>(null);
-  const [runVersionFilter, setRunVersionFilter] = usePersistedState<number | 'all'>('benchmark-runs:runVersionFilter', 'all');
+  // Persisted PER BENCHMARK — a single global key leaked a version filter set
+  // on one benchmark (e.g. v8) onto every other benchmark, where it matched
+  // nothing and rendered a bogus "No runs for v8" empty state that looked
+  // like data loss (hit on EnterpriseRAG-Bench, 2026-08-24).
+  const [rawRunVersionFilter, setRunVersionFilter] = usePersistedState<number | 'all'>(
+    `benchmark-runs:runVersionFilter:${benchmarkId ?? 'unknown'}`, 'all'
+  );
+  // Self-heal any stale persisted value: a version the benchmark doesn't have
+  // behaves as 'all' instead of filtering everything out.
+  const runVersionFilter = effectiveRunVersionFilter(
+    rawRunVersionFilter,
+    benchmark ? (benchmark.versions ?? []).map(v => v.version) : undefined
+  );
+  // Repair the persisted value too (not just mask it at render time), so
+  // localStorage doesn't keep serving a corrupt filter to every consumer.
+  useEffect(() => {
+    if (benchmark && runVersionFilter !== rawRunVersionFilter) {
+      setRunVersionFilter(runVersionFilter);
+    }
+  }, [benchmark, runVersionFilter, rawRunVersionFilter, setRunVersionFilter]);
 
   // Layout state — the legacy /benchmarks/:id/runs page used a side-by-side
   // resizable split (Test Cases left, Runs right). The Evals3 "Option B" rewrite
@@ -171,7 +194,17 @@ export const BenchmarkRunsPage2: React.FC = () => {
       const options = isPolling
         ? { fields: 'polling' as const, runsSize: 100 }
         : { runsSize: 100 };
-      const exp = await asyncBenchmarkStorage.getById(benchmarkId, options);
+      const [exp, evalRunsResult] = await Promise.all([
+        asyncBenchmarkStorage.getById(benchmarkId, options),
+        // Run-first EvaluationRun docs (created by `benchmark -f foo.eval.js`
+        // and other unified-mode CLI/API sources) that reference this
+        // benchmark but never got embedded into benchmark.runs[]. Best-effort:
+        // a failure here still shows the embedded runs.
+        listEvaluationRuns({ benchmarkId, size: 200 }).catch(err => {
+          console.error('Failed to load run-first evaluation runs:', err);
+          return { evaluationRuns: [], total: 0 };
+        }),
+      ]);
       if (!exp) { navigate(parentPath); return; }
 
       const expAny = exp as any;
@@ -184,6 +217,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
       } else {
         cachedVersions.current = exp.versions;
       }
+      exp.runs = mergeEvalRunsIntoBenchmarkRuns(exp.runs, evalRunsResult.evaluationRuns);
       setBenchmark(exp);
 
       if (!isPolling) {
@@ -212,7 +246,11 @@ export const BenchmarkRunsPage2: React.FC = () => {
       if (exp) {
         setBenchmark(prev => {
           if (!prev) return exp;
-          return { ...prev, runs: [...(prev.runs || []), ...(exp.runs || [])] };
+          const existingIds = new Set((prev.runs || []).map(r => r.id));
+          const newRuns = (exp.runs || [])
+            .filter(r => !existingIds.has(r.id))
+            .map(r => ({ ...r, __kind: 'benchmark' as const }));
+          return { ...prev, runs: [...(prev.runs || []), ...newRuns] };
         });
         const expAny = exp as any;
         if (expAny.totalRuns !== undefined) {
@@ -273,24 +311,13 @@ export const BenchmarkRunsPage2: React.FC = () => {
     let running = 0;
     Object.values(run.results || {}).forEach(r => { if (r.status === 'running') running++; });
 
-    if (run.stats && typeof run.stats.passed === 'number') {
-      return {
-        passed: run.stats.passed, failed: run.stats.failed,
-        pending: Math.max(0, run.stats.pending - running), running,
-        // `errored` is optional on older stored runs (issue #242 added it).
-        // Fall back to 0 so existing benchmarks render without a NaN badge.
-        errored: run.stats.errored ?? 0,
-        total: run.stats.total,
-      };
-    }
-    let passed = 0, failed = 0, pending = 0;
-    Object.values(run.results || {}).forEach(r => {
-      if (r.status === 'running') return;
-      else if (r.status === 'completed') passed++;
-      else if (r.status === 'failed' || r.status === 'cancelled') failed++;
-      else pending++;
-    });
-    return { passed, failed, pending, running, errored: 0, total: Object.keys(run.results || {}).length };
+    // Recompute from run.results (single source of truth, issue #242) rather
+    // than trusting the denormalized run.stats, which historically counted
+    // errored cases as passed. Falls back to run.stats only when per-case
+    // results aren't present (e.g. very old runs).
+    const { passed, failed, errored, total } = computeRunStats(run);
+    const pending = Math.max(0, total - passed - failed - errored - running);
+    return { passed, failed, pending, running, errored, total };
   }, []);
 
   const hasPendingEvaluations = useMemo(() => {
@@ -450,10 +477,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
   const hasMultipleRuns = runs.length >= 2;
 
   return (
-    <div className="p-6 h-full flex flex-col">
+    <div className="p-4 sm:p-6 h-full max-md:h-auto max-md:min-h-full flex flex-col">
       <Breadcrumbs
         items={[
-          { label: 'Evaluations', href: '/evaluations/benchmarks' },
+          { label: 'Evaluations', href: '/evaluations/runs' },
           { label: 'Benchmarks', href: '/evaluations/benchmarks' },
           { label: benchmark.name },
         ]}
@@ -573,13 +600,26 @@ export const BenchmarkRunsPage2: React.FC = () => {
                 <CardContent className="flex flex-col items-center justify-center py-12 text-muted-foreground">
                   <Play size={48} className="mb-4 opacity-20" />
                   <p className="text-lg font-medium">
-                    {runVersionFilter === 'all' ? 'No runs yet' : `No runs for v${runVersionFilter}`}
+                    {runVersionFilter === 'all' || runs.length === 0
+                      ? 'No runs yet'
+                      : `0 of ${runs.length} run${runs.length !== 1 ? 's' : ''} match v${runVersionFilter}`}
                   </p>
                   <p className="text-sm">
-                    {runVersionFilter === 'all'
+                    {runVersionFilter === 'all' || runs.length === 0
                       ? 'Run this benchmark to see results here'
-                      : 'Try selecting a different version or "All Versions"'}
+                      : 'Runs exist on other versions of this benchmark'}
                   </p>
+                  {runVersionFilter !== 'all' && runs.length > 0 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-4"
+                      data-testid="show-all-versions-btn"
+                      onClick={() => setRunVersionFilter('all')}
+                    >
+                      Show all versions ({runs.length})
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
             ) : (
@@ -595,13 +635,12 @@ export const BenchmarkRunsPage2: React.FC = () => {
                       isSelected ? 'border-primary bg-primary/5' : 'hover:border-primary/50'
                     }`}
                     onClick={() => {
-                      const runDetailPath = `/evaluations/benchmarks/${benchmarkId}/runs/${run.id}/inspect`;
-                      navigate(runDetailPath);
+                      navigate(runInspectPath(benchmarkId!, run));
                     }}
                   >
                     <CardContent className="p-4">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3 flex-1">
+                      <div className="flex items-center justify-between max-md:flex-col max-md:items-stretch max-md:gap-3">
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
                           {hasMultipleRuns && (
                             <Checkbox
                               checked={isSelected}
@@ -610,8 +649,8 @@ export const BenchmarkRunsPage2: React.FC = () => {
                               className="h-5 w-5"
                             />
                           )}
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-1">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
                               <h3 className="font-semibold">{run.name}</h3>
                               {getEffectiveRunStatus(run) === 'running' && (
                                 <Badge className="text-xs bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-500/20 dark:text-blue-400 dark:border-blue-500/30 animate-pulse">
@@ -648,7 +687,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
                             {run.description && (
                               <p className="text-sm text-muted-foreground mb-2">{run.description}</p>
                             )}
-                            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                            <div className="flex items-center gap-x-4 gap-y-1 text-xs text-muted-foreground flex-wrap">
                               <span className="flex items-center gap-1"><Calendar size={12} />{formatDate(run.createdAt)}</span>
                               <span>Agent: {DEFAULT_CONFIG.agents.find(a => a.key === run.agentKey)?.name || run.agentKey}</span>
                               <span>Model: {getModelName(run.modelId)}</span>
@@ -657,9 +696,9 @@ export const BenchmarkRunsPage2: React.FC = () => {
                         </div>
 
                         {/* Stats and Actions */}
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-4 max-md:justify-between max-md:pl-8 max-md:flex-wrap">
                           {(stats.total > 0 || getEffectiveRunStatus(run) === 'running') && (
-                            <div className="flex items-center gap-4 text-sm">
+                            <div className="flex items-center gap-4 text-sm flex-wrap">
                               {stats.running > 0 && (
                                 <span className="flex items-center gap-1 text-blue-700 dark:text-blue-400" title="Running">
                                   <Loader2 size={14} className="animate-spin" /> {stats.running}
@@ -687,7 +726,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
                               <span className="text-muted-foreground">/ {stats.total}</span>
                             </div>
                           )}
-                          {getEffectiveRunStatus(run) === 'running' && (
+                          {getEffectiveRunStatus(run) === 'running' && (run as any).__kind !== 'eval-run' && (
                             <Button
                               variant="outline" size="sm"
                               disabled={isCancelling(run.id)}
@@ -699,11 +738,11 @@ export const BenchmarkRunsPage2: React.FC = () => {
                             </Button>
                           )}
                           <Button
-                            variant="ghost" size="icon"
+                            variant='ghost' size='icon'
                             onClick={e => { e.stopPropagation(); handleDeleteRun(run); }}
-                            disabled={deleteState.isDeleting && deleteState.deletingId === run.id}
-                            className="text-red-700 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 hover:bg-red-500/10"
-                            title="Delete run"
+                            disabled={(deleteState.isDeleting && deleteState.deletingId === run.id) || (run as any).__kind === 'eval-run'}
+                            className='text-red-700 dark:text-red-400 hover:text-red-600 dark:hover:text-red-300 hover:bg-red-500/10'
+                            title={(run as any).__kind === 'eval-run' ? 'Run-first evaluation runs are deleted via /evaluations/runs' : 'Delete run'}
                           >
                             {deleteState.isDeleting && deleteState.deletingId === run.id
                               ? <Loader2 size={14} className="animate-spin" />
@@ -793,9 +832,17 @@ export const BenchmarkRunsPage2: React.FC = () => {
                             )}
                           </div>
                           <div className="flex items-center gap-2 mt-1 flex-wrap">
-                            {(tc.labels || []).slice(0, 3).map(label => (
-                              <Badge key={label} className={`text-xs ${getLabelColor(label)}`}>{label}</Badge>
-                            ))}
+                            {(tc.labels || []).slice(0, 3).map(label => {
+                              const duplicatesStructuredFact = /^(category|difficulty):/i.test(label);
+                              return (
+                                <Badge
+                                  key={label}
+                                  className={`text-xs ${getLabelColor(label)} ${duplicatesStructuredFact ? 'max-md:hidden' : ''}`}
+                                >
+                                  {label}
+                                </Badge>
+                              );
+                            })}
                             {(tc.labels || []).length > 3 && (
                               <span className="text-xs text-muted-foreground">+{(tc.labels || []).length - 3}</span>
                             )}
@@ -830,7 +877,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
               <SelectItem value="all">All Versions ({runs.length})</SelectItem>
               {versionData.map(v => (
                 <SelectItem key={v.version} value={String(v.version)}>
-                  v{v.version} ({v.runCount} run{v.runCount !== 1 ? 's' : ''})
+                  v{v.version}{v.isLatest ? ' (latest)' : ''} · {v.runCount === 0 ? 'no runs' : `${v.runCount} run${v.runCount !== 1 ? 's' : ''}`}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -888,15 +935,15 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
         if (layoutMode === 'split') {
           return (
-            <div className="flex-1 flex flex-col overflow-hidden" data-testid="benchmark-runs-split">
+            <div className="flex-1 flex flex-col overflow-hidden max-md:overflow-visible" data-testid="benchmark-runs-split">
               <div className="flex items-center justify-end mb-3">
                 {layoutToggle}
               </div>
-              <ResizablePanelGroup direction="horizontal" className="flex-1 overflow-hidden">
+              <ResizablePanelGroup direction="horizontal" className="flex-1 overflow-hidden max-md:!h-auto max-md:!overflow-visible">
                 {/* Left Panel — Test Cases */}
-                <ResizablePanel defaultSize={35} minSize={25} maxSize={55}>
-                  <div className="h-full overflow-y-auto pr-3">
-                    <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3 flex items-center justify-between">
+                <ResizablePanel defaultSize={35} minSize={25} maxSize={55} className="max-md:!min-h-0 max-md:!h-auto max-md:!overflow-visible">
+                  <div className="h-full overflow-y-auto pr-3 max-md:h-auto max-md:overflow-visible max-md:pr-0">
+                    <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3 flex items-center justify-between max-md:static">
                       <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center">
                         Test Cases
                         {versionTestCases.length > 0 && (
@@ -908,11 +955,11 @@ export const BenchmarkRunsPage2: React.FC = () => {
                     {testCasesBody}
                   </div>
                 </ResizablePanel>
-                <ResizableHandle withHandle />
+                <ResizableHandle withHandle className="max-md:hidden" />
                 {/* Right Panel — Runs */}
-                <ResizablePanel defaultSize={65} minSize={45}>
-                  <div className="h-full overflow-y-auto pl-3">
-                    <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3 flex items-center justify-between">
+                <ResizablePanel defaultSize={65} minSize={45} className="max-md:!min-h-0 max-md:!h-auto max-md:!overflow-visible max-md:mt-5">
+                  <div className="h-full overflow-y-auto pl-3 max-md:h-auto max-md:overflow-visible max-md:pl-0">
+                    <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3 flex items-center justify-between max-md:static">
                       <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center">
                         Runs
                         {filteredRuns.length > 0 && (

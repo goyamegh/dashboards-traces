@@ -435,18 +435,20 @@ test.describe('Evaluation Runner - Empty States', () => {
 
 test.describe('Evaluation Runner - Run Status Badges', () => {
   test('should render status badges with appropriate styling', async ({ page }) => {
-    const response = await page.request.get('/api/storage/evaluation-runs');
-    const data = await response.json();
+    const run = {
+      id: 'e2e-status-completed', name: 'Completed status fixture', status: 'completed',
+      agentKey: 'demo', modelId: 'demo', sources: [{ type: 'test-case-ids', testCaseIds: [] }],
+      createdAt: new Date().toISOString(), results: {}, stats: { passed: 0, failed: 0, total: 0, pending: 0 },
+    };
+    await page.route('**/api/storage/evaluation-runs/e2e-status-completed', route =>
+      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(run) })
+    );
 
-    if (data.total > 0) {
-      await page.goto('/evaluations/runs');
-      await page.waitForTimeout(3000);
-
-      // Status badges should be visible somewhere in the list
-      const body = await page.textContent('body');
-      const hasStatusText = /completed|running|failed|cancelled|pending/i.test(body || '');
-      expect(hasStatusText).toBeTruthy();
-    }
+    await page.goto('/evaluations/runs/e2e-status-completed');
+    const badge = page.locator('span', { hasText: /^completed$/i });
+    await expect(badge).toBeVisible();
+    await expect(badge).toHaveClass(/bg-green-100/);
+    await expect(badge).toHaveClass(/text-green-800/);
   });
 
   test('should show correct status badge on detail page for completed run', async ({ page }) => {
@@ -480,20 +482,27 @@ test.describe('Evaluation Runner - Run Status Badges', () => {
   });
 
   test('should differentiate status visually via badge colors or icons', async ({ page }) => {
-    const response = await page.request.get('/api/storage/evaluation-runs');
-    const data = await response.json();
+    await page.route(/\/api\/storage\/evaluation-runs\/e2e-status-(completed|failed)$/, route => {
+      const status = route.request().url().endsWith('failed') ? 'failed' : 'completed';
+      return route.fulfill({
+        status: 200,
+        contentType: 'application/json',
+        body: JSON.stringify({
+          id: `e2e-status-${status}`, name: `${status} fixture`, status,
+          agentKey: 'demo', modelId: 'demo', sources: [{ type: 'test-case-ids', testCaseIds: [] }],
+          createdAt: new Date().toISOString(), results: {}, stats: { passed: 0, failed: 0, total: 0, pending: 0 },
+        }),
+      });
+    });
 
-    if (data.total > 0) {
-      const runId = data.evaluationRuns[0].id;
-      await page.goto(`/evaluations/runs/${runId}`);
-      await page.waitForTimeout(3000);
+    await page.goto('/evaluations/runs/e2e-status-completed');
+    const completed = page.locator('span', { hasText: /^completed$/i });
+    await expect(completed).toHaveClass(/bg-green-100/);
+    const completedClass = await completed.getAttribute('class');
 
-      // Look for badge elements with status-related classes or data attributes
-      const badges = page.locator('[class*="badge"], [class*="status"], [data-status]');
-      const badgeCount = await badges.count();
-
-      // There should be at least one status indicator element
-      expect(badgeCount).toBeGreaterThan(0);
-    }
+    await page.goto('/evaluations/runs/e2e-status-failed');
+    const failed = page.locator('span', { hasText: /^failed$/i });
+    await expect(failed).toHaveClass(/bg-red-100/);
+    expect(await failed.getAttribute('class')).not.toBe(completedClass);
   });
 });

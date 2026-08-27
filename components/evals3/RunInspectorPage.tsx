@@ -73,6 +73,12 @@ export const RunInspectorPage: React.FC = () => {
   const [selectedTcId, setSelectedTcId] = useState<string | null>(null);
   const [selectedReport, setSelectedReport] = useState<EvaluationReport | null>(null);
   const [reportLoading, setReportLoading] = useState(false);
+  // Full TestCase for the selected row, fetched lazily on selection (the
+  // bulk load above is summary-only -- no sourceCode). null while loading
+  // or for a row whose full fetch hasn't resolved yet; the panel falls
+  // back to the summary TestCase from `results` in that case (everything
+  // except sourceCode is already correct there).
+  const [selectedTestCase, setSelectedTestCase] = useState<TestCase | null>(null);
   const [loadError, setLoadError] = useState(false);
   // Infinite scroll: number of rows revealed in the left list. Statuses for
   // ALL rows arrive in one lightweight batch (so the header tallies are
@@ -111,7 +117,13 @@ export const RunInspectorPage: React.FC = () => {
       setRun(runData);
 
       const tcIds = Object.keys(runData.results || {});
-      const testCases = await asyncTestCaseStorage.getByIds(tcIds);
+      // Summary fetch (no sourceCode/context/expectedOutcomes) -- every test
+      // case in a code-SDK file shares the SAME sourceCode, so fetching the
+      // full payload for every row here would duplicate it N times just to
+      // paint a list. The selected row's full TestCase (including
+      // sourceCode, for CollapsibleTestCaseDefinition's eval-source view)
+      // loads lazily below, mirroring the existing report on-demand pattern.
+      const testCases = await asyncTestCaseStorage.getByIds(tcIds, { summary: true });
       const tcMap = new Map(testCases.map(tc => [tc.id, tc]));
 
       // ONE lightweight batch (status fields only, chunked at 100 ids) instead
@@ -232,6 +244,20 @@ export const RunInspectorPage: React.FC = () => {
     return () => { cancelled = true; };
   }, [selectedReportId]);
 
+  // Load the FULL test case (including sourceCode) when selection changes.
+  // The bulk `results` fetch above is summary-only to avoid re-downloading
+  // the same eval-file source once per test case sharing it; only the
+  // currently-open row needs the full document (CollapsibleTestCaseDefinition
+  // renders EvalSourceCodeView, which needs sourceCode).
+  useEffect(() => {
+    if (!selectedTcId) { setSelectedTestCase(null); return; }
+    let cancelled = false;
+    asyncTestCaseStorage.getById(selectedTcId)
+      .then(tc => { if (!cancelled) setSelectedTestCase(tc); })
+      .catch(() => { if (!cancelled) setSelectedTestCase(null); });
+    return () => { cancelled = true; };
+  }, [selectedTcId]);
+
   const passCount = results.filter(r => r.status === 'passed').length;
   const failCount = results.filter(r => r.status === 'failed').length;
   // Issue #242: errored runs are evaluator failures and must be displayed
@@ -275,14 +301,14 @@ export const RunInspectorPage: React.FC = () => {
   const modelName = getModelName(run.modelId);
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col max-md:h-auto max-md:overflow-visible">
       {/* ── Top Bar ──────────────────────────────────────────────── */}
       <div className="px-4 py-3 border-b bg-card shrink-0">
         <Breadcrumbs
           items={
             mode === 'benchmark' && benchmark
               ? [
-                  { label: 'Evaluations', href: '/evaluations/benchmarks' },
+                  { label: 'Evaluations', href: '/evaluations/runs' },
                   { label: benchmark.name, href: `/evaluations/benchmarks/${benchmarkId}/runs` },
                   { label: run.name },
                 ]
@@ -340,10 +366,10 @@ export const RunInspectorPage: React.FC = () => {
       </div>
 
       {/* ── Left + Right Panels ──────────────────────────────────── */}
-      <ResizablePanelGroup direction="horizontal" className="flex-1">
+      <ResizablePanelGroup direction="horizontal" className="flex-1 max-md:!h-auto max-md:!overflow-visible max-md:!flex-col">
         {/* Left: Test Case List */}
-        <ResizablePanel defaultSize={30} minSize={20} maxSize={45} className="border-r">
-          <ScrollArea className="h-full">
+        <ResizablePanel defaultSize={30} minSize={20} maxSize={45} className="border-r max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible max-md:border-r-0 max-md:border-b">
+          <ScrollArea className="h-full max-md:h-auto">
             <div className="px-3 py-2 border-b">
               <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
                 Test Cases · {totalCount}
@@ -383,10 +409,10 @@ export const RunInspectorPage: React.FC = () => {
           </ScrollArea>
         </ResizablePanel>
 
-        <ResizableHandle withHandle />
+        <ResizableHandle withHandle className="max-md:hidden" />
 
         {/* Right: Test Case Detail */}
-        <ResizablePanel defaultSize={70} minSize={50}>
+        <ResizablePanel defaultSize={70} minSize={50} className="max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible">
           {selectedResult ? (
             reportLoading ? (
               <div className="flex items-center justify-center h-full">
@@ -395,7 +421,7 @@ export const RunInspectorPage: React.FC = () => {
             ) : selectedReport ? (
               <TestCaseInspectorPanel
                 report={selectedReport}
-                testCase={selectedResult.testCase}
+                testCase={selectedTestCase || selectedResult.testCase}
                 status={selectedResult.status}
               />
             ) : (

@@ -120,6 +120,34 @@ describe('extractRowCategory', () => {
     // category:RAG is deliberately ignored — it is stamped on every imported case
     expect(extractRowCategory(row('t', 'no tag here', {}, ['category:RAG']))).toBe(UNCATEGORIZED);
   });
+
+  // The proper, purpose-built tag — set via the SDK's `labels`, the
+  // JSON/CLI import's `subcategory` field, or the Test Case editor (see
+  // lib/testCaseLabels.ts's getSubcategoryFromLabels). Preferred over
+  // anything scraped from free text.
+  it('prefers the subcategory: label over the name-bracket tag and topic:', () => {
+    expect(extractRowCategory(row('t', 'no tag in this name', {}, ['subcategory:basic']))).toBe('basic');
+    // Wins even when the name ALSO has a (stale/different) bracket tag.
+    expect(
+      extractRowCategory(row('t', 'qst_0011 [semantic] some question', {}, ['subcategory:basic']))
+    ).toBe('basic');
+    // Wins over topic: too.
+    expect(
+      extractRowCategory(row('t', 'no tag here', {}, ['subcategory:basic', 'topic:Retrieval']))
+    ).toBe('basic');
+  });
+
+  it('falls back to the name-bracket tag when no subcategory label is set (legacy benchmarks)', () => {
+    expect(extractRowCategory(row('t', 'qst_0011 [basic] How long…', {}, ['category:RAG']))).toBe('basic');
+  });
+
+  it('lowercases the subcategory value for consistent grouping/display', () => {
+    expect(extractRowCategory(row('t', 'q', {}, ['subcategory:Basic']))).toBe('basic');
+  });
+
+  it('ignores an empty subcategory: label (falls through to the next signal)', () => {
+    expect(extractRowCategory(row('t', 'qst_0011 [basic] q', {}, ['subcategory:']))).toBe('basic');
+  });
 });
 
 describe('buildCategoryBreakdown', () => {

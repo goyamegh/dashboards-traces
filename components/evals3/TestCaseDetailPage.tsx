@@ -58,6 +58,7 @@ import { DEFAULT_CONFIG, getPreferredDefaultAgentKey } from '@/lib/constants';
 import { PREFS_KEYS } from '@/lib/preferences';
 import { ENV_CONFIG } from '@/lib/config';
 import { Markdown, hasRealMarkdown } from '@/components/ui/markdown';
+import { EvalSourceCodeView } from '@/components/evals3/EvalSourceCodeView';
 
 // Render a test-case prompt ("task definition"): as markdown when it actually
 // contains markdown (so headings / bullet lists indent instead of collapsing
@@ -349,12 +350,12 @@ export const TestCaseDetailPage: React.FC = () => {
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col max-md:h-auto max-md:overflow-visible">
       {/* ── Top Summary Bar ────────────────────────────────────────── */}
       <div className="px-4 py-3 border-b bg-card shrink-0">
         <Breadcrumbs
           items={[
-            { label: 'Evaluations', href: '/evaluations/benchmarks' },
+            { label: 'Evaluations', href: '/evaluations/runs' },
             { label: 'Test Cases', href: '/evaluations/test-cases' },
             { label: testCase.name },
           ]}
@@ -410,10 +411,10 @@ export const TestCaseDetailPage: React.FC = () => {
 
       {/* ── Main Content: Left Panel + Right Panel ─────────────────── */}
       {selectedRunId ? (
-      <ResizablePanelGroup direction="horizontal" className="flex-1">
+      <ResizablePanelGroup direction="horizontal" className="flex-1 max-md:!h-auto max-md:!overflow-visible max-md:!flex-col">
         {/* ── Left Panel ──────────────────────────────────────────── */}
-        <ResizablePanel defaultSize={30} minSize={20} maxSize={45} className="border-r">
-          <ScrollArea className="h-full">
+        <ResizablePanel defaultSize={30} minSize={20} maxSize={45} className="border-r max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible max-md:border-r-0 max-md:border-b">
+          <ScrollArea className="h-full max-md:h-auto">
             {/* ── Collapsible Definition ──────────────────────────── */}
             <div className="border-b">
               {/* Definition is always shown above the runs list — the input
@@ -467,6 +468,10 @@ export const TestCaseDetailPage: React.FC = () => {
                       </div>
                     </div>
                   )}
+                  {/* Eval source (code-SDK test cases only) -- full eval file
+                      as an IDE-style code view. Narrow panel, so cap the
+                      height a bit tighter than the full-width layout below. */}
+                  <EvalSourceCodeView testCase={testCase} maxHeight="320px" />
                 </div>
             </div>
 
@@ -637,10 +642,10 @@ export const TestCaseDetailPage: React.FC = () => {
           </ScrollArea>
         </ResizablePanel>
 
-        <ResizableHandle withHandle />
+        <ResizableHandle withHandle className="max-md:hidden" />
 
         {/* ── Right Panel: Test Case Inspector ────────────────────── */}
-        <ResizablePanel defaultSize={70} minSize={50}>
+        <ResizablePanel defaultSize={70} minSize={50} className="max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible">
           {isRunning && selectedRunId === RUNNING_RUN_ID ? (
             <LiveRunPanel
               testCase={testCase}
@@ -698,6 +703,7 @@ export const TestCaseDetailPage: React.FC = () => {
                   </ul>
                 </div>
               )}
+              <EvalSourceCodeView testCase={testCase} maxHeight="600px" />
             </div>
             {/* Runs list */}
             <div className="px-4 pt-3 pb-1 flex items-center justify-between">

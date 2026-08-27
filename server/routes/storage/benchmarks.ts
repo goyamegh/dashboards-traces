@@ -365,7 +365,11 @@ router.get('/api/storage/benchmarks', async (req: Request, res: Response) => {
     if (storageConfigured) {
       try {
         const result = await storage.benchmarks.getAll({ size: 1000 });
-        realData = result.items.map(normalizeBenchmark);
+        // Evaluation runs share the benchmark index/directory. Keep this route
+        // pure even if an adapter or older deployment returns mixed docs.
+        realData = result.items
+          .filter((doc: Benchmark & { docType?: string }) => doc.docType !== 'evaluation-run')
+          .map(normalizeBenchmark);
         storageReachable = true;
       } catch (e: any) {
         console.warn('[StorageAPI] Storage unavailable, returning sample data only:', e.message);

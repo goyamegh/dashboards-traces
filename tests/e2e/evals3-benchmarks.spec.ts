@@ -141,18 +141,17 @@ test.describe('Evals3 Benchmark CRUD', () => {
     test.skip(!seededTestCaseId, 'Seed test case unavailable');
     test.setTimeout(120_000); // demo run + judge can take a while
 
-    // The e2e server runs in file-storage (sample-only) mode, where the real
-    // /execute endpoint returns 400 ("OpenSearch not configured"). This test's
-    // contract is the WIZARD WIRING (the Evals3 regression where the editor
-    // closed without firing save + execute) — not the execution engine. Stub
-    // /execute at the network edge (same philosophy integ tests use for
-    // Bedrock) so we still assert the wizard POSTs to it, without needing a
-    // real OpenSearch/agent backend.
-    await page.route('**/api/storage/benchmarks/*/execute', route =>
+    // The e2e server has no real agent backend. This test owns WIZARD WIRING,
+    // not execution, so stub the unified evaluation-run SSE boundary while
+    // preserving the request and completion contract used by the UI.
+    await page.route('**/api/storage/evaluation-runs', route =>
       route.fulfill({
         status: 200,
         headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
-        body: `data: ${JSON.stringify({ type: 'progress', status: 'completed', currentTestCaseIndex: 0, totalTestCases: 1 })}\n\n`,
+        body: [
+          `event: started\ndata: ${JSON.stringify({ runId: 'e2e-wizard-run', testCases: [] })}\n\n`,
+          `event: completed\ndata: ${JSON.stringify({ id: 'e2e-wizard-run', status: 'completed', results: [] })}\n\n`,
+        ].join(''),
       })
     );
 
@@ -206,7 +205,7 @@ test.describe('Evals3 Benchmark CRUD', () => {
       { timeout: 15_000 }
     );
     const executePromise = page.waitForResponse(
-      r => /\/api\/storage\/benchmarks\/[^/]+\/execute$/.test(r.url()) &&
+      r => r.url().endsWith('/api/storage/evaluation-runs') &&
            r.request().method() === 'POST',
       { timeout: 15_000 }
     );
@@ -220,7 +219,10 @@ test.describe('Evals3 Benchmark CRUD', () => {
     expect(benchmarkId, 'POST response should include the new benchmark id').toBeTruthy();
 
     const executeResp = await executePromise;
-    expect(executeResp.status(), 'execute benchmark POST should succeed').toBeLessThan(400);
+    expect(executeResp.status(), 'unified evaluation-run POST should succeed').toBeLessThan(400);
+    const executeBody = executeResp.request().postDataJSON();
+    expect(executeBody.sources).toEqual([{ type: 'benchmark', benchmarkId }]);
+    expect(executeBody.benchmarkId).toBe(benchmarkId);
 
     // 6. Editor should close and URL should navigate to the runs page
     await expect(page).toHaveURL(new RegExp(`/evaluations/benchmarks/${benchmarkId}/runs`), { timeout: 5_000 });

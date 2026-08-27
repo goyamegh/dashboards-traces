@@ -1105,7 +1105,7 @@ export const AgentTracesPage: React.FC = () => {
       {/* Compact Header with Inline Stats and Filters */}
       <div className="px-6 pt-4 pb-3 border-b">
         {/* Single Row: Title + Stats + Filters */}
-        <div className="flex items-start justify-between gap-4">
+        <div className="flex flex-col items-start justify-between gap-4 lg:flex-row">
           {/* Left: Title and Description */}
           <div className="flex-shrink-0">
             <h2 className="text-xl font-bold">Agent Traces</h2>
@@ -1115,8 +1115,8 @@ export const AgentTracesPage: React.FC = () => {
           </div>
 
           {/* Right: Stats and Filters with Last Updated below */}
-          <div className="flex flex-col items-end gap-1 flex-shrink-0">
-            <div className="flex items-center gap-3">
+          <div className="flex w-full flex-col items-start gap-1 overflow-x-auto lg:w-auto lg:items-end lg:overflow-visible">
+            <div className="flex min-w-max items-center gap-3">
               {/* Search Bar */}
               <div className="w-[200px]">
                 <div className="relative">
