@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { calculateRunStats, getReportIdsFromRun, bucketRunResults } from '@/lib/runStats';
+import { calculateRunStats, getReportIdsFromRun, bucketRunResults, computeRunStats } from '@/lib/runStats';
 import type { BenchmarkRun, EvaluationReport } from '@/types';
 
 describe('runStats', () => {
@@ -384,6 +384,115 @@ describe('runStats', () => {
     it('handles empty/undefined results', () => {
       expect(bucketRunResults({})).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
       expect(bucketRunResults(undefined)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
+    });
+  });
+
+  describe('computeRunStats', () => {
+    // Regression for the trace-judged run.stats inflation bug: a run whose
+    // denormalized `stats` says everything passed, but whose `results`
+    // (the real source of truth) carry mixed verdicts, must display the
+    // REAL numbers — never the stale denormalized ones.
+    it('prefers results-derived verdicts over a stale/inflated run.stats blob', () => {
+      const run = {
+        results: {
+          'tc-1': { status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { status: 'completed', passFailStatus: 'passed' },
+          'tc-3': { status: 'completed', passFailStatus: 'failed' },
+          'tc-4': { status: 'completed', passFailStatus: 'failed' },
+        },
+        // Buggy denormalized stats as written by the pre-fix trace-judged
+        // path: every 'completed' result counted as passed.
+        stats: { passed: 4, failed: 0, pending: 0, errored: 0, total: 4 },
+      };
+
+      expect(computeRunStats(run)).toEqual({ passed: 2, failed: 2, errored: 0, pending: 0, total: 4 });
+    });
+
+    it('falls back to run.stats when results is empty (run has not started / legacy data)', () => {
+      const run = {
+        results: {},
+        stats: { passed: 3, failed: 1, pending: 0, errored: 0, total: 4 },
+      };
+
+      expect(computeRunStats(run)).toEqual({ passed: 3, failed: 1, errored: 0, pending: 0, total: 4 });
+    });
+
+    it('returns all-zero stats when neither results nor stats are present', () => {
+      expect(computeRunStats({})).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
+    });
+
+    it('treats an explicit empty results object the same as absent results (falls back to stats)', () => {
+      const run = { results: {}, stats: { passed: 2, failed: 0, pending: 0, errored: 0, total: 2 } };
+      expect(computeRunStats(run)).toEqual({ passed: 2, failed: 0, errored: 0, pending: 0, total: 2 });
+    });
+
+    it('falls through to all-zero when results is empty and stats.total is 0 (run not started)', () => {
+      const run = { results: {}, stats: { passed: 0, failed: 0, pending: 0, errored: 0, total: 0 } };
+      expect(computeRunStats(run)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
+    });
+
+    it('falls through to all-zero when results is empty and stats is entirely absent', () => {
+      const run = { results: {} };
+      expect(computeRunStats(run)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
+    });
+
+    it('defaults missing individual stats fields to 0 (partial/legacy stats blob)', () => {
+      const run = { results: {}, stats: { total: 5 } as any };
+      expect(computeRunStats(run)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 5 });
+    });
+  });
+
+  describe('producer/consumer agreement (double-correction regression)', () => {
+    // evaluationRunner's run-completion writer (the "producer") now sets
+    // `run.stats` to `{ ...bucketRunResults(run.results), total }` instead
+    // of the old naive "every completed = passed" loop. `computeRunStats`
+    // (the "consumer", used by the run detail/list pages) ALSO recomputes
+    // from `run.results` via the same `bucketRunResults` when results are
+    // present. Both paths must land on the exact same numbers for the same
+    // run — if either side ever re-applies a correction on top of the
+    // other's already-corrected output (e.g. consumer double-discounting
+    // `errored`, or producer pre-aggregating before the consumer's
+    // recompute), the two views would silently diverge again exactly like
+    // the original trace-judged-stats bug this PR fixes.
+    it('producer-side run.stats (bucketRunResults) and consumer-side computeRunStats agree for a seeded mixed-verdict run', () => {
+      const results: Record<string, { status?: string; passFailStatus?: string }> = {
+        'tc-1': { status: 'completed', passFailStatus: 'passed' },
+        'tc-2': { status: 'completed', passFailStatus: 'passed' },
+        'tc-3': { status: 'completed', passFailStatus: 'failed' },
+        'tc-4': { status: 'completed' }, // trace-judged, judge errored: no verdict
+        'tc-5': { status: 'running' },
+        'tc-6': { status: 'failed' },
+      };
+      const totalTestCases = Object.keys(results).length;
+
+      // Mirror evaluationRunner.ts's producer-side write exactly:
+      //   const bucketed = bucketRunResults(run.results);
+      //   run.stats = { ...bucketed, total: totalTestCases };
+      const producerStats = { ...bucketRunResults(results), total: totalTestCases };
+
+      // Consumer path: computeRunStats(run) recomputes from run.results
+      // directly (bucketRunResults again), NOT from the just-written
+      // run.stats — so this also proves the consumer doesn't trust a
+      // possibly-stale denormalized blob when fresh results exist.
+      const run = { results, stats: producerStats };
+      const consumerStats = computeRunStats(run);
+
+      expect(consumerStats).toEqual({
+        passed: producerStats.passed,
+        failed: producerStats.failed,
+        errored: producerStats.errored,
+        pending: producerStats.pending,
+        total: producerStats.total,
+      });
+      // Pin the actual numbers so a change in bucketing semantics is caught
+      // even if both sides regressed identically.
+      expect(consumerStats).toEqual({ passed: 2, failed: 2, errored: 1, pending: 1, total: 6 });
+    });
+
+    it('agrees even when computeRunStats falls back to the producer-written run.stats (no results persisted)', () => {
+      const producerStats = { passed: 5, failed: 1, errored: 1, pending: 0, total: 7 };
+      const run = { results: {}, stats: producerStats };
+      expect(computeRunStats(run)).toEqual(producerStats);
     });
   });
 });
