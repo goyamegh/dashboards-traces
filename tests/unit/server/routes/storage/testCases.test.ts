@@ -142,6 +142,42 @@ describe('Test Cases Storage Routes', () => {
         })
       );
     });
+
+    // Eval-source IDE view feature: the full eval-file source can be many
+    // KB. List views (fields=summary) strip it the same way they already
+    // strip context/expectedOutcomes/versions -- the Test Case detail page
+    // fetches the full record separately via GET /:id. Regression guard for
+    // "list view got slow/huge after adding sourceCode".
+    it('fields=summary strips sourceCode but keeps sourceFile/sourceFileName/sourceLanguage', async () => {
+      mockStorage.testCases.getAll.mockResolvedValue({
+        items: [
+          {
+            id: 'tc-code-1',
+            name: 'Code SDK Test',
+            initialPrompt: 'short prompt',
+            sourceFile: 'evals/rca.eval.ts',
+            sourceHash: 'hash1',
+            sourceCode: 'x'.repeat(5000),
+            sourceFileName: 'rca.eval.ts',
+            sourceLanguage: 'typescript',
+          },
+        ],
+        total: 1,
+      });
+
+      const { req, res } = createMocks({}, {}, { fields: 'summary' });
+      const handler = getRouteHandler(testCasesRoutes, 'get', '/api/storage/test-cases');
+
+      await handler(req, res);
+
+      const payload = (res.json as jest.Mock).mock.calls[0][0];
+      const tc = payload.testCases.find((t: any) => t.id === 'tc-code-1');
+      expect(tc).toBeDefined();
+      expect(tc.sourceCode).toBeUndefined();
+      expect(tc.sourceFile).toBe('evals/rca.eval.ts');
+      expect(tc.sourceFileName).toBe('rca.eval.ts');
+      expect(tc.sourceLanguage).toBe('typescript');
+    });
   });
 
   describe('GET /api/storage/test-cases/:id', () => {
