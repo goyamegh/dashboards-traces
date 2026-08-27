@@ -1407,16 +1407,24 @@ describe('Experiment Runner', () => {
       }));
     });
 
-    it('should not start polling if runId is missing', async () => {
+    it('starts polling even when runId is missing (sessionId/window/traceId correlation)', async () => {
+      // REST-connector reports never carry a runId; the poller now derives
+      // correlation from the report's sessionId / eval traceId / service
+      // window, so pending trace-mode reports must still be polled.
       const testCase = createTestCase('tc-1');
       const run = createBenchmarkRun('run-1');
 
       mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [], metricsStatus: 'pending' });
-      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1' });
+      mockRunsCreate.mockResolvedValue({ id: 'saved-report-1', metricsStatus: 'pending' });
 
       await runSingleUseCase(run, testCase, mockStorageModule);
 
-      expect(mockStartPollingAsync).not.toHaveBeenCalled();
+      expect(mockStartPollingAsync).toHaveBeenCalledWith(
+        'saved-report-1',
+        undefined,
+        expect.anything(),
+        expect.anything()
+      );
     });
 
     it('should call onAttempt callback during polling', async () => {

@@ -14,11 +14,13 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { GitCompare, X, Loader2, RotateCcw } from 'lucide-react';
+import { GitCompare, X, Loader2, RotateCcw, AlertTriangle } from 'lucide-react';
 import { ComparisonSearch } from './ComparisonSearch';
 import { UseCaseComparisonTable } from './UseCaseComparisonTable';
 import { RunPairSelector } from './RunPairSelector';
 import { ComparisonScoreboard } from './ComparisonScoreboard';
+import { ComparisonInsightsBand, type CategorySelection } from './ComparisonInsightsBand';
+import { bucketRow, extractRowCategory, type AgreementBucket } from '@/lib/comparisonInsights';
 import { ComparisonDeepDive, DeepDiveRunMeta } from './ComparisonDeepDive';
 import { FailureClusterPanel } from './FailureClusterPanel';
 import { extractFirstDivergence } from '@/services/trajectoryDiffService';
@@ -84,6 +86,16 @@ export const ComparisonPage: React.FC = () => {
   // load). Without this the table renders every cell as 'missing' (empty) for
   // the whole fetch window — the "no runs on each test case" symptom.
   const [reportsLoading, setReportsLoading] = useState(false);
+  // Surfaces a genuine fetch failure (network error, 431, 5xx) so it renders
+  // as a visible error banner instead of silently rendering every cell as
+  // "Not run" (the pre-fix symptom when getReportsByIds' single unchunked
+  // request blew past the server's URL/header size limit).
+  const [reportsError, setReportsError] = useState<string | null>(null);
+  // Guards against a stale in-flight report fetch clobbering newer state —
+  // e.g. the user swaps the selected runs while a slow/failing request for
+  // the PREVIOUS selection is still in flight; that response (success or
+  // error) must be discarded, not applied on top of the new selection.
+  const reportsRequestIdRef = useRef(0);
   const [isLoading, setIsLoading] = useState(true);
   const [traceMetricsMap, setTraceMetricsMap] = useState<Map<string, TraceMetrics>>(new Map());
 
@@ -120,6 +132,11 @@ export const ComparisonPage: React.FC = () => {
   // State for filters
   const [labelFilter, setLabelFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  // Insights-band filters: agreement bucket (all-pass / all-fail / split) and
+  // category (the raw-category set behind a matrix column, so the `(other)`
+  // rollup filters exactly the rows its cell counted). Both narrow the table.
+  const [agreementFilter, setAgreementFilter] = useState<AgreementBucket | null>(null);
+  const [categoryFilter, setCategoryFilter] = useState<CategorySelection | null>(null);
   const [testCaseFilter, setTestCaseFilter] = useState<string | null>(null);
   // All standalone evaluation runs (for the run-search universe).
   const [allEvalRuns, setAllEvalRuns] = useState<EvaluationRun[]>([]);
@@ -295,16 +312,28 @@ export const ComparisonPage: React.FC = () => {
       });
       const missing = Array.from(reportIds).filter(id => !reports[id]);
       if (missing.length === 0) return;
+      const requestId = ++reportsRequestIdRef.current;
       setReportsLoading(true);
+      setReportsError(null);
       try {
-        // ONE batched request (server fans out in parallel) instead of N
-        // per-report round-trips — cells populate in a single OpenSearch hop.
+        // Batched request chunked into at most a handful of bounded-size
+        // hops (never one unbounded request) instead of N per-report
+        // round-trips — see asyncRunStorage.getReportsByIds for why.
         const fetched = await asyncRunStorage.getReportsByIds(missing);
+        if (requestId !== reportsRequestIdRef.current) return; // superseded — discard
         if (Object.keys(fetched).length > 0) {
           setReports(prev => ({ ...prev, ...fetched }));
         }
+      } catch (err) {
+        if (requestId !== reportsRequestIdRef.current) return; // superseded — discard
+        // A real failure must be visible — never let it fall through as an
+        // empty result that renders every cell as "Not run". Log the real
+        // error for diagnosis; keep the user-facing message stable (avoid
+        // leaking transport-specific text like a raw "431 ..." into the UI).
+        console.error('[ComparisonPage] Failed to load reports:', err);
+        setReportsError('Failed to load test case reports. Please retry.');
       } finally {
-        setReportsLoading(false);
+        if (requestId === reportsRequestIdRef.current) setReportsLoading(false);
       }
     };
     loadReports();
@@ -492,11 +521,30 @@ export const ComparisonPage: React.FC = () => {
 
   const rowStatusCounts = useMemo(() => countRowsByStatus(allComparisonRows, referenceRunId), [allComparisonRows, referenceRunId]);
 
+  // Insights-band filters are defined relative to the CURRENT run selection
+  // (an agreement bucket over runs A,B means something else over A,B,C — and
+  // the band disappears entirely below 2 runs while its filters would keep
+  // narrowing the table invisibly). Reset them whenever the selection changes.
+  const selectionKey = selectedRunIds.join(',');
+  useEffect(() => {
+    setAgreementFilter(null);
+    setCategoryFilter(null);
+  }, [selectionKey]);
+
   const filteredRows = useMemo((): TestCaseComparisonRow[] => {
     let rows = allComparisonRows;
     if (labelFilter !== 'all') rows = rows.filter(r => (r.labels || []).includes(labelFilter));
     if (testCaseFilter) rows = rows.filter(r => r.testCaseId === testCaseFilter);
     rows = filterRowsByStatus(rows, statusFilter, selectedRunIds);
+    // Insights-band filters compose with everything else. (Activating an
+    // agreement chip explicitly flips the row-status pill to 'all' in the
+    // handler below — a visible state change, never a silent bypass.)
+    if (agreementFilter) {
+      rows = rows.filter(row => bucketRow(row, selectedRunIds) === agreementFilter);
+    }
+    if (categoryFilter) {
+      rows = rows.filter(row => categoryFilter.categories.includes(extractRowCategory(row)));
+    }
     if (rowStatusFilter === 'differences') {
       rows = rows.filter(row => calculateRowStatus(row, referenceRunId) !== 'neutral');
     } else if (rowStatusFilter !== 'all') {
@@ -507,7 +555,7 @@ export const ComparisonPage: React.FC = () => {
       rows = rows.filter(row => allow.has(row.testCaseId));
     }
     return rows;
-  }, [allComparisonRows, labelFilter, testCaseFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId, clusterCaseFilter]);
+  }, [allComparisonRows, labelFilter, testCaseFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId, clusterCaseFilter, agreementFilter, categoryFilter]);
 
   // If the filter is 'differences' but there are no differences (all-pass /
   // all-fail benchmark), automatically show everything so the user isn't
@@ -771,6 +819,29 @@ export const ComparisonPage: React.FC = () => {
               />
             )}
 
+            {/* Agreement + category insights — deterministic, no LLM */}
+            {selectedRuns.length >= 2 && (
+              <ComparisonInsightsBand
+                rows={allComparisonRows}
+                runIds={selectedRunIds}
+                getRunName={(id) => {
+                  const run = selectedRuns.find(r => r.id === id);
+                  return run ? getAgentName(run.agentKey) || run.name : id;
+                }}
+                agreementFilter={agreementFilter}
+                onAgreementFilter={(bucket) => {
+                  setAgreementFilter(bucket);
+                  // The default 'differences' pill hides all-pass/all-fail rows,
+                  // which would empty the Both-pass / Both-fail buckets. Flip
+                  // the pill to 'Show all' VISIBLY instead of overriding it
+                  // silently; the user can re-narrow afterwards.
+                  if (bucket) setRowStatusFilter('all');
+                }}
+                categoryFilter={categoryFilter}
+                onCategoryFilter={setCategoryFilter}
+              />
+            )}
+
             {/* What's actually different — agentic, trace-grounded deep-dive */}
             {selectedRuns.length === 2 && runAggregates.length === 2 && (
               <ComparisonDeepDive
@@ -887,6 +958,16 @@ export const ComparisonPage: React.FC = () => {
               )}
 
               {/* Comparison table */}
+              {reportsError && (
+                <div
+                  role="alert"
+                  data-testid="reports-error-banner"
+                  className="mb-2 flex items-center gap-2 rounded border border-red-500/30 bg-red-500/10 px-3 py-2 text-xs text-red-400"
+                >
+                  <AlertTriangle size={12} className="shrink-0" />
+                  <span>Failed to load test case reports: {reportsError}</span>
+                </div>
+              )}
               <UseCaseComparisonTable
                 reportsLoading={reportsLoading}
                 rows={filteredRows}
