@@ -160,8 +160,13 @@ export const RunInspectorPage: React.FC = () => {
       // reports, so this is safe to call unconditionally.
       for (const row of resultRows) {
         if (!row.report || !row.testCase) continue;
-        if (row.report.metricsStatus !== 'pending' || !row.report.runId) continue;
+        if (row.report.metricsStatus !== 'pending') continue;
         ensureTracePollingForReport(row.report, row.testCase, {
+          // Grace period: skip reports that only just went pending — they are
+          // likely eager-path placeholders whose agent is still executing, not
+          // stuck trace-mode reports. Prevents the fan-out from racing (and
+          // historically clobbering) eager judge verdicts.
+          minPendingAgeMs: 3 * 60 * 1000,
           onUpdated: (updated) => {
             setResults(prev => prev.map(r => r.testCaseId === row.testCaseId
               ? { ...r, report: updated, status: getResultStatus({ status: 'completed' }, updated) }
