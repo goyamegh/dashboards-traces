@@ -177,7 +177,7 @@ export const ComparisonPage: React.FC = () => {
     const requestId = ++testCaseMetaRequestIdRef.current;
     (async () => {
       try {
-        const fetched = await asyncTestCaseStorage.getByIds(missing);
+        const fetched = await asyncTestCaseStorage.getByIds(missing, { summary: true });
         if (requestId !== testCaseMetaRequestIdRef.current) return; // superseded — discard
         if (fetched.length > 0) {
           setTestCaseMetaById(prev => {

@@ -183,7 +183,7 @@ describe('AsyncTestCaseStorage', () => {
       const result = await asyncTestCaseStorage.getByIds(['tc-1', 'tc-2']);
 
       expect(mockOsTestCases.getByIds).toHaveBeenCalledTimes(1);
-      expect(mockOsTestCases.getByIds).toHaveBeenCalledWith(['tc-1', 'tc-2']);
+      expect(mockOsTestCases.getByIds).toHaveBeenCalledWith(['tc-1', 'tc-2'], undefined);
       expect(result.map(tc => tc.id)).toEqual(['tc-1', 'tc-2']);
     });
 
@@ -201,6 +201,20 @@ describe('AsyncTestCaseStorage', () => {
       expect(mockOsTestCases.getByIds.mock.calls[2][0]).toHaveLength(50);
       // Every id present, nothing dropped or duplicated across chunk boundaries.
       expect(result.map(tc => tc.id).sort()).toEqual([...ids].sort());
+    });
+
+    it('forwards the summary option to every chunked request', async () => {
+      const ids = Array.from({ length: 150 }, (_, i) => `tc-${i}`);
+      mockOsTestCases.getByIds.mockImplementation(async (chunk: string[]) =>
+        chunk.map(id => createMockStorageTestCase(id))
+      );
+
+      await asyncTestCaseStorage.getByIds(ids, { summary: true });
+
+      expect(mockOsTestCases.getByIds).toHaveBeenCalledTimes(2);
+      for (const call of mockOsTestCases.getByIds.mock.calls) {
+        expect(call[1]).toEqual({ summary: true });
+      }
     });
 
     it('never runs more than a modest number of chunk requests concurrently', async () => {
