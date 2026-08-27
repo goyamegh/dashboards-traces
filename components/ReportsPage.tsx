@@ -52,10 +52,11 @@ export const ReportsPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [metricsMap, setMetricsMap] = useState<Map<string, TraceMetrics>>(new Map());
 
-  // Load test cases on mount
+  // Load test cases on mount. Only name/description/category (list labels,
+  // filters, selected-report header) are rendered — the summary payload is enough.
   useEffect(() => {
     const loadTestCases = async () => {
-      const tcs = await asyncTestCaseStorage.getAll();
+      const tcs = await asyncTestCaseStorage.getAll({ summary: true });
       setTestCases(tcs);
     };
     loadTestCases();
