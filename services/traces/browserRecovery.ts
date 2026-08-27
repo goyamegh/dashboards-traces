@@ -44,10 +44,26 @@ export function ensureTracePollingForReport(
     /** Fired as soon as spans land, before the judge runs — lets the caller
      *  update trace-visualization state (issue #320 consolidation). */
     onSpans?: (spans: Span[]) => void;
+    /**
+     * Only start recovery when the report has been pending at least this
+     * long. Eager-path reports are *transiently* pending while their agent
+     * executes — fan-out callers (RunInspectorPage) should pass a grace
+     * period so freshly-created reports aren't dragged into trace polling
+     * that races their eager judge. 0 (default) = start immediately.
+     */
+    minPendingAgeMs?: number;
   }
 ): void {
-  // Only valid for trace-mode pending reports with a runId and a test case.
-  if (report.metricsStatus !== 'pending' || !report.runId || !testCase) return;
+  // Only valid for pending reports with a test case. A missing runId is no
+  // longer disqualifying — the poller correlates via sessionId/service-window
+  // hints derived from the report (REST agents never carry a runId).
+  if (report.metricsStatus !== 'pending' || !testCase) return;
+
+  const minAge = options?.minPendingAgeMs ?? 0;
+  if (minAge > 0) {
+    const ts = Date.parse(report.timestamp || '') || 0;
+    if (ts > 0 && Date.now() - ts < minAge) return;
+  }
 
   const existingState = tracePollingManager.getState(report.id);
   if (existingState?.running) return;

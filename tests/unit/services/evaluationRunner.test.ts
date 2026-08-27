@@ -169,6 +169,7 @@ describe('evaluationRunner', () => {
         passed: 2,
         failed: 0,
         pending: 0,
+        errored: 0,
         total: 2,
       });
       expect(result.results['tc-1'].status).toBe('completed');
@@ -396,7 +397,7 @@ describe('evaluationRunner', () => {
 
       mockRunEvaluation
         .mockRejectedValueOnce(new Error('Connection refused'))
-        .mockResolvedValueOnce({ id: 'report-2', trajectory: [] } as any);
+        .mockResolvedValueOnce({ id: 'report-2', trajectory: [], passFailStatus: 'passed' } as any);
 
       const result = await executeEvaluationRun(run, testCases, {
         storageModule: storage,
@@ -411,6 +412,7 @@ describe('evaluationRunner', () => {
         passed: 1,
         failed: 1,
         pending: 0,
+        errored: 0,
         total: 2,
       });
     });
@@ -524,7 +526,7 @@ describe('evaluationRunner', () => {
       });
 
       expect(result.status).toBe('completed');
-      expect(result.stats).toEqual({ passed: 0, failed: 0, pending: 0, total: 0 });
+      expect(result.stats).toEqual({ passed: 0, failed: 0, pending: 0, errored: 0, total: 0 });
       expect(mockRunEvaluation).not.toHaveBeenCalled();
     });
 
