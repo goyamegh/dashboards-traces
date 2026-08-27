@@ -54,9 +54,11 @@ jest.mock('@/services/storage', () => ({
   asyncRunStorage: {
     getByExperimentRun: jest.fn().mockResolvedValue([]),
     getReportById: jest.fn().mockResolvedValue(null),
+    getReportSummariesByIds: jest.fn().mockResolvedValue({}),
   },
   asyncTestCaseStorage: {
     getAll: jest.fn().mockResolvedValue([]),
+    getByIds: jest.fn().mockResolvedValue([]),
     getById: jest.fn().mockResolvedValue(null),
   },
 }));
@@ -137,9 +139,21 @@ import { asyncExperimentStorage, asyncRunStorage, asyncTestCaseStorage } from '@
 import { RunDetailsPage } from '@/components/RunDetailsPage';
 
 const mockGetExperiment = asyncExperimentStorage.getById as jest.MockedFunction<typeof asyncExperimentStorage.getById>;
-const mockGetByExperimentRun = asyncRunStorage.getByExperimentRun as jest.MockedFunction<typeof asyncRunStorage.getByExperimentRun>;
 const mockGetAllTestCases = asyncTestCaseStorage.getAll as jest.MockedFunction<typeof asyncTestCaseStorage.getAll>;
+const mockGetByIdsTestCases = asyncTestCaseStorage.getByIds as jest.MockedFunction<typeof asyncTestCaseStorage.getByIds>;
 const mockGetReportById = asyncRunStorage.getReportById as jest.MockedFunction<typeof asyncRunStorage.getReportById>;
+const mockGetReportSummariesByIds = asyncRunStorage.getReportSummariesByIds as jest.MockedFunction<typeof asyncRunStorage.getReportSummariesByIds>;
+
+// Helper: given the array of full reports a test wants "in storage", wire up
+// both the summary batch (initial paint) and the per-id full fetch (on
+// selection) so existing tests exercising `reports` keep working under the
+// new lazy-loading data path.
+function wireReports(reports: EvaluationReport[]) {
+  const byId: Record<string, EvaluationReport> = {};
+  for (const r of reports) byId[r.id] = r;
+  mockGetReportSummariesByIds.mockResolvedValue(byId);
+  mockGetReportById.mockImplementation((id: string) => Promise.resolve(byId[id] || null));
+}
 
 // ── Test data ─────────────────────────────────────────────────────────────────
 
@@ -213,6 +227,8 @@ describe('RunDetailsPage', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetAllTestCases.mockResolvedValue([]);
+    mockGetByIdsTestCases.mockResolvedValue([]);
+    mockGetReportSummariesByIds.mockResolvedValue({});
   });
 
   afterEach(() => {
@@ -234,7 +250,7 @@ describe('RunDetailsPage', () => {
       const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
 
       mockGetExperiment.mockResolvedValue(experiment);
-      mockGetByExperimentRun.mockResolvedValue(reports);
+      wireReports(reports);
 
       await renderAndWait();
 
@@ -257,7 +273,7 @@ describe('RunDetailsPage', () => {
       const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
 
       mockGetExperiment.mockResolvedValue(experiment);
-      mockGetByExperimentRun.mockResolvedValue(reports);
+      wireReports(reports);
 
       await renderAndWait();
 
@@ -280,7 +296,7 @@ describe('RunDetailsPage', () => {
       const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
 
       mockGetExperiment.mockResolvedValue(experiment);
-      mockGetByExperimentRun.mockResolvedValue(reports);
+      wireReports(reports);
 
       await renderAndWait();
 
@@ -297,7 +313,7 @@ describe('RunDetailsPage', () => {
       const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
 
       mockGetExperiment.mockResolvedValue(experiment);
-      mockGetByExperimentRun.mockResolvedValue(reports);
+      wireReports(reports);
 
       await renderAndWait();
 
@@ -316,7 +332,7 @@ describe('RunDetailsPage', () => {
       const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
 
       mockGetExperiment.mockResolvedValue(experiment);
-      mockGetByExperimentRun.mockResolvedValue(reports);
+      wireReports(reports);
 
       await renderAndWait();
 
@@ -370,7 +386,7 @@ describe('RunDetailsPage', () => {
       const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
 
       mockGetExperiment.mockResolvedValue(experiment);
-      mockGetByExperimentRun.mockResolvedValue(reports);
+      wireReports(reports);
 
       await renderAndWait();
 
@@ -387,6 +403,162 @@ describe('RunDetailsPage', () => {
         expect(mockFetch).toHaveBeenCalledWith(
           expect.stringContaining('/api/storage/benchmarks/bench-1/report?format=json&runIds=run-1')
         );
+      });
+    });
+  });
+
+  describe('loading state (regression: large run rendered a silent blank pane)', () => {
+    it('shows a human-readable loading label instead of a bare skeleton while the run loads', async () => {
+      let resolveExp: (v: Experiment) => void = () => {};
+      mockGetExperiment.mockImplementation(() => new Promise(resolve => { resolveExp = resolve; }));
+
+      act(() => {
+        render(React.createElement(RunDetailsPage));
+      });
+
+      // Still loading: the skeleton must be accompanied by explicit text,
+      // never a bare/void render.
+      expect(screen.getByTestId('run-details-loading')).toBeTruthy();
+      expect(screen.getByTestId('run-details-loading-label').textContent).toMatch(/Loading/i);
+
+      await act(async () => {
+        resolveExp(createExperiment(createExperimentRun()));
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('run-details-loading')).toBeNull();
+      });
+    });
+
+    it('surfaces an inline error with Retry instead of a silent blank pane when the fetch fails', async () => {
+      mockGetExperiment.mockRejectedValueOnce(new Error('network boom'));
+
+      await renderAndWait();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-details-error')).toBeTruthy();
+      });
+      expect(screen.getByText(/network boom/)).toBeTruthy();
+
+      // Retry re-invokes the loader; a second, successful attempt clears the
+      // error and renders real content instead of leaving the void in place.
+      const run = createExperimentRun();
+      const experiment = createExperiment(run);
+      wireReports([createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')]);
+      mockGetExperiment.mockResolvedValueOnce(experiment);
+
+      await act(async () => {
+        screen.getByTestId('run-details-retry').click();
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('run-details-error')).toBeNull();
+        expect(screen.getByText('Test Run')).toBeTruthy();
+      });
+    });
+  });
+
+  describe('summary-first rendering + lazy full-report fetch', () => {
+    it('paints the case list from batched summaries without fetching every full report up front', async () => {
+      const run = createExperimentRun();
+      const experiment = createExperiment(run);
+      // Summary reports lack trajectory/metrics (mirrors the real server-side
+      // field projection) - the sidebar must still render fine from these.
+      const summaries: Record<string, EvaluationReport> = {
+        'report-1': { ...createReport('report-1', 'tc-1'), trajectory: undefined as any, metrics: undefined },
+        'report-2': { ...createReport('report-2', 'tc-2'), trajectory: undefined as any, metrics: undefined },
+      };
+      mockGetExperiment.mockResolvedValue(experiment);
+      mockGetReportSummariesByIds.mockResolvedValue(summaries);
+
+      await renderAndWait();
+
+      // Case list rendered promptly from summaries alone.
+      await waitFor(() => {
+        expect(screen.getByText('tc-1')).toBeTruthy();
+        expect(screen.getByText('tc-2')).toBeTruthy();
+      });
+      // No full-report fetch happened yet - the run starts on the Summary tab.
+      expect(mockGetReportById).not.toHaveBeenCalled();
+
+      // Selecting a case triggers exactly one on-demand full-report fetch.
+      mockGetReportById.mockResolvedValueOnce(createReport('report-1', 'tc-1'));
+      await act(async () => {
+        screen.getByText('tc-1').click();
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      expect(mockGetReportById).toHaveBeenCalledWith('report-1');
+      await waitFor(() => {
+        expect(screen.getByTestId('run-details-content')).toBeTruthy();
+      });
+    });
+
+    it('shows a "Loading report" state for the selected case while its full body is in flight', async () => {
+      const run = createExperimentRun();
+      const experiment = createExperiment(run);
+      mockGetExperiment.mockResolvedValue(experiment);
+      mockGetReportSummariesByIds.mockResolvedValue({
+        'report-1': { ...createReport('report-1', 'tc-1'), trajectory: undefined as any },
+        'report-2': { ...createReport('report-2', 'tc-2'), trajectory: undefined as any },
+      });
+
+      let resolveFull: (v: EvaluationReport) => void = () => {};
+      mockGetReportById.mockImplementation(() => new Promise(resolve => { resolveFull = resolve; }));
+
+      await renderAndWait();
+
+      await act(async () => {
+        screen.getByText('tc-1').click();
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      expect(screen.getByText(/Loading report/i)).toBeTruthy();
+
+      await act(async () => {
+        resolveFull(createReport('report-1', 'tc-1'));
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-details-content')).toBeTruthy();
+      });
+    });
+
+    it('shows the same "Loading report" state in the full-width (single test case, no sidebar) layout', async () => {
+      // A run with exactly one result auto-selects that case and renders the
+      // full-width layout (no ResizablePanel sidebar) - a separate code path
+      // that mirrors the sidebar layout's pending/loading/error branches.
+      const run = createExperimentRun({ results: { 'tc-solo': { reportId: 'report-solo', status: 'completed' } } });
+      const experiment = createExperiment(run);
+      mockGetExperiment.mockResolvedValue(experiment);
+      mockGetReportSummariesByIds.mockResolvedValue({
+        'report-solo': { ...createReport('report-solo', 'tc-solo'), trajectory: undefined as any },
+      });
+
+      let resolveFull: (v: EvaluationReport) => void = () => {};
+      mockGetReportById.mockImplementation(() => new Promise(resolve => { resolveFull = resolve; }));
+
+      await renderAndWait();
+
+      await waitFor(() => {
+        expect(screen.getByText(/Loading report/i)).toBeTruthy();
+      });
+
+      await act(async () => {
+        resolveFull(createReport('report-solo', 'tc-solo'));
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-details-content')).toBeTruthy();
       });
     });
   });
