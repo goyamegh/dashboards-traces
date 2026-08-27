@@ -321,7 +321,7 @@ const RecentRow: React.FC<RecentRowProps> = ({ row, onClick }) => {
   return (
     <button
       onClick={onClick}
-      className="group w-full grid items-center gap-3 px-3 h-6 text-left text-[11px] border-b last:border-b-0 hover:bg-muted/50 transition-colors"
+      className="group w-full min-w-[720px] grid items-center gap-3 px-3 h-6 text-left text-[11px] border-b last:border-b-0 hover:bg-muted/50 transition-colors"
       style={{ gridTemplateColumns: '14px minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr) 130px 80px 14px' }}
     >
       <StatusIcon row={row} />
@@ -344,7 +344,7 @@ const RecentRow: React.FC<RecentRowProps> = ({ row, onClick }) => {
 // Header row for the recent runs table
 const RecentHeader: React.FC = () => (
   <div
-    className="grid items-center gap-3 px-3 h-5 text-[10px] uppercase tracking-wider text-muted-foreground border-b bg-muted/20"
+    className="grid min-w-[720px] items-center gap-3 px-3 h-5 text-[10px] uppercase tracking-wider text-muted-foreground border-b bg-muted/20"
     style={{ gridTemplateColumns: '14px minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr) 130px 80px 14px' }}
   >
     <span />
@@ -770,7 +770,7 @@ export const Dashboard: React.FC = () => {
 
   return (
     <TooltipProvider delayDuration={200}>
-      <div className="p-5 max-w-7xl mx-auto space-y-4" data-testid="dashboard-page">
+      <div className="p-4 sm:p-5 max-w-7xl mx-auto space-y-4" data-testid="dashboard-page">
         {isSampleMode && (
           <Alert className="bg-blue-50 dark:bg-blue-950 border-blue-200 dark:border-blue-800 py-2">
             <Info className="h-4 w-4 text-blue-600 dark:text-blue-400" />
@@ -836,7 +836,7 @@ export const Dashboard: React.FC = () => {
             {/* Trends + Needs Improvement: 2/3 + 1/3 */}
             <div className="grid gap-4 lg:grid-cols-3 lg:auto-rows-[340px]">
               {/* Performance Trends — 2/3 */}
-              <Card className="lg:col-span-2 flex flex-col overflow-hidden">
+              <Card className="lg:col-span-2 flex flex-col overflow-hidden h-[340px] lg:h-auto">
                 <CardHeader className="pb-2 px-4 pt-3 space-y-1">
                   <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
                     <div className="min-w-0">
@@ -912,7 +912,7 @@ export const Dashboard: React.FC = () => {
                   </Button>
                 </div>
               </CardHeader>
-              <CardContent className="px-0 pt-0 pb-0">
+              <CardContent className="px-0 pt-0 pb-0 overflow-x-auto overscroll-x-contain" tabIndex={0} aria-label="Recent evaluation runs table; scroll horizontally for all columns">
                 <RecentHeader />
                 {recentRows.map(r => (
                   <RecentRow

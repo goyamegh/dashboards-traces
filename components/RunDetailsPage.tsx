@@ -550,7 +550,7 @@ export const RunDetailsPage: React.FC = () => {
   }
 
   return (
-    <div className="h-full flex flex-col" data-testid="run-details-page">
+    <div className="h-full flex flex-col max-md:h-auto max-md:overflow-visible" data-testid="run-details-page">
       {/* Header */}
       <div className="flex items-center justify-between p-4 border-b">
         <div className="flex items-center gap-4">
@@ -699,13 +699,13 @@ export const RunDetailsPage: React.FC = () => {
       {/* Content */}
       {hasSidebar && !sidebarCollapsed ? (
         /* Resizable layout for experiment runs */
-        <ResizablePanelGroup direction="horizontal" className="flex-1">
+        <ResizablePanelGroup direction="horizontal" className="flex-1 max-md:!h-auto max-md:!overflow-visible max-md:!flex-col">
           {/* Sidebar Panel */}
           <ResizablePanel
             defaultSize={25}
             minSize={15}
             maxSize={40}
-            className="border-r"
+            className="border-r max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible max-md:border-r-0 max-md:border-b"
           >
             <Sidebar
               context={experimentContext!}
@@ -716,11 +716,11 @@ export const RunDetailsPage: React.FC = () => {
             />
           </ResizablePanel>
 
-          <ResizableHandle withHandle />
+          <ResizableHandle withHandle className="max-md:hidden" />
 
           {/* Main Content Panel */}
-          <ResizablePanel defaultSize={75}>
-            <div className="h-full overflow-hidden">
+          <ResizablePanel defaultSize={75} className="max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible">
+            <div className="h-full overflow-hidden max-md:h-auto max-md:overflow-visible">
               {selectedItem === 'summary' ? (
                 <RunSummaryPanel
                   run={experimentContext!.experimentRun}
