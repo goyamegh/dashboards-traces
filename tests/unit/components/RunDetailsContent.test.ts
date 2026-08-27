@@ -20,7 +20,7 @@
 
 import * as React from 'react';
 import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
-import { RunDetailsContent } from '@/components/RunDetailsContent';
+import { RunDetailsContent, getLogLevelColor } from '@/components/RunDetailsContent';
 import { EvaluationReport } from '@/types';
 
 // ── Dependency mocks ──────────────────────────────────────────────────────────
@@ -658,5 +658,24 @@ describe('RunDetailsContent', () => {
         expect(screen.queryByText(/Waiting for traces to become available/i)).toBeNull();
       });
     });
+  });
+});
+
+// ── getLogLevelColor (OpenSearch-logs level badge, Scope A theming fix) ───────
+//
+// This colors the "standard mode" logs tab badge. That branch is currently
+// unreachable via render (RunDetailsContent hardcodes isTraceMode = true), so
+// it's covered directly as an extracted pure function instead.
+describe('getLogLevelColor', () => {
+  it('colors ERROR red (with a dark-mode variant)', () => {
+    expect(getLogLevelColor('ERROR')).toBe('text-red-600 dark:text-red-400');
+  });
+
+  it('colors WARN amber (with a dark-mode variant)', () => {
+    expect(getLogLevelColor('WARN')).toBe('text-amber-600 dark:text-amber-400');
+  });
+
+  it.each([undefined, 'INFO', 'DEBUG', ''])('falls back to muted-foreground for %p', (level) => {
+    expect(getLogLevelColor(level)).toBe('text-muted-foreground');
   });
 });

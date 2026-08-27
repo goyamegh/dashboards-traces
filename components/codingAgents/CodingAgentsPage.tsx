@@ -832,7 +832,7 @@ function OverviewTab({ stats, agents, onTabChange, rangePreset, onRangeChange, o
 
 // ─── Session Detail Panel ────────────────────────────────────────────────────
 
-function SessionDetailPanel({ session, onClose }: { session: Session; onClose: () => void }) {
+export function SessionDetailPanel({ session, onClose }: { session: Session; onClose: () => void }) {
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [loading, setLoading] = useState(true);
   const [msgSearch, setMsgSearch] = useState('');
@@ -968,7 +968,7 @@ function SessionDetailPanel({ session, onClose }: { session: Session; onClose: (
         <mark
           key={`${idx}-${localMatch}`}
           ref={el => { matchRefs.current[gIdx] = el; }}
-          className={isActive ? 'bg-yellow-400 text-black rounded-sm px-0.5' : 'bg-yellow-200/60 dark:bg-yellow-700/40 rounded-sm px-0.5'}
+          className={isActive ? 'bg-yellow-200 text-yellow-900 dark:bg-yellow-500/30 dark:text-yellow-200 rounded-sm px-0.5' : 'bg-yellow-200/60 dark:bg-yellow-700/40 rounded-sm px-0.5'}
         >
           {text.slice(idx, idx + msgSearch.length)}
         </mark>

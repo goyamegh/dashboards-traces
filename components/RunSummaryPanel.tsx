@@ -128,10 +128,10 @@ export const RunSummaryPanel: React.FC<RunSummaryPanelProps> = ({
     }
   }, [reports]);
 
-  // Donut chart data
+  // Donut chart data — colors via theme tokens so the donut tracks the active theme.
   const pieData = [
-    { name: 'Passed', value: stats.passed, color: '#015aa3' },
-    { name: 'Failed', value: stats.failed, color: '#ef4444' },
+    { name: 'Passed', value: stats.passed, color: 'hsl(var(--primary))' },
+    { name: 'Failed', value: stats.failed, color: 'hsl(var(--destructive))' },
     // Issue #242: dedicated amber slice for evaluator-error runs.
     { name: 'Errored', value: stats.errored, color: '#f59e0b' },
   ].filter(d => d.value > 0);

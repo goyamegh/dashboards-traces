@@ -88,6 +88,18 @@ const getEvaluatorIcon = (evaluatorId: string) => {
   return Icon ? Icon : FlaskConical;
 };
 
+/**
+ * Color class for the OpenSearch-logs level badge (standard, non-trace mode).
+ * Extracted to a pure function so it's directly unit-testable: the JSX branch
+ * that renders it (isTraceMode === false) is currently unreachable in the app
+ * (isTraceMode is hardcoded true below), so a render test can't exercise it.
+ */
+export const getLogLevelColor = (level: string | undefined): string => {
+  if (level === 'ERROR') return 'text-red-600 dark:text-red-400';
+  if (level === 'WARN') return 'text-amber-600 dark:text-amber-400';
+  return 'text-muted-foreground';
+};
+
 export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
   report,
   className = '',
@@ -1050,11 +1062,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                           <span className="text-xs text-muted-foreground whitespace-nowrap">
                             {new Date(log.timestamp).toLocaleTimeString()}
                           </span>
-                          <span className={`text-xs font-semibold ${
-                            log.level === 'ERROR' ? 'text-red-400' :
-                            log.level === 'WARN' ? 'text-yellow-400' :
-                            'text-muted-foreground'
-                          }`}>
+                          <span className={`text-xs font-semibold ${getLogLevelColor(log.level)}`}>
                             [{log.level || 'INFO'}]
                           </span>
                           <span className="text-sm flex-1 font-mono">{log.message}</span>
