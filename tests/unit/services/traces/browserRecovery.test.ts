@@ -91,8 +91,21 @@ describe('ensureTracePollingForReport', () => {
     expect(mockStartPolling).not.toHaveBeenCalled();
   });
 
-  it('is a no-op when runId is missing', () => {
+  it('starts polling even when runId is missing (sessionId/window correlation)', () => {
+    // REST-connector reports never carry a runId; the poller now derives
+    // sessionId/service-window hints from the report, so recovery must not
+    // skip them (they previously sat pending until boot recovery tombstoned
+    // them).
     ensureTracePollingForReport(makeReport({ runId: undefined }), makeTc());
+    expect(mockStartPolling).toHaveBeenCalledWith('r1', undefined, expect.anything());
+  });
+
+  it('respects minPendingAgeMs for freshly-created reports', () => {
+    ensureTracePollingForReport(
+      makeReport({ timestamp: new Date().toISOString() }),
+      makeTc(),
+      { minPendingAgeMs: 3 * 60 * 1000 }
+    );
     expect(mockStartPolling).not.toHaveBeenCalled();
   });
 

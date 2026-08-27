@@ -27,6 +27,7 @@ import {
 } from '@/components/ui/dialog';
 import { EvaluationRun, TestCaseSnapshot } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
+import { computeRunStats } from '@/lib/runStats';
 import { formatRelativeTime, getModelName } from '@/lib/utils';
 import {
   getEvaluationRun,
@@ -157,7 +158,13 @@ export const EvalRunDetailPage: React.FC = () => {
 
   const agentName = DEFAULT_CONFIG.agents.find(a => a.key === run.agentKey)?.name || run.agentKey;
   const modelName = getModelName(run.modelId);
-  const stats = run.stats || { passed: 0, failed: 0, total: 0, pending: 0, errored: 0 };
+  // Recompute from the persisted per-test-case verdicts (run.results) rather
+  // than trusting the denormalized run.stats directly — the same defensive
+  // pattern EvalRunsPage uses. run.stats can be stale/wrong for trace-judged
+  // runs (the writer historically counted 'completed' as 'passed' without
+  // checking the verdict, e.g. showing 84/84 passed when only 66/84 actually
+  // passed judgment).
+  const stats = computeRunStats(run);
   const errored = stats.errored ?? 0;
   // Pass rate ignores errored runs entirely (issue #242): they had no
   // verdict, so neither numerator nor denominator should include them.
