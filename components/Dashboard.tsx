@@ -538,11 +538,14 @@ export const Dashboard: React.FC = () => {
   const [timeRange, setTimeRange] = usePersistedState<TimeRange>('dashboard:timeRange', 'all');
   const [selectedMetric, setSelectedMetric] = usePersistedState<TrendMetric>('dashboard:selectedMetric', 'passRate');
 
-  // Test case count — kept for backward-compat with stats-summary-bar tests; not surfaced in pills.
+  // Test case count — kept for backward-compat with stats-summary-bar tests; not
+  // surfaced in pills. Only the total count is needed, so request a single
+  // summary record and read `.total` from the paginated response instead of
+  // pulling every test case's full content across the wire.
   useEffect(() => {
     let cancelled = false;
-    asyncTestCaseStorage.getAll()
-      .then(tc => { if (!cancelled) setTestCaseCount(tc.length); })
+    asyncTestCaseStorage.getAll({ summary: true, size: 1 })
+      .then(page => { if (!cancelled) setTestCaseCount(page.total); })
       .catch(() => { if (!cancelled) setTestCaseCount(0); });
     return () => { cancelled = true; };
   }, []);

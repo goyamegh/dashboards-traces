@@ -40,8 +40,12 @@ export const EvalsPage: React.FC = () => {
   const loadTestCases = useCallback(async () => {
     setIsLoading(true);
     try {
+      // List cards only render id/name/category/difficulty/isPromoted/truncated
+      // prompt — the summary payload covers all of that. Editing/running a
+      // specific test case re-fetches the full record by id (see
+      // TestCaseEditor's own getById refresh) so this never loses content.
       const [tcs, cats] = await Promise.all([
-        asyncTestCaseStorage.getAll(),
+        asyncTestCaseStorage.getAll({ summary: true }),
         asyncTestCaseStorage.getCategories(),
       ]);
       setTestCases(tcs);
