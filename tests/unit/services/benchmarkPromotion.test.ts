@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { promoteRunToBenchmark } from '@/services/benchmarkPromotion';
+import { promoteRunToBenchmark, linkTestCaseIdsToBenchmark } from '@/services/benchmarkPromotion';
 import type { Benchmark, EvaluationRun } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
 
@@ -137,5 +137,117 @@ describe('promoteRunToBenchmark', () => {
         description: 'Promoted from run run-1',
       })
     );
+  });
+});
+
+describe('linkTestCaseIdsToBenchmark', () => {
+  let mockStorage: jest.Mocked<Pick<IStorageModule, 'benchmarks'>>;
+
+  const shellBenchmark: Benchmark = {
+    id: 'bench-shell',
+    name: 'Shell Benchmark',
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    currentVersion: 1,
+    versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: [] }],
+    testCaseIds: [],
+    runs: [],
+  };
+
+  beforeEach(() => {
+    mockStorage = {
+      benchmarks: {
+        getAll: jest.fn(),
+        getById: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
+        delete: jest.fn(),
+        addRun: jest.fn(),
+        updateRun: jest.fn(),
+        deleteRun: jest.fn(),
+        bulkCreate: jest.fn(),
+      } as any,
+    };
+  });
+
+  it('returns null when the benchmark does not exist', async () => {
+    mockStorage.benchmarks.getById.mockResolvedValue(null);
+
+    const result = await linkTestCaseIdsToBenchmark('missing-bench', ['tc-1'], mockStorage as any);
+
+    expect(result).toBeNull();
+    expect(mockStorage.benchmarks.update).not.toHaveBeenCalled();
+  });
+
+  it('is a no-op when every id is already present (no write, no version bump)', async () => {
+    const benchmark = { ...shellBenchmark, testCaseIds: ['tc-1', 'tc-2'] };
+    mockStorage.benchmarks.getById.mockResolvedValue(benchmark);
+
+    const result = await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-2'], mockStorage as any);
+
+    expect(result).toEqual({ benchmark, added: [] });
+    expect(mockStorage.benchmarks.update).not.toHaveBeenCalled();
+  });
+
+  it('unions new ids into testCaseIds and bumps the version (repairs a shell benchmark)', async () => {
+    mockStorage.benchmarks.getById.mockResolvedValue(shellBenchmark);
+    const updated = {
+      ...shellBenchmark,
+      testCaseIds: ['tc-1', 'tc-2'],
+      currentVersion: 2,
+    };
+    mockStorage.benchmarks.update.mockResolvedValue(updated);
+
+    const result = await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-2'], mockStorage as any);
+
+    expect(mockStorage.benchmarks.update).toHaveBeenCalledWith('bench-shell', expect.objectContaining({
+      testCaseIds: ['tc-1', 'tc-2'],
+      currentVersion: 2,
+    }));
+    const call = mockStorage.benchmarks.update.mock.calls[0][1] as any;
+    expect(call.versions).toHaveLength(2);
+    expect(call.versions[1].testCaseIds).toEqual(['tc-1', 'tc-2']);
+    expect(result).toEqual({ benchmark: updated, added: ['tc-1', 'tc-2'] });
+  });
+
+  it('only adds ids not already present, keeping existing order first', async () => {
+    const benchmark = { ...shellBenchmark, testCaseIds: ['tc-1'] };
+    mockStorage.benchmarks.getById.mockResolvedValue(benchmark);
+    mockStorage.benchmarks.update.mockImplementation(async (_id, updates) => ({ ...benchmark, ...updates }));
+
+    const result = await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-2', 'tc-3'], mockStorage as any);
+
+    expect(result?.added).toEqual(['tc-2', 'tc-3']);
+    const call = mockStorage.benchmarks.update.mock.calls[0][1] as any;
+    expect(call.testCaseIds).toEqual(['tc-1', 'tc-2', 'tc-3']);
+  });
+
+  it('deduplicates ids within the input list itself', async () => {
+    const benchmark = { ...shellBenchmark, testCaseIds: [] };
+    mockStorage.benchmarks.getById.mockResolvedValue(benchmark);
+    mockStorage.benchmarks.update.mockImplementation(async (_id, updates) => ({ ...benchmark, ...updates }));
+
+    const result = await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-1', 'tc-2'], mockStorage as any);
+
+    expect(result?.added).toEqual(['tc-1', 'tc-2']);
+  });
+
+  it('handles a benchmark with no versions array yet (legacy doc) by synthesizing v1', async () => {
+    const legacyBenchmark: any = {
+      id: 'bench-legacy',
+      name: 'Legacy',
+      createdAt: '2025-01-01T00:00:00Z',
+      testCaseIds: [],
+      runs: [],
+    };
+    mockStorage.benchmarks.getById.mockResolvedValue(legacyBenchmark);
+    mockStorage.benchmarks.update.mockImplementation(async (_id, updates) => ({ ...legacyBenchmark, ...updates }));
+
+    await linkTestCaseIdsToBenchmark('bench-legacy', ['tc-1'], mockStorage as any);
+
+    const call = mockStorage.benchmarks.update.mock.calls[0][1] as any;
+    expect(call.currentVersion).toBe(2);
+    expect(call.versions).toHaveLength(2);
+    expect(call.versions[0]).toEqual({ version: 1, createdAt: '2025-01-01T00:00:00Z', testCaseIds: [] });
   });
 });
