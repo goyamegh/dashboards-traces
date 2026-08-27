@@ -178,8 +178,8 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           left: 0,
           height: '100%',
           zIndex: isHoverExpanded ? 50 : undefined,
-          background: isDarkMode ? 'hsl(var(--background))' : '#FFFFFF',
-          borderRight: isDarkMode ? '1px solid #343741' : '1px solid #D3DAE6',
+          background: 'hsl(var(--background))',
+          borderRight: '1px solid hsl(var(--border))',
           boxShadow: isHoverExpanded
             ? '0px 12px 40px rgba(0, 0, 0, 0.45), 0px 0px 12px rgba(0, 0, 0, 0.15)'
             : '0px 0px 12px rgba(0, 0, 0, 0.05), 0px 0px 4px rgba(0, 0, 0, 0.05), 0px 0px 2px rgba(0, 0, 0, 0.05)',
