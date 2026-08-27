@@ -40,7 +40,17 @@ export function usePersistedState<T>(
 ): [T, (value: T | ((prev: T) => T)) => void] {
   const [state, setState] = useState<T>(() => readFromStorage(key, defaultValue));
   const keyRef = useRef(key);
-  keyRef.current = key;
+
+  // Rehydrate when the key changes between renders (e.g. a dynamic key like
+  // `filter:${benchmarkId}` while navigating client-side between two pages
+  // that share the component instance). Without this, the in-memory value
+  // from the OLD key survives the navigation and the next set() writes it
+  // to the NEW key — cross-entity state leakage. Render-phase setState on
+  // key change is the React-endorsed “derived state” pattern.
+  if (keyRef.current !== key) {
+    keyRef.current = key;
+    setState(readFromStorage(key, defaultValue));
+  }
 
   const setPersistedState = useCallback(
     (value: T | ((prev: T) => T)) => {
