@@ -23,6 +23,7 @@ import OpenSearchLogoLight from "@/assets/opensearch-logo-light.svg";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useServerStatus } from "@/hooks/useServerStatus";
 import { usePersistedState } from "@/hooks/usePersistedState";
+import { cn } from "@/lib/utils";
 import {
   Sidebar,
   SidebarContent,
@@ -98,6 +99,24 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   // Route changes close the off-canvas navigation after a mobile selection.
   useEffect(() => setMobileNavOpen(false), [location.pathname]);
 
+  // Chrome-vertical-tabs-style hover-open: when the sidebar is pinned
+  // collapsed to the icon rail, hovering (or keyboard-focusing) it temporarily
+  // expands the FULL sidebar as an OVERLAY — the layout area keeps reserving
+  // the rail width so content never reflows — and leaving/blurring it
+  // collapses it again. `isCollapsed` stays the persisted PIN preference (only
+  // the collapse/expand button and setIsCollapsed touch it); every visual
+  // conditional below reads `collapsed`, which folds in the momentary hover
+  // state. Mouse uses short intent delays (150ms open / 250ms close) to avoid
+  // flicker when crossing the rail; keyboard focus opens immediately (no
+  // delay) and closes on blur so Tab users get the same reveal without
+  // relying on a mouse gesture.
+  const [isHoverExpanded, setIsHoverExpanded] = useState(false);
+  const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverZoneRef = useRef<HTMLDivElement>(null);
+  useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); }, []);
+  useEffect(() => { setIsHoverExpanded(false); }, [isCollapsed]);
+  const collapsed = isCollapsed && !isHoverExpanded;
+
   // Collapse the nav when landing on a *specific run* URL (single-run inspect /
   // detail views are dense — no need to waste space on the global nav). Matches
   // /runs/<id>[/inspect] and /evaluations/runs/<id> but NOT the bare run LISTS
@@ -144,6 +163,10 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   return (
     <SidebarCollapseContext.Provider value={{ isCollapsed, setIsCollapsed }}>
       <SidebarProvider className="h-screen overflow-hidden">
+        {/* Mobile off-canvas backdrop (#400): dims the page behind the drawer
+            when it's open on small screens; tapping it closes the drawer.
+            Desktop hover-open has no backdrop (the rail keeps reserving its
+            width so content never needs dimming). */}
         {mobileNavOpen && (
           <button
             type="button"
@@ -152,14 +175,56 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
             onClick={() => setMobileNavOpen(false)}
           />
         )}
+        {/* Hover zone reserves the LAYOUT width on desktop (rail when pinned
+            collapsed) so the hover-open overlay never reflows content. Zero
+            width on mobile (<lg) — there the sidebar is a `fixed` off-canvas
+            drawer (#400) with no reserved gutter; hover/focus handlers are
+            desktop-only anyway (no hover on touch, and isCollapsed only
+            gates them). */}
+        <div
+          ref={hoverZoneRef}
+          className={cn(
+            'relative h-screen flex-shrink-0 transition-[width] duration-200 w-0',
+            collapsed ? 'lg:w-16' : 'lg:w-[180px]'
+          )}
+          data-testid="sidebar-hover-zone"
+          onMouseEnter={() => {
+            if (!isCollapsed) return;
+            if (hoverTimer.current) clearTimeout(hoverTimer.current);
+            hoverTimer.current = setTimeout(() => setIsHoverExpanded(true), 150);
+          }}
+          onMouseLeave={() => {
+            if (hoverTimer.current) clearTimeout(hoverTimer.current);
+            if (!isCollapsed) return;
+            hoverTimer.current = setTimeout(() => setIsHoverExpanded(false), 250);
+          }}
+          onFocus={() => {
+            if (!isCollapsed) return;
+            if (hoverTimer.current) clearTimeout(hoverTimer.current);
+            setIsHoverExpanded(true);
+          }}
+          onBlur={(e) => {
+            if (!isCollapsed) return;
+            const next = e.relatedTarget as Node | null;
+            if (next && hoverZoneRef.current?.contains(next)) return;
+            if (hoverTimer.current) clearTimeout(hoverTimer.current);
+            setIsHoverExpanded(false);
+          }}
+        >
         <Sidebar
         collapsible="none"
-        className={`fixed inset-y-0 left-0 z-50 h-screen flex-shrink-0 transition-transform duration-300 lg:static lg:translate-x-0 ${mobileNavOpen ? 'translate-x-0' : '-translate-x-full'}`}
+        className={cn(
+          'fixed inset-y-0 left-0 z-50 transition-[width,transform] duration-300 lg:absolute lg:translate-x-0 lg:duration-200',
+          mobileNavOpen ? 'translate-x-0' : '-translate-x-full'
+        )}
         style={{
-          width: isCollapsed ? '64px' : '180px',
-          background: isDarkMode ? 'hsl(var(--background))' : '#FFFFFF',
-          borderRight: isDarkMode ? '1px solid #343741' : '1px solid #D3DAE6',
-          boxShadow: '0px 0px 12px rgba(0, 0, 0, 0.05), 0px 0px 4px rgba(0, 0, 0, 0.05), 0px 0px 2px rgba(0, 0, 0, 0.05)',
+          width: collapsed ? '64px' : '180px',
+          zIndex: (isHoverExpanded || mobileNavOpen) ? 50 : undefined,
+          background: 'hsl(var(--background))',
+          borderRight: '1px solid hsl(var(--border))',
+          boxShadow: isHoverExpanded
+            ? '0px 12px 40px rgba(0, 0, 0, 0.45), 0px 0px 12px rgba(0, 0, 0, 0.15)'
+            : '0px 0px 12px rgba(0, 0, 0, 0.05), 0px 0px 4px rgba(0, 0, 0, 0.05), 0px 0px 2px rgba(0, 0, 0, 0.05)',
           borderRadius: '0px 24px 24px 0px',
           display: 'flex',
           flexDirection: 'column',
@@ -196,7 +261,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           </div>
 
           {/* Logo + Title */}
-          {!isCollapsed && (
+          {!collapsed && (
             <div className="flex items-center gap-2.5 mb-3">
               <img src={OpenSearchLogo} alt="OpenSearch" className="w-7 h-7 flex-shrink-0" />
               <div className="min-w-0">
@@ -209,14 +274,14 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               </div>
             </div>
           )}
-          {isCollapsed && (
+          {collapsed && (
             <div className="flex items-center justify-center mb-1">
               <img src={OpenSearchLogo} alt="OpenSearch" className="w-7 h-7" />
             </div>
           )}
           
           {/* Search bar - only show when expanded */}
-          {!isCollapsed && (
+          {!collapsed && (
             <div className="relative">
               <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
               <Input
@@ -238,13 +303,13 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                     <SidebarMenuButton
                       asChild
                       isActive={location.pathname === item.to}
-                      tooltip={isCollapsed ? item.label : undefined}
+                      tooltip={collapsed ? item.label : undefined}
                       data-testid={item.testId}
                       className="h-9"
                     >
-                      <Link to={item.to} className={isCollapsed ? 'justify-center' : ''}>
+                      <Link to={item.to} className={collapsed ? 'justify-center' : ''}>
                         <item.icon className="h-3.5 w-3.5" />
-                        {!isCollapsed && <span className="text-xs">{item.label}</span>}
+                        {!collapsed && <span className="text-xs">{item.label}</span>}
                       </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
@@ -252,7 +317,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
 
 
                 {/* Evaluations (evals3) collapsible section */}
-                {!isCollapsed && (
+                {!collapsed && (
                   <Collapsible defaultOpen={true}>
                     <SidebarMenuItem>
                       <SidebarMenuButton
@@ -262,7 +327,11 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                         className="h-9 w-full"
                       >
                         <div className="flex items-center w-full">
-                          <Link to="/evaluations/runs" className="flex items-center gap-2 flex-1 min-w-0">
+                          {/* Same testid as the collapsed rail's icon button: hovering
+                              the rail to click Evaluations swaps in this expanded
+                              row (hover-open) mid-click — a stable testid lets the
+                              click retarget to the same destination. */}
+                          <Link to="/evaluations/runs" className="flex items-center gap-2 flex-1 min-w-0" data-testid="nav-evals3">
                             <Gauge className="h-3.5 w-3.5" />
                             <span className="text-xs">Evaluations</span>
                           </Link>
@@ -308,7 +377,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                 {/* Evaluations icon only when collapsed — the closed-navbar
                     Evaluations button jumps straight to Evaluation Runs (the
                     most-used evals3 surface), not the Benchmarks list. */}
-                {isCollapsed && (
+                {collapsed && (
                   <SidebarMenuItem>
                     <SidebarMenuButton asChild isActive={location.pathname.startsWith("/evaluations")} tooltip="Evaluations" data-testid="nav-evals3" className="h-9">
                       <Link to="/evaluations/runs" className="justify-center">
@@ -323,13 +392,13 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                     <SidebarMenuButton
                       asChild
                       isActive={location.pathname === item.to}
-                      tooltip={isCollapsed ? item.label : undefined}
+                      tooltip={collapsed ? item.label : undefined}
                       data-testid={item.testId}
                       className="h-9"
                     >
-                      <Link to={item.to} className={isCollapsed ? 'justify-center' : ''}>
+                      <Link to={item.to} className={collapsed ? 'justify-center' : ''}>
                         <item.icon className="h-3.5 w-3.5" />
-                        {!isCollapsed && <span className="text-xs">{item.label}</span>}
+                        {!collapsed && <span className="text-xs">{item.label}</span>}
                       </Link>
                     </SidebarMenuButton>
                   </SidebarMenuItem>
@@ -339,13 +408,13 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                   <SidebarMenuButton
                     asChild
                     isActive={location.pathname === "/settings"}
-                    tooltip={isCollapsed ? "Settings" : "Configure connections and preferences"}
+                    tooltip={collapsed ? "Settings" : "Configure connections and preferences"}
                     data-testid="nav-settings"
                     className="h-9"
                   >
-                    <Link to="/settings" className={isCollapsed ? 'justify-center' : ''}>
+                    <Link to="/settings" className={collapsed ? 'justify-center' : ''}>
                       <Settings className="h-3.5 w-3.5" />
-                      {!isCollapsed && <span className="text-xs">Settings</span>}
+                      {!collapsed && <span className="text-xs">Settings</span>}
                     </Link>
                   </SidebarMenuButton>
                 </SidebarMenuItem>
@@ -355,7 +424,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         </SidebarContent>
 
         <SidebarFooter className="p-3 border-t sticky bottom-0 bg-background">
-          {!isCollapsed ? (
+          {!collapsed ? (
             <div className="space-y-2">
               <div className="text-xs font-medium text-muted-foreground uppercase tracking-wider">
                 Status
@@ -399,6 +468,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           )}
         </SidebarFooter>
       </Sidebar>
+      </div>
 
       <SidebarInset className="overflow-y-auto dashboard-gradient-bg mobile-responsive-content">
         <div className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between border-b bg-background/95 px-3 backdrop-blur lg:hidden">

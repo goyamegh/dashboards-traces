@@ -52,6 +52,11 @@ test('desktop keeps the persistent sidebar and hides the mobile toolbar', async 
 
   await expect(page.getByRole('button', { name: 'Open navigation' })).toBeHidden();
   const sidebar = page.getByTestId('sidebar');
-  await expect(sidebar).toHaveClass(/lg:static/);
+  // Desktop uses `lg:absolute` (not `lg:static`): the sidebar hover-open
+  // overlay (Chrome-vertical-tabs style, see components/Layout.tsx and
+  // sidebar-hover-flyout.spec.ts) needs absolute positioning so expanding it
+  // never reflows page content — the layout gutter is reserved by the
+  // separate hover-zone wrapper div, not by the sidebar's own box.
+  await expect(sidebar).toHaveClass(/lg:absolute/);
   await expect(sidebar).toHaveClass(/lg:translate-x-0/);
 });
