@@ -29,6 +29,7 @@ import { formatDuration, formatCost, fetchBatchMetrics } from '@/services/metric
 import { ENV_CONFIG } from '@/lib/config';
 import { RunDetailsContent } from './RunDetailsContent';
 import { RunSummaryBand, RunSummaryStats } from './RunSummaryBand';
+import { RunInsightsPane } from './RunInsightsPane';
 
 // ==================== Skeleton Components ====================
 
@@ -79,14 +80,23 @@ interface TestCaseListProps {
   onSelectItem: (item: string) => void;
   /** When true (split/detail view), scroll the selected row into view once on mount/selection change — powers deep-link preselection. */
   scrollToSelected?: boolean;
+  /**
+   * When set, only these testCaseIds are rendered — powers "click a failure
+   * theme in RunInsightsPane -> filter the list to just those cases".
+   * `null`/`undefined` shows every case (no filter active).
+   */
+  filterIds?: string[] | null;
+  /** Clears an active filter (rendered as a "Clear filter" chip next to the count). */
+  onClearFilter?: () => void;
 }
 
-const TestCaseList = ({ context, selectedItem, onSelectItem, scrollToSelected }: TestCaseListProps) => {
+const TestCaseList = ({ context, selectedItem, onSelectItem, scrollToSelected, filterIds, onClearFilter }: TestCaseListProps) => {
   const { experimentRun, testCases, reportsMap } = context;
 
   const getTestCase = (testCaseId: string) => testCases.find(tc => tc.id === testCaseId);
 
   const testCaseIds = Object.keys(experimentRun.results || {});
+  const visibleIds = filterIds ? testCaseIds.filter(id => filterIds.includes(id)) : testCaseIds;
   const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
 
   useEffect(() => {
@@ -97,18 +107,43 @@ const TestCaseList = ({ context, selectedItem, onSelectItem, scrollToSelected }:
   return (
     <ScrollArea className="h-full" data-testid="run-test-case-list">
       <div className="p-3 space-y-2">
-        {/* Header with count */}
+        {/* Header with count + Overview (deselect) affordance */}
         <div className="flex items-center justify-between px-1">
-          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-            Test Cases
-          </span>
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Test Cases
+            </span>
+            {selectedItem && (
+              <button
+                type="button"
+                data-testid="test-case-list-overview"
+                className="text-xs text-opensearch-blue hover:underline flex items-center gap-1"
+                onClick={() => { onSelectItem(''); onClearFilter?.(); }}
+              >
+                <ArrowLeft size={11} /> Overview
+              </button>
+            )}
+          </div>
           <Badge variant="secondary" className="text-xs">
-            {testCaseIds.length}
+            {filterIds ? `${visibleIds.length} / ${testCaseIds.length}` : testCaseIds.length}
           </Badge>
         </div>
+        {filterIds && (
+          <div className="flex items-center justify-between px-1 -mt-1">
+            <span className="text-[11px] text-muted-foreground">Filtered by failure theme</span>
+            <button
+              type="button"
+              data-testid="test-case-list-clear-filter"
+              className="text-[11px] text-opensearch-blue hover:underline"
+              onClick={onClearFilter}
+            >
+              Clear filter
+            </button>
+          </div>
+        )}
 
         {/* Test Cases */}
-        {testCaseIds.map(testCaseId => {
+        {visibleIds.map(testCaseId => {
           const result = experimentRun.results[testCaseId];
           const report = result.reportId ? reportsMap[result.reportId] : null;
           const testCase = getTestCase(testCaseId);
@@ -232,6 +267,11 @@ export const RunDetailsPage: React.FC = () => {
   // value is a testCaseId, synced to the `?testCase=` URL param.
   const [selectedItem, setSelectedItem] = useState<string>('');
   const [isCancelling, setIsCancelling] = useState(false);
+
+  // Set when a "why runs failed" theme in RunInsightsPane is clicked - the
+  // left test-case list narrows to just that theme's testCaseIds until
+  // cleared ("Clear filter" chip) or the user hits "Overview".
+  const [filterIds, setFilterIds] = useState<string[] | null>(null);
 
   // Evaluator id -> display name, fetched once (mirrors EvalRunsPage's
   // pattern) so the summary band can render a human-readable evaluator
@@ -776,28 +816,33 @@ export const RunDetailsPage: React.FC = () => {
         stats={stats as RunSummaryStats}
       />
 
-      {/* Content: the test-case list renders directly below the band on the
-          bare route (no "Select a test case" empty pane, no redirect).
-          Selecting a case (?testCase=<id>) switches to a list+detail split,
-          same RunDetailsContent used everywhere else in the app. */}
+      {/* Content: split view is ALWAYS shown once there's more than one test
+          case (owner feedback on the redesign: "I liked the split view ...
+          If no test case is selected, the right side can show an
+          aggregated view"). Left = test-case list (optionally filtered by
+          a clicked failure theme). Right = the selected case's detail, or
+          RunInsightsPane (verdict overview, why-runs-failed themes,
+          slowest/costliest, folded-in legacy details) when nothing is
+          selected. */}
       {hasSidebar ? (
-        selectedItem ? (
-          /* List + detail split once a case is selected */
-          <ResizablePanelGroup direction="horizontal" className="flex-1 max-md:!h-auto max-md:!overflow-visible max-md:!flex-col">
-            <ResizablePanel defaultSize={28} minSize={18} maxSize={42} className="border-r max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible max-md:border-r-0 max-md:border-b">
-              <TestCaseList
-                context={experimentContext!}
-                selectedItem={selectedItem}
-                onSelectItem={handleSelectItem}
-                scrollToSelected
-              />
-            </ResizablePanel>
+        <ResizablePanelGroup direction="horizontal" className="flex-1 max-md:!h-auto max-md:!overflow-visible max-md:!flex-col">
+          <ResizablePanel defaultSize={28} minSize={18} maxSize={42} className="border-r max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible max-md:border-r-0 max-md:border-b">
+            <TestCaseList
+              context={experimentContext!}
+              selectedItem={selectedItem}
+              onSelectItem={handleSelectItem}
+              scrollToSelected={!!selectedItem}
+              filterIds={filterIds}
+              onClearFilter={() => setFilterIds(null)}
+            />
+          </ResizablePanel>
 
-            <ResizableHandle withHandle className="max-md:hidden" />
+          <ResizableHandle withHandle className="max-md:hidden" />
 
-            <ResizablePanel defaultSize={72} className="max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible">
-              <div className="h-full overflow-hidden max-md:h-auto max-md:overflow-visible">
-                {displayReport ? (
+          <ResizablePanel defaultSize={72} className="max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible">
+            <div className="h-full overflow-hidden max-md:h-auto max-md:overflow-visible">
+              {selectedItem ? (
+                displayReport ? (
                   <RunDetailsContent
                     report={displayReport}
                     showViewAllReports={true}
@@ -806,20 +851,20 @@ export const RunDetailsPage: React.FC = () => {
                   />
                 ) : (
                   renderCaseDetailPlaceholder(experimentContext?.experimentRun.results?.[selectedItem]?.status)
-                )}
-              </div>
-            </ResizablePanel>
-          </ResizablePanelGroup>
-        ) : (
-          /* No case selected: the full test-case list, directly rendered. */
-          <div className="flex-1 overflow-hidden">
-            <TestCaseList
-              context={experimentContext!}
-              selectedItem=""
-              onSelectItem={handleSelectItem}
-            />
-          </div>
-        )
+                )
+              ) : (
+                <RunInsightsPane
+                  experimentRun={experimentContext!.experimentRun}
+                  testCases={experimentContext!.testCases}
+                  reportsMap={experimentContext!.reportsMap}
+                  stats={stats as RunSummaryStats}
+                  onSelectCase={handleSelectItem}
+                  onFilterCases={setFilterIds}
+                />
+              )}
+            </div>
+          </ResizablePanel>
+        </ResizablePanelGroup>
       ) : (
         /* Full-width layout for the single-test-case case (auto-selected, no
            list needed - see loadRunData's `testCaseIds.length === 1` branch). */
