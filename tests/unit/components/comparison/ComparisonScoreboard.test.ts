@@ -35,6 +35,26 @@ describe('ComparisonScoreboard structure', () => {
     expect(src).toContain("'pp'");
   });
 
+  it('renders a neutral em-dash (not a bare "=") for zero cost/duration/pass-rate delta', () => {
+    // Regression: costDelta === 0 and durationDelta === 0 used to render a
+    // bare '=' glyph, which reads as an equals-sign typo rather than "no
+    // change". Now uses an em dash with a "No change" tooltip, matching the
+    // muted-foreground styling already applied for the zero case.
+    expect(src).not.toContain("=== 0 ? '='");
+    expect(src).not.toMatch(/delta === 0 \? '='/);
+    expect(src).toContain("costDelta === 0 ? '\u2014'");
+    expect(src).toContain("durationDelta === 0 ? '\u2014'");
+    expect(src).toContain("title={costDelta === 0 ? 'No change' : undefined}");
+    expect(src).toContain("title={durationDelta === 0 ? 'No change' : undefined}");
+    expect(src).toContain('data-testid="scoreboard-delta-cost"');
+    expect(src).toContain('data-testid="scoreboard-delta-duration"');
+  });
+
+  it('formatDelta returns an em dash (not "=") when there is no difference', () => {
+    expect(src).not.toMatch(/if \(diff === 0\) return '=';/);
+    expect(src).toContain("if (diff === 0) return '\u2014';");
+  });
+
   it('coverage cell shows shared count from overlap prop', () => {
     expect(src).toContain('overlap.sharedTestCases');
     expect(src).toContain('fully comparable');
