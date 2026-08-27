@@ -26,9 +26,45 @@ function textResult(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj, null, 2) }], details: obj };
 }
 
+/** One A-vs-B numeric dimension the deep-dive agent found worth charting. */
+export interface DeepDiveChartSeriesPoint {
+  label: string;
+  a: number;
+  b: number;
+  unit?: string;
+}
+
+/** The small A-vs-B compare-bars chart, recorded as part of `record_deepdive_extras`. */
+export interface DeepDiveChartSpec {
+  title: string;
+  series: DeepDiveChartSeriesPoint[];
+}
+
+/** One follow-up experiment idea recorded by `record_deepdive_extras`. */
+export interface DeepDiveExperimentSuggestion {
+  title: string;
+  rationale: string;
+}
+
+/**
+ * Mutable sink the `record_deepdive_extras` tool below writes into. The
+ * comparison agent calls it (at most once, both fields optional) as a SIDE
+ * EFFECT of its investigation — its tool result is just an ack; the actual
+ * structured data is read back from this object by the caller after
+ * `session.prompt()` resolves. This avoids parsing structured JSON out of the
+ * agent's free-form markdown final answer, and a single combined tool (rather
+ * than two separate ones) means the chart and the experiment ideas are always
+ * recorded atomically in one call instead of two independently-ordered ones.
+ */
+export interface DeepDiveCapture {
+  chart?: DeepDiveChartSpec;
+  experiments?: DeepDiveExperimentSuggestion[];
+}
+
 export function createComparisonTraceExtension(
   runs: ComparisonRunInput[],
-  serverUrl: string
+  serverUrl: string,
+  capture: DeepDiveCapture = {}
 ): PiExtensionFactory {
   const byKey = new Map(runs.map((r) => [r.key.toUpperCase(), r]));
   const keys = runs.map((r) => `"${r.key.toUpperCase()}"`).join(' or ');
@@ -136,6 +172,67 @@ export function createComparisonTraceExtension(
         } catch (err: any) {
           return textResult({ run: r.key, error: `logs query error: ${err?.message ?? String(err)}` });
         }
+      },
+    });
+
+    pi.registerTool({
+      name: 'record_deepdive_extras',
+      label: 'Record an optional A-vs-B chart and/or follow-up experiment ideas',
+      description:
+        'Call this AT MOST ONCE, near the end of your investigation, after you have queried both runs. ' +
+        'Include `chart` if you found 2-6 real numeric dimensions where A and B genuinely differ (e.g. ' +
+        'tool-call count, retries, tokens, error count, duration) — real numbers you actually saw via ' +
+        'query_spans/query_logs, never invented; the UI renders it as a small compare-bars chart above your ' +
+        "narrative. Include `experiments` if you have 1-4 concrete follow-up test-case ideas suggested by what " +
+        'you actually observed in THIS pair (e.g. a failure mode only one agent handled, a tool one agent never ' +
+        'tried, an edge case neither run exercised) — each should be something a human could turn directly into ' +
+        'a new test case; ground the rationale in what you saw, citing a span with the same ' +
+        '[label](span:<runId>:<spanId>) syntax used in your narrative when relevant. Either or both may be ' +
+        "omitted entirely if you didn't find anything worth recording for that part — never fabricate one just " +
+        'to fill the call.',
+      promptSnippet: 'Record an optional A-vs-B chart and/or follow-up experiment ideas',
+      promptGuidelines: [
+        'Call at most once, near the end of your investigation, after querying both runs',
+        'chart: only real numbers you actually observed — never invent one; 2 to 6 series entries',
+        'experiments: 1 to 4 ideas that probe a difference, gap or failure you actually found — not generic advice',
+        'Omit chart and/or experiments entirely rather than fabricating content to fill them',
+      ],
+      parameters: Type.Object({
+        chart: Type.Optional(
+          Type.Object({
+            title: Type.String({ description: 'Short chart title, e.g. "Tool usage & retries"' }),
+            series: Type.Array(
+              Type.Object({
+                label: Type.String({ description: 'Short dimension label, e.g. "Tool calls"' }),
+                a: Type.Number({ minimum: 0, description: 'Non-negative value for run A' }),
+                b: Type.Number({ minimum: 0, description: 'Non-negative value for run B' }),
+                unit: Type.Optional(Type.String({ description: 'Unit suffix, e.g. "s", "tokens", "calls"' })),
+              }),
+              { minItems: 2, maxItems: 6 }
+            ),
+          })
+        ),
+        experiments: Type.Optional(
+          Type.Array(
+            Type.Object({
+              title: Type.String({ description: 'Short, actionable idea, e.g. "Force a mid-task tool failure"' }),
+              rationale: Type.String({ description: 'Why this is worth trying, grounded in this comparison' }),
+            }),
+            { minItems: 1, maxItems: 4 }
+          )
+        ),
+      }),
+      async execute(
+        _toolCallId: string,
+        params: { chart?: DeepDiveChartSpec; experiments?: DeepDiveExperimentSuggestion[] }
+      ) {
+        if (params.chart) capture.chart = { title: params.chart.title, series: params.chart.series };
+        if (params.experiments) capture.experiments = params.experiments;
+        return textResult({
+          recorded: true,
+          chart: !!params.chart,
+          experimentsCount: params.experiments?.length ?? 0,
+        });
       },
     });
   };
