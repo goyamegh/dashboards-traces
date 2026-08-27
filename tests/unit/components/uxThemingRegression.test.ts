@@ -133,17 +133,17 @@ describe('Scope A theming regressions', () => {
 });
 
 describe('Scope B theming regressions', () => {
-  describe('Fix #7 — RunSummaryPanel donut uses theme tokens', () => {
-    const src = read('components/RunSummaryPanel.tsx');
+  describe('Fix #7 — RunSummaryPanel donut theme-token fix (superseded)', () => {
+    // RunSummaryPanel.tsx (the donut-chart click-through summary pane) was
+    // removed by the run-report redesign (goyamegh/run-report-redesign) —
+    // its content is now the always-on RunSummaryBand, which never used
+    // hardcoded hex colors in the first place (stat chips are plain
+    // Tailwind token classes, e.g. `text-green-700 dark:text-green-400`).
+    const src = read('components/RunSummaryBand.tsx');
 
-    it('does not hardcode #015aa3 or #ef4444 in pie data', () => {
-      expect(src).not.toMatch(/color: '#015aa3'/);
-      expect(src).not.toMatch(/color: '#ef4444'/);
-    });
-
-    it('uses hsl(var(--primary)) and hsl(var(--destructive)) for pie cells', () => {
-      expect(src).toMatch(/hsl\(var\(--primary\)\)/);
-      expect(src).toMatch(/hsl\(var\(--destructive\)\)/);
+    it('RunSummaryBand does not hardcode hex colors for its verdict chips', () => {
+      expect(src).not.toMatch(/color: '#[0-9a-fA-F]{3,6}'/);
+      expect(src).not.toMatch(/#015aa3|#ef4444/);
     });
   });
 
