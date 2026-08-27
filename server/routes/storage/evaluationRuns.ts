@@ -187,7 +187,15 @@ function startRunHeartbeat(storage: ReturnType<typeof getStorageModule>, runId: 
  * Send an SSE event to the client.
  */
 function sendSSE(res: Response, event: string, data: any): void {
-  res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  // The HTTP stream is only an observer of the durable run. A browser close,
+  // proxy timeout, or failed socket write must never reject runner callbacks
+  // (which would prematurely finalize the run and remove its cancel token).
+  if (res.destroyed || res.writableEnded) return;
+  try {
+    res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+  } catch {
+    // Execution continues and persists progress/results for polling clients.
+  }
 }
 
 // GET /api/storage/evaluation-runs - List evaluation runs
@@ -245,7 +253,7 @@ router.get('/api/storage/evaluation-runs/:id', async (req: Request, res: Respons
 // POST /api/storage/evaluation-runs - Create and execute an evaluation run (SSE streaming)
 router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) => {
   try {
-    const { sources, agentKey, modelId, judgeModelId, name, evaluatorId, concurrency, benchmarkId, trigger } = req.body;
+    const { sources, agentKey, modelId, judgeModelId, name, description, evaluatorId, concurrency, benchmarkId, trigger, agentEndpoint, headers } = req.body;
 
     // Validate required fields
     if (!sources || !Array.isArray(sources) || sources.length === 0) {
@@ -281,9 +289,27 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       return;
     }
     const testCases = resolved.testCases;
+    const resolvedTestCaseIds = testCases.map(tc => tc.id);
     const evaluateFnMap = resolved.evaluateFnMap;
     const hooksByFile = resolved.hooksByFile;
     const testHookScopes = resolved.testHookScopes;
+
+    // Keep an explicitly associated benchmark linked to the canonical test
+    // case documents resolved above. Repeated CLI imports therefore reuse one
+    // benchmark and one stable set of testCaseIds instead of creating rows
+    // whose definitions and runs live only in evaluation-run documents.
+    if (benchmarkId) {
+      const benchmark = await storage.benchmarks.getById(benchmarkId);
+      if (!benchmark) {
+        sendSSE(res, 'error', { error: `Benchmark not found: ${benchmarkId}` });
+        res.end();
+        return;
+      }
+      const idsChanged = JSON.stringify(benchmark.testCaseIds || []) !== JSON.stringify(resolvedTestCaseIds);
+      if (idsChanged) {
+        await storage.benchmarks.update(benchmarkId, { testCaseIds: resolvedTestCaseIds });
+      }
+    }
 
     // Create test case snapshots
     const snapshots: TestCaseSnapshot[] = testCases.map(tc => ({
@@ -310,9 +336,12 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
     const run: any = {
       id: runId,
       name: name || `Evaluation Run ${new Date().toLocaleDateString()}`,
-      sources,
+      description,
+      sources: resolved.sources,
       agentKey,
       modelId: resolvedModelId,
+      agentEndpoint,
+      headers,
       // Customer-supplied judge model id (separate from agent's `modelId`).
       // Forwarded onto the run document so the runner reads it and the UI
       // can show which judge model graded each test case in this run.
@@ -356,12 +385,40 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
 
       // Update run with final status
       const finalStatus = cancellationToken.isCancelled ? 'cancelled' : 'completed';
+      const completedAt = new Date().toISOString();
       const updatedRun = await storage.evaluationRuns.update(runId, {
         status: finalStatus,
         stats: completedRun.stats,
-        completedAt: new Date().toISOString(),
+        completedAt,
         results: completedRun.results,
       });
+
+      // A benchmark-associated evaluation run must also appear in the
+      // benchmark's embedded run history: that remains the data model used by
+      // both benchmark list/detail UIs. The evaluation-run document is kept as
+      // the first-class history record; this is a linked projection with the
+      // same stable id and complete BenchmarkRun fields.
+      if (benchmarkId) {
+        const benchmarkRun: BenchmarkRun = {
+          id: updatedRun.id,
+          name: updatedRun.name,
+          createdAt: updatedRun.createdAt,
+          completedAt,
+          status: updatedRun.status,
+          agentKey: updatedRun.agentKey,
+          modelId: updatedRun.modelId,
+          judgeModelId: updatedRun.judgeModelId,
+          results: updatedRun.results,
+          stats: updatedRun.stats,
+          ...(updatedRun.description ? { description: updatedRun.description } : {}),
+          ...(updatedRun.evaluatorId ? { evaluatorId: updatedRun.evaluatorId } : {}),
+          ...(updatedRun.headers ? { headers: updatedRun.headers } : {}),
+          ...(updatedRun.concurrency ? { concurrency: updatedRun.concurrency } : {}),
+          testCaseSnapshots: updatedRun.testCaseSnapshots,
+        };
+        const linked = await storage.benchmarks.addRun(benchmarkId, benchmarkRun);
+        if (!linked) throw new Error(`Benchmark not found while linking completed run: ${benchmarkId}`);
+      }
 
       sendSSE(res, 'completed', updatedRun);
     } catch (error: any) {

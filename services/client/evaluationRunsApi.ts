@@ -29,6 +29,9 @@ export interface CreateEvaluationRunRequest {
   concurrency?: number;
   benchmarkId?: string;
   trigger?: 'ui' | 'cli' | 'api' | 'schedule';
+  description?: string;
+  agentEndpoint?: string;
+  headers?: Record<string, string>;
 }
 
 export interface EvaluationRunProgress {
