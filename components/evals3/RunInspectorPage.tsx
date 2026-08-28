@@ -275,7 +275,7 @@ export const RunInspectorPage: React.FC = () => {
   const modelName = getModelName(run.modelId);
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col max-md:h-auto max-md:overflow-visible">
       {/* ── Top Bar ──────────────────────────────────────────────── */}
       <div className="px-4 py-3 border-b bg-card shrink-0">
         <Breadcrumbs
@@ -340,10 +340,10 @@ export const RunInspectorPage: React.FC = () => {
       </div>
 
       {/* ── Left + Right Panels ──────────────────────────────────── */}
-      <ResizablePanelGroup direction="horizontal" className="flex-1">
+      <ResizablePanelGroup direction="horizontal" className="flex-1 max-md:!h-auto max-md:!overflow-visible max-md:!flex-col">
         {/* Left: Test Case List */}
-        <ResizablePanel defaultSize={30} minSize={20} maxSize={45} className="border-r">
-          <ScrollArea className="h-full">
+        <ResizablePanel defaultSize={30} minSize={20} maxSize={45} className="border-r max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible max-md:border-r-0 max-md:border-b">
+          <ScrollArea className="h-full max-md:h-auto">
             <div className="px-3 py-2 border-b">
               <span className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
                 Test Cases · {totalCount}
@@ -383,10 +383,10 @@ export const RunInspectorPage: React.FC = () => {
           </ScrollArea>
         </ResizablePanel>
 
-        <ResizableHandle withHandle />
+        <ResizableHandle withHandle className="max-md:hidden" />
 
         {/* Right: Test Case Detail */}
-        <ResizablePanel defaultSize={70} minSize={50}>
+        <ResizablePanel defaultSize={70} minSize={50} className="max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible">
           {selectedResult ? (
             reportLoading ? (
               <div className="flex items-center justify-center h-full">

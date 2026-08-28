@@ -349,7 +349,7 @@ export const TestCaseDetailPage: React.FC = () => {
   }
 
   return (
-    <div className="h-full flex flex-col">
+    <div className="h-full flex flex-col max-md:h-auto max-md:overflow-visible">
       {/* ── Top Summary Bar ────────────────────────────────────────── */}
       <div className="px-4 py-3 border-b bg-card shrink-0">
         <Breadcrumbs
@@ -410,10 +410,10 @@ export const TestCaseDetailPage: React.FC = () => {
 
       {/* ── Main Content: Left Panel + Right Panel ─────────────────── */}
       {selectedRunId ? (
-      <ResizablePanelGroup direction="horizontal" className="flex-1">
+      <ResizablePanelGroup direction="horizontal" className="flex-1 max-md:!h-auto max-md:!overflow-visible max-md:!flex-col">
         {/* ── Left Panel ──────────────────────────────────────────── */}
-        <ResizablePanel defaultSize={30} minSize={20} maxSize={45} className="border-r">
-          <ScrollArea className="h-full">
+        <ResizablePanel defaultSize={30} minSize={20} maxSize={45} className="border-r max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible max-md:border-r-0 max-md:border-b">
+          <ScrollArea className="h-full max-md:h-auto">
             {/* ── Collapsible Definition ──────────────────────────── */}
             <div className="border-b">
               {/* Definition is always shown above the runs list — the input
@@ -637,10 +637,10 @@ export const TestCaseDetailPage: React.FC = () => {
           </ScrollArea>
         </ResizablePanel>
 
-        <ResizableHandle withHandle />
+        <ResizableHandle withHandle className="max-md:hidden" />
 
         {/* ── Right Panel: Test Case Inspector ────────────────────── */}
-        <ResizablePanel defaultSize={70} minSize={50}>
+        <ResizablePanel defaultSize={70} minSize={50} className="max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible">
           {isRunning && selectedRunId === RUNNING_RUN_ID ? (
             <LiveRunPanel
               testCase={testCase}

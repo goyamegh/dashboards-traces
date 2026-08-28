@@ -450,7 +450,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
   const hasMultipleRuns = runs.length >= 2;
 
   return (
-    <div className="p-6 h-full flex flex-col">
+    <div className="p-4 sm:p-6 h-full max-md:h-auto max-md:min-h-full flex flex-col">
       <Breadcrumbs
         items={[
           { label: 'Evaluations', href: '/evaluations/benchmarks' },
@@ -600,8 +600,8 @@ export const BenchmarkRunsPage2: React.FC = () => {
                     }}
                   >
                     <CardContent className="p-4">
-                      <div className="flex items-center justify-between">
-                        <div className="flex items-center gap-3 flex-1">
+                      <div className="flex items-center justify-between max-md:flex-col max-md:items-stretch max-md:gap-3">
+                        <div className="flex items-center gap-3 flex-1 min-w-0">
                           {hasMultipleRuns && (
                             <Checkbox
                               checked={isSelected}
@@ -610,8 +610,8 @@ export const BenchmarkRunsPage2: React.FC = () => {
                               className="h-5 w-5"
                             />
                           )}
-                          <div className="flex-1">
-                            <div className="flex items-center gap-2 mb-1">
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
                               <h3 className="font-semibold">{run.name}</h3>
                               {getEffectiveRunStatus(run) === 'running' && (
                                 <Badge className="text-xs bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-500/20 dark:text-blue-400 dark:border-blue-500/30 animate-pulse">
@@ -648,7 +648,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
                             {run.description && (
                               <p className="text-sm text-muted-foreground mb-2">{run.description}</p>
                             )}
-                            <div className="flex items-center gap-4 text-xs text-muted-foreground">
+                            <div className="flex items-center gap-x-4 gap-y-1 text-xs text-muted-foreground flex-wrap">
                               <span className="flex items-center gap-1"><Calendar size={12} />{formatDate(run.createdAt)}</span>
                               <span>Agent: {DEFAULT_CONFIG.agents.find(a => a.key === run.agentKey)?.name || run.agentKey}</span>
                               <span>Model: {getModelName(run.modelId)}</span>
@@ -657,9 +657,9 @@ export const BenchmarkRunsPage2: React.FC = () => {
                         </div>
 
                         {/* Stats and Actions */}
-                        <div className="flex items-center gap-4">
+                        <div className="flex items-center gap-4 max-md:justify-between max-md:pl-8 max-md:flex-wrap">
                           {(stats.total > 0 || getEffectiveRunStatus(run) === 'running') && (
-                            <div className="flex items-center gap-4 text-sm">
+                            <div className="flex items-center gap-4 text-sm flex-wrap">
                               {stats.running > 0 && (
                                 <span className="flex items-center gap-1 text-blue-700 dark:text-blue-400" title="Running">
                                   <Loader2 size={14} className="animate-spin" /> {stats.running}
@@ -793,9 +793,17 @@ export const BenchmarkRunsPage2: React.FC = () => {
                             )}
                           </div>
                           <div className="flex items-center gap-2 mt-1 flex-wrap">
-                            {(tc.labels || []).slice(0, 3).map(label => (
-                              <Badge key={label} className={`text-xs ${getLabelColor(label)}`}>{label}</Badge>
-                            ))}
+                            {(tc.labels || []).slice(0, 3).map(label => {
+                              const duplicatesStructuredFact = /^(category|difficulty):/i.test(label);
+                              return (
+                                <Badge
+                                  key={label}
+                                  className={`text-xs ${getLabelColor(label)} ${duplicatesStructuredFact ? 'max-md:hidden' : ''}`}
+                                >
+                                  {label}
+                                </Badge>
+                              );
+                            })}
                             {(tc.labels || []).length > 3 && (
                               <span className="text-xs text-muted-foreground">+{(tc.labels || []).length - 3}</span>
                             )}
@@ -888,15 +896,15 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
         if (layoutMode === 'split') {
           return (
-            <div className="flex-1 flex flex-col overflow-hidden" data-testid="benchmark-runs-split">
+            <div className="flex-1 flex flex-col overflow-hidden max-md:overflow-visible" data-testid="benchmark-runs-split">
               <div className="flex items-center justify-end mb-3">
                 {layoutToggle}
               </div>
-              <ResizablePanelGroup direction="horizontal" className="flex-1 overflow-hidden">
+              <ResizablePanelGroup direction="horizontal" className="flex-1 overflow-hidden max-md:!h-auto max-md:!overflow-visible">
                 {/* Left Panel — Test Cases */}
-                <ResizablePanel defaultSize={35} minSize={25} maxSize={55}>
-                  <div className="h-full overflow-y-auto pr-3">
-                    <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3 flex items-center justify-between">
+                <ResizablePanel defaultSize={35} minSize={25} maxSize={55} className="max-md:!min-h-0 max-md:!h-auto max-md:!overflow-visible">
+                  <div className="h-full overflow-y-auto pr-3 max-md:h-auto max-md:overflow-visible max-md:pr-0">
+                    <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3 flex items-center justify-between max-md:static">
                       <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center">
                         Test Cases
                         {versionTestCases.length > 0 && (
@@ -908,11 +916,11 @@ export const BenchmarkRunsPage2: React.FC = () => {
                     {testCasesBody}
                   </div>
                 </ResizablePanel>
-                <ResizableHandle withHandle />
+                <ResizableHandle withHandle className="max-md:hidden" />
                 {/* Right Panel — Runs */}
-                <ResizablePanel defaultSize={65} minSize={45}>
-                  <div className="h-full overflow-y-auto pl-3">
-                    <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3 flex items-center justify-between">
+                <ResizablePanel defaultSize={65} minSize={45} className="max-md:!min-h-0 max-md:!h-auto max-md:!overflow-visible max-md:mt-5">
+                  <div className="h-full overflow-y-auto pl-3 max-md:h-auto max-md:overflow-visible max-md:pl-0">
+                    <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3 flex items-center justify-between max-md:static">
                       <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center">
                         Runs
                         {filteredRuns.length > 0 && (

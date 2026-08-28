@@ -452,7 +452,7 @@ export const BenchmarksPage: React.FC = () => {
   };
 
   const getUseCaseCount = (bench: Benchmark) => {
-    return bench.testCaseIds.length;
+    return (bench.testCaseIds || []).length;
   };
 
   const getRunNames = (bench: Benchmark) => {

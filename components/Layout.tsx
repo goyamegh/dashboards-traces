@@ -15,6 +15,8 @@ import {
   BarChart3,
   MessageSquare,
   Wand2,
+  Menu,
+  X,
 } from "lucide-react";
 import OpenSearchLogoDark from "@/assets/opensearch-logo.svg";
 import OpenSearchLogoLight from "@/assets/opensearch-logo-light.svg";
@@ -91,6 +93,10 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   const [testingOpen, setTestingOpen] = useState(true);
   const [searchQuery, setSearchQuery] = useState("");
   const [isCollapsed, setIsCollapsed] = usePersistedState<boolean>('sidebar:collapsed', false);
+  const [mobileNavOpen, setMobileNavOpen] = useState(false);
+
+  // Route changes close the off-canvas navigation after a mobile selection.
+  useEffect(() => setMobileNavOpen(false), [location.pathname]);
 
   // Chrome-vertical-tabs-style hover-open: when the sidebar is pinned
   // collapsed to the icon rail, hovering (or keyboard-focusing) it temporarily
@@ -170,12 +176,25 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   return (
     <SidebarCollapseContext.Provider value={{ isCollapsed, setIsCollapsed }}>
       <SidebarProvider className="h-screen overflow-hidden">
-        {/* Hover zone reserves the LAYOUT width (rail when pinned collapsed)
-            so the flyout overlays content instead of reflowing it. Mouse and
-            keyboard-focus both drive the same isHoverExpanded state. */}
+        {mobileNavOpen && (
+          <button
+            type="button"
+            className="fixed inset-0 z-40 bg-black/40 lg:hidden"
+            aria-label="Close navigation"
+            onClick={() => setMobileNavOpen(false)}
+          />
+        )}
+        {/* Hover zone reserves the LAYOUT width (rail when pinned collapsed) so
+            the flyout overlays content instead of reflowing it on desktop. On
+            phones it becomes a fixed, off-canvas drawer instead (zero layout
+            footprint — content is never pushed — sliding in/out via
+            translate), matching the mobile off-canvas navigation contract.
+            Mouse and keyboard-focus both drive the same isHoverExpanded
+            state (see onFocus/onBlur below) — `hoverZoneRef` is what lets
+            onBlur tell a Tab-within-the-rail from a Tab actually leaving it. */}
         <div
           ref={hoverZoneRef}
-          className="relative h-screen flex-shrink-0 transition-[width] duration-200"
+          className={`fixed inset-y-0 left-0 z-50 h-screen flex-shrink-0 transition-transform duration-300 lg:relative lg:inset-auto lg:z-auto lg:transform-none lg:transition-[width] lg:duration-200 ${mobileNavOpen ? 'translate-x-0' : '-translate-x-full'}`}
           style={{ width: isCollapsed ? '64px' : '180px' }}
           data-testid="sidebar-hover-zone"
           onMouseEnter={() => {
@@ -482,7 +501,20 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
       </Sidebar>
       </div>
 
-      <SidebarInset className="overflow-y-auto dashboard-gradient-bg">
+      <SidebarInset className="overflow-y-auto dashboard-gradient-bg mobile-responsive-content">
+        <div className="sticky top-0 z-30 flex h-12 shrink-0 items-center justify-between border-b bg-background/95 px-3 backdrop-blur lg:hidden">
+          <button
+            type="button"
+            className="inline-flex min-h-10 min-w-10 items-center justify-center rounded-md hover:bg-accent"
+            aria-label={mobileNavOpen ? 'Close navigation' : 'Open navigation'}
+            aria-expanded={mobileNavOpen}
+            onClick={() => setMobileNavOpen(open => !open)}
+          >
+            {mobileNavOpen ? <X size={20} /> : <Menu size={20} />}
+          </button>
+          <span className="text-sm font-semibold">AgentHealth</span>
+          <span className="w-10" aria-hidden="true" />
+        </div>
         <AssistantProvider>
           {children}
           <AssistantModal />
