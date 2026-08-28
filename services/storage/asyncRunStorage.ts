@@ -357,11 +357,33 @@ class AsyncRunStorage {
     if (reportIds.length === 0) return {};
     // Stored-doc field names (the projection runs server-side on the stored
     // shape): `traceId` maps to app-level `runId` in toTestCaseRun.
+    // `metrics` added for RunInsightsPane's "Avg Score" detail (run-report-insights):
+    // it's a small dynamic object of a handful of numeric fields, not the
+    // trajectory/messages bloat #429 fixed - safe to include in the summary.
     const fields = [
       'status', 'passFailStatus', 'metricsStatus', 'traceId', 'sessionId',
-      'judgeModelId', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations',
+      'judgeModelId', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations', 'metrics',
     ];
     // Chunk to keep the URL well under practical limits for large benchmarks.
+    const stored = await fetchChunked(reportIds, REPORT_ID_CHUNK_SIZE, chunk => opensearchRuns.getByIds(chunk, { fields }));
+    const out: Record<string, EvaluationReport> = {};
+    for (const s of stored) out[s.id] = toTestCaseRun(s);
+    return out;
+  }
+
+  /**
+   * Even-lighter batch fetch than {@link getReportSummariesByIds}: just the
+   * judge reasoning text + testCaseId. Used by RunInsightsPane (run-report
+   * insights pane, run-report-insights) to build "why did failing cases
+   * fail" theme clusters without pulling the full report body (trajectory,
+   * messages, logs) for every failing case in a large run - the exact
+   * over-fetch class of bug #429 fixed for the report-detail path. Callers
+   * are expected to pre-filter to failing reportIds and cap the id list
+   * (RunInsightsPane caps at 100) before calling this.
+   */
+  async getReportReasoningsByIds(reportIds: string[]): Promise<Record<string, EvaluationReport>> {
+    if (reportIds.length === 0) return {};
+    const fields = ['llmJudgeReasoning', 'testCaseId'];
     const stored = await fetchChunked(reportIds, REPORT_ID_CHUNK_SIZE, chunk => opensearchRuns.getByIds(chunk, { fields }));
     const out: Record<string, EvaluationReport> = {};
     for (const s of stored) out[s.id] = toTestCaseRun(s);
