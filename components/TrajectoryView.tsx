@@ -92,7 +92,7 @@ export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }
         const collapsible = isCollapsible(step);
         const latency = formatLatency(step.latencyMs);
         const failed = step.status === ToolCallStatus.FAILURE;
-        const typeColor = failed ? 'text-red-400' : (typeColors[step.type] || 'text-muted-foreground');
+        const typeColor = failed ? 'text-red-600 dark:text-red-400' : (typeColors[step.type] || 'text-muted-foreground');
         const bgColor = failed ? 'bg-red-500/5 border-red-500/20' : (typeBgColors[step.type] || 'bg-muted/30 border-border/50');
 
         return (

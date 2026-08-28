@@ -276,20 +276,23 @@ export const MetricsTimeSeriesChart: React.FC<MetricsTimeSeriesChartProps> = ({
 
       <ResponsiveContainer width="100%" height={height}>
         <LineChart data={chartData} margin={{ top: 5, right: showRightAxis ? 60 : 20, bottom: 5, left: 20 }}>
-          <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
+          {/* Theme-driven axes: previously used dark-grey hex (#374151, #9ca3af, #4b5563)
+              that vanished against the light-mode background. `hsl(var(--…))` resolves
+              against the current theme automatically. */}
+          <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
           <XAxis
             dataKey="name"
-            tick={{ fill: '#9ca3af', fontSize: 11 }}
-            tickLine={{ stroke: '#4b5563' }}
-            axisLine={{ stroke: '#4b5563' }}
+            tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }}
+            tickLine={{ stroke: 'hsl(var(--border))' }}
+            axisLine={{ stroke: 'hsl(var(--border))' }}
           />
           {/* Left Y-axis for percentage metrics */}
           <YAxis
             yAxisId="left"
             domain={[0, 100]}
-            tick={{ fill: '#9ca3af', fontSize: 11 }}
-            tickLine={{ stroke: '#4b5563' }}
-            axisLine={{ stroke: '#4b5563' }}
+            tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }}
+            tickLine={{ stroke: 'hsl(var(--border))' }}
+            axisLine={{ stroke: 'hsl(var(--border))' }}
             tickFormatter={(v) => `${v}%`}
             width={45}
           />
@@ -298,9 +301,9 @@ export const MetricsTimeSeriesChart: React.FC<MetricsTimeSeriesChartProps> = ({
             <YAxis
               yAxisId="right"
               orientation="right"
-              tick={{ fill: '#9ca3af', fontSize: 11 }}
-              tickLine={{ stroke: '#4b5563' }}
-              axisLine={{ stroke: '#4b5563' }}
+              tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 11 }}
+              tickLine={{ stroke: 'hsl(var(--border))' }}
+              axisLine={{ stroke: 'hsl(var(--border))' }}
               width={55}
             />
           )}
@@ -318,8 +321,8 @@ export const MetricsTimeSeriesChart: React.FC<MetricsTimeSeriesChartProps> = ({
                 name={metric.label}
                 stroke={metric.color}
                 strokeWidth={2}
-                dot={{ r: 4, fill: metric.color, stroke: '#1f2937', strokeWidth: 1 }}
-                activeDot={{ r: 6, fill: metric.color, stroke: '#fff', strokeWidth: 2 }}
+                dot={{ r: 4, fill: metric.color, stroke: 'hsl(var(--background))', strokeWidth: 1 }}
+                activeDot={{ r: 6, fill: metric.color, stroke: 'hsl(var(--background))', strokeWidth: 2 }}
                 connectNulls
               />
             );

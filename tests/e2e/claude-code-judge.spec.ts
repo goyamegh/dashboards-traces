@@ -10,7 +10,7 @@
  * and can be selected for evaluations.
  */
 
-import { test, expect } from '@playwright/test';
+import { test, expect } from './fixtures/test-fixtures';
 
 test.describe('Claude Code Judge', () => {
   test('claude-code-judge model appears in settings', async ({ page }) => {
