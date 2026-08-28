@@ -341,8 +341,8 @@ export const testCaseStorage = {
   /**
    * Bulk create test cases
    */
-  async bulkCreate(testCases: Partial<StorageTestCase>[]): Promise<{ created: number; errors: boolean }> {
-    return request<{ created: number; errors: boolean }>('POST', '/test-cases/bulk', { testCases });
+  async bulkCreate(testCases: Partial<StorageTestCase>[]): Promise<{ created: number; errors: boolean; testCases: StorageTestCase[] }> {
+    return request<{ created: number; errors: boolean; testCases: StorageTestCase[] }>('POST', '/test-cases/bulk', { testCases });
   },
 };
 

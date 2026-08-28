@@ -49,3 +49,54 @@ export async function promoteRunToBenchmark(
   // 8. Return both
   return { benchmark, run: updatedRun };
 }
+
+/**
+ * Link freshly-created/resolved test case ids into a benchmark's
+ * `testCaseIds` (bumping the version, same as `PUT /api/storage/benchmarks/:id`
+ * does when test cases change) so a run-first `EvaluationRun` created against
+ * `benchmarkId` doesn't leave the benchmark a testCaseIds-less shell.
+ *
+ * Used by (1) `POST /api/storage/evaluation-runs` at run-creation time —
+ * every source resolves to concrete test case ids before execution, so
+ * they're linked immediately, independent of whether the run itself
+ * succeeds — and (2) `agent-health benchmark doctor --apply`'s repair for
+ * benchmarks that already went stale before this fix existed.
+ *
+ * No-op (returns `added: []`, no version bump, no write) when every id is
+ * already present.
+ */
+export async function linkTestCaseIdsToBenchmark(
+  benchmarkId: string,
+  testCaseIds: string[],
+  storage: IStorageModule,
+): Promise<{ benchmark: Benchmark; added: string[] } | null> {
+  const benchmark = await storage.benchmarks.getById(benchmarkId);
+  if (!benchmark) return null;
+
+  const existingIds = benchmark.testCaseIds || [];
+  const existingSet = new Set(existingIds);
+  const added = Array.from(new Set(testCaseIds)).filter(id => id && !existingSet.has(id));
+  if (added.length === 0) {
+    return { benchmark, added: [] };
+  }
+
+  const mergedIds = [...existingIds, ...added];
+  const currentVersion = benchmark.currentVersion ?? 1;
+  const versions = benchmark.versions && benchmark.versions.length > 0
+    ? benchmark.versions
+    : [{ version: 1, createdAt: benchmark.createdAt, testCaseIds: existingIds }];
+  const newVersion = currentVersion + 1;
+  const newVersionEntry = {
+    version: newVersion,
+    createdAt: new Date().toISOString(),
+    testCaseIds: mergedIds,
+  };
+
+  const updated = await storage.benchmarks.update(benchmarkId, {
+    testCaseIds: mergedIds,
+    currentVersion: newVersion,
+    versions: [...versions, newVersionEntry],
+  });
+
+  return { benchmark: updated, added };
+}
