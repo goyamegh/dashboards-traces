@@ -46,7 +46,8 @@
  * any live-state assertion can fire.
  */
 
-import { test, expect, type APIRequestContext, type Page } from '@playwright/test';
+import { test, expect } from './fixtures/test-fixtures';
+import type { APIRequestContext, Page } from '@playwright/test';
 
 const TEST_TIMEOUT = 120_000;
 

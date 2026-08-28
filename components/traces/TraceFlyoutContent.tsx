@@ -398,16 +398,16 @@ export const TraceFlyoutContent: React.FC<TraceFlyoutContentProps> = ({
                       })}
                     </div>
                   </TooltipTrigger>
-                  <TooltipContent 
-                    side="bottom" 
-                    className="bg-gray-900 dark:bg-gray-800 border-gray-800 p-3 max-w-xs text-white [&>svg]:fill-gray-900 dark:[&>svg]:fill-gray-800"
+                  <TooltipContent
+                    side="bottom"
+                    className="p-3 max-w-xs"
                   >
                     <div className="space-y-1.5">
                       <div className="text-xs font-semibold mb-2">Time Distribution</div>
                       {categoryStats.map((stat) => {
                         const colors = getCategoryColors(stat.category);
-                        const formattedPercent = stat.percentage < 1 
-                          ? stat.percentage.toFixed(1) 
+                        const formattedPercent = stat.percentage < 1
+                          ? stat.percentage.toFixed(1)
                           : stat.percentage.toFixed(0);
                         return (
                           <div key={stat.category} className="flex items-center justify-between gap-4 text-xs">
@@ -415,9 +415,9 @@ export const TraceFlyoutContent: React.FC<TraceFlyoutContentProps> = ({
                               <div className={cn('w-2.5 h-2.5 rounded-sm flex-shrink-0', colors.bar)} />
                               <span className="font-medium">{stat.category}</span>
                             </div>
-                            <div className="flex items-center gap-2 text-gray-300">
+                            <div className="flex items-center gap-2 text-muted-foreground">
                               <span>{formatDuration(stat.totalDuration)}</span>
-                              <span className="text-gray-400">({formattedPercent}%)</span>
+                              <span className="text-muted-foreground/70">({formattedPercent}%)</span>
                             </div>
                           </div>
                         );
