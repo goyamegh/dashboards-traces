@@ -301,6 +301,70 @@ describe('Experiment Runner', () => {
       expect(savedReport.passFailStatus).toBe('passed');
     });
 
+    it('ALWAYS-RECORD: a mid-body throw still yields performanceMetrics.totalTokens/totalCostUsd and a notReached marker for the skipped tail', async () => {
+      // Regression for the owner-hit measurement-harness bug: chai's
+      // expect() is fail-fast, so a failing assertion partway through the
+      // body used to silently drop every axis the body never got to read
+      // (e.g. a `traces.totalTokens`/`totalCost` check placed AFTER the
+      // failing gate). The runner must stamp those objective actuals from
+      // its OWN TracesAccessor — independent of whether the body's code
+      // ever reached them — and record that the tail didn't run.
+      const testCase1 = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run = createBenchmarkRun('run-1');
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase1]);
+      mockInvokeAgent.mockResolvedValue({
+        trajectory: [{ type: 'response', content: 'Agent output' }],
+        rawEvents: [],
+        runId: null,
+        agentDurationMs: 250,
+        connector: { type: 'mock' },
+      });
+      mockSaveReportWithClient.mockImplementation((_c: any, report: any) =>
+        Promise.resolve({ ...report, id: 'saved-report-1' }));
+
+      const evaluateFnMap = new Map<string, (f: any) => Promise<void>>([
+        ['tc-1', async ({ agent, expect }: any) => {
+          const result = await agent.run('Test prompt');
+          expect(result.agentDurationMs).to.equal(999); // matcher #1: FAILS — throws
+          expect(result).to.exist;                        // matcher #2: NEVER reached
+        }],
+      ]);
+
+      const result = await executeRun(experiment, run, jest.fn(), {
+        client: mockClient,
+        evaluateFnMap,
+      });
+
+      // NOTE: benchmarkRunner.ts's `results[testCaseId].status` tracks
+      // execution completion (did it crash?), not the verdict — unlike
+      // evaluationRunner.ts it does not translate passFailStatus into this
+      // field. `report.passFailStatus` below is the real verdict signal.
+      expect(result.results['tc-1'].status).toBe('completed');
+      const savedReport = mockSaveReportWithClient.mock.calls[0][1];
+      expect(savedReport.evaluationType).toBe('deterministic');
+      expect(savedReport.passFailStatus).toBe('failed');
+
+      // durationMs already survived a throw pre-fix — pin it as a
+      // non-regression rather than the headline assertion.
+      expect(savedReport.performanceMetrics.durationMs).toBe(250);
+      expect(savedReport.performanceMetrics.agentDurationMs).toBe(250);
+      // THE FIX: totalTokens/totalCostUsd are now PRESENT (real zeros, since
+      // this agent has no useTraces — emptyTracesAccessor) even though the
+      // body never reached a `traces.totalTokens`/`totalCost` matcher.
+      // Pre-fix these were `undefined` — nothing ever wrote them.
+      expect(savedReport.performanceMetrics.totalTokens).toBe(0);
+      expect(savedReport.performanceMetrics.totalCostUsd).toBe(0);
+
+      // Matcher panel: the failing gate is recorded, PLUS a distinct
+      // synthetic entry for the tail that never ran.
+      expect(savedReport.matcherResults).toHaveLength(2);
+      expect(savedReport.matcherResults[0].pass).toBe(false);
+      expect(savedReport.matcherResults[0].notReached).toBeFalsy();
+      expect(savedReport.matcherResults[1].notReached).toBe(true);
+    });
+
     it('should handle cancellation', async () => {
       const testCase1 = createTestCase('tc-1');
       const testCase2 = createTestCase('tc-2');

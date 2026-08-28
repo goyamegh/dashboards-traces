@@ -16,7 +16,7 @@
  */
 
 import React, { useState } from 'react';
-import { CheckCircle2, XCircle, ChevronDown, ChevronRight, Brain, Code2, Activity, Wrench } from 'lucide-react';
+import { CheckCircle2, XCircle, ChevronDown, ChevronRight, Brain, Code2, Activity, Wrench, MinusCircle } from 'lucide-react';
 import { Markdown, hasRealMarkdown } from '@/components/ui/markdown';
 import type { MatcherResult, MatcherMethod } from '@/lib/matchers/types';
 import { Badge } from '@/components/ui/badge';
@@ -51,15 +51,22 @@ const METHOD_META: Record<MatcherMethod, { label: string; icon: React.ReactNode;
 export const MatcherResultsPanel: React.FC<Props> = ({ results }) => {
   if (!results || results.length === 0) return null;
 
-  const passed = results.filter(r => r.pass).length;
-  const failed = results.length - passed;
+  // `notReached` entries are a synthetic runner-appended marker (see
+  // appendNotReachedMarker in services/evaluation/index.ts) for matcher
+  // calls that never executed because an earlier assertion threw —
+  // distinct from both "passed" and "failed", so they're excluded from
+  // both counts and get their own tally in the header.
+  const reached = results.filter(r => !r.notReached);
+  const notReachedCount = results.length - reached.length;
+  const passed = reached.filter(r => r.pass).length;
+  const failed = reached.length - passed;
 
   return (
     <div>
       <h3 className="text-lg font-semibold mb-3 flex items-center gap-2">
         Matchers
         <span className="text-xs font-normal text-muted-foreground">
-          ({passed}/{results.length} passed{failed > 0 ? `, ${failed} failed` : ''})
+          ({passed}/{reached.length} passed{failed > 0 ? `, ${failed} failed` : ''}{notReachedCount > 0 ? `, ${notReachedCount} not reached` : ''})
         </span>
       </h3>
       <div className="border rounded-lg divide-y bg-card">
@@ -120,7 +127,9 @@ const MatcherRow: React.FC<RowProps> = ({ result }) => {
         className={`flex items-start gap-2 ${hasDetail ? 'cursor-pointer' : ''}`}
       >
         <div className="pt-0.5 shrink-0">
-          {result.pass ? (
+          {result.notReached ? (
+            <MinusCircle size={14} className="text-muted-foreground" />
+          ) : result.pass ? (
             <CheckCircle2 size={14} className="text-green-600" />
           ) : (
             <XCircle size={14} className="text-red-600" />
@@ -128,9 +137,14 @@ const MatcherRow: React.FC<RowProps> = ({ result }) => {
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className={`text-sm ${result.pass ? '' : 'text-red-600 dark:text-red-400 font-medium'}`}>
+            <span className={`text-sm ${result.notReached ? 'text-muted-foreground italic' : result.pass ? '' : 'text-red-600 dark:text-red-400 font-medium'}`}>
               {result.description || '(matcher)'}
             </span>
+            {result.notReached && (
+              <span className="text-[9px] uppercase tracking-wide text-muted-foreground shrink-0">
+                not reached
+              </span>
+            )}
             <Badge variant="outline" className={`text-[9px] px-1.5 py-0 shrink-0 inline-flex items-center gap-1 ${meta.cls}`}>
               {meta.icon}
               {meta.label}
