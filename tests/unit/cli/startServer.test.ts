@@ -66,13 +66,16 @@ describe('startServer module', () => {
         const tryPort = (port: number) => {
           setTimeout(() => {
             if (portsInUse.includes(port)) {
-              const err: NodeJS.ErrnoException = new Error(`listen EADDRINUSE: address already in use 0.0.0.0:${port}`);
-              err.code = 'EADDRINUSE';
-
               if (port <= requestedPort + maxAttempts) {
                 tryPort(port + 1);
               } else {
-                reject(err);
+                // Mirrors cli/utils/startServer.ts's tryListen(): once the
+                // fallback range is exhausted, the real error explicitly
+                // names AH_PORT so a busy-port user isn't left guessing.
+                reject(new Error(
+                  `Port ${port} is in use and all fallback ports (${requestedPort}-${requestedPort + maxAttempts}) are occupied. ` +
+                  `Set AH_PORT=<available-port> to use a different port: \`AH_PORT=8001 npx @opensearch-project/agent-health\``
+                ));
               }
             } else {
               resolve(port);
@@ -99,14 +102,14 @@ describe('startServer module', () => {
       expect(port).toBe(4004);
     });
 
-    it('should fail after MAX_PORT_ATTEMPTS consecutive in-use ports', async () => {
+    it('should fail after MAX_PORT_ATTEMPTS consecutive in-use ports, naming AH_PORT', async () => {
       const maxAttempts = 10;
       // Need maxAttempts + 2 ports in use to exhaust retries (original + 10 retries + 1 more)
       const allInUse = Array.from({ length: maxAttempts + 2 }, (_, i) => 4001 + i);
 
       await expect(
         simulateTryListen(4001, allInUse, maxAttempts)
-      ).rejects.toThrow('EADDRINUSE');
+      ).rejects.toThrow('AH_PORT');
     });
 
     it('should try up to 10 additional ports by default', async () => {
