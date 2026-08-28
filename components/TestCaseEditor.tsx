@@ -58,6 +58,65 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
   const [existingLabels, setExistingLabels] = useState<string[]>([]);
   const [isSaving, setIsSaving] = useState(false);
 
+  // Callers may pass a lightweight summary record (list views fetch
+  // `fields=summary` to avoid pulling the full test-case corpus over the
+  // wire — see services/storage/asyncTestCaseStorage.ts getAll({ summary })).
+  // A summary record has initialPrompt truncated to 200 chars and
+  // context/expectedOutcomes/versions emptied out. If we seeded form state
+  // from that directly, Save would silently persist the truncated prompt
+  // and wipe context/expectedOutcomes for the test case. So always refetch
+  // the full record by id when editing an existing test case, and reseed
+  // form state from it once it arrives. This is a single extra request for
+  // the one test case being edited — nothing like the list-wide cost this
+  // is guarding against.
+  const [isLoadingFullTestCase, setIsLoadingFullTestCase] = useState(!!testCase);
+  // Set (and Save stays disabled) when the full-record refetch above fails
+  // or 404s, so a transient network error can't leave the form silently
+  // save-able with the truncated/empty summary data it was seeded from —
+  // that would reintroduce exactly the data-loss bug this refetch guards
+  // against. Cleared on a successful load or a fresh retry attempt.
+  const [loadFullTestCaseError, setLoadFullTestCaseError] = useState<string | null>(null);
+  const [loadFullTestCaseAttempt, setLoadFullTestCaseAttempt] = useState(0);
+
+  useEffect(() => {
+    if (!testCase) {
+      setIsLoadingFullTestCase(false);
+      setLoadFullTestCaseError(null);
+      return;
+    }
+    let cancelled = false;
+    setIsLoadingFullTestCase(true);
+    setLoadFullTestCaseError(null);
+    asyncTestCaseStorage.getById(testCase.id)
+      .then(full => {
+        if (cancelled) return;
+        if (!full) {
+          // 404 / deleted-out-from-under-us: do NOT fall back to the
+          // (possibly summary-shaped) `testCase` prop — keep Save disabled
+          // and surface it, the same as a network failure below.
+          setLoadFullTestCaseError('Could not load the full test case (not found). Editing is disabled to avoid saving incomplete data.');
+          return;
+        }
+        setName(full.name || '');
+        setDescription(full.description || '');
+        setLabels(full.labels || []);
+        setInitialPrompt(full.initialPrompt || '');
+        setContext(full.context || []);
+        setExpectedOutcomes(full.expectedOutcomes && full.expectedOutcomes.length > 0 ? full.expectedOutcomes : ['']);
+        setIsLoadingFullTestCase(false);
+      })
+      .catch(err => {
+        console.error('Failed to load full test case for editing:', err);
+        if (cancelled) return;
+        // Deliberately do NOT clear isLoadingFullTestCase here — canSave stays
+        // false until a retry succeeds, so the (possibly truncated) prop data
+        // this component was seeded with can never be saved over the real record.
+        setLoadFullTestCaseError('Could not load the full test case. Editing is disabled until this succeeds — check your connection and retry.');
+      });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [testCase?.id, loadFullTestCaseAttempt]);
+
   useEffect(() => {
     asyncTestCaseStorage.getLabels().then(setExistingLabels);
   }, []);
@@ -308,8 +367,8 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
   // without having to invent placeholder outcomes the runner ignores.
   // We still REQUIRE name + initialPrompt because without those the
   // test case has no agent invocation contract at all.
-  const canSaveForm = name.trim() && initialPrompt.trim() && !isSaving;
-  const canSaveJson = jsonContent.trim() && jsonErrors.length === 0 && !isSaving;
+  const canSaveForm = name.trim() && initialPrompt.trim() && !isSaving && !isLoadingFullTestCase;
+  const canSaveJson = jsonContent.trim() && jsonErrors.length === 0 && !isSaving && !isLoadingFullTestCase;
   const canSave = editorMode === 'form' ? canSaveForm : canSaveJson;
 
   return (
@@ -318,11 +377,29 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
           <CardTitle>
             {testCase ? 'Edit Test Case' : 'Create Test Case'}
+            {isLoadingFullTestCase && !loadFullTestCaseError && (
+              <Loader2 size={14} className="inline-block ml-2 animate-spin text-muted-foreground" />
+            )}
           </CardTitle>
           <Button variant="ghost" size="icon" onClick={onCancel}>
             <X size={18} />
           </Button>
         </CardHeader>
+
+        {loadFullTestCaseError && (
+          <div className="px-6 pb-2">
+            <div className="bg-red-900/20 border border-red-500/50 rounded-md p-3 flex items-center justify-between gap-3">
+              <div className="text-red-300 text-xs">{loadFullTestCaseError}</div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setLoadFullTestCaseAttempt(a => a + 1)}
+              >
+                Retry
+              </Button>
+            </div>
+          </div>
+        )}
 
         {/* Mode Tabs */}
         <div className="px-6 pb-2">
