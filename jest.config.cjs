@@ -81,6 +81,19 @@ module.exports = {
     // unrelated rendering branches into this coverage scope.
     'hooks/useDataState.ts',
     'components/dashboard/ReadyToRun.tsx',
+    // hooks/** and components/** are intentionally NOT globbed in wholesale —
+    // most are React UI that this (node-environment) jest config can't
+    // meaningfully instrument, and their coverage comes from the e2e/nyc
+    // pipeline (see .nycrc.json) instead. The two files below are opted in
+    // individually because each now has a focused jsdom/RTL render-test suite
+    // that exercises the exact lines this PR's diff touches (codecov/patch
+    // #430 fix): ComparisonScoreboard's zero/non-zero delta branches and
+    // EvalRunsPage's view-mode colSpan ternaries. Neither file is large
+    // enough to meaningfully move the global threshold below (unlike e.g.
+    // components/codingAgents/CodingAgentsPage.tsx at ~3.3k lines, which
+    // stays excluded for that reason — see PR #219's codecov notes).
+    'components/comparison/ComparisonScoreboard.tsx',
+    'components/evals3/EvalRunsPage.tsx',
     '!**/__tests__/**',
     '!**/*.test.ts',
     '!**/dist/**',
