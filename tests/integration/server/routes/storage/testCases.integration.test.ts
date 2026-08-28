@@ -238,6 +238,31 @@ describe('Test Cases CRUD Integration Tests', () => {
       expect(ours.context).toEqual([]);
       expect(ours.expectedOutcomes).toEqual([]);
     }, 30000);
+
+    it('should return an accurate `total` count with a minimal page (summary + size=1) — the pattern Dashboard uses to show a test-case count without fetching the full corpus', async () => {
+      if (!backendAvailable) return;
+
+      // Baseline: full, unpaginated count.
+      const fullResponse = await fetch(`${BASE_URL}/api/storage/test-cases?includeSample=false`);
+      expect(fullResponse.ok).toBe(true);
+      const fullData = await fullResponse.json();
+      const expectedTotal = fullData.total;
+
+      // The lightweight equivalent: one summary record, size=1.
+      const pagedResponse = await fetch(
+        `${BASE_URL}/api/storage/test-cases?fields=summary&size=1&includeSample=false`,
+      );
+      expect(pagedResponse.ok).toBe(true);
+      const pagedData = await pagedResponse.json();
+
+      expect(pagedData.testCases.length).toBeLessThanOrEqual(1);
+      expect(pagedData.total).toBe(expectedTotal);
+      if (pagedData.testCases.length === 1) {
+        // The single returned record must be summary-shaped.
+        expect(pagedData.testCases[0].context).toEqual([]);
+        expect(pagedData.testCases[0].expectedOutcomes).toEqual([]);
+      }
+    }, 30000);
   });
 
   describe('GET /api/storage/test-cases/:id', () => {

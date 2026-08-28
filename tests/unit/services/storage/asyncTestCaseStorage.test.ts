@@ -145,6 +145,51 @@ describe('AsyncTestCaseStorage', () => {
 
       expect(result[0].isPromoted).toBe(false);
     });
+
+    // Regression coverage for the 168MB full-payload performance fix: list
+    // views now call getAll({ summary: true, ... }) instead of a bare
+    // getAll(). Assert the option plumbs through to the OpenSearch client
+    // (opensearchClient.getAll({ fields: 'summary', ... })) unchanged, so a
+    // future refactor of this passthrough can't silently drop it.
+    it('passes summary=true through as fields: "summary" to the OpenSearch client', async () => {
+      mockOsTestCases.getAll.mockResolvedValue(mockGetAllResult([createMockStorageTestCase()]));
+
+      await asyncTestCaseStorage.getAll({ summary: true });
+
+      expect(mockOsTestCases.getAll).toHaveBeenCalledWith(
+        expect.objectContaining({ fields: 'summary' }),
+      );
+    });
+
+    it('omits fields when summary is not requested', async () => {
+      mockOsTestCases.getAll.mockResolvedValue(mockGetAllResult([createMockStorageTestCase()]));
+
+      await asyncTestCaseStorage.getAll();
+
+      expect(mockOsTestCases.getAll).toHaveBeenCalledWith(
+        expect.objectContaining({ fields: undefined }),
+      );
+    });
+
+    it('passes size/after through and returns a TestCasePage with `total` when size is set ' +
+      '(the pattern Dashboard uses: summary + size=1 to read just the count)', async () => {
+      mockOsTestCases.getAll.mockResolvedValue({
+        testCases: [createMockStorageTestCase('tc-1')],
+        total: 3941,
+        after: 'tc-1',
+        hasMore: true,
+      });
+
+      const page = await asyncTestCaseStorage.getAll({ summary: true, size: 1, after: 'cursor-x' });
+
+      expect(mockOsTestCases.getAll).toHaveBeenCalledWith(
+        expect.objectContaining({ fields: 'summary', size: 1, after: 'cursor-x' }),
+      );
+      expect(page.total).toBe(3941);
+      expect(page.testCases).toHaveLength(1);
+      expect(page.after).toBe('tc-1');
+      expect(page.hasMore).toBe(true);
+    });
   });
 
   describe('getPromoted', () => {
@@ -576,7 +621,12 @@ describe('AsyncTestCaseStorage', () => {
 
   describe('bulkCreate', () => {
     it('bulk creates test cases', async () => {
-      mockOsTestCases.bulkCreate.mockResolvedValue({ created: 3, errors: false });
+      const createdStorageTestCase = createMockStorageTestCase('tc-created-1');
+      mockOsTestCases.bulkCreate.mockResolvedValue({
+        created: 3,
+        errors: false,
+        testCases: [createdStorageTestCase],
+      });
 
       const testCases: CreateTestCaseInput[] = [
         createMockCreateInput(),
@@ -586,7 +636,14 @@ describe('AsyncTestCaseStorage', () => {
       const result = await asyncTestCaseStorage.bulkCreate(testCases);
 
       expect(mockOsTestCases.bulkCreate).toHaveBeenCalledTimes(1);
-      expect(result).toEqual({ created: 3, errors: false });
+      expect(result.created).toBe(3);
+      expect(result.errors).toBe(false);
+      // Regression coverage for the "duplicated import flow" fix: bulkCreate
+      // now surfaces the created records (converted to app format) so
+      // callers (BenchmarksPage/TestCasesPage import handlers) can take ids
+      // directly instead of re-fetching the whole test-case corpus.
+      expect(result.testCases).toHaveLength(1);
+      expect(result.testCases[0].id).toBe('tc-created-1');
     });
   });
 

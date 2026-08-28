@@ -107,7 +107,7 @@ export const ComparisonSearch: React.FC<Props> = ({
           <ChevronDown size={12} className={`transition-transform ${open ? 'rotate-180' : ''}`} />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-[360px] p-0" align="start">
+      <PopoverContent className="w-[360px] p-0" align="start" data-testid="comparison-search-panel">
         {/* Step 1: scope */}
         <div className="flex items-center gap-1 p-2 border-b">
           {SCOPES.map(s => (

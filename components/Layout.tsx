@@ -23,6 +23,7 @@ import OpenSearchLogoLight from "@/assets/opensearch-logo-light.svg";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { useServerStatus } from "@/hooks/useServerStatus";
 import { usePersistedState } from "@/hooks/usePersistedState";
+import { cn } from "@/lib/utils";
 import {
   Sidebar,
   SidebarContent,
@@ -176,6 +177,10 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   return (
     <SidebarCollapseContext.Provider value={{ isCollapsed, setIsCollapsed }}>
       <SidebarProvider className="h-screen overflow-hidden">
+        {/* Mobile off-canvas backdrop (#400): dims the page behind the drawer
+            when it's open on small screens; tapping it closes the drawer.
+            Desktop hover-open has no backdrop (the rail keeps reserving its
+            width so content never needs dimming). */}
         {mobileNavOpen && (
           <button
             type="button"
@@ -184,18 +189,21 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
             onClick={() => setMobileNavOpen(false)}
           />
         )}
-        {/* Hover zone reserves the LAYOUT width (rail when pinned collapsed) so
-            the flyout overlays content instead of reflowing it on desktop. On
-            phones it becomes a fixed, off-canvas drawer instead (zero layout
-            footprint — content is never pushed — sliding in/out via
-            translate), matching the mobile off-canvas navigation contract.
-            Mouse and keyboard-focus both drive the same isHoverExpanded
-            state (see onFocus/onBlur below) — `hoverZoneRef` is what lets
-            onBlur tell a Tab-within-the-rail from a Tab actually leaving it. */}
+        {/* Hover zone reserves the LAYOUT width on desktop (rail when pinned
+            collapsed) so the hover-open overlay never reflows content — the
+            gutter tracks the PIN preference (isCollapsed), not `collapsed`
+            (which folds in the momentary hover/focus state), otherwise
+            hovering the rail would widen the gutter too and reflow content.
+            Zero width on mobile (<lg) — there the sidebar is a `fixed`
+            off-canvas drawer (#400) with no reserved gutter; hover/focus
+            handlers are desktop-only anyway (no hover on touch, and
+            isCollapsed only gates them). */}
         <div
           ref={hoverZoneRef}
-          className={`fixed inset-y-0 left-0 z-50 h-screen flex-shrink-0 transition-transform duration-300 lg:relative lg:inset-auto lg:z-auto lg:transform-none lg:transition-[width] lg:duration-200 ${mobileNavOpen ? 'translate-x-0' : '-translate-x-full'}`}
-          style={{ width: isCollapsed ? '64px' : '180px' }}
+          className={cn(
+            'relative h-screen flex-shrink-0 transition-[width] duration-200 w-0',
+            isCollapsed ? 'lg:w-16' : 'lg:w-[180px]'
+          )}
           data-testid="sidebar-hover-zone"
           onMouseEnter={() => {
             isMouseOverRef.current = true;
@@ -257,14 +265,13 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
         >
         <Sidebar
         collapsible="none"
-        className="transition-all duration-200"
+        className={cn(
+          'fixed inset-y-0 left-0 z-50 transition-[width,transform] duration-300 lg:absolute lg:translate-x-0 lg:duration-200',
+          mobileNavOpen ? 'translate-x-0' : '-translate-x-full'
+        )}
         style={{
           width: collapsed ? '64px' : '180px',
-          position: 'absolute',
-          top: 0,
-          left: 0,
-          height: '100%',
-          zIndex: isHoverExpanded ? 50 : undefined,
+          zIndex: (isHoverExpanded || mobileNavOpen) ? 50 : undefined,
           background: 'hsl(var(--background))',
           borderRight: '1px solid hsl(var(--border))',
           boxShadow: isHoverExpanded

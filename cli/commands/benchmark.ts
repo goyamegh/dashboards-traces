@@ -28,8 +28,9 @@ import { calculateRunStats, getReportIdsFromRun } from '@/lib/runStats.js';
 import { formatJson, formatMarkdownTable, parseOutputFormat, OUTPUT_FORMAT_DESCRIPTION, type OutputFormat } from '@/cli/utils/formatOutput.js';
 import type { AgentConfig, Benchmark, BenchmarkRun, TestCase, TestCaseRun, EvaluationReport, TestCaseSource, EvaluationRun } from '@/types/index.js';
 import { existsSync, statSync } from 'fs';
-import { isCodeFile } from '@/lib/testCases/loader.js';
+import { isCodeFile, detectSourceLanguage } from '@/lib/testCases/loader.js';
 import { createBenchmarkDoctorCommand } from '@/cli/commands/benchmarkDoctor.js';
+import { computeBenchmarkRepairPlan, applyRepairPlan } from '@/cli/utils/benchmarkDoctor.js';
 
 interface BenchmarkOptions {
   agent: string[];
@@ -77,11 +78,14 @@ function getDefaultModel(config: ResolvedConfig): string {
 }
 
 /**
- * Check if a string looks like a file path (ends with .json)
+ * Check if a string looks like a file path (ends with .json).
+ * Re-exported from cli/utils/runNaming.ts (moved there so
+ * `deriveUnifiedRunName` and this function can be unit-tested without
+ * importing this file's heavy top-level deps — chalk is ESM-only and
+ * breaks under ts-jest's CJS transform unless every dep is jest.mock'd).
  */
-export function isFilePath(value: string): boolean {
-  return value.toLowerCase().endsWith('.json') || isCodeFile(value);
-}
+export { isFilePath, deriveUnifiedRunName } from '@/cli/utils/runNaming.js';
+import { isFilePath, deriveUnifiedRunName } from '@/cli/utils/runNaming.js';
 
 /**
  * Load and validate test cases from a JSON file
@@ -615,7 +619,7 @@ async function runUnifiedMode(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        name: `CLI Run - ${agentKey} - ${new Date().toISOString()}`,
+        name: deriveUnifiedRunName(options.name, agentKey),
         sources,
         agentKey,
         modelId,
@@ -1285,5 +1289,97 @@ export function createBenchmarkCommand(): Command {
       }
     });
 
+  command.addCommand(createBenchmarkLinkRepairCommand());
+
   return command;
+}
+
+/**
+ * `benchmark repair-links` — detect (and, with `--apply`, repair) benchmarks
+ * whose linked run-first EvaluationRun documents reference test case ids
+ * missing from `benchmark.testCaseIds` (see `cli/utils/benchmarkDoctor.ts`
+ * for the pure planner and the root-cause note). Dry-run by default: prints
+ * the plan without writing anything. Distinct from `benchmark doctor`
+ * (duplicate/husk merge + image migration, see cli/commands/benchmarkDoctor.ts)
+ * — the two commands address unrelated benchmark-health concerns and
+ * previously collided on the same exported function name.
+ */
+export function createBenchmarkLinkRepairCommand(): Command {
+  return new Command('repair-links')
+    .description('Detect benchmarks whose run-first runs reference test cases missing from testCaseIds (use --apply to fix)')
+    .option('--apply', 'Apply the repair (default: dry-run, report only)')
+    .option('--stop-server', 'Stop the server after the check completes (default: keep running)')
+    .action(async (options: { apply?: boolean; stopServer?: boolean }) => {
+      console.log(chalk.bold('\nAgent Health - Benchmark Doctor\n'));
+      const config = await loadConfig();
+      const serverConfig = { ...DEFAULT_SERVER_CONFIG, ...config.server };
+      const isCI = !!process.env.CI;
+
+      const connectSpinner = ora('Connecting to server...').start();
+      let serverResult: EnsureServerResult;
+      let cleanup: () => void;
+      try {
+        serverResult = await ensureServer(serverConfig);
+        cleanup = createServerCleanup(serverResult, isCI || options.stopServer);
+        connectSpinner.succeed(serverResult.wasStarted
+          ? `Started server on port ${serverConfig.port}`
+          : `Connected to existing server on port ${serverConfig.port}`);
+      } catch (error) {
+        connectSpinner.fail(`Failed to connect: ${error instanceof Error ? error.message : error}`);
+        process.exit(1);
+      }
+
+      const api = new ApiClient(serverResult.baseUrl);
+
+      try {
+        const benchmarks = await api.listBenchmarks();
+        let flagged = 0;
+        let repaired = 0;
+
+        for (const bm of benchmarks) {
+          let evaluationRuns: EvaluationRun[] = [];
+          try {
+            const res = await fetch(
+              `${serverResult.baseUrl}/api/storage/evaluation-runs?benchmarkId=${encodeURIComponent(bm.id)}&size=500`
+            );
+            if (res.ok) {
+              const data = await res.json();
+              evaluationRuns = data.evaluationRuns || [];
+            }
+          } catch {
+            // Best-effort per-benchmark; skip on fetch failure.
+            continue;
+          }
+          if (evaluationRuns.length === 0) continue;
+
+          const plan = computeBenchmarkRepairPlan(bm, evaluationRuns);
+          if (!plan) continue;
+
+          flagged++;
+          console.log('');
+          console.log(chalk.yellow(`  Stale shell: ${plan.benchmarkName} (${plan.benchmarkId})`));
+          console.log(chalk.gray(`    ${plan.missingTestCaseIds.length} test case id(s) missing from testCaseIds, referenced by ${plan.affectedRunIds.length} run(s)`));
+          console.log(chalk.gray(`    Missing: ${plan.missingTestCaseIds.join(', ')}`));
+
+          if (options.apply) {
+            const newTestCaseIds = applyRepairPlan(bm.testCaseIds || [], plan);
+            await api.updateBenchmark(bm.id, { testCaseIds: newTestCaseIds });
+            repaired++;
+            console.log(chalk.green(`    ✓ Repaired: testCaseIds now has ${newTestCaseIds.length} id(s)`));
+          }
+        }
+
+        console.log('');
+        if (flagged === 0) {
+          console.log(chalk.green('  All benchmarks healthy — no missing test case links found.'));
+        } else if (options.apply) {
+          console.log(chalk.green(`  Repaired ${repaired}/${flagged} benchmark(s).`));
+        } else {
+          console.log(chalk.yellow(`  Found ${flagged} benchmark(s) with missing test case links.`));
+          console.log(chalk.gray('  Re-run with --apply to fix.'));
+        }
+      } finally {
+        cleanup!();
+      }
+    });
 }

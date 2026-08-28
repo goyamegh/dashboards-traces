@@ -757,6 +757,46 @@ describe('Test Cases Storage Routes', () => {
       expect(realTc.expectedOutcomes).toEqual([]);
     });
 
+    // Regression coverage for the actual root cause of the reported
+    // ~168MB full-payload performance bug on the shared cluster: measured
+    // live, ~165MB of that came from `sourceCode` (the full eval-file text
+    // stored on code-imported test cases by the in-flight eval-code-view
+    // feature) -- not context/expectedOutcomes/versions, which are tiny by
+    // comparison. `sourceCode` isn't declared on this branch's TestCase
+    // type (that feature hasn't merged to origin/main yet), but real
+    // stored documents already carry it, and the naive `{ ...doc }` spread
+    // in toSummary() would otherwise pass it straight through untouched.
+    it('should strip sourceCode (large eval-file text) from storage results in summary mode', async () => {
+      const hugeSourceCode = 'x'.repeat(500000);
+      mockStorage.testCases.getAll.mockResolvedValue({
+        items: [
+          {
+            id: 'tc-code-imported',
+            name: 'Code-imported TC',
+            initialPrompt: 'Short prompt',
+            createdAt: '2024-01-01T00:00:00Z',
+            sourceFile: 'evals/demo.eval.ts',
+            sourceHash: 'abc123',
+            sourceCode: hugeSourceCode,
+          },
+        ],
+        total: 1,
+      });
+
+      const { req, res } = createMocks({}, {}, { fields: 'summary' });
+      const handler = getRouteHandler(testCasesRoutes, 'get', '/api/storage/test-cases');
+
+      await handler(req, res);
+
+      const response = (res.json as jest.Mock).mock.calls[0][0];
+      const tc = response.testCases.find((t: any) => t.id === 'tc-code-imported');
+      expect(tc.sourceCode).toBeUndefined();
+      // Lightweight provenance fields (used to render a "has source" badge)
+      // are NOT heavy and must survive the summary transform.
+      expect(tc.sourceFile).toBe('evals/demo.eval.ts');
+      expect(tc.sourceHash).toBe('abc123');
+    });
+
     it('should truncate initialPrompt to 200 chars in summary mode', async () => {
       const longPrompt = 'A'.repeat(300);
       mockStorage.testCases.getAll.mockResolvedValue({

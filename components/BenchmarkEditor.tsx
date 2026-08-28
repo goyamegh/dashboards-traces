@@ -90,7 +90,10 @@ export const BenchmarkEditor: React.FC<BenchmarkEditorProps> = ({
     const loadTestCases = async () => {
       setIsLoading(true);
       try {
-        const testCases = await asyncTestCaseStorage.getAll();
+        // List view only renders id/name/category/subcategory/difficulty for
+        // checkboxes — the summary payload (no context/expectedOutcomes/versions)
+        // is enough and avoids pulling the full 168MB test-case corpus.
+        const testCases = await asyncTestCaseStorage.getAll({ summary: true });
         setAllTestCases(testCases);
         // Extract unique categories from test cases
         const uniqueCategories = Array.from(new Set(testCases.map(tc => tc.category))).sort();
