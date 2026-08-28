@@ -66,6 +66,12 @@ export async function startServer(options: StartOptions): Promise<number> {
         if (err.code === 'EADDRINUSE' && port <= options.port + MAX_PORT_ATTEMPTS) {
           console.log(`  Port ${port} is in use, trying ${port + 1}...`);
           resolve(tryListen(port + 1));
+        } else if (err.code === 'EADDRINUSE') {
+          // After max attempts, provide helpful error message about AH_PORT
+          reject(new Error(
+            `Port ${port} is in use and all fallback ports (${options.port}-${options.port + MAX_PORT_ATTEMPTS}) are occupied. ` +
+            `Set AH_PORT=<available-port> to use a different port: \`AH_PORT=8001 npx @opensearch-project/agent-health\``
+          ));
         } else {
           reject(err);
         }
