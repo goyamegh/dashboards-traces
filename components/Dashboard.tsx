@@ -32,6 +32,13 @@ import {
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatRelativeTime, getModelName } from '@/lib/utils';
 import {
+  computeBenchmarkLeaderboard,
+  getBenchmarksWithCompletedRuns,
+  formatPassRateFraction,
+  formatPassRatePercent,
+  BenchmarkLeaderboardRow,
+} from '@/lib/benchmarkLeaderboard';
+import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -362,6 +369,10 @@ const RecentHeader: React.FC = () => (
 interface NeedsImprovementWidgetProps {
   failingAgents: AgentImprovementRow[];
   regressingAgents: AgentRegressionRow[];
+  // Raw benchmarks (with embedded runs) for the "By benchmark" leaderboard
+  // tab. Kept as the widget's own concern — which benchmark is selected is
+  // local UI state the parent Dashboard doesn't need to know about.
+  benchmarks: Benchmark[];
   onAgentClick: (agentKey: string) => void;
   onRowClick: (row: RunRow) => void;
 }
@@ -406,12 +417,77 @@ const AgentRow: React.FC<{
   </button>
 );
 
+// One row of the "By benchmark" leaderboard tab: rank, agent (+ model
+// subtext), and a right-aligned tabular-nums "N/M (NN.N%)" pass-rate column.
+const LeaderboardRow: React.FC<{
+  rank: number;
+  row: BenchmarkLeaderboardRow & { agentName: string };
+  onClick: () => void;
+}> = ({ rank, row, onClick }) => (
+  <button
+    onClick={onClick}
+    className="group w-full grid items-center gap-2 px-3 h-10 py-1 text-left text-[11px] border-b last:border-b-0 hover:bg-muted/50 transition-colors"
+    style={{ gridTemplateColumns: '16px minmax(0,1fr) auto' }}
+    data-testid="benchmark-leaderboard-row"
+    data-agent-key={row.agentKey}
+  >
+    <span className="text-[10px] tabular-nums text-muted-foreground text-right">{rank}</span>
+    <div className="min-w-0">
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <div className="truncate font-medium leading-tight">{row.agentName}</div>
+        </TooltipTrigger>
+        <TooltipContent>
+          <div className="text-[11px]">
+            <div className="font-medium">{row.run.name}</div>
+            {/* BenchmarkRun (embedded, legacy shape) has no completedAt field —
+                only createdAt — so this is the closest available "when did
+                this run finish" signal. See lib/benchmarkLeaderboard.ts. */}
+            <div className="text-muted-foreground">Completed {formatRelativeTime(row.run.createdAt)}</div>
+          </div>
+        </TooltipContent>
+      </Tooltip>
+      <div className="truncate text-[10px] text-muted-foreground leading-tight">{getModelName(row.run.modelId)}</div>
+    </div>
+    <div className="text-right shrink-0 tabular-nums whitespace-nowrap">
+      <span className="font-medium">{formatPassRateFraction(row)}</span>
+      <span className="text-muted-foreground"> ({formatPassRatePercent(row.passRate)})</span>
+    </div>
+  </button>
+);
+
 const NeedsImprovementWidget: React.FC<NeedsImprovementWidgetProps> = ({
-  failingAgents, regressingAgents, onAgentClick,
+  failingAgents, regressingAgents, benchmarks, onAgentClick,
 }) => {
   const navigate = useNavigate();
-  const initialTab = failingAgents.length > 0 ? 'failing' : 'regressions';
-  const empty = failingAgents.length === 0 && regressingAgents.length === 0;
+
+  // "By benchmark" leaderboard — selector defaults to the most-recently-run
+  // benchmark (benchmarkOptions[0], see getBenchmarksWithCompletedRuns) but
+  // the user can switch it; selectedBenchmarkId only holds an explicit
+  // override so a later default change (e.g. a newer run lands elsewhere)
+  // doesn't get stuck on a choice the user never actually made.
+  const benchmarkOptions = useMemo(() => getBenchmarksWithCompletedRuns(benchmarks), [benchmarks]);
+  const [selectedBenchmarkId, setSelectedBenchmarkId] = useState<string | null>(null);
+  const effectiveBenchmarkId = (selectedBenchmarkId && benchmarkOptions.some(o => o.id === selectedBenchmarkId))
+    ? selectedBenchmarkId
+    : (benchmarkOptions[0]?.id ?? null);
+
+  const leaderboardRows = useMemo<(BenchmarkLeaderboardRow & { agentName: string })[]>(() => {
+    const bm = benchmarks.find(b => b.id === effectiveBenchmarkId);
+    if (!bm) return [];
+    return computeBenchmarkLeaderboard(bm).map(row => ({
+      ...row,
+      agentName: DEFAULT_CONFIG.agents.find(a => a.key === row.agentKey)?.name || row.agentKey || 'Unknown',
+    }));
+  }, [benchmarks, effectiveBenchmarkId]);
+
+  const goToLeaderboardRun = (benchmarkId: string, run: BenchmarkRun) =>
+    navigate(`/evaluations/benchmarks/${benchmarkId}/runs/${run.id}/inspect`);
+
+  // The "all clean" empty state is now widget-wide, not just Failing/Regressions:
+  // a benchmark leaderboard with nothing to rank is exactly as "nothing to see"
+  // as no failing/regressing agents.
+  const empty = failingAgents.length === 0 && regressingAgents.length === 0 && benchmarkOptions.length === 0;
 
   return (
     <Card className="flex flex-col overflow-hidden" data-testid="needs-improvement-card">
@@ -431,7 +507,7 @@ const NeedsImprovementWidget: React.FC<NeedsImprovementWidgetProps> = ({
           </Button>
         </div>
         <CardDescription className="text-[11px] leading-tight">
-          Agents with the most failing test cases or biggest regressions.
+          Compare agents on a benchmark, or see who's failing or regressing.
         </CardDescription>
       </CardHeader>
 
@@ -444,8 +520,11 @@ const NeedsImprovementWidget: React.FC<NeedsImprovementWidgetProps> = ({
             </p>
           </div>
         ) : (
-          <Tabs defaultValue={initialTab} className="flex-1 min-h-0 flex flex-col">
+          <Tabs defaultValue="benchmark" className="flex-1 min-h-0 flex flex-col">
             <TabsList className="mx-3 h-7 p-0.5 self-start">
+              <TabsTrigger value="benchmark" className="h-6 px-2 text-[11px] gap-1" data-testid="needs-improvement-tab-benchmark">
+                By benchmark
+              </TabsTrigger>
               <TabsTrigger value="failing" className="h-6 px-2 text-[11px] gap-1">
                 Failing
                 <Badge variant="secondary" className="h-4 px-1 text-[9px] tabular-nums">
@@ -459,6 +538,50 @@ const NeedsImprovementWidget: React.FC<NeedsImprovementWidgetProps> = ({
                 </Badge>
               </TabsTrigger>
             </TabsList>
+
+            <TabsContent value="benchmark" className="mt-2 flex-1 min-h-0 flex flex-col">
+              {benchmarkOptions.length === 0 ? (
+                <p className="px-4 py-4 text-center text-[11px] text-muted-foreground" data-testid="benchmark-leaderboard-empty">
+                  No benchmarks with completed runs yet.
+                </p>
+              ) : (
+                <>
+                  <div className="px-3 pb-1.5 shrink-0">
+                    <Select
+                      value={effectiveBenchmarkId ?? undefined}
+                      onValueChange={setSelectedBenchmarkId}
+                    >
+                      <SelectTrigger className="h-7 text-[11px] w-full" data-testid="benchmark-leaderboard-select">
+                        <SelectValue placeholder="Select a benchmark" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {benchmarkOptions.map(opt => (
+                          <SelectItem key={opt.id} value={opt.id} className="text-[11px]">
+                            {opt.name}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  {leaderboardRows.length === 0 ? (
+                    <p className="px-4 py-4 text-center text-[11px] text-muted-foreground" data-testid="benchmark-leaderboard-empty">
+                      No completed runs for this benchmark yet.
+                    </p>
+                  ) : (
+                    <ScrollArea className="h-full border-t" data-testid="benchmark-leaderboard-table">
+                      {leaderboardRows.map((row, idx) => (
+                        <LeaderboardRow
+                          key={row.agentKey}
+                          rank={idx + 1}
+                          row={row}
+                          onClick={() => goToLeaderboardRun(effectiveBenchmarkId!, row.run)}
+                        />
+                      ))}
+                    </ScrollArea>
+                  )}
+                </>
+              )}
+            </TabsContent>
 
             <TabsContent value="failing" className="mt-2 flex-1 min-h-0">
               {failingAgents.length === 0 ? (
@@ -889,6 +1012,7 @@ export const Dashboard: React.FC = () => {
               <NeedsImprovementWidget
                 failingAgents={failingAgents}
                 regressingAgents={regressingAgents}
+                benchmarks={benchmarks}
                 onAgentClick={goToAgent}
                 onRowClick={goToRun}
               />
