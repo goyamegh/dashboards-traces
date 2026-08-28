@@ -20,7 +20,7 @@ import { UseCaseComparisonTable } from './UseCaseComparisonTable';
 import { RunPairSelector } from './RunPairSelector';
 import { ComparisonScoreboard } from './ComparisonScoreboard';
 import { ComparisonInsightsBand, type CategorySelection } from './ComparisonInsightsBand';
-import { bucketRow, extractRowCategory, type AgreementBucket } from '@/lib/comparisonInsights';
+import { bucketRow, extractRowCategoryEffective, categoryLabelIsUsableFallback, type AgreementBucket } from '@/lib/comparisonInsights';
 import { ComparisonDeepDive, DeepDiveRunMeta } from './ComparisonDeepDive';
 import { FailureClusterPanel } from './FailureClusterPanel';
 import { extractFirstDivergence } from '@/services/trajectoryDiffService';
@@ -489,6 +489,12 @@ export const ComparisonPage: React.FC = () => {
 
   const allComparisonRows = useMemo((): TestCaseComparisonRow[] => buildTestCaseComparisonRows(selectedRuns, reports, getTestCaseMeta), [selectedRuns, reports, getTestCaseMeta]);
 
+  // Whether the category matrix (ComparisonInsightsBand) is using the
+  // category:-label fallback for this row set — computed the same way it
+  // is there, so the table's click-to-filter and the matrix always agree
+  // on which raw category values a click actually means.
+  const categoryFallbackEnabled = useMemo(() => categoryLabelIsUsableFallback(allComparisonRows), [allComparisonRows]);
+
   // ── Re-run comparison ───────────────────────────────────────────────
   // Re-execute every compared run's config on the SAME test cases, then open
   // the fresh comparison. Enabled ONLY when the runs are fully comparable
@@ -561,7 +567,12 @@ export const ComparisonPage: React.FC = () => {
       rows = rows.filter(row => bucketRow(row, selectedRunIds) === agreementFilter);
     }
     if (categoryFilter) {
-      rows = rows.filter(row => categoryFilter.categories.includes(extractRowCategory(row)));
+      // Must resolve categories with the SAME category:-fallback decision
+      // ComparisonInsightsBand's matrix used to build this filter's
+      // `categories` set (see categoryLabelIsUsableFallback) — otherwise a
+      // click on a fallback-derived column (e.g. WixQA's expertwritten/
+      // simulated) would filter every row out.
+      rows = rows.filter(row => categoryFilter.categories.includes(extractRowCategoryEffective(row, categoryFallbackEnabled)));
     }
     if (rowStatusFilter === 'differences') {
       rows = rows.filter(row => calculateRowStatus(row, referenceRunId) !== 'neutral');
@@ -573,7 +584,7 @@ export const ComparisonPage: React.FC = () => {
       rows = rows.filter(row => allow.has(row.testCaseId));
     }
     return rows;
-  }, [allComparisonRows, labelFilter, testCaseFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId, clusterCaseFilter, agreementFilter, categoryFilter]);
+  }, [allComparisonRows, labelFilter, testCaseFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId, clusterCaseFilter, agreementFilter, categoryFilter, categoryFallbackEnabled]);
 
   // If the filter is 'differences' but there are no differences (all-pass /
   // all-fail benchmark), automatically show everything so the user isn't
