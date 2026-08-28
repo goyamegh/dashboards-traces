@@ -23,7 +23,14 @@ import {
 } from '@/server/services/storage';
 import type { Client } from '@opensearch-project/opensearch';
 import type { IStorageModule } from '@/server/adapters/types';
-import { runEvaluationWithConnector, callBedrockJudge, invokeAgent, computeSdkMatcherSessionMetrics } from './evaluation';
+import {
+  runEvaluationWithConnector,
+  callBedrockJudge,
+  invokeAgent,
+  computeSdkMatcherSessionMetrics,
+  stampObjectiveActuals,
+  appendNotReachedMarker,
+} from './evaluation';
 import { buildEvaluatorErrorPatch } from './evaluation/evaluatorError';
 import { connectorRegistry } from '@/services/connectors/server';
 import { readEnv } from '@/lib/envCompat';
@@ -516,6 +523,15 @@ export async function executeRun(
             // labelled `errored` run, not a silent `failed` with an empty card.
             const agentFailed = evalError !== undefined && capturedResult === undefined;
             const failed = anyGateFailed || evalError !== undefined;
+            // ALWAYS-RECORD (owner-hit measurement-harness bug): mirrors the same
+            // fix in evaluationRunner.ts — stamp the objective totalTokens/
+            // totalCostUsd actuals (durationMs already survives a later throw,
+            // stamped inside invoke() above) and append a synthetic `notReached`
+            // marker for the tail of the test that never ran. See
+            // stampObjectiveActuals()/appendNotReachedMarker() in
+            // services/evaluation/index.ts and docs/SDK.md "Always-record guarantee".
+            stampObjectiveActuals((report as any).performanceMetrics, loadedTraces, capturedResult !== undefined);
+            appendNotReachedMarker(matcherResults, evalError, agentFailed);
             (report as any).evaluationType = 'deterministic';
             (report as any).matcherResults = matcherResults;
             if (evalError !== undefined) {
