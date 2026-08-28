@@ -27,6 +27,21 @@
  *   of any run reference (e.g. a benchmark whose top level was set directly,
  *   bypassing `linkTestCaseIdsToBenchmark`), so unlike the stale-shell check
  *   it does not require any linked runs to detect.
+ *
+ * Multi-version caveat (codex_review finding, see PR discussion): neither
+ * planner is version-aware — `computeBenchmarkRepairPlan` unions every
+ * linked run's snapshot ids into the TOP LEVEL regardless of which version
+ * was current when that run happened, and `computeVersionLinkRepairPlan`
+ * then offers to copy the (possibly cross-version) top level into the
+ * CURRENT version. For a benchmark that has only ever been linked via
+ * `linkTestCaseIdsToBenchmark` (which never bumps a version) this is safe —
+ * there is only one version, so there is nothing to cross-contaminate. Once
+ * a benchmark has been manually edited at least once (a real version bump),
+ * blending in top-level ids that may have arrived via an older version's
+ * runs would silently mix an older version's test cases into the current
+ * one. `computeVersionLinkRepairPlan` flags this via `needsManualReview`
+ * instead of guessing, and the CLI command skips `--apply` for flagged
+ * plans (still reports them in dry-run so a human can look).
  */
 
 import type { Benchmark, EvaluationRun } from '@/types/index.js';
@@ -103,6 +118,19 @@ export interface VersionLinkRepairPlan {
   currentVersion: number;
   /** Ids present in top-level testCaseIds but missing from the current version's entry. */
   missingTestCaseIds: string[];
+  /**
+   * True when this benchmark has more than one version. Backfilling the
+   * CURRENT version's testCaseIds from the TOP LEVEL is only known-safe when
+   * the top level's contents are guaranteed to belong to the current
+   * version — true for a benchmark that has only ever been linked via
+   * `linkTestCaseIdsToBenchmark` (which never bumps a version), false once a
+   * real version bump has happened, because the top level can by then
+   * contain ids `computeBenchmarkRepairPlan` unioned in from a run against
+   * an OLDER version (that planner has no version awareness). `--apply`
+   * skips plans with this flag set; dry-run still reports them so a human
+   * can decide what the CURRENT version's testCaseIds should actually be.
+   */
+  needsManualReview: boolean;
 }
 
 /**
@@ -137,5 +165,6 @@ export function computeVersionLinkRepairPlan(
     benchmarkName: benchmark.name,
     currentVersion: currentEntry?.version ?? currentVersion,
     missingTestCaseIds: missing,
+    needsManualReview: versions.length > 1,
   };
 }
