@@ -13,21 +13,25 @@ test.describe('Mobile responsive shell', () => {
   test('opens and dismisses the off-canvas navigation without covering content', async ({ page }) => {
     await page.goto('/evaluations/runs');
 
-    const sidebar = page.getByTestId('sidebar');
+    // The off-canvas drawer's fixed positioning + slide transform live on the
+    // wrapping "sidebar-hover-zone" element (it also reserves the desktop
+    // rail/flyout width — see sidebar-hover-flyout.spec.ts); the inner
+    // "sidebar" element is absolutely positioned within it.
+    const sidebarZone = page.getByTestId('sidebar-hover-zone');
     const open = page.getByRole('button', { name: 'Open navigation' });
     await expect(open).toBeVisible();
     await expect(open).toHaveAttribute('aria-expanded', 'false');
-    await expect(sidebar).toHaveClass(/-translate-x-full/);
+    await expect(sidebarZone).toHaveClass(/-translate-x-full/);
 
     await open.click();
     const close = page.locator('button[aria-label="Close navigation"][aria-expanded="true"]');
     await expect(close).toBeVisible();
-    await expect(sidebar).toHaveClass(/translate-x-0/);
+    await expect(sidebarZone).toHaveClass(/translate-x-0/);
 
     // The backdrop is a separate accessible close target for touch users.
     await page.locator('button.fixed.inset-0[aria-label="Close navigation"]').click({ position: { x: 380, y: 400 } });
     await expect(page.getByRole('button', { name: 'Open navigation' })).toBeVisible();
-    await expect(sidebar).toHaveClass(/-translate-x-full/);
+    await expect(sidebarZone).toHaveClass(/-translate-x-full/);
   });
 
   test('closes the drawer after mobile navigation and keeps page width bounded', async ({ page }) => {
@@ -51,12 +55,10 @@ test('desktop keeps the persistent sidebar and hides the mobile toolbar', async 
   await page.goto('/evaluations/runs');
 
   await expect(page.getByRole('button', { name: 'Open navigation' })).toBeHidden();
-  const sidebar = page.getByTestId('sidebar');
-  // Desktop uses `lg:absolute` (not `lg:static`): the sidebar hover-open
-  // overlay (Chrome-vertical-tabs style, see components/Layout.tsx and
-  // sidebar-hover-flyout.spec.ts) needs absolute positioning so expanding it
-  // never reflows page content — the layout gutter is reserved by the
-  // separate hover-zone wrapper div, not by the sidebar's own box.
-  await expect(sidebar).toHaveClass(/lg:absolute/);
-  await expect(sidebar).toHaveClass(/lg:translate-x-0/);
+  const sidebarZone = page.getByTestId('sidebar-hover-zone');
+  await expect(sidebarZone).toHaveClass(/lg:relative/);
+  // transform (translate) is fully reset at desktop — an active translate
+  // value (even translate-x-0) creates a stacking context that traps the
+  // sidebar's z-index above <main>, see components/Layout.tsx.
+  await expect(sidebarZone).toHaveClass(/lg:transform-none/);
 });
