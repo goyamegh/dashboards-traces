@@ -136,6 +136,16 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     // `[key: string]: number | undefined` index signature without leaking
     // surprise types into downstream consumers.
     metrics: storedMetricsToApp(stored.metrics as Record<string, unknown> | undefined),
+    // Per-test-case wall-clock timing (durationMs/agentDurationMs/...) as
+    // persisted by the evaluation/benchmark runner (see services/evaluationRunner.ts,
+    // services/benchmarkRunner.ts) and already read server-side (server/routes/
+    // comparison.ts). NOT declared on the narrow `StorageRun` interface above —
+    // same pattern as judgeModelId/traceId/sessionId below — so without this
+    // mapping every BROWSER-side consumer of a report loaded via
+    // getReportsByIds() (e.g. the comparison deep-dive panel's per-case
+    // Score/Duration/Tools header) silently saw `report.performanceMetrics`
+    // as undefined even though the field is stored and non-empty.
+    performanceMetrics: (stored as any).performanceMetrics,
     llmJudgeReasoning: stored.llmJudgeReasoning || '',
     annotations: (stored.annotations || []).map(ann => ({
       id: ann.id,

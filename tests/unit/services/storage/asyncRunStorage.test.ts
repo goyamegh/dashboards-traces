@@ -534,6 +534,37 @@ describe('AsyncRunStorage', () => {
       });
     });
 
+    // Regression guard: performanceMetrics (durationMs/agentDurationMs) is a
+    // real, persisted field (server/routes/comparison.ts and the evaluation/
+    // benchmark runners already read it) but was missing from toTestCaseRun's
+    // mapping entirely, so every BROWSER-side report loaded via
+    // getReportById()/getReportsByIds() silently lost it (e.g. the comparison
+    // deep-dive panel's per-case Duration cell always showed a dash).
+    it('preserves performanceMetrics (durationMs/agentDurationMs) from the stored document', async () => {
+      const mockStorageRun = {
+        ...createMockStorageRun('run-perf'),
+        performanceMetrics: { durationMs: 36900, agentDurationMs: 34000, judgeDurationMs: 2900 },
+      };
+      mockOsRuns.getById.mockResolvedValue(mockStorageRun);
+
+      const result = await asyncRunStorage.getReportById('run-perf');
+
+      expect(result?.performanceMetrics).toEqual({
+        durationMs: 36900,
+        agentDurationMs: 34000,
+        judgeDurationMs: 2900,
+      });
+    });
+
+    it('leaves performanceMetrics undefined when the stored document has none', async () => {
+      const mockStorageRun = createMockStorageRun('run-no-perf');
+      mockOsRuns.getById.mockResolvedValue(mockStorageRun);
+
+      const result = await asyncRunStorage.getReportById('run-no-perf');
+
+      expect(result?.performanceMetrics).toBeUndefined();
+    });
+
     it('handles trace-mode fields in conversion', async () => {
       const mockStorageRun = {
         ...createMockStorageRun('run-1'),
