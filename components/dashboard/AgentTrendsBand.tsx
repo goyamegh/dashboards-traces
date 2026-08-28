@@ -4,16 +4,37 @@
  */
 
 /**
- * AgentTrendsBand
+ * AgentTrendsBand — v3
  *
- * Landing-page "Agent trends" band — replaces the old Performance Trends
- * card (recharts area/line chart + Filter Chips) with:
- *   1. Per-agent summary chips (latest accuracy + WoW delta + cost/tokens per run)
- *   2. One multi-agent ECharts trend chart (rolling avg line + per-run dots)
- *   3. Metric toggle: Accuracy % | Cost/run | Tokens
- *   4. Scoping controls: benchmark selector + time range (7/30/90d)
+ * Landing-page "Agent trends" band. Replaces the v2 all-agents ECharts
+ * overlay (one line + scatter series per agent, shared 10-color palette,
+ * on-point "name: value" labels pinned at every agent's latest run) with
+ * a ranked dot plot of the LAST-ACTIVE benchmark, per owner feedback that
+ * the overlay became unreadable past ~10 agents (labels collided at the
+ * right edge, sparse per-agent runs produced misleading long interpolated
+ * lines across silent gaps, all-errored runs plotted as a literal — and
+ * indistinguishable-from-real — 0.0%, and 14 agents sharing a 10-color
+ * palette made several lines indistinguishable) — and per a follow-up
+ * design pivot ("show the last run benchmark and show its agent runs
+ * with numbers on hover and color coded for datapoints") replacing an
+ * intermediate sparkline-table draft as the PRIMARY view.
  *
- * See .pi/web/artifacts/trends-viz-mock.html for the approved visual design.
+ * New shape:
+ *   1. Metric toggle (Accuracy % | Cost/run | Tokens) + benchmark
+ *      selector (defaults to the benchmark with the most recent run) +
+ *      time-range scoping.
+ *   2. PRIMARY: AgentBenchmarkDotPlot — one row per agent that ran the
+ *      selected benchmark, ranked by latest score (best on top), one
+ *      large solid dot per agent's latest run + small faded dots for its
+ *      earlier runs on that SAME benchmark. No on-point labels; hover
+ *      carries the numbers, click opens the run report.
+ *   3. SECONDARY: a "History (N agents)" drawer — the sparkline-table
+ *      draft (AgentTrendRow + AgentTrendSparkline), kept as the
+ *      "how has each agent trended over time" view across the full
+ *      benchmark/time scope (not just the one benchmark the dot plot
+ *      shows); a row click opens that agent's latest run report.
+ *
+ * See .pi/web/artifacts/trends-v3/ for the before/after screenshots.
  */
 
 import React, { useMemo } from 'react';
@@ -24,19 +45,22 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from '@/components/ui/select';
-import { AgentTrendsEChart } from '@/components/charts/AgentTrendsEChart';
-import { AgentTrendsLegendDrawer } from '@/components/dashboard/AgentTrendsLegendDrawer';
 import {
   AgentRunPoint,
+  buildAgentRunPoints,
+  buildAgentTrendRows,
+  buildBenchmarkDotPlotRows,
+  BenchmarkDotPlotRow,
+  getMostRecentlyActiveBenchmarkId,
   RunMetricsLookup,
+  rankDotPlotRows,
+  sortAgentTrendRows,
+  timeRangeToSinceMs,
   TrendMetricKey,
   TrendsTimeRange,
-  buildAgentColorMap,
-  buildAgentRunPoints,
-  computeAgentChipSummaries,
-  getMostRecentlyActiveBenchmarkId,
-  timeRangeToSinceMs,
 } from '@/lib/agentTrends';
+import { AgentBenchmarkDotPlot } from '@/components/dashboard/AgentBenchmarkDotPlot';
+import { AgentTrendsAgentListDrawer } from '@/components/dashboard/AgentTrendsAgentListDrawer';
 
 export interface AgentTrendsBandProps {
   benchmarks: Benchmark[];
@@ -64,52 +88,59 @@ export const AgentTrendsBand: React.FC<AgentTrendsBandProps> = ({
 
   const defaultBenchmarkId = useMemo(() => getMostRecentlyActiveBenchmarkId(benchmarks), [benchmarks]);
 
-  const [benchmarkId, setBenchmarkId] = usePersistedState<string>('dashboard:trendsBenchmarkId', 'all');
+  // No "All benchmarks" choice here (unlike v2): a ranked dot plot needs ONE
+  // coherent benchmark scope to rank agents against each other meaningfully.
+  // A persisted value from before this redesign (or one that no longer
+  // exists) simply fails the `benchmarks.some(...)` check below and falls
+  // back to the most-recently-active benchmark — no migration code needed.
+  const [benchmarkId, setBenchmarkId] = usePersistedState<string>('dashboard:trendsBenchmarkId', '');
   const [timeRange, setTimeRange] = usePersistedState<TrendsTimeRange>('dashboard:trendsTimeRange', '30d');
   const [metric, setMetric] = usePersistedState<TrendMetricKey>('dashboard:trendsMetric', 'accuracy');
 
-  // "all" is a valid persisted choice; otherwise fall back to the most
-  // recently active benchmark until the user has ever picked something.
-  const effectiveBenchmarkId = benchmarkId === 'all' || benchmarks.some(b => b.id === benchmarkId)
-    ? benchmarkId
-    : (defaultBenchmarkId ?? 'all');
+  const effectiveBenchmarkId = benchmarks.some(b => b.id === benchmarkId) ? benchmarkId : defaultBenchmarkId;
+  const effectiveBenchmark = benchmarks.find(b => b.id === effectiveBenchmarkId) ?? null;
 
-  const points = useMemo<AgentRunPoint[]>(() => buildAgentRunPoints(
+  // All points across every benchmark in scope (time-range filtered) — feeds
+  // the secondary "history" drawer, which intentionally is NOT scoped to a
+  // single benchmark (it's the "how has this agent trended overall" view).
+  const allPoints = useMemo<AgentRunPoint[]>(() => buildAgentRunPoints(
     benchmarks,
     reports,
     metricsMap,
-    {
-      benchmarkId: effectiveBenchmarkId === 'all' ? null : effectiveBenchmarkId,
-      sinceMs: timeRangeToSinceMs(timeRange),
-      agentDisplayName: getAgentDisplayName,
-    },
-  ), [benchmarks, reports, metricsMap, effectiveBenchmarkId, timeRange, getAgentDisplayName]);
+    { sinceMs: timeRangeToSinceMs(timeRange), agentDisplayName: getAgentDisplayName },
+  ), [benchmarks, reports, metricsMap, timeRange, getAgentDisplayName]);
 
-  const chips = useMemo(() => computeAgentChipSummaries(points), [points]);
-  const colorMap = useMemo(() => buildAgentColorMap(chips.map(c => c.agentKey)), [chips]);
+  // Just the selected benchmark's points — feeds the primary dot plot.
+  const benchmarkPoints = useMemo<AgentRunPoint[]>(
+    () => (effectiveBenchmarkId ? allPoints.filter(p => p.benchmarkId === effectiveBenchmarkId) : []),
+    [allPoints, effectiveBenchmarkId],
+  );
 
-  // Hidden set (not visible set) so a newly-seen agent defaults to visible —
-  // legend visibility only ever needs to remember exceptions. Persisted so a
-  // user's "hide the noisy agent" choice survives a reload.
-  const [hiddenAgentKeys, setHiddenAgentKeys] = usePersistedState<string[]>('dashboard:trendsHiddenAgents', []);
-  const hiddenSet = useMemo(() => new Set(hiddenAgentKeys), [hiddenAgentKeys]);
-  const toggleAgentVisibility = (agentKey: string) => {
-    setHiddenAgentKeys(prev => (
-      prev.includes(agentKey) ? prev.filter(k => k !== agentKey) : [...prev, agentKey]
-    ));
+  const dotPlotRows = useMemo<BenchmarkDotPlotRow[]>(
+    () => rankDotPlotRows(buildBenchmarkDotPlotRows(benchmarkPoints, metric)),
+    [benchmarkPoints, metric],
+  );
+
+  const historyRows = useMemo(
+    () => sortAgentTrendRows(buildAgentTrendRows(allPoints, metric), 'latest'),
+    [allPoints, metric],
+  );
+
+  const goToRun = (benchmarkIdForRun: string, runDocId: string) =>
+    navigate(`/evaluations/benchmarks/${benchmarkIdForRun}/runs/${runDocId}/inspect`);
+
+  const goToAgentLatestRun = (agentKey: string) => {
+    const row = historyRows.find(r => r.agentKey === agentKey);
+    if (row?.latestBenchmarkId && row?.latestRunDocId) {
+      goToRun(row.latestBenchmarkId, row.latestRunDocId);
+    }
   };
 
-  const hasEnoughData = points.length >= 2;
-
-  const goToRun = (point: AgentRunPoint) =>
-    navigate(`/evaluations/benchmarks/${point.benchmarkId}/runs/${point.runDocId}/inspect`);
-
   return (
-    <Card data-testid="agent-trends-band">
+    <Card className="flex flex-col" data-testid="agent-trends-band">
       <CardHeader className="pb-2 px-4 pt-3">
-        {/* Single header row: title, metric toggle, agents drawer, scoping selects. */}
         <div className="flex flex-wrap items-center gap-1.5" data-testid="agent-trends-header-row">
-          <CardTitle className="text-sm mr-auto shrink-0" title="Accuracy, cost, and tokens per run — one line per agent.">
+          <CardTitle className="text-sm mr-auto shrink-0" title="Latest per-agent snapshot for one benchmark, ranked by score.">
             Agent Trends
           </CardTitle>
 
@@ -131,20 +162,18 @@ export const AgentTrendsBand: React.FC<AgentTrendsBandProps> = ({
             ))}
           </div>
 
-          <AgentTrendsLegendDrawer
-            chips={chips}
-            colorMap={colorMap}
-            hiddenAgentKeys={hiddenSet}
-            onToggleAgent={toggleAgentVisibility}
+          <AgentTrendsAgentListDrawer
+            rows={historyRows}
+            metric={metric}
+            onSelectAgent={goToAgentLatestRun}
           />
 
           <div className="flex items-center gap-1.5 shrink-0" data-testid="agent-trends-controls">
-            <Select value={effectiveBenchmarkId} onValueChange={setBenchmarkId}>
-              <SelectTrigger className="h-7 w-[160px] text-[11px]" data-testid="agent-trends-benchmark-select">
+            <Select value={effectiveBenchmarkId ?? ''} onValueChange={setBenchmarkId}>
+              <SelectTrigger className="h-7 w-[180px] text-[11px]" data-testid="agent-trends-benchmark-select">
                 <SelectValue placeholder="Benchmark" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="all">All benchmarks</SelectItem>
                 {benchmarks.map(b => (
                   <SelectItem key={b.id} value={b.id}>{b.name}</SelectItem>
                 ))}
@@ -164,7 +193,7 @@ export const AgentTrendsBand: React.FC<AgentTrendsBandProps> = ({
         </div>
       </CardHeader>
 
-      <CardContent className="px-2 pb-3 pt-0">
+      <CardContent className="px-3 pb-3 pt-0 flex-1 flex flex-col gap-2">
         {benchmarks.length === 0 ? (
           <div
             className="flex items-center justify-center text-muted-foreground text-sm h-[220px]"
@@ -172,21 +201,24 @@ export const AgentTrendsBand: React.FC<AgentTrendsBandProps> = ({
           >
             No benchmarks yet — run a benchmark to start tracking agent trends.
           </div>
-        ) : !hasEnoughData ? (
+        ) : dotPlotRows.length === 0 ? (
           <div
             className="flex items-center justify-center text-muted-foreground text-sm h-[220px]"
-            data-testid="agent-trends-empty-not-enough-runs"
+            data-testid="agent-trends-empty-no-runs"
           >
-            Need at least 2 runs in the selected scope to show a trend.
+            No runs for {effectiveBenchmark?.name ?? 'this benchmark'} in the selected time range.
           </div>
         ) : (
-          <AgentTrendsEChart
-            points={points}
-            metric={metric}
-            height={260}
-            onSelectRun={goToRun}
-            hiddenAgentKeys={hiddenSet}
-          />
+          <>
+            <div className="text-[11px] text-muted-foreground px-0.5" data-testid="agent-trends-scope-label">
+              Latest snapshot — <span className="font-medium text-foreground">{effectiveBenchmark?.name}</span>
+            </div>
+            <AgentBenchmarkDotPlot
+              rows={dotPlotRows}
+              metric={metric}
+              onSelectPoint={(_row, runDocId, benchmarkIdForRun) => goToRun(benchmarkIdForRun, runDocId)}
+            />
+          </>
         )}
       </CardContent>
     </Card>
