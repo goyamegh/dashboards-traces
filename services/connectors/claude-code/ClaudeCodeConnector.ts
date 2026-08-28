@@ -92,6 +92,17 @@ export class ClaudeCodeConnector extends SubprocessConnector {
    */
   private sessionId?: string;
 
+  /**
+   * The connector's pristine constructor-time args, captured on first execute.
+   * The registry hands out a SINGLETON connector instance shared by all
+   * concurrent benchmark tasks; building per-execution args by appending to
+   * `this.config.args` compounded another in-flight execution's appended
+   * config args (spawns were observed with --append-system-prompt /
+   * --allowed-tools duplicated up to 5× at concurrency 3). Every execution
+   * must build from this immutable base instead.
+   */
+  private pristineArgs?: string[];
+
   constructor(config?: Partial<SubprocessConfig>) {
     super({ ...CLAUDE_CODE_DEFAULT_CONFIG, ...config });
   }
@@ -374,11 +385,16 @@ export class ClaudeCodeConnector extends SubprocessConnector {
     this.debug('Config:', this['config']);
     this.resetState();
 
+    // Capture the pristine base args once (first execution wins — constructor
+    // args never change). See `pristineArgs` doc for why we must not snapshot
+    // `this.config.args` per-execution under concurrency.
+    this.pristineArgs ??= this.config.args ? [...this.config.args] : [];
+
     // Save original config for restoration after execution.
     // Uses structured clone for env to prevent leaking nested mutations
     // between consecutive executions in a benchmark run.
     const originalEnv = this.config.env ? structuredClone(this.config.env) : {};
-    const originalArgs = this.config.args ? [...this.config.args] : [];
+    const originalArgs = [...this.pristineArgs];
     const originalInputMode = this.config.inputMode;
     const originalTimeout = this.config.timeout;
     const originalWorkingDir = this.config.workingDir;
@@ -422,11 +438,21 @@ export class ClaudeCodeConnector extends SubprocessConnector {
     // — there is no run-level / user-selected agent model. We intentionally do
     // NOT inject a model from the run here.
 
-    // Append config-driven args
+    // Build per-execution args from the PRISTINE base (never from the live
+    // `this.config.args`, which may carry another in-flight execution's
+    // appended config args). `super.execute()` (SubprocessConnector) reads
+    // `this.config.args` synchronously at its very top (`const args =
+    // this.config.args || []`, before any `await`) — traced end-to-end: there
+    // is no `await` anywhere between this write and that read, so no other
+    // concurrent `execute()` call can interleave in between (JS run-to-
+    // completion semantics). This DOES depend on that base-class read staying
+    // synchronous-before-first-await; if `SubprocessConnector.execute()` is
+    // ever refactored to do async work before reading `config.args`, this
+    // invariant breaks silently — the concurrency test below is the guard.
     if (ccConfig) {
       const configArgs = this.buildConfigArgs(ccConfig);
+      this.config.args = [...this.pristineArgs, ...configArgs];
       if (configArgs.length > 0) {
-        this.config.args = [...(this.config.args || []), ...configArgs];
         this.debug('Config args added:', configArgs);
       }
     }
