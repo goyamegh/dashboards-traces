@@ -16,7 +16,8 @@
  * rawEvents each) is the perceived slowness.
  */
 
-import { test, expect, Route, Page } from '@playwright/test';
+import { test, expect } from './fixtures/test-fixtures';
+import type { Route, Page } from '@playwright/test';
 
 const RUN_A = 'eval-run-ldA';
 const RUN_B = 'eval-run-ldB';
