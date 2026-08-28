@@ -175,7 +175,24 @@ export function getIndexMappings(): IndexMappings {
           tags: { type: 'keyword' },
           actualOutcomes: { type: 'object', enabled: false },
           llmJudgeReasoning: { type: 'text' },
+          // Custom/system evaluators emit dynamic metric names driven by their
+          // own `scoringConfig.metrics` (e.g. `tool_selection_accuracy`,
+          // `reasoning_coherence`) -- see asyncRunStorage.ts's
+          // storedMetricsToApp()/toStorageFormat() comments. The four legacy
+          // keys below stay explicit, typed `float` fields (nothing queries
+          // them via OpenSearch today, but keeping them typed costs nothing
+          // and preserves any future sort/filter). `dynamic: false` on this
+          // object -- same #418 pattern as EvaluationRun.results -- stops any
+          // OTHER metric name from minting a brand-new mapped field shared
+          // across every run in the index; every code-QA benchmark run with a
+          // distinct custom evaluator was adding new `metrics.<name>` fields
+          // forever. Reads/writes via `_source` are unaffected (the full
+          // object round-trips regardless of what's mapped) -- only
+          // OpenSearch-side filter/sort/aggregate on an unmapped metric name
+          // is forfeited, and no consumer does that (see search()/query-audit
+          // in the PR description).
           metrics: {
+            dynamic: false,
             properties: {
               accuracy: { type: 'float' },
               faithfulness: { type: 'float' },
@@ -226,7 +243,17 @@ export function getIndexMappings(): IndexMappings {
                   priority: { type: 'keyword' },
                 },
               },
+              // Per-matcher equivalent of the report-level `metrics` object
+              // above (one `judge()` call's full metric breakdown, not just
+              // the headline `score`). Same growth vector, same fix: custom
+              // evaluators emit arbitrary dimension names per SDK `judge()`
+              // call, and `matcherResults` is itself `nested` -- a code-QA
+              // benchmark test case with many `judge()` claims x many custom
+              // dimensions multiplies fast (the field-count budget is
+              // index-wide, not per-doc). `dynamic: false` keeps the legacy
+              // four typed/queryable and opaques the rest.
               judgeMetrics: {
+                dynamic: false,
                 properties: {
                   accuracy: { type: 'float' },
                   faithfulness: { type: 'float' },
