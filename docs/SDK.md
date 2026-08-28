@@ -64,7 +64,7 @@ async function ({ agent, judge, evaluate, expect, testInfo, provisioned }) { ...
 | `agent`  | `AgentFixture`                                   | `await agent.run(prompt?, options?)` — invoke the agent **once** (control inversion). Returns an `EvalResult`. |
 | `judge`  | `JudgeFn`                                         | Non-throwing LLM judge. `judge(...)` gates; `judge.observe(...)` is observational. Returns a `Verdict`. |
 | `evaluate` | `EvaluateFn`                                     | Run a custom programmatic evaluator registered with `defineEvaluator()`. |
-| `expect` | chai's `expect` with our recording plugin        | Synchronous matcher entry-point |
+| `expect` | chai's `expect` with our recording plugin        | Synchronous matcher entry-point. `expect.soft(...)` records a failing assertion instead of throwing — see [Always-record guarantee](#5-matchers-record-structured-verdicts). |
 | `testInfo` | `TestInfo` (read-only)                          | `{ name, benchmarkPath, sourceFile, testCaseId }` |
 | `provisioned` | `Readonly<Record<string, unknown>>`          | Values set by `beforeEach` via `provide()` |
 | `result` | `EvalResult` *(legacy eager path)*               | Pre-populated agent result — present when the runner invokes before the body. Prefer `await agent.run()`. |
@@ -186,6 +186,67 @@ Matchers (4/5 passed)
 
 This is the major upgrade over throw-and-fail: every assertion gets its own
 row, status, and detail block.
+
+#### Always-record guarantee
+
+chai's `expect()` is fail-fast — the first failing assertion throws, and the
+rest of the test body (any later `expect()`/`judge()`/`evaluate()` calls)
+never executes. For a pass/fail verdict that's the intended Playwright-style
+contract, but a report consumed by an optimizer (or by you, comparing runs)
+needs the objective actuals — duration, token usage, USD cost — from every
+axis, even when one gate fails partway through. A token-budget gate failing
+shouldn't erase the cost figure that would otherwise have been on the report.
+
+So regardless of where (or whether) the body throws, the runner **always**
+stamps `performanceMetrics.durationMs` / `.agentDurationMs` /
+`.totalTokens` / `.totalCostUsd` onto the report the moment `agent.run()`
+resolves — reading them straight from the same OTel-derived data
+`result.traces`/the `traces` fixture exposes, independent of whether the
+body's own code ever reached a matcher that asserted on them. (`totalTokens`/
+`totalCostUsd` are `undefined`, not `0`, when `useTraces: true` but spans
+never arrived — see the loud-failure accessor in "Traces fixture" below;
+they're real `0`s when `useTraces: false`.)
+
+This guarantee has one hard limit: a `judge()`/`evaluate()` call itself is
+already non-throwing and records its score/verdict the instant it's called —
+so a REACHED judge call is always on the report today, throw-or-not. But a
+judge call placed textually *after* a failing `expect()` never executes at
+all — that's a pure source-order problem the runner cannot retroactively fix
+(it can't record a call that never ran). Use `expect.soft(...)` (below) when
+you need later judge/evaluate calls to run even after an earlier assertion
+fails.
+
+The matcher panel also gets a distinct **"not reached"** row appended
+whenever the body threw — so "this axis never ran" (grey, not-reached) reads
+differently from "this axis ran and failed" (red). It's excluded from the
+passed/failed counts and gets its own tally: `(3/4 passed, 1 not reached)`.
+
+#### `expect.soft(...)` — keep going instead of bailing on the first failure
+
+`expect.soft(value)` is the same chai assertion surface as `expect(value)`
+— every built-in BDD matcher plus the custom ones below — except a failing
+assertion **records** the MatcherResult and returns instead of throwing:
+
+```javascript
+test('budget-aware RCA', { prompt: '...' }, async ({ agent, expect, judge }) => {
+  const result = await agent.run();
+  expect.soft(result.traces.totalTokens).to.be.lessThan(10_000);  // fails — recorded, body continues
+  expect.soft(result.traces.totalCost).to.be.lessThan(0.05);      // still runs
+  await judge(result, 'identifies the root cause');                // still runs — the whole point
+  expect(result.agentOutput).to.contain('root cause');             // a HARD expect still bails on ITS OWN failure
+});
+```
+
+The runner's overall verdict is unaffected by soft vs. hard: a test already
+fails when ANY recorded gate matcher has `pass: false` (that's exactly how
+non-throwing `judge()`/`evaluate()` gates have always worked) — `expect.soft`
+just extends that same non-throwing contract to chai assertions. Mix soft and
+hard freely in one body; a hard `expect()` after a soft failure still bails
+at that point (source order still matters for the calls *after* a HARD
+failure). Reach for `.soft` on measurement/budget-style axis checks where you
+want every number on the report regardless of which gates failed; keep hard
+`expect()` for a precondition that makes the rest of the body meaningless if
+it's false (e.g. "the agent produced any output at all").
 
 ---
 
@@ -612,4 +673,4 @@ keeping it user-supplied lets you opt in without breaking anyone else.
 - [x] Non-throwing run-scoped `judge` with `gate` / `observe` roles + `skip` + `orThrow()`
 - [x] `defineEvaluator()` / `evaluate()` for mechanical / external verification ([#244](https://github.com/opensearch-project/agent-health/issues/244))
 - [x] Single code-import execution path (`benchmark -f *.eval.js` runs the SDK body) + unified `.js` / `.ts` / `.mjs` loaders + `agent-health migrate sdk-v2` codemod
-- [ ] `expect.soft()` to collect-all-failures instead of bail-on-first
+- [x] `expect.soft()` to collect-all-failures instead of bail-on-first
