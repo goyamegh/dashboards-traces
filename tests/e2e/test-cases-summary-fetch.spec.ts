@@ -165,11 +165,14 @@ test.describe('Test-case summary fetch — network + data-loss regression', () =
     }
 
     // The full (non-truncated) prompt must be visible, not the 200-char
-    // summary truncation.
+    // summary truncation. Assert directly on the distinguishing tail (not
+    // just a substring near the front, which the 200-char-truncated summary
+    // value would ALSO match) so Playwright's auto-retry keeps polling until
+    // the async getById refetch has actually landed, instead of passing
+    // immediately against the still-truncated seed value.
     const promptField = page.locator('#prompt');
-    await expect(promptField).toHaveValue(/exhaustive detail/);
+    await expect(promptField).toHaveValue(/leaks into the editor\.$/, { timeout: 10000 });
     const promptValue = await promptField.inputValue();
-    console.log('DEBUG promptValue:', JSON.stringify(promptValue));
     expect(promptValue.endsWith('leaks into the editor.')).toBeTruthy();
 
     // The real expected outcomes must be visible, not an empty placeholder.
