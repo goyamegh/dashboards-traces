@@ -857,6 +857,58 @@ describe('Test Cases Storage Routes', () => {
       expect(mockStorage.testCases.getById).toHaveBeenCalledWith('tc-123');
     });
 
+    // Regression/contract guard: the comparison page's category matrix (and
+    // any other id-scoped name lookup) fetches test cases with
+    // `fields=summary` specifically to avoid the sourceCode/context payload
+    // — but it still needs `name` and `labels` (the `subcategory:<x>` /
+    // `topic:<x>` tags `extractRowCategory` reads, plus the `[bracket]`
+    // name-tag fallback). A future change to `toSummary()` that starts
+    // stripping `labels` or `name` — the same failure mode that has bitten
+    // other lightweight report/test-case projections in this codebase —
+    // would silently collapse every row to `(uncategorized)` and hide the
+    // matrix again, with no error anywhere. Pin that these survive summary
+    // mode, via both the unfiltered (getAll) and ids-filtered (getById) code
+    // paths the route can take.
+    it('preserves labels and name in summary mode (category matrix depends on these)', async () => {
+      mockStorage.testCases.getAll.mockResolvedValue({
+        items: [
+          {
+            id: 'tc-labeled',
+            name: 'qst_0011 [basic] How long is the validity period',
+            initialPrompt: 'Short prompt',
+            createdAt: '2024-01-01T00:00:00Z',
+            labels: ['category:RAG', 'difficulty:Medium', 'subcategory:basic'],
+          },
+        ],
+        total: 1,
+      });
+
+      const { req, res } = createMocks({}, {}, { fields: 'summary' });
+      const handler = getRouteHandler(testCasesRoutes, 'get', '/api/storage/test-cases');
+      await handler(req, res);
+
+      const response = (res.json as jest.Mock).mock.calls[0][0];
+      const tc = response.testCases.find((t: any) => t.id === 'tc-labeled');
+      expect(tc.name).toBe('qst_0011 [basic] How long is the validity period');
+      expect(tc.labels).toEqual(['category:RAG', 'difficulty:Medium', 'subcategory:basic']);
+
+      // Same guarantee via the ids-filtered path (what the comparison page
+      // actually calls: GET /test-cases?ids=...&fields=summary).
+      mockStorage.testCases.getById.mockResolvedValue({
+        id: 'tc-labeled-2',
+        name: 'qst_0492 [info_not_found] For the missing doc',
+        initialPrompt: 'Short prompt',
+        createdAt: '2024-01-01T00:00:00Z',
+        labels: ['category:RAG', 'subcategory:info_not_found'],
+      });
+      const { req: req2, res: res2 } = createMocks({}, {}, { fields: 'summary', ids: 'tc-labeled-2' });
+      await handler(req2, res2);
+      const response2 = (res2.json as jest.Mock).mock.calls[0][0];
+      const tc2 = response2.testCases.find((t: any) => t.id === 'tc-labeled-2');
+      expect(tc2.name).toBe('qst_0492 [info_not_found] For the missing doc');
+      expect(tc2.labels).toEqual(['category:RAG', 'subcategory:info_not_found']);
+    });
+
     it('should return full data when no fields param (backward compat)', async () => {
       mockStorage.testCases.getAll.mockResolvedValue({
         items: [

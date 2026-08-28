@@ -195,6 +195,50 @@ describe('Test Cases CRUD Integration Tests', () => {
       expect(realIds.every((id: string) => id === targetId)).toBe(true);
     }, 30000);
 
+    // Regression/contract guard: the comparison page's category matrix
+    // fetches test-case names via the id-scoped summary path
+    // (`?ids=...&fields=summary`) specifically so it can look up a large
+    // comparison's names/labels without pulling every test case's full
+    // body. It still needs `name` (the `[bracket]` legacy fallback) and
+    // `labels` (the `subcategory:<x>` tag `extractRowCategory` prefers) —
+    // a future change to the summary projection that starts stripping
+    // either would silently collapse every row to `(uncategorized)` and
+    // hide the matrix again, with no error anywhere. Exercises the REAL
+    // server + storage round-trip (create → fetch via ids+summary).
+    it('preserves name and labels (subcategory: tag) through the ids+summary path the comparison page uses', async () => {
+      if (!backendAvailable) return;
+
+      const createResp = await fetch(`${BASE_URL}/api/storage/test-cases`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: `${NAME_MARKER}-qst_0011 [basic] category-matrix subcategory guard`,
+          category: 'RAG',
+          subcategory: 'basic',
+          difficulty: 'Medium',
+          initialPrompt: 'q',
+          expectedOutcomes: ['x'],
+        }),
+      });
+      const created = await createResp.json();
+      createdTestCaseIds.push(created.id);
+      expect(created.labels).toEqual(expect.arrayContaining(['subcategory:basic']));
+
+      const response = await fetch(
+        `${BASE_URL}/api/storage/test-cases?ids=${encodeURIComponent(created.id)}&fields=summary`,
+      );
+      expect(response.ok).toBe(true);
+
+      const data = await response.json();
+      const ours = data.testCases.find((tc: any) => tc.id === created.id);
+      expect(ours).toBeDefined();
+      expect(ours.name).toBe(`${NAME_MARKER}-qst_0011 [basic] category-matrix subcategory guard`);
+      expect(ours.labels).toEqual(expect.arrayContaining(['subcategory:basic']));
+      // Still strips the heavy fields — summary mode is doing its job.
+      expect(ours.context).toEqual([]);
+      expect(ours.expectedOutcomes).toEqual([]);
+    }, 30000);
+
     it('should return an accurate `total` count with a minimal page (summary + size=1) — the pattern Dashboard uses to show a test-case count without fetching the full corpus', async () => {
       if (!backendAvailable) return;
 
