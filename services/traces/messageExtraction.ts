@@ -24,8 +24,9 @@ export function extractMessagesFromSpans(
 ): ConversationMessage[] {
   if (!spans || spans.length === 0) return [];
 
-  const isClaudeCode = serviceName === 'claude-code' ||
-    spans.some(s => s.attributes?.['service.name'] === 'claude-code');
+  const isClaudeCode = serviceName?.startsWith('claude-code') ||
+    spans.some(s => String(s.attributes?.['service.name'] ?? '').startsWith('claude-code')) ||
+    spans.some(s => s.name?.startsWith('claude_code.'));
 
   const sorted = [...spans]
     .filter(s => s.startTime && !isNaN(new Date(s.startTime).getTime()))
@@ -34,10 +35,14 @@ export function extractMessagesFromSpans(
     );
 
   const messages: ConversationMessage[] = [];
+  // tool_use_ids that already produced a tool_result message from a `tool`
+  // span's own `tool.output` event, so the sibling `tool.execution` span
+  // (sorted after the call) doesn't push a duplicate result message.
+  const resultEmittedForToolUseId = new Set<string>();
 
   for (const span of sorted) {
     if (isClaudeCode) {
-      extractClaudeCodeMessages(span, messages);
+      extractClaudeCodeMessages(span, messages, resultEmittedForToolUseId);
     } else {
       extractGenericMessages(span, messages);
     }
@@ -54,31 +59,48 @@ export function extractMessagesFromSpans(
  *
  * Event names: user_prompt, api_request, tool_decision, tool_result
  */
-function extractClaudeCodeMessages(span: Span, messages: ConversationMessage[]): void {
+function extractClaudeCodeMessages(
+  span: Span,
+  messages: ConversationMessage[],
+  resultEmittedForToolUseId: Set<string>
+): void {
   const events = span.events || [];
   const attrs = span.attributes || {};
   const spanName = span.name?.toLowerCase() || '';
 
-  // User prompt events on interaction spans
+  // User prompt from interaction span attribute (Claude Code stores it directly)
+  if (spanName.includes('interaction') && attrs['user_prompt'] && attrs['user_prompt'] !== '<REDACTED>') {
+    messages.push({
+      id: `${span.spanId}-user-prompt`,
+      timestamp: span.startTime,
+      role: 'user',
+      content: String(attrs['user_prompt']),
+      metadata: { spanId: span.spanId, spanName: span.name },
+    });
+  }
+
+  // User prompt events on interaction spans (legacy path)
   for (const event of events) {
     if (event.name === 'user_prompt') {
       const content = event.attributes?.['user.prompt'] ||
         event.attributes?.['prompt'] ||
         event.attributes?.['content'] || '';
-      messages.push({
-        id: `${span.spanId}-user-prompt`,
-        timestamp: event.time || span.startTime,
-        role: 'user',
-        content: content || '[User prompt — content not captured. Set OTEL_LOG_USER_PROMPTS=1]',
-        metadata: { spanId: span.spanId, spanName: span.name },
-      });
+      if (content && !messages.some(m => m.id === `${span.spanId}-user-prompt`)) {
+        messages.push({
+          id: `${span.spanId}-user-prompt-ev`,
+          timestamp: event.time || span.startTime,
+          role: 'user',
+          content: content || '[User prompt — content not captured. Set OTEL_LOG_USER_PROMPTS=1]',
+          metadata: { spanId: span.spanId, spanName: span.name },
+        });
+      }
     }
   }
 
   // Tool decision / tool call spans
-  if (spanName.includes('tool') && !spanName.includes('execution')) {
+  if (spanName.includes('tool') && !spanName.includes('execution') && !spanName.includes('blocked')) {
     const toolName = attrs['tool_name'] || attrs['gen_ai.tool.name'] || attrs['tool.name'] || span.name;
-    const toolInput = attrs['tool_input'] || attrs['gen_ai.tool.input'] || '';
+    const toolInput = attrs['tool_input'] || attrs['gen_ai.tool.input'] || attrs['full_command'] || '';
 
     // Check for tool_decision events
     const toolDecisionEvent = events.find(e => e.name === 'tool_decision');
@@ -100,9 +122,37 @@ function extractClaudeCodeMessages(span: Span, messages: ConversationMessage[]):
         },
       });
     }
+
+    // tool.output event on the tool span (Claude Code emits output here).
+    // Dedup is symmetric with the tool.execution branch below: whichever one
+    // is processed first (normally this one, but a sibling tool.execution
+    // span could sort first under clock skew) marks the tool_use_id, and the
+    // other skips — so a tool call with both result shapes present never
+    // produces two tool_result messages regardless of span order.
+    const toolOutputEvent = events.find(e => e.name === 'tool.output');
+    if (toolOutputEvent) {
+      const output = toolOutputEvent.attributes?.['output'] ||
+        toolOutputEvent.attributes?.['result'] || '';
+      const toolUseId = attrs['tool_use_id'] || attrs['gen_ai.tool.call.id'];
+      const alreadyEmitted = toolUseId != null && resultEmittedForToolUseId.has(String(toolUseId));
+      if (output && !alreadyEmitted) {
+        if (toolUseId) resultEmittedForToolUseId.add(String(toolUseId));
+        messages.push({
+          id: `${span.spanId}-tool-output-ev`,
+          timestamp: toolOutputEvent.time || span.endTime,
+          role: 'tool_result',
+          content: typeof output === 'object' ? JSON.stringify(output, null, 2) : String(output),
+          metadata: {
+            spanId: span.spanId,
+            spanName: span.name,
+            toolName: String(toolName),
+          },
+        });
+      }
+    }
   }
 
-  // Tool result events
+  // Tool result events (legacy path)
   for (const event of events) {
     if (event.name === 'tool_result') {
       const content = event.attributes?.['result'] ||
@@ -124,8 +174,11 @@ function extractClaudeCodeMessages(span: Span, messages: ConversationMessage[]):
 
   // Tool result from tool.execution span attributes (fallback)
   if (spanName.includes('tool.execution') || spanName.includes('tool_execution')) {
+    const execToolUseId = attrs['tool_use_id'] || attrs['gen_ai.tool.call.id'];
+    const alreadyEmitted = execToolUseId != null && resultEmittedForToolUseId.has(String(execToolUseId));
     const output = attrs['gen_ai.tool.output'] || attrs['tool.output'] || attrs['output'];
-    if (output && !events.some(e => e.name === 'tool_result')) {
+    if (output && !alreadyEmitted && !events.some(e => e.name === 'tool_result')) {
+      if (execToolUseId != null) resultEmittedForToolUseId.add(String(execToolUseId));
       messages.push({
         id: `${span.spanId}-tool-output`,
         timestamp: span.endTime,

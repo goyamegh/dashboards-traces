@@ -94,6 +94,10 @@ function claudeNativeTrajectory(spans: Span[]): TrajectoryStep[] {
   const sorted = sortByStart(spans);
   const toolNames = toolNamesById(sorted);
   const steps: TrajectoryStep[] = [];
+  // tool_use_ids that already got a tool_result from a `tool` span's own
+  // `tool.output` event, so the sibling `tool.execution` span (processed
+  // later, since it starts after the call) doesn't emit a duplicate result.
+  const resultEmittedForToolUseId = new Set<string>();
 
   for (const s of sorted) {
     const a = s.attributes || {};
@@ -121,7 +125,7 @@ function claudeNativeTrajectory(spans: Span[]): TrajectoryStep[] {
       });
     } else if (t === 'tool') {
       const name = a['tool_name'] || a['gen_ai.tool.name'];
-      const input = a['tool_input'] || a['gen_ai.tool.input'];
+      const input = a['tool_input'] || a['gen_ai.tool.input'] || a['full_command'];
       let toolArgs: Record<string, any> | undefined;
       if (input) { try { toolArgs = typeof input === 'string' ? JSON.parse(input) : input; } catch { /* raw */ } }
       steps.push({
@@ -131,19 +135,51 @@ function claudeNativeTrajectory(spans: Span[]): TrajectoryStep[] {
         toolName: name ? String(name) : undefined,
         toolArgs,
       });
+
+      // Some Claude Code tool spans carry the result inline as a `tool.output`
+      // span event instead of a separate `tool.execution` span — surface it as
+      // a tool_result so it isn't silently dropped from the trajectory. Guard
+      // against the (unusual, but possible under clock skew) case where the
+      // sibling `tool.execution` span was already PROCESSED first (i.e. it
+      // sorted before this `tool` span) and already emitted a result for the
+      // same tool_use_id — the dedup Set is checked/marked symmetrically by
+      // both branches so whichever one runs first "wins" and the other skips.
+      const toolOutputEvent = (s.events || []).find(e => e.name === 'tool.output');
+      const eventOutput = toolOutputEvent?.attributes?.['output'] || toolOutputEvent?.attributes?.['result'];
+      const toolUseId = a['tool_use_id'] || a['gen_ai.tool.call.id'];
+      const alreadyEmittedForThisId = toolUseId != null && resultEmittedForToolUseId.has(String(toolUseId));
+      if (eventOutput && !alreadyEmittedForThisId) {
+        if (toolUseId != null) resultEmittedForToolUseId.add(String(toolUseId));
+        const eventTs = toolOutputEvent?.time ? new Date(toolOutputEvent.time).getTime() : NaN;
+        steps.push({
+          ...base,
+          id: `${s.spanId}-output`,
+          timestamp: !isNaN(eventTs) ? eventTs : ts,
+          type: 'tool_result',
+          content: String(eventOutput),
+          toolName: name ? String(name) : undefined,
+          toolOutput: eventOutput,
+          status: s.status === 'ERROR' ? ToolCallStatus.FAILURE : ToolCallStatus.SUCCESS,
+        });
+      }
     } else if (t === 'tool.execution') {
       const success = a['success'];
       const id = a['tool_use_id'] || a['gen_ai.tool.call.id'];
       const name = (id && toolNames.get(String(id))) || a['tool_name'];
       const output = a['gen_ai.tool.output'] || a['tool.output'];
-      steps.push({
-        ...base,
-        type: 'tool_result',
-        content: output != null ? String(output) : (success === false ? 'tool failed' : 'tool succeeded'),
-        toolName: name ? String(name) : undefined,
-        toolOutput: output,
-        status: success === false ? ToolCallStatus.FAILURE : ToolCallStatus.SUCCESS,
-      });
+      if (id && resultEmittedForToolUseId.has(String(id))) {
+        // Already emitted from the sibling `tool` span's tool.output event — skip duplicate.
+      } else {
+        if (id) resultEmittedForToolUseId.add(String(id));
+        steps.push({
+          ...base,
+          type: 'tool_result',
+          content: output != null ? String(output) : (success === false ? 'tool failed' : 'tool succeeded'),
+          toolName: name ? String(name) : undefined,
+          toolOutput: output,
+          status: success === false ? ToolCallStatus.FAILURE : ToolCallStatus.SUCCESS,
+        });
+      }
     } else if (t === 'tool.blocked_on_user') {
       const decision = String(a['decision'] ?? '');
       if (decision && decision !== 'accept') {
