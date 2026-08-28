@@ -5,19 +5,27 @@
 
 import {
   buildAgentRunPoints,
-  buildAgentColorMap,
-  buildAgentTrendSeries,
-  computeAgentChipSummaries,
+  buildAgentTrendRows,
+  buildBenchmarkDotPlotRows,
+  buildGapBrokenSeries,
+  computeLatestDelta,
+  formatDelta,
+  formatMetricValue,
   getMostRecentlyActiveBenchmarkId,
   getRunAccuracy,
   groupPointsByAgent,
+  metricDomain,
   metricValue,
-  rollingAverage,
+  rankDotPlotRows,
+  sortAgentTrendRows,
   timeRangeToSinceMs,
+  valueToPercent,
+  type AgentRunPoint,
   type RunMetricsLookup,
 } from '@/lib/agentTrends';
-import { formatMetricValue } from '@/components/charts/AgentTrendsEChart';
 import type { Benchmark, BenchmarkRun, EvaluationReport } from '@/types';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 function makeRun(overrides: Partial<BenchmarkRun>): BenchmarkRun {
   return {
@@ -61,6 +69,16 @@ function makeReport(overrides: Partial<EvaluationReport>): EvaluationReport {
   } as EvaluationReport;
 }
 
+/** Minimal AgentRunPoint builder for tests that exercise pure series/row shaping without going through buildAgentRunPoints. */
+function makePoint(overrides: Partial<AgentRunPoint>): AgentRunPoint {
+  return {
+    runDocId: 'r', benchmarkId: 'b', benchmarkName: 'B', agentKey: 'agent-a', agentName: 'Agent A',
+    modelId: 'm', createdAt: new Date(overrides.timestamp ?? 0).toISOString(), timestamp: 0,
+    passed: 1, failed: 0, total: 1, accuracyPct: 100, costUsd: null, tokens: null,
+    ...overrides,
+  };
+}
+
 describe('agentTrends', () => {
   describe('getRunAccuracy', () => {
     it('prefers denormalized run.stats when present', () => {
@@ -88,18 +106,29 @@ describe('agentTrends', () => {
       expect(result.accuracyPct).toBe(50);
     });
 
-    it('returns 0% (not NaN) for a run with zero evaluable test cases', () => {
+    // Owner-reported bug fix ("stray 0.0% points"): a run where every test
+    // case errored (no judge verdict at all) used to report accuracyPct: 0,
+    // which is visually indistinguishable from a genuine "passed nothing"
+    // result. It must now report `null` — "no accuracy signal" — so callers
+    // (buildGapBrokenSeries, row summaries) can drop it instead of plotting
+    // a fake zero.
+    it('returns null (not 0) for a run with zero evaluable test cases', () => {
       const run = makeRun({ stats: { passed: 0, failed: 0, pending: 0, errored: 2, total: 2 } });
-      expect(getRunAccuracy(run).accuracyPct).toBe(0);
+      expect(getRunAccuracy(run).accuracyPct).toBeNull();
+    });
+
+    it('returns null (not 0/NaN) when run.stats.total is 0 and results is empty (falls back to bucketing, still zero evaluable)', () => {
+      const run = makeRun({ stats: undefined, results: {} });
+      expect(getRunAccuracy(run).accuracyPct).toBeNull();
     });
   });
 
   describe('timeRangeToSinceMs', () => {
     const now = new Date('2024-06-30T00:00:00.000Z').getTime();
     it('computes 7d/30d/90d cutoffs relative to now', () => {
-      expect(timeRangeToSinceMs('7d', now)).toBe(now - 7 * 24 * 60 * 60 * 1000);
-      expect(timeRangeToSinceMs('30d', now)).toBe(now - 30 * 24 * 60 * 60 * 1000);
-      expect(timeRangeToSinceMs('90d', now)).toBe(now - 90 * 24 * 60 * 60 * 1000);
+      expect(timeRangeToSinceMs('7d', now)).toBe(now - 7 * DAY_MS);
+      expect(timeRangeToSinceMs('30d', now)).toBe(now - 30 * DAY_MS);
+      expect(timeRangeToSinceMs('90d', now)).toBe(now - 90 * DAY_MS);
     });
   });
 
@@ -189,96 +218,218 @@ describe('agentTrends', () => {
     });
   });
 
-  describe('rollingAverage', () => {
-    it('returns [] for an empty series', () => {
-      expect(rollingAverage([])).toEqual([]);
-    });
-
-    it('averages a single point to itself', () => {
-      expect(rollingAverage([10])).toEqual([10]);
-    });
-
-    it('computes a trailing window average matching window=3', () => {
-      expect(rollingAverage([10, 20, 30, 40], 3)).toEqual([10, 15, 20, 30]);
-    });
-
-    it('with window=1 the rolling average equals the raw series', () => {
-      expect(rollingAverage([5, 8, 2], 1)).toEqual([5, 8, 2]);
-    });
-
-    it('skips nulls without polluting the average, and reports null until data appears', () => {
-      expect(rollingAverage([null, null, 10, null, 20], 2)).toEqual([null, null, 10, 10, 15]);
-    });
-
-    it('treats window<=0 as window=1', () => {
-      expect(rollingAverage([1, 2, 3], 0)).toEqual([1, 2, 3]);
-    });
-  });
-
   describe('metricValue', () => {
-    const point = {
-      runDocId: 'r', benchmarkId: 'b', benchmarkName: 'B', agentKey: 'a', agentName: 'A',
-      modelId: 'm', createdAt: '2024-01-01T00:00:00Z', timestamp: 0,
-      passed: 1, failed: 0, total: 1, accuracyPct: 100, costUsd: 1.5, tokens: 100,
-    };
+    const point = makePoint({ accuracyPct: 100, costUsd: 1.5, tokens: 100 });
     it('reads the right field per metric key', () => {
       expect(metricValue(point, 'accuracy')).toBe(100);
       expect(metricValue(point, 'cost')).toBe(1.5);
       expect(metricValue(point, 'tokens')).toBe(100);
     });
+
+    it('returns null for accuracy when the point has no accuracy signal', () => {
+      expect(metricValue(makePoint({ accuracyPct: null }), 'accuracy')).toBeNull();
+    });
   });
 
-  describe('computeAgentChipSummaries', () => {
-    const now = new Date('2024-06-30T00:00:00.000Z').getTime();
+  describe('formatMetricValue', () => {
+    it('formats accuracy as a percentage with 1 decimal', () => {
+      expect(formatMetricValue('accuracy', 83.456)).toBe('83.5%');
+    });
+    it('formats cost via formatCost', () => {
+      expect(formatMetricValue('cost', 0.5)).toMatch(/\$/);
+    });
+    it('formats tokens via formatTokens', () => {
+      expect(formatMetricValue('tokens', 15000)).toMatch(/k|K|\d/);
+    });
+  });
 
-    it('returns null wowDelta with a single run (no prior-week baseline)', () => {
+  describe('buildGapBrokenSeries (per-agent series + gap-breaking)', () => {
+    it('plots consecutive runs within the gap threshold as one unbroken series (no synthetic breaks)', () => {
+      const points = [
+        makePoint({ timestamp: 0, accuracyPct: 60 }),
+        makePoint({ timestamp: 3 * DAY_MS, accuracyPct: 70 }),
+        makePoint({ timestamp: 6 * DAY_MS, accuracyPct: 80 }),
+      ];
+      const series = buildGapBrokenSeries(points, 'accuracy');
+      expect(series).toHaveLength(3);
+      expect(series.every(s => s.value != null)).toBe(true);
+    });
+
+    it('inserts a null-valued break between two runs more than 7 days apart', () => {
+      const points = [
+        makePoint({ timestamp: 0, accuracyPct: 60 }),
+        makePoint({ timestamp: 20 * DAY_MS, accuracyPct: 80 }), // 20-day gap > 7-day default threshold
+      ];
+      const series = buildGapBrokenSeries(points, 'accuracy');
+      expect(series).toHaveLength(3); // real, break, real
+      expect(series[0].value).toBe(60);
+      expect(series[1].value).toBeNull();
+      expect(series[1].point).toBeNull();
+      expect(series[1].timestamp).toBe(10 * DAY_MS); // midpoint
+      expect(series[2].value).toBe(80);
+    });
+
+    it('respects a custom gapBreakMs threshold', () => {
+      const points = [
+        makePoint({ timestamp: 0, accuracyPct: 60 }),
+        makePoint({ timestamp: 2 * DAY_MS, accuracyPct: 70 }),
+      ];
+      // 2-day gap: no break at the (default) 7-day threshold...
+      expect(buildGapBrokenSeries(points, 'accuracy')).toHaveLength(2);
+      // ...but breaks at a 1-day threshold.
+      expect(buildGapBrokenSeries(points, 'accuracy', 1 * DAY_MS)).toHaveLength(3);
+    });
+
+    it('drops points whose metric value is null instead of plotting a fake zero (the stray-0.0% fix)', () => {
+      const points = [
+        makePoint({ timestamp: 0, accuracyPct: 60 }),
+        makePoint({ timestamp: DAY_MS, accuracyPct: null }), // all test cases errored
+        makePoint({ timestamp: 2 * DAY_MS, accuracyPct: 80 }),
+      ];
+      const series = buildGapBrokenSeries(points, 'accuracy');
+      expect(series.map(s => s.value)).toEqual([60, 80]); // the null-accuracy run never appears
+    });
+
+    it('never breaks a gap measured across a dropped null point using stale adjacency (gap is measured between the nearest PLOTTED points)', () => {
+      const points = [
+        makePoint({ timestamp: 0, accuracyPct: 60 }),
+        makePoint({ timestamp: 3 * DAY_MS, accuracyPct: null }), // dropped, would have been "in between"
+        makePoint({ timestamp: 5 * DAY_MS, accuracyPct: 80 }), // only 5 days from the last PLOTTED point
+      ];
+      const series = buildGapBrokenSeries(points, 'accuracy');
+      expect(series.map(s => s.value)).toEqual([60, 80]); // no break: 5 days < 7-day threshold
+    });
+
+    it('returns [] for an agent with no plottable points for this metric', () => {
+      const points = [makePoint({ timestamp: 0, costUsd: null })];
+      expect(buildGapBrokenSeries(points, 'cost')).toEqual([]);
+    });
+  });
+
+  describe('computeLatestDelta', () => {
+    it('returns null delta with a single run (no prior run to compare)', () => {
+      const points = [makePoint({ timestamp: 0, accuracyPct: 80 })];
+      const delta = computeLatestDelta(points, 'accuracy');
+      expect(delta).toEqual({ latestValue: 80, previousValue: null, delta: null });
+    });
+
+    it('computes latest-minus-previous for two runs (not week-over-week average)', () => {
+      const points = [
+        makePoint({ timestamp: 0, accuracyPct: 60 }),
+        makePoint({ timestamp: DAY_MS, accuracyPct: 80 }),
+      ];
+      expect(computeLatestDelta(points, 'accuracy')).toEqual({ latestValue: 80, previousValue: 60, delta: 20 });
+    });
+
+    it('uses the latest two runs that HAVE a value for the metric, skipping nulls in between', () => {
+      const points = [
+        makePoint({ timestamp: 0, costUsd: 1 }),
+        makePoint({ timestamp: DAY_MS, costUsd: null }), // no trace match
+        makePoint({ timestamp: 2 * DAY_MS, costUsd: 1.5 }),
+      ];
+      expect(computeLatestDelta(points, 'cost')).toEqual({ latestValue: 1.5, previousValue: 1, delta: 0.5 });
+    });
+
+    it('reports a negative delta for a regression', () => {
+      const points = [
+        makePoint({ timestamp: 0, accuracyPct: 90 }),
+        makePoint({ timestamp: DAY_MS, accuracyPct: 70 }),
+      ];
+      expect(computeLatestDelta(points, 'accuracy').delta).toBe(-20);
+    });
+
+    it('returns all-null when there is no value at all for the metric', () => {
+      const points = [makePoint({ timestamp: 0, costUsd: null })];
+      expect(computeLatestDelta(points, 'cost')).toEqual({ latestValue: null, previousValue: null, delta: null });
+    });
+  });
+
+  describe('formatDelta', () => {
+    it('formats n/a for null', () => {
+      expect(formatDelta('accuracy', null)).toBe('n/a');
+    });
+    it('formats a positive accuracy delta in percentage points with a + sign', () => {
+      expect(formatDelta('accuracy', 3.2)).toBe('+3.2pp');
+    });
+    it('formats a negative accuracy delta without a double sign', () => {
+      expect(formatDelta('accuracy', -4)).toBe('-4pp');
+    });
+    it('collapses a near-zero delta to a neutral ±0pp', () => {
+      expect(formatDelta('accuracy', 0.01)).toBe('±0pp');
+    });
+    it('formats cost/token deltas via the metric formatter with a sign', () => {
+      expect(formatDelta('cost', 0.5)).toMatch(/^\+.*\$/);
+      expect(formatDelta('tokens', -200)).toMatch(/^-/);
+    });
+  });
+
+  describe('buildAgentTrendRows', () => {
+    it('builds one row per agent with runCount, latest run identity, series, and delta', () => {
       const bm = makeBenchmark('bm-1', 'B', [
-        makeRun({ id: 'r1', agentKey: 'a', createdAt: '2024-06-29T00:00:00.000Z', stats: { passed: 8, failed: 2, pending: 0, total: 10 } }),
+        makeRun({ id: 'a1', agentKey: 'agent-a', createdAt: '2024-06-01T00:00:00Z', stats: { passed: 6, failed: 4, pending: 0, total: 10 } }),
+        makeRun({ id: 'a2', agentKey: 'agent-a', createdAt: '2024-06-05T00:00:00Z', stats: { passed: 8, failed: 2, pending: 0, total: 10 } }),
+        makeRun({ id: 'b1', agentKey: 'agent-b', createdAt: '2024-06-02T00:00:00Z', stats: { passed: 7, failed: 3, pending: 0, total: 10 } }),
       ]);
       const points = buildAgentRunPoints([bm], [], new Map());
-      const [summary] = computeAgentChipSummaries(points, now);
-      expect(summary.latestAccuracyPct).toBe(80);
-      expect(summary.wowDeltaPct).toBeNull();
-      expect(summary.runCount).toBe(1);
+      const rows = buildAgentTrendRows(points, 'accuracy');
+      expect(rows.map(r => r.agentKey).sort()).toEqual(['agent-a', 'agent-b']);
+
+      const a = rows.find(r => r.agentKey === 'agent-a')!;
+      expect(a.runCount).toBe(2);
+      expect(a.latestRunDocId).toBe('a2');
+      expect(a.latestValue).toBe(80);
+      expect(a.previousValue).toBe(60);
+      expect(a.delta).toBe(20);
+      expect(a.series).toHaveLength(2);
+
+      const b = rows.find(r => r.agentKey === 'agent-b')!;
+      expect(b.runCount).toBe(1);
+      expect(b.delta).toBeNull(); // single run: no prior run to diff against
     });
 
-    it('computes a positive week-over-week delta from two full weeks of runs', () => {
+    it('a lone single run is a fully valid row (no >=2-points-across-all-agents floor, unlike the old chart)', () => {
       const bm = makeBenchmark('bm-1', 'B', [
-        // prior week (8-14 days ago): 60% avg
-        makeRun({ id: 'prev-1', agentKey: 'a', createdAt: '2024-06-17T00:00:00.000Z', stats: { passed: 6, failed: 4, pending: 0, total: 10 } }),
-        // this week (last 7 days): 80% avg
-        makeRun({ id: 'cur-1', agentKey: 'a', createdAt: '2024-06-29T00:00:00.000Z', stats: { passed: 8, failed: 2, pending: 0, total: 10 } }),
+        makeRun({ id: 'only', agentKey: 'agent-a', stats: { passed: 5, failed: 5, pending: 0, total: 10 } }),
       ]);
       const points = buildAgentRunPoints([bm], [], new Map());
-      const [summary] = computeAgentChipSummaries(points, now);
-      expect(summary.wowDeltaPct).toBeCloseTo(20, 5);
-      expect(summary.latestAccuracyPct).toBe(80);
+      const rows = buildAgentTrendRows(points, 'accuracy');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].latestValue).toBe(50);
     });
 
-    it('handles multiple agents and sorts by most-recently-active first', () => {
-      const bm = makeBenchmark('bm-1', 'B', [
-        makeRun({ id: 'r-old', agentKey: 'agent-old', createdAt: '2024-06-01T00:00:00.000Z', stats: { passed: 1, failed: 0, pending: 0, total: 1 } }),
-        makeRun({ id: 'r-new', agentKey: 'agent-new', createdAt: '2024-06-29T00:00:00.000Z', stats: { passed: 1, failed: 0, pending: 0, total: 1 } }),
-      ]);
-      const points = buildAgentRunPoints([bm], [], new Map());
-      const summaries = computeAgentChipSummaries(points, now);
-      expect(summaries.map(s => s.agentKey)).toEqual(['agent-new', 'agent-old']);
+    it('returns [] for an empty point set', () => {
+      expect(buildAgentTrendRows([], 'accuracy')).toEqual([]);
+    });
+  });
+
+  describe('sortAgentTrendRows', () => {
+    const bm = makeBenchmark('bm-1', 'B', [
+      // agent-hi: latest 90%, up from 70% (+20)
+      makeRun({ id: 'hi-1', agentKey: 'agent-hi', createdAt: '2024-06-01T00:00:00Z', stats: { passed: 7, failed: 3, pending: 0, total: 10 } }),
+      makeRun({ id: 'hi-2', agentKey: 'agent-hi', createdAt: '2024-06-02T00:00:00Z', stats: { passed: 9, failed: 1, pending: 0, total: 10 } }),
+      // agent-lo: latest 30%, down from 80% (-50, biggest drop)
+      makeRun({ id: 'lo-1', agentKey: 'agent-lo', createdAt: '2024-06-01T00:00:00Z', stats: { passed: 8, failed: 2, pending: 0, total: 10 } }),
+      makeRun({ id: 'lo-2', agentKey: 'agent-lo', createdAt: '2024-06-02T00:00:00Z', stats: { passed: 3, failed: 7, pending: 0, total: 10 } }),
+      // agent-new: single run, 60%, no delta signal
+      makeRun({ id: 'new-1', agentKey: 'agent-new', createdAt: '2024-06-02T00:00:00Z', stats: { passed: 6, failed: 4, pending: 0, total: 10 } }),
+    ]);
+    const points = buildAgentRunPoints([bm], [], new Map());
+    const rows = buildAgentTrendRows(points, 'accuracy');
+
+    it('"latest" sorts by current value descending, undefined-value rows last', () => {
+      const sorted = sortAgentTrendRows(rows, 'latest');
+      expect(sorted.map(r => r.agentKey)).toEqual(['agent-hi', 'agent-new', 'agent-lo']);
     });
 
-    it('returns [] for an empty point set (no benchmarks/runs)', () => {
-      expect(computeAgentChipSummaries([], now)).toEqual([]);
+    it('"biggestDrop" sorts by delta ascending (most negative first), no-delta rows last', () => {
+      const sorted = sortAgentTrendRows(rows, 'biggestDrop');
+      expect(sorted.map(r => r.agentKey)).toEqual(['agent-lo', 'agent-hi', 'agent-new']);
     });
 
-    it('carries the latest run cost/tokens through to the chip', () => {
-      const bm = makeBenchmark('bm-1', 'B', [
-        makeRun({ id: 'r1', agentKey: 'a', createdAt: '2024-06-29T00:00:00.000Z', stats: { passed: 1, failed: 0, pending: 0, total: 1 } }),
-      ]);
-      const reports = [makeReport({ id: 'rep-1', experimentRunId: 'r1', runId: 'agent-run-1' })];
-      const metricsMap = new Map<string, RunMetricsLookup>([['agent-run-1', { costUsd: 2.5, tokens: 4200 }]]);
-      const points = buildAgentRunPoints([bm], reports, metricsMap);
-      const [summary] = computeAgentChipSummaries(points, now);
-      expect(summary.latestCostUsd).toBeCloseTo(2.5, 6);
-      expect(summary.latestTokens).toBe(4200);
+    it('does not mutate the input array', () => {
+      const before = rows.map(r => r.agentKey);
+      sortAgentTrendRows(rows, 'biggestDrop');
+      expect(rows.map(r => r.agentKey)).toEqual(before);
     });
   });
 
@@ -295,89 +446,119 @@ describe('agentTrends', () => {
     });
   });
 
-  describe('buildAgentColorMap', () => {
-    it('assigns distinct colors deterministically by sorted agent key', () => {
-      const map = buildAgentColorMap(['agent-b', 'agent-a', 'agent-a']);
-      expect(map.size).toBe(2);
-      expect(map.get('agent-a')).not.toBe(map.get('agent-b'));
-      // Re-running with the same (even differently ordered/duplicated) input is stable.
-      const map2 = buildAgentColorMap(['agent-a', 'agent-b']);
-      expect(map2.get('agent-a')).toBe(map.get('agent-a'));
-      expect(map2.get('agent-b')).toBe(map.get('agent-b'));
+  describe('buildBenchmarkDotPlotRows (ranked dot plot — v3 primary viz)', () => {
+    it('splits each agent\'s valued runs into latest (most recent) + history (earlier), excluding latest from history', () => {
+      const points = [
+        makePoint({ agentKey: 'agent-a', timestamp: 0, accuracyPct: 60 }),
+        makePoint({ agentKey: 'agent-a', timestamp: DAY_MS, accuracyPct: 70 }),
+        makePoint({ agentKey: 'agent-a', timestamp: 2 * DAY_MS, accuracyPct: 90 }),
+      ];
+      const [row] = buildBenchmarkDotPlotRows(points, 'accuracy');
+      expect(row.latest?.value).toBe(90);
+      expect(row.history.map(h => h.value)).toEqual([60, 70]);
+    });
+
+    it('one row per agent scoped to whatever points are passed in (caller is responsible for the single-benchmark scope)', () => {
+      const points = [
+        makePoint({ agentKey: 'agent-a', agentName: 'Agent A', timestamp: 0, accuracyPct: 80 }),
+        makePoint({ agentKey: 'agent-b', agentName: 'Agent B', timestamp: 0, accuracyPct: 50 }),
+      ];
+      const rows = buildBenchmarkDotPlotRows(points, 'accuracy');
+      expect(rows.map(r => r.agentKey).sort()).toEqual(['agent-a', 'agent-b']);
+    });
+
+    it('still returns a row (latest: null) for an agent with no resolved value for the current metric', () => {
+      const points = [makePoint({ agentKey: 'agent-a', timestamp: 0, costUsd: null })];
+      const [row] = buildBenchmarkDotPlotRows(points, 'cost');
+      expect(row.latest).toBeNull();
+      expect(row.history).toEqual([]);
+    });
+
+    it('drops metric-null points from both latest and history (the stray-0.0% fix applies here too)', () => {
+      const points = [
+        makePoint({ agentKey: 'agent-a', timestamp: 0, accuracyPct: 60 }),
+        makePoint({ agentKey: 'agent-a', timestamp: DAY_MS, accuracyPct: null }), // all test cases errored
+        makePoint({ agentKey: 'agent-a', timestamp: 2 * DAY_MS, accuracyPct: 80 }),
+      ];
+      const [row] = buildBenchmarkDotPlotRows(points, 'accuracy');
+      expect(row.latest?.value).toBe(80);
+      expect(row.history.map(h => h.value)).toEqual([60]);
+    });
+
+    it('returns [] for an empty point set', () => {
+      expect(buildBenchmarkDotPlotRows([], 'accuracy')).toEqual([]);
     });
   });
 
-  describe('buildAgentTrendSeries', () => {
-    function twoAgentBenchmark() {
-      return makeBenchmark('bm-1', 'B', [
-        makeRun({ id: 'a1', agentKey: 'agent-a', createdAt: '2024-06-01T00:00:00Z', stats: { passed: 6, failed: 4, pending: 0, total: 10 } }),
-        makeRun({ id: 'a2', agentKey: 'agent-a', createdAt: '2024-06-05T00:00:00Z', stats: { passed: 8, failed: 2, pending: 0, total: 10 } }),
-        makeRun({ id: 'b1', agentKey: 'agent-b', createdAt: '2024-06-02T00:00:00Z', stats: { passed: 7, failed: 3, pending: 0, total: 10 } }),
-      ]);
-    }
-
-    it('builds one series per agent with its line + scatter data', () => {
-      const points = buildAgentRunPoints([twoAgentBenchmark()], [], new Map());
-      const series = buildAgentTrendSeries(points, 'accuracy');
-      expect(series.map(s => s.agentKey).sort()).toEqual(['agent-a', 'agent-b']);
-      const a = series.find(s => s.agentKey === 'agent-a')!;
-      expect(a.scatterData).toHaveLength(2);
-      expect(a.lineData.length).toBeGreaterThan(0);
+  describe('rankDotPlotRows', () => {
+    it('ranks by latest value descending — best (highest) on top — and stamps 0-based rank', () => {
+      const points = [
+        makePoint({ agentKey: 'agent-mid', agentName: 'Mid', timestamp: 0, accuracyPct: 70 }),
+        makePoint({ agentKey: 'agent-best', agentName: 'Best', timestamp: 0, accuracyPct: 95 }),
+        makePoint({ agentKey: 'agent-worst', agentName: 'Worst', timestamp: 0, accuracyPct: 40 }),
+      ];
+      const rows = buildBenchmarkDotPlotRows(points, 'accuracy');
+      const ranked = rankDotPlotRows(rows);
+      expect(ranked.map(r => r.agentKey)).toEqual(['agent-best', 'agent-mid', 'agent-worst']);
+      expect(ranked.map(r => r.rank)).toEqual([0, 1, 2]);
     });
 
-    it('omits series entirely for hidden agent keys (visibility toggling filters series)', () => {
-      const points = buildAgentRunPoints([twoAgentBenchmark()], [], new Map());
-      const visible = buildAgentTrendSeries(points, 'accuracy', new Set(['agent-b']));
-      expect(visible.map(s => s.agentKey)).toEqual(['agent-a']);
-
-      const noneHidden = buildAgentTrendSeries(points, 'accuracy', new Set());
-      expect(noneHidden.map(s => s.agentKey).sort()).toEqual(['agent-a', 'agent-b']);
-
-      const allHidden = buildAgentTrendSeries(points, 'accuracy', new Set(['agent-a', 'agent-b']));
-      expect(allHidden).toEqual([]);
+    it('sorts rows with no value for the metric last, ordered by name among themselves', () => {
+      const points = [
+        makePoint({ agentKey: 'agent-has-cost', agentName: 'HasCost', timestamp: 0, costUsd: 1.2 }),
+        makePoint({ agentKey: 'agent-zeta-no-cost', agentName: 'ZetaNoCost', timestamp: 0, costUsd: null }),
+        makePoint({ agentKey: 'agent-alpha-no-cost', agentName: 'AlphaNoCost', timestamp: 0, costUsd: null }),
+      ];
+      const ranked = rankDotPlotRows(buildBenchmarkDotPlotRows(points, 'cost'));
+      expect(ranked.map(r => r.agentKey)).toEqual(['agent-has-cost', 'agent-alpha-no-cost', 'agent-zeta-no-cost']);
     });
 
-    it('marks only the last plotted point of each agent as isLatest', () => {
-      const points = buildAgentRunPoints([twoAgentBenchmark()], [], new Map());
-      const series = buildAgentTrendSeries(points, 'accuracy');
-      for (const s of series) {
-        const latestFlags = s.scatterData.map(d => d.isLatest);
-        expect(latestFlags.filter(Boolean)).toHaveLength(1);
-        expect(latestFlags[latestFlags.length - 1]).toBe(true);
-      }
-    });
-
-    it('skips points whose metric value is null (e.g. cost/tokens with no trace match) when picking the latest', () => {
-      const bm = makeBenchmark('bm-1', 'B', [
-        makeRun({ id: 'r1', agentKey: 'agent-a', createdAt: '2024-06-01T00:00:00Z', stats: { passed: 1, failed: 0, pending: 0, total: 1 } }),
-        makeRun({ id: 'r2', agentKey: 'agent-a', createdAt: '2024-06-02T00:00:00Z', stats: { passed: 1, failed: 0, pending: 0, total: 1 } }),
-      ]);
-      const points = buildAgentRunPoints([bm], [], new Map()); // no trace metrics resolved -> cost/tokens null
-      const series = buildAgentTrendSeries(points, 'cost');
-      // The agent still gets an entry (so the chart can e.g. keep a stable
-      // legend), but with no plottable line/scatter data for this metric.
-      expect(series).toHaveLength(1);
-      expect(series[0].lineData).toEqual([]);
-      expect(series[0].scatterData).toEqual([]);
-    });
-
-    it('defaults hiddenAgentKeys to empty when omitted', () => {
-      const points = buildAgentRunPoints([twoAgentBenchmark()], [], new Map());
-      expect(buildAgentTrendSeries(points, 'accuracy').length).toBe(2);
+    it('does not mutate the input array', () => {
+      const points = [
+        makePoint({ agentKey: 'a', timestamp: 0, accuracyPct: 50 }),
+        makePoint({ agentKey: 'b', timestamp: 0, accuracyPct: 90 }),
+      ];
+      const rows = buildBenchmarkDotPlotRows(points, 'accuracy');
+      const before = rows.map(r => r.agentKey);
+      rankDotPlotRows(rows);
+      expect(rows.map(r => r.agentKey)).toEqual(before);
     });
   });
 
-  describe('formatMetricValue (chart label formatting per metric)', () => {
-    it('formats accuracy as a percentage with 1 decimal', () => {
-      expect(formatMetricValue('accuracy', 83.456)).toBe('83.5%');
+  describe('metricDomain', () => {
+    it('anchors accuracy to the true [0, 100] scale regardless of the observed value range', () => {
+      const points = [makePoint({ agentKey: 'a', timestamp: 0, accuracyPct: 91 }), makePoint({ agentKey: 'b', timestamp: 0, accuracyPct: 93 })];
+      expect(metricDomain(buildBenchmarkDotPlotRows(points, 'accuracy'), 'accuracy')).toEqual([0, 100]);
     });
 
-    it('formats cost via formatCost', () => {
-      expect(formatMetricValue('cost', 0.5)).toMatch(/\$/);
+    it('anchors cost/tokens at 0 with headroom above the observed max', () => {
+      const points = [makePoint({ agentKey: 'a', timestamp: 0, costUsd: 2 }), makePoint({ agentKey: 'b', timestamp: 0, costUsd: 5 })];
+      const domain = metricDomain(buildBenchmarkDotPlotRows(points, 'cost'), 'cost');
+      expect(domain![0]).toBe(0);
+      expect(domain![1]).toBeGreaterThan(5);
     });
 
-    it('formats tokens via formatTokens', () => {
-      expect(formatMetricValue('tokens', 15000)).toMatch(/k|K|\d/);
+    it('returns null when there is nothing to plot', () => {
+      expect(metricDomain([], 'accuracy')).toBeNull();
+      const points = [makePoint({ agentKey: 'a', timestamp: 0, costUsd: null })];
+      expect(metricDomain(buildBenchmarkDotPlotRows(points, 'cost'), 'cost')).toBeNull();
+    });
+  });
+
+  describe('valueToPercent', () => {
+    it('maps the domain min/max to 0/100 and the midpoint to 50', () => {
+      expect(valueToPercent(0, [0, 100])).toBe(0);
+      expect(valueToPercent(100, [0, 100])).toBe(100);
+      expect(valueToPercent(50, [0, 100])).toBe(50);
+    });
+
+    it('clamps out-of-domain values into [0, 100]', () => {
+      expect(valueToPercent(-10, [0, 100])).toBe(0);
+      expect(valueToPercent(150, [0, 100])).toBe(100);
+    });
+
+    it('returns 50 for a degenerate zero-width domain instead of dividing by zero', () => {
+      expect(valueToPercent(5, [5, 5])).toBe(50);
     });
   });
 });
