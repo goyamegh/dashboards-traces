@@ -300,7 +300,7 @@ export const BenchmarksPage: React.FC = () => {
       const runConfig = runConfigs[runIndex];
 
       // Initialize use case statuses for this run
-      const initialStatuses: UseCaseRunStatus[] = bench.testCaseIds.map(id => {
+      const initialStatuses: UseCaseRunStatus[] = (bench.testCaseIds || []).map(id => {
         const testCase = testCases.find(tc => tc.id === id);
         return {
           id,
@@ -400,7 +400,7 @@ export const BenchmarksPage: React.FC = () => {
     setRunConfigBenchmark(null);
 
     // Initialize use case statuses
-    const initialStatuses: UseCaseRunStatus[] = bench.testCaseIds.map(id => {
+    const initialStatuses: UseCaseRunStatus[] = (bench.testCaseIds || []).map(id => {
       const testCase = testCases.find(tc => tc.id === id);
       return {
         id,
@@ -452,7 +452,7 @@ export const BenchmarksPage: React.FC = () => {
   };
 
   const getUseCaseCount = (bench: Benchmark) => {
-    return (bench.testCaseIds || []).length;
+    return bench.testCaseIds?.length || 0;
   };
 
   const getRunNames = (bench: Benchmark) => {
