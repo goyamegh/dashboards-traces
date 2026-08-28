@@ -774,16 +774,24 @@ export const Dashboard: React.FC = () => {
           </Card>
         ) : (
           <>
-            {/* Agent Trends band — full width, replaces the old Performance Trends card */}
-            <AgentTrendsBand
-              benchmarks={benchmarks}
-              reports={reports}
-              metricsMap={metricsMap}
-              getAgentDisplayName={agentDisplayName}
-            />
-
-            {/* Needs Improvement — full width */}
-            <div className="grid gap-4 lg:auto-rows-[340px]">
+            {/* Agent Trends (chart) + Agents Needing Improvement (table) — side by
+                side on desktop, stacked on mobile (owner feedback: these rendered
+                as two full-width stacked rows; same lg: breakpoint + 2/1 column
+                split already used by DashboardSkeleton above, so mobile stacking
+                behavior from #400 is unaffected — grid-cols-1 below lg). Grid
+                items default to align-items: stretch, so NeedsImprovementWidget
+                (which is already `flex flex-col` + an internal `ScrollArea h-full`)
+                naturally matches AgentTrendsBand's height without a hard-coded
+                row height to keep in sync with the new, taller trends card. */}
+            <div className="grid gap-4 lg:grid-cols-3 lg:items-stretch" data-testid="agent-trends-and-needs-improvement-row">
+              <div className="lg:col-span-2">
+                <AgentTrendsBand
+                  benchmarks={benchmarks}
+                  reports={reports}
+                  metricsMap={metricsMap}
+                  getAgentDisplayName={agentDisplayName}
+                />
+              </div>
               <NeedsImprovementWidget
                 failingAgents={failingAgents}
                 regressingAgents={regressingAgents}
