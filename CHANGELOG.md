@@ -9,6 +9,14 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Added
+- **CLI DX: external-cwd invocation guide** ([docs/CLI.md](docs/CLI.md)): new "Running from Outside the Repo" section documenting how to invoke `agent-health` from outside the repository and troubleshooting four common setup friction points: `AH_PORT` for busy ports, `package.json "type": "module"` for config loading, `TSX_TSCONFIG_PATH` for TypeScript parsing, and Claude Code CLI binary resolution. Includes a complete external-invocation example and checklist.
+
+### Fixed
+- **A5.1 — CLI: port-in-use error now mentions `AH_PORT` env var** ([cli/utils/startServer.ts](cli/utils/startServer.ts)): when all fallback ports (4001–4010) are occupied, the error message now explicitly suggests `AH_PORT=<port>` instead of a generic "all ports in use", and provides a copy-paste example.
+- **A5.2–A5.3 — CLI: config loading errors now name `package.json` and `TSX_TSCONFIG_PATH`** ([lib/config/loader.ts](lib/config/loader.ts)): improved error messages for module resolution (`ERR_MODULE_NOT_FOUND`) and TypeScript parsing failures, guiding users to add `"type": "module"` to their cwd's `package.json` and/or set `TSX_TSCONFIG_PATH` to the repo's `tsconfig.json`.
+- **A6 — Server: config with zero agents now warns at startup and in API** ([server/services/configService.ts](server/services/configService.ts), [server/routes/storage/admin.ts](server/routes/storage/admin.ts), [lib/config/loader.ts](lib/config/loader.ts)): when a config file exists but declares zero agents, the server now: (1) logs a single prominent `WARNING: Config file exists but declares zero agents...` line on startup, (2) surfaces a `warnings[]` field in the `GET /api/storage/config/status` endpoint so the UI Settings page can display it, and (3) provides a clear error message when loading fails. Catches the "silent config data loss" scenario where an auto-updated config stub accidentally blanks the agents list, leaving the UI with no agents to select. Unit: [tests/unit/cli-dx-guards.test.ts](tests/unit/cli-dx-guards.test.ts); integration: [tests/integration/cli-dx-a6-zero-agents.test.ts](tests/integration/cli-dx-a6-zero-agents.test.ts).
+
 ## [0.6.0] - 2026-08-27
 
 ### Added

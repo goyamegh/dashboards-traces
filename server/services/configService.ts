@@ -106,6 +106,7 @@ export interface ConfigStatus {
       drifted: boolean;
     };
   };
+  warnings?: string[];
 }
 
 // ============================================================================
@@ -308,7 +309,7 @@ export function clearObservabilityConfig(): void {
  * Get configuration status for frontend display
  * Never exposes credentials - only shows source and endpoint
  */
-export function getConfigStatus(): ConfigStatus {
+export function getConfigStatus(agents?: any[]): ConfigStatus {
   const config = readConfigFromDisk() as ConfigFileDataSources;
 
   // Resolve the active storage config + source.
@@ -374,6 +375,13 @@ export function getConfigStatus(): ConfigStatus {
   const drifted = fileConfigKey !== storageState.configKey &&
     storageState.configKey !== '__file_override__';
 
+  // Build warnings list
+  const warnings: string[] = [];
+  if (agents !== undefined && agents.length === 0) {
+    warnings.push('WARNING: Config file exists but declares zero agents. The server will have no agents available for evaluation.');
+    console.warn('[app] WARNING: Config file exists but declares zero agents. The server will have no agents available for evaluation.');
+  }
+
   return {
     storage: {
       configured: storageSource !== 'none',
@@ -406,6 +414,7 @@ export function getConfigStatus(): ConfigStatus {
         drifted,
       },
     },
+    ...(warnings.length > 0 && { warnings }),
   };
 }
 
