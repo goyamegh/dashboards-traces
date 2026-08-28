@@ -30,6 +30,7 @@ import { asyncBenchmarkStorage, asyncRunStorage, asyncTestCaseStorage } from '@/
 import { listEvaluationRuns, getEvaluationRun, executeEvaluationRun } from '@/services/client';
 import {
   calculateRunAggregates,
+  mergeTraceMetrics,
   buildTestCaseComparisonRows,
   filterRowsByStatus,
   getRealTestCaseMeta,
@@ -427,29 +428,7 @@ export const ComparisonPage: React.FC = () => {
   const runAggregates = useMemo((): RunAggregateMetrics[] => {
     return selectedRuns.map(run => {
       const base = calculateRunAggregates(run, reports);
-      let totalTokens = 0, totalInputTokens = 0, totalOutputTokens = 0, totalCostUsd = 0, totalDurationMs = 0, totalLlmCalls = 0, totalToolCalls = 0, mc = 0;
-      for (const result of Object.values(run.results)) {
-        const report = reports[result.reportId];
-        if (report?.runId) {
-          const tm = traceMetricsMap.get(report.runId);
-          if (tm) { totalTokens += tm.totalTokens || 0; totalInputTokens += tm.inputTokens || 0; totalOutputTokens += tm.outputTokens || 0; totalCostUsd += tm.costUsd || 0; totalDurationMs += tm.durationMs || 0; totalLlmCalls += tm.llmCalls || 0; totalToolCalls += tm.toolCalls || 0; mc++; }
-        }
-      }
-      // Fall back to the run-level performance metrics when no traces are
-      // available — prefer real data we already have over showing "0ms" /
-      // "$0.00" (which reads as "this agent costs nothing" in the verdict).
-      const perf = (run as BenchmarkRun & { performanceMetrics?: { avgTestCaseDurationMs?: number; durationMs?: number } }).performanceMetrics;
-      const fallbackAvgDurationMs = perf?.avgTestCaseDurationMs ?? (perf?.durationMs && base.totalTestCases ? Math.round(perf.durationMs / base.totalTestCases) : undefined);
-      return {
-        ...base,
-        totalTokens: mc > 0 ? totalTokens : undefined,
-        totalInputTokens: mc > 0 ? totalInputTokens : undefined,
-        totalOutputTokens: mc > 0 ? totalOutputTokens : undefined,
-        totalCostUsd: mc > 0 ? totalCostUsd : undefined,
-        avgDurationMs: mc > 0 ? Math.round(totalDurationMs / mc) : fallbackAvgDurationMs,
-        totalLlmCalls: mc > 0 ? totalLlmCalls : undefined,
-        totalToolCalls: mc > 0 ? totalToolCalls : undefined,
-      };
+      return mergeTraceMetrics(base, run, reports, traceMetricsMap);
     });
   }, [selectedRuns, reports, traceMetricsMap]);
 
