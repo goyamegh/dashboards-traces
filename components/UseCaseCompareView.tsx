@@ -32,9 +32,10 @@ export const UseCaseCompareView: React.FC<UseCaseCompareViewProps> = ({
   );
   const [showTrajectoryCompare, setShowTrajectoryCompare] = useState(false);
 
-  // Load test cases on mount
+  // Load test cases on mount. Only name/difficulty/subcategory are rendered
+  // (breakdown table, comparison headers) so the lightweight summary is enough.
   useEffect(() => {
-    asyncTestCaseStorage.getAll().then(setTestCases);
+    asyncTestCaseStorage.getAll({ summary: true }).then(setTestCases);
   }, []);
 
   // Load all reports referenced by all runs

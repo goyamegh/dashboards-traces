@@ -188,6 +188,74 @@ describe('EvalSourceCodeView — syntax highlighting', () => {
   });
 });
 
+describe('EvalSourceCodeView — XSS hardening', () => {
+  // Regression coverage for the Code-Diff-Analyzer bot's Medium finding on
+  // `dangerouslySetInnerHTML` in the Prism-highlighted render path.
+  // `sourceCode` is import-controlled: users import arbitrary `.eval.js`/
+  // `.eval.ts` files and the RAW file contents are persisted verbatim as
+  // `testCase.sourceCode`, then rendered here. A malicious eval file must
+  // never be able to break out of the `<code>` element or execute script —
+  // it must render as inert, escaped TEXT, in every language/detection
+  // branch (explicit `sourceLanguage`, extension-detected JS, and
+  // extension-detected TS).
+  const XSS_PAYLOAD =
+    'const x = 1; </code><img src=x onerror="window.__xss=1">' +
+    '</script><script>window.__xss2=1</script>';
+
+  function assertRenderedInert(container: HTMLElement) {
+    // 1. No attacker element was materialized into the real DOM.
+    expect(container.querySelectorAll('img').length).toBe(0);
+    expect(container.querySelectorAll('script').length).toBe(0);
+    // 2. Neither onerror nor the injected <script> body executed.
+    expect((window as any).__xss).toBeUndefined();
+    expect((window as any).__xss2).toBeUndefined();
+    // 3. The payload survives as literal, readable text (not silently
+    //    dropped — it must still be visible/copyable source, just inert).
+    const body = within(container).getByTestId('eval-source-code-body');
+    expect(body.textContent).toContain(XSS_PAYLOAD);
+  }
+
+  afterEach(() => {
+    delete (window as any).__xss;
+    delete (window as any).__xss2;
+  });
+
+  it('renders a hostile payload as inert text for an explicit typescript sourceLanguage', () => {
+    const tc = baseTestCase({
+      sourceFile: 'evals/hostile.eval.ts',
+      sourceLanguage: 'typescript',
+      sourceCode: XSS_PAYLOAD,
+    });
+    const { container } = render(h(EvalSourceCodeView, { testCase: tc }));
+    expandPanel();
+    assertRenderedInert(container);
+  });
+
+  it('renders a hostile payload as inert text for an explicit javascript sourceLanguage', () => {
+    const tc = baseTestCase({
+      sourceFile: 'evals/hostile.eval.js',
+      sourceLanguage: 'javascript',
+      sourceCode: XSS_PAYLOAD,
+    });
+    const { container } = render(h(EvalSourceCodeView, { testCase: tc }));
+    expandPanel();
+    assertRenderedInert(container);
+  });
+
+  it('renders a hostile payload as inert text via the extension-detected fallback (no sourceLanguage persisted)', () => {
+    // Older imports predate the `sourceLanguage` field entirely, so this
+    // exercises the `detectSourceLanguage()` fallback branch, not just the
+    // explicit-language branch.
+    const tc = baseTestCase({
+      sourceFile: 'evals/hostile-legacy.eval.js',
+      sourceCode: XSS_PAYLOAD,
+    });
+    const { container } = render(h(EvalSourceCodeView, { testCase: tc }));
+    expandPanel();
+    assertRenderedInert(container);
+  });
+});
+
 describe('EvalSourceCodeView — copy button', () => {
   const originalClipboard = navigator.clipboard;
 

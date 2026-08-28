@@ -761,3 +761,47 @@ select:focus {
 .dark .eval-source-highlight .token.operator {
   color: #c9d1d9;
 }
+
+/*
+ * ContextValueView (components/evals3/ContextValueView.tsx) -- syntax
+ * highlighting for pretty-printed JSON test-case context items via
+ * prismjs (prism-json). GitHub-light/dark palette, scoped to the token
+ * classes prism-json actually emits (property/string/number/boolean/null
+ * keyword/punctuation/operator -- no comment/function/class-name tokens
+ * in JSON). If opensearch-project/agent-health#431 ("eval-code-view",
+ * EvalSourceCodeView.tsx) is also present, its .eval-source-highlight
+ * rules use the identical palette for the same reason: one visual
+ * language for "this is prism-highlighted code" across the app.
+ */
+.context-value-highlight .token.property,
+.context-value-highlight .token.number,
+.context-value-highlight .token.boolean,
+.context-value-highlight .token.builtin {
+  color: #0550ae;
+}
+.dark .context-value-highlight .token.property,
+.dark .context-value-highlight .token.number,
+.dark .context-value-highlight .token.boolean,
+.dark .context-value-highlight .token.builtin {
+  color: #79c0ff;
+}
+.context-value-highlight .token.string {
+  color: #0a3069;
+}
+.dark .context-value-highlight .token.string {
+  color: #a5d6ff;
+}
+.context-value-highlight .token.keyword {
+  color: #cf222e;
+}
+.dark .context-value-highlight .token.keyword {
+  color: #ff7b72;
+}
+.context-value-highlight .token.punctuation,
+.context-value-highlight .token.operator {
+  color: #57606a;
+}
+.dark .context-value-highlight .token.punctuation,
+.dark .context-value-highlight .token.operator {
+  color: #c9d1d9;
+}

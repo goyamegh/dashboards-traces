@@ -20,7 +20,8 @@
  * loading→absent transitions are observable and timeable.
  */
 
-import { test, expect, Route } from '@playwright/test';
+import { test, expect } from './fixtures/test-fixtures';
+import type { Route } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 

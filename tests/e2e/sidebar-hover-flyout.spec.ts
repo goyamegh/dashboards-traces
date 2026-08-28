@@ -18,6 +18,23 @@
 // collector (see tests/e2e/fixtures/test-fixtures.ts) — this spec exercises
 // most of Layout.tsx's hover-open logic.
 import { test, expect } from './fixtures/test-fixtures';
+import type { Page } from '@playwright/test';
+
+// Loads `path` with the sidebar ALREADY pinned collapsed (via localStorage,
+// like a returning user) and the virtual mouse parked away from the rail's
+// screen region — set up BEFORE navigation, not after. The default cursor
+// position for a brand-new page is (0,0), which overlaps the collapsed rail
+// (0..64px); moving it away only after the page has rendered leaves a race
+// window (hydration/render time) during which that (0,0) cursor can
+// spuriously trigger the MOUSE hover-open before the test gets a chance to
+// move it — contaminating what's meant to be a keyboard-only scenario.
+async function gotoWithRailCollapsed(page: Page, path = '/settings') {
+  await page.mouse.move(700, 400);
+  await page.goto(path);
+  await page.evaluate(() => localStorage.setItem('agent-health:sidebar:collapsed', 'true'));
+  await page.reload();
+  await page.waitForSelector('[data-testid="sidebar"]');
+}
 
 test.describe('Sidebar hover-open', () => {
   test('collapsed rail expands to the full sidebar on hover as an overlay and collapses on leave', async ({ page }) => {
@@ -50,33 +67,58 @@ test.describe('Sidebar hover-open', () => {
     await expect(zone).toHaveCSS('width', '64px');
   });
 
-  test('keyboard focus inside the rail also opens the full sidebar (a11y — not mouse-only)', async ({ page }) => {
-    await page.goto('/settings');
-    const zone = page.locator('[data-testid="sidebar-hover-zone"]');
+  test('real keyboard Tab into the collapsed rail opens the full sidebar; Shift+Tab back out closes it (a11y — not mouse-only)', async ({ page }) => {
     const sidebar = page.locator('[data-testid="sidebar"]');
+    const expandBtn = page.getByLabel('Expand sidebar');
 
-    await page.getByLabel('Collapse sidebar').click();
-    await expect(zone).toHaveCSS('width', '64px');
+    // Fresh load, already pinned collapsed, mouse parked away — nothing is
+    // focused yet, mirroring a keyboard user tabbing in from outside the
+    // page (e.g. from the browser chrome) on a returning visit.
+    await gotoWithRailCollapsed(page);
+    await expect(sidebar).toHaveCSS('width', '64px');
 
-    // Move the mouse off the rail so this stays a pure keyboard-only
-    // scenario — clicking the collapse button above moved the real cursor
-    // onto the rail, and a keyboard user wouldn't have it resting there.
-    await page.mouse.move(700, 400);
-
-    // Focusing a link inside the collapsed rail opens the full sidebar
-    // immediately (no hover-intent delay needed for keyboard users).
-    const overviewLink = page.locator('[data-testid="nav-overview"]');
-    await overviewLink.focus();
+    // First REAL Tab keypress (page.keyboard.press dispatches an actual key
+    // event through the browser's native focus-traversal, NOT el.focus() —
+    // a scripted .focus() call bypasses tab order/event-bubbling entirely and
+    // would pass even if the rail were unreachable by a real keyboard). It
+    // must land on the rail's first focusable element AND open the overlay
+    // immediately (no hover-intent delay for keyboard users).
+    await page.keyboard.press('Tab');
+    await expect(expandBtn).toBeFocused();
     await expect(sidebar).toHaveCSS('width', '180px');
 
-    // Tabbing to the next focusable item inside the (now expanded) sidebar
-    // keeps it open — focus never leaves the hover zone.
+    // Tabbing further while still inside the sidebar subtree keeps it open —
+    // focus never leaves the hover zone.
     await page.keyboard.press('Tab');
     await expect(sidebar).toHaveCSS('width', '180px');
 
-    // Moving focus away entirely collapses it back to the rail.
-    await page.evaluate(() => (document.activeElement as HTMLElement | null)?.blur());
+    // Shift+Tab (real reverse traversal) back to the rail's first element,
+    // then OUT of the sidebar subtree entirely — must collapse back to the
+    // rail (onBlur's relatedTarget check sees the newly-focused element is
+    // no longer inside the hover zone).
+    await page.keyboard.press('Shift+Tab');
+    await expect(expandBtn).toBeFocused();
+    await page.keyboard.press('Shift+Tab');
     await expect(sidebar).toHaveCSS('width', '64px');
+  });
+
+  test('Escape closes the keyboard-opened overlay without moving focus', async ({ page }) => {
+    const sidebar = page.locator('[data-testid="sidebar"]');
+    const expandBtn = page.getByLabel('Expand sidebar');
+
+    await gotoWithRailCollapsed(page);
+    await expect(sidebar).toHaveCSS('width', '64px');
+
+    await page.keyboard.press('Tab');
+    await expect(expandBtn).toBeFocused();
+    await expect(sidebar).toHaveCSS('width', '180px');
+
+    // Escape collapses the overlay but does NOT move focus — the DOM nodes
+    // never unmount (only their CSS width/labels change), so the same
+    // element stays focused, just narrower.
+    await page.keyboard.press('Escape');
+    await expect(sidebar).toHaveCSS('width', '64px');
+    await expect(expandBtn).toBeFocused();
   });
 
   test('mouse-leave does not collapse the sidebar while a keyboard user still has focus inside (mixed modality)', async ({ page }) => {
@@ -87,11 +129,13 @@ test.describe('Sidebar hover-open', () => {
     await page.getByLabel('Collapse sidebar').click();
     await expect(zone).toHaveCSS('width', '64px');
 
-    // Open via mouse hover, then move keyboard focus onto a link inside —
-    // now both the pointer and focus are "in" the zone.
+    // Open via mouse hover, then move keyboard focus onto a link inside via
+    // a REAL Tab press (not .focus()) — now both the pointer and focus are
+    // "in" the zone.
     await zone.hover();
     await expect(sidebar).toHaveCSS('width', '180px');
-    await page.locator('[data-testid="nav-overview"]').focus();
+    await page.keyboard.press('Tab');
+    await expect(zone.locator(':focus')).toHaveCount(1);
 
     // Mouse leaves, but focus is still inside — must NOT collapse (a naive
     // mouseleave timer with no focus check would close it out from under
@@ -113,10 +157,11 @@ test.describe('Sidebar hover-open', () => {
     await page.getByLabel('Collapse sidebar').click();
     await expect(zone).toHaveCSS('width', '64px');
 
-    // Open via mouse hover, then focus a link inside without moving the mouse.
+    // Open via mouse hover, then focus a link inside (real Tab, not
+    // .focus()) without moving the mouse.
     await zone.hover();
     await expect(sidebar).toHaveCSS('width', '180px');
-    await page.locator('[data-testid="nav-overview"]').focus();
+    await page.keyboard.press('Tab');
 
     // Blur the focused link WITHOUT moving the mouse away — the mouse still
     // owns the open state (no fresh mouseenter will ever fire since the
