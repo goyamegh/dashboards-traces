@@ -30,6 +30,7 @@ import { asyncBenchmarkStorage, asyncRunStorage, asyncTestCaseStorage } from '@/
 import { listEvaluationRuns, getEvaluationRun, executeEvaluationRun } from '@/services/client';
 import {
   calculateRunAggregates,
+  mergeTraceMetrics,
   buildTestCaseComparisonRows,
   filterRowsByStatus,
   getRealTestCaseMeta,
@@ -70,8 +71,10 @@ export const ComparisonPage: React.FC = () => {
   // All benchmarks for the selector
   const [allBenchmarks, setAllBenchmarks] = useState<Benchmark[]>([]);
 
-  // All test cases for name lookup
-  const [allTestCases, setAllTestCases] = useState<TestCase[]>([]);
+  // Test-case metadata for name lookup, keyed by id — fetched ONLY for the
+  // ids referenced by the currently selected runs (see the effect below;
+  // never the whole storage backend's test-case corpus).
+  const [testCaseMetaById, setTestCaseMetaById] = useState<Record<string, TestCase>>({});
 
   // State for benchmark and data
   const [benchmark, setBenchmark] = useState<Benchmark | null>(null);
@@ -104,6 +107,25 @@ export const ComparisonPage: React.FC = () => {
   const allRuns = useMemo((): BenchmarkRun[] => runPool.map(p => p.run), [runPool]);
   const getRunBenchmarkLabel = useCallback(
     (runId: string) => runPool.find(p => p.run.id === runId)?.benchmarkName,
+    [runPool]
+  );
+
+  // "Open run" deep-link target: benchmark runs resolve at
+  // /evaluations/benchmarks/:benchmarkId/runs/:runId (the bare
+  // /evaluations/runs/:runId route only resolves the SDK eval-run store and
+  // 404s for benchmark run ids). Keyed per-run (not the page-scoped
+  // `benchmarkId` param) because unscoped comparisons (`/compare?runs=a,b`)
+  // mix runs from different benchmarks and ad-hoc eval-runs with none.
+  //
+  // Only `kind === 'benchmark'` entries get a benchmarkId here — an
+  // eval-run's `benchmarkId` is merely a user-chosen LABEL/association (see
+  // NewRunPage's "benchmark association" picker; POST /evaluation-runs
+  // stores it as-is) and that run is never embedded in the referenced
+  // benchmark's `runs[]` array. Routing one of those to the benchmark route
+  // would 404/redirect at BenchmarkRunDetailPage's `bm.runs.find(...)` even
+  // though the bare eval-run route resolves it correctly.
+  const runBenchmarkIdById = useMemo(
+    () => new Map(runPool.map(p => [p.run.id, p.kind === 'benchmark' ? p.benchmarkId : undefined] as const)),
     [runPool]
   );
 
@@ -144,18 +166,53 @@ export const ComparisonPage: React.FC = () => {
   const [failureClusters, setFailureClusters] = useState<FailureCluster[]>([]);
   const [clusterCaseFilter, setClusterCaseFilter] = useState<{ caseIds: string[]; clusterName: string } | null>(null);
 
-  // Load all test cases (name lookup). Benchmarks list is loaded by the pool
-  // loader below and stored in allBenchmarks for the selector.
+  // Load test-case metadata (name lookup) for the SELECTED runs only.
+  //
+  // This used to call asyncTestCaseStorage.getAll() unconditionally on mount —
+  // every test case in the whole storage backend, full body included
+  // (sourceCode/context/expectedOutcomes), unpaginated. On a real deployment
+  // that is thousands of documents and can be 100+ MB; over a slow link it
+  // can take far longer than a user will wait, or fail outright — and a
+  // failure was swallowed by a bare console.error with no retry, silently
+  // leaving `testCaseMetaById` empty forever. Because the category matrix in
+  // ComparisonInsightsBand extracts each row's category from the test-case
+  // NAME's "[category]" tag, a permanently-empty lookup means every row
+  // resolves to `(uncategorized)` and the matrix never renders — while the
+  // agreement chips above it (which don't need names) render fine. That
+  // mismatch is exactly the reported symptom.
+  //
+  // Fetch only the ids the current selection actually needs, chunked +
+  // request-id guarded the same way the reports effect below is (a run
+  // selection change while a fetch for the PREVIOUS selection is still in
+  // flight must not clobber the new selection's state).
+  const testCaseMetaRequestIdRef = useRef(0);
   useEffect(() => {
+    const selected = runPool.filter(p => selectedRunIds.includes(p.run.id));
+    const testCaseIds = new Set<string>();
+    selected.forEach(({ run }) => {
+      Object.keys(run.results || {}).forEach(id => testCaseIds.add(id));
+    });
+    const missing = Array.from(testCaseIds).filter(id => !testCaseMetaById[id]);
+    if (missing.length === 0) return;
+    const requestId = ++testCaseMetaRequestIdRef.current;
     (async () => {
       try {
-        const tcs = await asyncTestCaseStorage.getAll();
-        setAllTestCases(tcs);
+        const fetched = await asyncTestCaseStorage.getByIds(missing, { summary: true });
+        if (requestId !== testCaseMetaRequestIdRef.current) return; // superseded — discard
+        if (fetched.length > 0) {
+          setTestCaseMetaById(prev => {
+            const next = { ...prev };
+            for (const tc of fetched) next[tc.id] = tc;
+            return next;
+          });
+        }
       } catch (err) {
-        console.error('Failed to load test cases:', err);
+        if (requestId !== testCaseMetaRequestIdRef.current) return; // superseded — discard
+        console.error('[ComparisonPage] Failed to load test case metadata:', err);
       }
     })();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [runPool, selectedRunIds]);
 
   // Helper: pick latest runs by date (up to 2 if available)
   const pickLatestRuns = (runs: BenchmarkRun[]) => {
@@ -408,35 +465,13 @@ export const ComparisonPage: React.FC = () => {
   const runAggregates = useMemo((): RunAggregateMetrics[] => {
     return selectedRuns.map(run => {
       const base = calculateRunAggregates(run, reports);
-      let totalTokens = 0, totalInputTokens = 0, totalOutputTokens = 0, totalCostUsd = 0, totalDurationMs = 0, totalLlmCalls = 0, totalToolCalls = 0, mc = 0;
-      for (const result of Object.values(run.results)) {
-        const report = reports[result.reportId];
-        if (report?.runId) {
-          const tm = traceMetricsMap.get(report.runId);
-          if (tm) { totalTokens += tm.totalTokens || 0; totalInputTokens += tm.inputTokens || 0; totalOutputTokens += tm.outputTokens || 0; totalCostUsd += tm.costUsd || 0; totalDurationMs += tm.durationMs || 0; totalLlmCalls += tm.llmCalls || 0; totalToolCalls += tm.toolCalls || 0; mc++; }
-        }
-      }
-      // Fall back to the run-level performance metrics when no traces are
-      // available — prefer real data we already have over showing "0ms" /
-      // "$0.00" (which reads as "this agent costs nothing" in the verdict).
-      const perf = (run as BenchmarkRun & { performanceMetrics?: { avgTestCaseDurationMs?: number; durationMs?: number } }).performanceMetrics;
-      const fallbackAvgDurationMs = perf?.avgTestCaseDurationMs ?? (perf?.durationMs && base.totalTestCases ? Math.round(perf.durationMs / base.totalTestCases) : undefined);
-      return {
-        ...base,
-        totalTokens: mc > 0 ? totalTokens : undefined,
-        totalInputTokens: mc > 0 ? totalInputTokens : undefined,
-        totalOutputTokens: mc > 0 ? totalOutputTokens : undefined,
-        totalCostUsd: mc > 0 ? totalCostUsd : undefined,
-        avgDurationMs: mc > 0 ? Math.round(totalDurationMs / mc) : fallbackAvgDurationMs,
-        totalLlmCalls: mc > 0 ? totalLlmCalls : undefined,
-        totalToolCalls: mc > 0 ? totalToolCalls : undefined,
-      };
+      return mergeTraceMetrics(base, run, reports, traceMetricsMap);
     });
   }, [selectedRuns, reports, traceMetricsMap]);
 
   // Test case name lookup — checks loaded test cases first, falls back to getRealTestCaseMeta (static data)
   const getTestCaseMeta = useCallback((testCaseId: string) => {
-    const tc = allTestCases.find(t => t.id === testCaseId);
+    const tc = testCaseMetaById[testCaseId];
     if (tc) {
       return {
         id: tc.id,
@@ -448,7 +483,7 @@ export const ComparisonPage: React.FC = () => {
       };
     }
     return getRealTestCaseMeta(testCaseId);
-  }, [allTestCases]);
+  }, [testCaseMetaById]);
 
   const allComparisonRows = useMemo((): TestCaseComparisonRow[] => buildTestCaseComparisonRows(selectedRuns, reports, getTestCaseMeta), [selectedRuns, reports, getTestCaseMeta]);
 
@@ -786,6 +821,7 @@ export const ComparisonPage: React.FC = () => {
                 runs={runAggregates}
                 selectedRuns={selectedRuns}
                 overlap={overlap}
+                runBenchmarkIdById={runBenchmarkIdById}
                 onRemoveRun={(id) => {
                   const next = selectedRunIds.filter(rid => rid !== id);
                   if (next.length >= 1) updateSelection(next);

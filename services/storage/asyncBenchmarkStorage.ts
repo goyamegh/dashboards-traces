@@ -79,6 +79,11 @@ function toBenchmarkRun(stored: StorageBenchmarkRunConfig): BenchmarkRun {
     // Handle both current (agentKey) and legacy (agentId) field names
     agentKey: stored.agentKey || stored.agentId || '',
     modelId: stored.modelId,
+    // Judge model id / evaluator id (Evaluation Runs page Judge + Evaluator
+    // columns) — distinct from the agent's `modelId` above. Read defensively
+    // since older StorageBenchmarkRunConfig docs predate these fields.
+    judgeModelId: (stored as any).judgeModelId,
+    evaluatorId: (stored as any).evaluatorId,
     headers: stored.headers,
     benchmarkVersion: (stored as any).benchmarkVersion ?? 1,
     testCaseSnapshots: (stored as any).testCaseSnapshots ?? [],
@@ -120,6 +125,8 @@ function toStorageFormat(benchmark: Partial<Benchmark>): Record<string, any> {
       description: run.description,
       agentKey: run.agentKey,
       modelId: run.modelId,
+      judgeModelId: run.judgeModelId,
+      evaluatorId: run.evaluatorId,
       headers: run.headers,
       createdAt: run.createdAt,
       benchmarkVersion: run.benchmarkVersion,
@@ -273,6 +280,8 @@ class AsyncBenchmarkStorage {
       description: r.description,
       agentKey: r.agentKey,
       modelId: r.modelId,
+      judgeModelId: r.judgeModelId,
+      evaluatorId: r.evaluatorId,
       headers: r.headers,
       createdAt: r.createdAt,
       status: r.status,

@@ -590,6 +590,17 @@ export interface TestCase {
   // Source provenance (code-imported test cases)
   sourceFile?: string;              // Relative path: "evals/cybergym.eval.ts"
   sourceHash?: string;              // SHA-256 of per-test-case content (for drift detection)
+  // Full eval-file source, captured once at import time so the Test Case
+  // detail page can render it as an IDE-style code view. All test cases
+  // parsed from the same file share the same sourceCode (the file, not the
+  // individual test, is the unit of "source"). Absent on:
+  //   - JSON-imported / UI-created test cases (no sourceFile at all), and
+  //   - code-imported test cases persisted BEFORE this field existed --
+  //     the UI shows a "source not captured at import" placeholder for
+  //     that case rather than treating it as an error.
+  sourceCode?: string;               // Full text of the eval file at import time
+  sourceFileName?: string;           // Basename of sourceFile, e.g. "cybergym.eval.ts"
+  sourceLanguage?: 'javascript' | 'typescript'; // For syntax highlighting
 
   // Metadata
   isPromoted: boolean;              // Available for experiments
@@ -980,6 +991,7 @@ export interface BenchmarkRun {
   name: string;                    // e.g., "Baseline", "With Fix v1", "Claude 4 Test"
   description?: string;            // Optional description of what this run tests
   createdAt: string;               // When this run was created
+  completedAt?: string;            // When execution reached a terminal state
 
   // Execution status (tracks server-side execution progress)
   status?: BenchmarkRunStatus;     // Overall run status (undefined = legacy data, treat as completed)
@@ -1099,6 +1111,26 @@ export interface EvaluationRun {
   description?: string;
   createdAt: string;
   completedAt?: string;
+  /**
+   * Set when the run was resumed via POST /api/storage/evaluation-runs/:id/resume
+   * (RedKite-style checkpoint resume — completed test cases are skipped, only
+   * those without a persisted report are re-executed). Last resume wins.
+   */
+  resumedAt?: string;
+  /**
+   * Liveness heartbeat stamped periodically by the server executing this run.
+   * Lets sibling servers sharing the same storage cluster distinguish an
+   * actively-executing run from an orphan (process died mid-run) — boot
+   * recovery and the resume endpoint treat a run as stale only when the
+   * heartbeat stops.
+   */
+  heartbeatAt?: string;
+  /**
+   * Claim token written by the server that most recently claimed this run
+   * for resume. Written-then-re-read to detect two servers racing to resume
+   * the same orphan (the storage interface has no cross-server CAS).
+   */
+  resumeToken?: string;
   status: BenchmarkRunStatus;
   error?: string;
 

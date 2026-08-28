@@ -19,6 +19,13 @@ export interface ComparisonScoreboardProps {
   runs: RunAggregateMetrics[];
   selectedRuns: BenchmarkRun[];
   overlap: TestCaseOverlap;
+  /**
+   * runId -> benchmarkId lookup (undefined for ad-hoc/eval-runs). Benchmark
+   * runs deep-link to /evaluations/benchmarks/:benchmarkId/runs/:runId — the
+   * bare /evaluations/runs/:runId route resolves only the SDK eval-run store
+   * and 404s for benchmark run ids.
+   */
+  runBenchmarkIdById?: Map<string, string | undefined>;
   onRemoveRun: (id: string) => void;
   onSwapRuns: () => void;
   getAgentName: (key: string) => string;
@@ -43,7 +50,7 @@ const formatDurationSafe = (v: number | undefined): string => {
 const formatDelta = (a: number | undefined, b: number | undefined, suffix = ''): string => {
   if (a === undefined || b === undefined) return '';
   const diff = a - b;
-  if (diff === 0) return '=';
+  if (diff === 0) return '—';
   const sign = diff > 0 ? '+' : '';
   return `${sign}${Math.round(diff)}${suffix}`;
 };
@@ -68,11 +75,12 @@ interface RunDetailDrawerProps {
   run: RunAggregateMetrics;
   selectedRun: BenchmarkRun;
   label: 'A' | 'B';
+  benchmarkId?: string;
   getAgentName: (key: string) => string;
   onRemove: () => void;
 }
 
-const RunDetailDrawer: React.FC<RunDetailDrawerProps> = ({ run, selectedRun, label, getAgentName, onRemove }) => {
+const RunDetailDrawer: React.FC<RunDetailDrawerProps> = ({ run, selectedRun, label, benchmarkId, getAgentName, onRemove }) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -106,7 +114,10 @@ const RunDetailDrawer: React.FC<RunDetailDrawerProps> = ({ run, selectedRun, lab
       </div>
       <div className="flex items-center gap-2 pt-1">
         <Link
-          to={`/evaluations/runs/${run.runId}`}
+          to={benchmarkId
+            ? `/evaluations/benchmarks/${benchmarkId}/runs/${run.runId}`
+            : `/evaluations/runs/${run.runId}`}
+          data-testid={`open-run-${run.runId}`}
           className="inline-flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300"
         >
           <ExternalLink size={10} /> Open run
@@ -146,7 +157,7 @@ const CondensedBand: React.FC<CondensedBandProps> = ({ runs, overlap, getAgentNa
   if (runs.length === 0) return null;
   const [a, b] = runs;
   const delta = b ? a.passRatePercent - b.passRatePercent : 0;
-  const deltaStr = delta === 0 ? '=' : `${delta > 0 ? '+' : ''}${Math.round(delta)}pp`;
+  const deltaStr = delta === 0 ? '—' : `${delta > 0 ? '+' : ''}${Math.round(delta)}pp`;
 
   return (
     <div className="flex items-center gap-3 px-4 py-2 text-xs" data-testid="scoreboard-condensed">
@@ -161,10 +172,13 @@ const CondensedBand: React.FC<CondensedBandProps> = ({ runs, overlap, getAgentNa
             <RunBadgeB /> <span className="font-medium">{getAgentName(b.agentKey)}</span>
             <span className="tabular-nums">{formatPassRate(b.passRatePercent)}</span>
           </span>
-          <span className={cn(
-            'font-medium tabular-nums',
-            delta > 0 ? 'text-blue-400' : delta < 0 ? 'text-red-400' : 'text-muted-foreground'
-          )}>
+          <span
+            className={cn(
+              'font-medium tabular-nums',
+              delta > 0 ? 'text-blue-400' : delta < 0 ? 'text-red-400' : 'text-muted-foreground'
+            )}
+            title={delta === 0 ? 'No change' : undefined}
+          >
             {deltaStr}
           </span>
         </>
@@ -194,6 +208,7 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
   runs,
   selectedRuns,
   overlap,
+  runBenchmarkIdById,
   onRemoveRun,
   onSwapRuns,
   getAgentName,
@@ -365,6 +380,7 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                                 run={run}
                                 selectedRun={selectedRuns[idx]}
                                 label={label as 'A' | 'B'}
+                                benchmarkId={runBenchmarkIdById?.get(run.runId)}
                                 getAgentName={getAgentName}
                                 onRemove={() => onRemoveRun(run.runId)}
                               />
@@ -392,30 +408,42 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                       </div>
                     </td>
                     <td className="px-3 py-1.5 text-right">
-                      <span className={cn(
-                        'font-semibold tabular-nums text-[11px]',
-                        passRateDelta > 0 ? 'text-blue-400' : passRateDelta < 0 ? 'text-red-400' : 'text-muted-foreground'
-                      )}>
+                      <span
+                        data-testid="scoreboard-delta-passrate"
+                        className={cn(
+                          'font-semibold tabular-nums text-[11px]',
+                          passRateDelta > 0 ? 'text-blue-400' : passRateDelta < 0 ? 'text-red-400' : 'text-muted-foreground'
+                        )}
+                        title={passRateDelta === 0 ? 'No change' : undefined}
+                      >
                         {formatDelta(runA.passRatePercent, runB.passRatePercent, 'pp')}
                       </span>
                     </td>
                     <td className="px-3 py-1.5 text-right">
                       {costDelta !== undefined && (
-                        <span className={cn(
-                          'tabular-nums text-[11px]',
-                          costDelta < 0 ? 'text-green-400' : costDelta > 0 ? 'text-red-400' : 'text-muted-foreground'
-                        )}>
-                          {costDelta === 0 ? '=' : (costDelta > 0 ? '+' : '') + formatCost(costDelta)}
+                        <span
+                          data-testid="scoreboard-delta-cost"
+                          className={cn(
+                            'tabular-nums text-[11px]',
+                            costDelta < 0 ? 'text-green-400' : costDelta > 0 ? 'text-red-400' : 'text-muted-foreground'
+                          )}
+                          title={costDelta === 0 ? 'No change' : undefined}
+                        >
+                          {costDelta === 0 ? '—' : (costDelta > 0 ? '+' : '') + formatCost(costDelta)}
                         </span>
                       )}
                     </td>
                     <td className="px-3 py-1.5 text-right">
                       {durationDelta !== undefined && (
-                        <span className={cn(
-                          'tabular-nums text-[11px]',
-                          durationDelta < 0 ? 'text-green-400' : durationDelta > 0 ? 'text-red-400' : 'text-muted-foreground'
-                        )}>
-                          {durationDelta === 0 ? '=' : (durationDelta > 0 ? '+' : '-') + formatDuration(Math.abs(durationDelta))}
+                        <span
+                          data-testid="scoreboard-delta-duration"
+                          className={cn(
+                            'tabular-nums text-[11px]',
+                            durationDelta < 0 ? 'text-green-400' : durationDelta > 0 ? 'text-red-400' : 'text-muted-foreground'
+                          )}
+                          title={durationDelta === 0 ? 'No change' : undefined}
+                        >
+                          {durationDelta === 0 ? '—' : (durationDelta > 0 ? '+' : '-') + formatDuration(Math.abs(durationDelta))}
                         </span>
                       )}
                     </td>

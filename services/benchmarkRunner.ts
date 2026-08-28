@@ -385,6 +385,7 @@ export async function executeRun(
             const tracesView: TracesAccessor = {
               get totalTokens() { return loadedTraces.totalTokens; },
               get totalCost() { return loadedTraces.totalCost; },
+              get costSource() { return loadedTraces.costSource; },
               get toolCalls() { return loadedTraces.toolCalls; },
               get spans() { return loadedTraces.spans; },
               spanDuration: (name: string) => loadedTraces.spanDuration(name),

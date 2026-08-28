@@ -5,6 +5,7 @@
 
 import {
   calculateRunAggregates,
+  mergeTraceMetrics,
   collectRunIdsFromReports,
   buildTestCaseComparisonRows,
   findBestRunForMetric,
@@ -25,6 +26,7 @@ import {
   EvaluationReport,
   TestCaseComparisonRow,
   TestCaseRunResult,
+  TraceMetrics,
 } from '@/types';
 
 describe('comparisonService', () => {
@@ -1064,6 +1066,197 @@ describe('comparisonService', () => {
       expect(single.totalTestCases).toBe(1);
       expect(single.sharedTestCases).toBe(1); // single run “shares” with itself
       expect(single.fullyOverlapping).toBe(true);
+    });
+  });
+
+  // Regression: CLI-written run docs persist results entries as
+  // { reportId, status } only — the verdict lives on the report doc. The
+  // scoreboard bucketed those as "errored" and rendered a fabricated 0%
+  // pass rate while the per-case table showed real Passed/Failed verdicts.
+  describe('calculateRunAggregates verdict overlay (results without passFailStatus)', () => {
+    const cliRun: BenchmarkRun = {
+      id: 'run-cli',
+      name: 'CLI Run',
+      createdAt: '2024-01-01T00:00:00Z',
+      agentKey: 'cc-agent',
+      modelId: 'model-1',
+      status: 'completed',
+      results: {
+        // No passFailStatus on any entry — mirrors the CLI benchmark path.
+        'tc-1': { reportId: 'report-1', status: 'completed' },
+        'tc-2': { reportId: 'report-2', status: 'completed' },
+        'tc-3': { reportId: 'report-3', status: 'completed' },
+      },
+    } as unknown as BenchmarkRun;
+
+    const cliReports: Record<string, EvaluationReport> = {
+      'report-1': { id: 'report-1', testCaseId: 'tc-1', passFailStatus: 'passed', metrics: { accuracy: 90 } } as EvaluationReport,
+      'report-2': { id: 'report-2', testCaseId: 'tc-2', passFailStatus: 'passed', metrics: { accuracy: 80 } } as EvaluationReport,
+      'report-3': { id: 'report-3', testCaseId: 'tc-3', passFailStatus: 'failed', metrics: { accuracy: 20 } } as EvaluationReport,
+    };
+
+    it('reads the verdict from the report when the results entry lacks it', () => {
+      const agg = calculateRunAggregates(cliRun, cliReports);
+      expect(agg.passedCount).toBe(2);
+      expect(agg.failedCount).toBe(1);
+      expect(agg.erroredCount).toBe(0);
+      expect(agg.passRatePercent).toBe(67); // 2/3, not 0%
+    });
+
+    it('still buckets completed-without-any-verdict as errored (#242)', () => {
+      const reportsMissingVerdict: Record<string, EvaluationReport> = {
+        'report-1': { id: 'report-1', testCaseId: 'tc-1', metrics: { accuracy: 0 } } as EvaluationReport,
+      };
+      const run = {
+        ...cliRun,
+        results: { 'tc-1': { reportId: 'report-1', status: 'completed' } },
+      } as unknown as BenchmarkRun;
+      const agg = calculateRunAggregates(run, reportsMissingVerdict);
+      expect(agg.erroredCount).toBe(1);
+      expect(agg.passRatePercent).toBe(0);
+    });
+
+    it('prefers the results-entry verdict when both exist', () => {
+      const run = {
+        ...cliRun,
+        results: { 'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'failed' } },
+      } as unknown as BenchmarkRun;
+      const agg = calculateRunAggregates(run, cliReports); // report says passed
+      expect(agg.failedCount).toBe(1);
+      expect(agg.passedCount).toBe(0);
+    });
+  });
+
+  // Regression: (1) the batch metrics API returns a zero-filled
+  // status:'pending' placeholder for a runId with no spans, which used to be
+  // summed as real data -> fabricated "$0.00 / 0ms". (2) when NO trace
+  // metrics are available at all, the display fell straight to "0ms" instead
+  // of falling back to the per-result performanceMetrics the benchmark
+  // runner already persists.
+  describe('mergeTraceMetrics', () => {
+    const baseAgg = calculateRunAggregates(
+      {
+        id: 'run-1',
+        name: 'Run 1',
+        createdAt: '2024-01-01T00:00:00Z',
+        agentKey: 'agent-1',
+        modelId: 'model-1',
+        status: 'completed',
+        results: {
+          'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { reportId: 'report-2', status: 'completed', passFailStatus: 'passed' },
+        },
+      } as unknown as BenchmarkRun,
+      {
+        'report-1': { id: 'report-1', testCaseId: 'tc-1', runId: 'trace-run-1' } as EvaluationReport,
+        'report-2': { id: 'report-2', testCaseId: 'tc-2', runId: 'trace-run-2' } as EvaluationReport,
+      }
+    );
+
+    const runWithReports = {
+      id: 'run-1',
+      name: 'Run 1',
+      createdAt: '2024-01-01T00:00:00Z',
+      agentKey: 'agent-1',
+      modelId: 'model-1',
+      status: 'completed',
+      results: {
+        'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' },
+        'tc-2': { reportId: 'report-2', status: 'completed', passFailStatus: 'passed' },
+      },
+    } as unknown as BenchmarkRun;
+
+    const reportsWithRunIds: Record<string, EvaluationReport> = {
+      'report-1': { id: 'report-1', testCaseId: 'tc-1', runId: 'trace-run-1' } as EvaluationReport,
+      'report-2': { id: 'report-2', testCaseId: 'tc-2', runId: 'trace-run-2' } as EvaluationReport,
+    };
+
+    const traceMetrics = (overrides: Partial<TraceMetrics>): TraceMetrics => ({
+      runId: 'trace-run-1',
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      costUsd: 0,
+      durationMs: 0,
+      llmCalls: 0,
+      toolCalls: 0,
+      toolsUsed: [],
+      status: 'success',
+      ...overrides,
+    });
+
+    it('sums real (non-pending) trace metrics across both results', () => {
+      const traceMetricsMap = new Map<string, TraceMetrics>([
+        ['trace-run-1', traceMetrics({ runId: 'trace-run-1', totalTokens: 100, costUsd: 0.5, durationMs: 2000, llmCalls: 3, toolCalls: 1 })],
+        ['trace-run-2', traceMetrics({ runId: 'trace-run-2', totalTokens: 200, costUsd: 1.5, durationMs: 4000, llmCalls: 5, toolCalls: 2 })],
+      ]);
+
+      const merged = mergeTraceMetrics(baseAgg, runWithReports, reportsWithRunIds, traceMetricsMap);
+
+      expect(merged.totalTokens).toBe(300);
+      expect(merged.totalCostUsd).toBe(2);
+      expect(merged.avgDurationMs).toBe(3000); // (2000 + 4000) / 2
+      expect(merged.totalLlmCalls).toBe(8);
+      expect(merged.totalToolCalls).toBe(3);
+    });
+
+    it('skips a zero-filled status:"pending" placeholder instead of counting it as real $0/0ms data', () => {
+      const traceMetricsMap = new Map<string, TraceMetrics>([
+        ['trace-run-1', traceMetrics({ runId: 'trace-run-1', totalTokens: 100, costUsd: 0.5, durationMs: 2000, llmCalls: 3, toolCalls: 1 })],
+        // No spans for this runId at all -> API returns an all-zeros pending placeholder.
+        ['trace-run-2', traceMetrics({ runId: 'trace-run-2', status: 'pending' })],
+      ]);
+
+      const merged = mergeTraceMetrics(baseAgg, runWithReports, reportsWithRunIds, traceMetricsMap);
+
+      // Only trace-run-1 counted (mc === 1), NOT averaged/summed with the
+      // pending placeholder's zeros.
+      expect(merged.totalTokens).toBe(100);
+      expect(merged.totalCostUsd).toBe(0.5);
+      expect(merged.avgDurationMs).toBe(2000);
+    });
+
+    it('falls back to the average of per-result performanceMetrics.durationMs when no trace metrics exist at all', () => {
+      const runWithPerResultDurations = {
+        ...runWithReports,
+        results: {
+          'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed', performanceMetrics: { durationMs: 1000 } },
+          'tc-2': { reportId: 'report-2', status: 'completed', passFailStatus: 'passed', performanceMetrics: { durationMs: 3000 } },
+        },
+      } as unknown as BenchmarkRun;
+
+      const merged = mergeTraceMetrics(baseAgg, runWithPerResultDurations, reportsWithRunIds, new Map());
+
+      expect(merged.avgDurationMs).toBe(2000); // (1000 + 3000) / 2
+      expect(merged.totalCostUsd).toBeUndefined();
+      expect(merged.totalTokens).toBeUndefined();
+    });
+
+    it('falls back to run-level performanceMetrics.avgTestCaseDurationMs when neither trace nor per-result durations exist', () => {
+      const runWithRunLevelPerf = {
+        ...runWithReports,
+        performanceMetrics: { avgTestCaseDurationMs: 5000 },
+      } as unknown as BenchmarkRun;
+
+      const merged = mergeTraceMetrics(baseAgg, runWithRunLevelPerf, reportsWithRunIds, new Map());
+
+      expect(merged.avgDurationMs).toBe(5000);
+    });
+
+    it('falls back to run-level performanceMetrics.durationMs / totalTestCases as a last resort', () => {
+      const runWithCoarsePerf = {
+        ...runWithReports,
+        performanceMetrics: { durationMs: 6000 },
+      } as unknown as BenchmarkRun;
+
+      const merged = mergeTraceMetrics(baseAgg, runWithCoarsePerf, reportsWithRunIds, new Map());
+
+      expect(merged.avgDurationMs).toBe(3000); // 6000 / totalTestCases(2)
+    });
+
+    it('avgDurationMs is undefined when no trace metrics, no per-result durations, and no run-level perf exist', () => {
+      const merged = mergeTraceMetrics(baseAgg, runWithReports, reportsWithRunIds, new Map());
+      expect(merged.avgDurationMs).toBeUndefined();
     });
   });
 });

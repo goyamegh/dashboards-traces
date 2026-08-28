@@ -64,6 +64,7 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { CollapsibleTestCaseDefinition } from '@/components/evals3/CollapsibleTestCaseDefinition';
 
 interface RunDetailsContentProps {
   report: EvaluationReport;
@@ -86,6 +87,18 @@ const EVALUATOR_ICONS: Record<string, React.ComponentType<any>> = {
 const getEvaluatorIcon = (evaluatorId: string) => {
   const Icon = EVALUATOR_ICONS[evaluatorId];
   return Icon ? Icon : FlaskConical;
+};
+
+/**
+ * Color class for the OpenSearch-logs level badge (standard, non-trace mode).
+ * Extracted to a pure function so it's directly unit-testable: the JSX branch
+ * that renders it (isTraceMode === false) is currently unreachable in the app
+ * (isTraceMode is hardcoded true below), so a render test can't exercise it.
+ */
+export const getLogLevelColor = (level: string | undefined): string => {
+  if (level === 'ERROR') return 'text-red-600 dark:text-red-400';
+  if (level === 'WARN') return 'text-amber-600 dark:text-amber-400';
+  return 'text-muted-foreground';
 };
 
 export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
@@ -808,6 +821,13 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
       </div>
       )}
 
+      {/* The standalone /runs/:runId surface does not have the inspector's
+          outer definition card, so expose the same reader-oriented task here.
+          hideMetrics means TestCaseInspectorPanel already rendered it. */}
+      {!hideMetrics && (
+        <CollapsibleTestCaseDefinition testCase={testCase} />
+      )}
+
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
         <TabsList className="w-full justify-start rounded-none border-b bg-card h-auto p-0">
@@ -1050,11 +1070,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                           <span className="text-xs text-muted-foreground whitespace-nowrap">
                             {new Date(log.timestamp).toLocaleTimeString()}
                           </span>
-                          <span className={`text-xs font-semibold ${
-                            log.level === 'ERROR' ? 'text-red-400' :
-                            log.level === 'WARN' ? 'text-yellow-400' :
-                            'text-muted-foreground'
-                          }`}>
+                          <span className={`text-xs font-semibold ${getLogLevelColor(log.level)}`}>
                             [{log.level || 'INFO'}]
                           </span>
                           <span className="text-sm flex-1 font-mono">{log.message}</span>

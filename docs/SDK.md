@@ -523,6 +523,17 @@ and the evaluator reference in [docs/skills/AGENT_HEALTH.md](./skills/AGENT_HEAL
 
 ## Running the tests
 
+> **Security note:** the ENTIRE contents of an imported `.eval.js`/`.eval.ts`
+> file are persisted verbatim on the resulting test case (`sourceCode`) and
+> rendered on the Test Case detail page as an IDE-style code view, so anyone
+> who can view test cases in this deployment can read the full file --
+> including any comments, hardcoded values, or internal URLs it contains.
+> Treat eval files like any other source file that lands in your repo and
+> gets deployed alongside the app: don't hardcode secrets, tokens, or
+> customer data in them -- pull those from environment variables /
+> `agent-health.config.ts` instead, same as you already would for the app's
+> own credentials.
+
 ### Via the UI
 
 `/evaluations/runs/new` → pick "Code import" → select your `.eval.js` files.

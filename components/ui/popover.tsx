@@ -4,90 +4,63 @@
  */
 
 import * as React from "react"
+import * as PopoverPrimitive from "@radix-ui/react-popover"
 import { cn } from "@/lib/utils"
 
-interface PopoverProps {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  children: React.ReactNode;
-}
+// Anchored on Radix's Popover primitive (already a project dependency via
+// Select/DropdownMenu) instead of hand-rolled `position: absolute; top-full`
+// CSS. The old implementation positioned its panel relative to a wrapper div
+// that lived inside a `position: sticky` toolbar; that combination is a
+// well-known class of browser layout footguns (subpixel/containing-block
+// edge cases around sticky ancestors, no collision detection, no viewport
+// flip) and manifested as the run-selector panel rendering detached from its
+// trigger on /compare. Radix's Popover.Content uses Floating UI under the
+// hood — portaled to <body>, position computed from the trigger's live
+// getBoundingClientRect() and kept in sync via scroll/resize listeners — so
+// it can't detach the way the CSS-relative version could. It also already
+// coordinates correctly with nested Radix portals (e.g. a <Select> inside a
+// PopoverContent, as in AgentTracesPage's filter panel), which is exactly
+// what the old manual click-outside listener was working around by
+// special-casing `[data-radix-popper-content-wrapper]`.
 
-interface PopoverTriggerProps {
-  children: React.ReactNode;
-  asChild?: boolean;
-}
+const Popover = PopoverPrimitive.Root;
 
-interface PopoverContentProps extends React.HTMLAttributes<HTMLDivElement> {
-  align?: 'start' | 'center' | 'end';
-  sideOffset?: number;
-}
+// All current call sites pass a single interactive element (a <Button> or
+// <button>) as the trigger's child, whether or not they set `asChild` —
+// the old implementation always rendered a wrapping <div onClick>` (ignoring
+// `asChild` entirely) so callers never relied on a real, unwrapped trigger
+// element. Always slotting via Radix's `asChild` preserves that behavior
+// (no extra wrapper, no nested <button>) without touching call sites.
+const PopoverTrigger = React.forwardRef<
+  React.ElementRef<typeof PopoverPrimitive.Trigger>,
+  Omit<React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Trigger>, 'asChild'> & { asChild?: boolean }
+>(({ children, asChild: _asChild, ...props }, ref) => (
+  <PopoverPrimitive.Trigger ref={ref} asChild {...props}>
+    {children}
+  </PopoverPrimitive.Trigger>
+));
+PopoverTrigger.displayName = "PopoverTrigger";
 
-const PopoverContext = React.createContext<{
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  triggerRef: React.RefObject<HTMLDivElement | null>;
-}>({ open: false, onOpenChange: () => {}, triggerRef: { current: null } });
-
-const Popover: React.FC<PopoverProps> = ({ open, onOpenChange, children }) => {
-  const triggerRef = React.useRef<HTMLDivElement>(null);
-  return (
-    <PopoverContext.Provider value={{ open, onOpenChange, triggerRef }}>
-      <div className="relative inline-block">
-        {children}
-      </div>
-    </PopoverContext.Provider>
-  );
-};
-
-const PopoverTrigger: React.FC<PopoverTriggerProps> = ({ children }) => {
-  const { onOpenChange, open, triggerRef } = React.useContext(PopoverContext);
-  return (
-    <div ref={triggerRef} onClick={() => onOpenChange(!open)} className="inline-flex">
-      {children}
-    </div>
-  );
-};
-
-const PopoverContent = React.forwardRef<HTMLDivElement, PopoverContentProps>(
-  ({ className, align = 'start', children, ...props }, ref) => {
-    const { open, onOpenChange } = React.useContext(PopoverContext);
-    const contentRef = React.useRef<HTMLDivElement>(null);
-
-    React.useEffect(() => {
-      if (!open) return;
-      const handleClickOutside = (e: MouseEvent) => {
-        const target = e.target as HTMLElement;
-        // Don't close if clicking inside a radix portal (e.g. Select dropdown)
-        if (target.closest('[data-radix-popper-content-wrapper]') || target.closest('[role="listbox"]') || target.closest('[role="option"]')) {
-          return;
-        }
-        if (contentRef.current && !contentRef.current.contains(target)) {
-          setTimeout(() => onOpenChange(false), 0);
-        }
-      };
-      document.addEventListener('mousedown', handleClickOutside);
-      return () => document.removeEventListener('mousedown', handleClickOutside);
-    }, [open, onOpenChange]);
-
-    if (!open) return null;
-
-    return (
-      <div
-        ref={contentRef}
-        className={cn(
-          "absolute top-full mt-1 z-50 min-w-[280px] rounded-md border bg-popover p-4 text-popover-foreground shadow-md animate-in fade-in-0 zoom-in-95",
-          align === 'end' && "right-0",
-          align === 'center' && "left-1/2 -translate-x-1/2",
-          align === 'start' && "left-0",
-          className
-        )}
-        {...props}
-      >
-        {children}
-      </div>
-    );
-  }
-);
+const PopoverContent = React.forwardRef<
+  React.ElementRef<typeof PopoverPrimitive.Content>,
+  React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Content>
+>(({ className, align = 'start', sideOffset = 4, collisionPadding = 8, ...props }, ref) => (
+  <PopoverPrimitive.Portal>
+    <PopoverPrimitive.Content
+      ref={ref}
+      side="bottom"
+      align={align}
+      sideOffset={sideOffset}
+      collisionPadding={collisionPadding}
+      className={cn(
+        "z-50 min-w-[280px] rounded-md border bg-popover p-4 text-popover-foreground shadow-md outline-none",
+        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 data-[state=closed]:zoom-out-95 data-[state=open]:zoom-in-95",
+        className
+      )}
+      {...props}
+    />
+  </PopoverPrimitive.Portal>
+));
 PopoverContent.displayName = "PopoverContent";
 
 export { Popover, PopoverTrigger, PopoverContent };
