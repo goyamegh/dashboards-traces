@@ -55,6 +55,7 @@ jest.mock('@/services/storage', () => ({
     getByExperimentRun: jest.fn().mockResolvedValue([]),
     getReportById: jest.fn().mockResolvedValue(null),
     getReportSummariesByIds: jest.fn().mockResolvedValue({}),
+    getReportReasoningsByIds: jest.fn().mockResolvedValue({}),
   },
   asyncTestCaseStorage: {
     getAll: jest.fn().mockResolvedValue([]),
@@ -82,11 +83,14 @@ jest.mock('@/lib/utils', () => ({
   // Judge/evaluator label helpers (lib/utils.ts) reused by RunSummaryBand.
   getJudgeModelLabel: jest.fn((id?: string | null) => (id ? `judge:${id}` : '—')),
   getEvaluatorLabel: jest.fn((id?: string | null) => (id ? `evaluator:${id}` : '—')),
+  // Used by RunInsightsPane's "Avg Score" detail (run-report-insights).
+  getRunOverallScore: jest.fn().mockReturnValue(null),
 }));
 
 jest.mock('@/services/metrics', () => ({
   formatDuration: jest.fn((v: number) => `${v}ms`),
   formatCost: jest.fn((v: number) => `$${v.toFixed(2)}`),
+  formatTokens: jest.fn((v: number) => `${v}`),
   fetchBatchMetrics: jest.fn().mockResolvedValue({ aggregate: null, metrics: {} }),
 }));
 
