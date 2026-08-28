@@ -50,6 +50,7 @@ export {
   cancelEvaluationRun,
   deleteEvaluationRun,
   promoteEvaluationRun,
+  rerunEvaluationRun,
   updateEvaluationRun,
   type CreateEvaluationRunRequest,
   type EvaluationRunProgress,

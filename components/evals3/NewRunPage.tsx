@@ -17,7 +17,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { PREFS_KEYS } from '@/lib/preferences';
-import { useNavigate, useLocation } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useClusterContext } from '@/hooks/useClusterContext';
 import { ClusterContextBanner } from '@/components/comparison/ClusterContextBanner';
 import {
@@ -46,7 +46,6 @@ interface SourceEntry {
 
 export const NewRunPage: React.FC = () => {
   const navigate = useNavigate();
-  const location = useLocation();
 
   // Step state
   const [step, setStep] = useState<1 | 2>(1);
@@ -96,35 +95,7 @@ export const NewRunPage: React.FC = () => {
   const { context: clusterContext } = useClusterContext();
   const hasSeededFromCluster = useRef(false);
 
-  // Re-run seeding — EvalRunDetailPage's "Re-run" navigates here with the
-  // source run's stored config so the composer opens pre-filled. Shape is
-  // a subset of the run document; loose-typed (location.state is `unknown`).
-  const restartFrom = (location.state as any)?.restartFrom as
-    | Partial<{ name: string; sources: TestCaseSource[]; agentKey: string; evaluatorId: string; judgeModelId: string; benchmarkId: string }>
-    | undefined;
-  const hasSeededFromRestart = useRef(false);
-
   const enabledAgents = DEFAULT_CONFIG.agents.filter(a => a.enabled !== false);
-
-  // Build a SourceEntry from a raw TestCaseSource. Used by the Re-run seeder
-  // (which receives heterogenous source types from a stored run document).
-  // The cluster seeder only ever produces a `test-case-ids` source with a
-  // richer label that includes the cluster name, so it stays inline below.
-  const buildSourceEntry = useCallback((src: TestCaseSource, idPrefix: string, idx: number): SourceEntry => {
-    let label = 'Source';
-    let count: number | undefined;
-    if (src.type === 'test-case-ids') {
-      count = (src as any).ids?.length || 0;
-      label = `${count} test case${count === 1 ? '' : 's'}`;
-    } else if (src.type === 'benchmark') {
-      const bm = benchmarks.find(b => b.id === (src as any).benchmarkId);
-      label = `Benchmark: ${bm?.name || (src as any).benchmarkId}`;
-      count = bm?.testCaseIds?.length;
-    } else if (src.type === 'label-filter') {
-      label = `Labels: ${((src as any).labels || []).join(', ')}`;
-    }
-    return { id: `${idPrefix}-${idx}`, source: src, label, count };
-  }, [benchmarks]);
 
   // Seed sources from cluster context exactly once after the page loads
   // its data. Auto-advances to Step 2 because the source is already chosen.
@@ -144,24 +115,6 @@ export const NewRunPage: React.FC = () => {
     setRunName(`Re-run: ${clusterContext.name}`);
     setStep(2);
   }, [clusterContext, loadingData]);
-
-  // Seed the whole composer from a source run (the "Re-run" action). Restores
-  // sources, agent, evaluator, judge model, and benchmark association, then
-  // lands on Step 2. The agent's model is resolved from the agent config.
-  useEffect(() => {
-    if (!restartFrom) return;
-    if (hasSeededFromRestart.current) return;
-    if (loadingData) return;
-    hasSeededFromRestart.current = true;
-    const entries = (restartFrom.sources || []).map((src, i) => buildSourceEntry(src, 'restart', i));
-    if (entries.length > 0) setSources(entries);
-    if (restartFrom.agentKey) setAgentKey(restartFrom.agentKey);
-    if (restartFrom.judgeModelId) setJudgeModelId(restartFrom.judgeModelId);
-    if (restartFrom.evaluatorId) setEvaluatorId(restartFrom.evaluatorId);
-    if (restartFrom.benchmarkId) setBenchmarkAssociation(restartFrom.benchmarkId);
-    setRunName(`Re-run: ${restartFrom.name || 'run'}`);
-    setStep(2);
-  }, [restartFrom, loadingData, buildSourceEntry]);
 
   // Load benchmarks and test cases
   useEffect(() => {

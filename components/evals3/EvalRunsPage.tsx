@@ -22,7 +22,7 @@ import { useNavigate } from 'react-router-dom';
 import {
   CheckCircle2, XCircle, Loader2, Clock, Search, RefreshCw,
   Activity, BarChart3, SlidersHorizontal, ChevronDown, ChevronRight,
-  Layers, List, GitCompare, AlertTriangle, TrendingDown, Target, X,
+  Layers, List, GitCompare, AlertTriangle, TrendingDown, Target, X, RotateCcw,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -37,6 +37,7 @@ import { DEFAULT_CONFIG } from '@/lib/constants';
 import { bucketRunResults } from '@/lib/runStats';
 import { formatRelativeTime, getModelName } from '@/lib/utils';
 import { Breadcrumbs } from './Breadcrumbs';
+import { RerunConfirmDialog } from './RerunConfirmDialog';
 
 // ─── Time Filter ─────────────────────────────────────────────────────────────
 
@@ -163,6 +164,12 @@ export const EvalRunsPage: React.FC = () => {
 
   // Compare selection
   const [selectedRuns, setSelectedRuns] = useState<Set<string>>(new Set());
+
+  // Re-run: row action target. Only 'eval-run' kind rows are re-runnable
+  // (the server route operates on top-level EvaluationRun docs; legacy
+  // benchmark-embedded runs aren't supported — see renderRunRow).
+  const [rerunTarget, setRerunTarget] = useState<EvaluationRun | null>(null);
+  const [rerunDialogOpen, setRerunDialogOpen] = useState(false);
 
   // Annotation counts: runId → { totalAnnotations, testCasesWithAnnotations, firstTestCaseId }
   const [annotationMap, setAnnotationMap] = useState<Map<string, { total: number; tcCount: number; firstTcId: string }>>(new Map());
@@ -654,6 +661,20 @@ export const EvalRunsPage: React.FC = () => {
             <span className="text-muted-foreground">{rr.total}</span>
           </div>
         </td>
+        <td className="px-2 py-1.5 align-middle text-center w-10" onClick={e => e.stopPropagation()}>
+          {rr.kind === 'eval-run' ? (
+            <button
+              data-testid={`rerun-row-btn-${rr.run.id}`}
+              className="h-6 w-6 inline-flex items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+              title="Re-run this evaluation"
+              onClick={() => { setRerunTarget(rr.run as unknown as EvaluationRun); setRerunDialogOpen(true); }}
+            >
+              <RotateCcw size={13} />
+            </button>
+          ) : (
+            <span className="text-[10px] text-muted-foreground" title="Re-run isn't available for legacy benchmark-embedded runs">—</span>
+          )}
+        </td>
       </tr>
     );
   };
@@ -950,12 +971,13 @@ export const EvalRunsPage: React.FC = () => {
               <SortHeader label="Timestamp" active={sort.field === 'timestamp'} dir={sort.dir} onClick={() => handleSort('timestamp')} />
               <th className="h-7 px-2 text-center align-middle font-medium text-xs text-muted-foreground bg-background border-b whitespace-nowrap">Annotations</th>
               <SortHeader label="Pass/Fail/Total" active={sort.field === 'results'} dir={sort.dir} onClick={() => handleSort('results')} className="text-right" />
+              <th className="h-7 w-10 px-2 align-middle bg-background border-b" />
             </tr>
           </thead>
           <tbody className="[&_tr:last-child]:border-0">
             {filteredRunRows.length === 0 ? (
               <tr>
-                <td colSpan={viewMode === 'flat' ? 9 : 8} className="py-16 text-center text-sm text-muted-foreground">
+                <td colSpan={viewMode === 'flat' ? 10 : 9} className="py-16 text-center text-sm text-muted-foreground">
                   {activeFilterCount > 0 ? 'No runs match the current filters' : timeRange === 'all' ? 'No evaluation runs found' : `No runs in ${TIME_OPTIONS.find(o => o.value === timeRange)?.label}`}
                 </td>
               </tr>
@@ -996,7 +1018,7 @@ export const EvalRunsPage: React.FC = () => {
                         </button>
                       </td>
                       {/* Rest of group header content */}
-                      <td colSpan={7} className="px-1 py-1.5 align-middle">
+                      <td colSpan={8} className="px-1 py-1.5 align-middle">
                         <div className="flex items-center gap-2">
                           <span className="text-muted-foreground">
                             {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
@@ -1017,7 +1039,7 @@ export const EvalRunsPage: React.FC = () => {
             )}
             {hasMoreRows && (
               <tr ref={loadMoreSentinelRef} data-testid="runs-table-sentinel">
-                <td colSpan={viewMode === 'flat' ? 9 : 8} className="py-3 text-center">
+                <td colSpan={viewMode === 'flat' ? 10 : 9} className="py-3 text-center">
                   <Loader2 size={14} className="animate-spin text-muted-foreground inline-block" />
                 </td>
               </tr>
@@ -1025,6 +1047,14 @@ export const EvalRunsPage: React.FC = () => {
           </tbody>
         </table>
       </div>
+
+      {/* Re-run Confirm Dialog — shared with EvalRunDetailPage */}
+      <RerunConfirmDialog
+        run={rerunTarget}
+        open={rerunDialogOpen}
+        onOpenChange={open => { setRerunDialogOpen(open); if (!open) setRerunTarget(null); }}
+        onRerun={newRunId => navigate(`/evaluations/runs/${newRunId}`)}
+      />
     </div>
   );
 };
