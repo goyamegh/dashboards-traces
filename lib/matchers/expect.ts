@@ -226,6 +226,16 @@ export const expect: typeof chai.expect & { soft: SoftExpect } = chai.expect as 
  * §4.4/§4.8) — `expect.soft` just extends that same non-throwing contract
  * to chai assertions. Mix soft and hard freely in one body; a hard
  * `expect()` after a soft failure still bails at that point.
+ *
+ * KNOWN LIMITATION (codex_review finding, empirically confirmed): a
+ * multi-step chain like `expect.soft(obj).to.have.property('x').that
+ * .equals(5)` is two chai assertions run back-to-back on the SAME
+ * Assertion instance. With a hard expect(), a missing property throws and
+ * `.that.equals(5)` never runs. In soft mode nothing throws, so
+ * `.that.equals(5)` DOES run (against `undefined`) and records its own
+ * derivative failure — real, but a symptom of the first, not independent
+ * signal. See docs/SDK.md's "Known limitation" callout; prefer single-step
+ * matchers on primitive values with `.soft`.
  */
 function softExpect(val?: unknown, msg?: string): Chai.Assertion {
   const assertion = (chai.expect as any)(val, msg);
