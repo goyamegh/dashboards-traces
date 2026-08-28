@@ -4,90 +4,101 @@
  */
 
 /**
- * Integration test for A6 - Zero agents warning in config status endpoint
+ * Integration test for A6 - Zero agents warning wiring in
+ * GET /api/storage/config/status.
+ *
+ * server/routes/storage/admin.ts's status handler used to call
+ * `getConfigStatus()` with no arguments, so the zero-agents warning
+ * computed inside `getConfigStatus(agents)` (server/services/configService.ts)
+ * could never fire in practice — the route never passed the loaded config's
+ * `agents` through. This test hits the real, running server (the same
+ * fetch-against-getTestBackendUrl() pattern as
+ * tests/integration/server/routes/config.integration.test.ts) to prove the
+ * endpoint is wired end to end and returns the documented shape.
+ *
+ * The zero-agents branch itself (warnings[] populated when agents.length===0)
+ * is exercised deterministically against the real exported function in the
+ * unit test (tests/unit/cli-dx-guards.test.ts) — the integration test's
+ * running server always has the repo's default/test agents configured, so it
+ * pins the complementary, equally real regression: a normally-configured
+ * server does NOT emit a false-positive zero-agents warning.
+ *
+ * Run tests:
+ *   npm run test:integration -- --testPathPattern=cli-dx-a6-zero-agents
+ *
+ * Prerequisites:
+ *   - Backend server running: npm run dev:server
  */
 
-import { createApp } from '@/server/app';
-import { loadConfigSync, clearConfigCache } from '@/lib/config/index';
-import type { Express } from 'express';
-import http from 'http';
+import { getTestBackendUrl } from '@/tests/integration/testConfig';
+
+const TEST_TIMEOUT = 30000;
+const BASE_URL = getTestBackendUrl();
+
+const checkBackend = async (): Promise<boolean> => {
+  try {
+    const response = await fetch(`${BASE_URL}/health`);
+    return response.ok;
+  } catch {
+    return false;
+  }
+};
 
 describe('A6 Integration - Config Status Zero Agents Warning', () => {
-  let app: Express;
-  let server: http.Server;
-  let testPort: number;
+  let backendAvailable = false;
 
   beforeAll(async () => {
-    testPort = 4621 + Math.floor(Math.random() * 100);
-    clearConfigCache();
-    app = await createApp();
-  });
+    backendAvailable = await checkBackend();
+    if (!backendAvailable) {
+      console.warn(
+        'Backend not available at',
+        BASE_URL,
+        '- skipping integration tests'
+      );
+    }
+  }, TEST_TIMEOUT);
 
-  afterAll(async () => {
-    return new Promise<void>((resolve) => {
-      if (server) {
-        server.close(() => resolve());
-      } else {
-        resolve();
+  it(
+    'GET /api/storage/config/status returns 200 with the documented shape',
+    async () => {
+      if (!backendAvailable) return;
+
+      const response = await fetch(`${BASE_URL}/api/storage/config/status`);
+      expect(response.status).toBe(200);
+
+      const data = await response.json();
+      expect(data).toHaveProperty('storage');
+      expect(data).toHaveProperty('observability');
+      expect(data).toHaveProperty('runtime');
+      expect(data.runtime).toHaveProperty('storage');
+    },
+    TEST_TIMEOUT
+  );
+
+  it(
+    'does not emit the zero-agents warning when the server has configured agents',
+    async () => {
+      if (!backendAvailable) return;
+
+      // Sanity-check the precondition this regression relies on: the test
+      // server's config declares at least one agent (it always does — see
+      // tests/integration/server/routes/config.integration.test.ts's
+      // DEFAULT_AGENT_COUNT). If that ever changes, this assertion's
+      // "no warning" is the wrong test — fail loud instead of green-lying.
+      const agentsResponse = await fetch(`${BASE_URL}/api/agents`);
+      const agentsData = await agentsResponse.json();
+      expect(agentsData.total).toBeGreaterThan(0);
+
+      const response = await fetch(`${BASE_URL}/api/storage/config/status`);
+      const data = await response.json();
+
+      if (data.warnings !== undefined) {
+        const hasZeroAgentsWarning = (data.warnings as string[]).some((w) =>
+          w.includes('zero agents')
+        );
+        expect(hasZeroAgentsWarning).toBe(false);
       }
-    });
-  });
-
-  it('should include warnings field in config status when agents are empty', async () => {
-    // Mock loadConfigSync to return zero agents
-    const originalLoadConfigSync = loadConfigSync;
-    jest.doMock('@/lib/config/index', () => ({
-      loadConfigSync: jest.fn().mockReturnValue({
-        agents: [],
-        models: {},
-        connectors: [],
-        testCases: [],
-        reporters: [['console']],
-        judge: { provider: 'bedrock', model: 'claude-sonnet-4' },
-        telemetry: {},
-        storage: undefined,
-        observability: undefined,
-      }),
-    }));
-
-    // This test verifies the interface is properly defined
-    // Actual endpoint test would require a running server
-    const mockConfigStatus = {
-      storage: { configured: false, source: 'none' as const },
-      observability: { configured: false, source: 'none' as const },
-      runtime: {
-        storage: {
-          backend: 'file' as const,
-          error: null,
-          configuredEndpoint: null,
-          drifted: false,
-        },
-      },
-      warnings: [
-        'WARNING: Config file exists but declares zero agents. The server will have no agents available for evaluation.',
-      ],
-    };
-
-    expect(mockConfigStatus.warnings).toBeDefined();
-    expect(mockConfigStatus.warnings?.length).toBeGreaterThan(0);
-    expect(mockConfigStatus.warnings?.[0]).toContain('zero agents');
-  });
-
-  it('should not include warnings when agents are present', async () => {
-    const mockConfigStatus = {
-      storage: { configured: false, source: 'none' as const },
-      observability: { configured: false, source: 'none' as const },
-      runtime: {
-        storage: {
-          backend: 'file' as const,
-          error: null,
-          configuredEndpoint: null,
-          drifted: false,
-        },
-      },
-      // No warnings field when agents are present
-    };
-
-    expect(mockConfigStatus.warnings).toBeUndefined();
-  });
+    },
+    TEST_TIMEOUT
+  );
 });
