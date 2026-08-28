@@ -258,7 +258,7 @@ async function resolveCodeImport(
   hooksByFile: Map<string, RegisteredHook[]>;
   testScopes: Map<string, { sourceFile?: string; describePath?: string }>;
 }> {
-  const { loadTestCasesFromModule } = await import('@/lib/testCases/loader');
+  const { loadTestCasesFromModule, detectSourceLanguage } = await import('@/lib/testCases/loader');
   const { clearEvaluators } = await import('@/lib/testCases/evaluators');
   // Evaluators register into a process-global registry. Clear it before
   // loading this batch so (a) evaluators from a prior run don't leak into
@@ -278,6 +278,8 @@ async function resolveCodeImport(
 
     const loaded = await loadTestCasesFromModule(filename);
     const sourceFile = path.relative(process.cwd(), loaded.filePath);
+    const sourceFileName = path.basename(sourceFile);
+    const sourceLanguage = detectSourceLanguage(sourceFile);
 
     const upsertInput = loaded.testCases.map(tc => {
       // Labels are the source of truth in the new SDK. Derive the legacy
@@ -298,6 +300,13 @@ async function resolveCodeImport(
         labels,
         sourceFile,
         sourceHash: tc.hash,
+        // See cli/commands/benchmark.ts for rationale -- full eval-file text
+        // + provenance so the Test Case detail page can render an
+        // IDE-style source view regardless of which import path produced
+        // the test case.
+        sourceCode: loaded.fileSource,
+        sourceFileName,
+        sourceLanguage,
         // Forward expectedOutcomes / expectedTrajectory so server-side
         // evaluators (`-e <evaluator>`, /api/evaluate) can grade the run
         // even when the test was authored as a code-based .eval.js. Inline
