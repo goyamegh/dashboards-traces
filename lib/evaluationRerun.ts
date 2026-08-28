@@ -40,7 +40,11 @@ export function computeRerunName(sourceName: string | undefined | null): string 
     return `${base} (re-run)`;
   }
 
-  const [, baseName, suffixNumber] = match;
+  const [, rawBaseName, suffixNumber] = match;
+  // A source named literally "(re-run)" / "(re-run 2)" (no prefix) captures
+  // an empty baseName — fall back to the default rather than emitting a
+  // leading-space name like " (re-run 2)".
+  const baseName = rawBaseName.trim() || DEFAULT_RUN_NAME;
   const nextNumber = suffixNumber ? parseInt(suffixNumber, 10) + 1 : 2;
   return `${baseName} (re-run ${nextNumber})`;
 }

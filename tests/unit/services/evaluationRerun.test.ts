@@ -113,6 +113,31 @@ describe('checkBenchmarkSourcesStillExist', () => {
     expect(mockStorage.benchmarks.getById).toHaveBeenCalledTimes(1);
   });
 
+  it('checks BOTH pins when sources and the top-level association reference the same benchmark at DIFFERENT versions (codex_review finding)', async () => {
+    // A source pins version 1 (still exists); the top-level association
+    // (independently-written field) pins version 99 (does not). Deduping by
+    // benchmarkId alone would drop the top-level check entirely because a
+    // source entry for the same id was already "seen" — silently missing a
+    // genuinely-broken pin. Deduping by the (id, version) pair catches it.
+    mockStorage.benchmarks.getById.mockResolvedValue(makeBenchmark({
+      currentVersion: 3,
+      versions: [
+        { version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: ['tc-1'] },
+        { version: 3, createdAt: '2026-01-03T00:00:00Z', testCaseIds: ['tc-1'] },
+      ],
+    }));
+    const run = makeRun({
+      sources: [{ type: 'benchmark', benchmarkId: 'bm-1', benchmarkVersion: 1 }],
+      benchmarkId: 'bm-1',
+      benchmarkVersion: 99,
+    });
+    const result = await checkBenchmarkSourcesStillExist(run, mockStorage);
+    expect(result).toMatch(/version 99/i);
+    expect(result).toMatch(/no longer exists/i);
+    // Still only one getById call — same benchmarkId, fetched once, checked twice.
+    expect(mockStorage.benchmarks.getById).toHaveBeenCalledTimes(1);
+  });
+
   it('checks every distinct benchmark referenced across multiple benchmark-type sources', async () => {
     mockStorage.benchmarks.getById.mockImplementation(async (id: string) =>
       id === 'bm-1' ? makeBenchmark({ id: 'bm-1' }) : null
