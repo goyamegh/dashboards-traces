@@ -315,8 +315,12 @@ export const BenchmarksPage4: React.FC = () => {
       if (!validation.valid || !validation.data) return;
       const result = await asyncTestCaseStorage.bulkCreate(validation.data);
       if (result.created > 0) {
-        const createdIds = (result as any).ids;
-        if (!createdIds || createdIds.length === 0) {
+        // Take ids directly from the bulk-create response (which now
+        // includes the created records) instead of the non-existent
+        // `.ids` property this used to read (always undefined — import
+        // silently failed with "created IDs are unavailable" every time).
+        const createdIds = result.testCases.map((tc) => tc.id);
+        if (createdIds.length === 0) {
           console.error('Import succeeded but created IDs are unavailable');
           return;
         }

@@ -22,7 +22,8 @@
  * `/compare?runs=…`.
  */
 
-import { test, expect, type Route } from '@playwright/test';
+import { test, expect } from './fixtures/test-fixtures';
+import type { Route } from '@playwright/test';
 
 const now = new Date().toISOString();
 

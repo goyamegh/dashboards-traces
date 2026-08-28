@@ -248,6 +248,20 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
             if (hoverTimer.current) clearTimeout(hoverTimer.current);
             setIsHoverExpanded(false);
           }}
+          onKeyDown={(e) => {
+            // Escape is a second, independent way out of the keyboard-opened
+            // overlay (on top of Shift+Tab-ing past the zone's first
+            // focusable element, handled by onBlur's relatedTarget check
+            // above) — a familiar a11y convention for dismissing a
+            // transient overlay without hunting for the exact edge of its
+            // tab range. Focus deliberately stays where it is (the DOM
+            // nodes don't unmount, only the CSS width/labels change), so
+            // there's nowhere stray to reset it to.
+            if (e.key !== 'Escape' || !isCollapsed || !isHoverExpanded) return;
+            isKeyboardOpenRef.current = false;
+            if (hoverTimer.current) clearTimeout(hoverTimer.current);
+            setIsHoverExpanded(false);
+          }}
         >
         <Sidebar
         collapsible="none"

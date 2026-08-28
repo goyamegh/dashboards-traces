@@ -21,7 +21,8 @@
  * unambiguous.
  */
 
-import { test, expect, Route } from '@playwright/test';
+import { test, expect } from './fixtures/test-fixtures';
+import type { Route } from '@playwright/test';
 
 const RUN_A = 'eval-run-dlA';
 const RUN_B = 'eval-run-dlB';
