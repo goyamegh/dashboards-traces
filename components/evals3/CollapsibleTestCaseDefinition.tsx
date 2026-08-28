@@ -19,10 +19,10 @@
  *     body in isolation (it's a JS closure at runtime), but the whole file
  *     that defines it is captured at import time and rendered here.
  *
- *   • JSON tests (no sourceFile) — show the full TestCase object as
- *     pretty-printed JSON. **No truncation** — the whole point of
- *     opening this section is to see the full prompt / expected
- *     outcomes / labels at once.
+ *   • JSON tests (no sourceFile) — lead with a reader-oriented definition
+ *     (prompt, expected outcomes, context, and metadata). The complete
+ *     serialized object remains available behind a raw-JSON disclosure for
+ *     debugging and export verification.
  *
  * Defaults to closed; opens on header click. The component is small and
  * stateless from the caller's perspective — drop it in wherever a
@@ -34,6 +34,7 @@ import { ChevronRight, ChevronDown, FileCode2, Braces, Copy, Check } from 'lucid
 import { TestCase } from '@/types';
 import { Badge } from '@/components/ui/badge';
 import { EvalSourceCodeView } from '@/components/evals3/EvalSourceCodeView';
+import { TestCaseDefinition } from '@/components/TestCaseDefinition';
 
 interface CollapsibleTestCaseDefinitionProps {
   testCase: TestCase | null;
@@ -48,15 +49,14 @@ export const CollapsibleTestCaseDefinition: React.FC<CollapsibleTestCaseDefiniti
   className,
 }) => {
   const [open, setOpen] = useState(defaultOpen);
+  const [rawOpen, setRawOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   if (!testCase) return null;
 
   const isSdk = !!testCase.sourceFile;
-  // Pretty-print the full TestCase. The whole point of the JSON view is to
-  // show the user exactly what would round-trip through `agent-health
-  // export` — so include every field, including labels / expectedOutcomes /
-  // versions, untruncated.
+  // Preserve the complete serialized form for the optional debugging/export
+  // view. It is deliberately not mounted until the user asks for raw JSON.
   const json = isSdk ? '' : JSON.stringify(testCase, null, 2);
 
   // JSON branch only — the SDK branch's copy affordance lives inside
@@ -110,30 +110,45 @@ export const CollapsibleTestCaseDefinition: React.FC<CollapsibleTestCaseDefiniti
             // and sha256 line were redundant duplicates (owner feedback).
             <EvalSourceCodeView testCase={testCase} maxHeight="360px" />
           ) : (
-            // JSON test: full untruncated pretty-print, copyable.
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider">
-                  Full Definition (JSON)
-                </div>
+            <div className="space-y-3 max-h-[55vh] overflow-y-auto pr-1">
+              <TestCaseDefinition testCase={testCase} compact />
+
+              <div className="border-t border-border pt-2">
                 <button
                   type="button"
-                  onClick={handleCopy}
-                  className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded hover:bg-muted"
-                  title="Copy JSON"
+                  onClick={() => setRawOpen(value => !value)}
+                  className="flex items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground px-1.5 py-1 rounded hover:bg-muted transition-colors"
+                  aria-expanded={rawOpen}
                 >
-                  {copied ? (
-                    <><Check size={10} className="text-green-600" /> Copied</>
-                  ) : (
-                    <><Copy size={10} /> Copy</>
-                  )}
+                  <Braces size={10} />
+                  {rawOpen ? 'Hide raw JSON' : 'View raw JSON'}
                 </button>
+
+                {rawOpen && (
+                  <div className="space-y-2 mt-2" data-testid="raw-test-case-json">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider">
+                        Raw JSON
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCopy}
+                        className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded hover:bg-muted"
+                        title="Copy JSON"
+                      >
+                        {copied ? (
+                          <><Check size={10} className="text-green-600" /> Copied</>
+                        ) : (
+                          <><Copy size={10} /> Copy</>
+                        )}
+                      </button>
+                    </div>
+                    <pre className="text-[10px] font-mono bg-card border border-border rounded p-3 whitespace-pre-wrap break-words overflow-x-auto leading-relaxed">
+                      {json}
+                    </pre>
+                  </div>
+                )}
               </div>
-              {/* No max-height / no scroll — user explicitly wants no truncation.
-                  The outer page already provides scroll if the JSON gets very tall. */}
-              <pre className="text-[10px] font-mono bg-card border border-border rounded p-3 whitespace-pre-wrap break-words overflow-x-auto leading-relaxed">
-                {json}
-              </pre>
             </div>
           )}
         </div>

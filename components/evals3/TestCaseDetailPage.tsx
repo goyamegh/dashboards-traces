@@ -59,6 +59,7 @@ import { PREFS_KEYS } from '@/lib/preferences';
 import { ENV_CONFIG } from '@/lib/config';
 import { Markdown, hasRealMarkdown } from '@/components/ui/markdown';
 import { EvalSourceCodeView } from '@/components/evals3/EvalSourceCodeView';
+import { TestCaseDefinition } from '@/components/TestCaseDefinition';
 
 // Render a test-case prompt ("task definition"): as markdown when it actually
 // contains markdown (so headings / bullet lists indent instead of collapsing
@@ -432,47 +433,17 @@ export const TestCaseDetailPage: React.FC = () => {
                   )}
                 </div>
               </div>
-              <div className="px-3 pb-3 space-y-2.5">
-                  {/* Input prompt */}
-                  <div>
-                    <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Input</div>
-                    <div className="text-[10px] bg-muted/40 rounded px-2 py-1.5 border border-border max-h-20 overflow-y-auto break-words leading-relaxed">
-                      {renderPrompt(testCase.initialPrompt)}
-                    </div>
-                  </div>
-                  {/* Expected outcomes */}
-                  {testCase.expectedOutcomes?.length > 0 && (
-                    <div>
-                      <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Expected</div>
-                      <ul className="space-y-0.5">
-                        {testCase.expectedOutcomes.map((o, i) => (
-                          <li key={i} className="text-[10px] text-muted-foreground flex items-start gap-1 leading-snug">
-                            <CheckCircle2 size={9} className="text-green-500 mt-0.5 shrink-0" />
-                            <span className="break-words min-w-0">{o}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
-                  )}
-                  {/* Context */}
-                  {testCase.context?.length > 0 && (
-                    <div>
-                      <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Context ({testCase.context.length})</div>
-                      <div className="space-y-1">
-                        {testCase.context.map((ctx, i) => (
-                          <div key={i} className="bg-muted/30 rounded px-2 py-1 border border-border overflow-hidden">
-                            <p className="text-[9px] font-medium text-muted-foreground truncate">{ctx.description}</p>
-                            <pre className="text-[9px] overflow-x-auto max-h-10 overflow-y-auto whitespace-pre-wrap break-all">{ctx.value.slice(0, 100)}{ctx.value.length > 100 ? '…' : ''}</pre>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                  {/* Eval source (code-SDK test cases only) -- full eval file
-                      as an IDE-style code view. Narrow panel, so cap the
-                      height a bit tighter than the full-width layout below. */}
+              <div className="px-3 pb-3">
+                {testCase.sourceFile ? (
+                  // SDK test: EvalSourceCodeView IS the whole surface here too
+                  // (mirrors CollapsibleTestCaseDefinition.tsx) -- rendering
+                  // TestCaseDefinition's own "Source File" pointer branch
+                  // alongside it would just duplicate the path/provenance row.
                   <EvalSourceCodeView testCase={testCase} maxHeight="320px" />
-                </div>
+                ) : (
+                  <TestCaseDefinition testCase={testCase} compact />
+                )}
+              </div>
             </div>
 
             {/* ── Runs List ───────────────────────────────────────── */}
@@ -684,26 +655,11 @@ export const TestCaseDetailPage: React.FC = () => {
             {/* Definition section — always open when no run selected */}
             <div className="border-b px-4 py-3 space-y-2.5">
               <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">Definition</div>
-              <div>
-                <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Input</div>
-                <div className="text-xs bg-muted/40 rounded px-3 py-2 border border-border break-words leading-relaxed">
-                  {renderPrompt(testCase.initialPrompt)}
-                </div>
-              </div>
-              {testCase.expectedOutcomes?.length > 0 && (
-                <div>
-                  <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Expected</div>
-                  <ul className="space-y-1">
-                    {testCase.expectedOutcomes.map((o, i) => (
-                      <li key={i} className="text-xs text-muted-foreground flex items-start gap-1.5">
-                        <CheckCircle2 size={11} className="text-green-500 mt-0.5 shrink-0" />
-                        <span>{o}</span>
-                      </li>
-                    ))}
-                  </ul>
-                </div>
+              {testCase.sourceFile ? (
+                <EvalSourceCodeView testCase={testCase} maxHeight="600px" />
+              ) : (
+                <TestCaseDefinition testCase={testCase} />
               )}
-              <EvalSourceCodeView testCase={testCase} maxHeight="600px" />
             </div>
             {/* Runs list */}
             <div className="px-4 pt-3 pb-1 flex items-center justify-between">

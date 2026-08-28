@@ -88,6 +88,11 @@ module.exports = {
     // fix — codecov was reporting 0% for this file's new branch because it
     // wasn't instrumented here at all, despite being thoroughly unit tested).
     'hooks/usePersistedState.ts',
+    // Component coverage is currently opt-in while the global baseline is
+    // expanded incrementally. Keep reader-oriented test-case definitions in
+    // the unit report so their focused DOM tests count toward patch coverage.
+    'components/TestCaseDefinition.tsx',
+    'components/evals3/CollapsibleTestCaseDefinition.tsx',
     '!**/__tests__/**',
     '!**/*.test.ts',
     '!**/dist/**',
