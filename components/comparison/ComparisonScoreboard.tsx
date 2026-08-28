@@ -43,7 +43,7 @@ const formatDurationSafe = (v: number | undefined): string => {
 const formatDelta = (a: number | undefined, b: number | undefined, suffix = ''): string => {
   if (a === undefined || b === undefined) return '';
   const diff = a - b;
-  if (diff === 0) return '=';
+  if (diff === 0) return '—';
   const sign = diff > 0 ? '+' : '';
   return `${sign}${Math.round(diff)}${suffix}`;
 };
@@ -146,7 +146,7 @@ const CondensedBand: React.FC<CondensedBandProps> = ({ runs, overlap, getAgentNa
   if (runs.length === 0) return null;
   const [a, b] = runs;
   const delta = b ? a.passRatePercent - b.passRatePercent : 0;
-  const deltaStr = delta === 0 ? '=' : `${delta > 0 ? '+' : ''}${Math.round(delta)}pp`;
+  const deltaStr = delta === 0 ? '—' : `${delta > 0 ? '+' : ''}${Math.round(delta)}pp`;
 
   return (
     <div className="flex items-center gap-3 px-4 py-2 text-xs" data-testid="scoreboard-condensed">
@@ -161,10 +161,13 @@ const CondensedBand: React.FC<CondensedBandProps> = ({ runs, overlap, getAgentNa
             <RunBadgeB /> <span className="font-medium">{getAgentName(b.agentKey)}</span>
             <span className="tabular-nums">{formatPassRate(b.passRatePercent)}</span>
           </span>
-          <span className={cn(
-            'font-medium tabular-nums',
-            delta > 0 ? 'text-blue-400' : delta < 0 ? 'text-red-400' : 'text-muted-foreground'
-          )}>
+          <span
+            className={cn(
+              'font-medium tabular-nums',
+              delta > 0 ? 'text-blue-400' : delta < 0 ? 'text-red-400' : 'text-muted-foreground'
+            )}
+            title={delta === 0 ? 'No change' : undefined}
+          >
             {deltaStr}
           </span>
         </>
@@ -392,30 +395,42 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                       </div>
                     </td>
                     <td className="px-3 py-1.5 text-right">
-                      <span className={cn(
-                        'font-semibold tabular-nums text-[11px]',
-                        passRateDelta > 0 ? 'text-blue-400' : passRateDelta < 0 ? 'text-red-400' : 'text-muted-foreground'
-                      )}>
+                      <span
+                        data-testid="scoreboard-delta-passrate"
+                        className={cn(
+                          'font-semibold tabular-nums text-[11px]',
+                          passRateDelta > 0 ? 'text-blue-400' : passRateDelta < 0 ? 'text-red-400' : 'text-muted-foreground'
+                        )}
+                        title={passRateDelta === 0 ? 'No change' : undefined}
+                      >
                         {formatDelta(runA.passRatePercent, runB.passRatePercent, 'pp')}
                       </span>
                     </td>
                     <td className="px-3 py-1.5 text-right">
                       {costDelta !== undefined && (
-                        <span className={cn(
-                          'tabular-nums text-[11px]',
-                          costDelta < 0 ? 'text-green-400' : costDelta > 0 ? 'text-red-400' : 'text-muted-foreground'
-                        )}>
-                          {costDelta === 0 ? '=' : (costDelta > 0 ? '+' : '') + formatCost(costDelta)}
+                        <span
+                          data-testid="scoreboard-delta-cost"
+                          className={cn(
+                            'tabular-nums text-[11px]',
+                            costDelta < 0 ? 'text-green-400' : costDelta > 0 ? 'text-red-400' : 'text-muted-foreground'
+                          )}
+                          title={costDelta === 0 ? 'No change' : undefined}
+                        >
+                          {costDelta === 0 ? '—' : (costDelta > 0 ? '+' : '') + formatCost(costDelta)}
                         </span>
                       )}
                     </td>
                     <td className="px-3 py-1.5 text-right">
                       {durationDelta !== undefined && (
-                        <span className={cn(
-                          'tabular-nums text-[11px]',
-                          durationDelta < 0 ? 'text-green-400' : durationDelta > 0 ? 'text-red-400' : 'text-muted-foreground'
-                        )}>
-                          {durationDelta === 0 ? '=' : (durationDelta > 0 ? '+' : '-') + formatDuration(Math.abs(durationDelta))}
+                        <span
+                          data-testid="scoreboard-delta-duration"
+                          className={cn(
+                            'tabular-nums text-[11px]',
+                            durationDelta < 0 ? 'text-green-400' : durationDelta > 0 ? 'text-red-400' : 'text-muted-foreground'
+                          )}
+                          title={durationDelta === 0 ? 'No change' : undefined}
+                        >
+                          {durationDelta === 0 ? '—' : (durationDelta > 0 ? '+' : '-') + formatDuration(Math.abs(durationDelta))}
                         </span>
                       )}
                     </td>
