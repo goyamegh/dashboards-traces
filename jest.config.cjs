@@ -76,6 +76,23 @@ module.exports = {
     'lib/**/*.ts',
     'cli/**/*.ts',
     'types/**/*.ts',
+    // hooks/** and components/** are intentionally NOT globbed in wholesale —
+    // most are React UI that this (node-environment) jest config can't
+    // meaningfully instrument, and their coverage comes from the e2e/nyc
+    // pipeline (see .nycrc.json) instead. The three files below are opted in
+    // individually because each now has a focused jsdom/RTL render-test suite
+    // exercising the exact lines this PR's Scope-A theming diff touches
+    // (codecov/patch #219 fix): RunDetailsContent's getLogLevelColor,
+    // TrajectoryView's failed/non-failed color branch, and RawEventsPanel's
+    // theme-token classes. components/codingAgents/CodingAgentsPage.tsx
+    // (~3.3k lines) is deliberately NOT added here even though it also has a
+    // real render test (sessionDetailPanel.test.ts) covering this PR's one
+    // changed line — opting in the whole file would add far more uncovered
+    // lines than tested ones and risks tripping the global thresholds below;
+    // see the PR's codecov write-up for the measured impact.
+    'components/RunDetailsContent.tsx',
+    'components/TrajectoryView.tsx',
+    'components/RawEventsPanel.tsx',
     '!**/__tests__/**',
     '!**/*.test.ts',
     '!**/dist/**',
