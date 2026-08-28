@@ -133,7 +133,12 @@ export function buildTracesAccessor(spans: Span[]): TracesAccessor {
   let hadReportedCost = false;
   let hadComputedCost = false;
   let tokenBearingSpanCount = 0;
-  let pricedSpanCount = 0;
+  // codex_review (PR #440): a span can have recognized tokens yet resolve
+  // NEITHER a reported cost NOR a computed one (unpriced/unresolved model) —
+  // this counter drives `costUnknowable` below so totalCost refuses to
+  // silently under-report just because *some other* span in the same trace
+  // happened to be priceable.
+  let unresolvedCostSpanCount = 0;
   const toolCalls: { name: string; durationMs: number }[] = [];
 
   for (const span of spans) {
@@ -169,7 +174,6 @@ export function buildTracesAccessor(spans: Span[]): TracesAccessor {
       const modelId = pickString(attrs, MODEL_ID_KEYS);
       const rates = lookupModelRates(modelId);
       if (rates) {
-        pricedSpanCount += 1;
         hadComputedCost = true;
         computedCost += computeCost(
           {
@@ -180,6 +184,11 @@ export function buildTracesAccessor(spans: Span[]): TracesAccessor {
           },
           rates,
         );
+      } else {
+        // This span's tokens contribute to totalTokens but NOT to totalCost —
+        // without this counter that would be a silent, plausible-looking
+        // undercount rather than the loud failure #230 asks for.
+        unresolvedCostSpanCount += 1;
       }
     }
 
@@ -207,12 +216,16 @@ export function buildTracesAccessor(spans: Span[]): TracesAccessor {
   // NOT throw — only the "we found nothing we understand" case throws.
   const noRecognizedTokenAttrs = spans.length > 0 && tokenBearingSpanCount === 0;
 
-  // Issue class: tokens were found, but no span reported cost AND no
-  // span's model matched the pricing table — totalCost would silently
-  // read 0 even though real spend happened. Throw only when reading
-  // totalCost (tokens themselves are legitimately known in this case).
-  const costUnknowable =
-    totalTokens > 0 && !hadReportedCost && pricedSpanCount === 0;
+  // Issue class: tokens were found, but AT LEAST ONE token-bearing span
+  // resolved neither a reported cost nor a computed one (unpriced model,
+  // no cost attribute). Pre-codex_review this only threw when EVERY span
+  // was unresolved — a trace with 9 priced spans and 1 unpriced span
+  // silently under-reported totalCost by exactly the unpriced span's real
+  // spend while still returning a plausible-looking number (PR #440 review
+  // finding, blocker). Throw only when reading totalCost (tokens themselves
+  // are legitimately known in this case) — any unresolved span makes the
+  // total untrustworthy, not just a total absence of resolved spans.
+  const costUnknowable = totalTokens > 0 && unresolvedCostSpanCount > 0;
 
   return {
     get totalTokens(): number {
@@ -237,11 +250,11 @@ export function buildTracesAccessor(spans: Span[]): TracesAccessor {
       }
       if (costUnknowable) {
         throw new Error(
-          `traces fixture: ${tokenBearingSpanCount} span(s) carried token usage but none reported ` +
-          `a cost attribute and none matched the fallback pricing table (see ` +
-          `lib/matchers/tracesPricing.ts). Reading totalCost would silently return 0 despite ` +
-          `real token spend — add the model to the pricing table or stamp a cost attribute on ` +
-          `the span.`
+          `traces fixture: ${unresolvedCostSpanCount} of ${tokenBearingSpanCount} span(s) with token usage ` +
+          `carried neither a cost attribute nor a model id matching the fallback pricing table (see ` +
+          `lib/matchers/tracesPricing.ts). Reading totalCost would silently UNDER-report real spend by ` +
+          `omitting those spans rather than reflect it -- add the model(s) to the pricing table or stamp a ` +
+          `cost attribute on the span(s), or use traces.spans to inspect per-span usage directly.`
         );
       }
       return totalCostValue;

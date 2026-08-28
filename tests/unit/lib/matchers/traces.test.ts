@@ -377,4 +377,61 @@ describe('buildTracesAccessor', () => {
     expect(t.totalCost).toBeGreaterThan(0);
     expect(t.costSource).toBe('computed');
   });
+
+  it('fail-loud (codex_review PR #440 blocker fix): throws reading totalCost when SOME spans are priced/reported but at least one token-bearing span is unpriced -- must not silently under-report', () => {
+    const t = buildTracesAccessor([
+      // Priced normally -- would make costUnknowable false under the old
+      // "only throw if EVERY span is unresolved" logic.
+      span({
+        name: 'a',
+        attributes: {
+          input_tokens: 1_000_000,
+          output_tokens: 0,
+          'gen_ai.request.model': 'claude-sonnet-4-6',
+        },
+      }),
+      // Unpriced model, no cost attribute -- its real spend would be
+      // silently dropped from totalCost pre-fix.
+      span({
+        name: 'b',
+        attributes: { input_tokens: 500, output_tokens: 100, 'gen_ai.request.model': 'some-unknown-model-xyz' },
+      }),
+    ]);
+    // Tokens are legitimately known across both spans -- must not throw.
+    expect(t.totalTokens).toBe(1_000_600);
+    expect(() => t.totalCost).toThrow(/pricing table/);
+    expect(() => t.totalCost).toThrow(/UNDER-report/);
+  });
+
+  it('does NOT throw reading totalCost when every token-bearing span is fully resolved (reported+computed mix)', () => {
+    const t = buildTracesAccessor([
+      span({ name: 'a', attributes: { 'gen_ai.usage.cost_usd': 0.01 } }),
+      span({
+        name: 'b',
+        attributes: { input_tokens: 1_000_000, output_tokens: 0, 'gen_ai.request.model': 'claude-sonnet-4-6' },
+      }),
+    ]);
+    expect(() => t.totalCost).not.toThrow();
+    expect(t.totalCost).toBeCloseTo(0.01 + 3, 5);
+  });
+
+  it('design note (reviewed, kept as documented): a trace with ONLY tool spans (no LLM span at all) throws on totalTokens, directing callers to traces.toolCalls/traces.spans instead of a silent 0', () => {
+    // Pins the deliberate tradeoff discussed in PR #440 review: this is the
+    // SAME `noRecognizedTokenAttrs` path as "none carried a recognized token
+    // attribute" (an agent whose spans use an unsupported shape) -- the
+    // fixture cannot distinguish "unsupported shape" from "no LLM call
+    // happened" without span-kind/operation-name classification, which is
+    // out of scope here. A body that legitimately expects zero LLM spend
+    // should assert on traces.toolCalls/traces.spans, not traces.totalTokens.
+    const t = buildTracesAccessor([
+      span({ name: 'tool.read_file', attributes: { 'gen_ai.tool.name': 'read_file' } }),
+      span({ name: 'tool.write_file', attributes: { 'gen_ai.tool.name': 'write_file' } }),
+    ]);
+    expect(t.toolCalls).toEqual([
+      { name: 'read_file', durationMs: 0 },
+      { name: 'write_file', durationMs: 0 },
+    ]);
+    expect(() => t.totalTokens).toThrow(/none carried a recognized/);
+    expect(() => t.totalCost).toThrow(/none carried a recognized/);
+  });
 });
