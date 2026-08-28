@@ -88,6 +88,10 @@ module.exports = {
     // fix — codecov was reporting 0% for this file's new branch because it
     // wasn't instrumented here at all, despite being thoroughly unit tested).
     'hooks/usePersistedState.ts',
+    // Context-value pretty-printing (test-case detail page) has a focused
+    // jsdom DOM test exercising both the JSON and plain-text render paths —
+    // fold it into the unit report rather than relying solely on e2e/nyc.
+    'components/evals3/ContextValueView.tsx',
     // Component coverage is currently opt-in while the global baseline is
     // expanded incrementally. Keep reader-oriented test-case definitions in
     // the unit report so their focused DOM tests count toward patch coverage.

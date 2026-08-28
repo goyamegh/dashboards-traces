@@ -17,6 +17,7 @@ import { CheckCircle2, FileCode2 } from 'lucide-react';
 import { TestCase } from '@/types';
 import { Badge } from '@/components/ui/badge';
 import { Markdown, hasRealMarkdown } from '@/components/ui/markdown';
+import { ContextValueView } from '@/components/evals3/ContextValueView';
 
 interface TestCaseDefinitionProps {
   testCase: TestCase;
@@ -33,15 +34,6 @@ const difficultyClasses: Record<string, string> = {
 
 function labelValue(testCase: TestCase, prefix: 'category:' | 'difficulty:'): string | undefined {
   return testCase.labels?.find(label => label.toLowerCase().startsWith(prefix))?.slice(prefix.length);
-}
-
-function formatContextValue(value: string): string {
-  try {
-    const parsed = JSON.parse(value);
-    return typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2);
-  } catch {
-    return value;
-  }
 }
 
 export const TestCaseDefinition: React.FC<TestCaseDefinitionProps> = ({
@@ -137,16 +129,17 @@ export const TestCaseDefinition: React.FC<TestCaseDefinitionProps> = ({
       {testCase.context && testCase.context.length > 0 && (
         <div>
           <div className={sectionLabelClass}>Context ({testCase.context.length})</div>
+          {/* ContextValueView (components/evals3/ContextValueView.tsx) supplies the
+              pretty-printed / syntax-highlighted / independently-collapsible
+              rendering for each item — composed in here so both this reader
+              layout (#420) and the highlighted-JSON fix keep working together. */}
           <div className="space-y-1.5">
             {testCase.context.map((item, index) => (
-              <div key={index} className="bg-card rounded border border-border px-3 py-2 min-w-0">
-                <p className={`${textClass} font-medium text-foreground break-words mb-1`}>
-                  {item.description || `Context item ${index + 1}`}
-                </p>
-                <pre className={`${textClass} text-muted-foreground font-mono whitespace-pre-wrap break-words overflow-x-auto max-h-32 overflow-y-auto leading-relaxed`}>
-                  {formatContextValue(item.value)}
-                </pre>
-              </div>
+              <ContextValueView
+                key={index}
+                title={item.description || `Context item ${index + 1}`}
+                value={item.value}
+              />
             ))}
           </div>
         </div>
