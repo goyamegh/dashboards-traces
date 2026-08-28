@@ -7,6 +7,8 @@ import {
   partitionByAgreement,
   bucketRow,
   extractRowCategory,
+  categoryLabelIsUsableFallback,
+  extractRowCategoryEffective,
   buildCategoryBreakdown,
   detectSharedWeakness,
   UNCATEGORIZED,
@@ -150,6 +152,100 @@ describe('extractRowCategory', () => {
   });
 });
 
+describe('categoryLabelIsUsableFallback / extractRowCategoryEffective', () => {
+  it('is false when any row already has a real bracket/topic facet (existing behavior untouched)', () => {
+    const rows = [
+      row('t1', 'q [basic] 1', {}, ['category:RAG']),
+      row('t2', 'no tag', {}, ['category:RAG']),
+    ];
+    expect(categoryLabelIsUsableFallback(rows)).toBe(false);
+    // extractRowCategoryEffective with fallback disabled == extractRowCategory
+    expect(extractRowCategoryEffective(rows[0], false)).toBe('basic');
+    expect(extractRowCategoryEffective(rows[1], false)).toBe(UNCATEGORIZED);
+  });
+
+  it('is false when every row is uncategorized but category: is uniform (the classic "category:RAG on everything" shape)', () => {
+    // This is exactly the case the original "category: intentionally NOT
+    // used" heuristic was protecting against: a single coarse label stamped
+    // on every case must NOT produce a redundant one-column matrix.
+    const rows = [1, 2, 3].map(i => row(`t${i}`, 'no tag', {}, ['category:RAG']));
+    expect(categoryLabelIsUsableFallback(rows)).toBe(false);
+    expect(extractRowCategoryEffective(rows[0], categoryLabelIsUsableFallback(rows))).toBe(UNCATEGORIZED);
+  });
+
+  it('is true when every row is uncategorized AND category: varies (the WixQA-400 shape: expertwritten/simulated)', () => {
+    const rows = [
+      ...[1, 2, 3].map(i => row(`e${i}`, `wixqa_expertwritten_${i}`, {}, ['category:expertwritten'])),
+      ...[1, 2, 3].map(i => row(`s${i}`, `wixqa_simulated_${i}`, {}, ['category:simulated'])),
+    ];
+    expect(categoryLabelIsUsableFallback(rows)).toBe(true);
+    const fallback = categoryLabelIsUsableFallback(rows);
+    expect(extractRowCategoryEffective(rows[0], fallback)).toBe('expertwritten');
+    expect(extractRowCategoryEffective(rows[3], fallback)).toBe('simulated');
+  });
+
+  it('is false for an empty row set', () => {
+    expect(categoryLabelIsUsableFallback([])).toBe(false);
+  });
+
+  it('ignores rows with no category: label at all when computing variance (only counts REAL values)', () => {
+    // 2 rows tagged category:RAG, 1 row with no category label whatsoever —
+    // only one distinct REAL value exists, so this must NOT count as "varies".
+    const rows = [
+      row('t1', 'no tag', {}, ['category:RAG']),
+      row('t2', 'no tag', {}, ['category:RAG']),
+      row('t3', 'no tag', {}),
+    ];
+    expect(categoryLabelIsUsableFallback(rows)).toBe(false);
+  });
+
+  // Regression coverage for codex_review findings on the first version of
+  // this fallback (severity HIGH/MED — see PR #449's review thread).
+  it('normalizes case before checking variance — category:RAG and category:rag must NOT count as 2 distinct values', () => {
+    // Without lowercasing before the Set/Map, inconsistent casing on an
+    // otherwise-uniform category would wrongly enable the fallback and
+    // produce a redundant single-column matrix (extractRowCategoryEffective
+    // lowercases when it RESOLVES a category — the variance CHECK must use
+    // the exact same normalization or the two can disagree).
+    const rows = [
+      ...Array.from({ length: 5 }, (_, i) => row(`u${i}`, 'no tag', {}, ['category:RAG'])),
+      ...Array.from({ length: 5 }, (_, i) => row(`l${i}`, 'no tag', {}, ['category:rag'])),
+    ];
+    expect(categoryLabelIsUsableFallback(rows)).toBe(false);
+    // All 10 resolve to the SAME effective category once fallback would be
+    // considered — confirms they were never meant to be "2 distinct values".
+    const effective = new Set(rows.map(r => extractRowCategoryEffective(r, true)));
+    expect(effective).toEqual(new Set(['rag']));
+  });
+
+  it('does not enable the fallback for one differently-tagged row when every OTHER row is uncategorized and category: varies (mixed-convention benchmark)', () => {
+    // A single [bracket]-tagged row must not disable the fallback for every
+    // OTHER row that has nothing better than category: to group by.
+    const rows = [
+      row('br1', 'q [custom] one-off case', {}, ['category:RAG']), // has its own real facet
+      ...Array.from({ length: 3 }, (_, i) => row(`e${i}`, `wixqa_expertwritten_${i}`, {}, ['category:expertwritten'])),
+      ...Array.from({ length: 3 }, (_, i) => row(`s${i}`, `wixqa_simulated_${i}`, {}, ['category:simulated'])),
+    ];
+    expect(categoryLabelIsUsableFallback(rows)).toBe(true);
+    // The bracketed row keeps its OWN facet regardless of the fallback flag.
+    expect(extractRowCategoryEffective(rows[0], true)).toBe('custom');
+    // The other rows use the category: fallback.
+    expect(extractRowCategoryEffective(rows[1], true)).toBe('expertwritten');
+    expect(extractRowCategoryEffective(rows[4], true)).toBe('simulated');
+  });
+
+  it('requires each candidate category: value to appear on >=2 rows — a single stray/typo value cannot flip the fallback on', () => {
+    // 5 rows category:RAG (real, dominant), 1 row category:rag-typo (a lone
+    // data-quality glitch) — must resolve like a uniform category, not like
+    // "2 distinct values that vary".
+    const rows = [
+      ...Array.from({ length: 5 }, (_, i) => row(`r${i}`, 'no tag', {}, ['category:RAG'])),
+      row('typo', 'no tag', {}, ['category:rag-typo']),
+    ];
+    expect(categoryLabelIsUsableFallback(rows)).toBe(false);
+  });
+});
+
 describe('buildCategoryBreakdown', () => {
   const rows = [
     ...[1, 2, 3, 4, 5].map(i =>
@@ -168,6 +264,38 @@ describe('buildCategoryBreakdown', () => {
     expect(b.perRun[RUN_A].semantic).toEqual({ passed: 2, total: 5 });
     expect(b.perRun[RUN_B].semantic).toEqual({ passed: 3, total: 5 });
     expect(b.perRun[RUN_A][OTHER_CATEGORY]).toEqual({ passed: 1, total: 1 });
+    // Real bracket-tag facets exist — the category:-label fallback must stay off.
+    expect(b.usesCategoryFallback).toBe(false);
+  });
+
+  it('falls back to the category: label when no row has a bracket/topic facet AND category: varies (WixQA-400 shape)', () => {
+    const wixqaLike = [
+      ...Array.from({ length: 6 }, (_, i) =>
+        row(`e${i}`, `wixqa_expertwritten_${i}`, { [RUN_A]: i < 4 ? 'passed' : 'failed', [RUN_B]: 'passed' } as any, [
+          'category:expertwritten',
+        ])
+      ),
+      ...Array.from({ length: 6 }, (_, i) =>
+        row(`s${i}`, `wixqa_simulated_${i}`, { [RUN_A]: i < 2 ? 'passed' : 'failed', [RUN_B]: i < 3 ? 'passed' : 'failed' } as any, [
+          'category:simulated',
+        ])
+      ),
+    ];
+    const b = buildCategoryBreakdown(wixqaLike, [RUN_A, RUN_B], 2);
+    expect(b.usesCategoryFallback).toBe(true);
+    expect(b.categories).toEqual(['expertwritten', 'simulated']);
+    expect(b.perRun[RUN_A].expertwritten).toEqual({ passed: 4, total: 6 });
+    expect(b.perRun[RUN_B].simulated).toEqual({ passed: 3, total: 6 });
+    expect(b.members.expertwritten).toEqual(['expertwritten']);
+  });
+
+  it('does NOT fall back when category: is uniform and no bracket/topic facet exists (no redundant single-value column)', () => {
+    const uniform = Array.from({ length: 6 }, (_, i) =>
+      row(`t${i}`, `case_${i}`, { [RUN_A]: 'passed', [RUN_B]: 'passed' } as any, ['category:RAG'])
+    );
+    const b = buildCategoryBreakdown(uniform, [RUN_A, RUN_B], 2);
+    expect(b.usesCategoryFallback).toBe(false);
+    expect(b.categories).toEqual([UNCATEGORIZED]);
   });
 
   it('exposes members so the (other) rollup is filterable with the same semantics it was computed with', () => {
@@ -243,5 +371,38 @@ describe('detectSharedWeakness', () => {
   it('returns null when nothing is genuinely weak', () => {
     const w = scenario({ a: 9, b: 8 }, { a: 9, b: 9 }); // 90/80 vs 90/90 — strong everywhere
     expect(w).toBeNull();
+  });
+
+  it('computes allFailShare correctly through the category:-label fallback (WixQA-shaped rows, no bracket/topic tags)', () => {
+    // Reproduces the WixQA-400 shape end-to-end through detectSharedWeakness:
+    // rows carry ONLY category:expertwritten/simulated (no [bracket], no
+    // topic:), so this only works if allFailInCat resolves rows via
+    // extractRowCategoryEffective(row, breakdown.usesCategoryFallback)
+    // instead of the base extractRowCategory (which would see every row as
+    // UNCATEGORIZED and silently zero out allFailShare).
+    const rows: TestCaseComparisonRow[] = [];
+    for (let i = 1; i <= 10; i++) {
+      rows.push(
+        row(`sim${i}`, `wixqa_simulated_${i}`, { [RUN_A]: i <= 6 ? 'passed' : 'failed', [RUN_B]: i <= 6 ? 'passed' : 'failed' } as any, [
+          'category:simulated',
+        ])
+      );
+      rows.push(
+        row(`exp${i}`, `wixqa_expertwritten_${i}`, { [RUN_A]: i <= 9 ? 'passed' : 'failed', [RUN_B]: i <= 9 ? 'passed' : 'failed' } as any, [
+          'category:expertwritten',
+        ])
+      );
+    }
+    const partition = partitionByAgreement(rows, [RUN_A, RUN_B]);
+    const breakdown = buildCategoryBreakdown(rows, [RUN_A, RUN_B], 5);
+    expect(breakdown.usesCategoryFallback).toBe(true);
+    const w = detectSharedWeakness(breakdown, partition, [RUN_A, RUN_B]);
+    expect(w).not.toBeNull();
+    expect(w!.category).toBe('simulated');
+    // 5 all-fail cases total (sim7-10 + exp10); 4 of them are 'simulated' —
+    // allFailShare must be 0.8, not 0 (the pre-fix bug: re-extracting via the
+    // base, non-fallback-aware function would see every row as UNCATEGORIZED
+    // and silently zero this out regardless of the real distribution).
+    expect(w!.allFailShare).toBe(0.8);
   });
 });
