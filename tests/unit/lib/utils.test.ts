@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { cn, getLabelColor, getDifficultyColor, formatDate, formatRelativeTime, getModelName, truncate, getRunShortId, getRunDisplayName, getRunOverallScore } from '@/lib/utils';
+import { cn, getLabelColor, getDifficultyColor, formatDate, formatRelativeTime, getModelName, getJudgeModelLabel, getEvaluatorLabel, truncate, getRunShortId, getRunDisplayName, getRunOverallScore } from '@/lib/utils';
 
 describe('lib/utils', () => {
   describe('cn', () => {
@@ -194,6 +194,44 @@ describe('lib/utils', () => {
     it('should return modelId for unknown model', () => {
       const name = getModelName('unknown-model');
       expect(name).toBe('unknown-model');
+    });
+  });
+
+  describe('getJudgeModelLabel', () => {
+    it('should return shortened display name for a known judge model id', () => {
+      expect(getJudgeModelLabel('claude-sonnet-4.5')).toBe('Claude Sonnet 4.5');
+    });
+
+    it('should fall back to the raw id for an unknown judge model id', () => {
+      expect(getJudgeModelLabel('us.anthropic.claude-made-up')).toBe('us.anthropic.claude-made-up');
+    });
+
+    it('should render an em dash when judgeModelId is missing (legacy run)', () => {
+      expect(getJudgeModelLabel(undefined)).toBe('—');
+      expect(getJudgeModelLabel(null)).toBe('—');
+      expect(getJudgeModelLabel('')).toBe('—');
+    });
+  });
+
+  describe('getEvaluatorLabel', () => {
+    const nameById = new Map<string, string>([
+      ['system-factuality', 'Factuality'],
+      ['eval-123', 'Custom RCA'],
+    ]);
+
+    it('should resolve a known evaluatorId to its name', () => {
+      expect(getEvaluatorLabel('system-factuality', nameById)).toBe('Factuality');
+      expect(getEvaluatorLabel('eval-123', nameById)).toBe('Custom RCA');
+    });
+
+    it('should fall back to the raw id when the evaluator is unknown (deleted/renamed)', () => {
+      expect(getEvaluatorLabel('definitely-does-not-exist', nameById)).toBe('definitely-does-not-exist');
+    });
+
+    it('should render an em dash when evaluatorId is missing (legacy run)', () => {
+      expect(getEvaluatorLabel(undefined, nameById)).toBe('—');
+      expect(getEvaluatorLabel(null, nameById)).toBe('—');
+      expect(getEvaluatorLabel('', nameById)).toBe('—');
     });
   });
 
