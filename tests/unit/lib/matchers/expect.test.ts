@@ -204,4 +204,24 @@ describe('expect.soft (RFC 004 roadmap — non-throwing assertions)', () => {
     // the previous statement — each call creates its own Assertion instance.
     expect(() => ahExpect(3).to.equal(4)).toThrow();
   });
+
+  it('KNOWN LIMITATION: a multi-step property chain records a derivative second failure when the first link fails (see docs/SDK.md)', () => {
+    // With a hard expect(), a missing property throws and `.that.equals()`
+    // never runs — only ONE failure would ever be recorded. In soft mode
+    // nothing throws, so the chain continues past the missing-property
+    // check and `.that.equals(5)` runs against `undefined`, recording its
+    // own "expected undefined to equal 5" failure. This test pins that
+    // documented, real behavior (not asserting it's desirable — see the
+    // "Known limitation" callout in docs/SDK.md) so a future change to the
+    // patched assert() override doesn't silently alter it either way
+    // without a deliberate update here.
+    ahExpect.soft({ a: 1 } as any).to.have.property('nonexistent').that.equals(5);
+    const out = endSession();
+    startSession();
+    expect(out).toHaveLength(2);
+    expect(out[0].pass).toBe(false);
+    expect(out[0].errorMessage).toContain('nonexistent');
+    expect(out[1].pass).toBe(false);
+    expect(out[1].errorMessage).toContain('undefined');
+  });
 });
