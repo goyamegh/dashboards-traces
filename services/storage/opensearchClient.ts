@@ -89,6 +89,15 @@ export interface StorageBenchmarkRunConfig {
   agentKey: string;  // Agent key (matches server route behavior)
   agentId?: string;  // Legacy field name (for backwards compatibility)
   modelId: string;
+  /**
+   * Judge model id and evaluator id, distinct from the agent's `modelId`.
+   * Not part of the original storage shape (added alongside the Evaluation
+   * Runs page's Judge/Evaluator columns). Optional so older stored docs
+   * (predating this field) type as `undefined` with no cast needed at the
+   * `toBenchmarkRun`/`toStorageFormat` mapping boundary.
+   */
+  judgeModelId?: string;
+  evaluatorId?: string;
   headers?: Record<string, string>;
   iterationCount?: number;
   createdAt: string;
