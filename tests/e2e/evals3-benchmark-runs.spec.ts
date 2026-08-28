@@ -197,28 +197,29 @@ test.describe('Evals3 Benchmark Runs Page', () => {
     await expect(dialog.locator('[data-testid="run-config-evaluator-trigger"]')).toBeVisible();
   });
 
-  test('Start Run posts evaluatorId from the dialog through to /execute', async ({ page }) => {
+  test('Start Run posts evaluatorId from the dialog through to the unified runner', async ({ page }) => {
     test.skip(!benchmarkId, 'No benchmark created');
 
-    // Capture the body of the /execute POST so we can assert the dialog's
-    // selected evaluatorId actually rides through. We DON'T fulfill the
-    // request — we let the real backend handle it so this also exercises
-    // the round-trip through validateRunConfig + the storage layer (the
-    // detailed contract is in
-    // tests/integration/server/routes/storage/benchmarkExecuteEvaluator.integration.test.ts;
-    // here we just need to know the UI delivered the right body).
+    // Capture the unified evaluation-run request so we assert both the dialog
+    // selection and benchmark source survive the UI adapter. Fulfill a complete
+    // SSE exchange: this test owns UI wiring, while runner persistence is
+    // covered by the storage route integration tests.
     let executeBody: any = null;
-    await page.route(
-      `**/api/storage/benchmarks/${encodeURIComponent(benchmarkId!)}/execute`,
-      async route => {
-        try {
-          executeBody = JSON.parse(route.request().postData() || '{}');
-        } catch {
-          /* ignore parse errors */
-        }
-        await route.continue();
-      },
-    );
+    await page.route('**/api/storage/evaluation-runs', async route => {
+      try {
+        executeBody = JSON.parse(route.request().postData() || '{}');
+      } catch {
+        /* ignore parse errors */
+      }
+      await route.fulfill({
+        status: 200,
+        headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
+        body: [
+          `event: started\ndata: ${JSON.stringify({ runId: 'e2e-eval-run', testCases: [] })}\n\n`,
+          `event: completed\ndata: ${JSON.stringify({ id: 'e2e-eval-run', status: 'completed', results: [] })}\n\n`,
+        ].join(''),
+      });
+    });
 
     await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs`);
     await page.waitForSelector('h2', { timeout: 30_000 });
@@ -243,14 +244,14 @@ test.describe('Evals3 Benchmark Runs Page', () => {
 
     await page.click('button:has-text("Start Run")');
 
-    // Wait for the route handler to capture the request body. The /execute
-    // call streams over SSE so the request fires before completion; the
-    // postData is captured synchronously inside route.continue().
+    // Wait for the route handler to capture the unified SSE request body.
     for (let i = 0; i < 40 && executeBody === null; i++) {
       await page.waitForTimeout(100);
     }
 
-    expect(executeBody, '/execute POST body should have been captured').toBeTruthy();
+    expect(executeBody, 'evaluation-runs POST body should have been captured').toBeTruthy();
+    expect(executeBody.sources).toEqual([{ type: 'benchmark', benchmarkId }]);
+    expect(executeBody.benchmarkId).toBe(benchmarkId);
     expect(executeBody.agentKey).toBeTruthy();
     expect(executeBody.modelId).toBeTruthy();
     expect(executeBody.name).toBeTruthy();
