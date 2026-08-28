@@ -93,6 +93,41 @@ test.describe('Evals3 Benchmarks Page', () => {
 
     expect(hasTable || hasEmptyState).toBeTruthy();
   });
+
+  test('evaluation-runs never appear as benchmark rows (docType isolation)', async ({ page, request }) => {
+    // Regression: benchmarks and evaluation-runs share one index/dir
+    // (docType-discriminated). The benchmarks list used to surface every
+    // CLI/SDK eval-run as an empty "0 TCs / 0 runs" benchmark row — so
+    // re-running the same CLI command appeared to mint a new benchmark
+    // every time. Seed an eval-run and assert the page never renders it.
+    const stamp = Date.now();
+    const runId = `eval-run-e2e-bmexclude-${stamp}`;
+    const runName = `E2E-BMEXCLUDE-RUN-${stamp}`;
+    const put = await request.put(`/api/storage/evaluation-runs/${runId}`, {
+      data: {
+        name: runName,
+        agentKey: 'demo',
+        modelId: 'demo-model',
+        sources: [],
+        trigger: 'cli',
+        status: 'completed',
+        testCaseSnapshots: [],
+        results: {},
+        createdAt: new Date().toISOString(),
+      },
+    });
+    expect(put.ok()).toBeTruthy();
+
+    try {
+      await page.reload();
+      await page.waitForSelector('h2:has-text("Benchmarks")', { timeout: 30000 });
+      // Give the list fetch time to settle, then assert the run name is absent.
+      await page.waitForTimeout(1500);
+      await expect(page.locator(`text=${runName}`)).toHaveCount(0);
+    } finally {
+      await request.delete(`/api/storage/evaluation-runs/${runId}`).catch(() => {});
+    }
+  });
 });
 
 test.describe('Evals3 Benchmark CRUD', () => {
