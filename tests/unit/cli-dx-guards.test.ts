@@ -56,6 +56,17 @@ describe('CLI DX Guards', () => {
   });
 
   describe('A6 - Zero agents config warning', () => {
+    // NOTE: server/services/configService.ts is globally redirected to
+    // __mocks__/@/server/services/configService.ts via jest.config.cjs's
+    // moduleNameMapper (the real module reads import.meta.url, which Jest's
+    // CJS-oriented ts-jest transform can't handle) — so getConfigStatus()
+    // itself is NOT reachable, real, in any Jest process, unit or
+    // integration. These cases pin the *contract* (the exact condition and
+    // message shape a caller should see); the real function executing that
+    // contract end-to-end is covered by hitting the actual running server in
+    // tests/integration/cli-dx-a6-zero-agents.test.ts, which is also where
+    // this repo's own configService.test.ts says the real implementation is
+    // tested (see that file's header comment).
     it('should generate warning message for zero agents', () => {
       const agents = [] as any[];
       const warnings: string[] = [];
