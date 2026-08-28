@@ -110,6 +110,9 @@ function toTestCase(stored: StorageTestCase): TestCase {
     // test cases from JSON ones (CollapsibleTestCaseDefinition keys off these).
     sourceFile: stored.sourceFile,
     sourceHash: stored.sourceHash,
+    sourceCode: stored.sourceCode,
+    sourceFileName: stored.sourceFileName,
+    sourceLanguage: stored.sourceLanguage,
     isPromoted: stored.tags?.includes('promoted') ?? false,
     createdAt: stored.createdAt,
     updatedAt: stored.updatedAt,
@@ -223,11 +226,12 @@ class AsyncTestCaseStorage {
   /**
    * Get test cases by specific IDs (for efficient filtered fetching)
    * Used when you only need test cases for a specific benchmark
+   * @param options.summary - true to fetch lightweight summary (no sourceCode/context/expectedOutcomes)
    */
-  async getByIds(ids: string[]): Promise<TestCase[]> {
+  async getByIds(ids: string[], options?: { summary?: boolean }): Promise<TestCase[]> {
     if (ids.length === 0) return [];
 
-    const stored = await opensearchTestCases.getByIds(ids);
+    const stored = await opensearchTestCases.getByIds(ids, options);
     const testCases = stored.map(toTestCase);
     // Maintain order of requested IDs
     const idOrder = new Map(ids.map((id, index) => [id, index]));

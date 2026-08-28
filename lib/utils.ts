@@ -250,3 +250,27 @@ export const truncate = (text: string, length: number): string => {
   if (text.length <= length) return text;
   return text.substring(0, length).trim() + '...';
 };
+
+// ==================== Eval Source Language Detection ====================
+
+/**
+ * Detect the syntax-highlighting language for a code-SDK eval file from its
+ * extension. Isomorphic (no Node built-ins) so it's shared by the CLI/server
+ * import path (lib/testCases/loader.ts, which re-exports this) AND the
+ * browser-side EvalSourceCodeView component -- one source of truth for
+ * "what language is this file" instead of duplicating the extension check.
+ *
+ * `.mjs`/`.js`/`.cjs` -> javascript, everything else code-like (`.ts` and
+ * unknown extensions) -> typescript. There's no `.jsx`/`.tsx` case today --
+ * eval files are plain Node scripts, not React -- but typescript's grammar
+ * is a superset of JS syntax so defaulting unknown-but-code extensions to
+ * it is the safer guess for highlighting purposes (worst case: a few
+ * JS-only tokens render unstyled, never mis-highlighted).
+ */
+export function detectSourceLanguage(fileName: string): 'javascript' | 'typescript' {
+  const lower = fileName.toLowerCase();
+  if (lower.endsWith('.js') || lower.endsWith('.mjs') || lower.endsWith('.cjs')) {
+    return 'javascript';
+  }
+  return 'typescript';
+}

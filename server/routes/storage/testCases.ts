@@ -31,6 +31,11 @@ function toSummary(doc: any): any {
     context: [],
     expectedOutcomes: [],
     versions: [],
+    // The full eval-file source can be many KB; list views only need to
+    // know a code-imported test case HAS a source (sourceFile / sourceHash
+    // / sourceFileName / sourceLanguage stay), not its full text. The Test
+    // Case detail page fetches the full (non-summary) record via getById.
+    sourceCode: undefined,
   };
 }
 

@@ -587,4 +587,24 @@ describe('Code SDK — CLI subprocess integration (every SDK condition)', () => 
     expect(tc?.category).toBe('Smoke');
     expect(tc?.difficulty).toBe('Easy');
   });
+
+  // -------------------------------------------------------------------
+  // Condition 21 -- the eval-file source is captured and persisted at
+  //   import time (Test Case detail page "Eval source" IDE view). Every
+  //   test case imported from this fixture shares the same sourceCode --
+  //   the file, not the individual test, is the unit of "source".
+  // -------------------------------------------------------------------
+  it('SDK condition 21: sourceCode/sourceFileName/sourceLanguage persisted on the test case (CJS .js path)', () => {
+    if (!backendAvailable) return;
+    const tc = testCases.get('two-arg-form');
+    expect(tc).toBeDefined();
+    expect(tc.sourceFileName).toBe('sdk-coverage.eval.js');
+    expect(tc.sourceLanguage).toBe('javascript');
+    expect(typeof tc.sourceCode).toBe('string');
+    // The persisted source is the ENTIRE file, not a per-test slice -- every
+    // test's name should appear in the one shared sourceCode blob.
+    expect(tc.sourceCode).toContain("test('two-arg-form'");
+    expect(tc.sourceCode).toContain("test('chai-fail'");
+    expect(tc.sourceCode).toContain('beforeAll');
+  });
 });

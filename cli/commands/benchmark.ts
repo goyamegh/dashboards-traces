@@ -28,7 +28,7 @@ import { calculateRunStats, getReportIdsFromRun } from '@/lib/runStats.js';
 import { formatJson, formatMarkdownTable, parseOutputFormat, OUTPUT_FORMAT_DESCRIPTION, type OutputFormat } from '@/cli/utils/formatOutput.js';
 import type { AgentConfig, Benchmark, BenchmarkRun, TestCase, TestCaseRun, EvaluationReport, TestCaseSource, EvaluationRun } from '@/types/index.js';
 import { existsSync, statSync } from 'fs';
-import { isCodeFile } from '@/lib/testCases/loader.js';
+import { isCodeFile, detectSourceLanguage } from '@/lib/testCases/loader.js';
 
 interface BenchmarkOptions {
   agent: string[];
@@ -909,6 +909,8 @@ export function createBenchmarkCommand(): Command {
               const { getCategoryFromLabels, getDifficultyFromLabels } = await import('@/lib/testCaseLabels.js');
               const loaded = await loadTestCasesFromModule(filePath!);
               const sourceFile = path.relative(process.cwd(), loaded.filePath);
+              const sourceFileName = path.basename(sourceFile);
+              const sourceLanguage = detectSourceLanguage(sourceFile);
               groups = loaded.benchmarks;
               const inGroup = new Set<string>();
               for (const list of groups.values()) {
@@ -928,6 +930,16 @@ export function createBenchmarkCommand(): Command {
                   labels,
                   sourceFile,
                   sourceHash: tc.hash,
+                  // Full eval-file text + provenance metadata, captured
+                  // once per import so the Test Case detail page can render
+                  // an IDE-style view of the source that produced this test
+                  // case (issue: "render the eval.ts file on the test case
+                  // page"). Every test case from this file shares the same
+                  // sourceCode -- the file is the unit of "source", not the
+                  // individual test.
+                  sourceCode: loaded.fileSource,
+                  sourceFileName,
+                  sourceLanguage,
                   description: tc.options.description,
                   // Forward expectedOutcomes / expectedTrajectory — see
                   // services/sourceResolver.ts for rationale. Without
