@@ -24,7 +24,15 @@ export function isCodeFile(filename: string): boolean {
   return CODE_EXTENSIONS.some(ext => lower.endsWith(ext));
 }
 
-export function computeTestCaseHash(tc: CodeTestCase): string {
+// Re-exported so CLI/server importers keep a single import path
+// (`@/lib/testCases/loader`) for both the loader and the language
+// detector, while the browser-side EvalSourceCodeView component imports
+// the same isomorphic implementation directly from `@/lib/utils` (this
+// module pulls in `fs`/`module`, which are Node-only and unsafe to bundle
+// into the browser).
+export { detectSourceLanguage } from '@/lib/utils.js';
+
+export function computeTestCaseHash(tc: CodeTestCase, fileSource?: string): string {
   const content = JSON.stringify({
     name: tc.name,
     prompt: tc.options.prompt,
@@ -38,6 +46,15 @@ export function computeTestCaseHash(tc: CodeTestCase): string {
     // would never reach storage.
     expectedOutcomes: tc.options.expectedOutcomes,
     expectedTrajectory: tc.options.expectedTrajectory,
+    // Fold in the WHOLE file's raw text (optional -- omitted by callers that
+    // don't have it, e.g. existing unit tests exercising this function in
+    // isolation). Without this, editing ONLY the evaluate() body, a helper
+    // function, an import, or even just a comment would leave every
+    // options-derived field above unchanged, `sourceHash` would stay put,
+    // `bulkUpsert` would classify the row as unchanged, and the persisted
+    // `sourceCode` -- the entire point of the eval-source viewer -- would
+    // silently go stale relative to the real file on disk.
+    fileSource,
   });
   return createHash('sha256').update(content).digest('hex');
 }
@@ -58,6 +75,15 @@ export interface LoadResult {
    */
   benchmarks: Map<string, string[]>;
   /**
+   * Raw text of the eval file, read once up front (before execution) for
+   * BOTH .js and .ts/.mjs paths. Persisted verbatim as `sourceCode` on each
+   * imported TestCase (see cli/commands/benchmark.ts) so the Test Case
+   * detail page can render the whole file as an IDE-style code view --
+   * without this we'd only have the parsed `initialPrompt`/`expectedOutcomes`
+   * fields, not the `evaluate()` body that produced them.
+   */
+  fileSource: string;
+  /**
    * All lifecycle hooks (`beforeEach`/`afterEach`/`beforeAll`/`afterAll`)
    * registered while loading this file. Empty when the file declares none.
    * The orchestrator filters by `(sourceFile, describePath)` at run time.
@@ -68,6 +94,18 @@ export interface LoadResult {
 export async function loadTestCasesFromModule(filePath: string): Promise<LoadResult> {
   const absPath = resolve(filePath);
 
+  // Read the raw file text up front, before any execution path below --
+  // both the .js (already needed its own read for the CJS wrapper) and the
+  // .ts/.mjs (dynamic `import()`) paths reuse this single read. For .js this
+  // read IS the executed source (the CJS wrapper below runs this exact
+  // string). For .ts/.mjs, `import()` reads the file independently via
+  // Node's own module loader a few lines later -- in the extremely narrow
+  // window where the file is edited between this read and that import
+  // resolving, `fileSource` could theoretically diverge from what actually
+  // ran. That's an accepted, practically negligible risk (same file, same
+  // synchronous-ish call, no network hop) rather than a guarantee.
+  const fileSource = readFileSync(absPath, 'utf-8');
+
   // Clear any prior registration for this file and set it as active
   clearRegistry(absPath);
   setActiveFile(absPath);
@@ -77,7 +115,7 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
   if (absPath.endsWith('.js')) {
     // For CJS .js files, execute in a fresh context with our test() function
     // injected. This avoids module caching issues across multiple loads.
-    const code = readFileSync(absPath, 'utf-8');
+    const code = fileSource;
     const fileDir = dirname(absPath);
     // NOTE: do not call require('module') here — this file is bundled as ESM
     // by esbuild for the server, and Dynamic require of built-ins is unsupported
@@ -171,10 +209,13 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
     );
   }
 
-  // Compute per-test-case hash
+  // Compute per-test-case hash. Includes fileSource (see
+  // computeTestCaseHash) so ANY change to the file -- not just the
+  // options fields already tracked -- invalidates the hash and triggers a
+  // re-persist, keeping the stored sourceCode in sync with disk.
   const loaded: LoadedTestCase[] = testCases.map(tc => ({
     ...tc,
-    hash: computeTestCaseHash(tc),
+    hash: computeTestCaseHash(tc, fileSource),
   }));
 
   // Derive describe-group → test names mapping. Tests outside any
@@ -194,5 +235,5 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
   // is a no-op in that case so existing tests are unaffected.
   const hooks = getRegisteredHooks(absPath);
 
-  return { testCases: loaded, filePath: absPath, benchmarks, hooks };
+  return { testCases: loaded, filePath: absPath, benchmarks, hooks, fileSource };
 }

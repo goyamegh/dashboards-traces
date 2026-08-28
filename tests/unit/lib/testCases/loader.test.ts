@@ -105,4 +105,32 @@ describe('computeTestCaseHash', () => {
     };
     expect(computeTestCaseHash(baseTc)).not.toBe(computeTestCaseHash(modified));
   });
+
+  // Eval-source IDE view feature: sourceCode must go stale-free. Without
+  // folding the whole file's text into the hash, editing ONLY the
+  // evaluate() body / a helper / a comment -- none of which touch the
+  // options fields above -- would leave the hash (and therefore the
+  // persisted sourceCode) unchanged even though the file on disk changed.
+  describe('fileSource sensitivity (issue: eval-source view going stale)', () => {
+    it('is unaffected when fileSource is omitted (back-compat for isolated callers)', () => {
+      expect(computeTestCaseHash(baseTc)).toBe(computeTestCaseHash(baseTc));
+    });
+
+    it('changes when fileSource differs, even with identical options', () => {
+      const hashA = computeTestCaseHash(baseTc, "test('x', () => {});");
+      const hashB = computeTestCaseHash(baseTc, "test('x', () => { /* edited */ });");
+      expect(hashA).not.toBe(hashB);
+    });
+
+    it('changes between no-fileSource and a given fileSource (drives the one-time backfill of legacy rows)', () => {
+      const withoutSource = computeTestCaseHash(baseTc);
+      const withSource = computeTestCaseHash(baseTc, "test('x', () => {});");
+      expect(withoutSource).not.toBe(withSource);
+    });
+
+    it('is identical for the same fileSource across repeated calls', () => {
+      const source = "test('x', () => {});";
+      expect(computeTestCaseHash(baseTc, source)).toBe(computeTestCaseHash(baseTc, source));
+    });
+  });
 });

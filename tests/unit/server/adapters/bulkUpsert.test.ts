@@ -42,6 +42,59 @@ describe('bulkUpsert', () => {
     expect(result.testCases[0].sourceHash).toBe('abc123');
   });
 
+  // Eval-source IDE view feature: sourceCode/sourceFileName/sourceLanguage
+  // are plain passthrough fields (no schema whitelist on this layer), same
+  // as sourceFile/sourceHash above. This locks that in as a regression
+  // guard -- a future "tidy up TestCase fields" refactor that adds an
+  // explicit allowlist would silently drop the eval source otherwise.
+  it('persists sourceCode/sourceFileName/sourceLanguage on create', async () => {
+    const input = [{
+      name: 'Code SDK Test',
+      initialPrompt: 'Analyze the outage',
+      sourceFile: 'evals/outage.eval.ts',
+      sourceHash: 'hash-v1',
+      sourceCode: "import { test } from '@opensearch-project/agent-health';\ntest('a', () => {});\n",
+      sourceFileName: 'outage.eval.ts',
+      sourceLanguage: 'typescript' as const,
+    }];
+
+    const result = await storage.testCases.bulkUpsert(input);
+
+    expect(result.created).toBe(1);
+    expect(result.testCases[0].sourceCode).toBe(input[0].sourceCode);
+    expect(result.testCases[0].sourceFileName).toBe('outage.eval.ts');
+    expect(result.testCases[0].sourceLanguage).toBe('typescript');
+  });
+
+  it('updates sourceCode when sourceHash drifts (source edited)', async () => {
+    const v1 = [{
+      name: 'Drifting Test',
+      initialPrompt: 'p',
+      sourceFile: 'evals/drift.eval.js',
+      sourceHash: 'hash-v1',
+      sourceCode: 'test("a", () => {});',
+      sourceFileName: 'drift.eval.js',
+      sourceLanguage: 'javascript' as const,
+    }];
+    const first = await storage.testCases.bulkUpsert(v1);
+    expect(first.created).toBe(1);
+
+    const v2 = [{
+      name: 'Drifting Test',
+      initialPrompt: 'p',
+      sourceFile: 'evals/drift.eval.js',
+      sourceHash: 'hash-v2',
+      sourceCode: 'test("a", () => { /* edited */ });',
+      sourceFileName: 'drift.eval.js',
+      sourceLanguage: 'javascript' as const,
+    }];
+    const second = await storage.testCases.bulkUpsert(v2);
+
+    expect(second.updated).toBe(1);
+    expect(second.testCases[0].id).toBe(first.testCases[0].id);
+    expect(second.testCases[0].sourceCode).toBe(v2[0].sourceCode);
+  });
+
   it('skips unchanged test cases (same name + sourceFile + sourceHash)', async () => {
     const input = [{
       name: 'Existing Case',

@@ -681,3 +681,83 @@ select:focus {
   width: 1.125rem;   /* 18px */
   height: 1.125rem;
 }
+
+/* ── Eval Source Code View (EvalSourceCodeView.tsx) ───────────────────────
+ * IDE-style Prism.js token colors for the code-SDK "Eval source" viewer on
+ * the Test Case detail page. Mirrors the existing `.prose pre` code-block
+ * background convention above (light `#F5F7FA` / dark `#0d1117`) so the
+ * eval-source card reads as "the same kind of code block" as markdown code
+ * fences elsewhere in the app, just with line numbers + full highlighting.
+ */
+.eval-source-code {
+  background-color: #F5F7FA;
+}
+.dark .eval-source-code {
+  background-color: #0d1117;
+}
+.eval-source-highlight .token.comment,
+.eval-source-highlight .token.prolog,
+.eval-source-highlight .token.doctype,
+.eval-source-highlight .token.cdata {
+  color: #6a737d;
+}
+.dark .eval-source-highlight .token.comment,
+.dark .eval-source-highlight .token.prolog,
+.dark .eval-source-highlight .token.doctype,
+.dark .eval-source-highlight .token.cdata {
+  color: #8b949e;
+}
+.eval-source-highlight .token.string,
+.eval-source-highlight .token.attr-value,
+.eval-source-highlight .token.template-string {
+  color: #0a3069;
+}
+.dark .eval-source-highlight .token.string,
+.dark .eval-source-highlight .token.attr-value,
+.dark .eval-source-highlight .token.template-string {
+  color: #a5d6ff;
+}
+.eval-source-highlight .token.keyword,
+.eval-source-highlight .token.operator-keyword {
+  color: #cf222e;
+}
+.dark .eval-source-highlight .token.keyword,
+.dark .eval-source-highlight .token.operator-keyword {
+  color: #ff7b72;
+}
+.eval-source-highlight .token.function,
+.eval-source-highlight .token.function-variable {
+  color: #8250df;
+}
+.dark .eval-source-highlight .token.function,
+.dark .eval-source-highlight .token.function-variable {
+  color: #d2a8ff;
+}
+.eval-source-highlight .token.number,
+.eval-source-highlight .token.boolean,
+.eval-source-highlight .token.property,
+.eval-source-highlight .token.builtin {
+  color: #0550ae;
+}
+.dark .eval-source-highlight .token.number,
+.dark .eval-source-highlight .token.boolean,
+.dark .eval-source-highlight .token.property,
+.dark .eval-source-highlight .token.builtin {
+  color: #79c0ff;
+}
+.eval-source-highlight .token.class-name,
+.eval-source-highlight .token.maybe-class-name {
+  color: #953800;
+}
+.dark .eval-source-highlight .token.class-name,
+.dark .eval-source-highlight .token.maybe-class-name {
+  color: #ffa657;
+}
+.eval-source-highlight .token.punctuation,
+.eval-source-highlight .token.operator {
+  color: #57606a;
+}
+.dark .eval-source-highlight .token.punctuation,
+.dark .eval-source-highlight .token.operator {
+  color: #c9d1d9;
+}
