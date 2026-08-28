@@ -12,6 +12,7 @@ jest.mock('@/services/storage/opensearchClient', () => ({
   testCaseStorage: {
     getAll: jest.fn(),
     getById: jest.fn(),
+    getByIds: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
     delete: jest.fn(),
@@ -144,6 +145,51 @@ describe('AsyncTestCaseStorage', () => {
 
       expect(result[0].isPromoted).toBe(false);
     });
+
+    // Regression coverage for the 168MB full-payload performance fix: list
+    // views now call getAll({ summary: true, ... }) instead of a bare
+    // getAll(). Assert the option plumbs through to the OpenSearch client
+    // (opensearchClient.getAll({ fields: 'summary', ... })) unchanged, so a
+    // future refactor of this passthrough can't silently drop it.
+    it('passes summary=true through as fields: "summary" to the OpenSearch client', async () => {
+      mockOsTestCases.getAll.mockResolvedValue(mockGetAllResult([createMockStorageTestCase()]));
+
+      await asyncTestCaseStorage.getAll({ summary: true });
+
+      expect(mockOsTestCases.getAll).toHaveBeenCalledWith(
+        expect.objectContaining({ fields: 'summary' }),
+      );
+    });
+
+    it('omits fields when summary is not requested', async () => {
+      mockOsTestCases.getAll.mockResolvedValue(mockGetAllResult([createMockStorageTestCase()]));
+
+      await asyncTestCaseStorage.getAll();
+
+      expect(mockOsTestCases.getAll).toHaveBeenCalledWith(
+        expect.objectContaining({ fields: undefined }),
+      );
+    });
+
+    it('passes size/after through and returns a TestCasePage with `total` when size is set ' +
+      '(the pattern Dashboard uses: summary + size=1 to read just the count)', async () => {
+      mockOsTestCases.getAll.mockResolvedValue({
+        testCases: [createMockStorageTestCase('tc-1')],
+        total: 3941,
+        after: 'tc-1',
+        hasMore: true,
+      });
+
+      const page = await asyncTestCaseStorage.getAll({ summary: true, size: 1, after: 'cursor-x' });
+
+      expect(mockOsTestCases.getAll).toHaveBeenCalledWith(
+        expect.objectContaining({ fields: 'summary', size: 1, after: 'cursor-x' }),
+      );
+      expect(page.total).toBe(3941);
+      expect(page.testCases).toHaveLength(1);
+      expect(page.after).toBe('tc-1');
+      expect(page.hasMore).toBe(true);
+    });
   });
 
   describe('getPromoted', () => {
@@ -156,6 +202,89 @@ describe('AsyncTestCaseStorage', () => {
 
       expect(result).toHaveLength(1);
       expect(result[0].id).toBe('tc-1');
+    });
+  });
+
+  // Regression guard for the comparison page's category matrix (2026-08-27):
+  // the name lookup used to call the unpaginated getAll() — every test case
+  // in the whole storage backend, full body included — instead of fetching
+  // only the ids it actually needs. getByIds must chunk (same policy as
+  // asyncRunStorage.getReportsByIds) so a comparison over many runs' worth
+  // of test cases never issues one unbounded `?ids=<all>` request nor an
+  // unbounded burst of parallel ones.
+  describe('getByIds', () => {
+    it('returns an empty array for no ids without hitting the API', async () => {
+      const result = await asyncTestCaseStorage.getByIds([]);
+      expect(result).toEqual([]);
+      expect(mockOsTestCases.getByIds).not.toHaveBeenCalled();
+    });
+
+    it('issues a single request and preserves requested id order for a small id list', async () => {
+      mockOsTestCases.getByIds.mockResolvedValue([
+        createMockStorageTestCase('tc-2'),
+        createMockStorageTestCase('tc-1'),
+      ]);
+
+      const result = await asyncTestCaseStorage.getByIds(['tc-1', 'tc-2']);
+
+      expect(mockOsTestCases.getByIds).toHaveBeenCalledTimes(1);
+      expect(mockOsTestCases.getByIds).toHaveBeenCalledWith(['tc-1', 'tc-2'], undefined);
+      expect(result.map(tc => tc.id)).toEqual(['tc-1', 'tc-2']);
+    });
+
+    it('chunks large id lists into batches of 100 issued in parallel', async () => {
+      const ids = Array.from({ length: 250 }, (_, i) => `tc-${i}`);
+      mockOsTestCases.getByIds.mockImplementation(async (chunk: string[]) =>
+        chunk.map(id => createMockStorageTestCase(id))
+      );
+
+      const result = await asyncTestCaseStorage.getByIds(ids);
+
+      expect(mockOsTestCases.getByIds).toHaveBeenCalledTimes(3);
+      expect(mockOsTestCases.getByIds.mock.calls[0][0]).toHaveLength(100);
+      expect(mockOsTestCases.getByIds.mock.calls[1][0]).toHaveLength(100);
+      expect(mockOsTestCases.getByIds.mock.calls[2][0]).toHaveLength(50);
+      // Every id present, nothing dropped or duplicated across chunk boundaries.
+      expect(result.map(tc => tc.id).sort()).toEqual([...ids].sort());
+    });
+
+    it('forwards the summary option to every chunked request', async () => {
+      const ids = Array.from({ length: 150 }, (_, i) => `tc-${i}`);
+      mockOsTestCases.getByIds.mockImplementation(async (chunk: string[]) =>
+        chunk.map(id => createMockStorageTestCase(id))
+      );
+
+      await asyncTestCaseStorage.getByIds(ids, { summary: true });
+
+      expect(mockOsTestCases.getByIds).toHaveBeenCalledTimes(2);
+      for (const call of mockOsTestCases.getByIds.mock.calls) {
+        expect(call[1]).toEqual({ summary: true });
+      }
+    });
+
+    it('never runs more than a modest number of chunk requests concurrently', async () => {
+      const ids = Array.from({ length: 800 }, (_, i) => `tc-${i}`); // 8 chunks of 100
+      let inFlight = 0;
+      let maxInFlight = 0;
+      mockOsTestCases.getByIds.mockImplementation(async (chunk: string[]) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise(resolve => setTimeout(resolve, 0));
+        inFlight--;
+        return chunk.map(id => createMockStorageTestCase(id));
+      });
+
+      await asyncTestCaseStorage.getByIds(ids);
+
+      expect(mockOsTestCases.getByIds).toHaveBeenCalledTimes(8);
+      expect(maxInFlight).toBeGreaterThan(0);
+      expect(maxInFlight).toBeLessThanOrEqual(8);
+    });
+
+    it('propagates a chunk failure instead of swallowing it into an empty result', async () => {
+      mockOsTestCases.getByIds.mockRejectedValue(new Error('network error'));
+
+      await expect(asyncTestCaseStorage.getByIds(['tc-1'])).rejects.toThrow('network error');
     });
   });
 
@@ -492,7 +621,12 @@ describe('AsyncTestCaseStorage', () => {
 
   describe('bulkCreate', () => {
     it('bulk creates test cases', async () => {
-      mockOsTestCases.bulkCreate.mockResolvedValue({ created: 3, errors: false });
+      const createdStorageTestCase = createMockStorageTestCase('tc-created-1');
+      mockOsTestCases.bulkCreate.mockResolvedValue({
+        created: 3,
+        errors: false,
+        testCases: [createdStorageTestCase],
+      });
 
       const testCases: CreateTestCaseInput[] = [
         createMockCreateInput(),
@@ -502,7 +636,14 @@ describe('AsyncTestCaseStorage', () => {
       const result = await asyncTestCaseStorage.bulkCreate(testCases);
 
       expect(mockOsTestCases.bulkCreate).toHaveBeenCalledTimes(1);
-      expect(result).toEqual({ created: 3, errors: false });
+      expect(result.created).toBe(3);
+      expect(result.errors).toBe(false);
+      // Regression coverage for the "duplicated import flow" fix: bulkCreate
+      // now surfaces the created records (converted to app format) so
+      // callers (BenchmarksPage/TestCasesPage import handlers) can take ids
+      // directly instead of re-fetching the whole test-case corpus.
+      expect(result.testCases).toHaveLength(1);
+      expect(result.testCases[0].id).toBe('tc-created-1');
     });
   });
 

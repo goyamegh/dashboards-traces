@@ -58,6 +58,42 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
   const [existingLabels, setExistingLabels] = useState<string[]>([]);
   const [isSaving, setIsSaving] = useState(false);
 
+  // Callers may pass a lightweight summary record (list views fetch
+  // `fields=summary` to avoid pulling the full test-case corpus over the
+  // wire — see services/storage/asyncTestCaseStorage.ts getAll({ summary })).
+  // A summary record has initialPrompt truncated to 200 chars and
+  // context/expectedOutcomes/versions emptied out. If we seeded form state
+  // from that directly, Save would silently persist the truncated prompt
+  // and wipe context/expectedOutcomes for the test case. So always refetch
+  // the full record by id when editing an existing test case, and reseed
+  // form state from it once it arrives. This is a single extra request for
+  // the one test case being edited — nothing like the list-wide cost this
+  // is guarding against.
+  const [isLoadingFullTestCase, setIsLoadingFullTestCase] = useState(!!testCase);
+
+  useEffect(() => {
+    if (!testCase) {
+      setIsLoadingFullTestCase(false);
+      return;
+    }
+    let cancelled = false;
+    setIsLoadingFullTestCase(true);
+    asyncTestCaseStorage.getById(testCase.id)
+      .then(full => {
+        if (cancelled || !full) return;
+        setName(full.name || '');
+        setDescription(full.description || '');
+        setLabels(full.labels || []);
+        setInitialPrompt(full.initialPrompt || '');
+        setContext(full.context || []);
+        setExpectedOutcomes(full.expectedOutcomes && full.expectedOutcomes.length > 0 ? full.expectedOutcomes : ['']);
+      })
+      .catch(err => console.error('Failed to load full test case for editing:', err))
+      .finally(() => { if (!cancelled) setIsLoadingFullTestCase(false); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [testCase?.id]);
+
   useEffect(() => {
     asyncTestCaseStorage.getLabels().then(setExistingLabels);
   }, []);
@@ -308,8 +344,8 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
   // without having to invent placeholder outcomes the runner ignores.
   // We still REQUIRE name + initialPrompt because without those the
   // test case has no agent invocation contract at all.
-  const canSaveForm = name.trim() && initialPrompt.trim() && !isSaving;
-  const canSaveJson = jsonContent.trim() && jsonErrors.length === 0 && !isSaving;
+  const canSaveForm = name.trim() && initialPrompt.trim() && !isSaving && !isLoadingFullTestCase;
+  const canSaveJson = jsonContent.trim() && jsonErrors.length === 0 && !isSaving && !isLoadingFullTestCase;
   const canSave = editorMode === 'form' ? canSaveForm : canSaveJson;
 
   return (
@@ -318,6 +354,9 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
         <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
           <CardTitle>
             {testCase ? 'Edit Test Case' : 'Create Test Case'}
+            {isLoadingFullTestCase && (
+              <Loader2 size={14} className="inline-block ml-2 animate-spin text-muted-foreground" />
+            )}
           </CardTitle>
           <Button variant="ghost" size="icon" onClick={onCancel}>
             <X size={18} />

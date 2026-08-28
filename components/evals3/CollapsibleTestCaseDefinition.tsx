@@ -14,14 +14,15 @@
  * Two shapes depending on provenance:
  *
  *   • SDK / code-imported tests (`testCase.sourceFile` set) — show the
- *     file path. We can't render the `evaluate` function body because
- *     it's a JS function reference at runtime, but the path is enough
- *     for the user to jump to the source in their editor.
+ *     file path plus the full eval-file source as an IDE-style code view
+ *     (EvalSourceCodeView). We still can't render the `evaluate` function
+ *     body in isolation (it's a JS closure at runtime), but the whole file
+ *     that defines it is captured at import time and rendered here.
  *
- *   • JSON tests (no sourceFile) — show the full TestCase object as
- *     pretty-printed JSON. **No truncation** — the whole point of
- *     opening this section is to see the full prompt / expected
- *     outcomes / labels at once.
+ *   • JSON tests (no sourceFile) — lead with a reader-oriented definition
+ *     (prompt, expected outcomes, context, and metadata). The complete
+ *     serialized object remains available behind a raw-JSON disclosure for
+ *     debugging and export verification.
  *
  * Defaults to closed; opens on header click. The component is small and
  * stateless from the caller's perspective — drop it in wherever a
@@ -32,6 +33,8 @@ import React, { useState } from 'react';
 import { ChevronRight, ChevronDown, FileCode2, Braces, Copy, Check } from 'lucide-react';
 import { TestCase } from '@/types';
 import { Badge } from '@/components/ui/badge';
+import { EvalSourceCodeView } from '@/components/evals3/EvalSourceCodeView';
+import { TestCaseDefinition } from '@/components/TestCaseDefinition';
 
 interface CollapsibleTestCaseDefinitionProps {
   testCase: TestCase | null;
@@ -46,20 +49,21 @@ export const CollapsibleTestCaseDefinition: React.FC<CollapsibleTestCaseDefiniti
   className,
 }) => {
   const [open, setOpen] = useState(defaultOpen);
+  const [rawOpen, setRawOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
   if (!testCase) return null;
 
   const isSdk = !!testCase.sourceFile;
-  // Pretty-print the full TestCase. The whole point of the JSON view is to
-  // show the user exactly what would round-trip through `agent-health
-  // export` — so include every field, including labels / expectedOutcomes /
-  // versions, untruncated.
+  // Preserve the complete serialized form for the optional debugging/export
+  // view. It is deliberately not mounted until the user asks for raw JSON.
   const json = isSdk ? '' : JSON.stringify(testCase, null, 2);
 
+  // JSON branch only — the SDK branch's copy affordance lives inside
+  // EvalSourceCodeView's header (copies the full source, not just the path).
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
-    const text = isSdk ? testCase.sourceFile! : json;
+    const text = json;
     try {
       await navigator.clipboard.writeText(text);
       setCopied(true);
@@ -100,61 +104,51 @@ export const CollapsibleTestCaseDefinition: React.FC<CollapsibleTestCaseDefiniti
       {open && (
         <div className="px-4 pb-3">
           {isSdk ? (
-            // SDK test: show the source path. We can't render the evaluate()
-            // function body because it's only available at runtime as a JS
-            // closure, but the path lets the user jump to it.
-            <div className="space-y-2">
-              <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider">
-                Source File
-              </div>
-              <div className="flex items-center gap-2 bg-card rounded border border-border px-3 py-2">
-                <FileCode2 size={12} className="text-muted-foreground shrink-0" />
-                <code className="text-[11px] font-mono break-all flex-1">
-                  {testCase.sourceFile}
-                </code>
-                <button
-                  type="button"
-                  onClick={handleCopy}
-                  className="p-1 rounded hover:bg-muted shrink-0"
-                  title="Copy path"
-                >
-                  {copied ? <Check size={11} className="text-green-600" /> : <Copy size={11} className="text-muted-foreground" />}
-                </button>
-              </div>
-              {testCase.sourceHash && (
-                <div className="text-[9px] text-muted-foreground font-mono">
-                  sha256: {testCase.sourceHash.slice(0, 16)}…
-                </div>
-              )}
-              <div className="text-[10px] text-muted-foreground italic">
-                The <code className="font-mono">evaluate()</code> body lives in the source file above and isn't serializable from runtime state.
-              </div>
-            </div>
+            // SDK test: EvalSourceCodeView IS the whole surface — its own
+            // header already shows the source path + language badge + line
+            // count + copy button, so the old standalone "Source File" row
+            // and sha256 line were redundant duplicates (owner feedback).
+            <EvalSourceCodeView testCase={testCase} maxHeight="360px" />
           ) : (
-            // JSON test: full untruncated pretty-print, copyable.
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider">
-                  Full Definition (JSON)
-                </div>
+            <div className="space-y-3 max-h-[55vh] overflow-y-auto pr-1">
+              <TestCaseDefinition testCase={testCase} compact />
+
+              <div className="border-t border-border pt-2">
                 <button
                   type="button"
-                  onClick={handleCopy}
-                  className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded hover:bg-muted"
-                  title="Copy JSON"
+                  onClick={() => setRawOpen(value => !value)}
+                  className="flex items-center gap-1.5 text-[10px] text-muted-foreground hover:text-foreground px-1.5 py-1 rounded hover:bg-muted transition-colors"
+                  aria-expanded={rawOpen}
                 >
-                  {copied ? (
-                    <><Check size={10} className="text-green-600" /> Copied</>
-                  ) : (
-                    <><Copy size={10} /> Copy</>
-                  )}
+                  <Braces size={10} />
+                  {rawOpen ? 'Hide raw JSON' : 'View raw JSON'}
                 </button>
+
+                {rawOpen && (
+                  <div className="space-y-2 mt-2" data-testid="raw-test-case-json">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider">
+                        Raw JSON
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleCopy}
+                        className="flex items-center gap-1 text-[10px] text-muted-foreground hover:text-foreground px-1.5 py-0.5 rounded hover:bg-muted"
+                        title="Copy JSON"
+                      >
+                        {copied ? (
+                          <><Check size={10} className="text-green-600" /> Copied</>
+                        ) : (
+                          <><Copy size={10} /> Copy</>
+                        )}
+                      </button>
+                    </div>
+                    <pre className="text-[10px] font-mono bg-card border border-border rounded p-3 whitespace-pre-wrap break-words overflow-x-auto leading-relaxed">
+                      {json}
+                    </pre>
+                  </div>
+                )}
               </div>
-              {/* No max-height / no scroll — user explicitly wants no truncation.
-                  The outer page already provides scroll if the JSON gets very tall. */}
-              <pre className="text-[10px] font-mono bg-card border border-border rounded p-3 whitespace-pre-wrap break-words overflow-x-auto leading-relaxed">
-                {json}
-              </pre>
             </div>
           )}
         </div>

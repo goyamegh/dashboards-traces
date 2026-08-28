@@ -77,6 +77,9 @@ export interface StorageTestCase {
    *  layer was just dropping it on read. */
   sourceFile?: string;
   sourceHash?: string;
+  sourceCode?: string;
+  sourceFileName?: string;
+  sourceLanguage?: 'javascript' | 'typescript';
 }
 
 export interface StorageBenchmarkRunConfig {
@@ -86,6 +89,14 @@ export interface StorageBenchmarkRunConfig {
   agentKey: string;  // Agent key (matches server route behavior)
   agentId?: string;  // Legacy field name (for backwards compatibility)
   modelId: string;
+  /**
+   * Judge model id and evaluator id, distinct from the agent's `modelId`.
+   * Not part of the original storage shape (added alongside the Evaluation
+   * Runs page's Judge/Evaluator columns) — `toBenchmarkRun`/`toStorageFormat`
+   * below read/write them defensively via `(stored as any)` for older docs.
+   */
+  judgeModelId?: string;
+  evaluatorId?: string;
   headers?: Record<string, string>;
   iterationCount?: number;
   createdAt: string;
@@ -254,11 +265,17 @@ export const testCaseStorage = {
   /**
    * Get test cases by specific IDs (latest versions only)
    * Used for efficient filtered fetching (e.g., only test cases in a benchmark)
+   * @param options.summary - true to fetch lightweight summary (no sourceCode/context/expectedOutcomes) —
+   *   use for list/bulk views that don't need the full eval-source blob (each
+   *   test case in a code-SDK file shares the SAME sourceCode; fetching it for
+   *   every row when only the selected one needs it re-inflates exactly the
+   *   kind of payload the lazy-loading work above trimmed).
    */
-  async getByIds(ids: string[]): Promise<StorageTestCase[]> {
+  async getByIds(ids: string[], options?: { summary?: boolean }): Promise<StorageTestCase[]> {
     if (ids.length === 0) return [];
     const idsParam = ids.join(',');
-    const result = await request<{ testCases: StorageTestCase[]; total: number }>('GET', `/test-cases?ids=${idsParam}`);
+    const fieldsParam = options?.summary ? '&fields=summary' : '';
+    const result = await request<{ testCases: StorageTestCase[]; total: number }>('GET', `/test-cases?ids=${idsParam}${fieldsParam}`);
     return result.testCases;
   },
 
@@ -324,8 +341,8 @@ export const testCaseStorage = {
   /**
    * Bulk create test cases
    */
-  async bulkCreate(testCases: Partial<StorageTestCase>[]): Promise<{ created: number; errors: boolean }> {
-    return request<{ created: number; errors: boolean }>('POST', '/test-cases/bulk', { testCases });
+  async bulkCreate(testCases: Partial<StorageTestCase>[]): Promise<{ created: number; errors: boolean; testCases: StorageTestCase[] }> {
+    return request<{ created: number; errors: boolean; testCases: StorageTestCase[] }>('POST', '/test-cases/bulk', { testCases });
   },
 };
 

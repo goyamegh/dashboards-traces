@@ -93,6 +93,41 @@ test.describe('Evals3 Benchmarks Page', () => {
 
     expect(hasTable || hasEmptyState).toBeTruthy();
   });
+
+  test('evaluation-runs never appear as benchmark rows (docType isolation)', async ({ page, request }) => {
+    // Regression: benchmarks and evaluation-runs share one index/dir
+    // (docType-discriminated). The benchmarks list used to surface every
+    // CLI/SDK eval-run as an empty "0 TCs / 0 runs" benchmark row — so
+    // re-running the same CLI command appeared to mint a new benchmark
+    // every time. Seed an eval-run and assert the page never renders it.
+    const stamp = Date.now();
+    const runId = `eval-run-e2e-bmexclude-${stamp}`;
+    const runName = `E2E-BMEXCLUDE-RUN-${stamp}`;
+    const put = await request.put(`/api/storage/evaluation-runs/${runId}`, {
+      data: {
+        name: runName,
+        agentKey: 'demo',
+        modelId: 'demo-model',
+        sources: [],
+        trigger: 'cli',
+        status: 'completed',
+        testCaseSnapshots: [],
+        results: {},
+        createdAt: new Date().toISOString(),
+      },
+    });
+    expect(put.ok()).toBeTruthy();
+
+    try {
+      await page.reload();
+      await page.waitForSelector('h2:has-text("Benchmarks")', { timeout: 30000 });
+      // Give the list fetch time to settle, then assert the run name is absent.
+      await page.waitForTimeout(1500);
+      await expect(page.locator(`text=${runName}`)).toHaveCount(0);
+    } finally {
+      await request.delete(`/api/storage/evaluation-runs/${runId}`).catch(() => {});
+    }
+  });
 });
 
 test.describe('Evals3 Benchmark CRUD', () => {
@@ -141,18 +176,17 @@ test.describe('Evals3 Benchmark CRUD', () => {
     test.skip(!seededTestCaseId, 'Seed test case unavailable');
     test.setTimeout(120_000); // demo run + judge can take a while
 
-    // The e2e server runs in file-storage (sample-only) mode, where the real
-    // /execute endpoint returns 400 ("OpenSearch not configured"). This test's
-    // contract is the WIZARD WIRING (the Evals3 regression where the editor
-    // closed without firing save + execute) — not the execution engine. Stub
-    // /execute at the network edge (same philosophy integ tests use for
-    // Bedrock) so we still assert the wizard POSTs to it, without needing a
-    // real OpenSearch/agent backend.
-    await page.route('**/api/storage/benchmarks/*/execute', route =>
+    // The e2e server has no real agent backend. This test owns WIZARD WIRING,
+    // not execution, so stub the unified evaluation-run SSE boundary while
+    // preserving the request and completion contract used by the UI.
+    await page.route('**/api/storage/evaluation-runs', route =>
       route.fulfill({
         status: 200,
         headers: { 'content-type': 'text/event-stream', 'cache-control': 'no-cache' },
-        body: `data: ${JSON.stringify({ type: 'progress', status: 'completed', currentTestCaseIndex: 0, totalTestCases: 1 })}\n\n`,
+        body: [
+          `event: started\ndata: ${JSON.stringify({ runId: 'e2e-wizard-run', testCases: [] })}\n\n`,
+          `event: completed\ndata: ${JSON.stringify({ id: 'e2e-wizard-run', status: 'completed', results: [] })}\n\n`,
+        ].join(''),
       })
     );
 
@@ -206,7 +240,7 @@ test.describe('Evals3 Benchmark CRUD', () => {
       { timeout: 15_000 }
     );
     const executePromise = page.waitForResponse(
-      r => /\/api\/storage\/benchmarks\/[^/]+\/execute$/.test(r.url()) &&
+      r => r.url().endsWith('/api/storage/evaluation-runs') &&
            r.request().method() === 'POST',
       { timeout: 15_000 }
     );
@@ -220,7 +254,10 @@ test.describe('Evals3 Benchmark CRUD', () => {
     expect(benchmarkId, 'POST response should include the new benchmark id').toBeTruthy();
 
     const executeResp = await executePromise;
-    expect(executeResp.status(), 'execute benchmark POST should succeed').toBeLessThan(400);
+    expect(executeResp.status(), 'unified evaluation-run POST should succeed').toBeLessThan(400);
+    const executeBody = executeResp.request().postDataJSON();
+    expect(executeBody.sources).toEqual([{ type: 'benchmark', benchmarkId }]);
+    expect(executeBody.benchmarkId).toBe(benchmarkId);
 
     // 6. Editor should close and URL should navigate to the runs page
     await expect(page).toHaveURL(new RegExp(`/evaluations/benchmarks/${benchmarkId}/runs`), { timeout: 5_000 });

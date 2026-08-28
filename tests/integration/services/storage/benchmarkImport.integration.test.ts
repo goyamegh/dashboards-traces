@@ -7,7 +7,8 @@
  * Integration tests for the Benchmarks page JSON import flow.
  *
  * These tests simulate the full import pipeline as triggered from
- * BenchmarksPage.handleImportFile: validate → bulkCreate → fetch IDs → create benchmark.
+ * BenchmarksPage.handleImportFile: validate → bulkCreate → create benchmark
+ * from the bulk-create response's ids (no full-corpus re-fetch).
  *
  * Requires the backend server to be running:
  *   npm run dev:server
@@ -123,19 +124,27 @@ describe('Benchmarks Page Import Flow', () => {
       // Step 2: Bulk create test cases
       const result = await asyncTestCaseStorage.bulkCreate(validation.data!);
       expect(result.created).toBe(2);
-      expect(result.errors).toBe(false);
+      expect(result.errors).toBe(0);
 
-      // Step 3: Fetch all test cases and find the created IDs (mirrors the handler's getAll + filter)
-      const allTestCases = await asyncTestCaseStorage.getAll();
-      const createdIds = allTestCases
-        .filter((tc) => validation.data!.some((d) => d.name === tc.name))
-        .map((tc) => tc.id);
+      // Step 3: Get IDs of created test cases directly from the bulk-create
+      // response — mirrors the current handleImportFile, which reads
+      // `result.testCases` instead of re-fetching the ENTIRE test-case
+      // corpus (the old `getAll()` + name-match, which was both the
+      // full-payload performance bug this suite is regression-testing AND a
+      // correctness bug: matching by `name` breaks for duplicate names.
+      const createdIds = result.testCases.map((tc) => tc.id);
 
-      expect(createdIds.length).toBeGreaterThanOrEqual(2);
+      expect(createdIds.length).toBe(2);
       createdIds.forEach((id) => {
         expect(id).toMatch(/^tc-/);
         createdTestCaseIds.push(id);
       });
+
+      // Regression guard for the fix: the import flow must not fall back to
+      // fetching the full test-case list to resolve the created ids.
+      const getAllSpy = jest.spyOn(asyncTestCaseStorage, 'getAll');
+      expect(getAllSpy).not.toHaveBeenCalled();
+      getAllSpy.mockRestore();
 
       // Step 4: Create benchmark with the test case IDs (mirrors the handler's benchmark creation)
       const benchmarkName = 'sample-import-test-cases';
@@ -196,15 +205,13 @@ describe('Benchmarks Page Import Flow', () => {
       // Create test cases first
       const firstResult = await asyncTestCaseStorage.bulkCreate(importFileContent);
 
-      // Track IDs for cleanup
-      const allTestCases = await asyncTestCaseStorage.getAll();
-      allTestCases
-        .filter((tc) => importFileContent.some((d) => d.name === tc.name))
-        .forEach((tc) => {
-          if (!createdTestCaseIds.includes(tc.id)) {
-            createdTestCaseIds.push(tc.id);
-          }
-        });
+      // Track IDs for cleanup directly from the bulk-create response (no
+      // full-corpus getAll() needed — see the import-pipeline test above).
+      firstResult.testCases.forEach((tc) => {
+        if (!createdTestCaseIds.includes(tc.id)) {
+          createdTestCaseIds.push(tc.id);
+        }
+      });
 
       // Note: bulkCreate does NOT deduplicate by name, so this will create new ones.
       // The BenchmarksPage handler shows an error only when created === 0.

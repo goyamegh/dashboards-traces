@@ -73,6 +73,10 @@ export async function promoteRunToBenchmark(
  * test cases in this version" despite the benchmark clearly having test
  * cases.
  *
+ * (An earlier revision of this function bumped to a brand-new version
+ * instead of updating the current one in place — that's the shape a
+ * concurrently-merged branch reintroduced; this revision supersedes it.)
+ *
  * Used by (1) `POST /api/storage/evaluation-runs` at run-creation time —
  * every source resolves to concrete test case ids before execution, so
  * they're linked immediately, independent of whether the run itself

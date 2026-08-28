@@ -17,7 +17,14 @@ import {
   PassFailStatus,
 } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
-import { runEvaluationWithConnector, callBedrockJudge, invokeAgent, computeSdkMatcherSessionMetrics } from '@/services/evaluation';
+import {
+  runEvaluationWithConnector,
+  callBedrockJudge,
+  invokeAgent,
+  computeSdkMatcherSessionMetrics,
+  stampObjectiveActuals,
+  appendNotReachedMarker,
+} from '@/services/evaluation';
 import { resolveAgentModel } from '@/lib/resolveAgentModel';
 import { readEnv } from '@/lib/envCompat';
 import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
@@ -377,6 +384,7 @@ export async function executeEvaluationRun(
             const tracesView: TracesAccessor = {
               get totalTokens() { return loadedTraces.totalTokens; },
               get totalCost() { return loadedTraces.totalCost; },
+              get costSource() { return loadedTraces.costSource; },
               get toolCalls() { return loadedTraces.toolCalls; },
               get spans() { return loadedTraces.spans; },
               spanDuration: (name: string) => loadedTraces.spanDuration(name),
@@ -540,6 +548,17 @@ export async function executeEvaluationRun(
             const agentFailed =
               evalError !== undefined && capturedResult === undefined && !anyGateFailed;
             const failed = anyGateFailed || evalError !== undefined;
+            // ALWAYS-RECORD (owner-hit measurement-harness bug): a failing gate
+            // partway through the body must not erase the objective actuals the
+            // optimizer needs from every axis. durationMs/agentDurationMs already
+            // survive a later throw (stamped inside invoke() above, before the
+            // body gets a chance to fail); totalTokens/totalCostUsd did NOT — see
+            // stampObjectiveActuals() in services/evaluation/index.ts. Also append
+            // a synthetic `notReached` marker so the matcher panel can render a
+            // distinct row for the tail of the test that never ran instead of just
+            // omitting it (see docs/SDK.md "Always-record guarantee").
+            stampObjectiveActuals(report.performanceMetrics, loadedTraces, capturedResult !== undefined);
+            appendNotReachedMarker(matcherResults, evalError, agentFailed);
             (report as any).evaluationType = 'deterministic';
             (report as any).matcherResults = matcherResults;
             if (evalError !== undefined) {
@@ -628,6 +647,17 @@ export async function executeEvaluationRun(
             report = caseSpanContext
               ? await context.with(caseSpanContext, runEval)
               : await runEval();
+
+            // Classic non-trace reports carry no `metricsStatus`. Without an
+            // explicit stamp, the pre-persisted placeholder's 'pending'
+            // survives the update-merge below ({...existing, ...fields}
+            // never clears a key the report doesn't carry), and the runner
+            // then trace-polls a NON-traced agent for the full timeout
+            // (10 min for a mock/demo run) before erroring the report.
+            // benchmarkRunner clears this explicitly; mirror it here.
+            if ((report as any).metricsStatus === undefined) {
+              (report as any).metricsStatus = agentConfig.useTraces ? 'pending' : 'completed';
+            }
           }
 
           // Save the report via storage module. When we successfully

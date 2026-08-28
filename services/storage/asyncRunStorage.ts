@@ -26,6 +26,7 @@ import type {
   OpenSearchLog,
   ConnectorProtocol,
 } from '@/types';
+import { fetchChunked } from '@/lib/chunkedFetch';
 
 // Re-export search types for convenience
 export interface SearchQuery {
@@ -219,37 +220,9 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
 // size limits regardless of how many ids are requested — see #431 ("Request
 // Header Fields Too Large") on the comparison page, 4 runs x 400 reports.
 // Shared by getReportsByIds() and getReportSummariesByIds() so the policy
-// stays in one place.
+// stays in one place. (The chunking primitive itself now lives in
+// lib/chunkedFetch.ts, shared with asyncTestCaseStorage's id-scoped lookup.)
 const REPORT_ID_CHUNK_SIZE = 100;
-
-// A comparison over a very large pool of runs/reports can produce far more
-// than a handful of chunks; fan them out with a modest concurrency cap
-// (rather than firing all chunks at once) so a huge id list can't stampede
-// the backend with an unbounded burst of parallel requests.
-const MAX_CONCURRENT_CHUNK_REQUESTS = 8;
-
-async function fetchChunked<T>(
-  ids: string[],
-  chunkSize: number,
-  fetchChunk: (chunk: string[]) => Promise<T[]>
-): Promise<T[]> {
-  const chunks: string[][] = [];
-  for (let i = 0; i < ids.length; i += chunkSize) {
-    chunks.push(ids.slice(i, i + chunkSize));
-  }
-  const results: T[][] = new Array(chunks.length);
-  let nextChunk = 0;
-  async function worker(): Promise<void> {
-    while (true) {
-      const i = nextChunk++;
-      if (i >= chunks.length) return;
-      results[i] = await fetchChunk(chunks[i]);
-    }
-  }
-  const workerCount = Math.min(MAX_CONCURRENT_CHUNK_REQUESTS, chunks.length);
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
-  return results.flat();
-}
 
 class AsyncRunStorage {
   // ==================== Core CRUD Operations ====================
@@ -364,11 +337,33 @@ class AsyncRunStorage {
     if (reportIds.length === 0) return {};
     // Stored-doc field names (the projection runs server-side on the stored
     // shape): `traceId` maps to app-level `runId` in toTestCaseRun.
+    // `metrics` added for RunInsightsPane's "Avg Score" detail (run-report-insights):
+    // it's a small dynamic object of a handful of numeric fields, not the
+    // trajectory/messages bloat #429 fixed - safe to include in the summary.
     const fields = [
       'status', 'passFailStatus', 'metricsStatus', 'traceId', 'sessionId',
-      'judgeModelId', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations',
+      'judgeModelId', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations', 'metrics',
     ];
     // Chunk to keep the URL well under practical limits for large benchmarks.
+    const stored = await fetchChunked(reportIds, REPORT_ID_CHUNK_SIZE, chunk => opensearchRuns.getByIds(chunk, { fields }));
+    const out: Record<string, EvaluationReport> = {};
+    for (const s of stored) out[s.id] = toTestCaseRun(s);
+    return out;
+  }
+
+  /**
+   * Even-lighter batch fetch than {@link getReportSummariesByIds}: just the
+   * judge reasoning text + testCaseId. Used by RunInsightsPane (run-report
+   * insights pane, run-report-insights) to build "why did failing cases
+   * fail" theme clusters without pulling the full report body (trajectory,
+   * messages, logs) for every failing case in a large run - the exact
+   * over-fetch class of bug #429 fixed for the report-detail path. Callers
+   * are expected to pre-filter to failing reportIds and cap the id list
+   * (RunInsightsPane caps at 100) before calling this.
+   */
+  async getReportReasoningsByIds(reportIds: string[]): Promise<Record<string, EvaluationReport>> {
+    if (reportIds.length === 0) return {};
+    const fields = ['llmJudgeReasoning', 'testCaseId'];
     const stored = await fetchChunked(reportIds, REPORT_ID_CHUNK_SIZE, chunk => opensearchRuns.getByIds(chunk, { fields }));
     const out: Record<string, EvaluationReport> = {};
     for (const s of stored) out[s.id] = toTestCaseRun(s);

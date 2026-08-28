@@ -52,10 +52,11 @@ export const ReportsPage: React.FC = () => {
   const [isLoading, setIsLoading] = useState(true);
   const [metricsMap, setMetricsMap] = useState<Map<string, TraceMetrics>>(new Map());
 
-  // Load test cases on mount
+  // Load test cases on mount. Only name/description/category (list labels,
+  // filters, selected-report header) are rendered — the summary payload is enough.
   useEffect(() => {
     const loadTestCases = async () => {
-      const tcs = await asyncTestCaseStorage.getAll();
+      const tcs = await asyncTestCaseStorage.getAll({ summary: true });
       setTestCases(tcs);
     };
     loadTestCases();
@@ -251,10 +252,10 @@ export const ReportsPage: React.FC = () => {
               <div className="flex items-center gap-2 text-xs text-muted-foreground">
                 <Badge variant="outline" className={
                   testCase.difficulty === 'Easy'
-                    ? 'bg-blue-900/30 text-blue-400 border-blue-800'
+                    ? 'bg-blue-50 text-blue-700 border-blue-200 dark:bg-blue-500/15 dark:text-blue-300 dark:border-blue-500/30'
                     : testCase.difficulty === 'Medium'
-                    ? 'bg-yellow-900/30 text-yellow-400 border-yellow-800'
-                    : 'bg-red-900/30 text-red-400 border-red-800'
+                    ? 'bg-yellow-50 text-yellow-800 border-yellow-200 dark:bg-yellow-500/15 dark:text-yellow-300 dark:border-yellow-500/30'
+                    : 'bg-red-50 text-red-700 border-red-200 dark:bg-red-500/15 dark:text-red-300 dark:border-red-500/30'
                 }>
                   {testCase.difficulty}
                 </Badge>

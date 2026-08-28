@@ -41,12 +41,16 @@ jest.mock('react-router-dom', () => ({
 
 const mockBenchmarkGetById = jest.fn();
 const mockTestCasesGetByIds = jest.fn();
+const mockTestCaseGetById = jest.fn();
 const mockGetReportSummariesByIds = jest.fn();
 const mockGetReportById = jest.fn();
 
 jest.mock('@/services/storage', () => ({
   asyncBenchmarkStorage: { getById: (...a: unknown[]) => mockBenchmarkGetById(...a) },
-  asyncTestCaseStorage: { getByIds: (...a: unknown[]) => mockTestCasesGetByIds(...a) },
+  asyncTestCaseStorage: {
+    getByIds: (...a: unknown[]) => mockTestCasesGetByIds(...a),
+    getById: (...a: unknown[]) => mockTestCaseGetById(...a),
+  },
   asyncRunStorage: {
     getReportSummariesByIds: (...a: unknown[]) => mockGetReportSummariesByIds(...a),
     getReportById: (...a: unknown[]) => mockGetReportById(...a),
@@ -161,6 +165,10 @@ beforeEach(() => {
   mockParams = { benchmarkId: 'bench-1', runId: 'run-1' };
   mockSearchParams = new URLSearchParams();
   mockGetReportById.mockResolvedValue({ id: 'rep-0', status: 'completed', passFailStatus: 'passed', trajectory: [] });
+  // Default: no full test-case override (matches the summary already in
+  // `results` for most tests). Tests exercising the eval-source lazy fetch
+  // set a specific resolved value.
+  mockTestCaseGetById.mockResolvedValue(null);
 });
 
 describe('RunInspectorPage — lazy report loading', () => {
@@ -307,5 +315,55 @@ describe('RunInspectorPage — lazy report loading', () => {
     await waitFor(() => expect(screen.getAllByTestId('test-case-row')).toHaveLength(2));
     await waitFor(() => expect(mockEnsurePolling).toHaveBeenCalledTimes(1));
     expect(mockEnsurePolling.mock.calls[0][0]).toEqual(expect.objectContaining({ id: 'rep-0', metricsStatus: 'pending' }));
+  });
+});
+
+describe('RunInspectorPage — eval-source lazy fetch (summary bulk load + full fetch on selection)', () => {
+  it('bulk-loads test cases as a SUMMARY (no sourceCode) to avoid duplicating shared eval-file source across every row', async () => {
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(3));
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(3));
+    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(3));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getAllByTestId('test-case-row')).toHaveLength(3));
+    expect(mockTestCasesGetByIds).toHaveBeenCalledWith(
+      expect.arrayContaining(['tc-0', 'tc-1', 'tc-2']),
+      { summary: true }
+    );
+  });
+
+  it('lazily fetches the FULL test case (with sourceCode) for the selected row only', async () => {
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(2));
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(2)); // summary shape -- no sourceCode
+    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(2));
+    mockTestCaseGetById.mockResolvedValue({
+      id: 'tc-1',
+      name: 'Case 1',
+      sourceFile: 'evals/foo.eval.ts',
+      sourceCode: "test('a', () => {});",
+    });
+
+    renderPage();
+    await waitFor(() => expect(screen.getAllByTestId('test-case-row')).toHaveLength(2));
+
+    fireEvent.click(screen.getAllByTestId('test-case-row')[1]);
+
+    await waitFor(() => expect(mockTestCaseGetById).toHaveBeenCalledWith('tc-1'));
+  });
+
+  it('does not fetch a full test case when nothing is selected', async () => {
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(2));
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(2));
+    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(2));
+
+    renderPage();
+    await waitFor(() => expect(screen.getAllByTestId('test-case-row')).toHaveLength(2));
+
+    // Auto-selection of the first row is existing behavior for benchmark-run
+    // mode elsewhere in this suite; guard here is just that we never call
+    // getById with an empty/undefined id.
+    expect(mockTestCaseGetById).not.toHaveBeenCalledWith(undefined);
+    expect(mockTestCaseGetById).not.toHaveBeenCalledWith(null);
   });
 });

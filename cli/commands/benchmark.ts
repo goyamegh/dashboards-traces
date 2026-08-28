@@ -28,7 +28,8 @@ import { calculateRunStats, getReportIdsFromRun } from '@/lib/runStats.js';
 import { formatJson, formatMarkdownTable, parseOutputFormat, OUTPUT_FORMAT_DESCRIPTION, type OutputFormat } from '@/cli/utils/formatOutput.js';
 import type { AgentConfig, Benchmark, BenchmarkRun, TestCase, TestCaseRun, EvaluationReport, TestCaseSource, EvaluationRun } from '@/types/index.js';
 import { existsSync, statSync } from 'fs';
-import { isCodeFile } from '@/lib/testCases/loader.js';
+import { isCodeFile, detectSourceLanguage } from '@/lib/testCases/loader.js';
+import { createBenchmarkDoctorCommand } from '@/cli/commands/benchmarkDoctor.js';
 import { computeBenchmarkRepairPlan, applyRepairPlan, computeVersionLinkRepairPlan } from '@/cli/utils/benchmarkDoctor.js';
 
 interface BenchmarkOptions {
@@ -77,11 +78,14 @@ function getDefaultModel(config: ResolvedConfig): string {
 }
 
 /**
- * Check if a string looks like a file path (ends with .json)
+ * Check if a string looks like a file path (ends with .json).
+ * Re-exported from cli/utils/runNaming.ts (moved there so
+ * `deriveUnifiedRunName` and this function can be unit-tested without
+ * importing this file's heavy top-level deps — chalk is ESM-only and
+ * breaks under ts-jest's CJS transform unless every dep is jest.mock'd).
  */
-export function isFilePath(value: string): boolean {
-  return value.toLowerCase().endsWith('.json') || isCodeFile(value);
-}
+export { isFilePath, deriveUnifiedRunName } from '@/cli/utils/runNaming.js';
+import { isFilePath, deriveUnifiedRunName } from '@/cli/utils/runNaming.js';
 
 /**
  * Load and validate test cases from a JSON file
@@ -615,7 +619,7 @@ async function runUnifiedMode(
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        name: `CLI Run - ${agentKey} - ${new Date().toISOString()}`,
+        name: deriveUnifiedRunName(options.name, agentKey),
         sources,
         agentKey,
         modelId,
@@ -764,6 +768,7 @@ async function runUnifiedMode(
 export function createBenchmarkCommand(): Command {
   const command = new Command('benchmark')
     .description('Run a benchmark against one or more agents')
+    .addCommand(createBenchmarkDoctorCommand())
     .option('-n, --name <name>', 'Benchmark name or ID (also associates run with benchmark)')
     .option(
       '-f, --file <path>',
@@ -1290,6 +1295,7 @@ export function createBenchmarkCommand(): Command {
 }
 
 /**
+/**
  * `benchmark repair-links` — detect (and, with `--apply`, repair) two shapes
  * of the same underlying bug class: a benchmark's `testCaseIds` (top level)
  * and the CURRENT version's `testCaseIds` entry can drift out of sync.
@@ -1303,6 +1309,11 @@ export function createBenchmarkCommand(): Command {
  *    services/benchmarkPromotion.ts:linkTestCaseIdsToBenchmark for the fix
  *    going forward and this command for backfilling benchmarks that went
  *    stale before that fix existed.
+ *
+ * Distinct from `benchmark doctor` (duplicate/husk merge + image migration,
+ * see cli/commands/benchmarkDoctor.ts) — the two commands address unrelated
+ * benchmark-health concerns and previously collided on the same command
+ * name ("doctor"), hence this one is named repair-links.
  *
  * Dry-run by default: prints both plans without writing anything.
  */

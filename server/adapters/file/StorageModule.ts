@@ -23,6 +23,7 @@ import type {
   TestCase,
   Benchmark,
   BenchmarkRun,
+  BenchmarkImage,
   EvaluationRun,
   TestCaseRun,
   RunAnnotation,
@@ -35,6 +36,7 @@ import type {
   IStorageModule,
   ITestCaseOperations,
   IBenchmarkOperations,
+  IBenchmarkImageOperations,
   IEvaluationRunOperations,
   IRunOperations,
   IAnalyticsOperations,
@@ -299,16 +301,25 @@ class FileBenchmarkOperations implements IBenchmarkOperations {
   }
 
   async getAll(options?: PaginationOptions): Promise<{ items: Benchmark[]; total: number }> {
-    const all = readAllFromDir<Benchmark>(this.dir).sort(
-      (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
-    );
+    // Benchmarks share this dir with evaluation-runs and benchmark-images
+    // (docType discriminator); exclude any doc with a non-benchmark docType so
+    // they don't surface as empty benchmark rows. Mirrors getById.
+    const all = readAllFromDir<Benchmark>(this.dir)
+      .filter((b) => {
+        const dt = (b as { docType?: string }).docType;
+        return dt === undefined || dt === 'benchmark';
+      })
+      .sort(
+        (a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime()
+      );
     return paginate(all, options);
   }
 
   async getById(id: string): Promise<Benchmark | null> {
     const doc = readJsonFile<Benchmark & { docType?: string }>(this.docPath(id));
-    // Shared dir with evaluation-runs — an eval-run id is NOT a benchmark.
-    return doc && doc.docType === 'evaluation-run' ? null : doc;
+    // Shared dir — an eval-run / image id is NOT a benchmark.
+    if (!doc) return null;
+    return doc.docType === undefined || doc.docType === 'benchmark' ? doc : null;
   }
 
   async create(benchmark: Partial<Benchmark>): Promise<Benchmark> {
@@ -827,6 +838,21 @@ export class FileSessionMetadataOperations implements ISessionMetadataOperations
 
 class FileEvaluationRunOperations implements IEvaluationRunOperations {
   private readonly dir: string;
+  /**
+   * Per-run write serialization. update()/updateResult() are
+   * read-modify-write with an `await` between read and write — with
+   * run.concurrency > 1 two in-flight updates could interleave at that
+   * boundary and the second write clobbers the first (lost per-test-case
+   * results). Chain writes per run id so they apply in order.
+   */
+  private writeQueues = new Map<string, Promise<unknown>>();
+
+  private serialized<T>(id: string, op: () => Promise<T>): Promise<T> {
+    const prev = this.writeQueues.get(id) ?? Promise.resolve();
+    const next = prev.then(op, op);
+    this.writeQueues.set(id, next.catch(() => {}));
+    return next;
+  }
 
   constructor(baseDir: string) {
     // Stored in same directory as benchmarks (same "index" concept)
@@ -857,11 +883,13 @@ class FileEvaluationRunOperations implements IEvaluationRunOperations {
   }
 
   async update(id: string, updates: Partial<EvaluationRun>): Promise<EvaluationRun> {
-    const existing = await this.getById(id);
-    if (!existing) throw new Error(`Evaluation run ${id} not found`);
-    const updated = { ...existing, ...updates } as EvaluationRun;
-    writeJsonFile(path.join(this.dir, `${id}.json`), updated);
-    return updated;
+    return this.serialized(id, async () => {
+      const existing = await this.getById(id);
+      if (!existing) throw new Error(`Evaluation run ${id} not found`);
+      const updated = { ...existing, ...updates } as EvaluationRun;
+      writeJsonFile(path.join(this.dir, `${id}.json`), updated);
+      return updated;
+    });
   }
 
   async delete(id: string): Promise<{ deleted: boolean }> {
@@ -879,6 +907,7 @@ class FileEvaluationRunOperations implements IEvaluationRunOperations {
     status?: string;
     testCaseId?: string;
     trigger?: string;
+    imageDigest?: string;
     sort?: 'createdAt' | 'completedAt';
     order?: 'asc' | 'desc';
   }): Promise<{ items: EvaluationRun[]; total: number }> {
@@ -890,6 +919,7 @@ class FileEvaluationRunOperations implements IEvaluationRunOperations {
     if (options?.agentKey) filtered = filtered.filter(r => r.agentKey === options.agentKey);
     if (options?.status) filtered = filtered.filter(r => r.status === options.status);
     if (options?.trigger) filtered = filtered.filter(r => r.trigger === options.trigger);
+    if (options?.imageDigest) filtered = filtered.filter(r => r.imageDigest === options.imageDigest);
     if (options?.testCaseId) {
       filtered = filtered.filter(r =>
         r.testCaseSnapshots?.some(s => s.id === options.testCaseId)
@@ -912,11 +942,86 @@ class FileEvaluationRunOperations implements IEvaluationRunOperations {
     status: RunResultStatus;
     error?: string;
   }): Promise<boolean> {
-    const existing = await this.getById(runId);
-    if (!existing) return false;
-    existing.results[testCaseId] = result;
-    writeJsonFile(path.join(this.dir, `${runId}.json`), existing);
-    return true;
+    return this.serialized(runId, async () => {
+      const existing = await this.getById(runId);
+      if (!existing) return false;
+      existing.results[testCaseId] = result;
+      writeJsonFile(path.join(this.dir, `${runId}.json`), existing);
+      return true;
+    });
+  }
+}
+
+// ============================================================================
+// File Benchmark Image Operations (stored in benchmarks dir, docType
+// 'benchmark-image', content-addressed by digest — id is `img-<digest>`)
+// ============================================================================
+
+class FileBenchmarkImageOperations implements IBenchmarkImageOperations {
+  private readonly dir: string;
+
+  constructor(baseDir: string) {
+    // Same directory as benchmarks (same "index" concept, docType discriminated)
+    this.dir = path.join(baseDir, 'benchmarks');
+    ensureDir(this.dir);
+  }
+
+  private docPath(digest: string): string {
+    return path.join(this.dir, `img-${sanitizeId(digest)}.json`);
+  }
+
+  async create(image: BenchmarkImage): Promise<BenchmarkImage> {
+    // Find-or-create: content-addressed identity means an existing digest is
+    // the same image by definition — never overwrite (preserves tags/createdAt).
+    const existing = await this.getByDigest(image.digest);
+    if (existing) return existing;
+    const doc: BenchmarkImage = {
+      ...image,
+      id: `img-${image.digest}`,
+      docType: 'benchmark-image',
+      tags: image.tags || [],
+      createdAt: image.createdAt || new Date().toISOString(),
+    };
+    writeJsonFile(this.docPath(image.digest), doc);
+    return doc;
+  }
+
+  async getByDigest(digest: string): Promise<BenchmarkImage | null> {
+    const doc = readJsonFile<any>(this.docPath(digest));
+    if (!doc || doc.docType !== 'benchmark-image') return null;
+    return doc as BenchmarkImage;
+  }
+
+  async getAll(options?: PaginationOptions): Promise<{ items: BenchmarkImage[]; total: number }> {
+    const all = (readAllFromDir<any>(this.dir)
+      .filter((doc: any) => doc.docType === 'benchmark-image') as BenchmarkImage[])
+      .sort((a, b) => new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime());
+    return paginate(all, options);
+  }
+
+  async update(
+    digest: string,
+    updates: Partial<Pick<BenchmarkImage, 'tags' | 'lastRunAt'>>
+  ): Promise<BenchmarkImage> {
+    const existing = await this.getByDigest(digest);
+    if (!existing) throw new Error(`Benchmark image ${digest} not found`);
+    // Only mutable metadata may change — the content fields ARE the identity.
+    const updated: BenchmarkImage = {
+      ...existing,
+      ...(updates.tags !== undefined ? { tags: updates.tags } : {}),
+      ...(updates.lastRunAt !== undefined ? { lastRunAt: updates.lastRunAt } : {}),
+    };
+    writeJsonFile(this.docPath(digest), updated);
+    return updated;
+  }
+
+  async delete(digest: string): Promise<{ deleted: boolean }> {
+    const filePath = this.docPath(digest);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      return { deleted: true };
+    }
+    return { deleted: false };
   }
 }
 
@@ -928,6 +1033,7 @@ export class FileStorageModule implements IStorageModule {
   readonly testCases: ITestCaseOperations;
   readonly benchmarks: IBenchmarkOperations;
   readonly evaluationRuns: IEvaluationRunOperations;
+  readonly images: IBenchmarkImageOperations;
   readonly runs: IRunOperations;
   readonly analytics: IAnalyticsOperations;
   readonly evaluators: IEvaluatorOperations;
@@ -942,6 +1048,7 @@ export class FileStorageModule implements IStorageModule {
     this.testCases = new FileTestCaseOperations(this.baseDir);
     this.benchmarks = new FileBenchmarkOperations(this.baseDir);
     this.evaluationRuns = new FileEvaluationRunOperations(this.baseDir);
+    this.images = new FileBenchmarkImageOperations(this.baseDir);
     this.runs = new FileRunOperations(this.baseDir);
     this.analytics = new FileAnalyticsOperations(this.baseDir);
     this.evaluators = new FileEvaluatorOperations(this.baseDir);
