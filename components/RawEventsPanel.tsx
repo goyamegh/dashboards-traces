@@ -80,13 +80,14 @@ function getEventSummary(event: AGUIEvent): string {
  * Get color classes for event type badge
  */
 function getEventTypeColor(type: string | undefined): string {
-  if (!type) return 'text-gray-700 bg-gray-100 dark:text-gray-400 dark:bg-gray-800';
-  if (type.includes('ERROR')) return 'text-red-700 bg-red-100 dark:text-red-400 dark:bg-red-500/10';
-  if (type.includes('TOOL')) return 'text-blue-700 bg-blue-100 dark:text-blue-400 dark:bg-blue-500/10';
-  if (type.includes('TEXT')) return 'text-blue-700 bg-blue-100 dark:text-blue-600 dark:bg-blue-500/10';
-  if (type.includes('RUN')) return 'text-purple-700 bg-purple-100 dark:text-purple-400 dark:bg-purple-500/10';
-  if (type.includes('ACTIVITY')) return 'text-amber-700 bg-amber-100 dark:text-amber-400 dark:bg-amber-500/10';
-  return 'text-gray-700 bg-gray-100 dark:text-gray-400 dark:bg-gray-800';
+  const neutral = 'text-muted-foreground bg-muted';
+  if (!type) return neutral;
+  if (type.includes('ERROR')) return 'text-red-700 bg-red-100 dark:text-red-300 dark:bg-red-500/15';
+  if (type.includes('TOOL')) return 'text-blue-700 bg-blue-100 dark:text-blue-300 dark:bg-blue-500/15';
+  if (type.includes('TEXT')) return 'text-blue-700 bg-blue-100 dark:text-blue-300 dark:bg-blue-500/15';
+  if (type.includes('RUN')) return 'text-purple-700 bg-purple-100 dark:text-purple-300 dark:bg-purple-500/15';
+  if (type.includes('ACTIVITY')) return 'text-amber-700 bg-amber-100 dark:text-amber-300 dark:bg-amber-500/15';
+  return neutral;
 }
 
 export const RawEventsPanel: React.FC<RawEventsPanelProps> = ({ events }) => {
@@ -125,41 +126,41 @@ export const RawEventsPanel: React.FC<RawEventsPanelProps> = ({ events }) => {
   };
 
   return (
-    <div className="bg-gray-900 rounded-lg border border-gray-800 p-3">
+    <div className="bg-card rounded-lg border border-border p-3">
       <details className="group" open>
         <summary className="flex items-center justify-between cursor-pointer list-none">
-          <div className="flex items-center text-[10px] font-bold text-gray-300 uppercase">
+          <div className="flex items-center text-[10px] font-bold text-muted-foreground uppercase">
             <Terminal className="mr-1" size={10} />
             Raw AG UI Events
-            <span className="ml-1.5 text-[10px] font-normal text-gray-500">
+            <span className="ml-1.5 text-[10px] font-normal text-muted-foreground/70">
               ({filteredEvents.length}{searchTerm ? ` of ${events.length}` : ''} events)
             </span>
           </div>
-          <span className="text-gray-500 group-open:rotate-180 transition-transform text-xs">▼</span>
+          <span className="text-muted-foreground/70 group-open:rotate-180 transition-transform text-xs">▼</span>
         </summary>
 
         <div className="mt-3">
           {/* Search Input */}
           <div className="flex items-center gap-2 mb-3">
             <div className="relative flex-1">
-              <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-gray-500" />
+              <Search size={14} className="absolute left-2 top-1/2 -translate-y-1/2 text-muted-foreground/70" />
               <input
                 type="text"
                 placeholder="Search events..."
                 value={searchTerm}
                 onChange={(e) => setSearchTerm(e.target.value)}
-                className="w-full bg-gray-950 border border-gray-700 rounded pl-8 pr-3 py-1.5 text-xs text-gray-200 placeholder-gray-500 focus:border-opensearch-blue focus:outline-none"
+                className="w-full bg-background border border-input rounded pl-8 pr-3 py-1.5 text-xs text-foreground placeholder:text-muted-foreground/70 focus:border-opensearch-blue focus:outline-none"
               />
             </div>
             <button
               onClick={expandAll}
-              className="px-2 py-1.5 text-[10px] text-gray-400 hover:text-gray-200 bg-gray-800 hover:bg-gray-700 rounded transition-colors"
+              className="px-2 py-1.5 text-[10px] text-muted-foreground hover:text-foreground bg-muted hover:bg-muted/80 rounded transition-colors"
             >
               Expand All
             </button>
             <button
               onClick={collapseAll}
-              className="px-2 py-1.5 text-[10px] text-gray-400 hover:text-gray-200 bg-gray-800 hover:bg-gray-700 rounded transition-colors"
+              className="px-2 py-1.5 text-[10px] text-muted-foreground hover:text-foreground bg-muted hover:bg-muted/80 rounded transition-colors"
             >
               Collapse All
             </button>
@@ -173,32 +174,32 @@ export const RawEventsPanel: React.FC<RawEventsPanelProps> = ({ events }) => {
               const summary = getEventSummary(event);
 
               return (
-                <div key={index} className="bg-gray-950 rounded border border-gray-800">
+                <div key={index} className="bg-background rounded border border-border">
                   {/* Event Header */}
                   <button
                     onClick={() => toggleExpand(index)}
-                    className="w-full flex items-start gap-2 p-2 text-left hover:bg-gray-900/50 transition-colors"
+                    className="w-full flex items-start gap-2 p-2 text-left hover:bg-muted/50 transition-colors"
                   >
-                    <span className="text-gray-500 text-[9px] font-mono w-6 flex-shrink-0">
+                    <span className="text-muted-foreground/70 text-[9px] font-mono w-6 flex-shrink-0">
                       #{originalIndex + 1}
                     </span>
                     {isExpanded ? (
-                      <ChevronDown size={12} className="text-gray-500 mt-0.5 flex-shrink-0" />
+                      <ChevronDown size={12} className="text-muted-foreground/70 mt-0.5 flex-shrink-0" />
                     ) : (
-                      <ChevronRight size={12} className="text-gray-500 mt-0.5 flex-shrink-0" />
+                      <ChevronRight size={12} className="text-muted-foreground/70 mt-0.5 flex-shrink-0" />
                     )}
                     <span className={`text-[9px] font-semibold px-1.5 py-0.5 rounded flex-shrink-0 ${getEventTypeColor(event.type)}`}>
                       {event.type || 'UNKNOWN'}
                     </span>
-                    <span className="text-[10px] text-gray-300 flex-1 truncate">
+                    <span className="text-[10px] text-foreground/80 flex-1 truncate">
                       {summary}
                     </span>
                   </button>
 
                   {/* Expanded JSON View */}
                   {isExpanded && (
-                    <div className="border-t border-gray-800 p-2">
-                      <pre className="text-[9px] text-gray-400 overflow-x-auto whitespace-pre-wrap font-mono bg-gray-900/50 p-2 rounded">
+                    <div className="border-t border-border p-2">
+                      <pre className="text-[9px] text-muted-foreground overflow-x-auto whitespace-pre-wrap font-mono bg-muted/50 p-2 rounded">
                         {JSON.stringify(event, null, 2)}
                       </pre>
                     </div>
@@ -208,7 +209,7 @@ export const RawEventsPanel: React.FC<RawEventsPanelProps> = ({ events }) => {
             })}
 
             {filteredEvents.length === 0 && (
-              <div className="text-center py-4 text-gray-500 text-xs">
+              <div className="text-center py-4 text-muted-foreground text-xs">
                 {searchTerm ? 'No events match your search' : 'No events captured'}
               </div>
             )}

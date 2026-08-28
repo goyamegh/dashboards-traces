@@ -632,7 +632,7 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
             {/* Results Area */}
             <div className="flex-1 min-h-0 overflow-y-auto p-4">
               {errorMessage && (
-                <div className="mb-4 p-3 text-sm text-red-600 bg-red-50 rounded border border-red-200">
+                <div className="mb-4 p-3 text-sm rounded border text-red-600 bg-red-50 border-red-200 dark:text-red-300 dark:bg-red-500/10 dark:border-red-500/30">
                   {errorMessage}
                 </div>
               )}
