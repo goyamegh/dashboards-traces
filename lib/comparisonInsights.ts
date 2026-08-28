@@ -18,6 +18,7 @@
  */
 
 import type { TestCaseComparisonRow } from '@/types';
+import { getSubcategoryFromLabels } from '@/lib/testCaseLabels';
 
 /** Agreement bucket for a row across the selected runs. */
 export type AgreementBucket = 'allPass' | 'allFail' | 'split';
@@ -101,15 +102,26 @@ export const OTHER_CATEGORY = '(other)';
 /**
  * Extract a row's category.
  * Priority:
- *   1. A bracketed tag embedded in the test-case name — the convention used
- *      by imported benchmarks (e.g. "qst_0011 [basic] How long is …").
- *   2. A `topic:<x>` label (the generic labels system).
- *   3. {@link UNCATEGORIZED}.
+ *   1. The `subcategory:<x>` label — the proper, purpose-built tag for this
+ *      (set via the SDK's `test(name, { labels: ['subcategory:basic'] })`,
+ *      the JSON/CLI import's `subcategory` field, or the Test Case editor).
+ *      Prefer this over anything scraped from free text: it's validated,
+ *      exported/round-tripped, and shown elsewhere in the UI (EvalsPage,
+ *      BenchmarkEditor) — a real column, not a regex guess.
+ *   2. A bracketed tag embedded in the test-case name — a convention older
+ *      imported benchmarks used before `subcategory` existed (e.g.
+ *      "qst_0011 [basic] How long is …"). Kept only for benchmarks that
+ *      predate the `subcategory` field; new imports should set it instead.
+ *   3. A `topic:<x>` label (the generic labels system, pre-dates
+ *      `subcategory` as a dedicated concept).
+ *   4. {@link UNCATEGORIZED}.
  * (`category:<x>` labels are intentionally NOT used here: imported benchmarks
  * stamp a single `category:RAG` on every case, which would collapse the
- * breakdown into one column.)
+ * breakdown into one column — that's the coarse domain, not this facet.)
  */
 export function extractRowCategory(row: Pick<TestCaseComparisonRow, 'testCaseName' | 'labels'>): string {
+  const subcategory = getSubcategoryFromLabels(row.labels);
+  if (subcategory) return subcategory.toLowerCase();
   const m = /\[([\w-]+)\]/.exec(row.testCaseName || '');
   if (m) return m[1].toLowerCase();
   const topic = (row.labels || []).find(l => l.toLowerCase().startsWith('topic:'));
