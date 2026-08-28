@@ -342,7 +342,14 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
           size,
           from,
           sort: [{ createdAt: { order: 'desc' } }],
-          query: { match_all: {} },
+          // Benchmark and evaluation-run documents share this index. Legacy
+          // benchmarks have no docType, while evaluation runs are explicitly
+          // discriminated, so exclude only the latter.
+          query: {
+            bool: {
+              must_not: [{ term: { 'docType.keyword': 'evaluation-run' } }],
+            },
+          },
         },
       });
 
