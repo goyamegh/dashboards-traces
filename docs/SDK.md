@@ -564,6 +564,20 @@ The `.eval.js`, `.eval.ts`, and `.eval.mjs` loaders all run through a single
 code-import execution path, so `benchmark -f <file>` executes the SDK body
 directly.
 
+> **`.eval.ts` / `.eval.mjs` resolve the package like any other import.**
+> `.eval.js` files are executed in a synthetic context where
+> `require('@opensearch-project/agent-health')` is intercepted directly, so
+> they work from anywhere on disk. `.eval.ts` and `.eval.mjs` files use a
+> plain native `import()`, so `import { test } from
+> '@opensearch-project/agent-health'` must resolve through Node's normal
+> module resolution — the package needs to be a real dependency reachable
+> from the file's location (installed in `node_modules`, a workspace link,
+> or a `node_modules` symlink to a local checkout). Test registrations are
+> shared process-wide (keyed off `globalThis`), so it doesn't matter
+> *which* physical copy of the package that resolves to — dist vs source,
+> symlinked vs installed all register into the same registry the
+> loader reads from.
+
 ---
 
 ## Dev tips

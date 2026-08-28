@@ -124,7 +124,7 @@ agent-health benchmark [options]
 **Modes:**
 - **Quick mode** (no `-n`, no `-f`): Auto-creates a benchmark from all stored test cases
 - **Named mode** (`-n <name>`): Runs a specific existing benchmark
-- **File mode** (`-f <path>`): Imports test cases from a JSON file **or runs a code SDK file** (`.eval.js` / `.eval.ts` — see [SDK.md](./SDK.md)), creates a benchmark, and runs it
+- **File mode** (`-f <path>`): Imports test cases from a JSON file **or runs a code SDK file** (`.eval.js` / `.eval.ts` — see [SDK.md](./SDK.md)), creates a benchmark, and runs it. `.eval.ts` / `.eval.mjs` files resolve `@opensearch-project/agent-health` through normal Node module resolution, so the package must be reachable as a real dependency from the file's location (see the note in [SDK.md](./SDK.md#migrating-v1--v2))
 
 ```bash
 agent-health benchmark                                           # quick mode
