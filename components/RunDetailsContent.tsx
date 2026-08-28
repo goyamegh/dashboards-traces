@@ -64,6 +64,7 @@ import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { CollapsibleTestCaseDefinition } from '@/components/evals3/CollapsibleTestCaseDefinition';
 
 interface RunDetailsContentProps {
   report: EvaluationReport;
@@ -818,6 +819,13 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
         })()}
         </>)}
       </div>
+      )}
+
+      {/* The standalone /runs/:runId surface does not have the inspector's
+          outer definition card, so expose the same reader-oriented task here.
+          hideMetrics means TestCaseInspectorPanel already rendered it. */}
+      {!hideMetrics && (
+        <CollapsibleTestCaseDefinition testCase={testCase} />
       )}
 
       {/* Tabs */}
