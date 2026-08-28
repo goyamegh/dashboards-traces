@@ -290,7 +290,12 @@ router.post('/api/storage/evaluation-runs/:id/rerun', async (req: Request, res: 
     // Edge case: source run's benchmark (or a version pinned on it) was
     // deleted since the run executed. The config is no longer satisfiable —
     // 409, not 400 (nothing wrong with the *request*, the referenced state
-    // just doesn't exist anymore).
+    // just doesn't exist anymore). NOTE: this only checks EXISTENCE of the
+    // pinned version; resolveTestCaseSources() below always resolves a
+    // 'benchmark' source against the benchmark's *current* test case list
+    // regardless of benchmarkVersion (pre-existing behavior, shared by every
+    // run-creation path, not rerun-specific) — see the caveat on
+    // checkBenchmarkSourcesStillExist() in services/evaluationRerun.ts.
     const benchmarkError = await checkBenchmarkSourcesStillExist(sourceRun, storage);
     if (benchmarkError) {
       return res.status(409).json({ error: benchmarkError });

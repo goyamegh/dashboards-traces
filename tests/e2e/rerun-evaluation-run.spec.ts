@@ -205,4 +205,22 @@ test.describe('Re-run an evaluation run', () => {
     await page.getByRole('button', { name: 'Cancel' }).click();
     await expect(dialog).not.toBeVisible();
   });
+
+  test('"Customize before re-running" opens the New-Run composer pre-filled from the source run', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed source run (storage not configured?)');
+
+    await page.goto(`/evaluations/runs/${sourceRunId}`);
+    await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
+
+    const customizeBtn = page.locator('[data-testid="rerun-customize-btn"]');
+    await expect(customizeBtn).toBeVisible({ timeout: 15000 });
+    await customizeBtn.click();
+
+    // Lands on the New-Run composer, pre-filled: run name starts "Re-run:".
+    await expect(page).toHaveURL(/\/evaluations\/runs\/new$/);
+    await expect(page.locator('input[placeholder="My evaluation run"]')).toHaveValue(/^Re-run:/, { timeout: 10000 });
+
+    // There is NO agent-model picker in the composer (agent owns its model).
+    await expect(page.getByText('Agent Model', { exact: true })).toHaveCount(0);
+  });
 });

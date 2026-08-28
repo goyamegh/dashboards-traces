@@ -72,7 +72,9 @@ export const RerunConfirmDialog: React.FC<RerunConfirmDialogProps> = ({ run, ope
             <RotateCcw size={16} /> Re-run evaluation?
           </DialogTitle>
           <DialogDescription>
-            This kicks off a brand-new, independent run with the same configuration.
+            This creates a new, independent run using this run's configuration —
+            agent, judge, and test-case sources are re-resolved at launch time,
+            so results may differ if that configuration has changed since.
           </DialogDescription>
         </DialogHeader>
 

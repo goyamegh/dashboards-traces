@@ -54,6 +54,13 @@ describe('computeRerunName', () => {
   it('does not confuse a name that merely contains the word "rerun" without the suffix shape', () => {
     expect(computeRerunName('rerun-of-baseline')).toBe('rerun-of-baseline (re-run)');
   });
+
+  it('falls back to the default base name when the suffix has no prefix (codex_review finding)', () => {
+    // A source literally named "(re-run)" (no prefix) would otherwise
+    // capture an empty baseName and produce " (re-run 2)" (leading space).
+    expect(computeRerunName('(re-run)')).toBe('Evaluation Run (re-run 2)');
+    expect(computeRerunName('(re-run 5)')).toBe('Evaluation Run (re-run 6)');
+  });
 });
 
 describe('buildRerunConfig', () => {

@@ -87,8 +87,14 @@ export const EvalRunDetailPage: React.FC = () => {
   // Provenance: when this run was itself created via re-run, look up the
   // source run's name for the chip (falls back to a truncated id if the
   // source run was since deleted — the link is a point-in-time provenance
-  // record, not a live reference that has to keep resolving).
+  // record, not a live reference that has to keep resolving). `sourceRunMissing`
+  // tracks a CONFIRMED lookup failure (vs. "not yet loaded") so the chip can
+  // visually de-emphasize a dangling link instead of looking identical to a
+  // healthy one (codex_review: clicking through still lands on this page's
+  // own well-handled "Run not found" state, same as any stale run URL — this
+  // is a styling cue, not a functional block).
   const [sourceRunName, setSourceRunName] = useState<string | null>(null);
+  const [sourceRunMissing, setSourceRunMissing] = useState(false);
 
   const loadRun = useCallback(async () => {
     if (!runId) return;
@@ -114,11 +120,11 @@ export const EvalRunDetailPage: React.FC = () => {
   }, [run?.status, loadRun]);
 
   useEffect(() => {
-    if (!run?.rerunOf) { setSourceRunName(null); return; }
+    if (!run?.rerunOf) { setSourceRunName(null); setSourceRunMissing(false); return; }
     let cancelled = false;
     getEvaluationRun(run.rerunOf)
-      .then(src => { if (!cancelled) setSourceRunName(src.name || src.id); })
-      .catch(() => { if (!cancelled) setSourceRunName(null); });
+      .then(src => { if (!cancelled) { setSourceRunName(src.name || src.id); setSourceRunMissing(false); } })
+      .catch(() => { if (!cancelled) { setSourceRunName(null); setSourceRunMissing(true); } });
     return () => { cancelled = true; };
   }, [run?.rerunOf]);
 
@@ -216,9 +222,13 @@ export const EvalRunDetailPage: React.FC = () => {
                 {run.rerunOf && (
                   <button
                     data-testid="rerun-provenance-chip"
-                    className="inline-flex items-center gap-1 rounded-full border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-xs px-2 py-0.5 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors"
+                    className={sourceRunMissing
+                      ? 'inline-flex items-center gap-1 rounded-full border border-muted-foreground/30 bg-muted/40 text-muted-foreground text-xs px-2 py-0.5 hover:bg-muted/60 transition-colors'
+                      : 'inline-flex items-center gap-1 rounded-full border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-xs px-2 py-0.5 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors'}
                     onClick={() => navigate(`/evaluations/runs/${run.rerunOf}`)}
-                    title="This run was created as a re-run of the linked source run"
+                    title={sourceRunMissing
+                      ? 'This run was created as a re-run, but the source run no longer exists'
+                      : 'This run was created as a re-run of the linked source run'}
                   >
                     <Link2 size={11} />
                     re-run of {sourceRunName || run.rerunOf.slice(0, 8)}
@@ -250,6 +260,34 @@ export const EvalRunDetailPage: React.FC = () => {
                 onClick={() => setRerunDialogOpen(true)}
               >
                 <RotateCcw size={14} className="mr-1" /> Re-run
+              </Button>
+              {/* Secondary path: open the New-Run composer pre-filled from
+                  this run's config instead of launching immediately, so the
+                  user can tweak agent/judge/sources/benchmark first. Restores
+                  the capability the old "Re-run" button used to provide
+                  before it became the one-click duplicate above — flagged by
+                  codex_review as a real loss otherwise (the composer has no
+                  other way to start a new run pre-filled from an existing
+                  one). */}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                data-testid="rerun-customize-btn"
+                onClick={() => navigate('/evaluations/runs/new', {
+                  state: {
+                    restartFrom: {
+                      name: run.name,
+                      sources: run.sources,
+                      agentKey: run.agentKey,
+                      evaluatorId: run.evaluatorId,
+                      judgeModelId: run.judgeModelId,
+                      benchmarkId: run.benchmarkId,
+                    },
+                  },
+                })}
+              >
+                Customize before re-running…
               </Button>
               {run.status === 'running' && (
                 <Button variant="destructive" size="sm" onClick={handleCancel} disabled={cancelling}>
