@@ -1287,25 +1287,25 @@ export function createBenchmarkCommand(): Command {
       }
     });
 
-  command.addCommand(createBenchmarkDoctorCommand());
+  command.addCommand(createBenchmarkLinkRepairCommand());
 
   return command;
 }
 
 /**
- * `benchmark doctor` — detect (and, with `--apply`, repair) benchmarks whose
+ * `benchmark repair-links` — detect (and, with `--apply`, repair) benchmarks whose
  * linked run-first EvaluationRun documents reference test case ids missing
  * from `benchmark.testCaseIds` (see `cli/utils/benchmarkDoctor.ts` for the
  * pure planner and the root-cause note). Dry-run by default: prints the plan
  * without writing anything.
  */
-export function createBenchmarkDoctorCommand(): Command {
-  return new Command('doctor')
+export function createBenchmarkLinkRepairCommand(): Command {
+  return new Command('repair-links')
     .description('Detect benchmarks whose run-first runs reference test cases missing from testCaseIds (use --apply to fix)')
     .option('--apply', 'Apply the repair (default: dry-run, report only)')
     .option('--stop-server', 'Stop the server after the check completes (default: keep running)')
     .action(async (options: { apply?: boolean; stopServer?: boolean }) => {
-      console.log(chalk.bold('\nAgent Health - Benchmark Doctor\n'));
+      console.log(chalk.bold('\nAgent Health - Benchmark Link Repair\n'));
       const config = await loadConfig();
       const serverConfig = { ...DEFAULT_SERVER_CONFIG, ...config.server };
       const isCI = !!process.env.CI;
