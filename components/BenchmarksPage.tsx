@@ -69,9 +69,10 @@ export const BenchmarksPage: React.FC = () => {
     message: string;
   }>({ isDeleting: false, deletingId: null, status: 'idle', message: '' });
 
-  // Load test cases on mount
+  // Load test cases on mount. Only id/name is used here (status labels, run
+  // lookups) so the lightweight summary payload avoids the full 168MB fetch.
   useEffect(() => {
-    asyncTestCaseStorage.getAll().then(setTestCases);
+    asyncTestCaseStorage.getAll({ summary: true }).then(setTestCases);
   }, []);
 
   // Run configuration dialog state
@@ -156,11 +157,13 @@ export const BenchmarksPage: React.FC = () => {
         return;
       }
 
-      // Step 2: Get IDs of created test cases (fetch latest to get generated IDs)
-      const allTestCases = await asyncTestCaseStorage.getAll();
-      const createdTestCaseIds = allTestCases
-        .filter((tc) => validation.data!.some((d) => d.name === tc.name))
-        .map((tc) => tc.id);
+      // Step 2: Get IDs of created test cases directly from the bulk-create
+      // response — the server already returns the created records
+      // (server/routes/storage/testCases.ts), so there's no need to re-fetch
+      // the entire test-case corpus (previously a bare getAll()) and
+      // re-derive the ids by matching on `name`, which is also a
+      // correctness bug when two test cases share a name.
+      const createdTestCaseIds = result.testCases.map((tc) => tc.id);
 
       // Step 3: Auto-create benchmark with imported test cases
       const benchmarkName = file.name.replace(/\.json$/i, '') || 'Imported Benchmark';
