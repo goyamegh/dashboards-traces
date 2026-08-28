@@ -67,10 +67,6 @@ jest.mock('@/services/client', () => ({
   cancelExperimentRun: jest.fn(),
 }));
 
-jest.mock('@/services/metrics', () => ({
-  formatDuration: jest.fn((v: number) => `${v}ms`),
-}));
-
 jest.mock('@/lib/constants', () => ({
   DEFAULT_CONFIG: {
     agents: [],
@@ -83,11 +79,15 @@ jest.mock('@/lib/utils', () => ({
   getDifficultyColor: jest.fn().mockReturnValue(''),
   getModelName: jest.fn((id: string) => id),
   cn: jest.fn((...args: any[]) => args.filter(Boolean).join(' ')),
-  // RunScore reads these from @/lib/utils; added to the component after this
-  // partial mock was written, so omitting them threw "getRunOverallScore is
-  // not a function".
-  getRunOverallScore: jest.fn().mockReturnValue(null),
-  formatMetricsBreakdown: jest.fn().mockReturnValue([]),
+  // Judge/evaluator label helpers (lib/utils.ts) reused by RunSummaryBand.
+  getJudgeModelLabel: jest.fn((id?: string | null) => (id ? `judge:${id}` : '—')),
+  getEvaluatorLabel: jest.fn((id?: string | null) => (id ? `evaluator:${id}` : '—')),
+}));
+
+jest.mock('@/services/metrics', () => ({
+  formatDuration: jest.fn((v: number) => `${v}ms`),
+  formatCost: jest.fn((v: number) => `$${v.toFixed(2)}`),
+  fetchBatchMetrics: jest.fn().mockResolvedValue({ aggregate: null, metrics: {} }),
 }));
 
 // Mock child components to avoid their own async side effects
@@ -95,12 +95,8 @@ jest.mock('@/components/RunDetailsContent', () => ({
   RunDetailsContent: () => React.createElement('div', { 'data-testid': 'run-details-content' }),
 }));
 
-jest.mock('@/components/RunSummaryPanel', () => ({
-  RunSummaryPanel: () => React.createElement('div', { 'data-testid': 'run-summary-panel' }),
-}));
-
 jest.mock('@/components/ui/card', () => ({
-  Card: ({ children, ...props }: any) => React.createElement('div', props, children),
+  Card: React.forwardRef(({ children, ...props }: any, ref: any) => React.createElement('div', { ref, ...props }, children)),
   CardContent: ({ children, ...props }: any) => React.createElement('div', props, children),
 }));
 
@@ -113,7 +109,7 @@ jest.mock('@/components/ui/badge', () => ({
 }));
 
 jest.mock('@/components/ui/scroll-area', () => ({
-  ScrollArea: ({ children }: any) => React.createElement('div', null, children),
+  ScrollArea: ({ children, ...props }: any) => React.createElement('div', props, children),
 }));
 
 jest.mock('@/components/ui/skeleton', () => ({
@@ -229,6 +225,19 @@ describe('RunDetailsPage', () => {
     mockGetAllTestCases.mockResolvedValue([]);
     mockGetByIdsTestCases.mockResolvedValue([]);
     mockGetReportSummariesByIds.mockResolvedValue({});
+    // RunDetailsPage fetches the evaluator id->name map once on mount
+    // (mirrors EvalRunsPage); default to an empty list so tests that don't
+    // care about evaluator labels aren't affected. Individual tests may
+    // override global.fetch for their own scenarios (e.g. download-report).
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ evaluators: [] }),
+    }) as any;
+    // `mockSearchParams` is a shared singleton mutated in-place by the
+    // component itself (searchParams.set/delete inside handleSelectItem) -
+    // reset it before every test so a prior test's case selection can't
+    // leak into the next test's initial ?testCase read.
+    mockSearchParams.delete('testCase');
   });
 
   afterEach(() => {
@@ -560,6 +569,114 @@ describe('RunDetailsPage', () => {
       await waitFor(() => {
         expect(screen.getByTestId('run-details-content')).toBeTruthy();
       });
+    });
+  });
+
+  describe('run summary band (redesign: bare route renders summary + list directly)', () => {
+    it('renders the summary band with agent/model/judge/evaluator labels and verdict counts, no click-through needed', async () => {
+      const run = createExperimentRun({
+        agentKey: 'test-agent',
+        modelId: 'test-model',
+        judgeModelId: 'judge-model-x',
+        evaluatorId: 'evaluator-y',
+      });
+      const experiment = createExperiment(run);
+      const reports = [
+        { ...createReport('report-1', 'tc-1'), passFailStatus: 'passed' as const },
+        { ...createReport('report-2', 'tc-2'), passFailStatus: 'failed' as const },
+      ];
+
+      mockGetExperiment.mockResolvedValue(experiment);
+      wireReports(reports);
+
+      await renderAndWait();
+
+      // Band renders directly on the bare route - no need to select anything.
+      await waitFor(() => {
+        expect(screen.getByTestId('run-summary-band')).toBeTruthy();
+      });
+
+      // Judge/evaluator labels come from lib/utils' getJudgeModelLabel /
+      // getEvaluatorLabel helpers (mocked above) - assert they were fed the
+      // run's judgeModelId/evaluatorId, and rendered.
+      expect(screen.getByTestId('run-summary-band-judge').textContent).toContain('judge:judge-model-x');
+      expect(screen.getByTestId('run-summary-band-evaluator').textContent).toContain('evaluator:evaluator-y');
+
+      // Verdict counts: 1 passed, 1 failed, 0 errored, 2 total.
+      const verdicts = screen.getByTestId('run-summary-band-verdicts');
+      expect(verdicts.textContent).toContain('1');
+      expect(verdicts.textContent).toContain('/ 2');
+
+      // The test-case list is rendered directly below the band - no
+      // "Select a test case" empty pane, no detail pane (nothing selected).
+      expect(screen.getByTestId('run-test-case-list')).toBeTruthy();
+      expect(screen.getByText('tc-1')).toBeTruthy();
+      expect(screen.getByText('tc-2')).toBeTruthy();
+      expect(screen.queryByTestId('run-details-content')).toBeNull();
+      expect(screen.queryByText(/Select a test case/i)).toBeNull();
+    });
+
+    it('shows an em dash for judge/evaluator when the run has neither set', async () => {
+      const run = createExperimentRun({ judgeModelId: undefined, evaluatorId: undefined });
+      const experiment = createExperiment(run);
+      mockGetExperiment.mockResolvedValue(experiment);
+      wireReports([createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')]);
+
+      await renderAndWait();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-summary-band-judge').textContent).toContain('\u2014');
+        expect(screen.getByTestId('run-summary-band-evaluator').textContent).toContain('\u2014');
+      });
+    });
+  });
+
+  describe('?testCase param sync (redesign: deep-linkable case selection)', () => {
+    afterEach(() => {
+      mockSearchParams.delete('testCase');
+    });
+
+    it('clicking a case row pushes ?testCase=<id> (not a history replace) and renders the case detail', async () => {
+      const run = createExperimentRun();
+      const experiment = createExperiment(run);
+      mockGetExperiment.mockResolvedValue(experiment);
+      wireReports([createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')]);
+
+      await renderAndWait();
+
+      await act(async () => {
+        screen.getByText('tc-1').click();
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      expect(mockSetSearchParams).toHaveBeenCalled();
+      const [paramsArg, optionsArg] = mockSetSearchParams.mock.calls[mockSetSearchParams.mock.calls.length - 1];
+      expect(paramsArg.get('testCase')).toBe('tc-1');
+      // Push semantics (no `{ replace: true }`) so browser back/forward can
+      // walk between "no case selected" and each selected case.
+      expect(optionsArg).toBeUndefined();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-details-content')).toBeTruthy();
+      });
+    });
+
+    it('deep-links: a ?testCase=<id> present on load preselects that case and renders its detail immediately', async () => {
+      mockSearchParams.set('testCase', 'tc-2');
+
+      const run = createExperimentRun();
+      const experiment = createExperiment(run);
+      mockGetExperiment.mockResolvedValue(experiment);
+      wireReports([createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')]);
+
+      await renderAndWait();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-details-content')).toBeTruthy();
+      });
+      // The deep-linked case's full report was fetched (not just its summary).
+      expect(mockGetReportById).toHaveBeenCalledWith('report-2');
     });
   });
 });
