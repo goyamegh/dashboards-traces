@@ -17,6 +17,7 @@ import { getStorageModule } from '../../adapters/index.js';
 import { SAMPLE_BENCHMARKS, isSampleBenchmarkId } from '../../../cli/demo/sampleBenchmarks.js';
 import { SAMPLE_TEST_CASES } from '../../../cli/demo/sampleTestCases.js';
 import { Benchmark, BenchmarkRun, BenchmarkProgress, RunConfigInput, TestCase, BenchmarkVersion, TestCaseSnapshot, StorageMetadata, RunStats, EvaluationReport } from '../../../types/index.js';
+import { linkTestCaseIdsToBenchmark } from '../../../services/benchmarkPromotion.js';
 import {
   executeRun,
   createCancellationToken,
@@ -740,6 +741,42 @@ router.patch('/api/storage/benchmarks/:id/metadata', async (req: Request, res: R
       return res.status(404).json({ error: 'Benchmark not found' });
     }
     console.error('[StorageAPI] Update benchmark metadata failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/storage/benchmarks/:id/link-test-case-ids - Union test case ids into
+// the benchmark's top-level testCaseIds AND its current version's testCaseIds,
+// in place (no version bump). Server-side counterpart of
+// services/benchmarkPromotion.ts:linkTestCaseIdsToBenchmark — the same path
+// POST /api/storage/evaluation-runs uses at run-creation time, exposed here so
+// `agent-health benchmark repair-links --apply` can drive the identical,
+// already-unit-tested repair for benchmarks that went stale before that link
+// existed (top-level testCaseIds correct, current version's testCaseIds empty
+// or behind — see cli/utils/benchmarkDoctor.ts's computeVersionLinkRepairPlan).
+router.post('/api/storage/benchmarks/:id/link-test-case-ids', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { testCaseIds } = req.body;
+
+    // Reject modifying sample data
+    if (isSampleId(id)) {
+      return res.status(400).json({ error: 'Cannot modify sample data. Sample benchmarks are read-only.' });
+    }
+    if (!Array.isArray(testCaseIds)) {
+      return res.status(400).json({ error: 'testCaseIds must be an array' });
+    }
+
+    const storage = getStorageModule();
+    const result = await linkTestCaseIdsToBenchmark(id, testCaseIds, storage);
+    if (!result) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
+
+    debug('StorageAPI', `Linked ${result.added.length} new test case id(s) into benchmark ${id} (top level + current version)`);
+    res.json(result);
+  } catch (error: any) {
+    console.error('[StorageAPI] Link test case ids to benchmark failed:', error.message);
     res.status(500).json({ error: error.message });
   }
 });

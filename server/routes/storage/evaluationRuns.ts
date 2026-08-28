@@ -12,7 +12,7 @@ import {
   createCancellationToken,
   CancellationToken,
 } from '../../../services/evaluationRunner.js';
-import { promoteRunToBenchmark } from '../../../services/benchmarkPromotion.js';
+import { promoteRunToBenchmark, linkTestCaseIdsToBenchmark } from '../../../services/benchmarkPromotion.js';
 import {
   checkBenchmarkSourcesStillExist,
   buildRerunConfig,
@@ -218,6 +218,22 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       version: (tc as any).version || 1,
       name: tc.name,
     }));
+
+    // Link the resolved test case ids into the referenced benchmark's
+    // testCaseIds (top level AND current version) immediately — independent
+    // of whether the run itself succeeds. Without this, a run against a
+    // fresh `benchmarkId` (created with testCaseIds: [] by the CLI) leaves
+    // the benchmark a permanent shell, and the benchmark page's test-case
+    // panel keeps rendering "No test cases in this version" even after the
+    // top level is populated by some other path. Best-effort: a failure
+    // here must not abort the run.
+    if (benchmarkId && snapshots.length > 0) {
+      try {
+        await linkTestCaseIdsToBenchmark(benchmarkId, snapshots.map(s => s.id), storage);
+      } catch (linkError: any) {
+        console.error(`[StorageAPI] Failed to link test cases into benchmark ${benchmarkId}:`, linkError.message);
+      }
+    }
 
     // Create the evaluation run document
     const runId = `eval-run-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
