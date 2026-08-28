@@ -20,7 +20,7 @@
 import React, { useState, useMemo, useCallback, useEffect } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Sparkles, Loader2, RefreshCw, ArrowUpRight, AlertTriangle } from 'lucide-react';
+import { Sparkles, Loader2, RefreshCw, ArrowUpRight, AlertTriangle, Lightbulb } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { BenchmarkRun, EvaluationReport, TestCaseComparisonRow } from '@/types';
 import { sanitizeMarkdownUrl } from './sanitizeMarkdownUrl';
@@ -33,14 +33,88 @@ export interface DeepDiveRunMeta {
   startedAt: number;
   endedAt: number;
 }
+/** One A-vs-B numeric dimension the deep-dive agent found worth charting. */
+interface DeepDiveChartSeriesPoint {
+  label: string;
+  a: number;
+  b: number;
+  unit?: string;
+}
+interface DeepDiveChartSpec {
+  title: string;
+  series: DeepDiveChartSeriesPoint[];
+}
+/** One concrete follow-up experiment idea grounded in this comparison. */
+interface ExperimentSuggestion {
+  title: string;
+  rationale: string;
+}
 interface DeepDiveResponse {
   markdown: string;
   modelId: string;
   durationMs: number;
   runs: DeepDiveRunMeta[];
+  chart?: DeepDiveChartSpec;
+  experiments?: ExperimentSuggestion[];
 }
 
 interface CacheEntry { markdown: string; meta: DeepDiveResponse; }
+
+/** Format a raw number compactly: integers as-is, fractional to 1 decimal. */
+function formatChartValue(v: number): string {
+  return Number.isInteger(v) ? v.toLocaleString() : v.toFixed(1);
+}
+
+/**
+ * CompareBars — a small, deterministic A-vs-B chart for ad hoc numeric
+ * dimensions the deep-dive agent found worth surfacing (tool counts, retries,
+ * tokens, error counts, ...). Units differ per row, so each row is normalized
+ * to its OWN max(a, b) rather than sharing one axis — a paired "bullet chart"
+ * rather than a grouped bar chart, which is the right shape when the rows are
+ * not on a common scale. The bar is a quick visual scan aid only — the PRINTED
+ * number (not bar length) is what carries precision, since values come from an
+ * LLM's tool call and are not independently re-validated against the spans it
+ * cited. Defensively guards against non-finite/negative values (e.g. a
+ * malformed tool call slipping past the schema) so a bad value degrades to an
+ * empty bar instead of a broken `NaN%`/negative CSS width.
+ */
+const CompareBars: React.FC<{ chart: DeepDiveChartSpec; nameA: string; nameB: string }> = ({ chart, nameA, nameB }) => (
+  <div className="rounded-lg border border-border bg-card/60 p-3 mb-3" data-testid="deep-dive-chart">
+    <div className="text-xs font-semibold text-foreground/90 mb-2">{chart.title}</div>
+    <div className="space-y-2.5">
+      {chart.series.map((s, i) => {
+        const safe = (v: number) => (Number.isFinite(v) ? Math.max(v, 0) : 0);
+        const a = safe(s.a);
+        const b = safe(s.b);
+        const max = Math.max(a, b, 1e-9);
+        const pctA = Math.max((a / max) * 100, a === 0 ? 0 : 3);
+        const pctB = Math.max((b / max) * 100, b === 0 ? 0 : 3);
+        const unit = s.unit ? ` ${s.unit}` : '';
+        return (
+          <div key={i}>
+            <div className="text-[11px] text-muted-foreground mb-1">{s.label}</div>
+            <div className="space-y-1">
+              {[
+                { ab: 'A' as const, raw: s.a, value: a, pct: pctA, name: nameA, bar: 'bg-opensearch-blue', text: 'text-opensearch-blue' },
+                { ab: 'B' as const, raw: s.b, value: b, pct: pctB, name: nameB, bar: 'bg-purple-400', text: 'text-purple-300' },
+              ].map((row) => (
+                <div key={row.ab} className="flex items-center gap-2">
+                  <span className={`w-3 text-[10px] font-bold flex-shrink-0 ${row.text}`} title={row.name}>{row.ab}</span>
+                  <div className="flex-1 h-2 rounded bg-muted overflow-hidden">
+                    <div className={`h-full rounded ${row.bar}`} style={{ width: `${row.pct}%` }} />
+                  </div>
+                  <span className="w-16 text-right text-[11px] tabular-nums text-foreground/80 flex-shrink-0">
+                    {Number.isFinite(row.raw) ? `${formatChartValue(row.raw)}${unit}` : '—'}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  </div>
+);
 
 // The agentic deep-dive is expensive (runs an in-process agent over both runs'
 // spans/logs), so we cache the result. Reports are immutable, so the key (the
@@ -256,11 +330,37 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
 
       {status === 'done' && (
         <>
+          {meta?.chart && meta.chart.series.length > 0 && (
+            <CompareBars chart={meta.chart} nameA={nameA} nameB={nameB} />
+          )}
           <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed [&_p]:my-1.5 [&_ul]:my-1.5 [&_li]:my-0.5 [&_strong]:text-foreground">
             <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={sanitizeMarkdownUrl} components={{ a: SpanAnchor }}>
               {markdown}
             </ReactMarkdown>
           </div>
+          {meta?.experiments && meta.experiments.length > 0 && (
+            <div className="mt-3 pt-3 border-t border-border" data-testid="deep-dive-experiments">
+              <h4 className="text-xs font-semibold text-foreground mb-2 flex items-center gap-1.5">
+                <Lightbulb size={13} className="text-amber-400 flex-shrink-0" /> Suggested next experiments
+              </h4>
+              <ul className="space-y-2">
+                {meta.experiments.map((s, i) => (
+                  <li key={i} className="text-sm">
+                    <span className="font-medium text-foreground">{s.title}</span>
+                    <div className="text-xs text-muted-foreground mt-0.5 [&_p]:m-0 prose-sm [&_a]:no-underline">
+                      <ReactMarkdown
+                        remarkPlugins={[remarkGfm]}
+                        urlTransform={sanitizeMarkdownUrl}
+                        components={{ a: SpanAnchor, p: ({ children }) => <span>{children}</span> }}
+                      >
+                        {s.rationale}
+                      </ReactMarkdown>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {meta && (
             <p className="text-[10px] text-muted-foreground/70 mt-3 pt-2 border-t border-border">
               Generated by {meta.modelId.split('/').pop()} in {(meta.durationMs / 1000).toFixed(0)}s · click a
