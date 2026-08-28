@@ -7,12 +7,14 @@
  * Agent Trends Band — Aggregation Utilities
  *
  * Builds the per-run, per-agent data model behind the landing-page
- * "Agent trends" band: chip summaries (latest accuracy + week-over-week
- * delta + cost/tokens per run) and the multi-agent trend chart (one dot
- * per BenchmarkRun, plus a rolling-average line per agent).
+ * "Agent trends" band: v3 replaces the all-agents overlay chart (one
+ * ECharts line+scatter series per agent, sharing a 10-color palette) with
+ * a small-multiples sparkline-table — one row per agent, sorted by latest
+ * score or biggest drop, each row's sparkline + a single-agent focused
+ * detail chart built from the SAME gap-broken series shape.
  *
  * Deliberately kept UI-framework-free so it's cheaply unit testable and
- * so it can be reused by both the chart component and the chip row.
+ * so it can be reused by the row list, the drawer, and the detail chart.
  *
  * Data-source note: accuracy/pass counts come straight from
  * `Benchmark.runs[]` (already loaded by the Dashboard for the runs list —
@@ -28,10 +30,13 @@
 
 import type { Benchmark, BenchmarkRun, EvaluationReport } from '@/types';
 import { bucketRunResults } from '@/lib/runStats';
+import { formatCost, formatTokens } from '@/services/metrics';
 
 export type TrendMetricKey = 'accuracy' | 'cost' | 'tokens';
 
 export type TrendsTimeRange = '7d' | '30d' | '90d';
+
+export type TrendSortMode = 'latest' | 'biggestDrop';
 
 export interface RunMetricsLookup {
   costUsd: number;
@@ -51,44 +56,34 @@ export interface AgentRunPoint {
   passed: number;
   failed: number;
   total: number;
-  accuracyPct: number; // 0-100, over the evaluable set
+  /**
+   * 0-100 pass rate over the evaluable set, or `null` when the run had
+   * ZERO evaluable test cases (every case errored — no judge verdict at
+   * all). Owner-reported bug: this used to default to `0`, which is
+   * visually indistinguishable from a genuine "the agent passed nothing"
+   * result — a run with no signal must never render as a real data point.
+   */
+  accuracyPct: number | null;
   costUsd: number | null; // null = no trace metrics resolved for this run
   tokens: number | null;
 }
 
-export interface AgentChipSummary {
-  agentKey: string;
-  agentName: string;
-  latestAccuracyPct: number | null;
-  wowDeltaPct: number | null; // null when there isn't a full prior week to compare
-  latestCostUsd: number | null;
-  latestTokens: number | null;
-  latestRunAt: string | null;
-  latestRunDocId: string | null;
-  latestBenchmarkId: string | null;
-  runCount: number;
-}
-
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+const GAP_BREAK_MS_DEFAULT = 7 * 24 * 60 * 60 * 1000; // 7 days
 
 /**
  * Deterministic, visually distinct color palette for the chart lines / chip
  * left-borders. Assigned by sorted agentKey so colors stay stable across
  * re-renders and time-range/benchmark filtering (not by first-seen order,
  * which would shuffle as the visible run set changes).
+ *
+ * v3 note: the small-multiples redesign no longer overlays every agent's
+ * line on one chart, so per-agent hue no longer needs to scale to N agents
+ * (the old 10-color palette repeated after the 10th agent — "indistinguishable
+ * colors" in the owner's feedback with 14 agents in scope). Each row/detail
+ * chart is already labeled by name, so a single, theme-aware accent color
+ * plus semantic (up/down) delta coloring is used everywhere instead — see
+ * `TREND_LINE_COLOR` in AgentTrendSparkline/AgentTrendDetailChart.
  */
-const AGENT_PALETTE = [
-  '#7fb5ff', '#37d67a', '#f5b759', '#ff6b6b',
-  '#b98cf0', '#4dd0e1', '#f472b6', '#a3e635',
-  '#fb923c', '#60a5fa',
-];
-
-export function buildAgentColorMap(agentKeys: string[]): Map<string, string> {
-  const sorted = [...new Set(agentKeys)].sort();
-  const map = new Map<string, string>();
-  sorted.forEach((key, i) => map.set(key, AGENT_PALETTE[i % AGENT_PALETTE.length]));
-  return map;
-}
 
 /**
  * Compute passed/failed/total/accuracyPct for a run, preferring the
@@ -100,16 +95,16 @@ export function getRunAccuracy(run: BenchmarkRun): {
   passed: number;
   failed: number;
   total: number;
-  accuracyPct: number;
+  accuracyPct: number | null;
 } {
   if (run.stats && run.stats.total > 0) {
     const evaluable = Math.max(0, run.stats.total - (run.stats.errored || 0));
-    const accuracyPct = evaluable > 0 ? (run.stats.passed / evaluable) * 100 : 0;
+    const accuracyPct = evaluable > 0 ? (run.stats.passed / evaluable) * 100 : null;
     return { passed: run.stats.passed, failed: run.stats.failed, total: run.stats.total, accuracyPct };
   }
   const bucketed = bucketRunResults(run.results);
   const evaluable = Math.max(0, bucketed.total - bucketed.errored);
-  const accuracyPct = evaluable > 0 ? (bucketed.passed / evaluable) * 100 : 0;
+  const accuracyPct = evaluable > 0 ? (bucketed.passed / evaluable) * 100 : null;
   return { passed: bucketed.passed, failed: bucketed.failed, total: bucketed.total, accuracyPct };
 }
 
@@ -211,26 +206,6 @@ export function groupPointsByAgent(points: AgentRunPoint[]): Map<string, AgentRu
   return map;
 }
 
-/**
- * Trailing rolling average over a metric series, skipping `null` samples
- * (e.g. runs with no trace-derived cost/tokens). Returns `null` for any
- * position with no non-null samples yet in the window — callers can treat
- * `null` as "don't plot this point on the average line".
- */
-export function rollingAverage(values: Array<number | null>, window: number = 3): Array<number | null> {
-  if (window <= 0) window = 1;
-  const out: Array<number | null> = [];
-  const buffer: number[] = [];
-  for (const value of values) {
-    if (value != null && !Number.isNaN(value)) {
-      buffer.push(value);
-      if (buffer.length > window) buffer.shift();
-    }
-    out.push(buffer.length > 0 ? buffer.reduce((a, b) => a + b, 0) / buffer.length : null);
-  }
-  return out;
-}
-
 export function metricValue(point: AgentRunPoint, metric: TrendMetricKey): number | null {
   switch (metric) {
     case 'accuracy':
@@ -244,119 +219,173 @@ export function metricValue(point: AgentRunPoint, metric: TrendMetricKey): numbe
   }
 }
 
-/** One plottable dot for the trend chart's scatter series. */
-export interface AgentSeriesPoint {
-  point: AgentRunPoint;
-  value: number;
-  /**
-   * True for the last (most recent) plotted point of this agent's series.
-   * The chart always pins a "name: value" label on this point regardless
-   * of label-overlap decluttering, per the approved design.
-   */
-  isLatest: boolean;
+export function formatMetricValue(metric: TrendMetricKey, value: number): string {
+  switch (metric) {
+    case 'accuracy':
+      return `${value.toFixed(1)}%`;
+    case 'cost':
+      return formatCost(value);
+    case 'tokens':
+      return formatTokens(value);
+    default:
+      return String(value);
+  }
 }
 
-/** One agent's line (rolling average) + dots (individual runs) for the trend chart. */
-export interface AgentSeriesData {
-  agentKey: string;
-  agentName: string;
-  /** Rolling-average line, [timestamp, value] pairs, gaps (nulls) omitted. */
-  lineData: Array<[number, number]>;
-  scatterData: AgentSeriesPoint[];
+/** One entry in a gap-broken trend series. `value: null` marks a synthetic break, never a real run. */
+export interface TrendSeriesEntry {
+  timestamp: number;
+  value: number | null;
+  point: AgentRunPoint | null;
 }
 
 /**
- * Group `points` by agent and shape them into per-agent line/scatter series
- * data for the trend chart, honoring per-agent visibility (the agents
- * drawer's checkboxes) by omitting hidden agents entirely — this is the
- * shared, framework-free logic that decides what the chart draws, kept
- * separate from AgentTrendsEChart's echarts-specific option wiring so it's
- * cheaply unit testable.
+ * Build one agent's gap-broken series for `metric`: points whose metric
+ * value is null (no evaluable accuracy, or no trace-resolved cost/tokens)
+ * are dropped — never plotted as a fake zero. A synthetic `{ value: null }`
+ * marker is inserted at the midpoint between any two consecutive PLOTTED
+ * points whose time gap exceeds `gapBreakMs` (default 7 days).
+ *
+ * Why: a chart line drawn between two data-array entries connects them
+ * with a straight (or smoothed) segment regardless of how far apart their
+ * x-values are — so two runs 25 days apart look, visually, like a
+ * continuous trend across those 25 days ("sparse runs produce misleading
+ * long interpolated lines" — owner feedback). Inserting a null-valued
+ * entry between them gives recharts' `<Line connectNulls={false}>` (the
+ * default) an explicit place to break the path, while the surrounding
+ * dead space still renders proportionally on a time-scaled x-axis.
  */
-export function buildAgentTrendSeries(
-  points: AgentRunPoint[],
+export function buildGapBrokenSeries(
+  agentPoints: AgentRunPoint[], // already time-sorted, single agent
   metric: TrendMetricKey,
-  hiddenAgentKeys: ReadonlySet<string> = new Set(),
-  rollingWindow: number = 3,
-): AgentSeriesData[] {
-  const grouped = groupPointsByAgent(points);
-  const out: AgentSeriesData[] = [];
+  gapBreakMs: number = GAP_BREAK_MS_DEFAULT,
+): TrendSeriesEntry[] {
+  const valued = agentPoints
+    .map(p => ({ p, v: metricValue(p, metric) }))
+    .filter((d): d is { p: AgentRunPoint; v: number } => d.v != null);
 
-  for (const [agentKey, agentPoints] of grouped) {
-    if (hiddenAgentKeys.has(agentKey)) continue;
-
-    const rawValues = agentPoints.map(p => metricValue(p, metric));
-    const rolling = rollingAverage(rawValues, rollingWindow);
-    const lineData = agentPoints
-      .map((p, i) => (rolling[i] != null ? ([p.timestamp, rolling[i] as number] as [number, number]) : null))
-      .filter((d): d is [number, number] => d != null);
-
-    const valued = agentPoints
-      .map((p, i) => ({ p, v: rawValues[i] }))
-      .filter((d): d is { p: AgentRunPoint; v: number } => d.v != null);
-    const lastValuedIndex = valued.length - 1;
-
-    const scatterData: AgentSeriesPoint[] = valued.map(({ p, v }, i) => ({
-      point: p,
-      value: v,
-      isLatest: i === lastValuedIndex,
-    }));
-
-    out.push({ agentKey, agentName: agentPoints[0].agentName, lineData, scatterData });
+  const out: TrendSeriesEntry[] = [];
+  for (let i = 0; i < valued.length; i++) {
+    const { p, v } = valued[i];
+    if (i > 0) {
+      const prev = valued[i - 1].p;
+      if (p.timestamp - prev.timestamp > gapBreakMs) {
+        out.push({ timestamp: (prev.timestamp + p.timestamp) / 2, value: null, point: null });
+      }
+    }
+    out.push({ timestamp: p.timestamp, value: v, point: p });
   }
-
   return out;
 }
 
-/**
- * Per-agent chip summary: latest accuracy + week-over-week delta (avg
- * accuracy of runs in the trailing 7 days vs the 7 days before that) +
- * latest run's cost/tokens.
- *
- * `wowDeltaPct` is `null` whenever either window has zero runs — a single
- * run, or a burst of runs that's all newer than 7 days old, can't produce a
- * meaningful week-over-week comparison, so we say so rather than fabricate
- * a delta against nothing.
- */
-export function computeAgentChipSummaries(
-  points: AgentRunPoint[],
-  nowMs: number = Date.now(),
-): AgentChipSummary[] {
-  const byAgent = groupPointsByAgent(points);
-  const summaries: AgentChipSummary[] = [];
+/** Latest-vs-previous delta for one agent's metric series (not week-over-week — the immediately prior run). */
+export interface TrendDelta {
+  latestValue: number | null;
+  previousValue: number | null;
+  /** latestValue - previousValue; null unless BOTH resolved to a real value. */
+  delta: number | null;
+}
 
-  for (const [agentKey, agentPoints] of byAgent) {
+export function computeLatestDelta(agentPoints: AgentRunPoint[], metric: TrendMetricKey): TrendDelta {
+  const validValues = agentPoints
+    .map(p => metricValue(p, metric))
+    .filter((v): v is number => v != null);
+  const n = validValues.length;
+  const latestValue = n >= 1 ? validValues[n - 1] : null;
+  const previousValue = n >= 2 ? validValues[n - 2] : null;
+  const delta = latestValue != null && previousValue != null ? latestValue - previousValue : null;
+  return { latestValue, previousValue, delta };
+}
+
+export function formatDelta(metric: TrendMetricKey, delta: number | null): string {
+  if (delta == null) return 'n/a';
+  const sign = delta > 0 ? '+' : delta < 0 ? '-' : '±';
+  if (metric === 'accuracy') {
+    const rounded = Math.round(delta * 10) / 10;
+    if (Math.abs(rounded) < 0.05) return '±0pp';
+    return `${rounded > 0 ? '+' : ''}${rounded}pp`;
+  }
+  return `${sign}${formatMetricValue(metric, Math.abs(delta))}`;
+}
+
+/** One row in the sparkline-table: one agent, its gap-broken series for the current metric, latest value + delta. */
+export interface AgentTrendRow {
+  agentKey: string;
+  agentName: string;
+  runCount: number;
+  latestRunAt: string | null;
+  latestRunDocId: string | null;
+  latestBenchmarkId: string | null;
+  /** All of this agent's points, time-sorted (unfiltered by metric) — the detail chart re-derives per-metric series from this on focus. */
+  points: AgentRunPoint[];
+  /** Gap-broken series for the CURRENTLY selected metric — what the row's sparkline draws. */
+  series: TrendSeriesEntry[];
+  latestValue: number | null;
+  previousValue: number | null;
+  delta: number | null;
+}
+
+/**
+ * Group `points` by agent and shape each into a sparkline-table row for
+ * the given metric. One row per agent that has at least one point in
+ * scope — a single run is a perfectly valid row (a lone dot, `delta: null`
+ * rendered as "n/a"); there is no "not enough data" floor at the row
+ * level (unlike the old all-agents chart, which needed >=2 points across
+ * ALL agents just to avoid an empty canvas).
+ */
+export function buildAgentTrendRows(
+  points: AgentRunPoint[],
+  metric: TrendMetricKey,
+  gapBreakMs: number = GAP_BREAK_MS_DEFAULT,
+): AgentTrendRow[] {
+  const grouped = groupPointsByAgent(points);
+  const rows: AgentTrendRow[] = [];
+  for (const [agentKey, agentPoints] of grouped) {
     if (agentPoints.length === 0) continue;
     const latest = agentPoints[agentPoints.length - 1];
-
-    const thisWeek = agentPoints.filter(p => p.timestamp > nowMs - WEEK_MS);
-    const prevWeek = agentPoints.filter(
-      p => p.timestamp <= nowMs - WEEK_MS && p.timestamp > nowMs - 2 * WEEK_MS,
-    );
-    const avgAccuracy = (arr: AgentRunPoint[]): number | null =>
-      arr.length > 0 ? arr.reduce((sum, p) => sum + p.accuracyPct, 0) / arr.length : null;
-
-    const thisWeekAvg = avgAccuracy(thisWeek);
-    const prevWeekAvg = avgAccuracy(prevWeek);
-    const wowDeltaPct = thisWeekAvg != null && prevWeekAvg != null ? thisWeekAvg - prevWeekAvg : null;
-
-    summaries.push({
+    const { latestValue, previousValue, delta } = computeLatestDelta(agentPoints, metric);
+    rows.push({
       agentKey,
       agentName: latest.agentName,
-      latestAccuracyPct: latest.accuracyPct,
-      wowDeltaPct,
-      latestCostUsd: latest.costUsd,
-      latestTokens: latest.tokens,
+      runCount: agentPoints.length,
       latestRunAt: latest.createdAt,
       latestRunDocId: latest.runDocId,
       latestBenchmarkId: latest.benchmarkId,
-      runCount: agentPoints.length,
+      points: agentPoints,
+      series: buildGapBrokenSeries(agentPoints, metric, gapBreakMs),
+      latestValue,
+      previousValue,
+      delta,
     });
   }
+  return rows;
+}
 
-  // Most recently active agent first.
-  summaries.sort((a, b) => new Date(b.latestRunAt || 0).getTime() - new Date(a.latestRunAt || 0).getTime());
-  return summaries;
+/**
+ * Sort rows by latest value (highest first; rows with no value for the
+ * current metric sort last) or by biggest drop (most negative delta
+ * first; rows with no delta sort last, ordered among themselves by latest
+ * value so a still-informative "no signal yet" row isn't buried below a
+ * literal `undefined`-sorts-arbitrarily bucket).
+ */
+export function sortAgentTrendRows(rows: AgentTrendRow[], sortMode: TrendSortMode): AgentTrendRow[] {
+  const sorted = [...rows];
+  if (sortMode === 'biggestDrop') {
+    sorted.sort((a, b) => {
+      if (a.delta == null && b.delta == null) return (b.latestValue ?? -Infinity) - (a.latestValue ?? -Infinity);
+      if (a.delta == null) return 1;
+      if (b.delta == null) return -1;
+      return a.delta - b.delta; // ascending: most negative (biggest drop) first
+    });
+  } else {
+    sorted.sort((a, b) => {
+      if (a.latestValue == null && b.latestValue == null) return 0;
+      if (a.latestValue == null) return 1;
+      if (b.latestValue == null) return -1;
+      return b.latestValue - a.latestValue; // descending: highest first
+    });
+  }
+  return sorted;
 }
 
 /** Default benchmark selector value: the benchmark with the most recent run. */
@@ -373,4 +402,106 @@ export function getMostRecentlyActiveBenchmarkId(benchmarks: Benchmark[]): strin
     }
   }
   return bestId;
+}
+
+// ==================== Ranked dot plot (primary v3 viz) ====================
+//
+// A Cleveland-style ranked dot plot of ONE benchmark's latest snapshot:
+// one row per agent that ran it, ranked by latest score; a large solid dot
+// for the latest run and small faded dots for that agent's earlier runs on
+// the SAME benchmark (variance/history at a glance, no interpolated lines
+// across time — there IS no time axis here, just "latest" vs "earlier").
+// Callers scope `points` to a single benchmarkId before calling these.
+
+/** One plottable dot: a run + its resolved metric value (metric-null points are never included). */
+export interface DotPlotEntry {
+  point: AgentRunPoint;
+  value: number;
+}
+
+/** One row of the ranked dot plot: one agent, its latest dot (solid) + earlier dots (faded). */
+export interface BenchmarkDotPlotRow {
+  agentKey: string;
+  agentName: string;
+  /** null when this agent has no run with a resolved value for the current metric (e.g. no trace-derived cost yet). */
+  latest: DotPlotEntry | null;
+  /** Earlier runs with a resolved value, time-ascending, EXCLUDING `latest`. */
+  history: DotPlotEntry[];
+  /** 0-based rank after `rankDotPlotRows` (0 = top/best); -1 until ranked. */
+  rank: number;
+}
+
+/**
+ * Group `points` (already scoped to one benchmark by the caller) by agent
+ * and split each agent's valued runs into `latest` (most recent with a
+ * resolved value) + `history` (earlier ones). An agent with zero valued
+ * runs for this metric still gets a row (`latest: null`) so it's visible
+ * in the list rather than silently disappearing when switching metrics.
+ */
+export function buildBenchmarkDotPlotRows(
+  points: AgentRunPoint[],
+  metric: TrendMetricKey,
+): BenchmarkDotPlotRow[] {
+  const grouped = groupPointsByAgent(points);
+  const rows: BenchmarkDotPlotRow[] = [];
+  for (const [agentKey, agentPoints] of grouped) {
+    const valued = agentPoints
+      .map(p => ({ point: p, value: metricValue(p, metric) }))
+      .filter((d): d is DotPlotEntry => d.value != null);
+
+    const agentName = agentPoints[0].agentName;
+    if (valued.length === 0) {
+      rows.push({ agentKey, agentName, latest: null, history: [], rank: -1 });
+      continue;
+    }
+    const latest = valued[valued.length - 1];
+    const history = valued.slice(0, -1);
+    rows.push({ agentKey, agentName, latest, history, rank: -1 });
+  }
+  return rows;
+}
+
+/**
+ * Rank rows by latest value, best (highest) first — rows with no value for
+ * the current metric sort last (still listed, just unranked among
+ * themselves by name for a stable order). Stamps `rank` (0 = top) on the
+ * returned copies; does not mutate the input.
+ */
+export function rankDotPlotRows(rows: BenchmarkDotPlotRow[]): BenchmarkDotPlotRow[] {
+  const sorted = [...rows].sort((a, b) => {
+    if (a.latest == null && b.latest == null) return a.agentName.localeCompare(b.agentName);
+    if (a.latest == null) return 1;
+    if (b.latest == null) return -1;
+    return b.latest.value - a.latest.value;
+  });
+  return sorted.map((row, index) => ({ ...row, rank: index }));
+}
+
+/**
+ * Shared X-domain for a dot plot: accuracy is always anchored to the true
+ * [0, 100] scale (auto-scaling to the observed min/max would visually
+ * exaggerate small real-world differences, e.g. an 88-95% cluster would
+ * stretch to fill the whole width). Cost/tokens are zero-anchored (0 is a
+ * meaningful reference point for both) up to the observed max plus a
+ * little headroom so the top dot isn't flush against the edge. Returns
+ * `null` when there is nothing to plot at all.
+ */
+export function metricDomain(rows: BenchmarkDotPlotRow[], metric: TrendMetricKey): [number, number] | null {
+  const values: number[] = [];
+  for (const row of rows) {
+    if (row.latest) values.push(row.latest.value);
+    for (const h of row.history) values.push(h.value);
+  }
+  if (values.length === 0) return null;
+  if (metric === 'accuracy') return [0, 100];
+  const max = Math.max(...values);
+  return [0, max <= 0 ? 1 : max * 1.08];
+}
+
+/** Map a value into a 0-100 position within `domain`, clamped — usable directly as a CSS `left`/`width` percentage. */
+export function valueToPercent(value: number, domain: [number, number]): number {
+  const [min, max] = domain;
+  if (max === min) return 50;
+  const pct = ((value - min) / (max - min)) * 100;
+  return Math.max(0, Math.min(100, pct));
 }
