@@ -49,6 +49,12 @@ describe('comparisonDeepDiveService — SYSTEM_PROMPT', () => {
     expect(SYSTEM_PROMPT).toMatch(/grounded in what you actually found/i);
     expect(SYSTEM_PROMPT).toMatch(/omit either or both rather than fabricating/i);
   });
+
+  it('instructs the agent to never write a bare "N/N" judge score (misreads as a case count)', () => {
+    expect(SYSTEM_PROMPT).toMatch(/scored 100\/100 judge points/);
+    expect(SYSTEM_PROMPT).toMatch(/NEVER a bare "N\/N"/);
+    expect(SYSTEM_PROMPT).toMatch(/misreads as a case count/i);
+  });
 });
 
 describe('comparisonDeepDiveService — buildUserPrompt', () => {
@@ -84,7 +90,7 @@ describe('comparisonDeepDiveService — buildUserPrompt', () => {
 
   it('includes per-run outcome + duration context when known', () => {
     const prompt = buildUserPrompt(runs);
-    expect(prompt).toMatch(/outcome: passed \(score 100\)/);
+    expect(prompt).toMatch(/outcome: passed \(judgeScore: 100 on a 0-100 scale\)/);
     expect(prompt).toMatch(/outcome: failed/);
     expect(prompt).toMatch(/211\.0s/);
     expect(prompt).toMatch(/266\.0s/);

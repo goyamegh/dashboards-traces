@@ -4,14 +4,30 @@
  */
 
 /**
- * Comparison deep-dive — "on-the-fly" chart + suggested-experiments sections.
+ * Comparison deep-dive — suggested-experiments section + header metrics.
  *
- * The deep-dive agent can now record (via record_metric_chart /
- * record_experiment_suggestions tool calls, tested at the unit level in
- * comparisonTraceTools.test.ts) a small A-vs-B chart and a list of concrete
- * follow-up experiment ideas alongside its markdown narrative. This spec
- * asserts the UI actually RENDERS both sections when the API returns them,
- * and renders NEITHER when the API omits them (older/degenerate responses).
+ * The deep-dive agent can record (via `record_deepdive_extras`, tested at the
+ * unit level in comparisonTraceTools.test.ts) a small A-vs-B chart and a list
+ * of concrete follow-up experiment ideas alongside its markdown narrative.
+ *
+ * Owner feedback (screenshot-verified) on the panel this spec covers:
+ *   1. the chart's "Score" row printed a bare number ("100 pts") with no
+ *      unit context — in a multi-hundred-case comparison that misreads as a
+ *      CASE COUNT, not a judge score;
+ *   2. the whole "Performance & Outcome" bars block was redundant chrome —
+ *      duration/tool-call numbers for the same case are visible elsewhere;
+ *   3. "show the numbers in the top header itself" instead of a chart.
+ *
+ * So the UI no longer renders `chart` at all (the API field itself is
+ * unchanged/still optional — see comparisonTraceTools.test.ts — the UI
+ * simply never reads it any more), and a compact `DeepDiveHeaderMetrics`
+ * line (Score / Duration / Tools, A vs B) always renders in the panel header
+ * instead, sourced from the reports directly rather than the LLM's chart
+ * tool call. This spec asserts: (a) the chart block is GONE even when the
+ * API still returns a `chart` field (regression guard against re-adding it),
+ * (b) the header metrics line renders the real per-report numbers, and
+ * (c) the suggested-experiments section — a separate, still-wanted feature —
+ * is unaffected.
  *
  * Deterministic: storage, /api/comparison/deep-dive and /api/traces are all
  * mocked via page.route() — no LLM/AWS creds required.
@@ -40,11 +56,28 @@ const evalRun = (id: string, agent: string, repId: string) => ({
   results: { [TC]: { reportId: repId, status: 'completed' } },
   stats: { passed: 1, failed: 0, total: 1 },
 });
-const report = (id: string, agent: string, runId: string, traceId: string) => ({
+// `opts` lets each side of the A/B pair carry its OWN score/duration/tool
+// count — the exact numbers the (now-removed) bars block used to chart, now
+// asserted directly against the header-metrics line instead.
+const report = (
+  id: string,
+  agent: string,
+  runId: string,
+  traceId: string,
+  opts: { accuracy?: number; durationMs?: number; toolCalls?: number } = {}
+) => ({
   id, createdAt: '2026-03-01T10:00:00Z', testCaseId: TC, agentId: agent,
   runId, modelId: 'claude-opus-4-8', status: 'completed', passFailStatus: 'passed',
-  traceId, metrics: { accuracy: 100 }, trajectory: [],
+  traceId, metrics: { accuracy: opts.accuracy ?? 100 },
+  performanceMetrics: { durationMs: opts.durationMs ?? 60000, agentDurationMs: opts.durationMs ?? 60000 },
+  trajectory: Array.from({ length: opts.toolCalls ?? 0 }, (_, i) => ({
+    id: `t${i}`, timestamp: 0, type: 'action', content: '', toolName: 'some_tool',
+  })),
 });
+// Report-A / report-B numbers match the owner's own example numbers
+// ("Duration: 36.9s vs 29.2s"; "Tools: 3 vs 3") for a direct regression check.
+const REPORT_A_OPTS = { accuracy: 100, durationMs: 36900, toolCalls: 3 };
+const REPORT_B_OPTS = { accuracy: 50, durationMs: 29200, toolCalls: 3 };
 const span = (traceId: string, spanId: string, name: string) => ({
   traceId, spanId, name, startTime: '2026-03-01T10:00:00.000Z', endTime: '2026-03-01T10:00:01.000Z',
   durationMs: 1000, serviceName: 'demo-agent', kind: 'SPAN_KIND_SERVER',
@@ -55,6 +88,8 @@ const deepDiveBodyWithExtras = {
   markdown: `**Both resolved it correctly — A was more thorough**\n\n- **Tool economy**: A made more tool calls than B.\n- **Errors**: no errors observed in run A; no errors observed in run B.\n`,
   modelId: 'amazon-bedrock/claude-opus-4-8',
   durationMs: 4200,
+  // The API can still return `chart` (older/other agent runs may populate
+  // it) — the UI must NOT render it any more regardless. See test below.
   chart: {
     title: 'Tool usage & retries',
     series: [
@@ -94,14 +129,14 @@ async function setupRoutes(page: import('@playwright/test').Page, deepDiveBody: 
   await page.route(/\/api\/storage\/runs\?ids=/, (r) => {
     const ids = (new URL(r.request().url()).searchParams.get('ids') || '').split(',');
     const runs: unknown[] = [];
-    if (ids.some((id) => id.includes('rep-chart-a'))) runs.push(report('rep-chart-a', 'demo', RUNID_A, TRACE_A));
-    if (ids.some((id) => id.includes('rep-chart-b'))) runs.push(report('rep-chart-b', 'pulsar', RUNID_B, TRACE_B));
+    if (ids.some((id) => id.includes('rep-chart-a'))) runs.push(report('rep-chart-a', 'demo', RUNID_A, TRACE_A, REPORT_A_OPTS));
+    if (ids.some((id) => id.includes('rep-chart-b'))) runs.push(report('rep-chart-b', 'pulsar', RUNID_B, TRACE_B, REPORT_B_OPTS));
     return json(r, { runs, total: runs.length });
   });
   await page.route('**/api/storage/runs/**', (r) => {
     const u = r.request().url();
-    if (u.includes('rep-chart-a')) return json(r, report('rep-chart-a', 'demo', RUNID_A, TRACE_A));
-    if (u.includes('rep-chart-b')) return json(r, report('rep-chart-b', 'pulsar', RUNID_B, TRACE_B));
+    if (u.includes('rep-chart-a')) return json(r, report('rep-chart-a', 'demo', RUNID_A, TRACE_A, REPORT_A_OPTS));
+    if (u.includes('rep-chart-b')) return json(r, report('rep-chart-b', 'pulsar', RUNID_B, TRACE_B, REPORT_B_OPTS));
     return r.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
   });
   await page.route('**/api/metrics/batch', (r) => json(r, { metrics: [] }));
@@ -114,23 +149,32 @@ async function setupRoutes(page: import('@playwright/test').Page, deepDiveBody: 
   });
 }
 
-test.describe('Comparison deep-dive — on-the-fly chart + suggested experiments', () => {
-  test('renders the compare-bars chart and suggested-experiments section when the API returns them', async ({ page }) => {
+test.describe('Comparison deep-dive — header metrics (no bars) + suggested experiments', () => {
+  test('renders header metrics (not a chart) and the suggested-experiments section', async ({ page }) => {
     await setupRoutes(page, deepDiveBodyWithExtras);
     await page.goto(`/compare?runs=${RUN_A},${RUN_B}`);
     await page.waitForSelector('[data-testid="comparison-page"]', { timeout: 30000 });
 
-    // Chart: title + all three series labels + a couple of formatted values.
-    const chart = page.locator('[data-testid="deep-dive-chart"]');
-    await expect(chart).toBeVisible({ timeout: 20000 });
-    await expect(chart).toContainText('Tool usage & retries');
-    await expect(chart).toContainText('Tool calls');
-    await expect(chart).toContainText('Retries');
-    await expect(chart).toContainText('Duration');
-    await expect(chart).toContainText('12');
-    await expect(chart).toContainText('88 s');
+    // The bars/chart block must NOT render, even though the mocked API
+    // response above still includes a `chart` field — regression guard
+    // against re-introducing the redundant "Performance & Outcome" bars.
+    await expect(page.locator('[data-testid="deep-dive-chart"]')).toHaveCount(0);
+
+    // Header metrics: one compact, labeled line with the real per-report
+    // score/duration/tool numbers — never a bare "100/100".
+    const headerMetrics = page.locator('[data-testid="deep-dive-header-metrics"]');
+    await expect(headerMetrics).toBeVisible({ timeout: 20000 });
+    await expect(headerMetrics).toContainText('Score:');
+    await expect(headerMetrics).toContainText('100%');
+    await expect(headerMetrics).toContainText('50%');
+    await expect(headerMetrics).toContainText('Duration:');
+    await expect(headerMetrics).toContainText('36.9s');
+    await expect(headerMetrics).toContainText('29.2s');
+    await expect(headerMetrics).toContainText('Tools:');
+    await expect(headerMetrics).toContainText('3');
 
     // Suggested experiments: heading + both suggestion titles + rationale text.
+    // Unaffected by the bars-block removal — a separate, still-wanted feature.
     const experiments = page.locator('[data-testid="deep-dive-experiments"]');
     await expect(experiments).toBeVisible();
     await expect(experiments).toContainText('Suggested next experiments');
@@ -145,49 +189,22 @@ test.describe('Comparison deep-dive — on-the-fly chart + suggested experiments
     await expect(citation).toHaveAttribute('data-run-id', RUNID_A);
   });
 
-  test('renders neither section when the API response omits chart/experiments', async ({ page }) => {
-    const { chart, experiments, ...bare } = deepDiveBodyWithExtras;
+  test('renders header metrics but no experiments section when the API response omits experiments', async ({ page }) => {
+    const { experiments, ...bare } = deepDiveBodyWithExtras;
     await setupRoutes(page, bare);
     await page.goto(`/compare?runs=${RUN_A},${RUN_B}`);
     await page.waitForSelector('[data-testid="comparison-page"]', { timeout: 30000 });
 
     await expect(page.locator('[data-testid="comparison-deep-dive"]')).toBeVisible({ timeout: 20000 });
+    // Chart never renders regardless of the API response.
     await expect(page.locator('[data-testid="deep-dive-chart"]')).toHaveCount(0);
+    // Experiments section is genuinely absent when the API omits it.
     await expect(page.locator('[data-testid="deep-dive-experiments"]')).toHaveCount(0);
-  });
-
-  test('degrades gracefully (no crash, no NaN%/negative width) when a chart value is malformed', async ({ page }) => {
-    // Simulates a value that survived JSON as `null` (e.g. a NaN a model tool
-    // call produced got serialized to null) and a negative value that slipped
-    // past the schema's `minimum: 0` — defense-in-depth on the RENDER side,
-    // since chart values come from an LLM tool call that is never independently
-    // re-validated against the spans it cited.
-    const malformed = {
-      ...deepDiveBodyWithExtras,
-      chart: {
-        title: 'Malformed values',
-        series: [
-          { label: 'Null value', a: null, b: 4 },
-          { label: 'Negative value', a: -5, b: 3 },
-        ],
-      },
-    };
-    await setupRoutes(page, malformed);
-    await page.goto(`/compare?runs=${RUN_A},${RUN_B}`);
-    await page.waitForSelector('[data-testid="comparison-page"]', { timeout: 30000 });
-
-    const chart = page.locator('[data-testid="deep-dive-chart"]');
-    await expect(chart).toBeVisible({ timeout: 20000 });
-    // Null renders as an explicit dash rather than "NaN" or a crash.
-    await expect(chart).toContainText('—');
-    // Negative value is still shown as text (not silently dropped)…
-    await expect(chart).toContainText('-5');
-    // …but no bar element was given an invalid negative or NaN CSS width.
-    const badWidths = await page.locator('[data-testid="deep-dive-chart"] [style*="width"]').evaluateAll((els) =>
-      els
-        .map((el) => (el as HTMLElement).style.width)
-        .filter((w) => w.includes('NaN') || w.includes('-'))
-    );
-    expect(badWidths).toEqual([]);
+    // Header metrics are sourced from the reports, not the deep-dive API
+    // response, so they still render even when the response is bare.
+    const headerMetrics = page.locator('[data-testid="deep-dive-header-metrics"]');
+    await expect(headerMetrics).toBeVisible();
+    await expect(headerMetrics).toContainText('100%');
+    await expect(headerMetrics).toContainText('50%');
   });
 });

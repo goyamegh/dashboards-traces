@@ -100,6 +100,7 @@ OUTPUT — a tight markdown deep-dive (NOT a multi-question report). Structure:
   - 3–6 bullets of the concrete, material differences. Lead each bullet with the dimension in **bold**.
   - An **Errors** bullet that is ALWAYS present: call out every error/failure found in run A, run B, or both — what it was, which run it hit, and how that agent handled it (recovered / retried / ignored / failed) — each backed by a span or log citation. If a run had no errors, state "no errors observed" for that run explicitly; never silently omit it.
   - Be specific with numbers from the spans (tool counts, durations, tokens, error counts) when available.
+  - Judge score wording: when you mention either run's judge score, ALWAYS write it unambiguously, e.g. "scored 100/100 judge points" or "a 92% judge score" — NEVER a bare "N/N" or "passed (N/N)". This comparison may be one of hundreds of test cases on the page, and a bare "100/100" misreads as a case count, not a score.
 
 SPAN CITATIONS (important): when a claim is backed by a specific span, cite it inline as a markdown link of EXACTLY this form:
     [short human label](span:<runId>:<spanId>)
@@ -115,7 +116,12 @@ export function buildUserPrompt(runs: ComparisonRunInput[]): string {
   for (const r of runs) {
     lines.push(`## Run ${r.key} — ${r.label}`);
     if (r.runId) lines.push(`- runId (use this in span: citations): ${r.runId}`);
-    if (r.passFailStatus) lines.push(`- outcome: ${r.passFailStatus}${typeof r.accuracy === 'number' ? ` (score ${r.accuracy})` : ''}`);
+    // Label the judge score explicitly ("judgeScore: N on a 0-100 scale") rather
+    // than a bare number — this is the context the model reads before writing its
+    // prose, and a bare "(score 100)" here is exactly what produced ambiguous
+    // narrative text like "passed (100/100)" (misread as a case count in a
+    // multi-hundred-case comparison). See also the SYSTEM_PROMPT rule below.
+    if (r.passFailStatus) lines.push(`- outcome: ${r.passFailStatus}${typeof r.accuracy === 'number' ? ` (judgeScore: ${r.accuracy} on a 0-100 scale)` : ''}`);
     if (typeof r.durationMs === 'number') lines.push(`- agent duration: ${(r.durationMs / 1000).toFixed(1)}s`);
     if (r.toolNames && r.toolNames.length) {
       lines.push(`- top-level tool calls (${r.toolNames.length}): ${r.toolNames.slice(0, 40).join(', ')}`);
