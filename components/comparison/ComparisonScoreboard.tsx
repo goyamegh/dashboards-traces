@@ -19,6 +19,13 @@ export interface ComparisonScoreboardProps {
   runs: RunAggregateMetrics[];
   selectedRuns: BenchmarkRun[];
   overlap: TestCaseOverlap;
+  /**
+   * runId -> benchmarkId lookup (undefined for ad-hoc/eval-runs). Benchmark
+   * runs deep-link to /evaluations/benchmarks/:benchmarkId/runs/:runId — the
+   * bare /evaluations/runs/:runId route resolves only the SDK eval-run store
+   * and 404s for benchmark run ids.
+   */
+  runBenchmarkIdById?: Map<string, string | undefined>;
   onRemoveRun: (id: string) => void;
   onSwapRuns: () => void;
   getAgentName: (key: string) => string;
@@ -68,11 +75,12 @@ interface RunDetailDrawerProps {
   run: RunAggregateMetrics;
   selectedRun: BenchmarkRun;
   label: 'A' | 'B';
+  benchmarkId?: string;
   getAgentName: (key: string) => string;
   onRemove: () => void;
 }
 
-const RunDetailDrawer: React.FC<RunDetailDrawerProps> = ({ run, selectedRun, label, getAgentName, onRemove }) => {
+const RunDetailDrawer: React.FC<RunDetailDrawerProps> = ({ run, selectedRun, label, benchmarkId, getAgentName, onRemove }) => {
   const [copied, setCopied] = useState(false);
 
   const handleCopy = () => {
@@ -106,7 +114,10 @@ const RunDetailDrawer: React.FC<RunDetailDrawerProps> = ({ run, selectedRun, lab
       </div>
       <div className="flex items-center gap-2 pt-1">
         <Link
-          to={`/evaluations/runs/${run.runId}`}
+          to={benchmarkId
+            ? `/evaluations/benchmarks/${benchmarkId}/runs/${run.runId}`
+            : `/evaluations/runs/${run.runId}`}
+          data-testid={`open-run-${run.runId}`}
           className="inline-flex items-center gap-1 text-[10px] text-blue-400 hover:text-blue-300"
         >
           <ExternalLink size={10} /> Open run
@@ -197,6 +208,7 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
   runs,
   selectedRuns,
   overlap,
+  runBenchmarkIdById,
   onRemoveRun,
   onSwapRuns,
   getAgentName,
@@ -368,6 +380,7 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                                 run={run}
                                 selectedRun={selectedRuns[idx]}
                                 label={label as 'A' | 'B'}
+                                benchmarkId={runBenchmarkIdById?.get(run.runId)}
                                 getAgentName={getAgentName}
                                 onRemove={() => onRemoveRun(run.runId)}
                               />
