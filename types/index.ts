@@ -1182,6 +1182,14 @@ export interface EvaluationRun {
    * conditions and are directly comparable. See {@link BenchmarkImage}.
    */
   imageDigest?: string;
+  /**
+   * Provenance: id of the source {@link EvaluationRun} this run was created
+   * from via `POST /api/storage/evaluation-runs/:id/rerun` ("kick off a
+   * duplicate of the same run"). Undefined for runs created any other way.
+   * The source run is NOT required to still exist for this run to be valid —
+   * it's a point-in-time provenance link, not a live reference.
+   */
+  rerunOf?: string;
 }
 
 // ============ Comparison Types ============
