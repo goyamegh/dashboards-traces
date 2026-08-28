@@ -9,6 +9,9 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Fixed
+- **Sidebar hover-open: the a11y keyboard fix (PR [#433](https://github.com/opensearch-project/agent-health/pull/433)) was never actually reachable on the deployed integration branch** ([components/Layout.tsx](components/Layout.tsx), [tests/e2e/sidebar-hover-flyout.spec.ts](tests/e2e/sidebar-hover-flyout.spec.ts)): once the mobile off-canvas drawer ([#400](https://github.com/opensearch-project/agent-health/pull/400)) landed on `main`, PR #433's branch conflicted with it on the shared hover-zone `<div>` and was being **skipped** by the integration rebuild on every cycle (logged as `SKIP #433 — conflicts current main`) — so real Tab/Shift+Tab traversal did nothing to the collapsed icon rail ("tab and shift tab basically move up and down, no opening or closing"), even though the keyboard-focus/blur code itself was correct. #433's branch now merges `#400`'s mobile-drawer wrapper (`fixed inset-y-0 ... translate-x` classes + the `mobileNavOpen` close-overlay button) together with the a11y `ref`/`onFocus`/`onBlur` handles it needs, so it integrates cleanly again. Also adds **Escape** as a second, independent way to close the keyboard-opened overlay (on top of the existing Shift+Tab-past-the-zone behavior), and hardens the regression e2e to use **real `page.keyboard.press('Tab'/'Shift+Tab')` traversal** instead of calling `.focus()` directly on the target element — a `.focus()`-based test would keep passing even if the rail became unreachable by an actual keyboard user (verified red against the pre-#400-rebase code, green after the fix). Unit/integration: none (UI-only); e2e: [tests/e2e/sidebar-hover-flyout.spec.ts](tests/e2e/sidebar-hover-flyout.spec.ts) (real-Tab open/close, Shift+Tab-out close, Escape close).
+
 ## [0.6.0] - 2026-08-27
 
 ### Added
