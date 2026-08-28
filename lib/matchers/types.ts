@@ -95,4 +95,17 @@ export interface MatcherResult {
     trajectory_alignment_score?: number;
     [k: string]: number | undefined;
   };
+
+  /**
+   * True for a synthetic entry the runner appends when the test body threw
+   * before reaching further matcher calls in source order — distinct from
+   * `pass: false` (a matcher that DID run and failed). This row was never
+   * *attempted*; it marks that later expect()/judge()/evaluate() calls (if
+   * any) never ran because chai's bail-on-first-failure semantics stopped
+   * the body at the first throw. Always excluded from gate/pass-rate
+   * aggregation. See `appendNotReachedMarker()` in services/evaluation/
+   * index.ts and `expect.soft()` in lib/matchers/expect.ts for the mode
+   * that avoids needing this marker by not bailing at all.
+   */
+  notReached?: boolean;
 }
