@@ -97,3 +97,25 @@ export function filterRunsByVersion(
     (run.benchmarkVersion || 1) === versionFilter
   );
 }
+
+/**
+ * Resolve the effective run-version filter from a persisted (possibly stale)
+ * value. A persisted version the benchmark doesn't actually have — e.g. a
+ * filter set while viewing a different benchmark under the old global
+ * localStorage key, a deleted version, or corrupted storage — must behave as
+ * 'all' rather than filtering every run out and rendering a bogus
+ * "No runs for vN" empty state that looks like data loss.
+ *
+ * @param raw - persisted filter value
+ * @param availableVersions - the benchmark's actual version numbers
+ *   (undefined while the benchmark is still loading — value passes through)
+ */
+export function effectiveRunVersionFilter(
+  raw: number | 'all',
+  availableVersions: number[] | undefined
+): number | 'all' {
+  if (raw === 'all') return 'all';
+  if (!Number.isInteger(raw) || raw < 1) return 'all';
+  if (availableVersions !== undefined && !availableVersions.includes(raw)) return 'all';
+  return raw;
+}
