@@ -341,7 +341,7 @@ export const BenchmarksPage4: React.FC = () => {
     <div className="p-4 h-full flex flex-col" data-testid="benchmarks-page">
       <Breadcrumbs
         items={[
-          { label: 'Evaluations', href: '/evaluations/benchmarks' },
+          { label: 'Evaluations', href: '/evaluations/runs' },
           { label: 'Benchmarks' },
         ]}
         actions={<>

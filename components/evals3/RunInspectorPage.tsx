@@ -282,7 +282,7 @@ export const RunInspectorPage: React.FC = () => {
           items={
             mode === 'benchmark' && benchmark
               ? [
-                  { label: 'Evaluations', href: '/evaluations/benchmarks' },
+                  { label: 'Evaluations', href: '/evaluations/runs' },
                   { label: benchmark.name, href: `/evaluations/benchmarks/${benchmarkId}/runs` },
                   { label: run.name },
                 ]
