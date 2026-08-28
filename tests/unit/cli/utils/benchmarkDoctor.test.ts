@@ -153,6 +153,7 @@ describe('computeVersionLinkRepairPlan', () => {
       benchmarkName: 'Test Benchmark',
       currentVersion: 1,
       missingTestCaseIds: ['tc-1787782533401-8i34lcu4u', 'tc-1787782534314-azbp4n9v1', 'tc-1787782535312-dqlq6w85o'],
+      needsManualReview: false,
     });
   });
 
@@ -181,6 +182,9 @@ describe('computeVersionLinkRepairPlan', () => {
       benchmarkName: 'Test Benchmark',
       currentVersion: 2,
       missingTestCaseIds: ['tc-1', 'tc-2'],
+      // Two versions present -> flagged, NOT auto-fixable (see the dedicated
+      // needsManualReview describe block below for why).
+      needsManualReview: true,
     });
   });
 
@@ -193,5 +197,47 @@ describe('computeVersionLinkRepairPlan', () => {
 
     expect(plan?.missingTestCaseIds).toEqual(['tc-2']);
     expect(plan?.currentVersion).toBe(1);
+  });
+});
+
+/**
+ * needsManualReview: codex_review flagged that neither planner is
+ * version-aware -- computeBenchmarkRepairPlan unions every linked run's
+ * snapshot ids into the TOP LEVEL regardless of which version was current
+ * when that run happened, so once a benchmark has more than one version,
+ * blindly copying the top level into the CURRENT version (as --apply does)
+ * risks mixing an older version's test cases into the current one. This is
+ * the guard that makes that unsafe case explicit instead of silent.
+ */
+describe('computeVersionLinkRepairPlan — needsManualReview', () => {
+  function bm(overrides: Partial<Pick<Benchmark, 'id' | 'name' | 'testCaseIds' | 'currentVersion' | 'versions'>> = {}) {
+    return {
+      id: 'bench-1',
+      name: 'Test Benchmark',
+      testCaseIds: [],
+      currentVersion: 1,
+      versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: [] }],
+      ...overrides,
+    };
+  }
+
+  it('is false for a single-version benchmark (the common CLI-shell case)', () => {
+    const plan = computeVersionLinkRepairPlan(bm({
+      testCaseIds: ['tc-1'],
+      versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: [] }],
+    }));
+    expect(plan?.needsManualReview).toBe(false);
+  });
+
+  it('is true once the benchmark has more than one version, even if the current one is the stale one', () => {
+    const plan = computeVersionLinkRepairPlan(bm({
+      testCaseIds: ['tc-1', 'tc-2'],
+      currentVersion: 2,
+      versions: [
+        { version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: ['tc-1'] },
+        { version: 2, createdAt: '2026-01-02T00:00:00Z', testCaseIds: [] },
+      ],
+    }));
+    expect(plan?.needsManualReview).toBe(true);
   });
 });

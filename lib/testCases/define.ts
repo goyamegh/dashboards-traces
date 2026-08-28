@@ -52,6 +52,17 @@ interface SharedRegistryState {
 }
 
 function getSharedState(): SharedRegistryState {
+  // Invariant this design relies on: eval files are loaded SEQUENTIALLY
+  // (setActiveFile -> synchronously evaluate one file's top-level test()/
+  // describe() calls -> move to the next), never concurrently, within a
+  // process. `activeFile` and `describeStack` are shared state now (not
+  // just per-module-instance as before this fix), so two files loading in
+  // parallel would race on them. Verified true for both real callers as of
+  // this fix: services/sourceResolver.ts's two loops and
+  // cli/commands/benchmark.ts's file-mode loader all `await
+  // loadTestCasesFromModule(...)` inside a plain `for` loop, never
+  // `Promise.all`. If a future caller parallelizes file loading, this
+  // invariant breaks and registration could scramble across files.
   const g = globalThis as unknown as Record<symbol, SharedRegistryState>;
   let state = g[REGISTRY_KEY];
   if (!state) {

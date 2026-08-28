@@ -248,6 +248,18 @@ want every number on the report regardless of which gates failed; keep hard
 `expect()` for a precondition that makes the rest of the body meaningless if
 it's false (e.g. "the agent produced any output at all").
 
+> **Known limitation: multi-step property chains can record a derivative
+> second failure.** `expect.soft(obj).to.have.property('x').that.equals(5)`
+> is really two chai assertions run back-to-back on the same chain (`property`
+> checks existence, `equals` checks the value) — with a HARD `expect()`, a
+> missing property throws immediately and `.that.equals(5)` never runs. In
+> soft mode nothing throws, so `.that.equals(5)` *does* run against
+> `undefined` and records its own "expected undefined to equal 5" failure —
+> real, but a symptom of the first failure, not independent information.
+> Prefer single-step matchers on primitive/simple values with `.soft` (as in
+> every example above); for a value that might not exist, use a hard
+> `expect()` to check existence first, then `.soft` on the value itself.
+
 ---
 
 ## Test options

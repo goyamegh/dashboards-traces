@@ -271,10 +271,12 @@ export function appendNotReachedMarker(
   if (evalError === undefined || agentFailed) return;
   matcherResults.push({
     description:
-      'Test body did not complete: a prior assertion threw, so any ' +
-      'expect()/judge()/evaluate() calls after it were never executed. ' +
-      'Use expect.soft(...) to record every matcher instead of stopping at ' +
-      'the first failure (see docs/SDK.md "Always-record guarantee").',
+      'Test body did not complete: an error was thrown before reaching ' +
+      'further matcher calls in source order, so any expect()/judge()/' +
+      'evaluate() calls after that point never executed. If the error came ' +
+      'from a failing expect() assertion (not a bug elsewhere in the test ' +
+      'body), expect.soft(...) records instead of throwing so later matchers ' +
+      'still run (see docs/SDK.md "Always-record guarantee").',
     pass: false,
     method: 'code-assertion',
     notReached: true,
