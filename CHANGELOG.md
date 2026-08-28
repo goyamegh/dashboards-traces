@@ -9,6 +9,9 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Fixed
+- **Test Case detail page: JSON context items are pretty-printed instead of raw truncated one-liners** ([components/evals3/ContextValueView.tsx](components/evals3/ContextValueView.tsx), [lib/contextFormat.ts](lib/contextFormat.ts), [components/evals3/TestCaseDetailPage.tsx](components/evals3/TestCaseDetailPage.tsx)): the Context section rendered each `AgentContextItem.value` as `ctx.value.slice(0, 100) + '…'` — a JSON payload like `{"appId":"explore","timeRange":{"from":"now-15m",...` showed as an unreadable, mid-token-truncated one-liner (reported against the "Detect Error Codes" test case). `formatContextValue()` now detects valid JSON objects/arrays and pretty-prints them (2-space indent, untruncated); each context item renders in its own independently-collapsible (default open), syntax-highlighted (prismjs, same pattern as other source/JSON viewers in this codebase) monospace block with its title. Non-JSON context (plain notes, log lines) renders as full untruncated text, no highlighting attempted. Scoped to content rendering only — no page layout changes (see [#428](https://github.com/opensearch-project/agent-health/pull/428), which restructures this page's definition/run-history hierarchy separately). Unit: [tests/unit/lib/contextFormat.test.ts](tests/unit/lib/contextFormat.test.ts), [tests/unit/components/evals3/ContextValueView.test.ts](tests/unit/components/evals3/ContextValueView.test.ts); e2e: [tests/e2e/test-case-context-pretty.spec.ts](tests/e2e/test-case-context-pretty.spec.ts).
+
 ## [0.6.0] - 2026-08-27
 
 ### Added

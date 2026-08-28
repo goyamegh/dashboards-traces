@@ -58,6 +58,7 @@ import { DEFAULT_CONFIG, getPreferredDefaultAgentKey } from '@/lib/constants';
 import { PREFS_KEYS } from '@/lib/preferences';
 import { ENV_CONFIG } from '@/lib/config';
 import { Markdown, hasRealMarkdown } from '@/components/ui/markdown';
+import { ContextValueView } from '@/components/evals3/ContextValueView';
 
 // Render a test-case prompt ("task definition"): as markdown when it actually
 // contains markdown (so headings / bullet lists indent instead of collapsing
@@ -459,10 +460,11 @@ export const TestCaseDetailPage: React.FC = () => {
                       <div className="text-[9px] font-semibold text-muted-foreground uppercase tracking-wider mb-0.5">Context ({testCase.context.length})</div>
                       <div className="space-y-1">
                         {testCase.context.map((ctx, i) => (
-                          <div key={i} className="bg-muted/30 rounded px-2 py-1 border border-border overflow-hidden">
-                            <p className="text-[9px] font-medium text-muted-foreground truncate">{ctx.description}</p>
-                            <pre className="text-[9px] overflow-x-auto max-h-10 overflow-y-auto whitespace-pre-wrap break-all">{ctx.value.slice(0, 100)}{ctx.value.length > 100 ? '…' : ''}</pre>
-                          </div>
+                          <ContextValueView
+                            key={i}
+                            title={ctx.description || `Context item ${i + 1}`}
+                            value={ctx.value}
+                          />
                         ))}
                       </div>
                     </div>

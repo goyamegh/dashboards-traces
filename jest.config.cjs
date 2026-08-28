@@ -76,6 +76,10 @@ module.exports = {
     'lib/**/*.ts',
     'cli/**/*.ts',
     'types/**/*.ts',
+    // Context-value pretty-printing (test-case detail page) has a focused
+    // jsdom DOM test exercising both the JSON and plain-text render paths —
+    // fold it into the unit report rather than relying solely on e2e/nyc.
+    'components/evals3/ContextValueView.tsx',
     '!**/__tests__/**',
     '!**/*.test.ts',
     '!**/dist/**',
