@@ -20,7 +20,7 @@ import { usePersistedSet } from '@/hooks/usePersistedSet';
 import { PREFS_KEYS } from '@/lib/preferences';
 import { useNavigate } from 'react-router-dom';
 import {
-  CheckCircle2, XCircle, Loader2, Clock, Search, RefreshCw,
+  CheckCircle2, Loader2, Search, RefreshCw,
   Activity, BarChart3, SlidersHorizontal, ChevronDown, ChevronRight,
   Layers, List, GitCompare, AlertTriangle, TrendingDown, Target, X,
 } from 'lucide-react';
@@ -34,7 +34,7 @@ import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/
 import { listEvaluationRuns } from '@/services/client';
 import { Benchmark, TestCase, BenchmarkRun, EvaluationRun } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
-import { bucketRunResults } from '@/lib/runStats';
+import { computeRunStats } from '@/lib/runStats';
 import { formatRelativeTime, getModelName } from '@/lib/utils';
 import { Breadcrumbs } from './Breadcrumbs';
 
@@ -105,27 +105,10 @@ function SortHeader({ label, active, dir, onClick, className }: {
 
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
-
-// Recompute pass/fail/errored from the persisted per-case verdicts
-// (run.results) — the single source of truth shared with the comparison page
-// via lib/runStats.bucketRunResults. The denormalized run.stats is naive (it
-// counts errored cases as passed and never tracks `errored`, #242), so it's
-// only a fallback when per-case results aren't present.
-function computeRunStats(run: BenchmarkRun): { passed: number; failed: number; errored: number; total: number } {
-  if (run.results && Object.keys(run.results).length > 0) {
-    const b = bucketRunResults(run.results as Record<string, { status?: string; passFailStatus?: string }>);
-    return { passed: b.passed, failed: b.failed, errored: b.errored, total: b.total };
-  }
-  if (run.stats && run.stats.total > 0) {
-    return {
-      passed: run.stats.passed,
-      failed: run.stats.failed,
-      errored: run.stats.errored ?? 0,
-      total: run.stats.total,
-    };
-  }
-  return { passed: 0, failed: 0, errored: 0, total: 0 };
-}
+//
+// Pass/fail/errored stats are computed via lib/runStats.computeRunStats — the
+// single source of truth shared with BenchmarkRunsPage and the comparison
+// page, so the numbers can't diverge between views (issue #242).
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
@@ -240,6 +223,7 @@ export const EvalRunsPage: React.FC = () => {
           benchmarkName: bm.name,
           agentName,
           ...stats,
+          errored: stats.errored ?? 0,
         });
       }
     }
@@ -280,6 +264,7 @@ export const EvalRunsPage: React.FC = () => {
         benchmarkName,
         agentName,
         ...stats,
+        errored: stats.errored ?? 0,
       });
     }
 
@@ -563,7 +548,6 @@ export const EvalRunsPage: React.FC = () => {
 
   // Render a run row
   const renderRunRow = (rr: RunRow, showBenchmark: boolean) => {
-    const isAllPassed = rr.failed === 0 && rr.passed > 0;
     const isChecked = selectedRuns.has(rr.run.id);
     return (
       <tr
@@ -591,13 +575,6 @@ export const EvalRunsPage: React.FC = () => {
               </svg>
             )}
           </button>
-        </td>
-        <td className="px-2 py-1.5 align-middle text-center w-8">
-          {isAllPassed
-            ? <CheckCircle2 size={12} className="text-green-500" />
-            : rr.failed > 0
-              ? <XCircle size={12} className="text-red-500" />
-              : <Clock size={12} className="text-muted-foreground" />}
         </td>
         <td className="px-2 py-1.5 align-middle">
           <div className="text-xs font-medium">{rr.run.name}</div>
@@ -666,7 +643,7 @@ export const EvalRunsPage: React.FC = () => {
     <div className="p-4 h-full flex flex-col">
       <Breadcrumbs
         items={[
-          { label: 'Evaluations', href: '/evaluations/benchmarks' },
+          { label: 'Evaluations', href: '/evaluations/runs' },
           { label: 'Runs' },
         ]}
         actions={<>
@@ -940,7 +917,6 @@ export const EvalRunsPage: React.FC = () => {
           <thead className={`sticky top-0 z-10 bg-background transition-shadow duration-200 ${isScrolled ? 'shadow-sm' : ''}`}>
             <tr className="border-b">
               <th className="h-7 w-8 px-2 align-middle bg-background border-b" />
-              <th className="h-7 w-8 px-2 align-middle bg-background border-b" />
               <SortHeader label="Run" active={sort.field === 'runId'} dir={sort.dir} onClick={() => handleSort('runId')} />
               {viewMode === 'flat' && (
                 <SortHeader label="Benchmark" active={sort.field === 'benchmark'} dir={sort.dir} onClick={() => handleSort('benchmark')} />
@@ -955,7 +931,7 @@ export const EvalRunsPage: React.FC = () => {
           <tbody className="[&_tr:last-child]:border-0">
             {filteredRunRows.length === 0 ? (
               <tr>
-                <td colSpan={viewMode === 'flat' ? 9 : 8} className="py-16 text-center text-sm text-muted-foreground">
+                <td colSpan={viewMode === 'flat' ? 8 : 7} className="py-16 text-center text-sm text-muted-foreground">
                   {activeFilterCount > 0 ? 'No runs match the current filters' : timeRange === 'all' ? 'No evaluation runs found' : `No runs in ${TIME_OPTIONS.find(o => o.value === timeRange)?.label}`}
                 </td>
               </tr>
@@ -996,7 +972,7 @@ export const EvalRunsPage: React.FC = () => {
                         </button>
                       </td>
                       {/* Rest of group header content */}
-                      <td colSpan={7} className="px-1 py-1.5 align-middle">
+                      <td colSpan={6} className="px-1 py-1.5 align-middle">
                         <div className="flex items-center gap-2">
                           <span className="text-muted-foreground">
                             {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
@@ -1017,7 +993,7 @@ export const EvalRunsPage: React.FC = () => {
             )}
             {hasMoreRows && (
               <tr ref={loadMoreSentinelRef} data-testid="runs-table-sentinel">
-                <td colSpan={viewMode === 'flat' ? 9 : 8} className="py-3 text-center">
+                <td colSpan={viewMode === 'flat' ? 8 : 7} className="py-3 text-center">
                   <Loader2 size={14} className="animate-spin text-muted-foreground inline-block" />
                 </td>
               </tr>
