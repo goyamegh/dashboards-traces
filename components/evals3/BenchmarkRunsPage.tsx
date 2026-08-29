@@ -51,6 +51,7 @@ import {
   getSelectedVersionData,
   getVersionTestCases,
   filterRunsByVersion,
+  effectiveRunVersionFilter,
   VersionData,
 } from '@/lib/benchmarkVersionUtils';
 import { RunConfigForExecution } from '@/components/BenchmarkEditor';
@@ -139,7 +140,26 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
   // Version state
   const [testCaseVersion, setTestCaseVersion] = useState<number | null>(null);
-  const [runVersionFilter, setRunVersionFilter] = usePersistedState<number | 'all'>('benchmark-runs:runVersionFilter', 'all');
+  // Persisted PER BENCHMARK — a single global key leaked a version filter set
+  // on one benchmark (e.g. v8) onto every other benchmark, where it matched
+  // nothing and rendered a bogus "No runs for v8" empty state that looked
+  // like data loss (hit on EnterpriseRAG-Bench, 2026-08-24).
+  const [rawRunVersionFilter, setRunVersionFilter] = usePersistedState<number | 'all'>(
+    `benchmark-runs:runVersionFilter:${benchmarkId ?? 'unknown'}`, 'all'
+  );
+  // Self-heal any stale persisted value: a version the benchmark doesn't have
+  // behaves as 'all' instead of filtering everything out.
+  const runVersionFilter = effectiveRunVersionFilter(
+    rawRunVersionFilter,
+    benchmark ? (benchmark.versions ?? []).map(v => v.version) : undefined
+  );
+  // Repair the persisted value too (not just mask it at render time), so
+  // localStorage doesn't keep serving a corrupt filter to every consumer.
+  useEffect(() => {
+    if (benchmark && runVersionFilter !== rawRunVersionFilter) {
+      setRunVersionFilter(runVersionFilter);
+    }
+  }, [benchmark, runVersionFilter, rawRunVersionFilter, setRunVersionFilter]);
 
   // Layout state — the legacy /benchmarks/:id/runs page used a side-by-side
   // resizable split (Test Cases left, Runs right). The Evals3 "Option B" rewrite
@@ -563,13 +583,26 @@ export const BenchmarkRunsPage2: React.FC = () => {
                 <CardContent className="flex flex-col items-center justify-center py-12 text-muted-foreground">
                   <Play size={48} className="mb-4 opacity-20" />
                   <p className="text-lg font-medium">
-                    {runVersionFilter === 'all' ? 'No runs yet' : `No runs for v${runVersionFilter}`}
+                    {runVersionFilter === 'all' || runs.length === 0
+                      ? 'No runs yet'
+                      : `0 of ${runs.length} run${runs.length !== 1 ? 's' : ''} match v${runVersionFilter}`}
                   </p>
                   <p className="text-sm">
-                    {runVersionFilter === 'all'
+                    {runVersionFilter === 'all' || runs.length === 0
                       ? 'Run this benchmark to see results here'
-                      : 'Try selecting a different version or "All Versions"'}
+                      : 'Runs exist on other versions of this benchmark'}
                   </p>
+                  {runVersionFilter !== 'all' && runs.length > 0 && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="mt-4"
+                      data-testid="show-all-versions-btn"
+                      onClick={() => setRunVersionFilter('all')}
+                    >
+                      Show all versions ({runs.length})
+                    </Button>
+                  )}
                 </CardContent>
               </Card>
             ) : (
@@ -828,7 +861,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
               <SelectItem value="all">All Versions ({runs.length})</SelectItem>
               {versionData.map(v => (
                 <SelectItem key={v.version} value={String(v.version)}>
-                  v{v.version} ({v.runCount} run{v.runCount !== 1 ? 's' : ''})
+                  v{v.version}{v.isLatest ? ' (latest)' : ''} · {v.runCount === 0 ? 'no runs' : `${v.runCount} run${v.runCount !== 1 ? 's' : ''}`}
                 </SelectItem>
               ))}
             </SelectContent>

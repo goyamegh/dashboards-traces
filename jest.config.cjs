@@ -87,18 +87,31 @@ module.exports = {
     // pipeline (see .nycrc.json) instead. Each file below is opted in
     // individually because it now has a focused jsdom/RTL render-test suite
     // exercising the exact lines its owning PR's diff touches:
-    // codecov/patch #430 — ComparisonScoreboard's zero/non-zero delta
-    // branches and EvalRunsPage's view-mode colSpan ternaries;
-    // codecov/patch #219 — RunDetailsContent's getLogLevelColor,
-    // TrajectoryView's failed/non-failed color branch, and RawEventsPanel's
-    // theme-token classes. components/codingAgents/CodingAgentsPage.tsx
-    // (~3.3k lines) is deliberately NOT added here even though it also has a
-    // real render test (sessionDetailPanel.test.ts) covering PR #219's one
-    // changed line — opting in the whole file would add far more uncovered
-    // lines than tested ones and risks tripping the global thresholds below;
-    // see PR #219's codecov write-up for the measured impact.
+    // - ComparisonScoreboard.tsx & EvalRunsPage.tsx (codecov/patch #430 fix):
+    //   ComparisonScoreboard's zero/non-zero delta branches and EvalRunsPage's
+    //   view-mode colSpan ternaries.
+    // - usePersistedState.ts (codecov/patch #415 fix): a plain hook with
+    //   100% line/functions coverage in its isolated unit suite, so it's safe
+    //   to fold its coverage into unit-test numbers rather than rely solely
+    //   on e2e coverage (was reporting 0% despite being thoroughly tested).
+    // - RunDetailsContent.tsx / TrajectoryView.tsx / RawEventsPanel.tsx
+    //   (codecov/patch #219 fix): RunDetailsContent's getLogLevelColor,
+    //   TrajectoryView's failed/non-failed color branch, and RawEventsPanel's
+    //   theme-token classes. components/codingAgents/CodingAgentsPage.tsx
+    //   (~3.3k lines) is deliberately NOT added here even though it also has
+    //   a real render test (sessionDetailPanel.test.ts) covering PR #219's
+    //   one changed line — opting in the whole file would add far more
+    //   uncovered lines than tested ones and risks tripping the global
+    //   thresholds below; see PR #219's codecov write-up for the measured
+    //   impact. Same reasoning keeps the other Scope A/B papercut files this
+    //   PR touches (LatencyHistogram, MetricsOverview, SpanNode, AgentMapView,
+    //   tooltip.tsx, ReportsPage.tsx, etc.) off this list too — they have real
+    //   render tests (see tests/unit/components/**/*.theme.test.ts) but
+    //   codecov/patch is satisfied without opting them in, so there's no
+    //   reason to take on that risk.
     'components/comparison/ComparisonScoreboard.tsx',
     'components/evals3/EvalRunsPage.tsx',
+    'hooks/usePersistedState.ts',
     'components/RunDetailsContent.tsx',
     'components/TrajectoryView.tsx',
     'components/RawEventsPanel.tsx',
