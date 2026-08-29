@@ -224,3 +224,171 @@ test.describe('Re-run an evaluation run', () => {
     await expect(page.getByText('Agent Model', { exact: true })).toHaveCount(0);
   });
 });
+
+test.describe('Run inspector — Re-run button (eval-run mode)', () => {
+  let testCaseId: string | null = null;
+  let sourceRunId: string | null = null;
+  let childRunId: string | null = null;
+  let seeded = false;
+
+  const SOURCE_NAME = 'E2E Inspector Rerun Source Run';
+
+  test.beforeAll(async ({ request }) => {
+    const tcRes = await request.post('/api/storage/test-cases', {
+      data: {
+        name: `e2e-inspect-rerun-tc-${Date.now()}`,
+        category: 'Test',
+        difficulty: 'Easy',
+        initialPrompt: 'What is causing the issue?',
+        expectedOutcomes: ['Identifies the cause'],
+      },
+    });
+    if (!tcRes.ok()) return;
+    const tc = await tcRes.json();
+    testCaseId = tc.id || tc.testCase?.id;
+    if (!testCaseId) return;
+
+    sourceRunId = `eval-run-e2e-inspect-src-${Date.now()}`;
+    const srcRes = await request.put(`/api/storage/evaluation-runs/${sourceRunId}`, {
+      data: {
+        id: sourceRunId,
+        name: SOURCE_NAME,
+        status: 'completed',
+        agentKey: 'demo',
+        modelId: 'claude-sonnet',
+        sources: [{ type: 'test-case-ids', ids: [testCaseId] }],
+        trigger: 'api',
+        testCaseSnapshots: [{ id: testCaseId, version: 1, name: 'e2e tc' }],
+        results: {},
+        createdAt: new Date().toISOString(),
+      },
+    });
+    if (!srcRes.ok()) return;
+
+    childRunId = `eval-run-e2e-inspect-child-${Date.now()}`;
+    const childRes = await request.put(`/api/storage/evaluation-runs/${childRunId}`, {
+      data: {
+        id: childRunId,
+        name: `${SOURCE_NAME} (re-run)`,
+        status: 'completed',
+        agentKey: 'demo',
+        modelId: 'claude-sonnet',
+        sources: [{ type: 'test-case-ids', ids: [testCaseId] }],
+        trigger: 'ui',
+        testCaseSnapshots: [{ id: testCaseId, version: 1, name: 'e2e tc' }],
+        results: {},
+        createdAt: new Date().toISOString(),
+        rerunOf: sourceRunId,
+      },
+    });
+    seeded = childRes.ok();
+  });
+
+  test.afterAll(async ({ request }) => {
+    if (childRunId) await request.delete(`/api/storage/evaluation-runs/${childRunId}`).catch(() => {});
+    if (sourceRunId) await request.delete(`/api/storage/evaluation-runs/${sourceRunId}`).catch(() => {});
+    if (testCaseId) await request.delete(`/api/storage/test-cases/${testCaseId}`).catch(() => {});
+  });
+
+  test('Re-run button is visible in the inspector page header (eval-run mode)', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed source run (storage not configured?)');
+
+    await page.goto(`/evaluations/runs/${sourceRunId}/inspect`);
+    await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
+    
+    const rerunBtn = page.locator('[data-testid="inspector-rerun-btn"]');
+    await expect(rerunBtn).toBeVisible({ timeout: 15000 });
+    await expect(rerunBtn).not.toBeDisabled();
+  });
+
+  test('inspector Re-run button opens confirm dialog', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed source run (storage not configured?)');
+
+    await page.goto(`/evaluations/runs/${sourceRunId}/inspect`);
+    await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
+    
+    await page.locator('[data-testid="inspector-rerun-btn"]').click();
+
+    const dialog = page.locator('[data-testid="rerun-confirm-dialog"]');
+    await expect(dialog).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('[data-testid="rerun-name-preview"]')).toHaveText(`${SOURCE_NAME} (re-run)`);
+
+    await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog).not.toBeVisible();
+  });
+
+  test('provenance chip renders in the inspector header', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed child run (storage not configured?)');
+
+    await page.goto(`/evaluations/runs/${childRunId}/inspect`);
+    await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
+
+    const chip = page.locator('[data-testid="rerun-provenance-chip"]');
+    await expect(chip).toBeVisible({ timeout: 15000 });
+    await expect(chip).toContainText('re-run of');
+    await expect(chip).toContainText(SOURCE_NAME);
+
+    await chip.click();
+    await expect(page).toHaveURL(new RegExp(`/evaluations/runs/${sourceRunId}$`), { timeout: 10000 });
+  });
+});
+
+test.describe('Run inspector — Re-run button hidden for benchmark-embedded runs', () => {
+  let testCaseId: string | null = null;
+  let benchmarkId: string | null = null;
+  let runId: string | null = null;
+  let seeded = false;
+
+  test.beforeAll(async ({ request }) => {
+    const tcRes = await request.post('/api/storage/test-cases', {
+      data: {
+        name: `e2e-inspect-bm-tc-${Date.now()}`,
+        category: 'Test',
+        difficulty: 'Easy',
+        initialPrompt: 'q',
+        expectedOutcomes: ['a'],
+      },
+    });
+    if (!tcRes.ok()) return;
+    const tc = await tcRes.json();
+    testCaseId = tc.id || tc.testCase?.id;
+    if (!testCaseId) return;
+
+    benchmarkId = `e2e-inspect-bm-${Date.now()}`;
+    runId = `e2e-inspect-bm-run-${Date.now()}`;
+    
+    const bmRes = await request.put(`/api/storage/benchmarks/${benchmarkId}`, {
+      data: {
+        id: benchmarkId,
+        name: 'E2E Inspector BM',
+        testCaseIds: [testCaseId],
+        runs: [{
+          id: runId,
+          name: 'BM Run 1',
+          agentKey: 'demo',
+          modelId: 'claude-sonnet',
+          status: 'completed',
+          createdAt: new Date().toISOString(),
+          results: {},
+        }],
+      },
+    });
+    seeded = bmRes.ok();
+  });
+
+  test.afterAll(async ({ request }) => {
+    if (benchmarkId) await request.delete(`/api/storage/benchmarks/${benchmarkId}`).catch(() => {});
+    if (testCaseId) await request.delete(`/api/storage/test-cases/${testCaseId}`).catch(() => {});
+  });
+
+  test('Re-run button is disabled for benchmark-embedded runs', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed benchmark run (storage not configured?)');
+
+    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs/${runId}/inspect`);
+    await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
+
+    const rerunBtn = page.locator('[data-testid="inspector-rerun-btn"]');
+    await expect(rerunBtn).toBeVisible({ timeout: 15000 });
+    await expect(rerunBtn).toBeDisabled();
+  });
+});
