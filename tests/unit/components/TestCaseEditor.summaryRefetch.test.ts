@@ -32,7 +32,7 @@
  */
 
 import * as React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import type { TestCase } from '@/types';
 
 jest.mock('@/services/storage', () => ({
@@ -171,5 +171,119 @@ describe('TestCaseEditor — refetches full record when given a summary test cas
 
     resolveGetById(fullTestCase());
     await waitFor(() => expect(saveButton.disabled).toBe(false));
+  });
+
+  it('disables the form inputs (not just Save) while the full record is still loading', async () => {
+    // Regression for the hydration race: if inputs stay editable during the
+    // refetch, whatever the user types is silently overwritten the moment
+    // getById resolves and reseeds form state.
+    let resolveGetById: (tc: TestCase) => void = () => {};
+    mockGetById.mockImplementation(
+      () => new Promise(resolve => { resolveGetById = resolve; })
+    );
+
+    render(
+      React.createElement(TestCaseEditor, {
+        testCase: summaryTestCase(),
+        onSave: jest.fn(),
+        onCancel: jest.fn(),
+      })
+    );
+
+    const nameField = screen.getByLabelText(/^Name/i) as HTMLInputElement;
+    const promptField = screen.getByLabelText(/Initial Prompt/i) as HTMLTextAreaElement;
+    expect(nameField.disabled).toBe(true);
+    expect(promptField.disabled).toBe(true);
+
+    resolveGetById(fullTestCase());
+    await waitFor(() => expect(promptField.disabled).toBe(false));
+    expect(nameField.disabled).toBe(false);
+  });
+});
+
+describe('TestCaseEditor — fails closed when the full-record refetch fails', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    (asyncTestCaseStorage.getLabels as jest.Mock).mockResolvedValue([]);
+  });
+
+  it('getById REJECTS: Save stays disabled, an inline error is shown, and Retry re-runs the fetch', async () => {
+    mockGetById.mockRejectedValueOnce(new Error('network down'));
+
+    render(
+      React.createElement(TestCaseEditor, {
+        testCase: summaryTestCase(),
+        onSave: jest.fn(),
+        onCancel: jest.fn(),
+      })
+    );
+
+    const saveButton = screen.getByRole('button', { name: /save/i }) as HTMLButtonElement;
+
+    // Fails closed: Save must NOT re-enable just because loading finished —
+    // it must stay disabled because the load itself failed. Assert both the
+    // button state and the banner text in the SAME waitFor so we don't get
+    // caught by the transient still-loading render (button already disabled
+    // because isLoadingFullTestCase is still true, before loadError commits).
+    await waitFor(() => {
+      expect(saveButton.disabled).toBe(true);
+      expect(
+        screen.getByText(/Couldn.t load the full test case — editing disabled to prevent data loss/i)
+      ).toBeTruthy();
+    });
+
+    // Retry re-invokes getById; once it succeeds, the error clears and Save re-enables.
+    mockGetById.mockResolvedValueOnce(fullTestCase());
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+    await waitFor(() => expect(mockGetById).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(saveButton.disabled).toBe(false));
+    expect(
+      screen.queryByText(/Couldn.t load the full test case — editing disabled to prevent data loss/i)
+    ).toBeNull();
+  });
+
+  it('getById resolves null: Save stays disabled and the same inline error is shown', async () => {
+    mockGetById.mockResolvedValueOnce(null as unknown as TestCase);
+
+    render(
+      React.createElement(TestCaseEditor, {
+        testCase: summaryTestCase(),
+        onSave: jest.fn(),
+        onCancel: jest.fn(),
+      })
+    );
+
+    const saveButton = screen.getByRole('button', { name: /save/i }) as HTMLButtonElement;
+
+    await waitFor(() => {
+      expect(saveButton.disabled).toBe(true);
+      expect(
+        screen.getByText(/Couldn.t load the full test case — editing disabled to prevent data loss/i)
+      ).toBeTruthy();
+    });
+
+    // Retry recovers the same way it does from a rejection.
+    mockGetById.mockResolvedValueOnce(fullTestCase());
+    fireEvent.click(screen.getByRole('button', { name: /retry/i }));
+
+    await waitFor(() => expect(saveButton.disabled).toBe(false));
+  });
+
+  it('does not show the fail-closed banner in create mode (testCase = null)', async () => {
+    render(
+      React.createElement(TestCaseEditor, {
+        testCase: null,
+        onSave: jest.fn(),
+        onCancel: jest.fn(),
+      })
+    );
+
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(screen.queryByText(/Couldn.t load the full test case/i)).toBeNull();
+    const saveButton = screen.getByRole('button', { name: /save/i }) as HTMLButtonElement;
+    // Create mode: Save's enablement depends only on required-field validation,
+    // never on the (nonexistent) refetch.
+    expect(saveButton.disabled).toBe(true); // name + initialPrompt are empty
   });
 });

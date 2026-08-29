@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { X, Plus, Trash2, Check, Loader2, FileJson } from 'lucide-react';
+import { X, Plus, Trash2, Check, Loader2, FileJson, AlertTriangle } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -69,18 +69,34 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
   // form state from it once it arrives. This is a single extra request for
   // the one test case being edited — nothing like the list-wide cost this
   // is guarding against.
+  //
+  // Fail CLOSED on refetch failure: if getById rejects or resolves falsy,
+  // we do NOT silently fall back to enabling Save against whatever
+  // (possibly summary-truncated) form state the caller seeded us with —
+  // that would reintroduce the exact data-loss bug this refetch exists to
+  // prevent. `loadError` keeps Save disabled and the form surface locked
+  // until a retry succeeds.
   const [isLoadingFullTestCase, setIsLoadingFullTestCase] = useState(!!testCase);
+  const [loadError, setLoadError] = useState(false);
+  const [retryNonce, setRetryNonce] = useState(0);
 
   useEffect(() => {
     if (!testCase) {
       setIsLoadingFullTestCase(false);
+      setLoadError(false);
       return;
     }
     let cancelled = false;
     setIsLoadingFullTestCase(true);
+    setLoadError(false);
     asyncTestCaseStorage.getById(testCase.id)
       .then(full => {
-        if (cancelled || !full) return;
+        if (cancelled) return;
+        if (!full) {
+          console.error(`Failed to load full test case for editing: getById(${testCase.id}) resolved ${full === null ? 'null' : 'undefined'}`);
+          setLoadError(true);
+          return;
+        }
         setName(full.name || '');
         setDescription(full.description || '');
         setLabels(full.labels || []);
@@ -88,11 +104,24 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
         setContext(full.context || []);
         setExpectedOutcomes(full.expectedOutcomes && full.expectedOutcomes.length > 0 ? full.expectedOutcomes : ['']);
       })
-      .catch(err => console.error('Failed to load full test case for editing:', err))
+      .catch(err => {
+        if (cancelled) return;
+        console.error('Failed to load full test case for editing:', err);
+        setLoadError(true);
+      })
       .finally(() => { if (!cancelled) setIsLoadingFullTestCase(false); });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [testCase?.id]);
+  }, [testCase?.id, retryNonce]);
+
+  const handleRetryLoad = () => setRetryNonce(n => n + 1);
+
+  // True whenever we don't have confirmed-good full data for an existing
+  // test case: either still loading it, or the load failed. Gates both the
+  // Save button and the editable surface (FIX 2 in PR #451 review — the
+  // hydration race where a user's in-progress edits get clobbered when the
+  // refetch resolves).
+  const isFormLocked = isLoadingFullTestCase || loadError;
 
   useEffect(() => {
     asyncTestCaseStorage.getLabels().then(setExistingLabels);
@@ -344,8 +373,8 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
   // without having to invent placeholder outcomes the runner ignores.
   // We still REQUIRE name + initialPrompt because without those the
   // test case has no agent invocation contract at all.
-  const canSaveForm = name.trim() && initialPrompt.trim() && !isSaving && !isLoadingFullTestCase;
-  const canSaveJson = jsonContent.trim() && jsonErrors.length === 0 && !isSaving && !isLoadingFullTestCase;
+  const canSaveForm = name.trim() && initialPrompt.trim() && !isSaving && !isFormLocked;
+  const canSaveJson = jsonContent.trim() && jsonErrors.length === 0 && !isSaving && !isFormLocked;
   const canSave = editorMode === 'form' ? canSaveForm : canSaveJson;
 
   return (
@@ -378,6 +407,23 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
           </Tabs>
         </div>
 
+        {/* Fail-closed error state: the full-record refetch failed, so form
+            state may still be the caller's summary-truncated seed. Block
+            editing entirely rather than risk persisting truncated data. */}
+        {testCase && loadError && (
+          <div className="px-6 pb-2">
+            <div className="rounded-md border border-red-300 dark:border-red-800 bg-red-50/60 dark:bg-red-950/30 p-3 text-sm flex items-center justify-between gap-3">
+              <span className="text-red-700 dark:text-red-300 flex items-center gap-2">
+                <AlertTriangle size={14} className="shrink-0" />
+                Couldn&apos;t load the full test case — editing disabled to prevent data loss.
+              </span>
+              <Button variant="outline" size="sm" className="shrink-0" onClick={handleRetryLoad}>
+                Retry
+              </Button>
+            </div>
+          </div>
+        )}
+
         <CardContent className="flex-1 overflow-hidden p-0">
           {/* Form Mode */}
           {editorMode === 'form' && (
@@ -406,6 +452,7 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                     value={name}
                     onChange={e => setName(e.target.value)}
                     placeholder="e.g., Service Discovery Test"
+                    disabled={isFormLocked}
                   />
                 </div>
 
@@ -417,13 +464,14 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                     onChange={e => setInitialPrompt(e.target.value)}
                     placeholder="The user query to send to the agent..."
                     rows={2}
+                    disabled={isFormLocked}
                   />
                 </div>
 
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
                     <Label>Expected Outcomes *</Label>
-                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={handleAddOutcome}>
+                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={handleAddOutcome} disabled={isFormLocked}>
                       <Plus size={12} className="mr-1" />
                       Add
                     </Button>
@@ -437,6 +485,7 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                           placeholder="e.g., Should query CloudWatch alarms and identify the root cause"
                           rows={1}
                           className="flex-1"
+                          disabled={isFormLocked}
                         />
                         {expectedOutcomes.length > 1 && (
                           <Button
@@ -444,6 +493,7 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                             size="icon"
                             className="h-8 w-8 shrink-0"
                             onClick={() => handleRemoveOutcome(index)}
+                            disabled={isFormLocked}
                           >
                             <Trash2 size={12} />
                           </Button>
@@ -466,6 +516,7 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                     onChange={e => setDescription(e.target.value)}
                     placeholder="Describe what this test case validates..."
                     rows={2}
+                    disabled={isFormLocked}
                   />
                 </div>
 
@@ -476,13 +527,14 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                     onChange={setLabels}
                     suggestions={existingLabels}
                     placeholder="Add labels..."
+                    disabled={isFormLocked}
                   />
                 </div>
 
                 <div className="space-y-1">
                   <div className="flex items-center justify-between">
                     <Label>Context</Label>
-                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={handleAddContext}>
+                    <Button variant="outline" size="sm" className="h-6 text-xs" onClick={handleAddContext} disabled={isFormLocked}>
                       <Plus size={12} className="mr-1" />
                       Add
                     </Button>
@@ -499,6 +551,7 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                                 size="icon"
                                 className="h-6 w-6"
                                 onClick={() => handleRemoveContext(index)}
+                                disabled={isFormLocked}
                               >
                                 <Trash2 size={12} />
                               </Button>
@@ -507,12 +560,14 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                               value={item.description}
                               onChange={e => handleUpdateContext(index, 'description', e.target.value)}
                               placeholder="Description (e.g., Current cluster state)"
+                              disabled={isFormLocked}
                             />
                             <Textarea
                               value={item.value}
                               onChange={e => handleUpdateContext(index, 'value', e.target.value)}
                               placeholder="Value (JSON stringified data)"
                               rows={2}
+                              disabled={isFormLocked}
                             />
                           </CardContent>
                         </Card>
