@@ -16,10 +16,14 @@
  * - The test-case list is windowed (100 rows/page) with a sentinel; an
  *   IntersectionObserver hit reveals the next page.
  * - `?reportId=` deep links beyond the first window bump the window.
+ * - A bare load (no `?reportId=`) selects NOTHING — verdict-first landing,
+ *   no auto-opened first row (regression companion to #443's fix on the
+ *   legacy /benchmarks/:id/runs/:id page).
  * - Summary-batch failure falls back to execution status (no crash).
  * - loadData failure renders the error + Retry state (not an infinite
  *   skeleton) and Retry recovers.
- * - The full report is fetched on-demand for the selected row only.
+ * - The full report is fetched on-demand for the selected row only, and
+ *   only once a row is actually selected (deep link or click).
  */
 
 import * as React from 'react';
@@ -263,10 +267,11 @@ describe('RunInspectorPage — lazy report loading', () => {
     expect(rows.filter(r => r.getAttribute('data-status') === 'failed')).toHaveLength(1);
     expect(rows.filter(r => r.getAttribute('data-status') === 'passed')).toHaveLength(4);
 
-    // Full report fetched only for the selected (first) row.
-    await waitFor(() => expect(mockGetReportById).toHaveBeenCalled());
-    expect(mockGetReportById).toHaveBeenCalledTimes(1);
-    expect(mockGetReportById).toHaveBeenCalledWith('rep-0');
+    // Bare load (no `?reportId=`): nothing is auto-selected, so no full
+    // report fetch happens at all — verdict-first landing, not an
+    // auto-opened first row.
+    expect(mockGetReportById).not.toHaveBeenCalled();
+    expect(screen.getByText(/Select a test case/i)).toBeTruthy();
   });
 
   it('falls back to execution status when the summary batch fails', async () => {
@@ -368,12 +373,15 @@ describe('RunInspectorPage — lazy report loading', () => {
     const bm2 = makeBenchmark(120);
     bm2.runs[0].id = 'run-2';
     mockBenchmarkGetById.mockResolvedValue(bm2);
+    mockGetReportById.mockClear();
     rerender(React.createElement(RunInspectorPage));
 
     // Window resets to the first page for the new run.
     await waitFor(() => expect(screen.getAllByTestId('test-case-row')).toHaveLength(100));
-    // And the first row of the new run is auto-selected (selection reset).
-    await waitFor(() => expect(mockGetReportById).toHaveBeenCalledWith('rep-0'));
+    // Selection is cleared (verdict-first landing) rather than re-auto-selecting
+    // the new run's first row.
+    await waitFor(() => expect(screen.getByText(/Select a test case/i)).toBeTruthy());
+    expect(mockGetReportById).not.toHaveBeenCalled();
   });
 
   it('fans out trace-polling recovery for pending rows using the summary report', async () => {

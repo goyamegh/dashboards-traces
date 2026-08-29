@@ -230,15 +230,21 @@ export const RunInspectorPage: React.FC = () => {
 
       setResults(resultRows);
       if (resultRows.length > 0 && !initialSelectionDone.current) {
-        // Honor `?reportId=<id>` first — if the user arrived via a deep
-        // link (e.g. "View" button on EvalRunDetailPage), select that
-        // report's row. Fall back to the first row otherwise.
+        // Honor `?reportId=<id>` — if the user arrived via a deep link (e.g.
+        // a "View" button on EvalRunDetailPage), select that report's row.
+        // A BARE run URL (no `?reportId=`) must land on the verdict-first
+        // overview (header tallies + case list, "Select a test case" empty
+        // pane) rather than silently auto-opening the first row — that used
+        // to happen unconditionally and is the same regression #443 fixed on
+        // the legacy /benchmarks/:id/runs/:id page (RunDetailsPage.tsx); this
+        // inspector page (the /evaluations/... route most links actually use)
+        // still did it until now.
         const targeted = targetReportId
           ? resultRows.find(r => r.reportId === targetReportId)
           : null;
-        setSelectedTcId((targeted ?? resultRows[0]).testCaseId);
-        // Make sure a deep-linked row is actually revealed by the windowed list.
         if (targeted) {
+          setSelectedTcId(targeted.testCaseId);
+          // Make sure a deep-linked row is actually revealed by the windowed list.
           const idx = resultRows.indexOf(targeted);
           if (idx >= ROWS_PER_PAGE) {
             setVisibleCount(Math.ceil((idx + 1) / ROWS_PER_PAGE) * ROWS_PER_PAGE);
