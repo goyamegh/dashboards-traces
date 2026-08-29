@@ -238,7 +238,37 @@ export function computeRunStats(
 ): Pick<RunStatsType, 'passed' | 'failed' | 'errored' | 'pending' | 'total'> {
   const plannedTotal = run.testCaseSnapshots?.length;
   if (run.results && Object.keys(run.results).length > 0) {
-    return bucketRunResults(run.results, plannedTotal);
+    const bucketed = bucketRunResults(run.results, plannedTotal);
+
+    // Legacy-shape fallback (goyamegh/pr-run-report-v2, run-list all-errored bug):
+    // runs created before per-result passFailStatus denormalization landed
+    // (evaluationRunner.ts writing `results[testCaseId].passFailStatus`) only
+    // persisted `{ reportId, status: 'completed' }` on each result -- no
+    // verdict field at all. bucketRunResults correctly treats a 'completed'
+    // result with no passFailStatus as `errored` (#242), which is right for a
+    // genuine judge failure, but wrong here: EVERY case in the run buckets as
+    // errored (0 passed, 0 failed) even though the run actually has real
+    // verdicts. Detect that specific signature and, only when the
+    // denormalized `run.stats` independently shows real pass/fail evidence
+    // (computed by the report-fetching `computeStatsForRun`, verified against
+    // linked reports' actual passFailStatus -- see tests/unit/lib/runStats.test.ts
+    // 'legacy run shape' cases), trust `run.stats` instead of asserting the
+    // whole run errored. A run that is genuinely all-errored (no result ever
+    // resolved a verdict) will have run.stats.passed === run.stats.failed === 0
+    // too, so it still falls through to the errored bucketing below.
+    const allBucketedAsErrored = bucketed.errored > 0 && bucketed.passed === 0 && bucketed.failed === 0;
+    const statsHaveRealVerdicts = !!run.stats && ((run.stats.passed ?? 0) > 0 || (run.stats.failed ?? 0) > 0);
+    if (allBucketedAsErrored && statsHaveRealVerdicts && run.stats) {
+      return {
+        passed: run.stats.passed ?? 0,
+        failed: run.stats.failed ?? 0,
+        errored: run.stats.errored ?? 0,
+        pending: run.stats.pending ?? 0,
+        total: run.stats.total ?? bucketed.total,
+      };
+    }
+
+    return bucketed;
   }
   if (run.stats && (run.stats.total ?? 0) > 0) {
     return {

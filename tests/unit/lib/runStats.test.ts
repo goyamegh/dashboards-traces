@@ -477,6 +477,67 @@ describe('runStats', () => {
       expect(computeRunStats(run)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 5 });
     });
 
+    // Regression for the benchmark-runs-list "every row shows 0 passed / 0
+    // failed / N errored" bug (owner-reported on a Feb 2026 pulsar benchmark,
+    // v8, exp-1765401828206-yq9ychdhu). Root cause: these runs predate
+    // evaluationRunner.ts's per-result passFailStatus write, so their
+    // persisted `results[testCaseId]` only ever carried
+    // `{ reportId, status: 'completed' }` -- the exact shape below, taken
+    // from the live doc (run-1772045410778-kndnkja4w). The linked reports
+    // DO have real verdicts (verified live: 4 reports with passFailStatus
+    // 'passed', 3 with 'failed', all metricsStatus 'ready') and that split
+    // is exactly what the denormalized `run.stats` already recorded --
+    // bucketRunResults just can't see it because it never looks at reports,
+    // only at `results`.
+    it('falls back to run.stats for legacy runs whose results carry no passFailStatus at all (all-errored bucketing) but stats has real verdict evidence', () => {
+      const run = {
+        results: {
+          'tc-1765401719989-2pw5h9dmk': { reportId: 'run-1772045530260-bvf4ko26q', status: 'completed' },
+          'tc-1765309559268-sc3iqnxp4': { reportId: 'run-1772045613371-li31jemot', status: 'completed' },
+          'tc-1765309559361-qo2zet9n0': { reportId: 'run-1772046217427-n4tv7vvtr', status: 'completed' },
+          'tc-1768926669257-idup9grc7': { reportId: 'run-1772045768365-yho8vdydu', status: 'completed' },
+          'tc-1765322629983-iall3egke': { reportId: 'run-1772045435841-0vizambtl', status: 'completed' },
+          'tc-1765309559452-7s5c5irsj': { reportId: 'run-1772046000950-fj058hzfg', status: 'completed' },
+          'tc-1765309559544-75a9fafl5': { reportId: 'run-1772045939125-f7cooj9hr', status: 'completed' },
+        },
+        // Denormalized at run-completion time by the (correct, report-fetching)
+        // computeStatsForRun -- matches the live doc's run.stats exactly.
+        stats: { total: 7, pending: 0, passed: 4, failed: 3 },
+      };
+
+      // bucketRunResults(run.results) alone would say { passed: 0, failed: 0,
+      // errored: 7, pending: 0, total: 7 } -- every case wrongly marked
+      // "errored: no judge verdict" despite 7/7 having real verdicts.
+      expect(bucketRunResults(run.results)).toEqual({ passed: 0, failed: 0, errored: 7, pending: 0, total: 7 });
+
+      expect(computeRunStats(run)).toEqual({ passed: 4, failed: 3, errored: 0, pending: 0, total: 7 });
+    });
+
+    it('does NOT fall back to run.stats when a run is genuinely all-errored (no verdict evidence anywhere)', () => {
+      const run = {
+        results: {
+          'tc-1': { reportId: 'report-1', status: 'completed' },
+          'tc-2': { reportId: 'report-2', status: 'completed' },
+        },
+        // Never refreshed / no verdicts ever resolved -- stats agrees it's all-errored.
+        stats: { total: 2, pending: 0, passed: 0, failed: 0, errored: 2 },
+      };
+
+      expect(computeRunStats(run)).toEqual({ passed: 0, failed: 0, errored: 2, pending: 0, total: 2 });
+    });
+
+    it('does not use the legacy fallback when results already carry a mix of real verdicts and errors (not all-errored)', () => {
+      const run = {
+        results: {
+          'tc-1': { status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { status: 'completed' }, // genuinely errored (judge failure)
+        },
+        // Stale/irrelevant stats blob -- must be ignored since results already
+        // resolved real (non-all-errored) verdicts.
+        stats: { total: 2, pending: 0, passed: 0, failed: 0, errored: 0 },
+      };
+
+      expect(computeRunStats(run)).toEqual({ passed: 1, failed: 0, errored: 1, pending: 0, total: 2 });
     it('threads run.testCaseSnapshots.length through as plannedTotal for an in-progress run', () => {
       const run = {
         results: { 'tc-1': { status: 'failed' }, 'tc-2': { status: 'failed' } },
