@@ -89,4 +89,32 @@ test.describe('Session Metadata API E2E', () => {
     const found = data.items.find((i: any) => i.sessionId === testSessionId);
     expect(found).toBeDefined();
   });
+
+  // Cleanup: session metadata has no cascade and, until this DELETE route
+  // existed, no way to remove it at all — every PUT above was a permanent
+  // file under .agent-health/data/session-metadata/ on the server host. This
+  // both proves the new endpoint works and deletes what this spec created.
+  test('DELETE removes the session metadata this spec created', async ({ request }) => {
+    const response = await request.delete(
+      `/api/coding-agents/sessions/${testAgent}/${testSessionId}/metadata`
+    );
+    expect(response.ok()).toBe(true);
+    const data = await response.json();
+    expect(data.deleted).toBe(true);
+
+    // Confirm gone. GET's contract is "null body when nothing is stored" (200,
+    // not 404) — unchanged by this delete, so re-assert that contract here too.
+    const getAfter = await request.get(
+      `/api/coding-agents/sessions/${testAgent}/${testSessionId}/metadata`
+    );
+    expect(getAfter.ok()).toBe(true);
+    expect(await getAfter.json()).toBeNull();
+  });
+
+  test('DELETE on an already-deleted (or never-existing) session returns 404', async ({ request }) => {
+    const response = await request.delete(
+      `/api/coding-agents/sessions/${testAgent}/${testSessionId}/metadata`
+    );
+    expect(response.status()).toBe(404);
+  });
 });
