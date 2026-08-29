@@ -26,7 +26,7 @@ import { parseLabels } from '@/lib/labels';
 interface TestCaseEditorProps {
   testCase: TestCase | null; // null = create mode
   onSave: (testCase: TestCase) => void;
-  onBulkSave?: (result: { created: number; errors: boolean }) => void;
+  onBulkSave?: (result: { created: number; errors: number }) => void;
   onCancel: () => void;
 }
 

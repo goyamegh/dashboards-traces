@@ -11,7 +11,19 @@
  */
 
 import { benchmarkStorage as opensearchBenchmarks, StorageBenchmark, StorageBenchmarkRunConfig } from './opensearchClient';
+import { ENV_CONFIG } from '@/lib/config';
 import type { Benchmark, BenchmarkRun, BenchmarkRunStatus, BenchmarkVersion, TestCaseSnapshot, RunResultStatus, RunStats } from '@/types';
+
+/**
+ * Base URL for the handful of routes this module fetches directly (everything
+ * else goes through `opensearchClient`'s request helper, which already
+ * prefixes it). In the browser this is the relative '/api/storage' (same
+ * origin); in Node (jest, CLI, SDK, migration scripts) it is an absolute
+ * http://localhost:<AH_PORT> URL — Node's fetch/undici REJECTS relative URLs
+ * with ERR_INVALID_URL, so a bare fetch('/api/storage/…') breaks every
+ * non-browser consumer of these methods.
+ */
+const STORAGE_API_BASE = ENV_CONFIG.storageApiUrl;
 
 /** API response for benchmark list */
 interface BenchmarkListResponse {
@@ -293,7 +305,7 @@ class AsyncBenchmarkStorage {
    */
   async deleteRun(benchmarkId: string, runId: string): Promise<boolean> {
     try {
-      const response = await fetch(`/api/storage/benchmarks/${benchmarkId}/runs/${runId}`, {
+      const response = await fetch(`${STORAGE_API_BASE}/benchmarks/${benchmarkId}/runs/${runId}`, {
         method: 'DELETE',
       });
 
@@ -334,7 +346,7 @@ class AsyncBenchmarkStorage {
   /**
    * Bulk create benchmarks (for migration)
    */
-  async bulkCreate(benchmarks: Benchmark[]): Promise<{ created: number; errors: boolean }> {
+  async bulkCreate(benchmarks: Benchmark[]): Promise<{ created: number; errors: number }> {
     const storageData = benchmarks.map(bench => ({
       ...toStorageFormat(bench),
       id: bench.id,
@@ -431,7 +443,7 @@ class AsyncBenchmarkStorage {
    */
   async refreshAllStats(benchmarkId: string): Promise<{ refreshed: number } | null> {
     try {
-      const response = await fetch(`/api/storage/benchmarks/${benchmarkId}/refresh-all-stats`, {
+      const response = await fetch(`${STORAGE_API_BASE}/benchmarks/${benchmarkId}/refresh-all-stats`, {
         method: 'POST',
       });
 
@@ -454,7 +466,7 @@ class AsyncBenchmarkStorage {
    */
   async refreshRunStats(benchmarkId: string, runId: string): Promise<{ refreshed: boolean; stats: RunStats } | null> {
     try {
-      const response = await fetch(`/api/storage/benchmarks/${benchmarkId}/runs/${runId}/refresh-stats`, {
+      const response = await fetch(`${STORAGE_API_BASE}/benchmarks/${benchmarkId}/runs/${runId}/refresh-stats`, {
         method: 'POST',
       });
 

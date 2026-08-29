@@ -519,22 +519,36 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
   async deleteRun(benchmarkId: string, runId: string): Promise<boolean> {
     assertNotMigrating(this.index);
     try {
-      await this.client.update({
+      const response = await this.client.update({
         index: this.index,
         id: benchmarkId,
         retry_on_conflict: 3,
         body: {
           script: {
+            // `ctx.op = 'noop'` when nothing matched, so the update response's
+            // `result` field distinguishes "removed" from "run id not in
+            // runs[]". Without it this adapter reported success for ANY run
+            // id on an existing benchmark, while the file adapter (and the
+            // route, which maps false → 404 'Run not found') return false —
+            // the two backends disagreed on the same request.
             source: `
-              ctx._source.runs.removeIf(r -> r.id == params.runId);
-              ctx._source.updatedAt = params.now;
+              int before = ctx._source.runs == null ? 0 : ctx._source.runs.size();
+              if (ctx._source.runs != null) {
+                ctx._source.runs.removeIf(r -> r.id == params.runId);
+              }
+              int after = ctx._source.runs == null ? 0 : ctx._source.runs.size();
+              if (after == before) {
+                ctx.op = 'noop';
+              } else {
+                ctx._source.updatedAt = params.now;
+              }
             `,
             params: { runId, now: new Date().toISOString() },
           },
         },
         refresh: 'wait_for',
       });
-      return true;
+      return (response?.body as { result?: string } | undefined)?.result !== 'noop';
     } catch (error: any) {
       if (error.meta?.statusCode === 404) return false;
       throw error;

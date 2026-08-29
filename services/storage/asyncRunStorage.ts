@@ -214,6 +214,14 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
   // Add trace-mode fields if present
   if (report.metricsStatus !== undefined) base.metricsStatus = report.metricsStatus;
   if ((report as any).sessionId !== undefined) (base as any).sessionId = (report as any).sessionId;
+  // Judge inputs: the read mapper (toTestCaseRun) and the server-side save
+  // path (server/services/storage/index.ts) both carry evaluatorId +
+  // judgeModelId, but this client-side write mapper silently dropped them —
+  // so any report persisted through asyncRunStorage.saveReport (e.g. the
+  // localStorage→OpenSearch migration) lost which evaluator/judge produced it
+  // and could never round-trip them back to the runs list.
+  if (report.evaluatorId !== undefined) (base as any).evaluatorId = report.evaluatorId;
+  if (report.judgeModelId !== undefined) (base as any).judgeModelId = report.judgeModelId;
   if (report.traceFetchAttempts !== undefined) base.traceFetchAttempts = report.traceFetchAttempts;
   if (report.lastTraceFetchAt !== undefined) base.lastTraceFetchAt = report.lastTraceFetchAt;
   if (report.traceError !== undefined) base.traceError = report.traceError;
@@ -605,7 +613,7 @@ class AsyncRunStorage {
   /**
    * Bulk create runs (for migration)
    */
-  async bulkCreate(runs: EvaluationReport[]): Promise<{ created: number; errors: boolean }> {
+  async bulkCreate(runs: EvaluationReport[]): Promise<{ created: number; errors: number }> {
     const storageData = runs.map(run => ({
       ...toStorageFormat(run),
       id: run.id,

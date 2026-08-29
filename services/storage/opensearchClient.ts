@@ -332,8 +332,8 @@ export const testCaseStorage = {
   /**
    * Bulk create test cases
    */
-  async bulkCreate(testCases: Partial<StorageTestCase>[]): Promise<{ created: number; errors: boolean; testCases: StorageTestCase[] }> {
-    return request<{ created: number; errors: boolean; testCases: StorageTestCase[] }>('POST', '/test-cases/bulk', { testCases });
+  async bulkCreate(testCases: Partial<StorageTestCase>[]): Promise<{ created: number; errors: number; testCases: StorageTestCase[] }> {
+    return request<{ created: number; errors: number; testCases: StorageTestCase[] }>('POST', '/test-cases/bulk', { testCases });
   },
 };
 
@@ -399,8 +399,8 @@ export const benchmarkStorage = {
   /**
    * Bulk create benchmarks
    */
-  async bulkCreate(benchmarks: Partial<StorageBenchmark>[]): Promise<{ created: number; errors: boolean }> {
-    return request<{ created: number; errors: boolean }>('POST', '/benchmarks/bulk', { benchmarks });
+  async bulkCreate(benchmarks: Partial<StorageBenchmark>[]): Promise<{ created: number; errors: number }> {
+    return request<{ created: number; errors: number }>('POST', '/benchmarks/bulk', { benchmarks });
   },
 
   /**
@@ -605,8 +605,8 @@ export const runStorage = {
   /**
    * Bulk create runs
    */
-  async bulkCreate(runs: Partial<StorageRun>[]): Promise<{ created: number; errors: boolean }> {
-    return request<{ created: number; errors: boolean }>('POST', '/runs/bulk', { runs });
+  async bulkCreate(runs: Partial<StorageRun>[]): Promise<{ created: number; errors: number }> {
+    return request<{ created: number; errors: number }>('POST', '/runs/bulk', { runs });
   },
 };
 
