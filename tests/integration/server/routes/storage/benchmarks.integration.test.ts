@@ -18,8 +18,16 @@
  */
 
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
+import { uniqueTestName } from '../../../../helpers/testDataTracker';
 
 const BASE_URL = getTestBackendUrl();
+
+// Unique per run so parallel/aborted runs on the shared cluster never
+// collide — and so cleanup never needs to guess by name (deleting entities
+// you didn't create because their NAME looks test-ish is how real user data
+// gets destroyed on a shared cluster).
+const CANCEL_TEST_CASE_NAME = uniqueTestName('cancel-tc');
+const CANCEL_BENCHMARK_NAME = uniqueTestName('cancel-benchmark');
 
 // Check if backend is available
 const checkBackend = async (): Promise<boolean> => {
@@ -45,7 +53,7 @@ const createTestCase = async (): Promise<string> => {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      name: 'Cancel Test Case',
+      name: CANCEL_TEST_CASE_NAME,
       category: 'Test',
       difficulty: 'Easy',
       initialPrompt: 'Test prompt for cancel integration test',
@@ -68,7 +76,7 @@ const createBenchmark = async (testCaseId: string): Promise<string> => {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      name: 'Cancel Integration Test Benchmark',
+      name: CANCEL_BENCHMARK_NAME,
       description: 'Benchmark for testing cancel race condition',
       testCaseIds: [testCaseId],
       runs: [],
@@ -287,35 +295,12 @@ describe('Benchmark Cancel Integration Tests', () => {
       await fetch(`${BASE_URL}/api/storage/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
     }
 
-    // Cleanup by tracked ID
+    // Cleanup by tracked ID only — never sweep shared storage by name.
     if (benchmarkId) {
       await deleteBenchmark(benchmarkId);
     }
     if (testCaseId) {
       await deleteTestCase(testCaseId);
-    }
-    // Fallback: clean up leftovers from previous failed runs by name
-    try {
-      const tcResp = await fetch(`${BASE_URL}/api/storage/test-cases`);
-      if (tcResp.ok) {
-        const data = await tcResp.json();
-        for (const tc of (data.testCases ?? [])) {
-          if (tc.name === 'Cancel Test Case') {
-            await deleteTestCase(tc.id).catch(() => {});
-          }
-        }
-      }
-      const benchResp = await fetch(`${BASE_URL}/api/storage/benchmarks`);
-      if (benchResp.ok) {
-        const benchData = await benchResp.json();
-        for (const b of (benchData.benchmarks ?? benchData ?? [])) {
-          if (b.name === 'Cancel Integration Test Benchmark') {
-            await deleteBenchmark(b.id).catch(() => {});
-          }
-        }
-      }
-    } catch {
-      // Ignore cleanup errors
     }
   }, 30000);
 
@@ -374,9 +359,10 @@ describe('Benchmark Export Integration Tests', () => {
   let exportTestCaseId: string | null = null;
   let exportBenchmarkId: string | null = null;
 
-  // Known values we create and then assert on export
+  // Known values we create and then assert on export. Name is unique per
+  // run (see CANCEL_* note above).
   const EXPORT_TEST_CASE_INPUT = {
-    name: 'Export Integration Test Case',
+    name: uniqueTestName('export-tc'),
     category: 'RCA',
     difficulty: 'Medium',
     initialPrompt: 'Investigate why the service is returning 500 errors',
@@ -406,7 +392,7 @@ describe('Benchmark Export Integration Tests', () => {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        name: 'Export Integration Benchmark',
+        name: uniqueTestName('export-benchmark'),
         description: 'Benchmark for testing export round-trip',
         testCaseIds: [exportTestCaseId],
         runs: [],
@@ -425,31 +411,9 @@ describe('Benchmark Export Integration Tests', () => {
 
   afterAll(async () => {
     if (!backendAvailable) return;
+    // Cleanup by tracked ID only — never sweep shared storage by name.
     if (exportBenchmarkId) await deleteBenchmark(exportBenchmarkId);
     if (exportTestCaseId) await deleteTestCase(exportTestCaseId);
-    // Fallback: clean up leftovers from previous failed runs by name
-    try {
-      const tcResp = await fetch(`${BASE_URL}/api/storage/test-cases`);
-      if (tcResp.ok) {
-        const data = await tcResp.json();
-        for (const tc of (data.testCases ?? [])) {
-          if (tc.name === 'Export Integration Test Case') {
-            await deleteTestCase(tc.id).catch(() => {});
-          }
-        }
-      }
-      const benchResp = await fetch(`${BASE_URL}/api/storage/benchmarks`);
-      if (benchResp.ok) {
-        const benchData = await benchResp.json();
-        for (const b of (benchData.benchmarks ?? benchData ?? [])) {
-          if (b.name === 'Export Integration Benchmark') {
-            await deleteBenchmark(b.id).catch(() => {});
-          }
-        }
-      }
-    } catch {
-      // Ignore cleanup errors
-    }
   }, 30000);
 
   it('should export the actual test case content created via OpenSearch', async () => {

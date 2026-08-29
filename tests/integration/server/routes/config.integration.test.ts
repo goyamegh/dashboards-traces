@@ -33,6 +33,7 @@ const DEFAULT_AGENT_COUNT = 4;
 const MIN_DEFAULT_MODEL_COUNT = 3;
 
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
+import { uniqueTestName } from '../../../helpers/testDataTracker';
 
 const BASE_URL = getTestBackendUrl();
 
@@ -183,37 +184,25 @@ describe('Config Endpoints Integration Tests', () => {
 
   describe('Custom Agent Persistence', () => {
     const TEST_AGENT = {
-      name: 'Integration Test Agent',
+      // Unique per run — cross-run collisions are impossible, so cleanup can
+      // be tracked-key-only.
+      name: uniqueTestName('config-agent'),
       endpoint: 'http://integration-test.example.com:9999',
     };
 
     const createdKeys: string[] = [];
 
-    // Clean up after tests regardless of pass/fail
+    // Clean up after tests regardless of pass/fail — by tracked key ONLY.
+    // Never look up victims by name: "name looks test-ish" is not proof of
+    // ownership; a real custom agent could carry any name a sweep guesses.
     afterAll(async () => {
       if (!backendAvailable) return;
-      // Best-effort cleanup: delete all agents created during this suite
       for (const key of createdKeys) {
         try {
           await fetch(`${BASE_URL}/api/agents/custom/${key}`, { method: 'DELETE' });
         } catch {
           // Ignore cleanup errors
         }
-      }
-      // Also delete by name in case key tracking missed one
-      try {
-        const response = await fetch(`${BASE_URL}/api/agents`);
-        const data = await response.json();
-        const testAgent = data.agents.find(
-          (a: { name: string }) => a.name === TEST_AGENT.name,
-        );
-        if (testAgent) {
-          await fetch(`${BASE_URL}/api/agents/custom/${testAgent.key}`, {
-            method: 'DELETE',
-          });
-        }
-      } catch {
-        // Ignore cleanup errors
       }
     }, TEST_TIMEOUT);
 

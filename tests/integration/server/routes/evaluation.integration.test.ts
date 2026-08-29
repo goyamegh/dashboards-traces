@@ -155,30 +155,16 @@ describe('Evaluate Route Integration Tests', () => {
         // Ignore cleanup errors
       }
     }
-    // Clean up any test cases created as a side effect of evaluation
+    // Clean up any test cases created as a side effect of evaluation — by
+    // tracked id ONLY (every inline test case above pushes its client-chosen
+    // id). Never sweep shared storage by name/prefix: "name looks test-ish"
+    // is not proof of ownership on a shared cluster.
     for (const id of createdTestCaseIds) {
       try {
         await fetch(`${BASE_URL}/api/storage/test-cases/${encodeURIComponent(id)}`, { method: 'DELETE' });
       } catch {
         // Ignore cleanup errors
       }
-    }
-
-    // Fallback: clean up leftover reports from previous failed runs
-    // Reports from this test use inline test cases with 'tc-eval-integ-' prefix
-    try {
-      const resp = await fetch(`${config.backendUrl}/api/storage/test-cases`);
-      if (resp.ok) {
-        const data = await resp.json();
-        const allTestCases = data.testCases ?? [];
-        for (const tc of allTestCases) {
-          if (tc.name?.startsWith('Integration Test Case tc-eval-integ-')) {
-            await fetch(`${config.backendUrl}/api/storage/test-cases/${encodeURIComponent(tc.id)}`, { method: 'DELETE' }).catch(() => {});
-          }
-        }
-      }
-    } catch {
-      // Ignore cleanup errors
     }
   }, TEST_TIMEOUT);
 

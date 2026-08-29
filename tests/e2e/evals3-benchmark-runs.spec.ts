@@ -7,17 +7,24 @@ import { test, expect } from './fixtures/test-fixtures';
 
 test.describe('Evals3 Benchmark Runs Page', () => {
   let benchmarkId: string | null = null;
+  let testCaseId: string | null = null;
+  // Unique per run — collisions with other runs/sessions on the shared
+  // backend are impossible, and cleanup deletes exactly the two ids created
+  // here. (Heading assertions use has-text substring matching, so the
+  // unique suffix does not affect them.)
+  const RUN_TAG = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  const TC_NAME = `E2E BM Runs TC ${RUN_TAG}`;
+  const BM_NAME = `E2E BM Runs Benchmark ${RUN_TAG}`;
 
   test.beforeAll(async ({ request }) => {
     // Create a benchmark with test cases so we have data to navigate to
     const tcRes = await request.post('/api/storage/test-cases', {
       data: {
-        name: 'E2E BM Runs TC',
+        name: TC_NAME,
         initialPrompt: 'What is 2+2?',
         expectedOutcomes: ['Agent responds with 4'],
       },
     });
-    let testCaseId: string | null = null;
     if (tcRes.ok()) {
       const tcData = await tcRes.json();
       testCaseId = tcData.id || tcData.testCase?.id;
@@ -25,7 +32,7 @@ test.describe('Evals3 Benchmark Runs Page', () => {
 
     const bmRes = await request.post('/api/storage/benchmarks', {
       data: {
-        name: 'E2E BM Runs Benchmark',
+        name: BM_NAME,
         description: 'Created for e2e benchmark runs test',
         testCaseIds: testCaseId ? [testCaseId] : [],
       },
@@ -37,26 +44,14 @@ test.describe('Evals3 Benchmark Runs Page', () => {
   });
 
   test.afterAll(async ({ request }) => {
-    // Cleanup
-    const bmRes = await request.get('/api/storage/benchmarks').catch(() => null);
-    if (bmRes?.ok()) {
-      const data = await bmRes.json();
-      const benchmarks = Array.isArray(data) ? data : data.benchmarks ?? [];
-      for (const bm of benchmarks) {
-        if (bm.name?.startsWith('E2E BM Runs')) {
-          await request.delete(`/api/storage/benchmarks/${encodeURIComponent(bm.id)}`).catch(() => {});
-        }
-      }
+    // Cleanup by tracked id ONLY — never list-and-delete by name/prefix:
+    // "name looks test-ish" is not proof of ownership on a shared backend
+    // (this exact prefix sweep used to delete other sessions' data).
+    if (benchmarkId) {
+      await request.delete(`/api/storage/benchmarks/${encodeURIComponent(benchmarkId)}`).catch(() => {});
     }
-    const tcRes = await request.get('/api/storage/test-cases').catch(() => null);
-    if (tcRes?.ok()) {
-      const data = await tcRes.json();
-      const tcs = Array.isArray(data) ? data : data.testCases ?? [];
-      for (const tc of tcs) {
-        if (tc.name?.startsWith('E2E BM Runs')) {
-          await request.delete(`/api/storage/test-cases/${encodeURIComponent(tc.id)}`).catch(() => {});
-        }
-      }
+    if (testCaseId) {
+      await request.delete(`/api/storage/test-cases/${encodeURIComponent(testCaseId)}`).catch(() => {});
     }
   });
 

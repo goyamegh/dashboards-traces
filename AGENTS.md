@@ -455,6 +455,19 @@ often a **live server wired to a shared OpenSearch cluster**. Anything a test
 creates and fails to delete is permanent clutter in real data (and, on the file
 backend, permanent JSON under `.agent-health/data/`).
 
+**Never delete by name across shared storage; only delete ids you created.**
+Cleanup hooks must not enumerate storage (`getAll()`, GET on a collection
+endpoint) and delete whatever matches a name/prefix — "name looks test-ish" is
+NOT proof of ownership (real data includes benchmarks named `mstest` and
+`Jason Test`, and importing the bundled OTEL demo file yields docs named
+`OTEL Demo: …`). Give fixtures run-unique names via `uniqueTestName()` so
+cross-run collisions can't happen, capture every created id, and delete exactly
+those ids. Leftovers from crashed runs are reaped by the tracker's crash ledger
+(`jest.globalTeardown.cjs`) and, for historical junk, the reviewed opt-in
+`scripts/sweep-test-data.mjs`. This rule is enforced by
+[tests/unit/testCleanupHygiene.test.ts](tests/unit/testCleanupHygiene.test.ts),
+which fails on any list+delete or name-gated delete inside `afterAll`/`afterEach`.
+
 Use the shared tracker — do not hand-roll `createdXIds[]` arrays:
 
 ```typescript

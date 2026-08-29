@@ -197,6 +197,10 @@ describe('Run Storage Integration Tests', () => {
 
       const report = buildReport();
       const saved = await asyncRunStorage.saveReport(report);
+      // Tracked even though the test deletes it itself — if an assertion
+      // below throws before the delete, the tracker still reaps it (cleanup
+      // is 404-tolerant, so the normal path stays green).
+      tracker.run(saved.id);
 
       const deleted = await asyncRunStorage.deleteReport(saved.id);
       expect(deleted).toBe(true);

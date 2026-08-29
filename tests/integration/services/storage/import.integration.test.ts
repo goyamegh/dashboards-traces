@@ -17,7 +17,7 @@ import { asyncTestCaseStorage } from '@/services/storage/asyncTestCaseStorage';
 import { asyncBenchmarkStorage } from '@/services/storage/asyncBenchmarkStorage';
 import { storageAdmin } from '@/services/storage/opensearchClient';
 import { validateTestCasesArrayJson, validateTestCaseJson } from '@/lib/testCaseValidation';
-import { createTestDataTracker } from '../../../helpers/testDataTracker';
+import { createTestDataTracker, uniqueTestName } from '../../../helpers/testDataTracker';
 
 // Skip tests if backend is not running
 const checkBackend = async (): Promise<boolean> => {
@@ -42,10 +42,12 @@ describe('Test Case Import Integration', () => {
   // 404-tolerant, crash-ledgered cleanup; see tests/helpers/testDataTracker.ts.
   const tracker = createTestDataTracker();
 
-  // Sample test cases matching the JSON schema
+  // Sample test cases matching the JSON schema. Names are unique per run
+  // (uniqueTestName) so parallel/aborted runs on the shared cluster can never
+  // collide — and so cleanup never needs to guess by name.
   const sampleTestCases = [
     {
-      name: 'Import Test: Checkout Service',
+      name: uniqueTestName('import-checkout-service'),
       description: 'Integration test case 1',
       category: 'RCA',
       difficulty: 'Easy' as const,
@@ -59,7 +61,7 @@ describe('Test Case Import Integration', () => {
       expectedOutcomes: ['Expected outcome 1', 'Expected outcome 2'],
     },
     {
-      name: 'Import Test: Latency Spike',
+      name: uniqueTestName('import-latency-spike'),
       description: 'Integration test case 2',
       category: 'RCA',
       difficulty: 'Medium' as const,
@@ -77,40 +79,12 @@ describe('Test Case Import Integration', () => {
   });
 
   afterAll(async () => {
+    // Delete ONLY ids this run created (tracker). Never sweep shared storage
+    // by name: "name looks test-ish" is not proof of ownership, and a
+    // name-based getAll+delete here deletes OTHER users' data on the shared
+    // cluster. Unique fixture names (above) make cross-run collisions — the
+    // thing a name sweep was crudely working around — impossible instead.
     await tracker.cleanup();
-    if (!backendAvailable) return;
-
-    // Fallback: clean up leftovers from previous failed runs by name
-    // (predates the tracker; the shared cluster may still hold them).
-    try {
-      const testCaseNames = [
-        ...sampleTestCases.map(tc => tc.name),
-        'Single Import Test',
-        'Benchmark Import Test',
-        'Multi Test 1',
-        'Multi Test 2',
-        'Multi Test 3',
-        'Duplicate Name Test',
-      ];
-      const allTestCases = await asyncTestCaseStorage.getAll();
-      for (const tc of allTestCases) {
-        if (testCaseNames.includes(tc.name)) {
-          await asyncTestCaseStorage.delete(tc.id).catch(() => {});
-        }
-      }
-      const benchmarkNames = [
-        'OTEL Demo Benchmark (Import Test)',
-        'Multi Test Case Benchmark',
-      ];
-      const allBenchmarks = await asyncBenchmarkStorage.getAll();
-      for (const b of allBenchmarks) {
-        if (benchmarkNames.includes(b.name)) {
-          await asyncBenchmarkStorage.delete(b.id).catch(() => {});
-        }
-      }
-    } catch {
-      // Ignore cleanup errors
-    }
   });
 
   describe('validateTestCasesArrayJson', () => {
@@ -189,7 +163,7 @@ describe('Test Case Import Integration', () => {
     it('should validate single test case', () => {
       const result = validateTestCaseJson(sampleTestCases[0]);
       expect(result.valid).toBe(true);
-      expect(result.data?.name).toBe('Import Test: Checkout Service');
+      expect(result.data?.name).toBe(sampleTestCases[0].name);
     });
 
     it('should return error for array input (should use bulk import)', () => {
@@ -236,7 +210,9 @@ describe('Test Case Import Integration', () => {
       // assertion was written against a lying client type and never ran.
       expect(result.errors).toBe(0);
 
-      // Track created test cases for cleanup by matching names
+      // bulkCreate only returns counts, so recover the minted ids via the
+      // run-unique names (uniqueTestName above guarantees only THIS run's
+      // docs can match) and track them for cleanup.
       const allTestCases = await asyncTestCaseStorage.getAll();
       allTestCases
         .filter((tc) => sampleTestCases.some((d) => d.name === tc.name))
@@ -250,7 +226,7 @@ describe('Test Case Import Integration', () => {
 
       // Use individual create to get the ID
       const testCase = await asyncTestCaseStorage.create({
-        name: 'Single Import Test',
+        name: uniqueTestName('single-import'),
         category: 'RCA',
         difficulty: 'Easy' as const,
         initialPrompt: 'Test prompt',
@@ -269,7 +245,7 @@ describe('Test Case Import Integration', () => {
 
       // Create test case using individual create to get ID
       const testCase = await asyncTestCaseStorage.create({
-        name: 'Benchmark Import Test',
+        name: uniqueTestName('benchmark-import-tc'),
         category: 'RCA',
         difficulty: 'Hard' as const,
         initialPrompt: 'Test prompt for benchmark',
@@ -280,8 +256,9 @@ describe('Test Case Import Integration', () => {
       tracker.testCase(testCase.id);
 
       // Create benchmark with that test case ID
+      const benchmarkName = uniqueTestName('otel-demo-benchmark-import');
       const benchmark = await asyncBenchmarkStorage.create({
-        name: 'OTEL Demo Benchmark (Import Test)',
+        name: benchmarkName,
         description: 'Auto-created from import integration test',
         currentVersion: 1,
         versions: [
@@ -296,7 +273,7 @@ describe('Test Case Import Integration', () => {
       });
 
       expect(benchmark.id).toMatch(/^bench-/);
-      expect(benchmark.name).toBe('OTEL Demo Benchmark (Import Test)');
+      expect(benchmark.name).toBe(benchmarkName);
       expect(benchmark.testCaseIds).toEqual([testCase.id]);
 
       tracker.benchmark(benchmark.id);
@@ -309,7 +286,7 @@ describe('Test Case Import Integration', () => {
       const testCaseIds: string[] = [];
 
       const tc1 = await asyncTestCaseStorage.create({
-        name: 'Multi Test 1',
+        name: uniqueTestName('multi-test-1'),
         category: 'RCA',
         difficulty: 'Easy' as const,
         initialPrompt: 'Prompt 1',
@@ -320,7 +297,7 @@ describe('Test Case Import Integration', () => {
       tracker.testCase(tc1.id);
 
       const tc2 = await asyncTestCaseStorage.create({
-        name: 'Multi Test 2',
+        name: uniqueTestName('multi-test-2'),
         category: 'Alerts',
         difficulty: 'Medium' as const,
         initialPrompt: 'Prompt 2',
@@ -331,7 +308,7 @@ describe('Test Case Import Integration', () => {
       tracker.testCase(tc2.id);
 
       const tc3 = await asyncTestCaseStorage.create({
-        name: 'Multi Test 3',
+        name: uniqueTestName('multi-test-3'),
         category: 'RCA',
         difficulty: 'Hard' as const,
         initialPrompt: 'Prompt 3',
@@ -343,7 +320,7 @@ describe('Test Case Import Integration', () => {
 
       // Create benchmark
       const benchmark = await asyncBenchmarkStorage.create({
-        name: 'Multi Test Case Benchmark',
+        name: uniqueTestName('multi-test-case-benchmark'),
         description: 'Benchmark with multiple test cases',
         currentVersion: 1,
         versions: [
@@ -367,7 +344,7 @@ describe('Test Case Import Integration', () => {
       if (!backendAvailable) return;
 
       const testCaseData = {
-        name: 'Duplicate Name Test',
+        name: uniqueTestName('duplicate-name'),
         category: 'RCA',
         difficulty: 'Easy' as const,
         initialPrompt: 'Test prompt',
