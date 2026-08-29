@@ -6,29 +6,37 @@
  */
 
 /**
- * Unit tests for DeepDiveHeaderMetrics — the compact "Score / Duration /
- * Tools, A vs B" line that replaced the ComparisonDeepDive panel's removed
- * "Performance & Outcome" bars block (owner feedback: bare "100 pts" bars
- * misread as case counts in a multi-hundred-case comparison; numbers should
- * live in the panel header instead of a chart).
+ * Unit tests for DeepDiveHeaderMetrics — the ComparisonDeepDive panel's
+ * header: the case identity line ("Case: <name>", linked) plus the compact
+ * "Score / Duration / Tools, A vs B" line that replaced the panel's removed
+ * "Performance & Outcome" bars block.
  *
  * Covers: score formatting via the app's canonical `getRunOverallScore`
  * (percentage, not a bare number), duration formatting, tool-call counting
- * from the trajectory, and the missing-value dash for every cell.
+ * from the trajectory, the missing-value dash for every cell, and (owner
+ * follow-up on #398) that the panel names the ONE test case it's actually
+ * analyzing instead of presenting as if it were a run-level statistic.
  */
 
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import {
   DeepDiveHeaderMetrics,
   DEEPDIVE_METRIC_DASH,
   formatScoreCell,
   formatDurationCell,
   formatToolsCell,
+  type DeepDiveHeaderMetricsProps,
 } from '@/components/comparison/DeepDiveHeaderMetrics';
 import type { EvaluationReport, TrajectoryStep } from '@/types';
 
 const h = React.createElement;
+
+/** DeepDiveHeaderMetrics can render a react-router-dom <Link> — needs a Router in scope. */
+function renderMetrics(props: DeepDiveHeaderMetricsProps) {
+  return render(h(MemoryRouter, null, h(DeepDiveHeaderMetrics, props)));
+}
 
 function makeReport(overrides: Partial<EvaluationReport> = {}): EvaluationReport {
   return {
@@ -115,9 +123,51 @@ describe('formatToolsCell', () => {
 });
 
 describe('DeepDiveHeaderMetrics (component)', () => {
-  it('renders nothing when neither report is known', () => {
-    const { container } = render(h(DeepDiveHeaderMetrics, { reportA: null, reportB: null }));
+  it('renders nothing when neither report nor case name is known', () => {
+    const { container } = renderMetrics({ reportA: null, reportB: null });
     expect(container.firstChild).toBeNull();
+  });
+
+  it('renders the case name prominently, linked to the test case, ahead of the metrics line', () => {
+    // Owner follow-up (#398): the deep-dive panel analyzes ONE representative
+    // test case, but nothing said so -- prose like "Run A passed (100/100)"
+    // reads like a run-level pass-rate stat. The panel header must name the
+    // case it's actually analyzing.
+    renderMetrics({
+      reportA: makeReport({ metrics: { accuracy: 100 } }),
+      reportB: makeReport({ metrics: { accuracy: 50 } }),
+      testCaseName: 'Diagnose protected-index write rejection',
+      testCaseId: 'tc-42',
+    });
+    const caseLabel = screen.getByTestId('deep-dive-case-label');
+    expect(caseLabel.textContent).toContain('Case:');
+    expect(caseLabel.textContent).toContain('Diagnose protected-index write rejection');
+    const link = screen.getByRole('link', { name: /Diagnose protected-index write rejection/ });
+    expect(link.getAttribute('href')).toBe('/evaluations/test-cases/tc-42');
+  });
+
+  it('renders the case name as plain (unlinked) text when no testCaseId is given', () => {
+    renderMetrics({ reportA: null, reportB: null, testCaseName: 'Untitled case' });
+    const caseLabel = screen.getByTestId('deep-dive-case-label');
+    expect(caseLabel.textContent).toContain('Untitled case');
+    expect(screen.queryByRole('link')).toBeNull();
+  });
+
+  it('renders the case name even when neither report has loaded yet', () => {
+    const { container } = renderMetrics({ reportA: null, reportB: null, testCaseName: 'Case pending reports' });
+    expect(container.firstChild).not.toBeNull();
+    expect(screen.getByTestId('deep-dive-case-label').textContent).toContain('Case pending reports');
+    // No metrics line yet -- nothing to show until a report loads.
+    expect(screen.queryByTestId('deep-dive-header-metrics')).toBeNull();
+  });
+
+  it('omits the case label entirely when no testCaseName is passed (metrics-only, back-compat)', () => {
+    renderMetrics({
+      reportA: makeReport({ metrics: { accuracy: 100 } }),
+      reportB: makeReport({ metrics: { accuracy: 50 } }),
+    });
+    expect(screen.queryByTestId('deep-dive-case-label')).toBeNull();
+    expect(screen.getByTestId('deep-dive-header-metrics')).toBeTruthy();
   });
 
   it('renders the full Score / Duration / Tools line for two known reports', () => {
@@ -131,7 +181,7 @@ describe('DeepDiveHeaderMetrics (component)', () => {
       performanceMetrics: { durationMs: 29200, agentDurationMs: 29200 },
       trajectory: [actionStep('b1'), actionStep('b2'), actionStep('b3')],
     });
-    render(h(DeepDiveHeaderMetrics, { reportA, reportB }));
+    renderMetrics({ reportA, reportB });
     const line = screen.getByTestId('deep-dive-header-metrics');
     expect(line.textContent).toContain('Score:');
     expect(line.textContent).toContain('100%');
@@ -152,7 +202,7 @@ describe('DeepDiveHeaderMetrics (component)', () => {
       performanceMetrics: { durationMs: 36900, agentDurationMs: 36900 },
       trajectory: [actionStep('a1')],
     });
-    render(h(DeepDiveHeaderMetrics, { reportA, reportB: null }));
+    renderMetrics({ reportA, reportB: null });
     const line = screen.getByTestId('deep-dive-header-metrics');
     expect(line.textContent).toContain('100%');
     // Three missing-value dashes: score, duration, tools for the absent B side.
@@ -171,7 +221,7 @@ describe('DeepDiveHeaderMetrics (component)', () => {
       performanceMetrics: { durationMs: 2000, agentDurationMs: 2000 },
       trajectory: [],
     });
-    render(h(DeepDiveHeaderMetrics, { reportA, reportB }));
+    renderMetrics({ reportA, reportB });
     const line = screen.getByTestId('deep-dive-header-metrics');
     const dashCount = (line.textContent?.match(new RegExp(DEEPDIVE_METRIC_DASH, 'g')) || []).length;
     expect(dashCount).toBe(2); // score A, score B

@@ -255,7 +255,12 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
                 elsewhere. Replaced with one compact labeled line here instead
                 of a chart — see DeepDiveHeaderMetrics. Independent of `meta`/
                 `status`, so it shows immediately (no need to wait on the LLM). */}
-            <DeepDiveHeaderMetrics reportA={reports[pair.reportIdA]} reportB={reports[pair.reportIdB]} />
+            <DeepDiveHeaderMetrics
+              reportA={reports[pair.reportIdA]}
+              reportB={reports[pair.reportIdB]}
+              testCaseName={pair.testCaseName}
+              testCaseId={pair.testCaseId}
+            />
           </div>
         </div>
         {status === 'done' && (
