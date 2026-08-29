@@ -12,6 +12,7 @@ jest.mock('@/services/storage/opensearchClient', () => ({
   testCaseStorage: {
     getAll: jest.fn(),
     getById: jest.fn(),
+    getByIds: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
     delete: jest.fn(),
@@ -222,6 +223,39 @@ describe('AsyncTestCaseStorage', () => {
       const result = await asyncTestCaseStorage.getById('non-existent');
 
       expect(result).toBeNull();
+    });
+  });
+
+  describe('getByIds', () => {
+    it('returns an empty array without calling the client when ids is empty', async () => {
+      const result = await asyncTestCaseStorage.getByIds([]);
+
+      expect(result).toEqual([]);
+      expect(mockOsTestCases.getByIds).not.toHaveBeenCalled();
+    });
+
+    it('fetches by ids and preserves the requested id order (not storage return order)', async () => {
+      mockOsTestCases.getByIds.mockResolvedValue([
+        createMockStorageTestCase('tc-2'),
+        createMockStorageTestCase('tc-1'),
+      ]);
+
+      const result = await asyncTestCaseStorage.getByIds(['tc-1', 'tc-2']);
+
+      expect(mockOsTestCases.getByIds).toHaveBeenCalledWith(['tc-1', 'tc-2'], undefined);
+      expect(result.map(tc => tc.id)).toEqual(['tc-1', 'tc-2']);
+    });
+
+    // Regression coverage for PR #431's getByIds({ summary: true }) option
+    // (used by RunInspectorPage/BenchmarkRunDetailPage to avoid re-downloading
+    // the same sourceCode blob once per row) — asserts the option plumbs
+    // through to the OpenSearch client unchanged.
+    it('passes the summary option through to the OpenSearch client', async () => {
+      mockOsTestCases.getByIds.mockResolvedValue([createMockStorageTestCase('tc-1')]);
+
+      await asyncTestCaseStorage.getByIds(['tc-1'], { summary: true });
+
+      expect(mockOsTestCases.getByIds).toHaveBeenCalledWith(['tc-1'], { summary: true });
     });
   });
 

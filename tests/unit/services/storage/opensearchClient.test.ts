@@ -190,6 +190,41 @@ describe('OpenSearch Storage Client', () => {
       });
     });
 
+    describe('getByIds', () => {
+      it('should return an empty array without fetching when ids is empty', async () => {
+        const result = await testCaseStorage.getByIds([]);
+
+        expect(result).toEqual([]);
+        expect(mockFetch).not.toHaveBeenCalled();
+      });
+
+      it('should fetch by comma-joined ids with no fields param by default', async () => {
+        mockFetch.mockResolvedValue(mockSuccessResponse({ testCases: [mockTestCase], total: 1 }));
+
+        const result = await testCaseStorage.getByIds(['tc-1', 'tc-2']);
+
+        expect(mockFetch).toHaveBeenCalledWith(
+          'http://localhost:4001/api/storage/test-cases?ids=tc-1,tc-2',
+          expect.objectContaining({ method: 'GET' })
+        );
+        expect(result).toEqual([mockTestCase]);
+      });
+
+      // Regression coverage for PR #431's getByIds({ summary: true }) option --
+      // RunInspectorPage/BenchmarkRunDetailPage use it to avoid re-downloading
+      // the same sourceCode blob once per row in a run's test-case list.
+      it('should append &fields=summary when options.summary is true', async () => {
+        mockFetch.mockResolvedValue(mockSuccessResponse({ testCases: [mockTestCase], total: 1 }));
+
+        await testCaseStorage.getByIds(['tc-1'], { summary: true });
+
+        expect(mockFetch).toHaveBeenCalledWith(
+          'http://localhost:4001/api/storage/test-cases?ids=tc-1&fields=summary',
+          expect.objectContaining({ method: 'GET' })
+        );
+      });
+    });
+
     describe('getVersions', () => {
       it('should return all versions of a test case', async () => {
         const versions = [
