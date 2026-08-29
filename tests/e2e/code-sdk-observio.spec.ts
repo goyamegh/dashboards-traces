@@ -123,7 +123,7 @@ test.describe('Code SDK - Observio E2E via API', () => {
     expect(result.agent.endpoint).toContain('3001');
   });
 
-  test('should execute deterministic evaluation run against Observio (live agent)', async ({ page }) => {
+  test('should execute deterministic evaluation run against Observio (live agent)', async ({ page, testData }) => {
     test.skip(!observioRunning, 'Observio agent not available');
     // Real eval = Observio agent + Bedrock judge + 2 fixture test cases.
     // The default 60s Playwright test timeout is too short; allow 3 min.
@@ -204,9 +204,19 @@ test.describe('Code SDK - Observio E2E via API', () => {
     expect(result.runId).toBeTruthy();
     expect(result.completed).toBe(true);
     expect(result.totalTestCases).toBe(2); // 2 test cases in the fixture
+
+    // Track for cleanup regardless of outcome: the evaluation run, and every
+    // per-test-case report it produced. DELETE .../evaluation-runs/:id does
+    // NOT cascade to those report docs (results[*].reportId), so without this
+    // they leak into the shared cluster on every real Observio execution.
+    testData.evaluationRun(result.runId);
+    const runDoc = await (await page.request.get(`/api/storage/evaluation-runs/${result.runId}`)).json();
+    for (const r of Object.values(runDoc.results || {}) as Array<{ reportId?: string }>) {
+      testData.run(r.reportId);
+    }
   });
 
-  test('should verify deterministic evaluation results have expected fields (live agent)', async ({ page }) => {
+  test('should verify deterministic evaluation results have expected fields (live agent)', async ({ page, testData }) => {
     test.skip(!observioRunning, 'Observio agent not available');
     // Real eval = Observio agent + Bedrock judge; needs more than the
     // default 60s test timeout.
@@ -265,6 +275,11 @@ test.describe('Code SDK - Observio E2E via API', () => {
       return;
     }
 
+    // Track immediately — cleanup must not depend on the assertions below
+    // passing (a real Observio execution has already created a run + reports
+    // by this point regardless of what we assert next).
+    testData.evaluationRun(createResult.runId);
+
     // Fetch the completed run and verify results
     const runDetails = await page.evaluate(async (runId: string) => {
       const res = await fetch(`/api/storage/evaluation-runs/${runId}`);
@@ -286,35 +301,8 @@ test.describe('Code SDK - Observio E2E via API', () => {
       if (r.status === 'completed') {
         expect(r.reportId).toBeTruthy();
       }
+      testData.run(r.reportId);
     }
-  });
-
-  test('should clean up e2e evaluation runs', async ({ page }) => {
-    // Clean up any runs created by this test suite
-    const result = await page.evaluate(async () => {
-      try {
-        const res = await fetch('/api/storage/evaluation-runs');
-        if (!res.ok) return { cleaned: 0 };
-        const data = await res.json();
-        const e2eRuns = (data.evaluationRuns || []).filter(
-          (r: any) => r.name?.startsWith('E2E Code SDK')
-        );
-
-        let cleaned = 0;
-        for (const run of e2eRuns) {
-          const delRes = await fetch(`/api/storage/evaluation-runs/${run.id}`, {
-            method: 'DELETE',
-          });
-          if (delRes.ok) cleaned++;
-        }
-        return { cleaned };
-      } catch {
-        return { cleaned: 0 };
-      }
-    });
-
-    // Cleanup is best-effort
-    expect(typeof result.cleaned).toBe('number');
   });
 });
 
