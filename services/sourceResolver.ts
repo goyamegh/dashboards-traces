@@ -5,6 +5,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { createHash } from 'crypto';
 import type { TestCaseSource, TestCase } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
 import { validateTestCasesArrayJson } from '@/lib/testCaseValidation';
@@ -225,6 +226,75 @@ async function fetchTestCasesByIds(ids: string[], storage: IStorageModule): Prom
   );
 }
 
+const IMPORT_METADATA_FIELDS = new Set([
+  'id', 'version', 'currentVersion', 'versions', 'createdAt', 'updatedAt',
+  'sourceFile', 'sourceHash',
+]);
+
+function canonicalDefinition(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalDefinition);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([key, field]) => !IMPORT_METADATA_FIELDS.has(key) && field !== undefined)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([key, field]) => [key, canonicalDefinition(field)])
+    );
+  }
+  return value;
+}
+
+function definitionHash(testCase: Partial<TestCase>): string {
+  return createHash('sha256').update(JSON.stringify(canonicalDefinition(testCase))).digest('hex');
+}
+
+/**
+ * Static JSON imports are declarative definitions, not requests to mint new
+ * identities. Reuse an existing document when its name/category and semantic
+ * content match. This preserves stable test-case IDs across repeated -f/-d
+ * CLI runs while deliberately leaving changed definitions as new documents.
+ */
+async function reuseOrCreateImportedTestCases(
+  definitions: Partial<TestCase>[],
+  storage: IStorageModule
+): Promise<TestCase[]> {
+  const scanLimit = 10_000;
+  const { items, total } = await storage.testCases.getAll({ size: scanLimit });
+  if (total > items.length) {
+    throw new Error(
+      `Cannot safely match imported test cases: ${total} existing cases exceed the ${scanLimit}-case scan limit. ` +
+      'No cases were imported. Reduce the stored case count and retry; import matching needs a complete scan to avoid duplicates.'
+    );
+  }
+  const candidates = [...items];
+  const resolved: TestCase[] = [];
+
+  for (const definition of definitions) {
+    const hash = definitionHash(definition);
+    if (definition.sourceHash && definition.sourceHash !== hash) {
+      debug('SourceResolver', `Ignoring stale sourceHash for imported test case ${definition.name ?? '<unnamed>'}`);
+    }
+    const canonical = JSON.stringify(canonicalDefinition(definition));
+    const existing = candidates.find(candidate =>
+      candidate.name === definition.name &&
+      candidate.category === definition.category &&
+      ((candidate.sourceHash && candidate.sourceHash === hash) ||
+        JSON.stringify(canonicalDefinition(candidate)) === canonical)
+    );
+
+    if (existing) {
+      resolved.push(existing);
+      continue;
+    }
+
+    const created = await storage.testCases.create({ ...definition, sourceHash: hash });
+    candidates.push(created);
+    resolved.push(created);
+  }
+
+  return resolved;
+}
+
 async function resolveFileImport(filenames: string[], storage: IStorageModule): Promise<TestCase[]> {
   const allCreated: TestCase[] = [];
 
@@ -242,8 +312,8 @@ async function resolveFileImport(filenames: string[], storage: IStorageModule): 
       throw new Error(`Validation failed for ${filename}: ${errorMessages}`);
     }
 
-    const result = await storage.testCases.bulkCreate(validation.data!);
-    allCreated.push(...result.testCases);
+    const testCases = await reuseOrCreateImportedTestCases(validation.data!, storage);
+    allCreated.push(...testCases);
   }
 
   return allCreated;
@@ -258,7 +328,7 @@ async function resolveCodeImport(
   hooksByFile: Map<string, RegisteredHook[]>;
   testScopes: Map<string, { sourceFile?: string; describePath?: string }>;
 }> {
-  const { loadTestCasesFromModule } = await import('@/lib/testCases/loader');
+  const { loadTestCasesFromModule, detectSourceLanguage } = await import('@/lib/testCases/loader');
   const { clearEvaluators } = await import('@/lib/testCases/evaluators');
   // Evaluators register into a process-global registry. Clear it before
   // loading this batch so (a) evaluators from a prior run don't leak into
@@ -278,6 +348,8 @@ async function resolveCodeImport(
 
     const loaded = await loadTestCasesFromModule(filename);
     const sourceFile = path.relative(process.cwd(), loaded.filePath);
+    const sourceFileName = path.basename(sourceFile);
+    const sourceLanguage = detectSourceLanguage(sourceFile);
 
     const upsertInput = loaded.testCases.map(tc => {
       // Labels are the source of truth in the new SDK. Derive the legacy
@@ -298,6 +370,13 @@ async function resolveCodeImport(
         labels,
         sourceFile,
         sourceHash: tc.hash,
+        // See cli/commands/benchmark.ts for rationale -- full eval-file text
+        // + provenance so the Test Case detail page can render an
+        // IDE-style source view regardless of which import path produced
+        // the test case.
+        sourceCode: loaded.fileSource,
+        sourceFileName,
+        sourceLanguage,
         // Forward expectedOutcomes / expectedTrajectory so server-side
         // evaluators (`-e <evaluator>`, /api/evaluate) can grade the run
         // even when the test was authored as a code-based .eval.js. Inline

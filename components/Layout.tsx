@@ -98,17 +98,36 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   // Route changes close the off-canvas navigation after a mobile selection.
   useEffect(() => setMobileNavOpen(false), [location.pathname]);
 
-  // Chrome-vertical-tabs-style flyout: when the sidebar is collapsed to the
-  // icon rail, hovering the rail temporarily expands it as an OVERLAY — the
-  // content area keeps the rail width and never reflows; leaving the sidebar
-  // collapses it again. `isCollapsed` stays the persisted pin preference; the
-  // expand button while flying out acts as "pin open".
+  // Chrome-vertical-tabs-style hover-open: when the sidebar is pinned
+  // collapsed to the icon rail, hovering (or keyboard-focusing) it temporarily
+  // expands the FULL sidebar as an OVERLAY — the layout area keeps reserving
+  // the rail width so content never reflows — and leaving/blurring it
+  // collapses it again. `isCollapsed` stays the persisted PIN preference (only
+  // the collapse/expand button and setIsCollapsed touch it); every visual
+  // conditional below reads `collapsed`, which folds in the momentary hover
+  // state. Mouse uses short intent delays (150ms open / 250ms close) to avoid
+  // flicker when crossing the rail; keyboard focus opens immediately (no
+  // delay) and closes on blur so Tab users get the same reveal without
+  // relying on a mouse gesture.
   const [isHoverExpanded, setIsHoverExpanded] = useState(false);
   const hoverTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverZoneRef = useRef<HTMLDivElement>(null);
+  // Tracks whether the pointer is currently over the hover zone, independent
+  // of focus — lets the blur handler know the mouse still "owns" the open
+  // state (so it doesn't collapse under a stationary cursor).
+  const isMouseOverRef = useRef(false);
+  // Tracks whether OUR OWN onFocus handler opened the overlay for a genuine
+  // keyboard-focus reason (set only when `isCollapsed` was already true at
+  // focus time, i.e. it actually drove an open). Deliberately NOT derived
+  // from raw `document.activeElement` containment: the collapse/expand
+  // toggle button is the same DOM node across renders (React reuses it —
+  // same element type/position in the ternary), so it keeps native DOM focus
+  // after a mouse *click* on it even though no keyboard interaction happened
+  // — containment alone would wrongly treat that residual click-focus as
+  // "keyboard is holding this open" and block the mouse-leave collapse.
+  const isKeyboardOpenRef = useRef(false);
   useEffect(() => () => { if (hoverTimer.current) clearTimeout(hoverTimer.current); }, []);
   useEffect(() => { setIsHoverExpanded(false); }, [isCollapsed]);
-  // What the sidebar visually renders as (rail vs full) — every label/layout
-  // conditional below reads this; only the pin controls read `isCollapsed`.
   const collapsed = isCollapsed && !isHoverExpanded;
 
   // Collapse the nav when landing on a *specific run* URL (single-run inspect /
@@ -169,20 +188,71 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
             the flyout overlays content instead of reflowing it on desktop. On
             phones it becomes a fixed, off-canvas drawer instead (zero layout
             footprint — content is never pushed — sliding in/out via
-            translate), matching the mobile off-canvas navigation contract. */}
+            translate), matching the mobile off-canvas navigation contract.
+            Mouse and keyboard-focus both drive the same isHoverExpanded
+            state (see onFocus/onBlur below) — `hoverZoneRef` is what lets
+            onBlur tell a Tab-within-the-rail from a Tab actually leaving it. */}
         <div
+          ref={hoverZoneRef}
           className={`fixed inset-y-0 left-0 z-50 h-screen flex-shrink-0 transition-transform duration-300 lg:relative lg:inset-auto lg:z-auto lg:transform-none lg:transition-[width] lg:duration-200 ${mobileNavOpen ? 'translate-x-0' : '-translate-x-full'}`}
           style={{ width: isCollapsed ? '64px' : '180px' }}
           data-testid="sidebar-hover-zone"
           onMouseEnter={() => {
+            isMouseOverRef.current = true;
             if (!isCollapsed) return;
             if (hoverTimer.current) clearTimeout(hoverTimer.current);
             hoverTimer.current = setTimeout(() => setIsHoverExpanded(true), 150);
           }}
           onMouseLeave={() => {
+            isMouseOverRef.current = false;
             if (hoverTimer.current) clearTimeout(hoverTimer.current);
             if (!isCollapsed) return;
-            hoverTimer.current = setTimeout(() => setIsHoverExpanded(false), 250);
+            hoverTimer.current = setTimeout(() => {
+              // A keyboard user may still hold it open via focus (mouse left
+              // but Tab hasn't) — don't collapse the overlay out from under
+              // them. `isKeyboardOpenRef` (set only by our own onFocus below,
+              // gated on isCollapsed) intentionally does NOT fire for the
+              // collapse/expand toggle button retaining native DOM focus
+              // after a mouse click on it — that button is the same DOM node
+              // across renders (React reuses it: same element type/position
+              // in the ternary), so raw focus-containment alone would
+              // wrongly treat residual click-focus as "keyboard is holding
+              // this open".
+              if (isKeyboardOpenRef.current) return;
+              setIsHoverExpanded(false);
+            }, 250);
+          }}
+          onFocus={() => {
+            if (!isCollapsed) return;
+            isKeyboardOpenRef.current = true;
+            if (hoverTimer.current) clearTimeout(hoverTimer.current);
+            setIsHoverExpanded(true);
+          }}
+          onBlur={(e) => {
+            if (!isCollapsed) return;
+            const next = e.relatedTarget as Node | null;
+            if (next && hoverZoneRef.current?.contains(next)) return;
+            isKeyboardOpenRef.current = false;
+            // The mouse may still be hovering the zone (e.g. focus moved out
+            // via a non-Tab path while the cursor never moved) — mouse
+            // ownership of the open state continues until it actually leaves.
+            if (isMouseOverRef.current) return;
+            if (hoverTimer.current) clearTimeout(hoverTimer.current);
+            setIsHoverExpanded(false);
+          }}
+          onKeyDown={(e) => {
+            // Escape is a second, independent way out of the keyboard-opened
+            // overlay (on top of Shift+Tab-ing past the zone's first
+            // focusable element, handled by onBlur's relatedTarget check
+            // above) — a familiar a11y convention for dismissing a
+            // transient overlay without hunting for the exact edge of its
+            // tab range. Focus deliberately stays where it is (the DOM
+            // nodes don't unmount, only the CSS width/labels change), so
+            // there's nowhere stray to reset it to.
+            if (e.key !== 'Escape' || !isCollapsed || !isHoverExpanded) return;
+            isKeyboardOpenRef.current = false;
+            if (hoverTimer.current) clearTimeout(hoverTimer.current);
+            setIsHoverExpanded(false);
           }}
         >
         <Sidebar
@@ -254,7 +324,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
               <img src={OpenSearchLogo} alt="OpenSearch" className="w-7 h-7" />
             </div>
           )}
-
+          
           {/* Search bar - only show when expanded */}
           {!collapsed && (
             <div className="relative">
@@ -302,10 +372,10 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
                         className="h-9 w-full"
                       >
                         <div className="flex items-center w-full">
-                          {/* Same testid as the rail variant: hovering the rail
-                              to click Evaluations swaps in this expanded row
-                              (flyout) mid-click — a stable testid lets the click
-                              retarget to the same destination. */}
+                          {/* Same testid as the collapsed rail's icon button: hovering
+                              the rail to click Evaluations swaps in this expanded
+                              row (hover-open) mid-click — a stable testid lets the
+                              click retarget to the same destination. */}
                           <Link to="/evaluations/runs" className="flex items-center gap-2 flex-1 min-w-0" data-testid="nav-evals3">
                             <Gauge className="h-3.5 w-3.5" />
                             <span className="text-xs">Evaluations</span>

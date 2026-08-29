@@ -76,20 +76,29 @@ module.exports = {
     'lib/**/*.ts',
     'cli/**/*.ts',
     'types/**/*.ts',
+    // Explicitly collect the small Overview state surfaces exercised by their
+    // focused component/hook tests without pulling the legacy Dashboard's
+    // unrelated rendering branches into this coverage scope.
+    'hooks/useDataState.ts',
+    'components/dashboard/ReadyToRun.tsx',
     // hooks/** and components/** are intentionally NOT globbed in wholesale —
     // most are React UI that this (node-environment) jest config can't
     // meaningfully instrument, and their coverage comes from the e2e/nyc
-    // pipeline (see .nycrc.json) instead. The three files below are opted in
-    // individually because each now has a focused jsdom/RTL render-test suite
-    // exercising the exact lines this PR's Scope-A theming diff touches
-    // (codecov/patch #219 fix): RunDetailsContent's getLogLevelColor,
+    // pipeline (see .nycrc.json) instead. Each file below is opted in
+    // individually because it now has a focused jsdom/RTL render-test suite
+    // exercising the exact lines its owning PR's diff touches:
+    // codecov/patch #430 — ComparisonScoreboard's zero/non-zero delta
+    // branches and EvalRunsPage's view-mode colSpan ternaries;
+    // codecov/patch #219 — RunDetailsContent's getLogLevelColor,
     // TrajectoryView's failed/non-failed color branch, and RawEventsPanel's
     // theme-token classes. components/codingAgents/CodingAgentsPage.tsx
     // (~3.3k lines) is deliberately NOT added here even though it also has a
-    // real render test (sessionDetailPanel.test.ts) covering this PR's one
+    // real render test (sessionDetailPanel.test.ts) covering PR #219's one
     // changed line — opting in the whole file would add far more uncovered
     // lines than tested ones and risks tripping the global thresholds below;
-    // see the PR's codecov write-up for the measured impact.
+    // see PR #219's codecov write-up for the measured impact.
+    'components/comparison/ComparisonScoreboard.tsx',
+    'components/evals3/EvalRunsPage.tsx',
     'components/RunDetailsContent.tsx',
     'components/TrajectoryView.tsx',
     'components/RawEventsPanel.tsx',

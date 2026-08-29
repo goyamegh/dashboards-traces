@@ -19,6 +19,7 @@ import { Benchmark, BenchmarkRun, EvaluationReport } from '@/types';
 import { fetchBatchMetrics } from '@/services/metrics';
 import { AgentTrendChart, TrendMetric } from './charts/AgentTrendChart';
 import { FirstRunExperience } from './dashboard/FirstRunExperience';
+import { ReadyToRun } from './dashboard/ReadyToRun';
 import { useDataState } from '@/hooks/useDataState';
 import { isSampleDataActive } from '@/config/sampleData';
 import {
@@ -764,8 +765,12 @@ export const Dashboard: React.FC = () => {
     );
   }
 
-  if (!dataState.hasData) {
+  if (dataState.overviewState === 'onboarding') {
     return <FirstRunExperience showCodingAgentsBanner={false} />;
+  }
+
+  if (dataState.overviewState === 'ready-to-run') {
+    return <ReadyToRun />;
   }
 
   return (

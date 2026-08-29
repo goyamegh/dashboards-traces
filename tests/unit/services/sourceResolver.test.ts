@@ -99,6 +99,7 @@ describe('resolveTestCaseSources', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     storage = createMockStorage();
+    (storage.testCases.getAll as jest.Mock).mockResolvedValue({ items: [], total: 0 });
   });
 
   describe('benchmark source type', () => {
@@ -191,11 +192,9 @@ describe('resolveTestCaseSources', () => {
       mockFs.existsSync.mockReturnValue(true);
       mockFs.readFileSync.mockReturnValue(JSON.stringify([{ name: 'TC1' }, { name: 'TC2' }]));
       mockValidate.mockReturnValue({ valid: true, data: [{ name: 'TC1' }, { name: 'TC2' }], errors: [] });
-      (storage.testCases.bulkCreate as jest.Mock).mockResolvedValue({
-        created: 2,
-        errors: 0,
-        testCases: [tc1, tc2],
-      });
+      (storage.testCases.create as jest.Mock)
+        .mockResolvedValueOnce(tc1)
+        .mockResolvedValueOnce(tc2);
 
       const sources: TestCaseSource[] = [
         { type: 'file-import', filenames: ['/path/to/file.json'], testCaseIds: [] },
@@ -209,6 +208,74 @@ describe('resolveTestCaseSources', () => {
         testCaseIds: ['imported-1', 'imported-2'],
       });
       expect(result.deduplicatedCount).toBe(0);
+    });
+
+    it('reuses an existing test case with the same name, category, and definition', async () => {
+      const definition = {
+        name: 'Stable case',
+        category: 'RCA',
+        difficulty: 'Easy',
+        initialPrompt: 'Diagnose it',
+        expectedOutcomes: ['Root cause found'],
+      };
+      const existing = {
+        ...definition,
+        id: 'tc-stable',
+        version: 1,
+        currentVersion: 1,
+        createdAt: '2024-01-01T00:00:00Z',
+        updatedAt: '2024-01-01T00:00:00Z',
+      } as unknown as TestCase;
+
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(JSON.stringify([definition]));
+      mockValidate.mockReturnValue({ valid: true, data: [definition], errors: [] });
+      (storage.testCases.getAll as jest.Mock).mockResolvedValue({ items: [existing], total: 1 });
+
+      const result = await resolveTestCaseSources([
+        { type: 'file-import', filenames: ['/same.json'], testCaseIds: [] },
+      ], storage);
+
+      expect(result.testCases).toEqual([existing]);
+      expect(result.sources[0]).toMatchObject({ testCaseIds: ['tc-stable'] });
+      expect(storage.testCases.create).not.toHaveBeenCalled();
+    });
+
+    it('fails explicitly instead of creating duplicates when import matching is truncated', async () => {
+      const definition = { name: 'Possibly existing case', category: 'RCA' };
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(JSON.stringify([definition]));
+      mockValidate.mockReturnValue({ valid: true, data: [definition], errors: [] });
+      (storage.testCases.getAll as jest.Mock).mockResolvedValue({
+        items: Array.from({ length: 10_000 }, (_, index) => makeTestCase(`tc-${index}`)),
+        total: 10_001,
+      });
+
+      await expect(resolveTestCaseSources([
+        { type: 'file-import', filenames: ['/truncated.json'], testCaseIds: [] },
+      ], storage)).rejects.toThrow(/10,?001 existing cases exceed the 10000-case scan limit.*avoid duplicates/);
+      expect(storage.testCases.getAll).toHaveBeenCalledWith({ size: 10_000 });
+      expect(storage.testCases.create).not.toHaveBeenCalled();
+    });
+
+    it('recomputes stale incoming hashes instead of reusing different content', async () => {
+      const definition = { name: 'Changed case', category: 'RCA', initialPrompt: 'new prompt', sourceHash: 'stale' };
+      const existing = { ...definition, id: 'old', initialPrompt: 'old prompt', sourceHash: 'stale' } as unknown as TestCase;
+      const created = { ...definition, id: 'new' } as unknown as TestCase;
+      mockFs.existsSync.mockReturnValue(true);
+      mockFs.readFileSync.mockReturnValue(JSON.stringify([definition]));
+      mockValidate.mockReturnValue({ valid: true, data: [definition], errors: [] });
+      (storage.testCases.getAll as jest.Mock).mockResolvedValue({ items: [existing], total: 1 });
+      (storage.testCases.create as jest.Mock).mockResolvedValue(created);
+
+      const result = await resolveTestCaseSources([
+        { type: 'file-import', filenames: ['/changed.json'], testCaseIds: [] },
+      ], storage);
+
+      expect(result.testCases).toEqual([created]);
+      expect(storage.testCases.create).toHaveBeenCalledWith(expect.objectContaining({
+        initialPrompt: 'new prompt', sourceHash: expect.not.stringMatching(/^stale$/),
+      }));
     });
 
     it('throws when file does not exist', async () => {
@@ -252,9 +319,9 @@ describe('resolveTestCaseSources', () => {
       mockValidate
         .mockReturnValueOnce({ valid: true, data: [{ name: 'TC1' }], errors: [] })
         .mockReturnValueOnce({ valid: true, data: [{ name: 'TC2' }], errors: [] });
-      (storage.testCases.bulkCreate as jest.Mock)
-        .mockResolvedValueOnce({ created: 1, errors: 0, testCases: [tc1] })
-        .mockResolvedValueOnce({ created: 1, errors: 0, testCases: [tc2] });
+      (storage.testCases.create as jest.Mock)
+        .mockResolvedValueOnce(tc1)
+        .mockResolvedValueOnce(tc2);
 
       const sources: TestCaseSource[] = [
         { type: 'file-import', filenames: ['/file1.json', '/file2.json'], testCaseIds: [] },
@@ -277,11 +344,7 @@ describe('resolveTestCaseSources', () => {
       mockFs.readdirSync.mockReturnValue(['case1.json', 'readme.txt'] as any);
       mockFs.readFileSync.mockReturnValue(JSON.stringify([{ name: 'TC1' }]));
       mockValidate.mockReturnValue({ valid: true, data: [{ name: 'TC1' }], errors: [] });
-      (storage.testCases.bulkCreate as jest.Mock).mockResolvedValue({
-        created: 1,
-        errors: 0,
-        testCases: [tc1],
-      });
+      (storage.testCases.create as jest.Mock).mockResolvedValue(tc1);
 
       const sources: TestCaseSource[] = [
         { type: 'directory-import', dirPaths: ['/test/dir'], testCaseIds: [] },
@@ -350,9 +413,9 @@ describe('resolveTestCaseSources', () => {
       mockValidate
         .mockReturnValueOnce({ valid: true, data: [{ name: 'A' }], errors: [] })
         .mockReturnValueOnce({ valid: true, data: [{ name: 'B' }], errors: [] });
-      (storage.testCases.bulkCreate as jest.Mock)
-        .mockResolvedValueOnce({ created: 1, errors: 0, testCases: [tc1] })
-        .mockResolvedValueOnce({ created: 1, errors: 0, testCases: [tc2] });
+      (storage.testCases.create as jest.Mock)
+        .mockResolvedValueOnce(tc1)
+        .mockResolvedValueOnce(tc2);
 
       const sources: TestCaseSource[] = [
         { type: 'directory-import', dirPaths: ['/dir1', '/dir2'], testCaseIds: [] },

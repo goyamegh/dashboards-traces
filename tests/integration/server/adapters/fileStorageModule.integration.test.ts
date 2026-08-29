@@ -299,6 +299,7 @@ describe('FileStorageModule - benchmarks', () => {
       const result = await storage.benchmarks.addRun(benchmarkId, run);
       expect(result).toBe(true);
 
+      await expect(storage.benchmarks.addRun(benchmarkId, run)).resolves.toBe(true);
       const benchmark = await storage.benchmarks.getById(benchmarkId);
       expect(benchmark!.runs!.length).toBe(1);
       expect(benchmark!.runs![0].id).toBe('run-1');

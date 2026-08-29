@@ -30,6 +30,7 @@ import { asyncBenchmarkStorage, asyncRunStorage, asyncTestCaseStorage } from '@/
 import { listEvaluationRuns, getEvaluationRun, executeEvaluationRun } from '@/services/client';
 import {
   calculateRunAggregates,
+  mergeTraceMetrics,
   buildTestCaseComparisonRows,
   filterRowsByStatus,
   getRealTestCaseMeta,
@@ -104,6 +105,25 @@ export const ComparisonPage: React.FC = () => {
   const allRuns = useMemo((): BenchmarkRun[] => runPool.map(p => p.run), [runPool]);
   const getRunBenchmarkLabel = useCallback(
     (runId: string) => runPool.find(p => p.run.id === runId)?.benchmarkName,
+    [runPool]
+  );
+
+  // "Open run" deep-link target: benchmark runs resolve at
+  // /evaluations/benchmarks/:benchmarkId/runs/:runId (the bare
+  // /evaluations/runs/:runId route only resolves the SDK eval-run store and
+  // 404s for benchmark run ids). Keyed per-run (not the page-scoped
+  // `benchmarkId` param) because unscoped comparisons (`/compare?runs=a,b`)
+  // mix runs from different benchmarks and ad-hoc eval-runs with none.
+  //
+  // Only `kind === 'benchmark'` entries get a benchmarkId here — an
+  // eval-run's `benchmarkId` is merely a user-chosen LABEL/association (see
+  // NewRunPage's "benchmark association" picker; POST /evaluation-runs
+  // stores it as-is) and that run is never embedded in the referenced
+  // benchmark's `runs[]` array. Routing one of those to the benchmark route
+  // would 404/redirect at BenchmarkRunDetailPage's `bm.runs.find(...)` even
+  // though the bare eval-run route resolves it correctly.
+  const runBenchmarkIdById = useMemo(
+    () => new Map(runPool.map(p => [p.run.id, p.kind === 'benchmark' ? p.benchmarkId : undefined] as const)),
     [runPool]
   );
 
@@ -408,29 +428,7 @@ export const ComparisonPage: React.FC = () => {
   const runAggregates = useMemo((): RunAggregateMetrics[] => {
     return selectedRuns.map(run => {
       const base = calculateRunAggregates(run, reports);
-      let totalTokens = 0, totalInputTokens = 0, totalOutputTokens = 0, totalCostUsd = 0, totalDurationMs = 0, totalLlmCalls = 0, totalToolCalls = 0, mc = 0;
-      for (const result of Object.values(run.results)) {
-        const report = reports[result.reportId];
-        if (report?.runId) {
-          const tm = traceMetricsMap.get(report.runId);
-          if (tm) { totalTokens += tm.totalTokens || 0; totalInputTokens += tm.inputTokens || 0; totalOutputTokens += tm.outputTokens || 0; totalCostUsd += tm.costUsd || 0; totalDurationMs += tm.durationMs || 0; totalLlmCalls += tm.llmCalls || 0; totalToolCalls += tm.toolCalls || 0; mc++; }
-        }
-      }
-      // Fall back to the run-level performance metrics when no traces are
-      // available — prefer real data we already have over showing "0ms" /
-      // "$0.00" (which reads as "this agent costs nothing" in the verdict).
-      const perf = (run as BenchmarkRun & { performanceMetrics?: { avgTestCaseDurationMs?: number; durationMs?: number } }).performanceMetrics;
-      const fallbackAvgDurationMs = perf?.avgTestCaseDurationMs ?? (perf?.durationMs && base.totalTestCases ? Math.round(perf.durationMs / base.totalTestCases) : undefined);
-      return {
-        ...base,
-        totalTokens: mc > 0 ? totalTokens : undefined,
-        totalInputTokens: mc > 0 ? totalInputTokens : undefined,
-        totalOutputTokens: mc > 0 ? totalOutputTokens : undefined,
-        totalCostUsd: mc > 0 ? totalCostUsd : undefined,
-        avgDurationMs: mc > 0 ? Math.round(totalDurationMs / mc) : fallbackAvgDurationMs,
-        totalLlmCalls: mc > 0 ? totalLlmCalls : undefined,
-        totalToolCalls: mc > 0 ? totalToolCalls : undefined,
-      };
+      return mergeTraceMetrics(base, run, reports, traceMetricsMap);
     });
   }, [selectedRuns, reports, traceMetricsMap]);
 
@@ -786,6 +784,7 @@ export const ComparisonPage: React.FC = () => {
                 runs={runAggregates}
                 selectedRuns={selectedRuns}
                 overlap={overlap}
+                runBenchmarkIdById={runBenchmarkIdById}
                 onRemoveRun={(id) => {
                   const next = selectedRunIds.filter(rid => rid !== id);
                   if (next.length >= 1) updateSelection(next);

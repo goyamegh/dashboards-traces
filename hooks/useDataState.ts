@@ -6,9 +6,14 @@
 import { useState, useEffect } from 'react';
 import { getConfigStatus } from '@/lib/dataSourceConfig';
 
+export type OverviewState = 'onboarding' | 'ready-to-run' | 'dashboard';
+
 export interface DataState {
   hasStorageConfigured: boolean;
-  hasData: boolean; // Same as hasStorageConfigured for now
+  /** Whether completed run data exists and the full dashboard can render. */
+  hasData: boolean;
+  /** Explicit three-way Overview gate; definitions alone are ready, not empty. */
+  overviewState: OverviewState;
 }
 
 interface UseDataStateReturn {
@@ -18,19 +23,18 @@ interface UseDataStateReturn {
 }
 
 /**
- * Hook to detect whether the user has configured a storage cluster.
- * 
- * This hook checks:
- * - If storage cluster is configured (via getConfigStatus API)
- * - Returns hasData = hasStorageConfigured
- * 
- * Used to determine whether to show FirstRunExperience or standard dashboard.
- * FirstRunExperience is shown when no storage cluster is configured.
+ * Detect whether the standard dashboard has anything to display.
+ *
+ * OpenSearch retains the existing configured-cluster gate. File mode has no
+ * cluster by design, so it distinguishes completed runs from imported
+ * benchmark/test-case definitions. Only a genuinely empty workspace gets
+ * onboarding; definitions without runs get a focused ready-to-run state.
  */
 export function useDataState(): UseDataStateReturn {
   const [dataState, setDataState] = useState<DataState>({
     hasStorageConfigured: false,
     hasData: false,
+    overviewState: 'onboarding',
   });
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -44,11 +48,30 @@ export function useDataState(): UseDataStateReturn {
         // Check if storage cluster is configured
         const configStatus = await getConfigStatus();
         const hasStorageConfigured = configStatus.storage.configured;
+        let hasData = hasStorageConfigured;
+        let overviewState: OverviewState = hasStorageConfigured ? 'dashboard' : 'onboarding';
 
-        setDataState({
-          hasStorageConfigured,
-          hasData: hasStorageConfigured,
-        });
+        if (configStatus.runtime?.storage.backend === 'file') {
+          const [benchmarksResponse, testCasesResponse, runsResponse] = await Promise.all([
+            fetch('/api/storage/benchmarks?includeSample=false'),
+            fetch('/api/storage/test-cases?size=1&includeSample=false'),
+            fetch('/api/storage/evaluation-runs?status=completed&size=1'),
+          ]);
+          if (!benchmarksResponse.ok || !testCasesResponse.ok || !runsResponse.ok) {
+            throw new Error('Failed to inspect file storage data');
+          }
+          const benchmarksPayload = await benchmarksResponse.json();
+          const testCasesPayload = await testCasesResponse.json();
+          const runsPayload = await runsResponse.json();
+          const benchmarks = benchmarksPayload.benchmarks || [];
+          const hasBenchmarkRuns = benchmarks
+            .some((benchmark: { runs?: unknown[] }) => (benchmark.runs?.length || 0) > 0);
+          hasData = hasBenchmarkRuns || (runsPayload.total || 0) > 0;
+          const hasDefinitions = benchmarks.length > 0 || (testCasesPayload.total || 0) > 0;
+          overviewState = hasData ? 'dashboard' : hasDefinitions ? 'ready-to-run' : 'onboarding';
+        }
+
+        setDataState({ hasStorageConfigured, hasData, overviewState });
       } catch (err) {
         // On error, default to unconfigured state (show FirstRunExperience)
         // This is a fail-safe: better to show onboarding than a broken dashboard
@@ -57,6 +80,7 @@ export function useDataState(): UseDataStateReturn {
         setDataState({
           hasStorageConfigured: false,
           hasData: false,
+          overviewState: 'onboarding',
         });
       } finally {
         setIsLoading(false);

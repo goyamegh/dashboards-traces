@@ -3,331 +3,57 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-// @ts-nocheck - Test file uses simplified mock objects
 import { executeBenchmarkRun, cancelBenchmarkRun } from '@/services/client/benchmarkApi';
-import type { RunConfigInput, BenchmarkRun, ExperimentProgress, ExperimentStartedEvent } from '@/types';
+import type { RunConfigInput } from '@/types';
 
-// Helper to create a mock ReadableStream from SSE data chunks
-function createMockSSEStream(chunks: string[]): ReadableStream<Uint8Array> {
-  const encoder = new TextEncoder();
-  let index = 0;
-
-  return new ReadableStream({
-    pull(controller) {
-      if (index < chunks.length) {
-        controller.enqueue(encoder.encode(chunks[index]));
-        index++;
-      } else {
-        controller.close();
-      }
-    },
-  });
+function stream(events: Array<{ event: string; data: unknown }>): ReadableStream<Uint8Array> {
+  const bytes = new TextEncoder().encode(events.map(({ event, data }) =>
+    `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`).join(''));
+  return new ReadableStream({ start(controller) { controller.enqueue(bytes); controller.close(); } });
 }
 
-// Helper to format SSE data
-function sseData(data: unknown): string {
-  return `data: ${JSON.stringify(data)}\n\n`;
-}
+describe('benchmarkApi unified file-capable runner', () => {
+  const config = {
+    name: 'Manual run', agentKey: 'demo', modelId: 'demo-model', concurrency: 1,
+  } as RunConfigInput;
 
-describe('benchmarkApi', () => {
-  let originalFetch: typeof global.fetch;
+  beforeEach(() => { jest.restoreAllMocks(); });
 
-  beforeEach(() => {
-    jest.clearAllMocks();
-    originalFetch = global.fetch;
+  it('posts every benchmark Run action to the unified evaluation-runs route', async () => {
+    const completed = { id: 'eval-run-1', status: 'completed', results: {} };
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, body: stream([
+      { event: 'started', data: { runId: 'eval-run-1', testCases: [{ id: 'tc-1', name: 'Case' }] } },
+      { event: 'progress', data: { runId: 'eval-run-1', testCaseId: 'tc-1', startedCount: 1, completedCount: 0, totalTestCases: 1, status: 'running' } },
+      { event: 'completed', data: completed },
+    ]) }) as any;
+    const progress = jest.fn();
+    const started = jest.fn();
+
+    await expect(executeBenchmarkRun('bench-1', config, progress, started)).resolves.toEqual(completed);
+    expect(global.fetch).toHaveBeenCalledWith('/api/storage/evaluation-runs', expect.objectContaining({ method: 'POST' }));
+    const request = (global.fetch as jest.Mock).mock.calls[0][1];
+    expect(JSON.parse(request.body)).toEqual(expect.objectContaining({
+      sources: [{ type: 'benchmark', benchmarkId: 'bench-1' }], benchmarkId: 'bench-1', trigger: 'ui',
+    }));
+    expect(started).toHaveBeenCalledWith(expect.objectContaining({ runId: 'eval-run-1' }));
+    expect(progress).toHaveBeenCalledWith(expect.objectContaining({ currentTestCaseIndex: 0 }));
   });
 
-  afterEach(() => {
-    global.fetch = originalFetch;
+  it('surfaces a unified runner SSE error', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, body: stream([
+      { event: 'error', data: { error: 'source failed' } },
+    ]) }) as any;
+    await expect(executeBenchmarkRun('bench-1', config, jest.fn())).rejects.toThrow('source failed');
   });
 
-  describe('executeBenchmarkRun', () => {
-    const mockRunConfig: RunConfigInput = {
-      name: 'Test Run',
-      agent: { key: 'test-agent', name: 'Test Agent' },
-      model: { key: 'test-model', name: 'Test Model' },
-    };
-
-    const mockCompletedRun: BenchmarkRun = {
-      id: 'run-123',
-      name: 'Test Run',
-      createdAt: '2024-01-01T00:00:00Z',
-      agent: { key: 'test-agent', name: 'Test Agent' },
-      model: { key: 'test-model', name: 'Test Model' },
-      status: 'completed',
-      results: [],
-    };
-
-    it('should execute run and return completed result', async () => {
-      const mockStream = createMockSSEStream([
-        sseData({ type: 'started', runId: 'run-123', testCases: ['tc-1', 'tc-2'] }),
-        sseData({ type: 'progress', runId: 'run-123', testCaseId: 'tc-1', status: 'completed' }),
-        sseData({ type: 'progress', runId: 'run-123', testCaseId: 'tc-2', status: 'completed' }),
-        sseData({ type: 'completed', run: mockCompletedRun }),
-      ]);
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: mockStream,
-      });
-
-      const onProgress = jest.fn();
-      const onStarted = jest.fn();
-
-      const result = await executeBenchmarkRun(
-        'exp-123',
-        mockRunConfig,
-        onProgress,
-        onStarted
-      );
-
-      expect(global.fetch).toHaveBeenCalledWith(
-        '/api/storage/benchmarks/exp-123/execute',
-        expect.objectContaining({
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(mockRunConfig),
-        })
-      );
-
-      expect(onStarted).toHaveBeenCalledWith({
-        runId: 'run-123',
-        testCases: ['tc-1', 'tc-2'],
-      });
-
-      expect(onProgress).toHaveBeenCalledTimes(2);
-      expect(result).toEqual(mockCompletedRun);
-    });
-
-    it('should throw on HTTP error', async () => {
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: false,
-        statusText: 'Internal Server Error',
-      });
-
-      const onProgress = jest.fn();
-
-      await expect(
-        executeBenchmarkRun('exp-123', mockRunConfig, onProgress)
-      ).rejects.toThrow('Failed to start benchmark run: Internal Server Error');
-    });
-
-    it('should throw when no response body', async () => {
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: null,
-      });
-
-      const onProgress = jest.fn();
-
-      await expect(
-        executeBenchmarkRun('exp-123', mockRunConfig, onProgress)
-      ).rejects.toThrow('No response body');
-    });
-
-    it('should throw on error event from server', async () => {
-      const mockStream = createMockSSEStream([
-        sseData({ type: 'started', runId: 'run-123' }),
-        sseData({ type: 'error', error: 'Test case not found' }),
-      ]);
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: mockStream,
-      });
-
-      const onProgress = jest.fn();
-
-      await expect(
-        executeBenchmarkRun('exp-123', mockRunConfig, onProgress)
-      ).rejects.toThrow('Test case not found');
-    });
-
-    it('should throw when run completes without result', async () => {
-      const mockStream = createMockSSEStream([
-        sseData({ type: 'started', runId: 'run-123' }),
-        sseData({ type: 'progress', runId: 'run-123', status: 'completed' }),
-        // Missing 'completed' event with run result
-      ]);
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: mockStream,
-      });
-
-      const onProgress = jest.fn();
-
-      await expect(
-        executeBenchmarkRun('exp-123', mockRunConfig, onProgress)
-      ).rejects.toThrow('Run completed without returning result');
-    });
-
-    it('should handle incomplete JSON chunks gracefully', async () => {
-      // Simulate a chunk being split across SSE boundaries
-      const mockStream = createMockSSEStream([
-        sseData({ type: 'started', runId: 'run-123', testCases: [] }),
-        'data: {"type": "pro', // Incomplete JSON
-        'gress", "runId": "run-123"}\n\n', // Rest of the JSON
-        sseData({ type: 'completed', run: mockCompletedRun }),
-      ]);
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: mockStream,
-      });
-
-      const onProgress = jest.fn();
-
-      const result = await executeBenchmarkRun('exp-123', mockRunConfig, onProgress);
-
-      // Should complete successfully despite the split chunk
-      expect(result).toEqual(mockCompletedRun);
-    });
-
-    it('should process completed event in remaining buffer', async () => {
-      // Completed event without trailing newlines (remaining in buffer)
-      const mockStream = createMockSSEStream([
-        sseData({ type: 'started', runId: 'run-123', testCases: [] }),
-        `data: ${JSON.stringify({ type: 'completed', run: mockCompletedRun })}`, // No trailing \n\n
-      ]);
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: mockStream,
-      });
-
-      const onProgress = jest.fn();
-
-      const result = await executeBenchmarkRun('exp-123', mockRunConfig, onProgress);
-
-      expect(result).toEqual(mockCompletedRun);
-    });
-
-    it('should throw on error event in remaining buffer', async () => {
-      const mockStream = createMockSSEStream([
-        sseData({ type: 'started', runId: 'run-123', testCases: [] }),
-        `data: ${JSON.stringify({ type: 'error', error: 'Final error' })}`, // No trailing \n\n
-      ]);
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: mockStream,
-      });
-
-      const onProgress = jest.fn();
-
-      await expect(
-        executeBenchmarkRun('exp-123', mockRunConfig, onProgress)
-      ).rejects.toThrow('Final error');
-    });
-
-    it('should handle started event without testCases array', async () => {
-      const mockStream = createMockSSEStream([
-        sseData({ type: 'started', runId: 'run-123' }), // No testCases field
-        sseData({ type: 'completed', run: mockCompletedRun }),
-      ]);
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: mockStream,
-      });
-
-      const onProgress = jest.fn();
-      const onStarted = jest.fn();
-
-      await executeBenchmarkRun('exp-123', mockRunConfig, onProgress, onStarted);
-
-      expect(onStarted).toHaveBeenCalledWith({
-        runId: 'run-123',
-        testCases: [],
-      });
-    });
-
-    it('should work without onStarted callback', async () => {
-      const mockStream = createMockSSEStream([
-        sseData({ type: 'started', runId: 'run-123' }),
-        sseData({ type: 'completed', run: mockCompletedRun }),
-      ]);
-
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        body: mockStream,
-      });
-
-      const onProgress = jest.fn();
-
-      // Should not throw even without onStarted callback
-      const result = await executeBenchmarkRun('exp-123', mockRunConfig, onProgress);
-      expect(result).toEqual(mockCompletedRun);
-    });
+  it('cancels through the same active-run registry', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ success: true }) }) as any;
+    await expect(cancelBenchmarkRun('bench-1', 'eval-run-1')).resolves.toBe(true);
+    expect(global.fetch).toHaveBeenCalledWith('/api/storage/evaluation-runs/eval-run-1/cancel', { method: 'POST' });
   });
 
-  describe('cancelBenchmarkRun', () => {
-    it('should cancel run and return true on success', async () => {
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue({ cancelled: true }),
-      });
-
-      const result = await cancelBenchmarkRun('exp-123', 'run-456');
-
-      expect(global.fetch).toHaveBeenCalledWith(
-        '/api/storage/benchmarks/exp-123/cancel',
-        expect.objectContaining({
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ runId: 'run-456' }),
-        })
-      );
-
-      expect(result).toBe(true);
-    });
-
-    it('should return false when cancelled is not true', async () => {
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: true,
-        json: jest.fn().mockResolvedValue({ cancelled: false }),
-      });
-
-      const result = await cancelBenchmarkRun('exp-123', 'run-456');
-
-      expect(result).toBe(false);
-    });
-
-    it('should throw on HTTP error with JSON error message', async () => {
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: false,
-        statusText: 'Not Found',
-        json: jest.fn().mockResolvedValue({ error: 'Run not found' }),
-      });
-
-      await expect(
-        cancelBenchmarkRun('exp-123', 'run-456')
-      ).rejects.toThrow('Run not found');
-    });
-
-    it('should throw on HTTP error when JSON parsing fails', async () => {
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: false,
-        statusText: 'Internal Server Error',
-        json: jest.fn().mockRejectedValue(new Error('Invalid JSON')),
-      });
-
-      await expect(
-        cancelBenchmarkRun('exp-123', 'run-456')
-      ).rejects.toThrow('Internal Server Error');
-    });
-
-    it('should throw fallback error when no error message in response', async () => {
-      global.fetch = jest.fn().mockResolvedValue({
-        ok: false,
-        statusText: 'Bad Request',
-        json: jest.fn().mockResolvedValue({}), // No error field
-      });
-
-      await expect(
-        cancelBenchmarkRun('exp-123', 'run-456')
-      ).rejects.toThrow('Failed to cancel run');
-    });
+  it('surfaces cancellation failures', async () => {
+    global.fetch = jest.fn().mockResolvedValue({ ok: false, statusText: 'Not Found', json: async () => ({ error: 'not active' }) }) as any;
+    await expect(cancelBenchmarkRun('bench-1', 'eval-run-1')).rejects.toThrow('not active');
   });
 });

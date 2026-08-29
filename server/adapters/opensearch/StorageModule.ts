@@ -58,6 +58,19 @@ function generateId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
 }
 
+/** Exact discriminator match across both current text+keyword and legacy text-only mappings. */
+function docTypeIs(value: string): any {
+  return {
+    bool: {
+      should: [
+        { term: { 'docType.keyword': value } },
+        { match_phrase: { docType: value } },
+      ],
+      minimum_should_match: 1,
+    },
+  };
+}
+
 /**
  * Detect index-not-found errors from OpenSearch.
  * Returns true if the error indicates the index doesn't exist yet,
@@ -342,7 +355,14 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
           size,
           from,
           sort: [{ createdAt: { order: 'desc' } }],
-          query: { match_all: {} },
+          // Benchmark and evaluation-run documents share this index. Legacy
+          // benchmarks have no docType, while evaluation runs are explicitly
+          // discriminated, so exclude only the latter.
+          query: {
+            bool: {
+              must_not: [docTypeIs('evaluation-run')],
+            },
+          },
         },
       });
 
@@ -441,8 +461,14 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
               if (ctx._source.runs == null) {
                 ctx._source.runs = [];
               }
-              ctx._source.runs.add(params.run);
-              ctx._source.updatedAt = params.now;
+              boolean exists = false;
+              for (def existing : ctx._source.runs) {
+                if (existing.id == params.run.id) { exists = true; break; }
+              }
+              if (!exists) {
+                ctx._source.runs.add(params.run);
+                ctx._source.updatedAt = params.now;
+              }
             `,
             params: { run, now: new Date().toISOString() },
           },
@@ -1234,13 +1260,10 @@ class OpenSearchEvaluationRunOperations implements IEvaluationRunOperations {
     const sortField = options?.sort || 'createdAt';
     const order = options?.order || 'desc';
 
-    // NOTE: docType/benchmarkId/agentKey/status/trigger are dynamically mapped
-    // as `text` (with a `.keyword` sub-field), so `term` queries MUST target
-    // `<field>.keyword` — a `term` on the analyzed `text` field never matches a
-    // hyphenated value like 'evaluation-run' (it's tokenized), which silently
-    // returned 0 results and made every evaluation run invisible in the UI
-    // lists even though getById (a direct _id GET) found them.
-    const must: any[] = [{ term: { 'docType.keyword': 'evaluation-run' } }];
+    // Deployed legacy indices may map docType as text-only, while current
+    // dynamic mappings add `.keyword`. Query both shapes; match_phrase keeps
+    // the hyphenated discriminator exact on the analyzed legacy field.
+    const must: any[] = [docTypeIs('evaluation-run')];
 
     if (options?.benchmarkId) must.push({ term: { 'benchmarkId.keyword': options.benchmarkId } });
     if (options?.agentKey) must.push({ term: { 'agentKey.keyword': options.agentKey } });

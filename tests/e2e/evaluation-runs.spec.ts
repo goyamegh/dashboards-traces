@@ -245,12 +245,13 @@ test.describe('Evaluation Run Detail Page', () => {
       await page.goto(`/evaluations/runs/${runId}`);
       await page.waitForTimeout(3000);
 
-      // Configuration section should be visible
-      await expect(page.locator('text=Run Configuration')).toBeVisible({ timeout: 10000 });
+      // Target the disclosure button rather than its left-aligned text span.
+      // On collapsed navigation layouts the sidebar flyout can cover the
+      // span while the button's actual interactive area remains available.
+      const configuration = page.getByRole('button', { name: 'Run Configuration' });
+      await expect(configuration).toBeVisible({ timeout: 10000 });
 
-      // Click to expand
-      await page.locator('text=Run Configuration').click();
-      await page.waitForTimeout(500);
+      await configuration.click();
 
       // Should show agent and model details
       await expect(page.locator('text=Agent:')).toBeVisible();
