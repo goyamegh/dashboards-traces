@@ -86,6 +86,10 @@ export function createBenchmarkDoctorCommand(): Command {
     .option('--json', 'Output as JSON instead of the human-readable report', false)
     .action(async (options: { apply?: boolean; migrateImages?: boolean; json?: boolean }) => {
       const config = await loadConfig();
+      // For dry-run diagnostic (no --apply, no --migrate-images), safely reuse
+      // foreign servers in read-only mode. With mutating flags, keep strict guard.
+      const isReadOnly = !options.apply && !options.migrateImages;
+      config.server.readOnly = isReadOnly;
       const serverResult: EnsureServerResult = await ensureServer(config.server);
       const cleanup = createServerCleanup(serverResult, false);
 

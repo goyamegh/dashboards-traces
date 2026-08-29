@@ -22,6 +22,8 @@ export type OwnershipAction =
   | 'refuse'
   /** Reuse the foreign server (explicit AH_REUSE_FOREIGN_SERVER override). */
   | 'reuse-foreign'
+  /** Reuse foreign for read-only (readOnly flag set, safe for diagnostics). */
+  | 'reuse-foreign-readonly'
   /** Ours, or identity unknown — continue to the normal version/reuse logic. */
   | 'proceed';
 
@@ -37,16 +39,20 @@ export interface OwnershipDecision {
  *                   block — ownership is then unverifiable.
  * @param myCwd      cwd of the current CLI process (process.cwd()).
  * @param allowForeign  true when AH_REUSE_FOREIGN_SERVER opts into reuse.
+ * @param readOnly   true for read-only operations (diagnostics, dry-runs);
+ *                   safely reuses foreign servers with a notice.
  */
 export function decideServerOwnership(params: {
   serverCwd?: string;
   myCwd: string;
   allowForeign: boolean;
+  readOnly?: boolean;
 }): OwnershipDecision {
-  const { serverCwd, myCwd, allowForeign } = params;
+  const { serverCwd, myCwd, allowForeign, readOnly } = params;
   const foreign =
     typeof serverCwd === 'string' && serverCwd.length > 0 && serverCwd !== myCwd;
 
+  if (foreign && readOnly) return { action: 'reuse-foreign-readonly' };
   if (foreign && !allowForeign) return { action: 'refuse' };
   if (foreign && allowForeign) return { action: 'reuse-foreign' };
   // Same cwd, or no identity to compare → fall through to version/reuse logic.

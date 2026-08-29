@@ -167,9 +167,14 @@ What it detects:
 
 Runs and reports are **never** deleted. Sample data (`demo-*`) is never touched.
 
+**Read-only mode**: When running without `--apply` or `--migrate-images` (pure dry-run),
+the command safely reuses existing foreign servers in read-only mode. This allows
+the diagnostic to run even when another agent-health instance is operating on a
+different worktree/port, with a clear notice that no writes will be issued.
+
 ```bash
-agent-health benchmark doctor                    # report what would change
-agent-health benchmark doctor --apply            # clean up
+agent-health benchmark doctor                    # report what would change (read-only)
+agent-health benchmark doctor --apply            # clean up (strict server guard)
 agent-health benchmark doctor --apply --migrate-images
 ```
 
