@@ -398,7 +398,7 @@ class AsyncTestCaseStorage {
   /**
    * Bulk create test cases (for migration)
    */
-  async bulkCreate(testCases: CreateTestCaseInput[]): Promise<{ created: number; errors: boolean }> {
+  async bulkCreate(testCases: CreateTestCaseInput[]): Promise<{ created: number; errors: number }> {
     const storageData = testCases.map(tc => toStorageFormat(tc));
     return opensearchTestCases.bulkCreate(storageData);
   }
