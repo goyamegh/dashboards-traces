@@ -5,14 +5,22 @@
 
 import { test, expect, Page } from './fixtures/test-fixtures';
 import type { APIRequestContext } from '@playwright/test';
+import { uniqueTestName, TestDataTracker } from '../helpers/testDataTracker';
 
 const QUICKRUN_AGENT_KEY_LS = 'agent-health:prefs:agentKey';
 
 /**
  * Ensure at least one test case exists so the popup can be opened.
  * Returns the test case id, or null if creation failed.
+ *
+ * Reuses an existing test case when one is already present (never deleted —
+ * it isn't ours to delete) and only tracks-for-cleanup a test case this call
+ * itself created.
  */
-async function ensureTestCaseExists(request: APIRequestContext): Promise<string | null> {
+async function ensureTestCaseExists(
+  request: APIRequestContext,
+  testData: TestDataTracker
+): Promise<string | null> {
   const list = await request.get(`/api/storage/test-cases`).catch(() => null);
   if (list?.ok()) {
     const data = await list.json().catch(() => null);
@@ -24,7 +32,7 @@ async function ensureTestCaseExists(request: APIRequestContext): Promise<string 
 
   const created = await request.post(`/api/storage/test-cases`, {
     data: {
-      name: `Popup Agent Pref Seed ${Date.now()}`,
+      name: uniqueTestName('quickrun-agent-pref-seed'),
       description: 'Seed test case for QuickRunModal agent-default e2e tests',
       category: 'E2E',
       difficulty: 'Easy',
@@ -36,7 +44,9 @@ async function ensureTestCaseExists(request: APIRequestContext): Promise<string 
 
   if (created?.ok()) {
     const tc = await created.json().catch(() => null);
-    return tc?.id || tc?.testCase?.id || null;
+    const id = tc?.id || tc?.testCase?.id || null;
+    testData.testCase(id);
+    return id;
   }
   return null;
 }
@@ -60,9 +70,9 @@ async function openQuickRunModal(page: Page): Promise<void> {
 }
 
 test.describe('QuickRunModal — agent default and persistence', () => {
-  test.beforeEach(async ({ page, request }) => {
+  test.beforeEach(async ({ page, request, testData }) => {
     // Make sure storage has at least one test case to operate on
-    await ensureTestCaseExists(request);
+    await ensureTestCaseExists(request, testData);
 
     await page.goto('/test-cases');
     await page.waitForSelector('[data-testid="test-cases-page"]', { timeout: 30000 });
