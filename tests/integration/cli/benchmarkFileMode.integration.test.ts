@@ -21,6 +21,7 @@ import { tmpdir } from 'os';
 import { ApiClient } from '@/cli/utils/apiClient';
 import { validateTestCasesArrayJson } from '@/lib/testCaseValidation';
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
+import { uniqueTestName } from '../../helpers/testDataTracker';
 
 const TEST_TIMEOUT = 30000;
 const BASE_URL = getTestBackendUrl();
@@ -65,41 +66,17 @@ describe('Benchmark File Mode Integration', () => {
 
     if (!backendAvailable) return;
 
-    // Clean up created benchmarks and test cases in parallel
+    // Clean up created benchmarks and test cases in parallel — by tracked id
+    // ONLY. Never sweep shared storage by name/prefix: the bundled OTEL demo
+    // file's names ('OTEL Demo: …') are exactly what a real user importing
+    // that sample file would have, so a prefix sweep here deletes THEIR data.
+    // "Name looks test-ish" is not proof of ownership.
     await Promise.all([
       ...createdBenchmarkIds.map(id =>
         fetch(`${BASE_URL}/api/storage/benchmarks/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {})),
       ...createdTestCaseIds.map(id =>
         fetch(`${BASE_URL}/api/storage/test-cases/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {})),
     ]);
-
-    // Fallback: clean up leftovers from previous failed runs by name prefix
-    try {
-      const [tcResp, benchResp] = await Promise.all([
-        fetch(`${BASE_URL}/api/storage/test-cases`),
-        fetch(`${BASE_URL}/api/storage/benchmarks`),
-      ]);
-      const deletes: Promise<any>[] = [];
-      if (tcResp.ok) {
-        const data = await tcResp.json();
-        for (const tc of data.testCases ?? []) {
-          if (tc.name?.startsWith('IntegTest:') || tc.name?.startsWith('ID Test ') || tc.name?.startsWith('OTEL Demo:')) {
-            deletes.push(fetch(`${BASE_URL}/api/storage/test-cases/${encodeURIComponent(tc.id)}`, { method: 'DELETE' }).catch(() => {}));
-          }
-        }
-      }
-      if (benchResp.ok) {
-        const benchData = await benchResp.json();
-        for (const b of (benchData.benchmarks ?? benchData ?? [])) {
-          if (b.name?.startsWith('File Mode IntegTest') || b.name?.startsWith('OTEL Demo IntegTest')) {
-            deletes.push(fetch(`${BASE_URL}/api/storage/benchmarks/${encodeURIComponent(b.id)}`, { method: 'DELETE' }).catch(() => {}));
-          }
-        }
-      }
-      await Promise.all(deletes);
-    } catch {
-      // Ignore cleanup errors
-    }
   }, 60000);
 
   // --- File loading and validation (no backend needed) ---
@@ -180,7 +157,7 @@ describe('Benchmark File Mode Integration', () => {
       // 1. Read and validate test cases from file
       const testCases = [
         {
-          name: `IntegTest: Service Latency ${Date.now()}`,
+          name: uniqueTestName('filemode-service-latency'),
           category: 'RCA',
           difficulty: 'Easy',
           initialPrompt: 'Investigate p99 latency spike in checkout-service',
@@ -193,7 +170,7 @@ describe('Benchmark File Mode Integration', () => {
           ],
         },
         {
-          name: `IntegTest: Error Rate Spike ${Date.now()}`,
+          name: uniqueTestName('filemode-error-rate-spike'),
           category: 'RCA',
           difficulty: 'Medium',
           initialPrompt: 'Error rate for payment-service jumped from 0.1% to 15%',
@@ -224,7 +201,7 @@ describe('Benchmark File Mode Integration', () => {
       // 3. Create benchmark from returned IDs
       try {
         const benchmark = await client.createBenchmark({
-          name: `File Mode IntegTest ${Date.now()}`,
+          name: uniqueTestName('filemode-benchmark'),
           description: 'Created by integration test',
           testCaseIds: bulkResult.testCases.map(tc => tc.id),
         });
@@ -263,7 +240,7 @@ describe('Benchmark File Mode Integration', () => {
       // Create benchmark
       try {
         const benchmark = await client.createBenchmark({
-          name: `OTEL Demo IntegTest ${Date.now()}`,
+          name: uniqueTestName('otel-demo-filemode-benchmark'),
           description: 'OTEL demo test cases imported from file',
           testCaseIds: bulkResult.testCases.map(tc => tc.id),
         });
@@ -285,7 +262,7 @@ describe('Benchmark File Mode Integration', () => {
 
       const testCases = [
         {
-          name: `ID Test ${Date.now()}`,
+          name: uniqueTestName('filemode-id-assignment'),
           category: 'RCA',
           difficulty: 'Easy',
           initialPrompt: 'Test prompt',

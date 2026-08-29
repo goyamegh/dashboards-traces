@@ -17,7 +17,7 @@ import { asyncBenchmarkStorage } from '@/services/storage/asyncBenchmarkStorage'
 import { asyncTestCaseStorage } from '@/services/storage/asyncTestCaseStorage';
 import { asyncRunStorage } from '@/services/storage/asyncRunStorage';
 import { storageAdmin } from '@/services/storage/opensearchClient';
-import { createTestDataTracker } from '../../../helpers/testDataTracker';
+import { createTestDataTracker, uniqueTestName } from '../../../helpers/testDataTracker';
 
 // Skip tests if backend is not running
 const checkBackend = async (): Promise<boolean> => {
@@ -78,28 +78,17 @@ describe('OpenSearch Storage Integration Tests', () => {
 
   describe('asyncTestCaseStorage', () => {
     let createdTestCaseId: string | null = null;
-
-    afterAll(async () => {
-      if (!backendAvailable) return;
-      // Fallback: clean up leftovers from previous failed runs by name
-      // (predates the tracker; the shared cluster may still hold them).
-      try {
-        const allTestCases = await asyncTestCaseStorage.getAll();
-        for (const tc of allTestCases) {
-          if (tc.name === 'Integration Test Case' || tc.name === 'Updated Test Case') {
-            await asyncTestCaseStorage.delete(tc.id).catch(() => {});
-          }
-        }
-      } catch {
-        // Ignore cleanup errors
-      }
-    });
+    // Unique per run so parallel/aborted runs on the shared cluster never
+    // collide. Cleanup is tracker-only (ids this run created) — never sweep
+    // shared storage by name; "name looks test-ish" is not proof of ownership.
+    const testCaseName = uniqueTestName('async-storage-tc');
+    const updatedTestCaseName = uniqueTestName('async-storage-tc-updated');
 
     it('should create a test case', async () => {
       if (!backendAvailable) return;
 
       const testCase = await asyncTestCaseStorage.create({
-        name: 'Integration Test Case',
+        name: testCaseName,
         category: 'Test',
         difficulty: 'Easy',
         initialPrompt: 'Test prompt',
@@ -109,7 +98,7 @@ describe('OpenSearch Storage Integration Tests', () => {
 
       expect(testCase).toBeDefined();
       expect(testCase.id).toBeDefined();
-      expect(testCase.name).toBe('Integration Test Case');
+      expect(testCase.name).toBe(testCaseName);
       expect(testCase.currentVersion).toBe(1);
 
       // Store ID for cleanup and subsequent tests
@@ -137,11 +126,11 @@ describe('OpenSearch Storage Integration Tests', () => {
       if (!backendAvailable || !createdTestCaseId) return;
 
       const updated = await asyncTestCaseStorage.update(createdTestCaseId, {
-        name: 'Updated Test Case',
+        name: updatedTestCaseName,
       });
 
       expect(updated).toBeDefined();
-      expect(updated?.name).toBe('Updated Test Case');
+      expect(updated?.name).toBe(updatedTestCaseName);
       expect(updated?.currentVersion).toBe(2);
     });
 
@@ -156,28 +145,14 @@ describe('OpenSearch Storage Integration Tests', () => {
 
   describe('asyncBenchmarkStorage', () => {
     let benchmarkId: string;
-
-    afterAll(async () => {
-      if (!backendAvailable) return;
-      // Fallback: clean up leftovers from previous failed runs by name
-      // (predates the tracker; the shared cluster may still hold them).
-      try {
-        const allBenchmarks = await asyncBenchmarkStorage.getAll();
-        for (const b of allBenchmarks) {
-          if (b.name === 'Integration Test Benchmark') {
-            await asyncBenchmarkStorage.delete(b.id).catch(() => {});
-          }
-        }
-      } catch {
-        // Ignore cleanup errors
-      }
-    });
+    // Unique per run; tracker-only cleanup (see note above).
+    const benchmarkName = uniqueTestName('async-storage-benchmark');
 
     it('should create a benchmark', async () => {
       if (!backendAvailable) return;
 
       const benchmark = await asyncBenchmarkStorage.create({
-        name: 'Integration Test Benchmark',
+        name: benchmarkName,
         description: 'Test benchmark',
         testCaseIds: ['tc-001', 'tc-002'],
         runs: [],
@@ -191,7 +166,7 @@ describe('OpenSearch Storage Integration Tests', () => {
 
       expect(benchmark).toBeDefined();
       expect(benchmark.id).toBeDefined();
-      expect(benchmark.name).toBe('Integration Test Benchmark');
+      expect(benchmark.name).toBe(benchmarkName);
       benchmarkId = benchmark.id;
       tracker.benchmark(benchmark.id);
     });

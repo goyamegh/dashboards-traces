@@ -21,7 +21,7 @@ import { asyncTestCaseStorage } from '@/services/storage/asyncTestCaseStorage';
 import { asyncBenchmarkStorage } from '@/services/storage/asyncBenchmarkStorage';
 import { storageAdmin } from '@/services/storage/opensearchClient';
 import { validateTestCasesArrayJson } from '@/lib/testCaseValidation';
-import { createTestDataTracker } from '../../../helpers/testDataTracker';
+import { createTestDataTracker, uniqueTestName } from '../../../helpers/testDataTracker';
 
 const checkBackend = async (): Promise<boolean> => {
   try {
@@ -46,10 +46,13 @@ describe('Benchmarks Page Import Flow', () => {
   const tracker = createTestDataTracker();
   const createdBenchmarkIds: string[] = [];
 
-  // Simulates the JSON file content that would be loaded via the file input
+  // Simulates the JSON file content that would be loaded via the file input.
+  // Names are unique per run (uniqueTestName) so the getAll+name lookup below
+  // can only ever match docs THIS run created, and parallel/aborted runs on
+  // the shared cluster never collide.
   const importFileContent = [
     {
-      name: 'BenchImport Test: Service Restart',
+      name: uniqueTestName('benchimport-service-restart'),
       description: 'Test the full benchmarks page import pipeline',
       category: 'RCA',
       difficulty: 'Easy' as const,
@@ -66,7 +69,7 @@ describe('Benchmarks Page Import Flow', () => {
       ],
     },
     {
-      name: 'BenchImport Test: Slow Queries',
+      name: uniqueTestName('benchimport-slow-queries'),
       description: 'Test the full benchmarks page import pipeline',
       category: 'RCA',
       difficulty: 'Medium' as const,
@@ -84,27 +87,12 @@ describe('Benchmarks Page Import Flow', () => {
   });
 
   afterAll(async () => {
+    // Delete ONLY ids this run created (tracker). Never sweep shared storage
+    // by name: "name looks test-ish" is not proof of ownership, and a
+    // name-based getAll+delete here deletes OTHER users' data on the shared
+    // cluster. Unique fixture names (above) make cross-run collisions — the
+    // thing a name sweep was crudely working around — impossible instead.
     await tracker.cleanup();
-    if (!backendAvailable) return;
-
-    // Clean up leftovers from previous failed runs by name (predates the
-    // tracker; the shared cluster may still hold them).
-    try {
-      const allBenchmarks = await asyncBenchmarkStorage.getAll();
-      for (const b of allBenchmarks) {
-        if (b.name === 'sample-import-test-cases') {
-          await asyncBenchmarkStorage.delete(b.id).catch(() => {});
-        }
-      }
-      const allTestCases = await asyncTestCaseStorage.getAll();
-      for (const tc of allTestCases) {
-        if (tc.name?.startsWith('BenchImport Test:')) {
-          await asyncTestCaseStorage.delete(tc.id).catch(() => {});
-        }
-      }
-    } catch {
-      // Ignore cleanup errors
-    }
   });
 
   describe('full import pipeline (validates → creates test cases → creates benchmark)', () => {
@@ -145,7 +133,7 @@ describe('Benchmarks Page Import Flow', () => {
       getAllSpy.mockRestore();
 
       // Step 4: Create benchmark with the test case IDs (mirrors the handler's benchmark creation)
-      const benchmarkName = 'sample-import-test-cases';
+      const benchmarkName = uniqueTestName('sample-import-test-cases');
       const benchmark = await asyncBenchmarkStorage.create({
         name: benchmarkName,
         description: `Auto-created from import of ${result.created} test case(s)`,

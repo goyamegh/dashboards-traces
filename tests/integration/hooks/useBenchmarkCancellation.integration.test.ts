@@ -21,6 +21,7 @@
 import { renderHook, act, waitFor } from '@testing-library/react';
 import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
+import { uniqueTestName } from '../../helpers/testDataTracker';
 
 const BASE_URL = getTestBackendUrl();
 
@@ -41,7 +42,7 @@ const createTestCase = async (): Promise<string> => {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      name: `Hook Cancel Test Case ${Date.now()}`,
+      name: uniqueTestName('hook-cancel-tc'),
       category: 'Test',
       difficulty: 'Easy',
       initialPrompt: 'Test prompt for hook cancel integration test',
@@ -64,7 +65,7 @@ const createBenchmark = async (testCaseId: string): Promise<string> => {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      name: `Hook Cancel Integration Test Benchmark ${Date.now()}`,
+      name: uniqueTestName('hook-cancel-benchmark'),
       description: 'Benchmark for testing hook cancel integration',
       testCaseIds: [testCaseId],
       runs: [],
@@ -265,35 +266,15 @@ describe('useBenchmarkCancellation Integration Tests', () => {
       await fetch(`${BASE_URL}/api/storage/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
     }
 
-    // Cleanup by tracked ID
+    // Cleanup by tracked ID only — never sweep shared storage by name:
+    // "name looks test-ish" is not proof of ownership, and a name/prefix
+    // getAll+delete here deletes OTHER runs'/users' data on the shared
+    // cluster. uniqueTestName fixtures make cross-run collisions impossible.
     if (benchmarkId) {
       await deleteBenchmark(benchmarkId);
     }
     if (testCaseId) {
       await deleteTestCase(testCaseId);
-    }
-    // Fallback: clean up leftovers from previous failed runs by name prefix
-    try {
-      const tcResp = await fetch(`${BASE_URL}/api/storage/test-cases`);
-      if (tcResp.ok) {
-        const data = await tcResp.json();
-        for (const tc of (data.testCases ?? [])) {
-          if (tc.name?.startsWith('Hook Cancel Test Case')) {
-            await deleteTestCase(tc.id).catch(() => {});
-          }
-        }
-      }
-      const benchResp = await fetch(`${BASE_URL}/api/storage/benchmarks`);
-      if (benchResp.ok) {
-        const benchData = await benchResp.json();
-        for (const b of (benchData.benchmarks ?? benchData ?? [])) {
-          if (b.name?.startsWith('Hook Cancel Integration Test Benchmark')) {
-            await deleteBenchmark(b.id).catch(() => {});
-          }
-        }
-      }
-    } catch {
-      // Ignore cleanup errors
     }
   }, 30000);
 

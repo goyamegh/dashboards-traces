@@ -169,18 +169,15 @@ test.describe('Evals3 Test Case Editor', () => {
 
 test.describe('Evals3 Test Case CRUD', () => {
   const testCaseName = `E2E Evals3 TC ${Date.now()}`;
+  // Ids of test cases this suite observed being created (captured from the
+  // POST response). Cleanup deletes exactly these — never list-and-delete by
+  // name/prefix: "name looks test-ish" is not proof of ownership on a shared
+  // backend.
+  const createdTestCaseIds: string[] = [];
 
   test.afterAll(async ({ request }) => {
-    // Clean up test cases created during this suite
-    const response = await request.get('/api/storage/test-cases').catch(() => null);
-    if (response?.ok()) {
-      const data = await response.json();
-      const testCases = Array.isArray(data) ? data : data.testCases ?? [];
-      for (const tc of testCases) {
-        if (tc.name?.startsWith('E2E Evals3 TC')) {
-          await request.delete(`/api/storage/test-cases/${encodeURIComponent(tc.id)}`).catch(() => {});
-        }
-      }
+    for (const id of createdTestCaseIds) {
+      await request.delete(`/api/storage/test-cases/${encodeURIComponent(id)}`).catch(() => {});
     }
   });
 
@@ -199,7 +196,19 @@ test.describe('Evals3 Test Case CRUD', () => {
 
     const saveButton = page.locator('button:has-text("Save")');
     if (await saveButton.isEnabled()) {
+      // Capture the id from the create POST so afterAll can delete exactly
+      // this doc.
+      const createRespPromise = page.waitForResponse(
+        r => r.url().includes('/api/storage/test-cases') && r.request().method() === 'POST',
+        { timeout: 10_000 }
+      ).catch(() => null);
       await saveButton.click();
+      const createResp = await createRespPromise;
+      if (createResp?.ok()) {
+        const body = await createResp.json().catch(() => null);
+        const id = body?.id || body?.testCase?.id;
+        if (id) createdTestCaseIds.push(id);
+      }
       await page.waitForTimeout(1000);
     }
   });
