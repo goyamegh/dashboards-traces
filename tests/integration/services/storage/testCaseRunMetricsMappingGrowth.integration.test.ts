@@ -29,10 +29,18 @@
  * name across every run/matcher ever indexed added new mapped fields shared
  * index-wide, eventually exceeding `index.mapping.total_fields.limit`.
  *
- * This test exercises the real production code path end-to-end against a
- * REAL OpenSearch cluster (no mocks):
- *   1. `ensureIndexesWithValidation()` creates a fresh `evals_runs` index
- *      using the actual `INDEX_MAPPINGS` (the fix under test).
+ * This test exercises the real production write path (no mocks) against a
+ * REAL OpenSearch cluster:
+ *   1. A throwaway `ahtest-*` index is created from the exact `evals_runs`
+ *      entry in `INDEX_MAPPINGS` (the fix under test), and
+ *      `STORAGE_INDEXES.runs` is redirected at it for this test file's module
+ *      registry (jest gives each test file its own registry, so nothing
+ *      leaks to other files). The suite therefore runs the REAL
+ *      `OpenSearchRunOperations` code paths — while the real `evals_runs`
+ *      index is never touched. That isolation matters: the failure mode this
+ *      suite exists to catch is MAPPING growth, and mapping growth in a real
+ *      shared index is permanent (deleting documents does not shrink a
+ *      mapping — only dropping the index does).
  *   2. Test A synthesizes ONE report with 1000+ distinct custom metric names
  *      spread across the report-level `metrics` object AND 250
  *      `matcherResults[]` entries (4 distinct `judgeMetrics` names each —
@@ -43,31 +51,42 @@
  *      query audit in the PR description) — a `dynamic: false` fix that
  *      accidentally caught one of these would silently break filtering.
  *
- * Cluster: connects to `TEST_OPENSEARCH_ENDPOINT` (default
- * `http://localhost:9200`), the same ephemeral OpenSearch the CI
- * `integration-tests` job provisions. Skips gracefully (with a console
- * warning) if unreachable, so local runs without a cluster stay green — the
- * mapping-shape assertions in
- * tests/unit/server/constants/indexMappings.test.ts assert the same fix at
- * the unit level regardless of cluster availability.
+ * Cluster: STRICTLY OPT-IN via `TEST_OPENSEARCH_ENDPOINT` (with a
+ * localhost:9200 fallback only under GitHub Actions, where the CI
+ * `integration-tests` job provisions a disposable service container) — see
+ * tests/helpers/rawOpenSearchCluster.ts. Without the opt-in the suite SKIPS:
+ * it must never write synthetic garbage into an unknown local port 9200
+ * (which may be a port-forward to a shared cluster). The mapping-shape
+ * assertions in tests/unit/server/constants/indexMappings.test.ts assert the
+ * same fix at the unit level regardless of cluster availability.
  *
  * To run locally against a disposable cluster:
  *   docker run -d --rm -p 9200:9200 -e discovery.type=single-node \
  *     -e DISABLE_SECURITY_PLUGIN=true -e DISABLE_INSTALL_DEMO_CONFIG=true \
  *     opensearchproject/opensearch:2.17.0
- *   npm run test:integration -- testCaseRunMetricsMappingGrowth
+ *   TEST_OPENSEARCH_ENDPOINT=http://localhost:9200 \
+ *     npm run test:integration -- testCaseRunMetricsMappingGrowth
  */
 
 import { Client } from '@opensearch-project/opensearch';
 import { OpenSearchStorageModule } from '@/server/adapters/opensearch/StorageModule';
 import { FileSessionMetadataOperations } from '@/server/adapters/file/StorageModule';
-import { ensureIndexesWithValidation } from '@/server/services/indexInitializer';
+import { INDEX_MAPPINGS } from '@/server/constants/indexMappings';
 import { STORAGE_INDEXES } from '@/server/middleware/dataSourceConfig';
 import type { TestCaseRun } from '@/types';
 import type { MatcherResult } from '@/lib/matchers/types';
+import {
+  RawOpenSearchTestData,
+  createRawOpenSearchClient,
+  rawClusterReachable,
+  rawOpenSearchOptInHint,
+  resolveRawOpenSearchEndpoint,
+} from '../../../helpers/rawOpenSearchCluster';
+import { uniqueTestName } from '../../../helpers/testDataTracker';
 
-const ENDPOINT = process.env.TEST_OPENSEARCH_ENDPOINT || 'http://localhost:9200';
-const INDEX = STORAGE_INDEXES.runs;
+const ENDPOINT = resolveRawOpenSearchEndpoint();
+/** Real index name, captured before the suite redirects STORAGE_INDEXES.runs. */
+const REAL_INDEX = STORAGE_INDEXES.runs;
 // > 1000 distinct nested matcher/attr keys, per the PR requirement — split
 // across report-level `metrics` (500 custom names) and 125 `judge()` calls
 // each emitting 4 distinct custom `judgeMetrics` dimension names (500 more),
@@ -75,21 +94,20 @@ const INDEX = STORAGE_INDEXES.runs;
 const NUM_REPORT_METRICS = 500;
 const NUM_MATCHERS = 125;
 const JUDGE_METRICS_PER_MATCHER = 4;
-// Tolerance for the shared-index race (concurrent CI test files adding
-// unrelated fields between this test's before/after mapping snapshots) — see
-// evaluationRunMappingGrowth.integration.test.ts for the same pattern. The
-// bug this guards against adds 1000+ fields for one report — orders of
-// magnitude past this slack.
-const FIELD_COUNT_SLACK = 15;
+// The index is now private to this suite (throwaway, created fresh), so no
+// concurrent test file can race the before/after mapping snapshots. A small
+// slack remains purely as defense against OpenSearch inferring an incidental
+// field this test didn't anticipate — the bug this guards against adds 1000+
+// fields for one report, orders of magnitude past it.
+const FIELD_COUNT_SLACK = 5;
 const RUN_TAG = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-async function clusterUp(client: Client): Promise<boolean> {
-  try {
-    await client.cluster.health({ wait_for_status: 'yellow', timeout: '5s' });
-    return true;
-  } catch {
-    return false;
-  }
+// Opt-in gate: without an explicitly-provided disposable cluster this suite
+// SKIPS (visible in jest output) instead of guessing at localhost:9200.
+const describeIfOptedIn = ENDPOINT ? describe : describe.skip;
+if (!ENDPOINT) {
+  // eslint-disable-next-line no-console
+  console.warn(rawOpenSearchOptInHint('TestCaseRun metrics/judgeMetrics mapping growth'));
 }
 
 /** Recursively count mapped fields the way OpenSearch's total_fields.limit does. */
@@ -133,32 +151,44 @@ function buildMatcherResults(
   });
 }
 
-describe('TestCaseRun metrics/judgeMetrics mapping growth (real OpenSearch)', () => {
+describeIfOptedIn('TestCaseRun metrics/judgeMetrics mapping growth (real OpenSearch)', () => {
   let client: Client;
   let storage: OpenSearchStorageModule;
+  let testData: RawOpenSearchTestData;
   let available = false;
+  /** Throwaway ahtest-* index this suite writes into (stands in for evals_runs). */
+  let index: string;
 
   beforeAll(async () => {
-    client = new Client({ node: ENDPOINT, ssl: { rejectUnauthorized: false } });
-    available = await clusterUp(client);
+    client = createRawOpenSearchClient(ENDPOINT!);
+    available = await rawClusterReachable(client);
     if (!available) {
       // eslint-disable-next-line no-console
       console.warn(`[skip] OpenSearch not reachable at ${ENDPOINT} — skipping mapping-growth tests`);
       return;
     }
 
-    // Real production code path: idempotently ensure the index exists with
-    // the actual mapping fix under test (server/constants/indexMappings.ts).
-    // Deliberately non-destructive — never deletes/truncates the shared
-    // `evals_runs` index, only ensures it exists and adds its own
-    // uniquely-tagged documents (RUN_TAG).
-    await ensureIndexesWithValidation(client);
+    // Create a throwaway index from the REAL evals_runs mapping (the fix
+    // under test), then point the storage module's lazily-read index name at
+    // it so every production code path below runs against the throwaway.
+    testData = new RawOpenSearchTestData(client);
+    index = await testData.createThrowawayIndex(
+      'mapping-growth-runs',
+      INDEX_MAPPINGS[REAL_INDEX] as Record<string, unknown>
+    );
+    (STORAGE_INDEXES as { runs: string }).runs = index;
 
     storage = new OpenSearchStorageModule(client, new FileSessionMetadataOperations());
   }, 30000);
 
   afterAll(async () => {
-    if (available) {
+    // Runs even when assertions fail. Restore the redirected index name,
+    // then drop the throwaway index (docs AND any mapping growth with it).
+    (STORAGE_INDEXES as { runs: string }).runs = REAL_INDEX;
+    if (available && testData) {
+      await testData.cleanup();
+    }
+    if (client) {
       await client.close().catch(() => {});
     }
   });
@@ -166,10 +196,32 @@ describe('TestCaseRun metrics/judgeMetrics mapping growth (real OpenSearch)', ()
   it('persists a report with 1000+ distinct custom metric/judgeMetrics names and does not grow the mapping', async () => {
     if (!available) return; // graceful skip, see beforeAll warning
 
-    const beforeMapping = await client.indices.getMapping({ index: INDEX });
-    const beforeFieldCount = countMappedFields((beforeMapping.body as any)[INDEX].mappings.properties);
+    // Baseline report FIRST, with the same field shape as the big report
+    // below (one custom metric name, one matcher with one judgeMetrics name),
+    // so the one-time cost of OpenSearch dynamically inferring top-level
+    // report fields that aren't in the explicit mapping (agentName,
+    // modelName, ...) lands before the baseline snapshot. The assertion below
+    // is then attributable to the 1000+ custom names, not index bootstrap.
+    const baselineReportId = uniqueTestName('report-mapping-baseline');
+    testData.trackDoc(index, baselineReportId);
+    await storage.runs.create({
+      id: baselineReportId,
+      testCaseId: `ahtest-tc-baseline-${RUN_TAG}`,
+      agentName: 'demo-agent',
+      modelName: 'test-model',
+      status: 'completed',
+      passFailStatus: 'passed',
+      trajectory: [],
+      metrics: buildReportMetrics(1, `baseline_metric_${RUN_TAG}`) as TestCaseRun['metrics'],
+      llmJudgeReasoning: 'baseline',
+      matcherResults: buildMatcherResults(1, 1, `baseline_dim_${RUN_TAG}`),
+    });
+    await client.indices.refresh({ index });
 
-    const reportId = `report-mapping-growth-${RUN_TAG}`;
+    const beforeMapping = await client.indices.getMapping({ index });
+    const beforeFieldCount = countMappedFields((beforeMapping.body as any)[index].mappings.properties);
+
+    const reportId = uniqueTestName('report-mapping-growth');
     const metricPrefix = `custom_metric_${RUN_TAG}`;
     const matcherPrefix = `judge_dim_${RUN_TAG}`;
 
@@ -180,7 +232,7 @@ describe('TestCaseRun metrics/judgeMetrics mapping growth (real OpenSearch)', ()
 
     const report: Partial<TestCaseRun> = {
       id: reportId,
-      testCaseId: `tc-${RUN_TAG}`,
+      testCaseId: `ahtest-tc-${RUN_TAG}`,
       agentName: 'demo-agent',
       modelName: 'test-model',
       status: 'completed',
@@ -191,8 +243,9 @@ describe('TestCaseRun metrics/judgeMetrics mapping growth (real OpenSearch)', ()
       matcherResults,
     };
 
+    testData.trackDoc(index, reportId);
     await storage.runs.create(report);
-    await client.indices.refresh({ index: INDEX });
+    await client.indices.refresh({ index });
 
     // 1. Reads back correctly: every custom metric/judgeMetrics name and
     // value survives the round-trip (dynamic:false only opaques mapping, not
@@ -210,16 +263,15 @@ describe('TestCaseRun metrics/judgeMetrics mapping growth (real OpenSearch)', ()
     // pre-write baseline. Before the fix, this grows by ~1 field per custom
     // name (plus nested judgeMetrics fields for matcherResults) — i.e.
     // 1000+ new fields for this one report alone, dwarfing the slack.
-    const afterMapping = await client.indices.getMapping({ index: INDEX });
-    const afterFieldCount = countMappedFields((afterMapping.body as any)[INDEX].mappings.properties);
+    const afterMapping = await client.indices.getMapping({ index });
+    const afterFieldCount = countMappedFields((afterMapping.body as any)[index].mappings.properties);
     expect(afterFieldCount - beforeFieldCount).toBeLessThanOrEqual(FIELD_COUNT_SLACK);
 
     // 3. The `metrics` and `matcherResults.judgeMetrics` mappings themselves
     // stay the dynamic:false, legacy-four-typed shape — never gain
     // per-custom-name sub-properties. This is the deterministic, race-proof
-    // assertion (unaffected by anything unrelated concurrent tests might add
-    // elsewhere in the mapping).
-    const metricsMapping = (afterMapping.body as any)[INDEX].mappings.properties.metrics;
+    // assertion.
+    const metricsMapping = (afterMapping.body as any)[index].mappings.properties.metrics;
     expect(String(metricsMapping.dynamic)).toBe('false');
     expect(Object.keys(metricsMapping.properties)).toEqual([
       'accuracy',
@@ -228,7 +280,7 @@ describe('TestCaseRun metrics/judgeMetrics mapping growth (real OpenSearch)', ()
       'trajectory_alignment_score',
     ]);
 
-    const judgeMetricsMapping = (afterMapping.body as any)[INDEX].mappings.properties.matcherResults.properties
+    const judgeMetricsMapping = (afterMapping.body as any)[index].mappings.properties.matcherResults.properties
       .judgeMetrics;
     expect(String(judgeMetricsMapping.dynamic)).toBe('false');
     expect(Object.keys(judgeMetricsMapping.properties)).toEqual([
@@ -242,10 +294,11 @@ describe('TestCaseRun metrics/judgeMetrics mapping growth (real OpenSearch)', ()
   it('keeps every field OpenSearchRunOperations.search() filters/sorts on real and queryable', async () => {
     if (!available) return;
 
-    const reportId = `report-query-audit-${RUN_TAG}`;
+    const reportId = uniqueTestName('report-query-audit');
+    testData.trackDoc(index, reportId);
     await storage.runs.create({
       id: reportId,
-      testCaseId: `query-audit-tc-${RUN_TAG}`,
+      testCaseId: `ahtest-query-audit-tc-${RUN_TAG}`,
       agentName: 'demo-agent',
       modelName: 'test-model',
       status: 'completed',
@@ -254,13 +307,13 @@ describe('TestCaseRun metrics/judgeMetrics mapping growth (real OpenSearch)', ()
       metrics: {},
       llmJudgeReasoning: '',
     } as Partial<TestCaseRun>);
-    await client.indices.refresh({ index: INDEX });
+    await client.indices.refresh({ index });
 
     // Exercise the real search() filters (server/adapters/opensearch/StorageModule.ts)
     // end-to-end — a `term` query against `testCaseId` only works if the
     // field is a real `keyword`-mapped field, which is exactly what the
     // `dynamic: false` fix on `metrics`/`judgeMetrics` must not disturb.
-    const { items } = await storage.runs.search({ testCaseId: `query-audit-tc-${RUN_TAG}` });
+    const { items } = await storage.runs.search({ testCaseId: `ahtest-query-audit-tc-${RUN_TAG}` });
     expect(items.map((r) => r.id)).toContain(reportId);
   }, 30000);
 });
