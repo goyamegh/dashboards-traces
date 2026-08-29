@@ -26,7 +26,14 @@ const checkBackend = async (): Promise<boolean> => {
   try {
     const response = await fetch(`${BASE_URL}/api/storage/health`);
     const data = await response.json();
-    return data.status === 'connected';
+    // Both storage backends report `status: 'ok'` when healthy (file storage:
+    // server/adapters/file/StorageModule.ts; OpenSearch:
+    // server/adapters/opensearch/StorageModule.ts) — neither ever returns
+    // 'connected'. That stale check made every test in this file silently
+    // skip (backendAvailable was always false) regardless of the backend's
+    // real state; see the same fix + explanation in the sibling
+    // evaluationRuns.rerun.integration.test.ts.
+    return data.status === 'ok';
   } catch {
     return false;
   }
@@ -122,6 +129,61 @@ const cancelRun = async (benchmarkId: string, runId: string): Promise<boolean> =
 };
 
 /**
+ * Every per-test-case report a benchmark run creates is stamped with
+ * `experimentRunId` = the run's own id at creation time
+ * (services/benchmarkRunner.ts's `saveReportWithClient`). `POST
+ * .../benchmarks/:id/cancel` only flips the run's top-level `status` to
+ * 'cancelled' immediately — cancellation is cooperative, not a hard abort,
+ * so whichever test case was already executing (already invoking the agent)
+ * keeps running in the background and only produces its report a few
+ * seconds later (the mock/demo connector sleeps through a synthetic
+ * trajectory). Reading `benchmark.runs[].results` right after cancel can
+ * miss it entirely. Polling `POST /api/storage/runs/search` (filtered by
+ * `experimentRunId`) until the result set stops changing is a reliable,
+ * timing-agnostic "background work is done" signal; every id it returns is
+ * a report this test created that `DELETE .../benchmarks/:id` will NOT
+ * cascade-delete.
+ */
+const harvestReportIdsForRun = async (
+  runId: string,
+  { timeoutMs = 20000, pollMs = 500, quietMs = 1500 }: { timeoutMs?: number; pollMs?: number; quietMs?: number } = {}
+): Promise<string[]> => {
+  const fetchIds = async (): Promise<string[]> => {
+    try {
+      const res = await fetch(`${BASE_URL}/api/storage/runs/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ experimentRunId: runId, size: 500 }),
+      });
+      if (!res.ok) return [];
+      const body = await res.json();
+      return (body.runs ?? []).map((r: any) => r.id).filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+
+  const deadline = Date.now() + timeoutMs;
+  let lastKey: string | null = null;
+  let stableSince: number | null = null;
+  let ids: string[] = [];
+
+  while (Date.now() < deadline) {
+    ids = await fetchIds();
+    const key = [...ids].sort().join(',');
+    if (key === lastKey) {
+      if (stableSince === null) stableSince = Date.now();
+      if (Date.now() - stableSince >= quietMs) return ids;
+    } else {
+      lastKey = key;
+      stableSince = null;
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return ids;
+};
+
+/**
  * Start a benchmark execution and return the run ID from the 'started' event.
  * Uses the demo agent for simulated responses to avoid external dependencies.
  */
@@ -196,6 +258,11 @@ describe('Benchmark Cancel Integration Tests', () => {
   let backendAvailable = false;
   let testCaseId: string | null = null;
   let benchmarkId: string | null = null;
+  // Per-test-case report doc(s) the executed-then-cancelled run created.
+  // Harvested inside the test itself (see harvestReportIdsForRun) and
+  // deleted here in afterAll — DELETE .../benchmarks/:id does not cascade
+  // to them.
+  let leakedReportIds: string[] = [];
 
   beforeAll(async () => {
     backendAvailable = await checkBackend();
@@ -212,6 +279,13 @@ describe('Benchmark Cancel Integration Tests', () => {
 
   afterAll(async () => {
     if (!backendAvailable) return;
+
+    // Delete the per-test-case report doc(s) harvested by the test above
+    // BEFORE deleting the benchmark/test case — DELETE .../benchmarks/:id
+    // does not cascade to them.
+    for (const id of leakedReportIds) {
+      await fetch(`${BASE_URL}/api/storage/runs/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {});
+    }
 
     // Cleanup by tracked ID
     if (benchmarkId) {
@@ -270,7 +344,12 @@ describe('Benchmark Cancel Integration Tests', () => {
 
     expect(run).toBeDefined();
     expect(run.status).toBe('cancelled');
-  }, 30000);
+
+    // Harvest any per-test-case report the (possibly still in-flight)
+    // background execution created for this run — DELETE .../benchmarks/:id
+    // in afterAll will NOT cascade to it (see harvestReportIdsForRun above).
+    leakedReportIds = await harvestReportIdsForRun(runId);
+  }, 45000);
 
   it('should return 404 when trying to cancel a non-existent run', async () => {
     if (!backendAvailable || !benchmarkId) {

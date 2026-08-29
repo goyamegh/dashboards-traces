@@ -70,6 +70,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { request as httpRequest } from 'http';
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
+import { createTestDataTracker, uniqueTestName } from '../../helpers/testDataTracker';
 
 // Same dodge as benchmarkCodeSdk.integration.test.ts — Jest 30 + undici
 // has a known race with localhost connections that surfaces as
@@ -155,6 +156,11 @@ describe('CLI: run-level evaluatorId binding (precedence rules end-to-end)', () 
   let tempDir: string;
   let fixturePath: string;
   let report: any;
+  // Tracks every benchmark/evaluation-run/test-case/report this suite
+  // creates so afterAll can delete all of it (see
+  // tests/helpers/testDataTracker.ts). DELETE benchmark/evaluation-run does
+  // NOT cascade to test cases or their per-test-case report doc.
+  const tracker = createTestDataTracker();
 
   beforeAll(async () => {
     backendAvailable = await checkBackend();
@@ -183,7 +189,7 @@ describe('CLI: run-level evaluatorId binding (precedence rules end-to-end)', () 
     // spawned CLI's ServerLifecycle health check (see
     // benchmarkCodeSdk.integration.test.ts for the worked rationale).
     const port = new URL(BASE_URL).port || '4001';
-    const benchmarkName = `cli-eval-id-binding-${Date.now()}`;
+    const benchmarkName = uniqueTestName('cli-eval-id-binding');
     const cleanEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (typeof v !== 'string') continue;
@@ -218,6 +224,36 @@ describe('CLI: run-level evaluatorId binding (precedence rules end-to-end)', () 
       timeout: TEST_TIMEOUT - 10_000,
     });
 
+    // Track the benchmark shell by its (unique, known) name regardless of
+    // whether the run itself succeeded (see benchmarkCodeSdk.integration.test.ts
+    // for the worked rationale: the CLI creates the benchmark BEFORE starting
+    // the run, so a downstream failure would otherwise leave an untracked
+    // shell). Best-effort: never throws.
+    try {
+      const listRes = await httpGet<any>(`${BASE_URL}/api/storage/benchmarks?size=1000`);
+      const found = (listRes.body?.benchmarks || []).find((b: any) => b.name === benchmarkName);
+      if (found) {
+        tracker.benchmark(found.id);
+        tracker.testCases(found.testCaseIds);
+        // Also track every evaluation-run linked to this benchmark: a run
+        // that fails before the CLI ever prints its "View results" URL is
+        // otherwise undiscoverable (confirmed empirically — it is NOT
+        // reachable from benchmark.testCaseIds), plus every report each of
+        // those runs points at (DELETE evaluation-run does not cascade).
+        const runsRes = await httpGet<any>(
+          `${BASE_URL}/api/storage/evaluation-runs?benchmarkId=${encodeURIComponent(found.id)}&size=500`
+        );
+        for (const r of runsRes.body?.evaluationRuns || []) {
+          tracker.evaluationRun(r.id);
+          for (const result of Object.values(r.results || {})) {
+            tracker.run((result as any)?.reportId);
+          }
+        }
+      }
+    } catch {
+      /* best effort */
+    }
+
     if (cli.status === null) {
       throw new Error(`CLI subprocess timed out or was killed.\nSTDOUT:\n${cli.stdout}\nSTDERR:\n${cli.stderr}`);
     }
@@ -229,7 +265,15 @@ describe('CLI: run-level evaluatorId binding (precedence rules end-to-end)', () 
     if (!m) {
       throw new Error(`Could not parse benchmark/run from CLI stdout:\n${stdout}\nSTDERR:\n${cli.stderr}`);
     }
-    const [, , runId] = m;
+    const [, benchmarkId, runId] = m;
+    // Track for cleanup up front, before any assertion below can throw:
+    // DELETE benchmark/evaluation-run does NOT cascade to test cases or
+    // reports (see tests/helpers/testDataTracker.ts), so all four are
+    // tracked explicitly.
+    tracker.benchmark(benchmarkId);
+    tracker.evaluationRun(runId);
+    const benchRes = await httpGet<any>(`${BASE_URL}/api/storage/benchmarks/${benchmarkId}`);
+    if (benchRes.status === 200) tracker.testCases(benchRes.body?.testCaseIds);
 
     // Pull the run + the single test case's persisted report. The code-import
     // (unified) path persists an `eval-run-…` document; fetch it directly from
@@ -244,6 +288,7 @@ describe('CLI: run-level evaluatorId binding (precedence rules end-to-end)', () 
     if (reportEntries.length !== 1 || !reportEntries[0].reportId) {
       throw new Error(`Expected exactly one report, got ${reportEntries.length}: ${JSON.stringify(run.results)}`);
     }
+    tracker.run(reportEntries[0].reportId);
     const reportRes = await httpGet<any>(`${BASE_URL}/api/storage/runs/${reportEntries[0].reportId}`);
     if (reportRes.status !== 200) {
       throw new Error(`GET report failed: ${reportRes.status}`);
@@ -251,8 +296,9 @@ describe('CLI: run-level evaluatorId binding (precedence rules end-to-end)', () 
     report = reportRes.body;
   }, TEST_TIMEOUT);
 
-  afterAll(() => {
+  afterAll(async () => {
     if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+    await tracker.cleanup();
   });
 
   // ─────────────────────────────────────────────────────────────────
