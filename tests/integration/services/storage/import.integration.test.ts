@@ -17,12 +17,20 @@ import { asyncTestCaseStorage } from '@/services/storage/asyncTestCaseStorage';
 import { asyncBenchmarkStorage } from '@/services/storage/asyncBenchmarkStorage';
 import { storageAdmin } from '@/services/storage/opensearchClient';
 import { validateTestCasesArrayJson, validateTestCaseJson } from '@/lib/testCaseValidation';
+import { createTestDataTracker } from '../../../helpers/testDataTracker';
 
 // Skip tests if backend is not running
 const checkBackend = async (): Promise<boolean> => {
   try {
     const health = await storageAdmin.health();
-    return health.status === 'connected';
+    // Both storage backends report `status: 'ok'` when healthy (file storage:
+    // server/adapters/file/StorageModule.ts; OpenSearch:
+    // server/adapters/opensearch/StorageModule.ts) — neither ever returns
+    // 'connected'. Comparing against 'connected' (a stale convention copied
+    // across several sibling integration-test files) was ALWAYS false, so
+    // every guarded test below silently early-returned — the whole suite
+    // green-lit without asserting anything, in every environment.
+    return health.status === 'ok';
   } catch {
     return false;
   }
@@ -30,8 +38,9 @@ const checkBackend = async (): Promise<boolean> => {
 
 describe('Test Case Import Integration', () => {
   let backendAvailable = false;
-  const createdTestCaseIds: string[] = [];
-  const createdBenchmarkIds: string[] = [];
+  // Tracks every test case / benchmark this suite creates — ordered,
+  // 404-tolerant, crash-ledgered cleanup; see tests/helpers/testDataTracker.ts.
+  const tracker = createTestDataTracker();
 
   // Sample test cases matching the JSON schema
   const sampleTestCases = [
@@ -68,26 +77,11 @@ describe('Test Case Import Integration', () => {
   });
 
   afterAll(async () => {
+    await tracker.cleanup();
     if (!backendAvailable) return;
 
-    // Cleanup: delete created test cases and benchmarks by tracked ID
-    for (const id of createdTestCaseIds) {
-      try {
-        await asyncTestCaseStorage.delete(id);
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
-
-    for (const id of createdBenchmarkIds) {
-      try {
-        await asyncBenchmarkStorage.delete(id);
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
-
     // Fallback: clean up leftovers from previous failed runs by name
+    // (predates the tracker; the shared cluster may still hold them).
     try {
       const testCaseNames = [
         ...sampleTestCases.map(tc => tc.name),
@@ -237,16 +231,17 @@ describe('Test Case Import Integration', () => {
       const result = await asyncTestCaseStorage.bulkCreate(sampleTestCases);
 
       expect(result.created).toBe(2);
-      expect(result.errors).toBe(false);
+      // `errors` is a COUNT (number of failed creates) — the server's bulk
+      // adapters have always returned a number; the old `toBe(false)`
+      // assertion was written against a lying client type and never ran.
+      expect(result.errors).toBe(0);
 
       // Track created test cases for cleanup by matching names
       const allTestCases = await asyncTestCaseStorage.getAll();
       allTestCases
         .filter((tc) => sampleTestCases.some((d) => d.name === tc.name))
         .forEach((tc) => {
-          if (!createdTestCaseIds.includes(tc.id)) {
-            createdTestCaseIds.push(tc.id);
-          }
+          tracker.testCase(tc.id);
         });
     });
 
@@ -264,7 +259,7 @@ describe('Test Case Import Integration', () => {
       });
 
       expect(testCase.id).toMatch(/^tc-/);
-      createdTestCaseIds.push(testCase.id);
+      tracker.testCase(testCase.id);
     });
   });
 
@@ -282,7 +277,7 @@ describe('Test Case Import Integration', () => {
         expectedOutcomes: ['Expected outcome'],
       });
 
-      createdTestCaseIds.push(testCase.id);
+      tracker.testCase(testCase.id);
 
       // Create benchmark with that test case ID
       const benchmark = await asyncBenchmarkStorage.create({
@@ -304,7 +299,7 @@ describe('Test Case Import Integration', () => {
       expect(benchmark.name).toBe('OTEL Demo Benchmark (Import Test)');
       expect(benchmark.testCaseIds).toEqual([testCase.id]);
 
-      createdBenchmarkIds.push(benchmark.id);
+      tracker.benchmark(benchmark.id);
     });
 
     it('should create benchmark with multiple test cases', async () => {
@@ -322,7 +317,7 @@ describe('Test Case Import Integration', () => {
         expectedOutcomes: ['Outcome 1'],
       });
       testCaseIds.push(tc1.id);
-      createdTestCaseIds.push(tc1.id);
+      tracker.testCase(tc1.id);
 
       const tc2 = await asyncTestCaseStorage.create({
         name: 'Multi Test 2',
@@ -333,7 +328,7 @@ describe('Test Case Import Integration', () => {
         expectedOutcomes: ['Outcome 2'],
       });
       testCaseIds.push(tc2.id);
-      createdTestCaseIds.push(tc2.id);
+      tracker.testCase(tc2.id);
 
       const tc3 = await asyncTestCaseStorage.create({
         name: 'Multi Test 3',
@@ -344,7 +339,7 @@ describe('Test Case Import Integration', () => {
         expectedOutcomes: ['Outcome 3'],
       });
       testCaseIds.push(tc3.id);
-      createdTestCaseIds.push(tc3.id);
+      tracker.testCase(tc3.id);
 
       // Create benchmark
       const benchmark = await asyncBenchmarkStorage.create({
@@ -363,7 +358,7 @@ describe('Test Case Import Integration', () => {
       });
 
       expect(benchmark.testCaseIds).toHaveLength(3);
-      createdBenchmarkIds.push(benchmark.id);
+      tracker.benchmark(benchmark.id);
     });
   });
 
@@ -389,7 +384,8 @@ describe('Test Case Import Integration', () => {
       expect(tc1.id).toMatch(/^tc-/);
       expect(tc2.id).toMatch(/^tc-/);
 
-      createdTestCaseIds.push(tc1.id, tc2.id);
+      tracker.testCase(tc1.id);
+      tracker.testCase(tc2.id);
     });
   });
 });
