@@ -24,7 +24,15 @@ const checkBackend = async (): Promise<boolean> => {
   try {
     const response = await fetch(`${BASE_URL}/api/storage/health`);
     const data = await response.json();
-    return data.status === 'connected';
+    // The health route's actual contract (server/adapters/index.ts
+    // HealthStatus, server/adapters/{file,opensearch}/StorageModule.ts
+    // health()) only ever returns 'ok' | 'error' — 'connected' has never
+    // been an emitted value. This check previously compared against
+    // 'connected' and so `backendAvailable` was always false, silently
+    // no-op'ing every test in this file regardless of whether a real
+    // backend was running (discovered while adding the PUT-preserves-
+    // provenance-fields regression test below, PR #451 codex review).
+    return data.status === 'ok';
   } catch {
     return false;
   }
