@@ -68,6 +68,53 @@ describe('FileStorageModule', () => {
         expect(fetched!.name).toBe('Updated');
         expect(fetched!.version).toBe(2);
       });
+
+      // VERIFY-3 (PR #451 codex review): TestCaseEditor.handleSave() only
+      // sends the fields the form manages (name, description, labels,
+      // initialPrompt, context, expectedOutcomes) when saving an existing
+      // test case. A record that also carries sourceCode / sourceFile /
+      // sourceHash (code-imported) or a `versions` array must not lose those
+      // fields just because the update payload omits them — the adapter
+      // must merge onto the current document, not replace it wholesale.
+      it('preserves sourceCode/sourceFile/sourceHash/versions when the update payload omits them (form-only save)', async () => {
+        const created = await mod.testCases.create({
+          name: 'Code-imported TC',
+          initialPrompt: 'Original prompt',
+          sourceFile: 'evals/demo.eval.ts',
+          sourceHash: 'hash-v1',
+          sourceCode: 'export const testCase = { name: "demo" };',
+          versions: [{ version: 1, createdAt: '2024-01-01T00:00:00Z', initialPrompt: 'Original prompt' }],
+        } as any);
+
+        // Exactly what TestCaseEditor.handleSave() sends in form mode for an
+        // existing test case — no sourceCode/sourceFile/sourceHash/versions.
+        const updated = await mod.testCases.update(created.id, {
+          name: 'Updated via form',
+          description: 'edited',
+          labels: ['category:RCA'],
+          initialPrompt: 'Updated prompt',
+          context: [],
+          expectedOutcomes: ['outcome'],
+        } as any);
+
+        expect(updated.name).toBe('Updated via form');
+        expect((updated as any).sourceFile).toBe('evals/demo.eval.ts');
+        expect((updated as any).sourceHash).toBe('hash-v1');
+        expect((updated as any).sourceCode).toBe('export const testCase = { name: "demo" };');
+        expect((updated as any).versions).toEqual([
+          { version: 1, createdAt: '2024-01-01T00:00:00Z', initialPrompt: 'Original prompt' },
+        ]);
+
+        // Re-fetch independently to confirm it's the persisted value on disk,
+        // not just the in-memory object `update()` happened to return.
+        const fetched = await mod.testCases.getById(created.id);
+        expect((fetched as any).sourceFile).toBe('evals/demo.eval.ts');
+        expect((fetched as any).sourceHash).toBe('hash-v1');
+        expect((fetched as any).sourceCode).toBe('export const testCase = { name: "demo" };');
+        expect((fetched as any).versions).toEqual([
+          { version: 1, createdAt: '2024-01-01T00:00:00Z', initialPrompt: 'Original prompt' },
+        ]);
+      });
     });
 
     describe('getById', () => {

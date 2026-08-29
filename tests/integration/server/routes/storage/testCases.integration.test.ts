@@ -322,6 +322,84 @@ describe('Test Cases CRUD Integration Tests', () => {
       expect(versionsData.total).toBeGreaterThanOrEqual(2);
     }, 30000);
 
+    // VERIFY-3 (PR #451 codex review): TestCaseEditor.handleSave() sends a
+    // PUT body containing ONLY the fields the form manages — name,
+    // description, labels, initialPrompt, context, expectedOutcomes (see
+    // components/TestCaseEditor.tsx handleSave / services/storage/
+    // asyncTestCaseStorage.ts update). A code-imported test case also
+    // carries sourceCode / sourceFile / sourceHash and a `versions` array
+    // that the form neither shows nor sends. This must survive a form-only
+    // PUT round trip through the real HTTP API — not just the client-side
+    // wrapper's own merge (asyncTestCaseStorage.update fetches+merges before
+    // sending), but the server route + adapter (file or OpenSearch,
+    // whichever backend `storageReachable` reports below) as well.
+    it('should preserve sourceCode/sourceFile/sourceHash/versions across a PUT that only includes form-managed fields', async () => {
+      if (!backendAvailable) return;
+
+      const createResp = await fetch(`${BASE_URL}/api/storage/test-cases`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: `${NAME_MARKER}-provenance`,
+          category: 'RCA',
+          difficulty: 'Easy',
+          initialPrompt: 'original prompt',
+          context: [],
+          expectedOutcomes: ['original'],
+          sourceFile: 'evals/demo.eval.ts',
+          sourceHash: 'hash-v1',
+          sourceCode: 'export const testCase = { name: "demo" };',
+          versions: [{ version: 1, createdAt: new Date().toISOString(), initialPrompt: 'original prompt' }],
+        }),
+      });
+      expect(createResp.status).toBe(201);
+      const created = await createResp.json();
+      createdTestCaseIds.push(created.id);
+      expect(created.sourceFile).toBe('evals/demo.eval.ts');
+      expect(created.sourceCode).toBeDefined();
+
+      // PUT with ONLY the fields a form-mode save sends. No sourceCode /
+      // sourceFile / sourceHash / versions in this payload at all.
+      const updateResp = await fetch(
+        `${BASE_URL}/api/storage/test-cases/${encodeURIComponent(created.id)}`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            name: `${NAME_MARKER}-provenance-edited`,
+            description: 'edited via form',
+            labels: ['category:RCA'],
+            initialPrompt: 'edited prompt',
+            context: [],
+            expectedOutcomes: ['edited'],
+          }),
+        },
+      );
+      expect(updateResp.ok).toBe(true);
+      const updated = await updateResp.json();
+      expect(updated.name).toBe(`${NAME_MARKER}-provenance-edited`);
+      expect(updated.sourceFile).toBe('evals/demo.eval.ts');
+      expect(updated.sourceHash).toBe('hash-v1');
+      expect(updated.sourceCode).toBe('export const testCase = { name: "demo" };');
+      expect(updated.versions).toEqual([
+        expect.objectContaining({ version: 1, initialPrompt: 'original prompt' }),
+      ]);
+
+      // Re-fetch independently — confirms it's actually persisted, not just
+      // echoed back in the PUT response.
+      const getResp = await fetch(
+        `${BASE_URL}/api/storage/test-cases/${encodeURIComponent(created.id)}`,
+      );
+      expect(getResp.ok).toBe(true);
+      const fetched = await getResp.json();
+      expect(fetched.sourceFile).toBe('evals/demo.eval.ts');
+      expect(fetched.sourceHash).toBe('hash-v1');
+      expect(fetched.sourceCode).toBe('export const testCase = { name: "demo" };');
+      expect(fetched.versions).toEqual([
+        expect.objectContaining({ version: 1, initialPrompt: 'original prompt' }),
+      ]);
+    }, 30000);
+
     it('should reject updating sample data (demo- prefix)', async () => {
       if (!backendAvailable) return;
 

@@ -408,6 +408,50 @@ describe('OpenSearchStorageModule', () => {
 
         await expect(mod.testCases.update('tc-new', { name: 'New' })).rejects.toThrow('Test case tc-new not found');
       });
+
+      // VERIFY-3 (PR #451 codex review): a form-only save (TestCaseEditor)
+      // sends only name/description/labels/initialPrompt/context/
+      // expectedOutcomes. Confirm the OpenSearch adapter's merge
+      // (`{ ...current, ...updates }`) preserves sourceCode/sourceFile/
+      // sourceHash/versions that the update payload doesn't mention, instead
+      // of replacing the whole document with the partial payload.
+      it('preserves sourceCode/sourceFile/sourceHash/versions absent from the update payload (form-only save)', async () => {
+        const existing = {
+          id: 'tc-1',
+          version: 1,
+          currentVersion: 1,
+          name: 'Code-imported TC',
+          initialPrompt: 'Original prompt',
+          sourceFile: 'evals/demo.eval.ts',
+          sourceHash: 'hash-v1',
+          sourceCode: 'export const testCase = { name: "demo" };',
+          versions: [{ version: 1, createdAt: '2024-01-01T00:00:00Z', initialPrompt: 'Original prompt' }],
+        };
+        mockClient.search.mockResolvedValue(makeSearchResponse([existing], 1));
+        mockClient.index.mockResolvedValue({});
+
+        const result = await mod.testCases.update('tc-1', {
+          name: 'Updated via form',
+          description: 'edited',
+          labels: ['category:RCA'],
+          initialPrompt: 'Updated prompt',
+          context: [],
+          expectedOutcomes: ['outcome'],
+        });
+
+        expect(result.name).toBe('Updated via form');
+        expect((result as any).sourceFile).toBe('evals/demo.eval.ts');
+        expect((result as any).sourceHash).toBe('hash-v1');
+        expect((result as any).sourceCode).toBe('export const testCase = { name: "demo" };');
+        expect((result as any).versions).toEqual(existing.versions);
+
+        // The document actually persisted to OpenSearch must carry them too.
+        const indexedBody = mockClient.index.mock.calls[0][0].body;
+        expect(indexedBody.sourceFile).toBe('evals/demo.eval.ts');
+        expect(indexedBody.sourceHash).toBe('hash-v1');
+        expect(indexedBody.sourceCode).toBe('export const testCase = { name: "demo" };');
+        expect(indexedBody.versions).toEqual(existing.versions);
+      });
     });
 
     describe('delete', () => {
