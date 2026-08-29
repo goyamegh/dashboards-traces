@@ -450,7 +450,7 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                   <Input
                     id="name"
                     value={name}
-                    onChange={e => setName(e.target.value)}
+                    onChange={e => { if (!isFormLocked) setName(e.target.value); }}
                     placeholder="e.g., Service Discovery Test"
                     disabled={isFormLocked}
                   />
@@ -461,7 +461,7 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                   <Textarea
                     id="prompt"
                     value={initialPrompt}
-                    onChange={e => setInitialPrompt(e.target.value)}
+                    onChange={e => { if (!isFormLocked) setInitialPrompt(e.target.value); }}
                     placeholder="The user query to send to the agent..."
                     rows={2}
                     disabled={isFormLocked}
@@ -513,7 +513,7 @@ export const TestCaseEditor: React.FC<TestCaseEditorProps> = ({
                   <Textarea
                     id="description"
                     value={description}
-                    onChange={e => setDescription(e.target.value)}
+                    onChange={e => { if (!isFormLocked) setDescription(e.target.value); }}
                     placeholder="Describe what this test case validates..."
                     rows={2}
                     disabled={isFormLocked}
