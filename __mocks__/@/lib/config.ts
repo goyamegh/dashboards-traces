@@ -41,9 +41,14 @@ export interface EnvConfig {
   otelExporterHeaders: string;
 }
 
-import { DEFAULT_BACKEND_PORT } from '@/lib/portConfig';
+import { resolveBackendPort } from '@/lib/portConfig';
 
-const BACKEND_URL = `http://localhost:${DEFAULT_BACKEND_PORT}`;
+// Resolve the SAME way the real lib/config does on the server side: honor
+// AH_PORT (legacy AGENT_HEALTH_PORT) and only then fall back to 4001. The
+// previous hardcoded DEFAULT_BACKEND_PORT sent every service-layer jest suite
+// to port 4001 — whatever happens to be running there (on dev boxes, a LIVE
+// server) — silently ignoring the AH_PORT the test run was told to use.
+const BACKEND_URL = `http://localhost:${resolveBackendPort()}`;
 
 export const ENV_CONFIG: EnvConfig = {
   backendUrl: BACKEND_URL,
