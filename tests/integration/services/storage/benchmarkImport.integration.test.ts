@@ -20,11 +20,19 @@ import { asyncTestCaseStorage } from '@/services/storage/asyncTestCaseStorage';
 import { asyncBenchmarkStorage } from '@/services/storage/asyncBenchmarkStorage';
 import { storageAdmin } from '@/services/storage/opensearchClient';
 import { validateTestCasesArrayJson } from '@/lib/testCaseValidation';
+import { createTestDataTracker } from '../../../helpers/testDataTracker';
 
 const checkBackend = async (): Promise<boolean> => {
   try {
     const health = await storageAdmin.health();
-    return health.status === 'connected';
+    // Both storage backends report `status: 'ok'` when healthy (file storage:
+    // server/adapters/file/StorageModule.ts; OpenSearch:
+    // server/adapters/opensearch/StorageModule.ts) — neither ever returns
+    // 'connected'. Comparing against 'connected' (a stale convention copied
+    // across several sibling integration-test files) was ALWAYS false, so
+    // every guarded test below silently early-returned — the whole suite
+    // green-lit without asserting anything, in every environment.
+    return health.status === 'ok';
   } catch {
     return false;
   }
@@ -32,7 +40,9 @@ const checkBackend = async (): Promise<boolean> => {
 
 describe('Benchmarks Page Import Flow', () => {
   let backendAvailable = false;
-  const createdTestCaseIds: string[] = [];
+  // Tracks every test case / benchmark this suite creates — ordered,
+  // 404-tolerant, crash-ledgered cleanup; see tests/helpers/testDataTracker.ts.
+  const tracker = createTestDataTracker();
   const createdBenchmarkIds: string[] = [];
 
   // Simulates the JSON file content that would be loaded via the file input
@@ -73,26 +83,11 @@ describe('Benchmarks Page Import Flow', () => {
   });
 
   afterAll(async () => {
+    await tracker.cleanup();
     if (!backendAvailable) return;
 
-    // Clean up by ID (current run)
-    for (const id of createdBenchmarkIds) {
-      try {
-        await asyncBenchmarkStorage.delete(id);
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
-
-    for (const id of createdTestCaseIds) {
-      try {
-        await asyncTestCaseStorage.delete(id);
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
-
-    // Clean up leftovers from previous failed runs by name
+    // Clean up leftovers from previous failed runs by name (predates the
+    // tracker; the shared cluster may still hold them).
     try {
       const allBenchmarks = await asyncBenchmarkStorage.getAll();
       for (const b of allBenchmarks) {
@@ -123,7 +118,10 @@ describe('Benchmarks Page Import Flow', () => {
       // Step 2: Bulk create test cases
       const result = await asyncTestCaseStorage.bulkCreate(validation.data!);
       expect(result.created).toBe(2);
-      expect(result.errors).toBe(false);
+      // `errors` is a COUNT (number of failed creates), not a boolean — see
+      // the storage adapters' bulkCreate; the old `toBe(false)` assertion was
+      // written against a lying client type and never actually ran.
+      expect(result.errors).toBe(0);
 
       // Step 3: Fetch all test cases and find the created IDs (mirrors the handler's getAll + filter)
       const allTestCases = await asyncTestCaseStorage.getAll();
@@ -134,7 +132,7 @@ describe('Benchmarks Page Import Flow', () => {
       expect(createdIds.length).toBeGreaterThanOrEqual(2);
       createdIds.forEach((id) => {
         expect(id).toMatch(/^tc-/);
-        createdTestCaseIds.push(id);
+        tracker.testCase(id);
       });
 
       // Step 4: Create benchmark with the test case IDs (mirrors the handler's benchmark creation)
@@ -160,6 +158,7 @@ describe('Benchmarks Page Import Flow', () => {
       expect(benchmark.runs).toEqual([]);
       expect(benchmark.description).toContain('Auto-created from import');
 
+      tracker.benchmark(benchmark.id);
       createdBenchmarkIds.push(benchmark.id);
     });
 
@@ -201,9 +200,7 @@ describe('Benchmarks Page Import Flow', () => {
       allTestCases
         .filter((tc) => importFileContent.some((d) => d.name === tc.name))
         .forEach((tc) => {
-          if (!createdTestCaseIds.includes(tc.id)) {
-            createdTestCaseIds.push(tc.id);
-          }
+          tracker.testCase(tc.id);
         });
 
       // Note: bulkCreate does NOT deduplicate by name, so this will create new ones.

@@ -17,12 +17,20 @@ import { asyncBenchmarkStorage } from '@/services/storage/asyncBenchmarkStorage'
 import { asyncTestCaseStorage } from '@/services/storage/asyncTestCaseStorage';
 import { asyncRunStorage } from '@/services/storage/asyncRunStorage';
 import { storageAdmin } from '@/services/storage/opensearchClient';
+import { createTestDataTracker } from '../../../helpers/testDataTracker';
 
 // Skip tests if backend is not running
 const checkBackend = async (): Promise<boolean> => {
   try {
     const health = await storageAdmin.health();
-    return health.status === 'connected';
+    // Both storage backends report `status: 'ok'` when healthy (file storage:
+    // server/adapters/file/StorageModule.ts; OpenSearch:
+    // server/adapters/opensearch/StorageModule.ts) — neither ever returns
+    // 'connected'. Comparing against 'connected' (a stale convention copied
+    // across several sibling integration-test files) was ALWAYS false, so
+    // every guarded test below silently early-returned — the whole suite
+    // green-lit without asserting anything, in every environment.
+    return health.status === 'ok';
   } catch {
     return false;
   }
@@ -30,6 +38,9 @@ const checkBackend = async (): Promise<boolean> => {
 
 describe('OpenSearch Storage Integration Tests', () => {
   let backendAvailable = false;
+  // Tracks every entity this suite creates so cleanup is ordered, 404-tolerant
+  // and crash-ledgered — see tests/helpers/testDataTracker.ts.
+  const tracker = createTestDataTracker();
 
   beforeAll(async () => {
     backendAvailable = await checkBackend();
@@ -38,12 +49,19 @@ describe('OpenSearch Storage Integration Tests', () => {
     }
   });
 
+  afterAll(async () => {
+    await tracker.cleanup();
+  });
+
   describe('storageAdmin', () => {
     it('should check health status', async () => {
       if (!backendAvailable) return;
 
       const health = await storageAdmin.health();
-      expect(health.status).toBe('connected');
+      // 'ok' is what GET /api/storage/health actually returns when healthy —
+      // this used to assert 'connected', which no backend ever reports; the
+      // assertion only "passed" because the broken guard above skipped it.
+      expect(health.status).toBe('ok');
     });
 
     it('should get storage stats', async () => {
@@ -63,15 +81,8 @@ describe('OpenSearch Storage Integration Tests', () => {
 
     afterAll(async () => {
       if (!backendAvailable) return;
-      // Cleanup: delete test case by tracked ID
-      if (createdTestCaseId) {
-        try {
-          await asyncTestCaseStorage.delete(createdTestCaseId);
-        } catch {
-          // Ignore cleanup errors
-        }
-      }
       // Fallback: clean up leftovers from previous failed runs by name
+      // (predates the tracker; the shared cluster may still hold them).
       try {
         const allTestCases = await asyncTestCaseStorage.getAll();
         for (const tc of allTestCases) {
@@ -103,6 +114,7 @@ describe('OpenSearch Storage Integration Tests', () => {
 
       // Store ID for cleanup and subsequent tests
       createdTestCaseId = testCase.id;
+      tracker.testCase(testCase.id);
     });
 
     it('should get test case by ID', async () => {
@@ -147,15 +159,8 @@ describe('OpenSearch Storage Integration Tests', () => {
 
     afterAll(async () => {
       if (!backendAvailable) return;
-      // Cleanup: delete benchmark by tracked ID
-      if (benchmarkId) {
-        try {
-          await asyncBenchmarkStorage.delete(benchmarkId);
-        } catch {
-          // Ignore cleanup errors
-        }
-      }
       // Fallback: clean up leftovers from previous failed runs by name
+      // (predates the tracker; the shared cluster may still hold them).
       try {
         const allBenchmarks = await asyncBenchmarkStorage.getAll();
         for (const b of allBenchmarks) {
@@ -188,6 +193,7 @@ describe('OpenSearch Storage Integration Tests', () => {
       expect(benchmark.id).toBeDefined();
       expect(benchmark.name).toBe('Integration Test Benchmark');
       benchmarkId = benchmark.id;
+      tracker.benchmark(benchmark.id);
     });
 
     it('should get benchmark by ID', async () => {

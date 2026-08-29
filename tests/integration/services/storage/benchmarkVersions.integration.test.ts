@@ -15,12 +15,20 @@
 
 import { asyncBenchmarkStorage } from '@/services/storage/asyncBenchmarkStorage';
 import { storageAdmin } from '@/services/storage/opensearchClient';
+import { createTestDataTracker } from '../../../helpers/testDataTracker';
 import type { BenchmarkRun } from '@/types';
 
 const checkBackend = async (): Promise<boolean> => {
   try {
     const health = await storageAdmin.health();
-    return health.status === 'connected';
+    // Both storage backends report `status: 'ok'` when healthy (file storage:
+    // server/adapters/file/StorageModule.ts; OpenSearch:
+    // server/adapters/opensearch/StorageModule.ts) — neither ever returns
+    // 'connected'. Comparing against 'connected' (a stale convention copied
+    // across several sibling integration-test files) was ALWAYS false, so
+    // every guarded test below silently early-returned — the whole suite
+    // green-lit without asserting anything, in every environment.
+    return health.status === 'ok';
   } catch {
     return false;
   }
@@ -42,7 +50,9 @@ function buildRun(overrides: Partial<BenchmarkRun> = {}): BenchmarkRun {
 
 describe('Benchmark Versions Integration Tests', () => {
   let backendAvailable = false;
-  const createdBenchmarkIds: string[] = [];
+  // Tracks every benchmark this suite creates — ordered, 404-tolerant,
+  // crash-ledgered cleanup; see tests/helpers/testDataTracker.ts.
+  const tracker = createTestDataTracker();
 
   beforeAll(async () => {
     backendAvailable = await checkBackend();
@@ -52,16 +62,10 @@ describe('Benchmark Versions Integration Tests', () => {
   });
 
   afterAll(async () => {
+    await tracker.cleanup();
     if (!backendAvailable) return;
-    // Cleanup all created benchmarks by tracked ID
-    for (const id of createdBenchmarkIds) {
-      try {
-        await asyncBenchmarkStorage.delete(id);
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
     // Fallback: clean up leftovers from previous failed runs by name
+    // (predates the tracker; the shared cluster may still hold them).
     try {
       const names = ['Version Integration Test', 'Run Embed Test', 'Run Delete Test', 'Delete Test'];
       const allBenchmarks = await asyncBenchmarkStorage.getAll();
@@ -100,7 +104,7 @@ describe('Benchmark Versions Integration Tests', () => {
       expect(benchmark.versions[0].version).toBe(1);
       expect(benchmark.versions[0].testCaseIds).toEqual(['tc-001', 'tc-002']);
 
-      createdBenchmarkIds.push(benchmark.id);
+      tracker.benchmark(benchmark.id);
     });
   });
 
@@ -120,7 +124,7 @@ describe('Benchmark Versions Integration Tests', () => {
           testCaseIds: ['tc-001'],
         }],
       });
-      createdBenchmarkIds.push(benchmark.id);
+      tracker.benchmark(benchmark.id);
 
       const run = buildRun({ name: 'Embedded Run' });
       const added = await asyncBenchmarkStorage.addRun(benchmark.id, run);
@@ -150,7 +154,7 @@ describe('Benchmark Versions Integration Tests', () => {
           testCaseIds: ['tc-001'],
         }],
       });
-      createdBenchmarkIds.push(benchmark.id);
+      tracker.benchmark(benchmark.id);
 
       // Add a run first
       const run = buildRun({ name: 'Run To Delete' });
@@ -186,7 +190,7 @@ describe('Benchmark Versions Integration Tests', () => {
           testCaseIds: ['tc-001'],
         }],
       });
-      createdBenchmarkIds.push(benchmark.id);
+      tracker.benchmark(benchmark.id);
 
       const all = await asyncBenchmarkStorage.getAll();
       expect(Array.isArray(all)).toBe(true);
