@@ -504,6 +504,12 @@ export async function validateAwsCredentials(profile?: string): Promise<string |
 
     const credentials = fromNodeProviderChain({
       ...(profile && { profile }),
+      // See resolveSigv4Credentials() in opensearchClientFactory.ts: without
+      // this, @smithy/shared-ini-file-loader's process-lifetime cache of
+      // ~/.aws/credentials would make this check keep validating whatever
+      // creds the process first read, defeating the "not just locally
+      // cached" guarantee this function promises.
+      ignoreCache: true,
     });
 
     // Make a real API call to verify credentials are usable, not just locally cached

@@ -64,8 +64,11 @@ import type { ClusterConfig } from '../../types/index.js';
  * The fix: always attach a synthetic `expiration` (now + this window) to
  * credentials that don't already carry one, so opensearch-js's own expiry
  * check periodically forces a re-call to `getCredentials()`, which - since
- * we build a fresh provider chain on every call below - re-reads whatever
- * is on disk/in the environment right now.
+ * we build a fresh provider chain on every call below, with `ignoreCache:
+ * true` to also defeat the AWS SDK's own file-content cache (see the
+ * `resolveSigv4Credentials` doc comment) - re-reads whatever is actually on
+ * disk/in the environment right now, not whatever was there the first time
+ * this process ever resolved credentials.
  */
 // 5 minutes: bounds the worst-case "still signing with a rotated-out key"
 // window to something short (opensearch-js re-checks ~30s before this
@@ -91,10 +94,33 @@ export const SIGV4_CREDENTIAL_REFRESH_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
  * expiration into other consumers of that provider.
  *
  * Exported for direct unit testing.
+ *
+ * IMPORTANT - a SECOND, process-wide cache sits underneath this "fresh
+ * provider chain every call" strategy: `@smithy/shared-ini-file-loader`
+ * memoizes the raw contents of `~/.aws/credentials` / `~/.aws/config` in a
+ * module-level `filePromises` map, keyed only by file path, for the lifetime
+ * of the Node process - it is NOT invalidated by mtime, and NOT invalidated
+ * by constructing a brand-new provider chain (that only avoids the AWS SDK's
+ * own `memoizeChain` credential-object cache, a different layer). The first
+ * time any code in the process reads that file, its content is frozen for
+ * every subsequent read, including ones made by unrelated fresh provider
+ * instances like the one built above. `ada credentials update` (and any
+ * other tool that rewrites the ini file in place) is therefore invisible to
+ * a long-running server no matter how often we "re-resolve" credentials -
+ * until the process restarts and the module cache resets. This is the actual
+ * cause of the Aug 2026 incidents where `/api/storage/config/retry` kept
+ * returning HTTP 403 after `ada` had already refreshed valid credentials on
+ * disk, and only a process restart recovered. The only supported way to
+ * bypass that file cache is the provider chain's own `ignoreCache: true`
+ * option (forwarded verbatim down to `readFile()`), so we pass it here.
  */
 export async function resolveSigv4Credentials(awsProfile?: string) {
   const provider = fromNodeProviderChain({
     ...(awsProfile && { profile: awsProfile }),
+    // Bypass @smithy/shared-ini-file-loader's process-lifetime file-content
+    // cache (see comment above) so a rotated ~/.aws/credentials is picked up
+    // on the very next resolution instead of requiring a process restart.
+    ignoreCache: true,
   });
   const credentials = await provider();
   if (credentials.expiration) {
