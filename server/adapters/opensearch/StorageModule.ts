@@ -546,7 +546,25 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
         },
         refresh: 'wait_for',
       });
-      return (response?.body as { result?: string } | undefined)?.result !== 'noop';
+      // Fail CLOSED, not open: only report success when we positively observe
+      // the update script's non-noop result. `@opensearch-project/opensearch`
+      // v3.5.1 always wraps the real ES/OS response under `.body` (verified
+      // against a live cluster: top-level keys are `body`/`statusCode`/
+      // `headers`/`meta`, with `body.result` being `'updated'` on an actual
+      // removal or `'noop'` when the script ran but nothing matched) — but if
+      // a future client version changes that shape, `.body` is absent/renamed,
+      // or `result` is some other unrecognized value, defaulting to "success"
+      // would silently resurrect the exact false-positive this method exists
+      // to fix. So: read both plausible shapes, and require an *exact* known
+      // success value rather than merely `!== 'noop'`.
+      const result =
+        (response?.body as { result?: string } | undefined)?.result ??
+        (response as unknown as { result?: string } | undefined)?.result;
+      if (result === 'updated') return true;
+      if (result === 'noop') return false;
+      throw new Error(
+        `deleteRun: unrecognized OpenSearch update result '${String(result)}' for benchmark ${benchmarkId}, run ${runId} — refusing to assume success`,
+      );
     } catch (error: any) {
       if (error.meta?.statusCode === 404) return false;
       throw error;

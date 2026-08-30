@@ -258,6 +258,37 @@ describe('Run Storage Integration Tests', () => {
       expect(fetched!.evaluatorId).toBe('system-rca');
     });
 
+    it('preserves judgeModelId through save → fetch, independent of evaluatorId (asyncRunStorage.saveReport round trip)', async () => {
+      // Regression test for the client-side write mapper
+      // (services/storage/asyncRunStorage.ts toStorageFormat) silently
+      // dropping judgeModelId/evaluatorId before persisting — exercises the
+      // REAL save() → server → storage → fetch() path end to end, not just
+      // the in-memory mapper (see the unit-level coverage in
+      // tests/unit/services/storage/asyncRunStorage.test.ts for that).
+      if (!backendAvailable) return;
+
+      const report = buildReport({
+        evaluatorId: 'system-rca',
+        judgeModelId: 'us.anthropic.claude-sonnet-4-5-20250929-v1:0',
+      } as Partial<EvaluationReport>);
+      const saved = await asyncRunStorage.saveReport(report);
+      tracker.run(saved.id);
+
+      const fetched = await asyncRunStorage.getReportById(saved.id);
+      expect(fetched).toBeDefined();
+      expect(fetched!.evaluatorId).toBe('system-rca');
+      expect(fetched!.judgeModelId).toBe('us.anthropic.claude-sonnet-4-5-20250929-v1:0');
+
+      // Also verify through the runs list (getReports), which goes through
+      // the same toTestCaseRun read mapper on a *different* code path
+      // (search/list vs get-by-id) — both must carry the fields.
+      const { reports } = await asyncRunStorage.getReportsByTestCase(report.testCaseId);
+      const listed = reports.find(r => r.id === saved.id);
+      expect(listed).toBeDefined();
+      expect(listed!.evaluatorId).toBe('system-rca');
+      expect(listed!.judgeModelId).toBe('us.anthropic.claude-sonnet-4-5-20250929-v1:0');
+    });
+
     it('leaves name / description undefined for runs that omit them (no fabrication)', async () => {
       if (!backendAvailable) return;
 

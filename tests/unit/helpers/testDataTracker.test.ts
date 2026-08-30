@@ -158,6 +158,38 @@ describe('TestDataTracker.cleanup', () => {
     expect(urls).toContain(`${BASE}/api/storage/images/sha256%3Aabc`);
   });
 
+  it('never issues a request for an id that was not explicitly tracked (the hygiene guarantee)', async () => {
+    // Runtime enforcement of the rule that used to be checked by a
+    // source-string regex over every integration/e2e file (removed — see
+    // AGENTS.md's "Integration / e2e Test Cleanup" section and the 2026-08-29
+    // incident it documents: cleanup hooks that call a listing API and delete
+    // by name/pattern destroy OTHER PEOPLE'S data on the shared cluster).
+    // The tracker has exactly one path from "entity exists" to "entity
+    // deleted": track()/testCase()/benchmark()/etc. append to `this.entities`,
+    // and cleanup() only ever issues a DELETE for entries in that array —
+    // there is no code path here that enumerates storage or lists anything.
+    // This test proves that structurally: seed the mock backend with
+    // "other people's" real-looking entities the tracker never heard about,
+    // track only ONE unrelated id, and assert cleanup deletes exactly that
+    // one id and issues no other request of any kind (DELETE, GET, or
+    // otherwise).
+    const { calls, fn } = mockFetch();
+    const t = new TestDataTracker(BASE);
+    t.testCase('tc-mine-only');
+
+    await t.cleanup();
+
+    expect(fn).toHaveBeenCalledTimes(1);
+    expect(calls).toEqual([
+      { url: `${BASE}/api/storage/test-cases/tc-mine-only`, method: 'DELETE' },
+    ]);
+    // In particular: no request to any collection/listing endpoint
+    // (`?size=`, no path lacking a trailing id segment, etc.) and nothing
+    // that isn't a DELETE.
+    expect(calls.some((c) => c.method !== 'DELETE')).toBe(false);
+    expect(calls.some((c) => /\?size=|\/api\/storage\/(test-cases|benchmarks|evaluators|runs|evaluation-runs|images)\/?$/.test(c.url))).toBe(false);
+  });
+
   it('deletes children before parents so nothing is orphaned', async () => {
     const { calls } = mockFetch();
     const t = new TestDataTracker(BASE);

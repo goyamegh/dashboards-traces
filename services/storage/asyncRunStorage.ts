@@ -118,10 +118,10 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     // Judge model used for this run (PR #390 persists it). Without this
     // mapping, browser-side trace-recovery judging silently fell back to the
     // agent's modelId even when a distinct judge model was configured.
-    judgeModelId: (stored as any).judgeModelId,
+    judgeModelId: stored.judgeModelId,
     status: stored.status,
     passFailStatus: stored.passFailStatus as 'passed' | 'failed' | undefined,
-    evaluatorId: (stored as any).evaluatorId,
+    evaluatorId: stored.evaluatorId,
     trajectory: (stored.trajectory || []) as TrajectoryStep[],
     // Preserve every metric the judge emitted, not just the four legacy keys.
     // Custom evaluators (and even system evaluators other than RCA Default)
@@ -218,9 +218,11 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
   // judgeModelId, but this client-side write mapper silently dropped them —
   // so any report persisted through asyncRunStorage.saveReport (e.g. the
   // localStorage→OpenSearch migration) lost which evaluator/judge produced it
-  // and could never round-trip them back to the runs list.
-  if (report.evaluatorId !== undefined) (base as any).evaluatorId = report.evaluatorId;
-  if (report.judgeModelId !== undefined) (base as any).judgeModelId = report.judgeModelId;
+  // and could never round-trip them back to the runs list. Both fields are
+  // part of the StorageRun type (see services/storage/opensearchClient.ts),
+  // so this is a plain typed assignment now — no `as any` needed.
+  if (report.evaluatorId !== undefined) base.evaluatorId = report.evaluatorId;
+  if (report.judgeModelId !== undefined) base.judgeModelId = report.judgeModelId;
   if (report.traceFetchAttempts !== undefined) base.traceFetchAttempts = report.traceFetchAttempts;
   if (report.lastTraceFetchAt !== undefined) base.lastTraceFetchAt = report.lastTraceFetchAt;
   if (report.traceError !== undefined) base.traceError = report.traceError;
