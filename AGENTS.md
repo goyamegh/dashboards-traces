@@ -464,9 +464,20 @@ NOT proof of ownership (real data includes benchmarks named `mstest` and
 cross-run collisions can't happen, capture every created id, and delete exactly
 those ids. Leftovers from crashed runs are reaped by the tracker's crash ledger
 (`jest.globalTeardown.cjs`) and, for historical junk, the reviewed opt-in
-`scripts/sweep-test-data.mjs`. This rule is enforced by
-[tests/unit/testCleanupHygiene.test.ts](tests/unit/testCleanupHygiene.test.ts),
-which fails on any list+delete or name-gated delete inside `afterAll`/`afterEach`.
+`scripts/sweep-test-data.mjs`. This is enforced at RUNTIME, not by scanning
+source text for the anti-pattern (an earlier version of this rule,
+`tests/unit/testCleanupHygiene.test.ts`, tried to regex-detect "list + delete"
+and "name-gated delete" in every cleanup hook's source — removed because a
+semantic property checked by string-matching source is exactly the
+"coverage-theater" pattern this repo's testing guidance forbids: it is
+trivially bypassed by moving the bad logic into a helper function, one level
+of indirection defeats it). Instead, [`TestDataTracker.cleanup()`](tests/helpers/testDataTracker.ts)
+is structurally incapable of the anti-pattern — it only ever issues a DELETE
+for an id previously passed to `track()`/`testCase()`/`benchmark()`/etc.
+(`this.entities`), and there is no code path in it that calls a listing API.
+[tests/unit/helpers/testDataTracker.test.ts](tests/unit/helpers/testDataTracker.test.ts)
+covers that guarantee directly ("never issues a request for an id that was
+not explicitly tracked") against the real implementation, not a source scan.
 
 Use the shared tracker — do not hand-roll `createdXIds[]` arrays:
 

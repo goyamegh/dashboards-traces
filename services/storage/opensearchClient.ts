@@ -153,6 +153,10 @@ export interface StorageRun {
   trajectory?: unknown[];
   rawEvents?: unknown[];
   logs?: unknown[];
+  /** Which evaluator produced this run's verdict (see EvaluationReport/BenchmarkRun.evaluatorId). */
+  evaluatorId?: string;
+  /** Which Bedrock judge model produced this run's verdict (see EvaluationReport/BenchmarkRun.judgeModelId). */
+  judgeModelId?: string;
   improvementStrategies?: {
     category: string;
     issue: string;
