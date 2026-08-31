@@ -406,7 +406,7 @@ describe('RunInspectorPage — Re-run button (eval-run mode)', () => {
     renderPage();
 
     await waitFor(() => expect(screen.getByTestId('inspector-rerun-btn')).toBeTruthy());
-    expect(screen.getByTestId('inspector-rerun-btn')).not.toBeDisabled();
+    expect((screen.getByTestId('inspector-rerun-btn') as HTMLButtonElement).disabled).toBe(false);
   });
 
   it('opens re-run dialog when Re-run button clicked', async () => {
@@ -493,10 +493,10 @@ describe('RunInspectorPage — Re-run button (eval-run mode)', () => {
 
     renderPage();
 
+    await waitFor(() => expect(screen.getByTestId('rerun-provenance-chip')).toBeTruthy());
     const chip = screen.getByTestId('rerun-provenance-chip');
-    await waitFor(() => expect(chip).toBeTruthy());
     // Chip should have muted styling when source is missing
-    expect(chip.className).toMatch(/border-muted-foreground|bg-muted/);
+    await waitFor(() => expect(chip.className).toMatch(/border-muted-foreground|bg-muted/));
   });
 });
 
@@ -510,12 +510,11 @@ describe('RunInspectorPage — Re-run button (benchmark mode)', () => {
 
     renderPage();
 
-    await waitFor(() => expect(screen.getByTestId('test-case-row')).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByTestId('test-case-row').length).toBeGreaterThan(0));
 
-    const rerunBtn = screen.getByTestId('inspector-rerun-btn');
-    expect(rerunBtn).toBeDisabled();
-    expect(rerunBtn.parentElement).toHaveAttribute(
-      'title',
+    const rerunBtn = screen.getByTestId('inspector-rerun-btn') as HTMLButtonElement;
+    expect(rerunBtn.disabled).toBe(true);
+    expect(rerunBtn.parentElement?.getAttribute('title')).toBe(
       'Re-run is only available for evaluation runs, not benchmark-embedded runs'
     );
   });

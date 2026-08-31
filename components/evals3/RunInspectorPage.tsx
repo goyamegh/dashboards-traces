@@ -418,6 +418,7 @@ export const RunInspectorPage: React.FC = () => {
                   variant="outline"
                   size="sm"
                   disabled
+                  data-testid="inspector-rerun-btn"
                   className="h-7 gap-1.5 text-xs"
                 >
                   <RotateCcw size={12} />
