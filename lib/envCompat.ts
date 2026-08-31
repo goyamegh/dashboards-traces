@@ -29,10 +29,17 @@ const warned = new Set<string>();
  * deprecation warning to stderr.
  */
 export function readEnv(newName: string, oldName: string): string | undefined {
-  const newVal = process.env[newName];
+  // Browser-like environments (and tests simulating them) may have no
+  // process.env at all; env reads must degrade to "unset", never throw,
+  // because this helper sits on module-load paths (lib/config,
+  // lib/portConfig) that browser bundles also import.
+  const env = typeof process !== 'undefined' ? process.env : undefined;
+  if (!env) return undefined;
+
+  const newVal = env[newName];
   if (newVal !== undefined) return newVal;
 
-  const oldVal = process.env[oldName];
+  const oldVal = env[oldName];
   if (oldVal !== undefined) {
     warnDeprecated(oldName, newName);
     return oldVal;
@@ -46,7 +53,8 @@ export function readEnv(newName: string, oldName: string): string | undefined {
  * Useful for tests that exercise deprecation paths without triggering reads.
  */
 export function isLegacyEnvSet(oldName: string): boolean {
-  return process.env[oldName] !== undefined;
+  const env = typeof process !== 'undefined' ? process.env : undefined;
+  return env ? env[oldName] !== undefined : false;
 }
 
 /**
@@ -60,9 +68,10 @@ export function warnDeprecated(oldName: string, newName: string): void {
   if (warned.has(oldName)) return;
   warned.add(oldName);
 
+  const env = typeof process !== 'undefined' ? process.env : undefined;
   if (
-    process.env.AH_QUIET_DEPRECATIONS === '1' ||
-    process.env.AGENT_HEALTH_QUIET_DEPRECATIONS === '1'
+    env?.AH_QUIET_DEPRECATIONS === '1' ||
+    env?.AGENT_HEALTH_QUIET_DEPRECATIONS === '1'
   ) {
     return;
   }

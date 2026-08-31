@@ -828,6 +828,15 @@ export class FileSessionMetadataOperations implements ISessionMetadataOperations
     const all = readAllFromDir<SessionMetadata>(this.dir);
     return paginate(all, options);
   }
+
+  async delete(agentKind: string, sessionId: string): Promise<{ deleted: boolean }> {
+    const filePath = this.docPath(agentKind, sessionId);
+    if (fs.existsSync(filePath)) {
+      fs.unlinkSync(filePath);
+      return { deleted: true };
+    }
+    return { deleted: false };
+  }
 }
 
 // ============================================================================

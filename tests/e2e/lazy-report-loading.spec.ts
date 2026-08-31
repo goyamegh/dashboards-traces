@@ -16,28 +16,43 @@
  *      - run rows are windowed (50/page) with an infinite-scroll sentinel
  *
  * Data is seeded through the storage API (file backend in e2e), mirroring
- * orphan-benchmark-run-recovery.spec.ts.
+ * orphan-benchmark-run-recovery.spec.ts. Everything seeded is registered with
+ * a TestDataTracker (fixture names via uniqueTestName so even a crashed run
+ * is sweepable) and deleted in afterAll — with the crash ledger as backstop.
+ * This spec used to leak its entire fixture set: 240 `e2e-lazy-tc-*` test
+ * cases (14% of ALL test cases on the shared cluster) were measured leaked
+ * because the hand-rolled afterAll never ran when a worker died.
  */
 
 import { test, expect } from './fixtures/test-fixtures';
+import { createTestDataTracker, uniqueTestName } from '../helpers/testDataTracker';
 
 const TC_COUNT = 120; // > ROWS_PER_PAGE (100) to exercise the inspector window
 const RUN_COUNT = 60; // > RUNS_PER_PAGE (50) to exercise the runs-table window
 
 test.describe('Run inspector — lazy report loading + infinite scroll', () => {
+  // beforeAll-scoped fixtures outlive any single test, so the per-test
+  // testData fixture cannot own them — this tracker does (afterAll +
+  // crash ledger), and it tracks every id AT CREATION TIME so an early
+  // return in beforeAll can never strand a partial fixture set.
+  const tracker = createTestDataTracker();
   let testCaseIds: string[] = [];
   const reportIds: string[] = [];
   let benchmarkId: string | null = null;
   let runId: string | null = null;
 
   test.beforeAll(async ({ request }) => {
+    // Seeding 120 test cases + 120 reports is fast on CI's file backend but
+    // can take minutes against a remote OpenSearch cluster — don't let the
+    // default 60s hook timeout kill the seed halfway through.
+    test.setTimeout(300_000);
     const stamp = Date.now();
 
     // 1. Bulk-create test cases.
     const tcRes = await request.post('/api/storage/test-cases/bulk', {
       data: {
         testCases: Array.from({ length: TC_COUNT }, (_, i) => ({
-          name: `e2e-lazy-tc-${i}-${stamp}`,
+          name: uniqueTestName(`lazy-tc-${i}`),
           category: 'Test',
           difficulty: 'Easy',
           initialPrompt: 'p',
@@ -48,6 +63,7 @@ test.describe('Run inspector — lazy report loading + infinite scroll', () => {
     if (!tcRes.ok()) return;
     const tcJson = await tcRes.json();
     testCaseIds = (tcJson.testCases || []).map((tc: any) => tc.id);
+    tracker.testCases(testCaseIds);
     if (testCaseIds.length !== TC_COUNT) return;
 
     // 2. Bulk-create one completed report per test case (first one failed,
@@ -69,12 +85,13 @@ test.describe('Run inspector — lazy report loading + infinite scroll', () => {
       };
     });
     const bulkRes = await request.post('/api/storage/runs/bulk', { data: { runs: runsPayload } });
+    tracker.trackAll('run', reportIds);
     if (!bulkRes.ok()) return;
 
     // 3. Benchmark with one completed run referencing every report.
     const bmRes = await request.post('/api/storage/benchmarks', {
       data: {
-        name: `E2E Lazy Benchmark ${stamp}`,
+        name: uniqueTestName('lazy-benchmark'),
         description: 'lazy-report-loading E2E',
         testCaseIds,
         runs: [],
@@ -84,6 +101,7 @@ test.describe('Run inspector — lazy report loading + infinite scroll', () => {
     });
     if (!bmRes.ok()) return;
     benchmarkId = (await bmRes.json()).id;
+    tracker.benchmark(benchmarkId);
 
     runId = `run-e2e-lazy-${stamp}`;
     const results: Record<string, { reportId: string; status: string }> = {};
@@ -113,14 +131,10 @@ test.describe('Run inspector — lazy report loading + infinite scroll', () => {
     if (!put.ok()) benchmarkId = null;
   });
 
-  test.afterAll(async ({ request }) => {
-    if (benchmarkId) await request.delete(`/api/storage/benchmarks/${benchmarkId}`).catch(() => {});
-    for (const id of reportIds) {
-      await request.delete(`/api/storage/runs/${id}`).catch(() => {});
-    }
-    for (const id of testCaseIds) {
-      await request.delete(`/api/storage/test-cases/${id}`).catch(() => {});
-    }
+  test.afterAll(async () => {
+    // Children before parents, 404-tolerant, ledger-backed — and reconciles
+    // late-written reports referencing the tracked test cases.
+    await tracker.cleanup();
   });
 
   test('statuses load via one lightweight batch — no per-report full fetches', async ({ page }) => {
@@ -176,6 +190,7 @@ test.describe('Run inspector — lazy report loading + infinite scroll', () => {
 });
 
 test.describe('Evaluation runs page — infinite scroll', () => {
+  const tracker = createTestDataTracker();
   let benchmarkId: string | null = null;
   let namePrefix = '';
 
@@ -185,7 +200,7 @@ test.describe('Evaluation runs page — infinite scroll', () => {
 
     const bmRes = await request.post('/api/storage/benchmarks', {
       data: {
-        name: `E2E Scroll Benchmark ${stamp}`,
+        name: uniqueTestName('scroll-benchmark'),
         description: 'runs infinite scroll E2E',
         testCaseIds: [],
         runs: [],
@@ -195,6 +210,7 @@ test.describe('Evaluation runs page — infinite scroll', () => {
     });
     if (!bmRes.ok()) return;
     benchmarkId = (await bmRes.json()).id;
+    tracker.benchmark(benchmarkId);
 
     const runs = Array.from({ length: RUN_COUNT }, (_, i) => ({
       id: `run-${namePrefix}-${i}`,
@@ -215,8 +231,10 @@ test.describe('Evaluation runs page — infinite scroll', () => {
     if (!put.ok()) benchmarkId = null;
   });
 
-  test.afterAll(async ({ request }) => {
-    if (benchmarkId) await request.delete(`/api/storage/benchmarks/${benchmarkId}`).catch(() => {});
+  test.afterAll(async () => {
+    // The 60 seeded runs are EMBEDDED subdocuments of the benchmark — they
+    // die with the parent doc.
+    await tracker.cleanup();
   });
 
   test('run rows are windowed and more load when the sentinel scrolls into view', async ({ page }) => {

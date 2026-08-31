@@ -8,6 +8,7 @@
  */
 
 import { jest } from '@jest/globals';
+import { ENV_CONFIG } from '@/lib/config';
 
 // Mock global fetch
 const mockFetch = jest.fn();
@@ -37,7 +38,7 @@ describe('AsyncBenchmarkStorage Stats Refresh', () => {
 
       expect(result).toEqual(expectedResponse);
       expect(mockFetch).toHaveBeenCalledWith(
-        `/api/storage/benchmarks/${benchmarkId}/refresh-all-stats`,
+        `${ENV_CONFIG.storageApiUrl}/benchmarks/${benchmarkId}/refresh-all-stats`,
         { method: 'POST' }
       );
     });
@@ -99,7 +100,7 @@ describe('AsyncBenchmarkStorage Stats Refresh', () => {
 
       expect(result).toEqual(expectedResponse);
       expect(mockFetch).toHaveBeenCalledWith(
-        `/api/storage/benchmarks/${benchmarkId}/runs/${runId}/refresh-stats`,
+        `${ENV_CONFIG.storageApiUrl}/benchmarks/${benchmarkId}/runs/${runId}/refresh-stats`,
         { method: 'POST' }
       );
     });
@@ -223,7 +224,7 @@ describe('AsyncBenchmarkStorage Stats Refresh', () => {
       const result = await asyncBenchmarkStorage.refreshRunStats(benchmarkId, runId);
 
       expect(mockFetch).toHaveBeenCalledWith(
-        `/api/storage/benchmarks/${benchmarkId}/runs/${runId}/refresh-stats`,
+        `${ENV_CONFIG.storageApiUrl}/benchmarks/${benchmarkId}/runs/${runId}/refresh-stats`,
         { method: 'POST' }
       );
     });

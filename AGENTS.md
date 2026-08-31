@@ -447,11 +447,133 @@ CI enforces minimum coverage thresholds configured in `jest.config.cjs`:
 - **Functions**: 80%
 - **Branches**: 80%
 
-### Integration Test Cleanup
+### Integration / e2e Test Cleanup
 
-**Always delete data created during integration tests.** Integration tests that call the storage API write JSON files to `.agent-health/data/` on disk (the file-based storage backend). If tests don't clean up, these files accumulate in the working directory and appear as untracked files in git.
+**Always delete data created during integration and e2e tests.** These tests hit the
+real storage API, and the backend they talk to is whatever `AH_PORT` points at —
+often a **live server wired to a shared OpenSearch cluster**. Anything a test
+creates and fails to delete is permanent clutter in real data (and, on the file
+backend, permanent JSON under `.agent-health/data/`).
 
-Track every created ID and delete it in `afterAll`:
+**Never delete by name across shared storage; only delete ids you created.**
+Cleanup hooks must not enumerate storage (`getAll()`, GET on a collection
+endpoint) and delete whatever matches a name/prefix — "name looks test-ish" is
+NOT proof of ownership (real data includes benchmarks named `mstest` and
+`Jason Test`, and importing the bundled OTEL demo file yields docs named
+`OTEL Demo: …`). Give fixtures run-unique names via `uniqueTestName()` so
+cross-run collisions can't happen, capture every created id, and delete exactly
+those ids. Leftovers from crashed runs are reaped by the tracker's crash ledger
+(`jest.globalTeardown.cjs`) and, for historical junk, the reviewed opt-in
+`scripts/sweep-test-data.mjs`. This is enforced at RUNTIME, not by scanning
+source text for the anti-pattern (an earlier version of this rule,
+`tests/unit/testCleanupHygiene.test.ts`, tried to regex-detect "list + delete"
+and "name-gated delete" in every cleanup hook's source — removed because a
+semantic property checked by string-matching source is exactly the
+"coverage-theater" pattern this repo's testing guidance forbids: it is
+trivially bypassed by moving the bad logic into a helper function, one level
+of indirection defeats it). Instead, [`TestDataTracker.cleanup()`](tests/helpers/testDataTracker.ts)
+is structurally incapable of the anti-pattern — it only ever issues a DELETE
+for (a) an id previously passed to `track()`/`testCase()`/`benchmark()`/etc.
+(`this.entities`), or (b) a report doc returned by a **reconciliation search
+that is itself scoped to a tracked test-case id** (`POST /runs/search
+{testCaseId}`), and there is no code path in it that calls a listing API or
+matches anything by name. The reconciliation pass exists because a background
+evaluation can persist its report doc AFTER `afterAll` harvested every id the
+suite could see (measured live: 14 leaked reports in one integration run) —
+cleanup() re-queries with a bounded settle-poll, and `jest.globalTeardown.cjs`
+runs one final end-of-run pass via `reconcile-test-case` ledger markers.
+[tests/unit/helpers/testDataTracker.test.ts](tests/unit/helpers/testDataTracker.test.ts)
+covers that guarantee directly ("never issues a request for an id that was
+not explicitly tracked" — with reconciliation searches allowed only against
+tracked test-case ids) against the real implementation, not a source scan.
+
+Use the shared tracker — do not hand-roll `createdXIds[]` arrays:
+
+```typescript
+import { createTestDataTracker, uniqueTestName } from '../../helpers/testDataTracker';
+
+const tracker = createTestDataTracker();            // reads AH_PORT, default localhost:4001
+afterAll(async () => { await tracker.cleanup(); }); // children before parents, 404-tolerant
+
+const tc = await client.createTestCase({ name: uniqueTestName('my-case') /* ... */ });
+tracker.testCase(tc.id);
+```
+
+Available: `testCase(id)` / `testCases(ids)`, `benchmark(id)`,
+`benchmarkRun(benchmarkId, runId)`, `evaluationRun(id)`, `run(reportId)`,
+`evaluator(id)`, `image(digest)`, `customAgent`, `remoteServer`,
+`assistantSession`. In Playwright, use the `testData` fixture from
+`tests/e2e/fixtures/test-fixtures.ts` — it cleans up automatically per test.
+
+**`cleanup()` never throws** (so it cannot turn a green suite red) but warns on
+failure. Set `AH_TEST_CLEANUP_STRICT=1` to make leaks hard failures.
+
+#### Deleting a benchmark or evaluation run does NOT delete its reports
+
+`DELETE /api/storage/benchmarks/:id` and `DELETE /api/storage/evaluation-runs/:id`
+are single-document deletes with **no cascade** to the per-test-case report docs
+created by `/execute` or a real run (`OpenSearchBenchmarkOperations.delete()` /
+`OpenSearchEvaluationRunOperations.delete()` in
+`server/adapters/opensearch/StorageModule.ts`). Tracking only the parent leaks
+every report — historically the biggest source of shared-cluster clutter. Walk the
+results first, after the run reaches a terminal state:
+
+```typescript
+const { evaluationRun } = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`).then(r => r.json());
+for (const result of evaluationRun.results ?? []) tracker.run(result.reportId);
+tracker.evaluationRun(runId);
+```
+
+#### Crash safety net
+
+`afterAll` does not run when a worker is killed (`--forceExit`, a jest timeout,
+OOM, Ctrl-C). So every id the tracker records is also appended to a ledger under
+`.agent-health/.test-ledger/`, and `jest.globalTeardown.cjs` deletes whatever a
+dead suite left behind — **by id**, so it costs nothing when nothing leaked. A
+successful `cleanup()` removes its own ledger; a non-empty sweep prints a loud
+warning, meaning that suite's cleanup is buggy even though the data is now gone.
+Ledgers are scoped by `AH_TEST_RUN_ID` (set in `jest.globalSetup.cjs`) so
+concurrent runs sharing a worktree never delete each other's in-flight data.
+Escape hatches: `AH_TEST_SKIP_SWEEP=1`, `AH_TEST_LEDGER_DISABLED=1`.
+
+#### Retroactive cleanup
+
+`scripts/sweep-test-data.mjs` finds and deletes test-created entities that leaked
+before this harness existed. **Dry-run by default; `--apply` deletes.** Plain
+`--apply` only ever touches the unambiguous `ahtest-` prefix; the broad legacy
+literal-name patterns (a human could plausibly reuse names like "E2E Test Case")
+require an explicit `--legacy` opt-in and print every candidate for review —
+keep those patterns exact and never loosen them to something like `/test/i`
+(real benchmarks are named `Pulsar-regression-tests`, `mstest`, `Jason Test`).
+Report docs carry **no name**, so name matching cannot see them at all;
+test-created reports are deleted **by id** via the tracker / crash ledger.
+Unknown flags are a hard error — the sweeper refuses rather than silently
+running a different sweep.
+
+There is deliberately **no structural "orphan" mode** (an earlier `--orphans`
+flag was removed): parent-reference absence is NOT a reliable junk signal on
+this data. Classic benchmark `/execute`-era reports carry
+`experimentRunId: run-<ts>-<rand>` ids that only ever existed embedded in the
+parent benchmark's `runs[]` array — never as standalone evaluation-run docs —
+so "eval-run doc 404" mis-flags every old real run; and even benchmark-anchored
+resolution selects hundreds of reports of genuine historical work (real,
+currently-configured agents) whose parents were simply deleted later.
+Reclaiming historical parentless reports requires a bespoke, manually-reviewed
+audit — do not automate it on name/parent heuristics. Regression-locked by
+[tests/unit/scripts/sweepTestData.test.ts](tests/unit/scripts/sweepTestData.test.ts).
+
+```bash
+node scripts/sweep-test-data.mjs                 # dry run: ahtest-* leaks
+node scripts/sweep-test-data.mjs --apply         # delete ahtest-* leaks
+node scripts/sweep-test-data.mjs --legacy        # dry run incl. legacy names (review!)
+node scripts/sweep-test-data.mjs --orphans       # dry run: dangling-parent reports
+```
+
+Name new entities with `uniqueTestName()` so they are always sweepable.
+
+#### Legacy pattern (being migrated away from)
+
+Older suites hand-roll this; prefer the tracker above for new code:
 
 ```typescript
 const createdTestCaseIds: string[] = [];

@@ -321,6 +321,15 @@ jobs:
         run: npm run test:integration -- --coverage --coverageThreshold='{}' --coverageReporters=json-summary --coverageReporters=json --coverageReporters=lcov --coverageDirectory=coverage-integration 2>&1 | tee integration-test-output.txt
         env:
           AH_PORT: 4001
+          # Zero-leak enforcement: a tracker cleanup (or the globalTeardown
+          # ledger sweep) whose DELETE the backend actively REJECTS fails the
+          # job instead of just logging a warning. Network-level failures
+          # (backend unreachable/died) still only warn — tests that needed the
+          # backend have already failed or skipped, and both the tracker and
+          # the teardown keep the ids for retry — so this cannot destabilize
+          # CI when the service is down. See tests/helpers/testDataTracker.ts
+          # (cleanup) and jest.globalTeardown.cjs for the exact semantics.
+          AH_TEST_CLEANUP_STRICT: '1'
 
       - name: Upload integration test coverage to Codecov
         uses: codecov/codecov-action@b9fd7d16f6d7d1b5d2bec1a2887e65ceed900238 # v4

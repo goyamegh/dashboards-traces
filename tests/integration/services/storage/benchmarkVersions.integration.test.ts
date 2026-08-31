@@ -15,12 +15,20 @@
 
 import { asyncBenchmarkStorage } from '@/services/storage/asyncBenchmarkStorage';
 import { storageAdmin } from '@/services/storage/opensearchClient';
+import { createTestDataTracker, uniqueTestName } from '../../../helpers/testDataTracker';
 import type { BenchmarkRun } from '@/types';
 
 const checkBackend = async (): Promise<boolean> => {
   try {
     const health = await storageAdmin.health();
-    return health.status === 'connected';
+    // Both storage backends report `status: 'ok'` when healthy (file storage:
+    // server/adapters/file/StorageModule.ts; OpenSearch:
+    // server/adapters/opensearch/StorageModule.ts) — neither ever returns
+    // 'connected'. Comparing against 'connected' (a stale convention copied
+    // across several sibling integration-test files) was ALWAYS false, so
+    // every guarded test below silently early-returned — the whole suite
+    // green-lit without asserting anything, in every environment.
+    return health.status === 'ok';
   } catch {
     return false;
   }
@@ -42,7 +50,9 @@ function buildRun(overrides: Partial<BenchmarkRun> = {}): BenchmarkRun {
 
 describe('Benchmark Versions Integration Tests', () => {
   let backendAvailable = false;
-  const createdBenchmarkIds: string[] = [];
+  // Tracks every benchmark this suite creates — ordered, 404-tolerant,
+  // crash-ledgered cleanup; see tests/helpers/testDataTracker.ts.
+  const tracker = createTestDataTracker();
 
   beforeAll(async () => {
     backendAvailable = await checkBackend();
@@ -52,27 +62,13 @@ describe('Benchmark Versions Integration Tests', () => {
   });
 
   afterAll(async () => {
-    if (!backendAvailable) return;
-    // Cleanup all created benchmarks by tracked ID
-    for (const id of createdBenchmarkIds) {
-      try {
-        await asyncBenchmarkStorage.delete(id);
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
-    // Fallback: clean up leftovers from previous failed runs by name
-    try {
-      const names = ['Version Integration Test', 'Run Embed Test', 'Run Delete Test', 'Delete Test'];
-      const allBenchmarks = await asyncBenchmarkStorage.getAll();
-      for (const b of allBenchmarks) {
-        if (names.includes(b.name)) {
-          await asyncBenchmarkStorage.delete(b.id).catch(() => {});
-        }
-      }
-    } catch {
-      // Ignore cleanup errors
-    }
+    // Delete ONLY ids this run created (tracker). Never sweep shared storage
+    // by name: "name looks test-ish" is not proof of ownership — a real user
+    // can plausibly name a benchmark 'Delete Test' — and a name-based
+    // getAll+delete here deletes OTHER users' data on the shared cluster.
+    // Unique fixture names (uniqueTestName below) make cross-run collisions
+    // — the thing a name sweep was crudely working around — impossible.
+    await tracker.cleanup();
   });
 
   describe('create benchmark with version', () => {
@@ -80,7 +76,7 @@ describe('Benchmark Versions Integration Tests', () => {
       if (!backendAvailable) return;
 
       const benchmark = await asyncBenchmarkStorage.create({
-        name: 'Version Integration Test',
+        name: uniqueTestName('version-integration'),
         description: 'Test versioning',
         testCaseIds: ['tc-001', 'tc-002'],
         runs: [],
@@ -100,7 +96,7 @@ describe('Benchmark Versions Integration Tests', () => {
       expect(benchmark.versions[0].version).toBe(1);
       expect(benchmark.versions[0].testCaseIds).toEqual(['tc-001', 'tc-002']);
 
-      createdBenchmarkIds.push(benchmark.id);
+      tracker.benchmark(benchmark.id);
     });
   });
 
@@ -109,7 +105,7 @@ describe('Benchmark Versions Integration Tests', () => {
       if (!backendAvailable) return;
 
       const benchmark = await asyncBenchmarkStorage.create({
-        name: 'Run Embed Test',
+        name: uniqueTestName('run-embed'),
         description: 'Test run embedding',
         testCaseIds: ['tc-001'],
         runs: [],
@@ -120,7 +116,7 @@ describe('Benchmark Versions Integration Tests', () => {
           testCaseIds: ['tc-001'],
         }],
       });
-      createdBenchmarkIds.push(benchmark.id);
+      tracker.benchmark(benchmark.id);
 
       const run = buildRun({ name: 'Embedded Run' });
       const added = await asyncBenchmarkStorage.addRun(benchmark.id, run);
@@ -139,7 +135,7 @@ describe('Benchmark Versions Integration Tests', () => {
       if (!backendAvailable) return;
 
       const benchmark = await asyncBenchmarkStorage.create({
-        name: 'Run Delete Test',
+        name: uniqueTestName('run-delete'),
         description: 'Test run deletion',
         testCaseIds: ['tc-001'],
         runs: [],
@@ -150,7 +146,7 @@ describe('Benchmark Versions Integration Tests', () => {
           testCaseIds: ['tc-001'],
         }],
       });
-      createdBenchmarkIds.push(benchmark.id);
+      tracker.benchmark(benchmark.id);
 
       // Add a run first
       const run = buildRun({ name: 'Run To Delete' });
@@ -175,7 +171,7 @@ describe('Benchmark Versions Integration Tests', () => {
       if (!backendAvailable) return;
 
       const benchmark = await asyncBenchmarkStorage.create({
-        name: `GetAll Test ${Date.now()}`,
+        name: uniqueTestName('getall-visibility'),
         description: 'Test getAll',
         testCaseIds: ['tc-001'],
         runs: [],
@@ -186,7 +182,7 @@ describe('Benchmark Versions Integration Tests', () => {
           testCaseIds: ['tc-001'],
         }],
       });
-      createdBenchmarkIds.push(benchmark.id);
+      tracker.benchmark(benchmark.id);
 
       const all = await asyncBenchmarkStorage.getAll();
       expect(Array.isArray(all)).toBe(true);
@@ -201,7 +197,7 @@ describe('Benchmark Versions Integration Tests', () => {
       if (!backendAvailable) return;
 
       const benchmark = await asyncBenchmarkStorage.create({
-        name: 'Delete Test',
+        name: uniqueTestName('delete-roundtrip'),
         description: 'Test deletion',
         testCaseIds: [],
         runs: [],
@@ -212,6 +208,10 @@ describe('Benchmark Versions Integration Tests', () => {
           testCaseIds: [],
         }],
       });
+      // Tracked even though the test deletes it itself — if the assertion
+      // below throws before the delete, the tracker still reaps it (cleanup
+      // is 404-tolerant, so the normal path stays green).
+      tracker.benchmark(benchmark.id);
 
       const deleted = await asyncBenchmarkStorage.delete(benchmark.id);
       expect(deleted).toBe(true);
