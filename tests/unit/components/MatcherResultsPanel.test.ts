@@ -193,3 +193,59 @@ describe('MatcherResultsPanel — genuine zero scores stay visible', () => {
     expect(screen.getByText(/score 0%/)).toBeTruthy();
   });
 });
+
+describe('MatcherResultsPanel — row interaction and value formatting', () => {
+  it('toggles a code-assertion row open/closed with the keyboard', () => {
+    panel([
+      {
+        description: 'to deep equal',
+        pass: true,
+        method: 'code-assertion',
+        expected: { a: 1, list: [1, 2, 3] },
+        actual: { a: 2, list: null },
+      },
+    ]);
+    // Collapsed (passed rows start closed) — no expected/actual visible.
+    expect(screen.queryByText(/expected:/)).toBeNull();
+    const row = screen.getByRole('button');
+    fireEvent.keyDown(row, { key: 'Enter' });
+    expect(screen.getByText(/expected:/)).toBeTruthy();
+    // Objects are JSON-formatted.
+    expect(screen.getByText(/"list": \[/)).toBeTruthy();
+    fireEvent.keyDown(row, { key: ' ' });
+    expect(screen.queryByText(/expected:/)).toBeNull();
+  });
+
+  it('truncates long string values and renders null/undefined/boolean actuals', () => {
+    const long = 'x'.repeat(250);
+    panel([
+      {
+        description: 'long string',
+        pass: false,
+        method: 'code-assertion',
+        expected: long,
+        actual: null,
+      },
+    ]);
+    // Failed rows start open; long strings truncate with an ellipsis.
+    expect(screen.getByText(new RegExp(`"x{50}`))).toBeTruthy();
+    expect(screen.getByText('null')).toBeTruthy();
+  });
+
+  it('toggles a judge row with the keyboard too', () => {
+    const passed = failedJudgeMatcher({ pass: true, score: 0.9 });
+    panel([passed]);
+    expect(screen.queryByText(/Full judge reasoning/)).toBeNull();
+    fireEvent.keyDown(screen.getByRole('button'), { key: 'Enter' });
+    expect(screen.getByText(/Full judge reasoning/)).toBeTruthy();
+  });
+
+  it('renders traces/evaluator method badges via the shared row', () => {
+    panel([
+      { description: 'traces.totalTokens < 10000', pass: true, method: 'traces' },
+      { description: 'custom evaluator ran', pass: true, method: 'evaluator' },
+    ]);
+    expect(screen.getByText('traces')).toBeTruthy();
+    expect(screen.getByText('evaluator')).toBeTruthy();
+  });
+});
