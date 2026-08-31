@@ -382,7 +382,7 @@ describe('PiConnector Integration Tests', () => {
       expect(spawnArgs).toContain('/path/to/my-package/prompts/agent-health.md');
     });
 
-    it('should apply model as --model arg', async () => {
+    it('should apply model as --model arg, with request.modelId winning over connectorConfig.model', async () => {
       const proc = createMockProcess();
       mockSpawn.mockReturnValue(proc);
 
@@ -399,8 +399,15 @@ describe('PiConnector Integration Tests', () => {
       await executePromise;
 
       const spawnArgs = mockSpawn.mock.calls[0][1];
+      // request.modelId always wins over connectorConfig.model, and exactly
+      // one --model flag must survive in the final argv (regression for the
+      // duplicate --model flag bug: connectorConfig.model's flag used to
+      // stay in argv alongside request.modelId's, producing two conflicting
+      // --model flags).
+      expect(spawnArgs.filter((a: string) => a === '--model').length).toBe(1);
       expect(spawnArgs).toContain('--model');
-      expect(spawnArgs).toContain('claude-sonnet-4-5');
+      expect(spawnArgs).toContain('model-1');
+      expect(spawnArgs).not.toContain('claude-sonnet-4-5');
     });
 
     it('should apply additionalArgs', async () => {
