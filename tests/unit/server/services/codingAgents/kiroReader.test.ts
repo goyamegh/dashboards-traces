@@ -134,10 +134,19 @@ function makeSqlitePromptRows(rows: Array<Record<string, any>> = []) {
   ]);
 }
 
+function loadFreshKiroModule(extraMocks?: () => void) {
+  jest.resetModules();
+  extraMocks?.();
+  return require('@/server/services/codingAgents/readers/kiro') as typeof import('@/server/services/codingAgents/readers/kiro');
+}
+
 // ─── Reset ───────────────────────────────────────────────────────────────────
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.doMock('better-sqlite3', () => {
+    throw new Error('better-sqlite3 not installed');
+  }, { virtual: true });
   // Default: all paths fail access (nothing exists)
   mockAccess.mockRejectedValue(new Error('ENOENT'));
   mockReaddir.mockResolvedValue([]);
@@ -400,6 +409,83 @@ describe('KiroReader', () => {
       const sessions = await reader.getSessions();
       expect(sessions).toHaveLength(0);
     });
+
+    it('parses sessions through better-sqlite3 when available', async () => {
+      const rowValue = JSON.stringify({
+        history: [
+          {
+            user: { content: { Prompt: { prompt: 'Investigate the database-backed session' } } },
+            assistant: { message: 'started' },
+            request_metadata: {
+              tool_use_ids_and_names: [
+                { name: 'mcp_repo__search' },
+                { 1: 'bash' },
+              ],
+            },
+          },
+          {
+            assistant: { message: 'done' },
+          },
+        ],
+        model_info: { model_name: 'claude-opus-4.1' },
+        user_turn_metadata: { usage_info: [{ value: 1.25 }, { value: 0.75 }] },
+      });
+
+      const DatabaseMock = jest.fn(() => ({
+        prepare: jest.fn(() => ({
+          all: jest.fn(() => [
+            {
+              key: '/mock/sqlite-project',
+              conversation_id: 'sqlite-db-session',
+              value: rowValue,
+              created_at: 1700000000000,
+              updated_at: 1700000120000,
+            },
+            {
+              key: '/mock/bad-project',
+              conversation_id: 'invalid-json-row',
+              value: '{not-json',
+              created_at: 1700000000000,
+              updated_at: 1700000060000,
+            },
+            {
+              key: '/mock/no-user-project',
+              conversation_id: 'no-user-row',
+              value: JSON.stringify({ history: [{ assistant: { message: 'only assistant' } }] }),
+              created_at: 1700000000000,
+              updated_at: 1700000060000,
+            },
+          ]),
+        })),
+        close: jest.fn(),
+      }));
+
+      const { KiroReader: FreshKiroReader } = loadFreshKiroModule(() => {
+        jest.doMock('better-sqlite3', () => DatabaseMock, { virtual: true });
+      });
+
+      const freshReader = new FreshKiroReader();
+      mockReaddir.mockResolvedValue([]);
+
+      const sessions = await freshReader.getSessions();
+      expect(DatabaseMock).toHaveBeenCalled();
+      expect(sessions).toHaveLength(1);
+      expect(sessions[0]).toMatchObject({
+        session_id: 'sqlite-db-session',
+        project_path: '/mock/sqlite-project',
+        first_prompt: 'Investigate the database-backed session',
+        estimated_cost: 2,
+        uses_mcp: true,
+        model: 'kiro-cli (claude-opus-4.1)',
+        session_completed: true,
+      });
+      expect(sessions[0].tool_counts).toEqual({
+        mcp_repo__search: 1,
+        bash: 1,
+      });
+
+      jest.resetModules();
+    });
   });
 
   describe('getSessions — deduplication', () => {
@@ -448,6 +534,122 @@ describe('KiroReader', () => {
       const sessions = await reader.getSessions();
       const dups = sessions.filter(s => s.session_id === 'dup-id');
       expect(dups).toHaveLength(1);
+    });
+
+    it('parses CLI JSONL sessions with prompt cleanup, MCP renaming, and token totals', async () => {
+      mockAccess.mockRejectedValue(new Error('ENOENT'));
+      mockReaddir.mockImplementation((dir: string, opts?: any) => {
+        if (dir === '/mock/home/.kiro/sessions/cli') {
+          return Promise.resolve(['cli-session.jsonl', 'cli-session.json']);
+        }
+        if (dir.includes('workspace-sessions') && opts?.withFileTypes) {
+          return Promise.resolve([]);
+        }
+        if (dir === IDE_BASE) {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+      mockReadFile.mockImplementation((p: string) => {
+        if (p.endsWith('cli-session.jsonl')) {
+          return Promise.resolve([
+            JSON.stringify({
+              kind: 'Prompt',
+              data: {
+                content: [{ kind: 'text', data: 'You are a session naming agent. Name this conversation.' }],
+              },
+            }),
+            JSON.stringify({
+              kind: 'Prompt',
+              data: {
+                content: [{ kind: 'text', data: '[CURRENT USER REQUEST 1]\nImplement the missing branch\n(If presenting choices, keep them short)' }],
+              },
+            }),
+            JSON.stringify({
+              kind: 'AssistantMessage',
+              data: {
+                content: [
+                  { kind: 'toolUse', data: { name: 'openFile', toolUseId: 'tool-plain', input: { path: 'README.md' } } },
+                  { kind: 'toolUse', data: { name: 'search', toolUseId: 'tool-mcp', input: { query: 'coverage' } } },
+                  { kind: 'toolUse', data: { name: 'lookup', serverName: 'docs', toolUseId: 'tool-direct', input: { topic: 'parser' } } },
+                ],
+              },
+            }),
+            JSON.stringify({
+              kind: 'Prompt',
+              data: {
+                content: [
+                  { kind: 'toolResult', data: { toolUseId: 'tool-plain', isError: true } },
+                ],
+              },
+            }),
+            JSON.stringify({
+              kind: 'ToolResults',
+              data: {
+                content: [
+                  { kind: 'toolResult', data: { toolUseId: 'tool-mcp', isError: false, content: 'done' } },
+                ],
+                results: {
+                  'tool-mcp': {
+                    tool: {
+                      kind: {
+                        Mcp: {
+                          serverName: 'repo',
+                          toolName: 'search',
+                        },
+                      },
+                    },
+                    result: { Success: false },
+                  },
+                },
+              },
+            }),
+          ].join('\n'));
+        }
+        if (p.endsWith('cli-session.json')) {
+          return Promise.resolve(JSON.stringify({
+            created_at: '2024-01-10T00:00:00.000Z',
+            updated_at: '2024-01-10T00:02:00.000Z',
+            cwd: '/mock/cli-project',
+            session_state: {
+              conversation_metadata: {
+                user_turn_metadatas: [
+                  { input_token_count: 11, output_token_count: 7 },
+                ],
+              },
+            },
+            turns: [
+              { input_token_count: 5, output_token_count: 3 },
+            ],
+          }));
+        }
+        return Promise.reject(new Error('ENOENT'));
+      });
+
+      const sessions = await reader.getSessions();
+      const cli = sessions.find(s => s.session_id === 'cli-session');
+      expect(cli).toBeDefined();
+      expect(cli).toMatchObject({
+        project_path: '/mock/cli-project',
+        first_prompt: 'Implement the missing branch',
+        user_message_count: 2,
+        assistant_message_count: 1,
+        session_completed: false,
+        input_tokens: 16,
+        output_tokens: 10,
+        uses_mcp: true,
+      });
+      expect(cli!.tool_counts).toEqual({
+        openFile: 1,
+        mcp_docs__lookup: 1,
+        mcp_repo__search: 1,
+      });
+      expect(cli!.tool_error_counts).toEqual({
+        openFile: 1,
+        mcp_repo__search: 1,
+      });
+      expect(cli!.total_tool_errors).toBe(2);
+      expect(cli!.estimated_cost).toBeGreaterThan(0);
     });
   });
 
@@ -522,6 +724,22 @@ describe('KiroReader', () => {
       const detail = await reader.getSessionDetail('nonexistent');
       expect(detail).toBeNull();
     });
+
+    it('returns null when SQLite detail JSON is malformed', async () => {
+      mockAccess.mockImplementation((p: string) =>
+        p === CLI_DB ? Promise.resolve() : Promise.reject(new Error('ENOENT'))
+      );
+      mockReaddir.mockResolvedValue([]);
+      mockExecFile.mockImplementation((_bin: string, args: string[]) => {
+        const cmd = (args || []).join(' ');
+        if (cmd.includes("conversation_id='broken-detail'")) {
+          return '{not-json';
+        }
+        return '[]';
+      });
+
+      await expect(reader.getSessionDetail('broken-detail')).resolves.toBeNull();
+    });
   });
 
   describe('getSessionDetail — .chat format with execution index', () => {
@@ -577,6 +795,213 @@ describe('KiroReader', () => {
       );
       expect(chatReads).toHaveLength(0);
     });
+
+    it('parses .chat detail from matching execution indexes and skips unreadable dirs', async () => {
+      mockAccess.mockRejectedValue(new Error('ENOENT'));
+      const dirReads = new Map<string, number>();
+
+      mockReaddir.mockImplementation((dir: string, opts?: any) => {
+        if (dir.includes('workspace-sessions') && opts?.withFileTypes) {
+          return Promise.resolve([]);
+        }
+        if (dir === IDE_BASE) {
+          return Promise.resolve([
+            { name: 'deadbeefdeadbeefdeadbeefdeadbeef', isDirectory: () => true },
+            { name: '0123456789abcdef0123456789abcdef', isDirectory: () => true },
+          ]);
+        }
+        if (dir.includes('deadbeefdeadbeefdeadbeefdeadbeef')) {
+          const count = (dirReads.get(dir) ?? 0) + 1;
+          dirReads.set(dir, count);
+          if (count === 1) {
+            return Promise.resolve(['candidate.chat']);
+          }
+          return Promise.reject(new Error('unreadable'));
+        }
+        if (dir.includes('0123456789abcdef0123456789abcdef')) {
+          return Promise.resolve(['exec_index', 'target.chat']);
+        }
+        return Promise.resolve([]);
+      });
+
+      mockReadFile.mockImplementation((p: string) => {
+        if (p.endsWith('exec_index')) {
+          return Promise.resolve(JSON.stringify({
+            executions: [{ executionId: 'chat-detail-001' }],
+            version: '2.0.0',
+          }));
+        }
+        if (p.endsWith('target.chat')) {
+          return Promise.resolve(JSON.stringify({
+            executionId: 'chat-detail-001',
+            context: [{
+              type: 'steering',
+              id: 'file:///mock/chat-project/AGENTS.md',
+            }],
+            chat: [
+              { role: 'human', content: '<identity>\nignore this</identity>' },
+              { role: 'human', content: 'Implement the missing chat detail' },
+              {
+                role: 'bot',
+                content: [
+                  { type: 'text', text: 'Planning the next step' },
+                  { type: 'tool_use', name: 'mcp_repo__search', input: { query: 'detail' } },
+                ],
+              },
+              { role: 'tool', content: 'search output' },
+              { role: 'bot', content: 'Finished the task' },
+            ],
+            metadata: {
+              startTime: 1700000000000,
+              endTime: 1700000060000,
+              workflow: 'spec',
+            },
+          }));
+        }
+        return Promise.reject(new Error('ENOENT'));
+      });
+
+      const detail = await reader.getSessionDetail('chat-detail-001');
+      expect(detail).not.toBeNull();
+      expect(detail!.session).toMatchObject({
+        session_id: 'chat-detail-001',
+        project_path: '/mock/chat-project',
+        uses_mcp: true,
+        model: 'kiro-ide (spec)',
+      });
+      expect(detail!.messages).toEqual([
+        { role: 'user', text: 'Implement the missing chat detail' },
+        { role: 'assistant', text: 'Planning the next step' },
+        {
+          role: 'assistant',
+          text: 'Tool: mcp_repo__search\n{\n  "query": "detail"\n}',
+          toolName: 'mcp_repo__search',
+        },
+        { role: 'tool_result', text: 'search output' },
+        { role: 'assistant', text: 'Finished the task' },
+      ]);
+    });
+  });
+
+  describe('getSessionDetail — CLI JSONL and IDE fallbacks', () => {
+    it('builds detail messages from CLI JSONL sessions', async () => {
+      mockAccess.mockImplementation((p: string) =>
+        p === '/mock/home/.kiro/sessions/cli/cli-detail.jsonl'
+          ? Promise.resolve()
+          : Promise.reject(new Error('ENOENT'))
+      );
+      mockReaddir.mockResolvedValue([]);
+      mockReadFile.mockImplementation((p: string) => {
+        if (p.endsWith('cli-detail.jsonl')) {
+          return Promise.resolve([
+            JSON.stringify({
+              kind: 'Prompt',
+              data: { content: [{ kind: 'text', data: 'Read the repository summary' }] },
+            }),
+            JSON.stringify({
+              kind: 'AssistantMessage',
+              data: {
+                content: [
+                  { kind: 'text', data: 'Reviewing the repository' },
+                  { kind: 'toolUse', data: { name: 'search', input: { query: 'repo' } } },
+                ],
+              },
+            }),
+            JSON.stringify({
+              kind: 'ToolResults',
+              data: {
+                content: [
+                  {
+                    kind: 'toolResult',
+                    data: {
+                      content: [{ text: 'result line 1' }, { text: 'result line 2' }],
+                      isError: false,
+                    },
+                  },
+                ],
+              },
+            }),
+          ].join('\n'));
+        }
+        if (p.endsWith('cli-detail.json')) {
+          return Promise.resolve(JSON.stringify({
+            created_at: '2024-02-01T00:00:00.000Z',
+            updated_at: '2024-02-01T00:01:00.000Z',
+            cwd: '/mock/cli-detail-project',
+          }));
+        }
+        return Promise.reject(new Error('ENOENT'));
+      });
+
+      const detail = await reader.getSessionDetail('cli-detail');
+      expect(detail).not.toBeNull();
+      expect(detail!.session.project_path).toBe('/mock/cli-detail-project');
+      expect(detail!.messages).toEqual([
+        { role: 'user', text: 'Read the repository summary' },
+        { role: 'assistant', text: 'Reviewing the repository' },
+        {
+          role: 'assistant',
+          text: 'Tool: search\n{\n  "query": "repo"\n}',
+          toolName: 'search',
+        },
+        {
+          role: 'tool_result',
+          text: 'result line 1\nresult line 2',
+          isError: false,
+        },
+      ]);
+    });
+
+    it('builds detail from IDE workspace sessions when CLI sources miss', async () => {
+      mockAccess.mockRejectedValue(new Error('ENOENT'));
+      mockReaddir.mockImplementation((dir: string, opts?: any) => {
+        if (dir.includes('workspace-sessions') && opts?.withFileTypes) {
+          return Promise.resolve([
+            { name: 'L21vY2svaWRl', isDirectory: () => true },
+          ]);
+        }
+        if (dir === IDE_BASE) {
+          return Promise.resolve([]);
+        }
+        return Promise.resolve([]);
+      });
+      mockReadFile.mockImplementation((p: string) => {
+        if (p.endsWith('ide-detail.json')) {
+          return Promise.resolve(JSON.stringify({
+            workspaceDirectory: '/mock/ide-project',
+            history: [
+              { message: { role: 'user', content: [{ type: 'text', text: 'Investigate the IDE session' }] } },
+              { message: { role: 'assistant', content: 'I found the issue' } },
+            ],
+            sessionType: 'task',
+          }));
+        }
+        if (p.endsWith('sessions.json')) {
+          return Promise.resolve(JSON.stringify([
+            {
+              sessionId: 'ide-detail',
+              title: 'IDE detail title',
+              dateCreated: '1700000000000',
+              workspaceDirectory: '/mock/ide-project',
+            },
+          ]));
+        }
+        return Promise.reject(new Error('ENOENT'));
+      });
+
+      const detail = await reader.getSessionDetail('ide-detail');
+      expect(detail).not.toBeNull();
+      expect(detail!.session).toMatchObject({
+        session_id: 'ide-detail',
+        project_path: '/mock/ide-project',
+        model: 'kiro-ide (task)',
+        first_prompt: 'Investigate the IDE session',
+      });
+      expect(detail!.messages).toEqual([
+        { role: 'user', text: 'Investigate the IDE session' },
+        { role: 'assistant', text: 'I found the issue' },
+      ]);
+    });
   });
 
   describe('getStats', () => {
@@ -620,6 +1045,60 @@ describe('KiroReader', () => {
       const session = await reader.rereadSession('/some/path/exec.chat');
       expect(session).not.toBeNull();
       expect(session!.session_id).toBe('exec-001');
+    });
+
+    it('parses richer .chat files with tool metadata and error counts', async () => {
+      mockReadFile.mockImplementation((p: string) => {
+        if (p.endsWith('.chat')) {
+          return Promise.resolve(makeChatFile({
+            executionId: undefined,
+            context: [
+              {
+                type: 'steering',
+                id: 'file:///mock/project/.kiro/steering/guide.md',
+              },
+            ],
+            chat: [
+              { role: 'human', content: '<identity>\nSystem prompt</identity>' },
+              { role: 'human', content: 'Plan the migration' },
+              {
+                role: 'bot',
+                content: [
+                  { type: 'tool_use', name: 'mcp_repo__search', input: { query: 'migration' } },
+                  { type: 'text', text: 'I will inspect the repository.' },
+                ],
+              },
+              {
+                role: 'tool',
+                content: [
+                  { type: 'tool_result', is_error: true },
+                ],
+              },
+              { role: 'bot', content: 'Completed the review.' },
+            ],
+            metadata: {
+              startTime: 1700000000000,
+              endTime: 1700000120000,
+              workflow: 'plan',
+            },
+          }));
+        }
+        return Promise.reject(new Error('ENOENT'));
+      });
+
+      const session = await reader.rereadSession('/some/path/fallback.chat');
+      expect(session).not.toBeNull();
+      expect(session).toMatchObject({
+        session_id: 'fallback',
+        project_path: '/mock/project',
+        first_prompt: 'Plan the migration',
+        uses_mcp: true,
+        model: 'kiro-ide (plan)',
+        session_completed: true,
+      });
+      expect(session!.tool_counts).toEqual({ mcp_repo__search: 1 });
+      expect(session!.tool_error_counts).toEqual({ unknown: 1 });
+      expect(session!.total_tool_errors).toBe(1);
     });
 
     it('returns null for missing files', async () => {
