@@ -131,6 +131,87 @@ describe('FileStorageModule', () => {
     });
   });
 
+  describe('images', () => {
+    const baseImage = () => ({
+      digest: 'digest-abc',
+      testCaseFingerprints: [{ id: 'tc-1', name: 'TC 1', contentHash: 'hash1' }],
+      testCaseCount: 1,
+      evalConditions: { evaluatorId: 'ev-1' },
+    });
+
+    it('creates an image and stamps id/docType/createdAt/tags defaults', async () => {
+      const created = await mod.images.create(baseImage() as any);
+
+      expect(created.id).toBe('img-digest-abc');
+      expect(created.docType).toBe('benchmark-image');
+      expect(created.tags).toEqual([]);
+      expect(created.createdAt).toBeDefined();
+    });
+
+    it('is find-or-create: creating with the same digest again returns the original (preserves tags)', async () => {
+      const first = await mod.images.create({ ...baseImage(), tags: ['nightly'] } as any);
+      const second = await mod.images.create({ ...baseImage(), tags: ['different'] } as any);
+
+      expect(second).toEqual(first);
+      expect(second.tags).toEqual(['nightly']);
+    });
+
+    it('getByDigest returns null for an unknown digest', async () => {
+      const result = await mod.images.getByDigest('nope');
+      expect(result).toBeNull();
+    });
+
+    it('getByDigest returns null for a non-image doc (docType mismatch)', async () => {
+      await mod.benchmarks.create({ id: 'img-digest-abc', name: 'Not really an image', testCaseIds: [] });
+      const result = await mod.images.getByDigest('digest-abc');
+      expect(result).toBeNull();
+    });
+
+    it('getAll lists images sorted by createdAt desc', async () => {
+      await mod.images.create({ ...baseImage(), digest: 'digest-old', createdAt: '2020-01-01T00:00:00.000Z' } as any);
+      await mod.images.create({ ...baseImage(), digest: 'digest-new', createdAt: '2025-01-01T00:00:00.000Z' } as any);
+
+      const { items, total } = await mod.images.getAll();
+      expect(total).toBe(2);
+      expect(items.map(i => i.digest)).toEqual(['digest-new', 'digest-old']);
+    });
+
+    it('update mutates only tags/lastRunAt, preserving content identity fields', async () => {
+      const created = await mod.images.create(baseImage() as any);
+      const updated = await mod.images.update(created.digest, { tags: ['v2'], lastRunAt: '2026-01-01T00:00:00.000Z' });
+
+      expect(updated.tags).toEqual(['v2']);
+      expect(updated.lastRunAt).toBe('2026-01-01T00:00:00.000Z');
+      expect(updated.digest).toBe(created.digest);
+      expect(updated.testCaseCount).toBe(created.testCaseCount);
+    });
+
+    it('update throws when the image does not exist', async () => {
+      await expect(mod.images.update('missing-digest', { tags: ['x'] })).rejects.toThrow('Benchmark image missing-digest not found');
+    });
+
+    it('delete removes an existing image and returns deleted:true', async () => {
+      const created = await mod.images.create(baseImage() as any);
+      const result = await mod.images.delete(created.digest);
+      expect(result).toEqual({ deleted: true });
+      expect(await mod.images.getByDigest(created.digest)).toBeNull();
+    });
+
+    it('delete returns deleted:false for a nonexistent digest', async () => {
+      const result = await mod.images.delete('nonexistent-digest');
+      expect(result).toEqual({ deleted: false });
+    });
+
+    it('images and benchmarks are cross-invisible via docType (shared dir)', async () => {
+      await mod.images.create(baseImage() as any);
+      await mod.benchmarks.create({ name: 'Real Benchmark', testCaseIds: [] });
+
+      const benchmarks = await mod.benchmarks.getAll();
+      expect(benchmarks.items.every(b => b.name !== undefined)).toBe(true);
+      expect(benchmarks.items.some((b: any) => b.docType === 'benchmark-image')).toBe(false);
+    });
+  });
+
   describe('sessionMetadata', () => {
     it('should return null for nonexistent session', async () => {
       const result = await mod.sessionMetadata.get('claude-code', 'nonexistent');

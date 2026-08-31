@@ -90,6 +90,10 @@ describe('OpenSearchStorageModule', () => {
 
   beforeEach(async () => {
     jest.clearAllMocks();
+    // clearAllMocks() resets call history but NOT a mockImplementation set by
+    // an earlier test (e.g. the migration-lock-error test below) — reset it
+    // explicitly so it doesn't leak its throwing behavior into later tests.
+    mockAssertNotMigrating.mockReset();
     mockClient = createMockClient();
 
     // Dynamic import to get the class after mocks are set up
@@ -543,12 +547,27 @@ describe('OpenSearchStorageModule', () => {
         );
       });
 
+      it('excludes evaluation-run AND benchmark-image discriminated docs from the shared index', async () => {
+        mockClient.search.mockResolvedValue(makeSearchResponse([], 0));
+        await mod.benchmarks.getAll();
+        const mustNot = mockClient.search.mock.calls[0][0].body.query.bool.must_not;
+        expect(mustNot).toHaveLength(2);
+        expect(JSON.stringify(mustNot)).toContain('evaluation-run');
+        expect(JSON.stringify(mustNot)).toContain('benchmark-image');
+      });
+
       it('should return empty results on index_not_found', async () => {
         mockClient.search.mockRejectedValue(makeIndexNotFoundError());
 
         const result = await mod.benchmarks.getAll();
 
         expect(result).toEqual({ items: [], total: 0 });
+      });
+
+      it('should rethrow non-index-not-found search errors', async () => {
+        mockClient.search.mockRejectedValue(new Error('cluster unreachable'));
+
+        await expect(mod.benchmarks.getAll()).rejects.toThrow('cluster unreachable');
       });
     });
 
@@ -589,6 +608,24 @@ describe('OpenSearchStorageModule', () => {
         const result = await mod.benchmarks.getById('eval-run-1');
 
         expect(result).toBeNull();
+      });
+
+      it('should return null for a benchmark-image doc (image id is NOT a benchmark)', async () => {
+        const image = { id: 'img-digest-abc', digest: 'digest-abc', docType: 'benchmark-image' };
+        mockClient.get.mockResolvedValue(makeGetResponse(image));
+
+        const result = await mod.benchmarks.getById('img-digest-abc');
+
+        expect(result).toBeNull();
+      });
+
+      it('should return the doc when docType is explicitly "benchmark"', async () => {
+        const bench = { id: 'bench-1', name: 'B1', docType: 'benchmark' };
+        mockClient.get.mockResolvedValue(makeGetResponse(bench));
+
+        const result = await mod.benchmarks.getById('bench-1');
+
+        expect(result).toEqual(bench);
       });
 
       it('should throw non-404 errors', async () => {
@@ -1407,6 +1444,176 @@ describe('OpenSearchStorageModule', () => {
       const must = mockClient.search.mock.calls[0][0].body.query.bool.must;
       expect(must).toContainEqual({ term: { 'testCaseSnapshots.id.keyword': 'tc-1' } });
       expect(JSON.stringify(must)).not.toContain('"nested"');
+    });
+
+    it('applies the imageDigest filter as a plain term on imageDigest.keyword', async () => {
+      mockClient.search.mockResolvedValue(makeSearchResponse([], 0));
+      await mod.evaluationRuns.list({ imageDigest: 'digest-abc' });
+      const must = mockClient.search.mock.calls[0][0].body.query.bool.must;
+      expect(must).toContainEqual({ term: { 'imageDigest.keyword': 'digest-abc' } });
+    });
+  });
+
+  describe('images', () => {
+    const baseImage = () => ({
+      digest: 'digest-abc',
+      testCaseFingerprints: [{ id: 'tc-1', name: 'TC 1', contentHash: 'hash1' }],
+      testCaseCount: 1,
+      evalConditions: { evaluatorId: 'ev-1' },
+    });
+
+    describe('create', () => {
+      it('find-or-create: returns the existing image untouched when the digest already exists', async () => {
+        mockClient.get.mockResolvedValue(
+          makeGetResponse({ ...baseImage(), id: 'img-digest-abc', docType: 'benchmark-image', tags: ['nightly'], createdAt: '2020-01-01T00:00:00.000Z' })
+        );
+
+        const result = await mod.images.create({ ...baseImage(), tags: ['ignored'] } as any);
+
+        expect(result.tags).toEqual(['nightly']);
+        expect(mockClient.index).not.toHaveBeenCalled();
+      });
+
+      it('creates a new image doc (id=img-<digest>, docType, default tags/createdAt) when the digest is new', async () => {
+        mockClient.get.mockResolvedValue(makeGetResponse(null, false));
+        mockClient.index.mockResolvedValue({});
+
+        const result = await mod.images.create(baseImage() as any);
+
+        expect(result.id).toBe('img-digest-abc');
+        expect(result.docType).toBe('benchmark-image');
+        expect(result.tags).toEqual([]);
+        expect(result.createdAt).toBeDefined();
+        expect(mockClient.index).toHaveBeenCalledWith(expect.objectContaining({
+          index: 'evals_experiments',
+          id: 'img-digest-abc',
+          refresh: 'wait_for',
+        }));
+      });
+    });
+
+    describe('getByDigest', () => {
+      it('returns null on a doc-level 404', async () => {
+        mockClient.get.mockRejectedValue(make404Error());
+        const result = await mod.images.getByDigest('nope');
+        expect(result).toBeNull();
+      });
+
+      it('rethrows non-404 errors', async () => {
+        mockClient.get.mockRejectedValue(new Error('timeout'));
+        await expect(mod.images.getByDigest('digest-abc')).rejects.toThrow('timeout');
+      });
+
+      it('returns null when found=false', async () => {
+        mockClient.get.mockResolvedValue(makeGetResponse(null, false));
+        const result = await mod.images.getByDigest('digest-abc');
+        expect(result).toBeNull();
+      });
+
+      it('returns null when the doc at that id is not a benchmark-image (docType mismatch)', async () => {
+        mockClient.get.mockResolvedValue(makeGetResponse({ id: 'img-digest-abc', docType: 'benchmark', name: 'Not an image' }));
+        const result = await mod.images.getByDigest('digest-abc');
+        expect(result).toBeNull();
+      });
+
+      it('returns the image when docType matches', async () => {
+        const doc = { ...baseImage(), id: 'img-digest-abc', docType: 'benchmark-image', tags: [], createdAt: '2026-01-01T00:00:00.000Z' };
+        mockClient.get.mockResolvedValue(makeGetResponse(doc));
+        const result = await mod.images.getByDigest('digest-abc');
+        expect(result).toEqual(doc);
+      });
+    });
+
+    describe('getAll', () => {
+      it('queries docType.keyword: benchmark-image with pagination defaults', async () => {
+        mockClient.search.mockResolvedValue(makeSearchResponse([], 0));
+        await mod.images.getAll();
+        const call = mockClient.search.mock.calls[0][0];
+        expect(call.body.query).toEqual({ term: { 'docType.keyword': 'benchmark-image' } });
+        expect(call.body.size).toBe(1000);
+        expect(call.body.from).toBe(0);
+      });
+
+      it('honors from/size overrides', async () => {
+        mockClient.search.mockResolvedValue(makeSearchResponse([], 0));
+        await mod.images.getAll({ from: 5, size: 10 });
+        const call = mockClient.search.mock.calls[0][0];
+        expect(call.body.size).toBe(10);
+        expect(call.body.from).toBe(5);
+      });
+
+      it('returns items/total from the search response', async () => {
+        const img = { ...baseImage(), id: 'img-digest-abc', docType: 'benchmark-image', tags: [] };
+        mockClient.search.mockResolvedValue(makeSearchResponse([img], 1));
+        const result = await mod.images.getAll();
+        expect(result).toEqual({ items: [img], total: 1 });
+      });
+
+      it('returns empty results on index_not_found', async () => {
+        mockClient.search.mockRejectedValue(makeIndexNotFoundError());
+        const result = await mod.images.getAll();
+        expect(result).toEqual({ items: [], total: 0 });
+      });
+
+      it('rethrows non-index-not-found search errors', async () => {
+        mockClient.search.mockRejectedValue(new Error('cluster down'));
+        await expect(mod.images.getAll()).rejects.toThrow('cluster down');
+      });
+    });
+
+    describe('update', () => {
+      it('throws when the image does not exist', async () => {
+        mockClient.get.mockResolvedValue(makeGetResponse(null, false));
+        await expect(mod.images.update('missing', { tags: ['x'] })).rejects.toThrow('Benchmark image missing not found');
+      });
+
+      it('merges only tags/lastRunAt, preserving identity fields, and re-indexes', async () => {
+        const existing = { ...baseImage(), id: 'img-digest-abc', docType: 'benchmark-image', tags: ['old'], createdAt: '2020-01-01T00:00:00.000Z' };
+        mockClient.get.mockResolvedValue(makeGetResponse(existing));
+        mockClient.index.mockResolvedValue({});
+
+        const result = await mod.images.update('digest-abc', { tags: ['new'], lastRunAt: '2026-01-01T00:00:00.000Z' });
+
+        expect(result.tags).toEqual(['new']);
+        expect(result.lastRunAt).toBe('2026-01-01T00:00:00.000Z');
+        expect(result.digest).toBe('digest-abc');
+        expect(mockClient.index).toHaveBeenCalledWith(expect.objectContaining({
+          index: 'evals_experiments',
+          id: 'img-digest-abc',
+          refresh: 'wait_for',
+        }));
+      });
+
+      it('leaves tags/lastRunAt unchanged when not provided in updates', async () => {
+        const existing = { ...baseImage(), id: 'img-digest-abc', docType: 'benchmark-image', tags: ['keep'], lastRunAt: '2020-01-01T00:00:00.000Z', createdAt: '2020-01-01T00:00:00.000Z' };
+        mockClient.get.mockResolvedValue(makeGetResponse(existing));
+        mockClient.index.mockResolvedValue({});
+
+        const result = await mod.images.update('digest-abc', {});
+
+        expect(result.tags).toEqual(['keep']);
+        expect(result.lastRunAt).toBe('2020-01-01T00:00:00.000Z');
+      });
+    });
+
+    describe('delete', () => {
+      it('deletes and returns deleted:true', async () => {
+        mockClient.delete.mockResolvedValue({});
+        const result = await mod.images.delete('digest-abc');
+        expect(result).toEqual({ deleted: true });
+        expect(mockClient.delete).toHaveBeenCalledWith(expect.objectContaining({ id: 'img-digest-abc', refresh: 'wait_for' }));
+      });
+
+      it('returns deleted:false on a doc-level 404', async () => {
+        mockClient.delete.mockRejectedValue(make404Error());
+        const result = await mod.images.delete('missing');
+        expect(result).toEqual({ deleted: false });
+      });
+
+      it('rethrows non-404 delete errors', async () => {
+        mockClient.delete.mockRejectedValue(new Error('cluster down'));
+        await expect(mod.images.delete('digest-abc')).rejects.toThrow('cluster down');
+      });
     });
   });
 });
