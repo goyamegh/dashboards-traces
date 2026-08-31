@@ -414,7 +414,7 @@ const JudgeRow: React.FC<RowProps> = ({ result }) => {
 
           {/* WHY / FIX — the two questions, side by side */}
           {failed && (whyBullets.length > 0 || strategies.length > 0) && (
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2 items-start">
               {whyBullets.length > 0 && (
                 <div className="border border-red-200 dark:border-red-500/30 bg-red-50/40 dark:bg-red-950/20 rounded-md p-2.5">
                   <div className="text-[10px] font-bold uppercase tracking-wider text-red-600 dark:text-red-400 mb-1.5">
