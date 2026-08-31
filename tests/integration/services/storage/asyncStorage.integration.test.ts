@@ -194,6 +194,59 @@ describe('OpenSearch Storage Integration Tests', () => {
       const result = await asyncBenchmarkStorage.deleteRun(benchmarkId, 'non-existent-run');
       expect(result).toBe(false); // Should return false since run doesn't exist
     });
+
+    it('deleteRun removes a run that actually exists, against the REAL configured backend (true), and leaves the benchmark 404-safe once deleted (false)', async () => {
+      // Regression test for the specific bug this method exists to prevent:
+      // the OpenSearch adapter's removeIf painless script used to report
+      // success for ANY run id on an existing benchmark — identical results
+      // whether or not anything actually matched. Exercising ONLY the
+      // "missing run" case (above) can't catch that, because both the correct
+      // and the buggy implementation return `false` there. This drives the
+      // full add → delete(true) → delete-again(false) → delete-on-missing-
+      // benchmark(false) cycle against whichever backend `AH_PORT` actually
+      // points at (the real OpenSearch adapter in this repo's shared-cluster
+      // dev setup, not a mock).
+      if (!backendAvailable) return;
+
+      const bm = await asyncBenchmarkStorage.create({
+        name: uniqueTestName('deleteRun-parity'),
+        description: 'Integration test for deleteRun against the real backend',
+        testCaseIds: [],
+        runs: [],
+        currentVersion: 1,
+        versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: [] }],
+      });
+      tracker.benchmark(bm.id);
+
+      const runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const added = await asyncBenchmarkStorage.addRun(bm.id, {
+        id: runId,
+        status: 'pending',
+      } as any);
+      expect(added).toBe(true);
+
+      // Sanity check: the run is actually there before we delete it.
+      const withRun = await asyncBenchmarkStorage.getById(bm.id);
+      expect(withRun?.runs?.some((r) => r.id === runId)).toBe(true);
+
+      const deleted = await asyncBenchmarkStorage.deleteRun(bm.id, runId);
+      expect(deleted).toBe(true);
+
+      const withoutRun = await asyncBenchmarkStorage.getById(bm.id);
+      expect(withoutRun?.runs?.some((r) => r.id === runId)).toBe(false);
+
+      // Deleting the same (now-gone) run id again must be a safe no-match,
+      // not a resurrected "success".
+      const deletedAgain = await asyncBenchmarkStorage.deleteRun(bm.id, runId);
+      expect(deletedAgain).toBe(false);
+
+      // Missing benchmark entirely: must also be false, never throw.
+      const missingBenchmark = await asyncBenchmarkStorage.deleteRun(
+        `no-such-benchmark-${Date.now()}`,
+        runId,
+      );
+      expect(missingBenchmark).toBe(false);
+    });
   });
 
   describe('asyncRunStorage', () => {
