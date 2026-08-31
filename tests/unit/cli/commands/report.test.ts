@@ -298,4 +298,81 @@ describe('Report Command', () => {
       expect(mockWriteFileSync).not.toHaveBeenCalled();
     });
   });
+
+  describe('action — fall-through after process.exit(1) (regression)', () => {
+    // In all three cases below, process.exit is stubbed so it does NOT
+    // actually terminate the process (as it wouldn't in a caller that
+    // swallows it, or under some future test harness). Before the fix, the
+    // code fell through past `process.exit(1)` into logic that either
+    // dereferenced an undefined value or treated an error response body as
+    // a valid report. The fix adds an explicit `return` after each
+    // `process.exit(1)` so no further work happens on that path.
+    let exitSpy: jest.SpyInstance;
+    let fetchSpy: jest.SpyInstance;
+
+    beforeEach(() => {
+      jest.clearAllMocks();
+      mockEnsureServer.mockResolvedValue({ baseUrl: 'http://localhost:4001', wasStarted: false });
+      mockCreateServerCleanup.mockReturnValue(jest.fn());
+      mockFindBenchmark.mockReset();
+      mockWriteFileSync.mockReset();
+      exitSpy = jest.spyOn(process, 'exit').mockImplementation(((): never => undefined as never) as any);
+      jest.spyOn(console, 'log').mockImplementation();
+      jest.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    });
+
+    afterEach(() => {
+      jest.restoreAllMocks();
+    });
+
+    it('stops after benchmark-not-found instead of dereferencing undefined benchmark', async () => {
+      mockFindBenchmark.mockResolvedValue(undefined);
+
+      const command = createReportCommand();
+
+      await expect(
+        command.parseAsync(['-b', 'does-not-exist'], { from: 'user' })
+      ).resolves.not.toThrow();
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      // Must not have proceeded to fetch/write a report for a benchmark that
+      // doesn't exist.
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
+
+    it('stops after a failed report fetch instead of writing the error body as the report', async () => {
+      mockFindBenchmark.mockResolvedValue({ id: 'bm-1', name: 'My Benchmark' });
+      fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: false,
+        json: async () => ({ error: 'boom' }),
+        headers: new Map(),
+        text: async () => 'error body',
+      } as any);
+
+      const command = createReportCommand();
+
+      await expect(
+        command.parseAsync(['-b', 'bm-1', '-o', 'out.html'], { from: 'user' })
+      ).resolves.not.toThrow();
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      // Regression: before the fix, execution fell through past the
+      // !response.ok branch and wrote the error response body to disk as if
+      // it were a valid report.
+      expect(mockWriteFileSync).not.toHaveBeenCalled();
+    });
+
+    it('stops after a server-connection failure instead of using an unassigned serverResult', async () => {
+      mockEnsureServer.mockRejectedValue(new Error('connection refused'));
+
+      const command = createReportCommand();
+
+      await expect(
+        command.parseAsync(['-b', 'bm-1'], { from: 'user' })
+      ).resolves.not.toThrow();
+
+      expect(exitSpy).toHaveBeenCalledWith(1);
+      expect(mockFindBenchmark).not.toHaveBeenCalled();
+    });
+  });
 });
