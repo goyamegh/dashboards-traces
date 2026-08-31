@@ -128,3 +128,20 @@ describe('shortId', () => {
     expect(shortId('49d9e88f')).toBe('49d9e88f');
   });
 });
+
+describe('parser robustness guards', () => {
+  it('caps work on pathological multi-hundred-KB inputs (bounded parse window)', () => {
+    // A huge blob of near-miss fact-list noise; must return quickly and not throw.
+    const noise = `1. 'almost a fact but no verdict keyword here at all' — maybe. `.repeat(8000);
+    const start = Date.now();
+    const facts = parseFactVerdicts(noise);
+    expect(Date.now() - start).toBeLessThan(2000);
+    expect(Array.isArray(facts)).toBe(true);
+  });
+
+  it('ignores fact-like text beyond the parse window', () => {
+    const pad = 'x'.repeat(25_000);
+    const tail = ` 1. 'a fact stated after the cap' — MISSING.`;
+    expect(parseFactVerdicts(pad + tail)).toEqual([]);
+  });
+});

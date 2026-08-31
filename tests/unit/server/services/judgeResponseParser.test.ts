@@ -270,14 +270,16 @@ describe('computeWeightedOverall / overallScore', () => {
     expect(res.metrics.accuracy).toBeUndefined();
   });
 
-  it('excludes metrics the judge failed to emit from both sides of the average', () => {
+  it('is all-or-nothing: a metric the judge failed to emit voids the overall (no flattering renormalization)', () => {
     const evaluator = makeWeightedEvaluator([
       { name: 'a', weight: 0.5 },
       { name: 'b', weight: 0.5 },
     ]);
     const raw = JSON.stringify({ pass_fail_status: 'passed', a: 80, reasoning: 'b missing' });
     const res = parseJudgeResponse(raw, { evaluator });
-    expect(res.overallScore).toBeCloseTo(80); // not 40
+    // Renormalizing over emitted weights would report 80 — rewarding a
+    // partial/malformed judge response with its best dimension.
+    expect(res.overallScore).toBeUndefined();
   });
 
   it('defaults missing/invalid weights to 1', () => {
