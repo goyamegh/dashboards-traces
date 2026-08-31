@@ -140,9 +140,10 @@ export async function getMemoryFiles(): Promise<{ projects: Array<{ slug: string
 }
 
 export async function updateMemoryFile(filePath: string, content: string): Promise<boolean> {
-  // Security: only allow writing to memory files under ~/.claude/projects/
+  // Security: only allow writing to memory files under
+  // ~/.claude/projects/<slug>/memory/<name>.md — never anything else.
   const resolved = path.resolve(filePath);
-  if (!resolved.startsWith(claudePath('projects')) || !resolved.includes('/memory/') || !resolved.endsWith('.md')) {
+  if (!(await isValidMemoryFilePath(resolved))) {
     return false;
   }
   try {
@@ -151,6 +152,82 @@ export async function updateMemoryFile(filePath: string, content: string): Promi
   } catch {
     return false;
   }
+}
+
+/**
+ * Validate that `resolved` (an already `path.resolve()`d absolute path) is
+ * strictly contained within `~/.claude/projects/` as a
+ * `<slug>/memory/<file>.md` entry.
+ *
+ * The previous guard used `resolved.startsWith(claudePath('projects'))`,
+ * which is a bare string prefix check — it also matches sibling paths that
+ * merely share the prefix without a path separator, e.g.
+ * `~/.claude/projectsEVIL/memory/x.md` (`'.../projectsEVIL'.startsWith('.../projects')`
+ * is true) or `~/.claude/projects-leaked/memory/x.md`. Combined with the
+ * loose `.includes('/memory/')` substring check (satisfied by, say,
+ * `.../projectsEVIL/a/memory/../../../etc/passwd.md` before resolution
+ * normalizes `..`, or simply by any path containing that substring anywhere),
+ * a caller could point `filePath` outside the projects directory and still
+ * pass the old guard, turning a scoped memory-file writer into an arbitrary
+ * `.md`-suffixed file write.
+ *
+ * This version uses `path.relative()` for real containment (any escape,
+ * including the prefix trick above, resolves to a relative path starting
+ * with `..`) and then requires the remaining relative path to be exactly
+ * `<slug>/memory/<file>.md` — three concrete segments with a real `memory`
+ * path component, not a substring match anywhere in the string.
+ *
+ * Symlink hardening: the lexical checks above operate on path *strings* and
+ * would still be fooled by a symlink planted at `<slug>` or `<slug>/memory`
+ * pointing outside the projects tree (`fs.writeFile` follows symlinks). A
+ * legitimate call can only ever succeed if `<slug>/memory/` already exists
+ * (this function never creates directories), so it's always safe to also
+ * `fs.realpath()` that containing directory and re-check containment against
+ * the *real* projects root — no legitimate write is broken by this, since
+ * `fs.writeFile` would already fail with ENOENT if the directory didn't
+ * exist. This closes the symlink gap without needing to resolve the `.md`
+ * leaf itself, which may not exist yet for a brand-new memory file.
+ */
+async function isValidMemoryFilePath(resolved: string): Promise<boolean> {
+  const projectsRoot = claudePath('projects');
+  const relative = path.relative(projectsRoot, resolved);
+
+  // Escapes projectsRoot entirely (sibling/parent directory, including the
+  // startsWith prefix-trick case above) or IS projectsRoot itself.
+  if (relative === '' || relative === '.' || relative.startsWith('..') || path.isAbsolute(relative)) {
+    return false;
+  }
+
+  const segments = relative.split(path.sep);
+  // Must be exactly <slug>/memory/<file>.md — no extra nesting, no leftover
+  // '.' or '..' segments (path.relative normalizes '..' at the front only;
+  // this rejects any that survive elsewhere, e.g. via NUL-adjacent tricks).
+  if (segments.length !== 3) return false;
+  if (segments.some((seg) => seg === '' || seg === '.' || seg === '..')) return false;
+
+  const [slug, memorySegment, fileName] = segments;
+  if (!slug) return false;
+  if (memorySegment !== 'memory') return false;
+  if (!fileName.endsWith('.md') || fileName === '.md') return false;
+
+  // Symlink check: resolve the real path of the containing `memory/`
+  // directory and confirm it's still inside the real (symlink-resolved)
+  // projects root. Reject (fail closed) if either can't be resolved — a
+  // legitimate write requires the directory to already exist anyway.
+  try {
+    const [realProjectsRoot, realMemoryDir] = await Promise.all([
+      fs.realpath(projectsRoot),
+      fs.realpath(path.dirname(resolved)),
+    ]);
+    const realRelative = path.relative(realProjectsRoot, realMemoryDir);
+    if (realRelative === '' || realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  return true;
 }
 
 // ─── Plans ──────────────────────────────────────────────────────────────────
