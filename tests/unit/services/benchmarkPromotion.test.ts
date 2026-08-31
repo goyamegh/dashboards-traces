@@ -141,13 +141,17 @@ describe('promoteRunToBenchmark', () => {
 });
 
 /**
- * Root-cause regression coverage: a prior implementation only wrote
- * `testCaseIds` at the top level (or bumped a brand-new version), so it
- * never repaired a benchmark whose top level was ALREADY correct but whose
- * CURRENT version's own `testCaseIds` entry stayed empty — exactly what the
- * benchmark page's test-case panel reads (`lib/benchmarkVersionUtils.ts`
- * getSelectedVersionData -> getVersionTestCases). These tests assert BOTH
- * levels get written, in place, with no version bump.
+ * `linkTestCaseIdsToBenchmark` is now a thin, storage-agnostic delegator to
+ * `storage.benchmarks.linkTestCaseIds()` -- the actual union-merge logic
+ * (top-level + current-version repair, legacy-doc v1 synthesis,
+ * multi-version targeting, dedup) moved into the OpenSearch/file adapters
+ * themselves so the mutation can be genuinely atomic per-backend (a
+ * codex_review finding: a client-side read-modify-write here, even with an
+ * optimistic-retry freshness check, could still race on the final write).
+ * See tests/unit/server/adapters/opensearch/StorageModule.test.ts
+ * (`linkTestCaseIds` describe block) and
+ * tests/unit/server/adapters/file/StorageModule.test.ts for the real
+ * merge-logic and concurrency coverage.
  */
 describe('linkTestCaseIdsToBenchmark', () => {
   let mockStorage: jest.Mocked<Pick<IStorageModule, 'benchmarks'>>;
@@ -158,8 +162,8 @@ describe('linkTestCaseIdsToBenchmark', () => {
     createdAt: '2026-01-01T00:00:00Z',
     updatedAt: '2026-01-01T00:00:00Z',
     currentVersion: 1,
-    versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: [] }],
-    testCaseIds: [],
+    versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: ['tc-1', 'tc-2'] }],
+    testCaseIds: ['tc-1', 'tc-2'],
     runs: [],
   };
 
@@ -175,196 +179,35 @@ describe('linkTestCaseIdsToBenchmark', () => {
         updateRun: jest.fn(),
         deleteRun: jest.fn(),
         bulkCreate: jest.fn(),
+        linkTestCaseIds: jest.fn(),
       } as any,
     };
   });
 
-  it('returns null when the benchmark does not exist', async () => {
-    mockStorage.benchmarks.getById.mockResolvedValue(null);
+  it('delegates to storage.benchmarks.linkTestCaseIds with the exact benchmarkId and testCaseIds, and returns its result verbatim', async () => {
+    const expected = { benchmark: shellBenchmark, added: ['tc-1', 'tc-2'] };
+    (mockStorage.benchmarks.linkTestCaseIds as jest.Mock).mockResolvedValue(expected);
+
+    const result = await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-2'], mockStorage as any);
+
+    expect(mockStorage.benchmarks.linkTestCaseIds).toHaveBeenCalledWith('bench-shell', ['tc-1', 'tc-2']);
+    expect(mockStorage.benchmarks.linkTestCaseIds).toHaveBeenCalledTimes(1);
+    expect(result).toBe(expected);
+  });
+
+  it('passes through null when the benchmark does not exist (does not swallow or rewrap it)', async () => {
+    (mockStorage.benchmarks.linkTestCaseIds as jest.Mock).mockResolvedValue(null);
 
     const result = await linkTestCaseIdsToBenchmark('missing-bench', ['tc-1'], mockStorage as any);
 
     expect(result).toBeNull();
-    expect(mockStorage.benchmarks.update).not.toHaveBeenCalled();
   });
 
-  it('is a true no-op when both the top level AND the current version already have every id (no write)', async () => {
-    const benchmark: Benchmark = {
-      ...shellBenchmark,
-      testCaseIds: ['tc-1', 'tc-2'],
-      versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: ['tc-1', 'tc-2'] }],
-    };
-    mockStorage.benchmarks.getById.mockResolvedValue(benchmark);
-
-    const result = await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-2'], mockStorage as any);
-
-    expect(result).toEqual({ benchmark, added: [] });
-    expect(mockStorage.benchmarks.update).not.toHaveBeenCalled();
-  });
-
-  it('writes BOTH the top level and the current version testCaseIds for a shell benchmark, without a version bump', async () => {
-    mockStorage.benchmarks.getById.mockResolvedValue(shellBenchmark);
-    mockStorage.benchmarks.update.mockImplementation(async (_id, updates) => ({ ...shellBenchmark, ...updates }));
-
-    const result = await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-2'], mockStorage as any);
-
-    expect(mockStorage.benchmarks.update).toHaveBeenCalledTimes(1);
-    const call = mockStorage.benchmarks.update.mock.calls[0][1] as any;
-    // Top level gets the union.
-    expect(call.testCaseIds).toEqual(['tc-1', 'tc-2']);
-    // The CURRENT version's own entry gets the union too — this is the fix.
-    expect(call.versions).toHaveLength(1);
-    expect(call.versions[0]).toEqual({ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: ['tc-1', 'tc-2'] });
-    // No version bump: currentVersion is not part of the update payload at all.
-    expect(call.currentVersion).toBeUndefined();
-    expect(result?.added).toEqual(['tc-1', 'tc-2']);
-  });
-
-  it("THE BUG SHAPE: repairs the current version's testCaseIds when the top level is already correct (top-level no-op, version still stale)", async () => {
-    // Mirrors the real dogfooding finding: bench-1787782179901-c1h0eld64 had
-    // testCaseIds (top level) = 3 ids, but versions[0].testCaseIds == [].
-    const staleVersionBenchmark: Benchmark = {
-      ...shellBenchmark,
-      testCaseIds: ['tc-1', 'tc-2', 'tc-3'],
-      currentVersion: 1,
-      versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: [] }],
-    };
-    mockStorage.benchmarks.getById.mockResolvedValue(staleVersionBenchmark);
-    mockStorage.benchmarks.update.mockImplementation(async (_id, updates) => ({ ...staleVersionBenchmark, ...updates }));
-
-    const result = await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-2', 'tc-3'], mockStorage as any);
-
-    // A prior implementation treated "top level already has every id" as a
-    // full no-op and returned before ever writing — this must NOT happen here.
-    expect(mockStorage.benchmarks.update).toHaveBeenCalledTimes(1);
-    const call = mockStorage.benchmarks.update.mock.calls[0][1] as any;
-    // Top level is unchanged content-wise but still included in the payload.
-    expect(call.testCaseIds).toEqual(['tc-1', 'tc-2', 'tc-3']);
-    // The current version's entry is now repaired to match.
-    expect(call.versions[0].testCaseIds).toEqual(['tc-1', 'tc-2', 'tc-3']);
-    expect(call.currentVersion).toBeUndefined();
-    // "added" reflects top-level newness (none here) — the version repair
-    // still happened, it's just not surfaced through this field.
-    expect(result?.added).toEqual([]);
-  });
-
-  it('only adds ids not already present at either level, keeping existing order first', async () => {
-    const benchmark: Benchmark = {
-      ...shellBenchmark,
-      testCaseIds: ['tc-1'],
-      versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: ['tc-1'] }],
-    };
-    mockStorage.benchmarks.getById.mockResolvedValue(benchmark);
-    mockStorage.benchmarks.update.mockImplementation(async (_id, updates) => ({ ...benchmark, ...updates }));
-
-    const result = await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-2', 'tc-3'], mockStorage as any);
-
-    expect(result?.added).toEqual(['tc-2', 'tc-3']);
-    const call = mockStorage.benchmarks.update.mock.calls[0][1] as any;
-    expect(call.testCaseIds).toEqual(['tc-1', 'tc-2', 'tc-3']);
-    expect(call.versions[0].testCaseIds).toEqual(['tc-1', 'tc-2', 'tc-3']);
-  });
-
-  it('deduplicates ids within the input list itself', async () => {
-    const benchmark = { ...shellBenchmark, testCaseIds: [] };
-    mockStorage.benchmarks.getById.mockResolvedValue(benchmark);
-    mockStorage.benchmarks.update.mockImplementation(async (_id, updates) => ({ ...benchmark, ...updates }));
-
-    const result = await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-1', 'tc-2'], mockStorage as any);
-
-    expect(result?.added).toEqual(['tc-1', 'tc-2']);
-  });
-
-  it('handles a benchmark with no versions array yet (legacy doc) by synthesizing v1 from the top level', async () => {
-    const legacyBenchmark: any = {
-      id: 'bench-legacy',
-      name: 'Legacy',
-      createdAt: '2025-01-01T00:00:00Z',
-      testCaseIds: [],
-      runs: [],
-    };
-    mockStorage.benchmarks.getById.mockResolvedValue(legacyBenchmark);
-    mockStorage.benchmarks.update.mockImplementation(async (_id, updates) => ({ ...legacyBenchmark, ...updates }));
-
-    await linkTestCaseIdsToBenchmark('bench-legacy', ['tc-1'], mockStorage as any);
-
-    const call = mockStorage.benchmarks.update.mock.calls[0][1] as any;
-    // No bump for a legacy doc either — currentVersion stays untouched.
-    expect(call.currentVersion).toBeUndefined();
-    expect(call.versions).toHaveLength(1);
-    expect(call.versions[0]).toEqual({ version: 1, createdAt: '2025-01-01T00:00:00Z', testCaseIds: ['tc-1'] });
-  });
-
-  it('updates the entry matching currentVersion (not array index 0) when the benchmark has multiple versions', async () => {
-    const multiVersionBenchmark: Benchmark = {
-      ...shellBenchmark,
-      testCaseIds: ['tc-1', 'tc-2'],
-      currentVersion: 2,
-      versions: [
-        { version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: ['tc-1'] },
-        { version: 2, createdAt: '2026-01-02T00:00:00Z', testCaseIds: [] }, // stale current version
-      ],
-    };
-    mockStorage.benchmarks.getById.mockResolvedValue(multiVersionBenchmark);
-    mockStorage.benchmarks.update.mockImplementation(async (_id, updates) => ({ ...multiVersionBenchmark, ...updates }));
-
-    await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-2'], mockStorage as any);
-
-    const call = mockStorage.benchmarks.update.mock.calls[0][1] as any;
-    // v1 (not the current version) must be left untouched.
-    expect(call.versions[0]).toEqual({ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: ['tc-1'] });
-    // v2 (currentVersion) is the one that gets repaired.
-    expect(call.versions[1].testCaseIds).toEqual(['tc-1', 'tc-2']);
-    expect(call.currentVersion).toBeUndefined();
-  });
-
-  it('retries the read-merge-write when another writer changes the benchmark between the merge read and the pre-write freshness check (no id loss, no versions[] clobber)', async () => {
-    const initial: Benchmark = {
-      ...shellBenchmark,
-      testCaseIds: [],
-      updatedAt: '2026-01-01T00:00:00.000Z',
-      versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: [] }],
-    };
-    const concurrentlyUpdated: Benchmark = {
-      ...shellBenchmark,
-      testCaseIds: ['tc-3'],
-      updatedAt: '2026-01-01T00:00:01.000Z',
-      versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: ['tc-3'] }],
-    };
-
-    mockStorage.benchmarks.getById
-      .mockResolvedValueOnce(initial)
-      .mockResolvedValueOnce(concurrentlyUpdated)
-      .mockResolvedValueOnce(concurrentlyUpdated)
-      .mockResolvedValueOnce(concurrentlyUpdated);
-    mockStorage.benchmarks.update.mockImplementation(async (_id, updates) => ({ ...concurrentlyUpdated, ...updates }));
-
-    const result = await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-2'], mockStorage as any);
-
-    expect(mockStorage.benchmarks.update).toHaveBeenCalledTimes(1);
-    const call = mockStorage.benchmarks.update.mock.calls[0][1] as any;
-    expect(call.testCaseIds).toEqual(['tc-3', 'tc-1', 'tc-2']);
-    expect(call.versions[0].testCaseIds).toEqual(['tc-3', 'tc-1', 'tc-2']);
-    expect(call.versions).toHaveLength(1);
-    expect(result?.added).toEqual(['tc-1', 'tc-2']);
-  });
-
-  it('gives up with a descriptive error after MAX_ATTEMPTS if the benchmark keeps changing on every retry (no silent id loss, no infinite loop)', async () => {
-    let call = 0;
-    mockStorage.benchmarks.getById.mockImplementation(async () => {
-      call++;
-      return {
-        ...shellBenchmark,
-        testCaseIds: [`tc-churn-${call}`],
-        updatedAt: `2026-01-01T00:00:${String(call).padStart(2, '0')}.000Z`,
-        versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: [`tc-churn-${call}`] }],
-      };
-    });
+  it('propagates a rejection from the adapter (e.g. every retry_on_conflict/outer-retry attempt exhausted) rather than swallowing it', async () => {
+    (mockStorage.benchmarks.linkTestCaseIds as jest.Mock).mockRejectedValue(new Error('adapter exhausted retries'));
 
     await expect(
       linkTestCaseIdsToBenchmark('bench-shell', ['tc-1'], mockStorage as any)
-    ).rejects.toThrow(/kept changing concurrently/);
-
-    expect(mockStorage.benchmarks.update).not.toHaveBeenCalled();
+    ).rejects.toThrow('adapter exhausted retries');
   });
 });

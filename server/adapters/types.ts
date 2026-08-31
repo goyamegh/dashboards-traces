@@ -127,6 +127,25 @@ export interface IBenchmarkOperations {
   updateRun(benchmarkId: string, runId: string, updates: Partial<BenchmarkRun>): Promise<boolean>;
   deleteRun(benchmarkId: string, runId: string): Promise<boolean>;
   bulkCreate(benchmarks: Partial<Benchmark>[]): Promise<{ created: number; errors: number }>;
+  /**
+   * Atomically union `testCaseIds` into BOTH the top-level `testCaseIds`
+   * array AND the current version's own `testCaseIds` entry (synthesizing
+   * a v1 from the top level first for legacy docs with no `versions[]`
+   * yet) — no version bump. This is a single atomic server-side mutation
+   * (a Painless scripted `_update` for the OpenSearch adapter, a
+   * process-serialized read-modify-write for the file adapter), NOT a
+   * client-side read-then-full-document-overwrite like `update()` — it is
+   * safe to call concurrently for the same benchmark from multiple
+   * requests (see `services/benchmarkPromotion.ts`'s `linkTestCaseIdsToBenchmark`,
+   * which now delegates here after a codex_review finding that its
+   * previous client-side optimistic-retry implementation could still lose
+   * a concurrent writer's ids). Returns `null` if the benchmark doesn't
+   * exist. `added` reflects ids newly introduced at the top level,
+   * computed best-effort from a pre-mutation read — purely informational
+   * (used only for a debug log at the call site), not relied on for
+   * correctness.
+   */
+  linkTestCaseIds(benchmarkId: string, testCaseIds: string[]): Promise<{ benchmark: Benchmark; added: string[] } | null>;
 }
 
 /**
