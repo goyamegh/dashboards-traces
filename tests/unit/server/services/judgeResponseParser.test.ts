@@ -232,3 +232,74 @@ describe('judgeResponseParser', () => {
     });
   });
 });
+
+describe('computeWeightedOverall / overallScore', () => {
+  function makeWeightedEvaluator(defs: Array<{ name: string; weight?: number }>): Evaluator {
+    return {
+      id: 'eval-weighted',
+      name: 'Weighted',
+      description: '',
+      isSystem: false,
+      systemPrompt: '',
+      scoringConfig: {
+        metrics: defs.map((d) => ({ name: d.name, description: '', weight: d.weight, scale: 100 })),
+        passThreshold: 80,
+        scale: 100,
+      },
+      inferenceConfig: {},
+    } as unknown as Evaluator;
+  }
+
+  it('computes the weighted overall across declared metrics (logos-human-persona shape)', () => {
+    // Real evaluator: answer_correctness 0.55, trust_honesty 0.30, readability 0.15.
+    const evaluator = makeWeightedEvaluator([
+      { name: 'answer_correctness', weight: 0.55 },
+      { name: 'trust_honesty', weight: 0.3 },
+      { name: 'readability', weight: 0.15 },
+    ]);
+    const raw = JSON.stringify({
+      pass_fail_status: 'failed',
+      answer_correctness: 55,
+      trust_honesty: 45,
+      readability: 75,
+      reasoning: 'both gates missed',
+    });
+    const res = parseJudgeResponse(raw, { evaluator });
+    // 0.55·55 + 0.30·45 + 0.15·75 = 55
+    expect(res.overallScore).toBeCloseTo(55);
+    expect(res.metrics.accuracy).toBeUndefined();
+  });
+
+  it('is all-or-nothing: a metric the judge failed to emit voids the overall (no flattering renormalization)', () => {
+    const evaluator = makeWeightedEvaluator([
+      { name: 'a', weight: 0.5 },
+      { name: 'b', weight: 0.5 },
+    ]);
+    const raw = JSON.stringify({ pass_fail_status: 'passed', a: 80, reasoning: 'b missing' });
+    const res = parseJudgeResponse(raw, { evaluator });
+    // Renormalizing over emitted weights would report 80 — rewarding a
+    // partial/malformed judge response with its best dimension.
+    expect(res.overallScore).toBeUndefined();
+  });
+
+  it('defaults missing/invalid weights to 1', () => {
+    const evaluator = makeWeightedEvaluator([{ name: 'a' }, { name: 'b', weight: 0 }]);
+    const raw = JSON.stringify({ pass_fail_status: 'passed', a: 60, b: 100, reasoning: '' });
+    const res = parseJudgeResponse(raw, { evaluator });
+    expect(res.overallScore).toBeCloseTo(80);
+  });
+
+  it('omits overallScore when the evaluator declares no metrics (legacy path)', () => {
+    const raw = JSON.stringify({ pass_fail_status: 'passed', accuracy: 90, reasoning: '' });
+    const res = parseJudgeResponse(raw, {});
+    expect(res.overallScore).toBeUndefined();
+    expect(res.metrics.accuracy).toBe(90);
+  });
+
+  it('omits overallScore when none of the declared metrics were emitted', () => {
+    const evaluator = makeWeightedEvaluator([{ name: 'a', weight: 1 }]);
+    const raw = JSON.stringify({ pass_fail_status: 'failed', reasoning: 'nothing' });
+    const res = parseJudgeResponse(raw, { evaluator });
+    expect(res.overallScore).toBeUndefined();
+  });
+});

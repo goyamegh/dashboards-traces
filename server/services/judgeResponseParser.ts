@@ -196,6 +196,35 @@ function extractExtraFields(parsed: any, evaluator: Evaluator | undefined): Reco
   return Object.keys(extra).length > 0 ? extra : undefined;
 }
 
+/**
+ * Weighted overall score across the evaluator's declared metrics, on the
+ * evaluator's scale. Uses each declared metric's `weight` (default 1 when
+ * omitted/invalid). Returns `undefined` unless EVERY declared metric was
+ * actually emitted by the judge — renormalizing over a partial set would
+ * inflate the headline (a response emitting only its best dimension would
+ * score as if the missing ones didn't exist), so a partial/malformed judge
+ * response gets no overall rather than a flattering one. Callers must not
+ * fabricate a 0 when this is undefined.
+ */
+export function computeWeightedOverall(
+  metrics: EvaluationMetrics,
+  evaluator: Evaluator | undefined
+): number | undefined {
+  const defs = evaluator?.scoringConfig?.metrics;
+  if (!defs?.length) return undefined;
+  let weighted = 0;
+  let totalWeight = 0;
+  for (const def of defs) {
+    const v = metrics[def.name];
+    if (typeof v !== 'number' || !Number.isFinite(v)) return undefined; // all-or-nothing
+    const w = typeof def.weight === 'number' && Number.isFinite(def.weight) && def.weight > 0 ? def.weight : 1;
+    weighted += v * w;
+    totalWeight += w;
+  }
+  if (totalWeight <= 0) return undefined;
+  return Math.round((weighted / totalWeight) * 100) / 100;
+}
+
 export interface ParseOptions {
   /** Evaluator whose scoringConfig drives metric extraction. */
   evaluator?: Evaluator;
@@ -260,6 +289,12 @@ export function parseJudgeResponse(
     rawResponse: raw,
   };
   if (extraFields) response.extraFields = extraFields;
+  // Headline for custom evaluators: their declared dimensions rarely include
+  // the legacy `accuracy` key, which left SDK judge() with nothing to
+  // headline (it showed "score 0%" even on passes). Compute the weighted
+  // overall from the evaluator's own weights so callers have a real number.
+  const overallScore = computeWeightedOverall(metrics, options.evaluator);
+  if (overallScore !== undefined) response.overallScore = overallScore;
 
   debug(source, 'parsed judge response: pass=', passFailStatus, 'metrics=', Object.keys(metrics));
   if (extraFields) debug(source, 'extra fields captured:', Object.keys(extraFields));

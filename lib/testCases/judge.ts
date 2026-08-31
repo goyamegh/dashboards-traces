@@ -156,6 +156,10 @@ interface RawJudgeResponse {
   metrics?: { accuracy?: number; [k: string]: number | undefined };
   llmJudgeReasoning?: string;
   improvementStrategies?: unknown[];
+  /** Weighted overall across the evaluator's declared metrics (server-computed). */
+  overallScore?: number;
+  /** Non-metric structured judge output (facts, failure_causes, evidence, …). */
+  extraFields?: Record<string, unknown>;
 }
 const verdictCache = new Map<string, RawJudgeResponse>();
 
@@ -323,10 +327,20 @@ async function runJudge(
   // Record the success path identically whether the verdict came fresh from
   // the endpoint or from the in-process cache.
   const finalize = (raw: RawJudgeResponse, durationMs: number): Verdict => {
-    const accuracy = raw.metrics?.accuracy ?? 0;
+    // Headline score precedence: legacy `accuracy` metric → server-computed
+    // weighted overall (custom evaluators declare their own dimensions and
+    // rarely emit `accuracy`) → none. Never fabricate a 0: pre-fix this
+    // defaulted to 0, so every custom-evaluator verdict rendered as
+    // "score 0%" — even passing ones.
+    const headline =
+      typeof raw.metrics?.accuracy === 'number'
+        ? raw.metrics.accuracy
+        : typeof raw.overallScore === 'number'
+          ? raw.overallScore
+          : undefined;
     const verdict = makeVerdict({
       passFailStatus: raw.passFailStatus ?? 'failed',
-      accuracy,
+      accuracy: headline ?? 0,
       reasoning: raw.llmJudgeReasoning ?? '',
       role,
       skipped: false,
@@ -338,10 +352,16 @@ async function runJudge(
       method: 'llm-judge',
       role,
       durationMs,
-      score: verdict.score,
+      // Only record a score when the judge actually produced a headline
+      // number — a fabricated 0 renders as a misleading "score 0%".
+      ...(headline !== undefined ? { score: headline / 100 } : {}),
       reasoning: verdict.reasoning,
       model: options?.model,
-      errorMessage: verdict.passFailStatus === 'failed' ? verdict.reasoning : undefined,
+      // NOTE: no `errorMessage` mirror. It used to copy `reasoning` verbatim
+      // on failure, which persisted the same multi-KB string twice and made
+      // the UI render it twice (once red as "error", once as "reasoning").
+      // `reasoning` is the single source of truth; consumers that need a
+      // failure detail fall back to it (see expect.toPass()).
       // Preserve the rest of the judge payload — these were silently
       // dropped before, which made SDK `judge()` calls strictly less
       // informative than the legacy auto-judge path. See MatcherResult.
@@ -350,6 +370,9 @@ async function runJudge(
         : {}),
       ...(raw.metrics && typeof raw.metrics === 'object'
         ? { judgeMetrics: { ...raw.metrics } }
+        : {}),
+      ...(raw.extraFields && typeof raw.extraFields === 'object' && Object.keys(raw.extraFields).length > 0
+        ? { judgeExtraFields: raw.extraFields }
         : {}),
     });
     return verdict;

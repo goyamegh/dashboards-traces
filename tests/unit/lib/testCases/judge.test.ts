@@ -452,3 +452,109 @@ describe('judge() — server URL resolution (port-isolation)', () => {
     expect(portWarnings).toHaveLength(0);
   });
 });
+
+describe('judge() — verdict recording (headline score, dedupe, extraFields)', () => {
+  beforeEach(() => {
+    clearJudgeCache();
+    process.env.AH_JUDGE_RETRY_BACKOFF_MS = '0';
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    delete process.env.AH_JUDGE_RETRY_BACKOFF_MS;
+  });
+
+  const trajectory = [{ type: 'response', content: 'ok' }] as any;
+
+  function mockFullJudgeFetch(payload: Record<string, unknown>): void {
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => payload,
+      text: async () => '',
+    }) as unknown as typeof fetch;
+  }
+
+  it('records NO score when the judge emitted neither accuracy nor overallScore (never a fabricated 0%)', async () => {
+    // Custom evaluators declare their own dimensions — `accuracy` is absent.
+    mockFullJudgeFetch({
+      passFailStatus: 'failed',
+      metrics: { answer_correctness: 55, trust_honesty: 45 },
+      llmJudgeReasoning: 'both gates missed',
+    });
+    startSession();
+    await judge({ trajectory } as any, 'claim');
+    const [entry] = endSession();
+    expect(entry.score).toBeUndefined();
+    expect(entry.judgeMetrics).toEqual({ answer_correctness: 55, trust_honesty: 45 });
+  });
+
+  it('falls back to the server-computed overallScore for the headline when accuracy is absent', async () => {
+    mockFullJudgeFetch({
+      passFailStatus: 'failed',
+      metrics: { answer_correctness: 55, trust_honesty: 45, readability: 75 },
+      overallScore: 55,
+      llmJudgeReasoning: 'weighted overall 55',
+    });
+    startSession();
+    const verdict = await judge({ trajectory } as any, 'claim');
+    const [entry] = endSession();
+    expect(entry.score).toBeCloseTo(0.55);
+    expect(verdict.accuracy).toBe(55);
+  });
+
+  it('still prefers the legacy accuracy metric over overallScore when both exist', async () => {
+    mockFullJudgeFetch({
+      passFailStatus: 'passed',
+      metrics: { accuracy: 90, answer_correctness: 80 },
+      overallScore: 80,
+      llmJudgeReasoning: 'ok',
+    });
+    startSession();
+    await judge({ trajectory } as any, 'claim');
+    const [entry] = endSession();
+    expect(entry.score).toBeCloseTo(0.9);
+  });
+
+  it('does NOT mirror reasoning into errorMessage on failure (the mirror double-rendered in the UI)', async () => {
+    mockFullJudgeFetch({
+      passFailStatus: 'failed',
+      metrics: { accuracy: 20 },
+      llmJudgeReasoning: 'A very long explanation of what went wrong.',
+    });
+    startSession();
+    await judge({ trajectory } as any, 'claim');
+    const [entry] = endSession();
+    expect(entry.pass).toBe(false);
+    expect(entry.reasoning).toBe('A very long explanation of what went wrong.');
+    expect(entry.errorMessage).toBeUndefined();
+  });
+
+  it('forwards structured extraFields as judgeExtraFields on the matcher entry', async () => {
+    const facts = [
+      { fact: 'states the deadline', verdict: 'missing', rationale: 'never mentioned' },
+    ];
+    mockFullJudgeFetch({
+      passFailStatus: 'failed',
+      metrics: { answer_correctness: 40 },
+      llmJudgeReasoning: 'missing facts',
+      extraFields: { facts, failure_causes: ['wrong source'] },
+    });
+    startSession();
+    await judge({ trajectory } as any, 'claim');
+    const [entry] = endSession();
+    expect(entry.judgeExtraFields).toEqual({ facts, failure_causes: ['wrong source'] });
+  });
+
+  it('omits judgeExtraFields when extraFields is empty', async () => {
+    mockFullJudgeFetch({
+      passFailStatus: 'passed',
+      metrics: { accuracy: 100 },
+      llmJudgeReasoning: 'ok',
+      extraFields: {},
+    });
+    startSession();
+    await judge({ trajectory } as any, 'claim');
+    const [entry] = endSession();
+    expect(entry.judgeExtraFields).toBeUndefined();
+  });
+});

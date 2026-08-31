@@ -30,6 +30,8 @@ interface JudgeResult {
   rawResponse?: string;
   /** Extra JSON keys the model emitted that weren't typed wire fields. */
   extraFields?: Record<string, unknown>;
+  /** Weighted overall across the evaluator's declared metrics (server-computed). */
+  overallScore?: number;
   /** System/user prompts the judge actually saw (when AH_JUDGE_DEBUG=1). */
   judgeDebug?: {
     provider?: string;
@@ -164,6 +166,7 @@ export async function callBedrockJudge(
         // responses (back-compat) and in production unless AH_JUDGE_DEBUG=1.
         rawResponse: result.rawResponse,
         extraFields: result.extraFields,
+        overallScore: result.overallScore,
         judgeDebug: result.judgeDebug,
       };
     } catch (error) {
