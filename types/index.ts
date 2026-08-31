@@ -1035,6 +1035,15 @@ export interface BenchmarkRun {
 
   // Server-side performance metrics (populated after run completes)
   performanceMetrics?: RunPerformanceMetrics;
+
+  /**
+   * Content digest of this run's evaluation conditions (test-case contents +
+   * evaluator/judge conditions) -- same identity as {@link EvaluationRun.imageDigest}.
+   * Stamped by `POST /api/storage/benchmarks/:id/execute` (the legacy
+   * `benchmark -f test-cases.json` / `benchmark -n "Existing Benchmark"`
+   * path); runs with equal digests are directly comparable. See {@link BenchmarkImage}.
+   */
+  imageDigest?: string;
 }
 
 // Parent entity - persisted to localStorage['benchmarks']

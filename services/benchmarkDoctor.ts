@@ -271,7 +271,9 @@ export async function applyDoctorPlan(api: DoctorStorageOps, plan: DoctorPlan): 
 }
 
 export interface MigrateImagesResult {
-  migrated: Array<{ benchmarkId: string; name: string; digest: string; missingTestCaseIds?: string[] }>;
+  /** True when this result is a preview (`dryRun: true`) — nothing was created or tagged. */
+  dryRun: boolean;
+  migrated: Array<{ benchmarkId: string; name: string; digest: string; alreadyExists?: boolean; missingTestCaseIds?: string[] }>;
   skipped: Array<{ benchmarkId: string; name: string; reason: string }>;
   errors: string[];
 }
@@ -282,13 +284,21 @@ export interface MigrateImagesResult {
  * Idempotent: identical content converges on the same digest; tags union.
  * Benchmarks are NOT deleted (back-compat); new runs converge on images by
  * digest.
+ *
+ * Dry-run by default (`opts.dryRun !== false`): computes and reports the
+ * REAL digest/tags/missing-ids each benchmark would produce (via the
+ * server's `dryRun: true` preview, not a local guess) without creating or
+ * tagging any image — same "plan first, --apply to execute" contract as
+ * `buildDoctorPlan`/`applyDoctorPlan` above. Pass `dryRun: false` to
+ * actually create/tag the images.
  */
 export async function migrateBenchmarksToImages(
   api: DoctorStorageOps,
   baseUrl: string,
-  opts: { benchmarkIds?: string[] } = {}
+  opts: { benchmarkIds?: string[]; dryRun?: boolean } = {}
 ): Promise<MigrateImagesResult> {
-  const result: MigrateImagesResult = { migrated: [], skipped: [], errors: [] };
+  const dryRun = opts.dryRun !== false;
+  const result: MigrateImagesResult = { dryRun, migrated: [], skipped: [], errors: [] };
   let benchmarks = await api.listBenchmarks();
   if (opts.benchmarkIds) {
     const allow = new Set(opts.benchmarkIds);
@@ -307,7 +317,7 @@ export async function migrateBenchmarksToImages(
       const res = await fetch(`${baseUrl}/api/storage/images`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ testCaseIds: b.testCaseIds, tags: [b.name] }),
+        body: JSON.stringify({ testCaseIds: b.testCaseIds, tags: [b.name], dryRun }),
       });
       if (!res.ok) {
         result.errors.push(`${b.name}: ${await res.text()}`);
@@ -319,6 +329,7 @@ export async function migrateBenchmarksToImages(
         benchmarkId: b.id,
         name: b.name,
         digest: body.image.digest,
+        ...(dryRun ? { alreadyExists: body.alreadyExists === true } : {}),
         ...(missingTestCaseIds && missingTestCaseIds.length > 0 ? { missingTestCaseIds } : {}),
       });
       // A partial migration (some testCaseIds no longer resolve to a stored
@@ -328,7 +339,7 @@ export async function migrateBenchmarksToImages(
       // migration.
       if (missingTestCaseIds && missingTestCaseIds.length > 0) {
         result.errors.push(
-          `${b.name}: migrated from a PARTIAL test-case set — missing ${missingTestCaseIds.length} id(s): ${missingTestCaseIds.join(', ')}`
+          `${b.name}: ${dryRun ? 'would migrate' : 'migrated'} from a PARTIAL test-case set — missing ${missingTestCaseIds.length} id(s): ${missingTestCaseIds.join(', ')}`
         );
       }
     } catch (e: any) {

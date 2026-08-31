@@ -143,6 +143,59 @@ describe('Benchmark Images API', () => {
       expect(res.status).toBe(500);
       expect(res.body.error).toBe('storage down');
     });
+
+    describe('dryRun: true (preview — no writes)', () => {
+      it('computes and returns the real digest without calling images.create/update', async () => {
+        mockTestCasesGetById.mockResolvedValue(sampleTestCase('tc-1'));
+        mockImagesGetByDigest.mockResolvedValue(null);
+
+        const res = await request(app)
+          .post('/api/storage/images')
+          .send({ testCaseIds: ['tc-1'], tags: ['nightly'], dryRun: true });
+
+        expect(res.status).toBe(200);
+        expect(res.body.dryRun).toBe(true);
+        expect(res.body.alreadyExists).toBe(false);
+        // The preview computes the REAL digest from the resolved test case
+        // content (buildImageDoc) — not the fixed `sampleImage` fixture, which
+        // only stands in for what images.create() would have returned.
+        expect(typeof res.body.image.digest).toBe('string');
+        expect(res.body.image.digest.length).toBeGreaterThan(0);
+        expect(res.body.image.tags).toEqual(['nightly']);
+        expect(mockImagesCreate).not.toHaveBeenCalled();
+        expect(mockImagesUpdate).not.toHaveBeenCalled();
+      });
+
+      it('reports alreadyExists: true and the existing tags when the image already exists', async () => {
+        mockTestCasesGetById.mockResolvedValue(sampleTestCase('tc-1'));
+        mockImagesGetByDigest.mockResolvedValue({ ...sampleImage, tags: ['nightly'] });
+
+        const res = await request(app)
+          .post('/api/storage/images')
+          .send({ testCaseIds: ['tc-1'], tags: ['nightly', 'weekly'], dryRun: true });
+
+        expect(res.status).toBe(200);
+        expect(res.body.alreadyExists).toBe(true);
+        expect(res.body.image.tags).toEqual(['nightly', 'weekly']);
+        expect(mockImagesCreate).not.toHaveBeenCalled();
+        expect(mockImagesUpdate).not.toHaveBeenCalled();
+      });
+
+      it('still surfaces missingTestCaseIds in the preview', async () => {
+        mockTestCasesGetById.mockImplementation((id: string) =>
+          id === 'tc-1' ? Promise.resolve(sampleTestCase('tc-1')) : Promise.resolve(null)
+        );
+        mockImagesGetByDigest.mockResolvedValue(null);
+
+        const res = await request(app)
+          .post('/api/storage/images')
+          .send({ testCaseIds: ['tc-1', 'tc-missing'], dryRun: true });
+
+        expect(res.status).toBe(200);
+        expect(res.body.dryRun).toBe(true);
+        expect(res.body.missingTestCaseIds).toEqual(['tc-missing']);
+      });
+    });
   });
 
   describe('GET /api/storage/images', () => {

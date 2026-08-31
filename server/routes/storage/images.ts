@@ -24,7 +24,7 @@ const router = Router();
 // tagged images. Content-addressed: posting the same content returns the same image.
 router.post('/api/storage/images', async (req: Request, res: Response) => {
   try {
-    const { testCaseIds, evalConditions, tags } = req.body;
+    const { testCaseIds, evalConditions, tags, dryRun } = req.body;
     if (!Array.isArray(testCaseIds) || testCaseIds.length === 0) {
       return res.status(400).json({ error: 'testCaseIds is required and must be a non-empty array' });
     }
@@ -40,9 +40,28 @@ router.post('/api/storage/images', async (req: Request, res: Response) => {
       return res.status(400).json({ error: `None of the test cases exist: ${missing.join(', ')}` });
     }
     const doc = buildImageDoc({ testCases, evalConditions });
+    const wantTags = Array.isArray(tags) ? tags.map((t: string) => String(t).trim()).filter(Boolean) : [];
+
+    // Preview-only: report the digest/tags/missing-ids this call WOULD
+    // produce without creating or updating anything in storage. Used by
+    // `benchmark doctor --migrate-images` (no --apply) so the migration
+    // plan shown to the operator is byte-for-byte the real digest, not a
+    // guess -- the same accuracy guarantee dry-run debris/dup detection
+    // already has.
+    if (dryRun === true) {
+      const existing = await storage.images.getByDigest(doc.digest).catch(() => null);
+      const currentTags = existing?.tags ?? [];
+      const previewTags = [...currentTags, ...wantTags.filter((t) => !currentTags.includes(t))];
+      return res.status(200).json({
+        image: { ...doc, tags: previewTags },
+        dryRun: true,
+        alreadyExists: existing !== null,
+        ...(missing.length > 0 ? { missingTestCaseIds: missing } : {}),
+      });
+    }
+
     const image = await storage.images.create(doc);
     // Union requested tags onto the (possibly pre-existing) image
-    const wantTags = Array.isArray(tags) ? tags.map((t: string) => String(t).trim()).filter(Boolean) : [];
     const newTags = wantTags.filter((t) => !image.tags.includes(t));
     const finalImage = newTags.length > 0
       ? await storage.images.update(image.digest, { tags: [...image.tags, ...newTags] })
