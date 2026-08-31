@@ -3,6 +3,8 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
+import * as fsModule from 'node:fs';
+
 /**
  * Shared test-data tracker + cleaner.
  *
@@ -175,14 +177,21 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-/** Lazily-resolved `fs`, so importing this module never breaks a browser bundle. */
+/**
+ * Node's fs, resolved statically.
+ *
+ * This USED to be a lazy `require('fs')` inside a try/catch "so importing this
+ * module never breaks a browser bundle" — but the package is `"type":
+ * "module"`, so Playwright compiles specs (and this helper) as ESM where
+ * `require` is undefined: the catch swallowed the ReferenceError and every
+ * e2e tracker silently ran with NO crash ledger at all. A static import works
+ * in both module systems (ts-jest emits CJS `require`, Playwright's esbuild
+ * keeps the ESM import), and no browser bundle imports this tests-only
+ * helper — if one ever does, a loud build error beats a silently-disabled
+ * safety net.
+ */
 function nodeFs(): typeof import('fs') | null {
-  try {
-    // eslint-disable-next-line @typescript-eslint/no-var-requires, global-require
-    return require('fs') as typeof import('fs');
-  } catch {
-    return null;
-  }
+  return fsModule;
 }
 
 /**
