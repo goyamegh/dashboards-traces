@@ -434,7 +434,26 @@ describe('migrateBenchmarksToImages', () => {
     expect(result.migrated).toEqual([]);
   });
 
-  it('migrates real benchmarks and filters by opts.benchmarkIds', async () => {
+  it('defaults to dryRun:true — previews the real digest/tags via the server, and requests dryRun without opts.dryRun', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ image: { digest: 'sha256:abc' }, alreadyExists: false }),
+    });
+    const api = mockApi({
+      listBenchmarks: jest.fn().mockResolvedValue([
+        bench({ id: 'b1', name: 'Keep', testCaseIds: ['tc-1'] }),
+      ]),
+    });
+    const result = await migrateBenchmarksToImages(api, BASE_URL);
+    expect(result.dryRun).toBe(true);
+    const [, requestInit] = fetchMock.mock.calls[0];
+    expect(JSON.parse(requestInit.body).dryRun).toBe(true);
+    expect(result.migrated).toEqual([
+      { benchmarkId: 'b1', name: 'Keep', digest: 'sha256:abc', alreadyExists: false },
+    ]);
+  });
+
+  it('opts.dryRun: false actually executes the migration (dryRun omitted from the result entries)', async () => {
     fetchMock.mockResolvedValue({
       ok: true,
       json: async () => ({ image: { digest: 'sha256:abc' } }),
@@ -445,8 +464,11 @@ describe('migrateBenchmarksToImages', () => {
         bench({ id: 'b2', name: 'Drop', testCaseIds: ['tc-2'] }),
       ]),
     });
-    const result = await migrateBenchmarksToImages(api, BASE_URL, { benchmarkIds: ['b1'] });
+    const result = await migrateBenchmarksToImages(api, BASE_URL, { benchmarkIds: ['b1'], dryRun: false });
+    expect(result.dryRun).toBe(false);
     expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, requestInit] = fetchMock.mock.calls[0];
+    expect(JSON.parse(requestInit.body).dryRun).toBe(false);
     expect(result.migrated).toEqual([{ benchmarkId: 'b1', name: 'Keep', digest: 'sha256:abc' }]);
   });
 
@@ -455,7 +477,7 @@ describe('migrateBenchmarksToImages', () => {
     const api = mockApi({
       listBenchmarks: jest.fn().mockResolvedValue([bench({ id: 'b1', name: 'Keep', testCaseIds: ['tc-1'] })]),
     });
-    const result = await migrateBenchmarksToImages(api, BASE_URL);
+    const result = await migrateBenchmarksToImages(api, BASE_URL, { dryRun: false });
     expect(result.errors).toEqual(['Keep: boom from server']);
     expect(result.migrated).toEqual([]);
   });
@@ -465,7 +487,7 @@ describe('migrateBenchmarksToImages', () => {
     const api = mockApi({
       listBenchmarks: jest.fn().mockResolvedValue([bench({ id: 'b1', name: 'Keep', testCaseIds: ['tc-1'] })]),
     });
-    const result = await migrateBenchmarksToImages(api, BASE_URL);
+    const result = await migrateBenchmarksToImages(api, BASE_URL, { dryRun: false });
     expect(result.errors).toEqual(['Keep: network down']);
   });
 
@@ -479,12 +501,28 @@ describe('migrateBenchmarksToImages', () => {
         bench({ id: 'b1', name: 'Partial', testCaseIds: ['tc-1', 'tc-gone'] }),
       ]),
     });
-    const result = await migrateBenchmarksToImages(api, BASE_URL);
+    const result = await migrateBenchmarksToImages(api, BASE_URL, { dryRun: false });
     expect(result.migrated).toEqual([
       { benchmarkId: 'b1', name: 'Partial', digest: 'sha256:partial', missingTestCaseIds: ['tc-gone'] },
     ]);
     expect(result.errors).toEqual([
       'Partial: migrated from a PARTIAL test-case set — missing 1 id(s): tc-gone',
+    ]);
+  });
+
+  it('dry-run partial migration warning says "would migrate", not "migrated"', async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({ image: { digest: 'sha256:partial' }, missingTestCaseIds: ['tc-gone'], alreadyExists: false }),
+    });
+    const api = mockApi({
+      listBenchmarks: jest.fn().mockResolvedValue([
+        bench({ id: 'b1', name: 'Partial', testCaseIds: ['tc-1', 'tc-gone'] }),
+      ]),
+    });
+    const result = await migrateBenchmarksToImages(api, BASE_URL);
+    expect(result.errors).toEqual([
+      'Partial: would migrate from a PARTIAL test-case set — missing 1 id(s): tc-gone',
     ]);
   });
 });
