@@ -673,6 +673,32 @@ directly.
 > vs source, symlinked vs installed all register into the same registry
 > the loader reads from.
 
+> **`.eval.ts` can `import` sibling `.ts` helper files, but not ESM-only
+> packages.** A relative/absolute `import` inside an `.eval.ts` file that
+> resolves to another `.ts` file (e.g. `import { helper } from
+> './helper.ts'`) is transpiled and executed through the same synthetic-CJS
+> mechanism recursively — multi-file `.eval.ts` fixtures work, and a helper
+> required more than once within one load executes exactly once (cached
+> for the duration of that load only, never across separate loads/reloads).
+> An `import` of a package that ships **no CommonJS entry point** (ESM-only,
+> e.g. modern `chalk`) fails with an actionable error — `.eval.ts` executes
+> as synthetic CJS, so under require()'s own rules that package can't load
+> there — unless the running Node version has native `require(esm)`
+> interop (stable since Node 22.12; check `process.features.require_module`),
+> in which case it works transparently via Node's own mechanism. If you hit
+> the error on an older Node, switch the fixture to `.eval.mjs` (real ESM,
+> can import ESM-only packages directly) or pre-compile to `.eval.js`.
+
+> **`.eval.mjs` reloads are cache-busted, not cached.** Every `import()` of
+> an `.eval.mjs` file is given a unique query string
+> (`?ah-reload=<timestamp>-<random>`) so re-loading the same file a second
+> time in one process (e.g. re-running the CLI against an edited fixture)
+> re-executes its top-level code instead of silently returning Node's
+> already-cached module for that URL. Accepted cost: each reload leaves one
+> module instance cached under a never-reused query string for the
+> lifetime of the process — negligible for CLI/server process lifetimes
+> (a handful to a few hundred loads, not an unbounded long-running loop).
+
 ---
 
 ## Dev tips
