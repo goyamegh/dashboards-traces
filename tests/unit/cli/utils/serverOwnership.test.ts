@@ -28,13 +28,29 @@ describe('decideServerOwnership()', () => {
     expect(d).toEqual({ action: 'refuse' });
   });
 
+  it('REUSES a foreign server in read-only mode (diagnostics/dry-run)', () => {
+    const d = decideServerOwnership({ serverCwd: OTHER_CWD, myCwd: MY_CWD, allowForeign: false, readOnly: true });
+    expect(d).toEqual({ action: 'reuse-foreign-readonly' });
+  });
+
   it('REUSES a foreign server when AH_REUSE_FOREIGN_SERVER override is on', () => {
     const d = decideServerOwnership({ serverCwd: OTHER_CWD, myCwd: MY_CWD, allowForeign: true });
     expect(d).toEqual({ action: 'reuse-foreign' });
   });
 
+  it('REUSES a foreign server in read-only mode even with allowForeign=false', () => {
+    // readOnly takes precedence (read-only is safe for foreign servers)
+    const d = decideServerOwnership({ serverCwd: OTHER_CWD, myCwd: MY_CWD, allowForeign: false, readOnly: true });
+    expect(d).toEqual({ action: 'reuse-foreign-readonly' });
+  });
+
   it('PROCEEDS for our own server (same cwd) — normal version/reuse logic applies', () => {
     const d = decideServerOwnership({ serverCwd: MY_CWD, myCwd: MY_CWD, allowForeign: false });
+    expect(d).toEqual({ action: 'proceed' });
+  });
+
+  it('PROCEEDS for our own server even in read-only mode', () => {
+    const d = decideServerOwnership({ serverCwd: MY_CWD, myCwd: MY_CWD, allowForeign: false, readOnly: true });
     expect(d).toEqual({ action: 'proceed' });
   });
 
@@ -50,6 +66,11 @@ describe('decideServerOwnership()', () => {
 
   it('override does not change behaviour for our own server', () => {
     const d = decideServerOwnership({ serverCwd: MY_CWD, myCwd: MY_CWD, allowForeign: true });
+    expect(d).toEqual({ action: 'proceed' });
+  });
+
+  it('override does not change behaviour for our own server with readOnly', () => {
+    const d = decideServerOwnership({ serverCwd: MY_CWD, myCwd: MY_CWD, allowForeign: true, readOnly: true });
     expect(d).toEqual({ action: 'proceed' });
   });
 });

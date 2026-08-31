@@ -196,6 +196,90 @@ describe('indexMappings', () => {
       expect(annotationsMapping.type).toBe('nested');
       expect(annotationsMapping.properties.text.type).toBe('text');
     });
+
+    // Regression coverage for the "code-QA benchmarks" field-count-limit
+    // incident: custom/system evaluators emit dynamic metric names driven by
+    // `evaluator.scoringConfig.metrics` (see asyncRunStorage.ts's
+    // storedMetricsToApp()/toStorageFormat comments and
+    // judgeResponseParser.ts's extractMetrics()). Without `dynamic: false`,
+    // every distinct custom metric name across every run ever created in
+    // `evals_runs` minted a new mapped field shared index-wide, eventually
+    // exceeding `index.mapping.total_fields.limit`. Mirrors the #418 pattern
+    // (EvaluationRun.results / testCaseSnapshots in evals_experiments) but
+    // keeps the legacy four metric names typed + queryable (`dynamic: false`
+    // with real `properties`), not fully opaqued (`enabled: false`) — no
+    // OpenSearch query filters/sorts on `metrics.*` today (see PR
+    // query-audit), so this is a defensive choice, not a requirement.
+    it('should block dynamic growth of report-level metrics while keeping legacy metric names typed', () => {
+      const mappings = getIndexMappings();
+      const key = Object.keys(mappings).find((k) => k.includes('runs'))!;
+      const metricsMapping = mappings[key].mappings.properties.metrics;
+
+      expect(metricsMapping.dynamic).toBe(false);
+      expect(metricsMapping.properties.accuracy).toEqual({ type: 'float' });
+      expect(metricsMapping.properties.faithfulness).toEqual({ type: 'float' });
+      expect(metricsMapping.properties.latency_score).toEqual({ type: 'float' });
+      expect(metricsMapping.properties.trajectory_alignment_score).toEqual({ type: 'float' });
+    });
+
+    // Same growth vector, per-matcher: `matcherResults[].judgeMetrics` is the
+    // SDK judge()-call equivalent of the report-level `metrics` object above,
+    // and `matcherResults` is itself `nested` — a code-QA benchmark test case
+    // with many `judge()` claims x many custom evaluator dimensions
+    // multiplies field growth fast (nested docs still count toward the
+    // index-wide field-count budget).
+    it('should block dynamic growth of matcherResults[].judgeMetrics while keeping legacy metric names typed', () => {
+      const mappings = getIndexMappings();
+      const key = Object.keys(mappings).find((k) => k.includes('runs'))!;
+      const matcherResultsMapping = mappings[key].mappings.properties.matcherResults;
+      const judgeMetricsMapping = matcherResultsMapping.properties.judgeMetrics;
+
+      expect(matcherResultsMapping.type).toBe('nested');
+      expect(judgeMetricsMapping.dynamic).toBe(false);
+      expect(judgeMetricsMapping.properties.accuracy).toEqual({ type: 'float' });
+      expect(judgeMetricsMapping.properties.faithfulness).toEqual({ type: 'float' });
+      expect(judgeMetricsMapping.properties.latency_score).toEqual({ type: 'float' });
+      expect(judgeMetricsMapping.properties.trajectory_alignment_score).toEqual({ type: 'float' });
+    });
+
+    // The other free-form subtrees in this index (matcherResults.actual/
+    // expected, trajectory, logs, rawEvents, improvementStrategies, spans)
+    // were already opaqued via `enabled: false` prior to this change — assert
+    // they stay that way so a future edit doesn't silently reopen one of
+    // these growth vectors.
+    it('should keep the pre-existing opaque object fields disabled', () => {
+      const mappings = getIndexMappings();
+      const key = Object.keys(mappings).find((k) => k.includes('runs'))!;
+      const props = mappings[key].mappings.properties;
+      const matcherProps = props.matcherResults.properties;
+
+      expect(props.trajectory).toEqual({ type: 'object', enabled: false });
+      expect(props.logs).toEqual({ type: 'object', enabled: false });
+      expect(props.rawEvents).toEqual({ type: 'object', enabled: false });
+      expect(props.improvementStrategies).toEqual({ type: 'object', enabled: false });
+      expect(props.spans).toEqual({ type: 'object', enabled: false });
+      expect(matcherProps.actual).toEqual({ type: 'object', enabled: false });
+      expect(matcherProps.expected).toEqual({ type: 'object', enabled: false });
+    });
+
+    // Query-audit regression: every field OpenSearchRunOperations.search()
+    // filters/sorts on (server/adapters/opensearch/StorageModule.ts) must stay
+    // real, explicitly-typed fields — none of them live under a `dynamic:
+    // false` or `enabled: false` subtree.
+    it('should keep every field used by OpenSearchRunOperations.search() explicitly mapped and queryable', () => {
+      const mappings = getIndexMappings();
+      const key = Object.keys(mappings).find((k) => k.includes('runs'))!;
+      const props = mappings[key].mappings.properties;
+
+      expect(props.experimentId).toEqual({ type: 'keyword' });
+      expect(props.experimentRunId).toEqual({ type: 'keyword' });
+      expect(props.testCaseId).toEqual({ type: 'keyword' });
+      expect(props.agentId).toEqual({ type: 'keyword' });
+      expect(props.modelId).toEqual({ type: 'keyword' });
+      expect(props.status).toEqual({ type: 'keyword' });
+      expect(props.passFailStatus).toEqual({ type: 'keyword' });
+      expect(props.createdAt).toEqual({ type: 'date' });
+    });
   });
 
   describe('Analytics Index Schema', () => {

@@ -93,10 +93,11 @@ export function setupSpaFallback(app: Express): void {
 
   if (!fs.existsSync(indexPath)) return;
 
-  // Read index.html once at startup — avoids sendFile issues in esbuild bundles
-  const indexHtml = fs.readFileSync(indexPath, 'utf-8');
-
-  app.use(makeSpaFallbackMiddleware(indexHtml));
+  // Pass the PATH, not the file's contents: the middleware re-reads
+  // index.html whenever its mtime changes, so an in-place `npm run build`
+  // in this same process never leaves a stale index.html pointing at
+  // deleted dist/assets/* hashes. See spaFallback.ts for details.
+  app.use(makeSpaFallbackMiddleware(indexPath));
 }
 
 /**

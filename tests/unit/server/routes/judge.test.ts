@@ -132,6 +132,19 @@ describe('Judge Routes', () => {
       });
     });
 
+    it('always passes ignoreCache: true so a rotated ~/.aws/credentials profile is not invisible to this check until a restart', async () => {
+      mockSend.mockResolvedValue({ inferenceProfileSummaries: [] });
+
+      const { req, res } = createMocks();
+      const handler = getRouteHandler(judgeRoutes, 'get', '/api/judge/bedrock-models');
+      await handler(req, res);
+
+      const { fromNodeProviderChain } = require('@aws-sdk/credential-providers');
+      expect(fromNodeProviderChain).toHaveBeenCalledWith(
+        expect.objectContaining({ ignoreCache: true })
+      );
+    });
+
     it('filters out non-Anthropic models', async () => {
       mockSend.mockResolvedValue({
         inferenceProfileSummaries: [

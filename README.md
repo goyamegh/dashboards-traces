@@ -333,6 +333,7 @@ For detailed development setup, testing, CI pipeline, debugging, and troubleshoo
 | [Connectors Guide](./docs/CONNECTORS.md) | Create custom connectors for your agent type |
 | [Architecture](./docs/ARCHITECTURE.md) | System design and patterns |
 | [ML-Commons Setup](./docs/ML-COMMONS-SETUP.md) | OpenSearch ML-Commons integration |
+| [Storage Index Field Limits](./docs/STORAGE_INDEX_FIELD_LIMITS.md) | Avoiding/fixing OpenSearch `total_fields.limit` growth on free-form report fields |
 
 ---
 

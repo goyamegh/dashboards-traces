@@ -61,11 +61,13 @@ agent-health list <resource> [-o table|json]
 | `models` | | Available models |
 | `test-cases` | `testcases`, `tc` | Stored test cases |
 | `benchmarks` | `bench` | Stored benchmarks |
+| `images` | `img` | Benchmark images (content-addressed evaluation-condition snapshots; runs sharing a digest are directly comparable) |
 
 ```bash
 agent-health list agents
 agent-health list tc -o json
 agent-health list bench
+agent-health list images
 ```
 
 ---
@@ -122,9 +124,15 @@ agent-health benchmark [options]
 | `--stop-server` | Stop the server after benchmark completes | Keep running |
 
 **Modes:**
-- **Quick mode** (no `-n`, no `-f`): Auto-creates a benchmark from all stored test cases
+- **Quick mode** (no `-n`, no `-f`): Runs all stored test cases as an **ad-hoc evaluation run** (no benchmark entity is created)
 - **Named mode** (`-n <name>`): Runs a specific existing benchmark
 - **File mode** (`-f <path>`): Imports test cases from a JSON file **or runs a code SDK file** (`.eval.js` / `.eval.ts` — see [SDK.md](./SDK.md)), creates a benchmark, and runs it
+
+Every evaluation run is stamped with an **image digest** — a content hash of
+its test-case contents + eval conditions (evaluator, judge model). Runs with
+the same digest ran under identical conditions and are directly comparable;
+re-running the same command converges on the same image instead of creating
+new entities. See `agent-health list images`.
 
 ```bash
 agent-health benchmark                                           # quick mode
@@ -134,6 +142,41 @@ agent-health benchmark -f ./examples/eval-files/demo.eval.js -a observio       #
 agent-health benchmark -f ./test-cases.json -n "My Run" -a pulsar --export results.json
 agent-health benchmark -n "Baseline" -e system-tool-usage -c 4   # custom evaluator, 4 in parallel
 agent-health benchmark -n "Baseline" --export report.html --format html
+```
+
+#### benchmark doctor
+
+Detect and clean up duplicated / debris benchmarks (dry-run by default).
+
+```
+agent-health benchmark doctor [--dry-run] [--apply] [--migrate-images] [--json]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--dry-run` | Preview only — this is already the default; use --apply to execute |
+| `--apply` | Execute the plan (default: dry-run report only) |
+| `--migrate-images` | Convert remaining benchmarks into tagged benchmark images |
+| `--json` | Output as JSON instead of the human-readable report |
+
+What it detects:
+- **Timestamped debris** — `quick-<ts>` / `*-<epoch-ms>` benchmarks with no
+  runs anywhere and older than 24h (deleted).
+- **Content duplicates** — benchmarks with identical test-case sets. Embedded
+  runs are merged into the canonical (most runs › most references › oldest),
+  evaluation runs are re-pointed, duplicate shells deleted.
+
+Runs and reports are **never** deleted. Sample data (`demo-*`) is never touched.
+
+**Read-only mode**: When running without `--apply` or `--migrate-images` (pure dry-run),
+the command safely reuses existing foreign servers in read-only mode. This allows
+the diagnostic to run even when another agent-health instance is operating on a
+different worktree/port, with a clear notice that no writes will be issued.
+
+```bash
+agent-health benchmark doctor                    # report what would change (read-only)
+agent-health benchmark doctor --apply            # clean up (strict server guard)
+agent-health benchmark doctor --apply --migrate-images
 ```
 
 ---

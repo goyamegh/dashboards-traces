@@ -257,17 +257,16 @@ export const testCaseStorage = {
   /**
    * Get test cases by specific IDs (latest versions only)
    * Used for efficient filtered fetching (e.g., only test cases in a benchmark)
-   * @param options.summary - true to fetch lightweight summary (no sourceCode/context/expectedOutcomes) —
-   *   use for list/bulk views that don't need the full eval-source blob (each
-   *   test case in a code-SDK file shares the SAME sourceCode; fetching it for
-   *   every row when only the selected one needs it re-inflates exactly the
-   *   kind of payload the lazy-loading work above trimmed).
+   * @param options.summary - request the lightweight list-view payload
+   *   (same server-side transform `getAll` uses — see toSummary() in
+   *   server/routes/storage/testCases.ts) instead of full records.
    */
   async getByIds(ids: string[], options?: { summary?: boolean }): Promise<StorageTestCase[]> {
     if (ids.length === 0) return [];
-    const idsParam = ids.join(',');
-    const fieldsParam = options?.summary ? '&fields=summary' : '';
-    const result = await request<{ testCases: StorageTestCase[]; total: number }>('GET', `/test-cases?ids=${idsParam}${fieldsParam}`);
+    const params = new URLSearchParams();
+    params.append('ids', ids.join(','));
+    if (options?.summary) params.append('fields', 'summary');
+    const result = await request<{ testCases: StorageTestCase[]; total: number }>('GET', `/test-cases?${params.toString()}`);
     return result.testCases;
   },
 
@@ -333,8 +332,8 @@ export const testCaseStorage = {
   /**
    * Bulk create test cases
    */
-  async bulkCreate(testCases: Partial<StorageTestCase>[]): Promise<{ created: number; errors: boolean }> {
-    return request<{ created: number; errors: boolean }>('POST', '/test-cases/bulk', { testCases });
+  async bulkCreate(testCases: Partial<StorageTestCase>[]): Promise<{ created: number; errors: boolean; testCases: StorageTestCase[] }> {
+    return request<{ created: number; errors: boolean; testCases: StorageTestCase[] }>('POST', '/test-cases/bulk', { testCases });
   },
 };
 

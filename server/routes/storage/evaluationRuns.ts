@@ -16,6 +16,7 @@ import { promoteRunToBenchmark } from '../../../services/benchmarkPromotion.js';
 import { loadConfigSync } from '../../../lib/config/index.js';
 import { getCustomAgents } from '../../services/customAgentStore.js';
 import { resolveAgentModel } from '../../../lib/resolveAgentModel.js';
+import { computeImageDigest, buildImageDoc } from '../../../lib/benchmarkImage.js';
 
 const router = Router();
 
@@ -41,7 +42,7 @@ function sendSSE(res: Response, event: string, data: any): void {
 router.get('/api/storage/evaluation-runs', async (req: Request, res: Response) => {
   try {
     const storage = getStorageModule();
-    const { benchmarkId, agentKey, status, testCaseId, trigger, from, size, sort, order } = req.query;
+    const { benchmarkId, agentKey, status, testCaseId, trigger, imageDigest, from, size, sort, order } = req.query;
 
     const filters: any = {};
     if (benchmarkId) filters.benchmarkId = benchmarkId;
@@ -49,6 +50,7 @@ router.get('/api/storage/evaluation-runs', async (req: Request, res: Response) =
     if (status) filters.status = status;
     if (testCaseId) filters.testCaseId = testCaseId;
     if (trigger) filters.trigger = trigger;
+    if (imageDigest) filters.imageDigest = imageDigest;
 
     const pagination = {
       from: from ? parseInt(from as string, 10) : 0,
@@ -194,6 +196,26 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       results: {},
       createdAt: now,
     };
+
+    // Stamp the content digest of this run's evaluation conditions and
+    // find-or-create the corresponding benchmark image. Content-addressed
+    // identity is the inherent dedup: re-running the same command yields the
+    // same digest → the same image doc — never a duplicate entity. Runs with
+    // equal digests are comparable by construction (same test-case contents,
+    // same evaluator/judge conditions; only the agent varies).
+    // Failure-safe: image bookkeeping must never block run execution.
+    try {
+      const evalConditions = {
+        evaluatorId: evaluatorId || undefined,
+        judgeModelId: run.judgeModelId || undefined,
+      };
+      const digest = computeImageDigest({ testCases, evalConditions });
+      run.imageDigest = digest;
+      await storage.images.create(buildImageDoc({ testCases, evalConditions }));
+      await storage.images.update(digest, { lastRunAt: now }).catch(() => {});
+    } catch (imageErr: any) {
+      console.warn('[StorageAPI] Image digest stamping failed (run continues):', imageErr?.message);
+    }
 
     await storage.evaluationRuns.create(run);
 

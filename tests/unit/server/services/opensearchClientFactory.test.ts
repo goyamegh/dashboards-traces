@@ -125,7 +125,7 @@ describe('opensearchClientFactory', () => {
       // Call getCredentials to trigger fromNodeProviderChain
       expect(typeof signerCall.getCredentials).toBe('function');
       signerCall.getCredentials();
-      expect(mockFromNodeProviderChain).toHaveBeenCalledWith({ profile: 'MyProfile' });
+      expect(mockFromNodeProviderChain).toHaveBeenCalledWith({ profile: 'MyProfile', ignoreCache: true });
     });
 
     it('should use aoss service for serverless', () => {
@@ -235,6 +235,32 @@ describe('opensearchClientFactory', () => {
       expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(2);
       expect(first.accessKeyId).toBe('first');
       expect(second.accessKeyId).toBe('second');
+    });
+
+    // Regression proof for the SECOND, deeper caching layer discovered during
+    // the 2026-08-30 incident: constructing a fresh provider chain per call
+    // (the test above) is NOT enough on its own, because
+    // @smithy/shared-ini-file-loader memoizes the raw contents of
+    // ~/.aws/credentials in a process-lifetime, path-keyed cache that is
+    // shared across every provider chain instance we build — no matter how
+    // many "fresh" chains we construct, they all read the SAME cached file
+    // content unless the chain is told `ignoreCache: true`. Without this,
+    // `ada credentials update` rewriting the file is invisible to a
+    // long-running server until it restarts (exactly what forced a restart
+    // during the incident even though /api/storage/config/retry rebuilt the
+    // client and re-resolved "fresh" credentials).
+    it('always passes ignoreCache: true so the AWS SDK re-reads ~/.aws/credentials from disk instead of its process-lifetime file cache', async () => {
+      await resolveSigv4Credentials('default');
+
+      expect(mockFromNodeProviderChain).toHaveBeenCalledWith(
+        expect.objectContaining({ ignoreCache: true })
+      );
+    });
+
+    it('passes ignoreCache: true even with no profile given (falls back to the default profile / env)', async () => {
+      await resolveSigv4Credentials();
+
+      expect(mockFromNodeProviderChain).toHaveBeenCalledWith({ ignoreCache: true });
     });
 
     it('attaches a synthetic near-term expiration when the resolved credentials carry none, so opensearch-js will re-invoke getCredentials instead of caching them forever', async () => {

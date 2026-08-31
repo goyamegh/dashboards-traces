@@ -359,7 +359,7 @@ export function stopServer(process: ChildProcess): void {
 export async function ensureServer(
   config: ResolvedServerConfig
 ): Promise<EnsureServerResult> {
-  const { port, reuseExistingServer, startTimeout } = config;
+  const { port, reuseExistingServer, startTimeout, readOnly } = config;
   const baseUrl = `http://localhost:${port}`;
 
   // Check if server is already running and get version
@@ -383,6 +383,7 @@ export async function ensureServer(
       serverCwd: serverStatus.cwd,
       myCwd,
       allowForeign,
+      readOnly,
     });
 
     if (ownership.action === 'refuse') {
@@ -394,6 +395,13 @@ export async function ensureServer(
           serverPid: serverStatus.pid,
         })
       );
+    }
+    if (ownership.action === 'reuse-foreign-readonly') {
+      console.log(
+        `[ServerLifecycle] Reusing FOREIGN server on port ${port} in read-only mode ` +
+          `(cwd ${serverStatus.cwd}, no writes will be issued).`
+      );
+      return { wasStarted: false, baseUrl };
     }
     if (ownership.action === 'reuse-foreign') {
       console.log(

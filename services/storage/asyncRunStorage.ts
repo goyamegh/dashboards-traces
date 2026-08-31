@@ -26,6 +26,7 @@ import type {
   OpenSearchLog,
   ConnectorProtocol,
 } from '@/types';
+import { fetchChunked } from '@/lib/chunkedFetch';
 
 // Re-export search types for convenience
 export interface SearchQuery {
@@ -136,6 +137,16 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     // `[key: string]: number | undefined` index signature without leaking
     // surprise types into downstream consumers.
     metrics: storedMetricsToApp(stored.metrics as Record<string, unknown> | undefined),
+    // Per-test-case wall-clock timing (durationMs/agentDurationMs/...) as
+    // persisted by the evaluation/benchmark runner (see services/evaluationRunner.ts,
+    // services/benchmarkRunner.ts) and already read server-side (server/routes/
+    // comparison.ts). NOT declared on the narrow `StorageRun` interface above —
+    // same pattern as judgeModelId/traceId/sessionId below — so without this
+    // mapping every BROWSER-side consumer of a report loaded via
+    // getReportsByIds() (e.g. the comparison deep-dive panel's per-case
+    // Score/Duration/Tools header) silently saw `report.performanceMetrics`
+    // as undefined even though the field is stored and non-empty.
+    performanceMetrics: (stored as any).performanceMetrics,
     llmJudgeReasoning: stored.llmJudgeReasoning || '',
     annotations: (stored.annotations || []).map(ann => ({
       id: ann.id,
@@ -219,37 +230,9 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
 // size limits regardless of how many ids are requested — see #431 ("Request
 // Header Fields Too Large") on the comparison page, 4 runs x 400 reports.
 // Shared by getReportsByIds() and getReportSummariesByIds() so the policy
-// stays in one place.
+// stays in one place. (The chunking primitive itself now lives in
+// lib/chunkedFetch.ts, shared with asyncTestCaseStorage's id-scoped lookup.)
 const REPORT_ID_CHUNK_SIZE = 100;
-
-// A comparison over a very large pool of runs/reports can produce far more
-// than a handful of chunks; fan them out with a modest concurrency cap
-// (rather than firing all chunks at once) so a huge id list can't stampede
-// the backend with an unbounded burst of parallel requests.
-const MAX_CONCURRENT_CHUNK_REQUESTS = 8;
-
-async function fetchChunked<T>(
-  ids: string[],
-  chunkSize: number,
-  fetchChunk: (chunk: string[]) => Promise<T[]>
-): Promise<T[]> {
-  const chunks: string[][] = [];
-  for (let i = 0; i < ids.length; i += chunkSize) {
-    chunks.push(ids.slice(i, i + chunkSize));
-  }
-  const results: T[][] = new Array(chunks.length);
-  let nextChunk = 0;
-  async function worker(): Promise<void> {
-    while (true) {
-      const i = nextChunk++;
-      if (i >= chunks.length) return;
-      results[i] = await fetchChunk(chunks[i]);
-    }
-  }
-  const workerCount = Math.min(MAX_CONCURRENT_CHUNK_REQUESTS, chunks.length);
-  await Promise.all(Array.from({ length: workerCount }, () => worker()));
-  return results.flat();
-}
 
 class AsyncRunStorage {
   // ==================== Core CRUD Operations ====================

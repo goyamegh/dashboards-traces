@@ -141,6 +141,7 @@ export interface ResolvedServerConfig {
   port: number;
   reuseExistingServer: boolean;
   startTimeout: number;
+  readOnly?: boolean;
 }
 
 /**

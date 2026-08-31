@@ -13,6 +13,7 @@
 import { testCaseStorage as opensearchTestCases, StorageTestCase } from './opensearchClient';
 import type { TestCase, TestCaseVersion, AgentContextItem, AgentToolDefinition, Difficulty } from '@/types';
 import { buildLabels, parseLabels } from '@/lib/labels';
+import { fetchChunked, DEFAULT_CHUNK_SIZE } from '@/lib/chunkedFetch';
 
 // Input type for creating a test case
 export interface CreateTestCaseInput {
@@ -225,13 +226,25 @@ class AsyncTestCaseStorage {
 
   /**
    * Get test cases by specific IDs (for efficient filtered fetching)
-   * Used when you only need test cases for a specific benchmark
-   * @param options.summary - true to fetch lightweight summary (no sourceCode/context/expectedOutcomes)
+   * Used when you only need test cases for a specific benchmark, or for a
+   * name/labels/category lookup scoped to a known id set — e.g. the
+   * comparison page's category-matrix breakdown, which used to call the
+   * unpaginated {@link getAll} for this (every test case in the whole
+   * storage backend, full body included) and could take many seconds or
+   * fail outright on a real deployment. Chunked the same way
+   * asyncRunStorage.getReportsByIds is — never one unbounded `?ids=<all>`
+   * request, never an unbounded burst of parallel ones either — so a
+   * lookup over many runs' worth of test cases stays bounded regardless of
+   * how large the id list is.
+   * @param options.summary - request the lightweight list-view payload
+   *   (strips sourceCode/context/expectedOutcomes) instead of full records.
    */
   async getByIds(ids: string[], options?: { summary?: boolean }): Promise<TestCase[]> {
     if (ids.length === 0) return [];
 
-    const stored = await opensearchTestCases.getByIds(ids, options);
+    const stored = await fetchChunked(ids, DEFAULT_CHUNK_SIZE, chunk =>
+      opensearchTestCases.getByIds(chunk, options?.summary ? { summary: true } : undefined),
+    );
     const testCases = stored.map(toTestCase);
     // Maintain order of requested IDs
     const idOrder = new Map(ids.map((id, index) => [id, index]));
@@ -398,9 +411,10 @@ class AsyncTestCaseStorage {
   /**
    * Bulk create test cases (for migration)
    */
-  async bulkCreate(testCases: CreateTestCaseInput[]): Promise<{ created: number; errors: boolean }> {
+  async bulkCreate(testCases: CreateTestCaseInput[]): Promise<{ created: number; errors: boolean; testCases: TestCase[] }> {
     const storageData = testCases.map(tc => toStorageFormat(tc));
-    return opensearchTestCases.bulkCreate(storageData);
+    const result = await opensearchTestCases.bulkCreate(storageData);
+    return { ...result, testCases: result.testCases.map(toTestCase) };
   }
 }
 

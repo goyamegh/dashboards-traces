@@ -29,6 +29,7 @@ import { formatJson, formatMarkdownTable, parseOutputFormat, OUTPUT_FORMAT_DESCR
 import type { AgentConfig, Benchmark, BenchmarkRun, TestCase, TestCaseRun, EvaluationReport, TestCaseSource, EvaluationRun } from '@/types/index.js';
 import { existsSync, statSync } from 'fs';
 import { isCodeFile, detectSourceLanguage } from '@/lib/testCases/loader.js';
+import { createBenchmarkDoctorCommand } from '@/cli/commands/benchmarkDoctor.js';
 
 interface BenchmarkOptions {
   agent: string[];
@@ -763,6 +764,7 @@ async function runUnifiedMode(
 export function createBenchmarkCommand(): Command {
   const command = new Command('benchmark')
     .description('Run a benchmark against one or more agents')
+    .addCommand(createBenchmarkDoctorCommand())
     .option('-n, --name <name>', 'Benchmark name or ID (also associates run with benchmark)')
     .option(
       '-f, --file <path>',
