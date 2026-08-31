@@ -286,11 +286,13 @@ const JudgeRow: React.FC<RowProps> = ({ result }) => {
   );
 
   // Headline score: hide the fabricated-zero bug signature — a persisted
-  // score of exactly 0 alongside real dimension metrics means the write
-  // path defaulted a missing `accuracy` to 0 (pre-fix data), not that the
-  // judge scored the run 0.
+  // score of exactly 0 alongside NON-ZERO dimension metrics is inconsistent
+  // (the weighted overall of non-zero dims can't be 0) and means the write
+  // path defaulted a missing `accuracy` to 0 (pre-fix data). A genuine
+  // total failure (all dims 0) stays visible as score 0%.
   const showScore =
-    typeof result.score === 'number' && !(result.score === 0 && dims.length > 0);
+    typeof result.score === 'number' &&
+    !(result.score === 0 && dims.some(([, v]) => v > 0));
 
   // Structured fields win; prose-parse is the fallback annotation.
   const extra = result.judgeExtraFields;

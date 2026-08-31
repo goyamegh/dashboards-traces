@@ -199,10 +199,12 @@ function extractExtraFields(parsed: any, evaluator: Evaluator | undefined): Reco
 /**
  * Weighted overall score across the evaluator's declared metrics, on the
  * evaluator's scale. Uses each declared metric's `weight` (default 1 when
- * omitted) over the values actually extracted; metrics the judge failed to
- * emit are excluded from both numerator and denominator rather than counted
- * as zero. Returns `undefined` when the evaluator declares no metrics or
- * none were extracted — callers must not fabricate a 0.
+ * omitted/invalid). Returns `undefined` unless EVERY declared metric was
+ * actually emitted by the judge — renormalizing over a partial set would
+ * inflate the headline (a response emitting only its best dimension would
+ * score as if the missing ones didn't exist), so a partial/malformed judge
+ * response gets no overall rather than a flattering one. Callers must not
+ * fabricate a 0 when this is undefined.
  */
 export function computeWeightedOverall(
   metrics: EvaluationMetrics,
@@ -214,7 +216,7 @@ export function computeWeightedOverall(
   let totalWeight = 0;
   for (const def of defs) {
     const v = metrics[def.name];
-    if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+    if (typeof v !== 'number' || !Number.isFinite(v)) return undefined; // all-or-nothing
     const w = typeof def.weight === 'number' && Number.isFinite(def.weight) && def.weight > 0 ? def.weight : 1;
     weighted += v * w;
     totalWeight += w;

@@ -56,11 +56,19 @@ function verdictKind(keyword: string): FactVerdictKind {
 const VERDICT_KEYWORD =
   /(MISSING\s*\/\s*CONTRADICTED|FULLY\s+STATED|PARTIALLY\s+STATED|NOT\s+STATED|CONTRADICTED|MISSING|PARTIAL(?:LY)?)/i;
 
+// Parse at most this much reasoning — real verdicts are a few KB; a hard cap
+// bounds regex work on pathological inputs (defense against backtracking
+// blowups on adversarial multi-hundred-KB strings).
+const MAX_PARSE_CHARS = 20_000;
+
 // A fact item: list marker (`1.`, `1)`, `**Fact 1:`, `Required fact 1 (`),
 // then the fact text (quoted or plain), a separator (—, -, :, en-dash, `):`),
 // then the verdict keyword. Fact text is capped to keep matches sane.
+// NOTE: deliberately no lookbehind — constructed-at-import regexes with
+// lookbehind hard-crash report rendering on older WebKit. The leading
+// whitespace/newline is consumed instead (harmless: markers never overlap).
 const FACT_ITEM = new RegExp(
-  String.raw`(?:^|\n|(?<=\s))` + // start of line or after whitespace (inline numbered lists)
+  String.raw`(?:^|[\s\n])` + // start of string or after whitespace (inline numbered lists)
     String.raw`(?:\*\*)?(?:Required\s+fact\s+\d+|Fact\s+\d+|\d+)\s*[.):\u2013\u2014-]?\s*` + // marker
     String.raw`(?:\*\*)?\s*` +
     String.raw`['‘"“(]?(.{4,240}?)['’"”)]?` + // fact text (lazy)
@@ -81,9 +89,10 @@ const FACT_ITEM = new RegExp(
  */
 export function parseFactVerdicts(reasoning: string | undefined): ParsedFactVerdict[] {
   if (!reasoning || reasoning.length < 20) return [];
+  const text = reasoning.slice(0, MAX_PARSE_CHARS);
   const out: ParsedFactVerdict[] = [];
   const seen = new Set<string>();
-  for (const m of reasoning.matchAll(FACT_ITEM)) {
+  for (const m of text.matchAll(FACT_ITEM)) {
     const factRaw = (m[1] ?? '').trim();
     const keyword = m[2] ?? '';
     // Guard against summary-phrase false positives like
@@ -122,27 +131,28 @@ function firstIdAfter(text: string, index: number, window = 140): string | undef
  */
 export function parseSourceMismatch(reasoning: string | undefined): ParsedSourceMismatch | null {
   if (!reasoning) return null;
+  const text = reasoning.slice(0, MAX_PARSE_CHARS);
 
   // Expected id: first hex id shortly after an "expected source …" mention.
   // (A character-class "gap" can't work here — prose like "document is
   // article" contains hex letters — so scan a window for the first id.)
-  const expectedKw = reasoning.match(/expected\s+source\s+(?:document|article)?/i);
+  const expectedKw = text.match(/expected\s+source\s+(?:document|article)?/i);
   if (!expectedKw || expectedKw.index === undefined) return null;
-  const expected = firstIdAfter(reasoning, expectedKw.index + expectedKw[0].length);
+  const expected = firstIdAfter(text, expectedKw.index + expectedKw[0].length);
   if (!expected) return null;
 
   // Cited id: first differing hex id shortly after a cite/retrieve verb.
   const citedKw = /(?:\bcited\b|\bretrieved\b|\busing\s+article\b|\bcites\b)/gi;
-  for (const m of reasoning.matchAll(citedKw)) {
+  for (const m of text.matchAll(citedKw)) {
     if (m.index === undefined) continue;
-    const id = firstIdAfter(reasoning, m.index + m[0].length);
+    const id = firstIdAfter(text, m.index + m[0].length);
     if (id && id.toLowerCase() !== expected.toLowerCase()) {
       return { expected, cited: id };
     }
   }
 
   // Compact form: "(b6c9353c vs 49d9e88f)" — either order relative to expected.
-  const vs = reasoning.match(
+  const vs = text.match(
     new RegExp(String.raw`([0-9a-f]{8,64})\s*(?:vs\.?|versus)\s*([0-9a-f]{8,64})`, 'i')
   );
   if (vs) {

@@ -179,3 +179,17 @@ describe('MatcherResultsPanel — non-judge rows unchanged', () => {
     expect(container.textContent).toBe('');
   });
 });
+
+describe('MatcherResultsPanel — genuine zero scores stay visible', () => {
+  it('shows score 0% when the dimensions are consistently zero (real total failure, not the bug)', () => {
+    panel([
+      failedJudgeMatcher({
+        score: 0,
+        judgeMetrics: { answer_correctness: 0, trust_honesty: 0 },
+        reasoning: 'Complete fabrication; every fact contradicted.',
+        improvementStrategies: undefined,
+      }),
+    ]);
+    expect(screen.getByText(/score 0%/)).toBeTruthy();
+  });
+});
