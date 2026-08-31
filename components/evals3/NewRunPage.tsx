@@ -96,9 +96,13 @@ export const NewRunPage: React.FC = () => {
   const { context: clusterContext } = useClusterContext();
   const hasSeededFromCluster = useRef(false);
 
-  // Re-run seeding — EvalRunDetailPage's "Re-run" navigates here with the
-  // source run's stored config so the composer opens pre-filled. Shape is
-  // a subset of the run document; loose-typed (location.state is `unknown`).
+  // Re-run (customize-before-launching) seeding — EvalRunDetailPage's
+  // secondary "Customize before re-running" action navigates here with the
+  // source run's stored config so the composer opens pre-filled, letting the
+  // user tweak agent/judge/sources/benchmark before launching (the primary
+  // "Re-run" button on that page launches an identical duplicate directly,
+  // without this detour — see RerunConfirmDialog). Shape is a subset of the
+  // run document; loose-typed (location.state is `unknown`).
   const restartFrom = (location.state as any)?.restartFrom as
     | Partial<{ name: string; sources: TestCaseSource[]; agentKey: string; evaluatorId: string; judgeModelId: string; benchmarkId: string }>
     | undefined;
@@ -145,9 +149,11 @@ export const NewRunPage: React.FC = () => {
     setStep(2);
   }, [clusterContext, loadingData]);
 
-  // Seed the whole composer from a source run (the "Re-run" action). Restores
-  // sources, agent, evaluator, judge model, and benchmark association, then
-  // lands on Step 2. The agent's model is resolved from the agent config.
+  // Seed the whole composer from a source run (the "Customize before
+  // re-running" action). Restores sources, agent, evaluator, judge model,
+  // and benchmark association, then lands on Step 2 so the user can review/
+  // edit before launching. The agent's model is resolved from the agent
+  // config, not restored here (there is no user-facing agent-model picker).
   useEffect(() => {
     if (!restartFrom) return;
     if (hasSeededFromRestart.current) return;
