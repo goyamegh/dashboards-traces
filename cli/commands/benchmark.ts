@@ -78,6 +78,33 @@ function getDefaultModel(config: ResolvedConfig): string {
 }
 
 /**
+ * Resolve the agent key to run against when the caller did not pass -a/--agent.
+ * Picks the first agent whose `enabled` flag is not explicitly `false`.
+ *
+ * Exported so the exit path can be regression-tested: `process.exit(1)` does
+ * not actually stop control flow when stubbed (e.g. in tests, or in any
+ * future caller that swallows/mocks it), so the function must not fall
+ * through to dereferencing `enabledAgent.key` when no agent is found.
+ *
+ * Deliberately throws (rather than returning a sentinel like `''`) after
+ * `process.exit(1)`: under a real, unstubbed `process.exit` this is
+ * unreachable, but if some future caller intercepts/stubs `process.exit`, an
+ * empty-string "agent key" is a poisonous value that could silently
+ * propagate into a real API call (codex_review finding) -- a loud thrown
+ * Error is the safer failure mode either way.
+ */
+export function resolveDefaultAgentKey(config: ResolvedConfig): string {
+  const enabledAgent = config.agents.find(a => a.enabled !== false);
+  if (!enabledAgent) {
+    console.error(chalk.red('  Error: No enabled agents found.'));
+    process.exit(1);
+    throw new Error('No enabled agents found (process.exit(1) did not terminate the process).');
+  }
+  console.log(chalk.gray(`  Agent: ${enabledAgent.name} (default)`));
+  return enabledAgent.key;
+}
+
+/**
  * Check if a string looks like a file path (ends with .json)
  */
 export function isFilePath(value: string): boolean {
@@ -565,13 +592,7 @@ async function runUnifiedMode(
   // Find agent
   let agentKey: string;
   if (options.agent.length === 0) {
-    const enabledAgent = config.agents.find(a => a.enabled !== false);
-    if (!enabledAgent) {
-      console.error(chalk.red('  Error: No enabled agents found.'));
-      process.exit(1);
-    }
-    agentKey = enabledAgent.key;
-    console.log(chalk.gray(`  Agent: ${enabledAgent.name} (default)`));
+    agentKey = resolveDefaultAgentKey(config);
   } else {
     agentKey = options.agent[0];
     console.log(chalk.gray(`  Agent: ${agentKey}`));

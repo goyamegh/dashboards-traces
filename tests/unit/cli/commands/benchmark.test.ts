@@ -16,6 +16,8 @@ import type { BenchmarkRun, EvaluationReport, Benchmark, AgentConfig, TestCaseSo
 import { calculateRunStats, getReportIdsFromRun } from '@/lib/runStats';
 import { validateTestCasesArrayJson } from '@/lib/testCaseValidation';
 import { resolveUnifiedRunOutcome } from '@/cli/utils/evaluationRunOutcome';
+import { resolveDefaultAgentKey } from '@/cli/commands/benchmark';
+import type { ResolvedConfig } from '@/lib/config/index';
 
 // Mock fs
 jest.mock('fs', () => ({
@@ -42,6 +44,46 @@ jest.mock('chalk', () => ({
   gray: (s: string) => s,
   bold: (s: string) => s,
 }));
+
+// Mock ora (ESM-only spinner lib) so importing the real benchmark.ts module
+// (needed to regression-test resolveDefaultAgentKey against the actual
+// source, not a copy) doesn't pull in an ESM import Jest's CJS transform
+// can't parse.
+jest.mock('ora', () => jest.fn(() => ({
+  start: jest.fn().mockReturnThis(),
+  succeed: jest.fn().mockReturnThis(),
+  fail: jest.fn().mockReturnThis(),
+  warn: jest.fn().mockReturnThis(),
+  info: jest.fn().mockReturnThis(),
+  stop: jest.fn().mockReturnThis(),
+  text: '',
+})));
+jest.mock('cli-table3', () => jest.fn().mockImplementation(() => ({ push: jest.fn(), toString: () => '' })));
+jest.mock('@/lib/config/index.js', () => ({
+  loadConfig: jest.fn(),
+  DEFAULT_SERVER_CONFIG: {},
+}));
+jest.mock('@/cli/utils/serverLifecycle.js', () => ({
+  ensureServer: jest.fn(),
+  createServerCleanup: jest.fn(),
+  isServerRunning: jest.fn(),
+}));
+jest.mock('@/cli/utils/apiClient.js', () => ({
+  ApiClient: jest.fn(),
+  ServerError: class ServerError extends Error {},
+}));
+jest.mock('@/cli/utils/formatOutput.js', () => ({
+  formatJson: jest.fn(),
+  formatMarkdownTable: jest.fn(),
+  parseOutputFormat: jest.fn(),
+  OUTPUT_FORMAT_DESCRIPTION: '',
+}));
+jest.mock('@/cli/utils/agentPathOption.js', () => ({ applyAgentPathOption: jest.fn() }));
+jest.mock('@/lib/testCases/loader.js', () => ({
+  isCodeFile: jest.requireActual('@/lib/testCases/loader').isCodeFile,
+  detectSourceLanguage: jest.fn(),
+}));
+jest.mock('@/cli/commands/benchmarkDoctor.js', () => ({ createBenchmarkDoctorCommand: jest.fn() }));
 
 describe('Benchmark Command - Helper Functions', () => {
   // Test findAgent functionality
@@ -828,5 +870,83 @@ describe('Benchmark Command - Source Composition (Unified Mode)', () => {
       (statSync as jest.Mock).mockReturnValue({ isDirectory: () => false });
       expect(statSync('./file.txt').isDirectory()).toBe(false);
     });
+  });
+});
+
+describe('resolveDefaultAgentKey', () => {
+  const baseConfig = {
+    agents: [] as AgentConfig[],
+    models: {},
+  } as unknown as ResolvedConfig;
+
+  let exitSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    // Regression guard for the fall-through bug: process.exit(1) was called
+    // but execution continued to `agentKey = enabledAgent.key`, a null-deref
+    // whenever process.exit doesn't actually terminate the process (exactly
+    // this test setup). Stub it as a no-op so we can assert the function
+    // returns safely instead of throwing.
+    exitSpy = jest.spyOn(process, 'exit').mockImplementation(((): never => {
+      return undefined as never;
+    }) as any);
+    jest.spyOn(console, 'error').mockImplementation();
+    jest.spyOn(console, 'log').mockImplementation();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+  });
+
+  it('does NOT null-deref when no enabled agent exists and process.exit is stubbed — throws a controlled error instead', () => {
+    const config = { ...baseConfig, agents: [{ key: 'a', name: 'A', endpoint: 'x', enabled: false }] } as unknown as ResolvedConfig;
+
+    // Regression guard for the fall-through bug: process.exit(1) was called
+    // but execution continued to `agentKey = enabledAgent.key`, a null-deref
+    // (TypeError: Cannot read properties of undefined) whenever process.exit
+    // doesn't actually terminate the process (exactly this test setup). The
+    // fixed function must fail loudly with its OWN descriptive Error instead
+    // of that null-deref TypeError, and must never fall through to return an
+    // empty-string sentinel that could silently propagate downstream
+    // (codex_review finding: an empty agent key is a poisonous value, not a
+    // safe default).
+    expect(() => resolveDefaultAgentKey(config)).toThrow(/no enabled agents found/i);
+    expect(() => resolveDefaultAgentKey(config)).not.toThrow(/Cannot read properties of undefined/);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+  });
+
+  it('returns the first agent whose enabled flag is not explicitly false', () => {
+    const config = {
+      ...baseConfig,
+      agents: [
+        { key: 'disabled-agent', name: 'Disabled', endpoint: 'x', enabled: false },
+        { key: 'enabled-agent', name: 'Enabled', endpoint: 'y' },
+      ],
+    } as unknown as ResolvedConfig;
+
+    const result = resolveDefaultAgentKey(config);
+
+    expect(result).toBe('enabled-agent');
+    expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  it('treats agents with no `enabled` field as enabled by default', () => {
+    const config = {
+      ...baseConfig,
+      agents: [{ key: 'implicit-enabled', name: 'Implicit', endpoint: 'z' }],
+    } as unknown as ResolvedConfig;
+
+    const result = resolveDefaultAgentKey(config);
+
+    expect(result).toBe('implicit-enabled');
+  });
+
+  it('exits with code 1 and throws (never returns an empty-string sentinel) when the agent list is empty', () => {
+    const config = { ...baseConfig, agents: [] } as unknown as ResolvedConfig;
+
+    expect(() => resolveDefaultAgentKey(config)).toThrow();
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
   });
 });
