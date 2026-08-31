@@ -158,6 +158,7 @@ describe('benchmark doctor (integration)', () => {
       // — never mass-migrate a shared backend from a test)
       const migration = await migrateBenchmarksToImages(client, BASE_URL, {
         benchmarkIds: [ourGroup!.canonicalId],
+        dryRun: false,
       });
       const ours = migration.migrated.find((m) => m.benchmarkId === ourGroup!.canonicalId);
       expect(ours).toBeDefined();
@@ -165,6 +166,63 @@ describe('benchmark doctor (integration)', () => {
       const image = await client.getImage(ours!.digest);
       expect(image).not.toBeNull();
       expect(image!.image.tags).toContain(survivor!.name);
+    },
+    TEST_TIMEOUT
+  );
+
+  it(
+    '--migrate-images dry-run preview computes the real digest but persists nothing; --apply then actually creates it',
+    async () => {
+      if (!backendAvailable) return;
+
+      const stamp = Date.now();
+      const bulk = await client.bulkCreateTestCases([
+        {
+          name: `doctor-dryrun-tc-${stamp}`,
+          category: 'General',
+          difficulty: 'Easy',
+          initialPrompt: 'Say hi.',
+          expectedOutcomes: ['Greets the user'],
+        },
+      ]);
+      createdTestCaseIds.push(...bulk.testCases.map((tc) => tc.id));
+
+      const benchmark = await client.createBenchmark({
+        name: `doctor-dryrun-bench-${stamp}`,
+        description: 'doctor integration dry-run preview',
+        testCaseIds: createdTestCaseIds,
+      });
+      createdBenchmarkIds.push(benchmark.id);
+
+      // Default (dry-run): reports the real digest but creates nothing.
+      const preview = await migrateBenchmarksToImages(client, BASE_URL, {
+        benchmarkIds: [benchmark.id],
+      });
+      const previewed = preview.migrated.find((m) => m.benchmarkId === benchmark.id);
+      expect(preview.dryRun).toBe(true);
+      expect(previewed).toBeDefined();
+      expect(previewed!.alreadyExists).toBe(false);
+      expect(await client.getImage(previewed!.digest)).toBeNull();
+
+      // --apply (dryRun: false): the SAME digest now actually gets created.
+      const applied = await migrateBenchmarksToImages(client, BASE_URL, {
+        benchmarkIds: [benchmark.id],
+        dryRun: false,
+      });
+      const appliedEntry = applied.migrated.find((m) => m.benchmarkId === benchmark.id);
+      expect(applied.dryRun).toBe(false);
+      expect(appliedEntry).toBeDefined();
+      expect(appliedEntry!.digest).toBe(previewed!.digest);
+      createdImageDigests.push(appliedEntry!.digest);
+      const image = await client.getImage(appliedEntry!.digest);
+      expect(image).not.toBeNull();
+
+      // Re-previewing the now-existing image reports alreadyExists: true.
+      const secondPreview = await migrateBenchmarksToImages(client, BASE_URL, {
+        benchmarkIds: [benchmark.id],
+      });
+      const secondPreviewed = secondPreview.migrated.find((m) => m.benchmarkId === benchmark.id);
+      expect(secondPreviewed!.alreadyExists).toBe(true);
     },
     TEST_TIMEOUT
   );
