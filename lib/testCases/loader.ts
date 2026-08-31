@@ -95,15 +95,14 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
   const absPath = resolve(filePath);
 
   // Read the raw file text up front, before any execution path below --
-  // both the .js (already needed its own read for the CJS wrapper) and the
-  // .ts/.mjs (dynamic `import()`) paths reuse this single read. For .js this
-  // read IS the executed source (the CJS wrapper below runs this exact
-  // string). For .ts/.mjs, `import()` reads the file independently via
-  // Node's own module loader a few lines later -- in the extremely narrow
-  // window where the file is edited between this read and that import
-  // resolving, `fileSource` could theoretically diverge from what actually
-  // ran. That's an accepted, practically negligible risk (same file, same
-  // synchronous-ish call, no network hop) rather than a guarantee.
+  // both the .js and .ts (synthetic-CJS) paths reuse this single read AS
+  // the executed source. For .mjs, native `import()` reads the file
+  // independently via Node's own module loader a few lines later -- in the
+  // extremely narrow window where the file is edited between this read and
+  // that import resolving, `fileSource` could theoretically diverge from
+  // what actually ran. That's an accepted, practically negligible risk
+  // (same file, same synchronous-ish call, no network hop) rather than a
+  // guarantee.
   const fileSource = readFileSync(absPath, 'utf-8');
 
   // Clear any prior registration for this file and set it as active
@@ -114,11 +113,14 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
 
   // Execute `code` (already-valid CJS source) in a fresh Module instance,
   // with our test() registrar injected via require() interception. Shared
-  // by real .eval.js files AND by the esbuild-transpiled fallback for
-  // .eval.ts below — both need the exact same wrappedRequire behavior so a
+  // by real .eval.js files AND by the esbuild-transpiled .eval.ts path
+  // below — both need the exact same wrappedRequire behavior so a
   // fixture's `require(...)` call for the SDK package name resolves to the
   // SAME authoring surface (and therefore the same shared registry)
-  // regardless of which path produced the CJS source.
+  // regardless of which path produced the CJS source. Building a fresh
+  // `Module` + `eval()` on every call (never caching) is what lets a file
+  // be re-loaded any number of times in one process and register tests
+  // again each time — see the .ts branch below for why that matters.
   const runAsSyntheticCjs = (code: string): any => {
     const fileDir = dirname(absPath);
     // NOTE: do not call require('module') here — this file is bundled as ESM
@@ -190,49 +192,71 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
     // For CJS .js files, execute in a fresh context with our test() function
     // injected. This avoids module caching issues across multiple loads.
     module = runAsSyntheticCjs(fileSource);
+  } else if (absPath.endsWith('.ts')) {
+    // .eval.ts ALWAYS goes through the esbuild-transpile -> synthetic-CJS
+    // path below, on every Node version — never a native `import()`, not
+    // even as a "try native first, fall back to esbuild" strategy. Two
+    // reasons this has to be unconditional rather than fallback-only:
+    //
+    //  1. Dual semantics: native `import()` under Node 22.6+/24's built-in
+    //     TypeScript type-stripping gives the file REAL ESM module
+    //     semantics (its own module registry entry, `import.meta`,
+    //     top-level `await`, live bindings) — a completely different
+    //     execution model from the synthetic-CJS path a fallback-only
+    //     design would give the exact same file on Node <22.6. Two Node
+    //     majors running one .eval.ts file through two different module
+    //     systems is exactly the kind of gap that let the shared-registry
+    //     bug documented above (`globalThis[Symbol.for(...)]`) happen in
+    //     the first place — unifying on one path removes the gap instead
+    //     of quietly reintroducing a second copy of it.
+    //  2. ESM cache staleness: `import()` caches by resolved URL. A
+    //     long-lived server process re-loading the SAME .eval.ts file a
+    //     second time (a normal `agent-health benchmark -f` re-run after
+    //     editing the fixture, not an exotic case) would silently get back
+    //     the ALREADY-cached module without re-executing its top-level
+    //     code, so `test()`/`describe()` never fire a second time and the
+    //     `clearRegistry()` call above has nothing to refill — "has no
+    //     test cases" on the second load with no code change at all.
+    //     `.eval.js` never had this problem: `runAsSyntheticCjs` builds a
+    //     fresh `Module` instance and `eval()`s the source on every single
+    //     call, uncached. `.eval.ts` now shares that exact same
+    //     never-cached execution path.
+    //
+    // Trade-off this accepts: an .eval.ts fixture can no longer use
+    // `import.meta` or a top-level `await` (esbuild's CJS output has
+    // neither) — documented in docs/SDK.md. esbuild is a required runtime
+    // dependency of this package specifically because of this
+    // unconditional path (see package.json "dependencies").
+    let cjsSource: string;
+    try {
+      const { transformSync } = await import('esbuild');
+      cjsSource = transformSync(fileSource, {
+        loader: 'ts',
+        format: 'cjs',
+        target: 'node18',
+        sourcefile: absPath,
+      }).code;
+    } catch (esbuildErr: any) {
+      throw new Error(
+        `Cannot import TypeScript file: ${filePath}\n` +
+        `esbuild (required to load .eval.ts files) failed to resolve or transpile it: ${esbuildErr.message}\n` +
+        'Install esbuild as a dependency: npm install esbuild\n' +
+        'Or pre-compile .eval.ts to .eval.js before running.'
+      );
+    }
+    module = runAsSyntheticCjs(cjsSource);
   } else {
-    // For .ts and .mjs files, prefer a native dynamic import first — the
-    // zero-dependency path, and the only one exercised on Node 22.6+/24
-    // (native TypeScript type-stripping) or for plain .mjs (no TS to strip).
+    // .eval.mjs: plain ESM with no TypeScript to strip, so native
+    // `import()` works unconditionally on every Node version this package
+    // supports — it stays the only path for this extension. Unlike .ts,
+    // there is no synthetic-CJS equivalent to unify onto here (real ESM
+    // files, `import.meta`, top-level `await`, etc. are all first-class
+    // for .mjs, and always were).
     try {
       const fileUrl = pathToFileURL(absPath).href;
       module = await import(fileUrl);
     } catch (err: any) {
-      if (err.code === 'ERR_UNKNOWN_FILE_EXTENSION' && absPath.endsWith('.ts')) {
-        // Older Node (no native TS support — this repo's own `engines` field
-        // commits to Node >=20, and the integration-tests CI job pins
-        // exactly Node 20) can't `import()` a .ts file at all. Fall back to
-        // transpiling with esbuild — already a devDependency here (it's
-        // what builds this repo's own server/CLI/lib bundles), and commonly
-        // resolvable transitively in real consumer projects too — into
-        // plain CJS, then run the result through the EXACT SAME
-        // synthetic-CJS path as .eval.js above rather than solving the ESM
-        // module-instance problem a second way. esbuild's `format: 'cjs'`
-        // rewrites `import ... from '@opensearch-project/agent-health'`
-        // into a plain `require(...)` call, so the existing wrappedRequire
-        // interception (and therefore the shared test registry) applies
-        // completely unchanged.
-        let cjsSource: string;
-        try {
-          const { transformSync } = await import('esbuild');
-          cjsSource = transformSync(fileSource, {
-            loader: 'ts',
-            format: 'cjs',
-            target: 'node18',
-            sourcefile: absPath,
-          }).code;
-        } catch (esbuildErr: any) {
-          throw new Error(
-            `Cannot import TypeScript file: ${filePath}\n` +
-            `Native Node type-stripping is unavailable on this Node version, and the esbuild fallback failed: ${esbuildErr.message}\n` +
-            'Install esbuild or tsx as a dependency (npm install esbuild), upgrade to Node 22.6+, ' +
-            'or pre-compile .eval.ts to .eval.js before running.'
-          );
-        }
-        module = runAsSyntheticCjs(cjsSource);
-      } else {
-        throw new Error(`Failed to import module: ${filePath}\n${err.message}`);
-      }
+      throw new Error(`Failed to import module: ${filePath}\n${err.message}`);
     }
   }
 
