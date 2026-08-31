@@ -110,6 +110,12 @@ async function postBulk(testCases: any[]): Promise<{ status: number; body: BulkR
 }
 
 describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
+  // The dedup lookup path scans existing test cases server-side; against a
+  // large shared OpenSearch cluster a single round-trip can exceed jest's
+  // default 30s (measured: three of these tests at 30–60s on a ~1.5k-doc
+  // cluster with multi-MB documents). CI's file backend stays instant.
+  jest.setTimeout(120_000);
+
   let backendAvailable = false;
   let client: ApiClient;
   // Per-run prefix: every TC and benchmark name gets this prefix so
