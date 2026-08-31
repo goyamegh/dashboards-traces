@@ -20,8 +20,14 @@
  */
 
 import { test, expect } from './fixtures/test-fixtures';
+import { createTestDataTracker, uniqueTestName } from '../helpers/testDataTracker';
 
 test.describe('Benchmark Runs list — passed count matches run.results, not stale run.stats', () => {
+  // beforeAll fixtures outlive single tests, so the per-test testData fixture
+  // cannot own them — this tracker does (afterAll + crash ledger). This spec
+  // used to leak its `e2e-passedcount-tc-*` test cases (5 measured on the
+  // shared cluster) whenever a worker died before the hand-rolled afterAll.
+  const tracker = createTestDataTracker();
   let benchmarkId: string | null = null;
   let runId: string | null = null;
   const testCaseIds: string[] = [];
@@ -30,7 +36,7 @@ test.describe('Benchmark Runs list — passed count matches run.results, not sta
     for (let i = 0; i < 2; i++) {
       const r = await request.post('/api/storage/test-cases', {
         data: {
-          name: `e2e-passedcount-tc-${i}-${Date.now()}`,
+          name: uniqueTestName(`passedcount-tc-${i}`),
           category: 'Test',
           difficulty: 'Easy',
           initialPrompt: 'p',
@@ -39,13 +45,15 @@ test.describe('Benchmark Runs list — passed count matches run.results, not sta
       });
       if (!r.ok()) return;
       const j = await r.json();
-      testCaseIds.push(j.id || j.testCase?.id);
+      const id = j.id || j.testCase?.id;
+      tracker.testCase(id);
+      testCaseIds.push(id);
     }
     if (testCaseIds.length !== 2) return;
 
     const bmRes = await request.post('/api/storage/benchmarks', {
       data: {
-        name: `E2E Passed-Count Benchmark ${Date.now()}`,
+        name: uniqueTestName('passedcount-benchmark'),
         description: 'passed-count E2E',
         testCaseIds,
         runs: [],
@@ -55,6 +63,7 @@ test.describe('Benchmark Runs list — passed count matches run.results, not sta
     });
     if (!bmRes.ok()) return;
     benchmarkId = (await bmRes.json()).id;
+    tracker.benchmark(benchmarkId);
 
     runId = `run-passedcount-e2e-${Date.now()}`;
     const get = await request.get(`/api/storage/benchmarks/${benchmarkId}`);
@@ -90,13 +99,11 @@ test.describe('Benchmark Runs list — passed count matches run.results, not sta
     }
   });
 
-  test.afterAll(async ({ request }) => {
-    if (benchmarkId) {
-      await request.delete(`/api/storage/benchmarks/${benchmarkId}`).catch(() => {});
-    }
-    for (const id of testCaseIds) {
-      await request.delete(`/api/storage/test-cases/${id}`).catch(() => {});
-    }
+  test.afterAll(async () => {
+    // Children before parents, 404-tolerant, ledger-backed. The seeded run is
+    // an EMBEDDED subdocument of the benchmark and dies with it; its
+    // `report-passedcount-*` reportIds never exist as standalone docs.
+    await tracker.cleanup();
   });
 
   test('shows 1 passed / 1 errored (recomputed), not the stale 2 passed', async ({ page }) => {
