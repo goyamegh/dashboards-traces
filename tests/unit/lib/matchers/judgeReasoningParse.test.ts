@@ -145,3 +145,18 @@ describe('parser robustness guards', () => {
     expect(parseFactVerdicts(pad + tail)).toEqual([]);
   });
 });
+
+describe('parseSourceMismatch — compact "vs" form', () => {
+  it('resolves the cited id from "(cited vs expected)" when no cite-verb precedes it', () => {
+    const r = `The expected source document is article 49d9e88fabcd1234. The answer was built from the wrong document (b6c9353c9999abcd vs 49d9e88fabcd1234).`;
+    const mm = parseSourceMismatch(r);
+    expect(mm).not.toBeNull();
+    expect(mm!.expected).toBe('49d9e88fabcd1234');
+    expect(mm!.cited).toBe('b6c9353c9999abcd');
+  });
+
+  it('returns null when the vs-pair is the expected id on both sides', () => {
+    const r = `The expected source document is article 49d9e88fabcd1234 (49d9e88fabcd1234 vs 49d9e88fabcd1234).`;
+    expect(parseSourceMismatch(r)).toBeNull();
+  });
+});
