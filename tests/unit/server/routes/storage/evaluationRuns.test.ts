@@ -192,7 +192,9 @@ describe('Evaluation Runs API', () => {
       expect(res.text).toContain('event: completed');
       expect(mockEvaluationRunsCreate).toHaveBeenCalled();
       expect(mockExecuteEvaluationRun).toHaveBeenCalled();
-      expect(mockEvaluationRunsUpdate).toHaveBeenCalledWith('eval-run-1'.length ? expect.any(String) : undefined, expect.objectContaining({ status: 'completed' }));
+      const createdRun = mockEvaluationRunsCreate.mock.calls[0][0];
+      expect(createdRun.id).toEqual(expect.any(String));
+      expect(mockEvaluationRunsUpdate).toHaveBeenCalledWith(createdRun.id, expect.objectContaining({ status: 'completed' }));
     });
 
     it('links a completed run to its benchmark and updates testCaseIds when they changed', async () => {
@@ -295,16 +297,23 @@ describe('Evaluation Runs API', () => {
 
     it('cancels an active run and marks it cancelled', async () => {
       // Prime an active cancellation token by starting (and not finishing) a run.
+      // executeEvaluationRun is called strictly AFTER storage.evaluationRuns.create()
+      // in the route handler, so resolving `executionStarted` from inside the mock's
+      // own invocation deterministically proves create() has already run --
+      // no timing-dependent polling/sleep needed.
       let resolveExec: (v: any) => void;
-      mockExecuteEvaluationRun.mockImplementation(() => new Promise((resolve) => { resolveExec = resolve; }));
+      let signalStarted: () => void;
+      const executionStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+      mockExecuteEvaluationRun.mockImplementation(() => {
+        signalStarted();
+        return new Promise((resolve) => { resolveExec = resolve; });
+      });
       const cancelFn = jest.fn();
       mockCreateCancellationToken.mockReturnValue({ isCancelled: false, cancel: cancelFn });
 
       const postPromise = request(app).post('/api/storage/evaluation-runs').send({ sources: [{ testCaseId: 'tc-1' }], agentKey: 'a1' });
       postPromise.catch(() => {}); // kick off dispatch immediately (supertest is thenable-lazy)
-      for (let i = 0; i < 50 && mockEvaluationRunsCreate.mock.calls.length === 0; i++) {
-        await new Promise((r) => setTimeout(r, 10));
-      }
+      await executionStarted;
 
       const runId = mockEvaluationRunsCreate.mock.calls[0][0].id;
       const cancelRes = await request(app).post(`/api/storage/evaluation-runs/${runId}/cancel`);
@@ -320,14 +329,17 @@ describe('Evaluation Runs API', () => {
 
     it('500s when the update call throws', async () => {
       let resolveExec: (v: any) => void;
-      mockExecuteEvaluationRun.mockImplementation(() => new Promise((resolve) => { resolveExec = resolve; }));
+      let signalStarted: () => void;
+      const executionStarted = new Promise<void>((resolve) => { signalStarted = resolve; });
+      mockExecuteEvaluationRun.mockImplementation(() => {
+        signalStarted();
+        return new Promise((resolve) => { resolveExec = resolve; });
+      });
       mockCreateCancellationToken.mockReturnValue({ isCancelled: false, cancel: jest.fn() });
 
       const postPromise = request(app).post('/api/storage/evaluation-runs').send({ sources: [{ testCaseId: 'tc-1' }], agentKey: 'a1' });
       postPromise.catch(() => {});
-      for (let i = 0; i < 50 && mockEvaluationRunsCreate.mock.calls.length === 0; i++) {
-        await new Promise((r) => setTimeout(r, 10));
-      }
+      await executionStarted;
       const runId = mockEvaluationRunsCreate.mock.calls[0][0].id;
 
       mockEvaluationRunsUpdate.mockRejectedValueOnce(new Error('boom'));

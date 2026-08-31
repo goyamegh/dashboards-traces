@@ -156,22 +156,26 @@ describe('OpenSearchSpanExporter', () => {
     [SpanKind.CLIENT, 'SPAN_KIND_CLIENT'],
     [SpanKind.PRODUCER, 'SPAN_KIND_PRODUCER'],
     [SpanKind.CONSUMER, 'SPAN_KIND_CONSUMER'],
-  ])('maps SpanKind %s to %s', (kind, expected) => {
+  ])('maps SpanKind %s to %s', (kind, expected, done) => {
     const exporter = new OpenSearchSpanExporter({ endpoint: 'http://os' });
-    exporter.export([makeSpan({ kind })], () => {});
-    const doc = mockBulk.mock.calls[0][0].body[1];
-    expect(doc.kind).toBe(expected);
+    exporter.export([makeSpan({ kind })], () => {
+      const doc = mockBulk.mock.calls[0][0].body[1];
+      expect(doc.kind).toBe(expected);
+      done();
+    });
   });
 
   it.each([
     [SpanStatusCode.UNSET, 0],
     [SpanStatusCode.OK, 1],
     [SpanStatusCode.ERROR, 2],
-  ])('maps SpanStatusCode %s to %d', (code, expected) => {
+  ])('maps SpanStatusCode %s to %d', (code, expected, done) => {
     const exporter = new OpenSearchSpanExporter({ endpoint: 'http://os' });
-    exporter.export([makeSpan({ status: { code, message: 'x' } })], () => {});
-    const doc = mockBulk.mock.calls[0][0].body[1];
-    expect(doc.status).toEqual({ code: expected, message: 'x' });
+    exporter.export([makeSpan({ status: { code, message: 'x' } })], () => {
+      const doc = mockBulk.mock.calls[0][0].body[1];
+      expect(doc.status).toEqual({ code: expected, message: 'x' });
+      done();
+    });
   });
 
   it('maps events with attributes, and defaults droppedAttributesCount', (done) => {

@@ -86,19 +86,58 @@ describe('FileStorageModule (extended)', () => {
       expect(result.testCases).toHaveLength(2);
     });
 
-    it('bulkUpsert creates new, updates changed (by sourceHash), and leaves unchanged entries alone', async () => {
+    it('bulkUpsert leaves an entry unchanged when its sourceHash matches (single-item batch)', async () => {
       const existing = await mod.testCases.create({ name: 'Existing', initialPrompt: 'p', sourceFile: 'a.ts', sourceHash: 'hash-1' } as any);
 
       const result = await mod.testCases.bulkUpsert([
-        { name: 'Existing', sourceFile: 'a.ts', sourceHash: 'hash-1', initialPrompt: 'p' } as any, // unchanged
-        { name: 'Existing', sourceFile: 'a.ts', sourceHash: 'hash-2', initialPrompt: 'p changed' } as any, // updated (same name+file, new hash)
+        { name: 'Existing', sourceFile: 'a.ts', sourceHash: 'hash-1', initialPrompt: 'p' } as any,
       ]);
 
-      // First call: unchanged (matches by name+sourceFile, same hash)
-      // Second call re-reads `all` from the SAME initial snapshot, so it also
-      // matches the same original `existing` entry and updates it.
-      expect(result.unchanged + result.updated + result.created).toBe(2);
+      expect(result).toMatchObject({ created: 0, updated: 0, unchanged: 1 });
+      expect(result.testCases).toEqual([existing]);
+    });
+
+    it('bulkUpsert updates an entry whose sourceHash changed (single-item batch)', async () => {
+      const existing = await mod.testCases.create({ name: 'Existing', initialPrompt: 'p', sourceFile: 'a.ts', sourceHash: 'hash-1' } as any);
+
+      const result = await mod.testCases.bulkUpsert([
+        { name: 'Existing', sourceFile: 'a.ts', sourceHash: 'hash-2', initialPrompt: 'p changed' } as any,
+      ]);
+
+      expect(result).toMatchObject({ created: 0, updated: 1, unchanged: 0 });
       expect(result.testCases[0].id).toBe(existing.id);
+      expect(result.testCases[0].sourceHash).toBe('hash-2');
+      expect(result.testCases[0].initialPrompt).toBe('p changed');
+      expect(result.testCases[0].version).toBe(2);
+    });
+
+    // NOTE (found while writing this test, reported not fixed per test-only
+    // scope): bulkUpsert() reads `all` ONCE before its loop and matches every
+    // item in the batch against that single pre-batch snapshot (see
+    // server/adapters/file/StorageModule.ts's bulkUpsert). So when two items
+    // in the SAME batch share a name+sourceFile key, the second item does
+    // NOT see the first item's update -- both resolve against the original
+    // pre-batch entity, and the second item's update wins (last-write-wins)
+    // rather than the two being sequenced/merged. Deterministic, not a crash
+    // risk, but a caller feeding two revisions of the "same" test case in one
+    // bulkUpsert call would not get the intermediate state reflected in the
+    // created/updated/unchanged counts the way the method name might suggest.
+    it('bulkUpsert matches every item in a batch against the SAME pre-batch snapshot (documents last-write-wins on duplicate keys within one call)', async () => {
+      const existing = await mod.testCases.create({ name: 'Existing', initialPrompt: 'p', sourceFile: 'a.ts', sourceHash: 'hash-1' } as any);
+
+      const result = await mod.testCases.bulkUpsert([
+        { name: 'Existing', sourceFile: 'a.ts', sourceHash: 'hash-1', initialPrompt: 'p' } as any, // matches existing (unchanged)
+        { name: 'Existing', sourceFile: 'a.ts', sourceHash: 'hash-2', initialPrompt: 'p changed' } as any, // also matches the ORIGINAL existing (pre-batch snapshot), not item 1's result
+      ]);
+
+      expect(result).toMatchObject({ created: 0, updated: 1, unchanged: 1 });
+      expect(result.testCases[0]).toEqual(existing); // item 1: unchanged, returns the original doc
+      expect(result.testCases[1].id).toBe(existing.id); // item 2: updates the SAME original entity (stale-snapshot match)
+      expect(result.testCases[1].sourceHash).toBe('hash-2');
+      expect(result.testCases[1].version).toBe(2);
+
+      const finalState = await mod.testCases.getById(existing.id);
+      expect(finalState?.sourceHash).toBe('hash-2'); // item 2's update is what persists
     });
 
     it('bulkUpsert creates a brand-new test case when no match exists', async () => {
