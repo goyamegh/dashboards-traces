@@ -99,20 +99,17 @@ export const SIGV4_CREDENTIAL_REFRESH_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
  * provider chain every call" strategy: `@smithy/shared-ini-file-loader`
  * memoizes the raw contents of `~/.aws/credentials` / `~/.aws/config` in a
  * module-level `filePromises` map, keyed only by file path, for the lifetime
- * of the Node process - it is NOT invalidated by mtime, and NOT invalidated
- * by constructing a brand-new provider chain (that only avoids the AWS SDK's
- * own `memoizeChain` credential-object cache, a different layer). The first
- * time any code in the process reads that file, its content is frozen for
- * every subsequent read, including ones made by unrelated fresh provider
- * instances like the one built above. `ada credentials update` (and any
- * other tool that rewrites the ini file in place) is therefore invisible to
- * a long-running server no matter how often we "re-resolve" credentials -
- * until the process restarts and the module cache resets. This is the actual
- * cause of the Aug 2026 incidents where `/api/storage/config/retry` kept
- * returning HTTP 403 after `ada` had already refreshed valid credentials on
- * disk, and only a process restart recovered. The only supported way to
- * bypass that file cache is the provider chain's own `ignoreCache: true`
- * option (forwarded verbatim down to `readFile()`), so we pass it here.
+ * of the Node process - a brand-new provider chain still calls into this
+ * SAME shared file-read cache. `ada credentials update` rewriting a static
+ * ini-file profile is therefore invisible to a long-running server until
+ * the process restarts - the actual cause of the Aug 2026 incidents where
+ * `/api/storage/config/retry` kept returning HTTP 403 after `ada` had
+ * already refreshed valid credentials on disk. `ignoreCache: true` bypasses
+ * that specific file-content cache (forwarded down to `readFile()`); it
+ * does NOT change how AWS-side re-authentication works for profile shapes
+ * that legitimately re-authenticate on their own (SSO, `credential_process`,
+ * assume-role chains), so this is scoped to the static-profile case that bit
+ * us, not a general credential-freshness guarantee.
  */
 export async function resolveSigv4Credentials(awsProfile?: string) {
   const provider = fromNodeProviderChain({
