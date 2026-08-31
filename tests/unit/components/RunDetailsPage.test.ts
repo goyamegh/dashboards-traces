@@ -54,19 +54,18 @@ jest.mock('@/services/storage', () => ({
   asyncRunStorage: {
     getByExperimentRun: jest.fn().mockResolvedValue([]),
     getReportById: jest.fn().mockResolvedValue(null),
+    getReportSummariesByIds: jest.fn().mockResolvedValue({}),
+    getReportReasoningsByIds: jest.fn().mockResolvedValue({}),
   },
   asyncTestCaseStorage: {
     getAll: jest.fn().mockResolvedValue([]),
+    getByIds: jest.fn().mockResolvedValue([]),
     getById: jest.fn().mockResolvedValue(null),
   },
 }));
 
 jest.mock('@/services/client', () => ({
   cancelExperimentRun: jest.fn(),
-}));
-
-jest.mock('@/services/metrics', () => ({
-  formatDuration: jest.fn((v: number) => `${v}ms`),
 }));
 
 jest.mock('@/lib/constants', () => ({
@@ -81,11 +80,18 @@ jest.mock('@/lib/utils', () => ({
   getDifficultyColor: jest.fn().mockReturnValue(''),
   getModelName: jest.fn((id: string) => id),
   cn: jest.fn((...args: any[]) => args.filter(Boolean).join(' ')),
-  // RunScore reads these from @/lib/utils; added to the component after this
-  // partial mock was written, so omitting them threw "getRunOverallScore is
-  // not a function".
+  // Judge/evaluator label helpers (lib/utils.ts) reused by RunSummaryBand.
+  getJudgeModelLabel: jest.fn((id?: string | null) => (id ? `judge:${id}` : '—')),
+  getEvaluatorLabel: jest.fn((id?: string | null) => (id ? `evaluator:${id}` : '—')),
+  // Used by RunInsightsPane's "Avg Score" detail (run-report-insights).
   getRunOverallScore: jest.fn().mockReturnValue(null),
-  formatMetricsBreakdown: jest.fn().mockReturnValue([]),
+}));
+
+jest.mock('@/services/metrics', () => ({
+  formatDuration: jest.fn((v: number) => `${v}ms`),
+  formatCost: jest.fn((v: number) => `$${v.toFixed(2)}`),
+  formatTokens: jest.fn((v: number) => `${v}`),
+  fetchBatchMetrics: jest.fn().mockResolvedValue({ aggregate: null, metrics: {} }),
 }));
 
 // Mock child components to avoid their own async side effects
@@ -93,12 +99,8 @@ jest.mock('@/components/RunDetailsContent', () => ({
   RunDetailsContent: () => React.createElement('div', { 'data-testid': 'run-details-content' }),
 }));
 
-jest.mock('@/components/RunSummaryPanel', () => ({
-  RunSummaryPanel: () => React.createElement('div', { 'data-testid': 'run-summary-panel' }),
-}));
-
 jest.mock('@/components/ui/card', () => ({
-  Card: ({ children, ...props }: any) => React.createElement('div', props, children),
+  Card: React.forwardRef(({ children, ...props }: any, ref: any) => React.createElement('div', { ref, ...props }, children)),
   CardContent: ({ children, ...props }: any) => React.createElement('div', props, children),
 }));
 
@@ -111,7 +113,7 @@ jest.mock('@/components/ui/badge', () => ({
 }));
 
 jest.mock('@/components/ui/scroll-area', () => ({
-  ScrollArea: ({ children }: any) => React.createElement('div', null, children),
+  ScrollArea: ({ children, ...props }: any) => React.createElement('div', props, children),
 }));
 
 jest.mock('@/components/ui/skeleton', () => ({
@@ -137,9 +139,21 @@ import { asyncExperimentStorage, asyncRunStorage, asyncTestCaseStorage } from '@
 import { RunDetailsPage } from '@/components/RunDetailsPage';
 
 const mockGetExperiment = asyncExperimentStorage.getById as jest.MockedFunction<typeof asyncExperimentStorage.getById>;
-const mockGetByExperimentRun = asyncRunStorage.getByExperimentRun as jest.MockedFunction<typeof asyncRunStorage.getByExperimentRun>;
 const mockGetAllTestCases = asyncTestCaseStorage.getAll as jest.MockedFunction<typeof asyncTestCaseStorage.getAll>;
+const mockGetByIdsTestCases = asyncTestCaseStorage.getByIds as jest.MockedFunction<typeof asyncTestCaseStorage.getByIds>;
 const mockGetReportById = asyncRunStorage.getReportById as jest.MockedFunction<typeof asyncRunStorage.getReportById>;
+const mockGetReportSummariesByIds = asyncRunStorage.getReportSummariesByIds as jest.MockedFunction<typeof asyncRunStorage.getReportSummariesByIds>;
+
+// Helper: given the array of full reports a test wants "in storage", wire up
+// both the summary batch (initial paint) and the per-id full fetch (on
+// selection) so existing tests exercising `reports` keep working under the
+// new lazy-loading data path.
+function wireReports(reports: EvaluationReport[]) {
+  const byId: Record<string, EvaluationReport> = {};
+  for (const r of reports) byId[r.id] = r;
+  mockGetReportSummariesByIds.mockResolvedValue(byId);
+  mockGetReportById.mockImplementation((id: string) => Promise.resolve(byId[id] || null));
+}
 
 // ── Test data ─────────────────────────────────────────────────────────────────
 
@@ -213,6 +227,21 @@ describe('RunDetailsPage', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGetAllTestCases.mockResolvedValue([]);
+    mockGetByIdsTestCases.mockResolvedValue([]);
+    mockGetReportSummariesByIds.mockResolvedValue({});
+    // RunDetailsPage fetches the evaluator id->name map once on mount
+    // (mirrors EvalRunsPage); default to an empty list so tests that don't
+    // care about evaluator labels aren't affected. Individual tests may
+    // override global.fetch for their own scenarios (e.g. download-report).
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ evaluators: [] }),
+    }) as any;
+    // `mockSearchParams` is a shared singleton mutated in-place by the
+    // component itself (searchParams.set/delete inside handleSelectItem) -
+    // reset it before every test so a prior test's case selection can't
+    // leak into the next test's initial ?testCase read.
+    mockSearchParams.delete('testCase');
   });
 
   afterEach(() => {
@@ -234,7 +263,7 @@ describe('RunDetailsPage', () => {
       const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
 
       mockGetExperiment.mockResolvedValue(experiment);
-      mockGetByExperimentRun.mockResolvedValue(reports);
+      wireReports(reports);
 
       await renderAndWait();
 
@@ -257,7 +286,7 @@ describe('RunDetailsPage', () => {
       const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
 
       mockGetExperiment.mockResolvedValue(experiment);
-      mockGetByExperimentRun.mockResolvedValue(reports);
+      wireReports(reports);
 
       await renderAndWait();
 
@@ -280,7 +309,7 @@ describe('RunDetailsPage', () => {
       const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
 
       mockGetExperiment.mockResolvedValue(experiment);
-      mockGetByExperimentRun.mockResolvedValue(reports);
+      wireReports(reports);
 
       await renderAndWait();
 
@@ -297,7 +326,7 @@ describe('RunDetailsPage', () => {
       const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
 
       mockGetExperiment.mockResolvedValue(experiment);
-      mockGetByExperimentRun.mockResolvedValue(reports);
+      wireReports(reports);
 
       await renderAndWait();
 
@@ -316,7 +345,7 @@ describe('RunDetailsPage', () => {
       const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
 
       mockGetExperiment.mockResolvedValue(experiment);
-      mockGetByExperimentRun.mockResolvedValue(reports);
+      wireReports(reports);
 
       await renderAndWait();
 
@@ -370,7 +399,7 @@ describe('RunDetailsPage', () => {
       const reports = [createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')];
 
       mockGetExperiment.mockResolvedValue(experiment);
-      mockGetByExperimentRun.mockResolvedValue(reports);
+      wireReports(reports);
 
       await renderAndWait();
 
@@ -388,6 +417,270 @@ describe('RunDetailsPage', () => {
           expect.stringContaining('/api/storage/benchmarks/bench-1/report?format=json&runIds=run-1')
         );
       });
+    });
+  });
+
+  describe('loading state (regression: large run rendered a silent blank pane)', () => {
+    it('shows a human-readable loading label instead of a bare skeleton while the run loads', async () => {
+      let resolveExp: (v: Experiment) => void = () => {};
+      mockGetExperiment.mockImplementation(() => new Promise(resolve => { resolveExp = resolve; }));
+
+      act(() => {
+        render(React.createElement(RunDetailsPage));
+      });
+
+      // Still loading: the skeleton must be accompanied by explicit text,
+      // never a bare/void render.
+      expect(screen.getByTestId('run-details-loading')).toBeTruthy();
+      expect(screen.getByTestId('run-details-loading-label').textContent).toMatch(/Loading/i);
+
+      await act(async () => {
+        resolveExp(createExperiment(createExperimentRun()));
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('run-details-loading')).toBeNull();
+      });
+    });
+
+    it('surfaces an inline error with Retry instead of a silent blank pane when the fetch fails', async () => {
+      mockGetExperiment.mockRejectedValueOnce(new Error('network boom'));
+
+      await renderAndWait();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-details-error')).toBeTruthy();
+      });
+      expect(screen.getByText(/network boom/)).toBeTruthy();
+
+      // Retry re-invokes the loader; a second, successful attempt clears the
+      // error and renders real content instead of leaving the void in place.
+      const run = createExperimentRun();
+      const experiment = createExperiment(run);
+      wireReports([createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')]);
+      mockGetExperiment.mockResolvedValueOnce(experiment);
+
+      await act(async () => {
+        screen.getByTestId('run-details-retry').click();
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      await waitFor(() => {
+        expect(screen.queryByTestId('run-details-error')).toBeNull();
+        expect(screen.getByText('Test Run')).toBeTruthy();
+      });
+    });
+  });
+
+  describe('summary-first rendering + lazy full-report fetch', () => {
+    it('paints the case list from batched summaries without fetching every full report up front', async () => {
+      const run = createExperimentRun();
+      const experiment = createExperiment(run);
+      // Summary reports lack trajectory/metrics (mirrors the real server-side
+      // field projection) - the sidebar must still render fine from these.
+      const summaries: Record<string, EvaluationReport> = {
+        'report-1': { ...createReport('report-1', 'tc-1'), trajectory: undefined as any, metrics: undefined },
+        'report-2': { ...createReport('report-2', 'tc-2'), trajectory: undefined as any, metrics: undefined },
+      };
+      mockGetExperiment.mockResolvedValue(experiment);
+      mockGetReportSummariesByIds.mockResolvedValue(summaries);
+
+      await renderAndWait();
+
+      // Case list rendered promptly from summaries alone.
+      await waitFor(() => {
+        expect(screen.getByText('tc-1')).toBeTruthy();
+        expect(screen.getByText('tc-2')).toBeTruthy();
+      });
+      // No full-report fetch happened yet - the run starts on the Summary tab.
+      expect(mockGetReportById).not.toHaveBeenCalled();
+
+      // Selecting a case triggers exactly one on-demand full-report fetch.
+      mockGetReportById.mockResolvedValueOnce(createReport('report-1', 'tc-1'));
+      await act(async () => {
+        screen.getByText('tc-1').click();
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      expect(mockGetReportById).toHaveBeenCalledWith('report-1');
+      await waitFor(() => {
+        expect(screen.getByTestId('run-details-content')).toBeTruthy();
+      });
+    });
+
+    it('shows a "Loading report" state for the selected case while its full body is in flight', async () => {
+      const run = createExperimentRun();
+      const experiment = createExperiment(run);
+      mockGetExperiment.mockResolvedValue(experiment);
+      mockGetReportSummariesByIds.mockResolvedValue({
+        'report-1': { ...createReport('report-1', 'tc-1'), trajectory: undefined as any },
+        'report-2': { ...createReport('report-2', 'tc-2'), trajectory: undefined as any },
+      });
+
+      let resolveFull: (v: EvaluationReport) => void = () => {};
+      mockGetReportById.mockImplementation(() => new Promise(resolve => { resolveFull = resolve; }));
+
+      await renderAndWait();
+
+      await act(async () => {
+        screen.getByText('tc-1').click();
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      expect(screen.getByText(/Loading report/i)).toBeTruthy();
+
+      await act(async () => {
+        resolveFull(createReport('report-1', 'tc-1'));
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-details-content')).toBeTruthy();
+      });
+    });
+
+    it('shows the same "Loading report" state in the full-width (single test case, no sidebar) layout', async () => {
+      // A run with exactly one result auto-selects that case and renders the
+      // full-width layout (no ResizablePanel sidebar) - a separate code path
+      // that mirrors the sidebar layout's pending/loading/error branches.
+      const run = createExperimentRun({ results: { 'tc-solo': { reportId: 'report-solo', status: 'completed' } } });
+      const experiment = createExperiment(run);
+      mockGetExperiment.mockResolvedValue(experiment);
+      mockGetReportSummariesByIds.mockResolvedValue({
+        'report-solo': { ...createReport('report-solo', 'tc-solo'), trajectory: undefined as any },
+      });
+
+      let resolveFull: (v: EvaluationReport) => void = () => {};
+      mockGetReportById.mockImplementation(() => new Promise(resolve => { resolveFull = resolve; }));
+
+      await renderAndWait();
+
+      await waitFor(() => {
+        expect(screen.getByText(/Loading report/i)).toBeTruthy();
+      });
+
+      await act(async () => {
+        resolveFull(createReport('report-solo', 'tc-solo'));
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-details-content')).toBeTruthy();
+      });
+    });
+  });
+
+  describe('run summary band (redesign: bare route renders summary + list directly)', () => {
+    it('renders the summary band with agent/model/judge/evaluator labels and verdict counts, no click-through needed', async () => {
+      const run = createExperimentRun({
+        agentKey: 'test-agent',
+        modelId: 'test-model',
+        judgeModelId: 'judge-model-x',
+        evaluatorId: 'evaluator-y',
+      });
+      const experiment = createExperiment(run);
+      const reports = [
+        { ...createReport('report-1', 'tc-1'), passFailStatus: 'passed' as const },
+        { ...createReport('report-2', 'tc-2'), passFailStatus: 'failed' as const },
+      ];
+
+      mockGetExperiment.mockResolvedValue(experiment);
+      wireReports(reports);
+
+      await renderAndWait();
+
+      // Band renders directly on the bare route - no need to select anything.
+      await waitFor(() => {
+        expect(screen.getByTestId('run-summary-band')).toBeTruthy();
+      });
+
+      // Judge/evaluator labels come from lib/utils' getJudgeModelLabel /
+      // getEvaluatorLabel helpers (mocked above) - assert they were fed the
+      // run's judgeModelId/evaluatorId, and rendered.
+      expect(screen.getByTestId('run-summary-band-judge').textContent).toContain('judge:judge-model-x');
+      expect(screen.getByTestId('run-summary-band-evaluator').textContent).toContain('evaluator:evaluator-y');
+
+      // Verdict counts: 1 passed, 1 failed, 0 errored, 2 total.
+      const verdicts = screen.getByTestId('run-summary-band-verdicts');
+      expect(verdicts.textContent).toContain('1');
+      expect(verdicts.textContent).toContain('/ 2');
+
+      // The test-case list is rendered directly below the band - no
+      // "Select a test case" empty pane, no detail pane (nothing selected).
+      expect(screen.getByTestId('run-test-case-list')).toBeTruthy();
+      expect(screen.getByText('tc-1')).toBeTruthy();
+      expect(screen.getByText('tc-2')).toBeTruthy();
+      expect(screen.queryByTestId('run-details-content')).toBeNull();
+      expect(screen.queryByText(/Select a test case/i)).toBeNull();
+    });
+
+    it('shows an em dash for judge/evaluator when the run has neither set', async () => {
+      const run = createExperimentRun({ judgeModelId: undefined, evaluatorId: undefined });
+      const experiment = createExperiment(run);
+      mockGetExperiment.mockResolvedValue(experiment);
+      wireReports([createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')]);
+
+      await renderAndWait();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-summary-band-judge').textContent).toContain('\u2014');
+        expect(screen.getByTestId('run-summary-band-evaluator').textContent).toContain('\u2014');
+      });
+    });
+  });
+
+  describe('?testCase param sync (redesign: deep-linkable case selection)', () => {
+    afterEach(() => {
+      mockSearchParams.delete('testCase');
+    });
+
+    it('clicking a case row pushes ?testCase=<id> (not a history replace) and renders the case detail', async () => {
+      const run = createExperimentRun();
+      const experiment = createExperiment(run);
+      mockGetExperiment.mockResolvedValue(experiment);
+      wireReports([createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')]);
+
+      await renderAndWait();
+
+      await act(async () => {
+        screen.getByText('tc-1').click();
+        await new Promise(r => setTimeout(r, 0));
+        await new Promise(r => setTimeout(r, 0));
+      });
+
+      expect(mockSetSearchParams).toHaveBeenCalled();
+      const [paramsArg, optionsArg] = mockSetSearchParams.mock.calls[mockSetSearchParams.mock.calls.length - 1];
+      expect(paramsArg.get('testCase')).toBe('tc-1');
+      // Push semantics (no `{ replace: true }`) so browser back/forward can
+      // walk between "no case selected" and each selected case.
+      expect(optionsArg).toBeUndefined();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-details-content')).toBeTruthy();
+      });
+    });
+
+    it('deep-links: a ?testCase=<id> present on load preselects that case and renders its detail immediately', async () => {
+      mockSearchParams.set('testCase', 'tc-2');
+
+      const run = createExperimentRun();
+      const experiment = createExperiment(run);
+      mockGetExperiment.mockResolvedValue(experiment);
+      wireReports([createReport('report-1', 'tc-1'), createReport('report-2', 'tc-2')]);
+
+      await renderAndWait();
+
+      await waitFor(() => {
+        expect(screen.getByTestId('run-details-content')).toBeTruthy();
+      });
+      // The deep-linked case's full report was fetched (not just its summary).
+      expect(mockGetReportById).toHaveBeenCalledWith('report-2');
     });
   });
 });
