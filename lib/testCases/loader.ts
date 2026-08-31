@@ -112,10 +112,14 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
 
   let module: any;
 
-  if (absPath.endsWith('.js')) {
-    // For CJS .js files, execute in a fresh context with our test() function
-    // injected. This avoids module caching issues across multiple loads.
-    const code = fileSource;
+  // Execute `code` (already-valid CJS source) in a fresh Module instance,
+  // with our test() registrar injected via require() interception. Shared
+  // by real .eval.js files AND by the esbuild-transpiled fallback for
+  // .eval.ts below — both need the exact same wrappedRequire behavior so a
+  // fixture's `require(...)` call for the SDK package name resolves to the
+  // SAME authoring surface (and therefore the same shared registry)
+  // regardless of which path produced the CJS source.
+  const runAsSyntheticCjs = (code: string): any => {
     const fileDir = dirname(absPath);
     // NOTE: do not call require('module') here — this file is bundled as ESM
     // by esbuild for the server, and Dynamic require of built-ins is unsupported
@@ -179,21 +183,56 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
     const wrapper = `(function(exports, require, module, __filename, __dirname) { ${code}\n});`;
     const compiledFn = eval(wrapper);
     compiledFn(m.exports, wrappedRequire, m, absPath, fileDir);
-    module = m.exports;
+    return m.exports;
+  };
+
+  if (absPath.endsWith('.js')) {
+    // For CJS .js files, execute in a fresh context with our test() function
+    // injected. This avoids module caching issues across multiple loads.
+    module = runAsSyntheticCjs(fileSource);
   } else {
-    // For .ts and .mjs files, use dynamic import
+    // For .ts and .mjs files, prefer a native dynamic import first — the
+    // zero-dependency path, and the only one exercised on Node 22.6+/24
+    // (native TypeScript type-stripping) or for plain .mjs (no TS to strip).
     try {
       const fileUrl = pathToFileURL(absPath).href;
       module = await import(fileUrl);
     } catch (err: any) {
       if (err.code === 'ERR_UNKNOWN_FILE_EXTENSION' && absPath.endsWith('.ts')) {
-        throw new Error(
-          `Cannot import TypeScript file: ${filePath}\n` +
-          'Install tsx as a dependency: npm install tsx\n' +
-          'Or pre-compile .eval.ts to .eval.js before running.'
-        );
+        // Older Node (no native TS support — this repo's own `engines` field
+        // commits to Node >=20, and the integration-tests CI job pins
+        // exactly Node 20) can't `import()` a .ts file at all. Fall back to
+        // transpiling with esbuild — already a devDependency here (it's
+        // what builds this repo's own server/CLI/lib bundles), and commonly
+        // resolvable transitively in real consumer projects too — into
+        // plain CJS, then run the result through the EXACT SAME
+        // synthetic-CJS path as .eval.js above rather than solving the ESM
+        // module-instance problem a second way. esbuild's `format: 'cjs'`
+        // rewrites `import ... from '@opensearch-project/agent-health'`
+        // into a plain `require(...)` call, so the existing wrappedRequire
+        // interception (and therefore the shared test registry) applies
+        // completely unchanged.
+        let cjsSource: string;
+        try {
+          const { transformSync } = await import('esbuild');
+          cjsSource = transformSync(fileSource, {
+            loader: 'ts',
+            format: 'cjs',
+            target: 'node18',
+            sourcefile: absPath,
+          }).code;
+        } catch (esbuildErr: any) {
+          throw new Error(
+            `Cannot import TypeScript file: ${filePath}\n` +
+            `Native Node type-stripping is unavailable on this Node version, and the esbuild fallback failed: ${esbuildErr.message}\n` +
+            'Install esbuild or tsx as a dependency (npm install esbuild), upgrade to Node 22.6+, ' +
+            'or pre-compile .eval.ts to .eval.js before running.'
+          );
+        }
+        module = runAsSyntheticCjs(cjsSource);
+      } else {
+        throw new Error(`Failed to import module: ${filePath}\n${err.message}`);
       }
-      throw new Error(`Failed to import module: ${filePath}\n${err.message}`);
     }
   }
 
