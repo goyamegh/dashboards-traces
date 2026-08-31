@@ -62,4 +62,33 @@ describe('__mocks__/@/lib/config ENV_CONFIG (AH_PORT live resolution)', () => {
 
     expect(suiteAUrl).not.toBe(suiteBUrl);
   });
+
+  it('still supports direct assignment, like a plain mutable property (does not throw / does not silently no-op)', async () => {
+    // The URL fields are defined as accessor (get/set) properties, not plain
+    // string properties, so they can re-resolve AH_PORT on every read. A
+    // getter-only accessor would make `ENV_CONFIG.backendUrl = '...'` throw
+    // under ESM strict mode (or silently no-op under sloppy mode) for any
+    // suite that monkeypatches this mock directly — a pattern every other
+    // field on this mock still supports. Each accessor has a setter so an
+    // explicit assignment continues to behave like assigning a normal field,
+    // and wins over the env-derived default.
+    delete process.env.AH_PORT;
+    const { ENV_CONFIG } = await import('@/lib/config');
+
+    expect(ENV_CONFIG.backendUrl).toBe('http://localhost:4001');
+
+    expect(() => {
+      ENV_CONFIG.backendUrl = 'http://example.test:9999';
+    }).not.toThrow();
+    expect(ENV_CONFIG.backendUrl).toBe('http://example.test:9999');
+
+    // The override wins even if AH_PORT changes afterwards.
+    process.env.AH_PORT = '5555';
+    expect(ENV_CONFIG.backendUrl).toBe('http://example.test:9999');
+
+    expect(() => {
+      ENV_CONFIG.storageApiUrl = 'http://example.test:9999/api/storage';
+    }).not.toThrow();
+    expect(ENV_CONFIG.storageApiUrl).toBe('http://example.test:9999/api/storage');
+  });
 });
