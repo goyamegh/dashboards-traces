@@ -473,11 +473,19 @@ semantic property checked by string-matching source is exactly the
 trivially bypassed by moving the bad logic into a helper function, one level
 of indirection defeats it). Instead, [`TestDataTracker.cleanup()`](tests/helpers/testDataTracker.ts)
 is structurally incapable of the anti-pattern — it only ever issues a DELETE
-for an id previously passed to `track()`/`testCase()`/`benchmark()`/etc.
-(`this.entities`), and there is no code path in it that calls a listing API.
+for (a) an id previously passed to `track()`/`testCase()`/`benchmark()`/etc.
+(`this.entities`), or (b) a report doc returned by a **reconciliation search
+that is itself scoped to a tracked test-case id** (`POST /runs/search
+{testCaseId}`), and there is no code path in it that calls a listing API or
+matches anything by name. The reconciliation pass exists because a background
+evaluation can persist its report doc AFTER `afterAll` harvested every id the
+suite could see (measured live: 14 leaked reports in one integration run) —
+cleanup() re-queries with a bounded settle-poll, and `jest.globalTeardown.cjs`
+runs one final end-of-run pass via `reconcile-test-case` ledger markers.
 [tests/unit/helpers/testDataTracker.test.ts](tests/unit/helpers/testDataTracker.test.ts)
 covers that guarantee directly ("never issues a request for an id that was
-not explicitly tracked") against the real implementation, not a source scan.
+not explicitly tracked" — with reconciliation searches allowed only against
+tracked test-case ids) against the real implementation, not a source scan.
 
 Use the shared tracker — do not hand-roll `createdXIds[]` arrays:
 

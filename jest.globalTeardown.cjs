@@ -50,6 +50,23 @@ const path = require('path');
 
 const LEDGER_DIR = path.join('.agent-health', '.test-ledger');
 
+/**
+ * Ledger marker kind written by TestDataTracker.finalizeLedger() after a fully
+ * successful cleanup that deleted test cases: "re-check this test-case id for
+ * LATE-WRITTEN report docs at the end of the run". A background evaluation can
+ * persist its report doc long after the suite that started it finished (and
+ * after cleanup()'s own bounded settle-poll gave up), referencing a test case
+ * that is already deleted. This end-of-run pass runs one id-scoped search per
+ * marker and deletes whatever appeared — by id, never by name, never by
+ * enumerating storage. Must match RECONCILE_KIND in tests/helpers/testDataTracker.ts.
+ */
+const RECONCILE_KIND = 'reconcile-test-case';
+
+/** Settle-poll pacing for the end-of-run reconciliation (OpenSearch index
+ *  refresh is ~1s, so passes are spaced wider than the tracker's). */
+const RECONCILE_GAP_MS = 1000;
+const RECONCILE_BUDGET_MS = 15000;
+
 /** DELETE route per entity kind. */
 const DELETE_PATHS = {
   run: (id) => `/api/storage/runs/${encodeURIComponent(id)}`,
@@ -225,6 +242,12 @@ function readLedgers(now = Date.now()) {
         if (entity && typeof entity.id === 'string' && DELETE_PATHS[entity.kind]) {
           entities.push(entity);
           fileEntities.push(entity);
+        } else if (entity && typeof entity.id === 'string' && entity.kind === RECONCILE_KIND) {
+          // Late-report re-check marker (see RECONCILE_KIND above). Tracked in
+          // fileEntities too so the per-file unlink rule covers it: a marker
+          // whose reconciliation failed keeps its ledger for the next run.
+          entities.push(entity);
+          fileEntities.push(entity);
         }
       } catch {
         /* torn line: ignore */
@@ -256,6 +279,8 @@ module.exports = async () => {
   });
 
   const swept = [];
+  /** Late-written reports deleted by the end-of-run reconciliation pass. */
+  const sweptLate = [];
   const failed = [];
   /** Keys of entities whose DELETE did not succeed — their ledgers must survive. */
   const failedKeys = new Set();
@@ -294,6 +319,92 @@ module.exports = async () => {
         }
       }
     }
+
+    // ── End-of-run late-report reconciliation (RECONCILE_KIND markers) ─────
+    // Every marker is a test-case id some suite created AND successfully
+    // deleted; a background evaluation may have written report docs for it
+    // after that suite's cleanup finished. Search per id, delete what
+    // appeared, and settle-poll (two consecutive empty passes) because a
+    // report can land — or become searchable, OpenSearch refresh is ~1s —
+    // while this pass runs.
+    const reconcileIds = [
+      ...new Set(unique.filter((e) => e.kind === RECONCILE_KIND).map((e) => e.id)),
+    ];
+    if (reconcileIds.length > 0) {
+      const handled = new Set();
+      const failedSearchIds = new Set();
+
+      const searchOnce = async (tcId) => {
+        const found = [];
+        try {
+          const response = await fetch(`${baseUrl}/api/storage/runs/search`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ testCaseId: tcId, size: 500 }),
+          });
+          if (!response.ok) {
+            if (!failedSearchIds.has(tcId)) {
+              failedSearchIds.add(tcId);
+              failed.push(`late-report search for test-case ${tcId} (HTTP ${response.status})`);
+              failedKeys.add(entityKey({ kind: RECONCILE_KIND, id: tcId }));
+              rejected = true;
+            }
+            return found;
+          }
+          const body = await response.json();
+          for (const run of body.runs || []) {
+            const id = run && run.id;
+            // demo-* docs are bundled read-only sample data — never ours.
+            if (typeof id !== 'string' || !id || id.startsWith('demo-')) continue;
+            if (handled.has(id)) continue;
+            handled.add(id);
+            found.push(id);
+          }
+        } catch (error) {
+          if (!failedSearchIds.has(tcId)) {
+            failedSearchIds.add(tcId);
+            failed.push(`late-report search for test-case ${tcId} (${error.message})`);
+            failedKeys.add(entityKey({ kind: RECONCILE_KIND, id: tcId }));
+          }
+        }
+        return found;
+      };
+
+      let emptyStreak = 0;
+      const deadline = Date.now() + RECONCILE_BUDGET_MS;
+      while (emptyStreak < 2 && Date.now() < deadline) {
+        const foundThisPass = [];
+        for (const tcId of reconcileIds) {
+          for (const id of await searchOnce(tcId)) foundThisPass.push({ id, tcId });
+        }
+        if (foundThisPass.length === 0) {
+          emptyStreak += 1;
+          // Every search failing proves nothing; polling a broken backend
+          // will not improve — the markers' ledgers are kept for retry.
+          if (failedSearchIds.size >= reconcileIds.length) break;
+        } else {
+          emptyStreak = 0;
+          for (const { id, tcId } of foundThisPass) {
+            try {
+              const response = await fetch(`${baseUrl}${DELETE_PATHS.run(id)}`, {
+                method: 'DELETE',
+              });
+              if (response.ok || response.status === 404 || response.status === 410) {
+                sweptLate.push(`run ${id} (late report of test-case ${tcId})`);
+              } else {
+                failed.push(`run ${id} (late report of test-case ${tcId}: HTTP ${response.status})`);
+                failedKeys.add(entityKey({ kind: RECONCILE_KIND, id: tcId }));
+                rejected = true;
+              }
+            } catch (error) {
+              failed.push(`run ${id} (late report of test-case ${tcId}: ${error.message})`);
+              failedKeys.add(entityKey({ kind: RECONCILE_KIND, id: tcId }));
+            }
+          }
+        }
+        if (emptyStreak < 2) await new Promise((resolve) => setTimeout(resolve, RECONCILE_GAP_MS));
+      }
+    }
   }
 
   // Unlink per file, and only files that were successfully read AND fully
@@ -323,6 +434,16 @@ module.exports = async () => {
     console.warn(
       `\n[test-cleanup] swept ${swept.length} orphaned test entit${swept.length === 1 ? 'y' : 'ies'} ` +
         `left behind by this run (a suite's afterAll cleanup did not run):\n  ${swept.join('\n  ')}\n`
+    );
+  }
+  if (sweptLate.length > 0) {
+    // NOT a suite bug: these reports were written by background evaluations
+    // AFTER their suite's cleanup (and its settle-poll) finished — exactly the
+    // gap this end-of-run pass exists to close.
+    // eslint-disable-next-line no-console
+    console.warn(
+      `\n[test-cleanup] reconciled ${sweptLate.length} late-written report doc${sweptLate.length === 1 ? '' : 's'} ` +
+        `referencing test cases this run created and deleted:\n  ${sweptLate.join('\n  ')}\n`
     );
   }
   if (unreadable.length > 0) {
