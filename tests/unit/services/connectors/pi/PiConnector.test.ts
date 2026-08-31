@@ -4,6 +4,7 @@
  */
 
 import { PiConnector, createAgentHealthPiConnector, piConnector } from '@/services/connectors/pi/PiConnector';
+import type { PiConnectorConfig } from '@/services/connectors/pi/PiConnector';
 import type { ConnectorAuth, ConnectorRequest } from '@/services/connectors/types';
 import type { TestCase, TrajectoryStep } from '@/types';
 import { ToolCallStatus } from '@/types';
@@ -245,8 +246,6 @@ describe('PiConnector', () => {
           '/pkg/extensions/agent-health.ts',
           '--append-system-prompt',
           '/pkg/prompts/agent-health.md',
-          '--model',
-          'config-model',
           '--verbose',
           '--model',
           'request-model',
@@ -303,6 +302,171 @@ describe('PiConnector', () => {
 
       await expect(promise).resolves.toBe(true);
       expect(spawn).toHaveBeenCalledWith('which', ['pi'], { shell: false });
+    });
+  });
+
+  describe('--model flag construction (goyamegh/fix-connector-cli-reader-batch)', () => {
+    let mockProcess: any;
+
+    beforeEach(() => {
+      mockProcess = new EventEmitter();
+      mockProcess.stdout = new EventEmitter();
+      mockProcess.stderr = new EventEmitter();
+      mockProcess.stdin = { write: jest.fn(), end: jest.fn() };
+      mockProcess.pid = 12345;
+      mockProcess.kill = jest.fn();
+      (spawn as jest.Mock).mockReturnValue(mockProcess);
+      (spawn as jest.Mock).mockClear();
+    });
+
+    function closeSoon(code = 0) {
+      setTimeout(() => {
+        mockProcess.emit('close', code, null);
+      }, 10);
+    }
+
+    it('passes a single --model flag from request.modelId when connectorConfig.model is not set', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'claude-sonnet-4-5',
+      };
+
+      closeSoon();
+      await connector.execute('pi', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      const modelFlagCount = spawnArgs.filter((a) => a === '--model').length;
+      expect(modelFlagCount).toBe(1);
+      const idx = spawnArgs.indexOf('--model');
+      expect(spawnArgs[idx + 1]).toBe('claude-sonnet-4-5');
+    });
+
+    it('regression: does NOT emit two --model flags when both connectorConfig.model and request.modelId are set', async () => {
+      const connectorConfig: PiConnectorConfig = { model: 'connector-config-model' };
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'request-model-id',
+        connectorConfig,
+      };
+
+      closeSoon();
+      await connector.execute('pi', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      const modelFlagCount = spawnArgs.filter((a) => a === '--model').length;
+      // Before the fix this was 2 (one from connectorConfig.model, one from
+      // request.modelId) -- argv duplication with the CLI receiving conflicting
+      // --model flags.
+      expect(modelFlagCount).toBe(1);
+    });
+
+    it('request.modelId wins over connectorConfig.model when both are set', async () => {
+      const connectorConfig: PiConnectorConfig = { model: 'connector-config-model' };
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'request-model-id',
+        connectorConfig,
+      };
+
+      closeSoon();
+      await connector.execute('pi', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      const idx = spawnArgs.indexOf('--model');
+      expect(spawnArgs[idx + 1]).toBe('request-model-id');
+      expect(spawnArgs).not.toContain('connector-config-model');
+    });
+
+    it('uses connectorConfig.model when request.modelId is not set', async () => {
+      const connectorConfig: PiConnectorConfig = { model: 'connector-config-model' };
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        connectorConfig,
+      };
+
+      closeSoon();
+      await connector.execute('pi', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      const modelFlagCount = spawnArgs.filter((a) => a === '--model').length;
+      expect(modelFlagCount).toBe(1);
+      const idx = spawnArgs.indexOf('--model');
+      expect(spawnArgs[idx + 1]).toBe('connector-config-model');
+    });
+
+    it('preserves other connectorConfig-derived args around the model flag', async () => {
+      const connectorConfig: PiConnectorConfig = {
+        model: 'connector-config-model',
+        packagePath: '/pkg',
+        additionalArgs: ['--verbose'],
+      };
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'request-model-id',
+        connectorConfig,
+      };
+
+      closeSoon();
+      await connector.execute('pi', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      expect(spawnArgs.filter((a) => a === '--model').length).toBe(1);
+      expect(spawnArgs).toContain('--verbose');
+      const idx = spawnArgs.indexOf('--model');
+      expect(spawnArgs[idx + 1]).toBe('request-model-id');
+    });
+
+    it('restores original args (no --model) after execution completes', async () => {
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'request-model-id',
+      };
+
+      closeSoon();
+      await connector.execute('pi', request, mockAuth);
+
+      expect((connector as any).config.args).not.toContain('--model');
+    });
+
+    it('regression (codex_review finding): strips a single-token --model=value form from additionalArgs', async () => {
+      const connectorConfig: PiConnectorConfig = {
+        additionalArgs: ['--model=stale-single-token-model'],
+      };
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'request-model-id',
+        connectorConfig,
+      };
+
+      closeSoon();
+      await connector.execute('pi', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      expect(spawnArgs).not.toContain('--model=stale-single-token-model');
+      expect(spawnArgs.filter((a) => a === '--model').length).toBe(1);
+      const idx = spawnArgs.indexOf('--model');
+      expect(spawnArgs[idx + 1]).toBe('request-model-id');
+    });
+
+    it('regression (codex_review finding): does not swallow an unrelated flag when a bare --model has no value', async () => {
+      const connectorConfig: PiConnectorConfig = {
+        additionalArgs: ['--model', '--verbose'],
+      };
+      const request: ConnectorRequest = {
+        testCase: mockTestCase,
+        modelId: 'request-model-id',
+        connectorConfig,
+      };
+
+      closeSoon();
+      await connector.execute('pi', request, mockAuth);
+
+      const spawnArgs = (spawn as jest.Mock).mock.calls[0][1] as string[];
+      // Before the fix, stripModelFlag treated '--verbose' as the missing
+      // value for the bare '--model' and deleted both, silently corrupting
+      // unrelated argv.
+      expect(spawnArgs).toContain('--verbose');
+      expect(spawnArgs.filter((a) => a === '--model').length).toBe(1);
     });
   });
 });

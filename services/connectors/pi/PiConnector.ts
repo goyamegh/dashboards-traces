@@ -297,9 +297,12 @@ export class PiConnector extends SubprocessConnector {
       }
     }
 
-    // Pass --model flag from request if specified
+    // Pass --model flag from request if specified. request.modelId always
+    // wins over connectorConfig.model above — strip any --model pair the
+    // config block may have already pushed so the final argv carries exactly
+    // one --model flag instead of two.
     if (request.modelId) {
-      this.config.args = [...(this.config.args || []), '--model', request.modelId];
+      this.config.args = [...this.stripModelFlag(this.config.args || []), '--model', request.modelId];
     }
 
     // Inherit AWS credentials
@@ -319,6 +322,42 @@ export class PiConnector extends SubprocessConnector {
       this.config.timeout = originalTimeout;
       this.config.workingDir = originalWorkingDir;
     }
+  }
+
+  /**
+   * Remove any `--model <value>` (two-token) or `--model=<value>` (single-
+   * token) occurrence from an argv array. Used so `request.modelId` can
+   * override `connectorConfig.model` without leaving a stale second
+   * `--model` flag in the final argv.
+   *
+   * This connector only ever generates the two-token form itself, but
+   * `connectorConfig.additionalArgs` is user-supplied and could plausibly
+   * contain the `--model=value` form, so both are handled (codex_review
+   * finding: a stray `--model=value` from `additionalArgs` would otherwise
+   * survive alongside the newly-appended two-token flag, recreating the
+   * duplicate-flag bug). If a bare `--model` has no following value (or is
+   * the last element), only the bare flag is removed — the next token is
+   * left alone rather than being swallowed as a "value" when it's actually
+   * another flag (codex_review finding: guards against corrupting unrelated
+   * malformed argv, e.g. `['--foo', '--model', '--bar']`).
+   */
+  private stripModelFlag(args: string[]): string[] {
+    const result: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+      const arg = args[i];
+      if (arg === '--model') {
+        const next = args[i + 1];
+        if (next !== undefined && !next.startsWith('-')) {
+          i++; // also skip the value that follows
+        }
+        continue;
+      }
+      if (arg.startsWith('--model=')) {
+        continue;
+      }
+      result.push(arg);
+    }
+    return result;
   }
 
   /**
