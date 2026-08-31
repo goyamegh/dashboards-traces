@@ -83,6 +83,22 @@ export interface CleanupResult {
   /** Entities successfully deleted (or already absent). */
   deleted: number;
   /**
+   * Report ids DISCOVERED by reconciliation (never explicitly tracked) that
+   * were deleted because they reference a tracked test-case id. These are the
+   * "late-written report" leaks: an evaluation kept executing in the
+   * background after its test moved on, and persisted its report doc after
+   * the suite's afterAll had already harvested everything it could see.
+   */
+  reconciled: string[];
+  /**
+   * Test-case ids whose reconciliation SEARCH failed — we could not verify
+   * that no late-written reports reference them. Kept separate from `failed`
+   * (which is strictly "tracked entity failed to delete") so callers'
+   * assertions about tracked entities stay precise. Strict mode treats an
+   * actively-rejected search like a rejected delete.
+   */
+  reconcileFailed: Array<{ testCaseId: string; reason: string; unreachable?: boolean }>;
+  /**
    * Entities we failed to delete — these are real leaks.
    *
    * `unreachable: true` marks network-level failures (fetch threw: connection
@@ -126,6 +142,38 @@ let uniqueCounter = 0;
  * no listing at all. `.agent-health/` is already gitignored.
  */
 export const LEDGER_DIR = '.agent-health/.test-ledger';
+
+/**
+ * Ledger line kind that asks `jest.globalTeardown.cjs` to re-check a
+ * test-case id for LATE-WRITTEN report docs at the very end of the run.
+ *
+ * cleanup()'s own settle-poll (below) is bounded to a few seconds, but a
+ * background evaluation can persist its report doc tens of seconds after the
+ * suite that started it finished — measured live: 14 report docs, all from
+ * the `demo` agent, written in the final minute of a 201s integration run,
+ * every one referencing a test case its suite had already deleted. Rewriting
+ * the ledger with these markers (instead of unlinking it) lets globalTeardown
+ * run one final id-scoped reconciliation pass after ALL suites are done.
+ */
+export const RECONCILE_KIND = 'reconcile-test-case';
+
+/** Delay between reconciliation settle-poll passes inside cleanup(). */
+const RECONCILE_GAP_MS = 250;
+
+/**
+ * Total settle-poll budget after the tracked entities are deleted. Bounded so
+ * a suite's afterAll can never hang; overridable for tests via
+ * `AH_TEST_RECONCILE_BUDGET_MS`. `0` disables the settle-poll (the pre-delete
+ * reconciliation pass still runs).
+ */
+function reconcileBudgetMs(): number {
+  const raw = Number(process.env.AH_TEST_RECONCILE_BUDGET_MS);
+  return Number.isFinite(raw) && raw >= 0 ? raw : 4000;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
 
 /** Lazily-resolved `fs`, so importing this module never breaks a browser bundle. */
 function nodeFs(): typeof import('fs') | null {
@@ -190,6 +238,11 @@ export class TestDataTracker {
   private readonly entities: TrackedEntity[] = [];
   private readonly seen = new Set<string>();
   private readonly ledgerPath: string | null;
+  /**
+   * Test-case ids from fully-successful cleanups, carried into the ledger as
+   * RECONCILE_KIND markers for globalTeardown's end-of-run re-check.
+   */
+  private readonly reconcilePending = new Set<string>();
 
   constructor(baseUrl: string = getTestBackendUrl()) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
@@ -231,13 +284,26 @@ export class TestDataTracker {
     }
   }
 
-  /** Remove this tracker's ledger once everything in it has been deleted. */
-  private clearLedger(): void {
+  /**
+   * Remove this tracker's ledger — or, when this cleanup deleted test cases,
+   * REWRITE it with `RECONCILE_KIND` markers so `jest.globalTeardown.cjs` can
+   * re-check those ids for late-written reports at the end of the whole run
+   * (see RECONCILE_KIND). Only called after a fully-successful cleanup; on any
+   * failure the original entity lines are kept for retry.
+   */
+  private finalizeLedger(): void {
     if (!this.ledgerPath) return;
     const fs = nodeFs();
     if (!fs) return;
     try {
-      if (fs.existsSync(this.ledgerPath)) fs.unlinkSync(this.ledgerPath);
+      if (this.reconcilePending.size === 0) {
+        if (fs.existsSync(this.ledgerPath)) fs.unlinkSync(this.ledgerPath);
+        return;
+      }
+      const lines = [...this.reconcilePending]
+        .map((id) => `${JSON.stringify({ kind: RECONCILE_KIND, id })}\n`)
+        .join('');
+      fs.writeFileSync(this.ledgerPath, lines);
     } catch {
       /* best effort */
     }
@@ -345,7 +411,23 @@ export class TestDataTracker {
   }
 
   /**
-   * Delete every tracked entity, children before parents.
+   * Delete every tracked entity, children before parents — then RECONCILE:
+   * for every test-case id this cleanup deleted, search for report docs that
+   * reference it and delete any that appeared (id-scoped: the search key is an
+   * id THIS tracker was given; nothing is ever matched by name and storage is
+   * never enumerated).
+   *
+   * Why reconciliation exists: an evaluation keeps executing in the background
+   * after a test moves on (cancellation flips status synchronously while the
+   * in-flight test case keeps running), so its report doc can be written AFTER
+   * afterAll already harvested every id it could see. The tracker never knew
+   * that id — a tracking-completeness gap, not a teardown gap. The pre-delete
+   * pass catches reports that already landed (and deletes them BEFORE their
+   * test cases, preserving child-before-parent); the bounded settle-poll after
+   * deletion catches ones that land during cleanup (re-query until two
+   * consecutive passes discover nothing new, within reconcileBudgetMs());
+   * anything later still is caught by globalTeardown via the RECONCILE_KIND
+   * ledger markers finalizeLedger() writes.
    *
    * Safe to call more than once. Successfully deleted entities are never
    * retried; entities that FAILED to delete (and any never attempted because
@@ -356,56 +438,155 @@ export class TestDataTracker {
    * completely, so a second call issues no requests (idempotent).
    *
    * Never throws unless `AH_TEST_CLEANUP_STRICT=1` — and even then only for
-   * failures where the backend actively REJECTED a delete. Network-level
-   * failures (backend unreachable / died mid-suite) warn instead of throwing
-   * in strict mode too: tests that needed the backend have already failed or
-   * skipped, and turning "backend went away" into a red cleanup would
-   * destabilise CI. The leaked ids stay in the ledger and in this queue, and
-   * jest.globalTeardown.cjs retries them (health-gated) at the end of the run.
+   * failures where the backend actively REJECTED a delete (or a reconciliation
+   * search). Network-level failures (backend unreachable / died mid-suite)
+   * warn instead of throwing in strict mode too: tests that needed the backend
+   * have already failed or skipped, and turning "backend went away" into a red
+   * cleanup would destabilise CI. The leaked ids stay in the ledger and in
+   * this queue, and jest.globalTeardown.cjs retries them (health-gated) at the
+   * end of the run.
    */
   async cleanup(): Promise<CleanupResult> {
     const queue = this.entities.splice(0, this.entities.length);
     this.seen.clear();
-    const result: CleanupResult = { deleted: 0, failed: [] };
+    const result: CleanupResult = { deleted: 0, reconciled: [], reconcileFailed: [], failed: [] };
     /** Entities proven gone; everything else is re-queued in `finally`. */
     const succeeded = new Set<TrackedEntity>();
 
+    // Small concurrency cap: fast, but never stampedes a shared cluster.
+    const CONCURRENCY = 4;
+
+    const deleteOne = async (entity: TrackedEntity): Promise<void> => {
+      try {
+        const response = await fetch(`${this.baseUrl}${deletePath(entity)}`, {
+          method: 'DELETE',
+        });
+        // 404/410 => already gone (cascade delete or a prior cleanup): success.
+        if (response.ok || response.status === 404 || response.status === 410) {
+          result.deleted += 1;
+          succeeded.add(entity);
+          return;
+        }
+        result.failed.push({
+          kind: entity.kind,
+          id: entity.id,
+          reason: `HTTP ${response.status}`,
+        });
+      } catch (error) {
+        result.failed.push({
+          kind: entity.kind,
+          id: entity.id,
+          reason: error instanceof Error ? error.message : String(error),
+          unreachable: true,
+        });
+      }
+    };
+
+    // ── Reconciliation plumbing ─────────────────────────────────────
+    const tcIds = queue.filter((e) => e.kind === 'test-case').map((e) => e.id);
+    /** Report ids already handled (tracked or discovered) — never re-deleted. */
+    const handledRunIds = new Set(queue.filter((e) => e.kind === 'run').map((e) => e.id));
+    /** Search failures deduped per test-case id (a broken backend would
+     *  otherwise produce one entry per settle pass). */
+    const reconcileFailedIds = new Set<string>();
+
+    /** One id-scoped search: report docs referencing this tracked test case. */
+    const searchReports = async (tcId: string): Promise<string[] | null> => {
+      try {
+        const response = await fetch(`${this.baseUrl}/api/storage/runs/search`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ testCaseId: tcId, size: 500 }),
+        });
+        if (!response.ok) {
+          if (!reconcileFailedIds.has(tcId)) {
+            reconcileFailedIds.add(tcId);
+            result.reconcileFailed.push({ testCaseId: tcId, reason: `HTTP ${response.status}` });
+          }
+          return null;
+        }
+        const body = (await response.json()) as { runs?: Array<{ id?: unknown }> };
+        return (body.runs ?? [])
+          .map((r) => r?.id)
+          .filter(
+            (id): id is string =>
+              // `demo-` docs are the bundled read-only sample data the search
+              // route mixes into every response — never ours, never deletable.
+              typeof id === 'string' && id.length > 0 && !id.startsWith('demo-')
+          );
+      } catch (error) {
+        if (!reconcileFailedIds.has(tcId)) {
+          reconcileFailedIds.add(tcId);
+          result.reconcileFailed.push({
+            testCaseId: tcId,
+            reason: error instanceof Error ? error.message : String(error),
+            unreachable: true,
+          });
+        }
+        return null;
+      }
+    };
+
+    /** One reconciliation pass over every tracked test-case id. */
+    const discoverReports = async (): Promise<TrackedEntity[]> => {
+      const found: TrackedEntity[] = [];
+      for (let i = 0; i < tcIds.length; i += CONCURRENCY) {
+        await Promise.all(
+          tcIds.slice(i, i + CONCURRENCY).map(async (tcId) => {
+            const ids = await searchReports(tcId);
+            for (const id of ids ?? []) {
+              if (handledRunIds.has(id)) continue;
+              handledRunIds.add(id);
+              found.push({ kind: 'run', id });
+            }
+          })
+        );
+      }
+      // Every discovered report goes to the crash ledger BEFORE any delete is
+      // attempted, and into the queue so the `finally` re-queue covers it.
+      for (const entity of found) {
+        this.appendToLedger(entity);
+        queue.push(entity);
+        result.reconciled.push(entity.id);
+      }
+      return found;
+    };
+
     try {
+      // Pre-delete reconciliation: reports that ALREADY landed join the `run`
+      // batch below, so they are deleted before the test cases they reference.
+      if (tcIds.length > 0) await discoverReports();
+      const preFoundNothing = result.reconciled.length === 0;
+
       for (const kind of ENTITY_KINDS) {
         const batch = queue.filter((e) => e.kind === kind);
         if (batch.length === 0) continue;
-
-        // Small concurrency cap: fast, but never stampedes a shared cluster.
-        const CONCURRENCY = 4;
         for (let i = 0; i < batch.length; i += CONCURRENCY) {
-          const slice = batch.slice(i, i + CONCURRENCY);
-          await Promise.all(
-            slice.map(async (entity) => {
-              try {
-                const response = await fetch(`${this.baseUrl}${deletePath(entity)}`, {
-                  method: 'DELETE',
-                });
-                // 404/410 => already gone (cascade delete or a prior cleanup): success.
-                if (response.ok || response.status === 404 || response.status === 410) {
-                  result.deleted += 1;
-                  succeeded.add(entity);
-                  return;
-                }
-                result.failed.push({
-                  kind: entity.kind,
-                  id: entity.id,
-                  reason: `HTTP ${response.status}`,
-                });
-              } catch (error) {
-                result.failed.push({
-                  kind: entity.kind,
-                  id: entity.id,
-                  reason: error instanceof Error ? error.message : String(error),
-                  unreachable: true,
-                });
-              }
-            })
-          );
+          await Promise.all(batch.slice(i, i + CONCURRENCY).map(deleteOne));
+        }
+      }
+
+      // Post-delete settle-poll: a report can land AFTER the pre-pass query
+      // too. Re-query until two consecutive passes discover nothing new,
+      // bounded by reconcileBudgetMs(). Common case (nothing ever found):
+      // one confirming pass after a single short gap, then exit.
+      if (tcIds.length > 0) {
+        let emptyStreak = preFoundNothing ? 1 : 0;
+        const deadline = Date.now() + reconcileBudgetMs();
+        while (emptyStreak < 2 && Date.now() < deadline) {
+          await sleep(RECONCILE_GAP_MS);
+          const late = await discoverReports();
+          if (late.length === 0) {
+            emptyStreak += 1;
+            // A pass where EVERY search failed proves nothing and will not
+            // improve by polling a broken backend — bail out.
+            if (reconcileFailedIds.size >= tcIds.length) break;
+            continue;
+          }
+          emptyStreak = 0;
+          for (let i = 0; i < late.length; i += CONCURRENCY) {
+            await Promise.all(late.slice(i, i + CONCURRENCY).map(deleteOne));
+          }
         }
       }
     } finally {
@@ -422,26 +603,44 @@ export class TestDataTracker {
       }
     }
 
-    if (result.failed.length > 0) {
-      const detail = result.failed
-        .map((f) => `${f.kind} ${f.id} (${f.reason})`)
-        .join(', ');
-      const message = `[test-cleanup] failed to delete ${result.failed.length} entit${
-        result.failed.length === 1 ? 'y' : 'ies'
-      } (kept queued + in the crash ledger for retry): ${detail}`;
-      // Strict mode throws only when the backend actively rejected a delete.
-      // "Backend unreachable" must not fail an otherwise-green build; see the
-      // method docstring for the full reasoning.
-      const rejected = result.failed.some((f) => !f.unreachable);
+    if (result.failed.length > 0 || result.reconcileFailed.length > 0) {
+      const parts: string[] = [];
+      if (result.failed.length > 0) {
+        const detail = result.failed
+          .map((f) => `${f.kind} ${f.id} (${f.reason})`)
+          .join(', ');
+        parts.push(
+          `failed to delete ${result.failed.length} entit${
+            result.failed.length === 1 ? 'y' : 'ies'
+          } (kept queued + in the crash ledger for retry): ${detail}`
+        );
+      }
+      if (result.reconcileFailed.length > 0) {
+        const detail = result.reconcileFailed
+          .map((f) => `${f.testCaseId} (${f.reason})`)
+          .join(', ');
+        parts.push(
+          `could not verify ${result.reconcileFailed.length} test-case id(s) for late-written reports: ${detail}`
+        );
+      }
+      const message = `[test-cleanup] ${parts.join('; ')}`;
+      // Strict mode throws only when the backend actively rejected a delete or
+      // a reconciliation search. "Backend unreachable" must not fail an
+      // otherwise-green build; see the method docstring for the full reasoning.
+      const rejected =
+        result.failed.some((f) => !f.unreachable) ||
+        result.reconcileFailed.some((f) => !f.unreachable);
       if (process.env.AH_TEST_CLEANUP_STRICT === '1' && rejected) {
         throw new Error(message);
       }
       // eslint-disable-next-line no-console
       console.warn(message);
     } else {
-      // Everything is gone, so the crash-recovery ledger is no longer needed.
-      // Kept on failure so globalTeardown gets a second attempt.
-      this.clearLedger();
+      // Everything is gone. Deleted test-case ids graduate into reconcile
+      // markers so globalTeardown re-checks them for late-written reports at
+      // the very end of the run; with no test cases the ledger is removed.
+      for (const tcId of tcIds) this.reconcilePending.add(tcId);
+      this.finalizeLedger();
     }
 
     return result;

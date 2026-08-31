@@ -76,12 +76,16 @@ async function createBenchmark(): Promise<{ id: string; name: string }> {
 }
 
 /** Create a report doc through the same storage route real runs persist through. */
-async function createReport(experimentId?: string, experimentRunId?: string): Promise<string> {
+async function createReport(
+  experimentId?: string,
+  experimentRunId?: string,
+  testCaseId?: string
+): Promise<string> {
   const response = await fetch(`${BASE_URL}/api/storage/runs`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      testCaseId: `ahtest-cleanup-tc-ref-${Date.now()}`,
+      testCaseId: testCaseId ?? `ahtest-cleanup-tc-ref-${Date.now()}`,
       testCaseName: uniqueTestName('cleanup-report'),
       status: 'completed',
       timestamp: new Date().toISOString(),
@@ -103,6 +107,23 @@ async function exists(
   return response.ok;
 }
 
+/** Poll until a report doc is visible to POST /runs/search (index refresh ~1s). */
+async function waitUntilSearchable(testCaseId: string, reportId: string): Promise<boolean> {
+  for (let attempt = 0; attempt < 30; attempt++) {
+    const response = await fetch(`${BASE_URL}/api/storage/runs/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ testCaseId, size: 100 }),
+    });
+    if (response.ok) {
+      const body = await response.json();
+      if ((body.runs ?? []).some((r: { id?: string }) => r.id === reportId)) return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  return false;
+}
+
 describe('test-data cleanup harness (integration)', () => {
   it('deletes a tracked test case from real storage', async () => {
     if (!backendAvailable) return;
@@ -120,6 +141,36 @@ describe('test-data cleanup harness (integration)', () => {
     expect(result.deleted).toBe(1);
     expect(await exists('test-cases', tc.id)).toBe(false);
   });
+
+  it('reconciles an UNTRACKED report referencing a tracked test case (late-written report regression)', async () => {
+    if (!backendAvailable) return;
+
+    // The measured leak: a background evaluation persists its report doc
+    // after afterAll harvested every id it could see — the tracker never
+    // learns the report id. Reproduce the state (report exists, tracker only
+    // knows the test case) and assert cleanup()'s id-scoped reconciliation
+    // finds and deletes it.
+    const tracker = createTestDataTracker(BASE_URL);
+    const tc = await createTestCase();
+    tracker.testCase(tc.id);
+    safetyNet.testCase(tc.id);
+
+    const lateReport = await createReport(undefined, undefined, tc.id);
+    safetyNet.run(lateReport); // belt & braces if reconciliation fails
+    // NOT tracked in `tracker` — that is the point.
+
+    // Make sure the report is searchable before cleanup so this asserts
+    // reconciliation, not the backend's index-refresh timing.
+    expect(await waitUntilSearchable(tc.id, lateReport)).toBe(true);
+
+    const result = await tracker.cleanup();
+
+    expect(result.failed).toEqual([]);
+    expect(result.reconcileFailed).toEqual([]);
+    expect(result.reconciled).toContain(lateReport);
+    expect(await exists('runs', lateReport)).toBe(false);
+    expect(await exists('test-cases', tc.id)).toBe(false);
+  }, 60_000);
 
   it('deletes a mixed batch of test cases and benchmarks in one cleanup', async () => {
     if (!backendAvailable) return;

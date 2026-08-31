@@ -25,7 +25,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawnSync } from 'child_process';
-import { createTestDataTracker, uniqueTestName, LEDGER_DIR } from '../../helpers/testDataTracker';
+import { createTestDataTracker, uniqueTestName, LEDGER_DIR, RECONCILE_KIND } from '../../helpers/testDataTracker';
 import { getTestBackendUrl } from '../testConfig';
 
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -314,5 +314,92 @@ describe('globalTeardown crash safety net (integration)', () => {
     delete process.env.AH_TEST_SKIP_SWEEP;
     await globalTeardown();
     expect(fs.existsSync(tracker.ledgerFile as string)).toBe(false);
+  }, 60_000);
+
+  // ── End-of-run late-report reconciliation (RECONCILE_KIND markers) ───────
+
+  it('deletes a late-written report referenced by a RECONCILE_KIND marker', async () => {
+    if (!backendAvailable) return;
+
+    // The scenario: a suite created + deleted a test case; a background
+    // evaluation persisted a report doc referencing it AFTER that suite's
+    // cleanup (and settle-poll) finished. The rewritten ledger carries a
+    // reconcile marker for the test-case id; teardown must find and delete
+    // the report by id-scoped search.
+    const lateTcId = uniqueTestName('late-tc');
+    const createResponse = await fetch(`${BASE_URL}/api/storage/runs`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        testCaseId: lateTcId,
+        testCaseName: uniqueTestName('late-report'),
+        status: 'completed',
+        timestamp: new Date().toISOString(),
+        trajectory: [],
+      }),
+    });
+    expect(createResponse.ok).toBe(true);
+    const reportId: string = (await createResponse.json()).id;
+    safetyNet.run(reportId);
+
+    // Wait until the doc is SEARCHABLE (OpenSearch index refresh is ~1s) so
+    // the assertion tests teardown's deletion, not the backend's refresh lag.
+    let visible = false;
+    for (let attempt = 0; attempt < 30 && !visible; attempt++) {
+      const search = await fetch(`${BASE_URL}/api/storage/runs/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ testCaseId: lateTcId, size: 10 }),
+      });
+      const body = await search.json();
+      visible = (body.runs ?? []).some((r: { id?: string }) => r.id === reportId);
+      if (!visible) await new Promise((resolve) => setTimeout(resolve, 500));
+    }
+    expect(visible).toBe(true);
+
+    fs.mkdirSync(LEDGER_DIR, { recursive: true });
+    const markerLedger = path.join(
+      LEDGER_DIR,
+      `run-${process.env.AH_TEST_RUN_ID}--${process.pid}-${Date.now()}-20.jsonl`
+    );
+    fs.writeFileSync(markerLedger, `${JSON.stringify({ kind: RECONCILE_KIND, id: lateTcId })}\n`);
+
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      await globalTeardown();
+
+      expect(
+        (await fetch(`${BASE_URL}/api/storage/runs/${encodeURIComponent(reportId)}`)).status
+      ).toBe(404);
+      expect(fs.existsSync(markerLedger)).toBe(false);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('late-written report doc')
+      );
+    } finally {
+      warn.mockRestore();
+      fs.rmSync(markerLedger, { force: true });
+    }
+  }, 90_000);
+
+  it('unlinks a marker ledger whose test case attracted no late reports', async () => {
+    if (!backendAvailable) return;
+
+    fs.mkdirSync(LEDGER_DIR, { recursive: true });
+    const markerLedger = path.join(
+      LEDGER_DIR,
+      `run-${process.env.AH_TEST_RUN_ID}--${process.pid}-${Date.now()}-21.jsonl`
+    );
+    // A test-case id that never existed: the search finds nothing, twice.
+    fs.writeFileSync(
+      markerLedger,
+      `${JSON.stringify({ kind: RECONCILE_KIND, id: uniqueTestName('never-existed-tc') })}\n`
+    );
+
+    try {
+      await globalTeardown();
+      expect(fs.existsSync(markerLedger)).toBe(false);
+    } finally {
+      fs.rmSync(markerLedger, { force: true });
+    }
   }, 60_000);
 });
