@@ -317,4 +317,54 @@ describe('linkTestCaseIdsToBenchmark', () => {
     expect(call.versions[1].testCaseIds).toEqual(['tc-1', 'tc-2']);
     expect(call.currentVersion).toBeUndefined();
   });
+
+  it('retries the read-merge-write when another writer changes the benchmark between the merge read and the pre-write freshness check (no id loss, no versions[] clobber)', async () => {
+    const initial: Benchmark = {
+      ...shellBenchmark,
+      testCaseIds: [],
+      updatedAt: '2026-01-01T00:00:00.000Z',
+      versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: [] }],
+    };
+    const concurrentlyUpdated: Benchmark = {
+      ...shellBenchmark,
+      testCaseIds: ['tc-3'],
+      updatedAt: '2026-01-01T00:00:01.000Z',
+      versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: ['tc-3'] }],
+    };
+
+    mockStorage.benchmarks.getById
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(concurrentlyUpdated)
+      .mockResolvedValueOnce(concurrentlyUpdated)
+      .mockResolvedValueOnce(concurrentlyUpdated);
+    mockStorage.benchmarks.update.mockImplementation(async (_id, updates) => ({ ...concurrentlyUpdated, ...updates }));
+
+    const result = await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-2'], mockStorage as any);
+
+    expect(mockStorage.benchmarks.update).toHaveBeenCalledTimes(1);
+    const call = mockStorage.benchmarks.update.mock.calls[0][1] as any;
+    expect(call.testCaseIds).toEqual(['tc-3', 'tc-1', 'tc-2']);
+    expect(call.versions[0].testCaseIds).toEqual(['tc-3', 'tc-1', 'tc-2']);
+    expect(call.versions).toHaveLength(1);
+    expect(result?.added).toEqual(['tc-1', 'tc-2']);
+  });
+
+  it('gives up with a descriptive error after MAX_ATTEMPTS if the benchmark keeps changing on every retry (no silent id loss, no infinite loop)', async () => {
+    let call = 0;
+    mockStorage.benchmarks.getById.mockImplementation(async () => {
+      call++;
+      return {
+        ...shellBenchmark,
+        testCaseIds: [`tc-churn-${call}`],
+        updatedAt: `2026-01-01T00:00:${String(call).padStart(2, '0')}.000Z`,
+        versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: [`tc-churn-${call}`] }],
+      };
+    });
+
+    await expect(
+      linkTestCaseIdsToBenchmark('bench-shell', ['tc-1'], mockStorage as any)
+    ).rejects.toThrow(/kept changing concurrently/);
+
+    expect(mockStorage.benchmarks.update).not.toHaveBeenCalled();
+  });
 });
