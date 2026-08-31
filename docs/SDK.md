@@ -648,19 +648,30 @@ The `.eval.js`, `.eval.ts`, and `.eval.mjs` loaders all run through a single
 code-import execution path, so `benchmark -f <file>` executes the SDK body
 directly.
 
-> **`.eval.ts` / `.eval.mjs` resolve the package like any other import.**
-> `.eval.js` files are executed in a synthetic context where
-> `require('@opensearch-project/agent-health')` is intercepted directly, so
-> they work from anywhere on disk. `.eval.ts` and `.eval.mjs` files use a
-> plain native `import()`, so `import { test } from
-> '@opensearch-project/agent-health'` must resolve through Node's normal
-> module resolution — the package needs to be a real dependency reachable
-> from the file's location (installed in `node_modules`, a workspace link,
-> or a `node_modules` symlink to a local checkout). Test registrations are
-> shared process-wide (keyed off `globalThis`), so it doesn't matter
-> *which* physical copy of the package that resolves to — dist vs source,
-> symlinked vs installed all register into the same registry the
-> loader reads from.
+> **`.eval.js` and `.eval.ts` are both executed as synthetic CJS — only
+> `.eval.mjs` needs the package to be really resolvable.** `.eval.js` and
+> `.eval.ts` files are both executed in a synthetic context where the
+> `require(...)` call for `@opensearch-project/agent-health` is intercepted
+> directly, so they work from anywhere on disk regardless of whether the
+> package is actually installed at that location. (`.eval.ts` is
+> transpiled to CommonJS with `esbuild` — a required runtime dependency of
+> this package — before running through that exact same synthetic-CJS
+> path; it deliberately does NOT use a native `import()`, both to avoid two
+> different Node versions giving the same file two different
+> module-execution semantics, and because `import()` caches by URL, which
+> would make a `.eval.ts` file unloadable a second time in one process
+> without a restart. One consequence: an `.eval.ts` fixture can't use
+> `import.meta` or a top-level `await` — real-ESM-only features with no
+> CommonJS equivalent.) `.eval.mjs` files use a plain native `import()`, so
+> `import { test } from '@opensearch-project/agent-health'` in an `.mjs`
+> file must resolve through Node's normal module resolution — the package
+> needs to be a real dependency reachable from the file's location
+> (installed in `node_modules`, a workspace link, or a `node_modules`
+> symlink to a local checkout). Test registrations are shared process-wide
+> (keyed off `globalThis`) regardless of loader, so it doesn't matter
+> *which* physical copy of the package a given import resolves to — dist
+> vs source, symlinked vs installed all register into the same registry
+> the loader reads from.
 
 ---
 
