@@ -228,11 +228,16 @@ test.describe('Comparison insights band', () => {
       // exactly the 3 cases with that subcategory tag. (Not `exact: true` —
       // the button's accessible name gains a trailing ⚠ when this category
       // is flagged as the shared weakness.)
+      // Scoped to `table` (the Table Compare grid) — same reasoning as the
+      // sibling test above (PR #398's deep-dive panel renders a test-case
+      // name in its own header outside any `<table>`, so an unscoped `text=`
+      // locator can false-match there).
+      const table = page.locator('table');
       await matrix.getByRole('button', { name: /^semantic/ }).click();
-      await expect(page.locator('text=q4 explain the rollback procedure').first()).toBeVisible();
-      await expect(page.locator('text=q5 summarize the incident timeline').first()).toBeVisible();
-      await expect(page.locator('text=q6 contrast the two runbooks').first()).toBeVisible();
-      await expect(page.locator('text=q1 how long is the certification valid')).toHaveCount(0);
+      await expect(table.getByText('q4 explain the rollback procedure').first()).toBeVisible();
+      await expect(table.getByText('q5 summarize the incident timeline').first()).toBeVisible();
+      await expect(table.getByText('q6 contrast the two runbooks').first()).toBeVisible();
+      await expect(table.getByText('q1 how long is the certification valid')).toHaveCount(0);
     } finally {
       await api.delete(`/api/storage/evaluation-runs/${RUN_TAG_A}`).catch(() => {});
       await api.delete(`/api/storage/evaluation-runs/${RUN_TAG_B}`).catch(() => {});
