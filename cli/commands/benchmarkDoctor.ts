@@ -71,6 +71,7 @@ function printPlan(plan: DoctorPlan): void {
 export function createBenchmarkDoctorCommand(): Command {
   return new Command('doctor')
     .description('Detect and clean up duplicated / debris benchmarks (dry-run by default)')
+    .option('--dry-run', 'Preview only — this is already the default; use --apply to execute')
     .option('--apply', 'Execute the plan (default: dry-run report only)')
     .option('--migrate-images', 'Also convert remaining benchmarks into tagged benchmark images')
     // NOT `-o/--output <format>`: the parent `benchmark` command already owns
@@ -84,7 +85,14 @@ export function createBenchmarkDoctorCommand(): Command {
     // whole class of bug (and there are only two output shapes, so a
     // string enum was unnecessary anyway).
     .option('--json', 'Output as JSON instead of the human-readable report', false)
-    .action(async (options: { apply?: boolean; migrateImages?: boolean; json?: boolean }) => {
+    .addHelpText('after', '\n  Dry-run by default. Nothing is changed without --apply.\n')
+    .action(async (options: { apply?: boolean; migrateImages?: boolean; json?: boolean; dryRun?: boolean }) => {
+      // Validate mutually exclusive flags
+      if (options.dryRun && options.apply) {
+        console.error(chalk.red('\n  Error: --dry-run and --apply are mutually exclusive.'));
+        console.error(chalk.gray('  Dry-run is the default. Use --apply to execute changes.\n'));
+        process.exit(1);
+      }
       const config = await loadConfig();
       // For dry-run diagnostic (no --apply, no --migrate-images), safely reuse
       // foreign servers in read-only mode. With mutating flags, keep strict guard.
