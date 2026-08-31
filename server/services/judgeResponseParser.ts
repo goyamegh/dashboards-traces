@@ -196,6 +196,33 @@ function extractExtraFields(parsed: any, evaluator: Evaluator | undefined): Reco
   return Object.keys(extra).length > 0 ? extra : undefined;
 }
 
+/**
+ * Weighted overall score across the evaluator's declared metrics, on the
+ * evaluator's scale. Uses each declared metric's `weight` (default 1 when
+ * omitted) over the values actually extracted; metrics the judge failed to
+ * emit are excluded from both numerator and denominator rather than counted
+ * as zero. Returns `undefined` when the evaluator declares no metrics or
+ * none were extracted — callers must not fabricate a 0.
+ */
+export function computeWeightedOverall(
+  metrics: EvaluationMetrics,
+  evaluator: Evaluator | undefined
+): number | undefined {
+  const defs = evaluator?.scoringConfig?.metrics;
+  if (!defs?.length) return undefined;
+  let weighted = 0;
+  let totalWeight = 0;
+  for (const def of defs) {
+    const v = metrics[def.name];
+    if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+    const w = typeof def.weight === 'number' && Number.isFinite(def.weight) && def.weight > 0 ? def.weight : 1;
+    weighted += v * w;
+    totalWeight += w;
+  }
+  if (totalWeight <= 0) return undefined;
+  return Math.round((weighted / totalWeight) * 100) / 100;
+}
+
 export interface ParseOptions {
   /** Evaluator whose scoringConfig drives metric extraction. */
   evaluator?: Evaluator;
@@ -260,6 +287,12 @@ export function parseJudgeResponse(
     rawResponse: raw,
   };
   if (extraFields) response.extraFields = extraFields;
+  // Headline for custom evaluators: their declared dimensions rarely include
+  // the legacy `accuracy` key, which left SDK judge() with nothing to
+  // headline (it showed "score 0%" even on passes). Compute the weighted
+  // overall from the evaluator's own weights so callers have a real number.
+  const overallScore = computeWeightedOverall(metrics, options.evaluator);
+  if (overallScore !== undefined) response.overallScore = overallScore;
 
   debug(source, 'parsed judge response: pass=', passFailStatus, 'metrics=', Object.keys(metrics));
   if (extraFields) debug(source, 'extra fields captured:', Object.keys(extraFields));
