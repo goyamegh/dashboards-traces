@@ -1192,6 +1192,27 @@ export interface EvaluationRun {
   rerunOf?: string;
 }
 
+/**
+ * Typed discriminator between the two run shapes that flow through the UI:
+ * `BenchmarkRun` (legacy, embedded in `benchmark.runs[]`, never carries
+ * `docType`) and `EvaluationRun` (first-class doc, `docType:
+ * 'evaluation-run'`). Runs created WITH a benchmarkId are dual-written as
+ * BOTH shapes for the same logical run (see
+ * `server/routes/storage/evaluationRuns.ts`), so the run object a component
+ * is holding can be either shape regardless of which route loaded it —
+ * `docType`, not the route/URL a component happened to load from, is the
+ * only reliable signal for "does this run support EvaluationRun-only
+ * capabilities (rerun, provenance, retry-judgement, ...)".
+ *
+ * Use this instead of inline `(run as any).docType === 'evaluation-run'`
+ * checks or route-derived `mode` flags for anything that depends on the
+ * RUN's actual shape (capabilities, fields like `rerunOf`). Route-derived
+ * state (which endpoint to fetch, which breadcrumb/URL to build) is a
+ * separate, legitimate concern and should stay keyed on the route.
+ */
+export const isEvaluationRun = (r: BenchmarkRun | EvaluationRun): r is EvaluationRun =>
+  'docType' in r && r.docType === 'evaluation-run';
+
 // ============ Comparison Types ============
 
 // Test case version reference for detecting changes between runs in comparisons

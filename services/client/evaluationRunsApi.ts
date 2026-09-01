@@ -195,7 +195,13 @@ export async function getEvaluationRun(id: string): Promise<EvaluationRun> {
   const response = await fetch(`/api/storage/evaluation-runs/${id}`);
 
   if (!response.ok) {
-    throw new Error(`Failed to get evaluation run: ${response.statusText}`);
+    const err = new Error(`Failed to get evaluation run: ${response.statusText}`) as Error & { status?: number };
+    // Attached (not part of the message) so callers can distinguish "not
+    // found" from a transient/server failure without string-matching
+    // statusText -- see RunInspectorPage.tsx's canonical-run resolution,
+    // which must NOT silently treat a 500/network error the same as a 404.
+    err.status = response.status;
+    throw err;
   }
 
   return response.json();

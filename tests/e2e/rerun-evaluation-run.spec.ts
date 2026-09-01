@@ -357,7 +357,7 @@ test.describe('Run inspector — Re-run button hidden for benchmark-embedded run
     benchmarkId = `e2e-inspect-bm-${Date.now()}`;
     runId = `e2e-inspect-bm-run-${Date.now()}`;
     
-    const bmRes = await request.put(`/api/storage/benchmarks/${benchmarkId}`, {
+    const bmRes = await request.post('/api/storage/benchmarks', {
       data: {
         id: benchmarkId,
         name: 'E2E Inspector BM',
@@ -390,5 +390,132 @@ test.describe('Run inspector — Re-run button hidden for benchmark-embedded run
     const rerunBtn = page.locator('[data-testid="inspector-rerun-btn"]');
     await expect(rerunBtn).toBeVisible({ timeout: 15000 });
     await expect(rerunBtn).toBeDisabled();
+  });
+});
+
+test.describe('Run inspector — Re-run enabled on the benchmark-scoped route for a dual-written evaluation-run (regression)', () => {
+  // #399 dual-write: a run created WITH a benchmarkId is persisted as BOTH
+  // a first-class evaluation-runs doc (docType: 'evaluation-run') AND a
+  // legacy-shaped projection embedded in benchmark.runs[] (no docType) --
+  // reachable from BOTH the eval-run route AND the benchmark-scoped route.
+  // Re-run used to be keyed on URL `mode` alone, so it never appeared on
+  // this route for these runs even though the run genuinely supports it.
+  // Seed both docs directly (mirrors the real dual-write) rather than
+  // going through the run executor, so this spec's assertions don't depend
+  // on an agent actually running.
+  let testCaseId: string | null = null;
+  let benchmarkId: string | null = null;
+  let runId: string | null = null;
+  let sourceRunId: string | null = null;
+  let seeded = false;
+
+  const RUN_NAME = 'E2E Dual-Written Run';
+  const SOURCE_NAME = 'E2E Dual-Written Source Run';
+
+  test.beforeAll(async ({ request }) => {
+    const tcRes = await request.post('/api/storage/test-cases', {
+      data: {
+        name: `e2e-dualwrite-tc-${Date.now()}`,
+        category: 'Test',
+        difficulty: 'Easy',
+        initialPrompt: 'q',
+        expectedOutcomes: ['a'],
+      },
+    });
+    if (!tcRes.ok()) return;
+    const tc = await tcRes.json();
+    testCaseId = tc.id || tc.testCase?.id;
+    if (!testCaseId) return;
+
+    benchmarkId = `e2e-dualwrite-bm-${Date.now()}`;
+    runId = `e2e-dualwrite-run-${Date.now()}`;
+    sourceRunId = `e2e-dualwrite-src-${Date.now()}`;
+
+    // Source run for the provenance-chip assertion below.
+    const srcRes = await request.put(`/api/storage/evaluation-runs/${sourceRunId}`, {
+      data: {
+        id: sourceRunId,
+        name: SOURCE_NAME,
+        status: 'completed',
+        agentKey: 'demo',
+        modelId: 'claude-sonnet',
+        sources: [{ type: 'test-case-ids', ids: [testCaseId] }],
+        trigger: 'api',
+        testCaseSnapshots: [{ id: testCaseId, version: 1, name: 'e2e tc' }],
+        results: {},
+        createdAt: new Date().toISOString(),
+      },
+    });
+    if (!srcRes.ok()) return;
+
+    // The benchmark, with an embedded projection for `runId` -- no docType,
+    // exactly as the server constructs it (server/routes/storage/evaluationRuns.ts).
+    const bmRes = await request.post('/api/storage/benchmarks', {
+      data: {
+        id: benchmarkId,
+        name: 'E2E Dual-Write BM',
+        testCaseIds: [testCaseId],
+        runs: [{
+          id: runId,
+          name: RUN_NAME,
+          agentKey: 'demo',
+          modelId: 'claude-sonnet',
+          status: 'completed',
+          createdAt: new Date().toISOString(),
+          results: {},
+        }],
+      },
+    });
+    if (!bmRes.ok()) return;
+
+    // The first-class doc for the SAME run id -- this is what makes
+    // isEvaluationRun(run) true once loadData() prefers it.
+    const runRes = await request.put(`/api/storage/evaluation-runs/${runId}`, {
+      data: {
+        id: runId,
+        name: RUN_NAME,
+        status: 'completed',
+        agentKey: 'demo',
+        modelId: 'claude-sonnet',
+        sources: [{ type: 'test-case-ids', ids: [testCaseId] }],
+        trigger: 'ui',
+        testCaseSnapshots: [{ id: testCaseId, version: 1, name: 'e2e tc' }],
+        results: {},
+        createdAt: new Date().toISOString(),
+        benchmarkId,
+        rerunOf: sourceRunId,
+      },
+    });
+    seeded = runRes.ok();
+  });
+
+  test.afterAll(async ({ request }) => {
+    if (runId) await request.delete(`/api/storage/evaluation-runs/${runId}`).catch(() => {});
+    if (sourceRunId) await request.delete(`/api/storage/evaluation-runs/${sourceRunId}`).catch(() => {});
+    if (benchmarkId) await request.delete(`/api/storage/benchmarks/${benchmarkId}`).catch(() => {});
+    if (testCaseId) await request.delete(`/api/storage/test-cases/${testCaseId}`).catch(() => {});
+  });
+
+  test('Re-run button is enabled on the benchmark-scoped inspector route', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed dual-written run (storage not configured?)');
+
+    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs/${runId}/inspect`);
+    await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
+
+    const rerunBtn = page.locator('[data-testid="inspector-rerun-btn"]');
+    await expect(rerunBtn).toBeVisible({ timeout: 15000 });
+    await expect(rerunBtn).not.toBeDisabled();
+  });
+
+  test('provenance chip renders on the benchmark-scoped inspector route', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed dual-written run (storage not configured?)');
+
+    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs/${runId}/inspect`);
+    await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
+
+    const chip = page.locator('[data-testid="rerun-provenance-chip"]');
+    await expect(chip).toBeVisible({ timeout: 15000 });
+    await expect(chip).toContainText('re-run of');
+    await expect(chip).toContainText(SOURCE_NAME);
   });
 });
