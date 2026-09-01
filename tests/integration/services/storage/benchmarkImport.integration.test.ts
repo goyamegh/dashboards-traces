@@ -21,11 +21,19 @@ import { asyncTestCaseStorage } from '@/services/storage/asyncTestCaseStorage';
 import { asyncBenchmarkStorage } from '@/services/storage/asyncBenchmarkStorage';
 import { storageAdmin } from '@/services/storage/opensearchClient';
 import { validateTestCasesArrayJson } from '@/lib/testCaseValidation';
+import { createTestDataTracker, uniqueTestName } from '../../../helpers/testDataTracker';
 
 const checkBackend = async (): Promise<boolean> => {
   try {
     const health = await storageAdmin.health();
-    return health.status === 'connected';
+    // Both storage backends report `status: 'ok'` when healthy (file storage:
+    // server/adapters/file/StorageModule.ts; OpenSearch:
+    // server/adapters/opensearch/StorageModule.ts) — neither ever returns
+    // 'connected'. Comparing against 'connected' (a stale convention copied
+    // across several sibling integration-test files) was ALWAYS false, so
+    // every guarded test below silently early-returned — the whole suite
+    // green-lit without asserting anything, in every environment.
+    return health.status === 'ok';
   } catch {
     return false;
   }
@@ -33,13 +41,18 @@ const checkBackend = async (): Promise<boolean> => {
 
 describe('Benchmarks Page Import Flow', () => {
   let backendAvailable = false;
-  const createdTestCaseIds: string[] = [];
+  // Tracks every test case / benchmark this suite creates — ordered,
+  // 404-tolerant, crash-ledgered cleanup; see tests/helpers/testDataTracker.ts.
+  const tracker = createTestDataTracker();
   const createdBenchmarkIds: string[] = [];
 
-  // Simulates the JSON file content that would be loaded via the file input
+  // Simulates the JSON file content that would be loaded via the file input.
+  // Names are unique per run (uniqueTestName) so the getAll+name lookup below
+  // can only ever match docs THIS run created, and parallel/aborted runs on
+  // the shared cluster never collide.
   const importFileContent = [
     {
-      name: 'BenchImport Test: Service Restart',
+      name: uniqueTestName('benchimport-service-restart'),
       description: 'Test the full benchmarks page import pipeline',
       category: 'RCA',
       difficulty: 'Easy' as const,
@@ -56,7 +69,7 @@ describe('Benchmarks Page Import Flow', () => {
       ],
     },
     {
-      name: 'BenchImport Test: Slow Queries',
+      name: uniqueTestName('benchimport-slow-queries'),
       description: 'Test the full benchmarks page import pipeline',
       category: 'RCA',
       difficulty: 'Medium' as const,
@@ -74,42 +87,12 @@ describe('Benchmarks Page Import Flow', () => {
   });
 
   afterAll(async () => {
-    if (!backendAvailable) return;
-
-    // Clean up by ID (current run)
-    for (const id of createdBenchmarkIds) {
-      try {
-        await asyncBenchmarkStorage.delete(id);
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
-
-    for (const id of createdTestCaseIds) {
-      try {
-        await asyncTestCaseStorage.delete(id);
-      } catch {
-        // Ignore cleanup errors
-      }
-    }
-
-    // Clean up leftovers from previous failed runs by name
-    try {
-      const allBenchmarks = await asyncBenchmarkStorage.getAll();
-      for (const b of allBenchmarks) {
-        if (b.name === 'sample-import-test-cases') {
-          await asyncBenchmarkStorage.delete(b.id).catch(() => {});
-        }
-      }
-      const allTestCases = await asyncTestCaseStorage.getAll();
-      for (const tc of allTestCases) {
-        if (tc.name?.startsWith('BenchImport Test:')) {
-          await asyncTestCaseStorage.delete(tc.id).catch(() => {});
-        }
-      }
-    } catch {
-      // Ignore cleanup errors
-    }
+    // Delete ONLY ids this run created (tracker). Never sweep shared storage
+    // by name: "name looks test-ish" is not proof of ownership, and a
+    // name-based getAll+delete here deletes OTHER users' data on the shared
+    // cluster. Unique fixture names (above) make cross-run collisions — the
+    // thing a name sweep was crudely working around — impossible instead.
+    await tracker.cleanup();
   });
 
   describe('full import pipeline (validates → creates test cases → creates benchmark)', () => {
@@ -124,6 +107,9 @@ describe('Benchmarks Page Import Flow', () => {
       // Step 2: Bulk create test cases
       const result = await asyncTestCaseStorage.bulkCreate(validation.data!);
       expect(result.created).toBe(2);
+      // `errors` is a COUNT (number of failed creates), not a boolean — see
+      // the storage adapters' bulkCreate; the old `toBe(false)` assertion was
+      // written against a lying client type and never actually ran.
       expect(result.errors).toBe(0);
 
       // Step 3: Get IDs of created test cases directly from the bulk-create
@@ -137,7 +123,7 @@ describe('Benchmarks Page Import Flow', () => {
       expect(createdIds.length).toBe(2);
       createdIds.forEach((id) => {
         expect(id).toMatch(/^tc-/);
-        createdTestCaseIds.push(id);
+        tracker.testCase(id);
       });
 
       // Regression guard for the fix: the import flow must not fall back to
@@ -147,7 +133,7 @@ describe('Benchmarks Page Import Flow', () => {
       getAllSpy.mockRestore();
 
       // Step 4: Create benchmark with the test case IDs (mirrors the handler's benchmark creation)
-      const benchmarkName = 'sample-import-test-cases';
+      const benchmarkName = uniqueTestName('sample-import-test-cases');
       const benchmark = await asyncBenchmarkStorage.create({
         name: benchmarkName,
         description: `Auto-created from import of ${result.created} test case(s)`,
@@ -169,6 +155,7 @@ describe('Benchmarks Page Import Flow', () => {
       expect(benchmark.runs).toEqual([]);
       expect(benchmark.description).toContain('Auto-created from import');
 
+      tracker.benchmark(benchmark.id);
       createdBenchmarkIds.push(benchmark.id);
     });
 
@@ -206,11 +193,12 @@ describe('Benchmarks Page Import Flow', () => {
       const firstResult = await asyncTestCaseStorage.bulkCreate(importFileContent);
 
       // Track IDs for cleanup directly from the bulk-create response (no
-      // full-corpus getAll() needed — see the import-pipeline test above).
+      // full-corpus getAll() + name-match needed — see the import-pipeline
+      // test above: that pattern is both a full-payload performance bug and
+      // a correctness bug for this exact scenario, since this test's whole
+      // point is duplicate names).
       firstResult.testCases.forEach((tc) => {
-        if (!createdTestCaseIds.includes(tc.id)) {
-          createdTestCaseIds.push(tc.id);
-        }
+        tracker.testCase(tc.id);
       });
 
       // Note: bulkCreate does NOT deduplicate by name, so this will create new ones.

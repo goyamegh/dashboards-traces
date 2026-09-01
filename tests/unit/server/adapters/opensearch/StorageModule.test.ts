@@ -770,7 +770,7 @@ describe('OpenSearchStorageModule', () => {
 
     describe('deleteRun', () => {
       it('should delete a run from a benchmark', async () => {
-        mockClient.update.mockResolvedValue({});
+        mockClient.update.mockResolvedValue({ body: { result: 'updated' } });
 
         const result = await mod.benchmarks.deleteRun('bench-1', 'run-1');
 
@@ -784,6 +784,20 @@ describe('OpenSearchStorageModule', () => {
             }),
           })
         );
+      });
+
+      it('should return false when the run id is not in runs[] (script noops)', async () => {
+        // The painless script sets ctx.op = 'noop' when removeIf matched
+        // nothing; the update response then carries result: 'noop'. Without
+        // this the OpenSearch adapter claimed success for ANY run id on an
+        // existing benchmark while the file adapter returned false — the
+        // route (which maps false → 404 'Run not found') disagreed across
+        // backends for the same request.
+        mockClient.update.mockResolvedValue({ body: { result: 'noop' } });
+
+        const result = await mod.benchmarks.deleteRun('bench-1', 'no-such-run');
+
+        expect(result).toBe(false);
       });
 
       it('should return false on 404', async () => {
