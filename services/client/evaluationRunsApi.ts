@@ -297,3 +297,39 @@ export async function updateEvaluationRun(
 
   return response.json();
 }
+
+export interface RetryJudgementCaseResult {
+  testCaseId: string;
+  reportId: string;
+  outcome: 'succeeded' | 'failed';
+  passFailStatus?: 'passed' | 'failed' | null;
+  error?: string;
+}
+
+export interface RetryJudgementSummary {
+  retried: number;
+  succeeded: number;
+  failed: number;
+  results: RetryJudgementCaseResult[];
+}
+
+/**
+ * Retry judgement for a TERMINAL run's judge-failed cases (or, with
+ * `scope: 'all'`, every rejudgeable case) at judge cost only — the agent is
+ * never re-invoked. 409s if the run is still executing.
+ */
+export async function retryJudgement(
+  id: string,
+  scope: 'errored' | 'all' = 'errored'
+): Promise<RetryJudgementSummary> {
+  const response = await fetch(`/api/storage/evaluation-runs/${id}/retry-judgement?scope=${scope}`, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to retry judgement');
+  }
+
+  return response.json();
+}
