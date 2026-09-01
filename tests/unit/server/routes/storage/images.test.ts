@@ -195,6 +195,52 @@ describe('Benchmark Images API', () => {
         expect(res.body.dryRun).toBe(true);
         expect(res.body.missingTestCaseIds).toEqual(['tc-missing']);
       });
+
+      it('does NOT swallow a storage read error as "image does not exist" — surfaces 500 instead of a false "would create" (codex_review finding)', async () => {
+        mockTestCasesGetById.mockResolvedValue(sampleTestCase('tc-1'));
+        mockImagesGetByDigest.mockRejectedValue(new Error('opensearch unreachable'));
+
+        const res = await request(app)
+          .post('/api/storage/images')
+          .send({ testCaseIds: ['tc-1'], dryRun: true });
+
+        expect(res.status).toBe(500);
+        expect(mockImagesCreate).not.toHaveBeenCalled();
+        expect(mockImagesUpdate).not.toHaveBeenCalled();
+      });
+
+      it('previews the REAL stored image (real createdAt/fingerprints), not a freshly fabricated doc, when it already exists', async () => {
+        mockTestCasesGetById.mockResolvedValue(sampleTestCase('tc-1'));
+        const realExisting = { ...sampleImage, tags: ['nightly'], createdAt: '2020-05-01T00:00:00.000Z' };
+        mockImagesGetByDigest.mockResolvedValue(realExisting);
+
+        const res = await request(app)
+          .post('/api/storage/images')
+          .send({ testCaseIds: ['tc-1'], tags: ['nightly'], dryRun: true });
+
+        expect(res.status).toBe(200);
+        // Real stored createdAt survives -- a fabricated buildImageDoc()
+        // would have stamped `new Date().toISOString()` instead.
+        expect(res.body.image.createdAt).toBe('2020-05-01T00:00:00.000Z');
+        expect(res.body.alreadyExists).toBe(true);
+        // No new tags requested beyond what's already there -- --apply
+        // really would be a no-op, and wouldAddTags must say so by being absent.
+        expect(res.body.wouldAddTags).toBeUndefined();
+      });
+
+      it('reports wouldAddTags when the image exists but under different tags — alreadyExists alone must not imply --apply is a no-op', async () => {
+        mockTestCasesGetById.mockResolvedValue(sampleTestCase('tc-1'));
+        mockImagesGetByDigest.mockResolvedValue({ ...sampleImage, tags: ['old-name'] });
+
+        const res = await request(app)
+          .post('/api/storage/images')
+          .send({ testCaseIds: ['tc-1'], tags: ['new-name'], dryRun: true });
+
+        expect(res.status).toBe(200);
+        expect(res.body.alreadyExists).toBe(true);
+        expect(res.body.wouldAddTags).toEqual(['new-name']);
+        expect(res.body.image.tags).toEqual(['old-name', 'new-name']);
+      });
     });
   });
 

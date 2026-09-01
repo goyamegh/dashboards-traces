@@ -1122,6 +1122,48 @@ describe('Experiments Storage Routes', () => {
       expect(typeof persistedRun.imageDigest).toBe('string');
     });
 
+    it('refuses to stamp a digest computed from a PARTIAL test-case set (codex_review finding: a partial digest is a wrong identity, not a harmless skip)', async () => {
+      mockGet.mockResolvedValue({
+        body: {
+          found: true,
+          _source: { id: 'exp-123', name: 'Test Benchmark', testCaseIds: ['tc-1', 'tc-2'], runs: [] },
+        },
+      });
+      mockUpdate.mockResolvedValue({ body: {} });
+      // Only tc-1 resolves -- tc-2 is missing (deleted, corpus paging gap, etc).
+      mockTestCasesGetAll.mockResolvedValue({
+        items: [{ id: 'tc-1', name: 'TC One', initialPrompt: 'do the thing' }],
+        total: 1,
+      });
+
+      const completedRun = {
+        id: 'run-123',
+        name: 'Run',
+        agentKey: 'agent',
+        modelId: 'model',
+        status: 'completed',
+        results: {
+          'tc-1': { reportId: 'report-1', status: 'completed' },
+          'tc-2': { reportId: 'report-2', status: 'completed' },
+        },
+        createdAt: '2024-01-01T00:00:00Z',
+      };
+      mockExecuteRun.mockResolvedValue(completedRun);
+
+      const { req, res } = createMocks(
+        { id: 'exp-123' },
+        { name: 'Run', agentKey: 'agent', modelId: 'model' }
+      );
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/:id/execute');
+
+      await handler(req, res);
+
+      expect(mockImagesCreate).not.toHaveBeenCalled();
+      const firstUpdateCall = mockUpdate.mock.calls[0][0];
+      const persistedRun = firstUpdateCall.body.doc.runs[0];
+      expect(persistedRun.imageDigest).toBeUndefined();
+    });
+
     it('never blocks execution when the image doc write fails (images.create throws) — mirrors evaluationRuns.ts: the digest itself is a pure computation and is kept on the run even though the image side-effect failed', async () => {
       mockGet.mockResolvedValue({
         body: {
