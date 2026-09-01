@@ -33,11 +33,22 @@ import { TestCaseDetailPage as Evals3TestCaseDetail } from './components/evals3/
 import { EvalRunsPage as Evals3EvalRuns } from './components/evals3/EvalRunsPage';
 import { RunInspectorPage as Evals3RunInspector } from './components/evals3/RunInspectorPage';
 import { NewRunPage as Evals3NewRun } from './components/evals3/NewRunPage';
-import { EvalRunDetailPage as Evals3EvalRunDetail } from './components/evals3/EvalRunDetailPage';
 
 function ExperimentRunsRedirect() {
   const { experimentId } = useParams();
   return <Navigate to={`/benchmarks/${experimentId}/runs`} replace />;
+}
+
+/**
+ * Run-experience convergence, Phase 1: the legacy `/inspect` suffix on the
+ * top-level eval-run route is now a redirect to the canonical URL (no
+ * suffix). Preserves the query string (e.g. `?reportId=...`) that
+ * EvalRunDetailPage's "View" links append.
+ */
+function EvalRunInspectRedirect() {
+  const { runId } = useParams();
+  const location = useLocation();
+  return <Navigate to={`/evaluations/runs/${runId}${location.search}`} replace />;
 }
 
 /**
@@ -134,8 +145,8 @@ function App() {
             <Route path="/evaluations/test-cases/:testCaseId" element={<Evals3TestCaseDetail />} />
             <Route path="/evaluations/runs" element={<Evals3EvalRuns />} />
             <Route path="/evaluations/runs/new" element={<Evals3NewRun />} />
-            <Route path="/evaluations/runs/:runId" element={<Evals3EvalRunDetail />} />
-            <Route path="/evaluations/runs/:runId/inspect" element={<Evals3RunInspector />} />
+            <Route path="/evaluations/runs/:runId" element={<Evals3RunInspector />} />
+            <Route path="/evaluations/runs/:runId/inspect" element={<EvalRunInspectRedirect />} />
             <Route path="/evaluations/benchmarks/:benchmarkId/runs" element={<Evals3BenchmarkRuns />} />
             <Route path="/evaluations/benchmarks/:benchmarkId/runs/:runId" element={<Navigate to="inspect" replace />} />
             <Route path="/evaluations/benchmarks/:benchmarkId/runs/:runId/inspect" element={<Evals3RunInspector />} />
