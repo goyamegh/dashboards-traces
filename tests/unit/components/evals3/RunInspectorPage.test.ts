@@ -501,9 +501,65 @@ describe('RunInspectorPage — Re-run button (eval-run mode)', () => {
 });
 
 describe('RunInspectorPage — Re-run button (benchmark mode)', () => {
-  it('disables Re-run button for benchmark-embedded runs', async () => {
-    // benchmark mode (with benchmarkId)
+  // Regression matrix for the route-vs-doc-type bug: RunInspectorPage serves
+  // both /evaluations/benchmarks/:benchmarkId/runs/:runId/inspect (mode
+  // 'benchmark') and /evaluations/runs/:runId/inspect (mode 'evalRun'), but
+  // since #399 a run created WITH a benchmarkId is dual-written as BOTH an
+  // embedded BenchmarkRun projection (benchmark.runs[], no docType) AND a
+  // first-class EvaluationRun doc (docType: 'evaluation-run') -- so `mode`
+  // alone cannot tell you whether the run supports EvaluationRun-only
+  // capabilities (rerun, provenance). isEvaluationRun(run) is the fix;
+  // loadData() must also prefer the first-class doc on the benchmark route
+  // for that predicate to ever be true there. Cells:
+  //   route scope   x   run docType            x   load state
+  //   eval route    x   evaluation-run         x   loaded          -> covered above
+  //   benchmark rt  x   true benchmark-run     x   loaded (404 on first-class fetch) -> below
+  //   benchmark rt  x   evaluation-run (dual)  x   loaded (first-class fetch succeeds) -> below (was broken)
+  //   benchmark rt  x   evaluation-run (dual)  x   first-class fetch resolves falsy (test-double edge case) -> below
+  const evalRunFixture = (overrides: Record<string, unknown> = {}) => ({
+    id: 'run-1',
+    docType: 'evaluation-run',
+    name: 'Run 1',
+    agentKey: 'demo',
+    modelId: 'model-1',
+    createdAt: '2024-01-01T00:00:00Z',
+    status: 'completed',
+    sources: [],
+    trigger: 'ui',
+    testCaseSnapshots: [],
+    results: { 'tc-0': { reportId: 'rep-0', status: 'completed' }, 'tc-1': { reportId: 'rep-1', status: 'completed' } },
+    ...overrides,
+  });
+
+  beforeEach(() => {
     mockParams = { benchmarkId: 'bench-1', runId: 'run-1' };
+    const { getEvaluationRun } = require('@/services/client');
+    // Default: no first-class doc exists for this run id (true legacy
+    // BenchmarkRun, pre-#399) -- loadData() must fall back to the embedded
+    // projection, not get stuck. Individual tests override this to
+    // simulate a dual-written evaluation-run.
+    const notFound = Object.assign(new Error('not found'), { status: 404 });
+    getEvaluationRun.mockReset().mockRejectedValue(notFound);
+  });
+
+  it('logs a warning (but still falls back to the embedded projection) when the first-class fetch fails with a non-404 error', async () => {
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    const { getEvaluationRun } = require('@/services/client');
+    const serverError = Object.assign(new Error('Internal Server Error'), { status: 500 });
+    getEvaluationRun.mockReset().mockRejectedValue(serverError);
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(2));
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(2));
+    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(2));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getAllByTestId('test-case-row').length).toBeGreaterThan(0));
+    expect((screen.getByTestId('inspector-rerun-btn') as HTMLButtonElement).disabled).toBe(true);
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
+  it('disables Re-run button for a true benchmark-embedded run (no first-class doc)', async () => {
     mockBenchmarkGetById.mockResolvedValue(makeBenchmark(2));
     mockTestCasesGetByIds.mockResolvedValue(makeTestCases(2));
     mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(2));
@@ -517,5 +573,69 @@ describe('RunInspectorPage — Re-run button (benchmark mode)', () => {
     expect(rerunBtn.parentElement?.getAttribute('title')).toBe(
       'Re-run is only available for evaluation runs, not benchmark-embedded runs'
     );
+    expect(screen.queryByTestId('rerun-provenance-chip')).toBeNull();
   });
-})
+
+  it('falls back to the embedded projection when getEvaluationRun resolves falsy (test-double edge case)', async () => {
+    const { getEvaluationRun } = require('@/services/client');
+    getEvaluationRun.mockReset().mockResolvedValue(undefined);
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(2));
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(2));
+    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(2));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getAllByTestId('test-case-row').length).toBeGreaterThan(0));
+    expect((screen.getByTestId('inspector-rerun-btn') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it('enables Re-run for a dual-written evaluation-run reached via the benchmark-scoped route (regression -- was broken)', async () => {
+    // Benchmark still resolves the LEGACY embedded projection here (real
+    // shape: no docType) -- the fix must come from loadData() preferring
+    // the first-class doc, not from the benchmark fixture itself.
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(2));
+    const { getEvaluationRun } = require('@/services/client');
+    getEvaluationRun.mockReset().mockResolvedValue(evalRunFixture());
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(2));
+    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(2));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getAllByTestId('test-case-row').length).toBeGreaterThan(0));
+    expect((screen.getByTestId('inspector-rerun-btn') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('shows the provenance chip for a dual-written evaluation-run reached via the benchmark-scoped route', async () => {
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(2));
+    const { getEvaluationRun } = require('@/services/client');
+    getEvaluationRun.mockReset()
+      .mockResolvedValueOnce(evalRunFixture({ rerunOf: 'eval-run-0' }))
+      .mockResolvedValueOnce({ id: 'eval-run-0', name: 'Original Run' });
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(2));
+    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(2));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId('rerun-provenance-chip')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/re-run of Original Run/)).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId('rerun-provenance-chip'));
+    expect(mockNavigate).toHaveBeenCalledWith('/evaluations/runs/eval-run-0');
+  });
+
+  it('opens the Re-run confirm dialog for a dual-written evaluation-run reached via the benchmark-scoped route', async () => {
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(2));
+    const { getEvaluationRun } = require('@/services/client');
+    getEvaluationRun.mockReset().mockResolvedValue(evalRunFixture());
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(2));
+    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(2));
+
+    renderPage();
+
+    await waitFor(() => expect((screen.getByTestId('inspector-rerun-btn') as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByTestId('inspector-rerun-btn'));
+
+    await waitFor(() => expect(screen.getByTestId('rerun-confirm-dialog')).toBeTruthy());
+  });
+});
+
