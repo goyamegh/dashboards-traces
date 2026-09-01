@@ -357,7 +357,7 @@ export const RunInspectorPage: React.FC = () => {
           <div className="flex-1 min-w-0">
             <h2 className="text-lg font-bold truncate">{run.name}</h2>
             {/* Provenance: rerunOf chip (EvaluationRun only) */}
-            {mode === 'evalRun' && (run as EvaluationRun)?.rerunOf && (
+            {(run as any).docType === 'evaluation-run' && (run as EvaluationRun)?.rerunOf && (
               <div className="mt-1 flex items-center">
                 <button
                   data-testid="rerun-provenance-chip"
@@ -398,7 +398,7 @@ export const RunInspectorPage: React.FC = () => {
             </span>
             {/* Re-run: only for eval-run mode; benchmark-embedded runs use BenchmarkRun
                 which doesn't support rerun. */}
-            {mode === 'evalRun' ? (
+            {(run as any).docType === 'evaluation-run' ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -448,7 +448,7 @@ export const RunInspectorPage: React.FC = () => {
       </div>
 
       {/* Re-run Confirm Dialog (EvaluationRun only) */}
-      {mode === 'evalRun' && (
+      {(run as any).docType === 'evaluation-run' && (
         <RerunConfirmDialog
           run={run as EvaluationRun | null}
           open={rerunDialogOpen}
