@@ -54,6 +54,14 @@ export interface RecoveryStat {
   failedOut: number;
   errors: number;
   durationMs: number;
+  /**
+   * True when recovery was short-circuited by TRACE_RECOVERY_DISABLED=1
+   * rather than actually scanning storage and finding zero orphans. Lets
+   * the boot log line distinguish "disabled" from "scanned, found nothing"
+   * — previously both printed the identical `no orphan pending reports
+   * [0ms]` message.
+   */
+  disabled?: boolean;
 }
 
 /**
@@ -79,6 +87,7 @@ export async function resumePendingTracePolls(storage: IStorageModule): Promise<
 
   if (process.env.TRACE_RECOVERY_DISABLED === '1') {
     stat.durationMs = Date.now() - startedAt;
+    stat.disabled = true;
     return stat;
   }
 
@@ -221,7 +230,9 @@ export async function resumePendingTracePolls(storage: IStorageModule): Promise<
 export async function resumePendingTracePollsSafely(storage: IStorageModule): Promise<void> {
   try {
     const stat = await resumePendingTracePolls(storage);
-    if (stat.pendingFound === 0 && stat.errors === 0) {
+    if (stat.disabled) {
+      console.log('[traceRecovery] recovery disabled via env (TRACE_RECOVERY_DISABLED=1)');
+    } else if (stat.pendingFound === 0 && stat.errors === 0) {
       console.log(
         `[traceRecovery] scanned=${stat.scanned} no orphan pending reports [${stat.durationMs}ms]`
       );
