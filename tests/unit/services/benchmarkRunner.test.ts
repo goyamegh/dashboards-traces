@@ -1427,7 +1427,14 @@ describe('Experiment Runner', () => {
       expect(mockCallBedrockJudge.mock.calls[0][6]).toBe('eval-trace-id-123');
     });
 
-    it('regression: falls back to report.id when neither runId nor traceId are available (#trace-poll-fix)', async () => {
+    it('regression: falls back to undefined (fail-closed) when neither runId nor traceId are available, NOT a fabricated report.id (#trace-poll-fix)', async () => {
+      // report.id is deliberately NOT an acceptable fallback (codex_review
+      // finding, 2026-09-01): /api/logs treats a truthy runId as an
+      // UNBOUNDED analyzed `match: { message: runId }` query with no time
+      // window, and a hyphenated report id (`run-<ts>-<rand>`) tokenizes into
+      // common words ("run") that would pull in unrelated cluster logs. When
+      // there's no genuine correlator, the judge call must still forward
+      // `undefined` so /api/judge's original fail-closed 400 stands.
       const testCase = createTestCase('tc-1');
       const experiment = createExperiment(['tc-1']);
       const run = createBenchmarkRun('run-1');
@@ -1456,7 +1463,7 @@ describe('Experiment Runner', () => {
       const updatedReport = { id: 'saved-report-1', trajectory: [{ type: 'response', content: 'Traced response' }] };
       await callbacks.onTracesFound([{ traceId: 'agent-own-trace-id', name: 'test-span' }], updatedReport);
 
-      expect(mockCallBedrockJudge.mock.calls[0][6]).toBe('saved-report-1');
+      expect(mockCallBedrockJudge.mock.calls[0][6]).toBeUndefined();
     });
 
     it('should handle judge errors gracefully', async () => {

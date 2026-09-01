@@ -142,28 +142,47 @@ export function buildJudgeAgentsHints(
  * `data.runId || data.id || null`, and agent response bodies here carry
  * neither) — so any REST-connector agent using the `agent-trace-judge` model
  * 400s before the judge ever runs, EVEN when Strategy C (`agents` hints,
- * service.name + time-window) or Strategy A (`report.traceId`, the eval's own
- * OTel span) already have enough to find the real spans (root-caused via a
- * live smoke test 2026-09-01: `ai-search-redkite-qwen-mtrl-stark-retail`
- * found its spans on poll attempt 1 once `traceServiceName` was set, then
- * still 400'd on this exact gate).
+ * service.name + time-window) already has enough to find the real spans
+ * (root-caused via a live smoke test 2026-09-01:
+ * `ai-search-redkite-qwen-mtrl-stark-retail` found its spans on poll attempt
+ * 1 once `traceServiceName` was set, then still 400'd on this exact gate).
  *
- * `traceJudgeTools.ts` sends `runId` as `runIds:[runId]` UNIONED (bool.should)
- * with `agents` — a `runId` that doesn't match any span's run-id attribute is
- * a harmless no-op contribution to that union, not a wrong answer. So the
- * safe fallback order is: the real connector runId (Strategy B) > the eval's
- * own OTel traceId (Strategy A, still a genuine correlator) > the report's
- * own id (always present — guarantees the gate is satisfiable and the
- * request is still meaningfully scoped to exactly this run for the
- * trajectory cross-check below).
+ * Fallback is `report.traceId` ONLY (the eval's own OTel `test_case` span) —
+ * deliberately NOT `report.id` (the storage doc id), and NOT `undefined`.
+ * Two different downstream consumers read this value with different safety
+ * properties:
+ *   - `/api/traces` (`query_spans`): `traceJudgeTools.ts` sends it as
+ *     `runIds:[runId]`, UNIONED (bool.should) with the `agents` Strategy-C
+ *     hints, matched against `attributes.agent_health.run.id` /
+ *     `attributes.gen_ai.conversation.id`. A value that matches no span is a
+ *     harmless no-op contribution to that union — safe for ANY truthy
+ *     string, including `report.id`.
+ *   - `/api/logs` (`query_logs`): `fetchLogs()` (server/services/logsService.ts)
+ *     treats a present `runId` as the ONLY filter — `match: { message: runId
+ *     }` with NO time-range bound at all ("searching by runId, we want to
+ *     find logs regardless of age"). `match` is analyzed: a hyphenated id
+ *     like a `report.id` (e.g. `run-1788232186357-pxdnz1a4k`) tokenizes into
+ *     `run` / `1788232186357` / `pxdnz1a4k` and would OR-match any log
+ *     containing the extremely common word "run" anywhere in the cluster,
+ *     unbounded by time — exactly the noise risk this codebase's Strategy-C
+ *     docs warn about, but worse (no window). A 32-hex-char OTel `traceId`
+ *     has no word boundaries for the analyzer to split on, so it behaves as
+ *     one high-entropy token — realistically only ever matches a log line
+ *     that legitimately contains this exact trace id.
+ *
+ * So `report.id` is NOT an acceptable fallback despite being always present:
+ * it is safe for `/api/traces` but unsafe for `/api/logs`. When `traceId` is
+ * ALSO absent (e.g. eval telemetry disabled), returning `undefined` and
+ * letting the route's original 400 stand is the correct fail-closed
+ * behavior — not a silent degrade into unscoped log search.
  *
  * The route's defense-in-depth check (`trajectoryRunIds.has(runId)`) only
  * activates when trajectory steps carry a `.runId` field (SDK-derived
  * trajectories); classic REST/subprocess trajectory steps never do, so this
- * fallback can't trip that 403.
+ * fallback can't trip that 403 either way.
  */
 export function resolveJudgeRunId(
-  report: Pick<TestCaseRun, 'runId' | 'traceId' | 'id'>
+  report: Pick<TestCaseRun, 'runId' | 'traceId'>
 ): string | undefined {
-  return report.runId || report.traceId || report.id || undefined;
+  return report.runId || report.traceId || undefined;
 }
