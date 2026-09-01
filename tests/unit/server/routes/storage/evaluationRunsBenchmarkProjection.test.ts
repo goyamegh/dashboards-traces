@@ -23,6 +23,7 @@ import {
   buildStartingBenchmarkRunProjection,
   buildTerminalBenchmarkRunProjection,
   linkTerminalBenchmarkRunProjection,
+  syncCancelledBenchmarkProjection,
   isEvaluationRunActiveInThisProcess,
 } from '@/server/routes/storage/evaluationRuns';
 import type { EvaluationRun } from '@/types/index';
@@ -141,14 +142,41 @@ describe('linkTerminalBenchmarkRunProjection', () => {
     expect(addRun).not.toHaveBeenCalled();
   });
 
-  it('falls back to addRun when the starting projection never landed', async () => {
+  it('falls back to addRun when the starting projection never landed, then follows up with an idempotent updateRun (TOCTOU guard)', async () => {
     const { storage, updateRun, addRun } = mockStorage({ id: 'bm-1', runs: [] });
     const projection = buildTerminalBenchmarkRunProjection(makeRun({ status: 'failed' }), 'now');
 
     await linkTerminalBenchmarkRunProjection(storage, 'bm-1', projection);
 
     expect(addRun).toHaveBeenCalledWith('bm-1', projection);
-    expect(updateRun).not.toHaveBeenCalled();
+    // Unconditional follow-up updateRun: guards a concurrent starting-link
+    // winning the add-if-absent race between our read and this addRun call
+    // — without this, that race would leave the OTHER writer's `running`
+    // projection stuck forever with no terminal fields.
+    expect(updateRun).toHaveBeenCalledWith('bm-1', projection.id, projection);
+  });
+
+  it('TOCTOU: succeeds via the updateRun follow-up even when addRun itself no-ops (lost the add race to a concurrent starting-link)', async () => {
+    const { storage, updateRun, addRun } = mockStorage({ id: 'bm-1', runs: [] });
+    // Simulates a concurrent starting-link landing between our getById read
+    // and this addRun call: the real adapter's add-if-absent semantics would
+    // return `true` (already present) without applying OUR terminal fields.
+    addRun.mockResolvedValue(true);
+    const projection = buildTerminalBenchmarkRunProjection(makeRun({ status: 'completed' }), 'now');
+
+    await expect(linkTerminalBenchmarkRunProjection(storage, 'bm-1', projection)).resolves.toBeUndefined();
+
+    expect(updateRun).toHaveBeenCalledWith('bm-1', projection.id, projection);
+  });
+
+  it('throws only when BOTH the addRun and the follow-up updateRun fail', async () => {
+    const { storage, updateRun, addRun } = mockStorage({ id: 'bm-1', runs: [] });
+    addRun.mockResolvedValue(false);
+    updateRun.mockResolvedValue(false);
+    const projection = buildTerminalBenchmarkRunProjection(makeRun({ status: 'failed' }), 'now');
+
+    await expect(linkTerminalBenchmarkRunProjection(storage, 'bm-1', projection))
+      .rejects.toThrow(/Failed to link/);
   });
 
   it('throws when the benchmark no longer exists', async () => {
@@ -166,6 +194,70 @@ describe('linkTerminalBenchmarkRunProjection', () => {
 
     await expect(linkTerminalBenchmarkRunProjection(storage, 'bm-1', projection))
       .rejects.toThrow(/Failed to link/);
+  });
+});
+
+describe('syncCancelledBenchmarkProjection', () => {
+  function mockStorage(benchmark: any) {
+    const updateRun = jest.fn().mockResolvedValue(true);
+    const addRun = jest.fn().mockResolvedValue(true);
+    const getById = jest.fn().mockResolvedValue(benchmark);
+    const storage = {
+      benchmarks: { getById, updateRun, addRun },
+    } as unknown as IStorageModule;
+    return { storage, getById, updateRun, addRun };
+  }
+
+  it('writes a PARTIAL update (status/completedAt only) when the projection already exists, never touching results/stats', async () => {
+    const { storage, updateRun, addRun } = mockStorage({
+      id: 'bm-1',
+      runs: [{ id: 'eval-run-1', status: 'running', results: { 'tc-1': { reportId: 'r1', status: 'completed' } } }],
+    });
+    const run = makeRun({ status: 'cancelled' });
+
+    await syncCancelledBenchmarkProjection(storage, 'bm-1', run, '2024-01-01T02:00:00.000Z');
+
+    expect(updateRun).toHaveBeenCalledWith('bm-1', 'eval-run-1', {
+      status: 'cancelled',
+      completedAt: '2024-01-01T02:00:00.000Z',
+    });
+    expect(addRun).not.toHaveBeenCalled();
+  });
+
+  it('includes error in the partial update when the run has one', async () => {
+    const { storage, updateRun } = mockStorage({ id: 'bm-1', runs: [{ id: 'eval-run-1' }] });
+    const run = makeRun({ status: 'cancelled', error: 'user requested' });
+
+    await syncCancelledBenchmarkProjection(storage, 'bm-1', run, 'now');
+
+    expect(updateRun).toHaveBeenCalledWith('bm-1', 'eval-run-1', {
+      status: 'cancelled',
+      completedAt: 'now',
+      error: 'user requested',
+    });
+  });
+
+  it('falls back to a full add-if-missing projection when nothing was linked yet', async () => {
+    const { storage, updateRun, addRun } = mockStorage({ id: 'bm-1', runs: [] });
+    const run = makeRun({ status: 'cancelled' });
+
+    await syncCancelledBenchmarkProjection(storage, 'bm-1', run, 'now');
+
+    expect(addRun).toHaveBeenCalledWith('bm-1', buildTerminalBenchmarkRunProjection(run, 'now'));
+    expect(updateRun).not.toHaveBeenCalled();
+  });
+
+  it('throws when the benchmark no longer exists', async () => {
+    const { storage } = mockStorage(null);
+    await expect(syncCancelledBenchmarkProjection(storage, 'bm-missing', makeRun(), 'now'))
+      .rejects.toThrow(/Benchmark not found/);
+  });
+
+  it('throws when the partial updateRun reports failure', async () => {
+    const { storage, updateRun } = mockStorage({ id: 'bm-1', runs: [{ id: 'eval-run-1' }] });
+    updateRun.mockResolvedValue(false);
+    await expect(syncCancelledBenchmarkProjection(storage, 'bm-1', makeRun(), 'now'))
+      .rejects.toThrow(/Failed to sync/);
   });
 });
 

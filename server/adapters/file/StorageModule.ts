@@ -300,6 +300,28 @@ class FileBenchmarkOperations implements IBenchmarkOperations {
     return path.join(this.dir, `${sanitizeId(id)}.json`);
   }
 
+  /**
+   * Per-benchmark-id in-process mutex for the read-modify-write mutators
+   * below (`addRun`/`updateRun`/`deleteRun`/`updateRunResult`). Unlike the
+   * OpenSearch adapter (server-side CAS via `retry_on_conflict`), the file
+   * backend's read-then-write is two separate steps with no atomicity of
+   * its own — concurrent test cases (`run.concurrency > 1`) calling
+   * `onTestCaseComplete` interleave across each other's `await`s and
+   * last-writer-wins the WHOLE file (silently dropping every other
+   * concurrent test case's result). Chaining each call for the same
+   * benchmark id onto the previous one serializes them without blocking
+   * unrelated benchmarks. `.catch(() => {})` on the stored tail keeps one
+   * rejected call from wedging every subsequent call for that id.
+   */
+  private locks = new Map<string, Promise<unknown>>();
+
+  private withLock<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    const prior = this.locks.get(id) ?? Promise.resolve();
+    const run = prior.then(fn, fn);
+    this.locks.set(id, run.catch(() => {}));
+    return run;
+  }
+
   async getAll(options?: PaginationOptions): Promise<{ items: Benchmark[]; total: number }> {
     // Benchmarks share this dir with evaluation-runs and benchmark-images
     // (docType discriminator); exclude both so they don't surface as empty
@@ -359,6 +381,10 @@ class FileBenchmarkOperations implements IBenchmarkOperations {
   }
 
   async addRun(benchmarkId: string, run: BenchmarkRun): Promise<boolean> {
+    return this.withLock(benchmarkId, () => this.addRunLocked(benchmarkId, run));
+  }
+
+  private async addRunLocked(benchmarkId: string, run: BenchmarkRun): Promise<boolean> {
     const benchmark = await this.getById(benchmarkId);
     if (!benchmark) return false;
 
@@ -372,6 +398,10 @@ class FileBenchmarkOperations implements IBenchmarkOperations {
   }
 
   async updateRun(benchmarkId: string, runId: string, updates: Partial<BenchmarkRun>): Promise<boolean> {
+    return this.withLock(benchmarkId, () => this.updateRunLocked(benchmarkId, runId, updates));
+  }
+
+  private async updateRunLocked(benchmarkId: string, runId: string, updates: Partial<BenchmarkRun>): Promise<boolean> {
     const benchmark = await this.getById(benchmarkId);
     if (!benchmark) return false;
 
@@ -386,6 +416,10 @@ class FileBenchmarkOperations implements IBenchmarkOperations {
   }
 
   async deleteRun(benchmarkId: string, runId: string): Promise<boolean> {
+    return this.withLock(benchmarkId, () => this.deleteRunLocked(benchmarkId, runId));
+  }
+
+  private async deleteRunLocked(benchmarkId: string, runId: string): Promise<boolean> {
     const benchmark = await this.getById(benchmarkId);
     if (!benchmark) return false;
 
@@ -401,12 +435,21 @@ class FileBenchmarkOperations implements IBenchmarkOperations {
 
   /**
    * Update a single test case's result within an embedded BenchmarkRun.
-   * Mirrors the OpenSearch adapter's `updateRunResult` — the file backend
-   * has no concurrent-writer race to guard against (single process,
-   * synchronous read-modify-write), so this is a plain lookup + mutate +
-   * write.
+   * Mirrors the OpenSearch adapter's `updateRunResult` — serialized per
+   * benchmark id via `withLock` above so concurrent test cases
+   * (`run.concurrency > 1`) can't interleave across each other's
+   * read-modify-write and lose one another's update (each call's read now
+   * always observes the PRIOR call's write for the same benchmark id).
    */
   async updateRunResult(benchmarkId: string, runId: string, testCaseId: string, result: {
+    reportId: string;
+    status: RunResultStatus;
+    error?: string;
+  }): Promise<boolean> {
+    return this.withLock(benchmarkId, () => this.updateRunResultLocked(benchmarkId, runId, testCaseId, result));
+  }
+
+  private async updateRunResultLocked(benchmarkId: string, runId: string, testCaseId: string, result: {
     reportId: string;
     status: RunResultStatus;
     error?: string;

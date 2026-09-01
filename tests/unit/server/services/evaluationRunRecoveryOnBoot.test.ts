@@ -245,6 +245,81 @@ describe('recoverOrphanEvaluationRuns', () => {
     expect(updateCalls).toHaveLength(0);
     expect(storage.evaluationRuns.list).not.toHaveBeenCalled();
   });
+
+  it('recovers ALL stale runs across pages even though recovering page 1 shrinks the live `status:running` result set (regression: fixed-offset pagination skipped survivors)', async () => {
+    process.env.EVALUATION_RUN_RECOVERY_PAGE_SIZE = '2';
+    // 3 stale runs, page size 2. The buggy fixed-`from` version would fetch
+    // (from=0,size=2) -> recover both -> advance to from=2 -> re-query a
+    // now-shrunk result set (only 1 running run left) at offset 2 -> empty
+    // page -> the 3rd run is never recovered. Re-querying from 0 every pass
+    // (with an attempted-ids set so already-decided runs aren't reprocessed)
+    // must recover all 3.
+    const runs = [
+      run({ id: 'run-1', results: { a: { reportId: '', status: 'pending' } } }),
+      run({ id: 'run-2', results: { a: { reportId: '', status: 'pending' } } }),
+      run({ id: 'run-3', results: { a: { reportId: '', status: 'pending' } } }),
+    ];
+    const { storage, updateCalls } = mockStorage({ runs });
+
+    const stat = await recoverOrphanEvaluationRuns(storage);
+
+    expect(stat.scannedRuns).toBe(3);
+    expect(stat.staleRuns).toBe(3);
+    expect(stat.runsMarkedFailed).toBe(3);
+    expect(updateCalls.map(c => c.id).sort()).toEqual(['run-1', 'run-2', 'run-3']);
+    expect(updateCalls.every(c => c.updates.status === 'failed')).toBe(true);
+  });
+
+  it('re-querying from 0 does not loop forever once every remaining run is decided (recent-but-not-stale runs mixed with stale ones)', async () => {
+    process.env.EVALUATION_RUN_RECOVERY_PAGE_SIZE = '2';
+    const runs = [
+      run({ id: 'stale-1', results: {} }),
+      run({ id: 'stale-2', results: {} }),
+      run({ id: 'fresh-1', createdAt: recently, results: {} }),
+    ];
+    const { storage, updateCalls } = mockStorage({ runs });
+
+    const stat = await recoverOrphanEvaluationRuns(storage);
+
+    expect(stat.staleRuns).toBe(2);
+    expect(updateCalls.map(c => c.id).sort()).toEqual(['stale-1', 'stale-2']);
+    // Terminates well within the maxPages cap — proves the not-stale
+    // survivor doesn't cause an infinite from-0 re-query loop.
+    expect((storage.evaluationRuns.list as jest.Mock).mock.calls.length).toBeLessThan(10);
+  });
+
+  it('prefers heartbeatAt over createdAt for staleness (defensive read — not on the EvaluationRun type, but a newer server sharing storage may write one)', async () => {
+    // createdAt is old enough to be stale on its own, but heartbeatAt is
+    // recent — the run is still alive and heartbeating from another process;
+    // must NOT be recovered.
+    const runs = [run({
+      id: 'heartbeating-run',
+      createdAt: longAgo,
+      heartbeatAt: recently,
+      results: { a: { reportId: '', status: 'pending' } },
+    } as any)];
+    const { storage, updateCalls } = mockStorage({ runs });
+
+    const stat = await recoverOrphanEvaluationRuns(storage);
+
+    expect(stat.staleRuns).toBe(0);
+    expect(updateCalls).toHaveLength(0);
+  });
+
+  it('recovers a run whose heartbeatAt is ALSO stale (heartbeat stopped — owning process really did die)', async () => {
+    const runs = [run({
+      id: 'dead-heartbeat-run',
+      createdAt: longAgo,
+      heartbeatAt: longAgo,
+      results: { a: { reportId: '', status: 'pending' } },
+    } as any)];
+    const { storage, updateCalls } = mockStorage({ runs });
+
+    const stat = await recoverOrphanEvaluationRuns(storage);
+
+    expect(stat.staleRuns).toBe(1);
+    expect(updateCalls).toHaveLength(1);
+  });
 });
 
 describe('recoverOrphanEvaluationRunsSafely', () => {

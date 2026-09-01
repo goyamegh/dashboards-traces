@@ -273,6 +273,7 @@ describe('Evaluation Runs API — benchmark projection wiring', () => {
       mockBenchmarksAddRun
         .mockResolvedValueOnce(true) // starting link succeeds
         .mockResolvedValueOnce(false); // terminal fallback addRun "fails"
+      mockBenchmarksUpdateRun.mockResolvedValue(false); // TOCTOU follow-up also "fails" — both branches must fail to actually error
       mockExecuteEvaluationRun.mockResolvedValue({ results: {}, stats: { total: 0 } });
 
       const res = await request(app).post('/api/storage/evaluation-runs').send(body);
@@ -341,6 +342,13 @@ describe('Evaluation Runs API — benchmark projection wiring', () => {
       expect(mockBenchmarksUpdateRun).toHaveBeenCalledWith(
         'bm-1', runId, expect.objectContaining({ status: 'cancelled' })
       );
+      // Partial update only — must NOT touch results/stats, which remain the
+      // executor's own terminal write's responsibility (avoids clobbering a
+      // richer, in-flight terminal write with a stale/pending snapshot).
+      const cancelUpdatePayload = mockBenchmarksUpdateRun.mock.calls.find(c => c[1] === runId)?.[2];
+      expect(cancelUpdatePayload).toEqual({ status: 'cancelled', completedAt: expect.any(String) });
+      expect(cancelUpdatePayload.results).toBeUndefined();
+      expect(cancelUpdatePayload.stats).toBeUndefined();
 
       cancellationToken.isCancelled = true;
       resolveExecute({ results: {}, stats: { total: 1 } });

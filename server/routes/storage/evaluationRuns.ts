@@ -129,11 +129,65 @@ export async function linkTerminalBenchmarkRunProjection(
     throw new Error(`Benchmark not found while linking terminal run to benchmark: ${benchmarkId}`);
   }
   const alreadyLinked = (benchmark.runs || []).some((r) => r.id === benchmarkRun.id);
-  const linked = alreadyLinked
-    ? await storage.benchmarks.updateRun(benchmarkId, benchmarkRun.id, benchmarkRun)
-    : await storage.benchmarks.addRun(benchmarkId, benchmarkRun);
-  if (!linked) {
+  if (alreadyLinked) {
+    const linked = await storage.benchmarks.updateRun(benchmarkId, benchmarkRun.id, benchmarkRun);
+    if (!linked) {
+      throw new Error(`Failed to link terminal run to benchmark: ${benchmarkId}`);
+    }
+    return;
+  }
+  // Not linked as of our read above — but a concurrent starting-link (the
+  // create route's own `addRun` at run start) can land in the window between
+  // that read and this call. `addRun` is add-if-absent, so if OUR addRun
+  // loses that race it silently no-ops, leaving the OTHER writer's `running`
+  // projection stuck forever with no terminal fields. Following up with an
+  // unconditional, idempotent `updateRun` for the same id guarantees the
+  // terminal fields land regardless of which branch actually won the race.
+  const added = await storage.benchmarks.addRun(benchmarkId, benchmarkRun);
+  const updated = await storage.benchmarks.updateRun(benchmarkId, benchmarkRun.id, benchmarkRun);
+  if (!added && !updated) {
     throw new Error(`Failed to link terminal run to benchmark: ${benchmarkId}`);
+  }
+}
+
+/**
+ * Cancel-route-specific projection sync: a PARTIAL update (status/
+ * completedAt/error only) when the projection already exists, so this can
+ * never race/clobber the executor's own (richer) terminal write of
+ * results/stats with a stale, still-pending snapshot — unlike
+ * `linkTerminalBenchmarkRunProjection` above (which writes the FULL
+ * projection shape and is meant for writers that ARE the source of truth
+ * for results/stats at that moment: the executor itself, boot recovery).
+ * The executor's own terminal write remains the sole owner of results/stats
+ * for a cancelled run; this only needs the status visible sooner.
+ *
+ * Falls back to linking a full projection (add-if-missing) only when
+ * nothing was linked yet — there's no existing entry to partially update in
+ * that case (e.g. the starting link itself never landed).
+ */
+export async function syncCancelledBenchmarkProjection(
+  storage: IStorageModule,
+  benchmarkId: string,
+  run: EvaluationRun,
+  completedAt: string
+): Promise<void> {
+  const benchmark = await storage.benchmarks.getById(benchmarkId);
+  if (!benchmark) {
+    throw new Error(`Benchmark not found while syncing cancelled run to benchmark: ${benchmarkId}`);
+  }
+  const alreadyLinked = (benchmark.runs || []).some((r) => r.id === run.id);
+  if (alreadyLinked) {
+    const updates: Partial<BenchmarkRun> = { status: 'cancelled', completedAt };
+    if (run.error != null) (updates as any).error = run.error;
+    const updated = await storage.benchmarks.updateRun(benchmarkId, run.id, updates);
+    if (!updated) {
+      throw new Error(`Failed to sync cancelled run to benchmark: ${benchmarkId}`);
+    }
+    return;
+  }
+  const added = await storage.benchmarks.addRun(benchmarkId, buildTerminalBenchmarkRunProjection(run, completedAt));
+  if (!added) {
+    throw new Error(`Failed to sync cancelled run to benchmark: ${benchmarkId}`);
   }
 }
 
@@ -497,16 +551,16 @@ router.post('/api/storage/evaluation-runs/:id/cancel', async (req: Request, res:
     // Keep the benchmark's embedded projection in sync so a cancel doesn't
     // leave the Benchmark Details page showing the run stuck on 'running'
     // until the executor loop notices `cancellationToken.isCancelled` on its
-    // own and reaches its own terminal write (which will also sync this
-    // projection, idempotently, with more complete results/stats). The
-    // cancellation itself already succeeded above regardless of this.
+    // own and reaches its own (richer) terminal write. Deliberately a
+    // PARTIAL sync (status/completedAt/error only, via
+    // `syncCancelledBenchmarkProjection`) — NOT the full terminal projection
+    // — so this can't race the executor's own terminal write and clobber its
+    // results/stats with a stale, still-pending snapshot; the executor
+    // remains the sole owner of results/stats for this run. The cancellation
+    // itself already succeeded above regardless of this.
     if (updatedRun.benchmarkId) {
       try {
-        await linkTerminalBenchmarkRunProjection(
-          storage,
-          updatedRun.benchmarkId,
-          buildTerminalBenchmarkRunProjection(updatedRun, completedAt)
-        );
+        await syncCancelledBenchmarkProjection(storage, updatedRun.benchmarkId, updatedRun, completedAt);
       } catch (linkError: any) {
         console.error(`[StorageAPI] Cancel: failed to sync benchmark ${updatedRun.benchmarkId} projection for run ${id}: ${linkError.message}`);
       }

@@ -34,7 +34,12 @@
  *
  * On boot, scan top-level evaluation-run docs for runs that are:
  *   - `status === 'running'` AND
- *   - older than `EVALUATION_RUN_STALE_AFTER_MS` (default 1h) AND
+ *   - older than `EVALUATION_RUN_STALE_AFTER_MS` (default 1h), measured from
+ *     the run's `heartbeatAt` when present (defensive read — not a field on
+ *     origin/main's `EvaluationRun` type, but a newer server sharing the
+ *     same storage may have written one; preferring it avoids false-killing
+ *     a long-running run that's still alive and heartbeating), else
+ *     `createdAt` AND
  *   - not in the *current* process's `activeCancellationTokens` map (so we
  *     don't kill an in-flight run started by a concurrent boot path)
  *
@@ -45,6 +50,17 @@
  *   - If it has a `benchmarkId`, sync the embedded `benchmark.runs`
  *     projection to the same terminal state (add-if-missing, update
  *     otherwise) so the two views can never disagree.
+ *
+ * Pagination note: this re-queries `status: 'running'` from offset 0 on
+ * every pass rather than advancing a fixed `from` offset. Recovering a run
+ * flips it out of that filter, shrinking the live result set out from under
+ * a fixed-offset scan — with a growing `from`, already-recovered docs at
+ * the front would push not-yet-seen stale docs at the back out of every
+ * subsequent page, silently skipping them. An `attemptedIds` set makes each
+ * run's disposition (recovered, not stale, active-in-process, or errored)
+ * decided at most once, so re-querying from 0 can't loop forever chewing on
+ * the same still-running-but-not-stale docs — combined with the existing
+ * `maxPages` cap, termination is guaranteed either way.
  *
  * Behaviour can be disabled in tests with `EVALUATION_RUN_RECOVERY_DISABLED=1`.
  */
@@ -68,6 +84,18 @@ export interface EvaluationRunRecoveryStat {
   benchmarkProjectionsSynced: number;
   errors: number;
   durationMs: number;
+}
+
+/**
+ * Age (ms) of a run's most recent liveness signal, preferring a defensively-
+ * read `heartbeatAt` (not part of origin/main's `EvaluationRun` type, but a
+ * newer server sharing the same storage may stamp one) over `createdAt`.
+ */
+function runAgeMs(run: EvaluationRun, now: number): number {
+  const heartbeatAt = (run as unknown as { heartbeatAt?: string }).heartbeatAt;
+  const reference = heartbeatAt || run.createdAt;
+  const referenceMs = new Date(reference || 0).getTime();
+  return Number.isFinite(referenceMs) && referenceMs > 0 ? now - referenceMs : Infinity;
 }
 
 /**
@@ -96,31 +124,50 @@ export async function recoverOrphanEvaluationRuns(storage: IStorageModule): Prom
   const maxPages = envInt('EVALUATION_RUN_RECOVERY_MAX_PAGES', 50);
   const now = Date.now();
 
-  let from = 0;
+  // Every run id is decided (recovered / not-stale / active-in-process /
+  // errored) at most once, regardless of how many times a from-0 re-query
+  // returns it — see the pagination note in the module doc comment above.
+  const seenIds = new Set<string>();
+  const attemptedIds = new Set<string>();
+
   for (let page = 0; page < maxPages; page++) {
     let runs: EvaluationRun[];
     try {
-      const result = await storage.evaluationRuns.list({ status: 'running', from, size: pageSize });
+      const result = await storage.evaluationRuns.list({ status: 'running', from: 0, size: pageSize });
       runs = result.items;
     } catch (err: any) {
       stat.errors++;
-      console.warn(`[evaluationRunRecovery] evaluationRuns.list failed at from=${from}: ${err?.message || err}`);
+      console.warn(`[evaluationRunRecovery] evaluationRuns.list failed: ${err?.message || err}`);
       break;
     }
     if (!runs || runs.length === 0) break;
-    stat.scannedRuns += runs.length;
 
+    let madeProgress = false;
     for (const run of runs) {
-      const runStart = new Date(run.createdAt || 0).getTime();
-      const ageMs = Number.isFinite(runStart) && runStart > 0 ? now - runStart : Infinity;
-      if (ageMs < staleAfterMs) continue;
+      if (!seenIds.has(run.id)) {
+        seenIds.add(run.id);
+        stat.scannedRuns++;
+      }
+      if (attemptedIds.has(run.id)) continue;
 
-      if (isEvaluationRunActiveInThisProcess(run.id)) {
-        // Legitimately still running in this process — leave alone.
+      const ageMs = runAgeMs(run, now);
+      if (ageMs < staleAfterMs) {
+        attemptedIds.add(run.id); // not stale (yet) — nothing to do this boot
         continue;
       }
 
+      if (isEvaluationRunActiveInThisProcess(run.id)) {
+        // Legitimately still running in this process — leave alone.
+        attemptedIds.add(run.id);
+        continue;
+      }
+
+      // Mark attempted BEFORE the (possibly-failing) update so a repeated
+      // storage error on the same run id can't cause an infinite re-query
+      // loop — guarantees termination independent of the maxPages cap too.
+      attemptedIds.add(run.id);
       stat.staleRuns++;
+      madeProgress = true;
       const reason = 'Evaluation run did not complete this test case ' +
         "(stale 'running' run recovered during boot recovery; original process likely died)";
 
@@ -168,8 +215,10 @@ export async function recoverOrphanEvaluationRuns(storage: IStorageModule): Prom
       console.log(`[evaluationRunRecovery] Marked stale run ${run.id} as failed (created ${run.createdAt})`);
     }
 
-    if (runs.length < pageSize) break;
-    from += pageSize;
+    // A short page means we've now seen every currently-`running` doc; a
+    // full page with no progress means everything left is not-stale/active
+    // and re-querying from 0 again would just see the identical set forever.
+    if (runs.length < pageSize || !madeProgress) break;
   }
 
   stat.durationMs = Date.now() - startedAt;
