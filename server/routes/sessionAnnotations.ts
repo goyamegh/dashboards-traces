@@ -7,7 +7,7 @@
  * @experimental Session Metadata Routes
  *
  * Generic sidecar metadata for coding agent sessions.
- * One GET, one PUT — callers define the schema.
+ * GET, PUT, DELETE (single session) + GET (list) — callers define the schema.
  */
 
 import { Router, Request, Response } from 'express';
@@ -49,6 +49,24 @@ router.put('/api/coding-agents/sessions/:agent/:sessionId/metadata', async (req:
     const storage = getStorageModule();
     const doc = await storage.sessionMetadata.put(agent, sessionId, data);
     res.json(doc);
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
+ * DELETE /api/coding-agents/sessions/:agent/:sessionId/metadata
+ * Delete session metadata. 404 if none exists.
+ */
+router.delete('/api/coding-agents/sessions/:agent/:sessionId/metadata', async (req: Request, res: Response) => {
+  try {
+    const { agent, sessionId } = req.params;
+    const storage = getStorageModule();
+    const result = await storage.sessionMetadata.delete(agent, sessionId);
+    if (!result.deleted) {
+      return res.status(404).json({ error: 'Session metadata not found' });
+    }
+    res.json({ deleted: true });
   } catch (error: any) {
     res.status(500).json({ error: error.message });
   }

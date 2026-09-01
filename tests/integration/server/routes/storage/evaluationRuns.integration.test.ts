@@ -30,7 +30,14 @@ const checkBackend = async (): Promise<boolean> => {
   try {
     const response = await fetch(`${BASE_URL}/api/storage/health`);
     const data = await response.json();
-    return data.status === 'connected';
+    // Both storage backends report `status: 'ok'` when healthy (file storage:
+    // server/adapters/file/StorageModule.ts; OpenSearch:
+    // server/adapters/opensearch/StorageModule.ts) — neither ever returns
+    // 'connected'. That stale check made every test in this file silently
+    // skip (backendAvailable was always false) regardless of the backend's
+    // real state; see the same fix + explanation in the sibling
+    // evaluationRuns.rerun.integration.test.ts.
+    return data.status === 'ok';
   } catch {
     return false;
   }
@@ -121,13 +128,91 @@ function parseSSEEvents(text: string): Array<{ event: string; data: any }> {
 }
 
 // Helper: cleanup created resources
-const cleanupIds: { testCases: string[]; evalRuns: string[]; benchmarks: string[] } = {
+const cleanupIds: { testCases: string[]; evalRuns: string[]; benchmarks: string[]; reports: string[] } = {
   testCases: [],
   evalRuns: [],
   benchmarks: [],
+  // Per-test-case report docs (server/adapters/*/StorageModule.ts `runs`
+  // storage) leaked by a run that was cancelled mid-flight. Populated by
+  // `harvestReportIdsForRun` below — either generically in `cleanup()` for
+  // every tracked evalRun, or explicitly by a test that deletes its own run
+  // (see 'should delete an existing run').
+  reports: [],
 };
 
+/**
+ * Every per-test-case report this app creates (evaluation-run OR
+ * benchmark-run) is stamped with `experimentRunId` = the parent run's id at
+ * creation time (services/evaluationRunner.ts / services/benchmarkRunner.ts).
+ *
+ * `POST /api/storage/evaluation-runs/:id/cancel` only flips the run's
+ * top-level `status` to 'cancelled' immediately and synchronously —
+ * cancellation is cooperative, not a hard abort, so whichever test case was
+ * already executing (pre-persisted placeholder report + agent invocation)
+ * keeps running in the background and only gets its terminal per-test-case
+ * result (and thus gets reflected anywhere queryable) once that finishes,
+ * some seconds later. Reading `run.results` right after `/cancel` returns
+ * can therefore miss an already-created report entirely.
+ *
+ * Polling `POST /api/storage/runs/search` (filtered by `experimentRunId`)
+ * until the result set stops changing is a reliable, timing-agnostic signal
+ * that the run's background work is done, and every id it returns is a
+ * report this test created that `DELETE .../evaluation-runs/:id` will NOT
+ * cascade-delete.
+ */
+async function harvestReportIdsForRun(
+  runId: string,
+  { timeoutMs = 20000, pollMs = 500, quietMs = 1500 }: { timeoutMs?: number; pollMs?: number; quietMs?: number } = {}
+): Promise<string[]> {
+  const fetchIds = async (): Promise<string[]> => {
+    try {
+      const res = await fetch(`${BASE_URL}/api/storage/runs/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ experimentRunId: runId, size: 500 }),
+      });
+      if (!res.ok) return [];
+      const body = await res.json();
+      return (body.runs ?? []).map((r: any) => r.id).filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+
+  const deadline = Date.now() + timeoutMs;
+  let lastKey: string | null = null;
+  let stableSince: number | null = null;
+  let ids: string[] = [];
+
+  while (Date.now() < deadline) {
+    ids = await fetchIds();
+    const key = [...ids].sort().join(',');
+    if (key === lastKey) {
+      if (stableSince === null) stableSince = Date.now();
+      if (Date.now() - stableSince >= quietMs) return ids;
+    } else {
+      lastKey = key;
+      stableSince = null;
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+  return ids;
+}
+
 async function cleanup() {
+  // Harvest per-test-case report docs for every tracked evaluation run
+  // BEFORE deleting anything. DELETE .../evaluation-runs/:id does not
+  // cascade to report docs, and a cancelled run's report can still be
+  // mid-write in the background (see harvestReportIdsForRun above).
+  const harvested = await Promise.all(
+    cleanupIds.evalRuns.map((id) => harvestReportIdsForRun(id))
+  );
+  const reportIds = new Set<string>([...cleanupIds.reports, ...harvested.flat()]);
+  for (const id of reportIds) {
+    try {
+      await fetch(`${BASE_URL}/api/storage/runs/${id}`, { method: 'DELETE' });
+    } catch { /* ignore */ }
+  }
   for (const id of cleanupIds.evalRuns) {
     try {
       await fetch(`${BASE_URL}/api/storage/evaluation-runs/${id}`, { method: 'DELETE' });
@@ -156,7 +241,7 @@ describe('Evaluation Runs API Integration', () => {
     if (backendAvailable) {
       await cleanup();
     }
-  });
+  }, 60000);
 
   describe('GET /api/storage/evaluation-runs', () => {
     it('should return empty list initially or existing runs', async () => {
@@ -614,7 +699,17 @@ describe('Evaluation Runs API Integration', () => {
       // Verify it's gone
       const getRes = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`);
       expect(getRes.status).toBe(404);
-    }, 30000);
+
+      // The DELETE above only removes the evaluation-run document — it does
+      // NOT cascade to the per-test-case report doc the background execution
+      // may have already created (or is still creating) for this run's one
+      // test case. This run id is intentionally NOT in cleanupIds.evalRuns
+      // (the test just deleted it), so harvest its report(s) explicitly and
+      // hand them to cleanup() via cleanupIds.reports. Harvesting by
+      // experimentRunId works regardless of whether the parent doc still
+      // exists.
+      cleanupIds.reports.push(...(await harvestReportIdsForRun(runId)));
+    }, 45000);
   });
 
   describe('Source resolution', () => {

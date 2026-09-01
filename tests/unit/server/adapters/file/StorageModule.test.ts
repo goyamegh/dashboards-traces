@@ -253,5 +253,39 @@ describe('FileStorageModule', () => {
       expect(total).toBe(2);
       expect(items.map(i => i.sessionId).sort()).toEqual(['a', 'b']);
     });
+
+    describe('delete', () => {
+      it('should return { deleted: false } for a nonexistent session', async () => {
+        const result = await mod.sessionMetadata.delete('claude-code', 'nonexistent');
+        expect(result).toEqual({ deleted: false });
+      });
+
+      it('should delete an existing session and return { deleted: true }', async () => {
+        await mod.sessionMetadata.put('claude-code', 's3', { status: 'interesting' });
+
+        const result = await mod.sessionMetadata.delete('claude-code', 's3');
+        expect(result).toEqual({ deleted: true });
+
+        const fetched = await mod.sessionMetadata.get('claude-code', 's3');
+        expect(fetched).toBeNull();
+      });
+
+      it('should be idempotent — deleting twice returns false the second time', async () => {
+        await mod.sessionMetadata.put('claude-code', 's4', { status: 'interesting' });
+
+        expect(await mod.sessionMetadata.delete('claude-code', 's4')).toEqual({ deleted: true });
+        expect(await mod.sessionMetadata.delete('claude-code', 's4')).toEqual({ deleted: false });
+      });
+
+      it('should not affect other sessions', async () => {
+        await mod.sessionMetadata.put('claude-code', 'keep-me', { x: 1 });
+        await mod.sessionMetadata.put('claude-code', 'delete-me', { x: 2 });
+
+        await mod.sessionMetadata.delete('claude-code', 'delete-me');
+
+        expect(await mod.sessionMetadata.get('claude-code', 'delete-me')).toBeNull();
+        expect(await mod.sessionMetadata.get('claude-code', 'keep-me')).not.toBeNull();
+      });
+    });
   });
 });

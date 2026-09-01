@@ -519,22 +519,54 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
   async deleteRun(benchmarkId: string, runId: string): Promise<boolean> {
     assertNotMigrating(this.index);
     try {
-      await this.client.update({
+      const response = await this.client.update({
         index: this.index,
         id: benchmarkId,
         retry_on_conflict: 3,
         body: {
           script: {
+            // `ctx.op = 'noop'` when nothing matched, so the update response's
+            // `result` field distinguishes "removed" from "run id not in
+            // runs[]". Without it this adapter reported success for ANY run
+            // id on an existing benchmark, while the file adapter (and the
+            // route, which maps false → 404 'Run not found') return false —
+            // the two backends disagreed on the same request.
             source: `
-              ctx._source.runs.removeIf(r -> r.id == params.runId);
-              ctx._source.updatedAt = params.now;
+              int before = ctx._source.runs == null ? 0 : ctx._source.runs.size();
+              if (ctx._source.runs != null) {
+                ctx._source.runs.removeIf(r -> r.id == params.runId);
+              }
+              int after = ctx._source.runs == null ? 0 : ctx._source.runs.size();
+              if (after == before) {
+                ctx.op = 'noop';
+              } else {
+                ctx._source.updatedAt = params.now;
+              }
             `,
             params: { runId, now: new Date().toISOString() },
           },
         },
         refresh: 'wait_for',
       });
-      return true;
+      // Fail CLOSED, not open: only report success when we positively observe
+      // the update script's non-noop result. `@opensearch-project/opensearch`
+      // v3.5.1 always wraps the real ES/OS response under `.body` (verified
+      // against a live cluster: top-level keys are `body`/`statusCode`/
+      // `headers`/`meta`, with `body.result` being `'updated'` on an actual
+      // removal or `'noop'` when the script ran but nothing matched) — but if
+      // a future client version changes that shape, `.body` is absent/renamed,
+      // or `result` is some other unrecognized value, defaulting to "success"
+      // would silently resurrect the exact false-positive this method exists
+      // to fix. So: read both plausible shapes, and require an *exact* known
+      // success value rather than merely `!== 'noop'`.
+      const result =
+        (response?.body as { result?: string } | undefined)?.result ??
+        (response as unknown as { result?: string } | undefined)?.result;
+      if (result === 'updated') return true;
+      if (result === 'noop') return false;
+      throw new Error(
+        `deleteRun: unrecognized OpenSearch update result '${String(result)}' for benchmark ${benchmarkId}, run ${runId} — refusing to assume success`,
+      );
     } catch (error: any) {
       if (error.meta?.statusCode === 404) return false;
       throw error;

@@ -133,6 +133,10 @@ test.describe('Evals3 Benchmarks Page', () => {
 test.describe('Evals3 Benchmark CRUD', () => {
   const benchmarkName = `E2E Evals3 BM ${Date.now()}`;
   let seededTestCaseId: string | null = null;
+  // Every benchmark id the wizard test observes being created — cleanup
+  // deletes exactly these. Never list-and-delete by name/prefix: "name looks
+  // test-ish" is not proof of ownership on a shared backend.
+  const createdBenchmarkIds: string[] = [];
 
   test.beforeAll(async ({ request }) => {
     // Seed a real test case so the wizard can pick one in the Test Cases step
@@ -155,16 +159,9 @@ test.describe('Evals3 Benchmark CRUD', () => {
   });
 
   test.afterAll(async ({ request }) => {
-    // Clean up benchmarks created during this suite
-    const response = await request.get('/api/storage/benchmarks').catch(() => null);
-    if (response?.ok()) {
-      const data = await response.json();
-      const benchmarks = Array.isArray(data) ? data : data.benchmarks ?? [];
-      for (const bm of benchmarks) {
-        if (bm.name?.startsWith('E2E Evals3 BM')) {
-          await request.delete(`/api/storage/benchmarks/${encodeURIComponent(bm.id)}`).catch(() => {});
-        }
-      }
+    // Cleanup by tracked id ONLY (see createdBenchmarkIds note above).
+    for (const id of createdBenchmarkIds) {
+      await request.delete(`/api/storage/benchmarks/${encodeURIComponent(id)}`).catch(() => {});
     }
     if (seededTestCaseId) {
       await request.delete(`/api/storage/test-cases/${encodeURIComponent(seededTestCaseId)}`).catch(() => {});
@@ -252,6 +249,7 @@ test.describe('Evals3 Benchmark CRUD', () => {
     const saved = await saveResp.json();
     const benchmarkId = saved.id || saved.benchmark?.id;
     expect(benchmarkId, 'POST response should include the new benchmark id').toBeTruthy();
+    if (benchmarkId) createdBenchmarkIds.push(benchmarkId);
 
     const executeResp = await executePromise;
     expect(executeResp.status(), 'unified evaluation-run POST should succeed').toBeLessThan(400);

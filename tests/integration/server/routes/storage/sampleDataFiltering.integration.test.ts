@@ -20,6 +20,7 @@
  */
 
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
+import { uniqueTestName } from '../../../../helpers/testDataTracker';
 
 const BASE_URL = getTestBackendUrl();
 const TEST_TIMEOUT = 30000;
@@ -100,8 +101,10 @@ describe('Sample Data Filtering - Benchmarks', () => {
   let testCaseId: string | null = null;
   let benchmarkId: string | null = null;
 
-  const TEST_CASE_NAME = 'SampleFilter Integration TC';
-  const BENCHMARK_NAME = 'SampleFilter Integration Benchmark';
+  // Unique per run — cross-run name collisions are impossible, so cleanup
+  // can be tracked-id-only.
+  const TEST_CASE_NAME = uniqueTestName('samplefilter-tc');
+  const BENCHMARK_NAME = uniqueTestName('samplefilter-benchmark');
 
   beforeAll(async () => {
     backendAvailable = await checkBackend();
@@ -119,33 +122,10 @@ describe('Sample Data Filtering - Benchmarks', () => {
   afterAll(async () => {
     if (!backendAvailable) return;
 
-    // Cleanup by tracked ID
+    // Cleanup by tracked ID only — never sweep shared storage by name:
+    // "name looks test-ish" is not proof of ownership on a shared cluster.
     if (benchmarkId) await deleteBenchmark(benchmarkId);
     if (testCaseId) await deleteTestCase(testCaseId);
-
-    // Fallback: clean up leftovers by name
-    try {
-      const benchResp = await fetch(`${BASE_URL}/api/storage/benchmarks`);
-      if (benchResp.ok) {
-        const data = await benchResp.json();
-        for (const b of (data.benchmarks ?? [])) {
-          if (b.name === BENCHMARK_NAME) {
-            await deleteBenchmark(b.id).catch(() => {});
-          }
-        }
-      }
-      const tcResp = await fetch(`${BASE_URL}/api/storage/test-cases`);
-      if (tcResp.ok) {
-        const data = await tcResp.json();
-        for (const tc of (data.testCases ?? [])) {
-          if (tc.name === TEST_CASE_NAME) {
-            await deleteTestCase(tc.id).catch(() => {});
-          }
-        }
-      }
-    } catch {
-      // Ignore cleanup errors
-    }
   }, TEST_TIMEOUT);
 
   it('excludes sample data by default when real data exists', async () => {
@@ -269,7 +249,7 @@ describe('Sample Data Filtering - Test Cases', () => {
   let backendAvailable = false;
   let testCaseId: string | null = null;
 
-  const TEST_CASE_NAME = 'SampleFilter TC Integration';
+  const TEST_CASE_NAME = uniqueTestName('samplefilter-tc-suite2');
 
   beforeAll(async () => {
     backendAvailable = await checkBackend();
@@ -286,23 +266,8 @@ describe('Sample Data Filtering - Test Cases', () => {
   afterAll(async () => {
     if (!backendAvailable) return;
 
-    // Cleanup by tracked ID
+    // Cleanup by tracked ID only — see note in the suite above.
     if (testCaseId) await deleteTestCase(testCaseId);
-
-    // Fallback: clean up leftovers by name
-    try {
-      const tcResp = await fetch(`${BASE_URL}/api/storage/test-cases`);
-      if (tcResp.ok) {
-        const data = await tcResp.json();
-        for (const tc of (data.testCases ?? [])) {
-          if (tc.name === TEST_CASE_NAME) {
-            await deleteTestCase(tc.id).catch(() => {});
-          }
-        }
-      }
-    } catch {
-      // Ignore cleanup errors
-    }
   }, TEST_TIMEOUT);
 
   it('excludes sample data by default when real data exists', async () => {

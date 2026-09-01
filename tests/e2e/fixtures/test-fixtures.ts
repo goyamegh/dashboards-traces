@@ -7,6 +7,7 @@ import { test as base, expect, Page } from '@playwright/test';
 import * as fs from 'fs';
 import * as path from 'path';
 import { v4 as uuidv4 } from 'uuid';
+import { createTestDataTracker, TestDataTracker } from '../../helpers/testDataTracker';
 
 const COVERAGE_DIR = path.join(process.cwd(), '.nyc_output');
 
@@ -118,6 +119,7 @@ if (process.env.E2E_COVERAGE === 'true') {
 // Extended test with fixtures and optional coverage collection
 export const test = base.extend<{
   authenticatedPage: Page;
+  testData: TestDataTracker;
 }>({
   // Collect Istanbul coverage from window.__coverage__ after each test
   page: async ({ page }, use) => {
@@ -140,6 +142,41 @@ export const test = base.extend<{
     await page.goto('/');
     await waitForAppReady(page);
     await use(page);
+  },
+
+  /**
+   * Test-data cleanup tracker (see tests/helpers/testDataTracker.ts).
+   *
+   * e2e specs run against a real backend — often a live server wired to a
+   * SHARED OpenSearch cluster — so every test case/benchmark/run/report a spec
+   * creates is permanent clutter unless something deletes it. This fixture is
+   * created fresh per test and its `cleanup()` always runs after the test body
+   * finishes, whether the test passed, failed, or skipped early, which a
+   * hand-rolled `afterAll` (easy to forget a field, or to skip on early return)
+   * does not guarantee.
+   *
+   * Usage inside a test:
+   *   test('...', async ({ page, testData }) => {
+   *     const tc = await createTestCase(...);
+   *     testData.testCase(tc.id);          // one line per created entity
+   *     ...
+   *   });
+   *
+   * For per-test-case report leaks specifically (DELETE on a benchmark/
+   * evaluation-run does NOT cascade to the report docs referenced by
+   * `results[*].reportId` / `runs[].results[*].reportId`), fetch the parent
+   * AFTER it reaches a terminal state and track every reportId found:
+   *   const run = await (await request.get(`/api/storage/evaluation-runs/${id}`)).json();
+   *   for (const r of Object.values(run.results)) testData.run(r.reportId);
+   *
+   * The tracker only deletes what THIS test tracked — never reuse it to
+   * delete entities the test merely read/reused (e.g. seeded/shared fixtures
+   * another test created), only ones it created itself.
+   */
+  testData: async ({}, use) => {
+    const tracker = createTestDataTracker();
+    await use(tracker);
+    await tracker.cleanup();
   },
 });
 

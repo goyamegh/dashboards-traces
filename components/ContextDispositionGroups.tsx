@@ -7,19 +7,11 @@ import React from 'react';
 import type { AgentContextItem } from '@/types';
 import { Badge } from '@/components/ui/badge';
 import { Markdown } from '@/components/ui/markdown';
+import { ContextValueView } from '@/components/evals3/ContextValueView';
 
 interface ContextDispositionGroupsProps {
   items: AgentContextItem[];
   compact?: boolean;
-}
-
-function formatContextValue(value: string): string {
-  try {
-    const parsed = JSON.parse(value);
-    return typeof parsed === 'string' ? parsed : JSON.stringify(parsed, null, 2);
-  } catch {
-    return value;
-  }
 }
 
 /**
@@ -46,14 +38,12 @@ export const ContextDispositionGroups: React.FC<ContextDispositionGroupsProps> =
         <div className="space-y-1.5">
           <h4 className={headingClass}>Delivered to agent</h4>
           {delivered.map((item, index) => (
-            <div key={index} className="bg-card rounded border border-border px-3 py-2 min-w-0">
-              <p className={`${textClass} font-medium text-foreground break-words mb-1`}>
-                {item.description || `Context item ${index + 1}`}
-              </p>
-              <pre className={`${textClass} text-muted-foreground font-mono whitespace-pre-wrap break-words overflow-x-auto max-h-32 overflow-y-auto leading-relaxed`}>
-                {formatContextValue(item.value)}
-              </pre>
-            </div>
+            <ContextValueView
+              key={index}
+              title={item.description || `Context item ${index + 1}`}
+              value={item.value}
+              maxHeight="128px"
+            />
           ))}
         </div>
       )}

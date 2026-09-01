@@ -54,23 +54,13 @@ describe('Test Cases CRUD Integration Tests', () => {
   afterAll(async () => {
     if (!backendAvailable) return;
 
+    // Cleanup by tracked ID only — never sweep shared storage by name.
+    // NAME_MARKER already makes this run's fixture names unique, and every
+    // successful create below pushes its id, so a getAll+name sweep here
+    // could only ever re-delete our own ids — or, worse, someone else's doc
+    // that happened to embed the marker. Tracked ids are the whole story.
     for (const id of createdTestCaseIds) {
       await deleteTestCase(id);
-    }
-
-    // Fallback: clean up any leftovers that share our name marker
-    try {
-      const resp = await fetch(`${BASE_URL}/api/storage/test-cases`);
-      if (resp.ok) {
-        const data = await resp.json();
-        for (const tc of (data.testCases ?? [])) {
-          if (typeof tc.name === 'string' && tc.name.includes(NAME_MARKER)) {
-            await deleteTestCase(tc.id);
-          }
-        }
-      }
-    } catch {
-      // Ignore cleanup errors
     }
   }, 30000);
 
@@ -391,6 +381,9 @@ describe('Test Cases CRUD Integration Tests', () => {
         }),
       });
       const created = await createResp.json();
+      // Track for afterAll too — if an assertion below throws before the
+      // DELETE lands, cleanup still reaps it (deletes are 404-tolerant).
+      createdTestCaseIds.push(created.id);
 
       const deleteResp = await fetch(
         `${BASE_URL}/api/storage/test-cases/${encodeURIComponent(created.id)}`,

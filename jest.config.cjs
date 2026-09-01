@@ -8,6 +8,12 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   setupFiles: ['<rootDir>/jest.setup.cjs'],
+  // Stamps a pid-bearing run id (setup), then drains the crash-recovery
+  // ledgers `TestDataTracker` writes, deleting BY ID anything a killed/timed-out
+  // worker never cleaned up. See jest.globalTeardown.cjs for the safety rules
+  // (pid-liveness ownership, per-file unlink, strict-mode semantics).
+  globalSetup: '<rootDir>/jest.globalSetup.cjs',
+  globalTeardown: '<rootDir>/jest.globalTeardown.cjs',
   roots: ['<rootDir>/tests'],
   testMatch: ['**/tests/**/*.test.ts'],
   moduleNameMapper: {
@@ -123,6 +129,10 @@ module.exports = {
     'components/RunDetailsContent.tsx',
     'components/TrajectoryView.tsx',
     'components/RawEventsPanel.tsx',
+    // Context-value pretty-printing (test-case detail page) has a focused
+    // jsdom DOM test exercising both the JSON and plain-text render paths —
+    // fold it into the unit report rather than relying solely on e2e/nyc.
+    'components/evals3/ContextValueView.tsx',
     '!**/__tests__/**',
     '!**/*.test.ts',
     '!**/dist/**',

@@ -13,6 +13,11 @@ import {
   CancellationToken,
 } from '../../../services/evaluationRunner.js';
 import { promoteRunToBenchmark } from '../../../services/benchmarkPromotion.js';
+import {
+  checkBenchmarkSourcesStillExist,
+  buildRerunConfig,
+  computeRerunName,
+} from '../../../services/evaluationRerun.js';
 import { loadConfigSync } from '../../../lib/config/index.js';
 import { getCustomAgents } from '../../services/customAgentStore.js';
 import { resolveAgentModel } from '../../../lib/resolveAgentModel.js';
@@ -331,6 +336,150 @@ router.post('/api/storage/evaluation-runs/:id/cancel', async (req: Request, res:
   } catch (error: any) {
     console.error('[StorageAPI] Cancel evaluation run failed:', error.message);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// POST /api/storage/evaluation-runs/:id/rerun - Duplicate a run's config into a fresh, independent run
+router.post('/api/storage/evaluation-runs/:id/rerun', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const storage = getStorageModule();
+
+    const sourceRun = await storage.evaluationRuns.getById(id);
+    if (!sourceRun) {
+      return res.status(404).json({ error: 'Evaluation run not found' });
+    }
+
+    // Source run may still be running — that's fine, the duplicate is an
+    // independent execution (no gating on sourceRun.status).
+
+    // Edge case: source run's benchmark (or a version pinned on it) was
+    // deleted since the run executed. The config is no longer satisfiable —
+    // 409, not 400 (nothing wrong with the *request*, the referenced state
+    // just doesn't exist anymore). NOTE: this only checks EXISTENCE of the
+    // pinned version; resolveTestCaseSources() below always resolves a
+    // 'benchmark' source against the benchmark's *current* test case list
+    // regardless of benchmarkVersion (pre-existing behavior, shared by every
+    // run-creation path, not rerun-specific) — see the caveat on
+    // checkBenchmarkSourcesStillExist() in services/evaluationRerun.ts.
+    const benchmarkError = await checkBenchmarkSourcesStillExist(sourceRun, storage);
+    if (benchmarkError) {
+      return res.status(409).json({ error: benchmarkError });
+    }
+
+    // Duplicate the source run's config, applying explicit defaults for
+    // fields missing on legacy run documents.
+    const built = buildRerunConfig(sourceRun);
+    if ('error' in built) {
+      return res.status(400).json({ error: built.error });
+    }
+    const { config, defaultsApplied } = built;
+
+    // Resolve sources up front (same as the create route) so a stale/removed
+    // benchmark, deleted test case, or missing import file surfaces as a
+    // clear error before we commit a new run doc — not as a run that's
+    // created then immediately fails.
+    let resolved;
+    try {
+      resolved = await resolveTestCaseSources(config.sources, storage);
+    } catch (resolveError: any) {
+      return res.status(409).json({ error: `Cannot re-run: ${resolveError.message}` });
+    }
+    const testCases = resolved.testCases;
+
+    const newRunId = `eval-run-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
+    const now = new Date().toISOString();
+    const newName = computeRerunName(sourceRun.name);
+
+    // Resolve the agent's model fresh from its current config — same rule as
+    // the create route (the agent owns its model; config.modelId is only the
+    // legacy fallback if resolution comes up empty).
+    let resolvedModelId = config.modelId;
+    try {
+      const cfg = loadConfigSync();
+      const allAgents = [...cfg.agents, ...getCustomAgents()];
+      resolvedModelId = resolveAgentModel(allAgents.find(a => a.key === config.agentKey), config.modelId);
+    } catch { /* loadConfigSync or anything else — keep fallback */ }
+
+    const snapshots: TestCaseSnapshot[] = testCases.map(tc => ({
+      id: tc.id,
+      version: (tc as any).version || 1,
+      name: tc.name,
+    }));
+
+    const newRun: any = {
+      id: newRunId,
+      docType: 'evaluation-run',
+      name: newName,
+      description: config.description,
+      agentKey: config.agentKey,
+      agentEndpoint: config.agentEndpoint,
+      modelId: resolvedModelId,
+      judgeModelId: config.judgeModelId,
+      evaluatorId: config.evaluatorId,
+      headers: config.headers,
+      concurrency: config.concurrency,
+      sources: resolved.sources,
+      trigger: 'ui',
+      status: 'running',
+      testCaseSnapshots: snapshots,
+      results: {},
+      createdAt: now,
+      benchmarkId: config.benchmarkId,
+      benchmarkVersion: config.benchmarkVersion,
+      rerunOf: sourceRun.id,
+    };
+
+    await storage.evaluationRuns.create(newRun);
+
+    // Respond immediately with the new run's id — the caller (report page)
+    // polls GET /:id for progress, matching how it already treats any
+    // 'running' run. Execution continues below without blocking the response.
+    res.status(201).json({ runId: newRunId, run: newRun, defaultsApplied });
+
+    const cancellationToken = createCancellationToken();
+    activeCancellationTokens.set(newRunId, cancellationToken);
+
+    executeEvaluationRun(newRun, testCases, {
+      storageModule: storage,
+      cancellationToken,
+      evaluateFnMap: resolved.evaluateFnMap,
+      hooksByFile: resolved.hooksByFile,
+      testHookScopes: resolved.testHookScopes,
+      onProgress: () => { /* no SSE client for background rerun execution */ },
+      onTestCaseComplete: async (testCaseId: string, result: any) => {
+        await storage.evaluationRuns.updateResult(newRunId, testCaseId, result);
+      },
+    })
+      .then(async (completedRun) => {
+        const finalStatus = cancellationToken.isCancelled ? 'cancelled' : 'completed';
+        await storage.evaluationRuns.update(newRunId, {
+          status: finalStatus,
+          stats: completedRun.stats,
+          completedAt: new Date().toISOString(),
+          results: completedRun.results,
+        });
+      })
+      .catch(async (error: any) => {
+        console.error(`[StorageAPI] Rerun evaluation run failed: ${newRunId}`, error.message);
+        try {
+          await storage.evaluationRuns.update(newRunId, {
+            status: 'failed',
+            completedAt: new Date().toISOString(),
+            error: error.message,
+          });
+        } catch (updateError: any) {
+          console.error(`[StorageAPI] Failed to update rerun status: ${updateError.message}`);
+        }
+      })
+      .finally(() => {
+        activeCancellationTokens.delete(newRunId);
+      });
+  } catch (error: any) {
+    console.error('[StorageAPI] Rerun evaluation run failed:', error.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
   }
 });
 

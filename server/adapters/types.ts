@@ -250,6 +250,7 @@ export interface ISessionMetadataOperations {
   get(agentKind: string, sessionId: string): Promise<SessionMetadata | null>;
   put(agentKind: string, sessionId: string, data: Record<string, unknown>): Promise<SessionMetadata>;
   list(options?: PaginationOptions): Promise<{ items: SessionMetadata[]; total: number }>;
+  delete(agentKind: string, sessionId: string): Promise<{ deleted: boolean }>;
 }
 
 // ============================================================================
