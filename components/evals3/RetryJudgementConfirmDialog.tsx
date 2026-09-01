@@ -39,6 +39,11 @@ export const RetryJudgementConfirmDialog: React.FC<RetryJudgementConfirmDialogPr
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [summary, setSummary] = useState<RetryJudgementSummary | null>(null);
+  // Populated once the POST returns 202 and while polling for completion —
+  // see retryJudgement()'s onProgress in services/client/evaluationRunsApi.ts.
+  // A 62-case run's judge pipeline can take 20-30+ minutes; this is the only
+  // feedback the user gets that the confirm dialog is still doing something.
+  const [progress, setProgress] = useState<{ completed: number; total: number } | null>(null);
 
   const handleOpenChange = (next: boolean) => {
     if (submitting) return; // Don't let a stray click close mid-request
@@ -48,6 +53,7 @@ export const RetryJudgementConfirmDialog: React.FC<RetryJudgementConfirmDialogPr
       // already got a chance to react to it via onComplete when the user
       // clicked "Done" below.
       setSummary(null);
+      setProgress(null);
     }
     onOpenChange(next);
   };
@@ -59,8 +65,9 @@ export const RetryJudgementConfirmDialog: React.FC<RetryJudgementConfirmDialogPr
   const handleConfirm = async () => {
     setSubmitting(true);
     setError(null);
+    setProgress(null);
     try {
-      const result = await retryJudgement(run.id);
+      const result = await retryJudgement(run.id, 'errored', (completed, total) => setProgress({ completed, total }));
       setSubmitting(false);
       setSummary(result);
     } catch (err: any) {
@@ -113,6 +120,16 @@ export const RetryJudgementConfirmDialog: React.FC<RetryJudgementConfirmDialogPr
                 <span data-testid="retry-judgement-error">{error}</span>
               </div>
             )}
+            {submitting && (
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground" data-testid="retry-judgement-progress">
+                <Loader2 size={12} className="animate-spin" />
+                <span>
+                  {progress && progress.total > 0
+                    ? `Retrying judgement... ${progress.completed}/${progress.total}`
+                    : 'Starting retry judgement...'}
+                </span>
+              </div>
+            )}
           </div>
         ) : (
           <div className="space-y-2 text-sm" data-testid="retry-judgement-summary">
@@ -143,7 +160,9 @@ export const RetryJudgementConfirmDialog: React.FC<RetryJudgementConfirmDialogPr
               </Button>
               <Button onClick={handleConfirm} disabled={submitting || count === 0} data-testid="retry-judgement-confirm-btn">
                 {submitting ? <Loader2 size={14} className="mr-1 animate-spin" /> : <RotateCw size={14} className="mr-1" />}
-                {submitting ? 'Retrying...' : 'Retry judgement'}
+                {submitting
+                  ? (progress && progress.total > 0 ? `Retrying ${progress.completed}/${progress.total}...` : 'Retrying...')
+                  : 'Retry judgement'}
               </Button>
             </>
           ) : (
