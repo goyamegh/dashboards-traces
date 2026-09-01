@@ -930,6 +930,22 @@ describe('Experiments Storage Routes', () => {
         expect.objectContaining({ created: 1, errors: 1 })
       );
     });
+
+    it('reports which indexes were dropped by validation, distinct from adapter-level errors (codex_review finding, applied)', async () => {
+      mockBenchmarksBulkCreate.mockResolvedValue({ created: 1, errors: 0 });
+
+      const { req, res } = createMocks(
+        {},
+        { benchmarks: [{}, { name: 'Valid Benchmark', testCaseIds: [] }, { name: '   ' }] }
+      );
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/bulk');
+
+      await handler(req, res);
+
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ created: 1, errors: 2, invalid: 2, invalidIndexes: [0, 2] })
+      );
+    });
   });
 
   describe('POST /api/storage/benchmarks/:id/execute', () => {

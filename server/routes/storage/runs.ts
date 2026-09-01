@@ -631,14 +631,28 @@ router.post('/api/storage/runs/bulk', async (req: Request, res: Response) => {
     // empty report doc. Mirrors the tolerant-partial-failure contract of
     // storage.runs.bulkCreate() (invalid entries count as `errors`, valid ones
     // still get created) rather than rejecting the whole batch.
-    const validRuns = runs.filter(run => validateRunCreate(run) === null);
-    const invalidCount = runs.length - validRuns.length;
+    //
+    // codex_review finding, applied: report the validation-drop count and
+    // its positions explicitly (invalid/invalidIndexes) so an importer
+    // checking only `errors` doesn't miss that some items were dropped for
+    // being malformed vs. an adapter-level failure on an otherwise-valid
+    // item. `errors` keeps its original total-failures meaning.
+    const invalidIndexes = runs
+      .map((run, i) => (validateRunCreate(run) === null ? -1 : i))
+      .filter((i) => i !== -1);
+    const validRuns = runs.filter((_, i) => !invalidIndexes.includes(i));
+    const invalidCount = invalidIndexes.length;
 
     const storage = getStorageModule();
     const result = await storage.runs.bulkCreate(validRuns);
 
     debug('StorageAPI', `Bulk created ${result.created} runs (${invalidCount} rejected by validation)`);
-    res.json({ created: result.created, errors: result.errors + invalidCount });
+    res.json({
+      created: result.created,
+      errors: result.errors + invalidCount,
+      invalid: invalidCount,
+      invalidIndexes,
+    });
   } catch (error: any) {
     console.error('[StorageAPI] Bulk create runs failed:', error.message);
     res.status(500).json({ error: error.message });

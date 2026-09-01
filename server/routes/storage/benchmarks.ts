@@ -999,8 +999,21 @@ router.post('/api/storage/benchmarks/bulk', async (req: Request, res: Response) 
     // Filter out invalid entries (e.g. `{}`) before persisting — the adapter's
     // create() does not validate `name` itself, so without this guard a
     // garbage item would silently persist a nameless benchmark.
-    const validBenchmarks = benchmarks.filter(bench => validateBenchmarkCreate(bench) === null);
-    const invalidCount = benchmarks.length - validBenchmarks.length;
+    //
+    // codex_review finding, applied: reporting these as a plain `errors`
+    // count made a silent drop indistinguishable from an adapter-level
+    // failure on an otherwise-valid item — a caller checking only
+    // `errors > 0` can't tell "N of your items were malformed" from "the
+    // adapter rejected N valid items". `invalid`/`invalidIndexes` (mirrors
+    // /test-cases/bulk's index-listing style) make the validation-drop
+    // count and its exact positions explicit and machine-readable, while
+    // `errors` keeps its original total-failures meaning for existing
+    // callers that only check that.
+    const invalidIndexes = benchmarks
+      .map((bench, i) => (validateBenchmarkCreate(bench) === null ? -1 : i))
+      .filter((i) => i !== -1);
+    const validBenchmarks = benchmarks.filter((_, i) => !invalidIndexes.includes(i));
+    const invalidCount = invalidIndexes.length;
 
     const now = new Date().toISOString();
     const prepared = validBenchmarks.map(bench => {
@@ -1025,7 +1038,12 @@ router.post('/api/storage/benchmarks/bulk', async (req: Request, res: Response) 
     const result = await storage.benchmarks.bulkCreate(prepared);
 
     debug('StorageAPI', `Bulk created ${result.created} benchmarks (${invalidCount} rejected by validation)`);
-    res.json({ created: result.created, errors: result.errors + invalidCount });
+    res.json({
+      created: result.created,
+      errors: result.errors + invalidCount,
+      invalid: invalidCount,
+      invalidIndexes,
+    });
   } catch (error: any) {
     console.error('[StorageAPI] Bulk create benchmarks failed:', error.message);
     res.status(500).json({ error: error.message });
