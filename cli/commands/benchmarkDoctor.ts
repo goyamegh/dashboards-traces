@@ -146,8 +146,18 @@ export function createBenchmarkDoctorCommand(): Command {
           } else {
             console.log(chalk.bold(migration.dryRun ? '  Image migration plan (dry-run):' : '  Image migration:'));
             for (const m of migration.migrated) {
-              const verb = migration.dryRun ? (m.alreadyExists ? '= already an image' : '+ would create') : '✓';
-              console.log(chalk.green(`    ${verb} ${m.name} → ${m.digest.slice(0, 12)}`));
+              // alreadyExists alone does NOT mean --apply is a no-op for
+              // this benchmark -- the image can exist under a different
+              // tag (e.g. renamed since), in which case --apply would
+              // still add the missing tag(s). Say so explicitly rather
+              // than implying nothing would change.
+              const verb = migration.dryRun
+                ? (m.alreadyExists
+                    ? (m.wouldAddTags?.length ? '= already an image, would add tag(s)' : '= already an image, no change')
+                    : '+ would create')
+                : '✓';
+              const tagSuffix = migration.dryRun && m.wouldAddTags?.length ? ` [${m.wouldAddTags.join(', ')}]` : '';
+              console.log(chalk.green(`    ${verb} ${m.name} → ${m.digest.slice(0, 12)}${tagSuffix}`));
             }
             for (const s of migration.skipped) {
               console.log(chalk.gray(`    - ${s.name}: skipped (${s.reason})`));

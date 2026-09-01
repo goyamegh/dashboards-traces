@@ -273,7 +273,20 @@ export async function applyDoctorPlan(api: DoctorStorageOps, plan: DoctorPlan): 
 export interface MigrateImagesResult {
   /** True when this result is a preview (`dryRun: true`) — nothing was created or tagged. */
   dryRun: boolean;
-  migrated: Array<{ benchmarkId: string; name: string; digest: string; alreadyExists?: boolean; missingTestCaseIds?: string[] }>;
+  migrated: Array<{
+    benchmarkId: string;
+    name: string;
+    digest: string;
+    alreadyExists?: boolean;
+    /**
+     * Tags `--apply` would still add even when `alreadyExists` is true
+     * (e.g. the image was created under a different benchmark name).
+     * `alreadyExists: true` with `wouldAddTags` empty/absent is the only
+     * shape that means "--apply would be a true no-op" for this benchmark.
+     */
+    wouldAddTags?: string[];
+    missingTestCaseIds?: string[];
+  }>;
   skipped: Array<{ benchmarkId: string; name: string; reason: string }>;
   errors: string[];
 }
@@ -330,6 +343,9 @@ export async function migrateBenchmarksToImages(
         name: b.name,
         digest: body.image.digest,
         ...(dryRun ? { alreadyExists: body.alreadyExists === true } : {}),
+        ...(dryRun && Array.isArray(body.wouldAddTags) && body.wouldAddTags.length > 0
+          ? { wouldAddTags: body.wouldAddTags }
+          : {}),
         ...(missingTestCaseIds && missingTestCaseIds.length > 0 ? { missingTestCaseIds } : {}),
       });
       // A partial migration (some testCaseIds no longer resolve to a stored
