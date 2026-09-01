@@ -492,6 +492,18 @@ describe('Test Cases Storage Routes', () => {
       expect(mockStorage.testCases.delete).toHaveBeenCalledWith('tc-123');
       expect(res.json).toHaveBeenCalledWith({ deleted: 3 });
     });
+
+    it('should return 404 when nothing was deleted (regression F7: previously answered 200 { deleted: 0 } indistinguishable from a successful no-op)', async () => {
+      mockStorage.testCases.delete.mockResolvedValue({ deleted: 0 });
+
+      const { req, res } = createMocks({ id: 'tc-nonexistent' });
+      const handler = getRouteHandler(testCasesRoutes, 'delete', '/api/storage/test-cases/:id');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).not.toHaveBeenCalledWith({ deleted: 0 });
+    });
   });
 
   describe('POST /api/storage/test-cases/bulk', () => {
