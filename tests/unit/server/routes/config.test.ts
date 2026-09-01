@@ -3,536 +3,468 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { Request, Response } from 'express';
-import configRoutes from '@/server/routes/config';
-import { loadConfigSync } from '@/lib/config/index';
-import { addCustomAgent, removeCustomAgent, getCustomAgents, clearCustomAgents } from '@/server/services/customAgentStore';
-import { VALID_CONNECTOR_TYPES, BUILT_IN_AGENT_KEYS } from '@/lib/constants';
+const mockLoadConfigSync = jest.fn();
+const mockAddCustomAgent = jest.fn();
+const mockRemoveCustomAgent = jest.fn();
+const mockGetCustomAgents = jest.fn();
+const mockGetRemoteServers = jest.fn();
+const mockWaitForObservioReady = jest.fn();
+const mockGetObservioPort = jest.fn();
+const mockReadLayeredState = jest.fn();
+const mockWriteStateScope = jest.fn();
+const mockIsCodeFirstMode = jest.fn();
+const mockFetch = jest.fn();
 
-// Mock config loader
 jest.mock('@/lib/config/index', () => ({
-  loadConfigSync: jest.fn(),
+  loadConfigSync: (...args: any[]) => mockLoadConfigSync(...args),
 }));
 
-// Mock custom agent store
 jest.mock('@/server/services/customAgentStore', () => ({
-  addCustomAgent: jest.fn(),
-  removeCustomAgent: jest.fn(),
-  getCustomAgents: jest.fn().mockReturnValue([]),
-  clearCustomAgents: jest.fn(),
+  addCustomAgent: (...args: any[]) => mockAddCustomAgent(...args),
+  removeCustomAgent: (...args: any[]) => mockRemoveCustomAgent(...args),
+  getCustomAgents: (...args: any[]) => mockGetCustomAgents(...args),
 }));
 
-// Mock observio agent service
+jest.mock('@/server/services/codingAgents/remoteConfig', () => ({
+  getRemoteServers: (...args: any[]) => mockGetRemoteServers(...args),
+}));
+
 jest.mock('@/server/services/observioAgent', () => ({
-  waitForObservioReady: jest.fn().mockResolvedValue(undefined),
-  getObservioPort: jest.fn().mockReturnValue(3001),
+  waitForObservioReady: (...args: any[]) => mockWaitForObservioReady(...args),
+  getObservioPort: (...args: any[]) => mockGetObservioPort(...args),
 }));
 
-const mockLoadConfigSync = loadConfigSync as jest.MockedFunction<typeof loadConfigSync>;
-const mockGetCustomAgents = getCustomAgents as jest.MockedFunction<typeof getCustomAgents>;
-const mockAddCustomAgent = addCustomAgent as jest.MockedFunction<typeof addCustomAgent>;
-const mockRemoveCustomAgent = removeCustomAgent as jest.MockedFunction<typeof removeCustomAgent>;
+jest.mock('@/lib/config/statePaths', () => ({
+  readLayeredState: (...args: any[]) => mockReadLayeredState(...args),
+  writeStateScope: (...args: any[]) => mockWriteStateScope(...args),
+  isCodeFirstMode: (...args: any[]) => mockIsCodeFirstMode(...args),
+}));
 
-// Helper to create mock request/response
-function createMocks(body?: any, params?: any, query?: any) {
-  const req = { body, params, query: query || {} } as unknown as Request;
-  const res = {
-    json: jest.fn().mockReturnThis(),
-    status: jest.fn().mockReturnThis(),
-    send: jest.fn().mockReturnThis(),
-  } as unknown as Response;
-  return { req, res };
+import express, { Application } from 'express';
+const request = require('supertest');
+import configRouter from '@/server/routes/config';
+
+function makeApp(): Application {
+  const app = express();
+  app.use(express.json());
+  app.use(configRouter);
+  return app;
 }
 
-// Helper to get route handler
-function getRouteHandler(router: any, method: string, path: string) {
-  const routes = router.stack;
-  const route = routes.find(
-    (layer: any) =>
-      layer.route &&
-      layer.route.path === path &&
-      layer.route.methods[method.toLowerCase()]
-  );
-  return route?.route.stack[0].handle;
-}
+describe('Config router', () => {
+  let app: Application;
+  const originalFetch = global.fetch;
 
-describe('Config Routes', () => {
+  beforeAll(() => {
+    (global as any).fetch = (...args: any[]) => mockFetch(...args);
+  });
+
+  afterAll(() => {
+    (global as any).fetch = originalFetch;
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
-    mockGetCustomAgents.mockReturnValue([]);
+    jest.spyOn(console, 'error').mockImplementation(() => {});
+    mockLoadConfigSync.mockReturnValue({
+      agents: [
+        { key: 'observio', name: 'Observio', endpoint: 'http://localhost:4001/agent', hooks: { beforeRequest: jest.fn() } },
+        { key: 'demo', name: 'Demo', endpoint: 'mock://demo' },
+        { key: 'local-invalid', name: 'Broken URL', endpoint: 'not-a-url' },
+      ],
+      models: {
+        'model-a': { provider: 'bedrock', model_id: 'anthropic.claude-3-5-sonnet' },
+      },
+    });
+    mockGetCustomAgents.mockReturnValue([
+      {
+        key: 'custom-1',
+        name: 'Custom Agent',
+        endpoint: 'https://custom.example.com/agent',
+        isCustom: true,
+        headers: {},
+        connectorType: 'rest',
+      },
+    ]);
+    mockGetRemoteServers.mockReturnValue([
+      { name: 'alpha', url: 'https://alpha.example.com', apiKey: 'secret' },
+      { name: 'beta', url: 'https://beta.example.com' },
+    ]);
+    mockWaitForObservioReady.mockResolvedValue(undefined);
+    mockGetObservioPort.mockReturnValue(4321);
+    mockReadLayeredState.mockReturnValue({
+      remoteServers: [
+        { name: 'alpha', url: 'https://alpha.example.com', apiKey: 'secret' },
+      ],
+    });
+    mockWriteStateScope.mockReturnValue(undefined);
+    mockIsCodeFirstMode.mockReturnValue(false);
+    mockFetch.mockResolvedValue({
+      ok: true,
+      status: 200,
+      statusText: 'OK',
+      json: async () => ({ agents: [{ name: 'claude-code' }, { name: 'codex' }] }),
+    });
+    app = makeApp();
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
   });
 
   describe('GET /api/agents', () => {
-    it('returns agents from config', async () => {
-      mockLoadConfigSync.mockReturnValue({
+    it('returns merged agents, strips hooks, patches local observio, and reports metadata', async () => {
+      const res = await request(app).get('/api/agents');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
         agents: [
-          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
-        ],
-        models: {},
-      } as any);
-
-      const { req, res } = createMocks();
-      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      await handler(req, res);
-
-      expect(res.json).toHaveBeenCalledWith({
-        agents: [{ key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo', builtIn: true }],
-        total: 1,
-        meta: { source: 'config', hasCustomAgents: false, customCount: 0, builtInCount: 1 },
-      });
-    });
-
-    it('strips hooks from serialized agent configs', async () => {
-      const mockHook = jest.fn();
-      mockLoadConfigSync.mockReturnValue({
-        agents: [
+          { key: 'observio', name: 'Observio', endpoint: 'http://localhost:4321/agent', builtIn: true },
+          { key: 'demo', name: 'Demo', endpoint: 'mock://demo', builtIn: true },
+          { key: 'local-invalid', name: 'Broken URL', endpoint: 'not-a-url', builtIn: false },
           {
-            key: 'pulsar',
-            name: 'Pulsar',
-            endpoint: 'http://localhost:3000/agent',
-            headers: { Authorization: 'Bearer token' },
-            hooks: { beforeRequest: mockHook },
+            key: 'custom-1',
+            name: 'Custom Agent',
+            endpoint: 'https://custom.example.com/agent',
+            isCustom: true,
+            headers: {},
+            connectorType: 'rest',
+            builtIn: false,
           },
         ],
-        models: {},
-      } as any);
-
-      const { req, res } = createMocks();
-      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      await handler(req, res);
-
-      const response = (res.json as jest.Mock).mock.calls[0][0];
-      expect(response.agents).toHaveLength(1);
-      expect(response.agents[0]).not.toHaveProperty('hooks');
-      expect(response.agents[0].key).toBe('pulsar');
-      expect(response.agents[0].name).toBe('Pulsar');
+        total: 4,
+        meta: {
+          source: 'config',
+          hasCustomAgents: true,
+          customCount: 2,
+          builtInCount: 2,
+        },
+      });
+      expect(res.body.agents[0]).not.toHaveProperty('hooks');
     });
 
-    it('handles agents without hooks gracefully', async () => {
-      mockLoadConfigSync.mockReturnValue({
-        agents: [
-          { key: 'basic', name: 'Basic Agent', endpoint: 'http://localhost:3000' },
-          { key: 'hooked', name: 'Hooked Agent', endpoint: 'http://localhost:3001', hooks: { beforeRequest: jest.fn() } },
-        ],
-        models: {},
-      } as any);
+    it('supports ?filter=custom and ?filter=builtin', async () => {
+      const customRes = await request(app).get('/api/agents?filter=custom');
+      const builtinRes = await request(app).get('/api/agents?filter=builtin');
 
-      const { req, res } = createMocks();
-      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      await handler(req, res);
-
-      const response = (res.json as jest.Mock).mock.calls[0][0];
-      expect(response.agents).toHaveLength(2);
-      expect(response.agents[0]).not.toHaveProperty('hooks');
-      expect(response.agents[1]).not.toHaveProperty('hooks');
+      expect(customRes.status).toBe(200);
+      expect(customRes.body.agents.map((agent: any) => agent.key)).toEqual(['local-invalid', 'custom-1']);
+      expect(builtinRes.status).toBe(200);
+      expect(builtinRes.body.agents.map((agent: any) => agent.key)).toEqual(['observio', 'demo']);
     });
 
     it('returns 500 when config loading fails', async () => {
-      mockLoadConfigSync.mockImplementation(() => {
-        throw new Error('Config load error');
+      mockLoadConfigSync.mockImplementationOnce(() => {
+        throw new Error('config broke');
       });
 
-      const { req, res } = createMocks();
-      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
+      const res = await request(app).get('/api/agents');
 
-      jest.spyOn(console, 'error').mockImplementation(() => {});
-      await handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(500);
-      expect(res.json).toHaveBeenCalledWith({ error: 'Config load error' });
-    });
-
-    it('returns merged built-in and custom agents', async () => {
-      mockLoadConfigSync.mockReturnValue({
-        agents: [
-          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
-        ],
-        models: {},
-      } as any);
-
-      mockGetCustomAgents.mockReturnValue([
-        { key: 'custom-1', name: 'My Custom', endpoint: 'http://custom.example.com', isCustom: true, headers: {}, connectorType: 'agui-streaming' as const },
-      ]);
-
-      const { req, res } = createMocks();
-      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      await handler(req, res);
-
-      const response = (res.json as jest.Mock).mock.calls[0][0];
-      expect(response.agents).toHaveLength(2);
-      expect(response.total).toBe(2);
-      expect(response.agents[0].key).toBe('demo');
-      expect(response.agents[1].key).toBe('custom-1');
-      expect(response.agents[1].isCustom).toBe(true);
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: 'config broke' });
     });
   });
 
   describe('POST /api/agents/custom', () => {
-    it('creates a custom agent and returns 201', () => {
-      const { req, res } = createMocks({ name: 'Test Agent', endpoint: 'http://localhost:9000' });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
+    it('validates required fields and endpoint format', async () => {
+      const missingName = await request(app).post('/api/agents/custom').send({ endpoint: 'https://agent.example.com' });
+      const missingEndpoint = await request(app).post('/api/agents/custom').send({ name: 'Agent' });
+      const invalidUrl = await request(app).post('/api/agents/custom').send({ name: 'Agent', endpoint: 'not-a-url' });
+      const badProtocol = await request(app).post('/api/agents/custom').send({ name: 'Agent', endpoint: 'ftp://server.example.com' });
 
-      expect(res.status).toHaveBeenCalledWith(201);
-      expect(mockAddCustomAgent).toHaveBeenCalledTimes(1);
-
-      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
-      expect(addedAgent.name).toBe('Test Agent');
-      expect(addedAgent.endpoint).toBe('http://localhost:9000');
-      expect(addedAgent.isCustom).toBe(true);
-      expect(addedAgent.connectorType).toBe('agui-streaming');
-      expect(addedAgent.key).toMatch(/^custom-/);
+      expect(missingName.status).toBe(400);
+      expect(missingName.body).toEqual({ error: 'name is required' });
+      expect(missingEndpoint.status).toBe(400);
+      expect(missingEndpoint.body).toEqual({ error: 'endpoint is required' });
+      expect(invalidUrl.status).toBe(400);
+      expect(invalidUrl.body).toEqual({ error: 'Invalid URL format' });
+      expect(badProtocol.status).toBe(400);
+      expect(badProtocol.body).toEqual({ error: 'URL must use http or https protocol' });
     });
 
-    it('returns 400 when name is missing', () => {
-      const { req, res } = createMocks({ endpoint: 'http://localhost:9000' });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
+    it('rejects invalid connector types', async () => {
+      const res = await request(app)
+        .post('/api/agents/custom')
+        .send({ name: 'Agent', endpoint: 'https://agent.example.com', connectorType: 'bogus' });
 
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ error: 'name is required' });
-      expect(mockAddCustomAgent).not.toHaveBeenCalled();
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/connectorType must be one of:/);
     });
 
-    it('returns 400 when endpoint is missing', () => {
-      const { req, res } = createMocks({ name: 'Test Agent' });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ error: 'endpoint is required' });
-      expect(mockAddCustomAgent).not.toHaveBeenCalled();
-    });
-
-    it('returns 400 for invalid URL', () => {
-      const { req, res } = createMocks({ name: 'Agent', endpoint: 'not-a-url' });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ error: 'Invalid URL format' });
-      expect(mockAddCustomAgent).not.toHaveBeenCalled();
-    });
-
-    it('returns 400 for non-http URL', () => {
-      const { req, res } = createMocks({ name: 'Agent', endpoint: 'ftp://server.com' });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ error: 'URL must use http or https protocol' });
-      expect(mockAddCustomAgent).not.toHaveBeenCalled();
-    });
-
-    it('returns 400 for empty name string', () => {
-      const { req, res } = createMocks({ name: '   ', endpoint: 'http://localhost:9000' });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect(res.json).toHaveBeenCalledWith({ error: 'name is required' });
-    });
-
-    it('trims whitespace from name and endpoint', () => {
-      const { req, res } = createMocks({ name: '  My Agent  ', endpoint: '  http://localhost:9000  ' });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(201);
-      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
-      expect(addedAgent.name).toBe('My Agent');
-      expect(addedAgent.endpoint).toBe('http://localhost:9000');
-    });
-
-    it('defaults connectorType to agui-streaming and useTraces to false when omitted', () => {
-      const { req, res } = createMocks({ name: 'Test Agent', endpoint: 'http://localhost:9000' });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(201);
-      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
-      expect(addedAgent.connectorType).toBe('agui-streaming');
-      expect(addedAgent.useTraces).toBe(false);
-    });
-
-    it('persists provided connectorType', () => {
-      const { req, res } = createMocks({
-        name: 'Rest Agent',
-        endpoint: 'http://localhost:9000',
-        connectorType: 'rest',
-      });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(201);
-      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
-      expect(addedAgent.connectorType).toBe('rest');
-    });
-
-    it('persists useTraces: true when provided', () => {
-      const { req, res } = createMocks({
-        name: 'Traced Agent',
-        endpoint: 'http://localhost:9000',
-        useTraces: true,
-      });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(201);
-      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
-      expect(addedAgent.useTraces).toBe(true);
-    });
-
-    it('returns 400 for an invalid connectorType', () => {
-      const { req, res } = createMocks({
-        name: 'Agent',
-        endpoint: 'http://localhost:9000',
-        connectorType: 'invalid-connector',
-      });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(400);
-      expect((res.json as jest.Mock).mock.calls[0][0].error).toMatch(/connectorType must be one of/);
-      expect(mockAddCustomAgent).not.toHaveBeenCalled();
-    });
-
-    it('accepts all valid connectorType values from VALID_CONNECTOR_TYPES', () => {
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-
-      // Use the shared constant — ensures test stays in sync with code
-      for (const connectorType of VALID_CONNECTOR_TYPES) {
-        jest.clearAllMocks();
-        const { req, res } = createMocks({
-          name: 'Agent',
-          endpoint: 'http://localhost:9000',
-          connectorType,
+    it('creates a custom agent, trimming fields and preserving flags', async () => {
+      const res = await request(app)
+        .post('/api/agents/custom')
+        .send({
+          name: '  New Agent  ',
+          endpoint: '  https://agent.example.com/run  ',
+          connectorType: 'langgraph',
+          useTraces: true,
         });
-        handler(req, res);
-        expect(res.status).toHaveBeenCalledWith(201);
-        const addedAgent = mockAddCustomAgent.mock.calls[0][0];
-        expect(addedAgent.connectorType).toBe(connectorType);
-      }
-    });
 
-    it('accepts strands connector type', () => {
-      const { req, res } = createMocks({
-        name: 'Strands Agent',
-        endpoint: 'http://localhost:9000',
-        connectorType: 'strands',
-      });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(201);
-      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
-      expect(addedAgent.connectorType).toBe('strands');
-    });
-
-    it('accepts langgraph connector type', () => {
-      const { req, res } = createMocks({
-        name: 'LangGraph Agent',
-        endpoint: 'http://localhost:8000',
+      expect(res.status).toBe(201);
+      expect(res.body.agent).toEqual({
+        key: expect.stringMatching(/^custom-/),
+        name: 'New Agent',
+        endpoint: 'https://agent.example.com/run',
+        isCustom: true,
         connectorType: 'langgraph',
+        useTraces: true,
+        headers: {},
       });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
-
-      expect(res.status).toHaveBeenCalledWith(201);
-      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
-      expect(addedAgent.connectorType).toBe('langgraph');
+      expect(mockAddCustomAgent).toHaveBeenCalledWith(res.body.agent);
     });
 
-    it('coerces non-boolean useTraces to false (truthy non-true values)', () => {
-      const { req, res } = createMocks({
-        name: 'Agent',
-        endpoint: 'http://localhost:9000',
-        useTraces: 'yes',
+    it('returns 500 when storing a custom agent throws', async () => {
+      mockAddCustomAgent.mockImplementationOnce(() => {
+        throw new Error('cannot store agent');
       });
-      const handler = getRouteHandler(configRoutes, 'post', '/api/agents/custom');
-      handler(req, res);
 
-      expect(res.status).toHaveBeenCalledWith(201);
-      const addedAgent = mockAddCustomAgent.mock.calls[0][0];
-      // Only strict true is accepted; 'yes' should be coerced to false
-      expect(addedAgent.useTraces).toBe(false);
+      const res = await request(app)
+        .post('/api/agents/custom')
+        .send({ name: 'Agent', endpoint: 'https://agent.example.com' });
+
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: 'cannot store agent' });
     });
   });
 
   describe('DELETE /api/agents/custom/:id', () => {
-    it('returns 204 when agent is found and removed', () => {
+    it('deletes an existing custom agent', async () => {
       mockRemoveCustomAgent.mockReturnValue(true);
 
-      const { req, res } = createMocks(undefined, { id: 'custom-123' });
-      const handler = getRouteHandler(configRoutes, 'delete', '/api/agents/custom/:id');
-      handler(req, res);
+      const res = await request(app).delete('/api/agents/custom/custom-1');
 
-      expect(mockRemoveCustomAgent).toHaveBeenCalledWith('custom-123');
-      expect(res.status).toHaveBeenCalledWith(204);
-      expect(res.send).toHaveBeenCalled();
+      expect(res.status).toBe(204);
+      expect(res.text).toBe('');
+      expect(mockRemoveCustomAgent).toHaveBeenCalledWith('custom-1');
     });
 
-    it('returns 404 when agent is not found', () => {
+    it('returns 404 when the custom agent is missing', async () => {
       mockRemoveCustomAgent.mockReturnValue(false);
 
-      const { req, res } = createMocks(undefined, { id: 'nonexistent' });
-      const handler = getRouteHandler(configRoutes, 'delete', '/api/agents/custom/:id');
-      handler(req, res);
+      const res = await request(app).delete('/api/agents/custom/missing');
 
-      expect(res.status).toHaveBeenCalledWith(404);
-      expect(res.json).toHaveBeenCalledWith({ error: 'Custom agent not found' });
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Custom agent not found' });
+    });
+
+    it('returns 500 when removal throws', async () => {
+      mockRemoveCustomAgent.mockImplementationOnce(() => {
+        throw new Error('remove failed');
+      });
+
+      const res = await request(app).delete('/api/agents/custom/custom-1');
+
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: 'remove failed' });
     });
   });
 
-  describe('GET /api/agents - builtIn field and filter param', () => {
-    it('marks built-in agents with builtIn: true', async () => {
-      mockLoadConfigSync.mockReturnValue({
-        agents: [
-          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
-          { key: 'observio', name: 'Observio Sample Agent', endpoint: 'http://localhost:3001' },
+  describe('GET /api/models', () => {
+    it('returns configured models', async () => {
+      const res = await request(app).get('/api/models');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        models: [
+          { key: 'model-a', provider: 'bedrock', model_id: 'anthropic.claude-3-5-sonnet' },
         ],
-        models: {},
-      } as any);
-
-      const { req, res } = createMocks();
-      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      await handler(req, res);
-
-      const response = (res.json as jest.Mock).mock.calls[0][0];
-      const demoAgent = response.agents.find((a: any) => a.key === 'demo');
-      const observioAgent = response.agents.find((a: any) => a.key === 'observio');
-
-      expect(demoAgent.builtIn).toBe(true);
-      expect(observioAgent.builtIn).toBe(true);
+        total: 1,
+        meta: { source: 'config' },
+      });
     });
 
-    it('marks config-file agents (non-built-in keys) with builtIn: false', async () => {
-      mockLoadConfigSync.mockReturnValue({
-        agents: [
-          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
-          { key: 'kiro', name: 'Kiro', endpoint: '/usr/local/bin/kiro' },
-          { key: 'pi-opus48', name: 'Pi (Opus 4.8)', endpoint: '/usr/local/bin/pi' },
+    it('returns 500 when model config loading fails', async () => {
+      mockLoadConfigSync.mockImplementationOnce(() => {
+        throw new Error('model read failed');
+      });
+
+      const res = await request(app).get('/api/models');
+
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: 'model read failed' });
+    });
+  });
+
+  describe('GET /api/remote-servers', () => {
+    it('lists remote servers with masked apiKey presence', async () => {
+      const res = await request(app).get('/api/remote-servers');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({
+        servers: [
+          { name: 'alpha', url: 'https://alpha.example.com', hasApiKey: true },
+          { name: 'beta', url: 'https://beta.example.com', hasApiKey: false },
         ],
-        models: {},
-      } as any);
-
-      const { req, res } = createMocks();
-      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      await handler(req, res);
-
-      const response = (res.json as jest.Mock).mock.calls[0][0];
-      expect(response.agents.find((a: any) => a.key === 'demo').builtIn).toBe(true);
-      expect(response.agents.find((a: any) => a.key === 'kiro').builtIn).toBe(false);
-      expect(response.agents.find((a: any) => a.key === 'pi-opus48').builtIn).toBe(false);
-      expect(response.meta.builtInCount).toBe(1);
+      });
     });
 
-    it('marks custom agents with builtIn: false', async () => {
-      mockLoadConfigSync.mockReturnValue({
-        agents: [
-          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
-        ],
-        models: {},
-      } as any);
+    it('returns 500 when listing remote servers fails', async () => {
+      mockGetRemoteServers.mockImplementationOnce(() => {
+        throw new Error('remote list failed');
+      });
 
-      mockGetCustomAgents.mockReturnValue([
-        { key: 'custom-abc', name: 'My Custom Agent', endpoint: 'http://custom.example.com', isCustom: true, headers: {}, connectorType: 'agui-streaming' as const },
-      ]);
+      const res = await request(app).get('/api/remote-servers');
 
-      const { req, res } = createMocks();
-      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      await handler(req, res);
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: 'remote list failed' });
+    });
+  });
 
-      const response = (res.json as jest.Mock).mock.calls[0][0];
-      const customAgent = response.agents.find((a: any) => a.key === 'custom-abc');
+  describe('POST /api/remote-servers', () => {
+    it('returns 409 in code-first mode', async () => {
+      mockIsCodeFirstMode.mockReturnValueOnce(true);
 
-      expect(customAgent).toBeDefined();
-      expect(customAgent.builtIn).toBe(false);
+      const res = await request(app)
+        .post('/api/remote-servers')
+        .send({ name: 'gamma', url: 'https://gamma.example.com' });
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/code-first mode/);
     });
 
-    it('?filter=custom returns only custom agents', async () => {
-      mockLoadConfigSync.mockReturnValue({
-        agents: [
-          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
-          { key: 'observio', name: 'Observio', endpoint: 'http://localhost:3001' },
-        ],
-        models: {},
-      } as any);
+    it('validates required name and url fields', async () => {
+      const noName = await request(app).post('/api/remote-servers').send({ url: 'https://server.example.com' });
+      const noUrl = await request(app).post('/api/remote-servers').send({ name: 'server' });
+      const badUrl = await request(app).post('/api/remote-servers').send({ name: 'server', url: 'notaurl' });
 
-      mockGetCustomAgents.mockReturnValue([
-        { key: 'custom-xyz', name: 'My Custom', endpoint: 'http://custom.example.com', isCustom: true, headers: {}, connectorType: 'rest' as const },
-      ]);
-
-      const { req, res } = createMocks(undefined, undefined, { filter: 'custom' });
-      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      await handler(req, res);
-
-      const response = (res.json as jest.Mock).mock.calls[0][0];
-      // Should only contain custom agents
-      expect(response.agents).toHaveLength(1);
-      expect(response.agents[0].key).toBe('custom-xyz');
-      expect(response.agents.every((a: any) => a.builtIn === false)).toBe(true);
+      expect(noName.status).toBe(400);
+      expect(noName.body).toEqual({ error: 'name is required' });
+      expect(noUrl.status).toBe(400);
+      expect(noUrl.body).toEqual({ error: 'url is required' });
+      expect(badUrl.status).toBe(400);
+      expect(badUrl.body).toEqual({ error: 'Invalid URL format' });
     });
 
-    it('?filter=builtin returns only built-in agents', async () => {
-      mockLoadConfigSync.mockReturnValue({
-        agents: [
-          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
-          { key: 'claude-code', name: 'Claude Code', endpoint: 'claude' },
-        ],
-        models: {},
-      } as any);
+    it('returns 409 when the remote server already exists', async () => {
+      const res = await request(app)
+        .post('/api/remote-servers')
+        .send({ name: 'alpha', url: 'https://other.example.com' });
 
-      mockGetCustomAgents.mockReturnValue([
-        { key: 'custom-xyz', name: 'My Custom', endpoint: 'http://custom.example.com', isCustom: true, headers: {}, connectorType: 'rest' as const },
-      ]);
-
-      const { req, res } = createMocks(undefined, undefined, { filter: 'builtin' });
-      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      await handler(req, res);
-
-      const response = (res.json as jest.Mock).mock.calls[0][0];
-      // Should only contain built-in agents, no custom agents
-      const customAgents = response.agents.filter((a: any) => a.key === 'custom-xyz');
-      expect(customAgents).toHaveLength(0);
-      expect(response.agents.every((a: any) => a.builtIn === true)).toBe(true);
-      expect(response.agents.length).toBeGreaterThanOrEqual(1);
+      expect(res.status).toBe(409);
+      expect(res.body).toEqual({ error: 'Server "alpha" already exists' });
     });
 
-    it('returns meta.hasCustomAgents correctly', async () => {
-      mockLoadConfigSync.mockReturnValue({
-        agents: [
-          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
-        ],
-        models: {},
-      } as any);
+    it('creates a new remote server and persists project state', async () => {
+      const res = await request(app)
+        .post('/api/remote-servers')
+        .send({ name: '  gamma  ', url: 'https://gamma.example.com/', apiKey: '  token  ' });
 
-      // Test with no custom agents
-      mockGetCustomAgents.mockReturnValue([]);
-      const { req: req1, res: res1 } = createMocks();
-      const handler = getRouteHandler(configRoutes, 'get', '/api/agents');
-      await handler(req1, res1);
+      expect(res.status).toBe(201);
+      expect(res.body).toEqual({
+        server: { name: 'gamma', url: 'https://gamma.example.com', hasApiKey: true },
+      });
+      expect(mockWriteStateScope).toHaveBeenCalledWith(
+        {
+          remoteServers: [
+            { name: 'alpha', url: 'https://alpha.example.com', apiKey: 'secret' },
+            { name: 'gamma', url: 'https://gamma.example.com', apiKey: 'token' },
+          ],
+        },
+        'project'
+      );
+    });
 
-      const response1 = (res1.json as jest.Mock).mock.calls[0][0];
-      expect(response1.meta.hasCustomAgents).toBe(false);
+    it('returns 500 when writing remote server state fails', async () => {
+      mockWriteStateScope.mockImplementationOnce(() => {
+        throw new Error('write failed');
+      });
 
-      // Test with custom agents present
-      jest.clearAllMocks();
-      mockLoadConfigSync.mockReturnValue({
-        agents: [
-          { key: 'demo', name: 'Demo Agent', endpoint: 'mock://demo' },
-        ],
-        models: {},
-      } as any);
-      mockGetCustomAgents.mockReturnValue([
-        { key: 'custom-1', name: 'Custom', endpoint: 'http://example.com', isCustom: true, headers: {}, connectorType: 'agui-streaming' as const },
-      ]);
+      const res = await request(app)
+        .post('/api/remote-servers')
+        .send({ name: 'gamma', url: 'https://gamma.example.com' });
 
-      const { req: req2, res: res2 } = createMocks();
-      await handler(req2, res2);
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: 'write failed' });
+    });
+  });
 
-      const response2 = (res2.json as jest.Mock).mock.calls[0][0];
-      expect(response2.meta.hasCustomAgents).toBe(true);
+  describe('DELETE /api/remote-servers/:name', () => {
+    it('returns 409 in code-first mode', async () => {
+      mockIsCodeFirstMode.mockReturnValueOnce(true);
+
+      const res = await request(app).delete('/api/remote-servers/alpha');
+
+      expect(res.status).toBe(409);
+      expect(res.body.error).toMatch(/code-first mode/);
+    });
+
+    it('returns 404 when the remote server is missing', async () => {
+      const res = await request(app).delete('/api/remote-servers/missing');
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Server "missing" not found' });
+    });
+
+    it('deletes a configured remote server', async () => {
+      const res = await request(app).delete('/api/remote-servers/alpha');
+
+      expect(res.status).toBe(204);
+      expect(mockWriteStateScope).toHaveBeenCalledWith({ remoteServers: [] }, 'project');
+    });
+
+    it('returns 500 when deleting remote server state fails', async () => {
+      mockWriteStateScope.mockImplementationOnce(() => {
+        throw new Error('delete write failed');
+      });
+
+      const res = await request(app).delete('/api/remote-servers/alpha');
+
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: 'delete write failed' });
+    });
+  });
+
+  describe('POST /api/remote-servers/:name/test', () => {
+    it('returns 404 when the remote server is missing', async () => {
+      const res = await request(app).post('/api/remote-servers/missing/test');
+
+      expect(res.status).toBe(404);
+      expect(res.body).toEqual({ error: 'Server "missing" not found' });
+    });
+
+    it('returns ok status and agent count when fetch succeeds', async () => {
+      const res = await request(app).post('/api/remote-servers/alpha/test');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ status: 'ok', agents: 2 });
+      expect(mockFetch).toHaveBeenCalledWith('https://alpha.example.com/api/coding-agents/available', {
+        headers: { Authorization: 'Bearer secret' },
+        signal: expect.any(AbortSignal),
+      });
+    });
+
+    it('returns an error payload for non-2xx remote responses', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 503,
+        statusText: 'Service Unavailable',
+      });
+
+      const res = await request(app).post('/api/remote-servers/alpha/test');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ status: 'error', message: 'HTTP 503 Service Unavailable' });
+    });
+
+    it('returns an error payload when fetch rejects', async () => {
+      mockFetch.mockRejectedValueOnce(new Error('dial failed'));
+
+      const res = await request(app).post('/api/remote-servers/alpha/test');
+
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ status: 'error', message: 'dial failed' });
+    });
+
+    it('returns 500 when reading configured servers throws', async () => {
+      mockReadLayeredState.mockImplementationOnce(() => {
+        throw new Error('state read failed');
+      });
+
+      const res = await request(app).post('/api/remote-servers/alpha/test');
+
+      expect(res.status).toBe(500);
+      expect(res.body).toEqual({ error: 'state read failed' });
     });
   });
 });
