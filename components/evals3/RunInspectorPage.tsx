@@ -117,10 +117,13 @@ export const RunInspectorPage: React.FC = () => {
   const [promoting, setPromoting] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
-  // Load data — fetch reports to get real pass/fail status
-  const loadData = useCallback(async () => {
+  // Load data — fetch reports to get real pass/fail status. `silent: true`
+  // (used by the running-poll below) skips the loading-skeleton flip so a
+  // background refresh doesn't blow away the user's open test-case selection
+  // every 3s — only the very first load (and manual Retry) shows the skeleton.
+  const loadData = useCallback(async (opts: { silent?: boolean } = {}) => {
     if (!runId) return;
-    setLoading(true);
+    if (!opts.silent) setLoading(true);
     setLoadError(false);
     try {
       let runData: BenchmarkRun | EvaluationRun;
@@ -251,6 +254,19 @@ export const RunInspectorPage: React.FC = () => {
 
   useEffect(() => { loadData(); }, [loadData]);
 
+  // Mid-resume (and any other in-place 'running') progress: EvalRunDetailPage
+  // has always polled every 3s while status === 'running' so pass/fail counts
+  // and per-test-case statuses update live without a manual reload — the
+  // inspector lacked this entirely (gap found auditing #414's checkpoint-
+  // resume UI against the canonical page: clicking Resume here updated
+  // nothing until the whole SSE stream finished, since resumeEvaluationRun()
+  // is called with a no-op progress callback and there was no fallback poll).
+  useEffect(() => {
+    if (mode !== 'evalRun' || run?.status !== 'running') return;
+    const interval = setInterval(() => loadData({ silent: true }), 3000);
+    return () => clearInterval(interval);
+  }, [mode, run?.status, loadData]);
+
   // Resolve the source run name for the rerunOf provenance chip (EvaluationRun only).
   useEffect(() => {
     if (mode !== 'evalRun' || !(run as EvaluationRun)?.rerunOf) {
@@ -311,9 +327,10 @@ export const RunInspectorPage: React.FC = () => {
     setActionError(null);
     resumeEvaluationRun(runId, () => {})
       .catch((err: any) => setActionError(err.message))
-      .finally(() => loadData());
-    // Give the server a moment to flip status to running, then refresh.
-    setTimeout(() => { loadData(); setResuming(false); }, 1000);
+      .finally(() => loadData({ silent: true }));
+    // Give the server a moment to flip status to running, then refresh
+    // silently — the running-poll effect above takes over from here.
+    setTimeout(() => { loadData({ silent: true }); setResuming(false); }, 1000);
   };
 
   const handlePromote = async () => {
