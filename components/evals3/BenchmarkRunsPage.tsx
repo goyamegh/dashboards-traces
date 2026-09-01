@@ -637,7 +637,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
                             <div className="flex items-center gap-2 mb-1 flex-wrap">
                               <h3 className="font-semibold">{run.name}</h3>
                               {getEffectiveRunStatus(run) === 'running' && (
-                                <Badge className="text-xs bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-500/20 dark:text-blue-400 dark:border-blue-500/30 animate-pulse">
+                                <Badge
+                                  data-testid="benchmark-run-running-badge"
+                                  className="text-xs bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-500/20 dark:text-blue-400 dark:border-blue-500/30 animate-pulse"
+                                >
                                   <Loader2 size={12} className="mr-1 animate-spin" /> Running
                                 </Badge>
                               )}

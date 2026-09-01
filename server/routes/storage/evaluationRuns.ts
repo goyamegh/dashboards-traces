@@ -54,20 +54,65 @@ export function isEvaluationRunActiveInThisProcess(runId: string): boolean {
 }
 
 /**
- * Project a finished EvaluationRun into the embedded BenchmarkRun shape that
- * `benchmark.runs` stores. Used today by the resume completion path only —
- * the create route's success path has its own separate (not yet unified)
- * copy of this projection, added by the still-open, unmerged PR #399. Once
- * that lands, the create route should switch to this helper so both paths
- * can't drift again; until then this is NOT a single source of truth, just
- * the resume path's own copy kept honest by tests.
+ * Project a `running` EvaluationRun into the embedded BenchmarkRun shape
+ * `benchmark.runs` stores, with every test case pre-seeded as `pending`.
+ * Mirrors the legacy `/execute` route's "initialize pending status for all
+ * test cases" + "save run to benchmark immediately so it persists across
+ * page refreshes" behaviour so the Benchmark Details page's existing
+ * running-run UI (spinners, live polling) has something to show for
+ * evaluation-run-based runs too — before this, the embedded projection was
+ * only ever written on a TERMINAL state, so an in-progress run was invisible
+ * on that page until it finished. Used ONLY by the create route: a freshly
+ * created run's `results` genuinely are all-pending, unlike a resumed run's
+ * (which mixes preserved-completed and freshly-reset-pending — see
+ * `buildBenchmarkRunProjection` below for that case).
  */
-export function buildBenchmarkRunProjection(run: EvaluationRun, completedAt: string): BenchmarkRun {
+export function buildStartingBenchmarkRunProjection(run: EvaluationRun, benchmarkVersion?: number): BenchmarkRun {
+  const results: BenchmarkRun['results'] = {};
+  for (const snapshot of run.testCaseSnapshots || []) {
+    results[snapshot.id] = { reportId: '', status: 'pending' };
+  }
   return {
     id: run.id,
     name: run.name,
     createdAt: run.createdAt,
-    completedAt,
+    status: 'running',
+    agentKey: run.agentKey,
+    modelId: run.modelId,
+    judgeModelId: run.judgeModelId,
+    // Explicit `!= null` (not truthy) checks: a truthy check would silently
+    // drop legitimately-meaningful falsy values, e.g. `concurrency: 0`
+    // (sequential execution, a real configured value) or an intentionally
+    // empty `description`/`evaluatorId` string.
+    ...(run.description != null ? { description: run.description } : {}),
+    ...(run.evaluatorId != null ? { evaluatorId: run.evaluatorId } : {}),
+    ...(run.headers != null ? { headers: run.headers } : {}),
+    ...(run.concurrency != null ? { concurrency: run.concurrency } : {}),
+    ...(benchmarkVersion != null ? { benchmarkVersion } : {}),
+    testCaseSnapshots: run.testCaseSnapshots,
+    results,
+  } as BenchmarkRun;
+}
+
+/**
+ * Project an EvaluationRun into the embedded BenchmarkRun shape that
+ * `benchmark.runs` stores, at ANY point in its life (running, resumed,
+ * completed, cancelled, or failed) — `run.status` and `run.results` drive
+ * the shape, so this works for the resume route's start-relink (status
+ * `running`, results a mix of preserved-completed + freshly-reset-pending)
+ * just as well as any terminal write. `completedAt` is optional: omit it
+ * for a non-terminal (still-running) projection.
+ *
+ * This is the SINGLE unified projection builder — the create route's own
+ * success path used to keep a separate, not-yet-unified copy of this exact
+ * projection (added by the still-open PR #399); now that it's landed, the
+ * create route uses this helper too, so the two paths can't drift again.
+ */
+export function buildBenchmarkRunProjection(run: EvaluationRun, completedAt?: string): BenchmarkRun {
+  return {
+    id: run.id,
+    name: run.name,
+    createdAt: run.createdAt,
     status: run.status,
     agentKey: run.agentKey,
     modelId: run.modelId,
@@ -78,6 +123,8 @@ export function buildBenchmarkRunProjection(run: EvaluationRun, completedAt: str
     // drop legitimately-meaningful falsy values, e.g. `concurrency: 0`
     // (sequential execution, a real configured value) or an intentionally
     // empty `description`/`evaluatorId` string (codex_review finding).
+    ...(completedAt != null ? { completedAt } : {}),
+    ...(run.error != null ? { error: run.error } : {}),
     ...(run.description != null ? { description: run.description } : {}),
     ...(run.evaluatorId != null ? { evaluatorId: run.evaluatorId } : {}),
     ...(run.headers != null ? { headers: run.headers } : {}),
@@ -88,44 +135,42 @@ export function buildBenchmarkRunProjection(run: EvaluationRun, completedAt: str
 
 /**
  * Keep `benchmark.runs` (the embedded projection both the benchmark detail
- * page and the scoped comparison pool read) in sync with a just-completed
- * evaluation run, without ever producing two entries for the same run id in
- * the common case.
+ * page and the scoped comparison pool read) in sync with an evaluation run
+ * at any point in its life, without ever producing two entries for the same
+ * run id in the common case.
  *
- * Bug this guards against (found in production, hit twice): the create
- * route's success path calls its own equivalent of this on every completion,
- * but until this fix the resume route's completion path never did — so a run
- * whose *original* create-route execution crashed before reaching its
- * success branch (no `addRun` ever happened) stayed invisible in
- * `benchmark.runs` forever, even after a later `POST .../resume` finished it
- * successfully. `GET /api/storage/evaluation-runs/:id` and the Evaluation
- * Runs page read the evaluation-run document directly, so they looked fine —
- * only the benchmark-scoped views were missing the run.
+ * Bug this guards against (found in production, hit twice): a run whose
+ * *original* create-route execution crashed before ever linking (no
+ * `addRun` ever happened) stayed invisible in `benchmark.runs` forever, even
+ * after a later `POST .../resume` finished it successfully. `GET
+ * /api/storage/evaluation-runs/:id` and the Evaluation Runs page read the
+ * evaluation-run document directly, so they looked fine — only the
+ * benchmark-scoped views were missing the run.
  *
  * Idempotent by run id in the common case: if `benchmark.runs` already has
- * an entry for this run (e.g. the create route's `addRun` DID land, and the
- * run was resumed again later for some other reason — cancellation, a second
- * interruption, etc.), this REPLACES that entry via `updateRun` instead of
- * appending a duplicate via `addRun`.
+ * an entry for this run, this UPDATEs that entry instead of appending a
+ * duplicate via `addRun`.
  *
- * KNOWN LIMITATION (codex_review, not fixed here — see PR discussion): this
- * is read-then-branch-then-write, not an atomic storage-level upsert. Two
- * TRULY concurrent completions of the *same* run id (e.g. this resume path
- * racing the create route's own linking of the same id) could both observe
- * "not yet linked" and both call `addRun`, producing a duplicate that a
- * later `updateRun` call can't repair (it only replaces ONE matching entry).
- * In practice this window is narrow: same-process double resume is already
- * blocked by `activeCancellationTokens`, and cross-process double resume of
- * the same run is already blocked by the `resumeToken` claim above — so the
- * only way to hit this is the *original* create-route execution finishing
- * its OWN linking at the exact moment another server independently decides
- * the run is stale enough to resume, which requires a live heartbeat gap
- * bigger than `EVALUATION_RUN_STALE_AFTER_MS` (default 1h) while the process
- * is actually still alive and about to succeed — pathological, not
- * impossible. Closing this fully requires an atomic upsert-by-id primitive
- * in the storage adapters (OpenSearch + file), which is a bigger, separate
- * change touching both the create and resume paths uniformly; tracked as a
- * follow-up rather than bundled into this bug fix.
+ * TOCTOU guard (codex_review finding): the read-then-branch above is not an
+ * atomic storage-level upsert. If our own `getById` read observed "not yet
+ * linked" but a CONCURRENT writer (e.g. the create route's own starting
+ * link) lands its `addRun` for the same id in the window between that read
+ * and our `addRun` call below, `addRun` is add-if-absent and would silently
+ * no-op on ours — leaving OUR terminal fields (results/stats/completedAt)
+ * never written, with the projection stuck on whatever the other writer put
+ * there (typically still `'running'`, forever). So the non-already-linked
+ * branch ALWAYS follows up with an unconditional, idempotent `updateRun` for
+ * the same id — the terminal fields land regardless of which write won the
+ * add race.
+ *
+ * REMAINING KNOWN LIMITATION (codex_review, not fixed here — see PR
+ * discussion): two TRULY concurrent completions of the *same* run id (e.g.
+ * this same helper racing itself from two different call sites) could both
+ * observe "not yet linked", both call `addRun` (one wins, one no-ops), and
+ * both then call `updateRun` — the LAST `updateRun` to land wins, which for
+ * two genuinely-different terminal writes of the same run id is a real,
+ * accepted race (closing it fully requires an atomic upsert-by-id primitive
+ * in the storage adapters, tracked as a follow-up).
  */
 export async function linkCompletedRunToBenchmark(
   storage: IStorageModule,
@@ -137,11 +182,58 @@ export async function linkCompletedRunToBenchmark(
     throw new Error(`Benchmark not found while linking completed run: ${benchmarkId}`);
   }
   const alreadyLinked = (benchmark.runs || []).some((r) => r.id === benchmarkRun.id);
-  const linked = alreadyLinked
-    ? await storage.benchmarks.updateRun(benchmarkId, benchmarkRun.id, benchmarkRun)
-    : await storage.benchmarks.addRun(benchmarkId, benchmarkRun);
-  if (!linked) {
+  if (alreadyLinked) {
+    const linked = await storage.benchmarks.updateRun(benchmarkId, benchmarkRun.id, benchmarkRun);
+    if (!linked) {
+      throw new Error(`Failed to link completed run to benchmark: ${benchmarkId}`);
+    }
+    return;
+  }
+  const added = await storage.benchmarks.addRun(benchmarkId, benchmarkRun);
+  const updated = await storage.benchmarks.updateRun(benchmarkId, benchmarkRun.id, benchmarkRun);
+  if (!added && !updated) {
     throw new Error(`Failed to link completed run to benchmark: ${benchmarkId}`);
+  }
+}
+
+/**
+ * Cancel-route-specific projection sync: a PARTIAL update (status/
+ * completedAt/error only) when the projection already exists, so this can
+ * never race/clobber the executor's own (richer) terminal write of
+ * results/stats with a stale, still-pending snapshot — unlike
+ * `linkCompletedRunToBenchmark` above (which writes the FULL projection
+ * shape and is meant for writers that ARE the source of truth for
+ * results/stats at that moment: the executor itself, boot recovery, resume).
+ * The executor's own terminal write remains the sole owner of results/stats
+ * for a cancelled run; this only needs the status visible sooner.
+ *
+ * Falls back to linking a full projection (add-if-missing) only when
+ * nothing was linked yet — there's no existing entry to partially update in
+ * that case (e.g. the starting link itself never landed).
+ */
+export async function syncCancelledBenchmarkProjection(
+  storage: IStorageModule,
+  benchmarkId: string,
+  run: EvaluationRun,
+  completedAt: string
+): Promise<void> {
+  const benchmark = await storage.benchmarks.getById(benchmarkId);
+  if (!benchmark) {
+    throw new Error(`Benchmark not found while syncing cancelled run to benchmark: ${benchmarkId}`);
+  }
+  const alreadyLinked = (benchmark.runs || []).some((r) => r.id === run.id);
+  if (alreadyLinked) {
+    const updates: Partial<BenchmarkRun> = { status: 'cancelled', completedAt };
+    if (run.error != null) (updates as any).error = run.error;
+    const updated = await storage.benchmarks.updateRun(benchmarkId, run.id, updates);
+    if (!updated) {
+      throw new Error(`Failed to sync cancelled run to benchmark: ${benchmarkId}`);
+    }
+    return;
+  }
+  const added = await storage.benchmarks.addRun(benchmarkId, buildBenchmarkRunProjection(run, completedAt));
+  if (!added) {
+    throw new Error(`Failed to sync cancelled run to benchmark: ${benchmarkId}`);
   }
 }
 
@@ -305,6 +397,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
     // case documents resolved above. Repeated CLI imports therefore reuse one
     // benchmark and one stable set of testCaseIds instead of creating rows
     // whose definitions and runs live only in evaluation-run documents.
+    let benchmarkVersionAtStart: number | undefined;
     if (benchmarkId) {
       const benchmark = await storage.benchmarks.getById(benchmarkId);
       if (!benchmark) {
@@ -312,6 +405,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
         res.end();
         return;
       }
+      benchmarkVersionAtStart = benchmark.currentVersion;
       const idsChanged = JSON.stringify(benchmark.testCaseIds || []) !== JSON.stringify(resolvedTestCaseIds);
       if (idsChanged) {
         await storage.benchmarks.update(benchmarkId, { testCaseIds: resolvedTestCaseIds });
@@ -401,6 +495,25 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
 
     await storage.evaluationRuns.create(run);
 
+    // Link a `running` projection into `benchmark.runs` immediately —
+    // mirrors the legacy /execute route's "save run to benchmark immediately
+    // so it persists across page refreshes". Without this, an in-progress
+    // evaluation-run-based run is invisible on the Benchmark Details page
+    // until it reaches a terminal state (the regression this fix addresses).
+    // Best-effort: the run is first-class via the top-level evaluation-run
+    // doc regardless, so a link failure here must not abort execution.
+    if (benchmarkId) {
+      try {
+        const startingProjection = buildStartingBenchmarkRunProjection(run, benchmarkVersionAtStart);
+        const linked = await storage.benchmarks.addRun(benchmarkId, startingProjection);
+        if (!linked) {
+          console.error(`[StorageAPI] Benchmark ${benchmarkId} not found while linking starting run ${runId} (run continues)`);
+        }
+      } catch (linkError: any) {
+        console.error(`[StorageAPI] Failed to link starting run ${runId} to benchmark ${benchmarkId} (run continues): ${linkError.message}`);
+      }
+    }
+
     // Send started event
     sendSSE(res, 'started', { runId, testCases: snapshots });
 
@@ -422,6 +535,13 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
         },
         onTestCaseComplete: async (testCaseId: string, result: any) => {
           await storage.evaluationRuns.updateResult(runId, testCaseId, result);
+          if (benchmarkId) {
+            try {
+              await storage.benchmarks.updateRunResult(benchmarkId, runId, testCaseId, result);
+            } catch (progressError: any) {
+              console.error(`[StorageAPI] Failed to update benchmark run progress for ${runId}/${testCaseId} (run continues): ${progressError.message}`);
+            }
+          }
           sendSSE(res, 'testCaseComplete', { testCaseId, result });
         },
       });
@@ -429,40 +549,64 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       const finalStatus = cancellationToken.isCancelled ? 'cancelled' : 'completed';
       const completedAt = new Date().toISOString();
 
-      // Link the terminal projection before finalizing the first-class run.
-      // If finalization crashes, retrying is safe because addRun is idempotent;
-      // a terminal evaluation-run can therefore never be orphaned from its benchmark.
-      if (benchmarkId) {
-        const benchmarkRun: BenchmarkRun = {
-          id: run.id, name: run.name, createdAt: run.createdAt, completedAt,
-          status: finalStatus, agentKey: run.agentKey, modelId: run.modelId,
-          judgeModelId: run.judgeModelId, results: completedRun.results, stats: completedRun.stats,
-          ...(run.description ? { description: run.description } : {}),
-          ...(run.evaluatorId ? { evaluatorId: run.evaluatorId } : {}),
-          ...(run.headers ? { headers: run.headers } : {}),
-          ...(run.concurrency ? { concurrency: run.concurrency } : {}),
-          testCaseSnapshots: run.testCaseSnapshots,
-        };
-        const linked = await storage.benchmarks.addRun(benchmarkId, benchmarkRun);
-        if (!linked) throw new Error(`Benchmark not found while linking completed run: ${benchmarkId}`);
-      }
-
       const updatedRun = await storage.evaluationRuns.update(runId, {
         status: finalStatus, stats: completedRun.stats, completedAt, results: completedRun.results,
       });
+
+      // Sync the terminal state into the benchmark's embedded projection.
+      // The starting projection linked at run start already exists in
+      // `benchmark.runs`, so `linkCompletedRunToBenchmark` UPDATEs it
+      // in place (falling back to add-if-missing) rather than blindly calling
+      // `addRun` again, which would silently no-op (add-if-absent) and leave
+      // the projection stuck on `status: 'running'` forever.
+      //
+      // Deliberately its OWN try/catch, NOT allowed to bubble into the outer
+      // catch below: by this point the run has genuinely reached a terminal
+      // state (results persisted, `updatedRun` above already written) — a
+      // secondary bookkeeping failure here must not rewrite the run's own
+      // status to 'failed' and misreport a real success/cancellation.
+      if (benchmarkId) {
+        try {
+          await linkCompletedRunToBenchmark(
+            storage,
+            benchmarkId,
+            buildBenchmarkRunProjection(updatedRun, completedAt)
+          );
+        } catch (linkError: any) {
+          console.error(`[StorageAPI] Run ${runId} ${finalStatus} but failed to sync benchmark ${benchmarkId} projection: ${linkError.message}`);
+        }
+      }
+
       sendSSE(res, 'completed', updatedRun);
     } catch (error: any) {
       console.error(`[StorageAPI] Evaluation run failed: ${runId}`, error.message);
 
       // Update run status to failed
+      let failedRun: EvaluationRun | undefined;
       try {
-        await storage.evaluationRuns.update(runId, {
+        failedRun = await storage.evaluationRuns.update(runId, {
           status: 'failed',
           completedAt: new Date().toISOString(),
           error: error.message,
         });
       } catch (updateError: any) {
         console.error(`[StorageAPI] Failed to update run status: ${updateError.message}`);
+      }
+
+      // Sync the benchmark projection to 'failed' too (previously this path
+      // never touched `benchmark.runs` at all, so a failed run vanished from
+      // the Benchmark Details page entirely instead of showing as failed).
+      if (benchmarkId) {
+        try {
+          const completedAt = failedRun?.completedAt || new Date().toISOString();
+          const projection = buildBenchmarkRunProjection(
+            failedRun ?? { ...run, status: 'failed', completedAt, error: error.message },
+            completedAt
+          );
+          await linkCompletedRunToBenchmark(storage, benchmarkId, projection);
+        } catch (linkError: any) {
+          console.error(`[StorageAPI] Run ${runId} failed and also failed to sync benchmark ${benchmarkId} projection: ${linkError.message}`);
+        }
       }
 
       sendSSE(res, 'error', { error: error.message, runId });
@@ -506,10 +650,29 @@ router.post('/api/storage/evaluation-runs/:id/cancel', async (req: Request, res:
     cancellationToken.cancel();
 
     const storage = getStorageModule();
-    await storage.evaluationRuns.update(id, {
+    const completedAt = new Date().toISOString();
+    const updatedRun = await storage.evaluationRuns.update(id, {
       status: 'cancelled',
-      completedAt: new Date().toISOString(),
+      completedAt,
     });
+
+    // Keep the benchmark's embedded projection in sync so a cancel doesn't
+    // leave the Benchmark Details page showing the run stuck on 'running'
+    // until the executor loop notices `cancellationToken.isCancelled` on its
+    // own and reaches its own (richer) terminal write. Deliberately a
+    // PARTIAL sync (status/completedAt/error only, via
+    // `syncCancelledBenchmarkProjection`) — NOT the full terminal projection
+    // — so this can't race the executor's own terminal write and clobber its
+    // results/stats with a stale, still-pending snapshot; the executor
+    // remains the sole owner of results/stats for this run. The cancellation
+    // itself already succeeded above regardless of this.
+    if (updatedRun.benchmarkId) {
+      try {
+        await syncCancelledBenchmarkProjection(storage, updatedRun.benchmarkId, updatedRun, completedAt);
+      } catch (linkError: any) {
+        console.error(`[StorageAPI] Cancel: failed to sync benchmark ${updatedRun.benchmarkId} projection for run ${id}: ${linkError.message}`);
+      }
+    }
 
     res.json({ success: true });
   } catch (error: any) {
@@ -643,6 +806,23 @@ router.post('/api/storage/evaluation-runs/:id/resume', async (req: Request, res:
       ...(missingIds.length > 0 ? { missingTestCaseIds: missingIds } : {}),
     });
 
+    // Re-link (or link for the first time) a `running` projection into
+    // `benchmark.runs` — same requirement as the create route's starting
+    // link: without this, a resumed run stays invisible on the Benchmark
+    // Details page until it reaches a terminal state again. Uses the
+    // generic projection builder (not the all-pending one the create route
+    // uses) since a resumed run's results are a real mix of
+    // preserved-completed + freshly-reset-pending, not "everything pending"
+    // like a brand-new run. Best-effort: the run is first-class via the
+    // top-level doc regardless, so a link failure here must not abort it.
+    if (run.benchmarkId) {
+      try {
+        await linkCompletedRunToBenchmark(storage, run.benchmarkId, buildBenchmarkRunProjection(run));
+      } catch (linkError: any) {
+        console.error(`[StorageAPI] Failed to re-link resumed run ${id} to benchmark ${run.benchmarkId} (run continues): ${linkError.message}`);
+      }
+    }
+
     const cancellationToken = createCancellationToken();
     activeCancellationTokens.set(id, cancellationToken);
     const stopHeartbeat = startRunHeartbeat(storage, id);
@@ -659,6 +839,13 @@ router.post('/api/storage/evaluation-runs/:id/resume', async (req: Request, res:
         },
         onTestCaseComplete: async (testCaseId: string, result: any) => {
           await storage.evaluationRuns.updateResult(id, testCaseId, result);
+          if (run.benchmarkId) {
+            try {
+              await storage.benchmarks.updateRunResult(run.benchmarkId, id, testCaseId, result);
+            } catch (progressError: any) {
+              console.error(`[StorageAPI] Failed to update benchmark run progress for ${id}/${testCaseId} (run continues): ${progressError.message}`);
+            }
+          }
           sendSSE(res, 'testCaseComplete', { testCaseId, result });
         },
       });
@@ -712,14 +899,30 @@ router.post('/api/storage/evaluation-runs/:id/resume', async (req: Request, res:
       sendSSE(res, 'completed', updatedRun);
     } catch (error: any) {
       console.error(`[StorageAPI] Evaluation run resume failed: ${id}`, error.message);
+      let failedRun: EvaluationRun | undefined;
       try {
-        await storage.evaluationRuns.update(id, {
+        failedRun = await storage.evaluationRuns.update(id, {
           status: 'failed',
           completedAt: new Date().toISOString(),
           error: error.message,
         });
       } catch (updateError: any) {
         console.error(`[StorageAPI] Failed to update run status: ${updateError.message}`);
+      }
+      // Sync the benchmark projection to 'failed' too — mirrors the create
+      // route's failure path; previously a resume that failed left the
+      // projection (if any) stuck on 'running' forever.
+      if (run.benchmarkId) {
+        try {
+          const completedAt = failedRun?.completedAt || new Date().toISOString();
+          const projection = buildBenchmarkRunProjection(
+            failedRun ?? { ...run, status: 'failed', completedAt, error: error.message },
+            completedAt
+          );
+          await linkCompletedRunToBenchmark(storage, run.benchmarkId, projection);
+        } catch (linkError: any) {
+          console.error(`[StorageAPI] Resumed run ${id} failed and also failed to sync benchmark ${run.benchmarkId} projection: ${linkError.message}`);
+        }
       }
       sendSSE(res, 'error', { error: error.message, runId: id });
     } finally {

@@ -117,17 +117,17 @@ describe('EvalRunsPage — empty state colSpan (issue: left status-icon column r
     mockGetAllBenchmarks.mockResolvedValue([]);
   });
 
-  it('uses colSpan=8 for the empty-state row in flat view (was 9 before the icon column was removed)', async () => {
+  it('uses colSpan=9 for the empty-state row in flat view (8 data columns + the Re-run action column)', async () => {
     const { container } = await renderPage();
 
     await waitFor(() => {
       const cell = container.querySelector('tbody td[colspan]') as HTMLTableCellElement | null;
       expect(cell).toBeTruthy();
-      expect(cell!.colSpan).toBe(8);
+      expect(cell!.colSpan).toBe(9);
     });
   });
 
-  it('uses colSpan=7 for the empty-state row in grouped view (was 8 before the icon column was removed)', async () => {
+  it('uses colSpan=8 for the empty-state row in grouped view (7 data columns + the Re-run action column)', async () => {
     const { container } = await renderPage();
 
     fireEvent.click(screen.getByTestId('viewmode-grouped'));
@@ -135,7 +135,7 @@ describe('EvalRunsPage — empty state colSpan (issue: left status-icon column r
     await waitFor(() => {
       const cell = container.querySelector('tbody td[colspan]') as HTMLTableCellElement | null;
       expect(cell).toBeTruthy();
-      expect(cell!.colSpan).toBe(7);
+      expect(cell!.colSpan).toBe(8);
     });
   });
 });
@@ -220,5 +220,118 @@ describe('EvalRunsPage — top-level evaluation-runs merge (RunRow convergence)'
     // 1 passed / 0 failed / 0 errored / total 1 for the single passed result.
     expect(row.querySelector('.text-green-500')?.textContent).toBe('1');
     expect(row.querySelector('.text-red-500')?.textContent).toBe('0');
+  });
+});
+
+describe('EvalRunsPage — in-progress (running) run visibility', () => {
+  // Regression: ongoing evaluation-run-based runs used to render as a bare
+  // 0/0/0 row with no indicator (computeRunStats fell through to empty
+  // `results: {}` + no `stats` yet). After the server-side fix seeds
+  // `results` with pending entries at start and always stamps `status`,
+  // this page must render an explicit running indicator — not just quietly
+  // "look complete".
+  function makeRunningEvalRun() {
+    return {
+      id: 'eval-run-running-1',
+      docType: 'evaluation-run',
+      name: 'In Progress Run',
+      createdAt: new Date().toISOString(),
+      status: 'running',
+      agentKey: 'agent-a',
+      modelId: 'claude-3',
+      sources: [],
+      trigger: 'ui',
+      testCaseSnapshots: [{ id: 'tc-1', version: 1, name: 'TC 1' }, { id: 'tc-2', version: 1, name: 'TC 2' }],
+      results: {
+        'tc-1': { reportId: '', status: 'pending' },
+        'tc-2': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' },
+      },
+    };
+  }
+
+  beforeEach(() => {
+    mockGetAllBenchmarks.mockResolvedValue([]);
+  });
+
+  it('shows a running badge/spinner for a run whose status is running, without misrendering it as a bare 0/0 row', async () => {
+    mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [makeRunningEvalRun()] });
+    await renderPage();
+
+    await waitFor(() => expect(screen.getByText('In Progress Run')).toBeTruthy());
+    const row = screen.getByText('In Progress Run').closest('tr') as HTMLElement;
+
+    expect(row.querySelector('[data-testid="run-running-badge"]')).toBeTruthy();
+    // One test case already completed+passed — the partial progress must
+    // still be visible (not clobbered to 0/0 by the running state).
+    expect(row.querySelector('.text-green-500')?.textContent).toBe('1');
+    expect(row.textContent).toContain('2'); // total reflects both snapshots, not 0
+  });
+
+  it('does not show the running badge for a completed run', async () => {
+    mockListEvaluationRuns.mockResolvedValue({
+      evaluationRuns: [{ ...makeRunningEvalRun(), id: 'eval-run-done', name: 'Done Run', status: 'completed' }],
+    });
+    await renderPage();
+
+    await waitFor(() => expect(screen.getByText('Done Run')).toBeTruthy());
+    const row = screen.getByText('Done Run').closest('tr') as HTMLElement;
+    expect(row.querySelector('[data-testid="run-running-badge"]')).toBeNull();
+  });
+
+  it('is visible under the default status/pass-rate filter settings (not excluded)', async () => {
+    mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [makeRunningEvalRun()] });
+    await renderPage();
+
+    // Default filters (status='all', pass rate 0-100) must not hide it.
+    await waitFor(() => expect(screen.getByText('In Progress Run')).toBeTruthy());
+  });
+
+  it('auto-refreshes (polls) while a run is in progress', async () => {
+    jest.useFakeTimers({ advanceTimers: true });
+    mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [makeRunningEvalRun()] });
+
+    let result!: ReturnType<typeof render>;
+    await act(async () => {
+      result = render(React.createElement(EvalRunsPage));
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    const initialCalls = mockListEvaluationRuns.mock.calls.length;
+    expect(initialCalls).toBeGreaterThanOrEqual(1);
+
+    await act(async () => {
+      jest.advanceTimersByTime(6000); // > RUNNING_POLL_INTERVAL_MS (5000ms)
+      await Promise.resolve();
+    });
+
+    expect(mockListEvaluationRuns.mock.calls.length).toBeGreaterThan(initialCalls);
+
+    result.unmount();
+    jest.useRealTimers();
+  });
+
+  it('does not poll when no run is in progress', async () => {
+    jest.useFakeTimers({ advanceTimers: true });
+    mockListEvaluationRuns.mockResolvedValue({
+      evaluationRuns: [{ ...makeRunningEvalRun(), status: 'completed' }],
+    });
+
+    let result!: ReturnType<typeof render>;
+    await act(async () => {
+      result = render(React.createElement(EvalRunsPage));
+    });
+    await act(async () => { await Promise.resolve(); });
+
+    const initialCalls = mockListEvaluationRuns.mock.calls.length;
+
+    await act(async () => {
+      jest.advanceTimersByTime(10000);
+      await Promise.resolve();
+    });
+
+    expect(mockListEvaluationRuns.mock.calls.length).toBe(initialCalls);
+
+    result.unmount();
+    jest.useRealTimers();
   });
 });

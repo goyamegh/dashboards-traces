@@ -109,6 +109,112 @@ describe('FileStorageModule', () => {
       expect(result!.id).toBe(bm.id);
     });
 
+    describe('updateRunResult', () => {
+      it('updates a single test case result within an embedded run without touching others', async () => {
+        const bm = await mod.benchmarks.create({
+          name: 'Run Progress',
+          testCaseIds: ['tc-1', 'tc-2'],
+          runs: [{
+            id: 'run-1',
+            name: 'Run 1',
+            createdAt: new Date().toISOString(),
+            status: 'running',
+            agentKey: 'demo',
+            modelId: 'claude-sonnet',
+            results: {
+              'tc-1': { reportId: '', status: 'pending' },
+              'tc-2': { reportId: '', status: 'pending' },
+            },
+          } as any],
+        });
+
+        const outcome = await mod.benchmarks.updateRunResult(bm.id, 'run-1', 'tc-1', {
+          reportId: 'report-1', status: 'completed',
+        });
+
+        expect(outcome).toBe(true);
+        const updated = await mod.benchmarks.getById(bm.id);
+        expect(updated!.runs![0].results['tc-1']).toEqual({ reportId: 'report-1', status: 'completed' });
+        expect(updated!.runs![0].results['tc-2']).toEqual({ reportId: '', status: 'pending' });
+      });
+
+      it('returns false when the benchmark does not exist', async () => {
+        const outcome = await mod.benchmarks.updateRunResult('missing-bm', 'run-1', 'tc-1', {
+          reportId: '', status: 'pending',
+        });
+        expect(outcome).toBe(false);
+      });
+
+      it('returns false when the run id is not in the benchmark', async () => {
+        const bm = await mod.benchmarks.create({ name: 'No Runs', testCaseIds: [], runs: [] });
+        const outcome = await mod.benchmarks.updateRunResult(bm.id, 'missing-run', 'tc-1', {
+          reportId: '', status: 'pending',
+        });
+        expect(outcome).toBe(false);
+      });
+
+      it('serializes concurrent calls for the same benchmark id so no update is lost (run.concurrency > 1)', async () => {
+        // Regression: read-modify-write with no per-id lock — concurrent
+        // onTestCaseComplete calls interleave across each other's awaits
+        // (readJsonFile/writeJsonFile are sync, but `async`/`await` still
+        // introduces a microtask boundary between the read and the write,
+        // which is enough for a second concurrent call to read the SAME
+        // stale doc before the first call's write lands) and last-writer-wins
+        // the whole file, dropping every other concurrent test case's result.
+        const testCaseIds = ['tc-1', 'tc-2', 'tc-3', 'tc-4', 'tc-5'];
+        const results: Record<string, any> = {};
+        for (const tcId of testCaseIds) results[tcId] = { reportId: '', status: 'pending' };
+        const bm = await mod.benchmarks.create({
+          name: 'Concurrency Run',
+          testCaseIds,
+          runs: [{
+            id: 'run-1',
+            name: 'Run 1',
+            createdAt: new Date().toISOString(),
+            status: 'running',
+            agentKey: 'demo',
+            modelId: 'claude-sonnet',
+            concurrency: testCaseIds.length,
+            results,
+          } as any],
+        });
+
+        await Promise.all(testCaseIds.map((tcId, i) =>
+          mod.benchmarks.updateRunResult(bm.id, 'run-1', tcId, {
+            reportId: `report-${i}`, status: 'completed',
+          })
+        ));
+
+        const updated = await mod.benchmarks.getById(bm.id);
+        for (let i = 0; i < testCaseIds.length; i++) {
+          expect(updated!.runs![0].results[testCaseIds[i]]).toEqual({
+            reportId: `report-${i}`, status: 'completed',
+          });
+        }
+      });
+
+      it('does not serialize calls for DIFFERENT benchmark ids (lock is per-id, not global)', async () => {
+        const bmA = await mod.benchmarks.create({
+          name: 'A', testCaseIds: ['tc-a'],
+          runs: [{ id: 'run-a', name: 'A', createdAt: new Date().toISOString(), status: 'running', agentKey: 'demo', modelId: 'm', results: { 'tc-a': { reportId: '', status: 'pending' } } } as any],
+        });
+        const bmB = await mod.benchmarks.create({
+          name: 'B', testCaseIds: ['tc-b'],
+          runs: [{ id: 'run-b', name: 'B', createdAt: new Date().toISOString(), status: 'running', agentKey: 'demo', modelId: 'm', results: { 'tc-b': { reportId: '', status: 'pending' } } } as any],
+        });
+
+        const [outcomeA, outcomeB] = await Promise.all([
+          mod.benchmarks.updateRunResult(bmA.id, 'run-a', 'tc-a', { reportId: 'r-a', status: 'completed' }),
+          mod.benchmarks.updateRunResult(bmB.id, 'run-b', 'tc-b', { reportId: 'r-b', status: 'completed' }),
+        ]);
+
+        expect(outcomeA).toBe(true);
+        expect(outcomeB).toBe(true);
+        expect((await mod.benchmarks.getById(bmA.id))!.runs![0].results['tc-a']).toEqual({ reportId: 'r-a', status: 'completed' });
+        expect((await mod.benchmarks.getById(bmB.id))!.runs![0].results['tc-b']).toEqual({ reportId: 'r-b', status: 'completed' });
+      });
+    });
+
     it('excludes co-located evaluation-run documents from getAll', async () => {
       await mod.benchmarks.create({ id: 'bench-1', name: 'Suite', testCaseIds: [], runs: [] });
       await mod.evaluationRuns.create({

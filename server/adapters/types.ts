@@ -125,6 +125,20 @@ export interface IBenchmarkOperations {
   delete(id: string): Promise<{ deleted: boolean }>;
   addRun(benchmarkId: string, run: BenchmarkRun): Promise<boolean>;
   updateRun(benchmarkId: string, runId: string, updates: Partial<BenchmarkRun>): Promise<boolean>;
+  /**
+   * Update a single test case's result within an embedded `BenchmarkRun`,
+   * without clobbering concurrent updates to other test cases in the same
+   * run (unlike `updateRun`, which replaces whole top-level keys such as
+   * `results`). Mirrors `IEvaluationRunOperations.updateResult` for the
+   * embedded-run shape — used to keep the benchmark-detail projection of an
+   * in-progress evaluation-run in sync with per-test-case progress.
+   * Returns `false` when the benchmark or the run id within it doesn't exist.
+   */
+  updateRunResult(benchmarkId: string, runId: string, testCaseId: string, result: {
+    reportId: string;
+    status: RunResultStatus;
+    error?: string;
+  }): Promise<boolean>;
   deleteRun(benchmarkId: string, runId: string): Promise<boolean>;
   bulkCreate(benchmarks: Partial<Benchmark>[]): Promise<{ created: number; errors: number }>;
   /**

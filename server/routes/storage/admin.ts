@@ -581,6 +581,35 @@ router.post('/api/storage/admin/recover-orphan-benchmark-runs', async (req: Requ
 });
 
 /**
+ * POST /api/storage/admin/recover-orphan-evaluation-runs
+ *
+ * Test-only endpoint: invokes the same boot-recovery logic that runs in
+ * `server/index.ts` after `app.listen()`, for the top-level EvaluationRun
+ * model. Sister of `/api/storage/admin/recover-orphan-benchmark-runs` above
+ * (see `server/services/evaluationRunRecoveryOnBoot.ts`).
+ *
+ * Gated behind `AGENT_HEALTH_TEST_ENDPOINTS=1` so it cannot be triggered
+ * accidentally in production.
+ */
+router.post('/api/storage/admin/recover-orphan-evaluation-runs', async (req: Request, res: Response) => {
+  if (process.env.AGENT_HEALTH_TEST_ENDPOINTS !== '1') {
+    return res.status(404).json({ error: 'Not found' });
+  }
+  try {
+    const storage = getStorageModule();
+    if (!storage) {
+      return res.status(503).json({ error: 'Storage not initialized' });
+    }
+    const { recoverOrphanEvaluationRuns } = await import('../../services/evaluationRunRecoveryOnBoot.js');
+    const stat = await recoverOrphanEvaluationRuns(storage);
+    res.json(stat);
+  } catch (error: any) {
+    console.error('[StorageAPI] recover-orphan-evaluation-runs failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+/**
  * POST /api/storage/admin/resume-pending-trace-polls
  * Sister test-only endpoint for the trace-recovery boot hook.
  */

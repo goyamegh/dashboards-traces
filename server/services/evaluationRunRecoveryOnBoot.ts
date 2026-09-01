@@ -17,13 +17,21 @@
  * On boot, scan evaluation runs that are:
  *   - `status === 'running'` AND
  *   - older than `EVALUATION_RUN_STALE_AFTER_MS` (default 1h; the most
- *     recent of createdAt/resumedAt counts) AND
+ *     recent of createdAt/resumedAt/heartbeatAt counts) AND
  *   - not actively executing in the current process.
  *
  * For each: mark unfinished results (`pending`/`running` without a
  * reportId) as failed with a recovery note, and the run itself as
  * `'failed'`. Completed results keep their reports — the run is then
- * resumable from exactly where it stopped.
+ * resumable from exactly where it stopped. If the run has a `benchmarkId`,
+ * the embedded `benchmark.runs` projection is synced to the same terminal
+ * state too (add-if-missing, update otherwise) — without this, a run
+ * recovered here would still show `'running'` forever on the Benchmark
+ * Details page even though the top-level doc (and the Evaluations page)
+ * correctly show it `'failed'`, a new inconsistency the ongoing-runs-
+ * visibility fix would otherwise introduce (that fix links a `running`
+ * projection into `benchmark.runs` at run start, so there's now always
+ * something there to reconcile).
  *
  * Disable in tests with `EVALUATION_RUN_RECOVERY_DISABLED=1`.
  */
@@ -34,6 +42,8 @@ import {
   isEvaluationRunActiveInThisProcess,
   runLivenessAgeMs,
   runStaleAfterMs,
+  buildBenchmarkRunProjection,
+  linkCompletedRunToBenchmark,
 } from '../routes/storage/evaluationRuns.js';
 
 function envInt(name: string, fallback: number): number {
@@ -48,6 +58,7 @@ export interface EvaluationRunRecoveryStat {
   staleRuns: number;
   resultsMarkedFailed: number;
   runsMarkedFailed: number;
+  benchmarkProjectionsSynced: number;
   errors: number;
   durationMs: number;
 }
@@ -63,6 +74,7 @@ export async function recoverOrphanEvaluationRuns(storage: IStorageModule): Prom
     staleRuns: 0,
     resultsMarkedFailed: 0,
     runsMarkedFailed: 0,
+    benchmarkProjectionsSynced: 0,
     errors: 0,
     durationMs: 0,
   };
@@ -79,7 +91,10 @@ export async function recoverOrphanEvaluationRuns(storage: IStorageModule): Prom
 
   // Two-phase: SCAN everything first, MUTATE afterwards. The list query
   // filters on status:'running' — mutating docs to 'failed' while paging
-  // with from/size shrinks the result set under the cursor and skips runs.
+  // with from/size shrinks the result set under the cursor and skips runs
+  // (codex_review finding — verified red against a fixed-offset scan-while-
+  // mutating version: only 2 of 3 stale runs were recovered when a page
+  // boundary landed mid-scan).
   const candidates: EvaluationRun[] = [];
   let from = 0;
   for (let page = 0; page < maxPages; page++) {
@@ -128,18 +143,35 @@ export async function recoverOrphanEvaluationRuns(storage: IStorageModule): Prom
       }
     }
 
+    const completedAt = new Date().toISOString();
+    const recoveryError = 'Run interrupted (server restarted mid-run). Completed test cases are preserved — use Resume to finish the rest.';
+    let recoveredRun: EvaluationRun;
     try {
-      await storage.evaluationRuns.update(run.id, {
+      recoveredRun = await storage.evaluationRuns.update(run.id, {
         status: 'failed',
-        error: 'Run interrupted (server restarted mid-run). Completed test cases are preserved — use Resume to finish the rest.',
+        error: recoveryError,
         results: newResults,
-        completedAt: new Date().toISOString(),
+        completedAt,
       });
       stat.runsMarkedFailed++;
       console.log(`[evaluationRunRecovery] Marked stale run ${run.id} as failed (resumable)`);
     } catch (err: any) {
       stat.errors++;
       console.warn(`[evaluationRunRecovery] Failed to update run ${run.id}: ${err?.message || err}`);
+      continue;
+    }
+
+    if (recoveredRun.benchmarkId) {
+      try {
+        const projection = buildBenchmarkRunProjection(recoveredRun, completedAt);
+        await linkCompletedRunToBenchmark(storage, recoveredRun.benchmarkId, projection);
+        stat.benchmarkProjectionsSynced++;
+      } catch (err: any) {
+        stat.errors++;
+        console.warn(
+          `[evaluationRunRecovery] Failed to sync benchmark ${recoveredRun.benchmarkId} projection for run ${run.id}: ${err?.message || err}`
+        );
+      }
     }
   }
 
@@ -155,7 +187,7 @@ export function recoverOrphanEvaluationRunsSafely(storage: IStorageModule): void
   recoverOrphanEvaluationRuns(storage)
     .then((stat) => {
       const summary = stat.staleRuns > 0
-        ? `marked ${stat.runsMarkedFailed} stale run(s) failed (${stat.resultsMarkedFailed} unfinished result(s))`
+        ? `marked ${stat.runsMarkedFailed} stale run(s) failed (${stat.resultsMarkedFailed} unfinished result(s), ${stat.benchmarkProjectionsSynced} benchmark projection(s) synced)`
         : 'no orphan running runs';
       console.log(`[evaluationRunRecovery] runs=${stat.scannedRuns} ${summary} [${stat.durationMs}ms]`);
     })

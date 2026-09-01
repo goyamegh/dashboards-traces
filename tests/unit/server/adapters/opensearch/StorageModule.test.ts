@@ -776,6 +776,68 @@ describe('OpenSearchStorageModule', () => {
       });
     });
 
+    describe('updateRunResult', () => {
+      it('should update a single test case result within a run, fail-closed on "updated"', async () => {
+        mockClient.update.mockResolvedValue({ body: { result: 'updated' } });
+        const result = { reportId: 'report-1', status: 'completed' as const };
+
+        const outcome = await mod.benchmarks.updateRunResult('bench-1', 'run-1', 'tc-1', result);
+
+        expect(outcome).toBe(true);
+        expect(mockClient.update).toHaveBeenCalledWith(
+          expect.objectContaining({
+            index: 'evals_experiments',
+            id: 'bench-1',
+            retry_on_conflict: 10,
+            refresh: 'wait_for',
+            body: expect.objectContaining({
+              script: expect.objectContaining({
+                params: { runId: 'run-1', testCaseId: 'tc-1', result },
+              }),
+            }),
+          })
+        );
+      });
+
+      it('should return false (fail closed) when the script reports noop (run id not in runs[])', async () => {
+        mockClient.update.mockResolvedValue({ body: { result: 'noop' } });
+
+        const outcome = await mod.benchmarks.updateRunResult('bench-1', 'missing-run', 'tc-1', {
+          reportId: '', status: 'pending',
+        });
+
+        expect(outcome).toBe(false);
+      });
+
+      it('should return false (fail closed) when the response shape is unrecognized', async () => {
+        mockClient.update.mockResolvedValue({});
+
+        const outcome = await mod.benchmarks.updateRunResult('bench-1', 'run-1', 'tc-1', {
+          reportId: '', status: 'pending',
+        });
+
+        expect(outcome).toBe(false);
+      });
+
+      it('should return false on 404', async () => {
+        mockClient.update.mockRejectedValue(make404Error());
+
+        const outcome = await mod.benchmarks.updateRunResult('missing', 'run-1', 'tc-1', {
+          reportId: '', status: 'pending',
+        });
+
+        expect(outcome).toBe(false);
+      });
+
+      it('should throw non-404 errors', async () => {
+        mockClient.update.mockRejectedValue(new Error('Conflict'));
+
+        await expect(
+          mod.benchmarks.updateRunResult('bench-1', 'run-1', 'tc-1', { reportId: '', status: 'pending' })
+        ).rejects.toThrow('Conflict');
+      });
+    });
+
     describe('deleteRun', () => {
       it('should delete a run from a benchmark', async () => {
         mockClient.update.mockResolvedValue({ body: { result: 'updated' } });

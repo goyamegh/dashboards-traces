@@ -190,19 +190,24 @@ describe('linkCompletedRunToBenchmark', () => {
     results: {},
   } as any);
 
-  it('adds a new run via addRun when the benchmark has no entry for this run id', async () => {
+  it('adds a new run via addRun when the benchmark has no entry for this run id, then follows up with an idempotent updateRun (TOCTOU guard)', async () => {
     const storage = {
       benchmarks: {
         getById: jest.fn().mockResolvedValue({ id: 'bm-1', runs: [] }),
         addRun: jest.fn().mockResolvedValue(true),
-        updateRun: jest.fn(),
+        updateRun: jest.fn().mockResolvedValue(true),
       },
     } as any;
 
     await linkCompletedRunToBenchmark(storage, 'bm-1', benchmarkRun('run-1'));
 
     expect(storage.benchmarks.addRun).toHaveBeenCalledWith('bm-1', expect.objectContaining({ id: 'run-1' }));
-    expect(storage.benchmarks.updateRun).not.toHaveBeenCalled();
+    // codex_review hardening: always follow up with an idempotent updateRun
+    // for the same id, even after a successful addRun — guards a concurrent
+    // starting-link winning the add-if-absent race in the window between our
+    // getById read and this addRun call, which would otherwise leave OUR
+    // terminal fields (results/stats/completedAt) never written.
+    expect(storage.benchmarks.updateRun).toHaveBeenCalledWith('bm-1', 'run-1', expect.objectContaining({ id: 'run-1' }));
   });
 
   it('upserts via updateRun (not addRun) when the run id is already linked — no duplicate entries', async () => {

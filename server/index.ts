@@ -173,7 +173,9 @@ async function startServer() {
             recoverOrphanBenchmarkRunsSafely(storage);
             // Same failure class for run-first EvaluationRun docs — flip stale
             // 'running' orphans to failed-with-note so they become resumable
-            // via POST /api/storage/evaluation-runs/:id/resume.
+            // via POST /api/storage/evaluation-runs/:id/resume. Also keeps
+            // the run's benchmark.runs[] projection (if any) in sync with the
+            // failed status — see server/services/evaluationRunRecoveryOnBoot.ts.
             recoverOrphanEvaluationRunsSafely(storage);
           }
         } catch (err: any) {

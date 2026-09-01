@@ -86,6 +86,8 @@ interface RunRow {
   /** Issue #242: evaluator-error runs counted separately from `failed`. */
   errored: number;
   total: number;
+  /** Still executing server-side — drives the running badge + auto-refresh. */
+  isRunning: boolean;
 }
 
 function SortHeader({ label, active, dir, onClick, className }: {
@@ -110,6 +112,26 @@ function SortHeader({ label, active, dir, onClick, className }: {
 // Pass/fail/errored stats are computed via lib/runStats.computeRunStats — the
 // single source of truth shared with BenchmarkRunsPage and the comparison
 // page, so the numbers can't diverge between views (issue #242).
+
+/** Light auto-refresh cadence while any visible run row is still in progress. */
+const RUNNING_POLL_INTERVAL_MS = 5000;
+
+/**
+ * Is this run row still executing? Mirrors `getEffectiveRunStatus` in
+ * BenchmarkRunsPage (kept as a small local copy rather than a shared import
+ * since the two pages' `RunRow`/`BenchmarkRun` typing differs slightly).
+ * Prefers the explicit `status` field (always present on both
+ * evaluation-run-based and legacy benchmark-embedded runs going forward);
+ * falls back to inferring from per-test-case result statuses for very old
+ * runs that predate `status` being stamped.
+ */
+function isRunInProgress(run: BenchmarkRun): boolean {
+  if (run.status) return run.status === 'running';
+  const results = Object.values(run.results || {});
+  if (results.length === 0) return false;
+  return results.some(r => r.status === 'running') ||
+    (results.some(r => r.status === 'pending') && !results.some(r => r.status === 'completed' || r.status === 'failed'));
+}
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
@@ -231,6 +253,7 @@ export const EvalRunsPage: React.FC = () => {
           agentName,
           ...stats,
           errored: stats.errored ?? 0,
+          isRunning: isRunInProgress(run),
         });
       }
     }
@@ -272,11 +295,23 @@ export const EvalRunsPage: React.FC = () => {
         agentName,
         ...stats,
         errored: stats.errored ?? 0,
+        isRunning: isRunInProgress(run),
       });
     }
 
     return rows;
   }, [benchmarks, evalRuns, timeRange, selectedAgent, search]);
+
+  // Any run still executing server-side, among the UNFILTERED row set —
+  // drives a light auto-refresh so an in-progress run's status/results
+  // update without a manual reload (mirrors BenchmarkRunsPage's polling).
+  const hasRunningRows = useMemo(() => allRunRows.some(rr => rr.isRunning), [allRunRows]);
+
+  useEffect(() => {
+    if (!hasRunningRows) return;
+    const interval = setInterval(() => { loadData(); }, RUNNING_POLL_INTERVAL_MS);
+    return () => clearInterval(interval);
+  }, [hasRunningRows, loadData]);
 
   // Available filter options (derived from data)
   const availableBenchmarks = useMemo(() => {
@@ -584,7 +619,17 @@ export const EvalRunsPage: React.FC = () => {
           </button>
         </td>
         <td className="px-2 py-1.5 align-middle">
-          <div className="text-xs font-medium">{rr.run.name}</div>
+          <div className="flex items-center gap-1.5">
+            <div className="text-xs font-medium">{rr.run.name}</div>
+            {rr.isRunning && (
+              <Badge
+                data-testid="run-running-badge"
+                className="text-[9px] px-1 py-0 gap-1 bg-blue-100 text-blue-700 border-blue-300 dark:bg-blue-500/20 dark:text-blue-400 dark:border-blue-500/30 animate-pulse"
+              >
+                <Loader2 size={9} className="animate-spin" /> Running
+              </Badge>
+            )}
+          </div>
           <div className="text-[9px] text-muted-foreground font-mono">{rr.run.id.slice(0, 8)}</div>
         </td>
         {showBenchmark && (
@@ -622,6 +667,9 @@ export const EvalRunsPage: React.FC = () => {
         </td>
         <td className="px-2 py-1.5 align-middle text-right">
           <div className="inline-flex items-center gap-1 text-[11px]">
+            {rr.isRunning && (
+              <Loader2 size={11} className="animate-spin text-blue-500 mr-0.5" aria-label="Running" />
+            )}
             <span className="text-green-500 font-medium">{rr.passed}</span>
             <span className="text-muted-foreground">/</span>
             <span className="text-red-500 font-medium">{rr.failed}</span>
