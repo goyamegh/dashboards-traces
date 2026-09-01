@@ -304,17 +304,24 @@ describe('Storage create-route validation (regression: empty/garbage body must 4
 
     it('does not persist anything for a rejected body (verified via a searchable marker testCaseId)', async () => {
       if (!backendAvailable) return;
-      // Give this invalid body a unique, searchable testCaseId so we can prove
-      // via /runs/search that no report referencing it was ever written --
-      // more reliable on a live shared cluster than comparing aggregate
+      // agentName/modelName are optional/display-only fields (relaxed after
+      // this suite was first written -- see the "relax agentName/modelName
+      // to optional" fix commit for why), so a body with only testCaseId is
+      // no longer invalid on its own. Use an invalid `status` value instead
+      // to make the body rejected while keeping a searchable marker
+      // testCaseId (the /runs/search route only supports filtering by
+      // testCaseId/experimentId/agentId/modelId/status/passFailStatus/tags/
+      // dateRange -- NOT agentName -- so testCaseId must stay the marker
+      // field) so we can prove via /runs/search that nothing was persisted
+      // -- more reliable on a live shared cluster than comparing aggregate
       // /runs totals, which fluctuate with concurrent unrelated activity.
-      const markerTestCaseId = `${NAME_MARKER}-runs-empty-body-marker`;
+      const markerTestCaseId = `${NAME_MARKER}-runs-invalid-body-marker`;
       const response = await fetch(`${BASE_URL}/api/storage/runs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           testCaseId: markerTestCaseId,
-          // Missing agentName/modelName -- invalid.
+          status: 'not-a-real-status', // invalid -- the one thing left rejecting this body
         }),
       });
       expect(response.status).toBe(400);
@@ -325,6 +332,22 @@ describe('Storage create-route validation (regression: empty/garbage body must 4
         body: JSON.stringify({ testCaseId: markerTestCaseId }),
       }).then((r) => r.json());
       expect(search.runs ?? []).toEqual([]);
+    });
+
+    it('accepts a body with only testCaseId (agentName/modelName are optional, display-only fields)', async () => {
+      if (!backendAvailable) return;
+      const response = await fetch(`${BASE_URL}/api/storage/runs`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          testCaseId: `${NAME_MARKER}-runs-optional-agent-tc`,
+        }),
+      });
+      expect(response.status).toBe(201);
+      const created = await response.json();
+      const id = created.run?.id ?? created.id;
+      expect(id).toBeDefined();
+      if (id) createdRunIds.push(id);
     });
 
     it('rejects an invalid status value with 400', async () => {
