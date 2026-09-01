@@ -988,10 +988,14 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
     // `benchmark -f test-cases.json` / `benchmark -n "Existing Benchmark"`
     // runs also converge on images by digest instead of silently having no
     // imageDigest at all (a gap the images/doctor dedup feature otherwise
-    // misses for this path). Skipped when the full-fetch above came back
-    // empty — a 0-test-case "image" is not a meaningful entity.
-    // Failure-safe: image bookkeeping must never block run execution.
-    if (fullTestCases.length > 0) {
+    // misses for this path). Requires the full-fetch above to have resolved
+    // EVERY id in benchmark.testCaseIds — a PARTIAL set (deleted test case,
+    // a >10000-item corpus, a transient read gap) would silently compute a
+    // digest for less content than the run actually covers, which is a
+    // wrong identity, not a harmless skip (codex_review finding: don't
+    // stamp on partial data). Failure-safe: image bookkeeping must never
+    // block run execution.
+    if (fullTestCases.length > 0 && fullTestCases.length === benchmark.testCaseIds.length) {
       try {
         const evalConditions = {
           evaluatorId: run.evaluatorId || undefined,
@@ -1004,6 +1008,10 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
       } catch (imageErr: any) {
         console.warn('[StorageAPI] Image digest stamping failed (run continues):', imageErr?.message);
       }
+    } else if (fullTestCases.length > 0) {
+      console.warn(
+        `[StorageAPI] Image digest stamping skipped for run ${run.id}: resolved ${fullTestCases.length}/${benchmark.testCaseIds.length} test cases (partial content -- refusing to stamp a digest for less content than the run covers).`
+      );
     }
 
     // Setup SSE
