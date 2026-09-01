@@ -16,6 +16,7 @@ import { isStorageAvailable, requireStorageClient, INDEXES } from '../../middlew
 import { INDEX_MAPPINGS } from '../../constants/indexMappings';
 import { getStorageModule, testStorageConnection, isFileStorage, setStorageModule, getStorageState, OpenSearchStorageModule, FileStorageModule, FileSessionMetadataOperations } from '../../adapters/index.js';
 import type { StorageState } from '../../adapters/index.js';
+import { loadConfigSync } from '@/lib/config/index';
 import { resolveStorageConfig } from '../../middleware/dataSourceConfig.js';
 import { createOpenSearchClient, configToCacheKey } from '../../services/opensearchClientFactory.js';
 import { debug } from '@/lib/debug';
@@ -304,7 +305,8 @@ router.post(
  */
 router.get('/api/storage/config/status', (req: Request, res: Response) => {
   try {
-    const status = getConfigStatus();
+    const config = loadConfigSync();
+    const status = getConfigStatus(config.agents);
     res.json(status);
   } catch (error: any) {
     console.error('[StorageAPI] Failed to get config status:', error.message);

@@ -129,6 +129,161 @@ describe('FileStorageModule', () => {
       expect(result.total).toBe(1);
       expect(result.items.map(item => item.id)).toEqual(['bench-1']);
     });
+
+    /**
+     * `linkTestCaseIds` is the file adapter's atomic (within-process)
+     * counterpart to the OpenSearch adapter's Painless scripted `_update`
+     * (see tests/unit/server/adapters/opensearch/StorageModule.test.ts).
+     * The file backend has no server-side atomic-update primitive, so it
+     * serializes through the module-level `withBenchmarkWriteLock` mutex
+     * in server/adapters/file/StorageModule.ts instead -- these tests use
+     * the REAL adapter against a real temp directory (no mocks) so the
+     * concurrency assertions mean something.
+     */
+    describe('linkTestCaseIds', () => {
+      it('unions ids into both the top level and the current version, without a version bump', async () => {
+        const bm = await mod.benchmarks.create({ name: 'Shell', testCaseIds: [] });
+
+        const result = await mod.benchmarks.linkTestCaseIds(bm.id, ['tc-1', 'tc-2', 'tc-1']);
+
+        expect(result?.added).toEqual(['tc-1', 'tc-2']);
+        expect(result?.benchmark.testCaseIds).toEqual(['tc-1', 'tc-2']);
+        // create() doesn't itself synthesize versions/currentVersion, so
+        // this exercises the SAME legacy-doc v1-synthesis path as the
+        // dedicated test below — no bump: currentVersion is never written.
+        expect(result?.benchmark.currentVersion).toBeUndefined();
+        expect(result?.benchmark.versions[0].testCaseIds).toEqual(['tc-1', 'tc-2']);
+        const fetched = await mod.benchmarks.getById(bm.id);
+        expect(fetched?.testCaseIds).toEqual(['tc-1', 'tc-2']);
+      });
+
+      it('returns null when the benchmark does not exist', async () => {
+        const result = await mod.benchmarks.linkTestCaseIds('missing-bench', ['tc-1']);
+        expect(result).toBeNull();
+      });
+
+      it('is a no-op (no write) when both levels already have every id', async () => {
+        const bm = await mod.benchmarks.create({ name: 'Shell', testCaseIds: ['tc-1'] });
+        await mod.benchmarks.linkTestCaseIds(bm.id, ['tc-1']); // seed the current version too
+        const before = await mod.benchmarks.getById(bm.id);
+
+        const result = await mod.benchmarks.linkTestCaseIds(bm.id, ['tc-1']);
+
+        expect(result?.added).toEqual([]);
+        expect(result?.benchmark.updatedAt).toBe(before?.updatedAt);
+      });
+
+      it("repairs a stale current-version testCaseIds even when the top level is already correct (the bug this function exists to fix)", async () => {
+        const bm = await mod.benchmarks.create({
+          id: 'bench-stale-version',
+          name: 'Stale',
+          testCaseIds: ['tc-1', 'tc-2', 'tc-3'],
+          currentVersion: 1,
+          versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: [] }],
+        } as any);
+
+        const result = await mod.benchmarks.linkTestCaseIds(bm.id, ['tc-1', 'tc-2', 'tc-3']);
+
+        expect(result?.added).toEqual([]); // nothing NEW at the top level
+        expect(result?.benchmark.versions[0].testCaseIds).toEqual(['tc-1', 'tc-2', 'tc-3']); // version repaired anyway
+      });
+
+      it('synthesizes a v1 version entry for a legacy doc with no versions array', async () => {
+        const bm = await mod.benchmarks.create({ id: 'bench-legacy', name: 'Legacy', testCaseIds: [] } as any);
+        // Simulate a pre-versioning doc by deleting the versions field the
+        // create() path already populated as [] -- write it back directly.
+        const fp = path.join(tmpDir, 'benchmarks', `${bm.id}.json`);
+        const raw = JSON.parse(fs.readFileSync(fp, 'utf-8'));
+        delete raw.versions;
+        delete raw.currentVersion;
+        fs.writeFileSync(fp, JSON.stringify(raw));
+
+        const result = await mod.benchmarks.linkTestCaseIds(bm.id, ['tc-1']);
+
+        expect(result?.benchmark.versions).toHaveLength(1);
+        expect(result?.benchmark.versions[0]).toMatchObject({ version: 1, testCaseIds: ['tc-1'] });
+        expect(result?.benchmark.currentVersion).toBeUndefined(); // no bump: field never written
+      });
+
+      it('targets the version matching currentVersion, not array index 0, when there are multiple versions', async () => {
+        const bm = await mod.benchmarks.create({
+          id: 'bench-multi',
+          name: 'Multi',
+          testCaseIds: ['tc-1', 'tc-2'],
+          currentVersion: 2,
+          versions: [
+            { version: 1, createdAt: new Date().toISOString(), testCaseIds: ['tc-1'] },
+            { version: 2, createdAt: new Date().toISOString(), testCaseIds: [] },
+          ],
+        } as any);
+
+        await mod.benchmarks.linkTestCaseIds(bm.id, ['tc-1', 'tc-2']);
+
+        const fetched = await mod.benchmarks.getById(bm.id);
+        expect(fetched?.versions[0].testCaseIds).toEqual(['tc-1']); // v1 untouched
+        expect(fetched?.versions[1].testCaseIds).toEqual(['tc-1', 'tc-2']); // v2 (current) repaired
+      });
+
+      it('CONCURRENCY: two simultaneous linkTestCaseIds calls against the same benchmark both land — no lost update', async () => {
+        const bm = await mod.benchmarks.create({ name: 'Race', testCaseIds: [] });
+
+        const [r1, r2] = await Promise.all([
+          mod.benchmarks.linkTestCaseIds(bm.id, ['tc-a']),
+          mod.benchmarks.linkTestCaseIds(bm.id, ['tc-b']),
+        ]);
+
+        expect(r1).not.toBeNull();
+        expect(r2).not.toBeNull();
+        const fetched = await mod.benchmarks.getById(bm.id);
+        // Both ids present regardless of which write landed first — this is
+        // exactly the case a client-side optimistic-retry-but-unguarded-write
+        // implementation could still lose (codex_review's finding).
+        expect(fetched?.testCaseIds.sort()).toEqual(['tc-a', 'tc-b']);
+        expect(fetched?.versions[0].testCaseIds.sort()).toEqual(['tc-a', 'tc-b']);
+      });
+
+      it('CONCURRENCY: many simultaneous linkTestCaseIds calls against the same benchmark all land — no lost update', async () => {
+        const bm = await mod.benchmarks.create({ name: 'BigRace', testCaseIds: [] });
+        const ids = Array.from({ length: 15 }, (_, i) => `tc-race-${i}`);
+
+        await Promise.all(ids.map(id => mod.benchmarks.linkTestCaseIds(bm.id, [id])));
+
+        const fetched = await mod.benchmarks.getById(bm.id);
+        expect(fetched?.testCaseIds.slice().sort()).toEqual(ids.slice().sort());
+        expect(fetched?.versions[0].testCaseIds.slice().sort()).toEqual(ids.slice().sort());
+      });
+
+      it('CONCURRENCY: linkTestCaseIds racing a plain update() version bump does not clobber the bump, and the linked ids still land', async () => {
+        const bm = await mod.benchmarks.create({ name: 'RaceVsBump', testCaseIds: ['tc-1'] });
+        await mod.benchmarks.linkTestCaseIds(bm.id, ['tc-1']); // seed v1's own array too
+
+        // A normal PUT /api/storage/benchmarks/:id edit bumps a new version
+        // (this is what the real edit route does — not going through
+        // linkTestCaseIds at all). Racing it against a concurrent link call
+        // for a DIFFERENT id.
+        const bump = mod.benchmarks.update(bm.id, {
+          testCaseIds: ['tc-1', 'tc-2'],
+          currentVersion: 2,
+          versions: [
+            { version: 1, createdAt: new Date().toISOString(), testCaseIds: ['tc-1'] },
+            { version: 2, createdAt: new Date().toISOString(), testCaseIds: ['tc-1', 'tc-2'] },
+          ],
+        } as any);
+        const link = mod.benchmarks.linkTestCaseIds(bm.id, ['tc-3']);
+
+        await Promise.all([bump, link]);
+
+        const fetched = await mod.benchmarks.getById(bm.id);
+        // tc-3 must have landed SOMEWHERE (top level at minimum) regardless
+        // of ordering — this is best-effort under a real race against a
+        // caller that bypasses the mutex entirely (update() isn't
+        // serialized through it, matching production: the normal edit
+        // route doesn't go through linkTestCaseIds). The mutex only
+        // guarantees linkTestCaseIds calls don't lose each other's writes;
+        // it can't retroactively serialize a concurrent plain update().
+        expect(fetched?.testCaseIds).toContain('tc-3');
+      });
+    });
   });
 
   describe('images', () => {

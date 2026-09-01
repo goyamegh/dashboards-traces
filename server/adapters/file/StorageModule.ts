@@ -24,6 +24,7 @@ import type {
   Benchmark,
   BenchmarkRun,
   BenchmarkImage,
+  BenchmarkVersion,
   EvaluationRun,
   TestCaseRun,
   RunAnnotation,
@@ -98,6 +99,38 @@ function paginate<T>(items: T[], options?: PaginationOptions): { items: T[]; tot
   const from = options?.from ?? 0;
   const size = options?.size ?? total;
   return { items: items.slice(from, from + size), total };
+}
+
+// ============================================================================
+// Benchmark write serialization
+// ============================================================================
+
+/**
+ * Module-level promise-chain mutex serializing `FileBenchmarkOperations
+ * .linkTestCaseIds()` calls (across every instance in this process). The
+ * file adapter's other benchmark mutations (`update`/`addRun`/`updateRun`/
+ * `deleteRun`) are all a plain read-then-full-file-overwrite with no
+ * concurrency guard either, but `linkTestCaseIds` is the one now invoked
+ * on every `POST /api/storage/evaluation-runs` (see
+ * services/benchmarkPromotion.ts), so it's the one a codex_review flagged
+ * as a real, reachable race — the file backend has no server-side atomic
+ * update primitive (no equivalent of OpenSearch's Painless scripted
+ * `_update`), so serializing this method's read-modify-write in-process is
+ * the closest sufficient substitute: single-process file-backend usage
+ * (the common case — local dev / a single CLI process) is race-free;
+ * cross-process file-backend concurrency remains unguarded, same as every
+ * other mutation on this adapter today.
+ */
+let benchmarkWriteQueue: Promise<unknown> = Promise.resolve();
+
+function withBenchmarkWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+  const result = benchmarkWriteQueue.then(fn, fn);
+  // Chain the NEXT caller off this one regardless of whether it threw —
+  // swallow the rejection here so it can't become an unhandled rejection
+  // on the shared queue variable itself (the real error still propagates
+  // to whoever awaited `result`).
+  benchmarkWriteQueue = result.catch(() => undefined);
+  return result;
 }
 
 // ============================================================================
@@ -411,6 +444,72 @@ class FileBenchmarkOperations implements IBenchmarkOperations {
       }
     }
     return { created, errors };
+  }
+
+  /**
+   * Atomic (within this process) union of `testCaseIds` into both the
+   * top-level array and the current version's own entry. Serialized
+   * through the module-level `withBenchmarkWriteLock` above rather than
+   * the plain unguarded read-then-write every other mutation on this
+   * class uses — see that helper's docstring for why this specific method
+   * needs it. The actual merge logic mirrors the OpenSearch adapter's
+   * Painless script line for line (legacy-doc v1 synthesis, targeting the
+   * version matching `currentVersion` with a last-entry fallback, no
+   * version bump) so the two backends stay behaviorally identical.
+   */
+  async linkTestCaseIds(
+    benchmarkId: string,
+    testCaseIds: string[],
+  ): Promise<{ benchmark: Benchmark; added: string[] } | null> {
+    return withBenchmarkWriteLock(async () => {
+      const benchmark = await this.getById(benchmarkId);
+      if (!benchmark) return null;
+
+      const uniqueIncoming = Array.from(new Set(testCaseIds)).filter(Boolean);
+
+      const existingTopLevelIds = benchmark.testCaseIds || [];
+      const topLevelSet = new Set(existingTopLevelIds);
+      const added = uniqueIncoming.filter(id => !topLevelSet.has(id));
+      const mergedTopLevelIds = added.length > 0 ? [...existingTopLevelIds, ...added] : existingTopLevelIds;
+
+      const currentVersion = benchmark.currentVersion ?? 1;
+      const versions: BenchmarkVersion[] = benchmark.versions && benchmark.versions.length > 0
+        ? benchmark.versions
+        : [{ version: 1, createdAt: benchmark.createdAt, testCaseIds: existingTopLevelIds }];
+      let currentVersionIndex = versions.findIndex(v => v.version === currentVersion);
+      if (currentVersionIndex === -1) currentVersionIndex = versions.length - 1;
+      const currentVersionEntry = versions[currentVersionIndex];
+      const existingVersionIds = currentVersionEntry.testCaseIds || [];
+      const versionSet = new Set(existingVersionIds);
+      const missingFromVersion = uniqueIncoming.filter(id => !versionSet.has(id));
+
+      const topLevelChanged = added.length > 0;
+      const versionChanged = missingFromVersion.length > 0;
+
+      if (!topLevelChanged && !versionChanged) {
+        return { benchmark, added: [] };
+      }
+
+      const mergedVersionIds = versionChanged
+        ? [...existingVersionIds, ...missingFromVersion]
+        : existingVersionIds;
+
+      const updatedVersions = versions.slice();
+      updatedVersions[currentVersionIndex] = {
+        ...currentVersionEntry,
+        testCaseIds: mergedVersionIds,
+      };
+
+      const updated: Benchmark = {
+        ...benchmark,
+        testCaseIds: mergedTopLevelIds,
+        versions: updatedVersions,
+        updatedAt: new Date().toISOString(),
+      };
+      writeJsonFile(this.docPath(benchmarkId), updated);
+
+      return { benchmark: updated, added };
+    });
   }
 }
 

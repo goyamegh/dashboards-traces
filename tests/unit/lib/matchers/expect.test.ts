@@ -143,3 +143,85 @@ describe('custom matchers', () => {
     ).toThrow(/missed the root cause/);
   });
 });
+
+describe('expect.soft (RFC 004 roadmap — non-throwing assertions)', () => {
+  beforeEach(() => startSession());
+  afterEach(() => endSession());
+
+  it('records a failing soft assertion but does NOT throw', () => {
+    expect(() => ahExpect.soft(1).to.equal(2)).not.toThrow();
+    const out = endSession();
+    startSession();
+    expect(out).toHaveLength(1);
+    expect(out[0].pass).toBe(false);
+    expect(out[0].method).toBe('code-assertion');
+    expect(out[0].errorMessage).toBeTruthy();
+  });
+
+  it('records a passing soft assertion normally', () => {
+    ahExpect.soft(2).to.equal(2);
+    const out = endSession();
+    startSession();
+    expect(out).toHaveLength(1);
+    expect(out[0].pass).toBe(true);
+  });
+
+  it('the test body keeps running after a soft failure — later matchers still record', () => {
+    // This is the exact bug the mode exists to fix: with hard expect(), the
+    // second line below would never execute.
+    ahExpect.soft(1).to.equal(2); // fails — recorded, does NOT throw
+    ahExpect(2).to.equal(2);       // still reached, passes
+    const out = endSession();
+    startSession();
+    expect(out).toHaveLength(2);
+    expect(out[0].pass).toBe(false);
+    expect(out[1].pass).toBe(true);
+  });
+
+  it('a hard expect() after a soft failure still bails on its OWN failure', () => {
+    ahExpect.soft(1).to.equal(2);                       // soft fail, continues
+    expect(() => ahExpect(3).to.equal(4)).toThrow();     // hard fail, throws
+    const out = endSession();
+    startSession();
+    expect(out).toHaveLength(2);
+    expect(out.every(r => !r.pass)).toBe(true);
+  });
+
+  it('custom matchers work in soft mode too — every assertion funnels through the same override', () => {
+    const trajectory = [{ type: 'action', toolName: 'search_logs' }];
+    ahExpect.soft(trajectory as any).to.haveCalledTool('missing-tool');
+    ahExpect.soft(trajectory as any).to.haveCalledTool('search_logs');
+    const out = endSession();
+    startSession();
+    expect(out).toHaveLength(2);
+    expect(out[0].pass).toBe(false);
+    expect(out[1].pass).toBe(true);
+  });
+
+  it('a fresh expect.soft(...) call is independently flagged — no cross-call leakage', () => {
+    ahExpect.soft(1).to.equal(2); // soft, swallowed
+    // A brand-new expect() call (not .soft) must NOT inherit the flag from
+    // the previous statement — each call creates its own Assertion instance.
+    expect(() => ahExpect(3).to.equal(4)).toThrow();
+  });
+
+  it('KNOWN LIMITATION: a multi-step property chain records a derivative second failure when the first link fails (see docs/SDK.md)', () => {
+    // With a hard expect(), a missing property throws and `.that.equals()`
+    // never runs — only ONE failure would ever be recorded. In soft mode
+    // nothing throws, so the chain continues past the missing-property
+    // check and `.that.equals(5)` runs against `undefined`, recording its
+    // own "expected undefined to equal 5" failure. This test pins that
+    // documented, real behavior (not asserting it's desirable — see the
+    // "Known limitation" callout in docs/SDK.md) so a future change to the
+    // patched assert() override doesn't silently alter it either way
+    // without a deliberate update here.
+    ahExpect.soft({ a: 1 } as any).to.have.property('nonexistent').that.equals(5);
+    const out = endSession();
+    startSession();
+    expect(out).toHaveLength(2);
+    expect(out[0].pass).toBe(false);
+    expect(out[0].errorMessage).toContain('nonexistent');
+    expect(out[1].pass).toBe(false);
+    expect(out[1].errorMessage).toContain('undefined');
+  });
+});

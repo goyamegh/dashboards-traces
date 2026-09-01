@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { promoteRunToBenchmark } from '@/services/benchmarkPromotion';
+import { promoteRunToBenchmark, linkTestCaseIdsToBenchmark } from '@/services/benchmarkPromotion';
 import type { Benchmark, EvaluationRun } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
 
@@ -137,5 +137,77 @@ describe('promoteRunToBenchmark', () => {
         description: 'Promoted from run run-1',
       })
     );
+  });
+});
+
+/**
+ * `linkTestCaseIdsToBenchmark` is now a thin, storage-agnostic delegator to
+ * `storage.benchmarks.linkTestCaseIds()` -- the actual union-merge logic
+ * (top-level + current-version repair, legacy-doc v1 synthesis,
+ * multi-version targeting, dedup) moved into the OpenSearch/file adapters
+ * themselves so the mutation can be genuinely atomic per-backend (a
+ * codex_review finding: a client-side read-modify-write here, even with an
+ * optimistic-retry freshness check, could still race on the final write).
+ * See tests/unit/server/adapters/opensearch/StorageModule.test.ts
+ * (`linkTestCaseIds` describe block) and
+ * tests/unit/server/adapters/file/StorageModule.test.ts for the real
+ * merge-logic and concurrency coverage.
+ */
+describe('linkTestCaseIdsToBenchmark', () => {
+  let mockStorage: jest.Mocked<Pick<IStorageModule, 'benchmarks'>>;
+
+  const shellBenchmark: Benchmark = {
+    id: 'bench-shell',
+    name: 'Shell Benchmark',
+    createdAt: '2026-01-01T00:00:00Z',
+    updatedAt: '2026-01-01T00:00:00Z',
+    currentVersion: 1,
+    versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: ['tc-1', 'tc-2'] }],
+    testCaseIds: ['tc-1', 'tc-2'],
+    runs: [],
+  };
+
+  beforeEach(() => {
+    mockStorage = {
+      benchmarks: {
+        getAll: jest.fn(),
+        getById: jest.fn(),
+        create: jest.fn(),
+        update: jest.fn(),
+        delete: jest.fn(),
+        addRun: jest.fn(),
+        updateRun: jest.fn(),
+        deleteRun: jest.fn(),
+        bulkCreate: jest.fn(),
+        linkTestCaseIds: jest.fn(),
+      } as any,
+    };
+  });
+
+  it('delegates to storage.benchmarks.linkTestCaseIds with the exact benchmarkId and testCaseIds, and returns its result verbatim', async () => {
+    const expected = { benchmark: shellBenchmark, added: ['tc-1', 'tc-2'] };
+    (mockStorage.benchmarks.linkTestCaseIds as jest.Mock).mockResolvedValue(expected);
+
+    const result = await linkTestCaseIdsToBenchmark('bench-shell', ['tc-1', 'tc-2'], mockStorage as any);
+
+    expect(mockStorage.benchmarks.linkTestCaseIds).toHaveBeenCalledWith('bench-shell', ['tc-1', 'tc-2']);
+    expect(mockStorage.benchmarks.linkTestCaseIds).toHaveBeenCalledTimes(1);
+    expect(result).toBe(expected);
+  });
+
+  it('passes through null when the benchmark does not exist (does not swallow or rewrap it)', async () => {
+    (mockStorage.benchmarks.linkTestCaseIds as jest.Mock).mockResolvedValue(null);
+
+    const result = await linkTestCaseIdsToBenchmark('missing-bench', ['tc-1'], mockStorage as any);
+
+    expect(result).toBeNull();
+  });
+
+  it('propagates a rejection from the adapter (e.g. every retry_on_conflict/outer-retry attempt exhausted) rather than swallowing it', async () => {
+    (mockStorage.benchmarks.linkTestCaseIds as jest.Mock).mockRejectedValue(new Error('adapter exhausted retries'));
+
+    await expect(
+      linkTestCaseIdsToBenchmark('bench-shell', ['tc-1'], mockStorage as any)
+    ).rejects.toThrow('adapter exhausted retries');
   });
 });
