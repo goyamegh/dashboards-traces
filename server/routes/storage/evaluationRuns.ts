@@ -18,6 +18,7 @@ import {
   buildRerunConfig,
   computeRerunName,
 } from '../../../services/evaluationRerun.js';
+import { retryJudgementForRun, type RetryJudgementScope } from '../../../services/evaluation/retryJudgement.js';
 import { loadConfigSync } from '../../../lib/config/index.js';
 import { getCustomAgents } from '../../services/customAgentStore.js';
 import { resolveAgentModel } from '../../../lib/resolveAgentModel.js';
@@ -480,6 +481,35 @@ router.post('/api/storage/evaluation-runs/:id/rerun', async (req: Request, res: 
     if (!res.headersSent) {
       res.status(500).json({ error: error.message });
     }
+  }
+});
+
+// POST /api/storage/evaluation-runs/:id/retry-judgement - Salvage judge-failed
+// cases at judge cost only (never re-invokes the agent). See
+// services/evaluation/retryJudgement.ts for the selection predicate + pipeline.
+router.post('/api/storage/evaluation-runs/:id/retry-judgement', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const scope: RetryJudgementScope = req.query.scope === 'all' ? 'all' : 'errored';
+    const storage = getStorageModule();
+
+    const run = await storage.evaluationRuns.getById(id);
+    if (!run) {
+      return res.status(404).json({ error: 'Evaluation run not found' });
+    }
+
+    // The run must be in a TERMINAL state — retrying judgement on a run
+    // that's still executing would race the runner's own writes to the same
+    // report docs / results map.
+    if (run.status === 'running' || run.status === 'pending') {
+      return res.status(409).json({ error: 'Cannot retry judgement while the run is still executing' });
+    }
+
+    const summary = await retryJudgementForRun(run, storage, { scope, concurrency: 3 });
+    res.json(summary);
+  } catch (error: any) {
+    console.error('[StorageAPI] Retry judgement failed:', error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 

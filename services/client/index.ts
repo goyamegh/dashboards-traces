@@ -52,7 +52,10 @@ export {
   promoteEvaluationRun,
   rerunEvaluationRun,
   updateEvaluationRun,
+  retryJudgement,
   type CreateEvaluationRunRequest,
   type EvaluationRunProgress,
   type EvaluationRunStartedEvent,
+  type RetryJudgementSummary,
+  type RetryJudgementCaseResult,
 } from './evaluationRunsApi';
