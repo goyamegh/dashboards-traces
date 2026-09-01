@@ -441,9 +441,9 @@ export const RunInspectorPage: React.FC = () => {
                 ]
           }
         />
-        <div className="flex items-center justify-between mt-1">
+        <div className="flex items-center justify-between mt-1 flex-wrap gap-y-2">
           <div className="flex-1 min-w-0">
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-lg font-bold truncate" data-testid="run-inspector-name">{run.name}</h2>
               {/* Status pill (EvaluationRun only) — absorbed from EvalRunDetailPage. */}
               {mode === 'evalRun' && <RunStatusBadge status={run.status} />}
@@ -471,7 +471,7 @@ export const RunInspectorPage: React.FC = () => {
               </div>
             )}
           </div>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0" data-testid="run-inspector-stats">
+          <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0 flex-wrap justify-end" data-testid="run-inspector-stats">
             <span className="flex items-center gap-1"><Calendar size={11} /> {formatDate(run.createdAt)}</span>
             <span>{agentName}</span>
             <span>{modelName}</span>

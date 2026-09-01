@@ -169,6 +169,15 @@ test.describe('Re-run an evaluation run', () => {
     await expect(chip).toContainText('re-run of');
     await expect(chip).toContainText(SOURCE_NAME);
 
+    // The sidebar hover-zone overlays content (rather than push it) at low
+    // x-offsets when hover-expanded (components/Layout.tsx) — Playwright's
+    // synthetic cursor can start inside that zone and trigger it, which then
+    // intercepts clicks on any element near the left edge (this chip sits at
+    // a low x-offset for an ad-hoc run's short breadcrumb). Move the mouse
+    // clear of the zone before clicking so the hover-collapse timer fires.
+    await page.mouse.move(700, 400);
+    await page.waitForTimeout(350);
+
     // The chip links back to the source run's report page.
     await chip.click();
     await expect(page).toHaveURL(new RegExp(`/evaluations/runs/${sourceRunId}$`), { timeout: 10000 });
@@ -327,6 +336,11 @@ test.describe('Run inspector — Re-run button (eval-run mode)', () => {
     await expect(chip).toBeVisible({ timeout: 15000 });
     await expect(chip).toContainText('re-run of');
     await expect(chip).toContainText(SOURCE_NAME);
+
+    // See the sibling test above — clear the sidebar hover-zone before
+    // clicking a chip positioned at a low x-offset.
+    await page.mouse.move(700, 400);
+    await page.waitForTimeout(350);
 
     await chip.click();
     await expect(page).toHaveURL(new RegExp(`/evaluations/runs/${sourceRunId}$`), { timeout: 10000 });
