@@ -236,3 +236,153 @@ test.describe('Run inspector — Retry judgement button disabled when no judge f
     await expect(btn).toBeDisabled();
   });
 });
+
+/*
+ * Regression (#462 live verification, 2026-09-01): the button was keyed on
+ * route `mode` (derived purely from the URL's benchmarkId param) instead of
+ * `run.docType`. An evaluation-run doc created with a benchmarkId is
+ * dual-written — a first-class `evaluation-runs` doc AND a legacy-shaped
+ * projection embedded in `benchmark.runs[]` (no docType) — so it's reachable
+ * from BOTH /evaluations/runs/<runId>/inspect AND
+ * /evaluations/benchmarks/<benchmarkId>/runs/<runId>/inspect. The button
+ * never rendered on the second URL even though the underlying run is a
+ * first-class evaluation run with judge-failed cases to salvage. Fixed by
+ * having the benchmark-route load path prefer the first-class doc (which
+ * carries docType) over the embedded projection when one exists — same class
+ * of bug as the Re-run button fix (goyamegh/rerun-idspace-fix).
+ */
+test.describe('Run inspector — Retry judgement button on the BENCHMARK-scoped route (regression)', () => {
+  let testCaseId: string | null = null;
+  let benchmarkId: string | null = null;
+  let runId: string | null = null;
+  let erroredReportId: string | null = null;
+  let seeded = false;
+
+  test.beforeAll(async ({ request }) => {
+    const tcRes = await request.post('/api/storage/test-cases', {
+      data: {
+        name: `e2e-retry-judgement-bmroute-tc-${Date.now()}`,
+        category: 'Test',
+        difficulty: 'Easy',
+        initialPrompt: 'What is causing the outage?',
+        expectedOutcomes: ['Identifies the root cause'],
+      },
+    });
+    if (!tcRes.ok()) return;
+    const tc = await tcRes.json();
+    testCaseId = tc.id || tc.testCase?.id;
+    if (!testCaseId) return;
+
+    erroredReportId = `report-e2e-retry-bmroute-errored-${Date.now()}`;
+    const erroredRes = await request.post('/api/storage/runs', {
+      data: {
+        id: erroredReportId,
+        timestamp: new Date().toISOString(),
+        agentName: 'Demo Agent',
+        agentKey: 'demo',
+        modelName: 'demo-model',
+        modelId: 'demo-model',
+        testCaseId,
+        status: 'completed',
+        metricsStatus: 'error',
+        passFailStatus: null,
+        traceError: 'Judge evaluation failed (kind=judge_failed): mock 400',
+        llmJudgeReasoning: '**Evaluator could not run.**',
+        trajectory: [{ type: 'action', toolName: 'search_logs', content: 'looking' }],
+        metrics: { accuracy: 0, faithfulness: 0, latency_score: 0, trajectory_alignment_score: 0 },
+      },
+    });
+    if (!erroredRes.ok()) return;
+
+    const bmRes = await request.post('/api/storage/benchmarks', {
+      data: {
+        name: `E2E Retry Judgement Benchmark Route ${Date.now()}`,
+        description: 'Regression coverage for the docType-keyed Retry judgement fix',
+        testCaseIds: [testCaseId],
+      },
+    });
+    if (!bmRes.ok()) return;
+    const bm = await bmRes.json();
+    benchmarkId = bm.id;
+    if (!benchmarkId) return;
+
+    runId = `eval-run-e2e-retry-judgement-bmroute-${Date.now()}`;
+    const runRes = await request.put(`/api/storage/evaluation-runs/${runId}`, {
+      data: {
+        id: runId,
+        name: 'E2E Retry Judgement Benchmark Route Run',
+        status: 'completed',
+        agentKey: 'demo',
+        modelId: 'demo-model',
+        judgeModelId: 'demo-model',
+        benchmarkId,
+        sources: [{ type: 'test-case-ids', ids: [testCaseId] }],
+        trigger: 'api',
+        testCaseSnapshots: [{ id: testCaseId, version: 1, name: 'e2e retry judgement bmroute tc' }],
+        results: {
+          [testCaseId]: { reportId: erroredReportId, status: 'completed' },
+        },
+        createdAt: new Date().toISOString(),
+      },
+    });
+    if (!runRes.ok()) return;
+
+    // Embed the LEGACY-shaped (no docType) projection into benchmark.runs[]
+    // — exactly what the live SSE /evaluation-runs execution path does when
+    // a run carries a benchmarkId ("Link the terminal projection before
+    // finalizing the first-class run"). This is the object the benchmark-
+    // scoped inspector route resolves BEFORE the fix's first-class-doc
+    // preference kicks in.
+    const linkRes = await request.put(`/api/storage/benchmarks/${benchmarkId}`, {
+      data: {
+        runs: [{
+          id: runId,
+          name: 'E2E Retry Judgement Benchmark Route Run',
+          agentKey: 'demo',
+          modelId: 'demo-model',
+          judgeModelId: 'demo-model',
+          status: 'completed',
+          results: {
+            [testCaseId]: { reportId: erroredReportId, status: 'completed' },
+          },
+        }],
+      },
+    });
+    seeded = linkRes.ok();
+  });
+
+  test.afterAll(async ({ request }) => {
+    if (runId) await request.delete(`/api/storage/evaluation-runs/${runId}`).catch(() => {});
+    if (erroredReportId) await request.delete(`/api/storage/runs/${erroredReportId}`).catch(() => {});
+    if (benchmarkId) await request.delete(`/api/storage/benchmarks/${benchmarkId}`).catch(() => {});
+    if (testCaseId) await request.delete(`/api/storage/test-cases/${testCaseId}`).catch(() => {});
+  });
+
+  test('button renders with the judge-failed count on the benchmark-scoped inspector route', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed benchmark-linked run (storage not configured?)');
+
+    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs/${runId}/inspect`);
+    await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
+
+    const btn = page.locator('[data-testid="inspector-retry-judgement-btn"]');
+    await expect(btn).toBeVisible({ timeout: 15000 });
+    await expect(btn).toContainText('Retry judgement (1)');
+    await expect(btn).not.toBeDisabled();
+  });
+
+  test('clicking opens the confirm dialog on the benchmark-scoped route too', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed benchmark-linked run (storage not configured?)');
+
+    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs/${runId}/inspect`);
+    await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
+
+    await page.locator('[data-testid="inspector-retry-judgement-btn"]').click();
+
+    const dialog = page.locator('[data-testid="retry-judgement-dialog"]');
+    await expect(dialog).toBeVisible({ timeout: 10000 });
+    await expect(page.locator('[data-testid="retry-judgement-count"]')).toHaveText('1');
+
+    await page.getByRole('button', { name: 'Cancel' }).click();
+    await expect(dialog).not.toBeVisible();
+  });
+});

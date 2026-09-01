@@ -535,11 +535,20 @@ export const RunInspectorPage: React.FC = () => {
                 </Button>
               </div>
             )}
-            {/* Retry judgement: eval-run mode only, terminal runs only. Salvages
+            {/* Retry judgement: evaluation-run docs only (never true
+                BenchmarkRun-embedded docs), terminal runs only. Salvages
                 judge-failed cases (trace timeouts, judge errors,
                 "evaluator could not run") at judge cost only — never
-                re-invokes the agent. See services/evaluation/retryJudgement.ts. */}
-            {mode === 'evalRun' && (() => {
+                re-invokes the agent. See services/evaluation/retryJudgement.ts.
+                Keyed on `run.docType` rather than route `mode` — same class
+                of bug as the Re-run button fix: an evaluation-run doc
+                (docType: 'evaluation-run') can be reached via the
+                benchmark-scoped inspector route
+                (/evaluations/benchmarks/<benchmarkId>/runs/<runId>/inspect)
+                whenever it was created with a benchmarkId, so `mode` alone
+                (derived purely from the URL's benchmarkId param) is not a
+                reliable signal for "is this a first-class evaluation run". */}
+            {(run as any).docType === 'evaluation-run' && (() => {
               const runTerminal = run.status !== 'running' && run.status !== 'pending';
               const disabled = !runTerminal || erroredCount === 0;
               const title = !runTerminal
@@ -595,7 +604,7 @@ export const RunInspectorPage: React.FC = () => {
       )}
 
       {/* Retry Judgement Confirm Dialog (EvaluationRun only) */}
-      {mode === 'evalRun' && (
+      {(run as any).docType === 'evaluation-run' && (
         <RetryJudgementConfirmDialog
           run={run as EvaluationRun | null}
           count={erroredCount}
