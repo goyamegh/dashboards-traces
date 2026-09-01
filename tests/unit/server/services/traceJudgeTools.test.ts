@@ -16,10 +16,14 @@ interface CapturedTool {
   execute: (id: string, params: any) => Promise<any>;
 }
 
-function collectTools(runId: string | undefined, serverUrl = 'http://localhost:4055'): Map<string, CapturedTool> {
+function collectTools(
+  runId: string | undefined,
+  serverUrl = 'http://localhost:4055',
+  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number; sessionId?: string }>
+): Map<string, CapturedTool> {
   const tools = new Map<string, CapturedTool>();
   const pi: any = { registerTool: (t: CapturedTool) => tools.set(t.name, t) };
-  createTraceJudgeExtension(runId, serverUrl)(pi);
+  createTraceJudgeExtension(runId, serverUrl, agents)(pi);
   return tools;
 }
 
@@ -76,5 +80,91 @@ describe('createTraceJudgeExtension', () => {
     (global as any).fetch = jest.fn().mockResolvedValue({ ok: false, status: 503 });
     const tools = collectTools('run-1');
     expect(parseText(await tools.get('query_spans')!.execute('t', {})).error).toMatch(/HTTP 503/);
+  });
+
+  describe('hints-only scoping (no runId -- REST connectors outside trace-mode polling)', () => {
+    const hints = [{ serviceName: 'example-agent', startedAt: 1_000, endedAt: 5_000 }];
+
+    it('still disables the tools when there is no runId AND no agents hints', async () => {
+      const tools = collectTools(undefined, 'http://localhost:4055', []);
+      const fetchMock = jest.fn();
+      (global as any).fetch = fetchMock;
+      const spans = await tools.get('query_spans')!.execute('t1', {});
+      const logs = await tools.get('query_logs')!.execute('t2', {});
+      expect(parseText(spans).error).toMatch(/no run id or trace correlation hints/i);
+      expect(parseText(logs).error).toMatch(/no run id or trace correlation hints/i);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('query_spans queries by agents hints alone when there is no runId', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ spans: [{ name: 'chat' }] }),
+      });
+      (global as any).fetch = fetchMock;
+      const tools = collectTools(undefined, 'http://localhost:4055', hints);
+      const res = await tools.get('query_spans')!.execute('t1', {});
+
+      const [url, opts] = fetchMock.mock.calls[0];
+      expect(url).toBe('http://localhost:4055/api/traces');
+      const body = JSON.parse(opts.body);
+      expect(body.runIds).toBeUndefined();
+      expect(body.agents).toEqual(hints);
+      const out = parseText(res);
+      expect(out.runId).toBeNull();
+      expect(out.scope).toBe('agents-hints');
+      expect(out.spanCount).toBe(1);
+    });
+
+    it('query_spans sends BOTH runIds and agents when both are present', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ spans: [] }) });
+      (global as any).fetch = fetchMock;
+      const tools = collectTools('run-XYZ', 'http://localhost:4055', hints);
+      await tools.get('query_spans')!.execute('t1', {});
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.runIds).toEqual(['run-XYZ']);
+      expect(body.agents).toEqual(hints);
+    });
+
+    it('query_logs derives a startTime/endTime window from the hints when there is no runId', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ logs: ['line'] }) });
+      (global as any).fetch = fetchMock;
+      const wide = [
+        { serviceName: 'a', startedAt: 2_000, endedAt: 3_000 },
+        { serviceName: 'a', startedAt: 500, endedAt: 4_000 },
+      ];
+      const tools = collectTools(undefined, 'http://localhost:4055', wide);
+      const res = await tools.get('query_logs')!.execute('t1', { query: 'ERROR' });
+
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.runId).toBeUndefined();
+      expect(body.startTime).toBe(500); // min(startedAt)
+      expect(body.endTime).toBe(4_000); // max(endedAt)
+      expect(body.query).toBe('ERROR');
+      const out = parseText(res);
+      expect(out.runId).toBeNull();
+      expect(out.scope).toBe('time-window');
+    });
+
+    it('query_logs prefers runId over the hints window when both are present', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ logs: [] }) });
+      (global as any).fetch = fetchMock;
+      const tools = collectTools('run-9', 'http://localhost:4055', hints);
+      await tools.get('query_logs')!.execute('t1', {});
+      const body = JSON.parse(fetchMock.mock.calls[0][1].body);
+      expect(body.runId).toBe('run-9');
+      expect(body.startTime).toBeUndefined();
+      expect(body.endTime).toBeUndefined();
+    });
+
+    it('enables the tools on a sessionId-only hint (no serviceName)', async () => {
+      const fetchMock = jest.fn().mockResolvedValue({ ok: true, json: async () => ({ spans: [] }) });
+      (global as any).fetch = fetchMock;
+      const sessionOnly = [{ serviceName: '', startedAt: 1, endedAt: 2, sessionId: 'sess-1' }];
+      const tools = collectTools(undefined, 'http://localhost:4055', sessionOnly);
+      const res = await tools.get('query_spans')!.execute('t1', {});
+      expect(parseText(res).error).toBeUndefined();
+      expect(fetchMock).toHaveBeenCalled();
+    });
   });
 });

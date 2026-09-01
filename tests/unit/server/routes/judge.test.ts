@@ -724,14 +724,14 @@ describe('Judge Routes', () => {
       inferenceConfig: { provider: 'agent' },
     };
 
-    it('returns 400 when runId is missing (trace tools have nothing to scope to)', async () => {
+    it('returns 400 when runId is missing AND no agents hints are present (trace tools have nothing to scope to)', async () => {
       mockGetEvaluatorById.mockResolvedValue(agentEvaluator);
 
       const { req, res } = createMocks({
         trajectory: [{ type: 'action', toolName: 'search' }],
         expectedOutcomes: ['Identify issue'],
         evaluatorId: 'custom-trace-eval',
-        // no runId
+        // no runId, no agents hints
       });
       const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
 
@@ -739,9 +739,108 @@ describe('Judge Routes', () => {
 
       expect(res.status).toHaveBeenCalledWith(400);
       expect(res.json).toHaveBeenCalledWith(
-        expect.objectContaining({ error: expect.stringContaining('runId is required') })
+        expect.objectContaining({ error: expect.stringContaining('runId') })
       );
       expect(mockEvaluateWithPiAgenticTrace).not.toHaveBeenCalled();
+    });
+
+    it('returns 400 when agents hints are present but carry neither serviceName nor sessionId', async () => {
+      mockGetEvaluatorById.mockResolvedValue(agentEvaluator);
+
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'search' }],
+        expectedOutcomes: ['Identify issue'],
+        evaluatorId: 'custom-trace-eval',
+        agents: [{ startedAt: 1, endedAt: 2 }], // no serviceName, no sessionId
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(mockEvaluateWithPiAgenticTrace).not.toHaveBeenCalled();
+    });
+
+    it('routes to evaluateWithPiAgenticTrace when runId is ABSENT but a serviceName+window hint is present (REST-connector, no trace-mode polling -- the reported bug)', async () => {
+      mockGetEvaluatorById.mockResolvedValue(agentEvaluator);
+      mockEvaluateWithPiAgenticTrace.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 88 },
+        llmJudgeReasoning: 'Trace-backed evaluation via hints',
+        improvementStrategies: [],
+      } as any);
+
+      const agents = [{ serviceName: 'example-agent', startedAt: 1000, endedAt: 2000 }];
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'search' }],
+        expectedOutcomes: ['Identify issue'],
+        evaluatorId: 'custom-trace-eval',
+        agents,
+        // no runId at all
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).not.toHaveBeenCalledWith(400);
+      expect(mockEvaluateWithPiAgenticTrace).toHaveBeenCalledWith(
+        expect.objectContaining({ runId: undefined, agents }),
+        expect.objectContaining({ id: 'custom-trace-eval' })
+      );
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ passFailStatus: 'passed' })
+      );
+    });
+
+    it('routes to evaluateWithPiAgenticTrace when runId is ABSENT but a sessionId-only hint is present', async () => {
+      mockGetEvaluatorById.mockResolvedValue(agentEvaluator);
+      mockEvaluateWithPiAgenticTrace.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 80 },
+        llmJudgeReasoning: 'ok',
+        improvementStrategies: [],
+      } as any);
+
+      const agents = [{ serviceName: '', startedAt: 1000, endedAt: 2000, sessionId: 'sess-abc' }];
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'search' }],
+        expectedOutcomes: ['Identify issue'],
+        evaluatorId: 'custom-trace-eval',
+        agents,
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).not.toHaveBeenCalledWith(400);
+      expect(mockEvaluateWithPiAgenticTrace).toHaveBeenCalled();
+    });
+
+    it('does NOT apply the trajectory cross-run 403 guard to a hints-only (no runId) request, even if the trajectory happens to carry a runId', async () => {
+      // The 403 guard exists to corroborate a CALLER-SUPPLIED runId against the
+      // trajectory. With no runId requested at all there is nothing to
+      // corroborate, and the hints themselves are server-derived -- not caller
+      // input a cross-tenant caller could spoof to pivot runs.
+      mockGetEvaluatorById.mockResolvedValue(agentEvaluator);
+      mockEvaluateWithPiAgenticTrace.mockResolvedValue({
+        passFailStatus: 'passed', metrics: { accuracy: 90 }, llmJudgeReasoning: 'ok', improvementStrategies: [],
+      } as any);
+
+      const agents = [{ serviceName: 'example-agent', startedAt: 1000, endedAt: 2000 }];
+      const { req, res } = createMocks({
+        trajectory: [{ type: 'action', toolName: 'search', runId: 'run-OWN' }],
+        expectedOutcomes: ['Identify issue'],
+        evaluatorId: 'custom-trace-eval',
+        agents,
+        // no runId requested
+      });
+      const handler = getRouteHandler(judgeRoutes, 'post', '/api/judge');
+
+      await handler(req, res);
+
+      expect(res.status).not.toHaveBeenCalledWith(403);
+      expect(res.status).not.toHaveBeenCalledWith(400);
+      expect(mockEvaluateWithPiAgenticTrace).toHaveBeenCalled();
     });
 
     it('routes to evaluateWithPiAgenticTrace when runId is present', async () => {

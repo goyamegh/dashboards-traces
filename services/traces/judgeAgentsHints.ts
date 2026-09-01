@@ -238,3 +238,46 @@ export function resolveJudgeRunId(
 ): string | undefined {
   return report.runId || report.traceId || undefined;
 }
+
+/**
+ * Does this `/api/judge` (provider `agent`) request carry ANY correlation
+ * handle its trace-query tools can scope to?
+ *
+ * True when EITHER:
+ *   - `runId` is truthy — Strategy B. By the time a well-behaved caller
+ *     reaches the route this is often already {@link resolveJudgeRunId}'s
+ *     `traceId` fallback rather than a native run id; the two are
+ *     indistinguishable (and equally valid) from here on, so this check
+ *     doesn't need to know which one it is.
+ *   - at least one entry in `agents` (Strategy C/D hints from
+ *     {@link buildJudgeAgentsHints}) carries a `serviceName` or `sessionId`.
+ *
+ * This is the fix for the bug `resolveJudgeRunId` alone didn't cover: the
+ * two SYNCHRONOUS (non-`useTraces`) judge call sites in
+ * `services/evaluation/index.ts` (`runEvaluationWithConnector`'s "STANDARD
+ * MODE" branch, used by every REST-connector agent that picks the
+ * `agent-trace-judge` model WITHOUT enabling trace-mode polling) already
+ * forward `agents` hints (`buildJudgeAgentsHints(...)`) — they just never
+ * had a `runId` to forward, because the connector never minted one and
+ * `report.traceId` isn't stamped yet at that point in the flow (that
+ * stamping happens later, in `evaluationRunner.ts`, only on the trace-mode
+ * branch). Pre-fix, `POST /api/judge`'s `if (!runId) return 400` rejected
+ * these requests unconditionally, even though the hints it had received in
+ * the SAME request body were already sufficient for the trace tools to
+ * find real spans — the hints mechanism existed (#264) but the gate fired
+ * first and never looked at it.
+ *
+ * Used by the route's `agent` provider gate (replacing the old
+ * `if (!runId)` check) and by {@link createTraceJudgeExtension}
+ * (`server/services/traceJudgeTools.ts`) to decide whether its tools are
+ * enabled at all — the gate and the tools must agree, or the route accepts
+ * a request whose tools then silently disable themselves and the judge
+ * degrades to trajectory-only reasoning without anyone being told.
+ */
+export function hasTraceCorrelation(
+  runId: string | undefined,
+  agents?: Array<Pick<JudgeAgentsHint, 'serviceName' | 'sessionId'>>
+): boolean {
+  if (runId) return true;
+  return Array.isArray(agents) && agents.some((a) => !!a && (!!a.serviceName || !!a.sessionId));
+}
