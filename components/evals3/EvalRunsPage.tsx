@@ -953,7 +953,7 @@ export const EvalRunsPage: React.FC = () => {
           <tbody className="[&_tr:last-child]:border-0">
             {filteredRunRows.length === 0 ? (
               <tr>
-                <td colSpan={viewMode === 'flat' ? 9 : 8} className="py-16 text-center text-sm text-muted-foreground">
+                <td colSpan={viewMode === 'flat' ? 8 : 7} className="py-16 text-center text-sm text-muted-foreground">
                   {activeFilterCount > 0 ? 'No runs match the current filters' : timeRange === 'all' ? 'No evaluation runs found' : `No runs in ${TIME_OPTIONS.find(o => o.value === timeRange)?.label}`}
                 </td>
               </tr>
@@ -994,7 +994,7 @@ export const EvalRunsPage: React.FC = () => {
                         </button>
                       </td>
                       {/* Rest of group header content */}
-                      <td colSpan={7} className="px-1 py-1.5 align-middle">
+                      <td colSpan={6} className="px-1 py-1.5 align-middle">
                         <div className="flex items-center gap-2">
                           <span className="text-muted-foreground">
                             {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
@@ -1015,7 +1015,7 @@ export const EvalRunsPage: React.FC = () => {
             )}
             {hasMoreRows && (
               <tr ref={loadMoreSentinelRef} data-testid="runs-table-sentinel">
-                <td colSpan={viewMode === 'flat' ? 9 : 8} className="py-3 text-center">
+                <td colSpan={viewMode === 'flat' ? 8 : 7} className="py-3 text-center">
                   <Loader2 size={14} className="animate-spin text-muted-foreground inline-block" />
                 </td>
               </tr>
