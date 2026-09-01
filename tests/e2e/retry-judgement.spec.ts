@@ -122,20 +122,40 @@ test.describe('Run inspector — Retry judgement button', () => {
     await expect(dialog).not.toBeVisible();
   });
 
-  test('confirming POSTs to retry-judgement and shows a succeeded/failed summary', async ({ page }) => {
+  test('confirming POSTs to retry-judgement (202 + poll) and shows a succeeded/failed summary', async ({ page }) => {
     test.skip(!seeded, 'Could not seed run (storage not configured?)');
 
-    let requested = false;
+    // The route responds 202 immediately and the client polls
+    // GET .../retry-judgement/status — see the "ASYNC JOB PATTERN" comment
+    // on the POST handler in server/routes/storage/evaluationRuns.ts (real
+    // incident: a 62-case run's judge pipeline ran 20-30+ minutes, so the
+    // route can no longer hold the response open and return the summary
+    // inline). This mock exercises exactly that client-side poll loop.
+    let posted = false;
+    let statusPolled = 0;
     await page.route(`**/api/storage/evaluation-runs/${runId}/retry-judgement*`, async route => {
-      requested = true;
+      posted = true;
+      await route.fulfill({
+        status: 202,
+        contentType: 'application/json',
+        body: JSON.stringify({ jobId: runId, total: 1, status: 'running' }),
+      });
+    });
+    await page.route(`**/api/storage/evaluation-runs/${runId}/retry-judgement/status`, async route => {
+      statusPolled += 1;
       await route.fulfill({
         status: 200,
         contentType: 'application/json',
         body: JSON.stringify({
-          retried: 1,
-          succeeded: 1,
-          failed: 0,
-          results: [{ testCaseId, reportId: erroredReportId, outcome: 'succeeded', passFailStatus: 'passed' }],
+          status: 'completed',
+          total: 1,
+          completed: 1,
+          summary: {
+            retried: 1,
+            succeeded: 1,
+            failed: 0,
+            results: [{ testCaseId, reportId: erroredReportId, outcome: 'succeeded', passFailStatus: 'passed' }],
+          },
         }),
       });
     });
@@ -148,10 +168,15 @@ test.describe('Run inspector — Retry judgement button', () => {
     await expect(dialog).toBeVisible({ timeout: 10000 });
     await page.locator('[data-testid="retry-judgement-confirm-btn"]').click();
 
+    // While polling (poll interval is 2s client-side), the dialog shows a
+    // live progress row rather than sitting on a bare spinner.
+    await expect(page.locator('[data-testid="retry-judgement-progress"]')).toBeVisible({ timeout: 5000 });
+
     const summary = page.locator('[data-testid="retry-judgement-summary"]');
-    await expect(summary).toBeVisible({ timeout: 10000 });
+    await expect(summary).toBeVisible({ timeout: 15000 });
     await expect(summary).toContainText('1 succeeded');
-    expect(requested).toBe(true);
+    expect(posted).toBe(true);
+    expect(statusPolled).toBeGreaterThan(0);
 
     await page.locator('[data-testid="retry-judgement-done-btn"]').click();
     await expect(dialog).not.toBeVisible();

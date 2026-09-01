@@ -267,23 +267,16 @@ async function runWithConcurrencyLimit<T>(
 }
 
 /**
- * Retry judgement for a run: salvage judge-failed cases (or, with
- * `scope: 'all'`, every rejudgeable case) at JUDGE COST ONLY — the agent is
- * never re-invoked. Updates each report doc, the run's `results` map, and
- * recomputes `run.stats` (`lib/runStats` `computeRunStats`) before
- * persisting the run doc.
- *
- * Caller is responsible for the running/terminal-status gate (this
- * function does not re-check `run.status`).
+ * Fetch every report doc referenced by `run.results` once, keyed by report
+ * id. Shared by {@link countRetryableCases} (a cheap pre-flight count so
+ * the HTTP route can respond with a total before kicking off the — often
+ * long-running — judge pipeline below) and {@link retryJudgementForRun}
+ * itself, so both agree on exactly the same selection.
  */
-export async function retryJudgementForRun(
-  run: EvaluationRun,
-  storage: IStorageModule,
-  options?: { scope?: RetryJudgementScope; concurrency?: number }
-): Promise<RetryJudgementSummary> {
-  const scope = options?.scope ?? 'errored';
-  const concurrency = Math.max(1, Math.min(options?.concurrency ?? MAX_RETRY_CONCURRENCY, MAX_RETRY_CONCURRENCY));
-
+async function fetchReportsById(
+  run: Pick<EvaluationRun, 'results'>,
+  storage: IStorageModule
+): Promise<Record<string, EvaluationReport | null>> {
   const reportIds = Array.from(
     new Set(
       Object.values(run.results || {})
@@ -296,49 +289,109 @@ export async function retryJudgementForRun(
   );
   const reportsById: Record<string, EvaluationReport | null> = {};
   reportIds.forEach((id, i) => { reportsById[id] = fetchedReports[i]; });
+  return reportsById;
+}
+
+/**
+ * How many cases `retryJudgementForRun(run, storage, { scope })` would
+ * retry, without doing any of the (potentially minutes-long) judge work.
+ * Used by the route to report a `total` in its immediate 202 response —
+ * see the module comment on `retryJudgementForRun` for why the route
+ * doesn't await the full pipeline inline anymore.
+ */
+export async function countRetryableCases(
+  run: Pick<EvaluationRun, 'results'>,
+  storage: IStorageModule,
+  scope: RetryJudgementScope = 'errored'
+): Promise<number> {
+  const reportsById = await fetchReportsById(run, storage);
+  return selectRetryableCases(run, reportsById, scope).length;
+}
+
+/**
+ * Retry judgement for a run: salvage judge-failed cases (or, with
+ * `scope: 'all'`, every rejudgeable case) at JUDGE COST ONLY — the agent is
+ * never re-invoked. Updates each report doc, the run's `results` map, and
+ * recomputes `run.stats` (`lib/runStats` `computeRunStats`) before
+ * persisting the run doc.
+ *
+ * Caller is responsible for the running/terminal-status gate (this
+ * function does not re-check `run.status`).
+ *
+ * This can run for a long time on a large run (real incident: 62 cases at
+ * ~40-90s per Bedrock judge call / concurrency 3 ≈ 20-30+ minutes) — the
+ * caller (the HTTP route) MUST NOT hold the response open for the whole
+ * duration; see server/routes/storage/evaluationRuns.ts's POST handler,
+ * which fires this and returns immediately, polling status separately.
+ * `options.onProgress(completed, total)` lets the caller track progress
+ * for that polling without waiting on the returned promise.
+ */
+export async function retryJudgementForRun(
+  run: EvaluationRun,
+  storage: IStorageModule,
+  options?: { scope?: RetryJudgementScope; concurrency?: number; onProgress?: (completed: number, total: number) => void }
+): Promise<RetryJudgementSummary> {
+  const scope = options?.scope ?? 'errored';
+  const concurrency = Math.max(1, Math.min(options?.concurrency ?? MAX_RETRY_CONCURRENCY, MAX_RETRY_CONCURRENCY));
+
+  const reportsById = await fetchReportsById(run, storage);
 
   const testCaseIds = selectRetryableCases(run, reportsById, scope);
   const agentConfig = resolveAgentConfig(run.agentKey);
 
   const results: RetryJudgementCaseResult[] = [];
   const updatedResults: Record<string, any> = { ...run.results };
+  const total = testCaseIds.length;
+  let completedCount = 0;
+  // Reports progress AFTER each case finishes (success or failure) rather
+  // than as cases start, so `completed` never exceeds what's actually been
+  // persisted — a poller reading `onProgress`'s last value always sees a
+  // consistent lower bound. See the module comment above for why callers
+  // need this at all (long-running pipeline, HTTP route can't await it).
+  const reportProgress = () => options?.onProgress?.(completedCount, total);
+  reportProgress();
 
   await runWithConcurrencyLimit(testCaseIds, concurrency, async (testCaseId) => {
-    const result = updatedResults[testCaseId] as RunResultLike;
-    const report = result?.reportId ? reportsById[result.reportId] : null;
-    if (!report) {
-      results.push({ testCaseId, reportId: result?.reportId || '', outcome: 'failed', error: 'report not found' });
-      return;
-    }
-    let testCase: TestCase | null = null;
     try {
-      testCase = await storage.testCases.getById(testCaseId);
-    } catch { /* handled below via null check */ }
-    if (!testCase) {
-      results.push({ testCaseId, reportId: report.id, outcome: 'failed', error: 'test case not found' });
-      return;
+      const result = updatedResults[testCaseId] as RunResultLike;
+      const report = result?.reportId ? reportsById[result.reportId] : null;
+      if (!report) {
+        results.push({ testCaseId, reportId: result?.reportId || '', outcome: 'failed', error: 'report not found' });
+        return;
+      }
+      let testCase: TestCase | null = null;
+      try {
+        testCase = await storage.testCases.getById(testCaseId);
+      } catch { /* handled below via null check */ }
+      if (!testCase) {
+        results.push({ testCaseId, reportId: report.id, outcome: 'failed', error: 'test case not found' });
+        return;
+      }
+
+      const { passFailStatus, error } = await retryJudgementForCase(report, testCase, run, storage, agentConfig);
+
+      const nextResult: any = { ...result, status: 'completed' };
+      if (passFailStatus) {
+        nextResult.passFailStatus = passFailStatus;
+      } else {
+        // Drop the key entirely rather than persist `passFailStatus: undefined`
+        // — bucketRunResults() treats a missing verdict as errored, same as
+        // the very first run.
+        delete nextResult.passFailStatus;
+      }
+      updatedResults[testCaseId] = nextResult;
+
+      results.push({
+        testCaseId,
+        reportId: report.id,
+        outcome: passFailStatus ? 'succeeded' : 'failed',
+        passFailStatus,
+        ...(error ? { error } : {}),
+      });
+    } finally {
+      completedCount += 1;
+      reportProgress();
     }
-
-    const { passFailStatus, error } = await retryJudgementForCase(report, testCase, run, storage, agentConfig);
-
-    const nextResult: any = { ...result, status: 'completed' };
-    if (passFailStatus) {
-      nextResult.passFailStatus = passFailStatus;
-    } else {
-      // Drop the key entirely rather than persist `passFailStatus: undefined`
-      // — bucketRunResults() treats a missing verdict as errored, same as
-      // the very first run.
-      delete nextResult.passFailStatus;
-    }
-    updatedResults[testCaseId] = nextResult;
-
-    results.push({
-      testCaseId,
-      reportId: report.id,
-      outcome: passFailStatus ? 'succeeded' : 'failed',
-      passFailStatus,
-      ...(error ? { error } : {}),
-    });
   });
 
   const updatedRun = { ...run, results: updatedResults };
