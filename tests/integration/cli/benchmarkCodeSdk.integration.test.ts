@@ -82,6 +82,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { request as httpRequest } from 'http';
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
+import { createTestDataTracker, uniqueTestName } from '../../helpers/testDataTracker';
 
 // Jest 30 + undici has a known race with localhost connections that
 // surfaces as `SocketError: other side closed` on the very first request
@@ -246,6 +247,12 @@ describe('Code SDK — CLI subprocess integration (every SDK condition)', () => 
   // Map of test name → persisted test case. For checking forwarded fields
   // (expectedOutcomes, labels, etc.) on the test case definition itself.
   const testCases = new Map<string, any>();
+  // Tracks every benchmark/evaluation-run/test-case/report this suite creates
+  // so afterAll can delete all of it — nothing here has any other owner on
+  // the shared cluster (see tests/helpers/testDataTracker.ts). DELETE on a
+  // benchmark/evaluation-run does NOT cascade to test cases or their
+  // per-test-case report docs, so those are tracked explicitly below too.
+  const tracker = createTestDataTracker();
 
   beforeAll(async () => {
     backendAvailable = await checkBackend();
@@ -271,7 +278,7 @@ describe('Code SDK — CLI subprocess integration (every SDK condition)', () => 
     // Spawn the CLI exactly the way a user would. We pin the port so the
     // CLI talks to the same server the test config points at.
     const port = new URL(BASE_URL).port || '4001';
-    const benchmarkName = `sdk-cli-coverage-${Date.now()}`;
+    const benchmarkName = uniqueTestName('sdk-cli-coverage');
     // Filter Jest-injected env. Jest 30 sets NODE_OPTIONS / VITEST flags
     // and various coverage shims that confuse undici inside the spawned
     // CLI — ServerLifecycle's `fetch('/health')` fails, the CLI thinks no
@@ -295,6 +302,38 @@ describe('Code SDK — CLI subprocess integration (every SDK condition)', () => 
       encoding: 'utf-8',
       timeout: TEST_TIMEOUT - 10_000,
     });
+
+    // Track the benchmark shell by its (unique, known) name regardless of
+    // whether the run itself succeeded. The CLI creates the benchmark BEFORE
+    // starting the run (cli/commands/benchmark.ts), so a run-creation failure
+    // downstream (timeout, storage error, etc.) would otherwise leave an
+    // untracked, unparseable benchmark shell — the URL-parsing path below
+    // only fires on a successful run. Best-effort: never throws, so a lookup
+    // problem here can't mask the CLI's own failure.
+    try {
+      const listRes = await httpGet<any>(`${BASE_URL}/api/storage/benchmarks?size=1000`);
+      const found = (listRes.body?.benchmarks || []).find((b: any) => b.name === benchmarkName);
+      if (found) {
+        tracker.benchmark(found.id);
+        tracker.testCases(found.testCaseIds);
+        // Also track every evaluation-run linked to this benchmark: a run
+        // that fails before the CLI ever prints its "View results" URL is
+        // otherwise undiscoverable (confirmed empirically — it is NOT
+        // reachable from benchmark.testCaseIds), plus every report each of
+        // those runs points at (DELETE evaluation-run does not cascade).
+        const runsRes = await httpGet<any>(
+          `${BASE_URL}/api/storage/evaluation-runs?benchmarkId=${encodeURIComponent(found.id)}&size=500`
+        );
+        for (const r of runsRes.body?.evaluationRuns || []) {
+          tracker.evaluationRun(r.id);
+          for (const result of Object.values(r.results || {})) {
+            tracker.run((result as any)?.reportId);
+          }
+        }
+      }
+    } catch {
+      /* best effort */
+    }
 
     if (cli.status === null) {
       throw new Error(`CLI subprocess timed out or was killed.\nSTDOUT:\n${cli.stdout}\nSTDERR:\n${cli.stderr}`);
@@ -322,25 +361,53 @@ describe('Code SDK — CLI subprocess integration (every SDK condition)', () => 
     // (unified) path persists `eval-run-…` documents that carry their own
     // results / testCaseSnapshots; they are associated with the benchmark but
     // not nested under benchmark.runs.
+    //
+    // Track every benchmark/run id for cleanup, plus every test case id
+    // linked onto the benchmark (linkTestCaseIdsToBenchmark runs at
+    // run-creation time — see services/benchmarkPromotion.ts). DELETE
+    // benchmark/evaluation-run does NOT cascade to either, so both must be
+    // tracked explicitly (see tests/helpers/testDataTracker.ts).
     const allRuns: any[] = [];
-    for (const { rid } of benchRunPairs) {
+    const seenBenchmarkIds = new Set<string>();
+    // Test-case ids belonging to THIS run's benchmark(s). The shared cluster
+    // can hold same-named leftovers from older runs (pre-cleanup-harness
+    // leaks), so the snapshot below must select by id, not by name — a
+    // name-keyed map over the global listing is last-write-wins and a stale
+    // duplicate (e.g. one persisted before sourceFileName existed) can
+    // clobber the fresh doc this run just created.
+    const runTestCaseIds = new Set<string>();
+    for (const { bid, rid } of benchRunPairs) {
+      tracker.evaluationRun(rid);
+      if (!seenBenchmarkIds.has(bid)) {
+        seenBenchmarkIds.add(bid);
+        tracker.benchmark(bid);
+        const benchRes = await httpGet<any>(`${BASE_URL}/api/storage/benchmarks/${bid}`);
+        if (benchRes.status === 200) {
+          tracker.testCases(benchRes.body?.testCaseIds);
+          for (const id of benchRes.body?.testCaseIds || []) runTestCaseIds.add(id);
+        }
+      }
       const runRes = await httpGet<any>(`${BASE_URL}/api/storage/evaluation-runs/${rid}`);
       if (runRes.status !== 200) continue;
       allRuns.push(runRes.body);
     }
     if (allRuns.length === 0) throw new Error(`No runs found across ${benchRunPairs.length} run id(s).`);
 
-    // Snapshot test cases so we can verify forwarded fields.
+    // Snapshot test cases so we can verify forwarded fields — only the docs
+    // linked to THIS run's benchmark (see runTestCaseIds above).
     const tcAll = (await httpGet<any>(`${BASE_URL}/api/storage/test-cases?size=500`)).body;
     for (const tc of tcAll.testCases || tcAll.items || []) {
-      if ((tc.sourceFile || '').includes('sdk-coverage.eval.js')) {
+      if (runTestCaseIds.has(tc.id)) {
         testCases.set(tc.name, tc);
       }
     }
 
-    // Build name → report map across every run we collected.
+    // Build name → report map across every run we collected. Track every
+    // reportId for cleanup regardless of whether the name lookup succeeds,
+    // so nothing leaks even if testCaseSnapshots were ever incomplete.
     for (const run of allRuns) {
       for (const [tcId, result] of Object.entries((run.results || {}) as Record<string, any>)) {
+        if ((result as any).reportId) tracker.run((result as any).reportId);
         const tcName = (run.testCaseSnapshots || []).find((s: any) => s.id === tcId)?.name;
         if (tcName && (result as any).reportId) {
           const rep = (await httpGet<any>(`${BASE_URL}/api/storage/runs/${(result as any).reportId}`)).body;
@@ -350,8 +417,9 @@ describe('Code SDK — CLI subprocess integration (every SDK condition)', () => 
     }
   }, TEST_TIMEOUT);
 
-  afterAll(() => {
+  afterAll(async () => {
     if (tempDir) rmSync(tempDir, { recursive: true, force: true });
+    await tracker.cleanup();
   });
 
   // Helper — the per-test report (persisted EvaluationReport with

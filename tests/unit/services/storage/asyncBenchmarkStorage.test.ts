@@ -6,6 +6,7 @@
 // @ts-nocheck - Test file uses simplified mock objects
 import { asyncBenchmarkStorage } from '@/services/storage/asyncBenchmarkStorage';
 import { benchmarkStorage as opensearchExperiments } from '@/services/storage/opensearchClient';
+import { ENV_CONFIG } from '@/lib/config';
 import type { Benchmark, BenchmarkRun } from '@/types';
 
 // Mock the OpenSearch client
@@ -413,10 +414,17 @@ describe('AsyncBenchmarkStorage', () => {
       const result = await asyncBenchmarkStorage.deleteRun('exp-1', 'run-1');
 
       expect(result).toBe(true);
+      // Must be an ABSOLUTE URL built from ENV_CONFIG.storageApiUrl: a bare
+      // relative fetch('/api/storage/…') works in a browser but throws
+      // ERR_INVALID_URL in Node (jest/CLI/SDK), which made deleteRun return
+      // false unconditionally outside the browser. In Node the base resolves
+      // to http://localhost:<AH_PORT>/api/storage; in a browser bundle it
+      // stays the relative '/api/storage' — same path, working both places.
       expect(mockFetch).toHaveBeenCalledWith(
-        '/api/storage/benchmarks/exp-1/runs/run-1',
+        `${ENV_CONFIG.storageApiUrl}/benchmarks/exp-1/runs/run-1`,
         { method: 'DELETE' }
       );
+      expect(ENV_CONFIG.storageApiUrl).toMatch(/^http/); // node context → absolute
     });
 
     it('returns false when API returns 404', async () => {

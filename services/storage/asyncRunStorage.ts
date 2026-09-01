@@ -119,10 +119,10 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     // Judge model used for this run (PR #390 persists it). Without this
     // mapping, browser-side trace-recovery judging silently fell back to the
     // agent's modelId even when a distinct judge model was configured.
-    judgeModelId: (stored as any).judgeModelId,
+    judgeModelId: stored.judgeModelId,
     status: stored.status,
     passFailStatus: stored.passFailStatus as 'passed' | 'failed' | undefined,
-    evaluatorId: (stored as any).evaluatorId,
+    evaluatorId: stored.evaluatorId,
     trajectory: (stored.trajectory || []) as TrajectoryStep[],
     // Preserve every metric the judge emitted, not just the four legacy keys.
     // Custom evaluators (and even system evaluators other than RCA Default)
@@ -214,6 +214,16 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
   // Add trace-mode fields if present
   if (report.metricsStatus !== undefined) base.metricsStatus = report.metricsStatus;
   if ((report as any).sessionId !== undefined) (base as any).sessionId = (report as any).sessionId;
+  // Judge inputs: the read mapper (toTestCaseRun) and the server-side save
+  // path (server/services/storage/index.ts) both carry evaluatorId +
+  // judgeModelId, but this client-side write mapper silently dropped them —
+  // so any report persisted through asyncRunStorage.saveReport (e.g. the
+  // localStorage→OpenSearch migration) lost which evaluator/judge produced it
+  // and could never round-trip them back to the runs list. Both fields are
+  // part of the StorageRun type (see services/storage/opensearchClient.ts),
+  // so this is a plain typed assignment now — no `as any` needed.
+  if (report.evaluatorId !== undefined) base.evaluatorId = report.evaluatorId;
+  if (report.judgeModelId !== undefined) base.judgeModelId = report.judgeModelId;
   if (report.traceFetchAttempts !== undefined) base.traceFetchAttempts = report.traceFetchAttempts;
   if (report.lastTraceFetchAt !== undefined) base.lastTraceFetchAt = report.lastTraceFetchAt;
   if (report.traceError !== undefined) base.traceError = report.traceError;
@@ -605,7 +615,7 @@ class AsyncRunStorage {
   /**
    * Bulk create runs (for migration)
    */
-  async bulkCreate(runs: EvaluationReport[]): Promise<{ created: number; errors: boolean }> {
+  async bulkCreate(runs: EvaluationReport[]): Promise<{ created: number; errors: number }> {
     const storageData = runs.map(run => ({
       ...toStorageFormat(run),
       id: run.id,

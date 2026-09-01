@@ -82,6 +82,20 @@ const deleteTestCase = async (id: string): Promise<void> => {
   }
 };
 
+// Delete a report doc (server-adapter `runs` storage). /api/evaluate
+// pre-creates a placeholder report immediately (before the agent even
+// starts) and updates it in place as the run progresses — nothing else in
+// this test file deletes it, so it must be tracked and removed explicitly.
+const deleteReport = async (id: string): Promise<void> => {
+  try {
+    await fetch(`${BASE_URL}/api/storage/runs/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+  } catch {
+    // Ignore cleanup errors
+  }
+};
+
 // Parse SSE events from a streaming response
 function parseSSEEvents(text: string): Array<{ type: string; [key: string]: any }> {
   return text
@@ -101,6 +115,10 @@ describe('Issue #184 - useTraces benchmark blocking (integration)', () => {
   let backendAvailable = false;
   let observioAvailable = false;
   let testCaseId: string | null = null;
+  // Report doc(s) /api/evaluate creates for this test case. Populated from
+  // the SSE 'started'/'completed' events (see the two `it()` blocks below)
+  // and deleted in afterAll — nothing else in the app deletes these.
+  const createdReportIds: string[] = [];
 
   beforeAll(async () => {
     backendAvailable = await checkBackend();
@@ -121,6 +139,9 @@ describe('Issue #184 - useTraces benchmark blocking (integration)', () => {
   });
 
   afterAll(async () => {
+    for (const id of createdReportIds) {
+      await deleteReport(id);
+    }
     if (testCaseId) {
       await deleteTestCase(testCaseId);
     }
@@ -157,6 +178,15 @@ describe('Issue #184 - useTraces benchmark blocking (integration)', () => {
     const startedEvent = events.find((e) => e.type === 'started');
     const stepEvents = events.filter((e) => e.type === 'step');
     const completedEvent = events.find((e) => e.type === 'completed');
+
+    // Track the report doc(s) this call created, regardless of which
+    // assertions below pass — server/routes/evaluation.ts pre-creates a
+    // placeholder report (surfaced as `started.reportId`) before the agent
+    // even runs, then updates that SAME doc id in place, so `started` and
+    // `completed` always reference one report.
+    if (startedEvent?.reportId) createdReportIds.push(startedEvent.reportId);
+    if (completedEvent?.report?.id) createdReportIds.push(completedEvent.report.id);
+    if (completedEvent?.reportId) createdReportIds.push(completedEvent.reportId);
 
     // Agent ran successfully
     expect(startedEvent).toBeDefined();
@@ -198,7 +228,14 @@ describe('Issue #184 - useTraces benchmark blocking (integration)', () => {
 
     const text = await response.text();
     const events = parseSSEEvents(text);
+    const startedEvent = events.find((e) => e.type === 'started');
     const completedEvent = events.find((e) => e.type === 'completed');
+
+    // Same tracking as the first test — this call also creates a real
+    // report doc that nothing else in the app deletes.
+    if (startedEvent?.reportId) createdReportIds.push(startedEvent.reportId);
+    if (completedEvent?.report?.id) createdReportIds.push(completedEvent.report.id);
+    if (completedEvent?.reportId) createdReportIds.push(completedEvent.reportId);
 
     // After full timeout, the report should show 'error' metricsStatus
     // (not 'pending' which was the bug)

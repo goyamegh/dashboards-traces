@@ -6,7 +6,7 @@
 /**
  * Integration tests for session metadata API
  *
- * Tests the GET/PUT/LIST endpoints against a running server.
+ * Tests the GET/PUT/DELETE/LIST endpoints against a running server.
  *
  * Prerequisites:
  *   - Backend server running: npm run dev:server
@@ -42,8 +42,16 @@ describe('Session Metadata API Integration Tests', () => {
   }, TEST_TIMEOUT);
 
   afterAll(async () => {
-    // Clean up: there's no DELETE endpoint, but the file will be in .agent-health/data/session-metadata/
-    // which is ephemeral test data
+    // Clean up: DELETE /api/coding-agents/sessions/:agent/:sessionId/metadata
+    // now exists (added alongside this test), so remove what this suite
+    // created instead of leaving it as a permanent file under
+    // .agent-health/data/session-metadata/.
+    if (backendAvailable) {
+      await fetch(
+        `${config.backendUrl}/api/coding-agents/sessions/${testAgent}/${testSessionId}/metadata`,
+        { method: 'DELETE' }
+      ).catch(() => {});
+    }
   });
 
   describe('GET /api/coding-agents/sessions/:agent/:sessionId/metadata', () => {
@@ -157,6 +165,61 @@ describe('Session Metadata API Integration Tests', () => {
       expect(data.total).toBeGreaterThanOrEqual(1);
       const found = data.items.find((i: any) => i.sessionId === testSessionId);
       expect(found).toBeDefined();
+    }, TEST_TIMEOUT);
+  });
+
+  describe('DELETE /api/coding-agents/sessions/:agent/:sessionId/metadata', () => {
+    it('should 404 for a session with no metadata', async () => {
+      if (!backendAvailable) return;
+
+      const response = await fetch(
+        `${config.backendUrl}/api/coding-agents/sessions/${testAgent}/nonexistent-delete-session/metadata`,
+        { method: 'DELETE' }
+      );
+
+      expect(response.status).toBe(404);
+      const data = await response.json();
+      expect(data.error).toBeDefined();
+    }, TEST_TIMEOUT);
+
+    it('should delete existing metadata, then confirm it is gone', async () => {
+      if (!backendAvailable) return;
+
+      const deleteSessionId = `integ-delete-test-${Date.now()}`;
+
+      // Create
+      const putResponse = await fetch(
+        `${config.backendUrl}/api/coding-agents/sessions/${testAgent}/${deleteSessionId}/metadata`,
+        {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ status: 'interesting' }),
+        }
+      );
+      expect(putResponse.ok).toBe(true);
+
+      // Delete
+      const deleteResponse = await fetch(
+        `${config.backendUrl}/api/coding-agents/sessions/${testAgent}/${deleteSessionId}/metadata`,
+        { method: 'DELETE' }
+      );
+      expect(deleteResponse.ok).toBe(true);
+      const deleteData = await deleteResponse.json();
+      expect(deleteData.deleted).toBe(true);
+
+      // Confirm gone: GET keeps its "null body, 200" contract for absent metadata
+      const getResponse = await fetch(
+        `${config.backendUrl}/api/coding-agents/sessions/${testAgent}/${deleteSessionId}/metadata`
+      );
+      expect(getResponse.ok).toBe(true);
+      expect(await getResponse.json()).toBeNull();
+
+      // Deleting again 404s — it's really gone, not soft-deleted
+      const secondDelete = await fetch(
+        `${config.backendUrl}/api/coding-agents/sessions/${testAgent}/${deleteSessionId}/metadata`,
+        { method: 'DELETE' }
+      );
+      expect(secondDelete.status).toBe(404);
     }, TEST_TIMEOUT);
   });
 });

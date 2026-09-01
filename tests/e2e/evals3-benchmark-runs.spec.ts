@@ -4,28 +4,39 @@
  */
 
 import { test, expect } from './fixtures/test-fixtures';
+import { createTestDataTracker, uniqueTestName } from '../helpers/testDataTracker';
 
 test.describe('Evals3 Benchmark Runs Page', () => {
+  // beforeAll fixtures outlive single tests, so the per-test testData fixture
+  // cannot own them — this tracker does (afterAll + crash ledger). Ids are
+  // tracked AT CREATION so a died worker can never strand them (5 leaked
+  // 'E2E BM Runs TC' test cases were measured on the shared cluster).
+  const tracker = createTestDataTracker();
   let benchmarkId: string | null = null;
+  let testCaseId: string | null = null;
+  // uniqueTestName gives run-unique, sweeper-recognisable names — collisions
+  // with other runs/sessions on the shared backend are impossible.
+  const TC_NAME = uniqueTestName('bm-runs-tc');
+  const BM_NAME = uniqueTestName('bm-runs-benchmark');
 
   test.beforeAll(async ({ request }) => {
     // Create a benchmark with test cases so we have data to navigate to
     const tcRes = await request.post('/api/storage/test-cases', {
       data: {
-        name: 'E2E BM Runs TC',
+        name: TC_NAME,
         initialPrompt: 'What is 2+2?',
         expectedOutcomes: ['Agent responds with 4'],
       },
     });
-    let testCaseId: string | null = null;
     if (tcRes.ok()) {
       const tcData = await tcRes.json();
       testCaseId = tcData.id || tcData.testCase?.id;
+      tracker.testCase(testCaseId);
     }
 
     const bmRes = await request.post('/api/storage/benchmarks', {
       data: {
-        name: 'E2E BM Runs Benchmark',
+        name: BM_NAME,
         description: 'Created for e2e benchmark runs test',
         testCaseIds: testCaseId ? [testCaseId] : [],
       },
@@ -33,38 +44,23 @@ test.describe('Evals3 Benchmark Runs Page', () => {
     if (bmRes.ok()) {
       const bmData = await bmRes.json();
       benchmarkId = bmData.id || bmData.benchmark?.id;
+      tracker.benchmark(benchmarkId);
     }
   });
 
-  test.afterAll(async ({ request }) => {
-    // Cleanup
-    const bmRes = await request.get('/api/storage/benchmarks').catch(() => null);
-    if (bmRes?.ok()) {
-      const data = await bmRes.json();
-      const benchmarks = Array.isArray(data) ? data : data.benchmarks ?? [];
-      for (const bm of benchmarks) {
-        if (bm.name?.startsWith('E2E BM Runs')) {
-          await request.delete(`/api/storage/benchmarks/${encodeURIComponent(bm.id)}`).catch(() => {});
-        }
-      }
-    }
-    const tcRes = await request.get('/api/storage/test-cases').catch(() => null);
-    if (tcRes?.ok()) {
-      const data = await tcRes.json();
-      const tcs = Array.isArray(data) ? data : data.testCases ?? [];
-      for (const tc of tcs) {
-        if (tc.name?.startsWith('E2E BM Runs')) {
-          await request.delete(`/api/storage/test-cases/${encodeURIComponent(tc.id)}`).catch(() => {});
-        }
-      }
-    }
+  test.afterAll(async () => {
+    // Cleanup by tracked id ONLY — never list-and-delete by name/prefix:
+    // "name looks test-ish" is not proof of ownership on a shared backend
+    // (this exact prefix sweep used to delete other sessions' data). The
+    // tracker is 404-tolerant, ledger-backed, and deletes children first.
+    await tracker.cleanup();
   });
 
   test('should display benchmark name as heading', async ({ page }) => {
     test.skip(!benchmarkId, 'No benchmark created');
     await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs`);
     await page.waitForSelector('h2', { timeout: 30000 });
-    await expect(page.locator('h2:has-text("E2E BM Runs Benchmark")')).toBeVisible();
+    await expect(page.locator(`h2:has-text("${BM_NAME}")`)).toBeVisible();
   });
 
   test('should show run count in subtitle', async ({ page }) => {
@@ -268,15 +264,17 @@ test.describe('Evals3 Benchmark Runs Page', () => {
     expect(executeBody.evaluatorId).not.toBe('__default__');
   });
 
-  test('should handle benchmark with undefined testCaseIds', async ({ page, request }) => {
-    // Create benchmark without testCaseIds
+  test('should handle benchmark with undefined testCaseIds', async ({ page, request, testData }) => {
+    // Create benchmark without testCaseIds. Tracked via the per-test testData
+    // fixture, so it is deleted even when an assertion below fails.
     const res = await request.post('/api/storage/benchmarks', {
-      data: { name: 'E2E BM Runs No TcIds' },
+      data: { name: uniqueTestName('bm-runs-no-tcids') },
     });
     let id: string | null = null;
     if (res.ok()) {
       const data = await res.json();
       id = data.id || data.benchmark?.id;
+      testData.benchmark(id);
     }
     test.skip(!id, 'Failed to create benchmark');
 
@@ -287,11 +285,6 @@ test.describe('Evals3 Benchmark Runs Page', () => {
     // Page should render without "Cannot read properties of undefined" error
     const hasError = await page.locator('text=Cannot read properties').isVisible().catch(() => false);
     expect(hasError).toBeFalsy();
-
-    // Cleanup
-    if (id) {
-      await request.delete(`/api/storage/benchmarks/${encodeURIComponent(id)}`).catch(() => {});
-    }
   });
 });
 
@@ -313,6 +306,7 @@ test.describe('Evals3 Benchmark Runs Page', () => {
  * produces a new version, and the header badge reflects v2 in place.
  */
 test.describe('Evals3 Benchmark Runs Page — Edit & versioning', () => {
+  const editTracker = createTestDataTracker();
   let editBenchmarkId: string | null = null;
   const seededTestCaseIds: string[] = [];
 
@@ -321,7 +315,7 @@ test.describe('Evals3 Benchmark Runs Page — Edit & versioning', () => {
     for (let i = 0; i < 2; i++) {
       const res = await request.post('/api/storage/test-cases', {
         data: {
-          name: `E2E Edit BM Runs TC ${i + 1} ${Date.now()}`,
+          name: uniqueTestName(`edit-bm-runs-tc-${i + 1}`),
           description: 'Seed for edit-on-detail-page e2e',
           category: 'E2E',
           difficulty: 'Easy',
@@ -334,14 +328,17 @@ test.describe('Evals3 Benchmark Runs Page — Edit & versioning', () => {
       if (res?.ok()) {
         const tc = await res.json();
         const id = tc.id || tc.testCase?.id;
-        if (id) seededTestCaseIds.push(id);
+        if (id) {
+          seededTestCaseIds.push(id);
+          editTracker.testCase(id);
+        }
       }
     }
     // Seed a benchmark with the first test case only, so editing can add the second.
     if (seededTestCaseIds.length > 0) {
       const bmRes = await request.post('/api/storage/benchmarks', {
         data: {
-          name: `E2E Edit BM Runs ${Date.now()}`,
+          name: uniqueTestName('edit-bm-runs'),
           description: 'Seed for edit-on-detail-page e2e',
           currentVersion: 1,
           versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: [seededTestCaseIds[0]] }],
@@ -352,17 +349,13 @@ test.describe('Evals3 Benchmark Runs Page — Edit & versioning', () => {
       if (bmRes.ok()) {
         const bm = await bmRes.json();
         editBenchmarkId = bm.id || bm.benchmark?.id;
+        editTracker.benchmark(editBenchmarkId);
       }
     }
   });
 
-  test.afterAll(async ({ request }) => {
-    if (editBenchmarkId) {
-      await request.delete(`/api/storage/benchmarks/${encodeURIComponent(editBenchmarkId)}`).catch(() => {});
-    }
-    for (const id of seededTestCaseIds) {
-      await request.delete(`/api/storage/test-cases/${encodeURIComponent(id)}`).catch(() => {});
-    }
+  test.afterAll(async () => {
+    await editTracker.cleanup();
   });
 
   test('detail page exposes an Edit button in the header', async ({ page }) => {
@@ -488,6 +481,7 @@ test.describe('Evals3 Benchmark Runs Page — Edit & versioning', () => {
  *   - the editor closes and the detail-page header reflects v2 in place.
  */
 test.describe('Evals3 Benchmark Runs Page — Edit without forced run', () => {
+  const noRunTracker = createTestDataTracker();
   let editBenchmarkId: string | null = null;
   const seededTestCaseIds: string[] = [];
 
@@ -495,7 +489,7 @@ test.describe('Evals3 Benchmark Runs Page — Edit without forced run', () => {
     for (let i = 0; i < 2; i++) {
       const res = await request.post('/api/storage/test-cases', {
         data: {
-          name: `E2E Edit-no-run TC ${i + 1} ${Date.now()}`,
+          name: uniqueTestName(`edit-no-run-tc-${i + 1}`),
           category: 'E2E',
           difficulty: 'Easy',
           initialPrompt: 'What is 2+2?',
@@ -507,13 +501,16 @@ test.describe('Evals3 Benchmark Runs Page — Edit without forced run', () => {
       if (res?.ok()) {
         const tc = await res.json();
         const id = tc.id || tc.testCase?.id;
-        if (id) seededTestCaseIds.push(id);
+        if (id) {
+          seededTestCaseIds.push(id);
+          noRunTracker.testCase(id);
+        }
       }
     }
     if (seededTestCaseIds.length > 0) {
       const bmRes = await request.post('/api/storage/benchmarks', {
         data: {
-          name: `E2E Edit-no-run BM ${Date.now()}`,
+          name: uniqueTestName('edit-no-run-bm'),
           description: 'Seed for edit-without-forced-run e2e',
           currentVersion: 1,
           versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: [seededTestCaseIds[0]] }],
@@ -524,17 +521,13 @@ test.describe('Evals3 Benchmark Runs Page — Edit without forced run', () => {
       if (bmRes.ok()) {
         const bm = await bmRes.json();
         editBenchmarkId = bm.id || bm.benchmark?.id;
+        noRunTracker.benchmark(editBenchmarkId);
       }
     }
   });
 
-  test.afterAll(async ({ request }) => {
-    if (editBenchmarkId) {
-      await request.delete(`/api/storage/benchmarks/${encodeURIComponent(editBenchmarkId)}`).catch(() => {});
-    }
-    for (const id of seededTestCaseIds) {
-      await request.delete(`/api/storage/test-cases/${encodeURIComponent(id)}`).catch(() => {});
-    }
+  test.afterAll(async () => {
+    await noRunTracker.cleanup();
   });
 
   test('Step 2 with test-case changes offers a "Save without running" path', async ({ page }) => {

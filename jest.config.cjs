@@ -8,6 +8,12 @@ module.exports = {
   preset: 'ts-jest',
   testEnvironment: 'node',
   setupFiles: ['<rootDir>/jest.setup.cjs'],
+  // Stamps a pid-bearing run id (setup), then drains the crash-recovery
+  // ledgers `TestDataTracker` writes, deleting BY ID anything a killed/timed-out
+  // worker never cleaned up. See jest.globalTeardown.cjs for the safety rules
+  // (pid-liveness ownership, per-file unlink, strict-mode semantics).
+  globalSetup: '<rootDir>/jest.globalSetup.cjs',
+  globalTeardown: '<rootDir>/jest.globalTeardown.cjs',
   roots: ['<rootDir>/tests'],
   testMatch: ['**/tests/**/*.test.ts'],
   moduleNameMapper: {
