@@ -430,8 +430,49 @@ describe('Runs Storage Routes', () => {
       );
     });
 
-    it('should reject a body missing agentName/modelName with 400', async () => {
+    it('should accept a body with only testCaseId (agentName/modelName are optional, display-only fields)', async () => {
+      mockRunsCreate.mockResolvedValue({ id: 'run-999', testCaseId: 'tc-123', status: 'pending' });
       const { req, res } = createMocks({}, { testCaseId: 'tc-123' });
+      const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsCreate).toHaveBeenCalled();
+      expect(res.status).not.toHaveBeenCalledWith(400);
+    });
+
+    it('should reject a non-string agentName with 400 (regression guard for the relaxed-but-not-untyped contract)', async () => {
+      const { req, res } = createMocks({}, { testCaseId: 'tc-123', agentName: 12345 });
+      const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsCreate).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should reject a non-string modelName with 400', async () => {
+      const { req, res } = createMocks({}, { testCaseId: 'tc-123', modelName: { nested: true } });
+      const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsCreate).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should reject an empty-string agentName with 400 (codex_review finding: typeof-only check let "" through)', async () => {
+      const { req, res } = createMocks({}, { testCaseId: 'tc-123', agentName: '' });
+      const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsCreate).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should reject a whitespace-only modelName with 400', async () => {
+      const { req, res } = createMocks({}, { testCaseId: 'tc-123', modelName: '   ' });
       const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
 
       await handler(req, res);

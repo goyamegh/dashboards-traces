@@ -38,12 +38,21 @@ const VALID_RUN_STATUSES = ['running', 'completed', 'failed'];
  * Validate a run/report create body.
  *
  * Minimal required contract, derived from the TestCaseRun type
- * (types/index.ts) and every internal caller that persists a run
- * (services/evaluationRunner.ts, services/benchmarkRunner.ts,
- * server/routes/evaluation.ts): all of them always set `testCaseId`,
- * `agentName`, and `modelName` on the initial placeholder document, even
- * before the agent/judge has produced a trajectory. Returns an error
- * message when invalid, null when valid.
+ * (types/index.ts): `testCaseId` is the one field every real report needs
+ * to be meaningfully attributable to a test case, so it's required and
+ * type-checked.
+ *
+ * `agentName`/`modelName` are set by every internal caller that persists a
+ * placeholder run (services/evaluationRunner.ts, services/benchmarkRunner.ts,
+ * server/routes/evaluation.ts) but are treated as optional/display-only
+ * everywhere they're read (components/evals3/TestCaseInspectorPanel.tsx,
+ * server/routes/comparison.ts both fall back to '—'/agentKey when absent),
+ * and the shared test cleanup-harness (tests/helpers/testDataTracker.ts,
+ * tests/integration/helpers/testDataTracker.integration.test.ts) creates
+ * minimal report docs without them purely to probe delete/cleanup paths —
+ * so they're required to be non-empty strings WHEN PRESENT, but not
+ * required to be present at all. Returns an error message when invalid,
+ * null when valid.
  */
 function validateRunCreate(body: any): string | null {
   if (!body || typeof body !== 'object' || Array.isArray(body)) {
@@ -52,11 +61,11 @@ function validateRunCreate(body: any): string | null {
   if (!body.testCaseId || typeof body.testCaseId !== 'string' || !body.testCaseId.trim()) {
     return 'testCaseId is required and must be a non-empty string';
   }
-  if (!body.agentName || typeof body.agentName !== 'string' || !body.agentName.trim()) {
-    return 'agentName is required and must be a non-empty string';
+  if (body.agentName !== undefined && (typeof body.agentName !== 'string' || !body.agentName.trim())) {
+    return 'agentName must be a non-empty string when provided';
   }
-  if (!body.modelName || typeof body.modelName !== 'string' || !body.modelName.trim()) {
-    return 'modelName is required and must be a non-empty string';
+  if (body.modelName !== undefined && (typeof body.modelName !== 'string' || !body.modelName.trim())) {
+    return 'modelName must be a non-empty string when provided';
   }
   if (body.status !== undefined && !VALID_RUN_STATUSES.includes(body.status)) {
     return `status must be one of: ${VALID_RUN_STATUSES.join(', ')}`;
