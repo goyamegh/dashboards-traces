@@ -394,6 +394,14 @@ router.delete('/api/storage/test-cases/:id', async (req: Request, res: Response)
     const storage = getStorageModule();
     const result = await storage.testCases.delete(id);
 
+    // Regression guard (API KPI probe finding): standardize delete-of-
+    // nonexistent semantics across storage routes \u2014 404 like GET,
+    // instead of a lying 200 { deleted: 0 } that looks identical to a
+    // successful no-op delete.
+    if (!result.deleted) {
+      return res.status(404).json({ error: 'Test case not found' });
+    }
+
     debug('StorageAPI', `Deleted test case: ${id} (${result.deleted} versions)`);
     res.json(result);
   } catch (error: any) {

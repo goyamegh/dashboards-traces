@@ -26,6 +26,8 @@ import {
 import { convertTestCasesToExportFormat, generateExportFilename } from '../../../lib/benchmarkExport.js';
 import { resolveCodeFnMapForStoredTestCases } from '../../../services/sourceResolver.js';
 import { computeImageDigest, buildImageDoc } from '../../../lib/benchmarkImage.js';
+import { loadConfigSync } from '../../../lib/config/index.js';
+import { getCustomAgents } from '../../services/customAgentStore.js';
 
 /**
  * Normalize benchmark data for legacy documents without version fields.
@@ -352,6 +354,26 @@ function validateRunConfig(config: any): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Resolve whether an agentKey refers to a configured agent (built-in from
+ * agent-health.config.ts/.js/env defaults, or a custom agent added via the
+ * Settings UI). Mirrors the exact source GET /api/agents merges
+ * (loadConfigSync().agents + getCustomAgents()) so "known" here means
+ * exactly what the Agents dropdown in the UI would show.
+ *
+ * Regression guard for an API KPI probe finding: POST .../execute with a
+ * bogus agentKey used to sail past validateRunConfig() (which only checked
+ * the field was a non-empty string), start a real 30s+ run against a
+ * connector that would immediately fail, and persist a junk run entry on
+ * the benchmark before failing. Callers must check this BEFORE creating or
+ * persisting a run.
+ */
+function isKnownAgentKey(agentKey: string): boolean {
+  const config = loadConfigSync();
+  if (config.agents.some(a => a.key === agentKey)) return true;
+  return getCustomAgents().some(a => a.key === agentKey);
 }
 
 /**
@@ -746,6 +768,17 @@ router.patch('/api/storage/benchmarks/:id/metadata', async (req: Request, res: R
       return res.status(400).json({ error: 'Provide name and/or description to update' });
     }
 
+    // Regression guard (API KPI probe finding): the route previously
+    // trusted `name`/`description` verbatim, so `{ name: 12345 }` persisted
+    // (and was returned back) as a number \u2014 type-confused metadata that
+    // breaks any consumer expecting a string.
+    if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
+      return res.status(400).json({ error: 'name must be a non-empty string when provided' });
+    }
+    if (description !== undefined && typeof description !== 'string') {
+      return res.status(400).json({ error: 'description must be a string when provided' });
+    }
+
     const storage = getStorageModule();
 
     // Get existing benchmark
@@ -904,7 +937,16 @@ router.delete('/api/storage/benchmarks/:id', async (req: Request, res: Response)
     }
 
     const storage = getStorageModule();
-    await storage.benchmarks.delete(id);
+    const result = await storage.benchmarks.delete(id);
+
+    // Regression guard (API KPI probe finding): the delete() adapter call
+    // already returns { deleted: boolean } reflecting whether a document
+    // was actually found and removed, but this route used to ignore it and
+    // always answer 200 { deleted: true } \u2014 lying about deletes of
+    // nonexistent benchmarks even though GET correctly 404s for the same id.
+    if (!result.deleted) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
 
     debug('StorageAPI', `Deleted benchmark: ${id}`);
     res.json({ deleted: true });
@@ -987,6 +1029,14 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
   const validationError = validateRunConfig(runConfig);
   if (validationError) {
     return res.status(400).json({ error: validationError });
+  }
+
+  // Resolve agentKey against configured agents (same source as GET /api/agents)
+  // BEFORE doing anything else. An unknown agentKey previously sailed through
+  // to executeRun(), which started a real 30s+ run and persisted a junk run
+  // entry before the connector eventually failed.
+  if (!isKnownAgentKey(runConfig.agentKey)) {
+    return res.status(400).json({ error: `Unknown agentKey: ${runConfig.agentKey}` });
   }
 
   // Require OpenSearch for execution

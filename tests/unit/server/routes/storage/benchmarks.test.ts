@@ -100,6 +100,16 @@ import {
   requireStorageClient,
 } from '@/server/middleware/storageClient';
 
+// Mock agent config resolution (used by the agentKey-exists check on
+// POST /execute). Tests below use agentKey: 'agent', so register it as
+// a known configured agent.
+jest.mock('@/lib/config/index', () => ({
+  loadConfigSync: jest.fn(() => ({ agents: [{ key: 'agent' }, { key: 'test-agent' }] })),
+}));
+jest.mock('@/server/services/customAgentStore', () => ({
+  getCustomAgents: jest.fn(() => []),
+}));
+
 // Mock sample benchmarks
 jest.mock('@/cli/demo/sampleBenchmarks', () => ({
   SAMPLE_BENCHMARKS: [
@@ -810,6 +820,18 @@ describe('Experiments Storage Routes', () => {
       await handler(req, res);
 
       expect(res.status).toHaveBeenCalledWith(404);
+    });
+
+    it('should return 404 when delete() resolves with { deleted: false } instead of throwing (regression F7: previously answered 200 { deleted: true } even though nothing was deleted)', async () => {
+      mockBenchmarksDelete.mockResolvedValue({ deleted: false });
+
+      const { req, res } = createMocks({ id: 'exp-nonexistent' });
+      const handler = getRouteHandler(benchmarksRoutes, 'delete', '/api/storage/benchmarks/:id');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).not.toHaveBeenCalledWith({ deleted: true });
     });
   });
 
@@ -1665,6 +1687,150 @@ describe('Experiments Storage Routes - Validation', () => {
         expect((arg as any).error).not.toContain('modelId is required');
       }
     }
+  });
+
+  it('should reject execute with an unknown agentKey with a fast 400, before touching storage (regression: F11 — previously started a real 30s+ run and persisted a junk run entry)', async () => {
+    const { req, res } = createMocks(
+      { id: 'exp-123' },
+      { name: 'Run', agentKey: 'totally-bogus-agent-key' }
+    );
+    const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/:id/execute');
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({
+      error: expect.stringContaining('totally-bogus-agent-key'),
+    });
+    // Must never reach the OpenSearch-required check, benchmark lookup, or run creation.
+    expect(isStorageAvailable).not.toHaveBeenCalled();
+    expect(mockBenchmarksGetById).not.toHaveBeenCalled();
+    expect(mockGet).not.toHaveBeenCalled();
+  });
+
+  it('should accept execute with a known built-in agentKey', async () => {
+    const { req, res } = createMocks(
+      { id: 'exp-123' },
+      { name: 'Run', agentKey: 'agent' }
+    );
+    const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/:id/execute');
+
+    await handler(req, res);
+
+    // Must NOT be rejected for agentKey — falls through to the next check instead.
+    for (const [arg] of (res.json as jest.Mock).mock.calls) {
+      if (arg && typeof (arg as any).error === 'string') {
+        expect((arg as any).error).not.toMatch(/unknown agentkey/i);
+      }
+    }
+  });
+
+  it('should accept execute with a known custom agentKey', async () => {
+    const { getCustomAgents } = require('@/server/services/customAgentStore');
+    (getCustomAgents as jest.Mock).mockReturnValueOnce([{ key: 'my-custom-agent' }]);
+
+    const { req, res } = createMocks(
+      { id: 'exp-123' },
+      { name: 'Run', agentKey: 'my-custom-agent' }
+    );
+    const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/:id/execute');
+
+    await handler(req, res);
+
+    for (const [arg] of (res.json as jest.Mock).mock.calls) {
+      if (arg && typeof (arg as any).error === 'string') {
+        expect((arg as any).error).not.toMatch(/unknown agentkey/i);
+      }
+    }
+  });
+});
+
+describe('PATCH /api/storage/benchmarks/:id/metadata - Type Validation (F12 regression)', () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockBenchmarksGetById.mockResolvedValue({
+      id: 'exp-meta-123',
+      name: 'Original Name',
+      description: 'Original desc',
+      testCaseIds: [],
+      runs: [],
+    });
+    mockBenchmarksUpdate.mockImplementation(async (_id: string, updates: any) => ({
+      id: 'exp-meta-123',
+      name: 'Original Name',
+      description: 'Original desc',
+      ...updates,
+    }));
+  });
+
+  it('rejects a numeric name with 400 and never calls storage.update (regression: previously persisted {name:12345} as a number)', async () => {
+    const { req, res } = createMocks(
+      { id: 'exp-meta-123' },
+      { name: 12345 }
+    );
+    const handler = getRouteHandler(benchmarksRoutes, 'patch', '/api/storage/benchmarks/:id/metadata');
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockBenchmarksUpdate).not.toHaveBeenCalled();
+  });
+
+  it('rejects an empty/whitespace-only name with 400', async () => {
+    const { req, res } = createMocks(
+      { id: 'exp-meta-123' },
+      { name: '   ' }
+    );
+    const handler = getRouteHandler(benchmarksRoutes, 'patch', '/api/storage/benchmarks/:id/metadata');
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockBenchmarksUpdate).not.toHaveBeenCalled();
+  });
+
+  it('rejects a non-string description (object) with 400', async () => {
+    const { req, res } = createMocks(
+      { id: 'exp-meta-123' },
+      { description: { nested: true } }
+    );
+    const handler = getRouteHandler(benchmarksRoutes, 'patch', '/api/storage/benchmarks/:id/metadata');
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockBenchmarksUpdate).not.toHaveBeenCalled();
+  });
+
+  it('rejects an array as name with 400', async () => {
+    const { req, res } = createMocks(
+      { id: 'exp-meta-123' },
+      { name: ['a', 'b'] }
+    );
+    const handler = getRouteHandler(benchmarksRoutes, 'patch', '/api/storage/benchmarks/:id/metadata');
+
+    await handler(req, res);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(mockBenchmarksUpdate).not.toHaveBeenCalled();
+  });
+
+  it('still accepts a valid string name/description update (no regression)', async () => {
+    const { req, res } = createMocks(
+      { id: 'exp-meta-123' },
+      { name: 'Renamed', description: 'New description' }
+    );
+    const handler = getRouteHandler(benchmarksRoutes, 'patch', '/api/storage/benchmarks/:id/metadata');
+
+    await handler(req, res);
+
+    expect(mockBenchmarksUpdate).toHaveBeenCalledWith(
+      'exp-meta-123',
+      expect.objectContaining({ name: 'Renamed', description: 'New description' })
+    );
+    expect(res.json).toHaveBeenCalledWith(
+      expect.objectContaining({ name: 'Renamed', description: 'New description' })
+    );
   });
 });
 
