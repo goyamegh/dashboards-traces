@@ -10,7 +10,7 @@
 
 import express, { Express } from 'express';
 import routes from './routes/index.js';
-import { setupMiddleware, setupSpaFallback } from './middleware/index.js';
+import { setupMiddleware, setupSpaFallback, setupFinalErrorHandler } from './middleware/index.js';
 import { loadConfig } from '@/lib/config/index';
 import { migrateYamlToJsonIfNeeded } from './services/configMigration.js';
 import { getStorageConfigFromFile, getObservabilityConfigFromFile, getStorageConfigFromTs, getObservabilityConfigFromTs, setTsClusterConfig } from './services/configService.js';
@@ -123,6 +123,9 @@ export async function createApp(): Promise<Express> {
 
   // SPA fallback - must be after routes so API requests aren't intercepted
   setupSpaFallback(app);
+
+  // Final catch-all JSON error handler - must be registered last
+  setupFinalErrorHandler(app);
 
   return app;
 }

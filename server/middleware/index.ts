@@ -45,6 +45,27 @@ function setupCors(app: Express): void {
  */
 function setupJsonParser(app: Express): void {
   app.use(express.json({ limit: '10mb' }));
+
+  // Regression guard (API KPI probe finding): a malformed JSON body (e.g.
+  // `{not json`) on ANY route used to fall through to Express's default
+  // error handler, which renders an HTML page containing the raw
+  // SyntaxError stack trace (internal file paths included). body-parser's
+  // JSON middleware tags well-known failures with a stable `err.type`
+  // (documented, widely-relied-on body-parser behavior):
+  //   - 'entity.parse.failed' -- malformed JSON syntax
+  //   - 'entity.too.large'    -- body exceeded the 10mb limit above
+  // Catch both here, right after the parser that can throw them, and
+  // answer clean JSON instead of falling through to Express's default
+  // HTML error handler.
+  app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
+    if (err && err.type === 'entity.parse.failed') {
+      return res.status(400).json({ error: 'invalid JSON body' });
+    }
+    if (err && err.type === 'entity.too.large') {
+      return res.status(413).json({ error: 'request body too large' });
+    }
+    next(err);
+  });
 }
 
 /**
@@ -106,6 +127,32 @@ export function setupSpaFallback(app: Express): void {
  */
 function setupStorageClient(app: Express): void {
   app.use(storageClientMiddleware);
+}
+
+/**
+ * Final catch-all error handler. Must be registered LAST (after routes and
+ * the SPA fallback) so it catches anything an individual route handler
+ * forwarded via `next(err)` as well as errors thrown by synchronous
+ * middleware anywhere earlier in the chain.
+ *
+ * Regression guard (API KPI probe finding, F4): without this, an uncaught
+ * error skips every route's own try/catch and falls through to Express's
+ * built-in error handler, which renders an HTML page with the error's
+ * stack trace (leaking internal file paths). This always answers JSON and
+ * never includes a stack, message internals, or HTML.
+ */
+export function setupFinalErrorHandler(app: Express): void {
+  app.use((err: any, _req: Request, res: Response, next: NextFunction) => {
+    if (res.headersSent) {
+      // Response already started (e.g. mid-SSE-stream) — can't send a fresh
+      // JSON body; just end the connection and let Express log it.
+      return next(err);
+    }
+    console.error('[UnhandledError]', err?.message || err);
+    res.status(err?.status && Number.isInteger(err.status) ? err.status : 500).json({
+      error: 'Internal server error',
+    });
+  });
 }
 
 /**
