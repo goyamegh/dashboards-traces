@@ -15,6 +15,14 @@ import { debug } from '@/lib/debug';
 import { getStorageModule } from '../../adapters/index.js';
 import { SAMPLE_TEST_CASES } from '../../../cli/demo/sampleTestCases.js';
 import type { TestCase, StorageMetadata } from '../../../types/index.js';
+import { parseOptionalListPagination } from './pagination.js';
+
+// Bounds applied ONLY when the caller opts into pagination via `size`/`limit`
+// (see parseOptionalListPagination doc-comment) — omitting the param entirely
+// still returns everything, which many internal callers (list views passing
+// `{ summary: true }`, server-side jobs, migrations) intentionally rely on.
+const TEST_CASES_PAGE_DEFAULT = 100;
+const TEST_CASES_PAGE_MAX = 500;
 
 const router = Router();
 
@@ -86,14 +94,28 @@ function getSampleTestCases(): TestCase[] {
 // Query params:
 //   ids       - comma-separated IDs to filter by
 //   fields    - 'summary' for lightweight list-view payload
-//   size      - page size (default: all results)
+//   size|limit - page size; if present but invalid/non-numeric/<=0, clamped
+//                to a default (100), and always capped at 500. If OMITTED
+//                entirely, the endpoint stays unpaginated (returns every
+//                test case) — several internal callers rely on that.
+//   from|offset - kept for symmetry with the other list routes; the primary
+//                pagination mechanism here is the `after` cursor below.
 //   after     - cursor token for pagination (ID-based cursor)
 router.get('/api/storage/test-cases', async (req: Request, res: Response) => {
   try {
-    const { ids, fields, size: sizeParam, after } = req.query;
+    const { ids, fields, after } = req.query;
     const filterIds = ids ? (ids as string).split(',').filter(Boolean) : null;
     const isSummary = fields === 'summary';
-    const pageSize = sizeParam ? parseInt(sizeParam as string, 10) : null;
+    // `size`/`limit` present (even if invalid) => paginate, clamped to
+    // [1, TEST_CASES_PAGE_MAX] with TEST_CASES_PAGE_DEFAULT as the fallback.
+    // Absent entirely => unpaginated (pageSize null), preserving the
+    // long-standing "return everything" contract several internal callers
+    // depend on. See parseOptionalListPagination doc-comment.
+    const pagination = parseOptionalListPagination(req.query as Record<string, unknown>, {
+      defaultSize: TEST_CASES_PAGE_DEFAULT,
+      maxSize: TEST_CASES_PAGE_MAX,
+    });
+    const pageSize = pagination.paginated ? pagination.size : null;
     const afterCursor = after as string | undefined;
 
     let realData: TestCase[] = [];

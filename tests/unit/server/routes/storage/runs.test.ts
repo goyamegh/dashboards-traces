@@ -218,6 +218,55 @@ describe('Runs Storage Routes', () => {
       });
     });
 
+    // Regression coverage for the API KPI probe finding: this route ignored
+    // `limit`/`from` entirely (only `size`/`from` were wired up), so
+    // `?limit=0`, `?limit=-5`, `?limit=100000` all silently fell back to the
+    // hardcoded default and returned an identical, unbounded-feeling dump.
+    it('respects `limit` as an alias for `size` (the probe used this param name)', async () => {
+      mockRunsGetAll.mockResolvedValue({ items: [], total: 0 });
+
+      const { req, res } = createMocks({}, {}, { limit: '5' });
+      const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsGetAll).toHaveBeenCalledWith({ size: 5, from: 0, _source: undefined });
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ size: 5, from: 0 }));
+    });
+
+    it.each(['0', '-5', 'abc'])('clamps an invalid limit=%s to the default page size (100) instead of ignoring it', async (raw) => {
+      mockRunsGetAll.mockResolvedValue({ items: [], total: 0 });
+
+      const { req, res } = createMocks({}, {}, { limit: raw });
+      const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsGetAll).toHaveBeenCalledWith({ size: 100, from: 0, _source: undefined });
+    });
+
+    it('caps an oversized limit at the hard max (1000) rather than passing it through unbounded', async () => {
+      mockRunsGetAll.mockResolvedValue({ items: [], total: 0 });
+
+      const { req, res } = createMocks({}, {}, { limit: '100000' });
+      const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsGetAll).toHaveBeenCalledWith({ size: 1000, from: 0, _source: undefined });
+    });
+
+    it('supports the `offset` alias for `from`', async () => {
+      mockRunsGetAll.mockResolvedValue({ items: [], total: 0 });
+
+      const { req, res } = createMocks({}, {}, { offset: '20' });
+      const handler = getRouteHandler(runsRoutes, 'get', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsGetAll).toHaveBeenCalledWith({ size: 100, from: 20, _source: undefined });
+    });
+
     it('should return only sample data when storage unavailable', async () => {
       mockRunsGetAll.mockRejectedValue(new Error('Connection refused'));
 

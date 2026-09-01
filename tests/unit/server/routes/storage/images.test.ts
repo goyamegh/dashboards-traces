@@ -160,6 +160,24 @@ describe('Benchmark Images API', () => {
       expect(mockImagesGetAll).toHaveBeenCalledWith({ from: 10, size: 5 });
     });
 
+    it('accepts `limit`/`offset` as aliases for `size`/`from`', async () => {
+      mockImagesGetAll.mockResolvedValue({ items: [], total: 0 });
+      await request(app).get('/api/storage/images?offset=10&limit=5');
+      expect(mockImagesGetAll).toHaveBeenCalledWith({ from: 10, size: 5 });
+    });
+
+    it.each(['0', '-5', 'abc'])('clamps an invalid size=%s to the default (100)', async (raw) => {
+      mockImagesGetAll.mockResolvedValue({ items: [], total: 0 });
+      await request(app).get(`/api/storage/images?size=${raw}`);
+      expect(mockImagesGetAll).toHaveBeenCalledWith({ from: 0, size: 100 });
+    });
+
+    it('caps an oversized size at the hard max (1000)', async () => {
+      mockImagesGetAll.mockResolvedValue({ items: [], total: 0 });
+      await request(app).get('/api/storage/images?size=999999');
+      expect(mockImagesGetAll).toHaveBeenCalledWith({ from: 0, size: 1000 });
+    });
+
     it('500s when storage throws', async () => {
       mockImagesGetAll.mockRejectedValue(new Error('boom'));
       const res = await request(app).get('/api/storage/images');
@@ -186,6 +204,24 @@ describe('Benchmark Images API', () => {
       expect(res.body.image).toEqual(sampleImage);
       expect(res.body.runs).toEqual([{ id: 'run-1' }]);
       expect(res.body.runsTotal).toBe(1);
+    });
+
+    it.each(['0', '-5', 'abc'])('clamps an invalid runs size=%s to the default (500) instead of ignoring it', async (raw) => {
+      mockImagesGetByDigest.mockResolvedValue(sampleImage);
+      mockEvaluationRunsList.mockResolvedValue({ items: [], total: 0 });
+
+      await request(app).get(`/api/storage/images/digest-abc?size=${raw}`);
+
+      expect(mockEvaluationRunsList).toHaveBeenCalledWith({ imageDigest: 'digest-abc', from: 0, size: 500 });
+    });
+
+    it('caps an oversized runs size at the hard max (2000)', async () => {
+      mockImagesGetByDigest.mockResolvedValue(sampleImage);
+      mockEvaluationRunsList.mockResolvedValue({ items: [], total: 0 });
+
+      await request(app).get('/api/storage/images/digest-abc?size=999999');
+
+      expect(mockEvaluationRunsList).toHaveBeenCalledWith({ imageDigest: 'digest-abc', from: 0, size: 2000 });
     });
 
     it('honors from/size query params for the runs page', async () => {

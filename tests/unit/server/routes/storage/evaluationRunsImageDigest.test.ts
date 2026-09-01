@@ -136,6 +136,38 @@ describe('Evaluation Runs API — image digest wiring', () => {
       const callArg = mockEvaluationRunsList.mock.calls[0][0];
       expect(callArg.imageDigest).toBeUndefined();
     });
+
+    it('defaults to size 50 / from 0 when no pagination params are given', async () => {
+      mockEvaluationRunsList.mockResolvedValue({ items: [], total: 0 });
+      await request(app).get('/api/storage/evaluation-runs');
+      expect(mockEvaluationRunsList).toHaveBeenCalledWith(
+        expect.objectContaining({ size: 50, from: 0 })
+      );
+    });
+
+    it('accepts `limit`/`offset` as aliases for `size`/`from`', async () => {
+      mockEvaluationRunsList.mockResolvedValue({ items: [], total: 0 });
+      await request(app).get('/api/storage/evaluation-runs?limit=5&offset=10');
+      expect(mockEvaluationRunsList).toHaveBeenCalledWith(
+        expect.objectContaining({ size: 5, from: 10 })
+      );
+    });
+
+    it.each(['0', '-5', 'abc'])('clamps an invalid size=%s to the default (50) instead of passing it through', async (raw) => {
+      mockEvaluationRunsList.mockResolvedValue({ items: [], total: 0 });
+      await request(app).get(`/api/storage/evaluation-runs?size=${raw}`);
+      expect(mockEvaluationRunsList).toHaveBeenCalledWith(
+        expect.objectContaining({ size: 50 })
+      );
+    });
+
+    it('caps an oversized size at the hard max (500)', async () => {
+      mockEvaluationRunsList.mockResolvedValue({ items: [], total: 0 });
+      await request(app).get('/api/storage/evaluation-runs?size=999999');
+      expect(mockEvaluationRunsList).toHaveBeenCalledWith(
+        expect.objectContaining({ size: 500 })
+      );
+    });
   });
 
   describe('POST /api/storage/evaluation-runs — digest stamping', () => {

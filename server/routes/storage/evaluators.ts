@@ -15,6 +15,15 @@ import { debug } from '@/lib/debug';
 import { getStorageModule } from '@/server/adapters';
 import { SYSTEM_EVALUATORS, toEvaluator, isSystemEvaluatorId, getSystemEvaluatorById } from '@/server/prompts/evaluatorTemplates';
 import type { Evaluator, StorageMetadata } from '@/types';
+import { parseOptionalListPagination } from './pagination.js';
+
+// Like test-cases: callers that omit size/limit get the full (small) list —
+// evaluator definitions, unlike runs/test-cases, aren't per-execution data and
+// every current UI caller (dropdowns, editors) expects the complete set.
+// A caller that DOES pass size/limit gets clamped, validated pagination
+// instead of an unbounded/garbage-in response. See pagination.ts.
+const EVALUATORS_PAGE_DEFAULT = 100;
+const EVALUATORS_PAGE_MAX = 500;
 
 const router = Router();
 
@@ -78,7 +87,19 @@ router.get('/api/storage/evaluators', async (req: Request, res: Response) => {
     customData.sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime());
 
     // System evaluators first, then custom evaluators
-    const allData = [...systemData, ...customData];
+    let allData = [...systemData, ...customData];
+    const total = allData.length;
+
+    // Optional pagination (see EVALUATORS_PAGE_DEFAULT/_MAX comment above):
+    // only applied when the caller explicitly passes size/limit (and/or
+    // from/offset); otherwise every evaluator is returned, as before.
+    const pagination = parseOptionalListPagination(req.query as Record<string, unknown>, {
+      defaultSize: EVALUATORS_PAGE_DEFAULT,
+      maxSize: EVALUATORS_PAGE_MAX,
+    });
+    if (pagination.paginated) {
+      allData = allData.slice(pagination.from, pagination.from + pagination.size);
+    }
 
     // Build metadata
     const meta: StorageMetadata = {
@@ -91,7 +112,7 @@ router.get('/api/storage/evaluators', async (req: Request, res: Response) => {
 
     res.json({
       evaluators: allData,
-      total: allData.length,
+      total,
       meta,
     });
   } catch (error: any) {

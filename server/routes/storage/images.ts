@@ -15,6 +15,17 @@
 import { Router, Request, Response } from 'express';
 import { getStorageModule } from '../../adapters/index.js';
 import { buildImageDoc } from '../../../lib/benchmarkImage.js';
+import { parseListPagination } from './pagination.js';
+
+// Always paginated (default 100, matching the pre-existing default), capped
+// at 1000 — see pagination.ts for the clamp convention.
+const IMAGES_PAGE_DEFAULT = 100;
+const IMAGES_PAGE_MAX = 1000;
+// The per-digest run list defaults higher (500) because that IS the
+// comparable set for one image — truncating it silently would hide real
+// runs. Still capped so an explicit huge/garbage size|limit is bounded.
+const IMAGE_RUNS_PAGE_DEFAULT = 500;
+const IMAGE_RUNS_PAGE_MAX = 2000;
 
 const router = Router();
 
@@ -55,14 +66,16 @@ router.post('/api/storage/images', async (req: Request, res: Response) => {
 });
 
 // GET /api/storage/images - List benchmark images
+// Query params: size|limit (default 100, capped at 1000), from|offset
+// (default 0) — see pagination.ts for the clamp convention.
 router.get('/api/storage/images', async (req: Request, res: Response) => {
   try {
     const storage = getStorageModule();
-    const { from, size } = req.query;
-    const result = await storage.images.getAll({
-      from: from ? parseInt(from as string, 10) : 0,
-      size: size ? parseInt(size as string, 10) : 100,
+    const pagination = parseListPagination(req.query as Record<string, unknown>, {
+      defaultSize: IMAGES_PAGE_DEFAULT,
+      maxSize: IMAGES_PAGE_MAX,
     });
+    const result = await storage.images.getAll(pagination);
     res.json({ images: result.items, total: result.total });
   } catch (error: any) {
     console.error('[StorageAPI] List images failed:', error.message);
@@ -80,14 +93,17 @@ router.get('/api/storage/images/:digest', async (req: Request, res: Response) =>
       return res.status(404).json({ error: `Image not found: ${digest}` });
     }
     // All runs sharing this digest ran under identical conditions —
-    // this IS the comparable set. Pageable via `size`/`from` (default 500/0)
-    // so an image with >500 runs isn't silently truncated with no way to
-    // fetch the rest — `runsTotal` always reflects the true count.
-    const { from, size } = req.query;
+    // this IS the comparable set. Pageable via `size`/`from` (default 500/0,
+    // capped at 2000 — see pagination.ts) so an image with >500 runs isn't
+    // silently truncated with no way to fetch the rest — `runsTotal` always
+    // reflects the true count.
+    const pagination = parseListPagination(req.query as Record<string, unknown>, {
+      defaultSize: IMAGE_RUNS_PAGE_DEFAULT,
+      maxSize: IMAGE_RUNS_PAGE_MAX,
+    });
     const runs = await storage.evaluationRuns.list({
       imageDigest: digest,
-      from: from ? parseInt(from as string, 10) : 0,
-      size: size ? parseInt(size as string, 10) : 500,
+      ...pagination,
     });
     res.json({ image, runs: runs.items, runsTotal: runs.total });
   } catch (error: any) {

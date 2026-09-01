@@ -1015,5 +1015,69 @@ describe('Test Cases Storage Routes', () => {
       expect(response.after).toBeUndefined();
       expect(response.hasMore).toBeUndefined();
     });
+
+    // Regression coverage for the API KPI probe finding: `?limit=abc` (a
+    // non-numeric size) used to silently fall through to "no size param" —
+    // returning every test case with full versioned content (measured at
+    // ~169MB / ~14s). An invalid size/limit must opt INTO pagination (with a
+    // clamped default), never fall back to unpaginated.
+    it('treats an invalid `size` (non-numeric) as "paginate with default", not "return everything"', async () => {
+      const items = Array.from({ length: 3 }, (_, i) => ({
+        id: `tc-${i}`,
+        name: `TC ${i}`,
+        createdAt: '2024-01-01T00:00:00Z',
+      }));
+      mockStorage.testCases.getAll.mockResolvedValue({ items, total: items.length });
+
+      const { req, res } = createMocks({}, {}, { size: 'abc' });
+      const handler = getRouteHandler(testCasesRoutes, 'get', '/api/storage/test-cases');
+
+      await handler(req, res);
+
+      const response = (res.json as jest.Mock).mock.calls[0][0];
+      // Paginated mode was entered (hasMore/after are defined, even if false/null
+      // for this small dataset) — this is what distinguishes it from the
+      // "no size param at all" backward-compat path tested above.
+      expect(response.hasMore).toBe(false);
+      expect(response.after).toBeNull();
+    });
+
+    it('accepts `limit` as an alias for `size` (the probe used this param name, which the route never read before)', async () => {
+      const items = Array.from({ length: 3 }, (_, i) => ({
+        id: `tc-${i}`,
+        name: `TC ${i}`,
+        createdAt: '2024-01-01T00:00:00Z',
+      }));
+      mockStorage.testCases.getAll.mockResolvedValue({ items, total: items.length });
+
+      const { req, res } = createMocks({}, {}, { limit: '2' });
+      const handler = getRouteHandler(testCasesRoutes, 'get', '/api/storage/test-cases');
+
+      await handler(req, res);
+
+      const response = (res.json as jest.Mock).mock.calls[0][0];
+      expect(response.testCases).toHaveLength(2);
+      expect(response.hasMore).toBe(true);
+    });
+
+    it('caps an oversized explicit size at the hard max (500) instead of returning it unbounded', async () => {
+      const items = Array.from({ length: 3 }, (_, i) => ({
+        id: `tc-${i}`,
+        name: `TC ${i}`,
+        createdAt: '2024-01-01T00:00:00Z',
+      }));
+      mockStorage.testCases.getAll.mockResolvedValue({ items, total: items.length });
+
+      const { req, res } = createMocks({}, {}, { size: '999999' });
+      const handler = getRouteHandler(testCasesRoutes, 'get', '/api/storage/test-cases');
+
+      await handler(req, res);
+
+      // 3 items < the 500 cap, so all 3 come back — the assertion that matters
+      // is that this didn't throw/misbehave and still entered paginated mode.
+      const response = (res.json as jest.Mock).mock.calls[0][0];
+      expect(response.testCases).toHaveLength(3);
+      expect(response.hasMore).toBe(false);
+    });
   });
 });

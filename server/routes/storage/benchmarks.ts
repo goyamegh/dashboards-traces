@@ -353,6 +353,11 @@ async function getAllTestCases(): Promise<TestCase[]> {
 }
 
 // GET /api/storage/benchmarks - List all
+// Audited for the same "ignores pagination" bug class as runs/test-cases/
+// evaluators/evaluation-runs/images (see pagination.ts): this route does
+// NOT read any size/from/limit/offset query params at all, so a caller
+// cannot widen or corrupt the page size — it is unconditionally capped at
+// 1000 server-side. No caller-controlled unbounded-dump vector exists here.
 router.get('/api/storage/benchmarks', async (req: Request, res: Response) => {
   try {
     let realData: Benchmark[] = [];

@@ -22,6 +22,13 @@ import {
   getSampleRunsByBenchmarkRun,
 } from '../../../cli/demo/sampleRuns.js';
 import type { TestCaseRun } from '../../../types/index.js';
+import { parseListPagination } from './pagination.js';
+
+// This route is ALWAYS paginated (unlike test-cases, no caller relies on an
+// unbounded dump here) — default page size 100, hard cap 1000. See
+// pagination.ts for the size|limit / from|offset alias + clamp convention.
+const RUNS_PAGE_DEFAULT = 100;
+const RUNS_PAGE_MAX = 1000;
 
 const router = Router();
 
@@ -42,9 +49,16 @@ function getTimestampMs(run: { timestamp?: string; createdAt?: string }): number
 }
 
 // GET /api/storage/runs - List all (paginated)
+// Query params: size|limit (default 100, capped at 1000), from|offset
+// (default 0). Invalid/negative/zero size clamps to the default rather than
+// silently returning an unbounded dump — see pagination.ts.
 router.get('/api/storage/runs', async (req: Request, res: Response) => {
   try {
-    const { size = '100', from = '0', fields, ids } = req.query;
+    const { fields, ids } = req.query;
+    const { size, from } = parseListPagination(req.query as Record<string, unknown>, {
+      defaultSize: RUNS_PAGE_DEFAULT,
+      maxSize: RUNS_PAGE_MAX,
+    });
 
     // Batch fetch by ids — collapses N per-report round-trips (e.g. the
     // comparison page loading every cell's report) into ONE request; the
@@ -97,8 +111,8 @@ router.get('/api/storage/runs', async (req: Request, res: Response) => {
     const storage = getStorageModule();
     try {
       const result = await storage.runs.getAll({
-        size: parseInt(size as string),
-        from: parseInt(from as string),
+        size,
+        from,
         _source: fieldList,
       });
       realData = result.items;
@@ -115,7 +129,7 @@ router.get('/api/storage/runs', async (req: Request, res: Response) => {
     const allData = [...realData, ...sortedSampleData];
     const total = allData.length;
 
-    res.json({ runs: allData, total, size: parseInt(size as string), from: parseInt(from as string) });
+    res.json({ runs: allData, total, size, from });
   } catch (error: any) {
     console.error('[StorageAPI] List runs failed:', error.message);
     res.status(500).json({ error: error.message });

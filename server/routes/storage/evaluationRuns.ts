@@ -17,6 +17,12 @@ import { loadConfigSync } from '../../../lib/config/index.js';
 import { getCustomAgents } from '../../services/customAgentStore.js';
 import { resolveAgentModel } from '../../../lib/resolveAgentModel.js';
 import { computeImageDigest, buildImageDoc } from '../../../lib/benchmarkImage.js';
+import { parseListPagination } from './pagination.js';
+
+// Always paginated (default 50, matching the pre-existing default), capped
+// at 500 so an explicit huge/garbage size|limit can't force an unbounded dump.
+const EVALUATION_RUNS_PAGE_DEFAULT = 50;
+const EVALUATION_RUNS_PAGE_MAX = 500;
 
 const router = Router();
 
@@ -39,10 +45,12 @@ function sendSSE(res: Response, event: string, data: any): void {
 }
 
 // GET /api/storage/evaluation-runs - List evaluation runs
+// Query params: size|limit (default 50, capped at 500), from|offset
+// (default 0) — see pagination.ts for the clamp convention.
 router.get('/api/storage/evaluation-runs', async (req: Request, res: Response) => {
   try {
     const storage = getStorageModule();
-    const { benchmarkId, agentKey, status, testCaseId, trigger, imageDigest, from, size, sort, order } = req.query;
+    const { benchmarkId, agentKey, status, testCaseId, trigger, imageDigest, sort, order } = req.query;
 
     const filters: any = {};
     if (benchmarkId) filters.benchmarkId = benchmarkId;
@@ -52,10 +60,10 @@ router.get('/api/storage/evaluation-runs', async (req: Request, res: Response) =
     if (trigger) filters.trigger = trigger;
     if (imageDigest) filters.imageDigest = imageDigest;
 
-    const pagination = {
-      from: from ? parseInt(from as string, 10) : 0,
-      size: size ? parseInt(size as string, 10) : 50,
-    };
+    const pagination = parseListPagination(req.query as Record<string, unknown>, {
+      defaultSize: EVALUATION_RUNS_PAGE_DEFAULT,
+      maxSize: EVALUATION_RUNS_PAGE_MAX,
+    });
 
     const sorting: any = {};
     if (sort) sorting.sort = sort as string;
