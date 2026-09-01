@@ -109,6 +109,51 @@ describe('FileStorageModule', () => {
       expect(result!.id).toBe(bm.id);
     });
 
+    describe('updateRunResult', () => {
+      it('updates a single test case result within an embedded run without touching others', async () => {
+        const bm = await mod.benchmarks.create({
+          name: 'Run Progress',
+          testCaseIds: ['tc-1', 'tc-2'],
+          runs: [{
+            id: 'run-1',
+            name: 'Run 1',
+            createdAt: new Date().toISOString(),
+            status: 'running',
+            agentKey: 'demo',
+            modelId: 'claude-sonnet',
+            results: {
+              'tc-1': { reportId: '', status: 'pending' },
+              'tc-2': { reportId: '', status: 'pending' },
+            },
+          } as any],
+        });
+
+        const outcome = await mod.benchmarks.updateRunResult(bm.id, 'run-1', 'tc-1', {
+          reportId: 'report-1', status: 'completed',
+        });
+
+        expect(outcome).toBe(true);
+        const updated = await mod.benchmarks.getById(bm.id);
+        expect(updated!.runs![0].results['tc-1']).toEqual({ reportId: 'report-1', status: 'completed' });
+        expect(updated!.runs![0].results['tc-2']).toEqual({ reportId: '', status: 'pending' });
+      });
+
+      it('returns false when the benchmark does not exist', async () => {
+        const outcome = await mod.benchmarks.updateRunResult('missing-bm', 'run-1', 'tc-1', {
+          reportId: '', status: 'pending',
+        });
+        expect(outcome).toBe(false);
+      });
+
+      it('returns false when the run id is not in the benchmark', async () => {
+        const bm = await mod.benchmarks.create({ name: 'No Runs', testCaseIds: [], runs: [] });
+        const outcome = await mod.benchmarks.updateRunResult(bm.id, 'missing-run', 'tc-1', {
+          reportId: '', status: 'pending',
+        });
+        expect(outcome).toBe(false);
+      });
+    });
+
     it('excludes co-located evaluation-run documents from getAll', async () => {
       await mod.benchmarks.create({ id: 'bench-1', name: 'Suite', testCaseIds: [], runs: [] });
       await mod.evaluationRuns.create({
