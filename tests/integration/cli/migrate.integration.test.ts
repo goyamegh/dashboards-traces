@@ -93,11 +93,15 @@ describe('CLI Migrate Command', () => {
       expect(subCmd).toBeDefined();
     });
 
-    it('should have --dry-run option on evaluation-runs subcommand', () => {
+    it('should have --apply option on evaluation-runs subcommand (dry-run by default; run-experience convergence hard rule)', () => {
       const cmd = createMigrateCommand();
       const subCmd = cmd.commands.find(c => c.name() === 'evaluation-runs');
-      const dryRunOption = subCmd?.options.find(o => o.long === '--dry-run');
-      expect(dryRunOption).toBeDefined();
+      const applyOption = subCmd?.options.find(o => o.long === '--apply');
+      expect(applyOption).toBeDefined();
+      // The subcommand must NOT default to writing — dry-run is the default,
+      // --apply is the explicit opt-in (see cli/migrations/evaluationRunsMigration.ts).
+      const dryRunFlag = subCmd?.options.find(o => o.long === '--dry-run');
+      expect(dryRunFlag).toBeUndefined();
     });
   });
 

@@ -299,6 +299,33 @@ agent-health migrate --dry-run     # Preview changes
 agent-health migrate -v            # Run migration with details
 ```
 
+#### migrate evaluation-runs
+
+Extracts legacy embedded `benchmark.runs[]` entries into top-level
+`EvaluationRun` documents, preserving the run's original id and stamping
+`benchmarkId`. Part of the run-experience convergence — `benchmark.runs[]`
+stays as a read-only projection; this only ever creates new top-level docs,
+never deletes or mutates the embedded array.
+
+```
+agent-health migrate evaluation-runs [options]
+```
+
+| Option | Description |
+|--------|-------------|
+| `--apply` | Apply the migration. **Default is dry-run** — omit this flag to preview with no writes. |
+| `-v, --verbose` | Show per-run progress |
+
+Idempotent: a run whose id already exists as a top-level `EvaluationRun` doc
+is skipped (counted as "already migrated"), so it is safe to re-run,
+including after a partial/interrupted previous run.
+
+```bash
+agent-health migrate evaluation-runs              # Dry run (default) — no writes
+agent-health migrate evaluation-runs --apply      # Apply the migration
+agent-health migrate evaluation-runs --apply -v   # Apply with per-run progress
+```
+
 ---
 
 ### configure
