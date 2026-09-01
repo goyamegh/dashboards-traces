@@ -45,6 +45,7 @@ import { computeRunStats } from '@/lib/runStats';
 import { loadConfigSync } from '@/lib/config/index';
 import { getCustomAgents } from '@/server/services/customAgentStore';
 import { debug } from '@/lib/debug';
+import { readEnv } from '@/lib/envCompat';
 
 export type RetryJudgementScope = 'errored' | 'all';
 
@@ -186,7 +187,11 @@ export async function retryJudgementForCase(
     }
   }
 
-  const judgeModelId = run.judgeModelId || report.judgeModelId || report.modelId;
+  const judgeModelId =
+    run.judgeModelId ||
+    report.judgeModelId ||
+    readEnv('BEDROCK_MODEL_ID', 'AGENT_HEALTH_BEDROCK_MODEL_ID') ||
+    report.modelId;
   try {
     const judgment = await callBedrockJudge(
       trajectory,
@@ -228,7 +233,17 @@ export async function retryJudgementForCase(
     return { passFailStatus: judgment.passFailStatus };
   } catch (error: any) {
     const message = error?.message ?? String(error);
-    await storage.runs.update(report.id, buildEvaluatorErrorPatch('judge_failed', error) as any).catch(() => {});
+    // codex_review: a repeat failure previously left the report's PRIOR
+    // `matcherResults` (a passing verdict, if this case was ever judged
+    // successfully before — e.g. under `scope=all`) stale and inconsistent
+    // with the new `metricsStatus: 'error'` — the Judge tab would show a
+    // green matcher entry on a report the UI otherwise renders as errored.
+    // Clear both alongside the canonical error patch.
+    await storage.runs.update(report.id, {
+      ...buildEvaluatorErrorPatch('judge_failed', `Retry judgement: ${message}`),
+      matcherResults: [],
+      improvementStrategies: [],
+    } as any).catch(() => {});
     return { passFailStatus: null, error: message };
   }
 }
@@ -332,6 +347,10 @@ export async function retryJudgementForRun(
     results: updatedResults,
     stats: { ...(run.stats || {}), ...stats } as any,
   });
+
+  // Deterministic order (not insertion/completion order, which varies with
+  // the concurrency fan-out) so callers/tests can rely on a stable summary.
+  results.sort((a, b) => a.testCaseId.localeCompare(b.testCaseId));
 
   return {
     retried: testCaseIds.length,

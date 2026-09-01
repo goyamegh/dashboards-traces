@@ -301,6 +301,64 @@ describe('retryJudgementForRun', () => {
     expect(updateCall[1].results['tc-errored'].passFailStatus).toBeUndefined();
   });
 
+  it('clears stale matcherResults/improvementStrategies when a scope=all retry fails on a previously-passed case (codex_review finding)', async () => {
+    mockedCallBedrockJudge.mockRejectedValue(new Error('Bedrock 400'));
+
+    const reports: Record<string, EvaluationReport> = {
+      'r-was-passing': makeReport({
+        id: 'r-was-passing',
+        testCaseId: 'tc-was-passing',
+        metricsStatus: 'ready' as any,
+        passFailStatus: 'passed',
+        matcherResults: [{ description: 'judge: x', pass: true, method: 'llm-judge' } as any],
+        improvementStrategies: [{ title: 'x' } as any],
+      }),
+    };
+    const storage = makeStorage(reports);
+    const run = makeRun({
+      results: { 'tc-was-passing': { reportId: 'r-was-passing', status: 'completed', passFailStatus: 'passed' } as any },
+    });
+
+    await retryJudgementForRun(run, storage as any, { scope: 'all' });
+
+    // The retry failed — the report must not keep showing the STALE passing
+    // matcher entry alongside metricsStatus:'error' (a Judge-tab inconsistency).
+    expect(reports['r-was-passing'].metricsStatus).toBe('error');
+    expect(reports['r-was-passing'].matcherResults).toEqual([]);
+    expect(reports['r-was-passing'].improvementStrategies).toEqual([]);
+    // The retry-specific message is preserved for diagnostics.
+    expect(reports['r-was-passing'].traceError).toContain('Retry judgement');
+    expect(reports['r-was-passing'].traceError).toContain('Bedrock 400');
+  });
+
+  it('falls back to BEDROCK_MODEL_ID env before the agent\'s own modelId when no judge model is set', async () => {
+    process.env.BEDROCK_MODEL_ID = 'env-judge-model';
+    mockedCallBedrockJudge.mockResolvedValue({
+      passFailStatus: 'passed',
+      metrics: { accuracy: 100, faithfulness: 100, latency_score: 100, trajectory_alignment_score: 100 },
+      llmJudgeReasoning: 'ok',
+      improvementStrategies: [],
+    });
+
+    try {
+      const reports: Record<string, EvaluationReport> = {
+        'r-no-judge-model': makeReport({ id: 'r-no-judge-model', testCaseId: 'tc-x', metricsStatus: 'error' as any, judgeModelId: undefined, modelId: 'agent-model' }),
+      };
+      const storage = makeStorage(reports);
+      const run = makeRun({ judgeModelId: undefined, results: { 'tc-x': { reportId: 'r-no-judge-model', status: 'completed' } as any } });
+
+      await retryJudgementForRun(run, storage as any);
+
+      // Judge model resolution: run.judgeModelId (unset) > report.judgeModelId
+      // (unset) > BEDROCK_MODEL_ID env > report.modelId (agent's model, last
+      // resort). Must NOT silently judge with the agent's own model when the
+      // env default is available.
+      expect(mockedCallBedrockJudge.mock.calls[0][4]).toBe('env-judge-model');
+    } finally {
+      delete process.env.BEDROCK_MODEL_ID;
+    }
+  });
+
   it('returns a no-op summary when there is nothing to retry', async () => {
     const reports: Record<string, EvaluationReport> = {
       'r-passed': makeReport({ id: 'r-passed', metricsStatus: 'ready' as any, passFailStatus: 'passed' }),

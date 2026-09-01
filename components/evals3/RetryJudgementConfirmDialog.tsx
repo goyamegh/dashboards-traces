@@ -96,12 +96,15 @@ export const RetryJudgementConfirmDialog: React.FC<RetryJudgementConfirmDialogPr
           <div className="space-y-2 text-sm">
             <div className="rounded-md border bg-muted/30 p-3 space-y-1">
               <div>
-                <span className="text-muted-foreground">Cases to retry:</span>{' '}
+                <span className="text-muted-foreground">Judge-failed cases:</span>{' '}
                 <span className="font-medium" data-testid="retry-judgement-count">{count}</span>
               </div>
               <div>
                 <span className="text-muted-foreground">Judge model:</span>{' '}
                 <span className="font-medium">{judgeSummary}</span>
+              </div>
+              <div className="text-xs text-muted-foreground">
+                Cases whose agent execution never actually completed are skipped automatically -- the retried count below may be lower than this.
               </div>
             </div>
             {error && (
