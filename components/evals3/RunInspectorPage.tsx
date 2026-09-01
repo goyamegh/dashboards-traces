@@ -63,9 +63,25 @@ export const RunInspectorPage: React.FC = () => {
   const targetReportId = searchParams.get('reportId');
 
   // `mode` is derived from the route. Benchmark mode reads from
-  // asyncBenchmarkStorage and finds the run inside benchmark.runs[];
-  // eval-run mode hits /api/storage/evaluation-runs/:id directly. Both
-  // modes feed the same `run.results` shape into the rest of the page.
+  // asyncBenchmarkStorage and PREFERS the run embedded in benchmark.runs[]
+  // (cheap, already trimmed); eval-run mode hits
+  // /api/storage/evaluation-runs/:id directly. Both modes feed the same
+  // `run.results` shape into the rest of the page.
+  //
+  // benchmark.runs[] is only populated on completion (linkCompletedRunToBenchmark
+  // in server/routes/storage/evaluationRuns.ts runs at completion, not at
+  // create time) — a still-`running`/`pending` run-first evaluation-run doc
+  // has NO entry there yet, even though it already exists as a standalone
+  // document and is already shown as a row on the runs list page (which
+  // unions benchmark.runs[] with `listEvaluationRuns({ benchmarkId })`, see
+  // allMergedRuns in BenchmarkRunsPage.tsx). Before this fix, `loadData`
+  // below found no match in `bm.runs` for such a run and silently
+  // `navigate()`d straight back to the runs list — from the user's
+  // perspective this looked exactly like the row not being a link at all
+  // (click → nothing visibly happens). Falling back to the standalone
+  // evaluation-run document (same fetch eval-run mode already uses) closes
+  // that gap; a genuinely nonexistent run now renders an explicit
+  // not-found state instead of bouncing invisibly.
   const mode: 'benchmark' | 'evalRun' = benchmarkId ? 'benchmark' : 'evalRun';
 
   const [benchmark, setBenchmark] = useState<Benchmark | null>(null);
@@ -82,6 +98,11 @@ export const RunInspectorPage: React.FC = () => {
   // except sourceCode is already correct there).
   const [selectedTestCase, setSelectedTestCase] = useState<TestCase | null>(null);
   const [loadError, setLoadError] = useState(false);
+  // Set only when a benchmark-mode run is missing from BOTH benchmark.runs[]
+  // AND the standalone evaluation-run store (i.e. genuinely gone, not just
+  // not-yet-linked). Rendered as an explicit "not found" state instead of
+  // the silent bounce-to-list this replaces — see the `mode` comment above.
+  const [notFoundReason, setNotFoundReason] = useState<string | null>(null);
   // Infinite scroll: number of rows revealed in the left list. Statuses for
   // ALL rows arrive in one lightweight batch (so the header tallies are
   // always complete); this only windows the DOM for very large benchmarks.
@@ -100,6 +121,7 @@ export const RunInspectorPage: React.FC = () => {
     if (!runId) return;
     setLoading(true);
     setLoadError(false);
+    setNotFoundReason(null);
     try {
       let runData: BenchmarkRun | EvaluationRun;
 
@@ -110,17 +132,57 @@ export const RunInspectorPage: React.FC = () => {
         setBenchmark(bm);
 
         const bmRun = bm.runs?.find(r => r.id === runId);
-        if (!bmRun) { navigate(`/evaluations/benchmarks/${benchmarkId}/runs`); return; }
-
-        // Runs created WITH a benchmarkId are dual-written (#399): a
-        // first-class EvaluationRun doc AND a legacy-shaped BenchmarkRun
-        // projection embedded in benchmark.runs[] above. Prefer the
-        // first-class doc when it exists so (a) isEvaluationRun(run) below
-        // is meaningful on this route too, not permanently false, and (b)
-        // the page shows live results/stats instead of a stale embedded
-        // snapshot. See lib/resolveCanonicalRun.ts for the fallback
-        // semantics (silent on 404, logged on any other failure).
-        runData = await resolveCanonicalEvaluationRun(runId, bmRun, getEvaluationRun);
+        if (bmRun) {
+          // Runs created WITH a benchmarkId are dual-written (#399): a
+          // first-class EvaluationRun doc AND a legacy-shaped BenchmarkRun
+          // projection embedded in benchmark.runs[] above. Prefer the
+          // first-class doc when it exists so (a) isEvaluationRun(run) below
+          // is meaningful on this route too, not permanently false, and (b)
+          // the page shows live results/stats instead of a stale embedded
+          // snapshot. See lib/resolveCanonicalRun.ts for the fallback
+          // semantics (silent on 404, logged on any other failure).
+          runData = await resolveCanonicalEvaluationRun(runId, bmRun, getEvaluationRun);
+        } else {
+          // Not embedded yet — fall back to the standalone evaluation-run
+          // document (run-first docs like CLI/UI-started runs exist here
+          // immediately at creation, before completion links them into
+          // benchmark.runs[]). Fetched directly (not via the shared
+          // `getEvaluationRun` helper) so a real 404 can be told apart from
+          // any other failure — a transient 500/network error must NOT be
+          // reported as "not found" (codex_review finding): it re-throws and
+          // falls into the outer catch's existing loadError/Retry state,
+          // same as every other fetch in this function.
+          const fallbackRes = await fetch(`/api/storage/evaluation-runs/${runId}`);
+          if (fallbackRes.status === 404) {
+            setNotFoundReason(
+              `This run (${runId}) isn't linked to benchmark "${bm.name}" yet, and no standalone evaluation-run document exists for it. It may still be starting up, or it was deleted.`
+            );
+            setLoading(false);
+            return;
+          }
+          if (!fallbackRes.ok) {
+            throw new Error(`Failed to get evaluation run: ${fallbackRes.statusText}`);
+          }
+          const fallbackRun: EvaluationRun = await fallbackRes.json();
+          // Association check (codex_review finding): a run id that exists
+          // standalone but belongs to a DIFFERENT benchmark (or none at all)
+          // must not be rendered under THIS benchmark's URL — that would
+          // silently show the wrong run's data. Only accept it once we've
+          // confirmed it's actually associated with `benchmarkId`.
+          const belongsToThisBenchmark =
+            fallbackRun.benchmarkId === benchmarkId ||
+            (fallbackRun.sources || []).some(
+              (s) => s.type === 'benchmark' && s.benchmarkId === benchmarkId
+            );
+          if (!belongsToThisBenchmark) {
+            setNotFoundReason(
+              `This run (${runId}) isn't linked to benchmark "${bm.name}" yet, and no standalone evaluation-run document exists for it. It may still be starting up, or it was deleted.`
+            );
+            setLoading(false);
+            return;
+          }
+          runData = fallbackRun;
+        }
       } else {
         // SDK eval-run mode — no benchmark.
         try {
@@ -310,6 +372,29 @@ export const RunInspectorPage: React.FC = () => {
   const judgedCount = passCount + failCount;
   const passRate = judgedCount > 0 ? Math.round((passCount / judgedCount) * 100) : 0;
   const selectedResult = results.find(r => r.testCaseId === selectedTcId) || null;
+
+  // Explicit not-found state (see `mode` comment above for the linking-lag
+  // scenario this replaces a silent navigate() for): distinct from loadError
+  // below because a retry can't fix a run that truly doesn't exist anywhere
+  // — offer a way back to the runs list instead of a Retry button.
+  if (!loading && notFoundReason) {
+    return (
+      <div className="flex items-center justify-center h-full">
+        <div className="text-center space-y-3 max-w-md px-4" data-testid="run-inspector-not-found">
+          <AlertTriangle size={32} className="mx-auto text-amber-500" />
+          <p className="text-sm font-medium">Run not found</p>
+          <p className="text-sm text-muted-foreground">{notFoundReason}</p>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => navigate(mode === 'benchmark' && benchmarkId ? `/evaluations/benchmarks/${benchmarkId}/runs` : '/evaluations/runs')}
+          >
+            Back to runs
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   // Error state takes priority over both the skeleton and any partially
   // populated data: a failure AFTER `run` was set (e.g. the test-cases fetch
