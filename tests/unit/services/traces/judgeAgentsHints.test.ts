@@ -60,27 +60,32 @@ describe('resolveJudgeRunId', () => {
   // null`, and the agent's own response body carries neither), so the
   // agent-trace-judge's hard `if (!runId) return 400` gate at
   // server/routes/judge.ts always rejected these reports even once trace
-  // correlation (Strategy C) found the real spans. resolveJudgeRunId's
-  // fallback chain keeps that gate satisfiable without ever sending a
-  // fabricated value that could defeat the route's trajectory cross-check.
+  // correlation (Strategy C) found the real spans. resolveJudgeRunId falls
+  // back to report.traceId ONLY — NOT report.id, which is unsafe: /api/logs
+  // treats a truthy runId as an unbounded `match: { message: runId }` query,
+  // and a hyphenated report id like `run-<ts>-<rand>` tokenizes into common
+  // words ("run") that would pull in unrelated cluster logs. See the
+  // function doc comment for the full safety analysis (codex_review finding,
+  // 2026-09-01).
 
   it('prefers the real connector runId (Strategy B) when present', () => {
-    expect(resolveJudgeRunId({ runId: 'run-abc', traceId: 'trace-xyz', id: 'report-1' })).toBe('run-abc');
+    expect(resolveJudgeRunId({ runId: 'run-abc', traceId: 'trace-xyz' })).toBe('run-abc');
   });
 
   it('falls back to the eval traceId (Strategy A) when runId is absent', () => {
-    expect(resolveJudgeRunId({ runId: undefined, traceId: 'trace-xyz', id: 'report-1' })).toBe('trace-xyz');
+    expect(resolveJudgeRunId({ runId: undefined, traceId: 'trace-xyz' })).toBe('trace-xyz');
   });
 
-  it('falls back to the report id when neither runId nor traceId is set (REST connectors)', () => {
-    expect(resolveJudgeRunId({ runId: undefined, traceId: undefined, id: 'report-1' })).toBe('report-1');
+  it('does NOT fall back to a fabricated value when neither runId nor traceId is set — fails closed', () => {
+    // report.id is deliberately NOT a fallback (see doc comment): unlike
+    // /api/traces (safe no-op union), /api/logs would run an unbounded,
+    // analyzed text match on it, risking unrelated-log noise on a shared
+    // cluster. Returning undefined here preserves the route's original
+    // fail-closed 400 instead of silently degrading to unscoped log search.
+    expect(resolveJudgeRunId({ runId: undefined, traceId: undefined })).toBeUndefined();
   });
 
   it('treats empty-string runId/traceId as absent, not as a valid value', () => {
-    expect(resolveJudgeRunId({ runId: '', traceId: '', id: 'report-1' })).toBe('report-1');
-  });
-
-  it('returns undefined only when the report itself has no id (should not happen for a persisted report)', () => {
-    expect(resolveJudgeRunId({ runId: undefined, traceId: undefined, id: undefined as any })).toBeUndefined();
+    expect(resolveJudgeRunId({ runId: '', traceId: '' })).toBeUndefined();
   });
 });
