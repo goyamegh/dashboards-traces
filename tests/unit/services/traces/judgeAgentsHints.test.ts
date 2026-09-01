@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { buildJudgeAgentsHints, resolveAgentServiceName, resolveJudgeRunId } from '@/services/traces/judgeAgentsHints';
+import { buildJudgeAgentsHints, resolveAgentServiceName, resolveJudgeRunId, hasTraceCorrelation } from '@/services/traces/judgeAgentsHints';
 import type { TestCaseRun } from '@/types';
 
 const baseReport = (over: Partial<TestCaseRun> = {}): Pick<
@@ -153,5 +153,50 @@ describe('resolveJudgeRunId', () => {
 
   it('treats empty-string runId/traceId as absent, not as a valid value', () => {
     expect(resolveJudgeRunId({ runId: '', traceId: '' })).toBeUndefined();
+  });
+});
+
+describe('hasTraceCorrelation (the /api/judge "agent" provider gate matrix)', () => {
+  // Root cause (extending #461 / trace-poll-fix): the two SYNCHRONOUS
+  // (non-useTraces) judge call sites in services/evaluation/index.ts forward
+  // `agents` Strategy-C hints but never have a runId (REST connectors never
+  // mint one, and report.traceId isn't stamped yet at that point in the
+  // flow) -- so server/routes/judge.ts's old unconditional `if (!runId)`
+  // 400'd every one of these requests even though the hints it already had
+  // were sufficient. This matrix pins the 4 cases the gate must decide.
+
+  it('runId present, no hints -- allowed (Strategy B alone)', () => {
+    expect(hasTraceCorrelation('run-abc', undefined)).toBe(true);
+    expect(hasTraceCorrelation('run-abc', [])).toBe(true);
+  });
+
+  it('runId present AND already resolved from traceId (resolveJudgeRunId fallback) -- allowed', () => {
+    const runId = resolveJudgeRunId({ runId: undefined, traceId: 'trace-xyz' });
+    expect(hasTraceCorrelation(runId, undefined)).toBe(true);
+  });
+
+  it('no runId, hints-only with serviceName+window -- allowed (the reported bug)', () => {
+    const agents = [{ serviceName: 'ai-search-agent', startedAt: 1, endedAt: 2 }];
+    expect(hasTraceCorrelation(undefined, agents)).toBe(true);
+  });
+
+  it('no runId, hints-only with sessionId but no serviceName -- allowed', () => {
+    const agents = [{ serviceName: '', startedAt: 1, endedAt: 2, sessionId: 'sess-1' }];
+    expect(hasTraceCorrelation(undefined, agents)).toBe(true);
+  });
+
+  it('no runId, no hints at all -- rejected (nothing to scope to)', () => {
+    expect(hasTraceCorrelation(undefined, undefined)).toBe(false);
+    expect(hasTraceCorrelation(undefined, [])).toBe(false);
+  });
+
+  it('no runId, hints present but every entry carries neither serviceName nor sessionId -- rejected', () => {
+    const agents = [{ serviceName: '', startedAt: 1, endedAt: 2 }];
+    expect(hasTraceCorrelation(undefined, agents as any)).toBe(false);
+  });
+
+  it('empty-string runId is treated as absent, same as resolveJudgeRunId', () => {
+    expect(hasTraceCorrelation('', undefined)).toBe(false);
+    expect(hasTraceCorrelation('', [{ serviceName: 'svc', startedAt: 1, endedAt: 2 }])).toBe(true);
   });
 });

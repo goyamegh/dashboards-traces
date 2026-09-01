@@ -17,6 +17,7 @@ import { evaluateWithClaudeCode, parseClaudeCodeError } from '@/server/services/
 import { evaluateWithPi, parsePiError } from '@/server/services/piJudgeService';
 import { evaluateWithPiAgenticTrace } from '@/server/services/piAgenticJudgeService';
 import { evaluateWithAgenticJudge, parseAgenticJudgeError } from '@/server/services/agenticJudgeService';
+import { hasTraceCorrelation } from '@/services/traces/judgeAgentsHints';
 import { loadConfigSync } from '@/lib/config/index';
 import serverConfig from '@/server/config';
 import { debug } from '@/lib/debug';
@@ -444,15 +445,28 @@ router.post('/api/judge', async (req: Request, res: Response) => {
     }
 
     if (provider === 'agent') {
-      // Agent trace judge: an LLM judge with read-only, run-scoped trace tools
+      // Agent trace judge: an LLM judge with read-only, trace-scoped tools
       // (query_spans/query_logs) so it can verify claims against the run's real
-      // OTel spans/logs instead of trusting the trajectory text. runId is the
-      // scoping invariant for those tools — without it they have nothing to
-      // read, so fail loudly rather than spawn a judge that can only report
-      // "no run id" (see piAgenticJudgeService).
-      if (!runId) {
+      // OTel spans/logs instead of trusting the trajectory text. Fail loudly
+      // rather than spawn a judge that can only report "no run id" (see
+      // piAgenticJudgeService) when there's truly nothing to scope on.
+      // Accept EITHER a runId (Strategy B, possibly already the caller's
+      // traceId fallback — see resolveJudgeRunId) OR at least one Strategy
+      // C/D correlation hint in `agents` (serviceName+window or sessionId,
+      // from buildJudgeAgentsHints — #264). Pre-fix this hard-required
+      // `runId` even when `agents` hints were already on the request,
+      // 400-ing every REST-connector agent that picks this judge provider
+      // without trace-mode polling (REST connectors never mint a runId —
+      // see services/evaluation/index.ts's "STANDARD MODE" judge call,
+      // which forwards `agents` hints but no runId). Reject only when
+      // NEITHER is present — there is then truly nothing to scope the
+      // trace tools to.
+      if (!hasTraceCorrelation(runId, agents)) {
         return res.status(400).json({
-          error: 'runId is required for the agent (trace) judge provider — its trace tools scope to it'
+          error:
+            'The agent (trace) judge provider needs a runId or at least one trace ' +
+            'correlation hint (agents: serviceName+window, or sessionId) to scope its ' +
+            'trace tools — this request had neither.'
         });
       }
       // Defense in depth against cross-run/cross-tenant exfiltration: the trace
@@ -465,19 +479,29 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       // them. When the trajectory carries no runId we cannot corroborate it —
       // this provider then trusts the caller and is single-tenant-only (see
       // AGENTS.md "Trace correlation"; gate it behind auth in shared clusters).
-      const trajectoryRunIds = new Set(
-        (trajectory as any[])
-          .map((s) => s?.runId)
-          .filter((id): id is string => typeof id === 'string' && id.length > 0)
-      );
-      if (trajectoryRunIds.size > 0 && !trajectoryRunIds.has(runId)) {
-        return res.status(403).json({
-          error:
-            'runId does not match the submitted trajectory — the agent (trace) judge ' +
-            'may only inspect the run that produced its trajectory',
-        });
+      // Only applies when a runId was actually supplied — a hints-only request
+      // (no runId at all) has nothing here to corroborate against, and the
+      // hints themselves are server-derived from the report, not caller input.
+      if (runId) {
+        const trajectoryRunIds = new Set(
+          (trajectory as any[])
+            .map((s) => s?.runId)
+            .filter((id): id is string => typeof id === 'string' && id.length > 0)
+        );
+        if (trajectoryRunIds.size > 0 && !trajectoryRunIds.has(runId)) {
+          return res.status(403).json({
+            error:
+              'runId does not match the submitted trajectory — the agent (trace) judge ' +
+              'may only inspect the run that produced its trajectory',
+          });
+        }
       }
-      debug('JudgeAPI', 'Agent trace judge - evaluating with run-scoped trace tools (runId=' + runId + ')');
+      debug(
+        'JudgeAPI',
+        'Agent trace judge - evaluating with trace-scoped tools (runId=' +
+          (runId ?? 'none — hints-only') +
+          ', hints=' + (Array.isArray(agents) ? agents.length : 0) + ')'
+      );
       // Pass the resolved evaluator so a saved `systemPrompt` replaces the
       // default base prompt (the trace-tool addendum is still appended
       // inside the service so the judge always knows query_spans/query_logs
