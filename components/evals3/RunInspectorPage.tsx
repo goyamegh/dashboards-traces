@@ -20,7 +20,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { Loader2, Clock, XCircle, Calendar, GitCompare, AlertTriangle } from 'lucide-react';
+import { Loader2, Clock, XCircle, Calendar, GitCompare, AlertTriangle, RotateCcw, Link2 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -34,6 +34,7 @@ import { formatDate, getModelName } from '@/lib/utils';
 import { TestCaseInspectorPanel } from './TestCaseInspectorPanel';
 import { Breadcrumbs } from './Breadcrumbs';
 import { ensureTracePollingForReport } from '@/services/traces/browserRecovery';
+import { RerunConfirmDialog } from './RerunConfirmDialog';
 
 interface TestCaseResult {
   testCaseId: string;
@@ -86,6 +87,12 @@ export const RunInspectorPage: React.FC = () => {
   const [visibleCount, setVisibleCount] = useState(ROWS_PER_PAGE);
   const sentinelRef = React.useRef<HTMLDivElement | null>(null);
   const initialSelectionDone = React.useRef(false);
+  const [rerunDialogOpen, setRerunDialogOpen] = useState(false);
+  // Provenance: when this run was itself created via re-run, look up the
+  // source run's name for the chip (falls back to a truncated id if the
+  // source run was since deleted).
+  const [sourceRunName, setSourceRunName] = useState<string | null>(null);
+  const [sourceRunMissing, setSourceRunMissing] = useState(false);
 
   // Load data — fetch reports to get real pass/fail status
   const loadData = useCallback(async () => {
@@ -198,6 +205,31 @@ export const RunInspectorPage: React.FC = () => {
   }, [benchmarkId, runId, mode, navigate, targetReportId]);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // Resolve the source run name for the rerunOf provenance chip (EvaluationRun only).
+  useEffect(() => {
+    if (mode !== 'evalRun' || !(run as EvaluationRun)?.rerunOf) {
+      setSourceRunName(null);
+      setSourceRunMissing(false);
+      return;
+    }
+    let cancelled = false;
+    const sourceRunId = (run as EvaluationRun).rerunOf!;
+    getEvaluationRun(sourceRunId)
+      .then(src => {
+        if (!cancelled) {
+          setSourceRunName(src.name || src.id);
+          setSourceRunMissing(false);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setSourceRunName(null);
+          setSourceRunMissing(true);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [run, mode]);
 
   // Reset per-run UI state when navigating between runs. React Router reuses
   // the component instance across param changes, so without this the previous
@@ -322,7 +354,27 @@ export const RunInspectorPage: React.FC = () => {
           }
         />
         <div className="flex items-center justify-between mt-1">
-          <h2 className="text-lg font-bold truncate">{run.name}</h2>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-lg font-bold truncate">{run.name}</h2>
+            {/* Provenance: rerunOf chip (EvaluationRun only) */}
+            {mode === 'evalRun' && (run as EvaluationRun)?.rerunOf && (
+              <div className="mt-1 flex items-center">
+                <button
+                  data-testid="rerun-provenance-chip"
+                  className={sourceRunMissing
+                    ? 'inline-flex items-center gap-1 rounded-full border border-muted-foreground/30 bg-muted/40 text-muted-foreground text-xs px-2 py-0.5 hover:bg-muted/60 transition-colors'
+                    : 'inline-flex items-center gap-1 rounded-full border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-xs px-2 py-0.5 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors'}
+                  onClick={() => navigate(`/evaluations/runs/${(run as EvaluationRun).rerunOf}`)}
+                  title={sourceRunMissing
+                    ? 'This run was created as a re-run, but the source run no longer exists'
+                    : 'This run was created as a re-run of the linked source run'}
+                >
+                  <Link2 size={11} />
+                  re-run of {sourceRunName || (run as EvaluationRun).rerunOf?.slice(0, 8)}
+                </button>
+              </div>
+            )}
+          </div>
           <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
             <span className="flex items-center gap-1"><Calendar size={11} /> {formatDate(run.createdAt)}</span>
             <span>{agentName}</span>
@@ -344,6 +396,36 @@ export const RunInspectorPage: React.FC = () => {
             <span className={`font-semibold ${passRate >= 80 ? 'text-green-500' : passRate >= 50 ? 'text-amber-500' : 'text-red-500'}`}>
               {passRate}%
             </span>
+            {/* Re-run: only for eval-run mode; benchmark-embedded runs use BenchmarkRun
+                which doesn't support rerun. */}
+            {mode === 'evalRun' ? (
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="inspector-rerun-btn"
+                className="h-7 gap-1.5 text-xs"
+                onClick={() => setRerunDialogOpen(true)}
+              >
+                <RotateCcw size={12} />
+                Re-run
+              </Button>
+            ) : (
+              <div
+                title="Re-run is only available for evaluation runs, not benchmark-embedded runs"
+                className="inline-flex"
+              >
+                <Button
+                  variant="outline"
+                  size="sm"
+                  disabled
+                  data-testid="inspector-rerun-btn"
+                  className="h-7 gap-1.5 text-xs"
+                >
+                  <RotateCcw size={12} />
+                  Re-run
+                </Button>
+              </div>
+            )}
             {/* Compare is a test-case-level primitive and no longer requires a
                 benchmark — benchmark runs deep-link with their benchmark for
                 context; ad-hoc SDK/eval runs use the benchmark-free
@@ -351,7 +433,7 @@ export const RunInspectorPage: React.FC = () => {
             <Button
               variant="outline"
               size="sm"
-              className="h-7 gap-1.5 text-xs ml-2"
+              className="h-7 gap-1.5 text-xs"
               onClick={() => navigate(
                 mode === 'benchmark' && benchmarkId
                   ? `/compare/${benchmarkId}?runs=${runId}`
@@ -364,6 +446,16 @@ export const RunInspectorPage: React.FC = () => {
           </div>
         </div>
       </div>
+
+      {/* Re-run Confirm Dialog (EvaluationRun only) */}
+      {mode === 'evalRun' && (
+        <RerunConfirmDialog
+          run={run as EvaluationRun | null}
+          open={rerunDialogOpen}
+          onOpenChange={setRerunDialogOpen}
+          onRerun={newRunId => navigate(`/evaluations/runs/${newRunId}`)}
+        />
+      )}
 
       {/* ── Left + Right Panels ──────────────────────────────────── */}
       <ResizablePanelGroup direction="horizontal" className="flex-1 max-md:!h-auto max-md:!overflow-visible max-md:!flex-col">
