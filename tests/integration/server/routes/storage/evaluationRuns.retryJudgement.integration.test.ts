@@ -158,6 +158,38 @@ describe('POST /api/storage/evaluation-runs/:id/retry-judgement', () => {
     expect(body.error).toMatch(/still executing/i);
   }, 15000);
 
+  it('returns 409 when a second retry-judgement request arrives while the first is still in flight (codex_review: same-process double-submit guard)', async () => {
+    if (!backendAvailable) return;
+
+    const tc = await createTestCase('Retry Judgement — concurrent submit');
+    cleanupIds.testCases.push(tc);
+
+    const report = await createReport(`report-retry-concurrent-${Date.now()}`, {
+      testCaseId: tc,
+      metricsStatus: 'error',
+      passFailStatus: null,
+    });
+    cleanupIds.reports.push(report.id);
+
+    const run = await seedEvalRun({
+      testCaseSnapshots: [{ id: tc, version: 1, name: 'Retry Judgement — concurrent submit' }],
+      results: { [tc]: { reportId: report.id, status: 'completed' } },
+    });
+    cleanupIds.evalRuns.push(run.id);
+
+    // Fire two requests back-to-back without awaiting the first — the
+    // in-process guard should reject the second with 409 rather than let
+    // both race the same report/run docs.
+    const [res1, res2] = await Promise.all([
+      fetch(`${BASE_URL}/api/storage/evaluation-runs/${run.id}/retry-judgement`, { method: 'POST' }),
+      fetch(`${BASE_URL}/api/storage/evaluation-runs/${run.id}/retry-judgement`, { method: 'POST' }),
+    ]);
+    const statuses = [res1.status, res2.status].sort();
+    expect(statuses).toEqual([200, 409]);
+    const loserBody = await (res1.status === 409 ? res1 : res2).json();
+    expect(loserBody.error).toMatch(/already in progress/i);
+  }, 30000);
+
   it('retries only the judge-failed case, leaves the passed case untouched, and recomputes stats', async () => {
     if (!backendAvailable) return;
 
