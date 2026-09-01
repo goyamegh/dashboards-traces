@@ -359,9 +359,23 @@ function validateRunConfig(config: any): string | null {
 /**
  * Resolve whether an agentKey refers to a configured agent (built-in from
  * agent-health.config.ts/.js/env defaults, or a custom agent added via the
- * Settings UI). Mirrors the exact source GET /api/agents merges
- * (loadConfigSync().agents + getCustomAgents()) so "known" here means
- * exactly what the Agents dropdown in the UI would show.
+ * Settings UI). Mirrors the EXACT resolution source both GET /api/agents
+ * AND services/benchmarkRunner.ts's buildAgentConfigForRun() use --
+ * `[...config.agents, ...getCustomAgents()].find(a => a.key === agentKey)`
+ * -- verified by reading buildAgentConfigForRun() directly: it is the one
+ * and only place executeRun() resolves an agentKey to a connector, and it
+ * does not consult remote servers, aliases, or any other source. So
+ * "known" here means exactly what would actually be executable, not an
+ * approximation.
+ *
+ * Also mirrors buildAgentConfigForRun()'s own defensive fallback
+ * (services/benchmarkRunner.ts's local getConfig() helper): loadConfigSync()
+ * is called OUTSIDE this route's try/catch (deliberately, so the check
+ * runs before any storage/benchmark lookup), so a config-load failure here
+ * must not throw an uncaught rejection out of an async Express 4 handler
+ * (which would hang the request rather than reach setupFinalErrorHandler).
+ * Fail closed to "not configured" instead, matching what executeRun()
+ * would do a moment later anyway.
  *
  * Regression guard for an API KPI probe finding: POST .../execute with a
  * bogus agentKey used to sail past validateRunConfig() (which only checked
@@ -371,9 +385,18 @@ function validateRunConfig(config: any): string | null {
  * persisting a run.
  */
 function isKnownAgentKey(agentKey: string): boolean {
-  const config = loadConfigSync();
+  let config;
+  try {
+    config = loadConfigSync();
+  } catch {
+    return false;
+  }
   if (config.agents.some(a => a.key === agentKey)) return true;
-  return getCustomAgents().some(a => a.key === agentKey);
+  try {
+    return getCustomAgents().some(a => a.key === agentKey);
+  } catch {
+    return false;
+  }
 }
 
 /**
