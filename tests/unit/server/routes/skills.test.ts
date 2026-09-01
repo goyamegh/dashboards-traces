@@ -318,15 +318,21 @@ describe('Skills router', () => {
       expect(res.body).toEqual({ cancelled: true, path: null });
     });
 
-    it('returns 500 when the picker fails unexpectedly', async () => {
+    it('returns 501 without leaking the shell command when the picker fails unexpectedly (regression: F6 API KPI probe finding)', async () => {
       mockExecSync.mockImplementationOnce(() => {
-        throw new Error('zenity missing');
+        throw new Error(
+          "Command failed: zenity --file-selection --directory --title=\"Select a skill folder\" 2>/dev/null || kdialog --getexistingdirectory ~ 2>/dev/null\n/bin/sh: zenity: command not found"
+        );
       });
 
       const res = await request(app).post('/api/skills/browse');
 
-      expect(res.status).toBe(500);
-      expect(res.body).toEqual({ error: 'Failed to open folder picker: zenity missing' });
+      expect(res.status).toBe(501);
+      const serialized = JSON.stringify(res.body);
+      expect(serialized).not.toContain('zenity');
+      expect(serialized).not.toContain('kdialog');
+      expect(serialized).not.toContain('Command failed');
+      expect(res.body.error).toMatch(/manually/i);
     });
   });
 
