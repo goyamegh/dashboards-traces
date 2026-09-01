@@ -60,9 +60,11 @@ jest.mock('@/server/routes/index', () => ({
 
 const mockSetupMiddleware = jest.fn();
 const mockSetupSpaFallback = jest.fn();
+const mockSetupFinalErrorHandler = jest.fn();
 jest.mock('@/server/middleware/index', () => ({
   setupMiddleware: mockSetupMiddleware,
   setupSpaFallback: mockSetupSpaFallback,
+  setupFinalErrorHandler: mockSetupFinalErrorHandler,
 }));
 
 jest.mock('@/services/connectors/server', () => ({}));
