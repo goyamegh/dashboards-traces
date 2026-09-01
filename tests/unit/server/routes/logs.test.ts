@@ -162,6 +162,49 @@ describe('Logs Routes', () => {
       });
     });
 
+    it('should return 400 when body is empty (regression: previously ran an unscoped match-all query)', async () => {
+      const { req, res } = createMocks({});
+      const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
+
+      await handler(req, res);
+
+      expect(mockFetchLogs).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: expect.stringContaining('runId'),
+      });
+    });
+
+    it('should return 400 when runId is not a string', async () => {
+      const { req, res } = createMocks({ runId: 12345 });
+      const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
+
+      await handler(req, res);
+
+      expect(mockFetchLogs).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should return 400 when body is not an object', async () => {
+      const { req, res } = createMocks(null);
+      const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
+
+      await handler(req, res);
+
+      expect(mockFetchLogs).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should return 400 when runId is whitespace-only (codex_review finding: falsy-only check let " " through)', async () => {
+      const { req, res } = createMocks({ runId: '   ' });
+      const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
+
+      await handler(req, res);
+
+      expect(mockFetchLogs).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
     it('should return 500 on service error', async () => {
       mockFetchLogs.mockRejectedValue(new Error('Connection refused'));
 

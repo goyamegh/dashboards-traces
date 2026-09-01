@@ -18,7 +18,20 @@ const router = Router();
  */
 router.post('/api/logs', async (req: Request, res: Response) => {
   try {
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
+
     const { runId, query, startTime, endTime, size = 100 } = req.body;
+
+    // Regression guard (API KPI probe finding, F9): every real caller of
+    // this route (query_logs judge/comparison tools) always scopes the
+    // query to a specific run — an empty/missing runId has no legitimate
+    // meaning here and previously fell through to an unscoped match-all
+    // query over the whole logs index.
+    if (!runId || typeof runId !== 'string' || !runId.trim()) {
+      return res.status(400).json({ error: 'runId is required and must be a non-empty string' });
+    }
 
     const obs = getObservabilityClient(req);
     if (!obs) {
