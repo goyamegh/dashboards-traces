@@ -663,12 +663,15 @@ export interface TraceMetrics {
   toolsUsed: string[];
   status: 'success' | 'error' | 'pending';
   /**
-   * Whether any spans were found for this runId. `false` means no trace data
-   * exists at all (e.g. a typo'd/nonexistent runId, or tracing hasn't
-   * started yet) \u2014 distinct from a real completed run that legitimately
-   * has zero cost. Optional for backwards compatibility with older callers.
+   * Whether ANY trace spans were ingested for this runId at query time.
+   * `false` only means "no spans matched the query right now" -- it does
+   * NOT prove the run doesn't exist: ingestion lag, a wrong/narrow time
+   * window, or a query bug can also produce `false` for a real run. Do
+   * not treat this as a run-existence check; it distinguishes "some spans
+   * are visible" from "none are visible yet/at all", nothing stronger.
+   * Optional for backwards compatibility with older callers.
    */
-  found?: boolean;
+  hasSpans?: boolean;
 }
 
 // ============ Trace Types ============
@@ -1447,8 +1450,8 @@ export interface MetricsResult {
   toolCalls: number;
   toolsUsed: string[];
   status: 'pending' | 'success' | 'error';
-  /** See TraceMetrics.found \u2014 same semantics. */
-  found?: boolean;
+  /** See TraceMetrics.hasSpans -- same semantics. */
+  hasSpans?: boolean;
 }
 
 // ============ Data Source Configuration Types ============

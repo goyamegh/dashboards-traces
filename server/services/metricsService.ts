@@ -202,7 +202,7 @@ export function computeMetricsFromSpans(
       toolCalls: 0,
       toolsUsed: [],
       status: 'pending',
-      found: false,
+      hasSpans: false,
     };
   }
 
@@ -274,7 +274,7 @@ export function computeMetricsFromSpans(
     toolCalls: toolsUsed.size,
     toolsUsed: Array.from(toolsUsed),
     status,
-    found: true,
+    hasSpans: true,
   };
 }
 
