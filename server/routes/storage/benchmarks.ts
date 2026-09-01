@@ -321,8 +321,8 @@ function validateBenchmarkCreate(body: any): string | null {
     return 'name is required and must be a non-empty string';
   }
   if (body.testCaseIds !== undefined) {
-    if (!Array.isArray(body.testCaseIds) || !body.testCaseIds.every((id: any) => typeof id === 'string')) {
-      return 'testCaseIds must be an array of strings when provided';
+    if (!Array.isArray(body.testCaseIds) || !body.testCaseIds.every((id: any) => typeof id === 'string' && id.trim().length > 0)) {
+      return 'testCaseIds must be an array of non-empty strings when provided';
     }
   }
   return null;
