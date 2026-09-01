@@ -180,9 +180,12 @@ export function extractFinalAssistantText(messages: any[]): string {
 /**
  * Evaluate a trajectory with the agent trace judge (in-process pi SDK).
  *
- * Requires `request.runId` so the trace tools can scope to the run. Without a
- * runId the tools report "no run id" and the judge degrades to a
- * trajectory-only judgement rather than failing.
+ * Requires EITHER `request.runId` OR at least one `request.agents` correlation
+ * hint (serviceName+window / sessionId — see hasTraceCorrelation) so the trace
+ * tools have something to scope to. Without either, the tools report "no run
+ * id or trace correlation hints" and the judge degrades to a trajectory-only
+ * judgement rather than failing — the route's gate (server/routes/judge.ts)
+ * rejects the request before it reaches here in that case.
  *
  * @param request - The judge request, must include `runId` for trace scoping.
  * @param evaluator - Optional saved evaluator. When provided, its `systemPrompt`
