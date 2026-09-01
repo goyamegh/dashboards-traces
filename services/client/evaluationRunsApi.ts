@@ -256,6 +256,29 @@ export async function promoteEvaluationRun(
 }
 
 /**
+ * Re-run an evaluation run: duplicate its config into a brand-new,
+ * independent run (fresh id, "<name> (re-run)"), linked back via
+ * `rerunOf`. The new run starts executing immediately server-side; poll
+ * `getEvaluationRun(runId)` for progress (same as any 'running' run).
+ */
+export async function rerunEvaluationRun(id: string): Promise<{
+  runId: string;
+  run: EvaluationRun;
+  defaultsApplied: string[];
+}> {
+  const response = await fetch(`/api/storage/evaluation-runs/${id}/rerun`, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to re-run evaluation run');
+  }
+
+  return response.json();
+}
+
+/**
  * Update an evaluation run (partial).
  */
 export async function updateEvaluationRun(

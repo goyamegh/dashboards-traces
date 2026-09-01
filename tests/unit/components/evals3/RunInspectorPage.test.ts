@@ -99,6 +99,16 @@ jest.mock('@/components/evals3/Breadcrumbs', () => ({
   Breadcrumbs: () => React.createElement('nav', { 'data-testid': 'breadcrumbs' }),
 }));
 
+jest.mock('@/components/evals3/RerunConfirmDialog', () => ({
+  RerunConfirmDialog: ({ run, open, onOpenChange, onRerun }: any) => (
+    open && run ? React.createElement(
+      'div',
+      { 'data-testid': 'rerun-confirm-dialog', onClick: () => onOpenChange(false) },
+      `Dialog for ${run.id}`,
+    ) : null
+  ),
+}));
+
 // IntersectionObserver stub that records instances so tests can fire hits.
 type IOCallback = (entries: Array<{ isIntersecting: boolean }>) => void;
 const ioInstances: { callback: IOCallback; observed: Element[] }[] = [];
@@ -367,3 +377,145 @@ describe('RunInspectorPage — eval-source lazy fetch (summary bulk load + full 
     expect(mockTestCaseGetById).not.toHaveBeenCalledWith(null);
   });
 });
+
+describe('RunInspectorPage — Re-run button (eval-run mode)', () => {
+  beforeEach(() => {
+    // Switch to eval-run mode (no benchmarkId)
+    mockParams = { benchmarkId: undefined, runId: 'eval-run-1' };
+  });
+
+  it('renders Re-run button for eval-run mode', async () => {
+    const { getEvaluationRun } = require('@/services/client');
+    getEvaluationRun.mockResolvedValue({
+      id: 'eval-run-1',
+      docType: 'evaluation-run',
+      name: 'Test Run',
+      agentKey: 'demo',
+      modelId: 'model-1',
+      createdAt: '2024-01-01T00:00:00Z',
+      status: 'completed',
+      sources: [],
+      trigger: 'ui',
+      testCaseSnapshots: [],
+      results: {},
+    });
+
+    mockTestCasesGetByIds.mockResolvedValue([]);
+    mockGetReportSummariesByIds.mockResolvedValue({});
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId('inspector-rerun-btn')).toBeTruthy());
+    expect((screen.getByTestId('inspector-rerun-btn') as HTMLButtonElement).disabled).toBe(false);
+  });
+
+  it('opens re-run dialog when Re-run button clicked', async () => {
+    const { getEvaluationRun } = require('@/services/client');
+    getEvaluationRun.mockResolvedValue({
+      id: 'eval-run-1',
+      docType: 'evaluation-run',
+      name: 'Test Run',
+      agentKey: 'demo',
+      modelId: 'model-1',
+      createdAt: '2024-01-01T00:00:00Z',
+      status: 'completed',
+      sources: [],
+      trigger: 'ui',
+      testCaseSnapshots: [],
+      results: {},
+    });
+
+    mockTestCasesGetByIds.mockResolvedValue([]);
+    mockGetReportSummariesByIds.mockResolvedValue({});
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId('inspector-rerun-btn')).toBeTruthy());
+
+    fireEvent.click(screen.getByTestId('inspector-rerun-btn'));
+
+    await waitFor(() => expect(screen.getByTestId('rerun-confirm-dialog')).toBeTruthy());
+  });
+
+  it('renders provenance chip when rerunOf is present', async () => {
+    const { getEvaluationRun } = require('@/services/client');
+    const sourceRun = {
+      id: 'eval-run-0',
+      name: 'Original Run',
+    };
+    getEvaluationRun
+      .mockResolvedValueOnce({
+        id: 'eval-run-1',
+        docType: 'evaluation-run',
+        name: 'Test Run (re-run)',
+        agentKey: 'demo',
+        modelId: 'model-1',
+        createdAt: '2024-01-01T00:00:00Z',
+        status: 'completed',
+        sources: [],
+        trigger: 'ui',
+        testCaseSnapshots: [],
+        results: {},
+        rerunOf: 'eval-run-0',
+      })
+      .mockResolvedValueOnce(sourceRun);
+
+    mockTestCasesGetByIds.mockResolvedValue([]);
+    mockGetReportSummariesByIds.mockResolvedValue({});
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId('rerun-provenance-chip')).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/re-run of Original Run/)).toBeTruthy());
+  });
+
+  it('shows missing-source style when rerunOf source run no longer exists', async () => {
+    const { getEvaluationRun } = require('@/services/client');
+    getEvaluationRun
+      .mockResolvedValueOnce({
+        id: 'eval-run-1',
+        docType: 'evaluation-run',
+        name: 'Test Run (re-run)',
+        agentKey: 'demo',
+        modelId: 'model-1',
+        createdAt: '2024-01-01T00:00:00Z',
+        status: 'completed',
+        sources: [],
+        trigger: 'ui',
+        testCaseSnapshots: [],
+        results: {},
+        rerunOf: 'eval-run-0',
+      })
+      .mockRejectedValueOnce(new Error('Run not found'));
+
+    mockTestCasesGetByIds.mockResolvedValue([]);
+    mockGetReportSummariesByIds.mockResolvedValue({});
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId('rerun-provenance-chip')).toBeTruthy());
+    const chip = screen.getByTestId('rerun-provenance-chip');
+    // Chip should have muted styling when source is missing
+    await waitFor(() => expect(chip.className).toMatch(/border-muted-foreground|bg-muted/));
+  });
+});
+
+describe('RunInspectorPage — Re-run button (benchmark mode)', () => {
+  it('disables Re-run button for benchmark-embedded runs', async () => {
+    // benchmark mode (with benchmarkId)
+    mockParams = { benchmarkId: 'bench-1', runId: 'run-1' };
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(2));
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(2));
+    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(2));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getAllByTestId('test-case-row').length).toBeGreaterThan(0));
+
+    const rerunBtn = screen.getByTestId('inspector-rerun-btn') as HTMLButtonElement;
+    expect(rerunBtn.disabled).toBe(true);
+    expect(rerunBtn.parentElement?.getAttribute('title')).toBe(
+      'Re-run is only available for evaluation runs, not benchmark-embedded runs'
+    );
+  });
+})

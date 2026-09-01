@@ -93,11 +93,50 @@ test.describe('Evals3 Benchmarks Page', () => {
 
     expect(hasTable || hasEmptyState).toBeTruthy();
   });
+
+  test('evaluation-runs never appear as benchmark rows (docType isolation)', async ({ page, request }) => {
+    // Regression: benchmarks and evaluation-runs share one index/dir
+    // (docType-discriminated). The benchmarks list used to surface every
+    // CLI/SDK eval-run as an empty "0 TCs / 0 runs" benchmark row — so
+    // re-running the same CLI command appeared to mint a new benchmark
+    // every time. Seed an eval-run and assert the page never renders it.
+    const stamp = Date.now();
+    const runId = `eval-run-e2e-bmexclude-${stamp}`;
+    const runName = `E2E-BMEXCLUDE-RUN-${stamp}`;
+    const put = await request.put(`/api/storage/evaluation-runs/${runId}`, {
+      data: {
+        name: runName,
+        agentKey: 'demo',
+        modelId: 'demo-model',
+        sources: [],
+        trigger: 'cli',
+        status: 'completed',
+        testCaseSnapshots: [],
+        results: {},
+        createdAt: new Date().toISOString(),
+      },
+    });
+    expect(put.ok()).toBeTruthy();
+
+    try {
+      await page.reload();
+      await page.waitForSelector('h2:has-text("Benchmarks")', { timeout: 30000 });
+      // Give the list fetch time to settle, then assert the run name is absent.
+      await page.waitForTimeout(1500);
+      await expect(page.locator(`text=${runName}`)).toHaveCount(0);
+    } finally {
+      await request.delete(`/api/storage/evaluation-runs/${runId}`).catch(() => {});
+    }
+  });
 });
 
 test.describe('Evals3 Benchmark CRUD', () => {
   const benchmarkName = `E2E Evals3 BM ${Date.now()}`;
   let seededTestCaseId: string | null = null;
+  // Every benchmark id the wizard test observes being created — cleanup
+  // deletes exactly these. Never list-and-delete by name/prefix: "name looks
+  // test-ish" is not proof of ownership on a shared backend.
+  const createdBenchmarkIds: string[] = [];
 
   test.beforeAll(async ({ request }) => {
     // Seed a real test case so the wizard can pick one in the Test Cases step
@@ -120,16 +159,9 @@ test.describe('Evals3 Benchmark CRUD', () => {
   });
 
   test.afterAll(async ({ request }) => {
-    // Clean up benchmarks created during this suite
-    const response = await request.get('/api/storage/benchmarks').catch(() => null);
-    if (response?.ok()) {
-      const data = await response.json();
-      const benchmarks = Array.isArray(data) ? data : data.benchmarks ?? [];
-      for (const bm of benchmarks) {
-        if (bm.name?.startsWith('E2E Evals3 BM')) {
-          await request.delete(`/api/storage/benchmarks/${encodeURIComponent(bm.id)}`).catch(() => {});
-        }
-      }
+    // Cleanup by tracked id ONLY (see createdBenchmarkIds note above).
+    for (const id of createdBenchmarkIds) {
+      await request.delete(`/api/storage/benchmarks/${encodeURIComponent(id)}`).catch(() => {});
     }
     if (seededTestCaseId) {
       await request.delete(`/api/storage/test-cases/${encodeURIComponent(seededTestCaseId)}`).catch(() => {});
@@ -217,6 +249,7 @@ test.describe('Evals3 Benchmark CRUD', () => {
     const saved = await saveResp.json();
     const benchmarkId = saved.id || saved.benchmark?.id;
     expect(benchmarkId, 'POST response should include the new benchmark id').toBeTruthy();
+    if (benchmarkId) createdBenchmarkIds.push(benchmarkId);
 
     const executeResp = await executePromise;
     expect(executeResp.status(), 'unified evaluation-run POST should succeed').toBeLessThan(400);

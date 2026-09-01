@@ -31,6 +31,7 @@
  */
 
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
+import { uniqueTestName } from '../../../../helpers/testDataTracker';
 
 const BASE_URL = getTestBackendUrl();
 const SYSTEM_ID = 'system-rca-default'; // Always present from server/prompts/evaluatorTemplates.ts
@@ -51,7 +52,9 @@ const checkBackend = async (): Promise<boolean> => {
 };
 
 const createPayload = (suffix: string) => ({
-  name: `Integration Eval ${suffix}`,
+  // uniqueTestName ⇒ run-unique, ahtest--prefixed (sweepable) — cross-run
+  // name collisions are impossible, so cleanup can be tracked-id-only.
+  name: uniqueTestName(`evaluator-${suffix}`),
   description: 'Created by evaluators.integration.test.ts — safe to delete',
   systemPrompt: 'You are an integration-test judge. Score the agent.',
   scoringConfig: {
@@ -81,30 +84,15 @@ describe('Evaluators CRUD Integration Tests', () => {
 
   afterAll(async () => {
     if (!backendAvailable) return;
-    // Tracked-id cleanup — never leak custom evaluators between runs
+    // Tracked-id cleanup ONLY — never sweep shared storage by name/prefix:
+    // "name looks test-ish" is not proof of ownership on a shared cluster
+    // (a user's real evaluator could match a static prefix). uniqueTestName
+    // fixtures make the cross-run collisions a sweep guarded against
+    // impossible in the first place.
     for (const id of createdIds) {
       await fetch(`${BASE_URL}/api/storage/evaluators/${encodeURIComponent(id)}`, {
         method: 'DELETE',
       }).catch(() => {});
-    }
-    // Best-effort fallback: nuke any leftovers by name prefix
-    try {
-      const resp = await fetch(`${BASE_URL}/api/storage/evaluators`);
-      if (resp.ok) {
-        const data = await resp.json();
-        const items: Array<{ id: string; name: string; isSystem: boolean }> =
-          data.evaluators ?? data.items ?? [];
-        for (const ev of items) {
-          if (!ev.isSystem && ev.name?.startsWith('Integration Eval ')) {
-            await fetch(
-              `${BASE_URL}/api/storage/evaluators/${encodeURIComponent(ev.id)}`,
-              { method: 'DELETE' },
-            ).catch(() => {});
-          }
-        }
-      }
-    } catch {
-      /* ignore */
     }
   }, 30000);
 

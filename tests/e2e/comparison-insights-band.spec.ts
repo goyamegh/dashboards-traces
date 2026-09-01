@@ -117,11 +117,17 @@ test.describe('Comparison insights band', () => {
       await expect(matrix).toContainText('semantic');
       await expect(matrix).toContainText('basic');
 
-      // Chip filters the table: Split → exactly the 2 split cases
+      // Chip filters the table: Split → exactly the 2 split cases.
+      // Scoped to `table` (the Table Compare grid) — a 2-run selection also
+      // renders the "What's actually different" deep-dive panel, whose header
+      // names its representative case (e.g. "Case: q1 [basic] both pass")
+      // outside any `<table>`, so an unscoped `text=` locator would false-match
+      // there regardless of this filter (see PR #398 e2e-tests fix-up).
+      const table = page.locator('table');
       await page.getByTestId('agreement-chip-split').click();
-      await expect(page.locator('text=q4 [semantic] split').first()).toBeVisible();
-      await expect(page.locator('text=q5 [semantic] split').first()).toBeVisible();
-      await expect(page.locator('text=q1 [basic] both pass')).toHaveCount(0);
+      await expect(table.getByText('q4 [semantic] split').first()).toBeVisible();
+      await expect(table.getByText('q5 [semantic] split').first()).toBeVisible();
+      await expect(table.getByText('q1 [basic] both pass')).toHaveCount(0);
 
       // Toggle the chip off → default view returns
       await page.getByTestId('agreement-chip-split').click();
@@ -222,11 +228,16 @@ test.describe('Comparison insights band', () => {
       // exactly the 3 cases with that subcategory tag. (Not `exact: true` —
       // the button's accessible name gains a trailing ⚠ when this category
       // is flagged as the shared weakness.)
+      // Scoped to `table` (the Table Compare grid) — same reasoning as the
+      // sibling test above (PR #398's deep-dive panel renders a test-case
+      // name in its own header outside any `<table>`, so an unscoped `text=`
+      // locator can false-match there).
+      const table = page.locator('table');
       await matrix.getByRole('button', { name: /^semantic/ }).click();
-      await expect(page.locator('text=q4 explain the rollback procedure').first()).toBeVisible();
-      await expect(page.locator('text=q5 summarize the incident timeline').first()).toBeVisible();
-      await expect(page.locator('text=q6 contrast the two runbooks').first()).toBeVisible();
-      await expect(page.locator('text=q1 how long is the certification valid')).toHaveCount(0);
+      await expect(table.getByText('q4 explain the rollback procedure').first()).toBeVisible();
+      await expect(table.getByText('q5 summarize the incident timeline').first()).toBeVisible();
+      await expect(table.getByText('q6 contrast the two runbooks').first()).toBeVisible();
+      await expect(table.getByText('q1 how long is the certification valid')).toHaveCount(0);
     } finally {
       await api.delete(`/api/storage/evaluation-runs/${RUN_TAG_A}`).catch(() => {});
       await api.delete(`/api/storage/evaluation-runs/${RUN_TAG_B}`).catch(() => {});

@@ -33,9 +33,10 @@ export const BenchmarkResultsView: React.FC<BenchmarkResultsViewProps> = ({
   const [showUseCaseCompare, setShowUseCaseCompare] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Load test cases on mount
+  // Load test cases on mount. Only name/difficulty/category are rendered here
+  // (per-use-case breakdown cards) so the lightweight summary payload is enough.
   useEffect(() => {
-    asyncTestCaseStorage.getAll().then(setTestCases);
+    asyncTestCaseStorage.getAll({ summary: true }).then(setTestCases);
   }, []);
 
   // Load all reports referenced by all runs

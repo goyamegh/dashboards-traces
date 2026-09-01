@@ -1089,7 +1089,27 @@ export type ExperimentStartedEvent = BenchmarkStartedEvent;
  * Discriminator for documents in evals_benchmarks index.
  * Legacy docs without this field default to 'benchmark' via normalization.
  */
-export type EvalDocType = 'benchmark' | 'evaluation-run';
+export type EvalDocType = 'benchmark' | 'evaluation-run' | 'benchmark-image';
+
+/**
+ * BenchmarkImage — content-addressed snapshot of evaluation conditions
+ * ("the controls"): test-case contents + evaluator/judge conditions. Runs
+ * sharing a digest are comparable by construction; the digest is also the
+ * inherent dedup key (same command → same digest → same image, never a
+ * duplicate). Tags are docker-style mutable labels — never identity.
+ * Stored in the evals_benchmarks index/dir with docType 'benchmark-image'.
+ */
+export interface BenchmarkImage {
+  id: string;                      // `img-<digest>` (content-addressed)
+  docType: 'benchmark-image';
+  digest: string;                  // sha256 hex over canonical content
+  tags: string[];                  // human labels ("coding-eval:v3"), mutable
+  testCaseFingerprints: Array<{ id?: string; name: string; contentHash: string }>;
+  testCaseCount: number;
+  evalConditions: { evaluatorId?: string; judgeModelId?: string };
+  createdAt: string;
+  lastRunAt?: string;
+}
 
 /**
  * Describes where test cases came from for an evaluation run.
@@ -1155,6 +1175,21 @@ export interface EvaluationRun {
   // Benchmark association (undefined for ad-hoc runs, set for benchmark runs)
   benchmarkId?: string;
   benchmarkVersion?: number;
+
+  /**
+   * Content digest of this run's evaluation conditions (test-case contents +
+   * evaluator/judge conditions). Runs with equal digests ran under identical
+   * conditions and are directly comparable. See {@link BenchmarkImage}.
+   */
+  imageDigest?: string;
+  /**
+   * Provenance: id of the source {@link EvaluationRun} this run was created
+   * from via `POST /api/storage/evaluation-runs/:id/rerun` ("kick off a
+   * duplicate of the same run"). Undefined for runs created any other way.
+   * The source run is NOT required to still exist for this run to be valid —
+   * it's a point-in-time provenance link, not a live reference.
+   */
+  rerunOf?: string;
 }
 
 // ============ Comparison Types ============

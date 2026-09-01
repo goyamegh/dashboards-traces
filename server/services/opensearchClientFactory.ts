@@ -64,8 +64,11 @@ import type { ClusterConfig } from '../../types/index.js';
  * The fix: always attach a synthetic `expiration` (now + this window) to
  * credentials that don't already carry one, so opensearch-js's own expiry
  * check periodically forces a re-call to `getCredentials()`, which - since
- * we build a fresh provider chain on every call below - re-reads whatever
- * is on disk/in the environment right now.
+ * we build a fresh provider chain on every call below, with `ignoreCache:
+ * true` to also defeat the AWS SDK's own file-content cache (see the
+ * `resolveSigv4Credentials` doc comment) - re-reads whatever is actually on
+ * disk/in the environment right now, not whatever was there the first time
+ * this process ever resolved credentials.
  */
 // 5 minutes: bounds the worst-case "still signing with a rotated-out key"
 // window to something short (opensearch-js re-checks ~30s before this
@@ -91,10 +94,30 @@ export const SIGV4_CREDENTIAL_REFRESH_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
  * expiration into other consumers of that provider.
  *
  * Exported for direct unit testing.
+ *
+ * IMPORTANT - a SECOND, process-wide cache sits underneath this "fresh
+ * provider chain every call" strategy: `@smithy/shared-ini-file-loader`
+ * memoizes the raw contents of `~/.aws/credentials` / `~/.aws/config` in a
+ * module-level `filePromises` map, keyed only by file path, for the lifetime
+ * of the Node process - a brand-new provider chain still calls into this
+ * SAME shared file-read cache. `ada credentials update` rewriting a static
+ * ini-file profile is therefore invisible to a long-running server until
+ * the process restarts - the actual cause of the Aug 2026 incidents where
+ * `/api/storage/config/retry` kept returning HTTP 403 after `ada` had
+ * already refreshed valid credentials on disk. `ignoreCache: true` bypasses
+ * that specific file-content cache (forwarded down to `readFile()`); it
+ * does NOT change how AWS-side re-authentication works for profile shapes
+ * that legitimately re-authenticate on their own (SSO, `credential_process`,
+ * assume-role chains), so this is scoped to the static-profile case that bit
+ * us, not a general credential-freshness guarantee.
  */
 export async function resolveSigv4Credentials(awsProfile?: string) {
   const provider = fromNodeProviderChain({
     ...(awsProfile && { profile: awsProfile }),
+    // Bypass @smithy/shared-ini-file-loader's process-lifetime file-content
+    // cache (see comment above) so a rotated ~/.aws/credentials is picked up
+    // on the very next resolution instead of requiring a process restart.
+    ignoreCache: true,
   });
   const credentials = await provider();
   if (credentials.expiration) {

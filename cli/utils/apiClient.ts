@@ -10,7 +10,7 @@
  * Follows the server-mediated architecture pattern.
  */
 
-import type { Benchmark, BenchmarkRun, BenchmarkProgress, RunConfigInput, TestCaseRun, StorageMetadata, AgentConfig, ModelConfig, TestCase, Evaluator, EvaluationRun, TestCaseSource } from '@/types/index.js';
+import type { Benchmark, BenchmarkRun, BenchmarkProgress, BenchmarkImage, RunConfigInput, TestCaseRun, StorageMetadata, AgentConfig, ModelConfig, TestCase, Evaluator, EvaluationRun, TestCaseSource } from '@/types/index.js';
 
 /**
  * Error thrown when the server sends an explicit error event via SSE.
@@ -1015,6 +1015,77 @@ export class ApiClient {
     }
 
     return completedRun;
+  }
+
+  /**
+   * List benchmark images (content-addressed evaluation-condition snapshots).
+   */
+  async listImages(): Promise<BenchmarkImage[]> {
+    const res = await fetch(`${this.baseUrl}/api/storage/images`);
+    if (!res.ok) throw new ServerError(`Failed to list images: ${res.statusText}`);
+    const data = await res.json();
+    return data.images || [];
+  }
+
+  /**
+   * Get an image and its runs (the comparable set — all runs sharing the digest).
+   */
+  async getImage(digest: string): Promise<{ image: BenchmarkImage; runs: EvaluationRun[] } | null> {
+    const res = await fetch(`${this.baseUrl}/api/storage/images/${encodeURIComponent(digest)}`);
+    if (res.status === 404) return null;
+    if (!res.ok) throw new ServerError(`Failed to get image: ${res.statusText}`);
+    return res.json();
+  }
+
+  /**
+   * Add a docker-style tag to an image (label, never identity). Idempotent.
+   */
+  async tagImage(digest: string, tag: string): Promise<BenchmarkImage> {
+    const res = await fetch(`${this.baseUrl}/api/storage/images/${encodeURIComponent(digest)}/tags`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ tag }),
+    });
+    if (!res.ok) throw new ServerError(`Failed to tag image: ${res.statusText}`);
+    return (await res.json()).image;
+  }
+
+  /**
+   * List evaluation runs (optionally filtered).
+   */
+  async listEvaluationRuns(filters: { benchmarkId?: string; imageDigest?: string; size?: number } = {}): Promise<EvaluationRun[]> {
+    const params = new URLSearchParams();
+    if (filters.benchmarkId) params.set('benchmarkId', filters.benchmarkId);
+    if (filters.imageDigest) params.set('imageDigest', filters.imageDigest);
+    params.set('size', String(filters.size ?? 500));
+    const res = await fetch(`${this.baseUrl}/api/storage/evaluation-runs?${params}`);
+    if (!res.ok) throw new ServerError(`Failed to list evaluation runs: ${res.statusText}`);
+    const data = await res.json();
+    return data.evaluationRuns || [];
+  }
+
+  /**
+   * Delete a benchmark by id.
+   */
+  async deleteBenchmark(id: string): Promise<boolean> {
+    const res = await fetch(`${this.baseUrl}/api/storage/benchmarks/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+    return res.ok;
+  }
+
+  /**
+   * Update an evaluation run (e.g. re-point benchmarkId during doctor merge).
+   */
+  async updateEvaluationRun(id: string, updates: Partial<EvaluationRun>): Promise<EvaluationRun | null> {
+    const res = await fetch(`${this.baseUrl}/api/storage/evaluation-runs/${encodeURIComponent(id)}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data.evaluationRun || data;
   }
 
   /**

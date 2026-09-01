@@ -198,6 +198,9 @@ describe('executeEvaluationRun — issue #230 traces fixture pre-loading', () =>
       expect(traces.totalTokens).toBe(0);
       expect(traces.totalCost).toBe(0);
       expect(traces.spans).toEqual([]);
+      // costSource passthrough (mirrors totalTokens/totalCost above): the
+      // opt-out accessor reports 'none' rather than throwing or guessing.
+      expect(traces.costSource).toBe('none');
     });
 
     await executeEvaluationRun(makeRun('plain-agent'), [TC], {

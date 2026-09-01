@@ -54,7 +54,7 @@ export function useDataState(): UseDataStateReturn {
         if (configStatus.runtime?.storage.backend === 'file') {
           const [benchmarksResponse, testCasesResponse, runsResponse] = await Promise.all([
             fetch('/api/storage/benchmarks?includeSample=false'),
-            fetch('/api/storage/test-cases?size=1&includeSample=false'),
+            fetch('/api/storage/test-cases?fields=summary&size=1&includeSample=false'),
             fetch('/api/storage/evaluation-runs?status=completed&size=1'),
           ]);
           if (!benchmarksResponse.ok || !testCasesResponse.ok || !runsResponse.ok) {

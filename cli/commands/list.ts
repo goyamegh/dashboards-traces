@@ -152,6 +152,57 @@ async function listTestCases(format: OutputFormat, config: ResolvedConfig): Prom
 }
 
 /**
+ * List benchmark images (content-addressed evaluation-condition snapshots)
+ */
+async function listImages(format: OutputFormat, config: ResolvedConfig): Promise<void> {
+  const serverResult = await ensureServer(config.server);
+  const cleanup = createServerCleanup(serverResult, config.server.reuseExistingServer === false);
+
+  try {
+    const client = new ApiClient(serverResult.baseUrl);
+    const images = await client.listImages();
+
+    if (format === 'json') {
+      console.log(formatJson({ images, total: images.length }));
+      return;
+    }
+
+    const headers = ['Digest', 'Tags', 'Test Cases', 'Judge Model', 'Evaluator', 'Created'];
+    const rows = images.map(img => [
+      img.digest.slice(0, 12),
+      img.tags.join(', ') || '-',
+      String(img.testCaseCount),
+      img.evalConditions.judgeModelId || '-',
+      img.evalConditions.evaluatorId || '-',
+      new Date(img.createdAt).toLocaleDateString(),
+    ]);
+
+    if (format === 'markdown') {
+      console.log(formatMarkdownTable(headers, rows));
+      return;
+    }
+
+    const table = new Table({
+      head: headers.map(h => chalk.cyan(h)),
+      colWidths: [16, 24, 12, 24, 20, 14],
+      wordWrap: true,
+    });
+    for (const row of rows) table.push(row);
+
+    console.log(chalk.bold('\nBenchmark Images:\n'));
+    console.log(table.toString());
+    console.log(chalk.gray(`\n  Total: ${images.length} images`));
+    console.log(chalk.gray('  Runs sharing a digest ran under identical conditions and are directly comparable.\n'));
+  } catch (error: any) {
+    console.error(chalk.red(`\n  Error: ${error.message}`));
+    console.log(chalk.gray('  Is the server running? Start with: npm run dev:server\n'));
+    process.exit(1);
+  } finally {
+    cleanup();
+  }
+}
+
+/**
  * List all available benchmarks via server API
  */
 async function listBenchmarks(format: OutputFormat, config: ResolvedConfig): Promise<void> {
@@ -386,7 +437,7 @@ async function listModels(format: OutputFormat, config: ResolvedConfig): Promise
 export function createListCommand(): Command {
   const command = new Command('list')
     .description('List available resources')
-    .argument('<resource>', 'Resource type: agents, test-cases, benchmarks, evaluators, connectors, models')
+    .argument('<resource>', 'Resource type: agents, test-cases, benchmarks, images, evaluators, connectors, models')
     .option('-o, --output <format>', OUTPUT_FORMAT_DESCRIPTION, 'table')
     .action(async (resource: string, options: { output: string }) => {
       const format = parseOutputFormat(options.output);
@@ -412,6 +463,10 @@ export function createListCommand(): Command {
         case 'bench':
           await listBenchmarks(format, config);
           break;
+        case 'images':
+        case 'img':
+          await listImages(format, config);
+          break;
         case 'evaluators':
         case 'eval':
           await listEvaluators(format, config);
@@ -424,7 +479,7 @@ export function createListCommand(): Command {
           break;
         default:
           console.error(chalk.red(`\n  Unknown resource type: ${resource}`));
-          console.log(chalk.gray('  Available: agents, test-cases, benchmarks, evaluators, connectors, models\n'));
+          console.log(chalk.gray('  Available: agents, test-cases, benchmarks, images, evaluators, connectors, models\n'));
           process.exit(1);
       }
     });

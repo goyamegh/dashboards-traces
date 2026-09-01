@@ -133,6 +133,34 @@ describe('AsyncRunStorage', () => {
         expect.objectContaining({ sessionId: 'sess-roundtrip' })
       );
     });
+
+    it('persists evaluatorId + judgeModelId through toStorageFormat (write side of the PR #206/#390 round-trip)', async () => {
+      // The read mapper (toTestCaseRun) and the server-side save path both
+      // carry these; the client-side write mapper used to drop them, so a
+      // report saved via asyncRunStorage (e.g. the localStorage→OpenSearch
+      // migration) lost which evaluator/judge produced it. Regression-locked
+      // by tests/integration/services/storage/runStorage.integration.test.ts
+      // ('preserves evaluatorId …') against a real backend.
+      mockOsRuns.create.mockResolvedValue(createMockStorageRun('run-judge'));
+      const report = createMockReport();
+      (report as any).evaluatorId = 'system-rca';
+      (report as any).judgeModelId = 'us.anthropic.claude-sonnet-4-5';
+      await asyncRunStorage.saveReport(report);
+      expect(mockOsRuns.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          evaluatorId: 'system-rca',
+          judgeModelId: 'us.anthropic.claude-sonnet-4-5',
+        })
+      );
+    });
+
+    it('omits evaluatorId / judgeModelId keys entirely when the report has none (no undefined stomping)', async () => {
+      mockOsRuns.create.mockResolvedValue(createMockStorageRun('run-nojudge'));
+      await asyncRunStorage.saveReport(createMockReport());
+      const arg = mockOsRuns.create.mock.calls[0][0];
+      expect('evaluatorId' in arg).toBe(false);
+      expect('judgeModelId' in arg).toBe(false);
+    });
   });
 
   describe('getReportsByTestCase', () => {
@@ -532,6 +560,37 @@ describe('AsyncRunStorage', () => {
           }),
         ]),
       });
+    });
+
+    // Regression guard: performanceMetrics (durationMs/agentDurationMs) is a
+    // real, persisted field (server/routes/comparison.ts and the evaluation/
+    // benchmark runners already read it) but was missing from toTestCaseRun's
+    // mapping entirely, so every BROWSER-side report loaded via
+    // getReportById()/getReportsByIds() silently lost it (e.g. the comparison
+    // deep-dive panel's per-case Duration cell always showed a dash).
+    it('preserves performanceMetrics (durationMs/agentDurationMs) from the stored document', async () => {
+      const mockStorageRun = {
+        ...createMockStorageRun('run-perf'),
+        performanceMetrics: { durationMs: 36900, agentDurationMs: 34000, judgeDurationMs: 2900 },
+      };
+      mockOsRuns.getById.mockResolvedValue(mockStorageRun);
+
+      const result = await asyncRunStorage.getReportById('run-perf');
+
+      expect(result?.performanceMetrics).toEqual({
+        durationMs: 36900,
+        agentDurationMs: 34000,
+        judgeDurationMs: 2900,
+      });
+    });
+
+    it('leaves performanceMetrics undefined when the stored document has none', async () => {
+      const mockStorageRun = createMockStorageRun('run-no-perf');
+      mockOsRuns.getById.mockResolvedValue(mockStorageRun);
+
+      const result = await asyncRunStorage.getReportById('run-no-perf');
+
+      expect(result?.performanceMetrics).toBeUndefined();
     });
 
     it('handles trace-mode fields in conversion', async () => {

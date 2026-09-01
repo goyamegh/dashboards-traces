@@ -22,26 +22,48 @@ import {
 } from '@/server/services/comparisonDeepDiveService';
 
 describe('comparisonDeepDiveService — SYSTEM_PROMPT', () => {
-  it('instructs the agent to hunt for errors in EACH run', () => {
+  it('instructs the agent to hunt for errors on EACH side', () => {
     expect(SYSTEM_PROMPT).toMatch(/ERRORS/);
-    expect(SYSTEM_PROMPT).toMatch(/hunt for failures in EACH run/i);
+    expect(SYSTEM_PROMPT).toMatch(/hunt for failures on EACH side/i);
     // Mentions concrete error signals so the model knows what to look for.
     expect(SYSTEM_PROMPT).toMatch(/otel\.status_code=ERROR/);
     expect(SYSTEM_PROMPT).toMatch(/exception\./);
     expect(SYSTEM_PROMPT).toMatch(/failed or were retried/i);
   });
 
-  it('requires an always-present Errors bullet covering run A, B, or both', () => {
+  it('requires an always-present Errors bullet covering side A, B, or both', () => {
     expect(SYSTEM_PROMPT).toMatch(/\*\*Errors\*\* bullet that is ALWAYS present/);
-    expect(SYSTEM_PROMPT).toMatch(/run A, run B, or both/);
-    // And an explicit per-run "no errors observed" when clean (never omitted).
+    expect(SYSTEM_PROMPT).toMatch(/side A, side B, or both/);
+    // And an explicit per-side "no errors observed" when clean (never omitted).
     expect(SYSTEM_PROMPT).toMatch(/no errors observed/);
     expect(SYSTEM_PROMPT).toMatch(/never silently omit/i);
+  });
+
+  it('instructs the agent to say CASE, never RUN, using the owner-mandated outcome+score template', () => {
+    // This deep-dive is per test case, not a benchmark run's aggregate pass
+    // rate -- owner feedback: "Run A passed (100/100)" reads like a run-level
+    // stat even though the panel is analyzing one case (see #398 follow-up).
+    expect(SYSTEM_PROMPT).toMatch(/CASE, never RUN/);
+    expect(SYSTEM_PROMPT).toMatch(/NEVER write "Run A" \/ "Run B"/);
+    expect(SYSTEM_PROMPT).toMatch(/On this case, A passed \(judge 100\/100\)/);
+    expect(SYSTEM_PROMPT).toMatch(/On this case, B failed \(judge 42\/100\)/);
   });
 
   it('still asks for span citations + a tight markdown deep-dive', () => {
     expect(SYSTEM_PROMPT).toMatch(/span:<runId>:<spanId>/);
     expect(SYSTEM_PROMPT).toMatch(/headline verdict/i);
+  });
+
+  it('instructs the agent to record a chart and follow-up experiment suggestions before writing', () => {
+    expect(SYSTEM_PROMPT).toMatch(/record_deepdive_extras` AT MOST ONCE/);
+    expect(SYSTEM_PROMPT).toMatch(/grounded in what you actually found/i);
+    expect(SYSTEM_PROMPT).toMatch(/omit either or both rather than fabricating/i);
+  });
+
+  it('instructs the agent to never write a bare "N/N" judge score (misreads as a case count)', () => {
+    expect(SYSTEM_PROMPT).toMatch(/scored 100\/100 judge points/);
+    expect(SYSTEM_PROMPT).toMatch(/NEVER a bare "N\/N"/);
+    expect(SYSTEM_PROMPT).toMatch(/misreads as a case count/i);
   });
 });
 
@@ -66,10 +88,13 @@ describe('comparisonDeepDiveService — buildUserPrompt', () => {
     },
   ];
 
-  it('labels both runs and threads each runId for span citations', () => {
+  it('labels both sides and threads each runId for span citations', () => {
     const prompt = buildUserPrompt(runs);
-    expect(prompt).toMatch(/## Run A — aos-oncall \(Claude Code\)/);
-    expect(prompt).toMatch(/## Run B — cp-oncall \(Claude Code\)/);
+    expect(prompt).toMatch(/## A — aos-oncall \(Claude Code\)/);
+    expect(prompt).toMatch(/## B — cp-oncall \(Claude Code\)/);
+    // Never the "Run A"/"Run B" framing -- that reads like a benchmark run's
+    // aggregate stat, not this one test case's two attempts (see #398 follow-up).
+    expect(prompt).not.toMatch(/## Run [AB]/);
     // The runId is explicitly surfaced "use this in span: citations".
     expect(prompt).toContain('subprocess-AAA');
     expect(prompt).toContain('subprocess-BBB');
@@ -78,7 +103,7 @@ describe('comparisonDeepDiveService — buildUserPrompt', () => {
 
   it('includes per-run outcome + duration context when known', () => {
     const prompt = buildUserPrompt(runs);
-    expect(prompt).toMatch(/outcome: passed \(score 100\)/);
+    expect(prompt).toMatch(/outcome: passed \(judgeScore: 100 on a 0-100 scale\)/);
     expect(prompt).toMatch(/outcome: failed/);
     expect(prompt).toMatch(/211\.0s/);
     expect(prompt).toMatch(/266\.0s/);

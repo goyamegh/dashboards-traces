@@ -58,10 +58,11 @@
  *
  * Cleanup
  * ───────
- *   • Every TestCase ID created during the test is recorded in
- *     `createdTestCaseIds[]` and deleted in `afterAll`. The `afterAll`
- *     also sweeps any leftover docs whose name starts with the test's
- *     unique prefix to catch leaks from a previously failed run.
+ *   • Every TestCase ID the backend returns is recorded in
+ *     `createdTestCaseIds[]` automatically by `postBulk` (before any
+ *     assertion can throw) and deleted in `afterAll` — by id ONLY.
+ *     Never sweep shared storage by name: "name looks test-ish" is not
+ *     proof of ownership on a shared cluster.
  */
 
 import { ApiClient } from '@/cli/utils/apiClient';
@@ -69,6 +70,8 @@ import { getTestBackendUrl } from '@/tests/integration/testConfig';
 
 const TEST_TIMEOUT = 30_000;
 const BASE_URL = getTestBackendUrl();
+// Ids of every test case this run created (auto-populated by postBulk).
+const createdTestCaseIds: string[] = [];
 
 const checkBackend = async (): Promise<boolean> => {
   try {
@@ -97,17 +100,28 @@ async function postBulk(testCases: any[]): Promise<{ status: number; body: BulkR
     body: JSON.stringify({ testCases }),
   });
   const body = await r.json();
+  // Track every id the backend hands back IMMEDIATELY — before any test
+  // assertion can throw — so afterAll can delete exactly what this run
+  // touched without ever needing a name-based sweep.
+  for (const tc of body?.testCases ?? []) {
+    if (tc?.id) createdTestCaseIds.push(tc.id);
+  }
   return { status: r.status, body };
 }
 
 describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
+  // The dedup lookup path scans existing test cases server-side; against a
+  // large shared OpenSearch cluster a single round-trip can exceed jest's
+  // default 30s (measured: three of these tests at 30–60s on a ~1.5k-doc
+  // cluster with multi-MB documents). CI's file backend stays instant.
+  jest.setTimeout(120_000);
+
   let backendAvailable = false;
   let client: ApiClient;
   // Per-run prefix: every TC and benchmark name gets this prefix so
   // parallel jest workers / repeated runs don't collide, and the cleanup
   // sweeper has a unique handle to find leaks.
   const NAME_PREFIX = `dedup-integ-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-  const createdTestCaseIds: string[] = [];
 
   beforeAll(async () => {
     backendAvailable = await checkBackend();
@@ -120,32 +134,14 @@ describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
 
   afterAll(async () => {
     if (!backendAvailable) return;
-    // Primary cleanup: delete every ID we know we created.
+    // Delete every ID this run created (postBulk records them all before
+    // any assertion can throw). Ids are deduped because upsert paths return
+    // the same id multiple times; deletes are 404-tolerant either way.
     await Promise.all(
-      createdTestCaseIds.map(id =>
+      [...new Set(createdTestCaseIds)].map(id =>
         fetch(`${BASE_URL}/api/storage/test-cases/${encodeURIComponent(id)}`, { method: 'DELETE' }).catch(() => {})
       )
     );
-    // Secondary sweep: delete any leftover TCs whose name starts with our
-    // unique prefix (catches docs that were created but never tracked,
-    // e.g. if an assertion failed before pushing into the array).
-    try {
-      const r = await fetch(`${BASE_URL}/api/storage/test-cases?size=500`);
-      if (r.ok) {
-        const data = await r.json();
-        const leftovers: Promise<any>[] = [];
-        for (const tc of (data.testCases || data.items || [])) {
-          if (typeof tc.name === 'string' && tc.name.startsWith(NAME_PREFIX)) {
-            leftovers.push(
-              fetch(`${BASE_URL}/api/storage/test-cases/${encodeURIComponent(tc.id)}`, { method: 'DELETE' }).catch(() => {})
-            );
-          }
-        }
-        await Promise.all(leftovers);
-      }
-    } catch {
-      /* best-effort */
-    }
   }, 60_000);
 
   // ─────────────────────────────────────────────────────────────────
@@ -173,7 +169,6 @@ describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
       expect(body.unchanged).toBe(0);
       expect(body.testCases).toHaveLength(1);
       expect(body.testCases[0].id).toMatch(/^tc-/);
-      createdTestCaseIds.push(body.testCases[0].id);
     }, TEST_TIMEOUT);
 
     it('re-importing the same (name, sourceFile, sourceHash) returns unchanged=1 and SAME id', async () => {
@@ -197,8 +192,6 @@ describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
       expect(second.updated).toBe(0);
       expect(second.unchanged).toBe(1);
       expect(second.testCases[0].id).toBe(first.testCases[0].id);
-
-      createdTestCaseIds.push(first.testCases[0].id);
     }, TEST_TIMEOUT);
 
     it('same (name, sourceFile) with DIFFERENT sourceHash returns updated=1, SAME id, version bumped', async () => {
@@ -227,8 +220,6 @@ describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
 
       const bumpedVersion = second.testCases[0].currentVersion ?? second.testCases[0].version;
       expect(bumpedVersion).toBeGreaterThan(1);
-
-      createdTestCaseIds.push(first.testCases[0].id);
     }, TEST_TIMEOUT);
 
     it('same name in DIFFERENT sourceFile is a different TestCase (different id)', async () => {
@@ -259,8 +250,6 @@ describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
       expect(a.created).toBe(1);
       expect(b.created).toBe(1);
       expect(a.testCases[0].id).not.toBe(b.testCases[0].id);
-
-      createdTestCaseIds.push(a.testCases[0].id, b.testCases[0].id);
     }, TEST_TIMEOUT);
 
     it('different names in same sourceFile each get their own id', async () => {
@@ -294,8 +283,6 @@ describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
       expect(second.unchanged).toBe(2);
       expect(second.created).toBe(0);
       expect(second.testCases.map(tc => tc.id).sort()).toEqual(first.testCases.map(tc => tc.id).sort());
-
-      createdTestCaseIds.push(...first.testCases.map(tc => tc.id));
     }, TEST_TIMEOUT);
   });
 
@@ -323,8 +310,6 @@ describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
       // expect no other keys.
       expect(body.updated).toBeUndefined();
       expect(body.unchanged).toBeUndefined();
-
-      createdTestCaseIds.push(body.testCases[0].id);
     }, TEST_TIMEOUT);
 
     it('repeated JSON imports mint fresh ids each time (legacy create-only)', async () => {
@@ -348,8 +333,6 @@ describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
       expect(first.created).toBe(1);
       expect(second.created).toBe(1);
       expect(first.testCases[0].id).not.toBe(second.testCases[0].id);
-
-      createdTestCaseIds.push(first.testCases[0].id, second.testCases[0].id);
     }, TEST_TIMEOUT);
   });
 
@@ -421,7 +404,6 @@ describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
       expect(body.created).toBe(2);
       expect(body.updated).toBe(0);
       expect(body.unchanged).toBe(0);
-      createdTestCaseIds.push(...body.testCases.map(tc => tc.id));
     }, TEST_TIMEOUT);
 
     it('cross-name collision regression: a JSON item named like an existing SDK record cannot reach the upsert path', async () => {
@@ -440,7 +422,6 @@ describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
       const seed = (await postBulk([sdkSeed])).body;
       expect(seed.created).toBe(1);
       const sdkId = seed.testCases[0].id;
-      createdTestCaseIds.push(sdkId);
 
       // Step 2: try to send a mixed batch — a JSON item whose `name`
       // happens to match the SDK record — alongside another SDK item.
@@ -505,8 +486,6 @@ describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
       expect(second.created).toBe(0);
       expect(second.unchanged).toBe(1);
       expect(second.testCases[0].id).toBe(first.testCases[0].id);
-
-      createdTestCaseIds.push(first.testCases[0].id);
     }, TEST_TIMEOUT);
   });
 });

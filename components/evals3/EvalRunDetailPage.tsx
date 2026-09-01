@@ -16,7 +16,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   Loader2, CheckCircle2, XCircle, Clock, AlertTriangle,
-  ChevronDown, ChevronRight, ArrowLeft, Bookmark, RotateCcw,
+  ChevronDown, ChevronRight, ArrowLeft, Bookmark, RotateCcw, Link2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -34,6 +34,7 @@ import {
   cancelEvaluationRun,
   promoteEvaluationRun,
 } from '@/services/client/evaluationRunsApi';
+import { RerunConfirmDialog } from './RerunConfirmDialog';
 import { Breadcrumbs } from './Breadcrumbs';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -82,6 +83,18 @@ export const EvalRunDetailPage: React.FC = () => {
   const [promoteName, setPromoteName] = useState('');
   const [promoting, setPromoting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
+  const [rerunDialogOpen, setRerunDialogOpen] = useState(false);
+  // Provenance: when this run was itself created via re-run, look up the
+  // source run's name for the chip (falls back to a truncated id if the
+  // source run was since deleted — the link is a point-in-time provenance
+  // record, not a live reference that has to keep resolving). `sourceRunMissing`
+  // tracks a CONFIRMED lookup failure (vs. "not yet loaded") so the chip can
+  // visually de-emphasize a dangling link instead of looking identical to a
+  // healthy one (codex_review: clicking through still lands on this page's
+  // own well-handled "Run not found" state, same as any stale run URL — this
+  // is a styling cue, not a functional block).
+  const [sourceRunName, setSourceRunName] = useState<string | null>(null);
+  const [sourceRunMissing, setSourceRunMissing] = useState(false);
 
   const loadRun = useCallback(async () => {
     if (!runId) return;
@@ -105,6 +118,15 @@ export const EvalRunDetailPage: React.FC = () => {
     const interval = setInterval(loadRun, 3000);
     return () => clearInterval(interval);
   }, [run?.status, loadRun]);
+
+  useEffect(() => {
+    if (!run?.rerunOf) { setSourceRunName(null); setSourceRunMissing(false); return; }
+    let cancelled = false;
+    getEvaluationRun(run.rerunOf)
+      .then(src => { if (!cancelled) { setSourceRunName(src.name || src.id); setSourceRunMissing(false); } })
+      .catch(() => { if (!cancelled) { setSourceRunName(null); setSourceRunMissing(true); } });
+    return () => { cancelled = true; };
+  }, [run?.rerunOf]);
 
   const handleCancel = async () => {
     if (!runId) return;
@@ -197,6 +219,21 @@ export const EvalRunDetailPage: React.FC = () => {
                 {run.trigger && (
                   <Badge variant="secondary" className="text-xs">{run.trigger}</Badge>
                 )}
+                {run.rerunOf && (
+                  <button
+                    data-testid="rerun-provenance-chip"
+                    className={sourceRunMissing
+                      ? 'inline-flex items-center gap-1 rounded-full border border-muted-foreground/30 bg-muted/40 text-muted-foreground text-xs px-2 py-0.5 hover:bg-muted/60 transition-colors'
+                      : 'inline-flex items-center gap-1 rounded-full border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-xs px-2 py-0.5 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors'}
+                    onClick={() => navigate(`/evaluations/runs/${run.rerunOf}`)}
+                    title={sourceRunMissing
+                      ? 'This run was created as a re-run, but the source run no longer exists'
+                      : 'This run was created as a re-run of the linked source run'}
+                  >
+                    <Link2 size={11} />
+                    re-run of {sourceRunName || run.rerunOf.slice(0, 8)}
+                  </button>
+                )}
               </div>
               <h1 className="text-xl font-semibold">{run.name || `Run ${run.id.slice(0, 8)}`}</h1>
               <div className="flex items-center gap-4 text-sm text-muted-foreground">
@@ -211,31 +248,47 @@ export const EvalRunDetailPage: React.FC = () => {
 
             {/* Actions */}
             <div className="flex items-center gap-2">
-              {/* Re-run: restart this run with its stored config (same agent,
-                  test-case sources, evaluator, judge model) via the New-Run
-                  flow, pre-filled. Available for any run that isn't currently
-                  running. The agent's model is resolved from its config. */}
-              {run.status !== 'running' && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  data-testid="rerun-run-btn"
-                  onClick={() => navigate('/evaluations/runs/new', {
-                    state: {
-                      restartFrom: {
-                        name: run.name,
-                        sources: run.sources,
-                        agentKey: run.agentKey,
-                        evaluatorId: run.evaluatorId,
-                        judgeModelId: run.judgeModelId,
-                        benchmarkId: run.benchmarkId,
-                      },
+              {/* Re-run: kick off a brand-new, independent run with the exact
+                  same config (agent, test-case sources, evaluator, judge
+                  model) via POST .../rerun, linked back via `rerunOf`.
+                  Available regardless of this run's status — re-running a
+                  still-running run is fine, the duplicate is independent. */}
+              <Button
+                variant="outline"
+                size="sm"
+                data-testid="rerun-run-btn"
+                onClick={() => setRerunDialogOpen(true)}
+              >
+                <RotateCcw size={14} className="mr-1" /> Re-run
+              </Button>
+              {/* Secondary path: open the New-Run composer pre-filled from
+                  this run's config instead of launching immediately, so the
+                  user can tweak agent/judge/sources/benchmark first. Restores
+                  the capability the old "Re-run" button used to provide
+                  before it became the one-click duplicate above — flagged by
+                  codex_review as a real loss otherwise (the composer has no
+                  other way to start a new run pre-filled from an existing
+                  one). */}
+              <Button
+                variant="ghost"
+                size="sm"
+                className="text-muted-foreground"
+                data-testid="rerun-customize-btn"
+                onClick={() => navigate('/evaluations/runs/new', {
+                  state: {
+                    restartFrom: {
+                      name: run.name,
+                      sources: run.sources,
+                      agentKey: run.agentKey,
+                      evaluatorId: run.evaluatorId,
+                      judgeModelId: run.judgeModelId,
+                      benchmarkId: run.benchmarkId,
                     },
-                  })}
-                >
-                  <RotateCcw size={14} className="mr-1" /> Re-run
-                </Button>
-              )}
+                  },
+                })}
+              >
+                Customize before re-running…
+              </Button>
               {run.status === 'running' && (
                 <Button variant="destructive" size="sm" onClick={handleCancel} disabled={cancelling}>
                   {cancelling ? <Loader2 size={14} className="mr-1 animate-spin" /> : null}
@@ -407,6 +460,14 @@ export const EvalRunDetailPage: React.FC = () => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Re-run Confirm Dialog */}
+      <RerunConfirmDialog
+        run={run}
+        open={rerunDialogOpen}
+        onOpenChange={setRerunDialogOpen}
+        onRerun={newRunId => navigate(`/evaluations/runs/${newRunId}`)}
+      />
     </div>
   );
 };

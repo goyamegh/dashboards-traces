@@ -27,10 +27,20 @@
  * elements, so a term query matches if ANY element has that id, which is
  * exactly the filter semantics this needs.
  *
- * Cluster: connects to `TEST_OPENSEARCH_ENDPOINT` (default
- * `http://localhost:9200`), same as evaluationRunMappingGrowth.integration.test.ts
- * — skips gracefully if unreachable. Never deletes/truncates the shared
- * `evals_experiments` index (see that file's header for why).
+ * Unlike the mapping-growth suites (which write thousands of distinct field
+ * names and therefore run against throwaway `ahtest-*` indices), this suite
+ * uses the real `evals_experiments` index bootstrapped by the production
+ * `ensureIndexesWithValidation()` path: its two docs contain only standard
+ * production field shapes (no synthetic field names, so no mapping impact),
+ * and both are tracked and deleted in `afterAll`.
+ *
+ * Cluster: STRICTLY OPT-IN via `TEST_OPENSEARCH_ENDPOINT` (with a
+ * localhost:9200 fallback only under GitHub Actions, where the CI
+ * `integration-tests` job provisions a disposable service container) — see
+ * tests/helpers/rawOpenSearchCluster.ts. Without the opt-in the suite SKIPS:
+ * it must never write synthetic docs into an unknown local port 9200 (which
+ * may be a port-forward to a shared cluster). Skips gracefully if the opted-
+ * in cluster is unreachable, same as the mapping-growth suites.
  */
 
 import { Client } from '@opensearch-project/opensearch';
@@ -39,48 +49,56 @@ import { FileSessionMetadataOperations } from '@/server/adapters/file/StorageMod
 import { ensureIndexesWithValidation } from '@/server/services/indexInitializer';
 import { STORAGE_INDEXES } from '@/server/middleware/dataSourceConfig';
 import type { EvaluationRun } from '@/types';
+import {
+  RawOpenSearchTestData,
+  createRawOpenSearchClient,
+  rawClusterReachable,
+  rawOpenSearchOptInHint,
+  resolveRawOpenSearchEndpoint,
+} from '../../../helpers/rawOpenSearchCluster';
+import { uniqueTestName } from '../../../helpers/testDataTracker';
 
-const ENDPOINT = process.env.TEST_OPENSEARCH_ENDPOINT || 'http://localhost:9200';
+const ENDPOINT = resolveRawOpenSearchEndpoint();
 const INDEX = STORAGE_INDEXES.benchmarks;
-const RUN_TAG = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-async function clusterUp(client: Client): Promise<boolean> {
-  try {
-    await client.cluster.health({ wait_for_status: 'yellow', timeout: '5s' });
-    return true;
-  } catch {
-    return false;
-  }
+// Opt-in gate: without an explicitly-provided disposable cluster this suite
+// SKIPS (visible in jest output) instead of guessing at localhost:9200.
+const describeIfOptedIn = ENDPOINT ? describe : describe.skip;
+if (!ENDPOINT) {
+  // eslint-disable-next-line no-console
+  console.warn(rawOpenSearchOptInHint('EvaluationRun list({ testCaseId }) filter'));
 }
 
-describe('EvaluationRun list({ testCaseId }) filter (real OpenSearch)', () => {
+describeIfOptedIn('EvaluationRun list({ testCaseId }) filter (real OpenSearch)', () => {
   let client: Client;
   let storage: OpenSearchStorageModule;
+  let testData: RawOpenSearchTestData;
   let available = false;
-  let matchingRunId: string;
-  let otherRunId: string;
-  const targetTestCaseId = `tc-filter-target-${RUN_TAG}`;
-  const otherTestCaseId = `tc-filter-other-${RUN_TAG}`;
+  const matchingRunId = uniqueTestName('eval-run-filter-match');
+  const otherRunId = uniqueTestName('eval-run-filter-other');
+  const targetTestCaseId = uniqueTestName('tc-filter-target');
+  const otherTestCaseId = uniqueTestName('tc-filter-other');
 
   beforeAll(async () => {
-    client = new Client({ node: ENDPOINT, ssl: { rejectUnauthorized: false } });
-    available = await clusterUp(client);
+    client = createRawOpenSearchClient(ENDPOINT!);
+    available = await rawClusterReachable(client);
     if (!available) {
       // eslint-disable-next-line no-console
       console.warn(`[skip] OpenSearch not reachable at ${ENDPOINT} — skipping testCaseId filter tests`);
       return;
     }
 
+    // Real production bootstrap path: idempotently ensure the evals_* indices
+    // exist with the actual INDEX_MAPPINGS. Never deletes/truncates anything.
     await ensureIndexesWithValidation(client);
     storage = new OpenSearchStorageModule(client, new FileSessionMetadataOperations());
+    testData = new RawOpenSearchTestData(client);
 
-    matchingRunId = `eval-run-filter-match-${RUN_TAG}`;
-    otherRunId = `eval-run-filter-other-${RUN_TAG}`;
-
+    testData.trackDoc(INDEX, matchingRunId);
     await storage.evaluationRuns.create({
       id: matchingRunId,
       docType: 'evaluation-run',
-      name: 'Filter target run',
+      name: uniqueTestName('filter-target-run'),
       createdAt: new Date().toISOString(),
       status: 'completed',
       agentKey: 'demo',
@@ -91,10 +109,11 @@ describe('EvaluationRun list({ testCaseId }) filter (real OpenSearch)', () => {
       results: {},
     } as EvaluationRun);
 
+    testData.trackDoc(INDEX, otherRunId);
     await storage.evaluationRuns.create({
       id: otherRunId,
       docType: 'evaluation-run',
-      name: 'Filter non-matching run',
+      name: uniqueTestName('filter-non-matching-run'),
       createdAt: new Date().toISOString(),
       status: 'completed',
       agentKey: 'demo',
@@ -109,7 +128,13 @@ describe('EvaluationRun list({ testCaseId }) filter (real OpenSearch)', () => {
   }, 30000);
 
   afterAll(async () => {
-    if (available) {
+    // Runs even when assertions fail: delete both synthetic eval-run docs
+    // from the shared index (404-tolerant) and refresh so the deletions are
+    // immediately visible to whatever runs next.
+    if (available && testData) {
+      await testData.cleanup();
+    }
+    if (client) {
       await client.close().catch(() => {});
     }
   });

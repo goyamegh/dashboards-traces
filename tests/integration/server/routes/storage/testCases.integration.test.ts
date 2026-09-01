@@ -54,23 +54,13 @@ describe('Test Cases CRUD Integration Tests', () => {
   afterAll(async () => {
     if (!backendAvailable) return;
 
+    // Cleanup by tracked ID only — never sweep shared storage by name.
+    // NAME_MARKER already makes this run's fixture names unique, and every
+    // successful create below pushes its id, so a getAll+name sweep here
+    // could only ever re-delete our own ids — or, worse, someone else's doc
+    // that happened to embed the marker. Tracked ids are the whole story.
     for (const id of createdTestCaseIds) {
       await deleteTestCase(id);
-    }
-
-    // Fallback: clean up any leftovers that share our name marker
-    try {
-      const resp = await fetch(`${BASE_URL}/api/storage/test-cases`);
-      if (resp.ok) {
-        const data = await resp.json();
-        for (const tc of (data.testCases ?? [])) {
-          if (typeof tc.name === 'string' && tc.name.includes(NAME_MARKER)) {
-            await deleteTestCase(tc.id);
-          }
-        }
-      }
-    } catch {
-      // Ignore cleanup errors
     }
   }, 30000);
 
@@ -238,6 +228,31 @@ describe('Test Cases CRUD Integration Tests', () => {
       expect(ours.context).toEqual([]);
       expect(ours.expectedOutcomes).toEqual([]);
     }, 30000);
+
+    it('should return an accurate `total` count with a minimal page (summary + size=1) — the pattern Dashboard uses to show a test-case count without fetching the full corpus', async () => {
+      if (!backendAvailable) return;
+
+      // Baseline: full, unpaginated count.
+      const fullResponse = await fetch(`${BASE_URL}/api/storage/test-cases?includeSample=false`);
+      expect(fullResponse.ok).toBe(true);
+      const fullData = await fullResponse.json();
+      const expectedTotal = fullData.total;
+
+      // The lightweight equivalent: one summary record, size=1.
+      const pagedResponse = await fetch(
+        `${BASE_URL}/api/storage/test-cases?fields=summary&size=1&includeSample=false`,
+      );
+      expect(pagedResponse.ok).toBe(true);
+      const pagedData = await pagedResponse.json();
+
+      expect(pagedData.testCases.length).toBeLessThanOrEqual(1);
+      expect(pagedData.total).toBe(expectedTotal);
+      if (pagedData.testCases.length === 1) {
+        // The single returned record must be summary-shaped.
+        expect(pagedData.testCases[0].context).toEqual([]);
+        expect(pagedData.testCases[0].expectedOutcomes).toEqual([]);
+      }
+    }, 30000);
   });
 
   describe('GET /api/storage/test-cases/:id', () => {
@@ -366,6 +381,9 @@ describe('Test Cases CRUD Integration Tests', () => {
         }),
       });
       const created = await createResp.json();
+      // Track for afterAll too — if an assertion below throws before the
+      // DELETE lands, cleanup still reaps it (deletes are 404-tolerant).
+      createdTestCaseIds.push(created.id);
 
       const deleteResp = await fetch(
         `${BASE_URL}/api/storage/test-cases/${encodeURIComponent(created.id)}`,

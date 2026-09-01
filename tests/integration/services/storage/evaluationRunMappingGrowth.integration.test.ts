@@ -19,10 +19,18 @@
  * created added new mapped fields to the index, shared across ALL documents
  * in the index — eventually exceeding the field-count ceiling.
  *
- * This test exercises the real production code path end-to-end against a
- * REAL OpenSearch cluster (no mocks):
- *   1. `ensureIndexesWithValidation()` creates a fresh `evals_experiments`
- *      index using the actual `INDEX_MAPPINGS` (the fix under test).
+ * This test exercises the real production write paths (no mocks) against a
+ * REAL OpenSearch cluster:
+ *   1. A throwaway `ahtest-*` index is created from the exact
+ *      `evals_experiments` entry in `INDEX_MAPPINGS` (the fix under test),
+ *      and `STORAGE_INDEXES.benchmarks` is redirected at it for this test
+ *      file's module registry (jest gives each test file its own registry,
+ *      so nothing leaks to other files). The suite therefore runs the REAL
+ *      `OpenSearchEvaluationRunOperations` code paths — while the real
+ *      `evals_experiments` index is never touched. That isolation matters:
+ *      the failure mode this suite exists to catch is MAPPING growth, and
+ *      mapping growth in a real shared index is permanent (deleting
+ *      documents does not shrink a mapping — only dropping the index does).
  *   2. Test A synthesizes a run with 500 test-case results in one write
  *      (comparable to, with margin, the 400-case run that crashed in
  *      production) via `OpenSearchEvaluationRunOperations.create()`, then
@@ -34,58 +42,57 @@
  *      to the cluster with `refresh: 'wait_for'`, matching production
  *      semantics but too slow at N=500 for a test).
  *
- * Cluster: connects to `TEST_OPENSEARCH_ENDPOINT` (default
- * `http://localhost:9200`), the same ephemeral OpenSearch the CI
- * `integration-tests` job provisions. Skips gracefully (with a console
- * warning) if unreachable, so local runs without a cluster stay green.
- *
- * `STORAGE_INDEXES.benchmarks` is a fixed constant ('evals_experiments'),
- * shared with every other integration test file that hits that same CI
- * OpenSearch service container (they may run in parallel Jest workers) — so
- * this test deliberately never deletes or truncates the index, only ensures
- * it exists (idempotent) and adds its own uniquely-named documents. Field-
- * count assertions compare a before/after snapshot around this test's own
- * writes and tolerate a small slack for incidental fields any other
- * concurrently-running test file might add in that window (see SLACK below)
- * — the bug this guards against grows the mapping by ~1000+ fields for one
- * 500-case run, dwarfing that slack.
+ * Cluster: STRICTLY OPT-IN via `TEST_OPENSEARCH_ENDPOINT` (with a
+ * localhost:9200 fallback only under GitHub Actions, where the CI
+ * `integration-tests` job provisions a disposable service container) — see
+ * tests/helpers/rawOpenSearchCluster.ts. Without the opt-in the suite SKIPS:
+ * it must never write synthetic garbage into an unknown local port 9200
+ * (which may be a port-forward to a shared cluster).
  *
  * To run locally against a disposable cluster:
  *   docker run -d --rm -p 9200:9200 -e discovery.type=single-node \
  *     -e DISABLE_SECURITY_PLUGIN=true -e DISABLE_INSTALL_DEMO_CONFIG=true \
  *     opensearchproject/opensearch:2.17.0
- *   npm run test:integration -- evaluationRunMappingGrowth
+ *   TEST_OPENSEARCH_ENDPOINT=http://localhost:9200 \
+ *     npm run test:integration -- evaluationRunMappingGrowth
  */
 
 import { Client } from '@opensearch-project/opensearch';
 import { OpenSearchStorageModule } from '@/server/adapters/opensearch/StorageModule';
 import { FileSessionMetadataOperations } from '@/server/adapters/file/StorageModule';
-import { ensureIndexesWithValidation } from '@/server/services/indexInitializer';
+import { INDEX_MAPPINGS } from '@/server/constants/indexMappings';
 import { STORAGE_INDEXES } from '@/server/middleware/dataSourceConfig';
 import type { EvaluationRun } from '@/types';
+import {
+  RawOpenSearchTestData,
+  createRawOpenSearchClient,
+  rawClusterReachable,
+  rawOpenSearchOptInHint,
+  resolveRawOpenSearchEndpoint,
+} from '../../../helpers/rawOpenSearchCluster';
+import { uniqueTestName } from '../../../helpers/testDataTracker';
 
-const ENDPOINT = process.env.TEST_OPENSEARCH_ENDPOINT || 'http://localhost:9200';
-const INDEX = STORAGE_INDEXES.benchmarks;
+const ENDPOINT = resolveRawOpenSearchEndpoint();
+/** Real index name, captured before the suite redirects STORAGE_INDEXES.benchmarks. */
+const REAL_INDEX = STORAGE_INDEXES.benchmarks;
 const NUM_TEST_CASES = 500; // > the 400 that crashed in production, with margin
 const NUM_INCREMENTAL_UPDATES = 25; // smaller: each updateResult() round-trips with refresh:'wait_for'
-// Tolerance for the shared-index race described above (concurrent CI test
-// files adding unrelated fields between this test's before/after mapping
-// snapshots). The bug this guards against adds ~1000+ fields for one
-// 500-case run — orders of magnitude past this slack — so it stays a strong
-// regression signal despite the tolerance.
-const FIELD_COUNT_SLACK = 15;
-// Unique per test run (Date.now()-seeded) so this suite's testCaseIds never
-// collide with another concurrently-running test file's synthetic IDs in the
-// same shared index.
+// The index is now private to this suite (throwaway, created fresh), so no
+// concurrent test file can race the before/after mapping snapshots. A small
+// slack remains purely as defense against OpenSearch inferring an incidental
+// field this test didn't anticipate — the bug this guards against adds ~1000+
+// fields for one 500-case run, orders of magnitude past it.
+const FIELD_COUNT_SLACK = 5;
+// Unique per test run (Date.now()-seeded) so this suite's synthetic
+// testCaseIds are recognizable and collision-free.
 const RUN_TAG = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
-async function clusterUp(client: Client): Promise<boolean> {
-  try {
-    await client.cluster.health({ wait_for_status: 'yellow', timeout: '5s' });
-    return true;
-  } catch {
-    return false;
-  }
+// Opt-in gate: without an explicitly-provided disposable cluster this suite
+// SKIPS (visible in jest output) instead of guessing at localhost:9200.
+const describeIfOptedIn = ENDPOINT ? describe : describe.skip;
+if (!ENDPOINT) {
+  // eslint-disable-next-line no-console
+  console.warn(rawOpenSearchOptInHint('EvaluationRun results mapping growth'));
 }
 
 /** Recursively count mapped fields the way OpenSearch's total_fields.limit does. */
@@ -109,31 +116,44 @@ function buildResults(count: number, prefix = 'tc'): EvaluationRun['results'] {
   return results;
 }
 
-describe('EvaluationRun results mapping growth (real OpenSearch)', () => {
+describeIfOptedIn('EvaluationRun results mapping growth (real OpenSearch)', () => {
   let client: Client;
   let storage: OpenSearchStorageModule;
+  let testData: RawOpenSearchTestData;
   let available = false;
+  /** Throwaway ahtest-* index this suite writes into (stands in for evals_experiments). */
+  let index: string;
 
   beforeAll(async () => {
-    client = new Client({ node: ENDPOINT, ssl: { rejectUnauthorized: false } });
-    available = await clusterUp(client);
+    client = createRawOpenSearchClient(ENDPOINT!);
+    available = await rawClusterReachable(client);
     if (!available) {
       // eslint-disable-next-line no-console
       console.warn(`[skip] OpenSearch not reachable at ${ENDPOINT} — skipping mapping-growth tests`);
       return;
     }
 
-    // Real production code path: idempotently ensure the index exists with
-    // the actual mapping fix under test (server/constants/indexMappings.ts).
-    // Deliberately non-destructive — see file header on why this never
-    // deletes/truncates the shared `evals_experiments` index.
-    await ensureIndexesWithValidation(client);
+    // Create a throwaway index from the REAL evals_experiments mapping (the
+    // fix under test), then point the storage module's lazily-read index name
+    // at it so every production code path below runs against the throwaway.
+    testData = new RawOpenSearchTestData(client);
+    index = await testData.createThrowawayIndex(
+      'mapping-growth-experiments',
+      INDEX_MAPPINGS[REAL_INDEX] as Record<string, unknown>
+    );
+    (STORAGE_INDEXES as { benchmarks: string }).benchmarks = index;
 
     storage = new OpenSearchStorageModule(client, new FileSessionMetadataOperations());
   }, 30000);
 
   afterAll(async () => {
-    if (available) {
+    // Runs even when assertions fail. Restore the redirected index name,
+    // then drop the throwaway index (docs AND any mapping growth with it).
+    (STORAGE_INDEXES as { benchmarks: string }).benchmarks = REAL_INDEX;
+    if (available && testData) {
+      await testData.cleanup();
+    }
+    if (client) {
       await client.close().catch(() => {});
     }
   });
@@ -150,11 +170,12 @@ describe('EvaluationRun results mapping growth (real OpenSearch)', () => {
     // it sees a populated array. That one-time cost is expected/fine — it's
     // bounded regardless of array length, unlike the unbounded `results` map
     // this test actually guards against.
-    const baselineRunId = `eval-run-mapping-baseline-${RUN_TAG}`;
+    const baselineRunId = uniqueTestName('eval-run-mapping-baseline');
+    testData.trackDoc(index, baselineRunId);
     await storage.evaluationRuns.create({
       id: baselineRunId,
       docType: 'evaluation-run',
-      name: 'Baseline (empty results)',
+      name: uniqueTestName('mapping-baseline-empty-results'),
       createdAt: new Date().toISOString(),
       status: 'running',
       agentKey: 'demo',
@@ -164,18 +185,18 @@ describe('EvaluationRun results mapping growth (real OpenSearch)', () => {
       testCaseSnapshots: [{ id: `tc-baseline-${RUN_TAG}`, version: 1, name: 'Baseline test case' }],
       results: {},
     } as EvaluationRun);
-    await client.indices.refresh({ index: INDEX });
-    const baselineMapping = await client.indices.getMapping({ index: INDEX });
+    await client.indices.refresh({ index });
+    const baselineMapping = await client.indices.getMapping({ index });
     const baselineFieldCount = countMappedFields(
-      (baselineMapping.body as any)[INDEX].mappings.properties
+      (baselineMapping.body as any)[index].mappings.properties
     );
 
-    const runId = `eval-run-mapping-growth-${RUN_TAG}`;
+    const runId = uniqueTestName('eval-run-mapping-growth');
     const tcPrefix = `mg-tc-${RUN_TAG}`;
     const run: EvaluationRun = {
       id: runId,
       docType: 'evaluation-run',
-      name: 'Mapping growth regression test (500 test cases)',
+      name: uniqueTestName('mapping-growth-500-test-cases'),
       createdAt: new Date().toISOString(),
       status: 'completed',
       agentKey: 'demo',
@@ -190,8 +211,9 @@ describe('EvaluationRun results mapping growth (real OpenSearch)', () => {
       results: buildResults(NUM_TEST_CASES, tcPrefix),
     };
 
+    testData.trackDoc(index, runId);
     await storage.evaluationRuns.create(run);
-    await client.indices.refresh({ index: INDEX });
+    await client.indices.refresh({ index });
 
     // 1. Reads back correctly: all 500 results present with correct shape.
     const fetched = await storage.evaluationRuns.getById(runId);
@@ -202,35 +224,33 @@ describe('EvaluationRun results mapping growth (real OpenSearch)', () => {
 
     // 2. No meaningful mapping growth: field count with 500 distinct
     // testCaseId keys in `results` stays within FIELD_COUNT_SLACK of the
-    // empty-results baseline (slack tolerates unrelated concurrent CI test
-    // files touching this shared index — see file header). Before the fix,
-    // this grows by ~2-5 fields per test case (results.<id>.reportId, .status,
-    // their .keyword sub-fields, ...) — i.e. 1000+ new fields for this one run
-    // alone, dwarfing the slack.
-    const afterMapping = await client.indices.getMapping({ index: INDEX });
-    const afterFieldCount = countMappedFields((afterMapping.body as any)[INDEX].mappings.properties);
+    // empty-results baseline. Before the fix, this grows by ~2-5 fields per
+    // test case (results.<id>.reportId, .status, their .keyword sub-fields,
+    // ...) — i.e. 1000+ new fields for this one run alone, dwarfing the slack.
+    const afterMapping = await client.indices.getMapping({ index });
+    const afterFieldCount = countMappedFields((afterMapping.body as any)[index].mappings.properties);
     expect(afterFieldCount - baselineFieldCount).toBeLessThanOrEqual(FIELD_COUNT_SLACK);
 
     // 3. The `results` field itself stays the disabled opaque-object shape —
     // never gains per-testCaseId sub-properties. This is the deterministic,
-    // race-proof assertion (unaffected by anything unrelated concurrent tests
-    // might add elsewhere in the mapping).
-    const resultsMapping = (afterMapping.body as any)[INDEX].mappings.properties.results;
+    // race-proof assertion.
+    const resultsMapping = (afterMapping.body as any)[index].mappings.properties.results;
     expect(resultsMapping).toEqual({ type: 'object', enabled: false });
   }, 60000);
 
   it('incrementally written results (real updateResult() painless path, per-test-case) also do not grow the mapping', async () => {
     if (!available) return;
 
-    const beforeMapping = await client.indices.getMapping({ index: INDEX });
-    const beforeFieldCount = countMappedFields((beforeMapping.body as any)[INDEX].mappings.properties);
+    const beforeMapping = await client.indices.getMapping({ index });
+    const beforeFieldCount = countMappedFields((beforeMapping.body as any)[index].mappings.properties);
 
-    const runId = `eval-run-mapping-incremental-${RUN_TAG}`;
+    const runId = uniqueTestName('eval-run-mapping-incremental');
     const tcPrefix = `incr-tc-${RUN_TAG}`;
+    testData.trackDoc(index, runId);
     await storage.evaluationRuns.create({
       id: runId,
       docType: 'evaluation-run',
-      name: 'Incremental updateResult() regression test',
+      name: uniqueTestName('mapping-incremental-updateresult'),
       createdAt: new Date().toISOString(),
       status: 'running',
       agentKey: 'demo',
@@ -257,12 +277,12 @@ describe('EvaluationRun results mapping growth (real OpenSearch)', () => {
     const fetched = await storage.evaluationRuns.getById(runId);
     expect(Object.keys(fetched!.results)).toHaveLength(NUM_INCREMENTAL_UPDATES);
 
-    await client.indices.refresh({ index: INDEX });
-    const afterMapping = await client.indices.getMapping({ index: INDEX });
-    const afterFieldCount = countMappedFields((afterMapping.body as any)[INDEX].mappings.properties);
+    await client.indices.refresh({ index });
+    const afterMapping = await client.indices.getMapping({ index });
+    const afterFieldCount = countMappedFields((afterMapping.body as any)[index].mappings.properties);
     expect(afterFieldCount - beforeFieldCount).toBeLessThanOrEqual(FIELD_COUNT_SLACK);
 
-    const resultsMapping = (afterMapping.body as any)[INDEX].mappings.properties.results;
+    const resultsMapping = (afterMapping.body as any)[index].mappings.properties.results;
     expect(resultsMapping).toEqual({ type: 'object', enabled: false });
   }, 60000);
 });

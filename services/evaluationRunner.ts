@@ -377,6 +377,7 @@ export async function executeEvaluationRun(
             const tracesView: TracesAccessor = {
               get totalTokens() { return loadedTraces.totalTokens; },
               get totalCost() { return loadedTraces.totalCost; },
+              get costSource() { return loadedTraces.costSource; },
               get toolCalls() { return loadedTraces.toolCalls; },
               get spans() { return loadedTraces.spans; },
               spanDuration: (name: string) => loadedTraces.spanDuration(name),
@@ -628,6 +629,17 @@ export async function executeEvaluationRun(
             report = caseSpanContext
               ? await context.with(caseSpanContext, runEval)
               : await runEval();
+
+            // Classic non-trace reports carry no `metricsStatus`. Without an
+            // explicit stamp, the pre-persisted placeholder's 'pending'
+            // survives the update-merge below ({...existing, ...fields}
+            // never clears a key the report doesn't carry), and the runner
+            // then trace-polls a NON-traced agent for the full timeout
+            // (10 min for a mock/demo run) before erroring the report.
+            // benchmarkRunner clears this explicitly; mirror it here.
+            if ((report as any).metricsStatus === undefined) {
+              (report as any).metricsStatus = agentConfig.useTraces ? 'pending' : 'completed';
+            }
           }
 
           // Save the report via storage module. When we successfully

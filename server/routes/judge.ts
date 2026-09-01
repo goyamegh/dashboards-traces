@@ -188,7 +188,11 @@ router.get('/api/judge/bedrock-models', async (_req: Request, res: Response) => 
   try {
     const client = new BedrockClient({
       region,
-      credentials: fromNodeProviderChain(),
+      // See resolveSigv4Credentials() in opensearchClientFactory.ts: without
+      // ignoreCache, @smithy/shared-ini-file-loader's process-lifetime cache
+      // of ~/.aws/credentials means a rotated profile is invisible to this
+      // model-listing check until the process restarts.
+      credentials: fromNodeProviderChain({ ignoreCache: true }),
     });
 
     const command = new ListInferenceProfilesCommand({});

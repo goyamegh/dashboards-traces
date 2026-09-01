@@ -274,9 +274,13 @@ describe('Experiment Runner', () => {
         Promise.resolve({ ...report, id: 'saved-report-1' }));
 
       let captured: any;
+      let tracesCostSource: any;
       const evaluateFnMap = new Map<string, (f: any) => Promise<void>>([
         ['tc-1', async (fixtures: any) => {
           captured = await fixtures.agent.run('Test prompt');
+          // costSource passthrough: 'test-agent' has no useTraces, so the
+          // view forwards emptyTracesAccessor()'s 'none' rather than throwing.
+          tracesCostSource = fixtures.traces.costSource;
         }],
       ]);
 
@@ -289,6 +293,7 @@ describe('Experiment Runner', () => {
       expect(mockRunEvaluationWithConnector).not.toHaveBeenCalled();
       expect(mockInvokeAgent).toHaveBeenCalledTimes(1);
       expect(captured.agentOutput).toBe('Agent output');
+      expect(tracesCostSource).toBe('none');
       expect(result.results['tc-1'].status).toBe('completed');
       // Report records the deterministic verdict.
       const savedReport = mockSaveReportWithClient.mock.calls[0][1];

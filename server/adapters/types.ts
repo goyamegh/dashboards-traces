@@ -14,6 +14,7 @@ import type {
   TestCase,
   Benchmark,
   BenchmarkRun,
+  BenchmarkImage,
   EvaluationRun,
   TestCaseRun,
   RunAnnotation,
@@ -142,6 +143,7 @@ export interface IEvaluationRunOperations {
     status?: string;
     testCaseId?: string;
     trigger?: string;
+    imageDigest?: string;
     sort?: 'createdAt' | 'completedAt';
     order?: 'asc' | 'desc';
   }): Promise<{ items: EvaluationRun[]; total: number }>;
@@ -150,6 +152,19 @@ export interface IEvaluationRunOperations {
     status: RunResultStatus;
     error?: string;
   }): Promise<boolean>;
+}
+
+/**
+ * Benchmark Image operations (stored in same index as benchmarks with
+ * docType 'benchmark-image'; content-addressed by digest).
+ */
+export interface IBenchmarkImageOperations {
+  /** Find-or-create keyed on digest — never mints a duplicate. */
+  create(image: BenchmarkImage): Promise<BenchmarkImage>;
+  getByDigest(digest: string): Promise<BenchmarkImage | null>;
+  getAll(options?: PaginationOptions): Promise<{ items: BenchmarkImage[]; total: number }>;
+  update(digest: string, updates: Partial<Pick<BenchmarkImage, 'tags' | 'lastRunAt'>>): Promise<BenchmarkImage>;
+  delete(digest: string): Promise<{ deleted: boolean }>;
 }
 
 // Backwards compatibility alias
@@ -235,6 +250,7 @@ export interface ISessionMetadataOperations {
   get(agentKind: string, sessionId: string): Promise<SessionMetadata | null>;
   put(agentKind: string, sessionId: string, data: Record<string, unknown>): Promise<SessionMetadata>;
   list(options?: PaginationOptions): Promise<{ items: SessionMetadata[]; total: number }>;
+  delete(agentKind: string, sessionId: string): Promise<{ deleted: boolean }>;
 }
 
 // ============================================================================
@@ -248,6 +264,7 @@ export interface IStorageModule {
   testCases: ITestCaseOperations;
   benchmarks: IBenchmarkOperations;
   evaluationRuns: IEvaluationRunOperations;
+  images: IBenchmarkImageOperations;
   runs: IRunOperations;
   analytics: IAnalyticsOperations;
   evaluators: IEvaluatorOperations;
