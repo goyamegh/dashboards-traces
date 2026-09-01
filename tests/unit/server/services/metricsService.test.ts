@@ -639,6 +639,26 @@ describe('metricsService', () => {
       expect(result.totalTokens).toBe(0);
     });
 
+    it('should set found:false for empty spans (regression: nonexistent runId indistinguishable from real zero-cost run)', () => {
+      const result = computeMetricsFromSpans('run-does-not-exist', []);
+      expect(result.found).toBe(false);
+    });
+
+    it('should set found:true when spans exist, even with zero cost', () => {
+      const spans = [
+        {
+          name: 'agent.run',
+          traceId: 'trace-1',
+          durationInNanos: 1000000,
+          status: { code: 1 },
+          attributes: {},
+        },
+      ];
+      const result = computeMetricsFromSpans('run-1', spans);
+      expect(result.found).toBe(true);
+      expect(result.costUsd).toBe(0);
+    });
+
     it('should compute metrics from spans with token usage', () => {
       const spans = [
         {
