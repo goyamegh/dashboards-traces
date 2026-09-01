@@ -104,7 +104,7 @@ test.describe('Resume links the run into benchmark.runs (production bug regressi
     // `demo` agent (fast, no external calls) so it actually completes and
     // exercises the fixed linking code.
     await page.goto(`/evaluations/runs/${runId}`);
-    const resumeBtn = page.locator('[data-testid="resume-run-btn"]');
+    const resumeBtn = page.locator('[data-testid="inspector-resume-btn"]');
     await expect(resumeBtn).toBeVisible({ timeout: 30000 });
     await resumeBtn.click();
 

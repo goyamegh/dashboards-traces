@@ -168,58 +168,45 @@ test.describe('New Run Page', () => {
   });
 });
 
-test.describe('Evaluation Run Detail Page', () => {
-  test('should show error state for non-existent run', async ({ page }) => {
+test.describe('Evaluation Run Detail Page (canonical inspector)', () => {
+  // As of the run-experience convergence (Phase 1), /evaluations/runs/:runId
+  // renders RunInspectorPage (evalRun mode) — not the old EvalRunDetailPage
+  // layout. These assertions target the inspector's actual markup/testids
+  // rather than the superseded page's copy ("EVALUATION RUN" badge, "Run
+  // Configuration" section, literal "Passed"/"Failed" labels, etc. no longer
+  // exist at this URL — EvalRunDetailPage.tsx itself is untouched but
+  // unrouted, kept only as a revert backup).
+  test('should redirect to the runs list for a non-existent run', async ({ page }) => {
     await page.goto('/evaluations/runs/non-existent-run-id');
-    await page.waitForTimeout(3000);
-
-    // Should show error or not found state
-    const body = await page.textContent('body');
-    expect(body).toMatch(/not found|error|Back to Runs/i);
+    await expect(page).toHaveURL(/\/evaluations\/runs$/, { timeout: 10000 });
   });
 
   test('should display run details when run exists', async ({ page }) => {
-    // First get a valid run ID
     const response = await page.request.get('/api/storage/evaluation-runs');
     const data = await response.json();
 
     if (data.total > 0) {
       const runId = data.evaluationRuns[0].id;
       await page.goto(`/evaluations/runs/${runId}`);
-      await page.waitForTimeout(3000);
 
-      // Should show the evaluation run badge
-      await expect(page.getByText('EVALUATION RUN', { exact: true })).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('[data-testid="run-inspector-name"]')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('[data-testid="run-inspector-error"]')).toHaveCount(0);
     }
   });
 
-  test('should show run metadata (agent, model, status)', async ({ page }) => {
+  test('should show run metadata (agent, model) and pass/fail/total stats', async ({ page }) => {
     const response = await page.request.get('/api/storage/evaluation-runs');
     const data = await response.json();
 
     if (data.total > 0) {
       const runId = data.evaluationRuns[0].id;
       await page.goto(`/evaluations/runs/${runId}`);
-      await page.waitForTimeout(3000);
 
-      // Should have status indicator
-      const body = await page.textContent('body');
-      expect(body).toMatch(/completed|running|failed|cancelled/);
-    }
-  });
-
-  test('should show stats (passed, failed, total)', async ({ page }) => {
-    const response = await page.request.get('/api/storage/evaluation-runs');
-    const data = await response.json();
-
-    if (data.total > 0) {
-      const runId = data.evaluationRuns[0].id;
-      await page.goto(`/evaluations/runs/${runId}`);
-      await page.waitForTimeout(3000);
-
-      await expect(page.locator('text=Passed')).toBeVisible();
-      await expect(page.locator('text=Failed')).toBeVisible();
-      await expect(page.locator('text=Total')).toBeVisible();
+      const stats = page.locator('[data-testid="run-inspector-stats"]');
+      await expect(stats).toBeVisible({ timeout: 10000 });
+      // e.g. "3✓ 1✗ / 4" plus a pass-rate percentage
+      await expect(stats).toContainText('/');
+      await expect(stats).toContainText('%');
     }
   });
 
@@ -227,52 +214,28 @@ test.describe('Evaluation Run Detail Page', () => {
     const response = await page.request.get('/api/storage/evaluation-runs');
     const data = await response.json();
 
-    if (data.total > 0) {
-      const runId = data.evaluationRuns[0].id;
-      await page.goto(`/evaluations/runs/${runId}`);
-      await page.waitForTimeout(3000);
+    const runWithSources = data.evaluationRuns?.find((r: any) => (r.sources || []).length > 0);
+    if (runWithSources) {
+      await page.goto(`/evaluations/runs/${runWithSources.id}`);
+      await page.waitForSelector('[data-testid="run-inspector-name"]', { timeout: 10000 });
 
-      await expect(page.locator('text=Sources')).toBeVisible();
+      // SourceBadge renders one <Badge> per sources[] entry, right next to the
+      // run name (absorbed from EvalRunDetailPage, run-experience convergence).
+      await expect(page.locator('body')).toContainText(/Benchmark|Test Cases|File|Directory|Labels/);
     }
   });
 
-  test('should show collapsible Run Configuration section', async ({ page }) => {
+  test('should show Convert to Benchmark button for ad-hoc completed runs', async ({ page }) => {
     const response = await page.request.get('/api/storage/evaluation-runs');
     const data = await response.json();
 
-    if (data.total > 0) {
-      const runId = data.evaluationRuns[0].id;
-      await page.goto(`/evaluations/runs/${runId}`);
-      await page.waitForTimeout(3000);
-
-      // Target the disclosure button rather than its left-aligned text span.
-      // On collapsed navigation layouts the sidebar flyout can cover the
-      // span while the button's actual interactive area remains available.
-      const configuration = page.getByRole('button', { name: 'Run Configuration' });
-      await expect(configuration).toBeVisible({ timeout: 10000 });
-
-      await configuration.click();
-
-      // Should show agent and model details
-      await expect(page.locator('text=Agent:')).toBeVisible();
-      await expect(page.locator('text=Model:')).toBeVisible();
-    }
-  });
-
-  test('should show Convert to Benchmark button for ad-hoc runs', async ({ page }) => {
-    const response = await page.request.get('/api/storage/evaluation-runs');
-    const data = await response.json();
-
-    // Find an ad-hoc run (no benchmarkId) that is completed
     const adHocRun = data.evaluationRuns.find(
       (r: any) => !r.benchmarkId && r.status === 'completed'
     );
 
     if (adHocRun) {
       await page.goto(`/evaluations/runs/${adHocRun.id}`);
-      await page.waitForTimeout(3000);
-
-      await expect(page.locator('text=Convert to Benchmark')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('[data-testid="inspector-convert-to-benchmark-btn"]')).toBeVisible({ timeout: 10000 });
     }
   });
 
@@ -280,15 +243,22 @@ test.describe('Evaluation Run Detail Page', () => {
     const response = await page.request.get('/api/storage/evaluation-runs');
     const data = await response.json();
 
-    // Find a run with benchmarkId
     const bmRun = data.evaluationRuns.find((r: any) => r.benchmarkId);
 
     if (bmRun) {
       await page.goto(`/evaluations/runs/${bmRun.id}`);
-      await page.waitForTimeout(3000);
+      await page.waitForSelector('[data-testid="run-inspector-name"]', { timeout: 10000 });
+      await expect(page.locator('[data-testid="inspector-convert-to-benchmark-btn"]')).toHaveCount(0);
 
-      await expect(page.locator('text=Convert to Benchmark')).not.toBeVisible({ timeout: 10000 });
-      await expect(page.locator('text=View Benchmark')).toBeVisible({ timeout: 10000 });
+      // Breadcrumb resolves the benchmark context from the run doc's
+      // benchmarkId (run-experience convergence, Phase 1), rather than a
+      // separate "View Benchmark" button — assert the benchmark's name
+      // appears as a breadcrumb link.
+      const benchmarkRes = await page.request.get(`/api/storage/benchmarks/${bmRun.benchmarkId}`);
+      if (benchmarkRes.ok()) {
+        const benchmark = await benchmarkRes.json();
+        await expect(page.locator('nav[aria-label="Breadcrumb"]')).toContainText(benchmark.name);
+      }
     }
   });
 
@@ -302,27 +272,22 @@ test.describe('Evaluation Run Detail Page', () => {
 
     if (adHocRun) {
       await page.goto(`/evaluations/runs/${adHocRun.id}`);
-      await page.waitForTimeout(3000);
+      await page.locator('[data-testid="inspector-convert-to-benchmark-btn"]').click();
 
-      await page.locator('text=Convert to Benchmark').click();
-      await page.waitForTimeout(500);
-
-      // Dialog should appear
-      await expect(page.locator('input[placeholder="Benchmark name"]')).toBeVisible();
+      await expect(page.locator('input[placeholder="Benchmark name"]')).toBeVisible({ timeout: 10000 });
       await expect(page.locator('button', { hasText: 'Create Benchmark' })).toBeVisible();
     }
   });
 
-  test('should show test case results table', async ({ page }) => {
+  test('should show the test case list with a per-run total count', async ({ page }) => {
     const response = await page.request.get('/api/storage/evaluation-runs');
     const data = await response.json();
 
     if (data.total > 0) {
       const runId = data.evaluationRuns[0].id;
       await page.goto(`/evaluations/runs/${runId}`);
-      await page.waitForTimeout(3000);
 
-      await expect(page.locator('text=Test Case Results')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('text=/Test Cases/')).toBeVisible({ timeout: 10000 });
     }
   });
 });

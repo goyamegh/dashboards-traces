@@ -48,12 +48,12 @@ test.describe('Resume interrupted evaluation run', () => {
     await page.goto(`/evaluations/runs/${runId}`);
 
     // Button is visible with the resumable count (tc2 pending + tc3 missing = 2).
-    const resumeBtn = page.locator('[data-testid="resume-run-btn"]');
+    const resumeBtn = page.locator('[data-testid="inspector-resume-btn"]');
     await expect(resumeBtn).toBeVisible({ timeout: 30000 });
     await expect(resumeBtn).toContainText('Resume (2 left)');
 
     // Re-run stays available too — Resume complements, not replaces, it.
-    await expect(page.locator('[data-testid="rerun-run-btn"]')).toBeVisible();
+    await expect(page.locator('[data-testid="inspector-rerun-btn"]')).toBeVisible();
 
     // Intercept the resume POST so the e2e test doesn't launch a real agent run.
     let resumeCalled = false;
@@ -88,8 +88,8 @@ test.describe('Resume interrupted evaluation run', () => {
     expect(res.ok()).toBeTruthy();
 
     await page.goto(`/evaluations/runs/${doneRunId}`);
-    await expect(page.locator('[data-testid="rerun-run-btn"]')).toBeVisible({ timeout: 30000 });
-    await expect(page.locator('[data-testid="resume-run-btn"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="inspector-rerun-btn"]')).toBeVisible({ timeout: 30000 });
+    await expect(page.locator('[data-testid="inspector-resume-btn"]')).toHaveCount(0);
 
     await request.delete(`/api/storage/evaluation-runs/${doneRunId}`).catch(() => {});
   });

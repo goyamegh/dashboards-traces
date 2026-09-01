@@ -103,7 +103,7 @@ test.describe('Re-run an evaluation run', () => {
 
     await page.goto(`/evaluations/runs/${sourceRunId}`);
     await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
-    await expect(page.locator('[data-testid="rerun-run-btn"]')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('[data-testid="inspector-rerun-btn"]')).toBeVisible({ timeout: 15000 });
   });
 
   test('clicking Re-run opens a confirm dialog with name preview + agent/judge summary', async ({ page }) => {
@@ -111,7 +111,7 @@ test.describe('Re-run an evaluation run', () => {
 
     await page.goto(`/evaluations/runs/${sourceRunId}`);
     await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
-    await page.locator('[data-testid="rerun-run-btn"]').click();
+    await page.locator('[data-testid="inspector-rerun-btn"]').click();
 
     const dialog = page.locator('[data-testid="rerun-confirm-dialog"]');
     await expect(dialog).toBeVisible({ timeout: 10000 });
@@ -149,7 +149,7 @@ test.describe('Re-run an evaluation run', () => {
 
     await page.goto(`/evaluations/runs/${sourceRunId}`);
     await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
-    await page.locator('[data-testid="rerun-run-btn"]').click();
+    await page.locator('[data-testid="inspector-rerun-btn"]').click();
     await expect(page.locator('[data-testid="rerun-confirm-dialog"]')).toBeVisible({ timeout: 10000 });
 
     await page.locator('[data-testid="rerun-confirm-btn"]').click();
@@ -180,7 +180,7 @@ test.describe('Re-run an evaluation run', () => {
 
     await page.goto(`/evaluations/runs/${sourceRunId}`);
     await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30000 });
-    await expect(page.locator('[data-testid="rerun-run-btn"]')).toBeVisible({ timeout: 15000 });
+    await expect(page.locator('[data-testid="inspector-rerun-btn"]')).toBeVisible({ timeout: 15000 });
     await expect(page.locator('[data-testid="rerun-provenance-chip"]')).toHaveCount(0);
   });
 

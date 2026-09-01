@@ -198,12 +198,13 @@ test.describe('Evaluation Runner - Run List Page with Filtering', () => {
 });
 
 test.describe('Evaluation Runner - Run Detail Page', () => {
-  test('should show error or not-found for invalid run ID', async ({ page }) => {
+  test('should redirect to the runs list for an invalid run ID', async ({ page }) => {
+    // Run-experience convergence, Phase 1: /evaluations/runs/:runId now
+    // renders RunInspectorPage (evalRun mode), which redirects to the runs
+    // list on a failed lookup instead of rendering an inline not-found
+    // message (pre-existing inspector behavior, now reachable from this URL).
     await page.goto('/evaluations/runs/nonexistent-run-12345');
-    await page.waitForTimeout(3000);
-
-    const body = await page.textContent('body');
-    expect(body).toMatch(/not found|error|back|does not exist/i);
+    await expect(page).toHaveURL(/\/evaluations\/runs$/, { timeout: 10000 });
   });
 
   test('should display run details when a valid run exists', async ({ page }) => {
@@ -213,11 +214,8 @@ test.describe('Evaluation Runner - Run Detail Page', () => {
     if (data.total > 0) {
       const runId = data.evaluationRuns[0].id;
       await page.goto(`/evaluations/runs/${runId}`);
-      await page.waitForTimeout(3000);
 
-      // Match the exact run-type badge. The responsive sidebar also contains
-      // "Evaluation Runs", so the old substring selector became ambiguous.
-      await expect(page.getByText('EVALUATION RUN', { exact: true })).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('[data-testid="run-inspector-name"]')).toBeVisible({ timeout: 10000 });
     }
   });
 
@@ -228,24 +226,23 @@ test.describe('Evaluation Runner - Run Detail Page', () => {
     if (data.total > 0) {
       const runId = data.evaluationRuns[0].id;
       await page.goto(`/evaluations/runs/${runId}`);
-      await page.waitForTimeout(3000);
+      await page.waitForSelector('[data-testid="run-inspector-name"]', { timeout: 10000 });
 
       const body = await page.textContent('body');
-      // Should contain status text
+      // Should contain status text (rendered via RunStatusBadge)
       expect(body).toMatch(/completed|running|failed|cancelled|pending/i);
     }
   });
 
-  test('should show test case results section', async ({ page }) => {
+  test('should show the test case list', async ({ page }) => {
     const response = await page.request.get('/api/storage/evaluation-runs');
     const data = await response.json();
 
     if (data.total > 0) {
       const runId = data.evaluationRuns[0].id;
       await page.goto(`/evaluations/runs/${runId}`);
-      await page.waitForTimeout(3000);
 
-      await expect(page.locator('text=Test Case Results')).toBeVisible({ timeout: 10000 });
+      await expect(page.locator('text=/Test Cases/')).toBeVisible({ timeout: 10000 });
     }
   });
 
@@ -256,11 +253,11 @@ test.describe('Evaluation Runner - Run Detail Page', () => {
     if (data.total > 0) {
       const runId = data.evaluationRuns[0].id;
       await page.goto(`/evaluations/runs/${runId}`);
-      await page.waitForTimeout(3000);
 
-      await expect(page.locator('text=Passed')).toBeVisible({ timeout: 10000 });
-      await expect(page.locator('text=Failed')).toBeVisible();
-      await expect(page.locator('text=Total')).toBeVisible();
+      const stats = page.locator('[data-testid="run-inspector-stats"]');
+      await expect(stats).toBeVisible({ timeout: 10000 });
+      await expect(stats).toContainText('/');
+      await expect(stats).toContainText('%');
     }
   });
 
@@ -271,11 +268,11 @@ test.describe('Evaluation Runner - Run Detail Page', () => {
     if (data.total > 0) {
       const run = data.evaluationRuns[0];
       await page.goto(`/evaluations/runs/${run.id}`);
-      await page.waitForTimeout(3000);
 
       // If the run has results, individual entries should be listed
       if (run.results && Object.keys(run.results).length > 0) {
-        const resultEntries = page.locator('[data-testid*="result"], tr, [class*="result"]');
+        const resultEntries = page.locator('[data-testid="test-case-row"]');
+        await expect(resultEntries.first()).toBeVisible({ timeout: 10000 });
         const count = await resultEntries.count();
         expect(count).toBeGreaterThan(0);
       }
@@ -379,11 +376,17 @@ test.describe('Evaluation Runner - Run Promotion UI', () => {
 
     if (linkedRun) {
       await page.goto(`/evaluations/runs/${linkedRun.id}`);
-      await page.waitForTimeout(3000);
+      await page.waitForSelector('[data-testid="run-inspector-name"]', { timeout: 10000 });
 
       await expect(page.locator('text=Convert to Benchmark')).not.toBeVisible();
-      // Should show View Benchmark instead
-      await expect(page.locator('text=View Benchmark')).toBeVisible({ timeout: 10000 });
+      // Benchmark context is resolved from the run doc's benchmarkId into the
+      // breadcrumb (run-experience convergence, Phase 1) rather than a
+      // separate "View Benchmark" button.
+      const benchmarkRes = await page.request.get(`/api/storage/benchmarks/${linkedRun.benchmarkId}`);
+      if (benchmarkRes.ok()) {
+        const benchmark = await benchmarkRes.json();
+        await expect(page.locator('nav[aria-label="Breadcrumb"]')).toContainText(benchmark.name);
+      }
     }
   });
 });
