@@ -29,6 +29,18 @@ const router = Router();
 // Registry of active cancellation tokens for in-progress runs
 const activeCancellationTokens = new Map<string, CancellationToken>();
 
+// codex_review (retry-judgement): the 409-if-running gate on
+// /retry-judgement checks the run's PERSISTED status, which is not a lock —
+// two concurrent retry-judgement requests against the SAME terminal run
+// would both pass that check, both issue judge calls, and race on the final
+// results/stats write (last-write-wins). This in-process guard closes that
+// window for the common case (double-click, or a second request while the
+// first is still running) within a single server process. It does NOT
+// cover multi-process races (two servers hitting the same run) — no
+// mutation endpoint in this file has that guarantee today (see this repo's
+// "single-writer discipline" convention for run mutations).
+const activeRetryJudgementRuns = new Set<string>();
+
 /**
  * Send an SSE event to the client.
  */
@@ -505,8 +517,17 @@ router.post('/api/storage/evaluation-runs/:id/retry-judgement', async (req: Requ
       return res.status(409).json({ error: 'Cannot retry judgement while the run is still executing' });
     }
 
-    const summary = await retryJudgementForRun(run, storage, { scope, concurrency: 3 });
-    res.json(summary);
+    // Same-process double-submit guard (see comment on the Set above).
+    if (activeRetryJudgementRuns.has(id)) {
+      return res.status(409).json({ error: 'Retry judgement is already in progress for this run' });
+    }
+    activeRetryJudgementRuns.add(id);
+    try {
+      const summary = await retryJudgementForRun(run, storage, { scope, concurrency: 3 });
+      res.json(summary);
+    } finally {
+      activeRetryJudgementRuns.delete(id);
+    }
   } catch (error: any) {
     console.error('[StorageAPI] Retry judgement failed:', error.message);
     res.status(500).json({ error: error.message });
