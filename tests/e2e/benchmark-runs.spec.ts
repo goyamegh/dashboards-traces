@@ -109,48 +109,90 @@ test.describe('Benchmark Runs Page', () => {
     }
   });
 
-  test('completed runs should show passed or failed counts, not all pending', async ({ page }) => {
-    const viewLatestButton = page.locator('button:has-text("View Latest")').first();
+  test('completed runs should show passed or failed counts, not all pending', async ({ page, request }) => {
+    // This test used to click the FIRST "View Latest" on whatever benchmark
+    // happened to exist and require a non-zero passed/failed count on it —
+    // nondeterministic under fullyParallel (another suite's freshly-started,
+    // all-pending run can be the first card) and its locators were stale
+    // (the passed count renders text-green-700 now, not text-opensearch-blue).
+    // Seed our OWN benchmark with a completed run (1 passed + 1 failed
+    // verdict) and assert against exactly that page.
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const tcIds: string[] = [];
+    for (let i = 0; i < 2; i++) {
+      const r = await request.post('/api/storage/test-cases', {
+        data: {
+          name: `e2e-bmruns-stats-tc-${i}-${stamp}`,
+          category: 'E2E',
+          difficulty: 'Easy',
+          initialPrompt: 'p',
+          expectedOutcomes: ['o'],
+        },
+      });
+      expect(r.ok(), `seed test case ${i} should succeed`).toBeTruthy();
+      const j = await r.json();
+      tcIds.push(j.id || j.testCase?.id);
+    }
 
-    if (await viewLatestButton.isVisible().catch(() => false)) {
-      await viewLatestButton.click();
-      await page.waitForTimeout(3000);
+    let benchmarkId: string | null = null;
+    try {
+      const bmRes = await request.post('/api/storage/benchmarks', {
+        data: {
+          name: `E2E BmRuns Stats ${stamp}`,
+          description: 'stats pass-through E2E seed',
+          testCaseIds: tcIds,
+          runs: [],
+          currentVersion: 1,
+          versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: tcIds }],
+        },
+      });
+      expect(bmRes.ok(), 'seed benchmark should succeed').toBeTruthy();
+      benchmarkId = (await bmRes.json()).id;
 
-      // Find stats containers that show "/ N" (total count indicator)
-      const statsContainers = page.locator('span.text-muted-foreground:has-text("/")');
-      const statsCount = await statsContainers.count();
+      const get = await request.get(`/api/storage/benchmarks/${benchmarkId}`);
+      const bm = await get.json();
+      const put = await request.put(`/api/storage/benchmarks/${benchmarkId}`, {
+        data: {
+          name: bm.name,
+          description: bm.description,
+          testCaseIds: bm.testCaseIds,
+          runs: [{
+            id: `run-bmruns-stats-${stamp}`,
+            name: 'Stats E2E Run',
+            agentKey: 'demo',
+            modelId: 'demo-model',
+            createdAt: new Date().toISOString(),
+            status: 'completed',
+            benchmarkVersion: 1,
+            testCaseSnapshots: [],
+            results: {
+              [tcIds[0]]: { reportId: `report-bmruns-stats-1-${stamp}`, status: 'completed', passFailStatus: 'passed' },
+              [tcIds[1]]: { reportId: `report-bmruns-stats-2-${stamp}`, status: 'completed', passFailStatus: 'failed' },
+            },
+            stats: { passed: 1, failed: 1, pending: 0, errored: 0, total: 2 },
+          }],
+        },
+      });
+      expect(put.ok(), 'seeding the completed run should succeed').toBeTruthy();
 
-      if (statsCount > 0) {
-        // For runs with stats, the passed count (text-opensearch-blue) or failed count (text-red-400)
-        // should have at least one non-zero value. If all results are "pending", it means
-        // stats are not being passed through from the backend.
-        const passedSpans = page.locator('span.text-opensearch-blue, [class*="text-opensearch-blue"]');
-        const failedSpans = page.locator('span.text-red-400, [class*="text-red-400"]');
+      await page.goto(`/benchmarks/${benchmarkId}/runs`);
+      await expect(page.locator('[data-testid="benchmark-runs-page"]')).toBeVisible({ timeout: 30000 });
+      await expect(page.locator('text=Stats E2E Run')).toBeVisible({ timeout: 15000 });
 
-        let hasNonZeroPassedOrFailed = false;
-
-        const passedCount = await passedSpans.count();
-        for (let i = 0; i < passedCount; i++) {
-          const text = await passedSpans.nth(i).textContent();
-          if (text && parseInt(text.trim(), 10) > 0) {
-            hasNonZeroPassedOrFailed = true;
-            break;
-          }
-        }
-
-        if (!hasNonZeroPassedOrFailed) {
-          const failedCount = await failedSpans.count();
-          for (let i = 0; i < failedCount; i++) {
-            const text = await failedSpans.nth(i).textContent();
-            if (text && parseInt(text.trim(), 10) > 0) {
-              hasNonZeroPassedOrFailed = true;
-              break;
-            }
-          }
-        }
-
-        // At least one completed run should show non-zero passed or failed
-        expect(hasNonZeroPassedOrFailed).toBeTruthy();
+      // The completed run's row must show 1 passed (green) and 1 failed (red)
+      // — non-zero verdict counts, not an all-pending row.
+      const passedSpan = page.locator('[class*="text-green-700"]', { hasText: '1' }).first();
+      const failedSpan = page.locator('[class*="text-red-700"]', { hasText: '1' }).first();
+      await expect(passedSpan).toBeVisible({ timeout: 15000 });
+      await expect(failedSpan).toBeVisible({ timeout: 15000 });
+      await expect(page.locator('span.text-muted-foreground:has-text("/")').first()).toBeVisible();
+    } finally {
+      // Delete exactly what this test created (ids only — shared backend).
+      if (benchmarkId) {
+        await request.delete(`/api/storage/benchmarks/${encodeURIComponent(benchmarkId)}`).catch(() => {});
+      }
+      for (const id of tcIds) {
+        await request.delete(`/api/storage/test-cases/${encodeURIComponent(id)}`).catch(() => {});
       }
     }
   });
