@@ -399,6 +399,31 @@ class FileBenchmarkOperations implements IBenchmarkOperations {
     return true;
   }
 
+  /**
+   * Update a single test case's result within an embedded BenchmarkRun.
+   * Mirrors the OpenSearch adapter's `updateRunResult` — the file backend
+   * has no concurrent-writer race to guard against (single process,
+   * synchronous read-modify-write), so this is a plain lookup + mutate +
+   * write.
+   */
+  async updateRunResult(benchmarkId: string, runId: string, testCaseId: string, result: {
+    reportId: string;
+    status: RunResultStatus;
+    error?: string;
+  }): Promise<boolean> {
+    const benchmark = await this.getById(benchmarkId);
+    if (!benchmark) return false;
+
+    const run = (benchmark.runs || []).find(r => r.id === runId);
+    if (!run) return false;
+
+    run.results = run.results || {};
+    run.results[testCaseId] = result;
+    benchmark.updatedAt = new Date().toISOString();
+    writeJsonFile(this.docPath(benchmarkId), benchmark);
+    return true;
+  }
+
   async bulkCreate(benchmarks: Partial<Benchmark>[]): Promise<{ created: number; errors: number }> {
     let created = 0;
     let errors = 0;

@@ -6,6 +6,7 @@
 import { Router, Request, Response } from 'express';
 import { BenchmarkRun, EvaluationRun, TestCaseSource, TestCaseSnapshot } from '../../../types/index.js';
 import { getStorageModule } from '../../adapters/index.js';
+import type { IStorageModule } from '../../adapters/types.js';
 import { resolveTestCaseSources } from '../../../services/sourceResolver.js';
 import {
   executeEvaluationRun,
@@ -27,6 +28,114 @@ const router = Router();
 
 // Registry of active cancellation tokens for in-progress runs
 const activeCancellationTokens = new Map<string, CancellationToken>();
+
+/**
+ * Is this evaluation run actively executing in the current server process?
+ * Used by boot recovery (`server/services/evaluationRunRecoveryOnBoot.ts`) to
+ * avoid failing out a run that a concurrent boot path is legitimately still
+ * running — mirrors `isRunActiveInThisProcess` in
+ * `server/routes/storage/benchmarks.ts` for the legacy BenchmarkRun model.
+ */
+export function isEvaluationRunActiveInThisProcess(runId: string): boolean {
+  return activeCancellationTokens.has(runId);
+}
+
+/**
+ * Project a `running` EvaluationRun into the embedded BenchmarkRun shape
+ * `benchmark.runs` stores, with every test case pre-seeded as `pending`.
+ * Mirrors the legacy `/execute` route's "initialize pending status for all
+ * test cases" + "save run to benchmark immediately so it persists across
+ * page refreshes" behaviour (see `server/routes/storage/benchmarks.ts`) so
+ * the Benchmark Details page's existing running-run UI (spinners, live
+ * polling) has something to show for evaluation-run-based runs too — before
+ * this, the embedded projection was only ever written on a TERMINAL state,
+ * so an in-progress run was invisible on that page until it finished.
+ */
+export function buildStartingBenchmarkRunProjection(run: EvaluationRun, benchmarkVersion?: number): BenchmarkRun {
+  const results: BenchmarkRun['results'] = {};
+  for (const snapshot of run.testCaseSnapshots || []) {
+    results[snapshot.id] = { reportId: '', status: 'pending' };
+  }
+  return {
+    id: run.id,
+    name: run.name,
+    createdAt: run.createdAt,
+    status: 'running',
+    agentKey: run.agentKey,
+    modelId: run.modelId,
+    judgeModelId: run.judgeModelId,
+    // Explicit `!= null` (not truthy) checks: a truthy check would silently
+    // drop legitimately-meaningful falsy values, e.g. `concurrency: 0`
+    // (sequential execution, a real configured value) or an intentionally
+    // empty `description`/`evaluatorId` string.
+    ...(run.description != null ? { description: run.description } : {}),
+    ...(run.evaluatorId != null ? { evaluatorId: run.evaluatorId } : {}),
+    ...(run.headers != null ? { headers: run.headers } : {}),
+    ...(run.concurrency != null ? { concurrency: run.concurrency } : {}),
+    ...(benchmarkVersion != null ? { benchmarkVersion } : {}),
+    testCaseSnapshots: run.testCaseSnapshots,
+    results,
+  } as BenchmarkRun;
+}
+
+/**
+ * Project a terminal (completed/cancelled/failed) EvaluationRun into the
+ * embedded BenchmarkRun shape. Used by every terminal writer (the create
+ * route's success/cancelled path, its failed catch path, and the cancel
+ * route) so they share one shape and can't drift from each other.
+ */
+export function buildTerminalBenchmarkRunProjection(run: EvaluationRun, completedAt: string): BenchmarkRun {
+  return {
+    id: run.id,
+    name: run.name,
+    createdAt: run.createdAt,
+    completedAt,
+    status: run.status,
+    agentKey: run.agentKey,
+    modelId: run.modelId,
+    judgeModelId: run.judgeModelId,
+    results: run.results,
+    stats: run.stats,
+    ...(run.error != null ? { error: run.error } : {}),
+    ...(run.description != null ? { description: run.description } : {}),
+    ...(run.evaluatorId != null ? { evaluatorId: run.evaluatorId } : {}),
+    ...(run.headers != null ? { headers: run.headers } : {}),
+    ...(run.concurrency != null ? { concurrency: run.concurrency } : {}),
+    testCaseSnapshots: run.testCaseSnapshots,
+  } as BenchmarkRun;
+}
+
+/**
+ * Keep `benchmark.runs` in sync with a run that just reached a terminal
+ * state (completed/cancelled/failed), without ever producing two entries for
+ * the same run id.
+ *
+ * The starting projection (`buildStartingBenchmarkRunProjection`, linked via
+ * `addRun` when the run began) means the run id is normally ALREADY present
+ * in `benchmark.runs` by the time a terminal write happens — so this reads
+ * the benchmark first and UPDATEs the existing entry via `updateRun`, only
+ * falling back to `addRun` if the id isn't there yet (the starting link
+ * failed, or never happened — e.g. very old runs created before this fix).
+ * `addRun` itself is add-if-absent, so calling it here is still safe even if
+ * another concurrent writer won the race and already added the same id.
+ */
+export async function linkTerminalBenchmarkRunProjection(
+  storage: IStorageModule,
+  benchmarkId: string,
+  benchmarkRun: BenchmarkRun
+): Promise<void> {
+  const benchmark = await storage.benchmarks.getById(benchmarkId);
+  if (!benchmark) {
+    throw new Error(`Benchmark not found while linking terminal run to benchmark: ${benchmarkId}`);
+  }
+  const alreadyLinked = (benchmark.runs || []).some((r) => r.id === benchmarkRun.id);
+  const linked = alreadyLinked
+    ? await storage.benchmarks.updateRun(benchmarkId, benchmarkRun.id, benchmarkRun)
+    : await storage.benchmarks.addRun(benchmarkId, benchmarkRun);
+  if (!linked) {
+    throw new Error(`Failed to link terminal run to benchmark: ${benchmarkId}`);
+  }
+}
 
 /**
  * Send an SSE event to the client.
@@ -144,6 +253,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
     // case documents resolved above. Repeated CLI imports therefore reuse one
     // benchmark and one stable set of testCaseIds instead of creating rows
     // whose definitions and runs live only in evaluation-run documents.
+    let benchmarkVersionAtStart: number | undefined;
     if (benchmarkId) {
       const benchmark = await storage.benchmarks.getById(benchmarkId);
       if (!benchmark) {
@@ -151,6 +261,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
         res.end();
         return;
       }
+      benchmarkVersionAtStart = benchmark.currentVersion;
       const idsChanged = JSON.stringify(benchmark.testCaseIds || []) !== JSON.stringify(resolvedTestCaseIds);
       if (idsChanged) {
         await storage.benchmarks.update(benchmarkId, { testCaseIds: resolvedTestCaseIds });
@@ -224,6 +335,25 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
 
     await storage.evaluationRuns.create(run);
 
+    // Link a `running` projection into `benchmark.runs` immediately —
+    // mirrors the legacy /execute route's "save run to benchmark immediately
+    // so it persists across page refreshes". Without this, an in-progress
+    // evaluation-run-based run is invisible on the Benchmark Details page
+    // until it reaches a terminal state (the regression this fix addresses).
+    // Best-effort: the run is first-class via the top-level evaluation-run
+    // doc regardless, so a link failure here must not abort execution.
+    if (benchmarkId) {
+      try {
+        const startingProjection = buildStartingBenchmarkRunProjection(run, benchmarkVersionAtStart);
+        const linked = await storage.benchmarks.addRun(benchmarkId, startingProjection);
+        if (!linked) {
+          console.error(`[StorageAPI] Benchmark ${benchmarkId} not found while linking starting run ${runId} (run continues)`);
+        }
+      } catch (linkError: any) {
+        console.error(`[StorageAPI] Failed to link starting run ${runId} to benchmark ${benchmarkId} (run continues): ${linkError.message}`);
+      }
+    }
+
     // Send started event
     sendSSE(res, 'started', { runId, testCases: snapshots });
 
@@ -244,6 +374,13 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
         },
         onTestCaseComplete: async (testCaseId: string, result: any) => {
           await storage.evaluationRuns.updateResult(runId, testCaseId, result);
+          if (benchmarkId) {
+            try {
+              await storage.benchmarks.updateRunResult(benchmarkId, runId, testCaseId, result);
+            } catch (progressError: any) {
+              console.error(`[StorageAPI] Failed to update benchmark run progress for ${runId}/${testCaseId} (run continues): ${progressError.message}`);
+            }
+          }
           sendSSE(res, 'testCaseComplete', { testCaseId, result });
         },
       });
@@ -251,40 +388,64 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       const finalStatus = cancellationToken.isCancelled ? 'cancelled' : 'completed';
       const completedAt = new Date().toISOString();
 
-      // Link the terminal projection before finalizing the first-class run.
-      // If finalization crashes, retrying is safe because addRun is idempotent;
-      // a terminal evaluation-run can therefore never be orphaned from its benchmark.
-      if (benchmarkId) {
-        const benchmarkRun: BenchmarkRun = {
-          id: run.id, name: run.name, createdAt: run.createdAt, completedAt,
-          status: finalStatus, agentKey: run.agentKey, modelId: run.modelId,
-          judgeModelId: run.judgeModelId, results: completedRun.results, stats: completedRun.stats,
-          ...(run.description ? { description: run.description } : {}),
-          ...(run.evaluatorId ? { evaluatorId: run.evaluatorId } : {}),
-          ...(run.headers ? { headers: run.headers } : {}),
-          ...(run.concurrency ? { concurrency: run.concurrency } : {}),
-          testCaseSnapshots: run.testCaseSnapshots,
-        };
-        const linked = await storage.benchmarks.addRun(benchmarkId, benchmarkRun);
-        if (!linked) throw new Error(`Benchmark not found while linking completed run: ${benchmarkId}`);
-      }
-
       const updatedRun = await storage.evaluationRuns.update(runId, {
         status: finalStatus, stats: completedRun.stats, completedAt, results: completedRun.results,
       });
+
+      // Sync the terminal state into the benchmark's embedded projection.
+      // The starting projection linked at run start already exists in
+      // `benchmark.runs`, so `linkTerminalBenchmarkRunProjection` UPDATEs it
+      // in place (falling back to add-if-missing) rather than blindly calling
+      // `addRun` again, which would silently no-op (add-if-absent) and leave
+      // the projection stuck on `status: 'running'` forever.
+      //
+      // Deliberately its OWN try/catch, NOT allowed to bubble into the outer
+      // catch below: by this point the run has genuinely reached a terminal
+      // state (results persisted, `updatedRun` above already written) — a
+      // secondary bookkeeping failure here must not rewrite the run's own
+      // status to 'failed' and misreport a real success/cancellation.
+      if (benchmarkId) {
+        try {
+          await linkTerminalBenchmarkRunProjection(
+            storage,
+            benchmarkId,
+            buildTerminalBenchmarkRunProjection(updatedRun, completedAt)
+          );
+        } catch (linkError: any) {
+          console.error(`[StorageAPI] Run ${runId} ${finalStatus} but failed to sync benchmark ${benchmarkId} projection: ${linkError.message}`);
+        }
+      }
+
       sendSSE(res, 'completed', updatedRun);
     } catch (error: any) {
       console.error(`[StorageAPI] Evaluation run failed: ${runId}`, error.message);
 
       // Update run status to failed
+      let failedRun: EvaluationRun | undefined;
       try {
-        await storage.evaluationRuns.update(runId, {
+        failedRun = await storage.evaluationRuns.update(runId, {
           status: 'failed',
           completedAt: new Date().toISOString(),
           error: error.message,
         });
       } catch (updateError: any) {
         console.error(`[StorageAPI] Failed to update run status: ${updateError.message}`);
+      }
+
+      // Sync the benchmark projection to 'failed' too (previously this path
+      // never touched `benchmark.runs` at all, so a failed run vanished from
+      // the Benchmark Details page entirely instead of showing as failed).
+      if (benchmarkId) {
+        try {
+          const completedAt = failedRun?.completedAt || new Date().toISOString();
+          const projection = buildTerminalBenchmarkRunProjection(
+            failedRun ?? { ...run, status: 'failed', completedAt, error: error.message },
+            completedAt
+          );
+          await linkTerminalBenchmarkRunProjection(storage, benchmarkId, projection);
+        } catch (linkError: any) {
+          console.error(`[StorageAPI] Run ${runId} failed and also failed to sync benchmark ${benchmarkId} projection: ${linkError.message}`);
+        }
       }
 
       sendSSE(res, 'error', { error: error.message, runId });
@@ -327,10 +488,29 @@ router.post('/api/storage/evaluation-runs/:id/cancel', async (req: Request, res:
     cancellationToken.cancel();
 
     const storage = getStorageModule();
-    await storage.evaluationRuns.update(id, {
+    const completedAt = new Date().toISOString();
+    const updatedRun = await storage.evaluationRuns.update(id, {
       status: 'cancelled',
-      completedAt: new Date().toISOString(),
+      completedAt,
     });
+
+    // Keep the benchmark's embedded projection in sync so a cancel doesn't
+    // leave the Benchmark Details page showing the run stuck on 'running'
+    // until the executor loop notices `cancellationToken.isCancelled` on its
+    // own and reaches its own terminal write (which will also sync this
+    // projection, idempotently, with more complete results/stats). The
+    // cancellation itself already succeeded above regardless of this.
+    if (updatedRun.benchmarkId) {
+      try {
+        await linkTerminalBenchmarkRunProjection(
+          storage,
+          updatedRun.benchmarkId,
+          buildTerminalBenchmarkRunProjection(updatedRun, completedAt)
+        );
+      } catch (linkError: any) {
+        console.error(`[StorageAPI] Cancel: failed to sync benchmark ${updatedRun.benchmarkId} projection for run ${id}: ${linkError.message}`);
+      }
+    }
 
     res.json({ success: true });
   } catch (error: any) {

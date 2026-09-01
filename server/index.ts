@@ -17,6 +17,7 @@ import { findObservioRoot, spawnObservioAgent, OBSERVIO_DEFAULT_PORT, resetObser
 import { validateAwsCredentials } from './services/tracesService.js';
 import { resumePendingTracePollsSafely } from './services/traceRecoveryOnBoot.js';
 import { recoverOrphanBenchmarkRunsSafely } from './services/benchmarkRunRecoveryOnBoot.js';
+import { recoverOrphanEvaluationRunsSafely } from './services/evaluationRunRecoveryOnBoot.js';
 import { getStorageModule } from './adapters/index.js';
 
 // Register server-side connectors (subprocess, claude-code)
@@ -170,6 +171,10 @@ async function startServer() {
             // with the runner long dead). Different bug class — see
             // server/services/benchmarkRunRecoveryOnBoot.ts.
             recoverOrphanBenchmarkRunsSafely(storage);
+            // Sister recovery for the unified, top-level EvaluationRun model —
+            // see server/services/evaluationRunRecoveryOnBoot.ts for why this
+            // is a separate pass from the one above.
+            recoverOrphanEvaluationRunsSafely(storage);
           }
         } catch (err: any) {
           console.warn(`[bootRecovery] Could not start: ${err?.message || err}`);

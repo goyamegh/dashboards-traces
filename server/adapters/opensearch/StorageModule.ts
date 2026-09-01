@@ -516,6 +516,66 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
     }
   }
 
+  /**
+   * Update a single test case's result within an embedded BenchmarkRun
+   * (`benchmark.runs[i].results[testCaseId]`) without clobbering concurrent
+   * updates to *other* test cases in the same run — unlike `updateRun`,
+   * which replaces whole top-level keys such as `results` wholesale. Mirrors
+   * `OpenSearchEvaluationRunOperations.updateResult`'s script shape, scoped
+   * to the matching run within the `runs[]` array.
+   */
+  async updateRunResult(benchmarkId: string, runId: string, testCaseId: string, result: {
+    reportId: string;
+    status: RunResultStatus;
+    error?: string;
+  }): Promise<boolean> {
+    assertNotMigrating(this.index);
+    try {
+      const response = await this.client.update({
+        index: this.index,
+        id: benchmarkId,
+        // Concurrent test cases (run.concurrency > 1) update the same
+        // benchmark doc — without CAS retries these script updates fail with
+        // version_conflict_engine_exception. Mirrors updateResult above.
+        retry_on_conflict: 10,
+        body: {
+          script: {
+            source: `
+              boolean found = false;
+              if (ctx._source.runs != null) {
+                for (int i = 0; i < ctx._source.runs.size(); i++) {
+                  if (ctx._source.runs[i].id == params.runId) {
+                    if (ctx._source.runs[i].results == null) {
+                      ctx._source.runs[i].results = new HashMap();
+                    }
+                    ctx._source.runs[i].results[params.testCaseId] = params.result;
+                    found = true;
+                    break;
+                  }
+                }
+              }
+              if (!found) {
+                ctx.op = 'noop';
+              }
+            `,
+            params: { runId, testCaseId, result },
+          },
+        },
+        refresh: 'wait_for',
+      });
+      // Fail closed: only report success on an observed non-noop result, so a
+      // run id absent from `runs[]` (e.g. the starting projection failed to
+      // link) is reported as `false` rather than a false-positive success.
+      const opResult =
+        (response?.body as { result?: string } | undefined)?.result ??
+        (response as unknown as { result?: string } | undefined)?.result;
+      return opResult === 'updated';
+    } catch (error: any) {
+      if (error.meta?.statusCode === 404) return false;
+      throw error;
+    }
+  }
+
   async deleteRun(benchmarkId: string, runId: string): Promise<boolean> {
     assertNotMigrating(this.index);
     try {
