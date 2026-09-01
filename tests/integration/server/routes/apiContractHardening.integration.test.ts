@@ -232,15 +232,15 @@ describe('API contract hardening (F4/F7/F8/F9/F11/F12 regressions)', () => {
 
   // ── F8: metrics for a nonexistent run must be distinguishable ──────────
   describe('F8: GET /api/metrics/:runId for a nonexistent run', () => {
-    it('returns found:false alongside the all-zero metrics (regression: previously indistinguishable from a real zero-cost run)', async () => {
+    it('returns hasSpans:false alongside the all-zero metrics (regression: previously indistinguishable from a real zero-cost run)', async () => {
       if (!backendAvailable) return;
       const response = await fetch(`${BASE_URL}/api/metrics/${NAME_MARKER}-nonexistent-run`);
       // 503 is acceptable if this environment has no observability data
-      // source configured at all; anything else must carry found:false.
+      // source configured at all; anything else must carry hasSpans:false.
       if (response.status === 503) return;
       expect(response.status).toBe(200);
       const body = await response.json();
-      expect(body.found).toBe(false);
+      expect(body.hasSpans).toBe(false);
       expect(body.status).toBe('pending');
     });
   });
