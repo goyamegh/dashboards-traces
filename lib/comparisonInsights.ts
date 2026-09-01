@@ -18,7 +18,7 @@
  */
 
 import type { TestCaseComparisonRow } from '@/types';
-import { getSubcategoryFromLabels } from '@/lib/testCaseLabels';
+import { getCategoryFromLabels, getSubcategoryFromLabels } from '@/lib/testCaseLabels';
 
 /** Agreement bucket for a row across the selected runs. */
 export type AgreementBucket = 'allPass' | 'allFail' | 'split';
@@ -116,8 +116,11 @@ export const OTHER_CATEGORY = '(other)';
  *      `subcategory` as a dedicated concept).
  *   4. {@link UNCATEGORIZED}.
  * (`category:<x>` labels are intentionally NOT used here: imported benchmarks
- * stamp a single `category:RAG` on every case, which would collapse the
- * breakdown into one column — that's the coarse domain, not this facet.)
+ * commonly stamp a single `category:RAG` on every case, which would collapse
+ * the breakdown into one column — that's the coarse domain, not this facet.
+ * {@link categoryLabelIsUsableFallback} + {@link extractRowCategoryEffective}
+ * add `category:` back in, but ONLY for the comparisons where it's actually
+ * informative — see their docs.)
  */
 export function extractRowCategory(row: Pick<TestCaseComparisonRow, 'testCaseName' | 'labels'>): string {
   const subcategory = getSubcategoryFromLabels(row.labels);
@@ -127,6 +130,64 @@ export function extractRowCategory(row: Pick<TestCaseComparisonRow, 'testCaseNam
   const topic = (row.labels || []).find(l => l.toLowerCase().startsWith('topic:'));
   if (topic) return topic.slice('topic:'.length).toLowerCase();
   return UNCATEGORIZED;
+}
+
+/**
+ * Whether `category:` should be used as a LAST-RESORT fallback facet for
+ * this set of rows. True only when, among the rows {@link extractRowCategory}
+ * leaves as {@link UNCATEGORIZED} (rows with a real `[bracket]`/`topic:`
+ * facet keep using that, whether or not `category:` also varies — one
+ * differently-tagged row must not disable the fallback for every OTHER row
+ * that has nothing better):
+ *   1. There's at least one such row.
+ *   2. The `category:` label, normalized the same way {@link
+ *      extractRowCategoryEffective} returns it (lowercased, so
+ *      `category:RAG` and `category:rag` count as ONE value, not two —
+ *      inconsistent casing must not look like variance), has ≥2 distinct
+ *      values that EACH appear on ≥2 rows. The 2-per-value floor keeps a
+ *      single stray/typo'd label from flipping this on for what is really a
+ *      uniform category with one dirty row — that must still resolve to
+ *      "nothing to facet by", not a real-facet-plus-a-noise-column matrix.
+ * A uniformly-stamped `category:RAG` (the case the original "intentionally
+ * NOT used" heuristic was written for) stays excluded — falling back to it
+ * would add a redundant single-value column to every such comparison,
+ * exactly the noise that heuristic was trying to avoid. WixQA-400's
+ * `category:expertwritten|simulated` (200/200) is the motivating case where
+ * it DOES vary (both values well above the floor) and is genuinely useful.
+ * Callers that resolve a per-row category for a set of rows should compute
+ * this ONCE for the whole set and pass it to every {@link
+ * extractRowCategoryEffective} call, so the matrix, its shared-weakness
+ * callout, and the table's click-to-filter all agree on the same facet.
+ */
+export function categoryLabelIsUsableFallback(
+  rows: Pick<TestCaseComparisonRow, 'testCaseName' | 'labels'>[]
+): boolean {
+  const uncategorizedRows = rows.filter(r => extractRowCategory(r) === UNCATEGORIZED);
+  if (uncategorizedRows.length === 0) return false;
+  const counts = new Map<string, number>();
+  for (const r of uncategorizedRows) {
+    const category = getCategoryFromLabels(r.labels)?.toLowerCase();
+    if (category) counts.set(category, (counts.get(category) || 0) + 1);
+  }
+  const distinctMeaningfulValues = Array.from(counts.values()).filter(n => n >= 2).length;
+  return distinctMeaningfulValues > 1;
+}
+
+/**
+ * {@link extractRowCategory}, extended with the `category:` fallback when
+ * {@link categoryLabelIsUsableFallback} (computed once per row-set, passed
+ * in as `useCategoryFallback`) says it's actually informative for this
+ * comparison. Only reached when the base extraction is {@link
+ * UNCATEGORIZED} — a real bracket/topic facet always wins.
+ */
+export function extractRowCategoryEffective(
+  row: Pick<TestCaseComparisonRow, 'testCaseName' | 'labels'>,
+  useCategoryFallback: boolean
+): string {
+  const base = extractRowCategory(row);
+  if (base !== UNCATEGORIZED || !useCategoryFallback) return base;
+  const category = getCategoryFromLabels(row.labels);
+  return category ? category.toLowerCase() : UNCATEGORIZED;
 }
 
 export interface CategoryCell {
@@ -148,6 +209,14 @@ export interface CategoryBreakdown {
    * the rows its cell counted.
    */
   members: Record<string, string[]>;
+  /**
+   * Whether this breakdown fell back to the `category:` label (see {@link
+   * categoryLabelIsUsableFallback}). Callers that need to resolve a row's
+   * category OUTSIDE this function (e.g. {@link detectSharedWeakness}, or
+   * the compare page's click-to-filter) must pass this to {@link
+   * extractRowCategoryEffective} to stay consistent with what's displayed.
+   */
+  usesCategoryFallback: boolean;
 }
 
 /**
@@ -165,9 +234,10 @@ export function buildCategoryBreakdown(
   minCases: number = MIN_CATEGORY_CASES
 ): CategoryBreakdown {
   // Raw counts per category (row-level, for rollup decisions)
+  const useCategoryFallback = categoryLabelIsUsableFallback(rows);
   const rawTotals: Record<string, number> = {};
   for (const row of rows) {
-    const cat = extractRowCategory(row);
+    const cat = extractRowCategoryEffective(row, useCategoryFallback);
     rawTotals[cat] = (rawTotals[cat] || 0) + 1;
   }
 
@@ -183,7 +253,7 @@ export function buildCategoryBreakdown(
   const perRun: Record<string, Record<string, CategoryCell>> = {};
   const totals: Record<string, number> = {};
   for (const row of rows) {
-    const cat = resolve(extractRowCategory(row));
+    const cat = resolve(extractRowCategoryEffective(row, useCategoryFallback));
     totals[cat] = (totals[cat] || 0) + 1;
     for (const runId of runIds) {
       const r = row.results[runId];
@@ -201,7 +271,7 @@ export function buildCategoryBreakdown(
     return (totals[b] || 0) - (totals[a] || 0);
   });
 
-  return { categories, perRun, totals, members };
+  return { categories, perRun, totals, members, usesCategoryFallback: useCategoryFallback };
 }
 
 export interface SharedWeakness {
@@ -268,7 +338,7 @@ export function detectSharedWeakness(
 
   const rates: Record<string, number> = {};
   for (const runId of runIds) rates[runId] = Math.round(rate(runId, best.cat)!);
-  const allFailInCat = partition.allFail.filter(row => extractRowCategory(row) === best!.cat).length;
+  const allFailInCat = partition.allFail.filter(row => extractRowCategoryEffective(row, breakdown.usesCategoryFallback) === best!.cat).length;
   const allFailShare = partition.allFail.length > 0 ? allFailInCat / partition.allFail.length : 0;
 
   return { category: best.cat, rates, allFailShare };
