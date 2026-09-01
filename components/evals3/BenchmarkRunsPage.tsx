@@ -39,12 +39,14 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { asyncBenchmarkStorage, asyncTestCaseStorage } from '@/services/storage';
 import { computeRunStats } from '@/lib/runStats';
-import { executeBenchmarkRun } from '@/services/client';
+import { executeBenchmarkRun, listEvaluationRuns } from '@/services/client';
 import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
-import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, RunStats, Evaluator } from '@/types';
+import { Benchmark, BenchmarkRun, EvaluationRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, RunStats, Evaluator } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { ENV_CONFIG } from '@/lib/config';
 import { getLabelColor, formatDate, getModelName } from '@/lib/utils';
+import { unionRunsByPrecedence } from '@/lib/runUnion';
+import { runDetailUrl } from '@/lib/runLinks';
 import { Breadcrumbs } from '@/components/evals3/Breadcrumbs';
 import {
   computeVersionData,
@@ -89,6 +91,12 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
   const [benchmark, setBenchmark] = useState<Benchmark | null>(null);
   const [testCases, setTestCases] = useState<TestCase[]>([]);
+  // Client-side union read (run-experience convergence, Phase 2): top-level
+  // EvaluationRun docs linked to this benchmark. Fetched alongside
+  // benchmark.runs[] so in-flight and unlinked eval-runs — which today only
+  // get a benchmark.runs[] projection once terminal — are visible here too.
+  // Best-effort: a failure here still shows the benchmark-embedded runs.
+  const [linkedEvalRuns, setLinkedEvalRuns] = useState<EvaluationRun[]>([]);
 
   // Run pagination
   const [totalRuns, setTotalRuns] = useState(0);
@@ -192,8 +200,15 @@ export const BenchmarkRunsPage2: React.FC = () => {
       const options = isPolling
         ? { fields: 'polling' as const, runsSize: 100 }
         : { runsSize: 100 };
-      const exp = await asyncBenchmarkStorage.getById(benchmarkId, options);
+      const [exp, evalRunsResult] = await Promise.all([
+        asyncBenchmarkStorage.getById(benchmarkId, options),
+        listEvaluationRuns({ benchmarkId, size: 100 }).catch(err => {
+          console.error('Failed to load linked evaluation-runs:', err);
+          return { evaluationRuns: [] as EvaluationRun[], total: 0 };
+        }),
+      ]);
       if (!exp) { navigate(parentPath); return; }
+      setLinkedEvalRuns(evalRunsResult.evaluationRuns);
 
       const expAny = exp as any;
       if (expAny.totalRuns !== undefined) {
@@ -282,8 +297,23 @@ export const BenchmarkRunsPage2: React.FC = () => {
     () => getVersionTestCases(testCases, selectedVersionData), [selectedVersionData, testCases]
   );
 
+  // Union of benchmark-embedded runs + linked top-level eval-run docs
+  // (run-experience convergence, Phase 2 read union). EvaluationRun is
+  // shape-compatible with BenchmarkRun for the fields this page reads (id,
+  // name, agentKey, modelId, createdAt, results, stats, status), same
+  // pattern EvalRunsPage uses. `__isEvalRunDoc` records which record backed
+  // the row so the click handler can route to the right canonical URL.
+  const unifiedRuns = useMemo<Array<BenchmarkRun & { __isEvalRunDoc?: boolean }>>(() => {
+    const union = unionRunsByPrecedence(benchmark?.runs, linkedEvalRuns);
+    return union.map(u => (
+      u.source === 'eval-run'
+        ? { ...(u.evalRun as unknown as BenchmarkRun), __isEvalRunDoc: true }
+        : { ...(u.benchmarkRun as BenchmarkRun), __isEvalRunDoc: false }
+    ));
+  }, [benchmark?.runs, linkedEvalRuns]);
+
   const filteredRuns = useMemo(
-    () => filterRunsByVersion(benchmark?.runs, runVersionFilter), [benchmark?.runs, runVersionFilter]
+    () => filterRunsByVersion(unifiedRuns, runVersionFilter), [unifiedRuns, runVersionFilter]
   );
 
   const hasMultipleVersions = versionData.length > 1;
@@ -304,14 +334,12 @@ export const BenchmarkRunsPage2: React.FC = () => {
   }, []);
 
   const hasPendingEvaluations = useMemo(() => {
-    if (!benchmark?.runs) return false;
-    return benchmark.runs.some(run => run.stats?.pending && run.stats.pending > 0);
-  }, [benchmark?.runs]);
+    return unifiedRuns.some(run => run.stats?.pending && run.stats.pending > 0);
+  }, [unifiedRuns]);
 
   const hasServerInProgressRuns = useMemo(() => {
-    if (!benchmark?.runs) return false;
-    return benchmark.runs.some(run => getEffectiveRunStatus(run) === 'running');
-  }, [benchmark?.runs]);
+    return unifiedRuns.some(run => getEffectiveRunStatus(run) === 'running');
+  }, [unifiedRuns]);
 
   // Polling
   useEffect(() => {
@@ -456,7 +484,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
     );
   }
 
-  const runs = benchmark.runs || [];
+  // Union read (run-experience convergence, Phase 2) so unlinked/in-flight
+  // eval-run docs are visible on this page too, not just terminal
+  // benchmark.runs[] projections.
+  const runs = unifiedRuns;
   const hasMultipleRuns = runs.length >= 2;
 
   return (
@@ -618,7 +649,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
                       isSelected ? 'border-primary bg-primary/5' : 'hover:border-primary/50'
                     }`}
                     onClick={() => {
-                      const runDetailPath = `/evaluations/benchmarks/${benchmarkId}/runs/${run.id}/inspect`;
+                      const runDetailPath = runDetailUrl(
+                        { id: run.id, benchmarkId },
+                        { legacyBenchmarkEmbedded: !(run as BenchmarkRun & { __isEvalRunDoc?: boolean }).__isEvalRunDoc }
+                      );
                       navigate(runDetailPath);
                     }}
                   >
@@ -710,7 +744,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
                               <span className="text-muted-foreground">/ {stats.total}</span>
                             </div>
                           )}
-                          {getEffectiveRunStatus(run) === 'running' && (
+                          {getEffectiveRunStatus(run) === 'running' && !(run as BenchmarkRun & { __isEvalRunDoc?: boolean }).__isEvalRunDoc && (
                             <Button
                               variant="outline" size="sm"
                               disabled={isCancelling(run.id)}
