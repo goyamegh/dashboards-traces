@@ -662,6 +662,13 @@ export interface TraceMetrics {
   toolCalls: number;
   toolsUsed: string[];
   status: 'success' | 'error' | 'pending';
+  /**
+   * Whether any spans were found for this runId. `false` means no trace data
+   * exists at all (e.g. a typo'd/nonexistent runId, or tracing hasn't
+   * started yet) \u2014 distinct from a real completed run that legitimately
+   * has zero cost. Optional for backwards compatibility with older callers.
+   */
+  found?: boolean;
 }
 
 // ============ Trace Types ============
@@ -1440,6 +1447,8 @@ export interface MetricsResult {
   toolCalls: number;
   toolsUsed: string[];
   status: 'pending' | 'success' | 'error';
+  /** See TraceMetrics.found \u2014 same semantics. */
+  found?: boolean;
 }
 
 // ============ Data Source Configuration Types ============

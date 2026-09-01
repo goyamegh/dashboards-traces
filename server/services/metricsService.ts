@@ -201,7 +201,8 @@ export function computeMetricsFromSpans(
       llmCalls: 0,
       toolCalls: 0,
       toolsUsed: [],
-      status: 'pending'
+      status: 'pending',
+      found: false,
     };
   }
 
@@ -272,7 +273,8 @@ export function computeMetricsFromSpans(
     llmCalls,
     toolCalls: toolsUsed.size,
     toolsUsed: Array.from(toolsUsed),
-    status
+    status,
+    found: true,
   };
 }
 
