@@ -8,6 +8,7 @@ import { Link } from 'react-router-dom';
 import { ChevronUp, ExternalLink, X, ArrowUpDown } from 'lucide-react';
 import { cn, formatRelativeTime, getModelName } from '@/lib/utils';
 import { formatCost, formatDuration, formatTokens } from '@/services/metrics';
+import { runDetailUrl } from '@/lib/runLinks';
 import type { RunAggregateMetrics, BenchmarkRun } from '@/types';
 import type { TestCaseOverlap } from '@/services/comparisonService';
 
@@ -365,9 +366,7 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                         <td className="px-2 py-2">
                           <div className="flex items-center justify-end gap-1.5">
                             <Link
-                              to={benchmarkId
-                                ? `/evaluations/benchmarks/${benchmarkId}/runs/${run.runId}`
-                                : `/evaluations/runs/${run.runId}`}
+                              to={runDetailUrl({ id: run.runId, benchmarkId }, { legacyBenchmarkEmbedded: !!benchmarkId })}
                               data-testid={`open-run-${run.runId}`}
                               title="Open run"
                               className="inline-flex items-center text-muted-foreground hover:text-blue-400 transition-colors"

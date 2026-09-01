@@ -32,6 +32,7 @@ import { Benchmark, TestCase, TestCaseSource } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { executeEvaluationRun } from '@/services/client/evaluationRunsApi';
 import { Breadcrumbs } from './Breadcrumbs';
+import { runDetailUrl } from '@/lib/runLinks';
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
@@ -264,7 +265,7 @@ export const NewRunPage: React.FC = () => {
         () => {}, // progress handled on detail page
       );
 
-      navigate(`/evaluations/runs/${result.id}`);
+      navigate(runDetailUrl({ id: result.id }));
     } catch (err: any) {
       setExecuteError(err.message);
       setExecuting(false);

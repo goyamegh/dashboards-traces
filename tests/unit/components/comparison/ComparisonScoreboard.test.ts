@@ -154,10 +154,12 @@ describe('ComparisonScoreboard structure', () => {
     // Regression: the drawer used to always link /evaluations/runs/:runId,
     // which 404s (resolves only the SDK eval-run store) for benchmark run
     // ids. runBenchmarkIdById (per-run, since unscoped comparisons mix
-    // benchmarks and ad-hoc eval-runs) now picks the right route.
+    // benchmarks and ad-hoc eval-runs) now picks the right route via the
+    // shared runDetailUrl helper (run-experience convergence, Phase 1) —
+    // legacyBenchmarkEmbedded: true only when runBenchmarkIdById resolved a
+    // benchmarkId (i.e. the run is a genuinely benchmark-embedded row).
     expect(src).toContain('runBenchmarkIdById');
-    expect(src).toContain('/evaluations/benchmarks/${benchmarkId}/runs/${run.runId}');
-    expect(src).toContain('/evaluations/runs/${run.runId}');
+    expect(src).toContain('runDetailUrl({ id: run.runId, benchmarkId }, { legacyBenchmarkEmbedded: !!benchmarkId })');
     expect(src).toContain('data-testid={`open-run-${run.runId}`}');
   });
 });

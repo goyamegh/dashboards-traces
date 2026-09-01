@@ -37,6 +37,8 @@ import { DEFAULT_CONFIG } from '@/lib/constants';
 import { ENV_CONFIG } from '@/lib/config';
 import { computeRunStats } from '@/lib/runStats';
 import { formatRelativeTime, getModelName, getJudgeModelLabel, getEvaluatorLabel } from '@/lib/utils';
+import { unionRunsByPrecedence } from '@/lib/runUnion';
+import { runDetailUrl } from '@/lib/runLinks';
 import { Breadcrumbs } from './Breadcrumbs';
 import { RerunConfirmDialog } from './RerunConfirmDialog';
 
@@ -226,74 +228,52 @@ export const EvalRunsPage: React.FC = () => {
     return [{ value: 'all', label: 'All Agents' }, ...agents];
   }, []);
 
-  // Derive flat run rows from benchmark data
+  // Derive flat run rows: union benchmark-embedded runs (across ALL
+  // benchmarks) with top-level evaluation-runs, by id, preferring the
+  // eval-run doc's data when both exist for the same id (run-experience
+  // convergence, Phase 2 — see lib/runUnion.ts for the precedence rule).
   const allRunRows = useMemo<RunRow[]>(() => {
     const threshold = getTimeThreshold(timeRange);
-    const rows: RunRow[] = [];
+    const benchNameById = new Map(benchmarks.map(b => [b.id, b.name] as const));
 
+    // Flatten benchmark-embedded runs with their parent benchmark id attached
+    // (a run only ever lives in ONE benchmark's runs[], so this is safe).
+    const embedded: Array<BenchmarkRun & { __benchmarkId: string }> = [];
     for (const bm of benchmarks) {
-      for (const run of bm.runs || []) {
-        if (threshold && new Date(run.createdAt) < threshold) continue;
-        if (selectedAgent !== 'all' && run.agentKey !== selectedAgent) continue;
-
-        const agentName = DEFAULT_CONFIG.agents.find(a => a.key === run.agentKey)?.name || run.agentKey || 'Unknown';
-
-        if (search) {
-          const q = search.toLowerCase();
-          if (
-            !(run.name ?? '').toLowerCase().includes(q) &&
-            !(run.id ?? '').toLowerCase().includes(q) &&
-            !(bm.name ?? '').toLowerCase().includes(q) &&
-            !agentName.toLowerCase().includes(q)
-          ) continue;
-        }
-
-        const stats = computeRunStats(run);
-        rows.push({
-          run,
-          kind: 'benchmark',
-          benchmarkId: bm.id,
-          benchmarkName: bm.name,
-          agentName,
-          ...stats,
-          errored: stats.errored ?? 0,
-        });
-      }
+      for (const run of bm.runs || []) embedded.push({ ...run, __benchmarkId: bm.id });
     }
 
-    // Merge top-level evaluation-runs (eval-run-…). Disjoint from the
-    // benchmark-embedded runs above (see RunRow convergence note); de-duped by
-    // id defensively. Same time/agent/search filters applied for consistency.
-    const seen = new Set(rows.map(r => r.run.id));
-    const benchNameById = new Map(benchmarks.map(b => [b.id, b.name] as const));
-    for (const er of evalRuns) {
-      if (seen.has(er.id)) continue;
-      if (threshold && new Date(er.createdAt) < threshold) continue;
-      if (selectedAgent !== 'all' && er.agentKey !== selectedAgent) continue;
+    const union = unionRunsByPrecedence(embedded, evalRuns);
+    const rows: RunRow[] = [];
 
-      const agentName = DEFAULT_CONFIG.agents.find(a => a.key === er.agentKey)?.name || er.agentKey || 'Unknown';
-      const benchmarkName = er.benchmarkId
-        ? (benchNameById.get(er.benchmarkId) ?? er.benchmarkId)
-        : '(ad-hoc)';
+    for (const u of union) {
+      const isEvalRun = u.source === 'eval-run';
+      const run = (isEvalRun ? (u.evalRun as unknown as BenchmarkRun) : (u.benchmarkRun as BenchmarkRun));
+      const benchmarkId = isEvalRun
+        ? (u.evalRun!.benchmarkId ?? '')
+        : ((u.benchmarkRun as (BenchmarkRun & { __benchmarkId: string })).__benchmarkId);
+      const benchmarkName = benchmarkId ? (benchNameById.get(benchmarkId) ?? benchmarkId) : '(ad-hoc)';
+
+      if (threshold && new Date(run.createdAt) < threshold) continue;
+      if (selectedAgent !== 'all' && run.agentKey !== selectedAgent) continue;
+
+      const agentName = DEFAULT_CONFIG.agents.find(a => a.key === run.agentKey)?.name || run.agentKey || 'Unknown';
 
       if (search) {
         const q = search.toLowerCase();
         if (
-          !(er.name ?? '').toLowerCase().includes(q) &&
-          !(er.id ?? '').toLowerCase().includes(q) &&
+          !(run.name ?? '').toLowerCase().includes(q) &&
+          !(run.id ?? '').toLowerCase().includes(q) &&
           !benchmarkName.toLowerCase().includes(q) &&
           !agentName.toLowerCase().includes(q)
         ) continue;
       }
 
-      // EvaluationRun is shape-compatible with BenchmarkRun for the fields this
-      // page reads (id, name, agentKey, modelId, createdAt, results, stats).
-      const run = er as unknown as BenchmarkRun;
       const stats = computeRunStats(run);
       rows.push({
         run,
-        kind: 'eval-run',
-        benchmarkId: er.benchmarkId ?? '',
+        kind: isEvalRun ? 'eval-run' : 'benchmark',
+        benchmarkId,
         benchmarkName,
         agentName,
         ...stats,
@@ -575,11 +555,14 @@ export const EvalRunsPage: React.FC = () => {
   }, [renderedRunRows]);
 
   // Inspector route differs per run model (convergence note): eval-runs use
-  // the top-level route, benchmark-embedded runs the nested one.
-  const inspectPath = (rr: RunRow) =>
-    rr.kind === 'eval-run'
-      ? `/evaluations/runs/${rr.run.id}/inspect`
-      : `/evaluations/benchmarks/${rr.benchmarkId}/runs/${rr.run.id}/inspect`;
+  // the canonical top-level route (which resolves benchmark context from the
+  // doc itself); legacy benchmark-embedded-only runs (no top-level doc) use
+  // the benchmark-nested route since there's nothing to resolve at
+  // /evaluations/runs/:id for them.
+  const inspectPath = (rr: RunRow) => runDetailUrl(
+    { id: rr.run.id, benchmarkId: rr.benchmarkId || null },
+    { legacyBenchmarkEmbedded: rr.kind === 'benchmark' }
+  );
 
   // Render a run row
   const renderRunRow = (rr: RunRow, showBenchmark: boolean) => {
@@ -1072,7 +1055,7 @@ export const EvalRunsPage: React.FC = () => {
         run={rerunTarget}
         open={rerunDialogOpen}
         onOpenChange={open => { setRerunDialogOpen(open); if (!open) setRerunTarget(null); }}
-        onRerun={newRunId => navigate(`/evaluations/runs/${newRunId}`)}
+        onRerun={newRunId => navigate(runDetailUrl({ id: newRunId }))}
       />
     </div>
   );
