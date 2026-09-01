@@ -109,6 +109,22 @@ jest.mock('@/components/evals3/RerunConfirmDialog', () => ({
   ),
 }));
 
+jest.mock('@/components/evals3/RetryJudgementConfirmDialog', () => ({
+  RetryJudgementConfirmDialog: ({ run, count, open, onOpenChange, onComplete }: any) => (
+    open && run ? React.createElement(
+      'div',
+      {
+        'data-testid': 'retry-judgement-confirm-dialog',
+        onClick: () => {
+          onComplete({ retried: count, succeeded: count, failed: 0, results: [] });
+          onOpenChange(false);
+        },
+      },
+      `Retry dialog for ${run.id} (${count})`,
+    ) : null
+  ),
+}));
+
 // IntersectionObserver stub that records instances so tests can fire hits.
 type IOCallback = (entries: Array<{ isIntersecting: boolean }>) => void;
 const ioInstances: { callback: IOCallback; observed: Element[] }[] = [];
@@ -163,6 +179,42 @@ function makeSummaries(caseCount: number, failedIdx: number[] = []) {
   return out;
 }
 
+// Report summaries where `erroredIdx` cases carry `metricsStatus: 'error'`
+// (getResultStatus() -> 'errored', the bucket Retry judgement salvages).
+function makeErroredSummaries(caseCount: number, erroredIdx: number[] = []) {
+  const out: Record<string, unknown> = {};
+  for (let i = 0; i < caseCount; i++) {
+    out[`rep-${i}`] = erroredIdx.includes(i)
+      ? { id: `rep-${i}`, status: 'completed', passFailStatus: null, metricsStatus: 'error', trajectory: [{ type: 'assistant', content: 'x' }] }
+      : { id: `rep-${i}`, status: 'completed', passFailStatus: 'passed', metricsStatus: 'ready', trajectory: [] };
+  }
+  return out;
+}
+
+// An EvaluationRun (docType: 'evaluation-run') fixture, resolvable from
+// `getEvaluationRun`. Used both for the eval-run-mode route and (the fix
+// under test) the benchmark-scoped route when a first-class doc exists for
+// a benchmark-linked run.
+function makeEvaluationRunFixture(id: string, caseCount: number, erroredIdx: number[] = []) {
+  const results: Record<string, { reportId: string; status: string }> = {};
+  for (let i = 0; i < caseCount; i++) {
+    results[`tc-${i}`] = { reportId: `rep-${i}`, status: 'completed' };
+  }
+  return {
+    id,
+    docType: 'evaluation-run' as const,
+    name: 'Eval Run',
+    agentKey: 'demo',
+    modelId: 'demo-model',
+    createdAt: '2024-01-01T00:00:00Z',
+    status: 'completed' as const,
+    sources: [],
+    trigger: 'ui' as const,
+    testCaseSnapshots: [],
+    results,
+  };
+}
+
 function makeTestCases(caseCount: number) {
   return Array.from({ length: caseCount }, (_, i) => ({ id: `tc-${i}`, name: `Case ${i}` }));
 }
@@ -179,6 +231,17 @@ beforeEach(() => {
   // `results` for most tests). Tests exercising the eval-source lazy fetch
   // set a specific resolved value.
   mockTestCaseGetById.mockResolvedValue(null);
+  // `jest.clearAllMocks()` clears call history but NOT a persistent
+  // `mockResolvedValue` set by an earlier test (that needs `mockReset()`).
+  // Explicitly reset + default `getEvaluationRun` to "not found" every test
+  // so a leftover implementation from one test (e.g. the eval-run-mode
+  // fixtures below) can never leak into a benchmark-mode test that now
+  // also calls `getEvaluationRun` (loadData's benchmark branch probes for
+  // a first-class EvaluationRun doc to key Retry judgement's docType
+  // check). Tests that care override this per-test as before.
+  const { getEvaluationRun } = require('@/services/client');
+  getEvaluationRun.mockReset();
+  getEvaluationRun.mockRejectedValue(new Error('not found'));
 });
 
 describe('RunInspectorPage — lazy report loading', () => {
@@ -519,3 +582,97 @@ describe('RunInspectorPage — Re-run button (benchmark mode)', () => {
     );
   });
 })
+
+/*
+ * Retry judgement (#462) is keyed on `run.docType === 'evaluation-run'`
+ * rather than route `mode` — same bug class as the Re-run button fix
+ * (goyamegh/rerun-idspace-fix): an evaluation-run doc created WITH a
+ * benchmarkId is dual-written (first-class `evaluation-runs` doc +
+ * legacy-shaped BenchmarkRun projection embedded in `benchmark.runs[]`),
+ * so it can be viewed from EITHER the eval-run route or the
+ * benchmark-scoped route (/evaluations/benchmarks/<id>/runs/<runId>/inspect).
+ * `mode` alone (derived purely from the URL's benchmarkId param) can't
+ * tell those two doc shapes apart. `loadData()`'s benchmark branch now
+ * best-effort-fetches the first-class doc via `getEvaluationRun` and
+ * prefers it when found, falling back to the embedded projection for
+ * true legacy BenchmarkRun-only runs (pre-#399, no first-class doc).
+ *
+ * Test matrix:
+ * - eval-run via eval route            -> Retry judgement enabled
+ * - eval-run via benchmark route       -> Retry judgement enabled (was broken — the fix)
+ * - benchmark-run via benchmark route  -> Retry judgement absent (no judge-failed cases to salvage on a doc-less legacy run)
+ */
+describe('RunInspectorPage — Retry judgement button (docType-keyed, not route-mode-keyed)', () => {
+  it('renders "Retry judgement (N)" for an eval-run via the EVAL route', async () => {
+    mockParams = { benchmarkId: undefined, runId: 'eval-run-1' };
+    const { getEvaluationRun } = require('@/services/client');
+    getEvaluationRun.mockResolvedValue(makeEvaluationRunFixture('eval-run-1', 3, [1]));
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(3));
+    mockGetReportSummariesByIds.mockResolvedValue(makeErroredSummaries(3, [1]));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId('inspector-retry-judgement-btn')).toBeTruthy());
+    const btn = screen.getByTestId('inspector-retry-judgement-btn') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    expect(btn.textContent).toContain('Retry judgement (1)');
+  });
+
+  it('renders "Retry judgement (N)" for the SAME eval-run doc via the BENCHMARK route (regression: was broken pre-fix)', async () => {
+    // Benchmark-scoped route: benchmarkId present in the URL params.
+    mockParams = { benchmarkId: 'bench-1', runId: 'run-1' };
+    // Legacy embedded projection still exists in benchmark.runs[] (no
+    // docType) — loadData must prefer the first-class doc below, not this.
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(3));
+    const { getEvaluationRun } = require('@/services/client');
+    getEvaluationRun.mockResolvedValue(makeEvaluationRunFixture('run-1', 3, [0, 2]));
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(3));
+    mockGetReportSummariesByIds.mockResolvedValue(makeErroredSummaries(3, [0, 2]));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId('inspector-retry-judgement-btn')).toBeTruthy());
+    const btn = screen.getByTestId('inspector-retry-judgement-btn') as HTMLButtonElement;
+    expect(btn.disabled).toBe(false);
+    expect(btn.textContent).toContain('Retry judgement (2)');
+  });
+
+  it('opens the Retry judgement dialog and refreshes the run on completion, via the BENCHMARK route', async () => {
+    mockParams = { benchmarkId: 'bench-1', runId: 'run-1' };
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(3));
+    const { getEvaluationRun } = require('@/services/client');
+    getEvaluationRun.mockResolvedValue(makeEvaluationRunFixture('run-1', 3, [0]));
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(3));
+    mockGetReportSummariesByIds.mockResolvedValue(makeErroredSummaries(3, [0]));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId('inspector-retry-judgement-btn')).toBeTruthy());
+    fireEvent.click(screen.getByTestId('inspector-retry-judgement-btn'));
+
+    await waitFor(() => expect(screen.getByTestId('retry-judgement-confirm-dialog')).toBeTruthy());
+    expect(screen.getByTestId('retry-judgement-confirm-dialog').textContent).toContain('run-1');
+
+    // The mocked dialog calls onComplete then onOpenChange(false) on click,
+    // which the real RunInspectorPage wires to `loadData()` — assert it
+    // re-fetches (getEvaluationRun called again) rather than going stale.
+    const callsBefore = getEvaluationRun.mock.calls.length;
+    fireEvent.click(screen.getByTestId('retry-judgement-confirm-dialog'));
+
+    await waitFor(() => expect(getEvaluationRun.mock.calls.length).toBeGreaterThan(callsBefore));
+  });
+
+  it('does NOT render Retry judgement for a true legacy BenchmarkRun (no first-class doc) via the BENCHMARK route', async () => {
+    mockParams = { benchmarkId: 'bench-1', runId: 'run-1' };
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(2));
+    // Default beforeEach already rejects getEvaluationRun ("not found") —
+    // simulates a run that only ever exists as an embedded BenchmarkRun.
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(2));
+    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(2));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getAllByTestId('test-case-row').length).toBeGreaterThan(0));
+    expect(screen.queryByTestId('inspector-retry-judgement-btn')).toBeNull();
+  });
+});

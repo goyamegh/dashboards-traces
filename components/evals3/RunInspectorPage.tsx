@@ -113,7 +113,32 @@ export const RunInspectorPage: React.FC = () => {
 
         const bmRun = bm.runs?.find(r => r.id === runId);
         if (!bmRun) { navigate(`/evaluations/benchmarks/${benchmarkId}/runs`); return; }
-        runData = bmRun;
+
+        // Prefer the first-class EvaluationRun doc when one exists for this
+        // run id. Runs created WITH a benchmarkId are dual-written
+        // (server/routes/storage/evaluationRuns.ts, "Link the terminal
+        // projection before finalizing the first-class run"): a first-class
+        // `docType: 'evaluation-run'` doc AND a legacy-shaped BenchmarkRun
+        // projection embedded in `benchmark.runs[]` — and the projection is
+        // never kept in sync after that write (retry-judgement, for one,
+        // only updates the first-class doc's results/stats). Fetching the
+        // first-class doc here means the Retry judgement affordance (gated
+        // on `docType === 'evaluation-run'`, below) works from this
+        // benchmark-scoped route too, and the panel shows live
+        // results/stats instead of a stale embedded snapshot. A run that
+        // only ever exists as a legacy BenchmarkRun (pre-#399, no
+        // first-class doc) 404s here and falls back to the embedded
+        // projection exactly as before — unchanged behavior for that case.
+        // (Re-run stays keyed on route `mode` on this branch — its own
+        // docType-keyed fix landed separately on goyamegh/rerun-idspace-fix
+        // and isn't ported here; out of scope for this fix.)
+        try {
+          // Defensive `?? bmRun`: some test doubles / API layers resolve
+          // to a falsy value on "not found" instead of throwing.
+          runData = (await getEvaluationRun(runId)) ?? bmRun;
+        } catch {
+          runData = bmRun;
+        }
       } else {
         // SDK eval-run mode — no benchmark.
         try {
@@ -429,11 +454,20 @@ export const RunInspectorPage: React.FC = () => {
                 </Button>
               </div>
             )}
-            {/* Retry judgement: eval-run mode only, terminal runs only. Salvages
+            {/* Retry judgement: evaluation-run docs only (never true
+                BenchmarkRun-embedded docs), terminal runs only. Salvages
                 judge-failed cases (trace timeouts, judge errors,
                 "evaluator could not run") at judge cost only — never
-                re-invokes the agent. See services/evaluation/retryJudgement.ts. */}
-            {mode === 'evalRun' && (() => {
+                re-invokes the agent. See services/evaluation/retryJudgement.ts.
+                Keyed on `run.docType` rather than route `mode` — same class
+                of bug as the Re-run button fix: an evaluation-run doc
+                (docType: 'evaluation-run') can be reached via the
+                benchmark-scoped inspector route
+                (/evaluations/benchmarks/<benchmarkId>/runs/<runId>/inspect)
+                whenever it was created with a benchmarkId, so `mode` alone
+                (derived purely from the URL's benchmarkId param) is not a
+                reliable signal for "is this a first-class evaluation run". */}
+            {(run as any).docType === 'evaluation-run' && (() => {
               const runTerminal = run.status !== 'running' && run.status !== 'pending';
               const disabled = !runTerminal || erroredCount === 0;
               const title = !runTerminal
@@ -489,7 +523,7 @@ export const RunInspectorPage: React.FC = () => {
       )}
 
       {/* Retry Judgement Confirm Dialog (EvaluationRun only) */}
-      {mode === 'evalRun' && (
+      {(run as any).docType === 'evaluation-run' && (
         <RetryJudgementConfirmDialog
           run={run as EvaluationRun | null}
           count={erroredCount}
