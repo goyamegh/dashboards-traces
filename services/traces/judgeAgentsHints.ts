@@ -131,3 +131,39 @@ export function buildJudgeAgentsHints(
     ...(report.sessionId ? { sessionId: report.sessionId } : {}),
   }];
 }
+
+/**
+ * Resolve the id forwarded as `runId` to `/api/judge` (provider `agent`).
+ *
+ * The route hard-requires a truthy `runId` ("runId is required for the agent
+ * (trace) judge provider — its trace tools scope to it") because that's the
+ * ONLY thing the trace tools historically scoped on (Strategy B). But REST
+ * connectors never populate `report.runId` (`RESTConnector.execute()` returns
+ * `data.runId || data.id || null`, and agent response bodies here carry
+ * neither) — so any REST-connector agent using the `agent-trace-judge` model
+ * 400s before the judge ever runs, EVEN when Strategy C (`agents` hints,
+ * service.name + time-window) or Strategy A (`report.traceId`, the eval's own
+ * OTel span) already have enough to find the real spans (root-caused via a
+ * live smoke test 2026-09-01: `example-rest-agent-variant`
+ * found its spans on poll attempt 1 once `traceServiceName` was set, then
+ * still 400'd on this exact gate).
+ *
+ * `traceJudgeTools.ts` sends `runId` as `runIds:[runId]` UNIONED (bool.should)
+ * with `agents` — a `runId` that doesn't match any span's run-id attribute is
+ * a harmless no-op contribution to that union, not a wrong answer. So the
+ * safe fallback order is: the real connector runId (Strategy B) > the eval's
+ * own OTel traceId (Strategy A, still a genuine correlator) > the report's
+ * own id (always present — guarantees the gate is satisfiable and the
+ * request is still meaningfully scoped to exactly this run for the
+ * trajectory cross-check below).
+ *
+ * The route's defense-in-depth check (`trajectoryRunIds.has(runId)`) only
+ * activates when trajectory steps carry a `.runId` field (SDK-derived
+ * trajectories); classic REST/subprocess trajectory steps never do, so this
+ * fallback can't trip that 403.
+ */
+export function resolveJudgeRunId(
+  report: Pick<TestCaseRun, 'runId' | 'traceId' | 'id'>
+): string | undefined {
+  return report.runId || report.traceId || report.id || undefined;
+}
