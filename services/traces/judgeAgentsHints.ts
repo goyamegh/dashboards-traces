@@ -42,6 +42,37 @@ const PROTOCOL_TO_SERVICE_NAME: Record<string, string> = {
   'subprocess': 'subprocess-agent',
 };
 
+/**
+ * Connector protocols where agent-health does NOT control (and cannot know)
+ * the remote agent's OTel `service.name`. Unlike `claude-code`/`kiro`/`pi`/
+ * `agui-streaming`/`subprocess` above — connectors WE wrote, whose spawned
+ * process/sample-agent always emits under the same fixed name — these are
+ * generic TRANSPORT protocols: `rest`/`openai-compatible`/`langgraph` just
+ * describe how the HTTP call is shaped, and ANY third-party agent (with ANY
+ * OTel service.name, or none at all) can sit behind one. `strands` is a
+ * third-party agent framework we don't control either. `mock` never emits
+ * real spans.
+ *
+ * Root cause (2026-09-01 trace_timeout incident): before this set existed,
+ * `resolveAgentServiceName()`'s last-resort `${protocol}-agent` heuristic
+ * silently resolved `ai-search-redkite-qwen-mtrl` (connectorType `rest`, no
+ * `traceServiceName` configured) to the fabricated name `"rest-agent"` —
+ * which matches no real span, ever. Strategy C then confidently polled that
+ * wrong service.name for the FULL attempt budget (60 attempts / 10 min)
+ * every single run, even though the agent's real spans (service.name
+ * `"ai-search-agent"`) were landing on the cluster the whole time. A wrong
+ * guess here is worse than no guess: `undefined` correctly skips Strategy C
+ * and falls back to Strategy A/B/D; a wrong string burns the entire poll
+ * budget on a query that can never match.
+ */
+const UNKNOWN_SERVICE_NAME_PROTOCOLS = new Set<string>([
+  'rest',
+  'openai-compatible',
+  'langgraph',
+  'strands',
+  'mock',
+]);
+
 /** Time-window slack on each side of the run window to absorb clock skew. */
 const SLACK_MS = 60_000;
 
@@ -68,9 +99,18 @@ export interface JudgeAgentsHint {
 /**
  * Resolve the `service.name` an agent emits OTel spans under. Priority:
  *   1. Explicit `agentConfig.traceServiceName` (the per-agent override).
- *   2. Protocol-default from the table above.
- *   3. `<connectorProtocol>-agent` heuristic (last-resort fallback).
- *   4. `<agentKey>-agent` as a final guess when protocol is unknown.
+ *   2. Protocol-default from the table above (connectors WE wrote — fixed,
+ *      known service.name).
+ *   3. `undefined` (+ a loud `console.warn`) for `UNKNOWN_SERVICE_NAME_PROTOCOLS`
+ *      (generic transport protocols where the remote service.name is NOT
+ *      knowable) — deliberately does NOT fabricate a guessed name. See the
+ *      set's doc comment for why a wrong guess is worse than no guess.
+ *   4. `<connectorProtocol>-agent` heuristic, but ONLY as a last resort for
+ *      connector protocol strings outside both of the above (e.g. a
+ *      user-configured custom connector key not in the upstream
+ *      `ConnectorProtocol` union) — kept for backward compatibility since
+ *      those are genuinely unknown rather than known-unknowable.
+ *   5. `<agentKey>-agent` as a final guess when protocol itself is unknown.
  *
  * Returns `undefined` when none of the above is derivable; the caller
  * should then skip Strategy C and fall back to Strategy B alone.
@@ -83,6 +123,18 @@ export function resolveAgentServiceName(args: {
   if (args.agentTraceServiceName) return args.agentTraceServiceName;
   if (args.connectorProtocol && PROTOCOL_TO_SERVICE_NAME[args.connectorProtocol]) {
     return PROTOCOL_TO_SERVICE_NAME[args.connectorProtocol];
+  }
+  if (args.connectorProtocol && UNKNOWN_SERVICE_NAME_PROTOCOLS.has(args.connectorProtocol)) {
+    // Loud and always-on (not gated behind a debug flag): silent wrong-name
+    // polling is exactly what caused the 2026-09-01 trace_timeout incident
+    // to go unnoticed for as long as it did. Surfacing this at resolve time
+    // (every poll attempt, not just once) means it shows up immediately in
+    // server logs for anyone running useTraces:true against a REST/
+    // openai-compatible/langgraph/strands agent without traceServiceName set.
+    console.warn(
+      `[judgeAgentsHints] Agent${args.agentKey ? ` "${args.agentKey}"` : ''} (connectorProtocol="${args.connectorProtocol}") has no traceServiceName configured, and this protocol's service.name isn't fixed/known to agent-health — skipping Strategy C (service.name + time-window) trace correlation rather than guessing a name that would never match. Set traceServiceName in the agent config to the exact OTel resource service.name the agent's own OTel SDK emits, or trace-mode judging (useTraces:true) will rely on Strategy A/B/D only and may time out if those aren't available either.`
+    );
+    return undefined;
   }
   if (args.connectorProtocol) return `${args.connectorProtocol}-agent`;
   if (args.agentKey) return `${args.agentKey}-agent`;
