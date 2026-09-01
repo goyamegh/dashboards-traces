@@ -20,19 +20,33 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { Loader2, Clock, XCircle, Calendar, GitCompare, AlertTriangle, RotateCcw, Link2 } from 'lucide-react';
+import {
+  Loader2, Clock, XCircle, Calendar, GitCompare, AlertTriangle, RotateCcw, Link2,
+  Play, Bookmark,
+} from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
+import {
+  Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter,
+} from '@/components/ui/dialog';
 import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
-import { getEvaluationRun } from '@/services/client';
+import {
+  getEvaluationRun, cancelEvaluationRun, promoteEvaluationRun,
+} from '@/services/client';
+import { resumeEvaluationRun } from '@/services/client/evaluationRunsApi';
 import { Benchmark, BenchmarkRun, EvaluationRun, TestCase, EvaluationReport } from '@/types';
 import { ResultStatus, getResultStatus, StatusIcon, StatusLabel } from './ResultStatus';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatDate, getModelName } from '@/lib/utils';
+import { runLooksOrphaned } from '@/lib/runLiveness';
+import { runDetailUrl } from '@/lib/runLinks';
 import { TestCaseInspectorPanel } from './TestCaseInspectorPanel';
 import { Breadcrumbs } from './Breadcrumbs';
+import { SourceBadge } from './SourceBadge';
+import { RunStatusBadge } from './RunStatusBadge';
 import { ensureTracePollingForReport } from '@/services/traces/browserRecovery';
 import { RerunConfirmDialog } from './RerunConfirmDialog';
 
@@ -93,6 +107,15 @@ export const RunInspectorPage: React.FC = () => {
   // source run was since deleted).
   const [sourceRunName, setSourceRunName] = useState<string | null>(null);
   const [sourceRunMissing, setSourceRunMissing] = useState(false);
+  // Absorbed from EvalRunDetailPage (run-experience convergence, Phase 1):
+  // cancel / resume / convert-to-benchmark for evalRun mode only — benchmark
+  // mode's BenchmarkRun doesn't support any of these.
+  const [cancelling, setCancelling] = useState(false);
+  const [resuming, setResuming] = useState(false);
+  const [promoteOpen, setPromoteOpen] = useState(false);
+  const [promoteName, setPromoteName] = useState('');
+  const [promoting, setPromoting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Load data — fetch reports to get real pass/fail status
   const loadData = useCallback(async () => {
@@ -112,14 +135,30 @@ export const RunInspectorPage: React.FC = () => {
         if (!bmRun) { navigate(`/evaluations/benchmarks/${benchmarkId}/runs`); return; }
         runData = bmRun;
       } else {
-        // SDK eval-run mode — no benchmark.
+        // SDK eval-run mode. No benchmark in the URL, but the run doc may
+        // still carry a `benchmarkId` (it was created via `benchmark -f`, a
+        // rerun/resume of a benchmark-linked run, etc.) — resolve it here so
+        // the canonical top-level URL still gets benchmark breadcrumbs and a
+        // "View Benchmark" affordance without requiring the id in the route
+        // (run-experience convergence, Phase 1).
+        let evalRunData: EvaluationRun;
         try {
-          runData = await getEvaluationRun(runId);
+          evalRunData = await getEvaluationRun(runId);
         } catch {
           navigate('/evaluations/runs');
           return;
         }
-        setBenchmark(null);
+        runData = evalRunData;
+        if (evalRunData.benchmarkId) {
+          try {
+            const bm = await asyncBenchmarkStorage.getById(evalRunData.benchmarkId);
+            setBenchmark(bm || null);
+          } catch {
+            setBenchmark(null);
+          }
+        } else {
+          setBenchmark(null);
+        }
       }
       setRun(runData);
 
@@ -249,6 +288,49 @@ export const RunInspectorPage: React.FC = () => {
     setVisibleCount(ROWS_PER_PAGE);
   }, [runId]);
 
+  // ── Cancel / Resume / Convert-to-Benchmark (evalRun mode only) ──────────
+  // Absorbed from EvalRunDetailPage as part of the run-experience
+  // convergence (Phase 1) so the inspector is the single detail surface.
+  const handleCancel = async () => {
+    if (!runId) return;
+    setCancelling(true);
+    setActionError(null);
+    try {
+      await cancelEvaluationRun(runId);
+      await loadData();
+    } catch (err: any) {
+      setActionError(err.message);
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  const handleResume = async () => {
+    if (!runId) return;
+    setResuming(true);
+    setActionError(null);
+    resumeEvaluationRun(runId, () => {})
+      .catch((err: any) => setActionError(err.message))
+      .finally(() => loadData());
+    // Give the server a moment to flip status to running, then refresh.
+    setTimeout(() => { loadData(); setResuming(false); }, 1000);
+  };
+
+  const handlePromote = async () => {
+    if (!runId || !promoteName.trim()) return;
+    setPromoting(true);
+    setActionError(null);
+    try {
+      await promoteEvaluationRun(runId, promoteName.trim());
+      setPromoteOpen(false);
+      await loadData();
+    } catch (err: any) {
+      setActionError(err.message);
+    } finally {
+      setPromoting(false);
+    }
+  };
+
   // Infinite scroll: reveal the next page of rows when the sentinel at the
   // bottom of the left list becomes visible.
   useEffect(() => {
@@ -344,16 +426,16 @@ export const RunInspectorPage: React.FC = () => {
       <div className="px-4 py-3 border-b bg-card shrink-0">
         <Breadcrumbs
           items={
-            mode === 'benchmark' && benchmark
+            benchmark
               ? [
                   { label: 'Evaluations', href: '/evaluations/runs' },
-                  { label: benchmark.name, href: `/evaluations/benchmarks/${benchmarkId}/runs` },
+                  { label: benchmark.name, href: `/evaluations/benchmarks/${benchmark.id}/runs` },
                   { label: run.name },
                 ]
               : [
-                  // SDK eval-run mode: no parent benchmark; root the breadcrumb
-                  // at the eval-runs index so users can navigate back to the
-                  // list of all runs.
+                  // Ad-hoc run (no benchmarkId, or benchmarkId whose benchmark
+                  // couldn't be resolved): root the breadcrumb at the eval-runs
+                  // index so users can navigate back to the list of all runs.
                   { label: 'Evaluation Runs', href: '/evaluations/runs' },
                   { label: run.name },
                 ]
@@ -361,7 +443,15 @@ export const RunInspectorPage: React.FC = () => {
         />
         <div className="flex items-center justify-between mt-1">
           <div className="flex-1 min-w-0">
-            <h2 className="text-lg font-bold truncate">{run.name}</h2>
+            <div className="flex items-center gap-2">
+              <h2 className="text-lg font-bold truncate" data-testid="run-inspector-name">{run.name}</h2>
+              {/* Status pill (EvaluationRun only) — absorbed from EvalRunDetailPage. */}
+              {mode === 'evalRun' && <RunStatusBadge status={run.status} />}
+              {/* Source badges (EvaluationRun only) — absorbed from EvalRunDetailPage. */}
+              {mode === 'evalRun' && (run as EvaluationRun)?.sources?.map((s, i) => (
+                <SourceBadge key={i} source={s} />
+              ))}
+            </div>
             {/* Provenance: rerunOf chip (EvaluationRun only) */}
             {mode === 'evalRun' && (run as EvaluationRun)?.rerunOf && (
               <div className="mt-1 flex items-center">
@@ -370,7 +460,7 @@ export const RunInspectorPage: React.FC = () => {
                   className={sourceRunMissing
                     ? 'inline-flex items-center gap-1 rounded-full border border-muted-foreground/30 bg-muted/40 text-muted-foreground text-xs px-2 py-0.5 hover:bg-muted/60 transition-colors'
                     : 'inline-flex items-center gap-1 rounded-full border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-xs px-2 py-0.5 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors'}
-                  onClick={() => navigate(`/evaluations/runs/${(run as EvaluationRun).rerunOf}`)}
+                  onClick={() => navigate(runDetailUrl({ id: (run as EvaluationRun).rerunOf! }))}
                   title={sourceRunMissing
                     ? 'This run was created as a re-run, but the source run no longer exists'
                     : 'This run was created as a re-run of the linked source run'}
@@ -381,7 +471,7 @@ export const RunInspectorPage: React.FC = () => {
               </div>
             )}
           </div>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
+          <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0" data-testid="run-inspector-stats">
             <span className="flex items-center gap-1"><Calendar size={11} /> {formatDate(run.createdAt)}</span>
             <span>{agentName}</span>
             <span>{modelName}</span>
@@ -405,16 +495,90 @@ export const RunInspectorPage: React.FC = () => {
             {/* Re-run: only for eval-run mode; benchmark-embedded runs use BenchmarkRun
                 which doesn't support rerun. */}
             {mode === 'evalRun' ? (
-              <Button
-                variant="outline"
-                size="sm"
-                data-testid="inspector-rerun-btn"
-                className="h-7 gap-1.5 text-xs"
-                onClick={() => setRerunDialogOpen(true)}
-              >
-                <RotateCcw size={12} />
-                Re-run
-              </Button>
+              <>
+                {/* Resume: continue THIS run — re-executes only test cases
+                    without a persisted report (checkpoint-resume). Absorbed
+                    from EvalRunDetailPage (run-experience convergence,
+                    Phase 1). */}
+                {(run.status !== 'running' || runLooksOrphaned(run as EvaluationRun))
+                  && ((run as EvaluationRun).testCaseSnapshots || []).some(s => !run.results?.[s.id]?.reportId) && (
+                  <Button
+                    variant="default"
+                    size="sm"
+                    data-testid="inspector-resume-btn"
+                    className="h-7 gap-1.5 text-xs"
+                    onClick={handleResume}
+                    disabled={resuming}
+                  >
+                    {resuming ? <Loader2 size={12} className="animate-spin" /> : <Play size={12} />}
+                    Resume ({((run as EvaluationRun).testCaseSnapshots || []).filter(s => !run.results?.[s.id]?.reportId).length} left)
+                  </Button>
+                )}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  data-testid="inspector-rerun-btn"
+                  className="h-7 gap-1.5 text-xs"
+                  onClick={() => setRerunDialogOpen(true)}
+                >
+                  <RotateCcw size={12} />
+                  Re-run
+                </Button>
+                {/* Secondary path: open the New-Run composer pre-filled from
+                    this run's config instead of launching immediately.
+                    Absorbed from EvalRunDetailPage (run-experience
+                    convergence, Phase 1). */}
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="h-7 text-xs text-muted-foreground"
+                  data-testid="rerun-customize-btn"
+                  onClick={() => navigate('/evaluations/runs/new', {
+                    state: {
+                      restartFrom: {
+                        name: run.name,
+                        sources: (run as EvaluationRun).sources,
+                        agentKey: run.agentKey,
+                        evaluatorId: (run as EvaluationRun).evaluatorId,
+                        judgeModelId: (run as EvaluationRun).judgeModelId,
+                        benchmarkId: (run as EvaluationRun).benchmarkId,
+                      },
+                    },
+                  })}
+                >
+                  Customize before re-running…
+                </Button>
+                {/* Cancel: only while actively running. Absorbed from
+                    EvalRunDetailPage (run-experience convergence, Phase 1). */}
+                {run.status === 'running' && (
+                  <Button
+                    variant="destructive"
+                    size="sm"
+                    data-testid="inspector-cancel-btn"
+                    className="h-7 gap-1.5 text-xs"
+                    onClick={handleCancel}
+                    disabled={cancelling}
+                  >
+                    {cancelling ? <Loader2 size={12} className="animate-spin" /> : null}
+                    Cancel
+                  </Button>
+                )}
+                {/* Convert to Benchmark: ad-hoc runs only (no benchmarkId).
+                    Absorbed from EvalRunDetailPage (run-experience
+                    convergence, Phase 1). */}
+                {!(run as EvaluationRun).benchmarkId && run.status === 'completed' && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    data-testid="inspector-convert-to-benchmark-btn"
+                    className="h-7 gap-1.5 text-xs"
+                    onClick={() => setPromoteOpen(true)}
+                  >
+                    <Bookmark size={12} />
+                    Convert to Benchmark
+                  </Button>
+                )}
+              </>
             ) : (
               <div
                 title="Re-run is only available for evaluation runs, not benchmark-embedded runs"
@@ -450,6 +614,9 @@ export const RunInspectorPage: React.FC = () => {
             </Button>
           </div>
         </div>
+        {actionError && (
+          <div className="mt-2 text-xs text-red-600" data-testid="inspector-action-error">{actionError}</div>
+        )}
       </div>
 
       {/* Re-run Confirm Dialog (EvaluationRun only) */}
@@ -458,8 +625,36 @@ export const RunInspectorPage: React.FC = () => {
           run={run as EvaluationRun | null}
           open={rerunDialogOpen}
           onOpenChange={setRerunDialogOpen}
-          onRerun={newRunId => navigate(`/evaluations/runs/${newRunId}`)}
+          onRerun={newRunId => navigate(runDetailUrl({ id: newRunId }))}
         />
+      )}
+
+      {/* Convert to Benchmark dialog (EvaluationRun only, ad-hoc runs) */}
+      {mode === 'evalRun' && (
+        <Dialog open={promoteOpen} onOpenChange={setPromoteOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Convert to Benchmark</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              This will create a named benchmark from the test cases in this run.
+              If a benchmark with this name exists, its test case list will be updated.
+            </p>
+            <Input
+              placeholder="Benchmark name"
+              value={promoteName}
+              onChange={e => setPromoteName(e.target.value)}
+              onKeyDown={e => e.key === 'Enter' && handlePromote()}
+            />
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setPromoteOpen(false)}>Cancel</Button>
+              <Button onClick={handlePromote} disabled={!promoteName.trim() || promoting}>
+                {promoting ? <Loader2 size={14} className="mr-1 animate-spin" /> : null}
+                Create Benchmark
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
       )}
 
       {/* ── Left + Right Panels ──────────────────────────────────── */}
