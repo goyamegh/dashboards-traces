@@ -522,6 +522,29 @@ describe('Experiments Storage Routes', () => {
       expect(createdExp.runs[0].id).toBeDefined();
       expect(createdExp.runs[0].createdAt).toBeDefined();
     });
+
+    it('should reject an empty body with 400 and never call storage.benchmarks.create (regression: previously 201 with a nameless benchmark)', async () => {
+      const { req, res } = createMocks({}, {});
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks');
+
+      await handler(req, res);
+
+      expect(mockBenchmarksCreate).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ error: expect.stringContaining('name') })
+      );
+    });
+
+    it('should reject testCaseIds that is not an array of strings with 400', async () => {
+      const { req, res } = createMocks({}, { name: 'New Benchmark', testCaseIds: 'not-an-array' });
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks');
+
+      await handler(req, res);
+
+      expect(mockBenchmarksCreate).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
   });
 
   describe('PUT /api/storage/benchmarks/:id', () => {
@@ -844,6 +867,25 @@ describe('Experiments Storage Routes', () => {
         expect.objectContaining({
           created: 2,
         })
+      );
+    });
+
+    it('should filter out a nameless item before calling storage.benchmarks.bulkCreate and count it as an error (regression: previously always persisted, the adapter has no name validation)', async () => {
+      mockBenchmarksBulkCreate.mockResolvedValue({ created: 1, errors: 0 });
+
+      const { req, res } = createMocks(
+        {},
+        { benchmarks: [{ name: 'Valid Benchmark', testCaseIds: [] }, {}] }
+      );
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/bulk');
+
+      await handler(req, res);
+
+      expect(mockBenchmarksBulkCreate).toHaveBeenCalledWith([
+        expect.objectContaining({ name: 'Valid Benchmark' }),
+      ]);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ created: 1, errors: 1 })
       );
     });
   });
