@@ -555,6 +555,26 @@ describe('Experiments Storage Routes', () => {
       expect(mockBenchmarksCreate).not.toHaveBeenCalled();
       expect(res.status).toHaveBeenCalledWith(400);
     });
+
+    it('should reject testCaseIds containing an empty string with 400 (codex_review finding: "" previously passed the typeof-string check)', async () => {
+      const { req, res } = createMocks({}, { name: 'New Benchmark', testCaseIds: ['tc-1', ''] });
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks');
+
+      await handler(req, res);
+
+      expect(mockBenchmarksCreate).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should reject testCaseIds containing a whitespace-only string with 400', async () => {
+      const { req, res } = createMocks({}, { name: 'New Benchmark', testCaseIds: ['   '] });
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks');
+
+      await handler(req, res);
+
+      expect(mockBenchmarksCreate).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
   });
 
   describe('PUT /api/storage/benchmarks/:id', () => {
