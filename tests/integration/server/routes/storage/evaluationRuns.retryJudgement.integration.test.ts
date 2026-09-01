@@ -5,6 +5,7 @@
 
 /**
  * Integration tests for POST /api/storage/evaluation-runs/:id/retry-judgement
+ * and GET .../retry-judgement/status.
  *
  * Requires the backend server to be running (see tests/integration/testConfig).
  * Run:
@@ -16,16 +17,25 @@
  * The demo judge's accuracy floor (0.7) always resolves to 'passed' for a
  * non-empty trajectory, which is what these assertions rely on.
  *
+ * ASYNC JOB CONTRACT (fixes the real "failed to retry judgement" toast on a
+ * 62-case run: the POST used to await the whole judge pipeline inline —
+ * 20-30+ minutes for that many cases — and the client's fetch/proxy timed
+ * out while the server kept working). The POST now responds 202 immediately
+ * with `{ jobId, total, status: 'running' }` and the caller polls GET
+ * .../retry-judgement/status until it reports `status: 'completed' |
+ * 'failed'`. `pollRetryJudgement()` below is the shared poll helper.
+ *
  * Covers:
  *   - 404 when the run doesn't exist
  *   - 409 when the run is still 'running'
- *   - happy path: only the judge-failed (metricsStatus:'error') case is
- *     retried; the already-passed case is left untouched; report + run.stats
- *     are updated
+ *   - 202 + poll happy path: only the judge-failed (metricsStatus:'error')
+ *     case is retried; the already-passed case is left untouched; report +
+ *     run.stats are updated
  *   - a case with metricsStatus:'error' but no stored trajectory (agent
  *     crash) is NOT retried — nothing to salvage
  *   - scope=all re-judges every rejudgeable case, including already-passed
  *     ones
+ *   - GET .../retry-judgement/status 404s once no job exists for a run
  */
 
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
@@ -41,6 +51,23 @@ const checkBackend = async (): Promise<boolean> => {
     return false;
   }
 };
+
+/**
+ * Poll GET .../retry-judgement/status until it reaches a terminal state.
+ * Mirrors services/client/evaluationRunsApi.ts's retryJudgement() polling
+ * loop, at a tighter interval since the demo judge resolves in ms not
+ * minutes.
+ */
+async function pollRetryJudgement(runId: string, maxAttempts = 50): Promise<any> {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const res = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}/retry-judgement/status`);
+    if (!res.ok) throw new Error(`Status poll failed: ${res.status} ${await res.text()}`);
+    const job = await res.json();
+    if (job.status === 'completed' || job.status === 'failed') return job;
+    await new Promise(resolve => setTimeout(resolve, 100));
+  }
+  throw new Error(`retry-judgement job for ${runId} did not complete within ${maxAttempts} polls`);
+}
 
 const createTestCase = async (name: string): Promise<string> => {
   const response = await fetch(`${BASE_URL}/api/storage/test-cases`, {
@@ -161,19 +188,34 @@ describe('POST /api/storage/evaluation-runs/:id/retry-judgement', () => {
   it('returns 409 when a second retry-judgement request arrives while the first is still in flight (codex_review: same-process double-submit guard)', async () => {
     if (!backendAvailable) return;
 
-    const tc = await createTestCase('Retry Judgement — concurrent submit');
-    cleanupIds.testCases.push(tc);
-
-    const report = await createReport(`report-retry-concurrent-${Date.now()}`, {
-      testCaseId: tc,
-      metricsStatus: 'error',
-      passFailStatus: null,
-    });
-    cleanupIds.reports.push(report.id);
+    // Seed enough retryable cases that the background job (kicked off by
+    // the 202 response, per the async job pattern) can't finish before the
+    // second concurrent request is dispatched — with a single case + the
+    // near-instant demo/mock judge, the whole pipeline can complete in a
+    // few ms, which is fast enough to occasionally beat the second
+    // `fetch()` in Promise.all() to the server (a test-timing artifact,
+    // not a guard bug: a REAL Bedrock judge call takes ~40-90s per case,
+    // so this race window never gets anywhere near this tight in
+    // production). More cases -> a longer-lived job -> a reliable margin.
+    const CASE_COUNT = 15;
+    const ids: string[] = [];
+    const reportIds: string[] = [];
+    for (let i = 0; i < CASE_COUNT; i++) {
+      const tc = await createTestCase(`Retry Judgement — concurrent submit ${i}`);
+      cleanupIds.testCases.push(tc);
+      const report = await createReport(`report-retry-concurrent-${Date.now()}-${i}`, {
+        testCaseId: tc,
+        metricsStatus: 'error',
+        passFailStatus: null,
+      });
+      cleanupIds.reports.push(report.id);
+      ids.push(tc);
+      reportIds.push(report.id);
+    }
 
     const run = await seedEvalRun({
-      testCaseSnapshots: [{ id: tc, version: 1, name: 'Retry Judgement — concurrent submit' }],
-      results: { [tc]: { reportId: report.id, status: 'completed' } },
+      testCaseSnapshots: ids.map((id, i) => ({ id, version: 1, name: `Retry Judgement — concurrent submit ${i}` })),
+      results: Object.fromEntries(ids.map((id, i) => [id, { reportId: reportIds[i], status: 'completed' }])),
     });
     cleanupIds.evalRuns.push(run.id);
 
@@ -185,9 +227,12 @@ describe('POST /api/storage/evaluation-runs/:id/retry-judgement', () => {
       fetch(`${BASE_URL}/api/storage/evaluation-runs/${run.id}/retry-judgement`, { method: 'POST' }),
     ]);
     const statuses = [res1.status, res2.status].sort();
-    expect(statuses).toEqual([200, 409]);
+    expect(statuses).toEqual([202, 409]);
     const loserBody = await (res1.status === 409 ? res1 : res2).json();
     expect(loserBody.error).toMatch(/already in progress/i);
+
+    // Drain the winner's job so it doesn't race the next test's job map entry.
+    await pollRetryJudgement(run.id);
   }, 30000);
 
   it('retries only the judge-failed case, leaves the passed case untouched, and recomputes stats', async () => {
@@ -224,9 +269,16 @@ describe('POST /api/storage/evaluation-runs/:id/retry-judgement', () => {
     });
     cleanupIds.evalRuns.push(run.id);
 
-    const res = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${run.id}/retry-judgement`, { method: 'POST' });
-    expect(res.status).toBe(200);
-    const body = await res.json();
+    const startRes = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${run.id}/retry-judgement`, { method: 'POST' });
+    expect(startRes.status).toBe(202);
+    const started = await startRes.json();
+    expect(started.total).toBe(1);
+    expect(started.status).toBe('running');
+
+    const job = await pollRetryJudgement(run.id);
+    expect(job.status).toBe('completed');
+    expect(job.completed).toBe(job.total);
+    const body = job.summary;
 
     expect(body.retried).toBe(1);
     expect(body.succeeded).toBe(1);
@@ -272,9 +324,12 @@ describe('POST /api/storage/evaluation-runs/:id/retry-judgement', () => {
     });
     cleanupIds.evalRuns.push(run.id);
 
-    const res = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${run.id}/retry-judgement`, { method: 'POST' });
-    expect(res.status).toBe(200);
-    const body = await res.json();
+    const startRes = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${run.id}/retry-judgement`, { method: 'POST' });
+    expect(startRes.status).toBe(202);
+    expect((await startRes.json()).total).toBe(0);
+
+    const job = await pollRetryJudgement(run.id);
+    const body = job.summary;
     expect(body.retried).toBe(0);
     expect(body.results).toEqual([]);
 
@@ -303,10 +358,20 @@ describe('POST /api/storage/evaluation-runs/:id/retry-judgement', () => {
     });
     cleanupIds.evalRuns.push(run.id);
 
-    const res = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${run.id}/retry-judgement?scope=all`, { method: 'POST' });
-    expect(res.status).toBe(200);
-    const body = await res.json();
+    const startRes = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${run.id}/retry-judgement?scope=all`, { method: 'POST' });
+    expect(startRes.status).toBe(202);
+
+    const job = await pollRetryJudgement(run.id);
+    const body = job.summary;
     expect(body.retried).toBe(1);
     expect(body.results[0].testCaseId).toBe(tcPassed);
   }, 30000);
+
+  it('GET .../retry-judgement/status 404s when no job has ever run for this id', async () => {
+    if (!backendAvailable) return;
+    const res = await fetch(`${BASE_URL}/api/storage/evaluation-runs/no-such-run-ever/retry-judgement/status`);
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toMatch(/no retry-judgement job/i);
+  });
 });

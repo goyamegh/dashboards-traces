@@ -40,6 +40,7 @@ import {
   selectRetryableCases,
   retryJudgementForRun,
   retryJudgementForCase,
+  countRetryableCases,
 } from '@/services/evaluation/retryJudgement';
 
 const mockedCallBedrockJudge = callBedrockJudge as jest.Mock;
@@ -413,5 +414,72 @@ describe('retryJudgementForRun', () => {
     expect(summary.failed).toBe(1);
     expect(summary.results[0].error).toBe('test case not found');
     expect(mockedCallBedrockJudge).not.toHaveBeenCalled();
+  });
+
+  it('reports progress via onProgress as each case completes (0/N up front, then N/N once all finish)', async () => {
+    mockedCallBedrockJudge.mockResolvedValue({
+      passFailStatus: 'passed',
+      metrics: { accuracy: 100, faithfulness: 100, latency_score: 100, trajectory_alignment_score: 100 },
+      llmJudgeReasoning: 'ok',
+      improvementStrategies: [],
+    });
+
+    const reports: Record<string, EvaluationReport> = {
+      'r-a': makeReport({ id: 'r-a', testCaseId: 'tc-a', metricsStatus: 'error' as any }),
+      'r-b': makeReport({ id: 'r-b', testCaseId: 'tc-b', metricsStatus: 'error' as any }),
+    };
+    const storage = makeStorage(reports);
+    const run = makeRun({
+      results: {
+        'tc-a': { reportId: 'r-a', status: 'completed' } as any,
+        'tc-b': { reportId: 'r-b', status: 'completed' } as any,
+      },
+    });
+
+    const progressCalls: Array<[number, number]> = [];
+    const summary = await retryJudgementForRun(run, storage as any, {
+      onProgress: (completed, total) => progressCalls.push([completed, total]),
+    });
+
+    expect(summary.retried).toBe(2);
+    // First call is the pre-flight 0/N so a poller sees a total immediately;
+    // every call after that has a non-decreasing `completed` up to N/N on
+    // the last call (exact interleaving with concurrency isn't asserted).
+    expect(progressCalls[0]).toEqual([0, 2]);
+    expect(progressCalls[progressCalls.length - 1]).toEqual([2, 2]);
+    expect(progressCalls.every(([, total]) => total === 2)).toBe(true);
+    const completedValues = progressCalls.map(([completed]) => completed);
+    for (let i = 1; i < completedValues.length; i++) {
+      expect(completedValues[i]).toBeGreaterThanOrEqual(completedValues[i - 1]);
+    }
+  });
+
+  describe('countRetryableCases', () => {
+    it('matches selectRetryableCases\' length without doing any judge work', async () => {
+      const reports: Record<string, EvaluationReport> = {
+        'r-errored': makeReport({ id: 'r-errored', testCaseId: 'tc-errored', metricsStatus: 'error' as any }),
+        'r-passed': makeReport({ id: 'r-passed', testCaseId: 'tc-passed', metricsStatus: 'ready' as any, passFailStatus: 'passed' }),
+      };
+      const storage = makeStorage(reports);
+      const run = makeRun({
+        results: {
+          'tc-errored': { reportId: 'r-errored', status: 'completed' } as any,
+          'tc-passed': { reportId: 'r-passed', status: 'completed', passFailStatus: 'passed' } as any,
+        },
+      });
+
+      const count = await countRetryableCases(run, storage as any);
+      expect(count).toBe(1);
+      expect(mockedCallBedrockJudge).not.toHaveBeenCalled();
+
+      const countAll = await countRetryableCases(run, storage as any, 'all');
+      expect(countAll).toBe(2);
+    });
+
+    it('returns 0 when there is nothing to retry', async () => {
+      const storage = makeStorage({});
+      const run = makeRun({ results: {} });
+      expect(await countRetryableCases(run, storage as any)).toBe(0);
+    });
   });
 });

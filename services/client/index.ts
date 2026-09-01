@@ -53,9 +53,11 @@ export {
   rerunEvaluationRun,
   updateEvaluationRun,
   retryJudgement,
+  getRetryJudgementStatus,
   type CreateEvaluationRunRequest,
   type EvaluationRunProgress,
   type EvaluationRunStartedEvent,
   type RetryJudgementSummary,
   type RetryJudgementCaseResult,
+  type RetryJudgementJobStatus,
 } from './evaluationRunsApi';
