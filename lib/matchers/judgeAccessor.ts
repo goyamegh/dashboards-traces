@@ -117,7 +117,15 @@ export function buildJudgeMatcherEntry(
 ): MatcherResult {
   const claim = options?.claim?.trim() || 'expected outcomes';
   const accuracy = judgeResult.metrics?.accuracy;
-  const score = typeof accuracy === 'number' ? accuracy / 100 : undefined;
+  // Same headline precedence as the SDK judge(): legacy `accuracy` →
+  // server-computed weighted overall → none (never a fabricated 0).
+  const headline =
+    typeof accuracy === 'number'
+      ? accuracy
+      : typeof judgeResult.overallScore === 'number'
+        ? judgeResult.overallScore
+        : undefined;
+  const score = headline !== undefined ? headline / 100 : undefined;
   const pass = judgeResult.passFailStatus === 'passed';
   const reasoning = judgeResult.llmJudgeReasoning ?? '';
 
@@ -129,7 +137,8 @@ export function buildJudgeMatcherEntry(
     score,
     reasoning,
     ...(options?.model ? { model: options.model } : {}),
-    ...(pass ? {} : { errorMessage: reasoning }),
+    // No `errorMessage` mirror: it used to copy `reasoning` verbatim on
+    // failure, which the UI then rendered twice. Reasoning is canonical.
     // Carry the rest of the judge payload through so SDK
     // `getJudgeMatcherResults()` consumers see the same data the
     // legacy report-level fields used to expose. See MatcherResult.
@@ -138,6 +147,9 @@ export function buildJudgeMatcherEntry(
       : {}),
     ...(judgeResult.metrics && typeof judgeResult.metrics === 'object'
       ? { judgeMetrics: { ...judgeResult.metrics } as any }
+      : {}),
+    ...(judgeResult.extraFields && typeof judgeResult.extraFields === 'object' && Object.keys(judgeResult.extraFields).length > 0
+      ? { judgeExtraFields: judgeResult.extraFields }
       : {}),
   };
 }
@@ -215,6 +227,10 @@ export interface JudgeResultLike {
     recommendation: string;
     priority: 'high' | 'medium' | 'low';
   }>;
+  /** Weighted overall across the evaluator's declared metrics (server-computed). */
+  overallScore?: number;
+  /** Non-metric structured judge output (facts, failure_causes, evidence, …). */
+  extraFields?: Record<string, unknown>;
 }
 
 // ─── internal helpers ───────────────────────────────────────────────────────

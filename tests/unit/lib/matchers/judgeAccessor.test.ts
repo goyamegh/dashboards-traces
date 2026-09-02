@@ -179,7 +179,7 @@ describe('recordJudgeMatcherResult — the write helper', () => {
     expect(report.llmJudgeReasoning).toBe('Agent satisfied the claim.');
   });
 
-  it('marks failed entries with errorMessage equal to reasoning (matches SDK judge() convention)', () => {
+  it('does NOT mirror reasoning into errorMessage on failure (reasoning is canonical; the mirror caused double-rendering)', () => {
     const report: any = { matcherResults: [] };
     const entry = recordJudgeMatcherResult(report, {
       passFailStatus: 'failed' as const,
@@ -187,7 +187,8 @@ describe('recordJudgeMatcherResult — the write helper', () => {
       llmJudgeReasoning: 'Did not satisfy.',
     });
     expect(entry.pass).toBe(false);
-    expect(entry.errorMessage).toBe('Did not satisfy.');
+    expect(entry.errorMessage).toBeUndefined();
+    expect(entry.reasoning).toBe('Did not satisfy.');
   });
 
   it('preserves existing matcherResults entries when appending', () => {

@@ -123,6 +123,12 @@ module.exports = {
     'components/ContextDispositionGroups.tsx',
     'components/TestCaseDetailPanel.tsx',
     'components/evals3/CollapsibleTestCaseDefinition.tsx',
+    // - MatcherResultsPanel.tsx (judge-tab WHY/FIX redesign, #454): the judge
+    //   row rendering (score-suppression heuristic, why/fix panels, fact
+    //   chips, reasoning dedupe) has a focused jsdom/RTL suite
+    //   (tests/unit/components/MatcherResultsPanel.test.ts) exercising the
+    //   exact branches that PR's diff touched.
+    'components/MatcherResultsPanel.tsx',
     'components/comparison/ComparisonScoreboard.tsx',
     'components/evals3/EvalRunsPage.tsx',
     'hooks/usePersistedState.ts',

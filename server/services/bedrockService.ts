@@ -75,6 +75,17 @@ export interface JudgeResponse {
    */
   extraFields?: Record<string, unknown>;
   /**
+   * Weighted overall score on the evaluator's scale, computed from the
+   * evaluator's `scoringConfig.metrics` weights over the metric values the
+   * judge actually emitted. Present only when the evaluator declares
+   * weighted metrics and at least one declared metric was extracted.
+   * This is the headline number for custom evaluators whose scoring
+   * dimensions don't include the legacy `accuracy` key — without it the
+   * SDK `judge()` matcher had nothing to headline and fell back to a
+   * misleading `score 0%` (even on passing verdicts).
+   */
+  overallScore?: number;
+  /**
    * Optional debug breadcrumbs the routing/persistence layer can use to
    * answer "did my saved prompt actually reach the model?". Set by services
    * when `AH_JUDGE_DEBUG=1` or `NODE_ENV=development`; otherwise omitted to

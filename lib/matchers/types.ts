@@ -108,4 +108,18 @@ export interface MatcherResult {
    * that avoids needing this marker by not bailing at all.
    */
   notReached?: boolean;
+
+  /**
+   * Structured, non-metric judge output beyond the typed wire fields — the
+   * SDK-side mirror of `JudgeResponse.extraFields`. Any JSON key a judge
+   * prompt emits beyond the known schema lands here (captured by
+   * `server/services/judgeResponseParser.ts`), so prompt iteration surfaces
+   * new structure without code changes. Conventional keys the UI knows how
+   * to render when present:
+   *
+   *   - `facts`: Array<{ fact: string; verdict: 'stated'|'partial'|'missing'|'contradicted'; rationale?: string; credit?: number }>
+   *   - `failure_causes`: Array<{ cause: string; detail?: string; dimension?: string }>
+   *   - `evidence`: { expected_sources?: string[]; cited_sources?: Array<string | { id: string; title?: string }> }
+   */
+  judgeExtraFields?: Record<string, unknown>;
 }
