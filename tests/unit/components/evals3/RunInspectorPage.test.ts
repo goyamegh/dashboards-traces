@@ -684,3 +684,4 @@ describe('RunInspectorPage — Retry judgement button (docType-keyed, not route-
     expect(screen.queryByTestId('inspector-retry-judgement-btn')).toBeNull();
   });
 });
+

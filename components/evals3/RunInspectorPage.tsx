@@ -28,6 +28,7 @@ import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/componen
 import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
 import { getEvaluationRun } from '@/services/client';
 import { Benchmark, BenchmarkRun, EvaluationRun, TestCase, EvaluationReport, isEvaluationRun } from '@/types';
+import { resolveCanonicalEvaluationRun } from '@/lib/resolveCanonicalRun';
 import { ResultStatus, getResultStatus, StatusIcon, StatusLabel } from './ResultStatus';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatDate, getModelName } from '@/lib/utils';
@@ -132,13 +133,7 @@ export const RunInspectorPage: React.FC = () => {
         // (Re-run stays keyed on route `mode` on this branch — its own
         // docType-keyed fix landed separately on goyamegh/rerun-idspace-fix
         // and isn't ported here; out of scope for this fix.)
-        try {
-          // Defensive `?? bmRun`: some test doubles / API layers resolve
-          // to a falsy value on "not found" instead of throwing.
-          runData = (await getEvaluationRun(runId)) ?? bmRun;
-        } catch {
-          runData = bmRun;
-        }
+        runData = await resolveCanonicalEvaluationRun(runId, bmRun, getEvaluationRun);
       } else {
         // SDK eval-run mode — no benchmark.
         try {
