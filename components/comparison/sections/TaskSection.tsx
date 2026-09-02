@@ -23,12 +23,18 @@ import { Link } from 'react-router-dom';
 import { ClipboardList, ExternalLink, Loader2 } from 'lucide-react';
 import { TestCase } from '@/types';
 import { asyncTestCaseStorage } from '@/services/storage';
+import { TestCasePromptHoverCard } from '../TestCasePromptHoverCard';
 
 interface TaskSectionProps {
   testCaseId: string;
+  /** The version a specific run in this row actually used (report.testCaseVersion),
+   *  for the hover preview's version badge. The body below always shows the
+   *  CURRENT test-case content (unchanged pre-existing behavior); this only
+   *  affects what the "View full test case" hover reports as the run's version. */
+  version?: number;
 }
 
-export const TaskSection: React.FC<TaskSectionProps> = ({ testCaseId }) => {
+export const TaskSection: React.FC<TaskSectionProps> = ({ testCaseId, version }) => {
   const [testCase, setTestCase] = useState<TestCase | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -73,12 +79,21 @@ export const TaskSection: React.FC<TaskSectionProps> = ({ testCaseId }) => {
           Task
           <span className="font-normal text-muted-foreground/70">· same prompt for both agents</span>
         </div>
-        <Link
-          to={`/evals3/test-cases/${testCaseId}`}
-          className="inline-flex flex-shrink-0 items-center gap-1 text-xs text-opensearch-blue hover:underline"
+        <TestCasePromptHoverCard
+          testCaseId={testCaseId}
+          testCaseName={testCase.name}
+          version={version}
+          labels={testCase.labels}
+          category={testCase.category}
+          difficulty={testCase.difficulty}
         >
-          View full test case <ExternalLink size={11} />
-        </Link>
+          <Link
+            to={`/evals3/test-cases/${testCaseId}`}
+            className="inline-flex flex-shrink-0 items-center gap-1 text-xs text-opensearch-blue hover:underline"
+          >
+            View full test case <ExternalLink size={11} />
+          </Link>
+        </TestCasePromptHoverCard>
       </div>
 
       {testCase.description && (
