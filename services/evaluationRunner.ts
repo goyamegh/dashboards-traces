@@ -27,7 +27,7 @@ import {
 } from '@/services/evaluation';
 import { resolveAgentModel } from '@/lib/resolveAgentModel';
 import { readEnv } from '@/lib/envCompat';
-import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
+import { buildJudgeAgentsHints, resolveJudgeRunId } from '@/services/traces/judgeAgentsHints';
 import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
 import { connectorRegistry } from '@/services/connectors/server';
 import { startTestCaseSpan, finalizeTestCaseSpan, addEvaluationResultEvents } from '@/lib/telemetry';
@@ -936,7 +936,9 @@ async function waitForTracesAndJudge(
               () => {},
               judgeModelId,
               report.evaluatorId,
-              report.runId,
+              // See resolveJudgeRunId: falls back to traceId/report.id when
+              // the connector never returned a native runId (REST agents).
+              resolveJudgeRunId(report),
               // Strategy C correlation hints (#264) so the agent trace
               // judge tool can find spans the agent emits under its OWN
               // correlation, not just spans matching agent-health's runId.

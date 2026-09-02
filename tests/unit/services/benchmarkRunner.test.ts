@@ -1448,6 +1448,88 @@ describe('Experiment Runner', () => {
       }));
     });
 
+    it('regression: forwards a fallback runId (traceId, then report.id) to the agent-trace judge when the connector never returned one (#trace-poll-fix)', async () => {
+      // Root cause (2026-09-01 live smoke test): REST-connector reports
+      // (e.g. example-rest-agent-variant) never carry a
+      // connector-native runId (RESTConnector.execute() returns
+      // `data.runId || data.id || null`). The `agent` (trace) judge provider
+      // hard-400s without a truthy `runId` even when Strategy C (service.name
+      // + time-window) already found the real spans. Without the fallback in
+      // resolveJudgeRunId, `callBedrockJudge` would be invoked with
+      // `runId: undefined` and the judge call would always fail for these
+      // agents regardless of whether trace correlation worked.
+      const testCase = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run = createBenchmarkRun('run-1');
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase]);
+      mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [], modelId: 'claude-sonnet' });
+      mockSaveReportWithClient.mockResolvedValue({
+        id: 'saved-report-1',
+        runId: undefined, // REST connector — no native runId
+        traceId: 'eval-trace-id-123', // eval's own OTel span traceId IS available
+        metricsStatus: 'pending',
+        modelId: 'claude-sonnet',
+        agentKey: 'test-agent',
+        trajectory: [],
+      });
+      mockCallBedrockJudge.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 95 },
+        llmJudgeReasoning: 'Test passed',
+        improvementStrategies: [],
+      });
+
+      await executeRun(experiment, run, jest.fn(), { client: mockClient });
+
+      const callbacks = mockStartPollingAsync.mock.calls[0][2];
+      const updatedReport = { id: 'saved-report-1', trajectory: [{ type: 'response', content: 'Traced response' }] };
+      await callbacks.onTracesFound([{ traceId: 'agent-own-trace-id', name: 'test-span' }], updatedReport);
+
+      // 7th positional arg to callBedrockJudge is the runId forwarded to
+      // /api/judge — must fall back to traceId, NOT stay undefined.
+      expect(mockCallBedrockJudge.mock.calls[0][6]).toBe('eval-trace-id-123');
+    });
+
+    it('regression: falls back to undefined (fail-closed) when neither runId nor traceId are available, NOT a fabricated report.id (#trace-poll-fix)', async () => {
+      // report.id is deliberately NOT an acceptable fallback (codex_review
+      // finding, 2026-09-01): /api/logs treats a truthy runId as an
+      // UNBOUNDED analyzed `match: { message: runId }` query with no time
+      // window, and a hyphenated report id (`run-<ts>-<rand>`) tokenizes into
+      // common words ("run") that would pull in unrelated cluster logs. When
+      // there's no genuine correlator, the judge call must still forward
+      // `undefined` so /api/judge's original fail-closed 400 stands.
+      const testCase = createTestCase('tc-1');
+      const experiment = createExperiment(['tc-1']);
+      const run = createBenchmarkRun('run-1');
+
+      mockGetAllTestCasesWithClient.mockResolvedValue([testCase]);
+      mockRunEvaluationWithConnector.mockResolvedValue({ id: 'report-1', trajectory: [], modelId: 'claude-sonnet' });
+      mockSaveReportWithClient.mockResolvedValue({
+        id: 'saved-report-1',
+        runId: undefined,
+        traceId: undefined,
+        metricsStatus: 'pending',
+        modelId: 'claude-sonnet',
+        agentKey: 'test-agent',
+        trajectory: [],
+      });
+      mockCallBedrockJudge.mockResolvedValue({
+        passFailStatus: 'passed',
+        metrics: { accuracy: 95 },
+        llmJudgeReasoning: 'Test passed',
+        improvementStrategies: [],
+      });
+
+      await executeRun(experiment, run, jest.fn(), { client: mockClient });
+
+      const callbacks = mockStartPollingAsync.mock.calls[0][2];
+      const updatedReport = { id: 'saved-report-1', trajectory: [{ type: 'response', content: 'Traced response' }] };
+      await callbacks.onTracesFound([{ traceId: 'agent-own-trace-id', name: 'test-span' }], updatedReport);
+
+      expect(mockCallBedrockJudge.mock.calls[0][6]).toBeUndefined();
+    });
+
     it('should handle judge errors gracefully', async () => {
       const testCase = createTestCase('tc-1');
       const experiment = createExperiment(['tc-1']);
