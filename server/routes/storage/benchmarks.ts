@@ -303,6 +303,30 @@ function isSampleId(id: string): boolean {
 }
 
 /**
+ * Validate a benchmark create body.
+ *
+ * Minimal required contract: `name` is a non-empty string, and `testCaseIds`
+ * (when present) is an array of strings. This mirrors validateRunConfig()
+ * below, which validates the `/execute` config, but guards the create route
+ * itself — previously an empty `{}` body silently persisted a nameless
+ * benchmark to the shared cluster.
+ */
+function validateBenchmarkCreate(body: any): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return 'Request body must be a valid benchmark object';
+  }
+  if (!body.name || typeof body.name !== 'string' || !body.name.trim()) {
+    return 'name is required and must be a non-empty string';
+  }
+  if (body.testCaseIds !== undefined) {
+    if (!Array.isArray(body.testCaseIds) || !body.testCaseIds.every((id: any) => typeof id === 'string')) {
+      return 'testCaseIds must be an array of strings when provided';
+    }
+  }
+  return null;
+}
+
+/**
  * Validate run configuration input
  * Returns error message if invalid, null if valid
  */
@@ -579,6 +603,11 @@ router.post('/api/storage/benchmarks', async (req: Request, res: Response) => {
     // Reject creating with demo- prefix
     if (benchmark.id && isSampleId(benchmark.id)) {
       return res.status(400).json({ error: 'Cannot create benchmark with demo- prefix (reserved for sample data)' });
+    }
+
+    const validationError = validateBenchmarkCreate(benchmark);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
     }
 
     const now = new Date().toISOString();
@@ -902,8 +931,14 @@ router.post('/api/storage/benchmarks/bulk', async (req: Request, res: Response) 
       return res.status(400).json({ error: 'Cannot create benchmarks with demo- prefix (reserved for sample data)' });
     }
 
+    // Filter out invalid entries (e.g. `{}`) before persisting — the adapter's
+    // create() does not validate `name` itself, so without this guard a
+    // garbage item would silently persist a nameless benchmark.
+    const validBenchmarks = benchmarks.filter(bench => validateBenchmarkCreate(bench) === null);
+    const invalidCount = benchmarks.length - validBenchmarks.length;
+
     const now = new Date().toISOString();
-    const prepared = benchmarks.map(bench => {
+    const prepared = validBenchmarks.map(bench => {
       if (!bench.id) bench.id = generateId('bench');
       bench.createdAt = bench.createdAt || now;
       bench.updatedAt = bench.updatedAt || now;
@@ -924,8 +959,8 @@ router.post('/api/storage/benchmarks/bulk', async (req: Request, res: Response) 
     const storage = getStorageModule();
     const result = await storage.benchmarks.bulkCreate(prepared);
 
-    debug('StorageAPI', `Bulk created ${result.created} benchmarks`);
-    res.json(result);
+    debug('StorageAPI', `Bulk created ${result.created} benchmarks (${invalidCount} rejected by validation)`);
+    res.json({ created: result.created, errors: result.errors + invalidCount });
   } catch (error: any) {
     console.error('[StorageAPI] Bulk create benchmarks failed:', error.message);
     res.status(500).json({ error: error.message });

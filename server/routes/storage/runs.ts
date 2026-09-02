@@ -32,6 +32,41 @@ function isSampleId(id: string): boolean {
   return id.startsWith('demo-');
 }
 
+const VALID_RUN_STATUSES = ['running', 'completed', 'failed'];
+
+/**
+ * Validate a run/report create body.
+ *
+ * Minimal required contract, derived from the TestCaseRun type
+ * (types/index.ts) and every internal caller that persists a run
+ * (services/evaluationRunner.ts, services/benchmarkRunner.ts,
+ * server/routes/evaluation.ts): all of them always set `testCaseId`,
+ * `agentName`, and `modelName` on the initial placeholder document, even
+ * before the agent/judge has produced a trajectory. Returns an error
+ * message when invalid, null when valid.
+ */
+function validateRunCreate(body: any): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return 'Request body must be a valid run/report object';
+  }
+  if (!body.testCaseId || typeof body.testCaseId !== 'string' || !body.testCaseId.trim()) {
+    return 'testCaseId is required and must be a non-empty string';
+  }
+  if (!body.agentName || typeof body.agentName !== 'string' || !body.agentName.trim()) {
+    return 'agentName is required and must be a non-empty string';
+  }
+  if (!body.modelName || typeof body.modelName !== 'string' || !body.modelName.trim()) {
+    return 'modelName is required and must be a non-empty string';
+  }
+  if (body.status !== undefined && !VALID_RUN_STATUSES.includes(body.status)) {
+    return `status must be one of: ${VALID_RUN_STATUSES.join(', ')}`;
+  }
+  if (body.trajectory !== undefined && !Array.isArray(body.trajectory)) {
+    return 'trajectory must be an array when provided';
+  }
+  return null;
+}
+
 /**
  * Get timestamp in milliseconds for sorting, using createdAt as fallback
  * Fixes bug where missing timestamps defaulted to epoch (1970)
@@ -191,6 +226,11 @@ router.post('/api/storage/runs', async (req: Request, res: Response) => {
     // Reject creating with demo- prefix
     if (runData.id && isSampleId(runData.id)) {
       return res.status(400).json({ error: 'Cannot create run with demo- prefix (reserved for sample data)' });
+    }
+
+    const validationError = validateRunCreate(runData);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
     }
 
     const storage = getStorageModule();
@@ -577,11 +617,19 @@ router.post('/api/storage/runs/bulk', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Cannot create runs with demo- prefix (reserved for sample data)' });
     }
 
-    const storage = getStorageModule();
-    const result = await storage.runs.bulkCreate(runs);
+    // Filter out invalid entries before persisting anything — a garbage item
+    // (e.g. `{}`) must never reach storage.runs.create() and be written as an
+    // empty report doc. Mirrors the tolerant-partial-failure contract of
+    // storage.runs.bulkCreate() (invalid entries count as `errors`, valid ones
+    // still get created) rather than rejecting the whole batch.
+    const validRuns = runs.filter(run => validateRunCreate(run) === null);
+    const invalidCount = runs.length - validRuns.length;
 
-    debug('StorageAPI', `Bulk created ${result.created} runs`);
-    res.json({ created: result.created, errors: result.errors });
+    const storage = getStorageModule();
+    const result = await storage.runs.bulkCreate(validRuns);
+
+    debug('StorageAPI', `Bulk created ${result.created} runs (${invalidCount} rejected by validation)`);
+    res.json({ created: result.created, errors: result.errors + invalidCount });
   } catch (error: any) {
     console.error('[StorageAPI] Bulk create runs failed:', error.message);
     res.status(500).json({ error: error.message });
