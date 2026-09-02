@@ -252,6 +252,33 @@ export function collectSessionIdsFromReports(
 }
 
 /**
+ * Build a `report.runId -> report.traceId` map for every report reachable
+ * from `runs` (Strategy-A correlator, see server/services/metricsService.ts).
+ *
+ * REST-connector reports never get a native runId (`RESTConnector.execute()`
+ * returns none), so `report.runId` already falls back to `report.traceId` in
+ * that case — harmless here (mapping a key to itself). The map matters for
+ * connectors that DO have a distinct native runId (subprocess agents like
+ * Claude Code) whose vendor OTel SDK never stamps `agent_health.run.id`; only
+ * the shared `traceId` (propagated via W3C TRACEPARENT) reaches their spans.
+ */
+export function collectTraceIdsFromReports(
+  runs: ExperimentRun[],
+  reports: Record<string, EvaluationReport>
+): Record<string, string> {
+  const traceIdByRunId: Record<string, string> = {};
+  for (const run of runs) {
+    for (const result of Object.values(run.results)) {
+      const report = reports[result.reportId];
+      if (report?.runId && report?.traceId && !traceIdByRunId[report.runId]) {
+        traceIdByRunId[report.runId] = report.traceId;
+      }
+    }
+  }
+  return traceIdByRunId;
+}
+
+/**
  * Build comparison rows for all test cases across selected runs
  */
 export function buildTestCaseComparisonRows(

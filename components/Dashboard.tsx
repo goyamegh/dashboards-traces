@@ -531,9 +531,14 @@ export const Dashboard: React.FC = () => {
 
   // Phase 2: deferred metrics
   useEffect(() => {
-    const runIds = reports.filter(r => r.runId).map(r => r.runId!).slice(0, 100);
+    const reportsWithRunId = reports.filter(r => r.runId).slice(0, 100);
+    const runIds = reportsWithRunId.map(r => r.runId!);
     if (runIds.length === 0) return;
-    fetchBatchMetrics(runIds)
+    const traceIdByRunId: Record<string, string> = {};
+    for (const r of reportsWithRunId) {
+      if (r.traceId && !traceIdByRunId[r.runId!]) traceIdByRunId[r.runId!] = r.traceId;
+    }
+    fetchBatchMetrics(runIds, traceIdByRunId)
       .then(({ metrics }) => {
         const m = new Map<string, { costUsd: number; durationMs: number; tokens: number }>();
         for (const x of metrics) {

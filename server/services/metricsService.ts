@@ -12,6 +12,7 @@
 import { Client } from '@opensearch-project/opensearch';
 import { MetricsResult, AggregateMetrics, OpenSearchConfig, Span } from '@/types';
 import { getSampleSpansForRunIds } from '../../cli/demo/sampleTraces.js';
+import { transformSpan } from './tracesService.js';
 
 // ============================================================================
 // Model Pricing
@@ -75,6 +76,155 @@ interface OpenSearchSpanSource {
   // keyed by the literal dotted OTel attribute name, e.g.
   // attributes['agent_health.run.id'] for the runId. (Data Prepper trace-analytics-plain-raw.)
   attributes?: Record<string, any>;
+}
+
+/**
+ * Read a span's attributes tolerant of BOTH OpenSearch schemas this cluster
+ * (and others in the wild) may use for the SAME logical span:
+ *   - plain-raw: a nested `attributes` object keyed by literal dotted OTel
+ *     names (`attributes['gen_ai.request.model']`).
+ *   - legacy @-raw (this is what the live `otel-v1-apm-span-*` index this
+ *     bug was hunted against actually uses, confirmed read-only): flat
+ *     `span.attributes.<key>` / `resource.attributes.<key>` fields with dots
+ *     in the attribute name encoded as `@` (`span.attributes.gen_ai@request@model`).
+ * `transformSpan` (already used by the Traces tab / `/api/traces` via
+ * tracesService.ts, which is why that endpoint found these spans' attributes
+ * fine while this file read an empty object) merges both shapes into one
+ * plain dotted-key map. Reusing it here — rather than re-deriving the same
+ * merge — keeps the two readers in agreement by construction.
+ */
+function readAttrs(span: OpenSearchSpanSource): Record<string, any> {
+  return transformSpan(span as any).attributes;
+}
+
+/**
+ * Token / model reads tolerant of vendor SDK naming.
+ *
+ * Root cause (live comparison-page bug hunt, read-only, against a real
+ * Claude Code trace-mode run): Claude Code's own OTel spans
+ * (`claude_code.llm_request`) stamp `gen_ai.request.model` correctly but
+ * report usage under bare `input_tokens` / `output_tokens` — NOT the OTel
+ * Gen AI registry names `gen_ai.usage.input_tokens` / `gen_ai.usage.output_tokens`
+ * this file previously read exclusively. The spans were being found by
+ * correlation just fine; every token/cost read against them silently landed
+ * on `0`. See AGENTS.md's "OpenTelemetry Instrumentation Standards" note and
+ * `lib/matchers/traces.ts` / `services/traces/traceSummary.ts`, which already
+ * carry this exact fallback for the Traces tab and the SDK `traces` fixture —
+ * this file was the one remaining reader using registry-only keys.
+ */
+function readInputTokens(attrs: Record<string, any>): number {
+  return Number(
+    attrs['gen_ai.usage.input_tokens'] ?? attrs['gen_ai.usage.prompt_tokens'] ?? attrs['input_tokens'] ?? 0,
+  ) || 0;
+}
+
+function readOutputTokens(attrs: Record<string, any>): number {
+  return Number(
+    attrs['gen_ai.usage.output_tokens'] ?? attrs['gen_ai.usage.completion_tokens'] ?? attrs['output_tokens'] ?? 0,
+  ) || 0;
+}
+
+/**
+ * True when a span is one of AGENT HEALTH's OWN eval/judge spans (the
+ * `test_case` / `test_suite_run` eval spans, or a judge LLM call tagged
+ * `gen_ai.operation.name = 'evaluation'`). Strategy A (traceId) correlation
+ * below pulls in every span on the shared trace, which can include these —
+ * they are not the agent's own work and must not inflate its token/cost/LLM
+ * counts.
+ */
+function isEvalOrJudgeSpan(attrs: Record<string, any>, spanName?: string): boolean {
+  return (
+    attrs['gen_ai.operation.name'] === 'evaluation' ||
+    spanName === 'test_case' ||
+    spanName === 'test_suite_run' ||
+    (typeof spanName === 'string' && spanName.startsWith('test_suite_run '))
+  );
+}
+
+/**
+ * Correlation `should` clauses for a single runId — Strategy B
+ * (`agent_health.run.id` / the OTEL-standard `gen_ai.conversation.id`) OR'd
+ * with Strategy A (`traceId`, the eval span's own OTel trace id, propagated
+ * via W3C TRACEPARENT to subprocess/HTTP connectors — see AGENTS.md's trace
+ * correlation conventions). `traceId` is a plain top-level span field in both
+ * the plain-raw and legacy @-raw schemas, so no attribute-encoding tolerance
+ * is needed for it.
+ *
+ * Without Strategy A here, REST-connector runs (which never get a native
+ * runId — `RESTConnector.execute()` returns none — so `report.runId` falls
+ * back to `report.traceId`) and subprocess agents whose vendor SDK never
+ * adopts `agent_health.run.id` (Claude Code) both 0-correlate even though
+ * `/api/traces` finds their spans instantly via the same traceId.
+ */
+function buildRunIdShouldClauses(runId: string, sessionId?: string, traceId?: string): Record<string, unknown>[] {
+  const clauses: Record<string, unknown>[] = [
+    { term: { 'attributes.agent_health.run.id': runId } },
+    { term: { 'attributes.gen_ai.conversation.id': runId } },
+  ];
+  if (sessionId) {
+    // `.keyword` sub-field for exact match on a hyphenated UUID (a bare
+    // analyzed text field would tokenize on the hyphens and match nothing) —
+    // mirrors tracesService.ts's Strategy D handling. Also try the raw
+    // (non-keyword) field and the Data-Prepper plain-raw `@`-encoded key,
+    // since the attribute lands under a different literal key per schema.
+    clauses.push(
+      { term: { 'attributes.session.id.keyword': sessionId } },
+      { term: { 'attributes.session.id': sessionId } },
+      { term: { 'span.attributes.session@id': sessionId } }
+    );
+  }
+  if (traceId) clauses.push({ term: { traceId } });
+  return clauses;
+}
+
+/** Batch (terms) form of {@link buildRunIdShouldClauses} — Strategy B OR
+ *  Strategy D (`session.id`, the precise per-run correlator real
+ *  closed-source connectors like Claude Code actually stamp on every span)
+ *  OR Strategy A (`traceId`). */
+function buildBatchRunIdShouldClauses(runIds: string[], sessionIds: string[], traceIds: string[]): Record<string, unknown>[] {
+  const clauses: Record<string, unknown>[] = [
+    { terms: { 'attributes.agent_health.run.id': runIds } },
+    { terms: { 'attributes.gen_ai.conversation.id': runIds } },
+  ];
+  if (sessionIds.length > 0) {
+    clauses.push(
+      { terms: { 'attributes.session.id.keyword': sessionIds } },
+      { terms: { 'attributes.session.id': sessionIds } },
+      { terms: { 'span.attributes.session@id': sessionIds } }
+    );
+  }
+  if (traceIds.length > 0) clauses.push({ terms: { traceId: traceIds } });
+  return clauses;
+}
+
+/**
+ * Resolve which requested runId a span actually matched, for grouping spans
+ * back to their runId in the batch path. Tries Strategy B by either
+ * attribute, then Strategy A via the traceId -> runId reverse lookup.
+ *
+ * Pre-fix this only ever checked `agent_health.run.id`, silently dropping any
+ * span that matched the OR'd `gen_ai.conversation.id` clause from grouping
+ * (it was still fetched, just never attributed to a runId).
+ */
+function resolveSpanRunId(
+  span: OpenSearchSpanSource,
+  idSet: Set<string>,
+  sessionIdToRunId: Map<string, string>,
+  traceIdToRunId: Map<string, string>
+): string | undefined {
+  const attrs = readAttrs(span);
+  const byRunIdAttr = attrs['agent_health.run.id'] as string | undefined;
+  if (byRunIdAttr && idSet.has(byRunIdAttr)) return byRunIdAttr;
+  const byConversationId = attrs['gen_ai.conversation.id'] as string | undefined;
+  if (byConversationId && idSet.has(byConversationId)) return byConversationId;
+  if (sessionIdToRunId.size > 0) {
+    const sessionId = (attrs['session.id'] as string | undefined) ?? (attrs['session@id'] as string | undefined);
+    if (sessionId && sessionIdToRunId.has(sessionId)) return sessionIdToRunId.get(sessionId);
+  }
+  if (traceIdToRunId.size > 0 && span.traceId && traceIdToRunId.has(span.traceId)) {
+    return traceIdToRunId.get(span.traceId);
+  }
+  return undefined;
 }
 
 interface OpenSearchResponse {
@@ -168,11 +318,19 @@ export function computeMetricsFromSampleSpans(runId: string): MetricsResult | nu
  * @returns Computed metrics
  */
 // Fields needed for metrics computation (used for _source projection in bulk
-// queries). We pull the whole nested `attributes` object: in the plain-raw
-// schema its keys are literal dotted OTel names (e.g. "gen_ai.usage.input_tokens")
-// which _source field-filtering cannot address individually.
+// queries). Tolerant of BOTH OpenSearch schemas (see readAttrs): the
+// plain-raw nested `attributes` object, AND the legacy @-raw flattened
+// `span.attributes.*` / `resource.attributes.*` fields — confirmed live to be
+// what this cluster's `otel-v1-apm-span-*` index actually uses. Pre-fix this
+// list omitted the wildcard patterns entirely, so the BATCH query's _source
+// projection silently stripped every token/model attribute out of the
+// response even though the single-run query (no _source restriction) read
+// them fine — the comparison page's batch metrics call always saw zeros.
 const METRICS_SOURCE_FIELDS = [
   'attributes',
+  'resource',
+  'span.attributes.*',
+  'resource.attributes.*',
   'name',
   'traceId',
   'startTime',
@@ -216,9 +374,13 @@ export function computeMetricsFromSpans(
   let modelId = 'default';
 
   for (const span of spans) {
-    const attrs = span.attributes || {};
-    const inTokens = Number(attrs['gen_ai.usage.input_tokens']) || 0;
-    const outTokens = Number(attrs['gen_ai.usage.output_tokens']) || 0;
+    const attrs = readAttrs(span);
+    // Strategy A correlation (below) pulls in the whole shared trace, which
+    // can include agent-health's own eval/judge spans — exclude them so the
+    // agent's own tokens/cost/LLM-call count aren't inflated by ours.
+    if (isEvalOrJudgeSpan(attrs, span.name)) continue;
+    const inTokens = readInputTokens(attrs);
+    const outTokens = readOutputTokens(attrs);
     inputTokens += inTokens;
     outputTokens += outTokens;
 
@@ -277,69 +439,20 @@ export function computeMetricsFromSpans(
 }
 
 /**
- * Build the `should` clauses matching ANY of a run's known trace-correlation
- * identities — Strategy B (`agent_health.run.id` / `gen_ai.conversation.id`,
- * requires the agent to have adopted our attribute convention) OR Strategy D
- * (`session.id`, the precise per-run correlator real closed-source connectors
- * like Claude Code actually stamp on every span — see AGENTS.md's trace
- * correlation conventions / services/traces/tracesService.ts). Without
- * Strategy D, agents that only ever emit `session.id` (never our custom
- * attribute) always miss this query and the batch metrics show `--`
- * indefinitely, even though the SAME spans are found by the Traces tab.
- */
-function buildRunIdShouldClauses(ids: string[], sessionIds: string[]): Record<string, unknown>[] {
-  const clauses: Record<string, unknown>[] = [
-    { terms: { 'attributes.agent_health.run.id': ids } },
-    { terms: { 'attributes.gen_ai.conversation.id': ids } },
-  ];
-  if (sessionIds.length > 0) {
-    // `.keyword` sub-field for exact match on a hyphenated UUID (a bare
-    // analyzed text field would tokenize on the hyphens and match nothing) —
-    // mirrors tracesService.ts's Strategy D handling. Also try the raw
-    // (non-keyword) field and the Data-Prepper plain-raw `@`-encoded key,
-    // since the attribute lands under a different literal key per schema.
-    clauses.push(
-      { terms: { 'attributes.session.id.keyword': sessionIds } },
-      { terms: { 'attributes.session.id': sessionIds } },
-      { terms: { 'span.attributes.session@id': sessionIds } }
-    );
-  }
-  return clauses;
-}
-
-/** Resolve which requested id a span actually matched, for grouping spans
- *  back to the runId that requested them (Strategy B by either attribute,
- *  else Strategy D via the sessionId -> runId reverse lookup). */
-function resolveSpanRunId(
-  span: OpenSearchSpanSource,
-  idSet: Set<string>,
-  sessionIdToRunId: Map<string, string>
-): string | undefined {
-  const attrs = span.attributes || {};
-  const byRunIdAttr = attrs['agent_health.run.id'] as string | undefined;
-  if (byRunIdAttr && idSet.has(byRunIdAttr)) return byRunIdAttr;
-  const byConversationId = attrs['gen_ai.conversation.id'] as string | undefined;
-  if (byConversationId && idSet.has(byConversationId)) return byConversationId;
-  if (sessionIdToRunId.size > 0) {
-    const sessionId = (attrs['session.id'] as string | undefined) ?? (attrs['session@id'] as string | undefined);
-    if (sessionId && sessionIdToRunId.has(sessionId)) return sessionIdToRunId.get(sessionId);
-  }
-  return undefined;
-}
-
-/**
  * Compute metrics from OpenSearch traces for a single run
  *
  * @param sessionId - Optional Strategy-D correlator (e.g. Claude Code's
  *   `session.id`) to OR into the query alongside Strategy B, for agents that
  *   never stamp our own `agent_health.run.id` / `gen_ai.conversation.id`.
+ * @param traceId - Optional Strategy-A correlator (the eval span's own OTel
+ *   trace id) — see {@link buildRunIdShouldClauses}.
  */
 export async function computeMetrics(
   runId: string,
   osConfig: OpenSearchConfig | { client: Client; indexPattern?: string },
-  sessionId?: string
+  sessionId?: string,
+  traceId?: string
 ): Promise<MetricsResult> {
-  const sessionIds = sessionId ? [sessionId] : [];
   if ('client' in osConfig) {
     const indexPattern = osConfig.indexPattern || 'otel-v1-apm-span-*';
     const response = await osConfig.client.search({
@@ -350,7 +463,7 @@ export async function computeMetrics(
         query: {
           bool: {
             must: [
-              { bool: { should: buildRunIdShouldClauses([runId], sessionIds), minimum_should_match: 1 } }
+              { bool: { should: buildRunIdShouldClauses(runId, sessionId, traceId), minimum_should_match: 1 } }
             ]
           }
         }
@@ -369,7 +482,7 @@ export async function computeMetrics(
     query: {
       bool: {
         must: [
-          { bool: { should: buildRunIdShouldClauses([runId], sessionIds), minimum_should_match: 1 } }
+          { bool: { should: buildRunIdShouldClauses(runId, sessionId, traceId), minimum_should_match: 1 } }
         ]
       }
     }
@@ -406,7 +519,8 @@ export async function computeMetrics(
 export async function computeBatchMetrics(
   runIds: string[],
   osConfig: OpenSearchConfig | { client: Client; indexPattern?: string },
-  sessionIdByRunId?: Record<string, string>
+  sessionIdByRunId?: Record<string, string>,
+  traceIdByRunId?: Record<string, string>
 ): Promise<MetricsResult[]> {
   if (runIds.length === 0) return [];
 
@@ -429,6 +543,13 @@ export async function computeBatchMetrics(
           if (sid) sessionIdToRunId.set(sid, rid);
         }
       }
+      const traceIdToRunId = new Map<string, string>();
+      if (traceIdByRunId) {
+        for (const rid of chunk) {
+          const tid = traceIdByRunId[rid];
+          if (tid) traceIdToRunId.set(tid, rid);
+        }
+      }
       try {
         const response = await osConfig.client.search({
           index: indexPattern,
@@ -440,7 +561,7 @@ export async function computeBatchMetrics(
               bool: {
                 must: [
                   { bool: {
-                    should: buildRunIdShouldClauses(chunk, Array.from(sessionIdToRunId.keys())),
+                    should: buildBatchRunIdShouldClauses(chunk, Array.from(sessionIdToRunId.keys()), Array.from(traceIdToRunId.keys())),
                     minimum_should_match: 1,
                   } }
                 ]
@@ -462,7 +583,7 @@ export async function computeBatchMetrics(
         const spansByRunId = new Map<string, OpenSearchSpanSource[]>();
         for (const rid of chunk) spansByRunId.set(rid, []);
         for (const span of allSpans) {
-          const rid = resolveSpanRunId(span, idSet, sessionIdToRunId);
+          const rid = resolveSpanRunId(span, idSet, sessionIdToRunId, traceIdToRunId);
           if (rid && spansByRunId.has(rid)) {
             spansByRunId.get(rid)!.push(span);
           }
@@ -495,6 +616,13 @@ export async function computeBatchMetrics(
         if (sid) sessionIdToRunId.set(sid, rid);
       }
     }
+    const traceIdToRunId = new Map<string, string>();
+    if (traceIdByRunId) {
+      for (const rid of chunk) {
+        const tid = traceIdByRunId[rid];
+        if (tid) traceIdToRunId.set(tid, rid);
+      }
+    }
     const query = {
       size: 10000,
       sort: [{ startTime: { order: 'asc' } }],
@@ -503,7 +631,7 @@ export async function computeBatchMetrics(
         bool: {
           must: [
             { bool: {
-              should: buildRunIdShouldClauses(chunk, Array.from(sessionIdToRunId.keys())),
+              should: buildBatchRunIdShouldClauses(chunk, Array.from(sessionIdToRunId.keys()), Array.from(traceIdToRunId.keys())),
               minimum_should_match: 1,
             } }
           ]
@@ -543,7 +671,7 @@ export async function computeBatchMetrics(
     const spansByRunId = new Map<string, OpenSearchSpanSource[]>();
     for (const rid of chunk) spansByRunId.set(rid, []);
     for (const span of allSpans) {
-      const rid = resolveSpanRunId(span, idSet, sessionIdToRunId);
+      const rid = resolveSpanRunId(span, idSet, sessionIdToRunId, traceIdToRunId);
       if (rid && spansByRunId.has(rid)) {
         spansByRunId.get(rid)!.push(span);
       }

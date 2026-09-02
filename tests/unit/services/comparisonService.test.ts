@@ -8,6 +8,7 @@ import {
   mergeTraceMetrics,
   collectRunIdsFromReports,
   collectSessionIdsFromReports,
+  collectTraceIdsFromReports,
   buildTestCaseComparisonRows,
   findBestRunForMetric,
   calculateDelta,
@@ -350,6 +351,58 @@ describe('comparisonService', () => {
       const sessionIdByRunId = collectSessionIdsFromReports(runs, reports);
 
       expect(sessionIdByRunId).toEqual({ 'agent-run-3': 'session-ccc' });
+    });
+  });
+
+  describe('collectTraceIdsFromReports', () => {
+    it('should build a runId -> traceId map', () => {
+      const runs: BenchmarkRun[] = [
+        {
+          id: 'exp-run-1',
+          name: 'Run 1',
+          createdAt: '2024-01-01',
+          agentKey: 'agent-1',
+          modelId: 'model-1',
+          status: 'completed',
+          results: {
+            'tc-1': { reportId: 'report-1', status: 'completed' },
+            'tc-2': { reportId: 'report-2', status: 'completed' },
+          },
+        },
+      ];
+
+      const reports: Record<string, EvaluationReport> = {
+        'report-1': { id: 'report-1', testCaseId: 'tc-1', runId: 'subprocess-1', traceId: 'trace-1' } as EvaluationReport,
+        'report-2': { id: 'report-2', testCaseId: 'tc-2', runId: 'subprocess-2', traceId: 'trace-2' } as EvaluationReport,
+      };
+
+      const map = collectTraceIdsFromReports(runs, reports);
+
+      expect(map).toEqual({ 'subprocess-1': 'trace-1', 'subprocess-2': 'trace-2' });
+    });
+
+    it('should omit reports with no traceId', () => {
+      const runs: BenchmarkRun[] = [
+        {
+          id: 'exp-run-1',
+          name: 'Run 1',
+          createdAt: '2024-01-01',
+          agentKey: 'agent-1',
+          modelId: 'model-1',
+          status: 'completed',
+          results: {
+            'tc-1': { reportId: 'report-1', status: 'completed' },
+          },
+        },
+      ];
+
+      const reports: Record<string, EvaluationReport> = {
+        'report-1': { id: 'report-1', testCaseId: 'tc-1', runId: 'run-1' } as EvaluationReport,
+      };
+
+      const map = collectTraceIdsFromReports(runs, reports);
+
+      expect(map).toEqual({});
     });
   });
 
