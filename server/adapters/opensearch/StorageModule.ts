@@ -586,6 +586,122 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
     }
     return { created, errors };
   }
+
+  /**
+   * Atomic union of `testCaseIds` into both the top-level array and the
+   * current version's own entry, via a single Painless scripted `_update`
+   * -- same pattern as `addRun`/`updateRun`/`deleteRun` above, chosen
+   * specifically because this method's PREDECESSOR (a client-side
+   * getById() + compute-merge + update() in services/benchmarkPromotion.ts)
+   * was flagged by codex_review as unsafe under concurrency: two callers
+   * could both pass a client-side "is this stale?" check against the same
+   * snapshot and then both call the plain `update()` (itself a
+   * read-then-full-document-overwrite, see `update()` above) -- last
+   * writer wins, losing the other's ids. A scripted `_update` runs
+   * server-side against the live document under OpenSearch's own internal
+   * concurrency control, so there is no client-observable window between
+   * "read" and "write" for two callers to race into.
+   *
+   * `retry_on_conflict: 10` (vs. 3 for the sibling run-mutation scripts)
+   * because this specific method is now on the hot path of every
+   * `POST /api/storage/evaluation-runs` (multiple runs against the same
+   * benchmark, e.g. a CLI campaign, land here close together) rather than
+   * the addRun/updateRun/deleteRun call sites' occasional single-run
+   * updates. Empirically verified against a real OpenSearch node: 20
+   * fully-concurrent calls against one document need `retry_on_conflict`
+   * comfortably above single digits to avoid a `version_conflict_engine_exception`
+   * escaping OpenSearch's own internal retry budget (observed a handful of
+   * 409s at `retry_on_conflict: 5`; zero at `30` for the same burst). 10 is
+   * a practical middle ground for realistic CLI-campaign-level concurrency;
+   * the outer catch below is defense-in-depth for the pathological case
+   * where even that is exceeded.
+   */
+  async linkTestCaseIds(
+    benchmarkId: string,
+    testCaseIds: string[],
+  ): Promise<{ benchmark: Benchmark; added: string[] } | null> {
+    assertNotMigrating(this.index);
+    const uniqueIncoming = Array.from(new Set(testCaseIds)).filter(Boolean);
+
+    // Best-effort pre-mutation read purely for the `added` count reported
+    // back to the caller (used only for a debug log at the route level) --
+    // NOT relied on for correctness. The script below is the sole source
+    // of truth for the actual mutation and is atomic regardless of how
+    // stale this read is by the time the script runs.
+    const before = await this.getById(benchmarkId);
+    if (!before) return null;
+    const beforeTopLevelIds = new Set(before.testCaseIds || []);
+    const added = uniqueIncoming.filter(id => !beforeTopLevelIds.has(id));
+
+    // Painless script: unions `params.ids` into ctx._source.testCaseIds,
+    // synthesizes a v1 version entry from the top level if `versions` is
+    // missing/empty (legacy docs -- mirrors the pre-existing JS-side
+    // fallback this replaces), locates the entry matching
+    // ctx._source.currentVersion (falling back to the last entry if no
+    // exact match, same as the JS version it replaces), and unions the
+    // same ids into THAT entry's own testCaseIds. No version bump --
+    // currentVersion itself is never written.
+    const script = {
+      source:
+        'if (ctx._source.testCaseIds == null) { ctx._source.testCaseIds = []; } ' +
+        'for (def id : params.ids) { ' +
+        '  if (!ctx._source.testCaseIds.contains(id)) { ctx._source.testCaseIds.add(id); } ' +
+        '} ' +
+        'if (ctx._source.versions == null || ctx._source.versions.size() == 0) { ' +
+        '  def v1 = new HashMap(); ' +
+        '  v1.version = 1; ' +
+        '  v1.createdAt = ctx._source.createdAt; ' +
+        '  v1.testCaseIds = new ArrayList(ctx._source.testCaseIds); ' +
+        '  ctx._source.versions = new ArrayList(); ' +
+        '  ctx._source.versions.add(v1); ' +
+        '  if (ctx._source.currentVersion == null) { ctx._source.currentVersion = 1; } ' +
+        '} ' +
+        'int curVer = ctx._source.currentVersion == null ? 1 : ctx._source.currentVersion; ' +
+        'int idx = -1; ' +
+        'for (int i = 0; i < ctx._source.versions.size(); i++) { ' +
+        '  if (ctx._source.versions[i].version == curVer) { idx = i; break; } ' +
+        '} ' +
+        'if (idx == -1) { idx = ctx._source.versions.size() - 1; } ' +
+        'if (ctx._source.versions[idx].testCaseIds == null) { ctx._source.versions[idx].testCaseIds = []; } ' +
+        'for (def id : params.ids) { ' +
+        '  if (!ctx._source.versions[idx].testCaseIds.contains(id)) { ctx._source.versions[idx].testCaseIds.add(id); } ' +
+        '} ' +
+        'ctx._source.updatedAt = params.now;',
+      params: { ids: uniqueIncoming, now: new Date().toISOString() },
+    };
+
+    // Outer retry-on-409: defense-in-depth for the case where OpenSearch's
+    // own internal retry_on_conflict budget above is itself exhausted
+    // under pathological concurrency (observed directly in manual testing
+    // at very high fully-simultaneous request counts). retry_on_conflict
+    // handles the realistic case atomically and instantly; this only ever
+    // engages in the rare case that doesn't.
+    const MAX_OUTER_ATTEMPTS = 3;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= MAX_OUTER_ATTEMPTS; attempt++) {
+      try {
+        await this.client.update({
+          index: this.index,
+          id: benchmarkId,
+          retry_on_conflict: 10,
+          body: { script },
+          refresh: 'wait_for',
+        });
+        const updated = await this.getById(benchmarkId);
+        // Deleted concurrently between the script succeeding and this
+        // read -- treat the same as "not found" rather than throwing.
+        return updated ? { benchmark: updated, added } : null;
+      } catch (error: any) {
+        if (error.meta?.statusCode === 404) return null;
+        const isConflict = error.meta?.statusCode === 409;
+        if (!isConflict || attempt === MAX_OUTER_ATTEMPTS) throw error;
+        lastError = error;
+      }
+    }
+    // Unreachable (the loop above always returns or throws), but keeps
+    // TypeScript satisfied that every path returns/throws explicitly.
+    throw lastError;
+  }
 }
 
 // ============================================================================

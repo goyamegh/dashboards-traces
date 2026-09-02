@@ -17,6 +17,7 @@ import { generateMockTrajectory } from './mockTrajectory';
 import { callBedrockJudge } from './bedrockJudge';
 import { buildJudgeMatcherEntry, formatExpectedOutcomesAsClaim } from '@/lib/matchers/judgeAccessor';
 import type { MatcherResult } from '@/lib/matchers/types';
+import type { TracesAccessor } from '@/lib/matchers/traces';
 import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 
 // Re-export for use by experimentRunner when calling judge after trace polling
@@ -152,7 +153,11 @@ export function computeSdkMatcherSessionMetrics(
     };
   }
 
-  const gates = matcherResults.filter(m => m.role !== 'observe' && !m.errored);
+  // `notReached` entries are a synthetic runner-appended marker (see
+  // appendNotReachedMarker below), not a matcher the user's body actually
+  // ran — exclude them from the gate denominator exactly like `observe`
+  // and `errored` entries, so they can't skew the pass-rate aggregate.
+  const gates = matcherResults.filter(m => m.role !== 'observe' && !m.errored && !m.notReached);
   const total = gates.length;
   const passing = gates.filter(m => m.pass).length;
   // Vacuous pass when there are no gates (e.g. body just calls the agent
@@ -190,6 +195,93 @@ export function computeSdkMatcherSessionMetrics(
     out[k] = Math.round(sums[k] / counts[k]);
   }
   return out;
+}
+
+// ─── Always-record: objective actuals survive a mid-body throw ────────────
+//
+// Bug (owner-hit, measurement-harness-defeating): chai's `expect()` is
+// fail-fast — the first failing assertion throws and the rest of the test
+// body (later expect()/judge()/evaluate() calls) never executes. For a
+// pass/fail assertion that's the intended Playwright-style contract, but an
+// optimizer reading these reports needs ALL FOUR axes (accuracy, latency,
+// tokens, cost) for every run, even when one gate fails — a token-budget
+// gate failing shouldn't erase the cost figure or a judge score that
+// would otherwise have been recorded.
+//
+// `durationMs`/`agentDurationMs` already survive a later throw: the runner
+// stamps them onto `report.performanceMetrics` the instant `agent.run()`
+// resolves (inside the `invoke()` closure in evaluationRunner.ts /
+// benchmarkRunner.ts), which happens BEFORE the body gets a chance to run
+// (and fail on) any further code. `totalTokens`/`totalCostUsd` did NOT get
+// the same treatment — nothing wrote them onto the report unless a matcher
+// in the body happened to read `result.traces.totalTokens`/`totalCost`,
+// which never happens if the body throws before reaching that line.
+//
+// `stampObjectiveActuals` closes that gap: it reads straight from the SAME
+// `TracesAccessor` the body would have read (`loadedTraces`, loaded once
+// right after `agent.run()` resolves) and writes onto
+// `report.performanceMetrics`, independent of whether any matcher asserted
+// on them. See docs/SDK.md "Always-record guarantee".
+//
+// judge() score is deliberately NOT handled here: `judge()` (RFC 004) is
+// already non-throwing and records its own MatcherResult synchronously the
+// moment it's called — so a REACHED judge call is already always-recorded
+// today with zero extra code. A judge call placed AFTER a throwing
+// `expect()` in the user's source is a pure ordering problem: the runner
+// cannot record a call that never executed. Only `expect.soft()` (see
+// lib/matchers/expect.ts) rescues that case, by not throwing in the first
+// place so the body reaches the judge() call at all.
+export function stampObjectiveActuals(
+  performanceMetrics: TestCasePerformanceMetrics | undefined,
+  loadedTraces: TracesAccessor,
+  hasCapturedResult: boolean,
+): void {
+  if (!hasCapturedResult || !performanceMetrics) return;
+  try {
+    const { totalTokens, totalCost } = loadedTraces;
+    if (typeof totalTokens === 'number') performanceMetrics.totalTokens = totalTokens;
+    if (typeof totalCost === 'number') performanceMetrics.totalCostUsd = totalCost;
+  } catch {
+    // `loadedTraces` is the "loud failure" accessor (#230) when
+    // `useTraces: true` but spans never arrived — every read throws. Leave
+    // totalTokens/totalCostUsd unset rather than writing a misleading `0`
+    // (0 would assert "no cost incurred", which we don't actually know).
+  }
+}
+
+/**
+ * Append a synthetic "not reached" MatcherResult when the test body threw
+ * before completing, so the matcher panel can render a clearly distinct row
+ * for the tail of the test that never ran (the "T3 judge not reached"
+ * symptom) instead of silently omitting it. Callers must invoke this AFTER
+ * computing their own gate/error booleans from the real matcherResults —
+ * this function mutates the array in place, and the synthetic entry is
+ * excluded from gating everywhere via its `notReached: true` flag (see the
+ * `computeSdkMatcherSessionMetrics` gates filter above).
+ *
+ * No-op for an agent crash (`agentFailed`): there's no "test body" telling
+ * a coherent story when the agent itself never produced a trajectory —
+ * that case already has its own clearly-labelled `agent_failed` patch.
+ */
+export function appendNotReachedMarker(
+  matcherResults: MatcherResult[],
+  evalError: unknown,
+  agentFailed: boolean,
+): void {
+  if (evalError === undefined || agentFailed) return;
+  matcherResults.push({
+    description:
+      'Test body did not complete: an error was thrown before reaching ' +
+      'further matcher calls in source order, so any expect()/judge()/' +
+      'evaluate() calls after that point never executed. If the error came ' +
+      'from a failing expect() assertion (not a bug elsewhere in the test ' +
+      'body), expect.soft(...) records instead of throwing so later matchers ' +
+      'still run (see docs/SDK.md "Always-record guarantee").',
+    pass: false,
+    method: 'code-assertion',
+    notReached: true,
+    errorMessage: evalError instanceof Error ? evalError.message : String(evalError),
+  });
 }
 
 /**

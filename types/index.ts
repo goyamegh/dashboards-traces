@@ -933,6 +933,22 @@ export interface TestCasePerformanceMetrics {
   agentDurationMs: number;               // Time in connector.execute()
   judgeDurationMs?: number;              // Time in callBedrockJudge() (absent in trace mode)
   judgeAttempts?: number;               // Number of judge retry attempts
+  /**
+   * Total LLM token usage (prompt + completion) for this test case's agent
+   * invocation, read from the same OTel-derived TracesAccessor a code-SDK
+   * test body reads via `result.traces.totalTokens` / the `traces` fixture.
+   *
+   * Always-record guarantee (see docs/SDK.md): for code-SDK (deterministic)
+   * test cases, the runner stamps this immediately after `agent.run()`
+   * resolves — independent of whether any matcher in the test body actually
+   * asserted on it — so a later-failing gate doesn't erase this objective
+   * actual. Undefined when the agent was never invoked (no-prompt test), or
+   * when `useTraces: true` but spans were never retrievable (the "loud
+   * failure" case — see lib/matchers/traces.ts `unavailableTracesAccessor`).
+   */
+  totalTokens?: number;
+  /** Same always-record guarantee as {@link totalTokens}, for USD cost. */
+  totalCostUsd?: number;
 }
 
 /** Server-side performance metrics for an entire benchmark run */

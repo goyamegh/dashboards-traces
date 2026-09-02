@@ -30,6 +30,7 @@ import type { AgentConfig, Benchmark, BenchmarkRun, TestCase, TestCaseRun, Evalu
 import { existsSync, statSync } from 'fs';
 import { isCodeFile, detectSourceLanguage } from '@/lib/testCases/loader.js';
 import { createBenchmarkDoctorCommand } from '@/cli/commands/benchmarkDoctor.js';
+import { computeBenchmarkRepairPlan, applyRepairPlan, computeVersionLinkRepairPlan } from '@/cli/utils/benchmarkDoctor.js';
 
 interface BenchmarkOptions {
   agent: string[];
@@ -1297,5 +1298,144 @@ export function createBenchmarkCommand(): Command {
       }
     });
 
+  command.addCommand(createBenchmarkLinkRepairCommand());
+
   return command;
 }
+
+/**
+ * `benchmark repair-links` — detect (and, with `--apply`, repair) two shapes
+ * of the same underlying bug class: a benchmark's `testCaseIds` (top level)
+ * and the CURRENT version's `testCaseIds` entry can drift out of sync.
+ *
+ *  - "Stale shell": linked run-first EvaluationRun documents reference test
+ *    case ids missing from `benchmark.testCaseIds` (computeBenchmarkRepairPlan).
+ *  - "Stale version": `benchmark.testCaseIds` already has ids the CURRENT
+ *    version's own array is missing (computeVersionLinkRepairPlan) — this is
+ *    the shape that made the benchmark page render "No test cases in this
+ *    version" despite correct top-level links; see
+ *    services/benchmarkPromotion.ts:linkTestCaseIdsToBenchmark for the fix
+ *    going forward and this command for backfilling benchmarks that went
+ *    stale before that fix existed.
+ *
+ * Dry-run by default: prints both plans without writing anything.
+ */
+export function createBenchmarkLinkRepairCommand(): Command {
+  return new Command('repair-links')
+    .description('Detect benchmarks whose testCaseIds are out of sync (run-referenced ids missing from testCaseIds, or testCaseIds missing from the current version) — use --apply to fix')
+    .option('--apply', 'Apply the repair (default: dry-run, report only)')
+    .option('--stop-server', 'Stop the server after the check completes (default: keep running)')
+    .action(async (options: { apply?: boolean; stopServer?: boolean }) => {
+      console.log(chalk.bold('\nAgent Health - Benchmark Link Repair\n'));
+      const config = await loadConfig();
+      const serverConfig = { ...DEFAULT_SERVER_CONFIG, ...config.server };
+      const isCI = !!process.env.CI;
+
+      const connectSpinner = ora('Connecting to server...').start();
+      let serverResult: EnsureServerResult;
+      let cleanup: () => void;
+      try {
+        serverResult = await ensureServer(serverConfig);
+        cleanup = createServerCleanup(serverResult, isCI || options.stopServer);
+        connectSpinner.succeed(serverResult.wasStarted
+          ? `Started server on port ${serverConfig.port}`
+          : `Connected to existing server on port ${serverConfig.port}`);
+      } catch (error) {
+        connectSpinner.fail(`Failed to connect: ${error instanceof Error ? error.message : error}`);
+        process.exit(1);
+      }
+
+      const api = new ApiClient(serverResult.baseUrl);
+
+      try {
+        const benchmarks = await api.listBenchmarks();
+        let shellFlagged = 0;
+        let shellRepaired = 0;
+        let versionFlagged = 0;
+        let versionRepaired = 0;
+        let versionNeedsReview = 0;
+
+        for (let bm of benchmarks) {
+          // --- Stale shell: run-referenced ids missing from testCaseIds ---
+          let evaluationRuns: EvaluationRun[] = [];
+          try {
+            const res = await fetch(
+              `${serverResult.baseUrl}/api/storage/evaluation-runs?benchmarkId=${encodeURIComponent(bm.id)}&size=500`
+            );
+            if (res.ok) {
+              const data = await res.json();
+              evaluationRuns = data.evaluationRuns || [];
+            }
+          } catch {
+            // Best-effort per-benchmark; skip the run-based check on fetch failure.
+          }
+
+          if (evaluationRuns.length > 0) {
+            const shellPlan = computeBenchmarkRepairPlan(bm, evaluationRuns);
+            if (shellPlan) {
+              shellFlagged++;
+              console.log('');
+              console.log(chalk.yellow(`  Stale shell: ${shellPlan.benchmarkName} (${shellPlan.benchmarkId})`));
+              console.log(chalk.gray(`    ${shellPlan.missingTestCaseIds.length} test case id(s) missing from testCaseIds, referenced by ${shellPlan.affectedRunIds.length} run(s)`));
+              console.log(chalk.gray(`    Missing: ${shellPlan.missingTestCaseIds.join(', ')}`));
+
+              if (options.apply) {
+                const newTestCaseIds = applyRepairPlan(bm.testCaseIds || [], shellPlan);
+                await api.updateBenchmark(bm.id, { testCaseIds: newTestCaseIds });
+                shellRepaired++;
+                console.log(chalk.green(`    ✓ Repaired: testCaseIds now has ${newTestCaseIds.length} id(s)`));
+                // PUT bumps the version and seeds the new version's array from
+                // the same testCaseIds, so re-fetch before the version check
+                // below to avoid a redundant (harmless but noisy) second write.
+                const refreshed = await api.getBenchmark(bm.id);
+                if (refreshed) bm = refreshed;
+              }
+            }
+          }
+
+          // --- Stale version: testCaseIds has ids the current version lacks ---
+          const versionPlan = computeVersionLinkRepairPlan(bm);
+          if (versionPlan) {
+            versionFlagged++;
+            console.log('');
+            console.log(chalk.yellow(`  Stale version: ${versionPlan.benchmarkName} (${versionPlan.benchmarkId})`));
+            console.log(chalk.gray(`    v${versionPlan.currentVersion}'s testCaseIds is missing ${versionPlan.missingTestCaseIds.length} id(s) present at the top level`));
+            console.log(chalk.gray(`    Missing: ${versionPlan.missingTestCaseIds.join(', ')}`));
+
+            if (versionPlan.needsManualReview) {
+              versionNeedsReview++;
+              console.log(chalk.red('    ⚠ Skipped: this benchmark has more than one version. The top-level'));
+              console.log(chalk.red('      testCaseIds can contain ids from an OLDER version\'s runs (see'));
+              console.log(chalk.red('      cli/utils/benchmarkDoctor.ts) -- copying them into the CURRENT'));
+              console.log(chalk.red('      version could mix in test cases that do not belong to it. Review'));
+              console.log(chalk.red(`      manually: POST /api/storage/benchmarks/${versionPlan.benchmarkId}/link-test-case-ids`));
+              console.log(chalk.red('      with the exact ids you intend for the current version, or edit the'));
+              console.log(chalk.red('      benchmark in the UI.'));
+            } else if (options.apply) {
+              const { benchmark: repaired } = await api.linkBenchmarkTestCaseIds(bm.id, bm.testCaseIds || []);
+              versionRepaired++;
+              const fixedVersion = (repaired.versions || []).find(v => v.version === (repaired.currentVersion ?? versionPlan.currentVersion));
+              console.log(chalk.green(`    ✓ Repaired: v${versionPlan.currentVersion}'s testCaseIds now has ${fixedVersion?.testCaseIds?.length ?? '?'} id(s)`));
+            }
+          }
+        }
+
+        const flagged = shellFlagged + versionFlagged;
+        console.log('');
+        if (flagged === 0) {
+          console.log(chalk.green('  All benchmarks healthy — no missing test case links found.'));
+        } else if (options.apply) {
+          console.log(chalk.green(`  Repaired ${shellRepaired}/${shellFlagged} stale shell benchmark(s), ${versionRepaired}/${versionFlagged - versionNeedsReview} stale version benchmark(s).`));
+          if (versionNeedsReview > 0) {
+            console.log(chalk.red(`  ${versionNeedsReview} multi-version benchmark(s) need manual review (not auto-repaired) -- see above.`));
+          }
+        } else {
+          console.log(chalk.yellow(`  Found ${shellFlagged} stale shell benchmark(s), ${versionFlagged} stale version benchmark(s) (${versionNeedsReview} of which need manual review, not auto-fixable).`));
+          console.log(chalk.gray('  Re-run with --apply to fix the auto-fixable ones.'));
+        }
+      } finally {
+        cleanup!();
+      }
+    });
+}
+

@@ -894,6 +894,28 @@ export class ApiClient {
   }
 
   /**
+   * Union test case ids into a benchmark's top-level testCaseIds AND its
+   * current version's testCaseIds, in place (no version bump). Server-side
+   * counterpart of services/benchmarkPromotion.ts:linkTestCaseIdsToBenchmark
+   * — used by `benchmark repair-links --apply` to backfill benchmarks whose
+   * current version's testCaseIds fell behind the top level.
+   */
+  async linkBenchmarkTestCaseIds(id: string, testCaseIds: string[]): Promise<{ benchmark: Benchmark; added: string[] }> {
+    const res = await fetch(`${this.baseUrl}/api/storage/benchmarks/${id}/link-test-case-ids`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ testCaseIds }),
+    });
+
+    if (!res.ok) {
+      const errorBody = await res.text();
+      throw new Error(`Failed to link test case ids to benchmark: ${errorBody}`);
+    }
+
+    return res.json();
+  }
+
+  /**
    * Fetch traces from OpenSearch with optional filters
    */
   async fetchTraces(params: {
