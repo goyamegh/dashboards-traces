@@ -564,16 +564,16 @@ describe('RunInspectorPage — benchmark-mode fallback for not-yet-linked runs',
     expect(screen.queryByTestId('run-inspector-not-found')).toBeNull();
     expect(screen.getByText('ClaudeCode-WithTraces-001')).toBeTruthy();
 
-    // Mode-gated UI must stay consistent with `mode` (derived from the
-    // route/benchmarkId), not with which fetch path resolved the data
-    // (codex_review finding): rendering standalone EvaluationRun data under
-    // benchmark mode must not accidentally unlock eval-run-only affordances
-    // like Re-run.
+    // Re-run capability is keyed on isEvaluationRun(run) (a doc concern,
+    // not a route concern) after the #466 predicate unification -- this
+    // fallback-loaded run genuinely IS a first-class EvaluationRun doc, so
+    // Re-run is correctly ENABLED here, consistent with the eval-run-mode
+    // and benchmark-mode-with-embedded-doc cases covered elsewhere in this
+    // file. (Superseded expectation: this run used to stay artificially
+    // disabled because Re-run was gated on route `mode` instead of the
+    // run's actual doc type.)
     const rerunBtn = screen.getByTestId('inspector-rerun-btn') as HTMLButtonElement;
-    expect(rerunBtn.disabled).toBe(true);
-    expect(rerunBtn.parentElement?.getAttribute('title')).toBe(
-      'Re-run is only available for evaluation runs, not benchmark-embedded runs'
-    );
+    expect(rerunBtn.disabled).toBe(false);
   });
 
   it('rejects a standalone run that exists but is NOT associated with this benchmark (cross-benchmark data must never render) — codex_review finding', async () => {
