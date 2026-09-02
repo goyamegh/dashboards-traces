@@ -37,6 +37,8 @@ const mockTestCasesGetAll = jest.fn();
 const mockTestCasesGetById = jest.fn();
 const mockRunsGetById = jest.fn();
 const mockIsConfigured = jest.fn();
+const mockImagesCreate = jest.fn();
+const mockImagesUpdate = jest.fn();
 
 const mockStorage = {
   benchmarks: {
@@ -55,6 +57,10 @@ const mockStorage = {
   },
   runs: {
     getById: mockRunsGetById,
+  },
+  images: {
+    create: mockImagesCreate,
+    update: mockImagesUpdate,
   },
   isConfigured: mockIsConfigured,
 };
@@ -206,6 +212,8 @@ describe('Experiments Storage Routes', () => {
     (isStorageAvailable as jest.Mock).mockReturnValue(true);
     (requireStorageClient as jest.Mock).mockReturnValue(mockClient);
     mockIsConfigured.mockReturnValue(true);
+    mockImagesCreate.mockResolvedValue({ digest: 'default-digest' });
+    mockImagesUpdate.mockResolvedValue({});
   });
 
   describe('GET /api/storage/benchmarks', () => {
@@ -1044,6 +1052,160 @@ describe('Experiments Storage Routes', () => {
       expect(res.flushHeaders).toHaveBeenCalled();
       expect(res.write).toHaveBeenCalled();
       expect(res.end).toHaveBeenCalled();
+    });
+
+    it('stamps imageDigest on the run + find-or-creates the benchmark image (legacy execute path parity with evaluation-runs)', async () => {
+      mockGet.mockResolvedValue({
+        body: {
+          found: true,
+          _source: {
+            id: 'exp-123',
+            name: 'Test Benchmark',
+            testCaseIds: ['tc-1'],
+            runs: [],
+          },
+        },
+      });
+      mockUpdate.mockResolvedValue({ body: {} });
+      // getAllTestCases() (progress-display lookups) AND the route's own
+      // full-fetch both call testCases.getAll — return the same full record
+      // both times so the digest is computed from real content, not names.
+      const fullTestCase = {
+        id: 'tc-1',
+        name: 'TC One',
+        initialPrompt: 'do the thing',
+        context: [],
+        expectedOutcomes: ['ok'],
+      };
+      mockTestCasesGetAll.mockResolvedValue({ items: [fullTestCase], total: 1 });
+      mockImagesCreate.mockResolvedValue({ digest: 'sha256:whatever-create-returns' });
+
+      const completedRun = {
+        id: 'run-123',
+        name: 'Run',
+        agentKey: 'agent',
+        modelId: 'model',
+        status: 'completed',
+        results: { 'tc-1': { reportId: 'report-1', status: 'completed' } },
+        createdAt: '2024-01-01T00:00:00Z',
+      };
+      mockExecuteRun.mockResolvedValue(completedRun);
+
+      const { req, res } = createMocks(
+        { id: 'exp-123' },
+        { name: 'Run', agentKey: 'agent', modelId: 'model', evaluatorId: 'ev-1' }
+      );
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/:id/execute');
+
+      await handler(req, res);
+
+      // images.create was called with a doc built from the full test case
+      // content (buildImageDoc's shape), not just an id/name summary.
+      expect(mockImagesCreate).toHaveBeenCalledWith(
+        expect.objectContaining({
+          docType: 'benchmark-image',
+          testCaseCount: 1,
+          evalConditions: expect.objectContaining({ evaluatorId: 'ev-1' }),
+        })
+      );
+      expect(mockImagesUpdate).toHaveBeenCalledWith(
+        expect.any(String),
+        expect.objectContaining({ lastRunAt: expect.any(String) })
+      );
+
+      // The FIRST persisted run doc (the immediate "save so it survives a
+      // refresh" write, before SSE/execution) already carries imageDigest —
+      // not just something patched in after the fact.
+      const firstUpdateCall = mockUpdate.mock.calls[0][0];
+      const persistedRun = firstUpdateCall.body.doc.runs[0];
+      expect(persistedRun.imageDigest).toBeTruthy();
+      expect(typeof persistedRun.imageDigest).toBe('string');
+    });
+
+    it('refuses to stamp a digest computed from a PARTIAL test-case set (codex_review finding: a partial digest is a wrong identity, not a harmless skip)', async () => {
+      mockGet.mockResolvedValue({
+        body: {
+          found: true,
+          _source: { id: 'exp-123', name: 'Test Benchmark', testCaseIds: ['tc-1', 'tc-2'], runs: [] },
+        },
+      });
+      mockUpdate.mockResolvedValue({ body: {} });
+      // Only tc-1 resolves -- tc-2 is missing (deleted, corpus paging gap, etc).
+      mockTestCasesGetAll.mockResolvedValue({
+        items: [{ id: 'tc-1', name: 'TC One', initialPrompt: 'do the thing' }],
+        total: 1,
+      });
+
+      const completedRun = {
+        id: 'run-123',
+        name: 'Run',
+        agentKey: 'agent',
+        modelId: 'model',
+        status: 'completed',
+        results: {
+          'tc-1': { reportId: 'report-1', status: 'completed' },
+          'tc-2': { reportId: 'report-2', status: 'completed' },
+        },
+        createdAt: '2024-01-01T00:00:00Z',
+      };
+      mockExecuteRun.mockResolvedValue(completedRun);
+
+      const { req, res } = createMocks(
+        { id: 'exp-123' },
+        { name: 'Run', agentKey: 'agent', modelId: 'model' }
+      );
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/:id/execute');
+
+      await handler(req, res);
+
+      expect(mockImagesCreate).not.toHaveBeenCalled();
+      const firstUpdateCall = mockUpdate.mock.calls[0][0];
+      const persistedRun = firstUpdateCall.body.doc.runs[0];
+      expect(persistedRun.imageDigest).toBeUndefined();
+    });
+
+    it('never blocks execution when the image doc write fails (images.create throws) — mirrors evaluationRuns.ts: the digest itself is a pure computation and is kept on the run even though the image side-effect failed', async () => {
+      mockGet.mockResolvedValue({
+        body: {
+          found: true,
+          _source: { id: 'exp-123', name: 'Test Benchmark', testCaseIds: ['tc-1'], runs: [] },
+        },
+      });
+      mockUpdate.mockResolvedValue({ body: {} });
+      mockTestCasesGetAll.mockResolvedValue({
+        items: [{ id: 'tc-1', name: 'TC One', initialPrompt: 'do the thing' }],
+        total: 1,
+      });
+      mockImagesCreate.mockRejectedValue(new Error('images index down'));
+
+      const completedRun = {
+        id: 'run-123',
+        name: 'Run',
+        agentKey: 'agent',
+        modelId: 'model',
+        status: 'completed',
+        results: { 'tc-1': { reportId: 'report-1', status: 'completed' } },
+        createdAt: '2024-01-01T00:00:00Z',
+      };
+      mockExecuteRun.mockResolvedValue(completedRun);
+
+      const { req, res } = createMocks(
+        { id: 'exp-123' },
+        { name: 'Run', agentKey: 'agent', modelId: 'model' }
+      );
+      const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/:id/execute');
+
+      await handler(req, res);
+
+      // The image write was attempted (and failed) — but execution still
+      // proceeds normally despite the image-bookkeeping failure.
+      expect(mockImagesCreate).toHaveBeenCalled();
+      expect(res.flushHeaders).toHaveBeenCalled();
+      expect(res.write).toHaveBeenCalled();
+      expect(res.end).toHaveBeenCalled();
+      const firstUpdateCall = mockUpdate.mock.calls[0][0];
+      const persistedRun = firstUpdateCall.body.doc.runs[0];
+      expect(persistedRun.imageDigest).toBeTruthy();
     });
   });
 
