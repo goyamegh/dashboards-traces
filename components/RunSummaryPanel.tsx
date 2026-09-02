@@ -117,12 +117,16 @@ export const RunSummaryPanel: React.FC<RunSummaryPanelProps> = ({
 
   // Fetch trace metrics if reports have runIds
   useEffect(() => {
-    const runIds = Object.values(reports)
-      .filter((r): r is EvaluationReport => r !== null && !!r.runId)
-      .map(r => r.runId!);
+    const reportsWithRunId = Object.values(reports)
+      .filter((r): r is EvaluationReport => r !== null && !!r.runId);
+    const runIds = reportsWithRunId.map(r => r.runId!);
+    const traceIdByRunId: Record<string, string> = {};
+    for (const r of reportsWithRunId) {
+      if (r.traceId && !traceIdByRunId[r.runId!]) traceIdByRunId[r.runId!] = r.traceId;
+    }
 
     if (runIds.length > 0) {
-      fetchBatchMetrics(runIds)
+      fetchBatchMetrics(runIds, traceIdByRunId)
         .then(data => setTraceMetrics(data.aggregate))
         .catch(() => setTraceMetrics(null));
     }

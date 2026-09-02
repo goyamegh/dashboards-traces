@@ -17,10 +17,16 @@ const API_BASE = ENV_CONFIG.backendUrl;
  * Backend handles config resolution (file or env vars) - no headers needed from frontend
  *
  * @param runId - The agent run ID (gen_ai.request.id span attribute)
+ * @param traceId - Optional Strategy-A correlator (the report's own OTel
+ *   traceId). Required for REST/subprocess-connector runs (no native runId,
+ *   `report.runId` falls back to `report.traceId`) and vendor agents (Claude
+ *   Code) whose spans never carry a runId attribute — see
+ *   server/services/metricsService.ts.
  * @returns Computed metrics including tokens, cost, duration, tool calls
  */
-export async function fetchRunMetrics(runId: string): Promise<TraceMetrics> {
-  const response = await fetch(`${API_BASE}/api/metrics/${encodeURIComponent(runId)}`);
+export async function fetchRunMetrics(runId: string, traceId?: string): Promise<TraceMetrics> {
+  const traceIdParam = traceId ? `?traceId=${encodeURIComponent(traceId)}` : '';
+  const response = await fetch(`${API_BASE}/api/metrics/${encodeURIComponent(runId)}${traceIdParam}`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Unknown error' }));
@@ -35,9 +41,10 @@ export async function fetchRunMetrics(runId: string): Promise<TraceMetrics> {
  * Backend handles config resolution (file or env vars) - no headers needed from frontend
  *
  * @param runIds - Array of run IDs to fetch metrics for
+ * @param traceIdByRunId - Optional Strategy-A correlator map (runId -> report.traceId)
  * @returns Object containing individual metrics and aggregate statistics
  */
-export async function fetchBatchMetrics(runIds: string[]): Promise<{
+export async function fetchBatchMetrics(runIds: string[], traceIdByRunId?: Record<string, string>): Promise<{
   metrics: TraceMetrics[];
   aggregate: {
     totalRuns: number;
@@ -59,7 +66,7 @@ export async function fetchBatchMetrics(runIds: string[]): Promise<{
     headers: {
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ runIds })
+    body: JSON.stringify(traceIdByRunId ? { runIds, traceIds: traceIdByRunId } : { runIds })
   });
 
   if (!response.ok) {

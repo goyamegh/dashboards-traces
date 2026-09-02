@@ -337,6 +337,66 @@ describe('metricsService', () => {
       expect(result.status).toBe('success');
     });
 
+    it('adds a Strategy-A traceId should-clause when a traceId correlator is passed', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ hits: { hits: [] } }),
+      });
+
+      await computeMetrics('run-with-no-native-id', defaultConfig, 'trace-abc-123');
+
+      const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      const should = requestBody.query.bool.must[0].bool.should;
+      expect(should).toEqual(expect.arrayContaining([{ term: { traceId: 'trace-abc-123' } }]));
+    });
+
+    it('omits the traceId should-clause when no traceId correlator is passed', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ hits: { hits: [] } }),
+      });
+
+      await computeMetrics('run-x', defaultConfig);
+
+      const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      const should = requestBody.query.bool.must[0].bool.should;
+      expect(should.some((c: any) => c.term && 'traceId' in c.term)).toBe(false);
+    });
+
+    it('finds a REST-connector run (no agent_health.run.id/gen_ai.conversation.id attrs) via the traceId correlator alone', async () => {
+      // REST connectors never get a native runId, so `report.runId` falls back
+      // to `report.traceId` upstream — the ONLY thing that reaches the agent's
+      // spans is a direct traceId match (Strategy A), not Strategy B.
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          hits: {
+            hits: [
+              {
+                _source: {
+                  name: 'invoke_agent',
+                  traceId: 'trace-rest-1',
+                  durationInNanos: 1000000000,
+                  status: { code: 1 },
+                  attributes: {
+                    'gen_ai.request.model': 'anthropic.claude-sonnet-4',
+                    'gen_ai.usage.input_tokens': 300,
+                    'gen_ai.usage.output_tokens': 50,
+                  },
+                },
+              },
+            ],
+          },
+        }),
+      });
+
+      const result = await computeMetrics('trace-rest-1', defaultConfig, 'trace-rest-1');
+
+      expect(result.status).toBe('success');
+      expect(result.inputTokens).toBe(300);
+      expect(result.llmCalls).toBe(1);
+    });
+
     it('should count tool executions', async () => {
       const mockResponse = {
         hits: {
@@ -632,6 +692,92 @@ describe('metricsService', () => {
       expect(result.status).toBe('success');
       expect(result.traceId).toBe('trace-1');
     });
+
+    it('falls back to vendor SDK token keys (Claude Code emits bare input_tokens/output_tokens, not gen_ai.usage.*)', () => {
+      // Real shape captured from a live Claude Code `claude_code.llm_request`
+      // span (comparison-page Cost/Tokens/LLM Calls columns bug): it stamps
+      // `gen_ai.request.model` correctly but reports usage under bare
+      // `input_tokens` / `output_tokens`, not the OTel registry names.
+      const spans = [
+        {
+          name: 'claude_code.llm_request',
+          traceId: 'trace-cc-1',
+          durationInNanos: 7238000000,
+          status: { code: 1 },
+          attributes: {
+            'gen_ai.system': 'anthropic',
+            'gen_ai.request.model': 'global.anthropic.claude-sonnet-4-6',
+            'span.type': 'llm_request',
+            input_tokens: 34947,
+            output_tokens: 313,
+          },
+        },
+      ];
+
+      const result = computeMetricsFromSpans('run-cc-1', spans);
+
+      expect(result.inputTokens).toBe(34947);
+      expect(result.outputTokens).toBe(313);
+      expect(result.totalTokens).toBe(35260);
+      expect(result.llmCalls).toBe(1);
+      expect(result.costUsd).toBeGreaterThan(0);
+    });
+
+    it('prefers gen_ai.usage.* registry keys over vendor keys when both are present', () => {
+      const spans = [
+        {
+          name: 'chat',
+          attributes: {
+            'gen_ai.request.model': 'anthropic.claude-sonnet-4',
+            'gen_ai.usage.input_tokens': 10,
+            'gen_ai.usage.output_tokens': 5,
+            input_tokens: 999,
+            output_tokens: 999,
+          },
+        },
+      ];
+
+      const result = computeMetricsFromSpans('run-1', spans);
+
+      expect(result.inputTokens).toBe(10);
+      expect(result.outputTokens).toBe(5);
+    });
+
+    it('excludes agent-health eval/judge spans from token/LLM-call counts (Strategy A can pull in the shared trace)', () => {
+      const spans = [
+        {
+          name: 'test_case',
+          attributes: {
+            'gen_ai.operation.name': 'evaluation',
+          },
+        },
+        {
+          name: 'chat',
+          attributes: {
+            'gen_ai.operation.name': 'evaluation',
+            'gen_ai.request.model': 'judge-model',
+            'gen_ai.usage.input_tokens': 9999,
+            'gen_ai.usage.output_tokens': 9999,
+          },
+        },
+        {
+          name: 'claude_code.llm_request',
+          attributes: {
+            'gen_ai.request.model': 'anthropic.claude-sonnet-4',
+            input_tokens: 500,
+            output_tokens: 100,
+          },
+        },
+      ];
+
+      const result = computeMetricsFromSpans('run-1', spans);
+
+      // Only the agent's own LLM span counts — the eval/judge spans sharing
+      // the trace are excluded entirely.
+      expect(result.inputTokens).toBe(500);
+      expect(result.outputTokens).toBe(100);
+      expect(result.llmCalls).toBe(1);
+    });
   });
 
   describe('computeBatchMetrics', () => {
@@ -728,6 +874,77 @@ describe('metricsService', () => {
       expect(result).toHaveLength(2);
       expect(result[0].status).toBe('pending');
       expect(result[1].status).toBe('pending');
+    });
+
+    it('adds a Strategy-A traceId terms should-clause and groups spans back by traceId (REST-connector / vendor-SDK runs)', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          hits: {
+            hits: [
+              {
+                // No agent_health.run.id / gen_ai.conversation.id at all —
+                // only findable via the traceId correlator.
+                _source: {
+                  name: 'claude_code.llm_request',
+                  traceId: 'trace-cc-run-1',
+                  attributes: {
+                    'gen_ai.request.model': 'anthropic.claude-sonnet-4',
+                    input_tokens: 400,
+                    output_tokens: 80,
+                  },
+                },
+              },
+            ],
+          },
+        }),
+      });
+
+      const result = await computeBatchMetrics(
+        ['run-cc-1'],
+        defaultConfig,
+        { 'run-cc-1': 'trace-cc-run-1' }
+      );
+
+      const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      const should = requestBody.query.bool.must[0].bool.should;
+      expect(should).toEqual(expect.arrayContaining([{ terms: { traceId: ['trace-cc-run-1'] } }]));
+
+      expect(result).toHaveLength(1);
+      expect(result[0].runId).toBe('run-cc-1');
+      expect(result[0].inputTokens).toBe(400);
+      expect(result[0].outputTokens).toBe(80);
+    });
+
+    it('groups a span matched only via gen_ai.conversation.id back to its runId (pre-fix this silently dropped it)', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({
+          hits: {
+            hits: [
+              {
+                _source: {
+                  name: 'chat',
+                  traceId: 'trace-conv-1',
+                  attributes: {
+                    'gen_ai.conversation.id': 'run-conv-1',
+                    'gen_ai.request.model': 'anthropic.claude-sonnet-4',
+                    'gen_ai.usage.input_tokens': 111,
+                    'gen_ai.usage.output_tokens': 22,
+                  },
+                },
+              },
+            ],
+          },
+        }),
+      });
+
+      const result = await computeBatchMetrics(['run-conv-1'], defaultConfig);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].runId).toBe('run-conv-1');
+      expect(result[0].inputTokens).toBe(111);
+      expect(result[0].status).toBe('success');
     });
   });
 });

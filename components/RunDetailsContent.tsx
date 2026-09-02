@@ -306,7 +306,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
   useEffect(() => {
     if (report.runId && isTraceMode) {
       setTraceMetricsLoading(true);
-      fetchRunMetrics(report.runId)
+      fetchRunMetrics(report.runId, report.traceId)
         .then(setTraceMetrics)
         .catch((error) => {
           console.warn('[RunDetails] Failed to fetch trace metrics:', error);
@@ -316,7 +316,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
     } else {
       setTraceMetrics(null);
     }
-  }, [report.runId, isTraceMode, liveReport.metricsStatus]);
+  }, [report.runId, report.traceId, isTraceMode, liveReport.metricsStatus]);
 
   // Reset trace state when report changes (switching test cases)
   // If already on Traces tab, auto-fetch new traces

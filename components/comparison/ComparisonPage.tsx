@@ -37,6 +37,7 @@ import {
   countRowsByStatus,
   calculateRowStatus,
   collectRunIdsFromReports,
+  collectTraceIdsFromReports,
   calculateCombinedScore,
   computeTestCaseOverlap,
   RowStatus,
@@ -383,9 +384,10 @@ export const ComparisonPage: React.FC = () => {
     const loadTraceMetrics = async () => {
       const selectedRunsForMetrics = runPool.filter(p => selectedRunIds.includes(p.run.id)).map(p => p.run);
       const runIds = collectRunIdsFromReports(selectedRunsForMetrics, reports);
+      const traceIdByRunId = collectTraceIdsFromReports(selectedRunsForMetrics, reports);
       if (runIds.length === 0) { setTraceMetricsMap(new Map()); return; }
       try {
-        const { metrics } = await fetchBatchMetrics(runIds);
+        const { metrics } = await fetchBatchMetrics(runIds, traceIdByRunId);
         const map = new Map<string, TraceMetrics>();
         metrics.forEach(m => { if (m.runId && !('error' in m)) map.set(m.runId, m as TraceMetrics); });
         setTraceMetricsMap(map);

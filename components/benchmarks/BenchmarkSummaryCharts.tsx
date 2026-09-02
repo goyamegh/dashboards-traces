@@ -155,9 +155,11 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
     const fetchMetrics = async () => {
       // Collect all runIds from reports
       const runIds: string[] = [];
+      const traceIdByRunId: Record<string, string> = {};
       Object.values(reports).forEach(report => {
         if (report?.runId) {
           runIds.push(report.runId);
+          if (report.traceId && !traceIdByRunId[report.runId]) traceIdByRunId[report.runId] = report.traceId;
         }
       });
 
@@ -167,7 +169,7 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
       }
 
       try {
-        const result = await fetchBatchMetrics(runIds);
+        const result = await fetchBatchMetrics(runIds, traceIdByRunId);
         setTraceMetrics({
           totalTokens: result.aggregate.totalInputTokens + result.aggregate.totalOutputTokens,
           totalCostUsd: result.aggregate.totalCostUsd,

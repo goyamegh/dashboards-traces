@@ -17,10 +17,15 @@ const router = Router();
 
 /**
  * GET /api/metrics/:runId - Compute metrics from traces for a single run
+ *   query: ?traceId= (optional Strategy-A correlator — the eval span's own
+ *     OTel traceId, shared with subprocess/HTTP agents via W3C TRACEPARENT
+ *     propagation; see server/services/metricsService.ts)
  */
 router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
   try {
     const { runId } = req.params;
+    const traceIdParam = req.query?.traceId;
+    const traceId = typeof traceIdParam === 'string' && traceIdParam ? traceIdParam : undefined;
 
     if (runId.startsWith('demo-')) {
       const sampleMetrics = computeMetricsFromSampleSpans(runId);
@@ -37,7 +42,7 @@ router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
 
     debug('MetricsAPI', 'Computing metrics for runId:', runId);
 
-    const metrics = await computeMetrics(runId, { client: obs.client, indexPattern: obs.indexes.traces });
+    const metrics = await computeMetrics(runId, { client: obs.client, indexPattern: obs.indexes.traces }, traceId);
 
     debug('MetricsAPI', 'Metrics computed:', {
       runId: metrics.runId,
@@ -61,10 +66,20 @@ router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
  */
 router.post('/api/metrics/batch', async (req: Request, res: Response) => {
   try {
-    const { runIds } = req.body;
+    const { runIds, traceIds } = req.body;
 
     if (!Array.isArray(runIds)) {
       return res.status(400).json({ error: 'runIds must be an array' });
+    }
+    let traceIdByRunId: Record<string, string> | undefined;
+    if (traceIds !== undefined) {
+      if (typeof traceIds !== 'object' || traceIds === null || Array.isArray(traceIds)) {
+        return res.status(400).json({ error: 'traceIds must be an object mapping runId -> traceId' });
+      }
+      traceIdByRunId = {};
+      for (const [rid, tid] of Object.entries(traceIds as Record<string, unknown>)) {
+        if (typeof tid === 'string' && tid) traceIdByRunId[rid] = tid;
+      }
     }
 
     debug('MetricsAPI', 'Computing batch metrics for', runIds.length, 'runs');
@@ -91,7 +106,7 @@ router.post('/api/metrics/batch', async (req: Request, res: Response) => {
         }));
       } else {
         try {
-          realResults = await computeBatchMetrics(realRunIds, { client: obs.client, indexPattern: obs.indexes.traces });
+          realResults = await computeBatchMetrics(realRunIds, { client: obs.client, indexPattern: obs.indexes.traces }, traceIdByRunId);
         } catch (e: any) {
           realResults = realRunIds.map((runId: string) => ({
             runId,
