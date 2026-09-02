@@ -4,11 +4,10 @@
  */
 
 import React, { useState, useEffect, useMemo } from 'react';
-import { usePersistedState } from '@/hooks/usePersistedState';
 import { Link, useNavigate } from 'react-router-dom';
 import {
   Info, BarChart3, Play, FileText, AlertTriangle, Clock,
-  CheckCircle2, XCircle, ArrowRight, TrendingDown, X, Activity,
+  CheckCircle2, XCircle, ArrowRight, TrendingDown, Activity,
 } from 'lucide-react';
 import {
   asyncBenchmarkStorage,
@@ -17,24 +16,13 @@ import {
 } from '@/services/storage';
 import { Benchmark, BenchmarkRun, EvaluationReport } from '@/types';
 import { fetchBatchMetrics } from '@/services/metrics';
-import { AgentTrendChart, TrendMetric } from './charts/AgentTrendChart';
+import { AgentTrendsBand } from './dashboard/AgentTrendsBand';
 import { FirstRunExperience } from './dashboard/FirstRunExperience';
 import { ReadyToRun } from './dashboard/ReadyToRun';
 import { useDataState } from '@/hooks/useDataState';
 import { isSampleDataActive } from '@/config/sampleData';
-import {
-  aggregateMetricsByDate,
-  getUniqueAgents,
-  getAgentDisplayName,
-  DashboardFilter,
-  TimeRange,
-  TrendDataPoint,
-} from '@/lib/dashboardMetrics';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatRelativeTime, getModelName } from '@/lib/utils';
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from '@/components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -163,47 +151,6 @@ const StatPill: React.FC<StatPillProps> = ({ to, label, value, icon: Icon, testI
     </div>
   );
   return to ? <Link to={to}>{inner}</Link> : inner;
-};
-
-// ==================== Filter Chips ====================
-
-interface FilterChipsProps {
-  filters: DashboardFilter;
-  benchmarks: Benchmark[];
-  onRemoveFilter: (type: 'benchmarkId' | 'agentKey') => void;
-  onClearAll: () => void;
-}
-
-const FilterChips: React.FC<FilterChipsProps> = ({ filters, benchmarks, onRemoveFilter, onClearAll }) => {
-  const hasFilters = filters.benchmarkId || filters.agentKey;
-  if (!hasFilters) return null;
-  const benchmarkName = filters.benchmarkId
-    ? benchmarks.find(b => b.id === filters.benchmarkId)?.name || filters.benchmarkId
-    : null;
-  return (
-    <div className="flex items-center gap-1.5 flex-wrap mt-2">
-      <span className="text-[11px] text-muted-foreground">Filters:</span>
-      {benchmarkName && (
-        <Badge variant="secondary" className="gap-1 h-5 text-[10px] px-1.5">
-          {benchmarkName}
-          <button onClick={() => onRemoveFilter('benchmarkId')} className="ml-0.5 hover:text-foreground">
-            <X className="h-2.5 w-2.5" />
-          </button>
-        </Badge>
-      )}
-      {filters.agentKey && (
-        <Badge variant="secondary" className="gap-1 h-5 text-[10px] px-1.5">
-          {getAgentDisplayName(filters.agentKey)}
-          <button onClick={() => onRemoveFilter('agentKey')} className="ml-0.5 hover:text-foreground">
-            <X className="h-2.5 w-2.5" />
-          </button>
-        </Badge>
-      )}
-      <Button variant="ghost" size="sm" onClick={onClearAll} className="text-[10px] h-5 px-1.5">
-        Clear
-      </Button>
-    </div>
-  );
 };
 
 // ==================== Status Icon ====================
@@ -534,9 +481,10 @@ export const Dashboard: React.FC = () => {
 
   const isSampleMode = isSampleDataActive();
 
-  const [filters, setFilters] = usePersistedState<DashboardFilter>('dashboard:filters', {});
-  const [timeRange, setTimeRange] = usePersistedState<TimeRange>('dashboard:timeRange', 'all');
-  const [selectedMetric, setSelectedMetric] = usePersistedState<TrendMetric>('dashboard:selectedMetric', 'passRate');
+  const agentDisplayName = useMemo(() => {
+    const names = new Map(DEFAULT_CONFIG.agents.map(a => [a.key, a.name]));
+    return (key: string) => names.get(key) || key;
+  }, []);
 
   // Test case count — kept for backward-compat with stats-summary-bar tests; not
   // surfaced in pills. Only the total count is needed, so request a single
@@ -595,12 +543,6 @@ export const Dashboard: React.FC = () => {
       })
       .catch(err => console.warn('[Dashboard] Metrics load failed:', err));
   }, [reports]);
-
-  const trendData = useMemo<TrendDataPoint[]>(
-    () => aggregateMetricsByDate(benchmarks, reports, metricsMap, filters, timeRange),
-    [benchmarks, reports, metricsMap, filters, timeRange],
-  );
-  const agents = useMemo(() => getUniqueAgents(benchmarks), [benchmarks]);
 
   const allRows = useMemo(() => buildRunRows(benchmarks), [benchmarks]);
   const totalRuns = allRows.length;
@@ -748,10 +690,6 @@ export const Dashboard: React.FC = () => {
   const goToRun = (row: RunRow) =>
     navigate(`/evaluations/benchmarks/${row.benchmarkId}/runs/${row.run.id}/inspect`);
 
-  const handleRemoveFilter = (type: 'benchmarkId' | 'agentKey') =>
-    setFilters(prev => ({ ...prev, [type]: undefined }));
-  const handleClearAllFilters = () => setFilters({});
-
   const hasData = benchmarks.length > 0 && benchmarks.some(b => b.runs && b.runs.length > 0);
 
   if (isCheckingData) {
@@ -841,59 +779,24 @@ export const Dashboard: React.FC = () => {
           </Card>
         ) : (
           <>
-            {/* Trends + Needs Improvement: 2/3 + 1/3 */}
-            <div className="grid gap-4 lg:grid-cols-3 lg:auto-rows-[340px]">
-              {/* Performance Trends — 2/3 */}
-              <Card className="lg:col-span-2 flex flex-col overflow-hidden h-[340px] lg:h-auto">
-                <CardHeader className="pb-2 px-4 pt-3 space-y-1">
-                  <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
-                    <div className="min-w-0">
-                      <CardTitle className="text-sm">Performance Trends</CardTitle>
-                      <CardDescription className="text-[11px] leading-tight">
-                        {agents.length > 0
-                          ? `${agents.length} agent${agents.length > 1 ? 's' : ''} · ${benchmarks.length} benchmark${benchmarks.length > 1 ? 's' : ''}`
-                          : 'Agent performance over time'}
-                      </CardDescription>
-                    </div>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      <Select value={selectedMetric} onValueChange={v => setSelectedMetric(v as TrendMetric)}>
-                        <SelectTrigger className="h-7 w-[110px] text-[11px]">
-                          <SelectValue placeholder="Metric" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="passRate">Pass Rate</SelectItem>
-                          <SelectItem value="cost">Cost</SelectItem>
-                          <SelectItem value="tokens">Tokens</SelectItem>
-                          <SelectItem value="latency">Latency</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <Select value={timeRange} onValueChange={v => setTimeRange(v as TimeRange)}>
-                        <SelectTrigger className="h-7 w-[105px] text-[11px]">
-                          <SelectValue placeholder="Range" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="7d">Last 7 days</SelectItem>
-                          <SelectItem value="30d">Last 30 days</SelectItem>
-                          <SelectItem value="all">All time</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                  <FilterChips
-                    filters={filters}
-                    benchmarks={benchmarks}
-                    onRemoveFilter={handleRemoveFilter}
-                    onClearAll={handleClearAllFilters}
-                  />
-                </CardHeader>
-                <CardContent className="flex-1 min-h-0 px-2 pb-2 pt-0">
-                  <div className="h-full w-full">
-                    <AgentTrendChart data={trendData} metric={selectedMetric} />
-                  </div>
-                </CardContent>
-              </Card>
-
-              {/* Needs Improvement — 1/3 */}
+            {/* Agent Trends (chart) + Agents Needing Improvement (table) — side by
+                side on desktop, stacked on mobile (owner feedback: these rendered
+                as two full-width stacked rows; same lg: breakpoint + 2/1 column
+                split already used by DashboardSkeleton above, so mobile stacking
+                behavior from #400 is unaffected — grid-cols-1 below lg). Grid
+                items default to align-items: stretch, so NeedsImprovementWidget
+                (which is already `flex flex-col` + an internal `ScrollArea h-full`)
+                naturally matches AgentTrendsBand's height without a hard-coded
+                row height to keep in sync with the new, taller trends card. */}
+            <div className="grid gap-4 lg:grid-cols-3 lg:items-stretch" data-testid="agent-trends-and-needs-improvement-row">
+              <div className="lg:col-span-2">
+                <AgentTrendsBand
+                  benchmarks={benchmarks}
+                  reports={reports}
+                  metricsMap={metricsMap}
+                  getAgentDisplayName={agentDisplayName}
+                />
+              </div>
               <NeedsImprovementWidget
                 failingAgents={failingAgents}
                 regressingAgents={regressingAgents}

@@ -442,6 +442,39 @@ describe('AsyncRunStorage', () => {
     });
   });
 
+  describe('getReportReasoningsByIds', () => {
+    it('returns an empty map for no ids without hitting the API', async () => {
+      const result = await asyncRunStorage.getReportReasoningsByIds([]);
+      expect(result).toEqual({});
+      expect(mockOsRuns.getByIds).not.toHaveBeenCalled();
+    });
+
+    it('requests only the reasoning + testCaseId fields (not the full report body)', async () => {
+      mockOsRuns.getByIds.mockResolvedValue([
+        { id: 'r-1', testCaseId: 'tc-1', llmJudgeReasoning: 'The agent was unable to retrieve any information due to tool connectivity issues.' },
+      ]);
+
+      const result = await asyncRunStorage.getReportReasoningsByIds(['r-1']);
+
+      expect(mockOsRuns.getByIds).toHaveBeenCalledTimes(1);
+      const [ids, options] = mockOsRuns.getByIds.mock.calls[0];
+      expect(ids).toEqual(['r-1']);
+      expect(options.fields).toEqual(['llmJudgeReasoning', 'testCaseId']);
+      expect(result['r-1'].llmJudgeReasoning).toContain('tool connectivity issues');
+    });
+
+    it('chunks large id lists into batches of 100 (RunInsightsPane caps failing-case fetches at 100 anyway)', async () => {
+      const ids = Array.from({ length: 150 }, (_, i) => `r-${i}`);
+      mockOsRuns.getByIds.mockResolvedValue([]);
+
+      await asyncRunStorage.getReportReasoningsByIds(ids);
+
+      expect(mockOsRuns.getByIds).toHaveBeenCalledTimes(2);
+      expect(mockOsRuns.getByIds.mock.calls[0][0]).toHaveLength(100);
+      expect(mockOsRuns.getByIds.mock.calls[1][0]).toHaveLength(50);
+    });
+  });
+
   describe('deleteReport', () => {
     it('returns true when deletion succeeds', async () => {
       mockOsRuns.delete.mockResolvedValue({ deleted: true });
