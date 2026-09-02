@@ -28,6 +28,7 @@ import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/componen
 import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
 import { getEvaluationRun } from '@/services/client';
 import { Benchmark, BenchmarkRun, EvaluationRun, TestCase, EvaluationReport, isEvaluationRun } from '@/types';
+import { resolveCanonicalEvaluationRun } from '@/lib/resolveCanonicalRun';
 import { ResultStatus, getResultStatus, StatusIcon, StatusLabel } from './ResultStatus';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatDate, getModelName } from '@/lib/utils';
@@ -114,31 +115,17 @@ export const RunInspectorPage: React.FC = () => {
         const bmRun = bm.runs?.find(r => r.id === runId);
         if (!bmRun) { navigate(`/evaluations/benchmarks/${benchmarkId}/runs`); return; }
 
-        // Prefer the first-class EvaluationRun doc when one exists for this
-        // run id. Runs created WITH a benchmarkId are dual-written
-        // (server/routes/storage/evaluationRuns.ts, "Link the terminal
-        // projection before finalizing the first-class run"): a first-class
-        // `docType: 'evaluation-run'` doc AND a legacy-shaped BenchmarkRun
-        // projection embedded in `benchmark.runs[]` — and the projection is
-        // never kept in sync after that write (retry-judgement, for one,
-        // only updates the first-class doc's results/stats). Fetching the
-        // first-class doc here means the Retry judgement affordance (gated
-        // on `docType === 'evaluation-run'`, below) works from this
-        // benchmark-scoped route too, and the panel shows live
-        // results/stats instead of a stale embedded snapshot. A run that
-        // only ever exists as a legacy BenchmarkRun (pre-#399, no
-        // first-class doc) 404s here and falls back to the embedded
-        // projection exactly as before — unchanged behavior for that case.
-        // (Re-run stays keyed on route `mode` on this branch — its own
-        // docType-keyed fix landed separately on goyamegh/rerun-idspace-fix
-        // and isn't ported here; out of scope for this fix.)
-        try {
-          // Defensive `?? bmRun`: some test doubles / API layers resolve
-          // to a falsy value on "not found" instead of throwing.
-          runData = (await getEvaluationRun(runId)) ?? bmRun;
-        } catch {
-          runData = bmRun;
-        }
+        // Runs created WITH a benchmarkId are dual-written (#399): a
+        // first-class EvaluationRun doc AND a legacy-shaped BenchmarkRun
+        // projection embedded in benchmark.runs[] above. Prefer the
+        // first-class doc when it exists so (a) isEvaluationRun(run) below
+        // is meaningful on this route too, not permanently false, and (b)
+        // the page shows live results/stats instead of a stale embedded
+        // snapshot -- this also keeps the Retry judgement affordance
+        // (gated on isEvaluationRun(run), below) working from this
+        // benchmark-scoped route. See lib/resolveCanonicalRun.ts for the
+        // fallback semantics (silent on 404, logged on any other failure).
+        runData = await resolveCanonicalEvaluationRun(runId, bmRun, getEvaluationRun);
       } else {
         // SDK eval-run mode — no benchmark.
         try {
@@ -242,13 +229,13 @@ export const RunInspectorPage: React.FC = () => {
 
   // Resolve the source run name for the rerunOf provenance chip (EvaluationRun only).
   useEffect(() => {
-    if (mode !== 'evalRun' || !(run as EvaluationRun)?.rerunOf) {
+    if (!run || !isEvaluationRun(run) || !run.rerunOf) {
       setSourceRunName(null);
       setSourceRunMissing(false);
       return;
     }
     let cancelled = false;
-    const sourceRunId = (run as EvaluationRun).rerunOf!;
+    const sourceRunId = run.rerunOf;
     getEvaluationRun(sourceRunId)
       .then(src => {
         if (!cancelled) {
@@ -365,6 +352,11 @@ export const RunInspectorPage: React.FC = () => {
 
   const agentName = DEFAULT_CONFIG.agents.find(a => a.key === run.agentKey)?.name || run.agentKey;
   const modelName = getModelName(run.modelId);
+  // Narrow once for the render below -- avoids repeated isEvaluationRun()
+  // calls and unsafe `as EvaluationRun` casts inside nested closures (TS
+  // narrowing of `run` doesn't reliably persist into inline arrow-function
+  // bodies like onClick handlers).
+  const evalRun: EvaluationRun | null = isEvaluationRun(run) ? run : null;
 
   return (
     <div className="h-full flex flex-col max-md:h-auto max-md:overflow-visible">
@@ -390,21 +382,23 @@ export const RunInspectorPage: React.FC = () => {
         <div className="flex items-center justify-between mt-1">
           <div className="flex-1 min-w-0">
             <h2 className="text-lg font-bold truncate">{run.name}</h2>
-            {/* Provenance: rerunOf chip (EvaluationRun only) */}
-            {mode === 'evalRun' && (run as EvaluationRun)?.rerunOf && (
+            {/* Provenance chip visibility is a DOC concern (does this run
+                object actually carry rerunOf data?), not a route concern --
+                isEvaluationRun() narrows `run` so `.rerunOf` is type-safe. */}
+            {evalRun?.rerunOf && (
               <div className="mt-1 flex items-center">
                 <button
                   data-testid="rerun-provenance-chip"
                   className={sourceRunMissing
                     ? 'inline-flex items-center gap-1 rounded-full border border-muted-foreground/30 bg-muted/40 text-muted-foreground text-xs px-2 py-0.5 hover:bg-muted/60 transition-colors'
                     : 'inline-flex items-center gap-1 rounded-full border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-xs px-2 py-0.5 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors'}
-                  onClick={() => navigate(`/evaluations/runs/${(run as EvaluationRun).rerunOf}`)}
+                  onClick={() => navigate(`/evaluations/runs/${evalRun.rerunOf}`)}
                   title={sourceRunMissing
                     ? 'This run was created as a re-run, but the source run no longer exists'
                     : 'This run was created as a re-run of the linked source run'}
                 >
                   <Link2 size={11} />
-                  re-run of {sourceRunName || (run as EvaluationRun).rerunOf?.slice(0, 8)}
+                  re-run of {sourceRunName || evalRun.rerunOf?.slice(0, 8)}
                 </button>
               </div>
             )}
@@ -430,9 +424,13 @@ export const RunInspectorPage: React.FC = () => {
             <span className={`font-semibold ${passRate >= 80 ? 'text-green-500' : passRate >= 50 ? 'text-amber-500' : 'text-red-500'}`}>
               {passRate}%
             </span>
-            {/* Re-run: only for eval-run mode; benchmark-embedded runs use BenchmarkRun
-                which doesn't support rerun. */}
-            {mode === 'evalRun' ? (
+            {/* Re-run capability is a DOC concern: only EvaluationRun docs
+                support rerun (BenchmarkRun has no rerun endpoint), and a
+                dual-written run reached via the benchmark route can BE an
+                EvaluationRun once loadData() above prefers the first-class
+                doc -- so this must key on the run's actual docType, not on
+                which route/mode loaded the page. */}
+            {evalRun ? (
               <Button
                 variant="outline"
                 size="sm"
@@ -518,10 +516,10 @@ export const RunInspectorPage: React.FC = () => {
         </div>
       </div>
 
-      {/* Re-run Confirm Dialog (EvaluationRun only) */}
-      {mode === 'evalRun' && (
+      {/* Re-run Confirm Dialog (EvaluationRun only) -- doc concern, see above. */}
+      {evalRun && (
         <RerunConfirmDialog
-          run={run as EvaluationRun | null}
+          run={evalRun}
           open={rerunDialogOpen}
           onOpenChange={setRerunDialogOpen}
           onRerun={newRunId => navigate(`/evaluations/runs/${newRunId}`)}
