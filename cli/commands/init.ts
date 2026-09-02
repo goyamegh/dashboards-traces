@@ -12,13 +12,16 @@ import { Command } from 'commander';
 import chalk from 'chalk';
 import { writeFileSync, existsSync } from 'fs';
 import { resolve } from 'path';
+import { getOwnPackageName } from '@/lib/ownPackageName.js';
 
+// The import specifier must match the name this package was published
+// under, so a forked/renamed publish generates a config that resolves.
 const TYPESCRIPT_CONFIG = `/*
  * Agent Health Configuration
  * See docs/CONFIGURATION.md for full options
  */
 
-import { defineConfig, AGUIStreamingConnector, ClaudeCodeConnector } from '@opensearch-project/agent-health';
+import { defineConfig, AGUIStreamingConnector, ClaudeCodeConnector } from '${getOwnPackageName()}';
 
 export default defineConfig({
   agents: [
