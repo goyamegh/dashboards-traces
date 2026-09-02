@@ -35,7 +35,7 @@ import { listEvaluationRuns } from '@/services/client';
 import { Benchmark, TestCase, BenchmarkRun, EvaluationRun } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { ENV_CONFIG } from '@/lib/config';
-import { computeRunStats } from '@/lib/runStats';
+import { computeRunStats, getEffectiveRunStatus } from '@/lib/runStats';
 import { formatRelativeTime, getModelName, getJudgeModelLabel, getEvaluatorLabel } from '@/lib/utils';
 import { Breadcrumbs } from './Breadcrumbs';
 import { RerunConfirmDialog } from './RerunConfirmDialog';
@@ -87,6 +87,13 @@ interface RunRow {
   /** Issue #242: evaluator-error runs counted separately from `failed`. */
   errored: number;
   total: number;
+  /**
+   * Effective run status (bug: page showed no in-flight indication for
+   * genuinely running runs — they rendered identically to a completed run
+   * with a bad score, 2026-09-01). Computed once at row-build time via the
+   * shared lib/runStats helper so it can't drift from BenchmarkRunsPage.tsx.
+   */
+  status: ReturnType<typeof getEffectiveRunStatus>;
 }
 
 /**
@@ -257,6 +264,7 @@ export const EvalRunsPage: React.FC = () => {
           agentName,
           ...stats,
           errored: stats.errored ?? 0,
+          status: getEffectiveRunStatus(run),
         });
       }
     }
@@ -298,11 +306,27 @@ export const EvalRunsPage: React.FC = () => {
         agentName,
         ...stats,
         errored: stats.errored ?? 0,
+        status: getEffectiveRunStatus(run),
       });
     }
 
     return rows;
   }, [benchmarks, evalRuns, timeRange, selectedAgent, search]);
+
+  // Poll while any known run is still in progress (bug #5, 2026-09-01: this
+  // page fetched once on mount and never again, so a run's status/counts
+  // never advanced without a manual full page reload — combined with no
+  // visible running indicator, an in-flight run looked indistinguishable
+  // from an abandoned page). Mirrors BenchmarkRunsPage2's polling pattern.
+  const hasInProgressRuns = useMemo(
+    () => allRunRows.some(rr => rr.status === 'running'),
+    [allRunRows]
+  );
+  useEffect(() => {
+    if (!hasInProgressRuns) return;
+    const interval = setInterval(() => { loadData(); }, 5000);
+    return () => clearInterval(interval);
+  }, [hasInProgressRuns, loadData]);
 
   // Available filter options (derived from data)
   const availableBenchmarks = useMemo(() => {
@@ -612,7 +636,18 @@ export const EvalRunsPage: React.FC = () => {
           </button>
         </td>
         <td className="px-2 py-1.5 align-middle">
-          <div className="text-xs font-medium">{rr.run.name}</div>
+          <div className="flex items-center gap-1.5">
+            <span className="text-xs font-medium">{rr.run.name}</span>
+            {rr.status === 'running' && (
+              <span
+                data-testid="run-row-status-running"
+                className="inline-flex items-center gap-1 px-1.5 py-0 rounded-full text-[9px] font-medium bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/30 animate-pulse"
+                title="This run is still in progress"
+              >
+                <Loader2 size={9} className="animate-spin" /> Running
+              </span>
+            )}
+          </div>
           <div className="text-[9px] text-muted-foreground font-mono">{rr.run.id.slice(0, 8)}</div>
         </td>
         {showBenchmark && (
