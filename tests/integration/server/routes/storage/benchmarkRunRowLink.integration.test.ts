@@ -57,7 +57,7 @@ const RUNNING_EVAL_RUN = {
 // (still running) precondition the bug depends on.
 const BENCHMARK_WITHOUT_EMBEDDED_RUN = {
   id: BENCHMARK_ID,
-  name: 'stark-retail-ai-search',
+  name: 'retail-retrieval-benchmark',
   testCaseIds: ['tc-1'],
   runs: [],
 };
