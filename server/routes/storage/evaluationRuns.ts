@@ -18,6 +18,12 @@ import {
   buildRerunConfig,
   computeRerunName,
 } from '../../../services/evaluationRerun.js';
+import {
+  retryJudgementForRun,
+  countRetryableCases,
+  type RetryJudgementScope,
+  type RetryJudgementSummary,
+} from '../../../services/evaluation/retryJudgement.js';
 import { loadConfigSync } from '../../../lib/config/index.js';
 import { getCustomAgents } from '../../services/customAgentStore.js';
 import { resolveAgentModel } from '../../../lib/resolveAgentModel.js';
@@ -27,6 +33,54 @@ const router = Router();
 
 // Registry of active cancellation tokens for in-progress runs
 const activeCancellationTokens = new Map<string, CancellationToken>();
+
+// codex_review (retry-judgement): the 409-if-running gate on
+// /retry-judgement checks the run's PERSISTED status, which is not a lock —
+// two concurrent retry-judgement requests against the SAME terminal run
+// would both pass that check, both issue judge calls, and race on the final
+// results/stats write (last-write-wins). This in-process guard closes that
+// window for the common case (double-click, or a second request while the
+// first is still running) within a single server process. It does NOT
+// cover multi-process races (two servers hitting the same run) — no
+// mutation endpoint in this file has that guarantee today (see this repo's
+// "single-writer discipline" convention for run mutations).
+const activeRetryJudgementRuns = new Set<string>();
+
+/**
+ * Retry-judgement is fire-and-poll (see the POST handler below): the route
+ * responds 202 immediately and this in-memory map tracks the background
+ * job so GET .../retry-judgement/status can report progress + the final
+ * summary. Real incident: a 62-case run holding the HTTP response open for
+ * ~20-30 minutes made the client's fetch/proxy time out and show "failed to
+ * retry judgement" while the server kept judging in the background
+ * (confirmed via fresh judge timestamps/reasoning on the run's report docs
+ * around the owner's click — the retry HAD been progressing).
+ *
+ * Single-process only, like `activeRetryJudgementRuns` above — lost on
+ * restart, which only matters for an in-flight job (a completed job's
+ * summary is already persisted on the report/run docs regardless).
+ */
+interface RetryJudgementJobState {
+  status: 'running' | 'completed' | 'failed';
+  scope: RetryJudgementScope;
+  total: number;
+  completed: number;
+  startedAt: number;
+  completedAt?: number;
+  summary?: RetryJudgementSummary;
+  error?: string;
+}
+const retryJudgementJobs = new Map<string, RetryJudgementJobState>();
+/** Keep a finished job's status around long enough for a slow poller to see it, then reclaim memory. */
+const RETRY_JUDGEMENT_JOB_TTL_MS = 60 * 60 * 1000;
+
+function pruneRetryJudgementJobs(now = Date.now()): void {
+  for (const [runId, job] of retryJudgementJobs) {
+    if (job.status !== 'running' && job.completedAt && now - job.completedAt > RETRY_JUDGEMENT_JOB_TTL_MS) {
+      retryJudgementJobs.delete(runId);
+    }
+  }
+}
 
 /**
  * Send an SSE event to the client.
@@ -497,6 +551,114 @@ router.post('/api/storage/evaluation-runs/:id/rerun', async (req: Request, res: 
       res.status(500).json({ error: error.message });
     }
   }
+});
+
+// POST /api/storage/evaluation-runs/:id/retry-judgement - Salvage judge-failed
+// cases at judge cost only (never re-invokes the agent). See
+// services/evaluation/retryJudgement.ts for the selection predicate + pipeline.
+//
+// ASYNC JOB PATTERN (fixes "failed to retry judgement" toast on large runs):
+// this used to `await retryJudgementForRun(...)` inline and respond with the
+// full summary — fine for a handful of cases, but a 62-case run at ~40-90s
+// per Bedrock judge call / concurrency 3 is 20-30+ minutes, which blows past
+// any client fetch timeout or intermediate proxy timeout. The client saw
+// "failed" while the server kept judging in the background (confirmed via
+// [BedrockJudge] Pass/Fail log lines continuing well after the toast, and
+// fresh judge reasoning/timestamps landing on the run's report docs).
+// Mirrors the /rerun handler above: respond immediately, run the pipeline in
+// the background, let the caller poll for progress/completion — see GET
+// .../retry-judgement/status below.
+router.post('/api/storage/evaluation-runs/:id/retry-judgement', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const scope: RetryJudgementScope = req.query.scope === 'all' ? 'all' : 'errored';
+    const storage = getStorageModule();
+
+    const run = await storage.evaluationRuns.getById(id);
+    if (!run) {
+      return res.status(404).json({ error: 'Evaluation run not found' });
+    }
+
+    // The run must be in a TERMINAL state — retrying judgement on a run
+    // that's still executing would race the runner's own writes to the same
+    // report docs / results map.
+    if (run.status === 'running' || run.status === 'pending') {
+      return res.status(409).json({ error: 'Cannot retry judgement while the run is still executing' });
+    }
+
+    // Same-process double-submit guard (see comment on the Set above). Check
+    // + add happen back-to-back with no `await` between them, so the two
+    // halves are atomic with respect to a concurrent request on the same id.
+    if (activeRetryJudgementRuns.has(id)) {
+      return res.status(409).json({ error: 'Retry judgement is already in progress for this run' });
+    }
+    activeRetryJudgementRuns.add(id);
+
+    pruneRetryJudgementJobs();
+
+    let total = 0;
+    try {
+      total = await countRetryableCases(run, storage, scope);
+    } catch (countError: any) {
+      console.error(`[StorageAPI] Retry judgement pre-flight count failed for run ${id}:`, countError.message);
+    }
+
+    const job: RetryJudgementJobState = { status: 'running', scope, total, completed: 0, startedAt: Date.now() };
+    retryJudgementJobs.set(id, job);
+
+    // Respond immediately — see the module comment above.
+    res.status(202).json({ jobId: id, status: job.status, total });
+
+    retryJudgementForRun(run, storage, {
+      scope,
+      concurrency: 3,
+      onProgress: (completedCount, totalCount) => {
+        job.completed = completedCount;
+        job.total = totalCount;
+      },
+    })
+      .then((summary) => {
+        job.status = 'completed';
+        job.summary = summary;
+        job.completed = summary.retried;
+        job.completedAt = Date.now();
+      })
+      .catch((error: any) => {
+        console.error(`[StorageAPI] Retry judgement failed for run ${id}:`, error.message);
+        job.status = 'failed';
+        job.error = error.message;
+        job.completedAt = Date.now();
+      })
+      .finally(() => {
+        activeRetryJudgementRuns.delete(id);
+      });
+  } catch (error: any) {
+    console.error('[StorageAPI] Retry judgement failed:', error.message);
+    if (!res.headersSent) {
+      res.status(500).json({ error: error.message });
+    }
+  }
+});
+
+// GET /api/storage/evaluation-runs/:id/retry-judgement/status - Poll the
+// background job started by the POST above. 404 once the run never had a
+// job (never started, or the tracking entry aged out — see
+// RETRY_JUDGEMENT_JOB_TTL_MS) as opposed to 200 with a synthetic idle state,
+// so a client that polls after a server restart gets an unambiguous signal
+// to stop polling rather than spinning forever on a job that's gone.
+router.get('/api/storage/evaluation-runs/:id/retry-judgement/status', (req: Request, res: Response) => {
+  const { id } = req.params;
+  const job = retryJudgementJobs.get(id);
+  if (!job) {
+    return res.status(404).json({ error: 'No retry-judgement job found for this run' });
+  }
+  res.json({
+    status: job.status,
+    total: job.total,
+    completed: job.completed,
+    ...(job.summary ? { summary: job.summary } : {}),
+    ...(job.error ? { error: job.error } : {}),
+  });
 });
 
 // PUT /api/storage/evaluation-runs/:id - Create or update a run without execution (for migration/import)
