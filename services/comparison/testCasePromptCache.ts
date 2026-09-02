@@ -48,18 +48,26 @@ const cache = new Map<string, Promise<TestCaseVersion[]>>();
 
 /**
  * Fetch (or reuse a cached/in-flight fetch of) the full version history for
- * a hover preview. Network/storage errors (including "no versions found",
- * which the server 404s) resolve to `[]` rather than rejecting — a failed
- * lookup should render a graceful "couldn't load" state in the hover card,
- * never throw during render.
+ * a hover preview. Network/storage errors resolve to `[]` for the CALLER
+ * (a failed lookup should render a graceful "couldn't load" state, never
+ * throw during render) but are deliberately NOT cached as a success value:
+ * caching a rejected fetch as a permanent `[]` would "poison" that test
+ * case's hover for the rest of the session after one transient failure
+ * (a 500, a network blip). On rejection the cache entry is evicted (if it's
+ * still the SAME pending entry — a concurrent caller may have already
+ * replaced it) so the NEXT hover retries instead of repeating the same
+ * empty result forever.
  */
 export function fetchTestCaseVersionsForHover(testCaseId: string): Promise<TestCaseVersion[]> {
   let pending = cache.get(testCaseId);
   if (!pending) {
-    pending = asyncTestCaseStorage.getVersions(testCaseId).catch(() => []);
+    pending = asyncTestCaseStorage.getVersions(testCaseId);
+    pending.catch(() => {
+      if (cache.get(testCaseId) === pending) cache.delete(testCaseId);
+    });
     cache.set(testCaseId, pending);
   }
-  return pending;
+  return pending.catch(() => []);
 }
 
 /** Test-only: reset the module-level cache between test cases. */

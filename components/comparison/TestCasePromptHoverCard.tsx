@@ -24,6 +24,7 @@ import React, { useState } from 'react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Badge } from '@/components/ui/badge';
 import { Skeleton } from '@/components/ui/skeleton';
+import { cn } from '@/lib/utils';
 import { useTestCasePromptPreview } from '@/hooks/useTestCasePromptPreview';
 import { selectPromptForVersion } from '@/services/comparison/testCasePromptCache';
 
@@ -62,7 +63,7 @@ export const TestCasePromptHoverCard: React.FC<TestCasePromptHoverCardProps> = (
 }) => {
   const [open, setOpen] = useState(false);
   const { loading, versions, error } = useTestCasePromptPreview(testCaseId, open);
-  const { initialPrompt, versionUsed } = selectPromptForVersion(versions, version);
+  const { initialPrompt, versionUsed, isFallbackVersion } = selectPromptForVersion(versions, version);
 
   const badgeLabels = labels && labels.length > 0
     ? labels
@@ -84,8 +85,17 @@ export const TestCasePromptHoverCard: React.FC<TestCasePromptHoverCardProps> = (
               {testCaseName || testCaseId}
             </span>
             {versionUsed !== undefined && (
-              <Badge variant="outline" className="shrink-0 text-[10px]" data-testid="compare-hover-prompt-version">
-                v{versionUsed}
+              <Badge
+                variant="outline"
+                className={cn('shrink-0 text-[10px]', isFallbackVersion && 'border-amber-500/40 text-amber-600 dark:text-amber-400')}
+                data-testid="compare-hover-prompt-version"
+                title={
+                  isFallbackVersion
+                    ? `The run used v${version}, which is no longer in this test case's captured history — showing the latest known version (v${versionUsed}) instead.`
+                    : undefined
+                }
+              >
+                {isFallbackVersion ? `v${versionUsed} (not the run's v${version})` : `v${versionUsed}`}
               </Badge>
             )}
           </div>

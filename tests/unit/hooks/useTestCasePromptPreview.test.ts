@@ -94,4 +94,30 @@ describe('useTestCasePromptPreview', () => {
     expect(result.current.versions).toEqual([]);
     expect(result.current.error).toBe(true);
   });
+
+  it('the id changing while a fetch is in flight does not apply the STALE id\'s result to the new id (unmount-cleanup guard)', async () => {
+    let resolveA: (v: TestCaseVersion[]) => void;
+    const pendingA = new Promise<TestCaseVersion[]>((resolve) => { resolveA = resolve; });
+    const versionsB: TestCaseVersion[] = [{ version: 9, createdAt: '2026-02-01T00:00:00Z', initialPrompt: 'b', context: [] }];
+
+    asyncTestCaseStorage.getVersions.mockImplementation((id: string) =>
+      id === 'tc-a' ? pendingA : Promise.resolve(versionsB)
+    );
+
+    const { result, rerender } = renderHook(
+      ({ id }) => useTestCasePromptPreview(id, true),
+      { initialProps: { id: 'tc-a' } }
+    );
+
+    // Switch to a different id BEFORE tc-a's fetch resolves — the effect's
+    // cleanup must mark the tc-a run's callback cancelled so it can never
+    // clobber tc-b's state once it finally settles.
+    rerender({ id: 'tc-b' });
+    await waitFor(() => expect(result.current.versions).toEqual(versionsB));
+
+    // Now let the stale tc-a fetch resolve — must NOT overwrite tc-b's state.
+    resolveA!([{ version: 1, createdAt: '2026-01-01T00:00:00Z', initialPrompt: 'a', context: [] }]);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(result.current.versions).toEqual(versionsB);
+  });
 });
