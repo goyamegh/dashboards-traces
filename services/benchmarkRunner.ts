@@ -34,7 +34,7 @@ import {
 import { buildEvaluatorErrorPatch } from './evaluation/evaluatorError';
 import { connectorRegistry } from '@/services/connectors/server';
 import { readEnv } from '@/lib/envCompat';
-import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
+import { buildJudgeAgentsHints, resolveJudgeRunId } from '@/services/traces/judgeAgentsHints';
 import {
   runInSession,
   recordVerdict,
@@ -1096,8 +1096,11 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
             () => {}, // No progress callback needed
             judgeModelId,
             report.evaluatorId,
-            // Forward report.runId so the agent (trace) judge can scope.
-            report.runId,
+            // Forward report.runId so the agent (trace) judge can scope;
+            // fall back to the eval's own traceId, then the report's own id,
+            // when the connector never returns a native runId (REST agents
+            // — see resolveJudgeRunId doc comment / #trace-poll-fix).
+            resolveJudgeRunId(report),
             // Strategy C correlation hints (#264).
             buildJudgeAgentsHints(report, agentConfig?.traceServiceName)
           );
@@ -1221,7 +1224,9 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
             () => {},
             judgeModelId,
             report.evaluatorId,
-            report.runId,
+            // See resolveJudgeRunId: falls back to traceId/report.id when
+            // the REST connector never returned a native runId.
+            resolveJudgeRunId(report),
             buildJudgeAgentsHints(report, agentConfig?.traceServiceName)
           );
           await updateRunWithClient(client, report.id, {

@@ -6,38 +6,65 @@
 /**
  * In-process trace-judge tools for the agent judge (RFC 004 §4.4, #244).
  *
- * These are the same read-only, run-scoped `query_spans` / `query_logs` tools
- * the agent judge uses to verify claims against the run's real OTel spans/logs
- * — but registered as an **in-process** pi extension factory (no spawned CLI,
- * no extension file, no env-var scoping). The `runId` is captured by closure
- * (so the judging model still cannot pivot to other runs), and the tools reuse
- * the server's existing read endpoints over localhost.
+ * These are the same read-only `query_spans` / `query_logs` tools the agent
+ * judge uses to verify claims against the run's real OTel spans/logs — but
+ * registered as an **in-process** pi extension factory (no spawned CLI, no
+ * extension file, no env-var scoping). `runId` and `agents` are both captured
+ * by closure (so the judging model still cannot pivot to other runs/other
+ * scopes), and the tools reuse the server's existing read endpoints over
+ * localhost.
+ *
+ * Scoping handle: `runId` (Strategy B) OR `agents` hints (Strategy C/D —
+ * serviceName+window / sessionId, from `buildJudgeAgentsHints`, #264). REST-
+ * connector agents never mint a `runId` outside trace-mode polling, so
+ * requiring `runId` unconditionally here would silently disable the tools
+ * for every such request even when the route (`server/routes/judge.ts`,
+ * `hasTraceCorrelation`) already accepted it on the strength of `agents`
+ * alone — see `services/traces/judgeAgentsHints.ts`'s `hasTraceCorrelation`
+ * doc comment for the full story. Both tools below are disabled only when
+ * NEITHER `runId` nor a usable `agents` hint is present.
  */
 
 import type { PiExtensionAPI, PiExtensionFactory } from './piSdkTypes';
 import { Type } from 'typebox';
+import { hasTraceCorrelation } from '@/services/traces/judgeAgentsHints';
 
 function textResult(obj: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(obj, null, 2) }], details: obj };
 }
 
+type TraceAgentHint = { serviceName: string; startedAt: number; endedAt: number; sessionId?: string };
+
 /**
- * Build an extension factory that registers the run-scoped trace tools.
- * @param runId   the single run the tools are hard-scoped to (closure, not a tool param)
+ * Build an extension factory that registers the trace-scoped tools.
+ * @param runId   the single run the tools scope to (closure, not a tool param) — may
+ *                be `undefined` when the caller only has `agents` hints (see above).
  * @param serverUrl base URL of this Agent Health server (reuses /api/traces, /api/logs)
- * @param agents  optional Strategy C correlation hints (service.name + time-window).
- *                When the agent's instrumentation doesn't share `gen_ai.request.id`
- *                with agent-health's runId (e.g. claude-code emits its own session
- *                ids), Strategy B alone returns just the eval span. Forwarding
- *                `agents` lets `/api/traces` union Strategy B (runIds) with
- *                Strategy C (service.name within the run's wall-clock window) so
- *                the judge actually sees the agent's emitted spans. See #264.
+ * @param agents  optional Strategy C/D correlation hints (service.name + time-window,
+ *                and/or sessionId). When the agent's instrumentation doesn't share
+ *                `gen_ai.request.id` with agent-health's runId (e.g. claude-code emits
+ *                its own session ids), or there is no runId at all (REST connectors
+ *                outside trace-mode polling), these hints are what the tools scope to.
+ *                Forwarding `agents` to `/api/traces` unions Strategy B (runIds) with
+ *                Strategy C (service.name within the run's wall-clock window) so the
+ *                judge actually sees the agent's emitted spans. See #264.
  */
 export function createTraceJudgeExtension(
   runId: string | undefined,
   serverUrl: string,
-  agents?: Array<{ serviceName: string; startedAt: number; endedAt: number; sessionId?: string }>
+  agents?: TraceAgentHint[]
 ): PiExtensionFactory {
+  const hasHints = Array.isArray(agents) && agents.length > 0;
+  const scoped = hasTraceCorrelation(runId, agents);
+  // Widest [min(startedAt), max(endedAt)] across all hints — used by
+  // query_logs (which has no serviceName filter of its own) as a time-window
+  // fallback when there's no runId to filter on directly.
+  const hintWindow = hasHints
+    ? {
+        startTime: Math.min(...agents!.map((a) => a.startedAt)),
+        endTime: Math.max(...agents!.map((a) => a.endedAt)),
+      }
+    : undefined;
   return (pi: PiExtensionAPI) => {
     pi.registerTool({
       name: 'query_spans',
@@ -60,22 +87,25 @@ export function createTraceJudgeExtension(
         ),
       }),
       async execute(_toolCallId: string, params: { nameFilter?: string }) {
-        if (!runId) {
-          return textResult({ error: 'No run id available — trace tools are disabled for this judge invocation.' });
+        if (!scoped) {
+          return textResult({ error: 'No run id or trace correlation hints available — trace tools are disabled for this judge invocation.' });
         }
         try {
           // Send Strategy B (runIds) AND Strategy C (agents: service.name +
-          // time-window) together. The /api/traces route unions them via
-          // bool.should so a span matching EITHER comes back without
-          // duplication. Without `agents`, claude-code's instrumentation
-          // (which doesn't stamp gen_ai.request.id with agent-health's
-          // runId) is invisible to the judge — leaving the judge to
-          // reason from the trajectory text alone.
-          const body: Record<string, unknown> = {
-            runIds: [runId],
-            size: 500,
-          };
-          if (agents && agents.length > 0) {
+          // time-window) together — whichever are actually present. The
+          // /api/traces route unions them via bool.should so a span matching
+          // EITHER comes back without duplication. When there's no runId at
+          // all (REST connectors outside trace-mode polling), `agents` alone
+          // is enough — /api/traces treats it as a first-class id filter, not
+          // just an add-on to runIds. Without `agents`, claude-code's
+          // instrumentation (which doesn't stamp gen_ai.request.id with
+          // agent-health's runId) is invisible to the judge — leaving the
+          // judge to reason from the trajectory text alone.
+          const body: Record<string, unknown> = { size: 500 };
+          if (runId) {
+            body.runIds = [runId];
+          }
+          if (hasHints) {
             body.agents = agents;
           }
           const res = await fetch(`${serverUrl}/api/traces`, {
@@ -101,7 +131,13 @@ export function createTraceJudgeExtension(
             status: s.status,
             attributes: s.attributes,
           }));
-          return textResult({ runId, spanCount: summary.length, spans: summary, warning: data?.warning });
+          return textResult({
+            runId: runId ?? null,
+            scope: runId ? 'runId' : 'agents-hints',
+            spanCount: summary.length,
+            spans: summary,
+            warning: data?.warning,
+          });
         } catch (err: any) {
           return textResult({ error: `traces query error: ${err?.message ?? String(err)}` });
         }
@@ -124,20 +160,39 @@ export function createTraceJudgeExtension(
         query: Type.Optional(Type.String({ description: 'Optional substring/text filter for log lines' })),
       }),
       async execute(_toolCallId: string, params: { query?: string }) {
-        if (!runId) {
-          return textResult({ error: 'No run id available — trace tools are disabled for this judge invocation.' });
+        if (!scoped) {
+          return textResult({ error: 'No run id or trace correlation hints available — trace tools are disabled for this judge invocation.' });
         }
         try {
+          // /api/logs has no serviceName filter of its own — when there's a
+          // runId, filter on it directly (existing behavior, unbounded by
+          // time: "searching by runId, we want to find logs regardless of
+          // age" — see server/services/logsService.ts). When there's ONLY
+          // `agents` hints (no runId at all — REST connectors outside
+          // trace-mode polling), fall back to the widest time window across
+          // the hints so the query is still scoped rather than defaulting to
+          // /api/logs's unscoped last-60-minutes fallback.
+          const body: Record<string, unknown> = { query: params.query, size: 200 };
+          if (runId) {
+            body.runId = runId;
+          } else if (hintWindow) {
+            body.startTime = hintWindow.startTime;
+            body.endTime = hintWindow.endTime;
+          }
           const res = await fetch(`${serverUrl}/api/logs`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ runId, query: params.query, size: 200 }),
+            body: JSON.stringify(body),
           });
           if (!res.ok) {
             return textResult({ error: `logs query failed: HTTP ${res.status}` });
           }
           const data: any = await res.json();
-          return textResult({ runId, logs: data?.logs ?? data });
+          return textResult({
+            runId: runId ?? null,
+            scope: runId ? 'runId' : 'time-window',
+            logs: data?.logs ?? data,
+          });
         } catch (err: any) {
           return textResult({ error: `logs query error: ${err?.message ?? String(err)}` });
         }
