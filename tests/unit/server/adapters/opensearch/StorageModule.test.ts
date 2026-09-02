@@ -74,6 +74,14 @@ function make404Error() {
   return err;
 }
 
+// Helper to build a version-conflict (409) error, as returned by a scripted
+// _update when its own internal retry_on_conflict budget is exhausted.
+function make409Error() {
+  const err = new Error('version_conflict_engine_exception') as any;
+  err.meta = { statusCode: 409 };
+  return err;
+}
+
 // Helper to build index_not_found_exception error (different from a doc-level 404)
 function makeIndexNotFoundError() {
   const err = new Error('index_not_found_exception') as any;
@@ -806,6 +814,112 @@ describe('OpenSearchStorageModule', () => {
         const result = await mod.benchmarks.deleteRun('missing', 'run-1');
 
         expect(result).toBe(false);
+      });
+    });
+
+    describe('linkTestCaseIds', () => {
+      const shellBenchmark = {
+        id: 'bench-shell',
+        name: 'Shell Benchmark',
+        createdAt: '2026-01-01T00:00:00Z',
+        updatedAt: '2026-01-01T00:00:00Z',
+        currentVersion: 1,
+        versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: [] }],
+        testCaseIds: [],
+        runs: [],
+      };
+
+      it('issues a Painless scripted _update (not a plain index overwrite) unioning ids into both levels', async () => {
+        mockClient.get
+          .mockResolvedValueOnce(makeGetResponse(shellBenchmark)) // pre-mutation read
+          .mockResolvedValueOnce(makeGetResponse({
+            ...shellBenchmark,
+            testCaseIds: ['tc-1', 'tc-2'],
+            versions: [{ version: 1, createdAt: '2026-01-01T00:00:00Z', testCaseIds: ['tc-1', 'tc-2'] }],
+            updatedAt: '2026-01-01T00:05:00Z',
+          })); // post-mutation read
+        mockClient.update.mockResolvedValue({});
+
+        const result = await mod.benchmarks.linkTestCaseIds('bench-shell', ['tc-1', 'tc-2', 'tc-1']);
+
+        expect(mockClient.update).toHaveBeenCalledTimes(1);
+        const call = mockClient.update.mock.calls[0][0];
+        expect(call.index).toBe('evals_experiments');
+        expect(call.id).toBe('bench-shell');
+        expect(call.refresh).toBe('wait_for');
+        // A real narrow atomic mutation, not addRun/updateRun's sibling
+        // pattern of reading the WHOLE doc client-side and reindexing it.
+        expect(call.retry_on_conflict).toBe(10);
+        expect(call.body.script.source).toEqual(expect.stringContaining('ctx._source.testCaseIds'));
+        expect(call.body.script.source).toEqual(expect.stringContaining('ctx._source.versions'));
+        expect(call.body.script.source).toEqual(expect.stringContaining('ctx._source.currentVersion'));
+        // Deduplicated before being sent as script params.
+        expect(call.body.script.params.ids).toEqual(['tc-1', 'tc-2']);
+        expect(typeof call.body.script.params.now).toBe('string');
+
+        expect(result?.benchmark.testCaseIds).toEqual(['tc-1', 'tc-2']);
+        expect(result?.benchmark.versions[0].testCaseIds).toEqual(['tc-1', 'tc-2']);
+        // "added" is computed from the pre-mutation read, best-effort.
+        expect(result?.added).toEqual(['tc-1', 'tc-2']);
+      });
+
+      it('returns null without calling update when the benchmark does not exist', async () => {
+        mockClient.get.mockResolvedValueOnce(makeGetResponse(null, false));
+
+        const result = await mod.benchmarks.linkTestCaseIds('missing-bench', ['tc-1']);
+
+        expect(result).toBeNull();
+        expect(mockClient.update).not.toHaveBeenCalled();
+      });
+
+      it('returns null if the benchmark 404s on the scripted update itself (deleted between the pre-read and the write)', async () => {
+        mockClient.get.mockResolvedValueOnce(makeGetResponse(shellBenchmark));
+        mockClient.update.mockRejectedValueOnce(make404Error());
+
+        const result = await mod.benchmarks.linkTestCaseIds('bench-shell', ['tc-1']);
+
+        expect(result).toBeNull();
+      });
+
+      it('returns null if the benchmark is deleted between the scripted update succeeding and the post-update read', async () => {
+        mockClient.get
+          .mockResolvedValueOnce(makeGetResponse(shellBenchmark))
+          .mockResolvedValueOnce(makeGetResponse(null, false));
+        mockClient.update.mockResolvedValue({});
+
+        const result = await mod.benchmarks.linkTestCaseIds('bench-shell', ['tc-1']);
+
+        expect(result).toBeNull();
+      });
+
+      it('retries the scripted update on a 409 version conflict (defense-in-depth beyond retry_on_conflict) and succeeds once it clears', async () => {
+        mockClient.get
+          .mockResolvedValueOnce(makeGetResponse(shellBenchmark))
+          .mockResolvedValueOnce(makeGetResponse({ ...shellBenchmark, testCaseIds: ['tc-1'] }));
+        mockClient.update
+          .mockRejectedValueOnce(make409Error())
+          .mockResolvedValueOnce({});
+
+        const result = await mod.benchmarks.linkTestCaseIds('bench-shell', ['tc-1']);
+
+        expect(mockClient.update).toHaveBeenCalledTimes(2);
+        expect(result?.benchmark.testCaseIds).toEqual(['tc-1']);
+      });
+
+      it('throws immediately on a non-409, non-404 error without retrying', async () => {
+        mockClient.get.mockResolvedValueOnce(makeGetResponse(shellBenchmark));
+        mockClient.update.mockRejectedValueOnce(new Error('cluster unavailable'));
+
+        await expect(mod.benchmarks.linkTestCaseIds('bench-shell', ['tc-1'])).rejects.toThrow('cluster unavailable');
+        expect(mockClient.update).toHaveBeenCalledTimes(1);
+      });
+
+      it('gives up after exhausting the outer retry budget against a persistent 409', async () => {
+        mockClient.get.mockResolvedValue(makeGetResponse(shellBenchmark));
+        mockClient.update.mockRejectedValue(make409Error());
+
+        await expect(mod.benchmarks.linkTestCaseIds('bench-shell', ['tc-1'])).rejects.toThrow(/version_conflict/);
+        expect(mockClient.update).toHaveBeenCalledTimes(3);
       });
     });
 
