@@ -100,7 +100,7 @@ describe('stampObjectiveActuals', () => {
     // before the (simulated) throw, and stamping happens unconditionally
     // afterwards regardless of what happened in between.
     const spans: Span[] = [
-      { traceId: 't', spanId: 's', name: 'x', attributes: { 'gen_ai.usage.cost_usd': 0.5 } } as unknown as Span,
+      { traceId: 't', spanId: 's', name: 'x', attributes: { 'gen_ai.usage.prompt_tokens': 100, 'gen_ai.usage.cost_usd': 0.5 } } as unknown as Span,
     ];
     const loadedTraces = buildTracesAccessor(spans);
     const perf: TestCasePerformanceMetrics = { durationMs: 1, agentDurationMs: 1 };
