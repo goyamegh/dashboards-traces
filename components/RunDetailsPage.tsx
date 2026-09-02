@@ -3,9 +3,9 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useSearchParams, useLocation } from 'react-router-dom';
-import { ArrowLeft, Calendar, CheckCircle2, XCircle, BarChart3, PanelLeftClose, PanelLeft, Clock, Loader2, StopCircle, Ban, Timer, Download, GitCompare, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, Calendar, CheckCircle2, XCircle, Clock, Loader2, StopCircle, Timer, Download, GitCompare, AlertTriangle } from 'lucide-react';
 import { getResultStatus, StatusIcon, StatusLabel } from '@/components/evals3/ResultStatus';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -24,17 +24,17 @@ import { asyncExperimentStorage, asyncRunStorage, asyncTestCaseStorage } from '@
 import { cancelExperimentRun } from '@/services/client';
 import { Experiment, ExperimentRun, EvaluationReport, TestCase } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
-import { getDifficultyColor, formatDate, getModelName } from '@/lib/utils';
-import { RunScore } from '@/components/RunScore';
-import { formatDuration } from '@/services/metrics';
+import { getDifficultyColor, formatDate, getModelName, getJudgeModelLabel, getEvaluatorLabel } from '@/lib/utils';
+import { formatDuration, formatCost, fetchBatchMetrics } from '@/services/metrics';
 import { ENV_CONFIG } from '@/lib/config';
 import { RunDetailsContent } from './RunDetailsContent';
-import { RunSummaryPanel } from './RunSummaryPanel';
+import { RunSummaryBand, RunSummaryStats } from './RunSummaryBand';
+import { RunInsightsPane } from './RunInsightsPane';
 
 // ==================== Skeleton Components ====================
 
-const PageSkeleton = () => (
-  <div className="h-full flex flex-col">
+const PageSkeleton = ({ label }: { label?: string | null }) => (
+  <div className="h-full flex flex-col" data-testid="run-details-loading">
     <div className="flex items-center justify-between p-4 border-b">
       <div className="flex items-center gap-4">
         <Skeleton className="h-10 w-10 rounded" />
@@ -43,6 +43,12 @@ const PageSkeleton = () => (
           <Skeleton className="h-4 w-[300px]" />
         </div>
       </div>
+    </div>
+    {/* Explicit progress text so a large run never sits on a silent void -
+        the reported bug had no indication anything was happening at all. */}
+    <div className="flex items-center gap-2 px-6 pt-4 text-sm text-muted-foreground" data-testid="run-details-loading-label">
+      <Loader2 size={14} className="animate-spin" />
+      <span>{label || 'Loading run\u2026'}</span>
     </div>
     <div className="flex-1 p-6">
       <Skeleton className="h-full w-full" />
@@ -60,87 +66,99 @@ interface ExperimentContext {
   reportsMap: Record<string, EvaluationReport | null>;
 }
 
-// ==================== Sidebar Component ====================
+// ==================== Test Case List Component ====================
+//
+// Directly rendered below the RunSummaryBand on the bare route (no
+// "Select a test case" empty pane, no redirect) — see RunDetailsPage's
+// render body. Each row shows name, category/difficulty chips, verdict
+// chip, and duration. Clicking a row is handled entirely by the caller via
+// `onSelectItem` (sets `?testCase=<id>` on the URL).
 
-interface SidebarProps {
+interface TestCaseListProps {
   context: ExperimentContext;
   selectedItem: string;
   onSelectItem: (item: string) => void;
-  onToggleCollapse: () => void;
-  isCollapsed: boolean;
+  /** When true (split/detail view), scroll the selected row into view once on mount/selection change — powers deep-link preselection. */
+  scrollToSelected?: boolean;
+  /**
+   * When set, only these testCaseIds are rendered — powers "click a failure
+   * theme in RunInsightsPane -> filter the list to just those cases".
+   * `null`/`undefined` shows every case (no filter active).
+   */
+  filterIds?: string[] | null;
+  /** Clears an active filter (rendered as a "Clear filter" chip next to the count). */
+  onClearFilter?: () => void;
 }
 
-const Sidebar = ({ context, selectedItem, onSelectItem, onToggleCollapse, isCollapsed }: SidebarProps) => {
-  const { experimentRun, siblingReports, testCases, reportsMap } = context;
+const TestCaseList = ({ context, selectedItem, onSelectItem, scrollToSelected, filterIds, onClearFilter }: TestCaseListProps) => {
+  const { experimentRun, testCases, reportsMap } = context;
 
   const getTestCase = (testCaseId: string) => testCases.find(tc => tc.id === testCaseId);
 
   const testCaseIds = Object.keys(experimentRun.results || {});
+  const visibleIds = filterIds ? testCaseIds.filter(id => filterIds.includes(id)) : testCaseIds;
+  const rowRefs = useRef<Record<string, HTMLDivElement | null>>({});
+
+  useEffect(() => {
+    if (!scrollToSelected || !selectedItem) return;
+    rowRefs.current[selectedItem]?.scrollIntoView?.({ block: 'center' });
+  }, [scrollToSelected, selectedItem]);
 
   return (
-    <ScrollArea className="h-full">
+    <ScrollArea className="h-full" data-testid="run-test-case-list">
       <div className="p-3 space-y-2">
-        {/* Summary Entry with collapse toggle */}
-        <Card
-          className={`cursor-pointer transition-colors ${
-            selectedItem === 'summary'
-              ? 'border-opensearch-blue bg-opensearch-blue/5'
-              : 'hover:border-muted-foreground/30'
-          }`}
-          onClick={() => onSelectItem('summary')}
-        >
-          <CardContent className="p-3">
-            <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon"
-                className="h-7 w-7 shrink-0"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onToggleCollapse();
-                }}
-                title={isCollapsed ? 'Show sidebar' : 'Hide sidebar'}
+        {/* Header with count + Overview (deselect) affordance */}
+        <div className="flex items-center justify-between px-1">
+          <div className="flex items-center gap-2">
+            <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+              Test Cases
+            </span>
+            {selectedItem && (
+              <button
+                type="button"
+                data-testid="test-case-list-overview"
+                className="text-xs text-opensearch-blue hover:underline flex items-center gap-1"
+                onClick={() => { onSelectItem(''); onClearFilter?.(); }}
               >
-                {isCollapsed ? <PanelLeft size={14} /> : <PanelLeftClose size={14} />}
-              </Button>
-              <div className={`p-1.5 rounded ${
-                selectedItem === 'summary' ? 'bg-opensearch-blue/20' : 'bg-muted'
-              }`}>
-                <BarChart3 size={16} className={
-                  selectedItem === 'summary' ? 'text-opensearch-blue' : 'text-muted-foreground'
-                } />
-              </div>
-              <span className={`font-medium ${
-                selectedItem === 'summary' ? 'text-opensearch-blue' : ''
-              }`}>
-                Summary
-              </span>
-            </div>
-          </CardContent>
-        </Card>
-
-        {/* Runs Header with count */}
-        <div className="flex items-center justify-between px-1 pt-2">
-          <span className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
-            Runs
-          </span>
+                <ArrowLeft size={11} /> Overview
+              </button>
+            )}
+          </div>
           <Badge variant="secondary" className="text-xs">
-            {testCaseIds.length}
+            {filterIds ? `${visibleIds.length} / ${testCaseIds.length}` : testCaseIds.length}
           </Badge>
         </div>
+        {filterIds && (
+          <div className="flex items-center justify-between px-1 -mt-1">
+            <span className="text-[11px] text-muted-foreground">Filtered by failure theme</span>
+            <button
+              type="button"
+              data-testid="test-case-list-clear-filter"
+              className="text-[11px] text-opensearch-blue hover:underline"
+              onClick={onClearFilter}
+            >
+              Clear filter
+            </button>
+          </div>
+        )}
 
         {/* Test Cases */}
-        {testCaseIds.map(testCaseId => {
+        {visibleIds.map(testCaseId => {
           const result = experimentRun.results[testCaseId];
           const report = result.reportId ? reportsMap[result.reportId] : null;
           const testCase = getTestCase(testCaseId);
           const isSelected = selectedItem === testCaseId;
 
           const resultStatus = getResultStatus(result, report);
+          const durationMs = result.performanceMetrics?.durationMs;
 
           return (
             <Card
               key={testCaseId}
+              ref={(el) => { rowRefs.current[testCaseId] = el; }}
+              data-testid="test-case-row"
+              data-test-case-id={testCaseId}
+              data-status={resultStatus}
               className={`cursor-pointer transition-colors ${
                 isSelected
                   ? 'border-opensearch-blue bg-opensearch-blue/5'
@@ -159,13 +177,21 @@ const Sidebar = ({ context, selectedItem, onSelectItem, onToggleCollapse, isColl
 
                   {/* Content */}
                   <div className="flex-1 min-w-0 overflow-hidden">
-                    <p className={`text-sm font-medium truncate ${
-                      isSelected ? 'text-opensearch-blue' : ''
-                    }`}>
-                      {testCase?.name || testCaseId}
-                    </p>
-                    <div className="flex items-center gap-2 mt-0.5">
-                      {testCase && (
+                    <div className="flex items-center justify-between gap-2">
+                      <p className={`text-sm font-medium truncate ${
+                        isSelected ? 'text-opensearch-blue' : ''
+                      }`}>
+                        {testCase?.name || testCaseId}
+                      </p>
+                      <StatusLabel status={resultStatus} />
+                    </div>
+                    <div className="flex items-center gap-2 mt-1 flex-wrap">
+                      {testCase?.category && (
+                        <Badge variant="outline" className="text-xs">
+                          {testCase.category}
+                        </Badge>
+                      )}
+                      {testCase?.difficulty && (
                         <Badge
                           variant="outline"
                           className={`text-xs ${getDifficultyColor(testCase.difficulty)}`}
@@ -173,13 +199,11 @@ const Sidebar = ({ context, selectedItem, onSelectItem, onToggleCollapse, isColl
                           {testCase.difficulty}
                         </Badge>
                       )}
-                      {/* Run score — always labeled "Score: X%" with a
-                          tooltip listing each metric contribution. */}
-                      {report && (
-                        <RunScore
-                          metrics={report.metrics as Record<string, number | undefined>}
-                          className="text-xs text-muted-foreground"
-                        />
+                      {durationMs != null && (
+                        <span className="flex items-center gap-1 text-xs text-muted-foreground">
+                          <Timer size={11} />
+                          {formatDuration(durationMs)}
+                        </span>
                       )}
                     </div>
 
@@ -216,15 +240,54 @@ export const RunDetailsPage: React.FC = () => {
   // Core state
   const [report, setReport] = useState<EvaluationReport | null>(null);
   const [isLoading, setIsLoading] = useState(true);
+  // Human-readable progress for the initial skeleton ("Loading N cases…") so a
+  // large run never sits on a silent blank pane while summaries load (#regression
+  // repro: 84-case run, ~168MB unscoped test-case fetch + N sequential report
+  // fetches, indefinite blank content pane).
+  const [loadingLabel, setLoadingLabel] = useState<string | null>(null);
+  // Set when loadRunData's try/catch catches a genuine fetch failure (as opposed
+  // to a legitimate "not found" which still redirects). Rendered as an inline
+  // error + Retry instead of silently returning null (a permanent blank pane).
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // True while the FULL report for the currently selected test case is being
+  // fetched on-demand (summaries alone don't include trajectory/messages).
+  const [reportLoading, setReportLoading] = useState(false);
+  // Full report bodies fetched on demand, keyed by reportId. `reportsMap` on
+  // ExperimentContext stays summary-only (status/verdict fields) for the fast
+  // initial paint; this cache is populated lazily as the user selects rows.
+  const [fullReports, setFullReports] = useState<Record<string, EvaluationReport>>({});
   const [testCase, setTestCase] = useState<TestCase | null>(null);
 
   // Experiment context (only set if run is part of an experiment)
   const [experimentContext, setExperimentContext] = useState<ExperimentContext | null>(null);
 
   // UI state
-  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [selectedItem, setSelectedItem] = useState<string>(''); // testCaseId or 'summary'
+  // Empty string = no test case selected (bare route renders the summary
+  // band + full test-case list directly, no click-through). A non-empty
+  // value is a testCaseId, synced to the `?testCase=` URL param.
+  const [selectedItem, setSelectedItem] = useState<string>('');
   const [isCancelling, setIsCancelling] = useState(false);
+
+  // Set when a "why runs failed" theme in RunInsightsPane is clicked - the
+  // left test-case list narrows to just that theme's testCaseIds until
+  // cleared ("Clear filter" chip) or the user hits "Overview".
+  const [filterIds, setFilterIds] = useState<string[] | null>(null);
+
+  // Evaluator id -> display name, fetched once (mirrors EvalRunsPage's
+  // pattern) so the summary band can render a human-readable evaluator
+  // label via lib/utils#getEvaluatorLabel instead of a raw id.
+  const [evaluatorNames, setEvaluatorNames] = useState<Map<string, string>>(new Map());
+  useEffect(() => {
+    fetch(`${ENV_CONFIG.backendUrl}/api/storage/evaluators`)
+      .then(r => (r.ok ? r.json() : { evaluators: [] }))
+      .then(d => (Array.isArray(d?.evaluators) ? d.evaluators : []) as { id: string; name: string }[])
+      .then(evaluators => setEvaluatorNames(new Map(evaluators.map(e => [e.id, e.name]))))
+      .catch(err => console.error('Failed to load evaluators:', err));
+  }, []);
+
+  // Aggregate trace-based cost across the run's reports (mirrors
+  // RunSummaryPanel's approach) so the band can show "cost if present".
+  const [traceMetrics, setTraceMetrics] = useState<{ totalCostUsd: number } | null>(null);
 
   // Track base path for navigation (benchmarks vs experiments)
   const basePath = benchmarkId ? '/benchmarks' : '/experiments';
@@ -239,10 +302,12 @@ export const RunDetailsPage: React.FC = () => {
     }
 
     setIsLoading(true);
+    setLoadError(null);
 
     try {
       // Case 1: Benchmark/Experiment run (with benchmarkId or experimentId)
       if (routeExperimentId) {
+        setLoadingLabel('Loading benchmark\u2026');
         const exp = await asyncExperimentStorage.getById(routeExperimentId);
 
         if (!exp) {
@@ -260,27 +325,30 @@ export const RunDetailsPage: React.FC = () => {
           return;
         }
 
-        // Load all reports for this experiment run by report ID
-        const reportIds = Object.values(expRun.results || {}).map(r => r.reportId).filter(Boolean);
-        const siblingReports: EvaluationReport[] = [];
-        for (const reportId of reportIds) {
-          const report = await asyncRunStorage.getReportById(reportId);
-          if (report) {
-            siblingReports.push(report);
-          }
-        }
+        const testCaseIds = Object.keys(expRun.results || {});
+        const reportIds = Object.values(expRun.results || {}).map(r => r.reportId).filter(Boolean) as string[];
 
-        // Load all test cases referenced in this run
-        const allTestCases = await asyncTestCaseStorage.getAll();
-        const relevantTestCases = allTestCases.filter(tc =>
-          Object.keys(expRun.results || {}).includes(tc.id)
-        );
+        // Regression/gap fix: this used to (a) fetch every FULL report one at a
+        // time (N sequential ~0.3-2MB requests) and (b) fetch *every* test case
+        // in the whole corpus via getAll() just to filter down to the ~N relevant
+        // to this run (168MB observed on an 84-case run against the shared
+        // cluster) - see #393/#429 for the same class of fix applied to the
+        // evals3 RunInspectorPage, never ported to this legacy page. Now: one
+        // lightweight status-only batch for reports, one id-scoped batch for
+        // test cases. Full per-case report bodies are fetched lazily on
+        // selection (see the effect below keyed on `selectedItem`).
+        setLoadingLabel(`Loading ${testCaseIds.length} test case${testCaseIds.length === 1 ? '' : 's'}\u2026`);
+        const [reportSummaries, relevantTestCases] = await Promise.all([
+          asyncRunStorage.getReportSummariesByIds(reportIds),
+          asyncTestCaseStorage.getByIds(testCaseIds),
+        ]);
+        const siblingReports: EvaluationReport[] = Object.values(reportSummaries);
 
         // Build reports map by reportId
         const reportsMap: Record<string, EvaluationReport | null> = {};
         Object.values(expRun.results || {}).forEach(result => {
           if (result.reportId) {
-            const found = siblingReports.find(r => r.id === result.reportId);
+            const found = reportSummaries[result.reportId];
             reportsMap[result.reportId] = found || null;
           }
         });
@@ -295,7 +363,6 @@ export const RunDetailsPage: React.FC = () => {
 
         // Check URL param for selected test case, default to summary
         const testCaseFromUrl = searchParams.get('testCase');
-        const testCaseIds = Object.keys(expRun.results || {});
         if (testCaseFromUrl && testCaseIds.includes(testCaseFromUrl)) {
           setSelectedItem(testCaseFromUrl);
           // Collapse main sidebar when loading with a test case selected
@@ -306,7 +373,7 @@ export const RunDetailsPage: React.FC = () => {
           setSelectedItem(testCaseIds[0]);
           setMainSidebarOpen(false);
         } else {
-          setSelectedItem('summary');
+          setSelectedItem('');
         }
 
         // Set first available report for header display
@@ -342,16 +409,60 @@ export const RunDetailsPage: React.FC = () => {
         setTestCase(tc);
       }
     } catch (error) {
+      // Genuine fetch failure (network error, 5xx, etc.) - surface an inline
+      // error + Retry instead of silently navigating away or leaving a
+      // permanent blank pane (the reported bug: "doesn't even tell me if it
+      // is loading"). Legitimate not-found cases are handled above via
+      // their own explicit navigate() calls, not this catch.
       console.error('Failed to load run:', error);
-      navigate('/test-cases');
+      setLoadError(error instanceof Error ? error.message : 'Failed to load run.');
     } finally {
       setIsLoading(false);
+      setLoadingLabel(null);
     }
   }, [runId, routeExperimentId, navigate, searchParams, setMainSidebarOpen]);
 
   useEffect(() => {
     loadRunData();
   }, [loadRunData]);
+
+  // Lazy full-report fetch: the initial load only fetches lightweight
+  // status summaries for every case in the run (fast, bounded size even for
+  // large runs). The FULL report body (trajectory, messages, logs) for the
+  // currently selected test case is fetched on demand here, exactly once per
+  // reportId, mirroring the pattern in evals3/RunInspectorPage.tsx (#393).
+  useEffect(() => {
+    if (!experimentContext || !selectedItem) return;
+    const reportId = experimentContext.experimentRun.results?.[selectedItem]?.reportId;
+    if (!reportId || fullReports[reportId]) return;
+
+    let cancelled = false;
+    setReportLoading(true);
+    asyncRunStorage.getReportById(reportId)
+      .then(full => {
+        if (cancelled || !full) return;
+        setFullReports(prev => ({ ...prev, [reportId]: full }));
+      })
+      .catch(err => console.error('[RunDetailsPage] Failed to load full report:', reportId, err))
+      .finally(() => { if (!cancelled) setReportLoading(false); });
+
+    return () => { cancelled = true; };
+  }, [experimentContext, selectedItem, fullReports]);
+
+  // Summary band "cost if present": aggregate trace-based cost across every
+  // report in the run that has a runId (agent-run correlation id). Uses the
+  // lightweight summaries already in `experimentContext`, not the lazily
+  // fetched full report bodies - no extra full-report fetches triggered.
+  useEffect(() => {
+    if (!experimentContext) { setTraceMetrics(null); return; }
+    const runIds = experimentContext.siblingReports
+      .filter((r): r is EvaluationReport => !!r?.runId)
+      .map(r => r.runId!);
+    if (runIds.length === 0) { setTraceMetrics(null); return; }
+    fetchBatchMetrics(runIds)
+      .then(data => setTraceMetrics(data.aggregate))
+      .catch(() => setTraceMetrics(null));
+  }, [experimentContext]);
 
   // Poll for updates when there are pending/running results
   useEffect(() => {
@@ -383,15 +494,18 @@ export const RunDetailsPage: React.FC = () => {
   const handleSelectItem = (item: string) => {
     setSelectedItem(item);
 
-    // Update URL with selected test case
-    if (item && item !== 'summary') {
+    // Update URL with selected test case. Pushes a new history entry (not
+    // `replace`) so the back/forward buttons walk between "no case
+    // selected" (full list) and each selected case - required for the
+    // deep-linkable `?testCase=<id>` URL to be genuinely shareable/navigable.
+    if (item) {
       searchParams.set('testCase', item);
-      setSearchParams(searchParams, { replace: true });
+      setSearchParams(searchParams);
       // Collapse main sidebar when selecting a specific test case run
       setMainSidebarOpen(false);
     } else {
       searchParams.delete('testCase');
-      setSearchParams(searchParams, { replace: true });
+      setSearchParams(searchParams);
     }
   };
 
@@ -469,7 +583,21 @@ export const RunDetailsPage: React.FC = () => {
   const hasSidebar = experimentContext && Object.keys(experimentContext.experimentRun.results || {}).length > 1;
 
   if (isLoading) {
-    return <PageSkeleton />;
+    return <PageSkeleton label={loadingLabel} />;
+  }
+
+  // Genuine fetch failure: inline error + Retry, never a silent blank pane.
+  if (loadError) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-3 p-6 text-center" data-testid="run-details-error">
+        <AlertTriangle size={40} className="text-red-600 dark:text-red-400" />
+        <p className="text-lg font-medium">Failed to load run</p>
+        <p className="text-sm text-muted-foreground max-w-md">{loadError}</p>
+        <Button variant="outline" size="sm" onClick={() => loadRunData()} data-testid="run-details-retry">
+          Retry
+        </Button>
+      </div>
+    );
   }
 
   // Handle case where neither experiment context nor standalone report is available
@@ -488,13 +616,15 @@ export const RunDetailsPage: React.FC = () => {
 
     // Experiment run
     if (experimentContext) {
-      if (selectedItem === 'summary') {
+      if (!selectedItem) {
         return null;
       }
 
       const result = experimentContext.experimentRun.results?.[selectedItem];
       if (result?.reportId) {
-        return experimentContext.reportsMap[result.reportId] || null;
+        // Full body is fetched lazily (see the effect above); until it lands,
+        // the summary alone isn't enough to render RunDetailsContent.
+        return fullReports[result.reportId] || null;
       }
     }
 
@@ -502,6 +632,13 @@ export const RunDetailsPage: React.FC = () => {
   };
 
   const displayReport = getDisplayReport();
+  // Distinguishes "selected case has no report at all" (pending/running/never
+  // ran) from "report exists, full body still loading" so the content pane
+  // shows a spinner instead of a misleading "No report available".
+  const selectedReportId = experimentContext && selectedItem
+    ? experimentContext.experimentRun.results?.[selectedItem]?.reportId
+    : undefined;
+  const isDisplayReportLoading = !!selectedReportId && !displayReport;
 
   // For standalone runs, render a simpler view
   if (!experimentContext && report) {
@@ -549,96 +686,61 @@ export const RunDetailsPage: React.FC = () => {
     );
   }
 
+  const agentDisplayName = experimentContext
+    ? DEFAULT_CONFIG.agents.find(a => a.key === experimentContext.experimentRun.agentKey)?.name
+      || experimentContext.experimentRun.agentKey
+    : '';
+
+  // Pending/running/loading/no-report placeholder shown in the detail panel
+  // when the selected case has no displayable report yet. Shared by both
+  // the split (list + detail) and single-test-case full-width layouts.
+  const renderCaseDetailPlaceholder = (resultStatus: string | undefined) => {
+    const isRunning = resultStatus === 'running';
+    const isPending = resultStatus === 'pending';
+
+    return (
+      <div className="flex-1 flex items-center justify-center text-muted-foreground h-full">
+        <div className="text-center">
+          {isRunning ? (
+            <>
+              <Loader2 size={48} className="mx-auto mb-4 text-blue-700 dark:text-blue-400 animate-spin" />
+              <p className="text-lg font-medium">Test case running</p>
+              <p className="text-sm mt-1">Executing test case...</p>
+            </>
+          ) : isPending ? (
+            <>
+              <Clock size={48} className="mx-auto mb-4 text-yellow-700 dark:text-yellow-400 animate-pulse" />
+              <p className="text-lg font-medium">Test case pending</p>
+              <p className="text-sm mt-1">Waiting for execution...</p>
+            </>
+          ) : isDisplayReportLoading ? (
+            <>
+              <Loader2 size={48} className="mx-auto mb-4 text-muted-foreground animate-spin" />
+              <p className="text-lg font-medium">Loading report\u2026</p>
+              <p className="text-sm mt-1">Fetching the full test case report</p>
+            </>
+          ) : (
+            <>
+              <XCircle size={48} className="mx-auto mb-4 opacity-20" />
+              <p>No report available for this test case</p>
+              <p className="text-sm mt-1">The test may have failed to execute</p>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  };
+
   return (
     <div className="h-full flex flex-col max-md:h-auto max-md:overflow-visible" data-testid="run-details-page">
-      {/* Header */}
-      <div className="flex items-center justify-between p-4 border-b">
-        <div className="flex items-center gap-4">
-          <Button variant="ghost" size="icon" onClick={handleBack} data-testid="back-button">
-            <ArrowLeft size={18} />
-          </Button>
-          <div>
-            <h2 className="text-xl font-bold" data-testid="run-title">
-              {experimentContext ? experimentContext.experimentRun.name : testCase?.name || 'Run Details'}
-            </h2>
-            {/* Show run description if available */}
-            {experimentContext?.experimentRun.description && (
-              <p className="text-sm text-muted-foreground mt-0.5">
-                {experimentContext.experimentRun.description}
-              </p>
-            )}
-            <div className="flex items-center gap-2 text-xs text-muted-foreground mt-1">
-              <span>{experimentContext.experiment.name}</span>
-              <span className="text-muted-foreground/50">·</span>
-              <span className="flex items-center gap-1">
-                <Calendar size={12} />
-                {formatDate(report?.timestamp || experimentContext.experimentRun.createdAt)}
-              </span>
-              <span className="text-muted-foreground/50">·</span>
-              <span>Model: {getModelName(report?.modelName || experimentContext.experimentRun.modelId)}</span>
-              {(report?.evaluatorId || experimentContext.experimentRun.evaluatorId) && (
-                <>
-                  <span className="text-muted-foreground/50">·</span>
-                  <span>Evaluator: {(report?.evaluatorId || experimentContext.experimentRun.evaluatorId)?.replace('system-', '').replace(/-/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}</span>
-                </>
-              )}
-              {experimentContext.experimentRun.performanceMetrics?.durationMs != null && (
-                <>
-                  <span className="text-muted-foreground/50">·</span>
-                  <span className="flex items-center gap-1" title="Total wall-clock time for the complete benchmark run">
-                    <Timer size={12} />
-                    Run duration: {formatDuration(experimentContext.experimentRun.performanceMetrics.durationMs)}
-                  </span>
-                </>
-              )}
-              {experimentContext.experimentRun.performanceMetrics?.concurrency != null &&
-               experimentContext.experimentRun.performanceMetrics.concurrency > 1 && (
-                <>
-                  <span className="text-muted-foreground/50">·</span>
-                  <span>Concurrency: {experimentContext.experimentRun.performanceMetrics.concurrency}</span>
-                </>
-              )}
-            </div>
-          </div>
-        </div>
+      {/* Top action bar - back button + run-level actions. Run metadata and
+          verdict counts live in RunSummaryBand below, not duplicated here. */}
+      <div className="flex items-center justify-between px-4 py-2 border-b shrink-0">
+        <Button variant="ghost" size="icon" onClick={handleBack} data-testid="back-button">
+          <ArrowLeft size={18} />
+        </Button>
 
-        <div className="flex items-center gap-4">
-          {/* Stats Badge (experiment runs only) */}
-          {stats && (
-            <div className="flex items-center gap-2 text-sm">
-              {stats.running > 0 && (
-                <span className="flex items-center gap-1 text-blue-700 dark:text-blue-400" title="Running">
-                  <Loader2 size={14} className="animate-spin" />
-                  {stats.running}
-                </span>
-              )}
-              {stats.pending > 0 && (
-                <span className="flex items-center gap-1 text-yellow-700 dark:text-yellow-400" title="Pending">
-                  <Clock size={14} />
-                  {stats.pending}
-                </span>
-              )}
-              <span className="flex items-center gap-1 text-green-700 dark:text-green-400">
-                <CheckCircle2 size={16} />
-                {stats.passed}
-              </span>
-              <span className="flex items-center gap-1 text-red-700 dark:text-red-400">
-                <XCircle size={16} />
-                {stats.failed}
-              </span>
-              {(stats as any).errored > 0 && (
-                <span
-                  className="flex items-center gap-1 text-amber-600 dark:text-amber-500"
-                  title="Evaluator could not run (e.g. judge validation error). Excluded from pass-rate aggregation."
-                >
-                  <AlertTriangle size={16} />
-                  {(stats as any).errored}
-                </span>
-              )}
-              <span className="text-muted-foreground">/ {stats.total}</span>
-            </div>
-          )}
-
+        <div className="flex items-center gap-2">
           {/* Compare Runs button */}
           {routeExperimentId && experimentContext && (experimentContext.experiment.runs?.length ?? 0) > 1 && (
             <Button
@@ -692,86 +794,80 @@ export const RunDetailsPage: React.FC = () => {
               {isCancelling ? 'Cancelling...' : 'Cancel'}
             </Button>
           )}
-
         </div>
       </div>
 
-      {/* Content */}
-      {hasSidebar && !sidebarCollapsed ? (
-        /* Resizable layout for experiment runs */
+      {/* Run summary band - always visible: name, agent/model, judge/evaluator,
+          started/duration/cost, verdict counts. Replaces the old click-through
+          "Summary" sidebar entry (RunSummaryPanel) - no longer a selectable
+          pane, just always-on context above the case list / detail. */}
+      <RunSummaryBand
+        runName={experimentContext.experimentRun.name}
+        description={experimentContext.experimentRun.description}
+        benchmarkName={experimentContext.experiment.name}
+        agentName={agentDisplayName}
+        modelName={getModelName(experimentContext.experimentRun.modelId)}
+        judgeModelLabel={getJudgeModelLabel(experimentContext.experimentRun.judgeModelId)}
+        evaluatorLabel={getEvaluatorLabel(experimentContext.experimentRun.evaluatorId, evaluatorNames)}
+        startedAt={experimentContext.experimentRun.createdAt}
+        durationMs={experimentContext.experimentRun.performanceMetrics?.durationMs}
+        concurrency={experimentContext.experimentRun.performanceMetrics?.concurrency}
+        costUsd={traceMetrics?.totalCostUsd}
+        stats={stats as RunSummaryStats}
+      />
+
+      {/* Content: split view is ALWAYS shown once there's more than one test
+          case (owner feedback on the redesign: "I liked the split view ...
+          If no test case is selected, the right side can show an
+          aggregated view"). Left = test-case list (optionally filtered by
+          a clicked failure theme). Right = the selected case's detail, or
+          RunInsightsPane (verdict overview, why-runs-failed themes,
+          slowest/costliest, folded-in legacy details) when nothing is
+          selected. */}
+      {hasSidebar ? (
         <ResizablePanelGroup direction="horizontal" className="flex-1 max-md:!h-auto max-md:!overflow-visible max-md:!flex-col">
-          {/* Sidebar Panel */}
-          <ResizablePanel
-            defaultSize={25}
-            minSize={15}
-            maxSize={40}
-            className="border-r max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible max-md:border-r-0 max-md:border-b"
-          >
-            <Sidebar
+          <ResizablePanel defaultSize={28} minSize={18} maxSize={42} className="border-r max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible max-md:border-r-0 max-md:border-b">
+            <TestCaseList
               context={experimentContext!}
               selectedItem={selectedItem}
               onSelectItem={handleSelectItem}
-              onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
-              isCollapsed={sidebarCollapsed}
+              scrollToSelected={!!selectedItem}
+              filterIds={filterIds}
+              onClearFilter={() => setFilterIds(null)}
             />
           </ResizablePanel>
 
           <ResizableHandle withHandle className="max-md:hidden" />
 
-          {/* Main Content Panel */}
-          <ResizablePanel defaultSize={75} className="max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible">
+          <ResizablePanel defaultSize={72} className="max-md:!h-auto max-md:!min-h-0 max-md:!overflow-visible">
             <div className="h-full overflow-hidden max-md:h-auto max-md:overflow-visible">
-              {selectedItem === 'summary' ? (
-                <RunSummaryPanel
-                  run={experimentContext!.experimentRun}
-                  reports={experimentContext!.reportsMap}
-                />
-              ) : displayReport ? (
-                <RunDetailsContent
-                  report={displayReport}
-                  showViewAllReports={true}
-                  onViewAllReports={handleViewAllReports}
-                  performanceMetrics={experimentContext!.experimentRun.results?.[selectedItem]?.performanceMetrics}
-                />
+              {selectedItem ? (
+                displayReport ? (
+                  <RunDetailsContent
+                    report={displayReport}
+                    showViewAllReports={true}
+                    onViewAllReports={handleViewAllReports}
+                    performanceMetrics={experimentContext!.experimentRun.results?.[selectedItem]?.performanceMetrics}
+                  />
+                ) : (
+                  renderCaseDetailPlaceholder(experimentContext?.experimentRun.results?.[selectedItem]?.status)
+                )
               ) : (
-                // Show pending/running state based on result status
-                (() => {
-                  const resultStatus = experimentContext?.experimentRun.results?.[selectedItem]?.status;
-                  const isRunning = resultStatus === 'running';
-                  const isPending = resultStatus === 'pending';
-
-                  return (
-                    <div className="flex-1 flex items-center justify-center text-muted-foreground h-full">
-                      <div className="text-center">
-                        {isRunning ? (
-                          <>
-                            <Loader2 size={48} className="mx-auto mb-4 text-blue-700 dark:text-blue-400 animate-spin" />
-                            <p className="text-lg font-medium">Test case running</p>
-                            <p className="text-sm mt-1">Executing test case...</p>
-                          </>
-                        ) : isPending ? (
-                          <>
-                            <Clock size={48} className="mx-auto mb-4 text-yellow-700 dark:text-yellow-400 animate-pulse" />
-                            <p className="text-lg font-medium">Test case pending</p>
-                            <p className="text-sm mt-1">Waiting for execution...</p>
-                          </>
-                        ) : (
-                          <>
-                            <XCircle size={48} className="mx-auto mb-4 opacity-20" />
-                            <p>No report available for this test case</p>
-                            <p className="text-sm mt-1">The test may have failed to execute</p>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  );
-                })()
+                <RunInsightsPane
+                  experimentRun={experimentContext!.experimentRun}
+                  testCases={experimentContext!.testCases}
+                  reportsMap={experimentContext!.reportsMap}
+                  stats={stats as RunSummaryStats}
+                  onSelectCase={handleSelectItem}
+                  onFilterCases={setFilterIds}
+                />
               )}
             </div>
           </ResizablePanel>
         </ResizablePanelGroup>
       ) : (
-        /* Full-width layout for single test case or collapsed sidebar */
+        /* Full-width layout for the single-test-case case (auto-selected, no
+           list needed - see loadRunData's `testCaseIds.length === 1` branch). */
         <div className="flex-1 overflow-hidden">
           {displayReport ? (
             <RunDetailsContent
@@ -781,39 +877,9 @@ export const RunDetailsPage: React.FC = () => {
               performanceMetrics={experimentContext.experimentRun.results?.[selectedItem]?.performanceMetrics}
             />
           ) : (
-            // Show pending/running state when no report available
-            (() => {
-              const firstTestCaseId = Object.keys(experimentContext.experimentRun.results || {})[0];
-              const resultStatus = experimentContext.experimentRun.results?.[firstTestCaseId]?.status;
-              const isRunning = resultStatus === 'running';
-              const isPending = resultStatus === 'pending';
-
-              return (
-                <div className="flex-1 flex items-center justify-center text-muted-foreground h-full">
-                  <div className="text-center">
-                    {isRunning ? (
-                      <>
-                        <Loader2 size={48} className="mx-auto mb-4 text-blue-700 dark:text-blue-400 animate-spin" />
-                        <p className="text-lg font-medium">Test case running</p>
-                        <p className="text-sm mt-1">Executing test case...</p>
-                      </>
-                    ) : isPending ? (
-                      <>
-                        <Clock size={48} className="mx-auto mb-4 text-yellow-700 dark:text-yellow-400 animate-pulse" />
-                        <p className="text-lg font-medium">Test case pending</p>
-                        <p className="text-sm mt-1">Waiting for execution...</p>
-                      </>
-                    ) : (
-                      <>
-                        <XCircle size={48} className="mx-auto mb-4 opacity-20" />
-                        <p>No report available</p>
-                        <p className="text-sm mt-1">The test may have failed to execute</p>
-                      </>
-                    )}
-                  </div>
-                </div>
-              );
-            })()
+            renderCaseDetailPlaceholder(
+              experimentContext.experimentRun.results?.[Object.keys(experimentContext.experimentRun.results || {})[0]]?.status
+            )
           )}
         </div>
       )}

@@ -133,20 +133,10 @@ describe('Scope A theming regressions', () => {
 });
 
 describe('Scope B theming regressions', () => {
-  describe('Fix #7 — RunSummaryPanel donut uses theme tokens', () => {
-    const src = read('components/RunSummaryPanel.tsx');
-
-    it('does not hardcode #015aa3 or #ef4444 in pie data', () => {
-      expect(src).not.toMatch(/color: '#015aa3'/);
-      expect(src).not.toMatch(/color: '#ef4444'/);
-    });
-
-    it('uses hsl(var(--primary)) and hsl(var(--destructive)) for pie cells', () => {
-      expect(src).toMatch(/hsl\(var\(--primary\)\)/);
-      expect(src).toMatch(/hsl\(var\(--destructive\)\)/);
-    });
-  });
-
+  // Fix #7 (RunSummaryPanel donut theme-token guard) is removed: PR #443's
+  // verdict-first run-report redesign deletes RunSummaryPanel.tsx entirely
+  // (replaced by RunSummaryBand.tsx, a text/badge summary row with no pie
+  // chart) so there is no donut-chart color regression left to guard.
   describe('Fix #8 — QuickRunModal error banner has dark variants', () => {
     const src = read('components/QuickRunModal.tsx');
 
