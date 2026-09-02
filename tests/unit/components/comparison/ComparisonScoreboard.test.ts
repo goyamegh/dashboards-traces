@@ -89,10 +89,35 @@ describe('ComparisonScoreboard structure', () => {
     expect(src).toContain('fully comparable');
   });
 
-  it('run row click expands a detail drawer', () => {
-    expect(src).toContain('RunDetailDrawer');
-    expect(src).toContain('expandedRow');
-    expect(src).toContain('setExpandedRow');
+  it('no longer has a per-run expandable drawer or chevron', () => {
+    // Change 3: the per-row dropdown is gone entirely; judge info shows once.
+    expect(src).not.toContain('RunDetailDrawer');
+    expect(src).not.toContain('expandedRow');
+    expect(src).not.toContain('setExpandedRow');
+    expect(src).not.toContain('ChevronRight');
+  });
+
+  it('shows every RunAggregateMetrics metric directly on the run row', () => {
+    expect(src).toContain('>Pass Rate<');
+    expect(src).toContain('>Avg Accuracy<');
+    expect(src).toContain('>Cost<');
+    expect(src).toContain('>Avg Duration<');
+    expect(src).toContain('>Tokens<');
+    expect(src).toContain('>LLM Calls<');
+    expect(src).toContain('>Tool Calls<');
+    expect(src).toContain('run-passrate-${run.runId}');
+    expect(src).toContain('run-accuracy-${run.runId}');
+  });
+
+  it('renders a single judge line instead of per-row judge info', () => {
+    expect(src).toContain('scoreboard-judge-line');
+    expect(src).toContain('JudgeLine');
+    expect(src).toContain('Judge:');
+  });
+
+  it('has an inline Open-run link and Remove button on each row (no drawer needed)', () => {
+    expect(src).toContain('data-testid={`open-run-${run.runId}`}');
+    expect(src).toContain('onClick={() => onRemoveRun(run.runId)}');
   });
 
   it('condensed state renders when isCondensed is true', () => {
@@ -106,10 +131,15 @@ describe('ComparisonScoreboard structure', () => {
     expect(src).toContain('sentinelRef');
   });
 
-  it('embeds MetricComparisonPanel inside an expandable "All metrics" section', () => {
-    expect(src).toContain('<MetricComparisonPanel');
-    expect(src).toContain('metricsExpanded');
-    expect(src).toContain('scoreboard-all-metrics-toggle');
+  it('no longer embeds MetricComparisonPanel or an "All metrics" expander (metrics live on the rows now)', () => {
+    expect(src).not.toContain('MetricComparisonPanel');
+    expect(src).not.toContain('metricsExpanded');
+    expect(src).not.toContain('scoreboard-all-metrics-toggle');
+  });
+
+  it('no longer renders any chart (recharts removed from this flow)', () => {
+    expect(src).not.toContain('recharts');
+    expect(src).not.toContain('BarChart');
   });
 
   it('has the sticky positioning and correct z-index', () => {
@@ -190,7 +220,7 @@ describe('ComparisonScoreboard "Open run" deep link (rendered)', () => {
     totalTestCases: 5,
     passedCount: 5,
     failedCount: 0,
-    avgAccuracy: 1,
+    avgAccuracy: 100,
     passRatePercent: 100,
   });
 
@@ -218,7 +248,7 @@ describe('ComparisonScoreboard "Open run" deep link (rendered)', () => {
       })
     );
 
-    fireEvent.click(screen.getByTestId('scoreboard-row-A'));
+    // No click-to-expand needed anymore — the link is inline on the row.
     const linkA = screen.getByTestId('open-run-run-a');
     expect(linkA.getAttribute('href')).toBe('/evaluations/benchmarks/bench-123/runs/run-a');
   });
@@ -238,7 +268,6 @@ describe('ComparisonScoreboard "Open run" deep link (rendered)', () => {
       })
     );
 
-    fireEvent.click(screen.getByTestId('scoreboard-row-B'));
     const linkB = screen.getByTestId('open-run-run-b');
     expect(linkB.getAttribute('href')).toBe('/evaluations/runs/run-b');
   });
@@ -256,8 +285,165 @@ describe('ComparisonScoreboard "Open run" deep link (rendered)', () => {
       })
     );
 
-    fireEvent.click(screen.getByTestId('scoreboard-row-A'));
     const linkA = screen.getByTestId('open-run-run-a');
     expect(linkA.getAttribute('href')).toBe('/evaluations/runs/run-a');
+  });
+
+  it('shows every metric on the row and a single judge line (no per-row drawer)', () => {
+    const runA = makeRun('run-a');
+    const runB = makeRun('run-b');
+    render(
+      React.createElement(ComparisonScoreboard, {
+        runs: [runA, runB],
+        selectedRuns: [makeSelectedRun('run-a'), makeSelectedRun('run-b')],
+        overlap,
+        runBenchmarkIdById: new Map([['run-a', 'bench-123'], ['run-b', undefined]]),
+        onRemoveRun: () => {},
+        onSwapRuns: () => {},
+        getAgentName: (k: string) => k,
+      })
+    );
+
+    expect(screen.getByTestId('run-passrate-run-a').textContent).toContain('100%');
+    expect(screen.getByTestId('run-accuracy-run-a').textContent).toContain('100%');
+    // Judge info renders exactly once (single shared model here).
+    expect(screen.getAllByTestId('scoreboard-judge-line')).toHaveLength(1);
+    expect(screen.getByTestId('scoreboard-judge-line').textContent).toContain('Judge:');
+  });
+
+  it('removing a run calls onRemoveRun with that run id', () => {
+    const runA = makeRun('run-a');
+    const runB = makeRun('run-b');
+    const onRemoveRun = jest.fn();
+    render(
+      React.createElement(ComparisonScoreboard, {
+        runs: [runA, runB],
+        selectedRuns: [makeSelectedRun('run-a'), makeSelectedRun('run-b')],
+        overlap,
+        runBenchmarkIdById: new Map([['run-a', 'bench-123'], ['run-b', undefined]]),
+        onRemoveRun,
+        onSwapRuns: () => {},
+        getAgentName: (k: string) => k,
+      })
+    );
+
+    const row = screen.getByTestId('scoreboard-row-A');
+    fireEvent.click(row.querySelector('button[title="Remove"]')!);
+    expect(onRemoveRun).toHaveBeenCalledWith('run-a');
+  });
+
+  it('leads each row with the RUN NAME (agent/model/time move to a secondary line) — owner: "runs info should be communicated"', () => {
+    const runA = { ...makeRun('run-a'), runName: 'stark-retail — mock run 1 (subset ingest)' };
+    const runB = { ...makeRun('run-b'), runName: 'stark-retail smoke (6 tests, subset ingest)' };
+    render(
+      React.createElement(ComparisonScoreboard, {
+        runs: [runA, runB],
+        selectedRuns: [makeSelectedRun('run-a'), makeSelectedRun('run-b')],
+        overlap,
+        onRemoveRun: () => {},
+        onSwapRuns: () => {},
+        getAgentName: () => 'internal-rest-agent-example',
+      })
+    );
+
+    const rowA = screen.getByTestId('scoreboard-row-A');
+    const rowB = screen.getByTestId('scoreboard-row-B');
+    expect(rowA.textContent).toContain('stark-retail — mock run 1 (subset ingest)');
+    expect(rowB.textContent).toContain('stark-retail smoke (6 tests, subset ingest)');
+    // The agent name / model still render, just as secondary info alongside the run name.
+    expect(rowA.textContent).toContain('internal-rest-agent-example');
+    expect(rowA.textContent).toContain('claude-sonnet');
+  });
+
+  it('falls back to the agent name when a run has no runName', () => {
+    const runA = { ...makeRun('run-a'), runName: '' };
+    render(
+      React.createElement(ComparisonScoreboard, {
+        runs: [runA],
+        selectedRuns: [makeSelectedRun('run-a')],
+        overlap: { ...overlap, runCount: 1 },
+        onRemoveRun: () => {},
+        onSwapRuns: () => {},
+        getAgentName: () => 'fallback-agent-name',
+      })
+    );
+    expect(screen.getByTestId('scoreboard-row-A').textContent).toContain('fallback-agent-name');
+  });
+
+  it('coverage cell states how many cases are tested in BOTH runs, naming which side has the extra cases (owner: "Coverage column is confusing")', () => {
+    const runA = makeRun('run-a');
+    const runB = makeRun('run-b');
+    const partialOverlap = {
+      runCount: 2,
+      totalTestCases: 62,
+      sharedTestCases: 6,
+      partialTestCases: 56,
+      perRun: [
+        { runId: 'run-a', runName: 'A', count: 62, uniqueCount: 56 },
+        { runId: 'run-b', runName: 'B', count: 6, uniqueCount: 0 },
+      ],
+      fullyOverlapping: false,
+    };
+    render(
+      React.createElement(ComparisonScoreboard, {
+        runs: [runA, runB],
+        selectedRuns: [makeSelectedRun('run-a'), makeSelectedRun('run-b')],
+        overlap: partialOverlap,
+        onRemoveRun: () => {},
+        onSwapRuns: () => {},
+        getAgentName: (k: string) => k,
+      })
+    );
+
+    const banner = screen.getByTestId('comparison-overlap-banner');
+    expect(banner.getAttribute('data-overlap')).toBe('partial');
+    expect(banner.textContent).toBe('6 in both · 56 only in A');
+    // No longer the old ambiguous "N shared / M total" wording.
+    expect(banner.textContent).not.toMatch(/\d+ total/);
+  });
+
+  it('coverage cell names BOTH sides when each has cases the other lacks', () => {
+    const runA = makeRun('run-a');
+    const runB = makeRun('run-b');
+    const disjointOverlap = {
+      runCount: 2,
+      totalTestCases: 10,
+      sharedTestCases: 4,
+      partialTestCases: 6,
+      perRun: [
+        { runId: 'run-a', runName: 'A', count: 7, uniqueCount: 3 },
+        { runId: 'run-b', runName: 'B', count: 7, uniqueCount: 3 },
+      ],
+      fullyOverlapping: false,
+    };
+    render(
+      React.createElement(ComparisonScoreboard, {
+        runs: [runA, runB],
+        selectedRuns: [makeSelectedRun('run-a'), makeSelectedRun('run-b')],
+        overlap: disjointOverlap,
+        onRemoveRun: () => {},
+        onSwapRuns: () => {},
+        getAgentName: (k: string) => k,
+      })
+    );
+    expect(screen.getByTestId('comparison-overlap-banner').textContent).toBe('4 in both · 3 only in A · 3 only in B');
+  });
+
+  it('coverage cell for a fully-overlapping comparison reads "N in both, fully comparable" (green)', () => {
+    const runA = makeRun('run-a');
+    const runB = makeRun('run-b');
+    render(
+      React.createElement(ComparisonScoreboard, {
+        runs: [runA, runB],
+        selectedRuns: [makeSelectedRun('run-a'), makeSelectedRun('run-b')],
+        overlap,
+        onRemoveRun: () => {},
+        onSwapRuns: () => {},
+        getAgentName: (k: string) => k,
+      })
+    );
+    const banner = screen.getByTestId('comparison-overlap-banner');
+    expect(banner.getAttribute('data-overlap')).toBe('full');
+    expect(banner.textContent).toBe('5 in both, fully comparable');
   });
 });
