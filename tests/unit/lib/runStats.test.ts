@@ -538,6 +538,8 @@ describe('runStats', () => {
       };
 
       expect(computeRunStats(run)).toEqual({ passed: 1, failed: 0, errored: 1, pending: 0, total: 2 });
+    });
+
     it('threads run.testCaseSnapshots.length through as plannedTotal for an in-progress run', () => {
       const run = {
         results: { 'tc-1': { status: 'failed' }, 'tc-2': { status: 'failed' } },
