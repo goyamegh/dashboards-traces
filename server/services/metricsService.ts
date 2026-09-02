@@ -155,6 +155,19 @@ function isEvalOrJudgeSpan(attrs: Record<string, any>, spanName?: string): boole
  * back to `report.traceId`) and subprocess agents whose vendor SDK never
  * adopts `agent_health.run.id` (Claude Code) both 0-correlate even though
  * `/api/traces` finds their spans instantly via the same traceId.
+ *
+ * Safety of matching on a bare traceId (adversarial-review follow-up):
+ * `startTestCaseSpan` (services/traces/index.ts) mints a FRESH OTel span —
+ * and therefore a fresh, effectively-unique traceId — for every single
+ * test-case invocation; it is never reused across runs or shared between
+ * concurrent test cases. This is the same guarantee `/api/traces` and every
+ * existing Strategy-A consumer (services/traces/tracesService.ts) already
+ * rely on — this file did not previously use `traceId` as a correlator at
+ * all, so it inherits an existing invariant rather than introducing a new
+ * one. Spans on that ONE trace that are agent-health's own (the eval/judge
+ * spans, possible when Strategy A pulls in the whole trace) are excluded
+ * via {@link isEvalOrJudgeSpan} above so they can't inflate the agent's own
+ * token/LLM-call count.
  */
 function buildRunIdShouldClauses(runId: string, traceId?: string): Record<string, unknown>[] {
   const clauses: Record<string, unknown>[] = [
