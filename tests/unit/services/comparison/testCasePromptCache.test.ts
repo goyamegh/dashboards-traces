@@ -88,7 +88,7 @@ describe('fetchTestCaseVersionsForHover (cache)', () => {
     expect(__testCasePromptCacheSizeForTests()).toBe(2);
   });
 
-  it('resolves to [] (not a rejection) when the fetch fails, and still only fetches once', async () => {
+  it('resolves to [] (not a rejection) when the fetch fails, and still only fetches once for CONCURRENT callers', async () => {
     asyncTestCaseStorage.getVersions.mockRejectedValue(new Error('boom'));
 
     const [first, second] = await Promise.all([
@@ -99,6 +99,18 @@ describe('fetchTestCaseVersionsForHover (cache)', () => {
     expect(first).toEqual([]);
     expect(second).toEqual([]);
     expect(asyncTestCaseStorage.getVersions).toHaveBeenCalledTimes(1);
+  });
+
+  it('does NOT poison the cache on failure — a later hover (after the failed one settles) retries instead of repeating []', async () => {
+    asyncTestCaseStorage.getVersions.mockRejectedValueOnce(new Error('transient 500'));
+    const first = await fetchTestCaseVersionsForHover('tc-retry');
+    expect(first).toEqual([]);
+    expect(__testCasePromptCacheSizeForTests()).toBe(0); // evicted, not poisoned
+
+    asyncTestCaseStorage.getVersions.mockResolvedValueOnce(VERSIONS);
+    const second = await fetchTestCaseVersionsForHover('tc-retry');
+    expect(second).toBe(VERSIONS);
+    expect(asyncTestCaseStorage.getVersions).toHaveBeenCalledTimes(2);
   });
 
   it('a fresh fetch happens again after the cache is reset (e.g. between test cases)', async () => {
