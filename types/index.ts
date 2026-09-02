@@ -1209,6 +1209,11 @@ export interface EvaluationRun {
  * RUN's actual shape (capabilities, fields like `rerunOf`). Route-derived
  * state (which endpoint to fetch, which breadcrumb/URL to build) is a
  * separate, legitimate concern and should stay keyed on the route.
+ *
+ * Adopted from #466 (`goyamegh/run-type-predicate`) ahead of that PR's
+ * merge, per the note on #462: both PRs hit the same route-vs-doctype bug
+ * class (Retry-judgement's button/dialog mount) and should not ship two
+ * competing `(run as any).docType` patches.
  */
 export const isEvaluationRun = (r: BenchmarkRun | EvaluationRun): r is EvaluationRun =>
   'docType' in r && r.docType === 'evaluation-run';
