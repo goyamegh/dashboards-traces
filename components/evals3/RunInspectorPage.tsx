@@ -27,7 +27,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
 import { getEvaluationRun } from '@/services/client';
-import { Benchmark, BenchmarkRun, EvaluationRun, TestCase, EvaluationReport } from '@/types';
+import { Benchmark, BenchmarkRun, EvaluationRun, TestCase, EvaluationReport, isEvaluationRun } from '@/types';
 import { ResultStatus, getResultStatus, StatusIcon, StatusLabel } from './ResultStatus';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatDate, getModelName } from '@/lib/utils';
@@ -467,7 +467,7 @@ export const RunInspectorPage: React.FC = () => {
                 whenever it was created with a benchmarkId, so `mode` alone
                 (derived purely from the URL's benchmarkId param) is not a
                 reliable signal for "is this a first-class evaluation run". */}
-            {(run as any).docType === 'evaluation-run' && (() => {
+            {run && isEvaluationRun(run) && (() => {
               const runTerminal = run.status !== 'running' && run.status !== 'pending';
               const disabled = !runTerminal || erroredCount === 0;
               const title = !runTerminal
@@ -523,7 +523,7 @@ export const RunInspectorPage: React.FC = () => {
       )}
 
       {/* Retry Judgement Confirm Dialog (EvaluationRun only) */}
-      {(run as any).docType === 'evaluation-run' && (
+      {run && isEvaluationRun(run) && (
         <RetryJudgementConfirmDialog
           run={run as EvaluationRun | null}
           count={erroredCount}
