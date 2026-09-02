@@ -20,14 +20,14 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { Loader2, Clock, XCircle, Calendar, GitCompare, AlertTriangle, RotateCcw, Link2 } from 'lucide-react';
+import { Loader2, Clock, XCircle, Calendar, GitCompare, AlertTriangle, RotateCcw, RotateCw, Link2 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
 import { getEvaluationRun } from '@/services/client';
-import { Benchmark, BenchmarkRun, EvaluationRun, TestCase, EvaluationReport } from '@/types';
+import { Benchmark, BenchmarkRun, EvaluationRun, TestCase, EvaluationReport, isEvaluationRun } from '@/types';
 import { ResultStatus, getResultStatus, StatusIcon, StatusLabel } from './ResultStatus';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatDate, getModelName } from '@/lib/utils';
@@ -35,6 +35,8 @@ import { TestCaseInspectorPanel } from './TestCaseInspectorPanel';
 import { Breadcrumbs } from './Breadcrumbs';
 import { ensureTracePollingForReport } from '@/services/traces/browserRecovery';
 import { RerunConfirmDialog } from './RerunConfirmDialog';
+import { RetryJudgementConfirmDialog } from './RetryJudgementConfirmDialog';
+import type { RetryJudgementSummary } from '@/services/client';
 
 interface TestCaseResult {
   testCaseId: string;
@@ -88,6 +90,7 @@ export const RunInspectorPage: React.FC = () => {
   const sentinelRef = React.useRef<HTMLDivElement | null>(null);
   const initialSelectionDone = React.useRef(false);
   const [rerunDialogOpen, setRerunDialogOpen] = useState(false);
+  const [retryJudgementDialogOpen, setRetryJudgementDialogOpen] = useState(false);
   // Provenance: when this run was itself created via re-run, look up the
   // source run's name for the chip (falls back to a truncated id if the
   // source run was since deleted).
@@ -110,7 +113,32 @@ export const RunInspectorPage: React.FC = () => {
 
         const bmRun = bm.runs?.find(r => r.id === runId);
         if (!bmRun) { navigate(`/evaluations/benchmarks/${benchmarkId}/runs`); return; }
-        runData = bmRun;
+
+        // Prefer the first-class EvaluationRun doc when one exists for this
+        // run id. Runs created WITH a benchmarkId are dual-written
+        // (server/routes/storage/evaluationRuns.ts, "Link the terminal
+        // projection before finalizing the first-class run"): a first-class
+        // `docType: 'evaluation-run'` doc AND a legacy-shaped BenchmarkRun
+        // projection embedded in `benchmark.runs[]` — and the projection is
+        // never kept in sync after that write (retry-judgement, for one,
+        // only updates the first-class doc's results/stats). Fetching the
+        // first-class doc here means the Retry judgement affordance (gated
+        // on `docType === 'evaluation-run'`, below) works from this
+        // benchmark-scoped route too, and the panel shows live
+        // results/stats instead of a stale embedded snapshot. A run that
+        // only ever exists as a legacy BenchmarkRun (pre-#399, no
+        // first-class doc) 404s here and falls back to the embedded
+        // projection exactly as before — unchanged behavior for that case.
+        // (Re-run stays keyed on route `mode` on this branch — its own
+        // docType-keyed fix landed separately on goyamegh/rerun-idspace-fix
+        // and isn't ported here; out of scope for this fix.)
+        try {
+          // Defensive `?? bmRun`: some test doubles / API layers resolve
+          // to a falsy value on "not found" instead of throwing.
+          runData = (await getEvaluationRun(runId)) ?? bmRun;
+        } catch {
+          runData = bmRun;
+        }
       } else {
         // SDK eval-run mode — no benchmark.
         try {
@@ -432,6 +460,43 @@ export const RunInspectorPage: React.FC = () => {
                 </Button>
               </div>
             )}
+            {/* Retry judgement: evaluation-run docs only (never true
+                BenchmarkRun-embedded docs), terminal runs only. Salvages
+                judge-failed cases (trace timeouts, judge errors,
+                "evaluator could not run") at judge cost only — never
+                re-invokes the agent. See services/evaluation/retryJudgement.ts.
+                Keyed on `run.docType` rather than route `mode` — same class
+                of bug as the Re-run button fix: an evaluation-run doc
+                (docType: 'evaluation-run') can be reached via the
+                benchmark-scoped inspector route
+                (/evaluations/benchmarks/<benchmarkId>/runs/<runId>/inspect)
+                whenever it was created with a benchmarkId, so `mode` alone
+                (derived purely from the URL's benchmarkId param) is not a
+                reliable signal for "is this a first-class evaluation run". */}
+            {run && isEvaluationRun(run) && (() => {
+              const runTerminal = run.status !== 'running' && run.status !== 'pending';
+              const disabled = !runTerminal || erroredCount === 0;
+              const title = !runTerminal
+                ? 'Retry judgement is only available once the run has finished'
+                : erroredCount === 0
+                  ? 'No judge-failed cases to retry'
+                  : undefined;
+              return (
+                <div title={title} className="inline-flex">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    disabled={disabled}
+                    data-testid="inspector-retry-judgement-btn"
+                    className="h-7 gap-1.5 text-xs"
+                    onClick={() => setRetryJudgementDialogOpen(true)}
+                  >
+                    <RotateCw size={12} />
+                    Retry judgement ({erroredCount})
+                  </Button>
+                </div>
+              );
+            })()}
             {/* Compare is a test-case-level primitive and no longer requires a
                 benchmark — benchmark runs deep-link with their benchmark for
                 context; ad-hoc SDK/eval runs use the benchmark-free
@@ -460,6 +525,17 @@ export const RunInspectorPage: React.FC = () => {
           open={rerunDialogOpen}
           onOpenChange={setRerunDialogOpen}
           onRerun={newRunId => navigate(`/evaluations/runs/${newRunId}`)}
+        />
+      )}
+
+      {/* Retry Judgement Confirm Dialog (EvaluationRun only) */}
+      {run && isEvaluationRun(run) && (
+        <RetryJudgementConfirmDialog
+          run={run as EvaluationRun | null}
+          count={erroredCount}
+          open={retryJudgementDialogOpen}
+          onOpenChange={setRetryJudgementDialogOpen}
+          onComplete={(_summary: RetryJudgementSummary) => loadData()}
         />
       )}
 
