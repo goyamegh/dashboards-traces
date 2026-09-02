@@ -43,7 +43,7 @@ test.describe('Benchmark run row link — mid-run / not-yet-linked runs are clic
   let benchmarkId: string | null = null;
   let testCaseId: string | null = null;
   let runId: string | null = null;
-  const RUN_NAME = uniqueTestName('ClaudeCode-WithTraces');
+  const RUN_NAME = uniqueTestName('run-first-inflight');
 
   test.beforeAll(async ({ request }) => {
     const tcRes = await request.post('/api/storage/test-cases', {
@@ -149,6 +149,30 @@ test.describe('Benchmark run row link — mid-run / not-yet-linked runs are clic
     // demand — unlike the old automatic, unexplained redirect.
     await page.click('text=Back to runs');
     await expect(page).toHaveURL(new RegExp(`/evaluations/benchmarks/${benchmarkId}/runs$`), { timeout: 15_000 });
+  });
+
+  test('clicking a not-yet-linked run\'s row on the benchmark runs list opens the inspector instead of bouncing back to the list', async ({ page }) => {
+    test.skip(!benchmarkId || !runId, 'Setup did not produce a benchmark + run to test');
+
+    // Same never-embedded precondition as the direct-URL test above, but
+    // this time driven through the ACTUAL row click on the runs LIST page —
+    // the real owner-reported path (an in-flight run's row looked clickable
+    // but silently did nothing). The row itself doesn't need to be visibly
+    // "Running" for this regression: the bounce is keyed purely on absence
+    // from `benchmark.runs[]`, which this setup's deliberately-unresolvable
+    // agentKey guarantees deterministically (no flaky timing window needed).
+    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs`);
+    const row = page.locator(`text=${RUN_NAME}`).first();
+    await expect(row).toBeVisible({ timeout: 15_000 });
+    await row.click();
+
+    // Before the fix this click landed back on the SAME runs-list URL
+    // (silent bounce). Assert it actually opens the inspector and renders.
+    await expect(page).toHaveURL(new RegExp(`/evaluations/benchmarks/${benchmarkId}/runs/${runId}/inspect$`), {
+      timeout: 15_000,
+    });
+    await expect(page.locator('[data-testid="run-inspector-not-found"]')).toHaveCount(0);
+    await expect(page.locator(`h2:has-text("${RUN_NAME}")`)).toBeVisible({ timeout: 15_000 });
   });
 });
 
