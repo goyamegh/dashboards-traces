@@ -71,8 +71,6 @@ jest.mock('@/lib/config', () => ({ ENV_CONFIG: { backendUrl: '' } }));
 jest.mock('@/lib/utils', () => ({
   formatDate: jest.fn(() => 'Aug 31, 2026'),
   getModelName: jest.fn((id: string) => id),
-  getJudgeModelLabel: jest.fn((id?: string) => id || '—'),
-  getEvaluatorLabel: jest.fn((id: string | undefined, names: Map<string, string>) => (id ? names.get(id) || id : '—')),
   getLabelColor: jest.fn(() => ''),
   cn: jest.fn((...args: unknown[]) => args.filter(Boolean).join(' ')),
 }));
