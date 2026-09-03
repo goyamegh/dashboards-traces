@@ -284,7 +284,12 @@ export const BenchmarkRunsTable: React.FC<BenchmarkRunsTableProps> = (props) => 
                   <FilterCell row={row} field="model" filters={filters} onToggle={onToggleFilter} mono />
                   <td className="px-2 py-1 align-middle text-right text-[11px] tabular-nums" data-testid="run-size-cell">{row.size}</td>
                   <td className="px-2 py-1 align-middle text-right whitespace-nowrap" data-testid="run-passrate-cell">
-                    <span className={`text-xs font-semibold tabular-nums ${passRateColor(row.passRate)}`}>
+                    <span
+                      className={`text-xs font-semibold tabular-nums ${passRateColor(row.passRate)}`}
+                      title={row.passRate === null
+                        ? 'No judged cases yet'
+                        : `${row.passed} passed of ${row.passed + row.failed} judged (errored/pending cases excluded, issue #242)`}
+                    >
                       {row.passRate === null ? '—' : `${row.passRate}%`}
                     </span>
                     <span className="ml-1.5 text-[10px] text-muted-foreground tabular-nums" data-testid="run-stats">
