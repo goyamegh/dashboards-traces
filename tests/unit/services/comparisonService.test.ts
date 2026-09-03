@@ -237,6 +237,101 @@ describe('comparisonService', () => {
       // lib/runStats: 1 passed / 2 = 50%.
       expect(aggregates.passRatePercent).toBe(50);
     });
+
+    // Live-tunnel regression (compare page, real STaRK-retail runs): reports
+    // scored by a custom evaluator carry ONLY that evaluator's metric keys
+    // (fact_precision / provenance_verifiability / abstention_integrity /
+    // payload_economy — the exact real shape) and NO `metrics.accuracy`. The
+    // old `?? 0` fallback averaged those as zeros → the scoreboard rendered a
+    // fabricated "Avg Accuracy 0%" for both runs. No accuracy anywhere must
+    // yield `undefined` (rendered "--"), not 0.
+    it('returns undefined avgAccuracy when no report carries metrics.accuracy (custom evaluator shape)', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        stats: undefined,
+        results: {
+          'tc-1': { reportId: 'report-c1', status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { reportId: 'report-c2', status: 'completed', passFailStatus: 'failed' },
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        'report-c1': {
+          id: 'report-c1',
+          testCaseId: 'tc-1',
+          passFailStatus: 'passed',
+          metricsStatus: 'ready',
+          metrics: { fact_precision: 100, provenance_verifiability: 100, abstention_integrity: 100, payload_economy: 85 },
+        } as unknown as EvaluationReport,
+        'report-c2': {
+          id: 'report-c2',
+          testCaseId: 'tc-2',
+          passFailStatus: 'failed',
+          metricsStatus: 'ready',
+          metrics: { fact_precision: 40, provenance_verifiability: 20, abstention_integrity: 60, payload_economy: 70 },
+        } as unknown as EvaluationReport,
+      };
+
+      const aggregates = calculateRunAggregates(run, reports);
+
+      expect(aggregates.avgAccuracy).toBeUndefined();
+      // Pass rate is unaffected by the missing accuracy metric.
+      expect(aggregates.passRatePercent).toBe(50);
+    });
+
+    // Mixed shape (also real: 1 of 62 reports in the REST run was scored by
+    // the default evaluator): only accuracy-bearing reports participate in
+    // the average — custom-scored reports neither drag it to 0 nor dilute it.
+    it('averages avgAccuracy only over reports that carry a numeric accuracy', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        stats: undefined,
+        results: {
+          'tc-1': { reportId: 'report-m1', status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { reportId: 'report-m2', status: 'completed', passFailStatus: 'passed' },
+          'tc-3': { reportId: 'report-m3', status: 'completed', passFailStatus: 'failed' },
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        'report-m1': {
+          id: 'report-m1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready',
+          metrics: { accuracy: 90, faithfulness: 80, trajectory_alignment_score: 70, latency_score: 60 },
+        } as EvaluationReport,
+        'report-m2': {
+          id: 'report-m2', testCaseId: 'tc-2', passFailStatus: 'passed', metricsStatus: 'ready',
+          metrics: { fact_precision: 100, provenance_verifiability: 100, abstention_integrity: 100, payload_economy: 85 },
+        } as unknown as EvaluationReport,
+        'report-m3': {
+          id: 'report-m3', testCaseId: 'tc-3', passFailStatus: 'failed', metricsStatus: 'ready',
+          metrics: { accuracy: 70, faithfulness: 50, trajectory_alignment_score: 40, latency_score: 30 },
+        } as EvaluationReport,
+      };
+
+      const aggregates = calculateRunAggregates(run, reports);
+
+      // (90 + 70) / 2 = 80 — NOT (90 + 0 + 70) / 3 = 53.
+      expect(aggregates.avgAccuracy).toBe(80);
+    });
+
+    // accuracy: 0 is a real score, not "missing" — it must count.
+    it('treats accuracy 0 as a real score, not missing', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        stats: undefined,
+        results: {
+          'tc-1': { reportId: 'report-z1', status: 'completed', passFailStatus: 'failed' },
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        'report-z1': {
+          id: 'report-z1', testCaseId: 'tc-1', passFailStatus: 'failed', metricsStatus: 'ready',
+          metrics: { accuracy: 0, faithfulness: 0, trajectory_alignment_score: 0, latency_score: 0 },
+        } as EvaluationReport,
+      };
+
+      const aggregates = calculateRunAggregates(run, reports);
+
+      expect(aggregates.avgAccuracy).toBe(0);
+    });
   });
 
   describe('collectRunIdsFromReports', () => {

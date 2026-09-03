@@ -36,10 +36,11 @@ function formatDate(isoString: string): string {
 }
 
 /**
- * Format a percentage value
+ * Format a percentage value ("--" when not recorded, e.g. custom-evaluator
+ * runs whose reports carry no `metrics.accuracy`).
  */
-function formatPercent(value: number): string {
-  return `${Math.round(value)}%`;
+function formatPercent(value: number | undefined): string {
+  return value !== undefined ? `${Math.round(value)}%` : '--';
 }
 
 /**
@@ -503,7 +504,7 @@ function renderExecutiveSummarySingleRun(run: ReportRunData): string {
   const agg = run.aggregates;
   const donut = generateDonutSvg(agg.passedCount, agg.failedCount, 120);
 
-  const accuracyColor = agg.avgAccuracy >= 80 ? 'var(--os-blue)' : agg.avgAccuracy >= 50 ? 'var(--amber-600)' : 'var(--red-700)';
+  const accuracyColor = agg.avgAccuracy === undefined ? 'var(--text-muted)' : agg.avgAccuracy >= 80 ? 'var(--os-blue)' : agg.avgAccuracy >= 50 ? 'var(--amber-600)' : 'var(--red-700)';
   const passRateColor = agg.passRatePercent >= 80 ? 'var(--green-700)' : agg.passRatePercent >= 50 ? 'var(--amber-600)' : 'var(--red-700)';
 
   return `
@@ -528,7 +529,7 @@ function renderExecutiveSummarySingleRun(run: ReportRunData): string {
             <div class="metric-card">
               <div class="metric-label">Accuracy</div>
               <div class="metric-value" style="color:${accuracyColor}">${formatPercent(agg.avgAccuracy)}</div>
-              <div class="progress-bar"><div class="progress-fill" style="width:${Math.round(agg.avgAccuracy)}%;background:${accuracyColor}"></div></div>
+              <div class="progress-bar"><div class="progress-fill" style="width:${Math.round(agg.avgAccuracy ?? 0)}%;background:${accuracyColor}"></div></div>
             </div>
             <div class="metric-card">
               <div class="metric-label">Agent</div>
@@ -579,7 +580,7 @@ function renderExecutiveSummaryMultiRun(runs: ReportRunData[]): string {
             <div style="margin-bottom:0.375rem">
               <span style="font-size:0.6875rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--text-muted)">Accuracy</span>
               <div style="font-size:1.125rem;font-weight:700;color:var(--os-blue)">${formatPercent(agg.avgAccuracy)}</div>
-              <div class="progress-bar"><div class="progress-fill" style="width:${Math.round(agg.avgAccuracy)}%;background:var(--os-blue)"></div></div>
+              <div class="progress-bar"><div class="progress-fill" style="width:${Math.round(agg.avgAccuracy ?? 0)}%;background:var(--os-blue)"></div></div>
             </div>
             <div style="font-size:0.75rem;color:var(--text-muted)">
               <span class="text-pass">${agg.passedCount}P</span> / <span class="text-fail">${agg.failedCount}F</span> of ${agg.totalTestCases}
@@ -599,7 +600,7 @@ function renderExecutiveSummaryMultiRun(runs: ReportRunData[]): string {
 function renderRunSummaryTable(runs: ReportRunData[]): string {
   const rows = runs.map((run, idx) => {
     const passRateColor = run.aggregates.passRatePercent >= 80 ? 'var(--green-700)' : run.aggregates.passRatePercent >= 50 ? 'var(--amber-600)' : 'var(--red-700)';
-    const accuracyColor = run.aggregates.avgAccuracy >= 80 ? 'var(--os-blue)' : run.aggregates.avgAccuracy >= 50 ? 'var(--amber-600)' : 'var(--red-700)';
+    const accuracyColor = run.aggregates.avgAccuracy === undefined ? 'var(--text-muted)' : run.aggregates.avgAccuracy >= 80 ? 'var(--os-blue)' : run.aggregates.avgAccuracy >= 50 ? 'var(--amber-600)' : 'var(--red-700)';
 
     return `
     <tr>
