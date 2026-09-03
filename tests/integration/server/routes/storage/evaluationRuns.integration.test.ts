@@ -588,19 +588,46 @@ describe('Evaluation Runs API Integration', () => {
       const runId = events.find(e => e.event === 'started')!.data.runId;
       cleanupIds.evalRuns.push(runId);
 
-      // Cancel and mark as completed
+      // Cancel, then drain the SSE stream to its NATURAL end rather than
+      // aborting the client connection. POST /evaluation-runs executes the
+      // whole run to completion *inside its own request handler* (see
+      // server/routes/storage/evaluationRuns.ts), independent of whether
+      // this client keeps listening — /cancel only flips a cooperative
+      // token; the handler's `finally` block (which calls `res.end()`) only
+      // runs AFTER that handler's own terminal
+      // `storage.evaluationRuns.update(runId, { status, stats, completedAt,
+      // results })` write has already landed (that write is even set
+      // synchronously by /cancel itself with `completedAt` — so polling for
+      // `completedAt` does NOT prove the run has settled). That write is a
+      // stale-read-then-full-document-overwrite (see
+      // OpenSearchEvaluationRunOperations.update()): if the handler's LATER
+      // finalize write (after it notices cancellation, or after the run
+      // completes anyway) lands AFTER the benchmarkId mutations below, it
+      // resurrects whatever benchmarkId existed when execution started
+      // (undefined, for this ad-hoc run) and clobbers the promote() write —
+      // exactly the known flake here: a re-promote that should 400 instead
+      // reads a resurrected `benchmarkId: undefined` and succeeds with 200.
+      // A fixed sleep (or polling `completedAt`) races this
+      // nondeterministically; the SSE stream closing (`done: true`) is the
+      // one signal that is only ever true once the handler's `finally` has
+      // already run, so nothing further will write to this run.
       await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}/cancel`, { method: 'POST' });
+
+      for (let i = 0; i < 300; i++) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (value) decoder.decode(value, { stream: true });
+      }
+      await reader.cancel().catch(() => {});
+      controller.abort();
+
+      // Mark as completed (idempotent if the background execution already
+      // wrote a terminal status above) and ensure benchmarkId is unset.
       await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'completed', benchmarkId: undefined }),
       });
-
-      reader.cancel();
-      controller.abort();
-
-      // Wait a moment for state to settle
-      await new Promise(r => setTimeout(r, 500));
 
       // Remove benchmarkId to ensure it's ad-hoc
       await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`, {
@@ -636,7 +663,7 @@ describe('Evaluation Runs API Integration', () => {
         const errBody = await promoteRes.json();
         expect(errBody.error).toMatch(/already|associated|benchmark/i);
       }
-    }, 30000);
+    }, 45000);
   });
 
   describe('DELETE /api/storage/evaluation-runs/:id', () => {
