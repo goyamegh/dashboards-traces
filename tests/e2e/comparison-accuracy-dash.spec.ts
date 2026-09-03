@@ -140,4 +140,20 @@ test.describe('Comparison — Avg Accuracy dash when no report carries accuracy'
     await expect(accuracy).toContainText(/—|--/);
     await expect(accuracy).not.toContainText('%');
   });
+
+  test('per-case cells omit the accuracy chip (no fabricated "Passed 0%") when reports carry no accuracy', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed benchmark/run/reports (storage not configured?)');
+
+    await page.goto(`/compare/${benchmarkId}`);
+    await page.waitForSelector('[data-testid="comparison-page"]', { timeout: 30000 });
+
+    // Wait for the per-case comparison table to render real verdict cells.
+    await expect(page.getByText('Passed', { exact: true }).first()).toBeVisible({ timeout: 30000 });
+
+    // Same fabrication as the scoreboard, one level down: MetricCell used to
+    // render `result.accuracy ?? 0` as a "0%" chip beside EVERY verdict when
+    // the reports were scored by a custom evaluator (no metrics.accuracy).
+    // With no report carrying accuracy, no accuracy chip may render at all.
+    await expect(page.locator('[data-testid="metric-cell-accuracy"]')).toHaveCount(0);
+  });
 });
