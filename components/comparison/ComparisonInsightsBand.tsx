@@ -16,8 +16,14 @@
  *   3. A shared-weakness callout when one category is the weakest for EVERY
  *      run — the "corpus problem, not agent problem" signal.
  *
- * Renders nothing for single-run views. The category section hides itself
- * when the benchmark has no meaningful categories (everything uncategorized).
+ * Renders nothing for single-run views. Categories come from `lib/
+ * comparisonInsights.ts`'s `extractRowCategory`/`extractRowCategoryEffective`
+ * (bracket-tag / topic: label, falling back to the `category:` label ONLY
+ * when it actually varies across the comparison — see
+ * `categoryLabelIsUsableFallback`'s docstring). When nothing usable is left
+ * (everything uncategorized, or every facet too small to break out), the
+ * category section is replaced by a compact one-line explanation instead of
+ * silently disappearing — see `categoriesEmptyReason` below.
  */
 
 import React, { useMemo, useState } from 'react';
@@ -94,6 +100,22 @@ export const ComparisonInsightsBand: React.FC<ComparisonInsightsBandProps> = ({
   const meaningfulCategories = breakdown.categories.filter(c => c !== UNCATEGORIZED);
   const showCategories =
     meaningfulCategories.length > 1 || (meaningfulCategories.length === 1 && meaningfulCategories[0] !== OTHER_CATEGORY);
+  // When every row is uncategorized even after the category:-label
+  // fallback above (or every real facet is too small to break out), the
+  // matrix used to just vanish with no trace — reads as "broken" rather
+  // than "this benchmark's cases have nothing to group by" (no `[bracket]`
+  // name tag, no `topic:` label, and no varying `category:` label either).
+  // Surface *why* instead of silently hiding — but only when there's
+  // something to explain: an empty `rows` set (e.g. zero test-case overlap
+  // between the runs) already gets its own banner upstream
+  // (ComparisonOverlapBanner) — don't pile a second, misleading "no
+  // categories" message on top of that.
+  const categoriesEmptyReason: string | null =
+    showCategories || rows.length === 0
+      ? null
+      : meaningfulCategories.length === 0
+        ? 'No category breakdown — these test cases don\'t carry a topic label or a [bracket]-tagged name, and their category doesn\'t vary enough across the comparison to use as a facet on its own.'
+        : `No category breakdown — every topic/[bracket]/category facet here has fewer than ${minCases} cases, too few to compare individually.`;
 
   const chip = (bucket: AgreementBucket, label: string, count: number, tone: string, activeTone: string) => (
     <button
@@ -149,6 +171,16 @@ export const ComparisonInsightsBand: React.FC<ComparisonInsightsBandProps> = ({
       </div>
 
       {/* ── Category × run matrix (collapsible, open by default) ── */}
+      {categoriesEmptyReason && (
+        <div
+          className="mt-2 border-t border-border/50 pt-2 flex items-center gap-2 text-[11px] text-muted-foreground"
+          data-testid="insights-categories-empty"
+        >
+          <Grid3x3 size={12} className="shrink-0" />
+          <span>{categoriesEmptyReason}</span>
+        </div>
+      )}
+
       {showCategories && (
         <div className="mt-2 border-t border-border/50 pt-2">
           <button

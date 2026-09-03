@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { calculateRunStats, getReportIdsFromRun, bucketRunResults, computeRunStats } from '@/lib/runStats';
+import { calculateRunStats, getReportIdsFromRun, bucketRunResults, computeRunStats, getEffectiveRunStatus, isRunInProgress } from '@/lib/runStats';
 import type { BenchmarkRun, EvaluationReport } from '@/types';
 
 describe('runStats', () => {
@@ -385,6 +385,42 @@ describe('runStats', () => {
       expect(bucketRunResults({})).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
       expect(bucketRunResults(undefined)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 0 });
     });
+
+    // Bug (2026-09-01): the runs list showed no in-flight indication for a
+    // genuinely running run — root cause was `total` reporting only the
+    // count of test cases that have STARTED (i.e. have a `results` entry),
+    // not the run's planned size. A run 9 cases into a planned 62 looked
+    // identical to a tiny, already-finished 9-case run.
+    describe('plannedTotal (in-flight total fix)', () => {
+      it('folds the shortfall between plannedTotal and observed results into pending', () => {
+        const b = bucketRunResults(
+          { a: { status: 'failed' }, b: { status: 'failed' } },
+          62
+        );
+        expect(b).toEqual({ passed: 0, failed: 2, errored: 0, pending: 60, total: 62 });
+      });
+
+      it('is a no-op when plannedTotal equals the observed count (a genuinely completed run)', () => {
+        const b = bucketRunResults(
+          { a: { status: 'completed', passFailStatus: 'passed' }, b: { status: 'completed', passFailStatus: 'failed' } },
+          2
+        );
+        expect(b).toEqual({ passed: 1, failed: 1, errored: 0, pending: 0, total: 2 });
+      });
+
+      it('is a no-op when plannedTotal is smaller than the observed count (never shrinks total)', () => {
+        const b = bucketRunResults(
+          { a: { status: 'completed', passFailStatus: 'passed' }, b: { status: 'completed', passFailStatus: 'passed' } },
+          1
+        );
+        expect(b.total).toBe(2);
+      });
+
+      it('is a no-op when plannedTotal is omitted (back-compat, existing callers unaffected)', () => {
+        const b = bucketRunResults({ a: { status: 'failed' } });
+        expect(b).toEqual({ passed: 0, failed: 1, errored: 0, pending: 0, total: 1 });
+      });
+    });
   });
 
   describe('computeRunStats', () => {
@@ -439,6 +475,106 @@ describe('runStats', () => {
     it('defaults missing individual stats fields to 0 (partial/legacy stats blob)', () => {
       const run = { results: {}, stats: { total: 5 } as any };
       expect(computeRunStats(run)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 5 });
+    });
+
+    // Regression for the benchmark-runs-list "every row shows 0 passed / 0
+    // failed / N errored" bug (owner-reported on a Feb 2026 pulsar benchmark,
+    // v8, exp-1765401828206-yq9ychdhu). Root cause: these runs predate
+    // evaluationRunner.ts's per-result passFailStatus write, so their
+    // persisted `results[testCaseId]` only ever carried
+    // `{ reportId, status: 'completed' }` -- the exact shape below, taken
+    // from the live doc (run-1772045410778-kndnkja4w). The linked reports
+    // DO have real verdicts (verified live: 4 reports with passFailStatus
+    // 'passed', 3 with 'failed', all metricsStatus 'ready') and that split
+    // is exactly what the denormalized `run.stats` already recorded --
+    // bucketRunResults just can't see it because it never looks at reports,
+    // only at `results`.
+    it('falls back to run.stats for legacy runs whose results carry no passFailStatus at all (all-errored bucketing) but stats has real verdict evidence', () => {
+      const run = {
+        results: {
+          'tc-1765401719989-2pw5h9dmk': { reportId: 'run-1772045530260-bvf4ko26q', status: 'completed' },
+          'tc-1765309559268-sc3iqnxp4': { reportId: 'run-1772045613371-li31jemot', status: 'completed' },
+          'tc-1765309559361-qo2zet9n0': { reportId: 'run-1772046217427-n4tv7vvtr', status: 'completed' },
+          'tc-1768926669257-idup9grc7': { reportId: 'run-1772045768365-yho8vdydu', status: 'completed' },
+          'tc-1765322629983-iall3egke': { reportId: 'run-1772045435841-0vizambtl', status: 'completed' },
+          'tc-1765309559452-7s5c5irsj': { reportId: 'run-1772046000950-fj058hzfg', status: 'completed' },
+          'tc-1765309559544-75a9fafl5': { reportId: 'run-1772045939125-f7cooj9hr', status: 'completed' },
+        },
+        // Denormalized at run-completion time by the (correct, report-fetching)
+        // computeStatsForRun -- matches the live doc's run.stats exactly.
+        stats: { total: 7, pending: 0, passed: 4, failed: 3 },
+      };
+
+      // bucketRunResults(run.results) alone would say { passed: 0, failed: 0,
+      // errored: 7, pending: 0, total: 7 } -- every case wrongly marked
+      // "errored: no judge verdict" despite 7/7 having real verdicts.
+      expect(bucketRunResults(run.results)).toEqual({ passed: 0, failed: 0, errored: 7, pending: 0, total: 7 });
+
+      expect(computeRunStats(run)).toEqual({ passed: 4, failed: 3, errored: 0, pending: 0, total: 7 });
+    });
+
+    it('does NOT fall back to run.stats when a run is genuinely all-errored (no verdict evidence anywhere)', () => {
+      const run = {
+        results: {
+          'tc-1': { reportId: 'report-1', status: 'completed' },
+          'tc-2': { reportId: 'report-2', status: 'completed' },
+        },
+        // Never refreshed / no verdicts ever resolved -- stats agrees it's all-errored.
+        stats: { total: 2, pending: 0, passed: 0, failed: 0, errored: 2 },
+      };
+
+      expect(computeRunStats(run)).toEqual({ passed: 0, failed: 0, errored: 2, pending: 0, total: 2 });
+    });
+
+    it('does not use the legacy fallback when results already carry a mix of real verdicts and errors (not all-errored)', () => {
+      const run = {
+        results: {
+          'tc-1': { status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { status: 'completed' }, // genuinely errored (judge failure)
+        },
+        // Stale/irrelevant stats blob -- must be ignored since results already
+        // resolved real (non-all-errored) verdicts.
+        stats: { total: 2, pending: 0, passed: 0, failed: 0, errored: 0 },
+      };
+
+      expect(computeRunStats(run)).toEqual({ passed: 1, failed: 0, errored: 1, pending: 0, total: 2 });
+    });
+
+    it('threads run.testCaseSnapshots.length through as plannedTotal for an in-progress run', () => {
+      const run = {
+        results: { 'tc-1': { status: 'failed' }, 'tc-2': { status: 'failed' } },
+        testCaseSnapshots: new Array(62).fill({ id: 'x', version: 1, name: 'x' }),
+      };
+      expect(computeRunStats(run)).toEqual({ passed: 0, failed: 2, errored: 0, pending: 60, total: 62 });
+    });
+
+    it('does not affect a completed run whose testCaseSnapshots length already matches results', () => {
+      const run = {
+        results: { 'tc-1': { status: 'completed', passFailStatus: 'passed' }, 'tc-2': { status: 'completed', passFailStatus: 'failed' } },
+        testCaseSnapshots: [{}, {}],
+      };
+      expect(computeRunStats(run)).toEqual({ passed: 1, failed: 1, errored: 0, pending: 0, total: 2 });
+    });
+
+    it('reports the planned total (not 0) when a run has testCaseSnapshots but no results yet at all', () => {
+      const run = { results: {}, testCaseSnapshots: new Array(10).fill({}) };
+      expect(computeRunStats(run)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, total: 10 });
+    });
+  });
+
+  describe('getEffectiveRunStatus / isRunInProgress (bug #5/#6: no in-flight indication on runs-list pages)', () => {
+    it('trusts an explicit status field first', () => {
+      expect(getEffectiveRunStatus({ status: 'running' })).toBe('running');
+      expect(getEffectiveRunStatus({ status: 'completed' })).toBe('completed');
+      expect(isRunInProgress({ status: 'running' })).toBe(true);
+      expect(isRunInProgress({ status: 'completed' })).toBe(false);
+    });
+
+    it('falls back to inspecting results for legacy runs with no top-level status', () => {
+      expect(getEffectiveRunStatus({ results: { a: { status: 'running' } } })).toBe('running');
+      expect(getEffectiveRunStatus({ results: { a: { status: 'pending' } } })).toBe('running');
+      expect(getEffectiveRunStatus({ results: { a: { status: 'completed' } } })).toBe('completed');
+      expect(getEffectiveRunStatus({ results: {} })).toBe('failed');
     });
   });
 

@@ -169,6 +169,29 @@ describe('AsyncBenchmarkStorage', () => {
         })
       );
     });
+
+    it('preserves judgeModelId/evaluatorId when converting runs to storage format (regression: toStorageFormat used to silently drop both)', async () => {
+      const createdExp = createMockStorageExperiment('new-exp');
+      mockOsExperiments.create.mockResolvedValue(createdExp);
+
+      await asyncBenchmarkStorage.create({
+        name: 'Test',
+        description: 'Test',
+        testCaseIds: [],
+        runs: [{ ...createMockBenchmarkRun(), judgeModelId: 'us.anthropic.claude-sonnet-4-6', evaluatorId: 'example-evaluator-persona' }],
+      });
+
+      expect(mockOsExperiments.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          runs: expect.arrayContaining([
+            expect.objectContaining({
+              judgeModelId: 'us.anthropic.claude-sonnet-4-6',
+              evaluatorId: 'example-evaluator-persona',
+            }),
+          ]),
+        })
+      );
+    });
   });
 
   describe('save', () => {
@@ -371,6 +394,27 @@ describe('AsyncBenchmarkStorage', () => {
       expect(mockOsExperiments.update).not.toHaveBeenCalled();
       consoleSpy.mockRestore();
       consoleErrorSpy.mockRestore();
+    });
+
+    it('preserves judgeModelId/evaluatorId when adding a run (regression: this inline storage mapper had its own separate whitelist that dropped both)', async () => {
+      const exp = createMockStorageExperiment();
+      mockOsExperiments.getById.mockResolvedValue(exp);
+      mockOsExperiments.update.mockResolvedValue(undefined);
+      const consoleSpy = jest.spyOn(console, 'log').mockImplementation();
+
+      const newRun = { ...createMockBenchmarkRun('run-2'), judgeModelId: 'us.anthropic.claude-sonnet-4-6', evaluatorId: 'example-evaluator-persona' };
+      const result = await asyncBenchmarkStorage.addRun('exp-1', newRun);
+
+      expect(result).toBe(true);
+      expect(mockOsExperiments.update).toHaveBeenCalledWith(
+        'exp-1',
+        expect.objectContaining({
+          runs: expect.arrayContaining([
+            expect.objectContaining({ id: 'run-2', judgeModelId: 'us.anthropic.claude-sonnet-4-6', evaluatorId: 'example-evaluator-persona' }),
+          ]),
+        })
+      );
+      consoleSpy.mockRestore();
     });
 
     it('handles experiment with no existing runs', async () => {
@@ -707,6 +751,52 @@ describe('AsyncBenchmarkStorage', () => {
         status: 'failed',
         error: 'Agent returned empty response',
       });
+    });
+
+    it('round-trips judgeModelId and evaluatorId through toBenchmarkRun (regression: these were silently dropped, so the Evaluation Runs page Judge/Evaluator columns showed — for populated benchmark-embedded runs)', async () => {
+      const storedRun = {
+        id: 'run-with-judge',
+        name: 'Run With Judge',
+        agentKey: 'my-agent',
+        modelId: 'claude-sonnet',
+        createdAt: '2024-06-15T12:00:00Z',
+        judgeModelId: 'us.anthropic.claude-sonnet-4-6',
+        evaluatorId: 'example-evaluator-persona',
+        results: {},
+      };
+      const expWithJudgeRun = {
+        ...createMockStorageExperiment(),
+        runs: [storedRun],
+      };
+      mockOsExperiments.getById.mockResolvedValue(expWithJudgeRun);
+
+      const result = await asyncBenchmarkStorage.getById('exp-1');
+      const run = result?.runs[0];
+
+      expect(run?.judgeModelId).toBe('us.anthropic.claude-sonnet-4-6');
+      expect(run?.evaluatorId).toBe('example-evaluator-persona');
+    });
+
+    it('leaves judgeModelId/evaluatorId undefined for legacy runs that predate these fields', async () => {
+      const legacyRun = {
+        id: 'run-legacy',
+        name: 'Legacy Run',
+        agentId: 'agent-1',
+        modelId: 'model-1',
+        createdAt: '2024-01-01T00:00:00Z',
+        results: {},
+      };
+      const expWithLegacyRun = {
+        ...createMockStorageExperiment(),
+        runs: [legacyRun],
+      };
+      mockOsExperiments.getById.mockResolvedValue(expWithLegacyRun);
+
+      const result = await asyncBenchmarkStorage.getById('exp-1');
+      const run = result?.runs[0];
+
+      expect(run?.judgeModelId).toBeUndefined();
+      expect(run?.evaluatorId).toBeUndefined();
     });
 
     it('does not spread empty string error into results', async () => {

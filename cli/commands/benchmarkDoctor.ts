@@ -17,6 +17,10 @@
  * real benchmark into a content-addressed benchmark image tagged with the
  * benchmark's name — the forward-looking grouping entity. Benchmarks are NOT
  * deleted by migration (back-compat); new runs converge on images by digest.
+ * Same dry-run-by-default contract as the rest of `doctor`: `--migrate-images`
+ * alone only PREVIEWS the real digest/tags each benchmark would produce (via
+ * a server-side `dryRun` preview — nothing is created or tagged); pair it
+ * with `--apply` to actually create/tag the images.
  */
 
 import { Command } from 'commander';
@@ -73,7 +77,7 @@ export function createBenchmarkDoctorCommand(): Command {
     .description('Detect and clean up duplicated / debris benchmarks (dry-run by default)')
     .option('--dry-run', 'Preview only — this is already the default; use --apply to execute')
     .option('--apply', 'Execute the plan (default: dry-run report only)')
-    .option('--migrate-images', 'Also convert remaining benchmarks into tagged benchmark images')
+    .option('--migrate-images', 'Preview (or, with --apply, execute) converting remaining benchmarks into tagged benchmark images')
     // NOT `-o/--output <format>`: the parent `benchmark` command already owns
     // `-o/--output` (and `--format`) for ITS OWN options, and commander
     // resolves a parent command's registered options against the full argv
@@ -94,9 +98,10 @@ export function createBenchmarkDoctorCommand(): Command {
         process.exit(1);
       }
       const config = await loadConfig();
-      // For dry-run diagnostic (no --apply, no --migrate-images), safely reuse
-      // foreign servers in read-only mode. With mutating flags, keep strict guard.
-      const isReadOnly = !options.apply && !options.migrateImages;
+      // For dry-run diagnostic (no --apply — --migrate-images alone is also a
+      // read-only preview now, see module doc comment), safely reuse foreign
+      // servers in read-only mode. With --apply, keep strict guard.
+      const isReadOnly = !options.apply;
       config.server.readOnly = isReadOnly;
       const serverResult: EnsureServerResult = await ensureServer(config.server);
       const cleanup = createServerCleanup(serverResult, false);
@@ -135,18 +140,32 @@ export function createBenchmarkDoctorCommand(): Command {
         }
 
         if (options.migrateImages) {
-          const migration = await migrateBenchmarksToImages(api, serverResult.baseUrl);
+          const migration = await migrateBenchmarksToImages(api, serverResult.baseUrl, { dryRun: !options.apply });
           if (isJson) {
             jsonOutput.migration = migration;
           } else {
-            console.log(chalk.bold('  Image migration:'));
+            console.log(chalk.bold(migration.dryRun ? '  Image migration plan (dry-run):' : '  Image migration:'));
             for (const m of migration.migrated) {
-              console.log(chalk.green(`    ✓ ${m.name} → ${m.digest.slice(0, 12)}`));
+              // alreadyExists alone does NOT mean --apply is a no-op for
+              // this benchmark -- the image can exist under a different
+              // tag (e.g. renamed since), in which case --apply would
+              // still add the missing tag(s). Say so explicitly rather
+              // than implying nothing would change.
+              const verb = migration.dryRun
+                ? (m.alreadyExists
+                    ? (m.wouldAddTags?.length ? '= already an image, would add tag(s)' : '= already an image, no change')
+                    : '+ would create')
+                : '✓';
+              const tagSuffix = migration.dryRun && m.wouldAddTags?.length ? ` [${m.wouldAddTags.join(', ')}]` : '';
+              console.log(chalk.green(`    ${verb} ${m.name} → ${m.digest.slice(0, 12)}${tagSuffix}`));
             }
             for (const s of migration.skipped) {
               console.log(chalk.gray(`    - ${s.name}: skipped (${s.reason})`));
             }
             for (const err of migration.errors) console.log(chalk.red(`    ! ${err}`));
+            if (migration.dryRun && migration.migrated.length > 0) {
+              console.log(chalk.gray('    Dry-run only. Re-run with --migrate-images --apply to execute.'));
+            }
             console.log();
           }
         }

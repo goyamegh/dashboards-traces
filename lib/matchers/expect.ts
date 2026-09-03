@@ -81,6 +81,21 @@ function ensurePluginsInstalled(): void {
           errorMessage: err?.message || String(err),
         });
       }
+      // `expect.soft(...)` (RFC 004 roadmap — non-throwing assertions):
+      // the failure is already recorded above; swallow instead of
+      // re-throwing so the rest of the test body keeps running and later
+      // matchers (traces/judge/evaluate calls) still execute. This is the
+      // ONLY difference from hard `expect()` — chaining, custom matchers,
+      // and negation all keep working unmodified because every chai
+      // assertion (built-in or custom) funnels through this same override,
+      // and chai's own addMethod/addProperty wrappers build the next chain
+      // link regardless of what this function returns. The runner's overall
+      // verdict is still the AND of every recorded gate (see `anyGateFailed`
+      // in services/evaluationRunner.ts) so a soft failure here still fails
+      // the test — it just doesn't truncate it.
+      if (utils.flag(this, 'ahSoft')) {
+        return;
+      }
       throw err;
     }
   };
@@ -190,7 +205,46 @@ function ensurePluginsInstalled(): void {
 ensurePluginsInstalled();
 
 /** The user-facing `expect` — chai's expect with our plugin pre-installed. */
-export const expect = chai.expect;
+export const expect: typeof chai.expect & { soft: SoftExpect } = chai.expect as any;
+
+/**
+ * `expect.soft(value, message?)` — same chai assertion surface as
+ * `expect(value)` (every built-in BDD matcher plus our custom
+ * haveCalledTool/haveStepsOfType/haveOutputMatching/haveCompletedWithin/
+ * toPass), except a failing assertion RECORDS the MatcherResult and
+ * returns instead of throwing. Use it to collect every axis in a test body
+ * instead of bailing on the first failure:
+ *
+ *   expect.soft(result.traces.totalTokens).to.be.lessThan(10_000);   // fails — recorded, body continues
+ *   expect.soft(result.traces.totalCost).to.be.lessThan(0.05);       // still runs
+ *   await judge(result, 'identifies the root cause');                // still runs
+ *
+ * The runner's overall verdict is unaffected by soft vs. hard: it already
+ * fails a test when ANY recorded gate matcher has `pass: false` (see
+ * `anyGateFailed` in services/evaluationRunner.ts), which is exactly how
+ * non-throwing `judge()`/`evaluate()` gates have always worked (RFC 004
+ * §4.4/§4.8) — `expect.soft` just extends that same non-throwing contract
+ * to chai assertions. Mix soft and hard freely in one body; a hard
+ * `expect()` after a soft failure still bails at that point.
+ *
+ * KNOWN LIMITATION (codex_review finding, empirically confirmed): a
+ * multi-step chain like `expect.soft(obj).to.have.property('x').that
+ * .equals(5)` is two chai assertions run back-to-back on the SAME
+ * Assertion instance. With a hard expect(), a missing property throws and
+ * `.that.equals(5)` never runs. In soft mode nothing throws, so
+ * `.that.equals(5)` DOES run (against `undefined`) and records its own
+ * derivative failure — real, but a symptom of the first, not independent
+ * signal. See docs/SDK.md's "Known limitation" callout; prefer single-step
+ * matchers on primitive values with `.soft`.
+ */
+function softExpect(val?: unknown, msg?: string): Chai.Assertion {
+  const assertion = (chai.expect as any)(val, msg);
+  (chai as any).util.flag(assertion, 'ahSoft', true);
+  return assertion;
+}
+(expect as any).soft = softExpect;
+
+type SoftExpect = (val?: unknown, msg?: string) => Chai.Assertion;
 
 /**
  * Build a UI-friendly description for an assertion. Chai's raw msg/negateMsg

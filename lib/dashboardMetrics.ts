@@ -345,15 +345,50 @@ export function getUniqueAgents(benchmarks: Benchmark[]): Array<{ key: string; n
 }
 
 /**
- * Color palette for agents (matches existing chart patterns)
+ * Color palette for agents (matches existing chart patterns).
+ * Explicit overrides win; everything else resolves via a deterministic
+ * hash below so every chart that colors dots/lines/badges by agent (the
+ * Agent Trends dot plot included) shares ONE consistent, app-wide mapping.
  */
 export const AGENT_COLORS: Record<string, string> = {
   'demo': '#6b7280',            // gray-500
 };
 
 /**
- * Get color for an agent key
+ * Distinct, readable hues for agents with no explicit override above.
+ * Kept modest (10 colors) — with many agents in view some hues repeat,
+ * but callers that need N agents to stay unambiguous (e.g. an all-agents
+ * overlay chart) should disambiguate by label/position, not by adding
+ * more hues; past ~10 simultaneous colors most people can't reliably
+ * tell them apart anyway.
+ */
+const AGENT_COLOR_PALETTE = [
+  '#3b82f6', // blue-500
+  '#10b981', // emerald-500
+  '#f59e0b', // amber-500
+  '#ef4444', // red-500
+  '#8b5cf6', // violet-500
+  '#06b6d4', // cyan-500
+  '#ec4899', // pink-500
+  '#84cc16', // lime-500
+  '#f97316', // orange-500
+  '#6366f1', // indigo-500
+];
+
+/**
+ * Get color for an agent key. Deterministic per key via a simple string
+ * hash into `AGENT_COLOR_PALETTE` — NOT a sorted-index assignment, on
+ * purpose: an index-based scheme reassigns colors as the visible agent
+ * set changes (e.g. narrowing a benchmark filter from 14 agents to 3
+ * shifts everyone's index), so the SAME agent could render a different
+ * color depending on what else happens to be in scope. A hash of the key
+ * itself is stable everywhere, independent of any other agent's presence.
  */
 export function getAgentColor(agentKey: string): string {
-  return AGENT_COLORS[agentKey] || '#3b82f6';
+  if (AGENT_COLORS[agentKey]) return AGENT_COLORS[agentKey];
+  let hash = 0;
+  for (let i = 0; i < agentKey.length; i++) {
+    hash = (hash * 31 + agentKey.charCodeAt(i)) | 0;
+  }
+  return AGENT_COLOR_PALETTE[Math.abs(hash) % AGENT_COLOR_PALETTE.length];
 }

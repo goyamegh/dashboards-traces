@@ -64,7 +64,7 @@ async function ({ agent, judge, evaluate, expect, testInfo, provisioned }) { ...
 | `agent`  | `AgentFixture`                                   | `await agent.run(prompt?, options?)` — invoke the agent **once** (control inversion). Returns an `EvalResult`. |
 | `judge`  | `JudgeFn`                                         | Non-throwing LLM judge. `judge(...)` gates; `judge.observe(...)` is observational. Returns a `Verdict`. |
 | `evaluate` | `EvaluateFn`                                     | Run a custom programmatic evaluator registered with `defineEvaluator()`. |
-| `expect` | chai's `expect` with our recording plugin        | Synchronous matcher entry-point |
+| `expect` | chai's `expect` with our recording plugin        | Synchronous matcher entry-point. `expect.soft(...)` records a failing assertion instead of throwing — see [Always-record guarantee](#5-matchers-record-structured-verdicts). |
 | `testInfo` | `TestInfo` (read-only)                          | `{ name, benchmarkPath, sourceFile, testCaseId }` |
 | `provisioned` | `Readonly<Record<string, unknown>>`          | Values set by `beforeEach` via `provide()` |
 | `result` | `EvalResult` *(legacy eager path)*               | Pre-populated agent result — present when the runner invokes before the body. Prefer `await agent.run()`. |
@@ -186,6 +186,79 @@ Matchers (4/5 passed)
 
 This is the major upgrade over throw-and-fail: every assertion gets its own
 row, status, and detail block.
+
+#### Always-record guarantee
+
+chai's `expect()` is fail-fast — the first failing assertion throws, and the
+rest of the test body (any later `expect()`/`judge()`/`evaluate()` calls)
+never executes. For a pass/fail verdict that's the intended Playwright-style
+contract, but a report consumed by an optimizer (or by you, comparing runs)
+needs the objective actuals — duration, token usage, USD cost — from every
+axis, even when one gate fails partway through. A token-budget gate failing
+shouldn't erase the cost figure that would otherwise have been on the report.
+
+So regardless of where (or whether) the body throws, the runner **always**
+stamps `performanceMetrics.durationMs` / `.agentDurationMs` /
+`.totalTokens` / `.totalCostUsd` onto the report the moment `agent.run()`
+resolves — reading them straight from the same OTel-derived data
+`result.traces`/the `traces` fixture exposes, independent of whether the
+body's own code ever reached a matcher that asserted on them. (`totalTokens`/
+`totalCostUsd` are `undefined`, not `0`, when `useTraces: true` but spans
+never arrived — see the loud-failure accessor in "Traces fixture" below;
+they're real `0`s when `useTraces: false`.)
+
+This guarantee has one hard limit: a `judge()`/`evaluate()` call itself is
+already non-throwing and records its score/verdict the instant it's called —
+so a REACHED judge call is always on the report today, throw-or-not. But a
+judge call placed textually *after* a failing `expect()` never executes at
+all — that's a pure source-order problem the runner cannot retroactively fix
+(it can't record a call that never ran). Use `expect.soft(...)` (below) when
+you need later judge/evaluate calls to run even after an earlier assertion
+fails.
+
+The matcher panel also gets a distinct **"not reached"** row appended
+whenever the body threw — so "this axis never ran" (grey, not-reached) reads
+differently from "this axis ran and failed" (red). It's excluded from the
+passed/failed counts and gets its own tally: `(3/4 passed, 1 not reached)`.
+
+#### `expect.soft(...)` — keep going instead of bailing on the first failure
+
+`expect.soft(value)` is the same chai assertion surface as `expect(value)`
+— every built-in BDD matcher plus the custom ones below — except a failing
+assertion **records** the MatcherResult and returns instead of throwing:
+
+```javascript
+test('budget-aware RCA', { prompt: '...' }, async ({ agent, expect, judge }) => {
+  const result = await agent.run();
+  expect.soft(result.traces.totalTokens).to.be.lessThan(10_000);  // fails — recorded, body continues
+  expect.soft(result.traces.totalCost).to.be.lessThan(0.05);      // still runs
+  await judge(result, 'identifies the root cause');                // still runs — the whole point
+  expect(result.agentOutput).to.contain('root cause');             // a HARD expect still bails on ITS OWN failure
+});
+```
+
+The runner's overall verdict is unaffected by soft vs. hard: a test already
+fails when ANY recorded gate matcher has `pass: false` (that's exactly how
+non-throwing `judge()`/`evaluate()` gates have always worked) — `expect.soft`
+just extends that same non-throwing contract to chai assertions. Mix soft and
+hard freely in one body; a hard `expect()` after a soft failure still bails
+at that point (source order still matters for the calls *after* a HARD
+failure). Reach for `.soft` on measurement/budget-style axis checks where you
+want every number on the report regardless of which gates failed; keep hard
+`expect()` for a precondition that makes the rest of the body meaningless if
+it's false (e.g. "the agent produced any output at all").
+
+> **Known limitation: multi-step property chains can record a derivative
+> second failure.** `expect.soft(obj).to.have.property('x').that.equals(5)`
+> is really two chai assertions run back-to-back on the same chain (`property`
+> checks existence, `equals` checks the value) — with a HARD `expect()`, a
+> missing property throws immediately and `.that.equals(5)` never runs. In
+> soft mode nothing throws, so `.that.equals(5)` *does* run against
+> `undefined` and records its own "expected undefined to equal 5" failure —
+> real, but a symptom of the first failure, not independent information.
+> Prefer single-step matchers on primitive/simple values with `.soft` (as in
+> every example above); for a value that might not exist, use a hard
+> `expect()` to check existence first, then `.soft` on the value itself.
 
 ---
 
@@ -575,6 +648,57 @@ The `.eval.js`, `.eval.ts`, and `.eval.mjs` loaders all run through a single
 code-import execution path, so `benchmark -f <file>` executes the SDK body
 directly.
 
+> **`.eval.js` and `.eval.ts` are both executed as synthetic CJS — only
+> `.eval.mjs` needs the package to be really resolvable.** `.eval.js` and
+> `.eval.ts` files are both executed in a synthetic context where the
+> `require(...)` call for `@opensearch-project/agent-health` is intercepted
+> directly, so they work from anywhere on disk regardless of whether the
+> package is actually installed at that location. (`.eval.ts` is
+> transpiled to CommonJS with `esbuild` — a required runtime dependency of
+> this package — before running through that exact same synthetic-CJS
+> path; it deliberately does NOT use a native `import()`, both to avoid two
+> different Node versions giving the same file two different
+> module-execution semantics, and because `import()` caches by URL, which
+> would make a `.eval.ts` file unloadable a second time in one process
+> without a restart. One consequence: an `.eval.ts` fixture can't use
+> `import.meta` or a top-level `await` — real-ESM-only features with no
+> CommonJS equivalent.) `.eval.mjs` files use a plain native `import()`, so
+> `import { test } from '@opensearch-project/agent-health'` in an `.mjs`
+> file must resolve through Node's normal module resolution — the package
+> needs to be a real dependency reachable from the file's location
+> (installed in `node_modules`, a workspace link, or a `node_modules`
+> symlink to a local checkout). Test registrations are shared process-wide
+> (keyed off `globalThis`) regardless of loader, so it doesn't matter
+> *which* physical copy of the package a given import resolves to — dist
+> vs source, symlinked vs installed all register into the same registry
+> the loader reads from.
+
+> **`.eval.ts` can `import` sibling `.ts` helper files, but not ESM-only
+> packages.** A relative/absolute `import` inside an `.eval.ts` file that
+> resolves to another `.ts` file (e.g. `import { helper } from
+> './helper.ts'`) is transpiled and executed through the same synthetic-CJS
+> mechanism recursively — multi-file `.eval.ts` fixtures work, and a helper
+> required more than once within one load executes exactly once (cached
+> for the duration of that load only, never across separate loads/reloads).
+> An `import` of a package that ships **no CommonJS entry point** (ESM-only,
+> e.g. modern `chalk`) fails with an actionable error — `.eval.ts` executes
+> as synthetic CJS, so under require()'s own rules that package can't load
+> there — unless the running Node version has native `require(esm)`
+> interop (stable since Node 22.12; check `process.features.require_module`),
+> in which case it works transparently via Node's own mechanism. If you hit
+> the error on an older Node, switch the fixture to `.eval.mjs` (real ESM,
+> can import ESM-only packages directly) or pre-compile to `.eval.js`.
+
+> **`.eval.mjs` reloads are cache-busted, not cached.** Every `import()` of
+> an `.eval.mjs` file is given a unique query string
+> (`?ah-reload=<timestamp>-<random>`) so re-loading the same file a second
+> time in one process (e.g. re-running the CLI against an edited fixture)
+> re-executes its top-level code instead of silently returning Node's
+> already-cached module for that URL. Accepted cost: each reload leaves one
+> module instance cached under a never-reused query string for the
+> lifetime of the process — negligible for CLI/server process lifetimes
+> (a handful to a few hundred loads, not an unbounded long-running loop).
+
 ---
 
 ## Dev tips
@@ -623,4 +747,4 @@ keeping it user-supplied lets you opt in without breaking anyone else.
 - [x] Non-throwing run-scoped `judge` with `gate` / `observe` roles + `skip` + `orThrow()`
 - [x] `defineEvaluator()` / `evaluate()` for mechanical / external verification ([#244](https://github.com/opensearch-project/agent-health/issues/244))
 - [x] Single code-import execution path (`benchmark -f *.eval.js` runs the SDK body) + unified `.js` / `.ts` / `.mjs` loaders + `agent-health migrate sdk-v2` codemod
-- [ ] `expect.soft()` to collect-all-failures instead of bail-on-first
+- [x] `expect.soft()` to collect-all-failures instead of bail-on-first

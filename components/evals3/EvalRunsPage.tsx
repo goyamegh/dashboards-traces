@@ -31,12 +31,15 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
-import { listEvaluationRuns } from '@/services/client';
+import { listEvaluationRuns, updateEvaluationRun } from '@/services/client';
 import { Benchmark, TestCase, BenchmarkRun, EvaluationRun } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
-import { computeRunStats } from '@/lib/runStats';
-import { formatRelativeTime, getModelName } from '@/lib/utils';
+import { ENV_CONFIG } from '@/lib/config';
+import { computeRunStats, getEffectiveRunStatus } from '@/lib/runStats';
+import { sortGroupsByRecency } from '@/lib/runSort';
+import { formatRelativeTime, getModelName, getJudgeModelLabel, getEvaluatorLabel } from '@/lib/utils';
 import { Breadcrumbs } from './Breadcrumbs';
+import { InlineRenameField } from './InlineRenameField';
 import { RerunConfirmDialog } from './RerunConfirmDialog';
 
 // ─── Time Filter ─────────────────────────────────────────────────────────────
@@ -86,7 +89,26 @@ interface RunRow {
   /** Issue #242: evaluator-error runs counted separately from `failed`. */
   errored: number;
   total: number;
+  /**
+   * Effective run status (bug: page showed no in-flight indication for
+   * genuinely running runs — they rendered identically to a completed run
+   * with a bad score, 2026-09-01). Computed once at row-build time via the
+   * shared lib/runStats helper so it can't drift from BenchmarkRunsPage.tsx.
+   */
+  status: ReturnType<typeof getEffectiveRunStatus>;
 }
+
+/**
+ * Column counts for the flat/grouped table — named constants (not magic
+ * numbers) so the three `colSpan` sites (empty state, infinite-scroll
+ * sentinel, group-header row) stay in sync when a column is added/removed.
+ * FLAT = checkbox, status, Run, Benchmark, Agent, Model, Judge, Evaluator,
+ * Timestamp, Annotations, Pass/Fail/Total. GROUPED drops the Benchmark
+ * column. The group-header row's own colSpan is GROUPED_COLUMN_COUNT - 1
+ * (the checkbox cell is rendered as its own separate <td> before it).
+ */
+const FLAT_COLUMN_COUNT = 10;
+const GROUPED_COLUMN_COUNT = 9;
 
 function SortHeader({ label, active, dir, onClick, className }: {
   label: string; active: boolean; dir: 'asc' | 'desc'; onClick: () => void; className?: string;
@@ -121,6 +143,11 @@ export const EvalRunsPage: React.FC = () => {
   // below. See the RunRow convergence note.
   const [evalRuns, setEvalRuns] = useState<EvaluationRun[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // evaluatorId → name lookup for the Evaluator column. Fetched once (id+name
+  // for every evaluator the org has, currently a handful) rather than lazily
+  // per row — unlike annotationMap below, this doesn't grow with run count.
+  const [evaluatorNames, setEvaluatorNames] = useState<Map<string, string>>(new Map());
 
   // Filters (persisted)
   const [search, setSearch] = usePersistedState<string>('eval-runs:search', '');
@@ -168,15 +195,23 @@ export const EvalRunsPage: React.FC = () => {
       // Fetch both run models in parallel (see RunRow convergence note). The
       // eval-runs fetch is best-effort so a failure there still shows
       // benchmark-embedded runs.
-      const [bms, er] = await Promise.all([
+      const [bms, er, evaluators] = await Promise.all([
         asyncBenchmarkStorage.getAll(),
         listEvaluationRuns({ size: 500 }).then(r => r.evaluationRuns).catch(err => {
           console.error('Failed to load evaluation-runs:', err);
           return [] as EvaluationRun[];
         }),
+        fetch(`${ENV_CONFIG.backendUrl}/api/storage/evaluators`)
+          .then(r => r.ok ? r.json() : { evaluators: [] })
+          .then(d => (Array.isArray(d?.evaluators) ? d.evaluators : []) as { id: string; name: string }[])
+          .catch(err => {
+            console.error('Failed to load evaluators:', err);
+            return [] as { id: string; name: string }[];
+          }),
       ]);
       setBenchmarks(bms);
       setEvalRuns(er);
+      setEvaluatorNames(new Map(evaluators.map(e => [e.id, e.name])));
     } catch (err) {
       console.error('Failed to load:', err);
     } finally {
@@ -231,6 +266,7 @@ export const EvalRunsPage: React.FC = () => {
           agentName,
           ...stats,
           errored: stats.errored ?? 0,
+          status: getEffectiveRunStatus(run),
         });
       }
     }
@@ -272,11 +308,27 @@ export const EvalRunsPage: React.FC = () => {
         agentName,
         ...stats,
         errored: stats.errored ?? 0,
+        status: getEffectiveRunStatus(run),
       });
     }
 
     return rows;
   }, [benchmarks, evalRuns, timeRange, selectedAgent, search]);
+
+  // Poll while any known run is still in progress (bug #5, 2026-09-01: this
+  // page fetched once on mount and never again, so a run's status/counts
+  // never advanced without a manual full page reload — combined with no
+  // visible running indicator, an in-flight run looked indistinguishable
+  // from an abandoned page). Mirrors BenchmarkRunsPage2's polling pattern.
+  const hasInProgressRuns = useMemo(
+    () => allRunRows.some(rr => rr.status === 'running'),
+    [allRunRows]
+  );
+  useEffect(() => {
+    if (!hasInProgressRuns) return;
+    const interval = setInterval(() => { loadData(); }, 5000);
+    return () => clearInterval(interval);
+  }, [hasInProgressRuns, loadData]);
 
   // Available filter options (derived from data)
   const availableBenchmarks = useMemo(() => {
@@ -369,12 +421,14 @@ export const EvalRunsPage: React.FC = () => {
         case 'runId': return dir * a.run.name.localeCompare(b.run.name);
         case 'benchmark': return dir * a.benchmarkName.localeCompare(b.benchmarkName);
         case 'agent': return dir * a.agentName.localeCompare(b.agentName);
+        case 'judge': return dir * getJudgeModelLabel(a.run.judgeModelId).localeCompare(getJudgeModelLabel(b.run.judgeModelId));
+        case 'evaluator': return dir * getEvaluatorLabel(a.run.evaluatorId, evaluatorNames).localeCompare(getEvaluatorLabel(b.run.evaluatorId, evaluatorNames));
         case 'timestamp': return dir * (new Date(a.run.createdAt).getTime() - new Date(b.run.createdAt).getTime());
         case 'results': return dir * (a.total - b.total);
         default: return 0;
       }
     });
-  }, [sort]);
+  }, [sort, evaluatorNames]);
 
   const handleSort = (field: string) => {
     setSort(prev => prev.field === field ? { field, dir: prev.dir === 'asc' ? 'desc' : 'asc' } : { field, dir: 'desc' });
@@ -429,14 +483,18 @@ export const EvalRunsPage: React.FC = () => {
     });
   };
 
-  // Grouped by benchmark
+  // Grouped by benchmark. Groups are ordered by each group's most recent
+  // run (descending) — pure reverse-chronological is the owner's mental
+  // model even in grouped view; sorting groups alphabetically by benchmark
+  // name (the old behavior) meant "benchmark name, then time" instead of
+  // "time". See lib/runSort.ts.
   const groupedByBenchmark = useMemo(() => {
     const groups = new Map<string, { id: string; name: string; rows: RunRow[] }>();
     for (const rr of filteredRunRows) {
       if (!groups.has(rr.benchmarkId)) groups.set(rr.benchmarkId, { id: rr.benchmarkId, name: rr.benchmarkName, rows: [] });
       groups.get(rr.benchmarkId)!.rows.push(rr);
     }
-    return Array.from(groups.values()).sort((a, b) => a.name.localeCompare(b.name));
+    return sortGroupsByRecency(Array.from(groups.values()), group => group.rows.map(rr => rr.run));
   }, [filteredRunRows]);
 
   // Regressions — count benchmarks where latest run is worse than previous
@@ -546,6 +604,20 @@ export const EvalRunsPage: React.FC = () => {
     return () => { cancelled = true; };
   }, [renderedRunRows]);
 
+  // Rename only applies to top-level eval-run rows — same gating as re-run
+  // (the PATCH route operates on the evaluation-runs collection; legacy
+  // benchmark-embedded runs have no equivalent endpoint).
+  const handleRenameEvalRun = async (runId: string, newName: string) => {
+    const previous = evalRuns.find(r => r.id === runId)?.name;
+    setEvalRuns(prev => prev.map(r => (r.id === runId ? { ...r, name: newName } : r)));
+    try {
+      await updateEvaluationRun(runId, { name: newName });
+    } catch (err) {
+      setEvalRuns(prev => prev.map(r => (r.id === runId && previous !== undefined ? { ...r, name: previous } : r)));
+      throw err;
+    }
+  };
+
   // Inspector route differs per run model (convergence note): eval-runs use
   // the top-level route, benchmark-embedded runs the nested one.
   const inspectPath = (rr: RunRow) =>
@@ -584,7 +656,27 @@ export const EvalRunsPage: React.FC = () => {
           </button>
         </td>
         <td className="px-2 py-1.5 align-middle">
-          <div className="text-xs font-medium">{rr.run.name}</div>
+          <div className="flex items-center gap-1.5">
+            {rr.kind === 'eval-run' ? (
+              <InlineRenameField
+                value={rr.run.name}
+                onSave={newName => handleRenameEvalRun(rr.run.id, newName)}
+                textClassName="text-xs font-medium"
+                testId={`run-row-rename-${rr.run.id}`}
+              />
+            ) : (
+              <span className="text-xs font-medium">{rr.run.name}</span>
+            )}
+            {rr.status === 'running' && (
+              <span
+                data-testid="run-row-status-running"
+                className="inline-flex items-center gap-1 px-1.5 py-0 rounded-full text-[9px] font-medium bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/30 animate-pulse"
+                title="This run is still in progress"
+              >
+                <Loader2 size={9} className="animate-spin" /> Running
+              </span>
+            )}
+          </div>
           <div className="text-[9px] text-muted-foreground font-mono">{rr.run.id.slice(0, 8)}</div>
         </td>
         {showBenchmark && (
@@ -603,6 +695,19 @@ export const EvalRunsPage: React.FC = () => {
         )}
         <td className="px-2 py-1.5 align-middle text-[11px]">{rr.agentName}</td>
         <td className="px-2 py-1.5 align-middle text-[11px]">{getModelName(rr.run.modelId)}</td>
+        <td className="px-2 py-1.5 align-middle text-[11px]" data-testid="run-judge-cell">{getJudgeModelLabel(rr.run.judgeModelId)}</td>
+        <td className="px-2 py-1.5 align-middle text-[11px]" data-testid="run-evaluator-cell">
+          {rr.run.evaluatorId ? (
+            <button
+              className="text-left text-[11px] text-purple-600 hover:text-purple-700 dark:text-purple-400 dark:hover:text-purple-300 hover:underline transition-colors"
+              onClick={e => { e.stopPropagation(); navigate(`/evaluators/${rr.run.evaluatorId}`); }}
+            >
+              {getEvaluatorLabel(rr.run.evaluatorId, evaluatorNames)}
+            </button>
+          ) : (
+            <span className="text-[11px] text-muted-foreground">—</span>
+          )}
+        </td>
         <td className="px-2 py-1.5 align-middle text-[10px] text-muted-foreground whitespace-nowrap">{formatRelativeTime(rr.run.createdAt)}</td>
         <td className="px-2 py-1.5 align-middle text-center">
           {(() => {
@@ -944,6 +1049,8 @@ export const EvalRunsPage: React.FC = () => {
               )}
               <SortHeader label="Agent" active={sort.field === 'agent'} dir={sort.dir} onClick={() => handleSort('agent')} />
               <th className="h-7 px-2 text-left align-middle font-medium text-xs text-muted-foreground bg-background border-b whitespace-nowrap">Model</th>
+              <SortHeader label="Judge" active={sort.field === 'judge'} dir={sort.dir} onClick={() => handleSort('judge')} />
+              <SortHeader label="Evaluator" active={sort.field === 'evaluator'} dir={sort.dir} onClick={() => handleSort('evaluator')} />
               <SortHeader label="Timestamp" active={sort.field === 'timestamp'} dir={sort.dir} onClick={() => handleSort('timestamp')} />
               <th className="h-7 px-2 text-center align-middle font-medium text-xs text-muted-foreground bg-background border-b whitespace-nowrap">Annotations</th>
               <SortHeader label="Pass/Fail/Total" active={sort.field === 'results'} dir={sort.dir} onClick={() => handleSort('results')} className="text-right" />
@@ -953,7 +1060,7 @@ export const EvalRunsPage: React.FC = () => {
           <tbody className="[&_tr:last-child]:border-0">
             {filteredRunRows.length === 0 ? (
               <tr>
-                <td colSpan={viewMode === 'flat' ? 8 : 7} className="py-16 text-center text-sm text-muted-foreground">
+                <td colSpan={viewMode === 'flat' ? FLAT_COLUMN_COUNT : GROUPED_COLUMN_COUNT} className="py-16 text-center text-sm text-muted-foreground">
                   {activeFilterCount > 0 ? 'No runs match the current filters' : timeRange === 'all' ? 'No evaluation runs found' : `No runs in ${TIME_OPTIONS.find(o => o.value === timeRange)?.label}`}
                 </td>
               </tr>
@@ -994,7 +1101,7 @@ export const EvalRunsPage: React.FC = () => {
                         </button>
                       </td>
                       {/* Rest of group header content */}
-                      <td colSpan={6} className="px-1 py-1.5 align-middle">
+                      <td colSpan={GROUPED_COLUMN_COUNT - 1} className="px-1 py-1.5 align-middle">
                         <div className="flex items-center gap-2">
                           <span className="text-muted-foreground">
                             {isCollapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
@@ -1015,7 +1122,7 @@ export const EvalRunsPage: React.FC = () => {
             )}
             {hasMoreRows && (
               <tr ref={loadMoreSentinelRef} data-testid="runs-table-sentinel">
-                <td colSpan={viewMode === 'flat' ? 8 : 7} className="py-3 text-center">
+                <td colSpan={viewMode === 'flat' ? FLAT_COLUMN_COUNT : GROUPED_COLUMN_COUNT} className="py-3 text-center">
                   <Loader2 size={14} className="animate-spin text-muted-foreground inline-block" />
                 </td>
               </tr>

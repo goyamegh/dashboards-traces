@@ -17,6 +17,7 @@ import { getStorageModule } from '../../adapters/index.js';
 import { SAMPLE_BENCHMARKS, isSampleBenchmarkId } from '../../../cli/demo/sampleBenchmarks.js';
 import { SAMPLE_TEST_CASES } from '../../../cli/demo/sampleTestCases.js';
 import { Benchmark, BenchmarkRun, BenchmarkProgress, RunConfigInput, TestCase, BenchmarkVersion, TestCaseSnapshot, StorageMetadata, RunStats, EvaluationReport } from '../../../types/index.js';
+import { linkTestCaseIdsToBenchmark } from '../../../services/benchmarkPromotion.js';
 import {
   executeRun,
   createCancellationToken,
@@ -24,6 +25,7 @@ import {
 } from '../../../services/benchmarkRunner.js';
 import { convertTestCasesToExportFormat, generateExportFilename } from '../../../lib/benchmarkExport.js';
 import { resolveCodeFnMapForStoredTestCases } from '../../../services/sourceResolver.js';
+import { computeImageDigest, buildImageDoc } from '../../../lib/benchmarkImage.js';
 
 /**
  * Normalize benchmark data for legacy documents without version fields.
@@ -743,6 +745,42 @@ router.patch('/api/storage/benchmarks/:id/metadata', async (req: Request, res: R
   }
 });
 
+// POST /api/storage/benchmarks/:id/link-test-case-ids - Union test case ids into
+// the benchmark's top-level testCaseIds AND its current version's testCaseIds,
+// in place (no version bump). Server-side counterpart of
+// services/benchmarkPromotion.ts:linkTestCaseIdsToBenchmark — the same path
+// POST /api/storage/evaluation-runs uses at run-creation time, exposed here so
+// `agent-health benchmark repair-links --apply` can drive the identical,
+// already-unit-tested repair for benchmarks that went stale before that link
+// existed (top-level testCaseIds correct, current version's testCaseIds empty
+// or behind — see cli/utils/benchmarkDoctor.ts's computeVersionLinkRepairPlan).
+router.post('/api/storage/benchmarks/:id/link-test-case-ids', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const { testCaseIds } = req.body;
+
+    // Reject modifying sample data
+    if (isSampleId(id)) {
+      return res.status(400).json({ error: 'Cannot modify sample data. Sample benchmarks are read-only.' });
+    }
+    if (!Array.isArray(testCaseIds)) {
+      return res.status(400).json({ error: 'testCaseIds must be an array' });
+    }
+
+    const storage = getStorageModule();
+    const result = await linkTestCaseIdsToBenchmark(id, testCaseIds, storage);
+    if (!result) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
+
+    debug('StorageAPI', `Linked ${result.added.length} new test case id(s) into benchmark ${id} (top level + current version)`);
+    res.json(result);
+  } catch (error: any) {
+    console.error('[StorageAPI] Link test case ids to benchmark failed:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // GET /api/storage/benchmarks/:id/versions - List all versions
 router.get('/api/storage/benchmarks/:id/versions', async (req: Request, res: Response) => {
   try {
@@ -967,6 +1005,52 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
       run.results[testCaseId] = { reportId: '', status: 'pending' };
     });
 
+    // Full test-case bodies (content) for this benchmark's ids — needed for
+    // both the image-digest stamp below and the SDK code-import
+    // re-materialization further down. `allTestCases`/`testCaseMap` above
+    // only carry (id, name) for cheap progress-display lookups.
+    let fullTestCases: TestCase[] = [];
+    try {
+      const allFull = await getStorageModule().testCases.getAll({ size: 10000 });
+      const requested = new Set(benchmark.testCaseIds);
+      fullTestCases = allFull.items.filter(tc => requested.has(tc.id));
+    } catch (err: any) {
+      console.warn(`[StorageAPI] Full test-case fetch failed (non-fatal, image digest/SDK re-materialization skipped): ${err.message}`);
+    }
+
+    // Stamp the content digest of this run's evaluation conditions and
+    // find-or-create the corresponding benchmark image — same
+    // content-addressed identity as the unified evaluation-runs path
+    // (server/routes/storage/evaluationRuns.ts), so legacy
+    // `benchmark -f test-cases.json` / `benchmark -n "Existing Benchmark"`
+    // runs also converge on images by digest instead of silently having no
+    // imageDigest at all (a gap the images/doctor dedup feature otherwise
+    // misses for this path). Requires the full-fetch above to have resolved
+    // EVERY id in benchmark.testCaseIds — a PARTIAL set (deleted test case,
+    // a >10000-item corpus, a transient read gap) would silently compute a
+    // digest for less content than the run actually covers, which is a
+    // wrong identity, not a harmless skip (codex_review finding: don't
+    // stamp on partial data). Failure-safe: image bookkeeping must never
+    // block run execution.
+    if (fullTestCases.length > 0 && fullTestCases.length === benchmark.testCaseIds.length) {
+      try {
+        const evalConditions = {
+          evaluatorId: run.evaluatorId || undefined,
+          judgeModelId: run.judgeModelId || undefined,
+        };
+        const digest = computeImageDigest({ testCases: fullTestCases, evalConditions });
+        run.imageDigest = digest;
+        await storage.images.create(buildImageDoc({ testCases: fullTestCases, evalConditions }));
+        await storage.images.update(digest, { lastRunAt: run.createdAt }).catch(() => {});
+      } catch (imageErr: any) {
+        console.warn('[StorageAPI] Image digest stamping failed (run continues):', imageErr?.message);
+      }
+    } else if (fullTestCases.length > 0) {
+      console.warn(
+        `[StorageAPI] Image digest stamping skipped for run ${run.id}: resolved ${fullTestCases.length}/${benchmark.testCaseIds.length} test cases (partial content -- refusing to stamp a digest for less content than the run covers).`
+      );
+    }
+
     // Setup SSE
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
@@ -1011,11 +1095,8 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
     let hooksByFile: Map<string, import('../../../lib/testCases/types.js').RegisteredHook[]> | undefined;
     let testHookScopes: Map<string, { sourceFile?: string; describePath?: string }> | undefined;
     try {
-      // Re-fetch full test cases (incl. sourceFile) — the testCaseMap built
-      // earlier only carries (id, name) for performance.
-      const allFull = await getStorageModule().testCases.getAll({ size: 10000 });
-      const requested = new Set(benchmark.testCaseIds);
-      const fullTestCases = allFull.items.filter(tc => requested.has(tc.id));
+      // Reuses the `fullTestCases` fetched above for image-digest stamping
+      // — one full-corpus fetch instead of two.
       const resolved = await resolveCodeFnMapForStoredTestCases(fullTestCases);
       if (resolved.evaluateFnMap.size > 0) {
         evaluateFnMap = resolved.evaluateFnMap;

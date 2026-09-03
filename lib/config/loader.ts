@@ -213,7 +213,19 @@ async function loadUserConfig(configPath: string): Promise<UserConfig> {
     return module.default ?? module;
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to load config file ${configPath}: ${message}`);
+    let helpText = '';
+
+    // Improved error messages for common issues. Deliberately checks the
+    // literal word 'tsconfig' below (not a bare 'TS' substring, which would
+    // false-positive on unrelated messages containing those two letters).
+    if (message.includes('ERR_MODULE_NOT_FOUND') || message.includes('Cannot find')) {
+      helpText = `\n\n  Ensure your cwd package.json has: {\"type\":\"module\"}`;
+    }
+    if (message.includes('tsconfig')) {
+      helpText = `\n\n  Set TSX_TSCONFIG_PATH to your tsconfig.json location, e.g.:\n  TSX_TSCONFIG_PATH=/path/to/agent-health/tsconfig.json npx @opensearch-project/agent-health`;
+    }
+
+    throw new Error(`Failed to load config file ${configPath}: ${message}${helpText}`);
   }
 }
 

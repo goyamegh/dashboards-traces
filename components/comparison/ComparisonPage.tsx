@@ -20,7 +20,7 @@ import { UseCaseComparisonTable } from './UseCaseComparisonTable';
 import { RunPairSelector } from './RunPairSelector';
 import { ComparisonScoreboard } from './ComparisonScoreboard';
 import { ComparisonInsightsBand, type CategorySelection } from './ComparisonInsightsBand';
-import { bucketRow, extractRowCategory, type AgreementBucket } from '@/lib/comparisonInsights';
+import { bucketRow, extractRowCategoryEffective, categoryLabelIsUsableFallback, type AgreementBucket } from '@/lib/comparisonInsights';
 import { ComparisonDeepDive, DeepDiveRunMeta } from './ComparisonDeepDive';
 import { FailureClusterPanel } from './FailureClusterPanel';
 import { extractFirstDivergence } from '@/services/trajectoryDiffService';
@@ -37,6 +37,7 @@ import {
   countRowsByStatus,
   calculateRowStatus,
   collectRunIdsFromReports,
+  collectSessionIdsFromReports,
   calculateCombinedScore,
   computeTestCaseOverlap,
   RowStatus,
@@ -383,9 +384,10 @@ export const ComparisonPage: React.FC = () => {
     const loadTraceMetrics = async () => {
       const selectedRunsForMetrics = runPool.filter(p => selectedRunIds.includes(p.run.id)).map(p => p.run);
       const runIds = collectRunIdsFromReports(selectedRunsForMetrics, reports);
+      const sessionIdByRunId = collectSessionIdsFromReports(selectedRunsForMetrics, reports);
       if (runIds.length === 0) { setTraceMetricsMap(new Map()); return; }
       try {
-        const { metrics } = await fetchBatchMetrics(runIds);
+        const { metrics } = await fetchBatchMetrics(runIds, sessionIdByRunId);
         const map = new Map<string, TraceMetrics>();
         metrics.forEach(m => { if (m.runId && !('error' in m)) map.set(m.runId, m as TraceMetrics); });
         setTraceMetricsMap(map);
@@ -487,6 +489,12 @@ export const ComparisonPage: React.FC = () => {
 
   const allComparisonRows = useMemo((): TestCaseComparisonRow[] => buildTestCaseComparisonRows(selectedRuns, reports, getTestCaseMeta), [selectedRuns, reports, getTestCaseMeta]);
 
+  // Whether the category matrix (ComparisonInsightsBand) is using the
+  // category:-label fallback for this row set — computed the same way it
+  // is there, so the table's click-to-filter and the matrix always agree
+  // on which raw category values a click actually means.
+  const categoryFallbackEnabled = useMemo(() => categoryLabelIsUsableFallback(allComparisonRows), [allComparisonRows]);
+
   // ── Re-run comparison ───────────────────────────────────────────────
   // Re-execute every compared run's config on the SAME test cases, then open
   // the fresh comparison. Enabled ONLY when the runs are fully comparable
@@ -559,7 +567,12 @@ export const ComparisonPage: React.FC = () => {
       rows = rows.filter(row => bucketRow(row, selectedRunIds) === agreementFilter);
     }
     if (categoryFilter) {
-      rows = rows.filter(row => categoryFilter.categories.includes(extractRowCategory(row)));
+      // Must resolve categories with the SAME category:-fallback decision
+      // ComparisonInsightsBand's matrix used to build this filter's
+      // `categories` set (see categoryLabelIsUsableFallback) — otherwise a
+      // click on a fallback-derived column (e.g. WixQA's expertwritten/
+      // simulated) would filter every row out.
+      rows = rows.filter(row => categoryFilter.categories.includes(extractRowCategoryEffective(row, categoryFallbackEnabled)));
     }
     if (rowStatusFilter === 'differences') {
       rows = rows.filter(row => calculateRowStatus(row, referenceRunId) !== 'neutral');
@@ -571,7 +584,7 @@ export const ComparisonPage: React.FC = () => {
       rows = rows.filter(row => allow.has(row.testCaseId));
     }
     return rows;
-  }, [allComparisonRows, labelFilter, testCaseFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId, clusterCaseFilter, agreementFilter, categoryFilter]);
+  }, [allComparisonRows, labelFilter, testCaseFilter, statusFilter, selectedRunIds, rowStatusFilter, referenceRunId, clusterCaseFilter, agreementFilter, categoryFilter, categoryFallbackEnabled]);
 
   // If the filter is 'differences' but there are no differences (all-pass /
   // all-fail benchmark), automatically show everything so the user isn't
@@ -745,6 +758,15 @@ export const ComparisonPage: React.FC = () => {
         <Breadcrumbs
           items={[
             { label: 'Evaluations', href: '/evaluations/benchmarks' },
+            // Iteration 5 (owner): insert the benchmark-name crumb for
+            // benchmark-scoped comparisons. Links to .../runs (the actual
+            // benchmark detail route, App.tsx) rather than the bare
+            // /evaluations/benchmarks/:id — there is no route for the bare
+            // path, so it would silently fall through to the app's
+            // catch-all and redirect to "/".
+            ...(benchmark?.name
+              ? [{ label: benchmark.name, href: `/evaluations/benchmarks/${benchmark.id}/runs` }]
+              : []),
             { label: 'Compare Runs' },
           ]}
           actions={
@@ -815,7 +837,13 @@ export const ComparisonPage: React.FC = () => {
 
             {/* Comparison Scoreboard — replaces VerdictStrip + ComparisonOverlapBanner + MetricComparisonPanel Collapsible.
                 Renders for single-run views too (run row + "All metrics"), like
-                the old standalone Detailed-metrics panel did. */}
+                the old standalone Detailed-metrics panel did.
+                Iteration-5 amendment (owner feedback): the "Comparing A vs B
+                · benchmark X" line above this that iteration 4 added is GONE
+                — benchmark identity lives only in the breadcrumb above, run
+                identity lives only on the A/B scoreboard rows themselves
+                (ComparisonScoreboard.tsx). No new vertical space vs. the
+                pre-iteration-4 layout. */}
             {selectedRuns.length >= 1 && (
               <ComparisonScoreboard
                 runs={runAggregates}

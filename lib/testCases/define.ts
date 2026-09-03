@@ -13,26 +13,75 @@ import type {
 } from './types.js';
 import { readEnv } from '../envCompat.js';
 
-const registries = new Map<string, CodeTestCase[]>();
-// Hooks live in a parallel registry keyed by file path, exactly matching
-// the test() registry. The HookOrchestrator filters by describePath at
-// run time. Cross-file hooks never leak — the loader resets per file.
-const hookRegistries = new Map<string, RegisteredHook[]>();
-let activeFile: string | null = null;
 const DEFAULT_KEY = '__default__';
 
-// Active describe stack (synchronous push/pop). Each entry is a describe
-// name; nested describes accumulate. When test() runs, it captures the
-// current stack and joins with ' > ' to derive the test's benchmarkPath.
-const describeStack: string[] = [];
+/**
+ * Registration state lives behind a `globalThis`-keyed symbol instead of
+ * plain module-level variables. Why: `.eval.js` files are `eval()`'d in a
+ * synthetic CJS context where `require('@opensearch-project/agent-health')`
+ * is intercepted by the loader and handed this same module's exports
+ * directly — but `.eval.ts` / `.eval.mjs` files are loaded via a plain
+ * native `import()`, which resolves `@opensearch-project/agent-health`
+ * through Node's normal module resolution (the package's `exports` map,
+ * e.g. `./lib/dist/lib/index.js`). When the host process itself runs from
+ * TypeScript *source* (dev CLI under tsx, or a project-local `node_modules`
+ * symlink pointing at this repo — both real setups), that resolution lands
+ * on a PHYSICALLY DIFFERENT file on disk than the one this module's own
+ * code imports internally. Two different files means two different ES
+ * module instances, each with its own module-level `Map` — so a `.eval.ts`
+ * file's `test()` calls landed in an orphaned registry the loader never
+ * read from, and `getRegisteredTests()` came back empty ("Module ... has no
+ * test cases").
+ *
+ * `Symbol.for(key)` returns the SAME symbol from the process-wide global
+ * symbol registry no matter which module instance asks for it (dist vs
+ * source, CJS vs ESM, symlinked vs installed) — so keying the shared state
+ * off `globalThis[Symbol.for(...)]` makes every instance of this module
+ * read and write the same underlying `Map`s, regardless of how many times /
+ * from where it gets loaded. This fixes the module-instance mismatch at the
+ * root instead of special-casing each way it can occur.
+ */
+const REGISTRY_KEY = Symbol.for('agent-health.test-registry.v1');
 
-// Emit a one-time experimental-status warning the first time the SDK is
-// touched, unless the user opts out. This is intentionally noisy enough to be
-// noticed but only fires once per process so it doesn't pollute test output.
-let experimentalWarningEmitted = false;
+interface SharedRegistryState {
+  registries: Map<string, CodeTestCase[]>;
+  hookRegistries: Map<string, RegisteredHook[]>;
+  activeFile: string | null;
+  describeStack: string[];
+  experimentalWarningEmitted: boolean;
+}
+
+function getSharedState(): SharedRegistryState {
+  // Invariant this design relies on: eval files are loaded SEQUENTIALLY
+  // (setActiveFile -> synchronously evaluate one file's top-level test()/
+  // describe() calls -> move to the next), never concurrently, within a
+  // process. `activeFile` and `describeStack` are shared state now (not
+  // just per-module-instance as before this fix), so two files loading in
+  // parallel would race on them. Verified true for both real callers as of
+  // this fix: services/sourceResolver.ts's two loops and
+  // cli/commands/benchmark.ts's file-mode loader all `await
+  // loadTestCasesFromModule(...)` inside a plain `for` loop, never
+  // `Promise.all`. If a future caller parallelizes file loading, this
+  // invariant breaks and registration could scramble across files.
+  const g = globalThis as unknown as Record<symbol, SharedRegistryState>;
+  let state = g[REGISTRY_KEY];
+  if (!state) {
+    state = {
+      registries: new Map<string, CodeTestCase[]>(),
+      hookRegistries: new Map<string, RegisteredHook[]>(),
+      activeFile: null,
+      describeStack: [],
+      experimentalWarningEmitted: false,
+    };
+    g[REGISTRY_KEY] = state;
+  }
+  return state;
+}
+
 function emitExperimentalWarningOnce(): void {
-  if (experimentalWarningEmitted) return;
-  experimentalWarningEmitted = true;
+  const state = getSharedState();
+  if (state.experimentalWarningEmitted) return;
+  state.experimentalWarningEmitted = true;
   if (readEnv('AH_SUPPRESS_EXPERIMENTAL', 'AGENT_HEALTH_SUPPRESS_EXPERIMENTAL') === '1') return;
   // eslint-disable-next-line no-console
   console.warn(
@@ -45,16 +94,17 @@ function emitExperimentalWarningOnce(): void {
 
 /** @internal */
 export function _resetExperimentalWarning(): void {
-  experimentalWarningEmitted = false;
+  getSharedState().experimentalWarningEmitted = false;
 }
 
 export function setActiveFile(filePath: string): void {
-  activeFile = filePath;
-  if (!registries.has(filePath)) {
-    registries.set(filePath, []);
+  const state = getSharedState();
+  state.activeFile = filePath;
+  if (!state.registries.has(filePath)) {
+    state.registries.set(filePath, []);
   }
-  if (!hookRegistries.has(filePath)) {
-    hookRegistries.set(filePath, []);
+  if (!state.hookRegistries.has(filePath)) {
+    state.hookRegistries.set(filePath, []);
   }
 }
 
@@ -110,18 +160,19 @@ export function test(
     throw new Error(`test("${name}") requires a body function`);
   }
 
-  const key = activeFile ?? DEFAULT_KEY;
-  if (!registries.has(key)) {
-    registries.set(key, []);
+  const state = getSharedState();
+  const key = state.activeFile ?? DEFAULT_KEY;
+  if (!state.registries.has(key)) {
+    state.registries.set(key, []);
   }
-  const registry = registries.get(key)!;
+  const registry = state.registries.get(key)!;
 
   // Within-file uniqueness guard: a name+benchmarkPath pair must be unique.
   // The same name in two different describe blocks is allowed because they
   // map to different benchmarks.
-  const benchmarkPath = describeStack.length > 0 ? describeStack.join(' > ') : undefined;
+  const benchmarkPath = state.describeStack.length > 0 ? state.describeStack.join(' > ') : undefined;
   if (registry.some(t => t.name === name && t.benchmarkPath === benchmarkPath)) {
-    const fileLabel = activeFile ? ` in ${activeFile}` : '';
+    const fileLabel = state.activeFile ? ` in ${state.activeFile}` : '';
     const groupLabel = benchmarkPath ? ` (in describe "${benchmarkPath}")` : '';
     throw new Error(
       `Duplicate test name "${name}"${groupLabel}${fileLabel}. ` +
@@ -134,7 +185,7 @@ export function test(
     name,
     options,
     evaluate,
-    sourceFile: activeFile ?? undefined,
+    sourceFile: state.activeFile ?? undefined,
     benchmarkPath,
   });
 }
@@ -163,7 +214,8 @@ export function describe(name: string, fn: () => void): void {
   if (typeof fn !== 'function') {
     throw new Error(`describe("${name}") requires a body function`);
   }
-  describeStack.push(name);
+  const state = getSharedState();
+  state.describeStack.push(name);
   try {
     const result = fn() as unknown;
     if (result && typeof (result as any).then === 'function') {
@@ -175,13 +227,14 @@ export function describe(name: string, fn: () => void): void {
       );
     }
   } finally {
-    describeStack.pop();
+    state.describeStack.pop();
   }
 }
 
 export function getRegisteredTests(filePath?: string): CodeTestCase[] {
-  if (filePath) return [...(registries.get(filePath) ?? [])];
-  return [...registries.values()].flatMap(r => [...r]);
+  const state = getSharedState();
+  if (filePath) return [...(state.registries.get(filePath) ?? [])];
+  return [...state.registries.values()].flatMap(r => [...r]);
 }
 
 /**
@@ -190,19 +243,21 @@ export function getRegisteredTests(filePath?: string): CodeTestCase[] {
  * effect on the registry.
  */
 export function getRegisteredHooks(filePath?: string): RegisteredHook[] {
-  if (filePath) return [...(hookRegistries.get(filePath) ?? [])];
-  return [...hookRegistries.values()].flatMap(r => [...r]);
+  const state = getSharedState();
+  if (filePath) return [...(state.hookRegistries.get(filePath) ?? [])];
+  return [...state.hookRegistries.values()].flatMap(r => [...r]);
 }
 
 export function clearRegistry(filePath?: string): void {
+  const state = getSharedState();
   if (filePath) {
-    registries.delete(filePath);
-    hookRegistries.delete(filePath);
+    state.registries.delete(filePath);
+    state.hookRegistries.delete(filePath);
   } else {
-    registries.clear();
-    hookRegistries.clear();
+    state.registries.clear();
+    state.hookRegistries.clear();
   }
-  activeFile = null;
+  state.activeFile = null;
 }
 
 /**
@@ -218,15 +273,16 @@ function registerHook(kind: HookKind, fn: HookFn): void {
   if (typeof fn !== 'function') {
     throw new Error(`${kind}() requires a function as its first argument`);
   }
-  const key = activeFile ?? DEFAULT_KEY;
-  if (!hookRegistries.has(key)) {
-    hookRegistries.set(key, []);
+  const state = getSharedState();
+  const key = state.activeFile ?? DEFAULT_KEY;
+  if (!state.hookRegistries.has(key)) {
+    state.hookRegistries.set(key, []);
   }
-  const describePath = describeStack.length > 0 ? describeStack.join(' > ') : undefined;
-  hookRegistries.get(key)!.push({
+  const describePath = state.describeStack.length > 0 ? state.describeStack.join(' > ') : undefined;
+  state.hookRegistries.get(key)!.push({
     kind,
     fn,
-    sourceFile: activeFile ?? undefined,
+    sourceFile: state.activeFile ?? undefined,
     describePath,
   });
 }

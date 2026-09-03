@@ -126,7 +126,7 @@ agent-health benchmark [options]
 **Modes:**
 - **Quick mode** (no `-n`, no `-f`): Runs all stored test cases as an **ad-hoc evaluation run** (no benchmark entity is created)
 - **Named mode** (`-n <name>`): Runs a specific existing benchmark
-- **File mode** (`-f <path>`): Imports test cases from a JSON file **or runs a code SDK file** (`.eval.js` / `.eval.ts` — see [SDK.md](./SDK.md)), creates a benchmark, and runs it
+- **File mode** (`-f <path>`): Imports test cases from a JSON file **or runs a code SDK file** (`.eval.js` / `.eval.ts` — see [SDK.md](./SDK.md)), creates a benchmark, and runs it. `.eval.ts` is executed as synthetic CJS (like `.eval.js`) and works from anywhere on disk; only `.eval.mjs` resolves `@opensearch-project/agent-health` through normal Node module resolution, so an `.eval.mjs` file needs the package reachable as a real dependency from its location (see the note in [SDK.md](./SDK.md#migrating-v1--v2))
 
 Every evaluation run is stamped with an **image digest** — a content hash of
 its test-case contents + eval conditions (evaluator, judge model). Runs with
@@ -472,3 +472,140 @@ Most commands support `-o, --output`:
 |--------|----------|
 | `table` | Human-readable (default) |
 | `json` | Machine-readable, scripting |
+
+---
+
+## Running from Outside the Repo
+
+When running `npx @opensearch-project/agent-health` from a directory *outside* the agent-health repository (e.g., from a customer or partner project), you may encounter configuration and environment issues. This section covers the most common friction points and their solutions.
+
+### Issue 1: Port Already In Use
+
+**Error message:**
+```
+Port 4001 is in use, trying 4002...
+```
+
+**Root cause:** The default ports (4001 for server, 4000 for frontend) are busy, and all fallback ports (4001–4010) are occupied.
+
+**Solution:** Set `AH_PORT` to use a different port:
+
+```bash
+AH_PORT=8001 npx @opensearch-project/agent-health
+```
+
+The server will listen on port 8001. If your frontend dev port (4000) is also in use, set `AH_DEV_PORT` as well:
+
+```bash
+AH_PORT=8001 AH_DEV_PORT=8000 npx @opensearch-project/agent-health
+```
+
+### Issue 2: Config File Loading Fails (`package.json` Type)
+
+**Error message:**
+```
+Failed to load config file agent-health.config.ts: ERR_MODULE_NOT_FOUND
+```
+
+**Root cause:** Your cwd's `package.json` doesn't declare `"type": "module"`, and Node.js cannot load the TypeScript config as an ES module.
+
+**Solution:** Add `"type": "module"` to your local `package.json`:
+
+```json
+{
+  "type": "module",
+  "name": "my-project",
+  "version": "1.0.0"
+}
+```
+
+Alternatively, create a minimal `package.json` in the directory where you're running the command:
+
+```bash
+echo '{"type":"module"}' > package.json
+npx @opensearch-project/agent-health
+```
+
+### Issue 3: TypeScript Config Parsing Fails (`TSX_TSCONFIG_PATH`)
+
+**Error message:**
+```
+Failed to load config file agent-health.config.ts: [TypeScript parsing error]
+```
+
+**Root cause:** The TypeScript loader cannot find your `tsconfig.json` (e.g., if you placed your config in a subdirectory).
+
+**Solution:** Set `TSX_TSCONFIG_PATH` to point to the agent-health repo's `tsconfig.json`:
+
+```bash
+TSX_TSCONFIG_PATH=/path/to/agent-health/tsconfig.json npx @opensearch-project/agent-health
+```
+
+Or, if you have your own `tsconfig.json` that extends agent-health's:
+
+```bash
+TSX_TSCONFIG_PATH=./tsconfig.json npx @opensearch-project/agent-health
+```
+
+### Issue 4: Claude Code Binary Not Found
+
+**Error message:**
+```
+Subprocess timed out or failed: ENOENT: no such file or directory, spawn 'claude'
+```
+
+**Root cause:** The `claude` CLI is not installed or not in your `PATH`.
+
+**Solution:** Ensure Claude Code CLI is installed and accessible:
+
+```bash
+which claude                              # Verify CLI is in PATH
+claude --version                          # Check installation
+```
+
+If the CLI is installed but not in `PATH`, set `CLAUDE_CODE_BIN` to the full path:
+
+```bash
+CLAUDE_CODE_BIN=/usr/local/bin/claude npx @opensearch-project/agent-health
+```
+
+Or install Claude Code globally:
+
+```bash
+npm install -g @anthropic-ai/claude-code
+```
+
+### Complete External Invocation Example
+
+Here's a full example running from outside the repo with all common overrides:
+
+```bash
+# From ~/my-project/ directory (outside agent-health repo):
+export AH_PORT=8001
+export AH_DEV_PORT=8000
+export TSX_TSCONFIG_PATH=/opt/agent-health/tsconfig.json
+export CLAUDE_CODE_BIN=/usr/local/bin/claude
+export AWS_PROFILE=my-profile
+
+# Create minimal package.json if needed
+echo '{"type":"module"}' > package.json
+
+# Run the CLI
+npx @opensearch-project/agent-health --no-browser
+```
+
+Then navigate to http://localhost:8001 in your browser.
+
+### Checklist
+
+- [ ] `AH_PORT` set if default ports are busy
+- [ ] `package.json` has `"type": "module"`
+- [ ] `TSX_TSCONFIG_PATH` set if config parsing fails
+- [ ] Claude Code CLI installed (if using claude-code connector)
+- [ ] AWS credentials configured (if using Bedrock judge)
+
+If issues persist, run with `DEBUG=true` for verbose output:
+
+```bash
+DEBUG=true npx @opensearch-project/agent-health
+```

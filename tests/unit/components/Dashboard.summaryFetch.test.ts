@@ -46,10 +46,6 @@ jest.mock('@/services/metrics', () => ({
   fetchBatchMetrics: jest.fn().mockResolvedValue({ metrics: [] }),
 }));
 
-jest.mock('@/components/charts/AgentTrendChart', () => ({
-  AgentTrendChart: () => null,
-}));
-
 jest.mock('@/components/dashboard/FirstRunExperience', () => ({
   FirstRunExperience: () => null,
 }));

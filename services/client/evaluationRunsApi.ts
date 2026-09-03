@@ -195,7 +195,13 @@ export async function getEvaluationRun(id: string): Promise<EvaluationRun> {
   const response = await fetch(`/api/storage/evaluation-runs/${id}`);
 
   if (!response.ok) {
-    throw new Error(`Failed to get evaluation run: ${response.statusText}`);
+    const err = new Error(`Failed to get evaluation run: ${response.statusText}`) as Error & { status?: number };
+    // Attached (not part of the message) so callers can distinguish "not
+    // found" from a transient/server failure without string-matching
+    // statusText -- see RunInspectorPage.tsx's canonical-run resolution,
+    // which must NOT silently treat a 500/network error the same as a 404.
+    err.status = response.status;
+    throw err;
   }
 
   return response.json();
@@ -292,8 +298,98 @@ export async function updateEvaluationRun(
   });
 
   if (!response.ok) {
-    throw new Error(`Failed to update evaluation run: ${response.statusText}`);
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to update evaluation run');
   }
 
   return response.json();
+}
+
+export interface RetryJudgementCaseResult {
+  testCaseId: string;
+  reportId: string;
+  outcome: 'succeeded' | 'failed';
+  passFailStatus?: 'passed' | 'failed' | null;
+  error?: string;
+}
+
+export interface RetryJudgementSummary {
+  retried: number;
+  succeeded: number;
+  failed: number;
+  results: RetryJudgementCaseResult[];
+}
+
+export interface RetryJudgementJobStatus {
+  status: 'running' | 'completed' | 'failed';
+  total: number;
+  completed: number;
+  summary?: RetryJudgementSummary;
+  error?: string;
+}
+
+/**
+ * Poll the background job started by {@link retryJudgement}'s POST. 404s
+ * once the run never had a job (never started, or the server-side tracking
+ * entry aged out) — surfaced to the caller as a thrown Error, same as any
+ * other non-2xx response here.
+ */
+export async function getRetryJudgementStatus(id: string): Promise<RetryJudgementJobStatus> {
+  const response = await fetch(`/api/storage/evaluation-runs/${id}/retry-judgement/status`);
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to fetch retry-judgement status');
+  }
+  return response.json();
+}
+
+/** Polling cadence + ceiling for {@link retryJudgement} below. */
+const RETRY_JUDGEMENT_POLL_INTERVAL_MS = 2000;
+/** 30 minutes at the interval above — generous over the real incident's ~20-30min run, still bounded. */
+const RETRY_JUDGEMENT_POLL_MAX_ATTEMPTS = 900;
+
+/**
+ * Retry judgement for a TERMINAL run's judge-failed cases (or, with
+ * `scope: 'all'`, every rejudgeable case) at judge cost only — the agent is
+ * never re-invoked. 409s if the run is still executing.
+ *
+ * The route responds 202 immediately (job started in the background) and
+ * this function polls GET .../retry-judgement/status until the job reaches
+ * a terminal state, resolving with the final summary. This is what fixes
+ * the real incident this shipped for: a 62-case run's judge pipeline ran
+ * 20-30+ minutes, well past any fetch/proxy timeout — awaiting a single
+ * long-open POST surfaced a false "failed to retry judgement" toast while
+ * the server kept working. `onProgress(completed, total)` fires after the
+ * initial POST and after every poll, so callers can render live progress.
+ */
+export async function retryJudgement(
+  id: string,
+  scope: 'errored' | 'all' = 'errored',
+  onProgress?: (completed: number, total: number) => void
+): Promise<RetryJudgementSummary> {
+  const response = await fetch(`/api/storage/evaluation-runs/${id}/retry-judgement?scope=${scope}`, {
+    method: 'POST',
+  });
+
+  if (!response.ok) {
+    const err = await response.json().catch(() => ({ error: response.statusText }));
+    throw new Error(err.error || 'Failed to retry judgement');
+  }
+
+  const started: { total?: number } = await response.json().catch(() => ({}));
+  onProgress?.(0, started.total ?? 0);
+
+  for (let attempt = 0; attempt < RETRY_JUDGEMENT_POLL_MAX_ATTEMPTS; attempt++) {
+    await new Promise(resolve => setTimeout(resolve, RETRY_JUDGEMENT_POLL_INTERVAL_MS));
+    const job = await getRetryJudgementStatus(id);
+    onProgress?.(job.completed, job.total);
+    if (job.status === 'completed') {
+      if (!job.summary) throw new Error('Retry judgement reported completed with no summary');
+      return job.summary;
+    }
+    if (job.status === 'failed') {
+      throw new Error(job.error || 'Retry judgement failed');
+    }
+  }
+  throw new Error('Retry judgement is taking longer than expected — check back on the run later');
 }

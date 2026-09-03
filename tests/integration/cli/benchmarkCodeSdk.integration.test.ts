@@ -497,7 +497,13 @@ describe('Code SDK — CLI subprocess integration (every SDK condition)', () => 
   it("SDK condition 6: chai expect() FAILING records pass=false with errorMessage (issue #245 regression)", () => {
     if (!backendAvailable) return;
     expect(reportFor('chai-fail').passFailStatus).toBe('failed');
-    const failed = bodyMatchersFor('chai-fail').filter(m => m.pass === false);
+    // Excludes the synthetic `notReached` marker the always-record fix (see
+    // services/evaluation/index.ts's appendNotReachedMarker) now appends for
+    // the tail of the body that never ran after this exact throw — it's a
+    // distinct, separately-flagged category (see lib/matchers/types.ts),
+    // not a second real matcher failure. Matches the same exclusion
+    // computeSdkMatcherSessionMetrics's gate filter already applies.
+    const failed = bodyMatchersFor('chai-fail').filter(m => m.pass === false && !m.notReached);
     expect(failed).toHaveLength(1);
     expect(failed[0].description).toBe("'a' to equal 'b'");
     expect(failed[0].errorMessage).toMatch(/expected 'a' to equal 'b'/);

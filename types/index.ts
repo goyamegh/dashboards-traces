@@ -933,6 +933,22 @@ export interface TestCasePerformanceMetrics {
   agentDurationMs: number;               // Time in connector.execute()
   judgeDurationMs?: number;              // Time in callBedrockJudge() (absent in trace mode)
   judgeAttempts?: number;               // Number of judge retry attempts
+  /**
+   * Total LLM token usage (prompt + completion) for this test case's agent
+   * invocation, read from the same OTel-derived TracesAccessor a code-SDK
+   * test body reads via `result.traces.totalTokens` / the `traces` fixture.
+   *
+   * Always-record guarantee (see docs/SDK.md): for code-SDK (deterministic)
+   * test cases, the runner stamps this immediately after `agent.run()`
+   * resolves — independent of whether any matcher in the test body actually
+   * asserted on it — so a later-failing gate doesn't erase this objective
+   * actual. Undefined when the agent was never invoked (no-prompt test), or
+   * when `useTraces: true` but spans were never retrievable (the "loud
+   * failure" case — see lib/matchers/traces.ts `unavailableTracesAccessor`).
+   */
+  totalTokens?: number;
+  /** Same always-record guarantee as {@link totalTokens}, for USD cost. */
+  totalCostUsd?: number;
 }
 
 /** Server-side performance metrics for an entire benchmark run */
@@ -1035,6 +1051,15 @@ export interface BenchmarkRun {
 
   // Server-side performance metrics (populated after run completes)
   performanceMetrics?: RunPerformanceMetrics;
+
+  /**
+   * Content digest of this run's evaluation conditions (test-case contents +
+   * evaluator/judge conditions) -- same identity as {@link EvaluationRun.imageDigest}.
+   * Stamped by `POST /api/storage/benchmarks/:id/execute` (the legacy
+   * `benchmark -f test-cases.json` / `benchmark -n "Existing Benchmark"`
+   * path); runs with equal digests are directly comparable. See {@link BenchmarkImage}.
+   */
+  imageDigest?: string;
 }
 
 // Parent entity - persisted to localStorage['benchmarks']
@@ -1191,6 +1216,32 @@ export interface EvaluationRun {
    */
   rerunOf?: string;
 }
+
+/**
+ * Typed discriminator between the two run shapes that flow through the UI:
+ * `BenchmarkRun` (legacy, embedded in `benchmark.runs[]`, never carries
+ * `docType`) and `EvaluationRun` (first-class doc, `docType:
+ * 'evaluation-run'`). Runs created WITH a benchmarkId are dual-written as
+ * BOTH shapes for the same logical run (see
+ * `server/routes/storage/evaluationRuns.ts`), so the run object a component
+ * is holding can be either shape regardless of which route loaded it —
+ * `docType`, not the route/URL a component happened to load from, is the
+ * only reliable signal for "does this run support EvaluationRun-only
+ * capabilities (rerun, provenance, retry-judgement, ...)".
+ *
+ * Use this instead of inline `(run as any).docType === 'evaluation-run'`
+ * checks or route-derived `mode` flags for anything that depends on the
+ * RUN's actual shape (capabilities, fields like `rerunOf`). Route-derived
+ * state (which endpoint to fetch, which breadcrumb/URL to build) is a
+ * separate, legitimate concern and should stay keyed on the route.
+ *
+ * Adopted from #466 (`goyamegh/run-type-predicate`) ahead of that PR's
+ * merge, per the note on #462: both PRs hit the same route-vs-doctype bug
+ * class (Retry-judgement's button/dialog mount) and should not ship two
+ * competing `(run as any).docType` patches.
+ */
+export const isEvaluationRun = (r: BenchmarkRun | EvaluationRun): r is EvaluationRun =>
+  'docType' in r && r.docType === 'evaluation-run';
 
 // ============ Comparison Types ============
 

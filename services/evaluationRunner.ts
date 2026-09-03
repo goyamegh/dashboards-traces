@@ -17,7 +17,14 @@ import {
   PassFailStatus,
 } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
-import { runEvaluationWithConnector, callBedrockJudge, invokeAgent, computeSdkMatcherSessionMetrics } from '@/services/evaluation';
+import {
+  runEvaluationWithConnector,
+  callBedrockJudge,
+  invokeAgent,
+  computeSdkMatcherSessionMetrics,
+  stampObjectiveActuals,
+  appendNotReachedMarker,
+} from '@/services/evaluation';
 import { resolveAgentModel } from '@/lib/resolveAgentModel';
 import { readEnv } from '@/lib/envCompat';
 import { buildJudgeAgentsHints, resolveJudgeRunId } from '@/services/traces/judgeAgentsHints';
@@ -541,6 +548,17 @@ export async function executeEvaluationRun(
             const agentFailed =
               evalError !== undefined && capturedResult === undefined && !anyGateFailed;
             const failed = anyGateFailed || evalError !== undefined;
+            // ALWAYS-RECORD (owner-hit measurement-harness bug): a failing gate
+            // partway through the body must not erase the objective actuals the
+            // optimizer needs from every axis. durationMs/agentDurationMs already
+            // survive a later throw (stamped inside invoke() above, before the
+            // body gets a chance to fail); totalTokens/totalCostUsd did NOT — see
+            // stampObjectiveActuals() in services/evaluation/index.ts. Also append
+            // a synthetic `notReached` marker so the matcher panel can render a
+            // distinct row for the tail of the test that never ran instead of just
+            // omitting it (see docs/SDK.md "Always-record guarantee").
+            stampObjectiveActuals(report.performanceMetrics, loadedTraces, capturedResult !== undefined);
+            appendNotReachedMarker(matcherResults, evalError, agentFailed);
             (report as any).evaluationType = 'deterministic';
             (report as any).matcherResults = matcherResults;
             if (evalError !== undefined) {

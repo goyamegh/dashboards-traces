@@ -186,9 +186,13 @@ describe('createBenchmarkDoctorCommand', () => {
     expect(console.log).toHaveBeenCalledWith(expect.stringContaining('failed to delete bench-x'));
   });
 
-  it('--migrate-images: runs migration and prints migrated/skipped/error lines', async () => {
+  it('--migrate-images (no --apply): dry-run preview only — readOnly stays true, no writes, prints a plan', async () => {
     mockMigrate.mockResolvedValue({
-      migrated: [{ name: 'Bench A', digest: 'abcdef1234567890' }],
+      dryRun: true,
+      migrated: [
+        { name: 'Bench A', digest: 'abcdef1234567890', alreadyExists: false },
+        { name: 'Bench D', digest: '0011223344556677', alreadyExists: true },
+      ],
       skipped: [{ name: 'Bench B', reason: 'no test cases' }],
       errors: ['image build failed for Bench C'],
     } as any);
@@ -196,14 +200,40 @@ describe('createBenchmarkDoctorCommand', () => {
     const cmd = createBenchmarkDoctorCommand();
     await cmd.parseAsync(['node', 'doctor', '--migrate-images']);
 
-    expect(mockEnsureServer).toHaveBeenCalledWith(expect.objectContaining({ readOnly: false }));
-    expect(mockMigrate).toHaveBeenCalledWith(expect.anything(), 'http://localhost:4001');
+    // --migrate-images alone must NOT force a mutating (non-read-only)
+    // server connection — it's a preview now, same as bare `doctor`.
+    expect(mockEnsureServer).toHaveBeenCalledWith(expect.objectContaining({ readOnly: true }));
+    expect(mockMigrate).toHaveBeenCalledWith(expect.anything(), 'http://localhost:4001', { dryRun: true });
     const output = (console.log as jest.Mock).mock.calls.map((c) => c.join(' ')).join('\n');
-    expect(output).toContain('Image migration:');
+    expect(output).toContain('Image migration plan (dry-run):');
     expect(output).toContain('Bench A');
     expect(output).toContain('abcdef123456');
+    expect(output).toContain('would create');
+    expect(output).toContain('Bench D');
+    expect(output).toContain('already an image');
     expect(output).toContain('Bench B: skipped (no test cases)');
     expect(output).toContain('image build failed for Bench C');
+    expect(output).toContain('Dry-run only. Re-run with --migrate-images --apply to execute.');
+  });
+
+  it('--migrate-images --apply: executes the migration — readOnly=false, prints executed (not preview) lines', async () => {
+    mockMigrate.mockResolvedValue({
+      dryRun: false,
+      migrated: [{ name: 'Bench A', digest: 'abcdef1234567890' }],
+      skipped: [{ name: 'Bench B', reason: 'no test cases' }],
+      errors: [],
+    } as any);
+
+    const cmd = createBenchmarkDoctorCommand();
+    await cmd.parseAsync(['node', 'doctor', '--migrate-images', '--apply']);
+
+    expect(mockEnsureServer).toHaveBeenCalledWith(expect.objectContaining({ readOnly: false }));
+    expect(mockMigrate).toHaveBeenCalledWith(expect.anything(), 'http://localhost:4001', { dryRun: false });
+    const output = (console.log as jest.Mock).mock.calls.map((c) => c.join(' ')).join('\n');
+    expect(output).toContain('Image migration:');
+    expect(output).not.toContain('Image migration plan (dry-run):');
+    expect(output).not.toContain('Dry-run only. Re-run with --migrate-images --apply');
+    expect(output).toContain('Bench A');
   });
 
   it('--json with --apply and --migrate-images: prints one JSON document containing plan/result/migration', async () => {
@@ -211,7 +241,7 @@ describe('createBenchmarkDoctorCommand', () => {
     mockApplyDoctorPlan.mockResolvedValue({
       debrisDeleted: 1, husksDeleted: 1, runsRepointed: 2, embeddedRunsMerged: 2, errors: [],
     } as any);
-    mockMigrate.mockResolvedValue({ migrated: [], skipped: [], errors: [] } as any);
+    mockMigrate.mockResolvedValue({ dryRun: false, migrated: [], skipped: [], errors: [] } as any);
 
     const cmd = createBenchmarkDoctorCommand();
     await cmd.parseAsync(['node', 'doctor', '--apply', '--migrate-images', '--json']);
@@ -227,7 +257,7 @@ describe('createBenchmarkDoctorCommand', () => {
     const parsed = JSON.parse(jsonCall![0]);
     expect(parsed.plan).toEqual(busyPlan);
     expect(parsed.result.debrisDeleted).toBe(1);
-    expect(parsed.migration).toEqual({ migrated: [], skipped: [], errors: [] });
+    expect(parsed.migration).toEqual({ dryRun: false, migrated: [], skipped: [], errors: [] });
   });
 
   it('prints an error and exits 1 when the API call throws, but still cleans up', async () => {

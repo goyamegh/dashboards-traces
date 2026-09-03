@@ -106,6 +106,7 @@ export interface ConfigStatus {
       drifted: boolean;
     };
   };
+  warnings?: string[];
 }
 
 // ============================================================================
@@ -304,11 +305,19 @@ export function clearObservabilityConfig(): void {
 // Config Status (for frontend display)
 // ============================================================================
 
+// Logged at most once per server process: GET /api/storage/config/status is
+// polled by the UI (Dashboard's useDataState, SettingsPage) on every page
+// visit, not just at server startup, so without this guard a persistent
+// zero-agents config would re-log the same WARNING on every request/poll.
+// The returned warnings[] field itself is NOT gated -- the API response
+// always reflects live state; only the server-log noise is deduplicated.
+let zeroAgentsWarningLogged = false;
+
 /**
  * Get configuration status for frontend display
  * Never exposes credentials - only shows source and endpoint
  */
-export function getConfigStatus(): ConfigStatus {
+export function getConfigStatus(agents?: any[]): ConfigStatus {
   const config = readConfigFromDisk() as ConfigFileDataSources;
 
   // Resolve the active storage config + source.
@@ -374,6 +383,19 @@ export function getConfigStatus(): ConfigStatus {
   const drifted = fileConfigKey !== storageState.configKey &&
     storageState.configKey !== '__file_override__';
 
+  // Build warnings list. The returned field always reflects live state
+  // (needed by the UI); the console.warn is deliberately warn-once (see
+  // zeroAgentsWarningLogged above) since this getter runs on every
+  // GET /api/storage/config/status call, not just once at startup.
+  const warnings: string[] = [];
+  if (agents !== undefined && agents.length === 0) {
+    warnings.push('WARNING: Config file exists but declares zero agents. The server will have no agents available for evaluation.');
+    if (!zeroAgentsWarningLogged) {
+      zeroAgentsWarningLogged = true;
+      console.warn('[app] WARNING: Config file exists but declares zero agents. The server will have no agents available for evaluation.');
+    }
+  }
+
   return {
     storage: {
       configured: storageSource !== 'none',
@@ -406,6 +428,7 @@ export function getConfigStatus(): ConfigStatus {
         drifted,
       },
     },
+    ...(warnings.length > 0 && { warnings }),
   };
 }
 
