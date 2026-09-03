@@ -13,6 +13,7 @@ import { EvaluationReport, BenchmarkRun, TrajectoryStep, ToolCallStatus } from '
 import { calculateTotalLatency } from '@/data/mockComparisonData';
 import { cn } from '@/lib/utils';
 import { Markdown } from '@/components/ui/markdown';
+import { normalizeTrajectorySteps } from '@/lib/trajectoryStepDisplay';
 
 interface TrajectorySectionProps {
   runs: BenchmarkRun[];
@@ -103,7 +104,7 @@ const RunTrajectory: React.FC<{
   run: BenchmarkRun;
   report: EvaluationReport | null;
 }> = ({ run, report }) => {
-  const trajectory = report?.trajectory || [];
+  const trajectory = normalizeTrajectorySteps(report?.trajectory || []);
   const totalLatency = calculateTotalLatency(trajectory);
 
   if (!report) {

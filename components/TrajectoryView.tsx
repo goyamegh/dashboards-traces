@@ -8,6 +8,7 @@ import { TrajectoryStep, ToolCallStatus } from '@/types';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Markdown, hasRealMarkdown } from '@/components/ui/markdown';
 import { truncate } from '@/lib/utils';
+import { normalizeLegacyUserStep } from '@/lib/trajectoryStepDisplay';
 
 interface TrajectoryViewProps {
   steps: TrajectoryStep[];
@@ -15,10 +16,6 @@ interface TrajectoryViewProps {
 }
 
 const PREVIEW_LENGTH = 80;
-
-// Legacy prefix stamped by older producers (services/traces/spansToTrajectory.ts)
-// that echoed the user's prompt as a `thinking` step instead of its own type.
-const LEGACY_USER_PREFIX = 'User: ';
 
 // Color classes for each step type
 const typeColors: Record<string, string> = {
@@ -38,21 +35,6 @@ const typeBgColors: Record<string, string> = {
   response: 'bg-slate-500/5 border-slate-500/20',
   user: 'bg-cyan-500/5 border-cyan-500/20',
 };
-
-/**
- * Old persisted reports (pre-fix) have the user's prompt baked in as a
- * `thinking` step with a literal `User: ` prefix, always at index 0 (the
- * producer only ever emitted this for the opening interaction span). We
- * can't retroactively rewrite stored reports, so re-derive the intended
- * `user` step at render time for that one specific, unambiguous shape
- * instead of silently keeping it mislabeled as thinking.
- */
-function toDisplayStep(step: TrajectoryStep, index: number): TrajectoryStep {
-  if (index === 0 && step.type === 'thinking' && step.content.startsWith(LEGACY_USER_PREFIX)) {
-    return { ...step, type: 'user', content: step.content.slice(LEGACY_USER_PREFIX.length) };
-  }
-  return step;
-}
 
 export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }) => {
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
@@ -111,8 +93,8 @@ export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }
         </div>
       )}
 
-      {steps.map((rawStep, index) => {
-        const step = toDisplayStep(rawStep, index);
+      {steps.map((rawStep) => {
+        const step = normalizeLegacyUserStep(rawStep);
         const isExpanded = expandedSteps.has(step.id);
         const collapsible = isCollapsible(step);
         const latency = formatLatency(step.latencyMs);

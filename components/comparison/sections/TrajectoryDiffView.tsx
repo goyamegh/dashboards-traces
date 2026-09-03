@@ -18,6 +18,7 @@ import {
   Wrench,
   Brain,
   MessageSquare,
+  User,
   CheckCircle2,
 } from 'lucide-react';
 import { EvaluationReport, BenchmarkRun, TrajectoryStep } from '@/types';
@@ -47,6 +48,8 @@ const StepIcon: React.FC<{ type?: TrajectoryStep['type'] }> = ({ type }) => {
       return <CheckCircle2 size={14} className="text-opensearch-blue" />;
     case 'response':
       return <MessageSquare size={14} className="text-amber-400" />;
+    case 'user':
+      return <User size={14} className="text-cyan-400" />;
     default:
       return <Wrench size={14} className="text-muted-foreground" />;
   }

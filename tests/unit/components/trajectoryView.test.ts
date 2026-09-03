@@ -94,13 +94,13 @@ describe('TrajectoryView', () => {
     expect(screen.queryByText('user prompt')).toBeNull();
   });
 
-  it('does NOT relabel a legacy "User: " thinking step when it is NOT the first step', () => {
+  it('relabels a legacy "User: " thinking step at ANY position, not just index 0 (multi-turn legacy reports)', () => {
     const steps = [
       makeStep({ id: 'action-0', type: 'action', content: 'searched catalog', toolName: 'search' }),
       makeStep({ id: 'legacy-2', type: 'thinking', content: 'User: follow-up question' }),
     ];
     render(React.createElement(TrajectoryView, { steps, loading: false }));
-    expect(screen.getByText('thinking')).toBeTruthy();
-    expect(screen.queryByText('user prompt')).toBeNull();
+    expect(screen.getByText('user prompt')).toBeTruthy();
+    expect(screen.queryByText('thinking')).toBeNull();
   });
 });

@@ -4,6 +4,7 @@
  */
 
 import { TrajectoryStep } from '@/types';
+import { normalizeTrajectorySteps } from '@/lib/trajectoryStepDisplay';
 
 /**
  * Represents an aligned step in the diff view
@@ -86,11 +87,20 @@ export function calculateStepSimilarity(
 /**
  * Align two trajectory arrays using an LCS-based algorithm
  * Returns aligned steps with type annotations (matched, added, removed, modified)
+ *
+ * Both inputs are normalized ({@link normalizeTrajectorySteps}) before
+ * alignment, so a legacy-shape `thinking` step that echoes a user prompt
+ * (pre owner-papercut-fix reports) is compared as the `user` step it always
+ * meant to be — otherwise an old report and a freshly-run report showing the
+ * identical prompt would score a false type mismatch and register as a
+ * spurious added/removed/modified pair instead of a match.
  */
 export function alignTrajectories(
-  baseline: TrajectoryStep[],
-  comparison: TrajectoryStep[]
+  rawBaseline: TrajectoryStep[],
+  rawComparison: TrajectoryStep[]
 ): AlignedStep[] {
+  const baseline = normalizeTrajectorySteps(rawBaseline);
+  const comparison = normalizeTrajectorySteps(rawComparison);
   const MATCH_THRESHOLD = 0.6;
   const MODIFIED_THRESHOLD = 0.4;
 
