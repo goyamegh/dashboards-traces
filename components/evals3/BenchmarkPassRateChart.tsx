@@ -21,7 +21,6 @@ interface Props {
   /** agentKeys currently used as active filters (highlighted in the legend). */
   activeAgentKeys: Set<string>;
   onToggleAgent: (agentKey: string, label: string) => void;
-  onSelectRun?: (runId: string) => void;
   height?: number;
 }
 
@@ -60,24 +59,32 @@ export function makeTickFormatter(dense: boolean): (t: number) => string {
     : { month: 'short', day: 'numeric' });
 }
 
+// Recharts hands the tooltip one payload entry per series that has a point at
+// the hovered x — render them all rather than assuming payload[0] is "the" point
+// (two agents can have runs at the same instant).
 const PointTooltip: React.FC<{ active?: boolean; payload?: Array<{ payload: PassRatePoint; color?: string; name?: string }> }> = ({ active, payload }) => {
   if (!active || !payload || payload.length === 0) return null;
-  const p = payload[0];
-  const pt = p.payload;
   return (
-    <div className="rounded-md border bg-popover px-2.5 py-1.5 text-[11px] shadow-md">
-      <div className="font-medium truncate max-w-[260px]">{pt.runName}</div>
-      <div className="text-muted-foreground">{p.name} · {formatDate(new Date(pt.t).toISOString())}</div>
-      <div>
-        <span style={{ color: p.color }} className="font-semibold">{pt.passRate}%</span>
-        <span className="text-muted-foreground"> · {pt.passed} pass / {pt.failed} fail / {pt.total} total</span>
-      </div>
+    <div className="rounded-md border bg-popover px-2.5 py-1.5 text-[11px] shadow-md space-y-1">
+      {payload.map((p, i) => {
+        const pt = p.payload;
+        return (
+          <div key={`${pt.runId}-${i}`}>
+            <div className="font-medium truncate max-w-[260px]">{pt.runName}</div>
+            <div className="text-muted-foreground">{p.name} · {formatDate(new Date(pt.t).toISOString())}</div>
+            <div>
+              <span style={{ color: p.color }} className="font-semibold">{pt.passRate}%</span>
+              <span className="text-muted-foreground"> · {pt.passed} pass / {pt.failed} fail / {pt.total} total</span>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 };
 
 export const BenchmarkPassRateChart: React.FC<Props> = ({
-  series, activeAgentKeys, onToggleAgent, onSelectRun, height = 150,
+  series, activeAgentKeys, onToggleAgent, height = 150,
 }) => {
   if (series.length === 0) {
     return (
@@ -141,7 +148,6 @@ export const BenchmarkPassRateChart: React.FC<Props> = ({
             tick={{ fill: 'hsl(var(--muted-foreground))', fontSize: 10 }}
             tickLine={false}
             axisLine={{ stroke: 'hsl(var(--border))' }}
-            allowDuplicatedCategory={false}
           />
           <YAxis
             domain={[0, 100]}
@@ -165,8 +171,8 @@ export const BenchmarkPassRateChart: React.FC<Props> = ({
                 stroke={seriesColor(i)}
                 strokeWidth={dim ? 1 : 2}
                 strokeOpacity={dim ? 0.25 : 1}
-                dot={{ r: 3, strokeWidth: 0, fill: seriesColor(i), fillOpacity: dim ? 0.25 : 1, cursor: onSelectRun ? 'pointer' : undefined }}
-                activeDot={{ r: 5, onClick: (_: unknown, e: any) => { const id = e?.payload?.runId; if (id && onSelectRun) onSelectRun(id); } }}
+                dot={{ r: 3, strokeWidth: 0, fill: seriesColor(i), fillOpacity: dim ? 0.25 : 1 }}
+                activeDot={{ r: 5 }}
                 isAnimationActive={false}
                 connectNulls
               />

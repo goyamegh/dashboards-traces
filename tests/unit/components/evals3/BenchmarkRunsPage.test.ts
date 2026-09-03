@@ -312,6 +312,19 @@ describe('BenchmarkRunsPage2 — Runs tab table, chart and click-to-filter', () 
     expect(within(cc).queryByTestId('run-latest-badge')).toBeTruthy();
   });
 
+  it('Latest follows createdAt, not array position — a newer associated eval-run (appended after embedded runs) gets the badge', async () => {
+    mockListEvaluationRuns.mockResolvedValue({
+      evaluationRuns: [makeAssociatedEvalRun({ id: 'eval-newest', name: 'Newest Eval Run', status: 'completed', createdAt: '2026-09-05T00:00:00.000Z', results: { 'tc-1': { reportId: 'r', status: 'completed', passFailStatus: 'passed' } } })],
+    });
+    await renderPage();
+    await waitFor(() => expect(screen.getAllByTestId('run-row')).toHaveLength(3));
+    expect(screen.getAllByTestId('run-latest-badge')).toHaveLength(1);
+    const newest = screen.getByText('Newest Eval Run').closest('[data-testid="run-row"]') as HTMLElement;
+    expect(within(newest).queryByTestId('run-latest-badge')).toBeTruthy();
+    // Default sort is newest-first too.
+    expect(screen.getAllByTestId('run-name-link')[0].textContent).toBe('Newest Eval Run');
+  });
+
   it('clicking the run name navigates to the inspector (and does not follow the href)', async () => {
     await renderPage();
     await waitFor(() => expect(screen.getAllByTestId('run-row')).toHaveLength(2));
