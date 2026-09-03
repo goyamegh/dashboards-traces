@@ -39,6 +39,7 @@ export const TrajectoryCompareView: React.FC<TrajectoryCompareViewProps> = ({
       case 'action': return 'text-blue-700 bg-blue-100 dark:text-blue-400 dark:bg-blue-500/10';
       case 'tool_result': return 'text-amber-700 bg-amber-100 dark:text-amber-400 dark:bg-amber-500/10';
       case 'response': return 'text-blue-700 bg-blue-100 dark:text-opensearch-blue dark:bg-opensearch-blue/10';
+      case 'user': return 'text-cyan-700 bg-cyan-100 dark:text-cyan-400 dark:bg-cyan-500/10';
       default: return 'text-muted-foreground bg-muted';
     }
   };

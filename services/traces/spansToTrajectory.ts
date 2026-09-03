@@ -110,10 +110,10 @@ function claudeNativeTrajectory(spans: Span[]): TrajectoryStep[] {
       const redacted = !prompt || prompt === '<REDACTED>';
       steps.push({
         ...base,
-        type: 'thinking',
+        type: 'user',
         content: redacted
-          ? `User: [prompt redacted — set OTEL_LOG_USER_PROMPTS=1 to capture] (${a['user_prompt_length'] ?? '?'} chars)`
-          : `User: ${prompt}`,
+          ? `[prompt redacted — set OTEL_LOG_USER_PROMPTS=1 to capture] (${a['user_prompt_length'] ?? '?'} chars)`
+          : String(prompt),
       });
     } else if (t === 'llm_request') {
       const model = a['model'] || a['gen_ai.request.model'] || '';
@@ -339,7 +339,7 @@ function genericTrajectory(spans: Span[], serviceName?: string): TrajectoryStep[
         }); break;
       }
       case 'user':
-        steps.push({ ...base, type: 'thinking', content: `User: ${m.content}` }); break;
+        steps.push({ ...base, type: 'user', content: m.content }); break;
       default:
         steps.push({ ...base, type: 'thinking', content: m.content });
     }

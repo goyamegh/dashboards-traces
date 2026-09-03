@@ -16,6 +16,10 @@ interface TrajectoryViewProps {
 
 const PREVIEW_LENGTH = 80;
 
+// Legacy prefix stamped by older producers (services/traces/spansToTrajectory.ts)
+// that echoed the user's prompt as a `thinking` step instead of its own type.
+const LEGACY_USER_PREFIX = 'User: ';
+
 // Color classes for each step type
 const typeColors: Record<string, string> = {
   thinking: 'text-amber-400',
@@ -23,6 +27,7 @@ const typeColors: Record<string, string> = {
   action: 'text-blue-400',
   tool_result: 'text-opensearch-blue',
   response: 'text-slate-400',
+  user: 'text-cyan-400',
 };
 
 const typeBgColors: Record<string, string> = {
@@ -31,7 +36,23 @@ const typeBgColors: Record<string, string> = {
   action: 'bg-blue-500/5 border-blue-500/20',
   tool_result: 'bg-opensearch-blue/5 border-opensearch-blue/20',
   response: 'bg-slate-500/5 border-slate-500/20',
+  user: 'bg-cyan-500/5 border-cyan-500/20',
 };
+
+/**
+ * Old persisted reports (pre-fix) have the user's prompt baked in as a
+ * `thinking` step with a literal `User: ` prefix, always at index 0 (the
+ * producer only ever emitted this for the opening interaction span). We
+ * can't retroactively rewrite stored reports, so re-derive the intended
+ * `user` step at render time for that one specific, unambiguous shape
+ * instead of silently keeping it mislabeled as thinking.
+ */
+function toDisplayStep(step: TrajectoryStep, index: number): TrajectoryStep {
+  if (index === 0 && step.type === 'thinking' && step.content.startsWith(LEGACY_USER_PREFIX)) {
+    return { ...step, type: 'user', content: step.content.slice(LEGACY_USER_PREFIX.length) };
+  }
+  return step;
+}
 
 export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }) => {
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
@@ -61,6 +82,9 @@ export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }
     if (step.type === 'tool_result') {
       return 'result';
     }
+    if (step.type === 'user') {
+      return 'user prompt';
+    }
     return step.type;
   };
 
@@ -87,7 +111,8 @@ export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }
         </div>
       )}
 
-      {steps.map((step) => {
+      {steps.map((rawStep, index) => {
+        const step = toDisplayStep(rawStep, index);
         const isExpanded = expandedSteps.has(step.id);
         const collapsible = isCollapsible(step);
         const latency = formatLatency(step.latencyMs);

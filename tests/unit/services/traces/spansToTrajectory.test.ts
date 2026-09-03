@@ -77,7 +77,7 @@ describe('spansToTrajectory', () => {
     const traj = spansToTrajectory(spans, 'claude-code');
 
     const types = traj.map(t => t.type);
-    expect(types).toContain('thinking');     // user prompt
+    expect(types).toContain('user');         // user prompt (own step type, not thinking)
     expect(types).toContain('action');       // tool call
     expect(types).toContain('tool_result');  // tool result
 
@@ -85,8 +85,9 @@ describe('spansToTrajectory', () => {
     expect(action.toolName).toBe('read_file');
     expect(action.toolArgs).toEqual({ path: 'a.ts' });
 
-    const userStep = traj.find(t => t.content.startsWith('User:'))!;
-    expect(userStep.content).toContain('fix the bug');
+    const userStep = traj.find(t => t.type === 'user')!;
+    expect(userStep.content).toBe('fix the bug');
+    expect(userStep.content).not.toContain('User:');
   });
 
   it('marks tool_result FAILURE when the span status is ERROR', () => {
@@ -100,6 +101,27 @@ describe('spansToTrajectory', () => {
 
   it('returns an empty array for no spans', () => {
     expect(spansToTrajectory([], 'claude-code')).toEqual([]);
+  });
+
+  it('classifies a generic (non-Claude-Code) OTel GenAI user prompt as `user`, not `thinking`', () => {
+    const genericSpan: Span = {
+      traceId: 't1',
+      spanId: 'g1',
+      name: 'chat',
+      startTime: '2026-01-01T00:00:00.000Z',
+      endTime: '2026-01-01T00:00:01.000Z',
+      status: 'OK',
+      attributes: { 'service.name': 'my-rest-agent', 'gen_ai.system': 'openai' },
+      events: [
+        { name: 'llm.request', time: '2026-01-01T00:00:00.000Z', attributes: { 'gen_ai.prompt': 'Can you recommend a sturdy, stainless steel camping mug?' } },
+        { name: 'llm.response', time: '2026-01-01T00:00:01.000Z', attributes: { 'llm.completion': 'Sure, here are a few options...' } },
+      ],
+    };
+    const traj = spansToTrajectory([genericSpan], 'my-rest-agent');
+    const userStep = traj.find(t => t.type === 'user');
+    expect(userStep).toBeDefined();
+    expect(userStep!.content).toBe('Can you recommend a sturdy, stainless steel camping mug?');
+    expect(traj.some(t => t.type === 'thinking')).toBe(false);
   });
 });
 
@@ -167,7 +189,7 @@ describe('Claude Code native (attribute-based) spans', () => {
       ccSpan('e1', 'tool.execution', { tool_use_id: 'tu1', success: true }, '2026-01-01T00:00:03.000Z'),
     ];
     const traj = spansToTrajectory(spans);
-    expect(traj.map(t => t.type)).toEqual(['thinking', 'assistant', 'action', 'tool_result']);
+    expect(traj.map(t => t.type)).toEqual(['user', 'assistant', 'action', 'tool_result']);
     const action = traj.find(t => t.type === 'action')!;
     expect(action.toolName).toBe('Bash');
     const result = traj.find(t => t.type === 'tool_result')!;
@@ -184,6 +206,28 @@ describe('Claude Code native (attribute-based) spans', () => {
     ];
     const result = spansToTrajectory(spans).find(t => t.type === 'tool_result')!;
     expect(result.status).toBe(ToolCallStatus.FAILURE);
+  });
+
+  it('classifies the opening user prompt as its own `user` step, never `thinking` (owner papercut)', () => {
+    const spans: Span[] = [
+      ccSpan('i1', 'interaction', { user_prompt: 'Can you recommend a sturdy, stainless steel camping mug?' }, '2026-01-01T00:00:00.000Z'),
+    ];
+    const traj = spansToTrajectory(spans);
+    expect(traj).toHaveLength(1);
+    expect(traj[0].type).toBe('user');
+    expect(traj[0].type).not.toBe('thinking');
+    // No 'User:' echo prefix — the step's own type/label carries that meaning now.
+    expect(traj[0].content).toBe('Can you recommend a sturdy, stainless steel camping mug?');
+  });
+
+  it('does NOT flag a real reject-tool `thinking` step as `user` (blocked_on_user stays thinking)', () => {
+    const spans: Span[] = [
+      ccSpan('t1', 'tool', { tool_name: 'Write', tool_use_id: 'tu1' }, '2026-01-01T00:00:00.000Z'),
+      ccSpan('b1', 'tool.blocked_on_user', { decision: 'reject', source: 'user_temporary' }, '2026-01-01T00:00:01.000Z'),
+    ];
+    const traj = spansToTrajectory(spans);
+    const meta = traj.find(t => t.content.includes('rejected a tool call'));
+    expect(meta?.type).toBe('thinking');
   });
 
   it('detects user_rejection from tool.blocked_on_user', () => {

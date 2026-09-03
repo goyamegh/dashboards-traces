@@ -323,6 +323,7 @@ const CSS_STYLES = `
   .step-tool_result.failed { border-color: var(--red-700); background: rgba(185,28,28,0.05); }
   .step-response { border-color: var(--purple-700); background: rgba(126,34,206,0.05); }
   .step-assistant { border-color: var(--purple-700); background: rgba(126,34,206,0.05); }
+  .step-user { border-color: #0891b2; background: rgba(8,145,178,0.05); }
   .step-type { font-size: 0.6875rem; text-transform: uppercase; letter-spacing: 0.05em; font-weight: 600; margin-bottom: 0.25rem; }
   .step-thinking .step-type { color: var(--amber-600); }
   .step-action .step-type { color: #3b82f6; }
@@ -330,6 +331,7 @@ const CSS_STYLES = `
   .step-tool_result.failed .step-type { color: var(--red-700); }
   .step-response .step-type { color: var(--purple-700); }
   .step-assistant .step-type { color: var(--purple-700); }
+  .step-user .step-type { color: #0891b2; }
   .step-content { font-size: 0.8125rem; white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto; color: var(--text); }
 
   /* Improvement strategies */

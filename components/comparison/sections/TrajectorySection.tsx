@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { ChevronDown, ChevronRight, Wrench, Brain, MessageSquare, CheckCircle2, XCircle } from 'lucide-react';
+import { ChevronDown, ChevronRight, Wrench, Brain, MessageSquare, User, CheckCircle2, XCircle } from 'lucide-react';
 import { EvaluationReport, BenchmarkRun, TrajectoryStep, ToolCallStatus } from '@/types';
 import { calculateTotalLatency } from '@/data/mockComparisonData';
 import { cn } from '@/lib/utils';
@@ -30,6 +30,8 @@ const StepIcon: React.FC<{ type: TrajectoryStep['type'] }> = ({ type }) => {
       return <CheckCircle2 size={14} className="text-opensearch-blue" />;
     case 'response':
       return <MessageSquare size={14} className="text-amber-400" />;
+    case 'user':
+      return <User size={14} className="text-cyan-400" />;
     default:
       return null;
   }

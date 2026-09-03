@@ -63,4 +63,44 @@ describe('TrajectoryView', () => {
     render(React.createElement(TrajectoryView, { steps: [], loading: true }));
     expect(screen.getByText('Initializing agent...')).toBeTruthy();
   });
+
+  it('renders a `user` step as "user prompt", not "thinking", with its own color', () => {
+    const steps = [makeStep({ id: 'u1', type: 'user', content: 'Can you recommend a sturdy, stainless steel camping mug?' })];
+    render(React.createElement(TrajectoryView, { steps, loading: false }));
+
+    const label = screen.getByText('user prompt');
+    expect(label.className).toContain('text-cyan-400');
+    expect(screen.queryByText('thinking')).toBeNull();
+  });
+
+  it('relabels a legacy (pre-fix) thinking step at position 0 that echoes "User: ..." as a user prompt', () => {
+    const steps = [
+      makeStep({ id: 'legacy-1', type: 'thinking', content: 'User: Can you recommend a sturdy, stainless steel camping mug?' }),
+      makeStep({ id: 'resp-1', type: 'response', content: 'Sure, here are a few options...' }),
+    ];
+    render(React.createElement(TrajectoryView, { steps, loading: false }));
+
+    const label = screen.getByText('user prompt');
+    expect(label.className).toContain('text-cyan-400');
+    // The `User: ` echo prefix is stripped once the step is re-labeled.
+    expect(screen.getByText(/^Can you recommend a sturdy, stainless steel camping mug\?/)).toBeTruthy();
+    expect(screen.queryByText('thinking')).toBeNull();
+  });
+
+  it('does NOT relabel a genuine thinking step at position 0 that happens to contain "User" mid-sentence', () => {
+    const steps = [makeStep({ id: 'think-1', type: 'thinking', content: 'The User asked about mugs, let me search.' })];
+    render(React.createElement(TrajectoryView, { steps, loading: false }));
+    expect(screen.getByText('thinking')).toBeTruthy();
+    expect(screen.queryByText('user prompt')).toBeNull();
+  });
+
+  it('does NOT relabel a legacy "User: " thinking step when it is NOT the first step', () => {
+    const steps = [
+      makeStep({ id: 'action-0', type: 'action', content: 'searched catalog', toolName: 'search' }),
+      makeStep({ id: 'legacy-2', type: 'thinking', content: 'User: follow-up question' }),
+    ];
+    render(React.createElement(TrajectoryView, { steps, loading: false }));
+    expect(screen.getByText('thinking')).toBeTruthy();
+    expect(screen.queryByText('user prompt')).toBeNull();
+  });
 });
