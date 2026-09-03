@@ -223,19 +223,19 @@ export const EvalRunDetailPage: React.FC = () => {
                   <button
                     data-testid="rerun-provenance-chip"
                     className={sourceRunMissing
-                      ? 'inline-flex items-center gap-1 rounded-full border border-muted-foreground/30 bg-muted/40 text-muted-foreground text-xs px-2 py-0.5 hover:bg-muted/60 transition-colors'
-                      : 'inline-flex items-center gap-1 rounded-full border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-xs px-2 py-0.5 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors'}
+                      ? 'inline-flex items-center gap-1 max-w-[220px] rounded-full border border-muted-foreground/30 bg-muted/40 text-muted-foreground text-xs px-2 py-0.5 hover:bg-muted/60 transition-colors'
+                      : 'inline-flex items-center gap-1 max-w-[220px] rounded-full border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-xs px-2 py-0.5 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors'}
                     onClick={() => navigate(`/evaluations/runs/${run.rerunOf}`)}
                     title={sourceRunMissing
                       ? 'This run was created as a re-run, but the source run no longer exists'
-                      : 'This run was created as a re-run of the linked source run'}
+                      : `Re-run of "${sourceRunName || run.rerunOf}"`}
                   >
-                    <Link2 size={11} />
-                    re-run of {sourceRunName || run.rerunOf.slice(0, 8)}
+                    <Link2 size={11} className="shrink-0" />
+                    <span className="truncate">re-run of {sourceRunName || run.rerunOf.slice(0, 8)}</span>
                   </button>
                 )}
               </div>
-              <h1 className="text-xl font-semibold">{run.name || `Run ${run.id.slice(0, 8)}`}</h1>
+              <h1 className="text-xl font-semibold" title={run.name || `Run ${run.id.slice(0, 8)}`}>{run.name || `Run ${run.id.slice(0, 8)}`}</h1>
               <div className="flex items-center gap-4 text-sm text-muted-foreground">
                 <span>{agentName}</span>
                 <span>{modelName}</span>
