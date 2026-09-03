@@ -95,7 +95,7 @@ describe('Metrics Routes', () => {
       expect(mockComputeMetrics).toHaveBeenCalledWith('test-run-123', expect.objectContaining({
         client: mockClient,
         indexPattern: 'otel-traces-*',
-      }), undefined);
+      }), undefined, undefined);
       expect(res.json).toHaveBeenCalledWith(mockMetrics);
     });
 
@@ -110,7 +110,35 @@ describe('Metrics Routes', () => {
 
       await handler(req, res);
 
-      expect(mockComputeMetrics).toHaveBeenCalledWith('test-run-123', expect.any(Object), 'session-aaa');
+      expect(mockComputeMetrics).toHaveBeenCalledWith('test-run-123', expect.any(Object), 'session-aaa', undefined);
+    });
+
+    it('should forward a traceId query param to computeMetrics (Strategy A)', async () => {
+      mockComputeMetrics.mockResolvedValue({
+        runId: 'test-run-123',
+        traceId: 'trace-abc',
+        totalTokens: 0,
+        inputTokens: 0,
+        outputTokens: 0,
+        llmCalls: 0,
+        toolCalls: 0,
+        toolsUsed: [],
+        costUsd: 0,
+        durationMs: 0,
+        status: 'success' as const,
+      });
+
+      const { req, res } = createMocks({ runId: 'test-run-123' }, {}, {}, { traceId: 'trace-abc' });
+      const handler = getRouteHandler(metricsRoutes, 'get', '/api/metrics/:runId');
+
+      await handler(req, res);
+
+      expect(mockComputeMetrics).toHaveBeenCalledWith(
+        'test-run-123',
+        expect.objectContaining({ client: mockClient, indexPattern: 'otel-traces-*' }),
+        undefined,
+        'trace-abc'
+      );
     });
 
     it('should return 503 when observability not configured', async () => {
@@ -197,6 +225,7 @@ describe('Metrics Routes', () => {
       expect(mockComputeBatchMetrics).toHaveBeenCalledWith(
         ['run-1', 'run-2'],
         expect.objectContaining({ client: mockClient, indexPattern: 'otel-traces-*' }),
+        undefined,
         undefined
       );
       expect(mockComputeAggregateMetrics).toHaveBeenCalledWith([mockMetrics1, mockMetrics2]);
@@ -204,6 +233,60 @@ describe('Metrics Routes', () => {
         metrics: [mockMetrics1, mockMetrics2],
         aggregate: mockAggregate,
       });
+    });
+
+    it('should forward a traceIds map to computeBatchMetrics (Strategy A)', async () => {
+      mockComputeBatchMetrics.mockResolvedValue([]);
+      mockComputeAggregateMetrics.mockReturnValue({
+        totalRuns: 0, successRate: 0, totalCostUsd: 0, avgCostUsd: 0, avgDurationMs: 0,
+        p50DurationMs: 0, p95DurationMs: 0, avgTokens: 0, totalInputTokens: 0,
+        totalOutputTokens: 0, avgLlmCalls: 0, avgToolCalls: 0,
+      });
+
+      const { req, res } = createMocks({}, { runIds: ['run-1'], traceIds: { 'run-1': 'trace-1' } });
+      const handler = getRouteHandler(metricsRoutes, 'post', '/api/metrics/batch');
+
+      await handler(req, res);
+
+      expect(mockComputeBatchMetrics).toHaveBeenCalledWith(
+        ['run-1'],
+        expect.objectContaining({ client: mockClient, indexPattern: 'otel-traces-*' }),
+        undefined,
+        { 'run-1': 'trace-1' }
+      );
+    });
+
+    it('should reject a non-object traceIds body field', async () => {
+      const { req, res } = createMocks({}, { runIds: ['run-1'], traceIds: 'not-an-object' });
+      const handler = getRouteHandler(metricsRoutes, 'post', '/api/metrics/batch');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: 'traceIds must be an object mapping runId -> traceId',
+      });
+    });
+
+    it('should drop non-string values from traceIds defensively', async () => {
+      mockComputeBatchMetrics.mockResolvedValue([]);
+      mockComputeAggregateMetrics.mockReturnValue({
+        totalRuns: 0, successRate: 0, totalCostUsd: 0, avgCostUsd: 0, avgDurationMs: 0,
+        p50DurationMs: 0, p95DurationMs: 0, avgTokens: 0, totalInputTokens: 0,
+        totalOutputTokens: 0, avgLlmCalls: 0, avgToolCalls: 0,
+      });
+
+      const { req, res } = createMocks({}, { runIds: ['run-1'], traceIds: { 'run-1': 42, 'run-2': 'trace-2' } });
+      const handler = getRouteHandler(metricsRoutes, 'post', '/api/metrics/batch');
+
+      await handler(req, res);
+
+      expect(mockComputeBatchMetrics).toHaveBeenCalledWith(
+        ['run-1'],
+        expect.objectContaining({ client: mockClient, indexPattern: 'otel-traces-*' }),
+        undefined,
+        { 'run-2': 'trace-2' }
+      );
     });
 
     it('should return 400 when runIds is not an array', async () => {
@@ -247,7 +330,8 @@ describe('Metrics Routes', () => {
       expect(mockComputeBatchMetrics).toHaveBeenCalledWith(
         ['run-1', 'run-2'],
         expect.any(Object),
-        { 'run-1': 'session-aaa' }
+        { 'run-1': 'session-aaa' },
+        undefined
       );
     });
 

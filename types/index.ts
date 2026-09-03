@@ -1274,7 +1274,12 @@ export interface RunAggregateMetrics {
   failedCount: number;
   /** Test cases the evaluator couldn't verdict (#242); excluded from pass rate. */
   erroredCount?: number;
-  avgAccuracy: number;
+  /**
+   * Mean `metrics.accuracy` over the reports that actually carry one.
+   * `undefined` when no report in the run has an accuracy score (e.g.
+   * custom evaluators scoring different metric keys) — renders "--", not 0%.
+   */
+  avgAccuracy?: number;
   passRatePercent: number;
   // Trace metrics (optional - populated from metrics API)
   totalTokens?: number;

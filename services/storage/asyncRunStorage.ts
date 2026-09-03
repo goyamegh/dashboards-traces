@@ -156,11 +156,21 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
       tags: ann.tags,
       author: ann.author,
     })),
-    runId: stored.traceId || (stored as any).runId,
+    runId: (stored as any).runId || stored.traceId,
     // Preserve the OTel traceId as its OWN field (distinct from runId). The
     // comparison Traces tab correlates spans by report.traceId (Strategy A);
     // without this it was always undefined here — mapped into runId only — so
     // agents that emit their own trace (pi) / Claude Code never showed traces.
+    //
+    // `runId` above prefers the REAL connector runId (`stored.runId`) and only
+    // falls back to `traceId` when the connector never returned one (REST
+    // connectors: `RESTConnector.execute()` returns none). Pre-fix this was
+    // `stored.traceId || stored.runId` — unconditionally clobbering a real
+    // runId with traceId whenever both were present, discarding it for every
+    // subprocess connector that DOES get a native runId (Claude Code, Kiro,
+    // Pi). Found investigating why the comparison page's batch metrics query
+    // (`services/comparisonService.ts:collectRunIdsFromReports`, keyed by
+    // `report.runId`) used the wrong Strategy-B correlator for those agents.
     traceId: (stored as any).traceId,
     sessionId: (stored as any).sessionId,
     rawEvents: stored.rawEvents as any[] | undefined,

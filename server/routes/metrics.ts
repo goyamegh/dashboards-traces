@@ -18,12 +18,17 @@ const router = Router();
 /**
  * GET /api/metrics/:runId - Compute metrics from traces for a single run
  *   query: ?sessionId= (optional Strategy-D correlator, see the batch route below)
+ *   query: ?traceId= (optional Strategy-A correlator — the eval span's own
+ *     OTel traceId, shared with subprocess/HTTP agents via W3C TRACEPARENT
+ *     propagation; see server/services/metricsService.ts)
  */
 router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
   try {
     const { runId } = req.params;
     const sessionIdParam = req.query?.sessionId;
     const sessionId = typeof sessionIdParam === 'string' && sessionIdParam ? sessionIdParam : undefined;
+    const traceIdParam = req.query?.traceId;
+    const traceId = typeof traceIdParam === 'string' && traceIdParam ? traceIdParam : undefined;
 
     if (runId.startsWith('demo-')) {
       const sampleMetrics = computeMetricsFromSampleSpans(runId);
@@ -40,7 +45,7 @@ router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
 
     debug('MetricsAPI', 'Computing metrics for runId:', runId);
 
-    const metrics = await computeMetrics(runId, { client: obs.client, indexPattern: obs.indexes.traces }, sessionId);
+    const metrics = await computeMetrics(runId, { client: obs.client, indexPattern: obs.indexes.traces }, sessionId, traceId);
 
     debug('MetricsAPI', 'Metrics computed:', {
       runId: metrics.runId,
@@ -72,7 +77,7 @@ router.get('/api/metrics/:runId', async (req: Request, res: Response) => {
  */
 router.post('/api/metrics/batch', async (req: Request, res: Response) => {
   try {
-    const { runIds, sessionIds } = req.body;
+    const { runIds, sessionIds, traceIds } = req.body;
 
     if (!Array.isArray(runIds)) {
       return res.status(400).json({ error: 'runIds must be an array' });
@@ -85,6 +90,16 @@ router.post('/api/metrics/batch', async (req: Request, res: Response) => {
       sessionIdByRunId = {};
       for (const [rid, sid] of Object.entries(sessionIds as Record<string, unknown>)) {
         if (typeof sid === 'string' && sid) sessionIdByRunId[rid] = sid;
+      }
+    }
+    let traceIdByRunId: Record<string, string> | undefined;
+    if (traceIds !== undefined) {
+      if (typeof traceIds !== 'object' || traceIds === null || Array.isArray(traceIds)) {
+        return res.status(400).json({ error: 'traceIds must be an object mapping runId -> traceId' });
+      }
+      traceIdByRunId = {};
+      for (const [rid, tid] of Object.entries(traceIds as Record<string, unknown>)) {
+        if (typeof tid === 'string' && tid) traceIdByRunId[rid] = tid;
       }
     }
 
@@ -112,7 +127,7 @@ router.post('/api/metrics/batch', async (req: Request, res: Response) => {
         }));
       } else {
         try {
-          realResults = await computeBatchMetrics(realRunIds, { client: obs.client, indexPattern: obs.indexes.traces }, sessionIdByRunId);
+          realResults = await computeBatchMetrics(realRunIds, { client: obs.client, indexPattern: obs.indexes.traces }, sessionIdByRunId, traceIdByRunId);
         } catch (e: any) {
           realResults = realRunIds.map((runId: string) => ({
             runId,

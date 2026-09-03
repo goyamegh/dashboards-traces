@@ -40,14 +40,15 @@ export const AggregateMetricsTable: React.FC<AggregateMetricsTableProps> = ({
 
   const baselineRun = runs[0];
 
-  // Find best run for each metric
+  // Find best run for each metric (undefined values never win / never seed).
   const findBestRunId = (key: MetricKey, higherIsBetter: boolean): string => {
     let bestRunId = runs[0].runId;
-    let bestValue = runs[0][key];
+    let bestValue: number | undefined = undefined;
 
     for (const run of runs) {
       const value = run[key];
-      if (higherIsBetter ? value > bestValue : value < bestValue) {
+      if (value === undefined) continue;
+      if (bestValue === undefined || (higherIsBetter ? value > bestValue : value < bestValue)) {
         bestValue = value;
         bestRunId = run.runId;
       }
@@ -80,9 +81,10 @@ export const AggregateMetricsTable: React.FC<AggregateMetricsTableProps> = ({
                 <TableCell className="font-medium">{label}</TableCell>
                 {runs.map((run, index) => {
                   const value = run[key];
+                  const baseValue = baselineRun[key];
                   const isBest = run.runId === bestRunId && runs.length > 1;
                   const isBaseline = index === 0;
-                  const delta = !isBaseline ? value - baselineRun[key] : 0;
+                  const delta = (!isBaseline && value !== undefined && baseValue !== undefined) ? value - baseValue : 0;
 
                   return (
                     <TableCell
@@ -97,7 +99,7 @@ export const AggregateMetricsTable: React.FC<AggregateMetricsTableProps> = ({
                           'font-medium',
                           isBest && 'text-opensearch-blue'
                         )}>
-                          {value}%
+                          {value !== undefined ? `${value}%` : '--'}
                         </span>
                         {!isBaseline && delta !== 0 && (
                           <span className={cn('text-xs', getDeltaColorClass(delta))}>

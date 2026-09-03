@@ -595,7 +595,39 @@ describe('AsyncRunStorage', () => {
       });
     });
 
-    // Regression guard: performanceMetrics (durationMs/agentDurationMs) is a
+    // Regression guard (comparison-page Cost/Tokens/LLM Calls bug): `runId`
+    // must prefer the REAL connector runId over `traceId` when BOTH are
+    // present on the stored doc. Pre-fix this was `stored.traceId ||
+    // stored.runId` — unconditionally clobbering a real runId (e.g. a
+    // subprocess connector's `subprocess-<ts>`) with the OTel traceId,
+    // discarding it entirely. `traceId` remains available as its OWN,
+    // separate field either way.
+    it('prefers the real connector runId over traceId when both are present on the stored doc', async () => {
+      const mockStorageRun = {
+        ...createMockStorageRun('run-1'),
+        runId: 'subprocess-1788335139441',
+        traceId: 'trace-abc-123',
+      };
+      mockOsRuns.getById.mockResolvedValue(mockStorageRun);
+
+      const result = await asyncRunStorage.getReportById('run-1');
+
+      expect(result?.runId).toBe('subprocess-1788335139441');
+      expect(result?.traceId).toBe('trace-abc-123');
+    });
+
+    // REST connectors never get a native runId (RESTConnector.execute()
+    // returns none) — runId must still fall back to traceId in that case, so
+    // Strategy-A/B correlation has SOMETHING to key off.
+    it('falls back to traceId for runId when the stored doc has no distinct runId (REST connectors)', async () => {
+      const mockStorageRun = createMockStorageRun('run-1'); // traceId: 'trace-1', no runId field
+      mockOsRuns.getById.mockResolvedValue(mockStorageRun);
+
+      const result = await asyncRunStorage.getReportById('run-1');
+
+      expect(result?.runId).toBe('trace-1');
+      expect(result?.traceId).toBe('trace-1');
+    });
     // real, persisted field (server/routes/comparison.ts and the evaluation/
     // benchmark runners already read it) but was missing from toTestCaseRun's
     // mapping entirely, so every BROWSER-side report loaded via
