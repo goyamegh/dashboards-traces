@@ -14,11 +14,91 @@ import {
 } from '@/types';
 import { TEST_CASES } from '@/data/testCases';
 import { bucketRunResults } from '@/lib/runStats';
+import { getRunOverallScore } from '@/lib/utils';
 import {
   MockTestCaseMeta,
   getMockTestCaseMeta,
   getMockTestCaseVersion,
 } from '@/data/mockComparisonData';
+
+/**
+ * The single evaluator metric a per-case cell falls back to showing when a
+ * report carries no `metrics.accuracy` (custom evaluators score their own
+ * metric keys — e.g. fact_precision / provenance_verifiability /
+ * abstention_integrity / payload_economy — and have no accuracy field at
+ * all; the real shape found on a live STaRK-retail comparison).
+ *
+ * Why alphabetical, not the evaluator's declared/weighted rubric order:
+ * `Evaluator.scoringConfig.metrics[]` (types/index.ts `ScoringMetric` /
+ * `ScoringConfig`) DOES carry an ordered, weighted rubric list, and real
+ * evaluator configs explicitly call out a highest-weight metric as "the
+ * PRIMARY metric" (see examples/eval-files/ops-rca-evaluator.json:
+ * `root_cause_accuracy` at weight 0.6 vs. 0.2/0.1/0.1 for the rest) — that
+ * would be the semantically correct source for "the primary rubric".
+ * Resolving it here would require the comparison page to additionally fetch
+ * each report's Evaluator doc by `report.evaluatorId` (a new network
+ * round-trip + cache; ComparisonPage's current data flow only fetches runs +
+ * reports, never evaluators). This picks the SAME evaluator-agnostic,
+ * alphabetical ordering `getRunOverallScore()` / `RunScore`
+ * (components/RunScore.tsx) already use to average a report's metrics
+ * without a per-evaluator config lookup, so "primary rubric" and "score
+ * breakdown" stay deterministic and mutually consistent. If evaluator docs
+ * ever become part of ComparisonPage's fetch set, this should be upgraded to
+ * resolve the true declared/highest-weight rubric instead.
+ */
+export function getPrimaryRubricKey(
+  metrics: Record<string, number | undefined> | undefined | null
+): string | undefined {
+  if (!metrics) return undefined;
+  const keys = Object.keys(metrics)
+    .filter((k) => typeof metrics[k] === 'number' && Number.isFinite(metrics[k] as number))
+    .sort((a, b) => a.localeCompare(b));
+  return keys[0];
+}
+
+export interface PrimaryRubric {
+  key: string;
+  value: number;
+}
+
+/** The primary rubric (see {@link getPrimaryRubricKey}) as a key/value pair, or undefined when the report has no numeric metric. */
+export function getPrimaryRubric(
+  metrics: Record<string, number | undefined> | undefined | null
+): PrimaryRubric | undefined {
+  const key = getPrimaryRubricKey(metrics);
+  if (key === undefined) return undefined;
+  return { key, value: metrics![key] as number };
+}
+
+/**
+ * Per-case "overall score" — the single honest number that feeds the
+ * run-level "Avg score" aggregate (see {@link calculateRunAggregates}).
+ * Three-tier fallback, each tier only consulted when the previous is
+ * unavailable:
+ *   1. `metrics.accuracy` — the built-in judge's canonical metric.
+ *   2. The primary rubric ({@link getPrimaryRubric}) — a custom evaluator's
+ *      single most-representative metric.
+ *   3. The mean of every numeric metric on the report ({@link getRunOverallScore})
+ *      — documented as a defensive fallback for a report whose metrics map
+ *      is non-empty but whose primary rubric couldn't be determined; given
+ *      tier 2's current (alphabetical) implementation this cannot actually
+ *      happen — whenever there is ≥1 numeric metric, tier 2 always resolves
+ *      — but the derivation stays total (never silently drops a case) if
+ *      {@link getPrimaryRubricKey}'s implementation changes.
+ * Returns `undefined` when the report carries no numeric metric at all.
+ */
+export function computeOverallScore(
+  report: { metrics?: Record<string, number | undefined> | null } | undefined | null
+): number | undefined {
+  const metrics = report?.metrics;
+  if (typeof metrics?.accuracy === 'number' && Number.isFinite(metrics.accuracy)) {
+    return metrics.accuracy;
+  }
+  const primary = getPrimaryRubric(metrics);
+  if (primary) return primary.value;
+  const mean = getRunOverallScore(metrics);
+  return mean ?? undefined;
+}
 
 /**
  * Get test case metadata from real TEST_CASES data
@@ -83,14 +163,28 @@ export function calculateRunAggregates(
   // an accuracy score, avgAccuracy is undefined and renders "--", not 0%.
   let totalAccuracy = 0;
   let accuracyCount = 0;
+  // "Avg score" (avgScore): unlike avgAccuracy (accuracy-only), this is
+  // defined for custom-evaluator runs too — each case's overall score comes
+  // from computeOverallScore's accuracy -> primary-rubric -> mean-of-all
+  // tiering, so a run scored entirely by a custom evaluator (no report
+  // carries metrics.accuracy) still gets an honest aggregate instead of
+  // rendering "--" the way avgAccuracy does.
+  let totalScore = 0;
+  let scoreCount = 0;
   for (const testCaseId of testCaseIds) {
     const result = run.results[testCaseId];
     const report = reports[result.reportId];
     if (!report) continue;
     if (report.metricsStatus === 'error' || report.metricsStatus === 'pending' || report.metricsStatus === 'calculating') continue;
-    if (typeof report.metrics?.accuracy !== 'number') continue;
-    accuracyCount++;
-    totalAccuracy += report.metrics.accuracy;
+    if (typeof report.metrics?.accuracy === 'number') {
+      accuracyCount++;
+      totalAccuracy += report.metrics.accuracy;
+    }
+    const overallScore = computeOverallScore(report);
+    if (overallScore !== undefined) {
+      scoreCount++;
+      totalScore += overallScore;
+    }
   }
   const evaluable = Math.max(0, testCaseIds.length - erroredCount);
 
@@ -105,6 +199,7 @@ export function calculateRunAggregates(
     failedCount,
     erroredCount,
     avgAccuracy: accuracyCount > 0 ? Math.round(totalAccuracy / accuracyCount) : undefined,
+    avgScore: scoreCount > 0 ? Math.round(totalScore / scoreCount) : undefined,
     passRatePercent: evaluable > 0 ? Math.round((passedCount / evaluable) * 100) : 0,
     // Trace metrics will be populated separately via fetchBatchMetrics
     totalTokens: undefined,
@@ -337,6 +432,12 @@ export function buildTestCaseComparisonRows(
         faithfulness: report.metrics.faithfulness,
         trajectoryAlignment: report.metrics.trajectory_alignment_score,
         latencyScore: report.metrics.latency_score,
+        // Only computed when there is no metrics.accuracy to show instead
+        // (codex review: attaching it unconditionally made an admittedly
+        // heuristic value look authoritative on every result, including ones
+        // where it's never rendered). MetricCell only ever reads this when
+        // `accuracy` is undefined, so this mirrors that precedence exactly.
+        primaryRubric: typeof report.metrics.accuracy === 'number' ? undefined : getPrimaryRubric(report.metrics),
         testCaseVersion: version,
       };
     }

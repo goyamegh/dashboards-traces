@@ -156,4 +156,36 @@ test.describe('Comparison — Avg Accuracy dash when no report carries accuracy'
     // With no report carrying accuracy, no accuracy chip may render at all.
     await expect(page.locator('[data-testid="metric-cell-accuracy"]')).toHaveCount(0);
   });
+
+  // Owner spec follow-up: "an average score for all tests" + "the percentage
+  // of the rubric for each test case should show the primary rubric". Same
+  // seeded custom-evaluator fixture as above (no report carries
+  // metrics.accuracy) — both cases' primary rubric (alphabetically-first
+  // numeric key) is abstention_integrity: 100 and 60.
+  test('scoreboard "Avg score" is a real percentage (accuracy is "--", but Avg score is not)', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed benchmark/run/reports (storage not configured?)');
+
+    await page.goto(`/compare/${benchmarkId}`);
+    await page.waitForSelector('[data-testid="comparison-page"]', { timeout: 30000 });
+    await page.waitForSelector('[data-testid="comparison-scoreboard"]', { timeout: 15000 });
+
+    // (100 + 60) / 2 = 80.
+    const avgScore = page.locator(`[data-testid="run-avgscore-${runId}"]`);
+    await expect(avgScore).toBeVisible({ timeout: 15000 });
+    await expect(avgScore).toHaveText('80%');
+  });
+
+  test('per-case cells show the primary-rubric chip instead of a bare verdict', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed benchmark/run/reports (storage not configured?)');
+
+    await page.goto(`/compare/${benchmarkId}`);
+    await page.waitForSelector('[data-testid="comparison-page"]', { timeout: 30000 });
+    await expect(page.getByText('Passed', { exact: true }).first()).toBeVisible({ timeout: 30000 });
+
+    const chips = page.locator('[data-testid="metric-cell-primary-rubric"]');
+    await expect(chips.first()).toBeVisible({ timeout: 15000 });
+    const texts = await chips.allTextContents();
+    expect(texts.some(t => t.includes('abstention_integrity') && t.includes('100%'))).toBe(true);
+    expect(texts.some(t => t.includes('abstention_integrity') && t.includes('60%'))).toBe(true);
+  });
 });

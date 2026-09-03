@@ -22,6 +22,9 @@ import {
   getRealTestCaseMeta,
   detectComparisonMode,
   computeTestCaseOverlap,
+  getPrimaryRubricKey,
+  getPrimaryRubric,
+  computeOverallScore,
 } from '@/services/comparisonService';
 import {
   BenchmarkRun,
@@ -1546,6 +1549,197 @@ describe('comparisonService', () => {
       };
       const merged = mergeTraceMetrics(baseAgg, runWithReports, reportsWithTrajectories, traceMetricsMap);
       expect(merged.totalToolCalls).toBe(16); // trace-derived sum, NOT the 1-action fallback count
+    });
+  });
+
+  // Owner spec: "Accuracy as a column should be called Average accuracy. And
+  // an average score for all tests. And the percentage of the rubric for each
+  // test case should show the primary rubric." These describe blocks cover
+  // the score-derivation primitives behind "Avg score" (avgScore) and the
+  // per-case primary-rubric chip.
+  describe('getPrimaryRubricKey / getPrimaryRubric', () => {
+    it('returns undefined for null/undefined/empty metrics', () => {
+      expect(getPrimaryRubricKey(undefined)).toBeUndefined();
+      expect(getPrimaryRubricKey(null)).toBeUndefined();
+      expect(getPrimaryRubricKey({})).toBeUndefined();
+      expect(getPrimaryRubric(undefined)).toBeUndefined();
+    });
+
+    it('picks the alphabetically-first key with a finite numeric value (real custom-evaluator shape)', () => {
+      const metrics = { fact_precision: 100, provenance_verifiability: 100, abstention_integrity: 100, payload_economy: 85 };
+      expect(getPrimaryRubricKey(metrics)).toBe('abstention_integrity');
+      expect(getPrimaryRubric(metrics)).toEqual({ key: 'abstention_integrity', value: 100 });
+    });
+
+    it('ignores non-numeric / undefined / NaN entries', () => {
+      const metrics = { zzz_not_a_number: undefined, aaa_nan: NaN, bbb_real: 42 } as unknown as Record<string, number | undefined>;
+      expect(getPrimaryRubricKey(metrics)).toBe('bbb_real');
+    });
+
+    it('still resolves a primary rubric even when accuracy IS present (accuracy is not special-cased here)', () => {
+      const metrics = { accuracy: 90, faithfulness: 80 };
+      // 'accuracy' < 'faithfulness' alphabetically.
+      expect(getPrimaryRubricKey(metrics)).toBe('accuracy');
+    });
+  });
+
+  describe('computeOverallScore', () => {
+    it('tier 1: uses metrics.accuracy when present, ignoring other metrics', () => {
+      const report = { metrics: { accuracy: 90, faithfulness: 10 } };
+      expect(computeOverallScore(report)).toBe(90);
+    });
+
+    it('tier 1: a real accuracy of 0 counts (not treated as missing)', () => {
+      expect(computeOverallScore({ metrics: { accuracy: 0, faithfulness: 50 } })).toBe(0);
+    });
+
+    it('tier 2: falls back to the primary rubric when accuracy is absent (custom-evaluator shape)', () => {
+      const report = {
+        metrics: { fact_precision: 40, provenance_verifiability: 20, abstention_integrity: 60, payload_economy: 70 },
+      };
+      // Primary rubric is 'abstention_integrity' (alphabetically first) = 60.
+      expect(computeOverallScore(report)).toBe(60);
+    });
+
+    it('tier 3 (documented defensive fallback): returns undefined, matching tier 2, when metrics is empty', () => {
+      expect(computeOverallScore({ metrics: {} })).toBeUndefined();
+    });
+
+    it('returns undefined for a report with no metrics object at all', () => {
+      expect(computeOverallScore({})).toBeUndefined();
+      expect(computeOverallScore(undefined)).toBeUndefined();
+    });
+  });
+
+  describe('calculateRunAggregates — avgScore ("Avg score" aggregate)', () => {
+    const mockRun: BenchmarkRun = {
+      id: 'run-score',
+      name: 'Score Run',
+      createdAt: '2024-01-01T00:00:00Z',
+      agentKey: 'agent-1',
+      modelId: 'model-1',
+      status: 'completed',
+      results: {},
+    } as BenchmarkRun;
+
+    it('accuracy-present: avgScore matches avgAccuracy when every report carries metrics.accuracy', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        results: {
+          'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { reportId: 'report-2', status: 'completed', passFailStatus: 'failed' },
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        'report-1': { id: 'report-1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready', metrics: { accuracy: 90 } } as EvaluationReport,
+        'report-2': { id: 'report-2', testCaseId: 'tc-2', passFailStatus: 'failed', metricsStatus: 'ready', metrics: { accuracy: 70 } } as EvaluationReport,
+      };
+
+      const aggregates = calculateRunAggregates(run, reports);
+
+      expect(aggregates.avgAccuracy).toBe(80);
+      expect(aggregates.avgScore).toBe(80);
+    });
+
+    it('custom-evaluator-only: avgScore is defined (via the primary rubric) even though avgAccuracy is undefined', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        results: {
+          'tc-1': { reportId: 'report-c1', status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { reportId: 'report-c2', status: 'completed', passFailStatus: 'failed' },
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        'report-c1': {
+          id: 'report-c1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready',
+          metrics: { fact_precision: 100, provenance_verifiability: 100, abstention_integrity: 100, payload_economy: 85 },
+        } as unknown as EvaluationReport,
+        'report-c2': {
+          id: 'report-c2', testCaseId: 'tc-2', passFailStatus: 'failed', metricsStatus: 'ready',
+          metrics: { fact_precision: 40, provenance_verifiability: 20, abstention_integrity: 60, payload_economy: 70 },
+        } as unknown as EvaluationReport,
+      };
+
+      const aggregates = calculateRunAggregates(run, reports);
+
+      expect(aggregates.avgAccuracy).toBeUndefined();
+      // Primary rubric per case is 'abstention_integrity': (100 + 60) / 2 = 80.
+      expect(aggregates.avgScore).toBe(80);
+    });
+
+    it('empty: avgScore is undefined when no case in the run has any numeric metric', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        results: {
+          'tc-1': { reportId: 'report-e1', status: 'completed', passFailStatus: 'passed' },
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        'report-e1': { id: 'report-e1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready', metrics: {} } as unknown as EvaluationReport,
+      };
+
+      const aggregates = calculateRunAggregates(run, reports);
+
+      expect(aggregates.avgAccuracy).toBeUndefined();
+      expect(aggregates.avgScore).toBeUndefined();
+    });
+
+    it('empty: avgScore is undefined when the run has no results at all', () => {
+      const aggregates = calculateRunAggregates({ ...mockRun, results: {} }, {});
+      expect(aggregates.avgScore).toBeUndefined();
+    });
+  });
+
+  describe('buildTestCaseComparisonRows — primaryRubric on TestCaseRunResult', () => {
+    it('attaches primaryRubric for a report with no metrics.accuracy (custom evaluator)', () => {
+      const runs: BenchmarkRun[] = [{
+        id: 'run-1', name: 'Run 1', createdAt: '2024-01-01T00:00:00Z', agentKey: 'agent-1', modelId: 'model-1', status: 'completed',
+        results: { 'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' } },
+      } as BenchmarkRun];
+      const reports: Record<string, EvaluationReport> = {
+        'report-1': {
+          id: 'report-1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready',
+          metrics: { fact_precision: 72, abstention_integrity: 90 },
+        } as unknown as EvaluationReport,
+      };
+
+      const rows = buildTestCaseComparisonRows(runs, reports, () => undefined, () => undefined);
+      const result = rows[0].results['run-1'] as TestCaseRunResult;
+
+      expect(result.accuracy).toBeUndefined();
+      expect(result.primaryRubric).toEqual({ key: 'abstention_integrity', value: 90 });
+    });
+
+    it('leaves primaryRubric undefined at the source when metrics.accuracy IS present (codex review: avoid a heuristic value looking authoritative on every result)', () => {
+      const runs: BenchmarkRun[] = [{
+        id: 'run-1', name: 'Run 1', createdAt: '2024-01-01T00:00:00Z', agentKey: 'agent-1', modelId: 'model-1', status: 'completed',
+        results: { 'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' } },
+      } as BenchmarkRun];
+      const reports: Record<string, EvaluationReport> = {
+        'report-1': {
+          id: 'report-1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready',
+          metrics: { accuracy: 90, faithfulness: 10 },
+        } as EvaluationReport,
+      };
+
+      const rows = buildTestCaseComparisonRows(runs, reports, () => undefined, () => undefined);
+      const result = rows[0].results['run-1'] as TestCaseRunResult;
+
+      expect(result.accuracy).toBe(90);
+      expect(result.primaryRubric).toBeUndefined();
+    });
+
+    it('leaves primaryRubric undefined when the report has no numeric metrics at all', () => {
+      const runs: BenchmarkRun[] = [{
+        id: 'run-1', name: 'Run 1', createdAt: '2024-01-01T00:00:00Z', agentKey: 'agent-1', modelId: 'model-1', status: 'completed',
+        results: { 'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' } },
+      } as BenchmarkRun];
+      const reports: Record<string, EvaluationReport> = {
+        'report-1': { id: 'report-1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready', metrics: {} } as unknown as EvaluationReport,
+      };
+
+      const rows = buildTestCaseComparisonRows(runs, reports, () => undefined, () => undefined);
+      expect((rows[0].results['run-1'] as TestCaseRunResult).primaryRubric).toBeUndefined();
     });
   });
 });

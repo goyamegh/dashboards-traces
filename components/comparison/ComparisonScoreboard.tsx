@@ -243,6 +243,13 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
   const accuracyDelta = (runB && runA.avgAccuracy !== undefined && runB.avgAccuracy !== undefined)
     ? runA.avgAccuracy - runB.avgAccuracy
     : undefined;
+  // Only directly comparable when both runs' reports were scored by the same
+  // evaluator — a custom evaluator's "primary rubric" is an
+  // alphabetically-picked metric name, not a fixed quantity across
+  // evaluators (see the delta cell's tooltip below).
+  const avgScoreDelta = (runB && runA.avgScore !== undefined && runB.avgScore !== undefined)
+    ? runA.avgScore - runB.avgScore
+    : undefined;
   const costDelta = (runB && runA.totalCostUsd !== undefined && runB.totalCostUsd !== undefined)
     ? runA.totalCostUsd - runB.totalCostUsd
     : undefined;
@@ -282,7 +289,13 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                   <tr className="border-b border-border/50 text-[10px] uppercase tracking-wide text-muted-foreground">
                     <th className="px-4 py-2 text-left w-[240px]">Run</th>
                     <th className="px-3 py-2 text-right">Pass Rate</th>
-                    <th className="px-3 py-2 text-right">Avg Accuracy</th>
+                    <th className="px-3 py-2 text-right">Average accuracy</th>
+                    <th
+                      className="px-3 py-2 text-right cursor-help"
+                      title="Mean, over test cases with a derivable score, of each case's overall score: metrics.accuracy where present, else the report's primary rubric, else the mean of its numeric metrics. '--' only when no case in the run has any score."
+                    >
+                      Avg score
+                    </th>
                     <th className="px-3 py-2 text-right">Cost</th>
                     <th className="px-3 py-2 text-right">Avg Duration</th>
                     <th className="px-3 py-2 text-right">Tokens</th>
@@ -334,6 +347,9 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                           <span data-testid={`run-accuracy-${run.runId}`}>
                             {formatPercent(run.avgAccuracy)}
                           </span>
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums" data-testid={`run-avgscore-${run.runId}`}>
+                          {formatPercent(run.avgScore)}
                         </td>
                         <td className="px-3 py-2 text-right tabular-nums">
                           {formatCostSafe(run.totalCostUsd)}
@@ -448,6 +464,24 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                           title={accuracyDelta === 0 ? 'No change' : undefined}
                         >
                           {formatDelta(runA.avgAccuracy, runB.avgAccuracy, 'pp')}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-1.5 text-right">
+                      {avgScoreDelta !== undefined && (
+                        <span
+                          data-testid="scoreboard-delta-avgscore"
+                          className={cn(
+                            'tabular-nums text-[11px]',
+                            avgScoreDelta > 0 ? 'text-blue-400' : avgScoreDelta < 0 ? 'text-red-400' : 'text-muted-foreground'
+                          )}
+                          title={
+                            avgScoreDelta === 0
+                              ? 'No change'
+                              : "Only directly comparable when both runs' reports were scored by the same evaluator — a custom evaluator's \"primary rubric\" is an alphabetically-picked metric name, not a fixed quantity across evaluators."
+                          }
+                        >
+                          {formatDelta(runA.avgScore, runB.avgScore)}
                         </span>
                       )}
                     </td>

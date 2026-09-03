@@ -129,6 +129,30 @@ export const MetricCell: React.FC<MetricCellProps> = ({
             )}
           </>
         )}
+        {/* No metrics.accuracy on this report (custom evaluator) — fall back
+            to the PRIMARY RUBRIC (see comparisonService.getPrimaryRubric) so
+            the cell shows SOME per-case number instead of just a bare verdict.
+            Compact: the rubric name truncates in a fixed-width span; the
+            full metric name lives in the title tooltip. No delta chip here —
+            unlike accuracy/faithfulness, MetricCell has no
+            baselinePrimaryRubric prop wired from the caller, so there is no
+            baseline value to diff against yet (a plumbing gap, not a "this
+            metric can't be compared" judgment — see ComparisonScoreboard's
+            run-level "Avg score" delta, which DOES compare it, aggregated
+            over many cases instead of one; that delta is only meaningful
+            when both runs share the same evaluator, since a different
+            evaluator's alphabetically-first metric is a different quantity —
+            see its tooltip). */}
+        {show('accuracy') && accuracy === undefined && result.primaryRubric && (
+          <span
+            className="inline-flex items-center gap-1 ml-1 max-w-[92px]"
+            title={`Primary rubric: ${result.primaryRubric.key} (this report carries no metrics.accuracy — showing the evaluator's own metric instead)`}
+            data-testid="metric-cell-primary-rubric"
+          >
+            <span className="truncate text-[10px] text-muted-foreground">{result.primaryRubric.key}</span>
+            <span className="text-[11px] font-medium tabular-nums flex-shrink-0">{round1(result.primaryRubric.value)}%</span>
+          </span>
+        )}
       </div>
 
       {/* Secondary metrics — only when explicitly toggled visible */}
