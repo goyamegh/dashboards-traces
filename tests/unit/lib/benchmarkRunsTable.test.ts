@@ -12,7 +12,7 @@ import type { BenchmarkRun } from '@/types';
 import {
   buildRunTableRow, computePassRate, applyRunFilters, toggleRunFilter, removeRunFilter,
   sortRunRows, toggleRunSort, buildPassRateSeries, rowFieldValue, rowFieldLabel,
-  seriesColor, SERIES_COLORS, DEFAULT_RUN_SORT, RunTableRow, RunFilter,
+  seriesColor, SERIES_COLORS, DEFAULT_RUN_SORT, latestRunId, RunTableRow, RunFilter,
 } from '@/lib/benchmarkRunsTable';
 
 const resolvers = {
@@ -183,12 +183,14 @@ describe('buildPassRateSeries', () => {
     ].map(r => buildRunTableRow(r, resolvers));
 
     const series = buildPassRateSeries(rows);
-    expect(series.map(s => s.key)).toEqual(['agent-cc', 'agent-ais']); // busiest first
-    expect(series[0].label).toBe('Claude Code');
-    expect(series[0].points.map(p => p.runId)).toEqual(['cc-early', 'cc-late']);
-    expect(series[0].points.map(p => p.passRate)).toEqual([0, 100]);
-    expect(series[1].points).toHaveLength(1);
-    expect(series[1].points[0]).toMatchObject({ runId: 'ais', passRate: 50, passed: 1, failed: 1, total: 2 });
+    // Alphabetical by label — NOT by point count — so the index→colour mapping
+    // is stable while polling adds runs.
+    expect(series.map(s => s.key)).toEqual(['agent-ais', 'agent-cc']);
+    expect(series[1].label).toBe('Claude Code');
+    expect(series[1].points.map(p => p.runId)).toEqual(['cc-early', 'cc-late']);
+    expect(series[1].points.map(p => p.passRate)).toEqual([0, 100]);
+    expect(series[0].points).toHaveLength(1);
+    expect(series[0].points[0]).toMatchObject({ runId: 'ais', passRate: 50, passed: 1, failed: 1, total: 2 });
     for (const s of series) for (const p of s.points) expect(typeof p.t).toBe('number');
   });
 
@@ -199,6 +201,37 @@ describe('buildPassRateSeries', () => {
 
   it('returns an empty list for no rows', () => {
     expect(buildPassRateSeries([])).toEqual([]);
+  });
+
+  it('keeps series order (and therefore colours) stable when a new run makes another agent the busiest', () => {
+    const base = [
+      run({ id: 'cc1', agentKey: 'agent-cc', createdAt: '2026-09-01T00:00:00Z', results: { t: res('completed', 'passed') } }),
+      run({ id: 'ais1', agentKey: 'agent-ais', createdAt: '2026-09-01T00:00:00Z', results: { t: res('completed', 'passed') } }),
+      run({ id: 'ais2', agentKey: 'agent-ais', createdAt: '2026-09-02T00:00:00Z', results: { t: res('completed', 'passed') } }),
+    ].map(r => buildRunTableRow(r, resolvers));
+    const before = buildPassRateSeries(base).map(s => s.key);
+    const after = buildPassRateSeries([
+      ...base,
+      ...[
+        run({ id: 'cc2', agentKey: 'agent-cc', createdAt: '2026-09-03T00:00:00Z', results: { t: res('completed', 'passed') } }),
+        run({ id: 'cc3', agentKey: 'agent-cc', createdAt: '2026-09-04T00:00:00Z', results: { t: res('completed', 'passed') } }),
+      ].map(r => buildRunTableRow(r, resolvers)),
+    ]).map(s => s.key);
+    expect(after).toEqual(before);
+  });
+});
+
+describe('latestRunId', () => {
+  it('picks the max createdAt regardless of array order and ignores unparseable dates', () => {
+    expect(latestRunId([
+      { id: 'old', createdAt: '2026-09-01T00:00:00Z' },
+      { id: 'bad', createdAt: 'nope' },
+      { id: 'new', createdAt: '2026-09-03T00:00:00Z' },
+      { id: 'mid', createdAt: '2026-09-02T00:00:00Z' },
+    ])).toBe('new');
+  });
+  it('returns null for an empty list', () => {
+    expect(latestRunId([])).toBeNull();
   });
 });
 

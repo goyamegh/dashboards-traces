@@ -233,9 +233,24 @@ export function buildPassRateSeries(rows: RunTableRow[]): PassRateSeries[] {
   }
   const out = [...byAgent.values()];
   for (const s of out) s.points.sort((a, b) => a.t - b.t);
-  // Stable order: most points first so the legend leads with the busiest agent.
-  out.sort((a, b) => b.points.length - a.points.length || a.label.localeCompare(b.label));
+  // Order by label (then key) — NOT by point count. Series index drives the
+  // line colour, so the order must be stable while the page polls every few
+  // seconds and new runs land; "busiest first" would recolour agents mid-run.
+  out.sort((a, b) => a.label.localeCompare(b.label) || a.key.localeCompare(b.key));
   return out;
+}
+
+/** Latest run = max createdAt over the given runs (not "first in the array" —
+ *  the merged list appends standalone eval-run docs after embedded runs, so
+ *  array order is not chronological). */
+export function latestRunId(runs: Array<Pick<BenchmarkRun, 'id' | 'createdAt'>>): string | null {
+  let best: { id: string; t: number } | null = null;
+  for (const r of runs) {
+    const t = new Date(r.createdAt).getTime();
+    if (Number.isNaN(t)) continue;
+    if (!best || t > best.t) best = { id: r.id, t };
+  }
+  return best?.id ?? null;
 }
 
 /** Deterministic, distinguishable palette for agent lines (index-based). */

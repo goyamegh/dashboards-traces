@@ -57,7 +57,7 @@ import { BenchmarkRunsTable, RunFilterPills } from '@/components/evals3/Benchmar
 import { BenchmarkPassRateChart } from '@/components/evals3/BenchmarkPassRateChart';
 import {
   buildRunTableRow, applyRunFilters, toggleRunFilter, removeRunFilter,
-  sortRunRows, toggleRunSort, buildPassRateSeries, DEFAULT_RUN_SORT,
+  sortRunRows, toggleRunSort, buildPassRateSeries, latestRunId, DEFAULT_RUN_SORT,
   RunFilter, RunSort, RunSortField, RunTableRow,
 } from '@/lib/benchmarkRunsTable';
 import { getRecentCompletedRuns } from '@/lib/benchmarkCaseReview';
@@ -701,7 +701,6 @@ export const BenchmarkRunsPage2: React.FC = () => {
                   series={passRateSeries}
                   activeAgentKeys={activeAgentKeys}
                   onToggleAgent={(agentKey, label) => handleToggleFilter({ field: 'agent', value: agentKey, label })}
-                  onSelectRun={runId => navigate(`/evaluations/benchmarks/${benchmarkId}/runs/${runId}/inspect`)}
                 />
               </div>
               <RunFilterPills
@@ -719,7 +718,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
                 onSort={handleSort}
                 benchmarkId={benchmark.id}
                 currentVersion={benchmark.currentVersion}
-                latestRunId={runVersionFilter === 'all' ? (filteredRuns[0]?.id ?? null) : null}
+                latestRunId={runVersionFilter === 'all' ? latestRunId(filteredRuns) : null}
                 selectable={hasMultipleRuns}
                 selectedRunIds={selectedRunIds}
                 onToggleSelect={toggleRunSelection}
