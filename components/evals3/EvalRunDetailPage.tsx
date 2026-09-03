@@ -231,7 +231,7 @@ export const EvalRunDetailPage: React.FC = () => {
                       : `Re-run of "${sourceRunName || run.rerunOf}"`}
                   >
                     <Link2 size={11} className="shrink-0" />
-                    <span className="truncate">re-run of {sourceRunName || run.rerunOf.slice(0, 8)}</span>
+                    <span className="min-w-0 truncate">re-run of {sourceRunName || run.rerunOf.slice(0, 8)}</span>
                   </button>
                 )}
               </div>
