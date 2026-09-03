@@ -274,6 +274,34 @@ describe('RunInspectorPage — lazy report loading', () => {
     expect(screen.getByText(/Select a test case/i)).toBeTruthy();
   });
 
+  // Papercut #1: the inspector used to leave the main pane on "Select a
+  // test case" even though the left list was already populated (FAILED /
+  // ERRORED / PASSED rows all visible) -- nothing pre-selected the first
+  // row on initial load. Locks in the fix: the first row (list order --
+  // the simple default; deep links and user selection still win, covered
+  // by dedicated tests elsewhere in this file) is auto-selected as soon as
+  // results land, so the dead-pane message never appears when the list is
+  // non-empty.
+  it('auto-selects the first case on load -- never shows the dead "Select a test case" pane when the list is populated', async () => {
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(3));
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(3));
+    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(3, [1]));
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getAllByTestId('test-case-row')).toHaveLength(3));
+
+    // First row (list order) is visually selected...
+    const rows = screen.getAllByTestId('test-case-row');
+    expect(rows[0].getAttribute('data-test-case-id')).toBe('tc-0');
+    expect(rows[0].className).toMatch(/border-l-blue-500/);
+
+    // ...and the detail pane renders real content instead of the
+    // "Select a test case" placeholder.
+    await waitFor(() => expect(screen.getByTestId('inspector-panel')).toBeTruthy());
+    expect(screen.queryByText('Select a test case')).toBeNull();
+  });
+
   it('falls back to execution status when the summary batch fails', async () => {
     mockBenchmarkGetById.mockResolvedValue(makeBenchmark(3));
     mockTestCasesGetByIds.mockResolvedValue(makeTestCases(3));
@@ -539,6 +567,56 @@ describe('RunInspectorPage — Re-run button (eval-run mode)', () => {
 
     await waitFor(() => expect(screen.getByTestId('rerun-provenance-chip')).toBeTruthy());
     await waitFor(() => expect(screen.getByText(/re-run of Original Run/)).toBeTruthy());
+  });
+
+  // Papercut #2: a long source-run name used to blow the pill onto multiple
+  // lines and crowd the title above it. The chip must stay single-line
+  // (truncated label, bounded width) and the full source name must only
+  // ever show up in a tooltip -- never forcing a taller header.
+  it('keeps the re-run chip single-line and truncated, with the full source name only in the tooltip', async () => {
+    const { getEvaluationRun } = require('@/services/client');
+    const LONG_SOURCE_NAME = 'Regression sweep across the full staging benchmark with trajectory capture and judge validation enabled end to end';
+    getEvaluationRun
+      .mockResolvedValueOnce({
+        id: 'eval-run-1',
+        docType: 'evaluation-run',
+        name: 'Claude…',
+        agentKey: 'demo',
+        modelId: 'model-1',
+        createdAt: '2024-01-01T00:00:00Z',
+        status: 'completed',
+        sources: [],
+        trigger: 'ui',
+        testCaseSnapshots: [],
+        results: {},
+        rerunOf: 'eval-run-0',
+      })
+      .mockResolvedValueOnce({ id: 'eval-run-0', name: LONG_SOURCE_NAME });
+
+    mockTestCasesGetByIds.mockResolvedValue([]);
+    mockGetReportSummariesByIds.mockResolvedValue({});
+
+    renderPage();
+
+    const chip = await screen.findByTestId('rerun-provenance-chip');
+    // Single-line, bounded width: `truncate` + a max-width class on the
+    // chip itself, not left to grow (and wrap) with the source name length.
+    expect(chip.className).toMatch(/max-w-\[\d+px\]/);
+    // The visible label lives on an inner span that truncates on overflow --
+    // the CHIP truncates, not the run title. The source-run-name fetch
+    // resolves asynchronously, so wait for it to land in the label.
+    await waitFor(() => expect(chip.querySelector('span')?.textContent).toContain(LONG_SOURCE_NAME));
+    const label = chip.querySelector('span');
+    expect(label?.className).toMatch(/truncate/);
+    // The full source name is only reachable via the tooltip.
+    expect(chip.getAttribute('title')).toContain(LONG_SOURCE_NAME);
+
+    // The rename field (the run's own title) keeps its `truncate` class and
+    // gets its own tooltip with the full (untruncated) name -- the chip
+    // does not eat into its space.
+    const titleText = screen.getByTestId('run-inspector-rename-text');
+    expect(titleText.className).toMatch(/truncate/);
+    expect(titleText.getAttribute('title')).toBe('Claude…');
   });
 
   it('shows missing-source style when rerunOf source run no longer exists', async () => {

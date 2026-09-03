@@ -488,25 +488,30 @@ export const RunInspectorPage: React.FC = () => {
                 testId="run-inspector-rename"
               />
             ) : (
-              <h2 className="text-lg font-bold truncate">{run.name}</h2>
+              <h2 className="text-lg font-bold truncate" title={run.name}>{run.name}</h2>
             )}
             {/* Provenance chip visibility is a DOC concern (does this run
                 object actually carry rerunOf data?), not a route concern --
-                isEvaluationRun() narrows `run` so `.rerunOf` is type-safe. */}
+                isEvaluationRun() narrows `run` so `.rerunOf` is type-safe.
+                Kept SINGLE LINE and truncated (max-w + truncate on the label
+                span) on purpose: a long source-run name used to wrap the
+                whole pill onto multiple lines and crowd the title above it
+                out of its space. The full source name only shows up in the
+                title tooltip now -- the title/rename field gets the room. */}
             {evalRun?.rerunOf && (
               <div className="mt-1 flex items-center">
                 <button
                   data-testid="rerun-provenance-chip"
                   className={sourceRunMissing
-                    ? 'inline-flex items-center gap-1 rounded-full border border-muted-foreground/30 bg-muted/40 text-muted-foreground text-xs px-2 py-0.5 hover:bg-muted/60 transition-colors'
-                    : 'inline-flex items-center gap-1 rounded-full border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-xs px-2 py-0.5 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors'}
+                    ? 'inline-flex items-center gap-1 max-w-[220px] rounded-full border border-muted-foreground/30 bg-muted/40 text-muted-foreground text-xs px-2 py-0.5 hover:bg-muted/60 transition-colors'
+                    : 'inline-flex items-center gap-1 max-w-[220px] rounded-full border border-blue-200 dark:border-blue-800 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 text-xs px-2 py-0.5 hover:bg-blue-100 dark:hover:bg-blue-900/40 transition-colors'}
                   onClick={() => navigate(`/evaluations/runs/${evalRun.rerunOf}`)}
                   title={sourceRunMissing
                     ? 'This run was created as a re-run, but the source run no longer exists'
-                    : 'This run was created as a re-run of the linked source run'}
+                    : `Re-run of "${sourceRunName || evalRun.rerunOf}"`}
                 >
-                  <Link2 size={11} />
-                  re-run of {sourceRunName || evalRun.rerunOf?.slice(0, 8)}
+                  <Link2 size={11} className="shrink-0" />
+                  <span className="truncate">re-run of {sourceRunName || evalRun.rerunOf?.slice(0, 8)}</span>
                 </button>
               </div>
             )}
