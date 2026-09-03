@@ -41,7 +41,7 @@ import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
 import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, Evaluator, EvaluationRun } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { ENV_CONFIG } from '@/lib/config';
-import { formatDate, getModelName, getJudgeModelLabel, getEvaluatorLabel } from '@/lib/utils';
+import { formatDate, getModelName } from '@/lib/utils';
 import { Breadcrumbs } from '@/components/evals3/Breadcrumbs';
 import {
   computeVersionData,
@@ -369,8 +369,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
   const allRows = useMemo<RunTableRow[]>(() => filteredRuns.map(run => buildRunTableRow(run, {
     agentName: key => DEFAULT_CONFIG.agents.find(a => a.key === key)?.name || key || 'Unknown',
     modelName: id => getModelName(id),
-    judgeLabel: id => getJudgeModelLabel(id),
-    evaluatorLabel: id => getEvaluatorLabel(id, evaluatorNames),
+    // Judge model ids share DEFAULT_CONFIG.models with agent model ids; an
+    // evaluator that was deleted since the run falls back to its raw id.
+    judgeLabel: id => (id ? getModelName(id) : '—'),
+    evaluatorLabel: id => (id ? evaluatorNames.get(id) || id : '—'),
   })), [filteredRuns, evaluatorNames]);
 
   const visibleRows = useMemo(
