@@ -246,6 +246,46 @@ describe('recoverOrphanBenchmarkRuns', () => {
     expect(stat.staleRuns).toBe(0);
     expect(updateCalls).toHaveLength(0);
     expect(storage.benchmarks.getAll).not.toHaveBeenCalled();
+    // Regression guard (F10): the returned stat must carry a distinct
+    // "disabled" marker so the boot log line doesn't look identical to a
+    // real scan that happened to find zero orphans.
+    expect(stat.disabled).toBe(true);
+  });
+});
+
+describe('recoverOrphanBenchmarkRunsSafely boot log (F10 regression)', () => {
+  let logSpy: jest.SpyInstance;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    logSpy = jest.spyOn(console, 'log').mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    logSpy.mockRestore();
+    delete process.env.BENCHMARK_RUN_RECOVERY_DISABLED;
+  });
+
+  it('logs a distinct "recovery disabled via env" line when BENCHMARK_RUN_RECOVERY_DISABLED=1, never the ambiguous "no orphan running runs" line', async () => {
+    process.env.BENCHMARK_RUN_RECOVERY_DISABLED = '1';
+    const { storage } = mockStorage({ benchmarks: [] });
+
+    await recoverOrphanBenchmarkRunsSafely(storage);
+
+    const logged = logSpy.mock.calls.map((args) => args.join(' '));
+    expect(logged.some((line) => line.includes('recovery disabled via env'))).toBe(true);
+    expect(logged.some((line) => line.includes('no orphan running runs'))).toBe(false);
+  });
+
+  it('logs the normal "no orphan running runs" line when recovery actually ran and found nothing (unchanged behavior)', async () => {
+    delete process.env.BENCHMARK_RUN_RECOVERY_DISABLED;
+    const { storage } = mockStorage({ benchmarks: [] });
+
+    await recoverOrphanBenchmarkRunsSafely(storage);
+
+    const logged = logSpy.mock.calls.map((args) => args.join(' '));
+    expect(logged.some((line) => line.includes('no orphan running runs'))).toBe(true);
+    expect(logged.some((line) => line.includes('recovery disabled via env'))).toBe(false);
   });
 });
 

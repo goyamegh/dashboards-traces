@@ -55,6 +55,14 @@ export interface BenchmarkRunRecoveryStat {
   runsMarkedFailed: number;
   errors: number;
   durationMs: number;
+  /**
+   * True when recovery was short-circuited by BENCHMARK_RUN_RECOVERY_DISABLED=1
+   * rather than actually scanning storage and finding zero orphans. Lets the
+   * boot log line distinguish "disabled" from "scanned, found nothing" —
+   * previously both printed the identical `no orphan running runs [0ms]`
+   * message.
+   */
+  disabled?: boolean;
 }
 
 /**
@@ -75,6 +83,7 @@ export async function recoverOrphanBenchmarkRuns(storage: IStorageModule): Promi
 
   if (process.env.BENCHMARK_RUN_RECOVERY_DISABLED === '1') {
     stat.durationMs = Date.now() - startedAt;
+    stat.disabled = true;
     return stat;
   }
 
@@ -192,7 +201,9 @@ export async function recoverOrphanBenchmarkRuns(storage: IStorageModule): Promi
 export async function recoverOrphanBenchmarkRunsSafely(storage: IStorageModule): Promise<void> {
   try {
     const stat = await recoverOrphanBenchmarkRuns(storage);
-    if (stat.staleRuns === 0 && stat.errors === 0) {
+    if (stat.disabled) {
+      console.log('[benchmarkRunRecovery] recovery disabled via env (BENCHMARK_RUN_RECOVERY_DISABLED=1)');
+    } else if (stat.staleRuns === 0 && stat.errors === 0) {
       console.log(
         `[benchmarkRunRecovery] benchmarks=${stat.scannedBenchmarks} runs=${stat.scannedRuns} no orphan running runs [${stat.durationMs}ms]`
       );

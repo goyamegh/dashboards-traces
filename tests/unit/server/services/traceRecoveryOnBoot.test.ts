@@ -328,6 +328,8 @@ describe('resumePendingTracePolls', () => {
     expect(updateCalls).toHaveLength(0);
     expect(startPollingMock).not.toHaveBeenCalled();
     expect(storage.runs.getAll).not.toHaveBeenCalled();
+    // Regression guard (F10): distinguish "disabled" from "scanned, found nothing".
+    expect(stat.disabled).toBe(true);
   });
 
   it('handles failure of test case lookup as a recoverable error', async () => {
@@ -373,5 +375,19 @@ describe('resumePendingTracePollsSafely', () => {
     const summary = log.mock.calls.map(c => c.join(' ')).find(line => line.includes('[traceRecovery]'));
     expect(summary).toBeDefined();
     log.mockRestore();
+  });
+
+  it('logs a distinct "recovery disabled via env" line when TRACE_RECOVERY_DISABLED=1, never the ambiguous "no orphan pending reports" line (F10 regression)', async () => {
+    process.env.TRACE_RECOVERY_DISABLED = '1';
+    const { storage } = mockStorage({ reports: [] });
+    const log = jest.spyOn(console, 'log').mockImplementation(() => {});
+
+    await resumePendingTracePollsSafely(storage);
+
+    const logged = log.mock.calls.map((args) => args.join(' '));
+    expect(logged.some((line) => line.includes('recovery disabled via env'))).toBe(true);
+    expect(logged.some((line) => line.includes('no orphan pending reports'))).toBe(false);
+    log.mockRestore();
+    delete process.env.TRACE_RECOVERY_DISABLED;
   });
 });

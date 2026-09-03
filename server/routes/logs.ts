@@ -18,7 +18,41 @@ const router = Router();
  */
 router.post('/api/logs', async (req: Request, res: Response) => {
   try {
-    const { runId, query, startTime, endTime, size = 100 } = req.body;
+    if (!req.body || typeof req.body !== 'object' || Array.isArray(req.body)) {
+      return res.status(400).json({ error: 'Request body must be a JSON object' });
+    }
+
+    const { runId, query, startTime, endTime, size: rawSize } = req.body;
+
+    // Regression guard (API KPI probe finding, F9): every real caller of
+    // this route (query_logs judge/comparison tools) always scopes the
+    // query to a specific run — an empty/missing runId has no legitimate
+    // meaning here and previously fell through to an unscoped match-all
+    // query over the whole logs index.
+    if (!runId || typeof runId !== 'string' || !runId.trim()) {
+      return res.status(400).json({ error: 'runId is required and must be a non-empty string' });
+    }
+
+    // Codex review follow-up: size was passed straight through to the
+    // OpenSearch client with no bound, and startTime/endTime were never
+    // type-checked at all (services/logsService.ts's LogsQueryOptions
+    // declares both as `number` -- an OpenSearch date-math string or an
+    // out-of-range page size would either error deep in the client or,
+    // worse, silently fetch an enormous window/page.
+    let size = 100;
+    if (rawSize !== undefined) {
+      const parsed = Number(rawSize);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 1000) {
+        return res.status(400).json({ error: 'size must be an integer between 1 and 1000' });
+      }
+      size = parsed;
+    }
+    if (startTime !== undefined && typeof startTime !== 'number') {
+      return res.status(400).json({ error: 'startTime must be a number (epoch ms) when provided' });
+    }
+    if (endTime !== undefined && typeof endTime !== 'number') {
+      return res.status(400).json({ error: 'endTime must be a number (epoch ms) when provided' });
+    }
 
     const obs = getObservabilityClient(req);
     if (!obs) {

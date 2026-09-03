@@ -47,6 +47,25 @@ function isSampleId(id: string): boolean {
 }
 
 /**
+ * Validate a test case create body at the route layer.
+ *
+ * Mirrors the adapter-level check (`storage.testCases.create()` throws
+ * 'Test case name is required' — see server/adapters/opensearch/StorageModule.ts
+ * and server/adapters/file/StorageModule.ts) so an invalid body 400s here
+ * instead of falling through to the route's generic catch, which previously
+ * turned it into a 500.
+ */
+function validateTestCaseCreate(body: any): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return 'Request body must be a valid test case object';
+  }
+  if (!body.name || typeof body.name !== 'string' || !body.name.trim()) {
+    return 'Test case name is required';
+  }
+  return null;
+}
+
+/**
  * Convert sample test case format to full TestCase format
  */
 function toTestCase(sample: typeof SAMPLE_TEST_CASES[0]): TestCase {
@@ -325,6 +344,11 @@ router.post('/api/storage/test-cases', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Cannot create test case with demo- prefix (reserved for sample data)' });
     }
 
+    const validationError = validateTestCaseCreate(testCase);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
+    }
+
     const storage = getStorageModule();
     const created = await storage.testCases.create(testCase);
 
@@ -370,6 +394,14 @@ router.delete('/api/storage/test-cases/:id', async (req: Request, res: Response)
     const storage = getStorageModule();
     const result = await storage.testCases.delete(id);
 
+    // Regression guard (API KPI probe finding): standardize delete-of-
+    // nonexistent semantics across storage routes \u2014 404 like GET,
+    // instead of a lying 200 { deleted: 0 } that looks identical to a
+    // successful no-op delete.
+    if (!result.deleted) {
+      return res.status(404).json({ error: 'Test case not found' });
+    }
+
     debug('StorageAPI', `Deleted test case: ${id} (${result.deleted} versions)`);
     res.json(result);
   } catch (error: any) {
@@ -403,6 +435,20 @@ router.post('/api/storage/test-cases/bulk', async (req: Request, res: Response) 
     const hasDemoIds = testCases.some(tc => tc.id && isSampleId(tc.id));
     if (hasDemoIds) {
       return res.status(400).json({ error: 'Cannot create test cases with demo- prefix (reserved for sample data)' });
+    }
+
+    // Validate every item up front. bulkCreate() already tolerates per-item
+    // failures (counts them as errors), but bulkUpsert() does NOT catch
+    // per-item create() errors -- a nameless item on that path throws
+    // uncaught and would 500 the whole request. Reject the whole batch
+    // instead of letting a `{}` item slip through either path.
+    const invalidIndexes = testCases
+      .map((tc, i) => (validateTestCaseCreate(tc) === null ? -1 : i))
+      .filter((i) => i !== -1);
+    if (invalidIndexes.length > 0) {
+      return res.status(400).json({
+        error: `Test case name is required (invalid item(s) at index: ${invalidIndexes.join(', ')})`,
+      });
     }
 
     const storage = getStorageModule();
