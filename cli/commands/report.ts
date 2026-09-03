@@ -61,6 +61,7 @@ export function createReportCommand(): Command {
           `Failed to connect to server: ${error instanceof Error ? error.message : error}`
         );
         process.exit(1);
+        return;
       }
 
       const api = new ApiClient(serverResult.baseUrl);
@@ -76,6 +77,7 @@ export function createReportCommand(): Command {
           console.log(chalk.gray('    npx agent-health list benchmarks'));
           console.log('');
           process.exit(1);
+          return;
         }
         spinner.succeed(`Found benchmark: ${benchmark.name} (${benchmark.id})`);
 
@@ -95,6 +97,7 @@ export function createReportCommand(): Command {
           const errorBody = await response.json().catch(() => ({ error: 'Unknown error' }));
           reportSpinner.fail(`Report generation failed: ${errorBody.error}`);
           process.exit(1);
+          return;
         }
 
         // Get filename from Content-Disposition header or generate one
