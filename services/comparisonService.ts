@@ -75,18 +75,23 @@ export function calculateRunAggregates(
 
   // Accuracy is averaged over the *evaluated* reports only (exclude errored and
   // not-yet-evaluated / trace-pending), so placeholder zeros never drag it down.
+  // Only reports that actually CARRY a numeric `metrics.accuracy` participate:
+  // custom-evaluator reports score entirely different metric keys (e.g.
+  // fact_precision / provenance_verifiability) and have no accuracy field at
+  // all — the old `?? 0` fallback fabricated a "0%" Avg Accuracy for every
+  // custom-scored run on the compare page. When NO report in the run carries
+  // an accuracy score, avgAccuracy is undefined and renders "--", not 0%.
   let totalAccuracy = 0;
-  let completedCount = 0;
+  let accuracyCount = 0;
   for (const testCaseId of testCaseIds) {
     const result = run.results[testCaseId];
     const report = reports[result.reportId];
     if (!report) continue;
     if (report.metricsStatus === 'error' || report.metricsStatus === 'pending' || report.metricsStatus === 'calculating') continue;
-    completedCount++;
-    totalAccuracy += report.metrics?.accuracy ?? 0;
+    if (typeof report.metrics?.accuracy !== 'number') continue;
+    accuracyCount++;
+    totalAccuracy += report.metrics.accuracy;
   }
-
-  const count = completedCount || 1; // Avoid division by zero (accuracy: over evaluable)
   const evaluable = Math.max(0, testCaseIds.length - erroredCount);
 
   return {
@@ -99,7 +104,7 @@ export function calculateRunAggregates(
     passedCount,
     failedCount,
     erroredCount,
-    avgAccuracy: Math.round(totalAccuracy / count),
+    avgAccuracy: accuracyCount > 0 ? Math.round(totalAccuracy / accuracyCount) : undefined,
     passRatePercent: evaluable > 0 ? Math.round((passedCount / evaluable) * 100) : 0,
     // Trace metrics will be populated separately via fetchBatchMetrics
     totalTokens: undefined,

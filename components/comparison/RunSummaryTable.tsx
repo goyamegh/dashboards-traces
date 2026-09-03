@@ -145,7 +145,7 @@ const SUMMARY_ROWS: SummaryRow[] = [
     higherIsBetter: true,
     useHeatmap: true,
     showDelta: true,
-    getValue: (r) => `${r.avgAccuracy}%`,
+    getValue: (r) => r.avgAccuracy !== undefined ? `${r.avgAccuracy}%` : '--',
     getNumericValue: (r) => r.avgAccuracy,
   },
   {
@@ -282,7 +282,7 @@ export const RunSummaryTable: React.FC<RunSummaryTableProps> = ({
                   <span className="text-muted-foreground"> / {run.totalTestCases}</span>
                 </span>
                 <span className="font-medium" data-testid={`run-passrate-${run.runId}`}>{run.passRatePercent}%</span>
-                <span className="text-muted-foreground" data-testid={`run-accuracy-${run.runId}`}>Acc {run.avgAccuracy}%</span>
+                <span className="text-muted-foreground" data-testid={`run-accuracy-${run.runId}`}>Acc {run.avgAccuracy !== undefined ? `${run.avgAccuracy}%` : '--'}</span>
               </div>
             </div>
           );
