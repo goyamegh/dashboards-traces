@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { GitBranch, Scale, Activity } from 'lucide-react';
 import { EvaluationReport, BenchmarkRun } from '@/types';
@@ -35,9 +35,23 @@ export const UseCaseExpandedRow: React.FC<UseCaseExpandedRowProps> = ({
     if (spanDeepLink) setTab('traces');
   }, [spanDeepLink?.nonce]);
 
+  // The version a run in this row actually used, for the Task strip's
+  // "View full test case" hover preview (versioned correctness — a report
+  // reflects the test case AS IT WAS RUN, not today's edit). Picks the first
+  // run that actually ran this case and has a loaded report; undefined (falls
+  // back to current content) if nothing has loaded yet.
+  const referenceVersion = useMemo(() => {
+    for (const run of runs) {
+      const reportId = run.results?.[useCaseId]?.reportId;
+      const report = reportId ? reports[reportId] : undefined;
+      if (report?.testCaseVersion !== undefined) return report.testCaseVersion;
+    }
+    return undefined;
+  }, [runs, reports, useCaseId]);
+
   return (
     <div className="p-4 bg-muted/20 border-t border-border">
-      <TaskSection testCaseId={useCaseId} />
+      <TaskSection testCaseId={useCaseId} version={referenceVersion} />
       <Tabs value={tab} onValueChange={setTab} className="w-full">
         <TabsList className="mb-4">
           <TabsTrigger value="trajectory" className="gap-2">
