@@ -331,7 +331,7 @@ export const BenchmarksPage4: React.FC = () => {
           versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: createdIds }],
           testCaseIds: createdIds, runs: [],
         });
-        navigate(`/evaluations/benchmarks/${bm.id}/runs`);
+        navigate(`/evaluations/benchmarks/${bm.id}`);
       }
     } catch (err) { console.error('Import failed:', err); }
     finally { setIsImporting(false); event.target.value = ''; }
@@ -453,7 +453,7 @@ export const BenchmarksPage4: React.FC = () => {
                     const lr = stats?.latestRun;
                     return (
                       <tr key={bm.id} className="border-b hover:bg-muted/50 cursor-pointer transition-colors"
-                        onClick={() => navigate(`/evaluations/benchmarks/${bm.id}/runs`)}>
+                        onClick={() => navigate(`/evaluations/benchmarks/${bm.id}`)}>
                         <td className="px-2 py-1.5 align-middle">
                           <div className="flex items-center gap-1.5">
                             <div className="text-xs font-medium truncate max-w-[220px]">{bm.name}</div>
@@ -595,7 +595,7 @@ export const BenchmarksPage4: React.FC = () => {
                 // the version bump landed in the row badge. Only navigate
                 // away on a brand-new create.
                 if (!wasEditing) {
-                  navigate(`/evaluations/benchmarks/${bm.id}/runs`);
+                  navigate(`/evaluations/benchmarks/${bm.id}`);
                 }
               }}
               onSaveAndRun={async (bm: Benchmark, runConfigs: RunConfigForExecution[]) => {

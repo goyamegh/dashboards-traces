@@ -122,6 +122,10 @@ module.exports = {
     'components/TestCaseDefinition.tsx',
     'components/ContextDispositionGroups.tsx',
     'components/TestCaseDetailPanel.tsx',
+    // Benchmark case-review has focused RTL coverage for suite health,
+    // filtering, selected-case details, heat strips, and mobile paging.
+    'components/evals3/BenchmarkCaseDefinition.tsx',
+    'components/evals3/BenchmarkCasesTab.tsx',
     'components/evals3/CollapsibleTestCaseDefinition.tsx',
     // - MatcherResultsPanel.tsx (judge-tab WHY/FIX redesign, #454): the judge
     //   row rendering (score-suppression heuristic, why/fix panels, fact

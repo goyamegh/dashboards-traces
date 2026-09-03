@@ -4,26 +4,21 @@
  */
 
 /*
- * BenchmarkRunsPage V2 — Evals 3
+ * Benchmark detail — Evals 3
  *
- * Layout-aware: the user can choose between
- *   - "split" (default, restored)  : Test Cases (left)  |  Runs (right)
- *                                     resizable two-panel view (legacy /benchmarks/:id/runs)
- *   - "tabs"                       : two-tab view ("Runs" / "Test Cases")
- *                                     introduced by Evals3 "Option B"
- *
- * Choice is persisted in localStorage under `benchmark-runs:layoutMode`.
- * Same data model + backend as before (asyncBenchmarkStorage). Wired to Evals 3 only.
+ * Cases is the default master-detail review surface; Runs retains the existing
+ * execution/comparison actions and adds an aligned case-verdict heat strip.
+ * Route state keeps both tabs and selected cases deep-linkable.
  */
 
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { usePersistedState } from '@/hooks/usePersistedState';
 import { PREFS_KEYS } from '@/lib/preferences';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   GitCompare, Calendar, CheckCircle2, XCircle, Play,
-  Trash2, Plus, X, Loader2, Circle, Check, ChevronRight, Clock,
-  StopCircle, Ban, Columns2, LayoutPanelTop, Pencil, AlertTriangle,
+  Trash2, Plus, X, Loader2, Circle, Check, Clock,
+  StopCircle, Ban, Pencil, AlertTriangle,
 } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -36,26 +31,26 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { JudgeModelSelect } from '@/components/JudgeModelSelect';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
-import { asyncBenchmarkStorage, asyncTestCaseStorage } from '@/services/storage';
+import { asyncBenchmarkStorage, asyncRunStorage, asyncTestCaseStorage } from '@/services/storage';
 import { computeRunStats } from '@/lib/runStats';
 import { executeBenchmarkRun } from '@/services/client';
 import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
 import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, RunStats, Evaluator } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { ENV_CONFIG } from '@/lib/config';
-import { getLabelColor, formatDate, getModelName } from '@/lib/utils';
+import { formatDate, getModelName } from '@/lib/utils';
 import { Breadcrumbs } from '@/components/evals3/Breadcrumbs';
 import {
   computeVersionData,
-  getSelectedVersionData,
-  getVersionTestCases,
   filterRunsByVersion,
   effectiveRunVersionFilter,
   VersionData,
 } from '@/lib/benchmarkVersionUtils';
 import { RunConfigForExecution } from '@/components/BenchmarkEditor';
 import { BenchmarkEditor } from '@/components/BenchmarkEditor';
+import { BenchmarkCasesTab, CaseHeatStrip } from '@/components/evals3/BenchmarkCasesTab';
+import { getRecentCompletedRuns } from '@/lib/benchmarkCaseReview';
+import type { EvaluationReport } from '@/types';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -83,9 +78,11 @@ const getEffectiveRunStatus = (run: BenchmarkRun): BenchmarkRun['status'] => {
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export const BenchmarkRunsPage2: React.FC = () => {
-  const { benchmarkId } = useParams<{ benchmarkId: string }>();
+  const { benchmarkId, caseId } = useParams<{ benchmarkId: string; caseId?: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const parentPath = '/evaluations/benchmarks';
+  const activeTab = /\/runs(?:\/|$)/.test(location.pathname) ? 'runs' : 'cases';
 
   const [benchmark, setBenchmark] = useState<Benchmark | null>(null);
   const [testCases, setTestCases] = useState<TestCase[]>([]);
@@ -138,8 +135,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
     status: 'idle' | 'success' | 'error'; message: string;
   }>({ isDeleting: false, deletingId: null, status: 'idle', message: '' });
 
-  // Version state
-  const [testCaseVersion, setTestCaseVersion] = useState<number | null>(null);
+  // Version state for the Runs tab. Cases always reflect the benchmark's
+  // current canonical case order; historical run cells remain aligned to it
+  // (heat-strip click-through surfaces a per-run version notice instead —
+  // see caseVersionNotice below).
   // Persisted PER BENCHMARK — a single global key leaked a version filter set
   // on one benchmark (e.g. v8) onto every other benchmark, where it matched
   // nothing and rendered a bogus "No runs for v8" empty state that looked
@@ -161,19 +160,9 @@ export const BenchmarkRunsPage2: React.FC = () => {
     }
   }, [benchmark, runVersionFilter, rawRunVersionFilter, setRunVersionFilter]);
 
-  // Layout state — the legacy /benchmarks/:id/runs page used a side-by-side
-  // resizable split (Test Cases left, Runs right). The Evals3 "Option B" rewrite
-  // collapsed that into tabs (https://.../components/evals3/BenchmarkRunsPage.tsx,
-  // pre-restoration). Users relied on the split view to spot which test case a
-  // run touched without losing the runs context, so we restore it as the
-  // default and keep the tabs available behind a toggle.
-  const [layoutMode, setLayoutMode] = usePersistedState<'split' | 'tabs'>(
-    'benchmark-runs:layoutMode',
-    'split',
-  );
-
-  // Tab state (only used when layoutMode === 'tabs')
-  const [activeTab, setActiveTab] = usePersistedState<string>('benchmark-runs:activeTab', 'runs');
+  // Lightweight report summaries power both the five-run case sparklines and
+  // the per-run heat strips without adding a server endpoint.
+  const [reportSummaries, setReportSummaries] = useState<Record<string, EvaluationReport>>({});
 
   // Editor state — Edit Benchmark lives on this page (per user feedback the
   // pencil button on the list page was unexpected; users land on the benchmark
@@ -265,26 +254,55 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
   // ─── Derived Data ────────────────────────────────────────────────────────
 
-  const benchmarkTestCases = useMemo(() =>
-    testCases.filter(tc => (benchmark?.testCaseIds || []).includes(tc.id)),
-    [testCases, benchmark]
-  );
+  // Preserve benchmark.testCaseIds order: every heat-strip row must use the
+  // same canonical columns even when async storage returns definitions in a
+  // different order.
+  const benchmarkTestCases = useMemo(() => {
+    const byId = new Map(testCases.map(testCase => [testCase.id, testCase]));
+    return (benchmark?.testCaseIds || []).map(id => byId.get(id)).filter((testCase): testCase is TestCase => !!testCase);
+  }, [testCases, benchmark?.testCaseIds]);
 
   const versionData = useMemo<VersionData[]>(
     () => computeVersionData(benchmark), [benchmark]
   );
 
-  const selectedVersionData = useMemo(
-    () => getSelectedVersionData(versionData, testCaseVersion), [versionData, testCaseVersion]
-  );
-
-  const versionTestCases = useMemo(
-    () => getVersionTestCases(testCases, selectedVersionData), [selectedVersionData, testCases]
-  );
-
   const filteredRuns = useMemo(
     () => filterRunsByVersion(benchmark?.runs, runVersionFilter), [benchmark?.runs, runVersionFilter]
   );
+
+  const recentCompletedRuns = useMemo(
+    () => getRecentCompletedRuns(benchmark?.runs || [], 5),
+    [benchmark?.runs],
+  );
+
+  // Cases need only five runs, while the Runs tab needs every currently loaded
+  // row. The existing chunked summaries API works in both file and OpenSearch
+  // modes and omits trajectories/raw events from these requests.
+  const reportIdsForView = useMemo(() => {
+    const sourceRuns = activeTab === 'runs' ? filteredRuns : recentCompletedRuns;
+    return [...new Set(sourceRuns.flatMap(run =>
+      Object.values(run.results || {}).map(result => result.reportId).filter(Boolean)
+    ))];
+  }, [activeTab, filteredRuns, recentCompletedRuns]);
+  const reportIdsKey = reportIdsForView.join(',');
+
+  useEffect(() => {
+    let cancelled = false;
+    if (reportIdsForView.length === 0) {
+      setReportSummaries({});
+      return () => { cancelled = true; };
+    }
+    asyncRunStorage.getReportSummariesByIds(reportIdsForView)
+      .then(summaries => { if (!cancelled) setReportSummaries(summaries); })
+      .catch(error => {
+        console.error('Failed to load benchmark verdict summaries:', error);
+        if (!cancelled) setReportSummaries({});
+      });
+    return () => { cancelled = true; };
+    // reportIdsKey is the stable semantic dependency; the array is rebuilt by
+    // memo whenever the selected tab/run set changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reportIdsKey]);
 
   const hasMultipleVersions = versionData.length > 1;
 
@@ -468,7 +486,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
           { label: benchmark.name },
         ]}
         actions={<>
-          {hasMultipleRuns && (
+          {activeTab === 'runs' && hasMultipleRuns && (
             <>
               <Button variant="outline" size="sm" className="h-7 text-xs" onClick={handleToggleSelectAll}>
                 {selectedRunIds.length === runs.length
@@ -514,13 +532,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
         </p>
       </div>
 
-      {/* ── Layout-aware body (split | tabs) ──────────────────────────────
-         The legacy `/benchmarks/:id/runs` page used a side-by-side resizable
-         split (Test Cases left, Runs right) so users could see which test case
-         a run touched without losing the runs context. The Evals3 "Option B"
-         rewrite collapsed that into tabs and several users asked for the
-         split view back. We restore split as the default and keep tabs
-         available behind a toggle (persisted via `benchmark-runs:layoutMode`). */}
+      {/* Cases (default) and Runs are route-backed tabs. */}
       {(() => {
         // ── Reusable body fragments — identical in both layouts ──────────
         const runsBody = (
@@ -734,6 +746,16 @@ export const BenchmarkRunsPage2: React.FC = () => {
                           </Button>
                         </div>
                       </div>
+                      <div className="mt-3 pt-3 border-t">
+                        <div className="text-[10px] text-muted-foreground mb-1.5">Case verdicts · click a cell to review</div>
+                        <CaseHeatStrip
+                          benchmarkId={benchmark.id}
+                          run={run}
+                          testCases={benchmarkTestCases}
+                          reportsById={reportSummaries}
+                          onSelectCase={testCaseId => navigate(`/evaluations/benchmarks/${benchmark.id}/cases/${testCaseId}`)}
+                        />
+                      </div>
                     </CardContent>
                   </Card>
                 );
@@ -760,93 +782,18 @@ export const BenchmarkRunsPage2: React.FC = () => {
         );
 
         const testCasesBody = (
-          <>
-          {/* Version Metadata */}
-          {selectedVersionData && (
-            <div className="mb-4 p-3 rounded-lg border border-border bg-muted/20">
-              <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
-                <span className="flex items-center gap-1"><Calendar size={12} /> Created {formatDate(selectedVersionData.createdAt)}</span>
-                <span className="font-medium text-foreground">
-                  {versionTestCases.length} test case{versionTestCases.length !== 1 ? 's' : ''}
-                </span>
-                {(selectedVersionData.added.length > 0 || selectedVersionData.removed.length > 0) && (
-                  <>
-                    {selectedVersionData.added.length > 0 && (
-                      <span className="text-green-700 dark:text-green-400">+{selectedVersionData.added.length} added</span>
-                    )}
-                    {selectedVersionData.removed.length > 0 && (
-                      <span className="text-red-700 dark:text-red-400">-{selectedVersionData.removed.length} removed</span>
-                    )}
-                    <span>from v{selectedVersionData.version - 1}</span>
-                  </>
-                )}
-              </div>
-            </div>
-          )}
-
-          {/* Test Cases List */}
-          <div className="space-y-2">
-            {versionTestCases.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-16 text-muted-foreground">
-                <p className="text-sm">No test cases in this version</p>
-              </div>
-            ) : (
-              versionTestCases.map(tc => {
-                const isAddedInThisVersion = selectedVersionData?.added.includes(tc.id);
-                return (
-                  <Card
-                    key={tc.id}
-                    className={`cursor-pointer hover:border-primary/50 transition-colors ${
-                      isAddedInThisVersion ? 'border-green-500/30 bg-green-50 dark:bg-green-500/5' : ''
-                    }`}
-                    onClick={() => {
-                      const tcPath = `/evaluations/test-cases/${tc.id}`;
-                      navigate(tcPath);
-                    }}
-                  >
-                    <CardContent className="p-3">
-                      <div className="flex items-center justify-between">
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2">
-                            <p className="text-sm font-medium truncate">{tc.name}</p>
-                            {isAddedInThisVersion && (
-                              <Badge className="text-xs bg-green-100 text-green-700 border-green-300 dark:bg-green-500/20 dark:text-green-400 dark:border-green-500/30">
-                                new
-                              </Badge>
-                            )}
-                          </div>
-                          <div className="flex items-center gap-2 mt-1 flex-wrap">
-                            {(tc.labels || []).slice(0, 3).map(label => {
-                              const duplicatesStructuredFact = /^(category|difficulty):/i.test(label);
-                              return (
-                                <Badge
-                                  key={label}
-                                  className={`text-xs ${getLabelColor(label)} ${duplicatesStructuredFact ? 'max-md:hidden' : ''}`}
-                                >
-                                  {label}
-                                </Badge>
-                              );
-                            })}
-                            {(tc.labels || []).length > 3 && (
-                              <span className="text-xs text-muted-foreground">+{(tc.labels || []).length - 3}</span>
-                            )}
-                            {tc.category && (
-                              <span className="text-xs text-muted-foreground">· {tc.category}</span>
-                            )}
-                            {tc.difficulty && (
-                              <Badge variant="outline" className="text-[10px]">{tc.difficulty}</Badge>
-                            )}
-                          </div>
-                        </div>
-                        <ChevronRight size={16} className="text-muted-foreground flex-shrink-0" />
-                      </div>
-                    </CardContent>
-                  </Card>
-                );
-              })
-            )}
-          </div>
-          </>
+          <BenchmarkCasesTab
+            benchmarkId={benchmark.id}
+            testCases={benchmarkTestCases}
+            recentRuns={recentCompletedRuns}
+            allRuns={runs}
+            totalRuns={totalRuns || runs.length}
+            reportsById={reportSummaries}
+            selectedCaseId={caseId}
+            onSelectCase={testCaseId => navigate(`/evaluations/benchmarks/${benchmark.id}/cases/${testCaseId}`)}
+            onClearCase={() => navigate(`/evaluations/benchmarks/${benchmark.id}`)}
+            onOpenRuns={() => navigate(`/evaluations/benchmarks/${benchmark.id}/runs`)}
+          />
         );
 
         const runsVersionSelect = hasMultipleVersions ? (
@@ -868,117 +815,40 @@ export const BenchmarkRunsPage2: React.FC = () => {
           </Select>
         ) : null;
 
-        const testCasesVersionSelect = hasMultipleVersions ? (
-          <Select
-            value={testCaseVersion === null ? 'latest' : String(testCaseVersion)}
-            onValueChange={val => setTestCaseVersion(val === 'latest' ? null : Number(val))}
-          >
-            <SelectTrigger className="w-[140px] h-8 text-xs">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {versionData.map(v => (
-                <SelectItem key={v.version} value={v.isLatest ? 'latest' : String(v.version)}>
-                  v{v.version}{v.isLatest ? ' (latest)' : ''}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        ) : null;
-
-        const layoutToggle = (
-          <div className="inline-flex items-center rounded border border-border overflow-hidden" data-testid="layout-toggle">
-            <Button
-              type="button"
-              variant={layoutMode === 'split' ? 'secondary' : 'ghost'}
-              size="sm"
-              className="h-8 px-2 rounded-none border-0"
-              aria-label="Split view (Test Cases left, Runs right)"
-              aria-pressed={layoutMode === 'split'}
-              data-testid="layout-mode-split"
-              onClick={() => setLayoutMode('split')}
-              title="Split view"
-            >
-              <Columns2 size={14} />
-            </Button>
-            <Button
-              type="button"
-              variant={layoutMode === 'tabs' ? 'secondary' : 'ghost'}
-              size="sm"
-              className="h-8 px-2 rounded-none border-0"
-              aria-label="Tabbed view"
-              aria-pressed={layoutMode === 'tabs'}
-              data-testid="layout-mode-tabs"
-              onClick={() => setLayoutMode('tabs')}
-              title="Tabbed view"
-            >
-              <LayoutPanelTop size={14} />
-            </Button>
-          </div>
-        );
-
-        if (layoutMode === 'split') {
-          return (
-            <div className="flex-1 flex flex-col overflow-hidden max-md:overflow-visible" data-testid="benchmark-runs-split">
-              <div className="flex items-center justify-end mb-3">
-                {layoutToggle}
-              </div>
-              <ResizablePanelGroup direction="horizontal" className="flex-1 overflow-hidden max-md:!h-auto max-md:!overflow-visible">
-                {/* Left Panel — Test Cases */}
-                <ResizablePanel defaultSize={35} minSize={25} maxSize={55} className="max-md:!min-h-0 max-md:!h-auto max-md:!overflow-visible">
-                  <div className="h-full overflow-y-auto pr-3 max-md:h-auto max-md:overflow-visible max-md:pr-0">
-                    <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3 flex items-center justify-between max-md:static">
-                      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center">
-                        Test Cases
-                        {versionTestCases.length > 0 && (
-                          <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5 py-0">{versionTestCases.length}</Badge>
-                        )}
-                      </h3>
-                      {testCasesVersionSelect}
-                    </div>
-                    {testCasesBody}
-                  </div>
-                </ResizablePanel>
-                <ResizableHandle withHandle className="max-md:hidden" />
-                {/* Right Panel — Runs */}
-                <ResizablePanel defaultSize={65} minSize={45} className="max-md:!min-h-0 max-md:!h-auto max-md:!overflow-visible max-md:mt-5">
-                  <div className="h-full overflow-y-auto pl-3 max-md:h-auto max-md:overflow-visible max-md:pl-0">
-                    <div className="sticky top-0 z-10 bg-background pb-3 border-b border-border mb-3 flex items-center justify-between max-md:static">
-                      <h3 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground flex items-center">
-                        Runs
-                        {filteredRuns.length > 0 && (
-                          <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5 py-0">{filteredRuns.length}</Badge>
-                        )}
-                      </h3>
-                      {runsVersionSelect}
-                    </div>
-                    {runsBody}
-                  </div>
-                </ResizablePanel>
-              </ResizablePanelGroup>
-            </div>
-          );
-        }
-
-        // ── Tabs layout (legacy Evals3 "Option B") ──────────────────────
         return (
-          <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">
-            <div className="flex items-center justify-between mb-3">
+          <Tabs
+            value={activeTab}
+            onValueChange={value => navigate(value === 'runs'
+              ? `/evaluations/benchmarks/${benchmark.id}/runs`
+              : caseId
+                ? `/evaluations/benchmarks/${benchmark.id}/cases/${caseId}`
+                : `/evaluations/benchmarks/${benchmark.id}`
+            )}
+            className="flex-1 min-h-0 flex flex-col overflow-hidden max-md:overflow-visible"
+          >
+            <div className="flex items-center justify-between mb-3 shrink-0">
               <TabsList>
+                <TabsTrigger value="cases" className="text-xs">
+                  Cases {benchmarkTestCases.length > 0 && <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5 py-0">{benchmarkTestCases.length}</Badge>}
+                </TabsTrigger>
                 <TabsTrigger value="runs" className="text-xs">
                   Runs {filteredRuns.length > 0 && <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5 py-0">{filteredRuns.length}</Badge>}
                 </TabsTrigger>
-                <TabsTrigger value="test-cases" className="text-xs">
-                  Test Cases {versionTestCases.length > 0 && <Badge variant="secondary" className="ml-1.5 text-[10px] px-1.5 py-0">{versionTestCases.length}</Badge>}
-                </TabsTrigger>
               </TabsList>
-              <div className="flex items-center gap-2">
-                {activeTab === 'runs' ? runsVersionSelect : testCasesVersionSelect}
-                {layoutToggle}
-              </div>
+              {activeTab === 'runs' && runsVersionSelect}
             </div>
-            <TabsContent value="runs" className="flex-1 overflow-y-auto mt-0">{runsBody}</TabsContent>
-            <TabsContent value="test-cases" className="flex-1 overflow-y-auto mt-0">{testCasesBody}</TabsContent>
+            {/*
+              flex + flex-col here is required, not cosmetic: BenchmarkCasesTab's
+              root renders "flex-1 min-h-0" panes expecting a flex parent. Without
+              `display: flex` on this TabsContent, those classes are no-ops (they
+              only affect flex items), so the whole subtree grows to its natural
+              content height instead of being clamped to the tab's available
+              height — the aside's own `overflow-y-auto` never gets a bounded
+              box to scroll within, so nothing below the fold is reachable on
+              large benchmarks. See PR #447 review: "scrolling doesn't work".
+            */}
+            <TabsContent value="cases" className="flex-1 min-h-0 mt-0 flex flex-col overflow-hidden max-md:overflow-visible">{testCasesBody}</TabsContent>
+            <TabsContent value="runs" className="flex-1 min-h-0 overflow-y-auto mt-0">{runsBody}</TabsContent>
           </Tabs>
         );
       })()}

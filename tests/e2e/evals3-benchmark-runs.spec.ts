@@ -77,58 +77,27 @@ test.describe('Evals3 Benchmark Runs Page', () => {
     await expect(page.locator('button:has-text("Add Run")')).toBeVisible();
   });
 
-  test('should default to split layout (Test Cases left, Runs right)', async ({ page }) => {
+  test('should show the Runs tab active (heat-strip run list) via the legacy /runs deep link', async ({ page }) => {
     test.skip(!benchmarkId, 'No benchmark created');
-    // Wipe persisted layout pref so this asserts the *default*, not whatever the
-    // user happens to have saved.
+    // PR #447 superseded #399's split/tabs layout toggle with a fixed two-tab
+    // (Cases | Runs) layout, so the split container / layout-mode toggle no
+    // longer exist; the legacy `.../benchmarks/:id/runs` deep link now maps to
+    // the Runs tab being the active tab instead.
     await page.addInitScript(() => { try { localStorage.clear(); } catch {} });
     await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs`);
     await page.waitForSelector('h2', { timeout: 30000 });
 
-    // Split container present — this is the regression check for restoring the
-    // legacy two-panel layout (https://.../components/evals3/BenchmarkRunsPage.tsx).
-    await expect(page.locator('[data-testid="benchmark-runs-split"]')).toBeVisible();
+    const runsTab = page.locator('[role="tab"]:has-text("Runs")');
+    await expect(runsTab).toBeVisible();
+    await expect(runsTab).toHaveAttribute('aria-selected', 'true');
+    await expect(page.locator('[role="tab"]:has-text("Cases")')).toBeVisible();
+    await expect(page.locator('[data-testid="benchmark-runs-split"]')).toHaveCount(0);
+    await expect(page.locator('[data-testid="layout-mode-tabs"]')).toHaveCount(0);
 
-    // Both panel headers visible side-by-side.
-    await expect(page.locator('h3:has-text("Test Cases")')).toBeVisible();
-    await expect(page.locator('h3:has-text("Runs")')).toBeVisible();
-
-    // Tabs (TabsList) should NOT exist in split mode.
-    await expect(page.locator('[role="tablist"]')).toHaveCount(0);
-
-    // Layout toggle visible with Split active.
-    const splitToggle = page.locator('[data-testid="layout-mode-split"]');
-    await expect(splitToggle).toBeVisible();
-    await expect(splitToggle).toHaveAttribute('aria-pressed', 'true');
-  });
-
-  test('should switch to tabs layout when toggled and persist the choice', async ({ page }) => {
-    test.skip(!benchmarkId, 'No benchmark created');
-    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs`);
-    await page.waitForSelector('h2', { timeout: 30000 });
-    // Start from a known-clean layout preference. NOTE: clear ONCE here, not
-    // via addInitScript — an init script re-runs on the reload below and would
-    // wipe the very preference whose persistence we're asserting.
-    await page.evaluate(() => { try { localStorage.removeItem('benchmark-runs:layoutMode'); } catch {} });
+    // Reload — the tab reflects the URL (not a stale layout preference).
     await page.reload();
     await page.waitForSelector('h2', { timeout: 30000 });
-
-    // Click the tabs toggle.
-    await page.click('[data-testid="layout-mode-tabs"]');
-
-    // Tabs visible, split container gone.
-    await expect(page.locator('[role="tab"]:has-text("Runs")')).toBeVisible();
-    await expect(page.locator('[role="tab"]:has-text("Test Cases")')).toBeVisible();
-    await expect(page.locator('[data-testid="benchmark-runs-split"]')).toHaveCount(0);
-
-    // Toggle should be aria-pressed=true on the Tabs side.
-    await expect(page.locator('[data-testid="layout-mode-tabs"]')).toHaveAttribute('aria-pressed', 'true');
-
-    // Reload — the choice must persist via localStorage (`benchmark-runs:layoutMode`).
-    await page.reload();
-    await page.waitForSelector('h2', { timeout: 30000 });
-    await expect(page.locator('[role="tab"]:has-text("Runs")')).toBeVisible();
-    await expect(page.locator('[data-testid="benchmark-runs-split"]')).toHaveCount(0);
+    await expect(page.locator('[role="tab"]:has-text("Runs")')).toHaveAttribute('aria-selected', 'true');
   });
 
   test('should show breadcrumbs with navigation', async ({ page }) => {
