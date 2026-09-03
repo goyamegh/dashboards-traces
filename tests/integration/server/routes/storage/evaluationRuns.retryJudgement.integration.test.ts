@@ -232,8 +232,19 @@ describe('POST /api/storage/evaluation-runs/:id/retry-judgement', () => {
     expect(loserBody.error).toMatch(/already in progress/i);
 
     // Drain the winner's job so it doesn't race the next test's job map entry.
-    await pollRetryJudgement(run.id);
-  }, 30000);
+    //
+    // This job is genuinely bigger than the other tests' (CASE_COUNT=15,
+    // deliberately, to create the race window above) and the runner caps
+    // retry concurrency at 3 (MAX_RETRY_CONCURRENCY in
+    // services/evaluation/retryJudgement.ts) — five real sequential judge
+    // batches, not "a few ms". The poll helper's default budget
+    // (50 attempts x 100ms = 5s) was sized for the single-case near-instant
+    // case in the OTHER tests below and was flaky here (~2/3 failures
+    // locally: "did not complete within 50 polls" while the job was still
+    // legitimately draining, not stuck) — give this call a budget sized to
+    // its own workload instead of the default.
+    await pollRetryJudgement(run.id, 200);
+  }, 45000);
 
   it('retries only the judge-failed case, leaves the passed case untouched, and recomputes stats', async () => {
     if (!backendAvailable) return;
