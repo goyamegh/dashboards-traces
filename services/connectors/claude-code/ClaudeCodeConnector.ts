@@ -8,7 +8,7 @@
  * Specialized subprocess connector for Claude Code CLI
  */
 
-import type { TrajectoryStep } from '@/types';
+import type { AgentSessionInfo, TrajectoryStep } from '@/types';
 import { ToolCallStatus } from '@/types';
 import {
   SubprocessConnector,
@@ -33,6 +33,14 @@ import type {
 export const CLAUDE_CODE_MAX_TOOL_OUTPUT_CHARS = 32 * 1024;
 
 /**
+ * Upper bound on every list captured into {@link AgentSessionInfo} (tools,
+ * skills, plugins, denials, …) and on each captured string, so a session
+ * with an unusually large tool/skill inventory cannot bloat the run doc.
+ */
+export const AGENT_SESSION_MAX_LIST = 200;
+const AGENT_SESSION_MAX_STRING = 512;
+
+/**
  * Per-invocation parse state for one Claude Code subprocess. See
  * {@link SubprocessExecutionState} for why none of this may live on the
  * (singleton) connector instance.
@@ -49,6 +57,15 @@ interface ClaudeCodeExecutionState extends SubprocessExecutionState {
    * {@link extraResultMetadata} → `report.sessionId`.
    */
   sessionId?: string;
+  /**
+   * What this session had access to (from `system/init`) and what it did /
+   * was denied / cost (from `result` + observed `tool_use` blocks). Per
+   * invocation, like everything else here. Surfaced as
+   * `metadata.agentSession` → `report.agentSession`.
+   */
+  session?: AgentSessionInfo;
+  /** Per-tool count of `tool_result` blocks flagged `is_error`. */
+  toolErrorCounts: Map<string, number>;
   /**
    * `tool_use` blocks seen so far, keyed by their id, so the matching
    * `tool_result` block (which only carries `tool_use_id`) can be attributed
@@ -140,6 +157,92 @@ export function boundToolOutput(text: string, max: number = CLAUDE_CODE_MAX_TOOL
   return `${text.slice(0, max)}\n… [tool output truncated: showing ${max} of ${text.length} chars]`;
 }
 
+const str = (v: unknown): string | undefined =>
+  typeof v === 'string' && v ? v.slice(0, AGENT_SESSION_MAX_STRING) : undefined;
+const num = (v: unknown): number | undefined => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+/** Keep only non-empty strings, truncated and bounded in count. */
+const strList = (v: unknown): string[] | undefined =>
+  Array.isArray(v)
+    ? v.map(str).filter((s): s is string => s !== undefined).slice(0, AGENT_SESSION_MAX_LIST)
+    : undefined;
+/** Push `value` onto a first-use-ordered distinct list, honouring the bound. */
+function pushDistinct(list: string[], value: string | undefined): void {
+  if (value === undefined || list.includes(value) || list.length >= AGENT_SESSION_MAX_LIST) return;
+  list.push(value);
+}
+
+/** Project a Claude Code `system/init` event onto {@link AgentSessionInfo}. */
+function sessionInfoFromInit(event: any): AgentSessionInfo {
+  const info: AgentSessionInfo = {};
+  const set = <K extends keyof AgentSessionInfo>(k: K, v: AgentSessionInfo[K] | undefined) => {
+    if (v !== undefined) info[k] = v;
+  };
+  set('agentVersion', str(event.claude_code_version));
+  set('model', str(event.model));
+  set('permissionMode', str(event.permissionMode));
+  set('cwd', str(event.cwd));
+  set('tools', strList(event.tools));
+  set('skills', strList(event.skills));
+  set('agents', strList(event.agents));
+  set('memoryPaths', strList(event.memory_paths));
+  if (Array.isArray(event.plugins)) {
+    set(
+      'plugins',
+      event.plugins
+        .map((p: any) => ({ name: str(p?.name), source: str(p?.source) }))
+        .filter((p: any): p is { name: string; source?: string } => p.name !== undefined)
+        .map((p: { name: string; source?: string }) => (p.source ? p : { name: p.name }))
+        .slice(0, AGENT_SESSION_MAX_LIST)
+    );
+  }
+  if (Array.isArray(event.mcp_servers)) {
+    set(
+      'mcpServers',
+      event.mcp_servers
+        .map((m: any) => ({ name: str(m?.name), status: str(m?.status) }))
+        .filter((m: any): m is { name: string; status?: string } => m.name !== undefined)
+        .map((m: { name: string; status?: string }) => (m.status ? m : { name: m.name }))
+        .slice(0, AGENT_SESSION_MAX_LIST)
+    );
+  }
+  return info;
+}
+
+/** Fold a Claude Code `result` event's summary fields into `info` (in place). */
+function applyResultToSessionInfo(info: AgentSessionInfo, event: any): void {
+  const set = <K extends keyof AgentSessionInfo>(k: K, v: AgentSessionInfo[K] | undefined) => {
+    if (v !== undefined) info[k] = v;
+  };
+  set('numTurns', num(event.num_turns));
+  set('totalCostUsd', num(event.total_cost_usd));
+  set('durationMs', num(event.duration_ms));
+  set('durationApiMs', num(event.duration_api_ms));
+  if (typeof event.is_error === 'boolean') info.isError = event.is_error;
+  set('stopReason', str(event.stop_reason) ?? str(event.subtype));
+  if (event.usage && typeof event.usage === 'object') {
+    const u = event.usage;
+    const usage: NonNullable<AgentSessionInfo['usage']> = {};
+    if (num(u.input_tokens) !== undefined) usage.inputTokens = u.input_tokens;
+    if (num(u.output_tokens) !== undefined) usage.outputTokens = u.output_tokens;
+    if (num(u.cache_creation_input_tokens) !== undefined) usage.cacheCreationInputTokens = u.cache_creation_input_tokens;
+    if (num(u.cache_read_input_tokens) !== undefined) usage.cacheReadInputTokens = u.cache_read_input_tokens;
+    if (Object.keys(usage).length > 0) info.usage = usage;
+  }
+  if (Array.isArray(event.permission_denials)) {
+    // Keep the runtime's own objects (tool_name + tool_input) — they ARE the
+    // evidence of what the agent tried and could not do. Bounded like the rest.
+    info.permissionDenials = event.permission_denials
+      .filter((d: unknown) => d && typeof d === 'object')
+      .slice(0, AGENT_SESSION_MAX_LIST)
+      .map((d: any) => {
+        const json = JSON.stringify(d);
+        return json.length <= 4 * AGENT_SESSION_MAX_STRING
+          ? d
+          : { tool_name: d.tool_name, truncated: true, preview: json.slice(0, AGENT_SESSION_MAX_STRING) };
+      });
+  }
+}
+
 /**
  * Claude Code CLI Connector
  * Invokes Claude Code as a subprocess for agent evaluation
@@ -185,6 +288,7 @@ export class ClaudeCodeConnector extends SubprocessConnector<ClaudeCodeExecution
       thinkingBuffer: '',
       textBuffer: '',
       pendingToolUses: new Map(),
+      toolErrorCounts: new Map(),
     };
   }
 
@@ -238,6 +342,11 @@ export class ClaudeCodeConnector extends SubprocessConnector<ClaudeCodeExecution
       state.sessionId = event.session_id;
     }
 
+    // Session bootstrap: what this run HAD ACCESS TO. Emitted once, first.
+    if (event.type === 'system' && event.subtype === 'init') {
+      state.session = { ...sessionInfoFromInit(event), ...(state.session || {}) };
+    }
+
     // Handle different event types from Claude Code stream-json
     if (event.type === 'assistant' && event.message?.content) {
       for (const block of event.message.content) {
@@ -248,6 +357,13 @@ export class ClaudeCodeConnector extends SubprocessConnector<ClaudeCodeExecution
         } else if (block.type === 'tool_use') {
           if (typeof block.id === 'string' && block.id) {
             state.pendingToolUses.set(block.id, { name: block.name, input: block.input });
+          }
+          // What the agent actually USED, so the panel can diff it against
+          // what it was allowed (`tools`) and offered (`skills`).
+          state.session ??= {};
+          pushDistinct((state.session.toolsUsed ??= []), str(block.name));
+          if (block.name === 'Skill') {
+            pushDistinct((state.session.skillsInvoked ??= []), str(block.input?.skill));
           }
           steps.push(this.createStep('action', JSON.stringify(block.input || {}), {
             toolName: block.name,
@@ -272,6 +388,12 @@ export class ClaudeCodeConnector extends SubprocessConnector<ClaudeCodeExecution
           const paired =
             typeof block.tool_use_id === 'string' ? state.pendingToolUses.get(block.tool_use_id) : undefined;
           if (paired && typeof block.tool_use_id === 'string') state.pendingToolUses.delete(block.tool_use_id);
+          if (block.is_error && paired?.name) {
+            // A disallowed tool often never shows up in `permission_denials`
+            // (the agent probes via ToolSearch and gets an error result
+            // instead), so errored results are the second audit signal.
+            state.toolErrorCounts.set(paired.name, (state.toolErrorCounts.get(paired.name) || 0) + 1);
+          }
           const output = boundToolOutput(toolResultText(block, event));
           steps.push(
             this.createStep('tool_result', output, {
@@ -304,11 +426,15 @@ export class ClaudeCodeConnector extends SubprocessConnector<ClaudeCodeExecution
         steps.push(this.createStep('assistant', state.textBuffer));
         state.textBuffer = '';
       }
-    } else if (event.type === 'result' && event.result) {
-      // Final result message
-      steps.push(this.createStep('response',
-        typeof event.result === 'string' ? event.result : JSON.stringify(event.result)
-      ));
+    } else if (event.type === 'result') {
+      // Final summary: turns / cost / usage / permission denials / error flag.
+      state.session ??= {};
+      applyResultToSessionInfo(state.session, event);
+      if (event.result) {
+        steps.push(this.createStep('response',
+          typeof event.result === 'string' ? event.result : JSON.stringify(event.result)
+        ));
+      }
     }
 
     return steps;
@@ -503,15 +629,27 @@ export class ClaudeCodeConnector extends SubprocessConnector<ClaudeCodeExecution
   }
 
   /**
-   * Surface the captured Claude Code `session_id` so the runner can persist it
-   * as `report.sessionId` for Strategy D trace correlation. Read from the
-   * per-invocation state — never from the instance — so concurrent runs on
-   * the shared singleton can't swap session ids.
+   * Surface the captured Claude Code `session_id` (→ `report.sessionId`, for
+   * Strategy D trace correlation) and the session audit info (→
+   * `report.agentSession`: what the run had access to, what it used, what
+   * was denied, what it cost). Read from the per-invocation state — never
+   * from the instance — so concurrent runs on the shared singleton can't
+   * swap session ids or capabilities.
    */
   protected override extraResultMetadata(state: ClaudeCodeExecutionState): Record<string, any> {
+    let agentSession = state.session;
+    if (state.toolErrorCounts.size > 0) {
+      agentSession = {
+        ...(agentSession || {}),
+        toolErrors: [...state.toolErrorCounts.entries()]
+          .slice(0, AGENT_SESSION_MAX_LIST)
+          .map(([toolName, count]) => ({ toolName, count })),
+      };
+    }
     return {
       ...super.extraResultMetadata(state),
       ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+      ...(agentSession ? { agentSession } : {}),
     };
   }
 }

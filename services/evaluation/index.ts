@@ -9,7 +9,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { AgentConfig, EvaluationReport, TestCase, TrajectoryStep, OpenSearchLog, LLMJudgeResponse, ConnectorProtocol, BeforeRequestContext, AfterResponseContext, TestCasePerformanceMetrics } from '@/types';
+import { AgentConfig, AgentSessionInfo, EvaluationReport, TestCase, TrajectoryStep, OpenSearchLog, LLMJudgeResponse, ConnectorProtocol, BeforeRequestContext, AfterResponseContext, TestCasePerformanceMetrics } from '@/types';
 import { executeBeforeRequestHook, executeAfterResponseHook } from '@/lib/hooks';
 import { AGUIToTrajectoryConverter, consumeSSEStream, buildAgentPayload } from '@/services/agent';
 import { AGUIEvent } from '@/types/agui';
@@ -510,6 +510,7 @@ export async function runEvaluationWithConnector(
   let rawEvents: any[] = [];
   let agentRunId: string | null = null;
   let agentSessionId: string | undefined;
+  let agentSession: AgentSessionInfo | undefined;
 
   debug('Eval', 'Config:', { agent: agent.name, model: modelId, testCase: testCase.id });
 
@@ -530,6 +531,7 @@ export async function runEvaluationWithConnector(
     fullTrajectory = invocation.trajectory;
     agentRunId = invocation.runId;
     agentSessionId = invocation.metadata?.sessionId ?? undefined;
+    agentSession = invocation.metadata?.agentSession ?? undefined;
     rawEvents = invocation.rawEvents;
 
     debug('Eval', 'Trajectory captured:', fullTrajectory.length, 'steps');
@@ -559,6 +561,7 @@ export async function runEvaluationWithConnector(
         improvementStrategies: [],
         runId: agentRunId || undefined,
         sessionId: agentSessionId || undefined,
+        agentSession,
         rawEvents,
         connectorProtocol: connector.type as ConnectorProtocol,
         performanceMetrics: {
@@ -586,6 +589,7 @@ export async function runEvaluationWithConnector(
         improvementStrategies: [],
         runId: agentRunId || undefined,
         sessionId: agentSessionId || undefined,
+        agentSession,
         rawEvents,
         connectorProtocol: connector.type as ConnectorProtocol,
         performanceMetrics: {
@@ -733,6 +737,7 @@ export async function runEvaluationWithConnector(
       llmJudgeResponse,
       runId: agentRunId || undefined,
       sessionId: agentSessionId || undefined,
+      agentSession,
       rawEvents,
       connectorProtocol: connector.type as ConnectorProtocol,
       performanceMetrics: {

@@ -435,6 +435,7 @@ export async function executeEvaluationRun(
               report.rawEvents = inv.rawEvents;
               (report as any).runId = inv.runId ?? undefined;
               (report as any).sessionId = inv.metadata?.sessionId ?? undefined;
+              (report as any).agentSession = inv.metadata?.agentSession ?? undefined;
               report.performanceMetrics = {
                 durationMs: inv.agentDurationMs,
                 agentDurationMs: inv.agentDurationMs,

@@ -417,6 +417,70 @@ export interface SessionMetadata {
 // Metrics status for trace-mode runs (traces take ~5 min to propagate)
 export type MetricsStatus = 'pending' | 'calculating' | 'ready' | 'error';
 
+/**
+ * What the agent HAD ACCESS TO during a run and what it actually did with
+ * it — captured from the agent's own session bootstrap/summary so a run is
+ * auditable without inferring from the trajectory. All fields optional: the
+ * first producer is the Claude Code connector (from its stream-json
+ * `system/init` and `result` events); other connectors may fill a subset.
+ *
+ * Arrays are bounded by the producer (see `AGENT_SESSION_MAX_LIST`) so a
+ * pathological session cannot bloat the run document.
+ */
+export interface AgentSessionInfo {
+  /** Agent runtime version (e.g. Claude Code `claude_code_version`). */
+  agentVersion?: string;
+  /** Model the agent reported it ran with. */
+  model?: string;
+  /** Permission mode (e.g. `default`, `acceptEdits`, `bypassPermissions`). */
+  permissionMode?: string;
+  /** Working directory the agent ran in. */
+  cwd?: string;
+  /** Tools the agent had available. */
+  tools?: string[];
+  /** Distinct tools the agent actually invoked, in first-use order. */
+  toolsUsed?: string[];
+  /** Skills available to the agent. */
+  skills?: string[];
+  /** Skills the agent actually invoked (e.g. `Skill` tool_use inputs), first-use order. */
+  skillsInvoked?: string[];
+  /** Plugins loaded into the session (path dropped — name + source only). */
+  plugins?: Array<{ name: string; source?: string }>;
+  /** MCP servers attached to the session and their connection status. */
+  mcpServers?: Array<{ name: string; status?: string }>;
+  /** Sub-agents available to the session. */
+  agents?: string[];
+  /** Memory/instruction files the agent loaded (e.g. CLAUDE.md paths). */
+  memoryPaths?: string[];
+  /** Number of agent turns reported by the runtime. */
+  numTurns?: number;
+  /** Total cost in USD reported by the runtime. */
+  totalCostUsd?: number;
+  /** Wall-clock duration reported by the runtime (ms). */
+  durationMs?: number;
+  /** Time spent in model API calls reported by the runtime (ms). */
+  durationApiMs?: number;
+  /** Token usage reported by the runtime. */
+  usage?: {
+    inputTokens?: number;
+    outputTokens?: number;
+    cacheCreationInputTokens?: number;
+    cacheReadInputTokens?: number;
+  };
+  /**
+   * Actions the runtime refused because permission was not granted. Kept
+   * as the runtime's own objects (tool name + input) so nothing is lost;
+   * `tool_name` is the common key.
+   */
+  permissionDenials?: Array<Record<string, unknown>>;
+  /** Tool invocations that returned an error result (`tool_result.is_error`). */
+  toolErrors?: Array<{ toolName: string; count: number }>;
+  /** Whether the runtime reported the run as an error. */
+  isError?: boolean;
+  /** Runtime's stop reason / result subtype (e.g. `success`, `error_max_turns`). */
+  stopReason?: string;
+}
+
 // TestCaseRun = result of running a specific test case version (renamed from EvaluationReport)
 export interface TestCaseRun {
   id: string;
@@ -494,6 +558,12 @@ export interface TestCaseRun {
    * propagate W3C context or tag our `agent_health.run.id`.
    */
   sessionId?: string;
+  /**
+   * What the agent had access to (tools/skills/plugins/MCP servers/model/
+   * permission mode) and what it tried that was denied, plus cost/turns/
+   * usage — as reported by the agent runtime itself. See {@link AgentSessionInfo}.
+   */
+  agentSession?: AgentSessionInfo;
   logs?: OpenSearchLog[]; // OpenSearch logs for the run (master version)
   rawEvents?: any[]; // Raw AG UI events for debugging
   connectorProtocol?: ConnectorProtocol; // Protocol used to execute this run (for trajectory parsing)

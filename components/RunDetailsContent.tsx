@@ -65,6 +65,7 @@ import { Progress } from '@/components/ui/progress';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { CollapsibleTestCaseDefinition } from '@/components/evals3/CollapsibleTestCaseDefinition';
+import { AgentSessionPanel } from '@/components/AgentSessionPanel';
 
 interface RunDetailsContentProps {
   report: EvaluationReport;
@@ -827,6 +828,13 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
       {!hideMetrics && (
         <CollapsibleTestCaseDefinition testCase={testCase} />
       )}
+
+      {/* What the agent HAD ACCESS TO / USED / WAS DENIED in this run, as
+          reported by its runtime (Claude Code system/init + result events).
+          Renders nothing for reports without `agentSession`. Shown in every
+          embedding (standalone page, inspector panel, flyout) because it is
+          run-scoped evidence, not test-case metadata. */}
+      <AgentSessionPanel session={liveReport.agentSession ?? report.agentSession} />
 
       {/* Tabs */}
       <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col overflow-hidden">

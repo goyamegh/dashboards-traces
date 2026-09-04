@@ -172,6 +172,29 @@ export function getIndexMappings(): IndexMappings {
           passFailStatus: { type: 'keyword' },
           traceId: { type: 'keyword' },
           sessionId: { type: 'keyword' },
+          // Session audit (types/index.ts AgentSessionInfo): what the agent
+          // had access to / used / was denied, as reported by its runtime.
+          // `dynamic: false` so only the filter-worthy scalars/lists below
+          // are mapped; `permissionDenials[].tool_input` is arbitrary JSON
+          // and would otherwise mint a new field per distinct tool input.
+          // `_source` round-trips the full object regardless.
+          agentSession: {
+            dynamic: false,
+            properties: {
+              agentVersion: { type: 'keyword' },
+              model: { type: 'keyword' },
+              permissionMode: { type: 'keyword' },
+              tools: { type: 'keyword' },
+              toolsUsed: { type: 'keyword' },
+              skills: { type: 'keyword' },
+              skillsInvoked: { type: 'keyword' },
+              numTurns: { type: 'integer' },
+              totalCostUsd: { type: 'float' },
+              isError: { type: 'boolean' },
+              stopReason: { type: 'keyword' },
+              permissionDenials: { type: 'object', enabled: false },
+            },
+          },
           tags: { type: 'keyword' },
           actualOutcomes: { type: 'object', enabled: false },
           llmJudgeReasoning: { type: 'text' },

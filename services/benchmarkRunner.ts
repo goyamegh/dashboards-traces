@@ -431,6 +431,7 @@ export async function executeRun(
               (report as any).rawEvents = inv.rawEvents;
               (report as any).runId = inv.runId ?? undefined;
               (report as any).sessionId = inv.metadata?.sessionId ?? undefined;
+              (report as any).agentSession = inv.metadata?.agentSession ?? undefined;
               (report as any).performanceMetrics = {
                 durationMs: inv.agentDurationMs,
                 agentDurationMs: inv.agentDurationMs,
@@ -844,6 +845,8 @@ async function saveReportWithModule(storage: IStorageModule, report: any): Promi
     runId: report.runId,
     // Agent-emitted session id (Strategy D trace correlation, e.g. Claude Code).
     sessionId: report.sessionId,
+    // Session audit: what the agent had access to / used / was denied.
+    agentSession: report.agentSession,
     // Persist judgeModelId on the report so the run-detail UI can show
     // "agent: <m1> judge: <m2>" and the audit trail is intact. Inherits
     // from the run-level cx input (BenchmarkRun.judgeModelId).
@@ -964,6 +967,7 @@ export async function runSingleUseCase(
       runId: report.runId,
       // Agent-emitted session id (Strategy D trace correlation, e.g. Claude Code).
       sessionId: report.sessionId,
+      agentSession: report.agentSession,
       // Same fix as saveReportWithModule above — only stamp a real W3C
       // trace id, not the subprocess connector's run id.
       traceId: report.traceId || (report.spans?.[0] as any)?.traceId,

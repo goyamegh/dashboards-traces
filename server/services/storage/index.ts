@@ -211,6 +211,8 @@ export async function saveReportWithClient(
     passFailStatus: report.passFailStatus,
     traceId: report.runId,
     sessionId: report.sessionId,
+    // Session audit (what the agent had access to / used / was denied).
+    ...(report.agentSession !== undefined ? { agentSession: report.agentSession } : {}),
     tags: [],
     actualOutcomes: [],
     llmJudgeReasoning: report.llmJudgeReasoning,

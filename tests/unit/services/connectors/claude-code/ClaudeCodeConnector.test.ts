@@ -1358,4 +1358,193 @@ describe('ClaudeCodeConnector', () => {
       expect(boundToolOutput('abcd', 3)).toBe('abc\n… [tool output truncated: showing 3 of 4 chars]');
     });
   });
+
+  // Session audit: a run is only auditable if the report records what the
+  // agent HAD ACCESS TO (skills/plugins/tools/MCP servers/model/permission
+  // mode/version from `system/init`), what it USED (tool_use blocks), what
+  // it was DENIED (`result.permission_denials` + errored tool results), and
+  // what it COST (`result` turns/usd/usage). Pre-fix the connector kept only
+  // `session_id` and discarded all of it.
+  describe('agent session capture (metadata.agentSession)', () => {
+    const initEvent = {
+      type: 'system',
+      subtype: 'init',
+      session_id: 'sess-audit',
+      claude_code_version: '2.1.201',
+      model: 'claude-sonnet-4-5',
+      permissionMode: 'default',
+      cwd: '/work/repo',
+      tools: ['Read', 'Grep', 'Skill', 'ToolSearch', 'mcp__search__query'],
+      skills: ['opensearch-dsl', 'deep-research'],
+      plugins: [
+        { name: 'plugin-a', path: '/home/u/.claude/plugins/a', source: 'user' },
+        { name: 'plugin-b', path: '/home/u/.claude/plugins/b', source: 'marketplace' },
+      ],
+      mcp_servers: [{ name: 'search', status: 'connected' }, { name: 'broken', status: 'failed' }],
+      agents: ['Explore', 'Plan'],
+      memory_paths: ['/work/repo/CLAUDE.md'],
+      slash_commands: ['compact', 'help'],
+    };
+    const resultEvent = {
+      type: 'result',
+      subtype: 'success',
+      session_id: 'sess-audit',
+      is_error: false,
+      stop_reason: 'end_turn',
+      num_turns: 7,
+      total_cost_usd: 0.1234,
+      duration_ms: 12345,
+      duration_api_ms: 9876,
+      usage: { input_tokens: 100, output_tokens: 50, cache_creation_input_tokens: 20, cache_read_input_tokens: 30, server_tool_use: { web_search_requests: 0 } },
+      modelUsage: { 'claude-sonnet-4-5': { inputTokens: 100 } },
+      permission_denials: [{ tool_name: 'Bash', tool_use_id: 'toolu_denied', tool_input: { command: 'rm -rf /' } }],
+      result: 'done',
+    };
+    const ndjson = (...events: any[]) => events.map(e => JSON.stringify(e)).join('\n') + '\n';
+
+    const runWith = async (stdout: string) => {
+      setTimeout(() => {
+        mockProcess.stdout.emit('data', Buffer.from(stdout));
+        mockProcess.emit('close', 0, null);
+      }, 5);
+      return connector.execute('claude', { testCase: mockTestCase, modelId: 'm' }, mockAuth);
+    };
+
+    it('projects system/init onto agentSession (version, model, permission mode, tools, skills, plugins, MCP servers, agents, memory)', async () => {
+      const r = await runWith(ndjson(initEvent));
+      const s = r.metadata?.agentSession;
+      expect(r.metadata?.sessionId).toBe('sess-audit'); // unchanged top-level contract
+      expect(s).toMatchObject({
+        agentVersion: '2.1.201',
+        model: 'claude-sonnet-4-5',
+        permissionMode: 'default',
+        cwd: '/work/repo',
+        tools: ['Read', 'Grep', 'Skill', 'ToolSearch', 'mcp__search__query'],
+        skills: ['opensearch-dsl', 'deep-research'],
+        plugins: [{ name: 'plugin-a', source: 'user' }, { name: 'plugin-b', source: 'marketplace' }],
+        mcpServers: [{ name: 'search', status: 'connected' }, { name: 'broken', status: 'failed' }],
+        agents: ['Explore', 'Plan'],
+        memoryPaths: ['/work/repo/CLAUDE.md'],
+      });
+      // `path` is dropped (local filesystem detail), slash commands are not captured.
+      expect((s!.plugins![0] as any).path).toBeUndefined();
+      expect((s as any).slashCommands).toBeUndefined();
+    });
+
+    it('folds the result event into agentSession (turns, cost, durations, usage, denials, stop reason)', async () => {
+      const r = await runWith(ndjson(initEvent, resultEvent));
+      const s = r.metadata?.agentSession!;
+      expect(s.numTurns).toBe(7);
+      expect(s.totalCostUsd).toBe(0.1234);
+      expect(s.durationMs).toBe(12345);
+      expect(s.durationApiMs).toBe(9876);
+      expect(s.isError).toBe(false);
+      expect(s.stopReason).toBe('end_turn');
+      expect(s.usage).toEqual({ inputTokens: 100, outputTokens: 50, cacheCreationInputTokens: 20, cacheReadInputTokens: 30 });
+      expect(s.permissionDenials).toEqual([{ tool_name: 'Bash', tool_use_id: 'toolu_denied', tool_input: { command: 'rm -rf /' } }]);
+      // Init-derived capability lists survive the result merge.
+      expect(s.skills).toEqual(['opensearch-dsl', 'deep-research']);
+      // The response step is still emitted.
+      expect(r.trajectory.at(-1)).toMatchObject({ type: 'response', content: 'done' });
+    });
+
+    it('derives toolsUsed (distinct, first-use order), skillsInvoked, and toolErrors from tool_use / tool_result blocks', async () => {
+      const stdout = ndjson(
+        initEvent,
+        { type: 'assistant', session_id: 'sess-audit', message: { content: [
+          { type: 'tool_use', id: 't1', name: 'Skill', input: { skill: 'opensearch-dsl' } },
+          { type: 'tool_use', id: 't2', name: 'Read', input: { file_path: '/a' } },
+        ] } },
+        { type: 'user', session_id: 'sess-audit', message: { content: [
+          { type: 'tool_result', tool_use_id: 't1', content: 'skill loaded' },
+          { type: 'tool_result', tool_use_id: 't2', content: 'file' },
+        ] } },
+        { type: 'assistant', session_id: 'sess-audit', message: { content: [
+          { type: 'tool_use', id: 't3', name: 'Read', input: { file_path: '/b' } },
+          { type: 'tool_use', id: 't4', name: 'ToolSearch', input: { query: 'Bash' } },
+          { type: 'tool_use', id: 't5', name: 'ToolSearch', input: { query: 'Write' } },
+          { type: 'tool_use', id: 't6', name: 'Skill', input: { skill: 'not-offered' } },
+        ] } },
+        { type: 'user', session_id: 'sess-audit', message: { content: [
+          { type: 'tool_result', tool_use_id: 't3', content: 'file b' },
+          { type: 'tool_result', tool_use_id: 't4', is_error: true, content: 'No matching deferred tools found' },
+          { type: 'tool_result', tool_use_id: 't5', is_error: true, content: 'No matching deferred tools found' },
+          { type: 'tool_result', tool_use_id: 't6', content: 'ok' },
+        ] } },
+        resultEvent,
+      );
+      const r = await runWith(stdout);
+      const s = r.metadata?.agentSession!;
+      expect(s.toolsUsed).toEqual(['Skill', 'Read', 'ToolSearch']);
+      expect(s.skillsInvoked).toEqual(['opensearch-dsl', 'not-offered']);
+      expect(s.toolErrors).toEqual([{ toolName: 'ToolSearch', count: 2 }]);
+    });
+
+    it('tolerates a sparse init (no skills/plugins/tools) and a result without usage or denials', async () => {
+      const r = await runWith(ndjson(
+        { type: 'system', subtype: 'init', session_id: 'sess-sparse', model: 'm1' },
+        { type: 'result', subtype: 'error_max_turns', session_id: 'sess-sparse', is_error: true, num_turns: 3 },
+      ));
+      const s = r.metadata?.agentSession!;
+      expect(s).toEqual({ model: 'm1', numTurns: 3, isError: true, stopReason: 'error_max_turns' });
+      expect(s.skills).toBeUndefined();
+      expect(s.permissionDenials).toBeUndefined();
+    });
+
+    it('omits agentSession entirely when no init/result/tool_use was seen', async () => {
+      const r = await runWith('{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}\n');
+      expect(r.metadata?.agentSession).toBeUndefined();
+    });
+
+    it('bounds list sizes and ignores non-string entries', async () => {
+      const r = await runWith(ndjson({
+        type: 'system', subtype: 'init', session_id: 's',
+        tools: Array.from({ length: 500 }, (_, i) => `tool-${i}`),
+        skills: ['ok', 42, null, '', 'also-ok'],
+        plugins: [{ name: 'p' }, { nope: true }, null],
+        mcp_servers: [{ name: 'a' }, 'garbage'],
+      }));
+      const s = r.metadata?.agentSession!;
+      expect(s.tools).toHaveLength(200);
+      expect(s.skills).toEqual(['ok', 'also-ok']);
+      expect(s.plugins).toEqual([{ name: 'p' }]);
+      expect(s.mcpServers).toEqual([{ name: 'a' }]);
+    });
+
+    it('two interleaved executions on the shared singleton keep their OWN capabilities and denials', async () => {
+      const procs: any[] = [];
+      (spawn as jest.Mock).mockClear();
+      (spawn as jest.Mock).mockImplementation(() => {
+        const proc: any = new EventEmitter();
+        proc.stdout = new EventEmitter();
+        proc.stderr = new EventEmitter();
+        proc.stdin = { write: jest.fn(), end: jest.fn() };
+        proc.pid = 400 + procs.length;
+        proc.kill = jest.fn();
+        procs.push(proc);
+        return proc;
+      });
+      const e1 = connector.execute('claude', { testCase: { ...mockTestCase, id: 'tc-A' }, modelId: 'm' }, mockAuth);
+      const e2 = connector.execute('claude', { testCase: { ...mockTestCase, id: 'tc-B' }, modelId: 'm' }, mockAuth);
+      await new Promise((r) => setTimeout(r, 5));
+      const [pA, pB] = procs;
+
+      // A: init(skills A) + tool_use → B: init(skills B) → A: result(denial) + close → B: result + close
+      pA.stdout.emit('data', Buffer.from(ndjson({ type: 'system', subtype: 'init', session_id: 'sess-A', skills: ['skill-A'], tools: ['Read'] })));
+      pA.stdout.emit('data', Buffer.from(ndjson({ type: 'assistant', session_id: 'sess-A', message: { content: [{ type: 'tool_use', id: 'a1', name: 'Read', input: {} }] } })));
+      pB.stdout.emit('data', Buffer.from(ndjson({ type: 'system', subtype: 'init', session_id: 'sess-B', skills: ['skill-B'], tools: ['Grep'] })));
+      pA.stdout.emit('data', Buffer.from(ndjson({ type: 'result', session_id: 'sess-A', result: 'A', num_turns: 2, permission_denials: [{ tool_name: 'Bash' }] })));
+      pA.emit('close', 0, null);
+      const rA = await e1;
+      pB.stdout.emit('data', Buffer.from(ndjson({ type: 'assistant', session_id: 'sess-B', message: { content: [{ type: 'tool_use', id: 'b1', name: 'Grep', input: {} }] } })));
+      pB.stdout.emit('data', Buffer.from(ndjson({ type: 'result', session_id: 'sess-B', result: 'B', num_turns: 5, permission_denials: [] })));
+      pB.emit('close', 0, null);
+      const rB = await e2;
+
+      expect(rA.metadata?.agentSession).toMatchObject({ skills: ['skill-A'], tools: ['Read'], toolsUsed: ['Read'], numTurns: 2 });
+      expect(rA.metadata?.agentSession?.permissionDenials).toEqual([{ tool_name: 'Bash' }]);
+      expect(rB.metadata?.agentSession).toMatchObject({ skills: ['skill-B'], tools: ['Grep'], toolsUsed: ['Grep'], numTurns: 5, permissionDenials: [] });
+      expect(rB.metadata?.agentSession?.toolsUsed).not.toContain('Read');
+    });
+  });
 });
