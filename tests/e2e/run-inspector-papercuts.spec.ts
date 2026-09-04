@@ -4,17 +4,24 @@
  */
 
 /**
- * E2E: two run-inspector papercuts.
+ * E2E: run-inspector re-run provenance chip papercut.
  *
- * 1. Dead pane on load — the inspector opened with the case list already
- *    populated (failed/errored/passed rows) but the main pane still said
- *    "Select a test case" because nothing pre-selected the first row.
- * 2. Re-run provenance chip crowding the title — a long source-run name
- *    used to wrap the "re-run of <source>" pill onto multiple lines,
- *    fighting the (truncated) run title for vertical space. The identical
- *    chip exists on TWO pages -- RunInspectorPage.tsx's split-panel
- *    inspector (/evaluations/runs/:id/inspect) and EvalRunDetailPage.tsx's
- *    report page (/evaluations/runs/:id) -- both are covered below.
+ * Re-run provenance chip crowding the title — a long source-run name used
+ * to wrap the "re-run of <source>" pill onto multiple lines, fighting the
+ * (truncated) run title for vertical space. The identical chip exists on
+ * TWO pages -- RunInspectorPage.tsx's split-panel inspector
+ * (/evaluations/runs/:id/inspect) and EvalRunDetailPage.tsx's report page
+ * (/evaluations/runs/:id) -- both are covered below.
+ *
+ * NOTE: an earlier draft of this spec also carried a "Run inspector —
+ * auto-select first case on load" describe block, asserting that a bare
+ * run URL auto-selects the first case instead of showing the "Select a
+ * test case" pane. That assumption was superseded by the verdict-first
+ * run-report redesign (#443, landed on main after this branch was cut):
+ * a bare run URL now deliberately lands on the empty-selection overview
+ * pane (see the `initialSelectionDone` comment in RunInspectorPage.tsx).
+ * The block asserted the opposite of that intentional behavior and was
+ * dropped as stale scope rather than reintroduced as a regression.
  *
  * Data is seeded through the storage API and cleaned up via the shared
  * TestDataTracker + crash ledger (mirrors rerun-evaluation-run.spec.ts /
@@ -23,122 +30,6 @@
 
 import { test, expect } from './fixtures/test-fixtures';
 import { createTestDataTracker, uniqueTestName } from '../helpers/testDataTracker';
-
-test.describe('Run inspector — auto-select first case on load', () => {
-  const tracker = createTestDataTracker();
-  let runId: string | null = null;
-  let seeded = false;
-
-  test.beforeAll(async ({ request }) => {
-    const stamp = Date.now();
-    const testCaseIds: string[] = [];
-    const reportIds: string[] = [];
-
-    // Three test cases, one of each status so the left list shows a
-    // FAILED/ERRORED/PASSED mix, mirroring the owner's screenshot.
-    for (let i = 0; i < 3; i++) {
-      const tcRes = await request.post('/api/storage/test-cases', {
-        data: {
-          name: uniqueTestName(`inspector-papercut-tc-${i}`),
-          category: 'Test',
-          difficulty: 'Easy',
-          initialPrompt: 'p',
-          expectedOutcomes: ['o'],
-        },
-      });
-      if (!tcRes.ok()) return;
-      const tc = await tcRes.json();
-      const tcId = tc.id || tc.testCase?.id;
-      if (!tcId) return;
-      testCaseIds.push(tcId);
-      tracker.testCase(tcId);
-    }
-
-    const statuses: Array<{ passFailStatus: string | null; metricsStatus: string }> = [
-      { passFailStatus: 'failed', metricsStatus: 'ready' },
-      { passFailStatus: null, metricsStatus: 'error' },
-      { passFailStatus: 'passed', metricsStatus: 'ready' },
-    ];
-    testCaseIds.forEach((tcId, i) => {
-      reportIds.push(`report-e2e-inspector-papercut-${stamp}-${i}`);
-    });
-    const bulkRes = await request.post('/api/storage/runs/bulk', {
-      data: {
-        runs: testCaseIds.map((tcId, i) => ({
-          id: reportIds[i],
-          testCaseId: tcId,
-          testCaseVersionId: `${tcId}-v1`,
-          agentId: 'demo',
-          modelId: 'demo-model',
-          iteration: 1,
-          status: 'completed',
-          trajectory: [{ type: 'assistant', content: `step for ${tcId}` }],
-          ...statuses[i],
-        })),
-      },
-    });
-    tracker.trackAll('run', reportIds);
-    if (!bulkRes.ok()) return;
-
-    runId = `eval-run-e2e-inspector-papercut-${stamp}`;
-    const results: Record<string, { reportId: string; status: string }> = {};
-    testCaseIds.forEach((tcId, i) => { results[tcId] = { reportId: reportIds[i], status: 'completed' }; });
-    const runRes = await request.put(`/api/storage/evaluation-runs/${runId}`, {
-      data: {
-        id: runId,
-        name: uniqueTestName('inspector-papercut-run'),
-        status: 'completed',
-        agentKey: 'demo',
-        modelId: 'demo-model',
-        sources: [{ type: 'test-case-ids', ids: testCaseIds }],
-        trigger: 'api',
-        testCaseSnapshots: [],
-        results,
-        createdAt: new Date().toISOString(),
-      },
-    });
-    tracker.evaluationRun(runId);
-    seeded = runRes.ok();
-  });
-
-  test.afterAll(async () => {
-    await tracker.cleanup();
-  });
-
-  test('a case is auto-selected and its detail renders -- no dead "Select a test case" pane', async ({ page }) => {
-    test.skip(!seeded, 'Could not seed evaluation run (storage not configured?)');
-
-    await page.goto(`/evaluations/runs/${runId}/inspect`);
-    await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30_000 });
-
-    // List populated with the mixed statuses.
-    await expect(page.locator('[data-testid="test-case-row"]')).toHaveCount(3, { timeout: 30_000 });
-    await expect(page.locator('[data-testid="test-case-row"][data-status="failed"]')).toHaveCount(1);
-    await expect(page.locator('[data-testid="test-case-row"][data-status="errored"]')).toHaveCount(1);
-    await expect(page.locator('[data-testid="test-case-row"][data-status="passed"]')).toHaveCount(1);
-
-    // The dead-pane message never appears.
-    await expect(page.getByText('Select a test case')).toHaveCount(0);
-
-    // Some row is visually selected (blue left border) and the right pane
-    // shows real content, not the empty placeholder.
-    await expect(page.locator('[data-testid="test-case-row"].border-l-blue-500')).toHaveCount(1);
-  });
-
-  test('reloading the page keeps a case selected (no regression to the dead pane on refresh)', async ({ page }) => {
-    test.skip(!seeded, 'Could not seed evaluation run (storage not configured?)');
-
-    await page.goto(`/evaluations/runs/${runId}/inspect`);
-    await page.waitForSelector('[data-testid="sidebar"]', { timeout: 30_000 });
-    await expect(page.locator('[data-testid="test-case-row"]')).toHaveCount(3, { timeout: 30_000 });
-    await expect(page.getByText('Select a test case')).toHaveCount(0);
-
-    await page.reload();
-    await expect(page.locator('[data-testid="test-case-row"]')).toHaveCount(3, { timeout: 30_000 });
-    await expect(page.getByText('Select a test case')).toHaveCount(0);
-    await expect(page.locator('[data-testid="test-case-row"].border-l-blue-500')).toHaveCount(1);
-  });
-});
 
 test.describe('Run inspector — compact re-run provenance chip', () => {
   let testCaseId: string | null = null;

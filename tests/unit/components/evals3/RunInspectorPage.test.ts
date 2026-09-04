@@ -274,33 +274,15 @@ describe('RunInspectorPage — lazy report loading', () => {
     expect(screen.getByText(/Select a test case/i)).toBeTruthy();
   });
 
-  // Papercut #1: the inspector used to leave the main pane on "Select a
-  // test case" even though the left list was already populated (FAILED /
-  // ERRORED / PASSED rows all visible) -- nothing pre-selected the first
-  // row on initial load. Locks in the fix: the first row (list order --
-  // the simple default; deep links and user selection still win, covered
-  // by dedicated tests elsewhere in this file) is auto-selected as soon as
-  // results land, so the dead-pane message never appears when the list is
-  // non-empty.
-  it('auto-selects the first case on load -- never shows the dead "Select a test case" pane when the list is populated', async () => {
-    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(3));
-    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(3));
-    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(3, [1]));
-
-    renderPage();
-
-    await waitFor(() => expect(screen.getAllByTestId('test-case-row')).toHaveLength(3));
-
-    // First row (list order) is visually selected...
-    const rows = screen.getAllByTestId('test-case-row');
-    expect(rows[0].getAttribute('data-test-case-id')).toBe('tc-0');
-    expect(rows[0].className).toMatch(/border-l-blue-500/);
-
-    // ...and the detail pane renders real content instead of the
-    // "Select a test case" placeholder.
-    await waitFor(() => expect(screen.getByTestId('inspector-panel')).toBeTruthy());
-    expect(screen.queryByText('Select a test case')).toBeNull();
-  });
+  // NOTE: an earlier draft of this branch added a regression test here
+  // locking in "the inspector auto-selects the first case on load". That
+  // assumption was superseded by the verdict-first run-report redesign
+  // (#443, landed on main after this branch was cut): a bare run URL now
+  // deliberately lands on the "Select a test case" overview pane rather
+  // than auto-opening the first row (see the `initialSelectionDone`
+  // comment in RunInspectorPage.tsx). The removed test asserted the
+  // opposite of that intentional behavior and is dropped as stale scope
+  // rather than reintroduced as a regression.
 
   it('falls back to execution status when the summary batch fails', async () => {
     mockBenchmarkGetById.mockResolvedValue(makeBenchmark(3));
