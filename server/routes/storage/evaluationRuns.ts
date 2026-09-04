@@ -29,6 +29,7 @@ import { getCustomAgents } from '../../services/customAgentStore.js';
 import { resolveAgentModel } from '../../../lib/resolveAgentModel.js';
 import { computeImageDigest, buildImageDoc } from '../../../lib/benchmarkImage.js';
 import { validateRunNameUpdate } from '../../../lib/runName.js';
+import { finalizeEvaluationRun } from '../../../services/evaluationRunFinalize.js';
 
 const router = Router();
 
@@ -322,14 +323,22 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       const finalStatus = cancellationToken.isCancelled ? 'cancelled' : 'completed';
       const completedAt = new Date().toISOString();
 
-      // Link the terminal projection before finalizing the first-class run.
-      // If finalization crashes, retrying is safe because addRun is idempotent;
-      // a terminal evaluation-run can therefore never be orphaned from its benchmark.
+      // Terminal write: merge-if-absent results (+ `cancelled` markers for
+      // never-started cases), recompute stats from the PERSISTED doc, then a
+      // scripted partial status/stats/completedAt update — never a wholesale
+      // `results` overwrite. See services/evaluationRunFinalize.ts.
+      const finalized = await finalizeEvaluationRun(storage, {
+        runId, finalStatus, completedRun, completedAt,
+      });
+
+      // Link the terminal projection into the benchmark. addRun is idempotent,
+      // so a crash here can be retried without orphaning the run; the
+      // projection carries the reconciled (persisted) results and stats.
       if (benchmarkId) {
         const benchmarkRun: BenchmarkRun = {
           id: run.id, name: run.name, createdAt: run.createdAt, completedAt,
           status: finalStatus, agentKey: run.agentKey, modelId: run.modelId,
-          judgeModelId: run.judgeModelId, results: completedRun.results, stats: completedRun.stats,
+          judgeModelId: run.judgeModelId, results: finalized.run.results, stats: finalized.stats,
           ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
           ...(run.description ? { description: run.description } : {}),
           ...(run.evaluatorId ? { evaluatorId: run.evaluatorId } : {}),
@@ -341,11 +350,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
         if (!linked) throw new Error(`Benchmark not found while linking completed run: ${benchmarkId}`);
       }
 
-      const updatedRun = await storage.evaluationRuns.update(runId, {
-        status: finalStatus, stats: completedRun.stats, completedAt, results: completedRun.results,
-        ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
-      });
-      sendSSE(res, 'completed', updatedRun);
+      sendSSE(res, 'completed', finalized.run);
     } catch (error: any) {
       console.error(`[StorageAPI] Evaluation run failed: ${runId}`, error.message);
 
@@ -526,13 +531,7 @@ router.post('/api/storage/evaluation-runs/:id/rerun', async (req: Request, res: 
     })
       .then(async (completedRun) => {
         const finalStatus = cancellationToken.isCancelled ? 'cancelled' : 'completed';
-        await storage.evaluationRuns.update(newRunId, {
-          status: finalStatus,
-          stats: completedRun.stats,
-          completedAt: new Date().toISOString(),
-          results: completedRun.results,
-          ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
-        });
+        await finalizeEvaluationRun(storage, { runId: newRunId, finalStatus, completedRun });
       })
       .catch(async (error: any) => {
         console.error(`[StorageAPI] Rerun evaluation run failed: ${newRunId}`, error.message);
