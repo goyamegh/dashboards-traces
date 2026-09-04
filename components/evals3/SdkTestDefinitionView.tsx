@@ -117,7 +117,8 @@ export const SdkTestDefinitionView: React.FC<SdkTestDefinitionViewProps> = ({
           <AlertCircle size={12} className="shrink-0 mt-px text-amber-500" />
           <span>
             Per-test definition not captured at import — showing the whole eval file. Re-import this file
-            (<code className="font-mono">agent-health benchmark -f …</code>) to capture this test's options and evaluate function.
+            (<code className="font-mono">agent-health benchmark -f …</code>) to capture this test's options and evaluate
+            function; the record is backfilled in place, no new version.
           </span>
         </div>
         <EvalSourceCodeView testCase={testCase} maxHeight={maxHeight} />

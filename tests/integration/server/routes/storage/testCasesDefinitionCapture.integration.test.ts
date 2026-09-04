@@ -26,6 +26,10 @@
  *   3. A second import of the UNCHANGED file classifies every record as
  *      `unchanged` — same ids, same `currentVersion` — because `definition`
  *      is not part of `sourceHash`.
+ *   4. Backfill: a record persisted WITHOUT `definition` (imported before the
+ *      field existed) gains it on the next unchanged-file re-import, in place
+ *      — still `unchanged`, still version 1. This is the path the UI's
+ *      "re-import to capture" hint relies on.
  *
  * Prerequisites: backend reachable at AH_PORT (self-skips otherwise).
  * Cleanup: every id the backend returns is tracked and deleted by id.
@@ -169,6 +173,33 @@ describe('per-test definition capture — code import round-trip', () => {
       expect(tc.definition).toBeUndefined();
       expect(tc.sourceCode).toBeUndefined();
       expect(tc.sourceFile).toBe(`tests/fixtures/${salt}/definition-capture.eval.js`);
+    }
+  });
+
+  it('legacy records (no definition) are backfilled in place on the next unchanged re-import — still version 1', async () => {
+    if (!backendAvailable) return;
+
+    const legacySalt = `${salt}-legacy`;
+    const payload = await buildImportPayload(legacySalt);
+    // Simulate records persisted before the field existed.
+    const legacyPayload = payload.map(({ definition: _drop, ...rest }) => rest);
+    const first = (await postBulk(legacyPayload)).body;
+    expect(first.created).toBe(4);
+    for (const tc of first.testCases) expect(tc.definition).toBeUndefined();
+
+    const second = (await postBulk(payload)).body;
+    expect(second.created).toBe(0);
+    expect(second.updated).toBe(0);
+    expect(second.unchanged).toBe(4);
+    expect(second.testCases.map((tc: any) => tc.id).sort()).toEqual(first.testCases.map((tc: any) => tc.id).sort());
+
+    for (const tc of second.testCases) {
+      const fresh = await (await fetch(`${BASE_URL}/api/storage/test-cases/${encodeURIComponent(tc.id)}`)).json();
+      expect(fresh.currentVersion ?? fresh.version).toBe(1);
+      expect(fresh.definition?.registeredAs).toBe('sdk');
+      expect(typeof fresh.definition?.bodySource).toBe('string');
+      const versions = await (await fetch(`${BASE_URL}/api/storage/test-cases/${encodeURIComponent(tc.id)}/versions`)).json();
+      expect(versions.total).toBe(1);
     }
   });
 
