@@ -98,14 +98,10 @@ describe('ComparisonScoreboard structure', () => {
   });
 
   it('shows every RunAggregateMetrics metric directly on the run row', () => {
-    expect(src).toContain('>Pass Rate<');
-    expect(src).toContain('>Average accuracy<');
-    expect(src).toContain('Avg score');
-    expect(src).toContain('>Cost<');
-    expect(src).toContain('>Avg Duration<');
-    expect(src).toContain('>Tokens<');
-    expect(src).toContain('>LLM Calls<');
-    expect(src).toContain('>Tool Calls<');
+    // Headers are data-driven (SCOREBOARD_COLUMNS) so every one carries a tooltip.
+    for (const label of ['Pass Rate', 'Average accuracy', 'Avg score', 'Cost', 'Avg Duration', 'Tokens', 'LLM Calls', 'Tool Calls', 'Coverage']) {
+      expect(src).toContain(`label: '${label}'`);
+    }
     expect(src).toContain('run-passrate-${run.runId}');
     expect(src).toContain('run-accuracy-${run.runId}');
     expect(src).toContain('run-avgscore-${run.runId}');
@@ -157,9 +153,12 @@ describe('ComparisonScoreboard structure', () => {
     // which 404s (resolves only the SDK eval-run store) for benchmark run
     // ids. runBenchmarkIdById (per-run, since unscoped comparisons mix
     // benchmarks and ad-hoc eval-runs) now picks the right route.
+    // Route selection now lives in the shared runReportPath helper (also used
+    // by the run-name link and the per-case table headers).
     expect(src).toContain('runBenchmarkIdById');
-    expect(src).toContain('/evaluations/benchmarks/${benchmarkId}/runs/${run.runId}');
-    expect(src).toContain('/evaluations/runs/${run.runId}');
+    expect(src).toContain('/evaluations/benchmarks/${benchmarkId}/runs/${runId}');
+    expect(src).toContain('/evaluations/runs/${runId}');
+    expect(src).toContain('to={runReportPath(run.runId, benchmarkId)}');
     expect(src).toContain('data-testid={`open-run-${run.runId}`}');
   });
 });

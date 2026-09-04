@@ -176,4 +176,41 @@ test.describe('Comparison scoreboard — "Open run" deep link', () => {
     // Never routed through the benchmark path at all.
     await expect(page).not.toHaveURL(new RegExp(`/evaluations/benchmarks/${BENCH_ID}/runs`));
   });
+
+  test('run NAMES are links to the same run-report route (full name in title), and every column header has a one-line tooltip', async ({ page }) => {
+    await page.goto(`/compare?runs=${BENCH_RUN_ID},${ADHOC_RUN_ID}`);
+    await page.waitForSelector('[data-testid="comparison-scoreboard"]', { timeout: 30000 });
+
+    // Owner: "run names should be clickable to the run link, complete name
+    // should show up on hover" — the name anchor must agree with the icon.
+    const nameA = page.locator(`[data-testid="run-name-link-${BENCH_RUN_ID}"]`);
+    await expect(nameA).toHaveAttribute('href', `/evaluations/benchmarks/${BENCH_ID}/runs/${BENCH_RUN_ID}`);
+    await expect(nameA).toHaveAttribute('title', 'Benchmark Run');
+    const nameB = page.locator(`[data-testid="run-name-link-${ADHOC_RUN_ID}"]`);
+    await expect(nameB).toHaveAttribute('href', `/evaluations/runs/${ADHOC_RUN_ID}`);
+    await expect(nameB).toHaveAttribute('title', 'Ad-hoc Run');
+
+    // The per-case table's run headers link the same way.
+    const headerLinkA = page.locator(`[data-testid="case-table-run-link-${BENCH_RUN_ID}"]`);
+    await expect(headerLinkA).toHaveAttribute('href', `/evaluations/benchmarks/${BENCH_ID}/runs/${BENCH_RUN_ID}`);
+    await expect(headerLinkA).toHaveAttribute('title', 'Benchmark Run');
+
+    // Owner: "each column should be explainable by a hover with a one line
+    // description" — every labeled header carries a non-empty title.
+    const headers = page.locator('[data-testid="comparison-scoreboard"] thead th[data-testid^="scoreboard-col-"]');
+    await expect(headers).toHaveCount(10);
+    for (let i = 0; i < 10; i++) {
+      const title = await headers.nth(i).getAttribute('title');
+      expect(title, `header ${i} should have a tooltip`).toBeTruthy();
+      expect(title).not.toContain('\n');
+    }
+    await expect(page.locator('[data-testid="scoreboard-col-avgAccuracy"]')).toHaveAttribute(
+      'title', 'Mean of the judge-graded accuracy over test cases that report one');
+    await expect(page.locator('[data-testid="scoreboard-col-avgScore"]')).toHaveAttribute(
+      'title', 'Mean per-case overall score: accuracy if present, else primary rubric, else mean of all rubric metrics');
+
+    // Clicking the name navigates to the run report.
+    await nameA.click();
+    await page.waitForURL(`**/evaluations/benchmarks/${BENCH_ID}/runs/${BENCH_RUN_ID}/inspect`, { timeout: 15000 });
+  });
 });

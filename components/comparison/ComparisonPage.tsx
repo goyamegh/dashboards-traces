@@ -1027,6 +1027,7 @@ export const ComparisonPage: React.FC = () => {
                 trajectoryTargetTestCase={trajectoryTargetTestCase}
                 spanDeepLink={spanDeepLink}
                 windowAgentsByRunId={traceWindowAgents}
+                runBenchmarkIdById={runBenchmarkIdById}
                 onTrajectoryRequest={(testCaseId) => {
                   setTrajectoryTargetTestCase(testCaseId);
                   setTrajectoryRunPair(null);
