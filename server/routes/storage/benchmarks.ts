@@ -26,6 +26,8 @@ import {
 import { convertTestCasesToExportFormat, generateExportFilename } from '../../../lib/benchmarkExport.js';
 import { resolveCodeFnMapForStoredTestCases } from '../../../services/sourceResolver.js';
 import { computeImageDigest, buildImageDoc } from '../../../lib/benchmarkImage.js';
+import { loadConfigSync } from '../../../lib/config/index.js';
+import { getCustomAgents } from '../../services/customAgentStore.js';
 
 /**
  * Normalize benchmark data for legacy documents without version fields.
@@ -303,6 +305,30 @@ function isSampleId(id: string): boolean {
 }
 
 /**
+ * Validate a benchmark create body.
+ *
+ * Minimal required contract: `name` is a non-empty string, and `testCaseIds`
+ * (when present) is an array of strings. This mirrors validateRunConfig()
+ * below, which validates the `/execute` config, but guards the create route
+ * itself — previously an empty `{}` body silently persisted a nameless
+ * benchmark to the shared cluster.
+ */
+function validateBenchmarkCreate(body: any): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return 'Request body must be a valid benchmark object';
+  }
+  if (!body.name || typeof body.name !== 'string' || !body.name.trim()) {
+    return 'name is required and must be a non-empty string';
+  }
+  if (body.testCaseIds !== undefined) {
+    if (!Array.isArray(body.testCaseIds) || !body.testCaseIds.every((id: any) => typeof id === 'string' && id.trim().length > 0)) {
+      return 'testCaseIds must be an array of non-empty strings when provided';
+    }
+  }
+  return null;
+}
+
+/**
  * Validate run configuration input
  * Returns error message if invalid, null if valid
  */
@@ -328,6 +354,49 @@ function validateRunConfig(config: any): string | null {
     }
   }
   return null;
+}
+
+/**
+ * Resolve whether an agentKey refers to a configured agent (built-in from
+ * agent-health.config.ts/.js/env defaults, or a custom agent added via the
+ * Settings UI). Mirrors the EXACT resolution source both GET /api/agents
+ * AND services/benchmarkRunner.ts's buildAgentConfigForRun() use --
+ * `[...config.agents, ...getCustomAgents()].find(a => a.key === agentKey)`
+ * -- verified by reading buildAgentConfigForRun() directly: it is the one
+ * and only place executeRun() resolves an agentKey to a connector, and it
+ * does not consult remote servers, aliases, or any other source. So
+ * "known" here means exactly what would actually be executable, not an
+ * approximation.
+ *
+ * Also mirrors buildAgentConfigForRun()'s own defensive fallback
+ * (services/benchmarkRunner.ts's local getConfig() helper): loadConfigSync()
+ * is called OUTSIDE this route's try/catch (deliberately, so the check
+ * runs before any storage/benchmark lookup), so a config-load failure here
+ * must not throw an uncaught rejection out of an async Express 4 handler
+ * (which would hang the request rather than reach setupFinalErrorHandler).
+ * Fail closed to "not configured" instead, matching what executeRun()
+ * would do a moment later anyway.
+ *
+ * Regression guard for an API KPI probe finding: POST .../execute with a
+ * bogus agentKey used to sail past validateRunConfig() (which only checked
+ * the field was a non-empty string), start a real 30s+ run against a
+ * connector that would immediately fail, and persist a junk run entry on
+ * the benchmark before failing. Callers must check this BEFORE creating or
+ * persisting a run.
+ */
+function isKnownAgentKey(agentKey: string): boolean {
+  let config;
+  try {
+    config = loadConfigSync();
+  } catch {
+    return false;
+  }
+  if (config.agents.some(a => a.key === agentKey)) return true;
+  try {
+    return getCustomAgents().some(a => a.key === agentKey);
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -581,6 +650,11 @@ router.post('/api/storage/benchmarks', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Cannot create benchmark with demo- prefix (reserved for sample data)' });
     }
 
+    const validationError = validateBenchmarkCreate(benchmark);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
+    }
+
     const now = new Date().toISOString();
 
     // Initialize versioning - start at version 1
@@ -715,6 +789,17 @@ router.patch('/api/storage/benchmarks/:id/metadata', async (req: Request, res: R
 
     if (name === undefined && description === undefined) {
       return res.status(400).json({ error: 'Provide name and/or description to update' });
+    }
+
+    // Regression guard (API KPI probe finding): the route previously
+    // trusted `name`/`description` verbatim, so `{ name: 12345 }` persisted
+    // (and was returned back) as a number \u2014 type-confused metadata that
+    // breaks any consumer expecting a string.
+    if (name !== undefined && (typeof name !== 'string' || !name.trim())) {
+      return res.status(400).json({ error: 'name must be a non-empty string when provided' });
+    }
+    if (description !== undefined && typeof description !== 'string') {
+      return res.status(400).json({ error: 'description must be a string when provided' });
     }
 
     const storage = getStorageModule();
@@ -875,7 +960,16 @@ router.delete('/api/storage/benchmarks/:id', async (req: Request, res: Response)
     }
 
     const storage = getStorageModule();
-    await storage.benchmarks.delete(id);
+    const result = await storage.benchmarks.delete(id);
+
+    // Regression guard (API KPI probe finding): the delete() adapter call
+    // already returns { deleted: boolean } reflecting whether a document
+    // was actually found and removed, but this route used to ignore it and
+    // always answer 200 { deleted: true } \u2014 lying about deletes of
+    // nonexistent benchmarks even though GET correctly 404s for the same id.
+    if (!result.deleted) {
+      return res.status(404).json({ error: 'Benchmark not found' });
+    }
 
     debug('StorageAPI', `Deleted benchmark: ${id}`);
     res.json({ deleted: true });
@@ -902,8 +996,27 @@ router.post('/api/storage/benchmarks/bulk', async (req: Request, res: Response) 
       return res.status(400).json({ error: 'Cannot create benchmarks with demo- prefix (reserved for sample data)' });
     }
 
+    // Filter out invalid entries (e.g. `{}`) before persisting — the adapter's
+    // create() does not validate `name` itself, so without this guard a
+    // garbage item would silently persist a nameless benchmark.
+    //
+    // codex_review finding, applied: reporting these as a plain `errors`
+    // count made a silent drop indistinguishable from an adapter-level
+    // failure on an otherwise-valid item — a caller checking only
+    // `errors > 0` can't tell "N of your items were malformed" from "the
+    // adapter rejected N valid items". `invalid`/`invalidIndexes` (mirrors
+    // /test-cases/bulk's index-listing style) make the validation-drop
+    // count and its exact positions explicit and machine-readable, while
+    // `errors` keeps its original total-failures meaning for existing
+    // callers that only check that.
+    const invalidIndexes = benchmarks
+      .map((bench, i) => (validateBenchmarkCreate(bench) === null ? -1 : i))
+      .filter((i) => i !== -1);
+    const validBenchmarks = benchmarks.filter((_, i) => !invalidIndexes.includes(i));
+    const invalidCount = invalidIndexes.length;
+
     const now = new Date().toISOString();
-    const prepared = benchmarks.map(bench => {
+    const prepared = validBenchmarks.map(bench => {
       if (!bench.id) bench.id = generateId('bench');
       bench.createdAt = bench.createdAt || now;
       bench.updatedAt = bench.updatedAt || now;
@@ -924,8 +1037,13 @@ router.post('/api/storage/benchmarks/bulk', async (req: Request, res: Response) 
     const storage = getStorageModule();
     const result = await storage.benchmarks.bulkCreate(prepared);
 
-    debug('StorageAPI', `Bulk created ${result.created} benchmarks`);
-    res.json(result);
+    debug('StorageAPI', `Bulk created ${result.created} benchmarks (${invalidCount} rejected by validation)`);
+    res.json({
+      created: result.created,
+      errors: result.errors + invalidCount,
+      invalid: invalidCount,
+      invalidIndexes,
+    });
   } catch (error: any) {
     console.error('[StorageAPI] Bulk create benchmarks failed:', error.message);
     res.status(500).json({ error: error.message });
@@ -952,6 +1070,14 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
   const validationError = validateRunConfig(runConfig);
   if (validationError) {
     return res.status(400).json({ error: validationError });
+  }
+
+  // Resolve agentKey against configured agents (same source as GET /api/agents)
+  // BEFORE doing anything else. An unknown agentKey previously sailed through
+  // to executeRun(), which started a real 30s+ run and persisted a junk run
+  // entry before the connector eventually failed.
+  if (!isKnownAgentKey(runConfig.agentKey)) {
+    return res.status(400).json({ error: `Unknown agentKey: ${runConfig.agentKey}` });
   }
 
   // Require OpenSearch for execution

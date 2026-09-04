@@ -404,10 +404,10 @@ describe('Runs Storage Routes', () => {
     });
 
     it('should create new run', async () => {
-      const newRun = { id: 'run-123', testCaseId: 'tc-123', status: 'pending' };
+      const newRun = { id: 'run-123', testCaseId: 'tc-123', agentName: 'agent-a', modelName: 'model-a', status: 'pending' };
       mockRunsCreate.mockResolvedValue(newRun);
 
-      const { req, res } = createMocks({}, { testCaseId: 'tc-123' });
+      const { req, res } = createMocks({}, { testCaseId: 'tc-123', agentName: 'agent-a', modelName: 'model-a' });
       const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
 
       await handler(req, res);
@@ -415,6 +415,83 @@ describe('Runs Storage Routes', () => {
       expect(mockRunsCreate).toHaveBeenCalledWith(expect.objectContaining({ testCaseId: 'tc-123' }));
       expect(res.status).toHaveBeenCalledWith(201);
       expect(res.json).toHaveBeenCalledWith(newRun);
+    });
+
+    it('should reject an empty body with 400 and never call storage.runs.create (regression: previously 201 with an empty report doc)', async () => {
+      const { req, res } = createMocks({}, {});
+      const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsCreate).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ error: expect.stringContaining('testCaseId') })
+      );
+    });
+
+    it('should accept a body with only testCaseId (agentName/modelName are optional, display-only fields)', async () => {
+      mockRunsCreate.mockResolvedValue({ id: 'run-999', testCaseId: 'tc-123', status: 'pending' });
+      const { req, res } = createMocks({}, { testCaseId: 'tc-123' });
+      const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsCreate).toHaveBeenCalled();
+      expect(res.status).not.toHaveBeenCalledWith(400);
+    });
+
+    it('should reject a non-string agentName with 400 (regression guard for the relaxed-but-not-untyped contract)', async () => {
+      const { req, res } = createMocks({}, { testCaseId: 'tc-123', agentName: 12345 });
+      const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsCreate).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should reject a non-string modelName with 400', async () => {
+      const { req, res } = createMocks({}, { testCaseId: 'tc-123', modelName: { nested: true } });
+      const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsCreate).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should reject an empty-string agentName with 400 (codex_review finding: typeof-only check let "" through)', async () => {
+      const { req, res } = createMocks({}, { testCaseId: 'tc-123', agentName: '' });
+      const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsCreate).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should reject a whitespace-only modelName with 400', async () => {
+      const { req, res } = createMocks({}, { testCaseId: 'tc-123', modelName: '   ' });
+      const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsCreate).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should reject an invalid status value with 400', async () => {
+      const { req, res } = createMocks(
+        {},
+        { testCaseId: 'tc-123', agentName: 'agent-a', modelName: 'model-a', status: 'bogus' }
+      );
+      const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
+
+      await handler(req, res);
+
+      expect(mockRunsCreate).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
     });
   });
 
@@ -941,8 +1018,8 @@ describe('Runs Storage Routes', () => {
 
       const { req, res } = createMocks({}, {
         runs: [
-          { testCaseId: 'tc-1' },
-          { testCaseId: 'tc-2' },
+          { testCaseId: 'tc-1', agentName: 'agent-a', modelName: 'model-a' },
+          { testCaseId: 'tc-2', agentName: 'agent-a', modelName: 'model-a' },
         ],
       });
       const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs/bulk');
@@ -950,14 +1027,54 @@ describe('Runs Storage Routes', () => {
       await handler(req, res);
 
       expect(mockRunsBulkCreate).toHaveBeenCalledWith([
-        { testCaseId: 'tc-1' },
-        { testCaseId: 'tc-2' },
+        { testCaseId: 'tc-1', agentName: 'agent-a', modelName: 'model-a' },
+        { testCaseId: 'tc-2', agentName: 'agent-a', modelName: 'model-a' },
       ]);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           created: 2,
           errors: 0,
         })
+      );
+    });
+
+    it('should filter out invalid items before calling storage.runs.bulkCreate and count them as errors (regression: previously always persisted garbage items)', async () => {
+      mockRunsBulkCreate.mockResolvedValue({ created: 1, errors: 0 });
+
+      const { req, res } = createMocks({}, {
+        runs: [
+          { testCaseId: 'tc-1', agentName: 'agent-a', modelName: 'model-a' },
+          {}, // garbage item -- must never reach storage.runs.bulkCreate
+        ],
+      });
+      const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs/bulk');
+
+      await handler(req, res);
+
+      expect(mockRunsBulkCreate).toHaveBeenCalledWith([
+        { testCaseId: 'tc-1', agentName: 'agent-a', modelName: 'model-a' },
+      ]);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ created: 1, errors: 1 })
+      );
+    });
+
+    it('reports which indexes were dropped by validation, distinct from adapter-level errors (codex_review finding, applied)', async () => {
+      mockRunsBulkCreate.mockResolvedValue({ created: 1, errors: 0 });
+
+      const { req, res } = createMocks({}, {
+        runs: [
+          {},
+          { testCaseId: 'tc-1', agentName: 'agent-a', modelName: 'model-a' },
+          { testCaseId: '   ' },
+        ],
+      });
+      const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs/bulk');
+
+      await handler(req, res);
+
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ created: 1, errors: 2, invalid: 2, invalidIndexes: [0, 2] })
       );
     });
   });
@@ -984,7 +1101,7 @@ describe('Runs Storage Routes - Error Handling (500 errors)', () => {
   it('POST /api/storage/runs should handle errors', async () => {
     mockRunsCreate.mockRejectedValue(new Error('Create failed'));
 
-    const { req, res } = createMocks({}, { testCaseId: 'tc-123' });
+    const { req, res } = createMocks({}, { testCaseId: 'tc-123', agentName: 'agent-a', modelName: 'model-a' });
     const handler = getRouteHandler(runsRoutes, 'post', '/api/storage/runs');
 
     await handler(req, res);

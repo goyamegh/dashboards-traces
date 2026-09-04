@@ -124,14 +124,16 @@ describe('Logs Routes', () => {
       );
     });
 
-    it('should pass query and time range filters', async () => {
+    it('should pass query and time range filters (epoch ms, matching LogsQueryOptions.startTime/endTime: number and the epoch_millis range query)', async () => {
       mockFetchLogs.mockResolvedValue({ hits: { hits: [], total: { value: 0 } }, logs: [] as any, total: 0 });
 
+      const startTime = new Date('2024-01-01T00:00:00Z').getTime();
+      const endTime = new Date('2024-01-02T00:00:00Z').getTime();
       const { req, res } = createMocks({
         runId: 'test',
         query: 'error',
-        startTime: '2024-01-01T00:00:00Z',
-        endTime: '2024-01-02T00:00:00Z',
+        startTime,
+        endTime,
       });
       const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
 
@@ -140,12 +142,52 @@ describe('Logs Routes', () => {
       expect(mockFetchLogs).toHaveBeenCalledWith(
         expect.objectContaining({
           query: 'error',
-          startTime: '2024-01-01T00:00:00Z',
-          endTime: '2024-01-02T00:00:00Z',
+          startTime,
+          endTime,
         }),
         expect.any(Object),
         expect.any(String)
       );
+    });
+
+    it('should reject a non-numeric startTime with 400 (codex_review finding: previously untyped)', async () => {
+      const { req, res } = createMocks({ runId: 'test', startTime: '2024-01-01T00:00:00Z' });
+      const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
+
+      await handler(req, res);
+
+      expect(mockFetchLogs).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should reject a non-numeric endTime with 400', async () => {
+      const { req, res } = createMocks({ runId: 'test', endTime: 'not-a-number' });
+      const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
+
+      await handler(req, res);
+
+      expect(mockFetchLogs).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should reject a size of 0 with 400 (codex_review finding: previously unbounded)', async () => {
+      const { req, res } = createMocks({ runId: 'test', size: 0 });
+      const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
+
+      await handler(req, res);
+
+      expect(mockFetchLogs).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should reject a size above 1000 with 400', async () => {
+      const { req, res } = createMocks({ runId: 'test', size: 5000 });
+      const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
+
+      await handler(req, res);
+
+      expect(mockFetchLogs).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
     });
 
     it('should return 503 when observability not configured', async () => {
@@ -160,6 +202,49 @@ describe('Logs Routes', () => {
       expect(res.json).toHaveBeenCalledWith({
         error: 'Observability data source not configured',
       });
+    });
+
+    it('should return 400 when body is empty (regression: previously ran an unscoped match-all query)', async () => {
+      const { req, res } = createMocks({});
+      const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
+
+      await handler(req, res);
+
+      expect(mockFetchLogs).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith({
+        error: expect.stringContaining('runId'),
+      });
+    });
+
+    it('should return 400 when runId is not a string', async () => {
+      const { req, res } = createMocks({ runId: 12345 });
+      const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
+
+      await handler(req, res);
+
+      expect(mockFetchLogs).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should return 400 when body is not an object', async () => {
+      const { req, res } = createMocks(null);
+      const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
+
+      await handler(req, res);
+
+      expect(mockFetchLogs).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
+
+    it('should return 400 when runId is whitespace-only (codex_review finding: falsy-only check let " " through)', async () => {
+      const { req, res } = createMocks({ runId: '   ' });
+      const handler = getRouteHandler(logsRoutes, 'post', '/api/logs');
+
+      await handler(req, res);
+
+      expect(mockFetchLogs).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
     });
 
     it('should return 500 on service error', async () => {

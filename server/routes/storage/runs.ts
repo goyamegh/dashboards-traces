@@ -32,6 +32,50 @@ function isSampleId(id: string): boolean {
   return id.startsWith('demo-');
 }
 
+const VALID_RUN_STATUSES = ['running', 'completed', 'failed'];
+
+/**
+ * Validate a run/report create body.
+ *
+ * Minimal required contract, derived from the TestCaseRun type
+ * (types/index.ts): `testCaseId` is the one field every real report needs
+ * to be meaningfully attributable to a test case, so it's required and
+ * type-checked.
+ *
+ * `agentName`/`modelName` are set by every internal caller that persists a
+ * placeholder run (services/evaluationRunner.ts, services/benchmarkRunner.ts,
+ * server/routes/evaluation.ts) but are treated as optional/display-only
+ * everywhere they're read (components/evals3/TestCaseInspectorPanel.tsx,
+ * server/routes/comparison.ts both fall back to '—'/agentKey when absent),
+ * and the shared test cleanup-harness (tests/helpers/testDataTracker.ts,
+ * tests/integration/helpers/testDataTracker.integration.test.ts) creates
+ * minimal report docs without them purely to probe delete/cleanup paths —
+ * so they're required to be non-empty strings WHEN PRESENT, but not
+ * required to be present at all. Returns an error message when invalid,
+ * null when valid.
+ */
+function validateRunCreate(body: any): string | null {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    return 'Request body must be a valid run/report object';
+  }
+  if (!body.testCaseId || typeof body.testCaseId !== 'string' || !body.testCaseId.trim()) {
+    return 'testCaseId is required and must be a non-empty string';
+  }
+  if (body.agentName !== undefined && (typeof body.agentName !== 'string' || !body.agentName.trim())) {
+    return 'agentName must be a non-empty string when provided';
+  }
+  if (body.modelName !== undefined && (typeof body.modelName !== 'string' || !body.modelName.trim())) {
+    return 'modelName must be a non-empty string when provided';
+  }
+  if (body.status !== undefined && !VALID_RUN_STATUSES.includes(body.status)) {
+    return `status must be one of: ${VALID_RUN_STATUSES.join(', ')}`;
+  }
+  if (body.trajectory !== undefined && !Array.isArray(body.trajectory)) {
+    return 'trajectory must be an array when provided';
+  }
+  return null;
+}
+
 /**
  * Get timestamp in milliseconds for sorting, using createdAt as fallback
  * Fixes bug where missing timestamps defaulted to epoch (1970)
@@ -191,6 +235,11 @@ router.post('/api/storage/runs', async (req: Request, res: Response) => {
     // Reject creating with demo- prefix
     if (runData.id && isSampleId(runData.id)) {
       return res.status(400).json({ error: 'Cannot create run with demo- prefix (reserved for sample data)' });
+    }
+
+    const validationError = validateRunCreate(runData);
+    if (validationError) {
+      return res.status(400).json({ error: validationError });
     }
 
     const storage = getStorageModule();
@@ -577,11 +626,33 @@ router.post('/api/storage/runs/bulk', async (req: Request, res: Response) => {
       return res.status(400).json({ error: 'Cannot create runs with demo- prefix (reserved for sample data)' });
     }
 
-    const storage = getStorageModule();
-    const result = await storage.runs.bulkCreate(runs);
+    // Filter out invalid entries before persisting anything — a garbage item
+    // (e.g. `{}`) must never reach storage.runs.create() and be written as an
+    // empty report doc. Mirrors the tolerant-partial-failure contract of
+    // storage.runs.bulkCreate() (invalid entries count as `errors`, valid ones
+    // still get created) rather than rejecting the whole batch.
+    //
+    // codex_review finding, applied: report the validation-drop count and
+    // its positions explicitly (invalid/invalidIndexes) so an importer
+    // checking only `errors` doesn't miss that some items were dropped for
+    // being malformed vs. an adapter-level failure on an otherwise-valid
+    // item. `errors` keeps its original total-failures meaning.
+    const invalidIndexes = runs
+      .map((run, i) => (validateRunCreate(run) === null ? -1 : i))
+      .filter((i) => i !== -1);
+    const validRuns = runs.filter((_, i) => !invalidIndexes.includes(i));
+    const invalidCount = invalidIndexes.length;
 
-    debug('StorageAPI', `Bulk created ${result.created} runs`);
-    res.json({ created: result.created, errors: result.errors });
+    const storage = getStorageModule();
+    const result = await storage.runs.bulkCreate(validRuns);
+
+    debug('StorageAPI', `Bulk created ${result.created} runs (${invalidCount} rejected by validation)`);
+    res.json({
+      created: result.created,
+      errors: result.errors + invalidCount,
+      invalid: invalidCount,
+      invalidIndexes,
+    });
   } catch (error: any) {
     console.error('[StorageAPI] Bulk create runs failed:', error.message);
     res.status(500).json({ error: error.message });

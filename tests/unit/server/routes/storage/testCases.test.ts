@@ -53,6 +53,7 @@ function createMockStorage(configured = true) {
       update: jest.fn(),
       delete: jest.fn(),
       bulkCreate: jest.fn(),
+      bulkUpsert: jest.fn(),
       search: jest.fn(),
     },
     benchmarks: {},
@@ -397,6 +398,29 @@ describe('Test Cases Storage Routes', () => {
         expect.objectContaining({ id: 'custom-id-123' })
       );
     });
+
+    it('should reject an empty body with 400 and never call storage.testCases.create (regression: previously a 500 from a generic adapter Error)', async () => {
+      const { req, res } = createMocks({}, {});
+      const handler = getRouteHandler(testCasesRoutes, 'post', '/api/storage/test-cases');
+
+      await handler(req, res);
+
+      expect(mockStorage.testCases.create).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ error: expect.stringContaining('name') })
+      );
+    });
+
+    it('should reject a non-string name with 400', async () => {
+      const { req, res } = createMocks({}, { name: 123 });
+      const handler = getRouteHandler(testCasesRoutes, 'post', '/api/storage/test-cases');
+
+      await handler(req, res);
+
+      expect(mockStorage.testCases.create).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+    });
   });
 
   describe('PUT /api/storage/test-cases/:id', () => {
@@ -468,6 +492,18 @@ describe('Test Cases Storage Routes', () => {
       expect(mockStorage.testCases.delete).toHaveBeenCalledWith('tc-123');
       expect(res.json).toHaveBeenCalledWith({ deleted: 3 });
     });
+
+    it('should return 404 when nothing was deleted (regression F7: previously answered 200 { deleted: 0 } indistinguishable from a successful no-op)', async () => {
+      mockStorage.testCases.delete.mockResolvedValue({ deleted: 0 });
+
+      const { req, res } = createMocks({ id: 'tc-nonexistent' });
+      const handler = getRouteHandler(testCasesRoutes, 'delete', '/api/storage/test-cases/:id');
+
+      await handler(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(404);
+      expect(res.json).not.toHaveBeenCalledWith({ deleted: 0 });
+    });
   });
 
   describe('POST /api/storage/test-cases/bulk', () => {
@@ -528,6 +564,23 @@ describe('Test Cases Storage Routes', () => {
           created: 2,
           errors: 0,
         })
+      );
+    });
+
+    it('should reject a batch containing a nameless item with 400 and never call bulkCreate/bulkUpsert (regression: a nameless item on the bulkUpsert path threw uncaught -> 500)', async () => {
+      const { req, res } = createMocks(
+        {},
+        { testCases: [{ name: 'Valid' }, {}] }
+      );
+      const handler = getRouteHandler(testCasesRoutes, 'post', '/api/storage/test-cases/bulk');
+
+      await handler(req, res);
+
+      expect(mockStorage.testCases.bulkCreate).not.toHaveBeenCalled();
+      expect(mockStorage.testCases.bulkUpsert).not.toHaveBeenCalled();
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(
+        expect.objectContaining({ error: expect.stringContaining('name') })
       );
     });
   });

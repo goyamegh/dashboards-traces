@@ -178,7 +178,19 @@ router.post('/api/skills/browse', async (_req: Request, res: Response) => {
     if (err.status === 1 || err.message?.includes('User canceled')) {
       return res.json({ cancelled: true, path: null });
     }
-    res.status(500).json({ error: `Failed to open folder picker: ${err.message}` });
+    // Regression guard (API KPI probe finding, F6): on headless Linux boxes
+    // with neither zenity nor kdialog installed, execSync's rejection
+    // message includes the full shell command it ran (`Command failed:
+    // zenity --file-selection ...`) \u2014 that used to be forwarded
+    // verbatim into the response body. Log the real error server-side for
+    // debugging, but never let shell command text reach the client; answer
+    // a clean 501 telling the UI no native picker is available (the Skills
+    // page already has a manual-path text entry as a fallback).
+    debug('SkillsAPI', 'Folder picker failed:', err.message);
+    console.warn('[SkillsAPI] Native folder picker unavailable:', err.message);
+    res.status(501).json({
+      error: 'Native folder picker unavailable on this server. Enter the skill folder path manually.',
+    });
   }
 });
 
