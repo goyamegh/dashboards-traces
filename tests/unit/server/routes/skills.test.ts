@@ -354,6 +354,28 @@ describe('Skills router', () => {
       expect(mockParseSkill).toHaveBeenCalledWith(resolve(cwd, 'skills/repo-skill'));
       expect(res.body).toEqual(parsed);
     });
+
+    // Regression: GET /api/skills/discover returns user-scope skills with a
+    // `~/.claude/skills/<name>` display path. resolveSkillPath() used to
+    // resolve that against cwd, so validating any user-scope skill failed
+    // with "Directory does not exist: <cwd>/~/.claude/skills/<name>".
+    it('expands a ~/ display path against the home directory, not cwd', async () => {
+      const parsed = { valid: true, skill: { metadata: { name: 'User Skill' } }, errors: [] };
+      mockParseSkill.mockReturnValueOnce(parsed);
+
+      const res = await request(app).post('/api/skills/validate').send({ path: '~/.claude/skills/user-skill' });
+
+      expect(res.status).toBe(200);
+      expect(mockParseSkill).toHaveBeenCalledWith(resolve('/home/tester', '.claude/skills/user-skill'));
+    });
+
+    it('does NOT expand a ~-prefixed relative directory name (e.g. ~backup/)', async () => {
+      mockParseSkill.mockReturnValueOnce({ valid: true, skill: { metadata: { name: 'x' } }, errors: [] });
+
+      await request(app).post('/api/skills/validate').send({ path: '~backup/skill' });
+
+      expect(mockParseSkill).toHaveBeenCalledWith(resolve(cwd, '~backup/skill'));
+    });
   });
 
   describe('POST /api/skills/eval', () => {

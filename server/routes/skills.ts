@@ -28,11 +28,18 @@ const router = Router();
 
 /**
  * Resolve a skill path to an absolute path.
- * Accepts relative paths (resolved against cwd) or absolute paths.
+ * Accepts relative paths (resolved against cwd), absolute paths, and `~`/`~/...`
+ * home-relative paths. Home expansion matters because GET /api/skills/discover
+ * deliberately returns user-scope skills (~/.claude/skills) with a `~/` display
+ * path — without expanding it here, validating/evaluating any user-scope skill
+ * failed with "Directory does not exist: <cwd>/~/.claude/skills/...".
  * This is a local dev tool — the server process already has filesystem access,
  * so there's no security benefit in restricting paths.
  */
-function resolveSkillPath(inputPath: string): string {
+export function resolveSkillPath(inputPath: string): string {
+  if (inputPath === '~' || inputPath.startsWith('~/')) {
+    return resolve(homedir(), inputPath === '~' ? '' : inputPath.slice(2));
+  }
   const cwd = process.cwd();
   return resolve(cwd, inputPath);
 }
