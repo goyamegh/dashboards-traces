@@ -8,6 +8,7 @@ import { TrajectoryStep, ToolCallStatus } from '@/types';
 import { ChevronDown, ChevronRight } from 'lucide-react';
 import { Markdown, hasRealMarkdown } from '@/components/ui/markdown';
 import { truncate } from '@/lib/utils';
+import { normalizeLegacyUserStep } from '@/lib/trajectoryStepDisplay';
 
 interface TrajectoryViewProps {
   steps: TrajectoryStep[];
@@ -23,6 +24,7 @@ const typeColors: Record<string, string> = {
   action: 'text-blue-400',
   tool_result: 'text-opensearch-blue',
   response: 'text-slate-400',
+  user: 'text-cyan-400',
 };
 
 const typeBgColors: Record<string, string> = {
@@ -31,6 +33,7 @@ const typeBgColors: Record<string, string> = {
   action: 'bg-blue-500/5 border-blue-500/20',
   tool_result: 'bg-opensearch-blue/5 border-opensearch-blue/20',
   response: 'bg-slate-500/5 border-slate-500/20',
+  user: 'bg-cyan-500/5 border-cyan-500/20',
 };
 
 export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }) => {
@@ -61,6 +64,9 @@ export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }
     if (step.type === 'tool_result') {
       return 'result';
     }
+    if (step.type === 'user') {
+      return 'user prompt';
+    }
     return step.type;
   };
 
@@ -87,7 +93,8 @@ export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }
         </div>
       )}
 
-      {steps.map((step) => {
+      {steps.map((rawStep) => {
+        const step = normalizeLegacyUserStep(rawStep);
         const isExpanded = expandedSteps.has(step.id);
         const collapsible = isCollapsible(step);
         const latency = formatLatency(step.latencyMs);

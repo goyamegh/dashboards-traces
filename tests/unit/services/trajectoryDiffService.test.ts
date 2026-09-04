@@ -171,6 +171,19 @@ describe('TrajectoryDiffService', () => {
       expect(result.every(s => s.type === 'matched')).toBe(true);
     });
 
+    it('normalizes a legacy `thinking`+"User: " step so it matches the equivalent `user` step, not a false modified/added+removed pair (owner papercut fix)', () => {
+      const legacyShape = [createStep('thinking', { content: 'User: fix the login bug' })];
+      const newShape = [createStep('user', { content: 'fix the login bug' })];
+
+      const result = alignTrajectories(legacyShape, newShape);
+
+      expect(result).toHaveLength(1);
+      expect(result[0].type).toBe('matched');
+      // The aligned step carries the normalized type/content, not the raw legacy shape.
+      expect(result[0].baselineStep?.type).toBe('user');
+      expect(result[0].comparisonStep?.type).toBe('user');
+    });
+
     it('should detect added steps in comparison', () => {
       const baseline = [
         createStep('thinking', { content: 'Analyzing' }),

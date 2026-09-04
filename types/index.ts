@@ -230,7 +230,7 @@ export enum ToolCallStatus {
 export interface TrajectoryStep {
   id: string;
   timestamp: number;
-  type: 'tool_result' | 'assistant' | 'action' | 'response' | 'thinking';
+  type: 'tool_result' | 'assistant' | 'action' | 'response' | 'thinking' | 'user';
   content: string;
   toolName?: string;
   toolArgs?: Record<string, any>;

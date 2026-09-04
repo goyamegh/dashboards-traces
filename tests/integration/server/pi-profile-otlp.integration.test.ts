@@ -106,11 +106,11 @@ describe('pi profiling extension → profile pipeline (integration)', () => {
     const res = await request(app).post('/api/traces').send({ sessionId: SESSION_ID }).expect(200);
     const trajectory = spansToTrajectory(res.body.spans, 'pi-agent');
     const types = trajectory.map(s => s.type);
-    expect(types).toContain('thinking');   // user prompt
+    expect(types).toContain('user');       // user prompt (own step type, not thinking)
     expect(types).toContain('assistant');  // completion
     expect(types).toContain('action');     // tool calls
     expect(types).toContain('tool_result');
-    expect(trajectory.find(s => s.type === 'thinking')?.content).toContain('Why is the checkout service throwing 500s?');
+    expect(trajectory.find(s => s.type === 'user')?.content).toContain('Why is the checkout service throwing 500s?');
     expect(trajectory.find(s => s.type === 'action')?.toolName).toBe('search_logs');
   });
 
