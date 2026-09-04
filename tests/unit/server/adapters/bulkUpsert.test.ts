@@ -66,6 +66,43 @@ describe('bulkUpsert', () => {
     expect(result.testCases[0].sourceLanguage).toBe('typescript');
   });
 
+  // Per-test SDK definition capture is a passthrough field too, and — the
+  // important half — adding it must NOT bump versions: the hash inputs are
+  // unchanged, so a re-import of the same file with `definition` now
+  // attached classifies as `unchanged` and keeps the existing record.
+  it('persists definition on create and does not version-bump when only definition is added on re-import', async () => {
+    const base = {
+      name: 'Defined Test',
+      initialPrompt: 'p',
+      sourceFile: 'evals/defined.eval.js',
+      sourceHash: 'same-hash',
+      sourceCode: "test('a', { prompt: 'p' }, () => {});",
+    };
+    const first = await storage.testCases.bulkUpsert([base]);
+    expect(first.created).toBe(1);
+    expect(first.testCases[0].definition).toBeUndefined();
+
+    const second = await storage.testCases.bulkUpsert([{
+      ...base,
+      definition: { registeredAs: 'sdk' as const, options: { prompt: 'p' }, bodySource: '() => {}' },
+    }]);
+    expect(second.unchanged).toBe(1);
+    expect(second.updated).toBe(0);
+    expect(second.testCases[0].id).toBe(first.testCases[0].id);
+    expect(second.testCases[0].currentVersion).toBe(1);
+
+    // A fresh record created WITH definition persists it verbatim.
+    const created = await storage.testCases.bulkUpsert([{
+      ...base,
+      name: 'Defined Test 2',
+      definition: { registeredAs: 'sdk' as const, options: { prompt: 'p', timeout: 5 }, bodySource: '() => { ok() }' },
+    }]);
+    expect(created.created).toBe(1);
+    expect(created.testCases[0].definition).toEqual({
+      registeredAs: 'sdk', options: { prompt: 'p', timeout: 5 }, bodySource: '() => { ok() }',
+    });
+  });
+
   it('updates sourceCode when sourceHash drifts (source edited)', async () => {
     const v1 = [{
       name: 'Drifting Test',
