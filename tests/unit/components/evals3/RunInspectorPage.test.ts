@@ -274,6 +274,16 @@ describe('RunInspectorPage — lazy report loading', () => {
     expect(screen.getByText(/Select a test case/i)).toBeTruthy();
   });
 
+  // NOTE: an earlier draft of this branch added a regression test here
+  // locking in "the inspector auto-selects the first case on load". That
+  // assumption was superseded by the verdict-first run-report redesign
+  // (#443, landed on main after this branch was cut): a bare run URL now
+  // deliberately lands on the "Select a test case" overview pane rather
+  // than auto-opening the first row (see the `initialSelectionDone`
+  // comment in RunInspectorPage.tsx). The removed test asserted the
+  // opposite of that intentional behavior and is dropped as stale scope
+  // rather than reintroduced as a regression.
+
   it('falls back to execution status when the summary batch fails', async () => {
     mockBenchmarkGetById.mockResolvedValue(makeBenchmark(3));
     mockTestCasesGetByIds.mockResolvedValue(makeTestCases(3));
@@ -539,6 +549,56 @@ describe('RunInspectorPage — Re-run button (eval-run mode)', () => {
 
     await waitFor(() => expect(screen.getByTestId('rerun-provenance-chip')).toBeTruthy());
     await waitFor(() => expect(screen.getByText(/re-run of Original Run/)).toBeTruthy());
+  });
+
+  // Papercut #2: a long source-run name used to blow the pill onto multiple
+  // lines and crowd the title above it. The chip must stay single-line
+  // (truncated label, bounded width) and the full source name must only
+  // ever show up in a tooltip -- never forcing a taller header.
+  it('keeps the re-run chip single-line and truncated, with the full source name only in the tooltip', async () => {
+    const { getEvaluationRun } = require('@/services/client');
+    const LONG_SOURCE_NAME = 'Regression sweep across the full staging benchmark with trajectory capture and judge validation enabled end to end';
+    getEvaluationRun
+      .mockResolvedValueOnce({
+        id: 'eval-run-1',
+        docType: 'evaluation-run',
+        name: 'Claude…',
+        agentKey: 'demo',
+        modelId: 'model-1',
+        createdAt: '2024-01-01T00:00:00Z',
+        status: 'completed',
+        sources: [],
+        trigger: 'ui',
+        testCaseSnapshots: [],
+        results: {},
+        rerunOf: 'eval-run-0',
+      })
+      .mockResolvedValueOnce({ id: 'eval-run-0', name: LONG_SOURCE_NAME });
+
+    mockTestCasesGetByIds.mockResolvedValue([]);
+    mockGetReportSummariesByIds.mockResolvedValue({});
+
+    renderPage();
+
+    const chip = await screen.findByTestId('rerun-provenance-chip');
+    // Single-line, bounded width: `truncate` + a max-width class on the
+    // chip itself, not left to grow (and wrap) with the source name length.
+    expect(chip.className).toMatch(/max-w-\[\d+px\]/);
+    // The visible label lives on an inner span that truncates on overflow --
+    // the CHIP truncates, not the run title. The source-run-name fetch
+    // resolves asynchronously, so wait for it to land in the label.
+    await waitFor(() => expect(chip.querySelector('span')?.textContent).toContain(LONG_SOURCE_NAME));
+    const label = chip.querySelector('span');
+    expect(label?.className).toMatch(/truncate/);
+    // The full source name is only reachable via the tooltip.
+    expect(chip.getAttribute('title')).toContain(LONG_SOURCE_NAME);
+
+    // The rename field (the run's own title) keeps its `truncate` class and
+    // gets its own tooltip with the full (untruncated) name -- the chip
+    // does not eat into its space.
+    const titleText = screen.getByTestId('run-inspector-rename-text');
+    expect(titleText.className).toMatch(/truncate/);
+    expect(titleText.getAttribute('title')).toBe('Claude…');
   });
 
   it('shows missing-source style when rerunOf source run no longer exists', async () => {

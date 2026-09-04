@@ -135,7 +135,7 @@ export const InlineRenameField: React.FC<InlineRenameFieldProps> = ({
 
   return (
     <div className={`group/rename inline-flex items-center gap-1 min-w-0 ${className || ''}`}>
-      <span className={`truncate ${textClassName || ''}`} data-testid={testId ? `${testId}-text` : undefined}>
+      <span className={`truncate ${textClassName || ''}`} title={value} data-testid={testId ? `${testId}-text` : undefined}>
         {value}
       </span>
       <button
