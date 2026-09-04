@@ -1135,6 +1135,88 @@ describe('ClaudeCodeConnector', () => {
     });
   });
 
+  // Regression (codex_review finding on this fix): per-execution options used
+  // to be applied by MUTATING the shared singleton's `this.config` and
+  // restoring it in `finally`. That only held while no `await` separated the
+  // write from every read; a callback reading `this.config` after the first
+  // await saw whichever concurrent execution wrote last. Options are now
+  // resolved into an immutable per-call snapshot and `this.config` is never
+  // written during execution.
+  describe('per-execution config isolation (shared singleton instance)', () => {
+    function spawnCollector() {
+      const procs: any[] = [];
+      (spawn as jest.Mock).mockClear();
+      (spawn as jest.Mock).mockImplementation(() => {
+        const proc: any = new EventEmitter();
+        proc.stdout = new EventEmitter();
+        proc.stderr = new EventEmitter();
+        proc.stdin = { write: jest.fn(), end: jest.fn() };
+        proc.pid = 400 + procs.length;
+        proc.kill = jest.fn();
+        procs.push(proc);
+        return proc;
+      });
+      return procs;
+    }
+
+    it('concurrent executions with different connectorConfigs each spawn with their own args/env/cwd', async () => {
+      const procs = spawnCollector();
+      const e1 = connector.execute('claude', {
+        testCase: { ...mockTestCase, id: 'tc-A' }, modelId: 'm',
+        connectorConfig: { appendSystemPrompt: 'prompt A', env: { WHO: 'A' }, workingDir: '/tmp/a', allowedTools: ['Read'] } as any,
+      }, mockAuth);
+      const e2 = connector.execute('claude', {
+        testCase: { ...mockTestCase, id: 'tc-B' }, modelId: 'm',
+        connectorConfig: { systemPrompt: 'prompt B', env: { WHO: 'B' }, workingDir: '/tmp/b', usePromptArg: true } as any,
+      }, mockAuth);
+      await new Promise((r) => setTimeout(r, 5));
+      expect(procs.length).toBe(2);
+      for (const p of procs) p.emit('close', 0, null);
+      await Promise.all([e1, e2]);
+
+      const [[, argsA, optsA], [, argsB, optsB]] = (spawn as jest.Mock).mock.calls;
+      expect(argsA).toContain('--append-system-prompt');
+      expect(argsA[argsA.indexOf('--append-system-prompt') + 1]).toBe('prompt A');
+      expect(argsA).toContain('--allowed-tools');
+      expect(argsA).not.toContain('--system-prompt');
+      expect(optsA.env.WHO).toBe('A');
+      expect(optsA.cwd).toBe('/tmp/a');
+      // A used stdin; B used --print with the prompt as an argv slot.
+      expect(procs[0].stdin.write).toHaveBeenCalled();
+
+      expect(argsB).toContain('--system-prompt');
+      expect(argsB[argsB.indexOf('--system-prompt') + 1]).toBe('prompt B');
+      expect(argsB).not.toContain('--append-system-prompt');
+      expect(argsB).not.toContain('--allowed-tools');
+      expect(optsB.env.WHO).toBe('B');
+      expect(optsB.cwd).toBe('/tmp/b');
+      expect(argsB.at(-1)).toContain('## Task'); // usePromptArg → prompt appended as arg
+      expect(procs[1].stdin.write).not.toHaveBeenCalled();
+    });
+
+    it('never writes per-execution options onto the shared this.config (not even transiently)', async () => {
+      const procs = spawnCollector();
+      const cfg = (connector as any).config;
+      const before = JSON.stringify(cfg);
+      const pending = connector.execute('claude', {
+        testCase: mockTestCase, modelId: 'm',
+        connectorConfig: { appendSystemPrompt: 'p', env: { X: '1' }, timeout: 123, workingDir: '/tmp/x', usePromptArg: true } as any,
+      }, mockAuth);
+      // Mid-execution (child spawned, not yet closed): the shared config is untouched.
+      await new Promise((r) => setTimeout(r, 5));
+      expect(JSON.stringify((connector as any).config)).toBe(before);
+      expect((connector as any).config.args).not.toContain('--append-system-prompt');
+      procs[0].emit('close', 0, null);
+      await pending;
+      expect(JSON.stringify((connector as any).config)).toBe(before);
+      // …while the spawned child DID get the per-execution options.
+      const [, args, opts] = (spawn as jest.Mock).mock.calls[0];
+      expect(args).toContain('--append-system-prompt');
+      expect(opts.env.X).toBe('1');
+      expect(opts.cwd).toBe('/tmp/x');
+    });
+  });
+
   // Regression (P1, evidence fidelity): tool results used to be persisted
   // without a `toolName` or `toolOutput` (only `content`), so the span-derived
   // "tool succeeded" stubs replaced them and the judge saw 0 bytes of output

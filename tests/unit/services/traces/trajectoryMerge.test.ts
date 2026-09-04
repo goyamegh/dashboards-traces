@@ -6,12 +6,13 @@
 import type { TrajectoryStep } from '@/types';
 import { ToolCallStatus } from '@/types';
 import {
-  hasToolOutput,
   mergeSpanTrajectory,
   spanTrajectoryLosesToolEvidence,
   toolEvidenceChars,
   toolEvidenceText,
 } from '@/services/traces/trajectoryMerge';
+
+const hasToolOutput = (s: TrajectoryStep) => toolEvidenceText(s).length > 0 && s.toolOutput != null;
 
 let n = 0;
 function step(partial: Partial<TrajectoryStep> & Pick<TrajectoryStep, 'type' | 'content'>): TrajectoryStep {
@@ -36,28 +37,16 @@ function restConnectorTrajectory(): TrajectoryStep[] {
 }
 
 describe('trajectoryMerge — evidence-preserving replacement policy', () => {
-  describe('hasToolOutput', () => {
-    it('is true only for tool_result steps with a non-empty toolOutput', () => {
-      expect(hasToolOutput(step({ type: 'tool_result', content: 'x', toolOutput: 'x' }))).toBe(true);
-      expect(hasToolOutput(step({ type: 'tool_result', content: 'x', toolOutput: { a: 1 } }))).toBe(true);
-      expect(hasToolOutput(step({ type: 'tool_result', content: 'x', toolOutput: ['a'] }))).toBe(true);
-      expect(hasToolOutput(step({ type: 'tool_result', content: 'tool succeeded' }))).toBe(false);
-      expect(hasToolOutput(step({ type: 'tool_result', content: 'x', toolOutput: '' }))).toBe(false);
-      expect(hasToolOutput(step({ type: 'tool_result', content: 'x', toolOutput: '   ' }))).toBe(false);
-      expect(hasToolOutput(step({ type: 'tool_result', content: 'x', toolOutput: {} }))).toBe(false);
-      expect(hasToolOutput(step({ type: 'tool_result', content: 'x', toolOutput: [] }))).toBe(false);
-      expect(hasToolOutput(step({ type: 'action', content: 'x', toolOutput: 'x' }))).toBe(false);
-      expect(hasToolOutput(undefined)).toBe(false);
-      expect(hasToolOutput(null)).toBe(false);
-    });
-  });
-
   describe('toolEvidenceText / toolEvidenceChars', () => {
     it('prefers toolOutput, falls back to content, and ignores non-result steps', () => {
       expect(toolEvidenceText(step({ type: 'tool_result', content: 'c', toolOutput: 'out' }))).toBe('out');
       expect(toolEvidenceText(step({ type: 'tool_result', content: 'c', toolOutput: { a: 1 } }))).toBe('{"a":1}');
       expect(toolEvidenceText(step({ type: 'tool_result', content: 'content only' }))).toBe('content only');
-      expect(toolEvidenceText(step({ type: 'tool_result', content: 'c', toolOutput: {} }))).toBe('c');
+      // An explicit EMPTY result is still evidence ("the search returned
+      // nothing") — only a missing toolOutput falls through to content.
+      expect(toolEvidenceText(step({ type: 'tool_result', content: 'c', toolOutput: {} }))).toBe('{}');
+      expect(toolEvidenceText(step({ type: 'tool_result', content: 'c', toolOutput: [] }))).toBe('[]');
+      expect(toolEvidenceText(step({ type: 'tool_result', content: 'c', toolOutput: '' }))).toBe('');
       expect(toolEvidenceText(step({ type: 'action', content: 'ignored', toolOutput: 'ignored' }))).toBe('');
       expect(toolEvidenceText(undefined)).toBe('');
       expect(toolEvidenceChars([
@@ -228,20 +217,29 @@ describe('trajectoryMerge — evidence-preserving replacement policy', () => {
       }
     });
 
-    it('fills missing toolName from the span step when shapes line up, without overriding an existing one', () => {
+    it('folds span timing only when tool names agree (or one side is unnamed) and never copies names', () => {
       const connector = [
         step({ type: 'action', content: '{}', toolName: 'search' }),
-        step({ type: 'tool_result', content: 'rows: a, b, c, d, e, f, g, h', toolOutput: 'rows: a, b, c, d, e, f, g, h' }), // no toolName
+        step({ type: 'tool_result', content: 'rows: a, b, c, d, e, f, g, h', toolOutput: 'rows: a, b, c, d, e, f, g, h' }), // unnamed
         step({ type: 'response', content: 'done' }),
       ];
-      const span = [
-        step({ type: 'action', content: 'search', toolName: 'other_name', latencyMs: 5 }),
+      const agreeing = [
+        step({ type: 'action', content: 'search', toolName: 'search', latencyMs: 5 }),
         step({ type: 'tool_result', content: 'tool succeeded', toolName: 'search', latencyMs: 4 }),
       ];
-      const merged = mergeSpanTrajectory(connector, span);
-      expect(merged[0].toolName).toBe('search'); // existing name kept
-      expect(merged[1].toolName).toBe('search'); // filled from span
+      const merged = mergeSpanTrajectory(connector, agreeing);
+      expect(merged[0].latencyMs).toBe(5);
+      expect(merged[1].latencyMs).toBe(4);
+      expect(merged[1].toolName).toBeUndefined(); // names are never cross-attributed
       expect(merged[1].toolOutput).toBe('rows: a, b, c, d, e, f, g, h');
+
+      // Same type pattern but a DIFFERENT tool name → not the same calls → no timing.
+      const disagreeing = [
+        step({ type: 'action', content: 'other', toolName: 'other_tool', latencyMs: 5 }),
+        step({ type: 'tool_result', content: 'tool succeeded', toolName: 'other_tool', latencyMs: 4 }),
+      ];
+      const untouched = mergeSpanTrajectory(connector, disagreeing);
+      expect(untouched.slice(0, 2)).toEqual(connector.slice(0, 2));
     });
 
     it('does not fold timing when the tool sequences differ in shape (counts/types mismatch)', () => {

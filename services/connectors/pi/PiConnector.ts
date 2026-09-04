@@ -18,9 +18,7 @@ import {
 import type {
   ConnectorAuth,
   ConnectorRequest,
-  ConnectorResponse,
   ConnectorProgressCallback,
-  ConnectorRawEventCallback,
   SubprocessConfig,
 } from '@/services/connectors/types';
 
@@ -262,78 +260,51 @@ export class PiConnector extends SubprocessConnector<PiExecutionState> {
   }
 
   /**
-   * Apply connectorConfig
+   * Translate `PiConnectorConfig` into the effective per-execution subprocess
+   * config. Pure — `this.config` is never written, so concurrent executions
+   * on the shared singleton cannot see each other's args / env / timeout.
    */
-  override async execute(
-    endpoint: string,
-    request: ConnectorRequest,
-    auth: ConnectorAuth,
-    onProgress?: ConnectorProgressCallback,
-    onRawEvent?: ConnectorRawEventCallback
-  ): Promise<ConnectorResponse> {
-    // Save original config
-    const originalArgs = this.config.args ? [...this.config.args] : [];
-    const originalEnv = this.config.env ? structuredClone(this.config.env) : {};
-    const originalTimeout = this.config.timeout;
-    const originalWorkingDir = this.config.workingDir;
+  protected override resolveExecutionConfig(request: ConnectorRequest) {
+    const piConfig = (request.connectorConfig || {}) as PiConnectorConfig;
+    const base = super.resolveExecutionConfig({
+      ...request,
+      connectorConfig: {
+        ...(piConfig.env ? { env: piConfig.env } : {}),
+        ...(piConfig.timeout !== undefined ? { timeout: piConfig.timeout } : {}),
+        ...(piConfig.workingDir ? { workingDir: piConfig.workingDir } : {}),
+      },
+    });
 
-    // Apply connectorConfig
-    const piConfig = request.connectorConfig as PiConnectorConfig | undefined;
-    if (piConfig) {
-      if (piConfig.env) {
-        this.config.env = { ...this.config.env, ...piConfig.env };
-      }
-      if (piConfig.timeout !== undefined) {
-        this.config.timeout = piConfig.timeout;
-      }
-      if (piConfig.workingDir) {
-        this.config.workingDir = piConfig.workingDir;
-      }
-
-      // Build additional args from config
-      const extraArgs: string[] = [];
-      if (piConfig.packagePath) {
-        // Pi uses --skill and --extension to load package components
-        extraArgs.push('--skill', `${piConfig.packagePath}/skills/*`);
-        extraArgs.push('--extension', `${piConfig.packagePath}/extensions/agent-health.ts`);
-        extraArgs.push('--append-system-prompt', `${piConfig.packagePath}/prompts/agent-health.md`);
-      }
-      if (piConfig.model) {
-        extraArgs.push('--model', piConfig.model);
-      }
-      if (piConfig.additionalArgs) {
-        extraArgs.push(...piConfig.additionalArgs);
-      }
-      if (extraArgs.length > 0) {
-        this.config.args = [...(this.config.args || []), ...extraArgs];
-      }
+    // Build additional args from config
+    const extraArgs: string[] = [];
+    if (piConfig.packagePath) {
+      // Pi uses --skill and --extension to load package components
+      extraArgs.push('--skill', `${piConfig.packagePath}/skills/*`);
+      extraArgs.push('--extension', `${piConfig.packagePath}/extensions/agent-health.ts`);
+      extraArgs.push('--append-system-prompt', `${piConfig.packagePath}/prompts/agent-health.md`);
     }
+    if (piConfig.model) {
+      extraArgs.push('--model', piConfig.model);
+    }
+    if (piConfig.additionalArgs) {
+      extraArgs.push(...piConfig.additionalArgs);
+    }
+    let args = [...(this.config.args || []), ...extraArgs];
 
     // Pass --model flag from request if specified. request.modelId always
     // wins over connectorConfig.model above — strip any --model pair the
     // config block may have already pushed so the final argv carries exactly
     // one --model flag instead of two.
     if (request.modelId) {
-      this.config.args = [...this.stripModelFlag(this.config.args || []), '--model', request.modelId];
+      args = [...this.stripModelFlag(args), '--model', request.modelId];
     }
 
     // Inherit AWS credentials
-    if (process.env.AWS_PROFILE) {
-      this.config.env = { ...this.config.env, AWS_PROFILE: process.env.AWS_PROFILE };
-    }
-    if (process.env.AWS_REGION) {
-      this.config.env = { ...this.config.env, AWS_REGION: process.env.AWS_REGION };
-    }
+    const env = { ...(base.env || {}) };
+    if (process.env.AWS_PROFILE) env.AWS_PROFILE = process.env.AWS_PROFILE;
+    if (process.env.AWS_REGION) env.AWS_REGION = process.env.AWS_REGION;
 
-    try {
-      return await super.execute(endpoint, request, auth, onProgress, onRawEvent);
-    } finally {
-      // Restore config
-      this.config.args = originalArgs;
-      this.config.env = originalEnv;
-      this.config.timeout = originalTimeout;
-      this.config.workingDir = originalWorkingDir;
-    }
+    return { ...base, args, env };
   }
 
   /**

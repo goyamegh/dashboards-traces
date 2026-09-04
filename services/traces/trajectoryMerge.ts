@@ -36,14 +36,17 @@
  *          (`toolOutput`, else `content`) — the CONNECTOR trajectory is kept
  *          as the judged trajectory (its ordering of calls, results and
  *          answer is the faithful narrative). Where the span-derived tool
- *          steps line up one-to-one with the connector's, their timing
- *          (`latencyMs`) and tool names are folded onto the connector steps
- *          so the judge still sees per-step latency. The merged tool-step
- *          count is never lower than the connector's, and no `tool_result`
- *          that had an output loses it. Span-only narrative steps (`[LLM …]`
- *          markers, the echoed user prompt) are dropped in this branch — they
- *          carry no evidence. If the connector trajectory has no `response`
- *          content, the span trajectory's answer steps are appended.
+ *          steps line up one-to-one with the connector's — same count, same
+ *          step types in order, AND the same tool name wherever both sides
+ *          name one — the spans' timing (`latencyMs`) is folded onto the
+ *          connector steps so the judge still sees per-step latency; nothing
+ *          else is copied across (a wrong attribution would be worse than a
+ *          missing one). The merged tool-step count is never lower than the
+ *          connector's, and no `tool_result` that had an output loses it.
+ *          Span-only narrative steps (`[LLM …]` markers, the echoed user
+ *          prompt) are dropped in this branch — they carry no evidence. If
+ *          the connector trajectory has no `response` content, the span
+ *          trajectory's answer steps are appended.
  *       b. Otherwise (span tool steps are at least as complete as the
  *          connector's) the span trajectory is used, keeping the #320
  *          behaviour for trace-only agents — and if it has no non-empty
@@ -56,7 +59,7 @@
 import type { TrajectoryStep } from '@/types';
 
 /** Steps that constitute tool evidence for the judge. */
-export const TOOL_STEP_TYPES: ReadonlySet<TrajectoryStep['type']> = new Set(['action', 'tool_result']);
+const TOOL_STEP_TYPES: ReadonlySet<TrajectoryStep['type']> = new Set(['action', 'tool_result']);
 
 function stringify(value: unknown): string {
   if (value == null) return '';
@@ -70,21 +73,15 @@ function stringify(value: unknown): string {
 
 /**
  * The evidence text a `tool_result` step contributes to the judge: its
- * `toolOutput` when non-empty, else its `content`. Empty for non-result steps.
+ * `toolOutput` when present, else its `content`. Empty for non-result steps.
+ * An explicit empty result (`{}`, `[]`, `""`) IS evidence — "the search
+ * returned nothing" is often the crucial fact — so nothing is filtered here;
+ * only `undefined`/`null` fall through to `content`.
  */
 export function toolEvidenceText(step: TrajectoryStep | undefined | null): string {
   if (!step || step.type !== 'tool_result') return '';
-  const out = stringify(step.toolOutput).trim();
-  // `{}` / `[]` are empty payloads, not evidence.
-  if (out && out !== '{}' && out !== '[]') return out;
+  if (step.toolOutput != null) return stringify(step.toolOutput).trim();
   return typeof step.content === 'string' ? step.content.trim() : '';
-}
-
-/** Does this `tool_result` carry an actual output payload (not a stub)? */
-export function hasToolOutput(step: TrajectoryStep | undefined | null): boolean {
-  if (!step || step.type !== 'tool_result') return false;
-  const out = stringify(step.toolOutput).trim();
-  return out.length > 0 && out !== '{}' && out !== '[]';
 }
 
 function toolSteps(trajectory: readonly TrajectoryStep[]): TrajectoryStep[] {
@@ -127,24 +124,28 @@ export function mergeSpanTrajectory(
   if (span.length === 0) return [...original];
 
   if (spanTrajectoryLosesToolEvidence(original, span)) {
-    // (a) Keep the connector's evidence. Fold span timing / tool names onto
-    // the connector's tool steps when the two tool sequences have the same
-    // shape (same count and step types in order).
+    // (a) Keep the connector's evidence. Fold span TIMING onto the
+    // connector's tool steps only when the two tool sequences are
+    // unambiguously the same calls: same count, same step types in order,
+    // and — wherever both sides name the tool — the same tool name. Retries,
+    // filtered spans or parallel calls that merely preserve the type pattern
+    // fail the name check and get no cross-attribution at all.
     const connectorTools = toolSteps(original);
     const spanTools = toolSteps(span);
-    const sameShape =
+    const sameCalls =
       spanTools.length === connectorTools.length &&
-      spanTools.every((s, i) => s.type === connectorTools[i].type);
-    if (!sameShape) return appendAnswerIfMissing([...original], span);
+      spanTools.every((s, i) => {
+        const c = connectorTools[i];
+        return s.type === c.type && (!s.toolName || !c.toolName || s.toolName === c.toolName);
+      });
+    if (!sameCalls) return appendAnswerIfMissing([...original], span);
 
     let toolIdx = 0;
     const kept = original.map((step) => {
       if (!TOOL_STEP_TYPES.has(step.type)) return step;
       const from = spanTools[toolIdx++];
-      const out: TrajectoryStep = { ...step };
-      if (out.latencyMs == null && from.latencyMs != null) out.latencyMs = from.latencyMs;
-      if (!out.toolName && from.toolName) out.toolName = from.toolName;
-      return out;
+      if (step.latencyMs != null || from.latencyMs == null) return step;
+      return { ...step, latencyMs: from.latencyMs };
     });
     return appendAnswerIfMissing(kept, span);
   }

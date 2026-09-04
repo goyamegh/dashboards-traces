@@ -201,6 +201,26 @@ export function compactTrajectory(
   return trajectory.map(step => {
     const compacted = { ...step };
 
+    // Many connectors store a tool result's text on BOTH `content` and
+    // `toolOutput` (REST/hook-built steps, subprocess-agent results, generic
+    // span conversion). Serializing it twice doubles the judged JSON for the
+    // largest steps for zero information gain and crowds out later steps
+    // under the caps. Keep the payload once (`toolOutput`) and leave a short
+    // pointer in `content`.
+    if (
+      compacted.type === 'tool_result' &&
+      typeof compacted.content === 'string' &&
+      compacted.toolOutput != null &&
+      compacted.content.length > 200
+    ) {
+      const out = typeof compacted.toolOutput === 'string'
+        ? compacted.toolOutput
+        : JSON.stringify(compacted.toolOutput);
+      if (out === compacted.content) {
+        compacted.content = `[see toolOutput — ${out.length} chars]`;
+      }
+    }
+
     // Truncate large content fields
     if (compacted.content && typeof compacted.content === 'string') {
       compacted.content = truncateString(compacted.content, contentCap);

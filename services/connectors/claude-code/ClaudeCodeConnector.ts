@@ -150,17 +150,6 @@ export class ClaudeCodeConnector extends SubprocessConnector<ClaudeCodeExecution
 
   override traceContext = { propagateEnv: true, serviceName: 'claude-code-agent' };
 
-  /**
-   * The connector's pristine constructor-time args, captured on first execute.
-   * The registry hands out a SINGLETON connector instance shared by all
-   * concurrent benchmark tasks; building per-execution args by appending to
-   * `this.config.args` compounded another in-flight execution's appended
-   * config args (spawns were observed with --append-system-prompt /
-   * --allowed-tools duplicated up to 5× at concurrency 3). Every execution
-   * must build from this immutable base instead.
-   */
-  private pristineArgs?: string[];
-
   constructor(config?: Partial<SubprocessConfig>) {
     super({ ...CLAUDE_CODE_DEFAULT_CONFIG, ...config });
   }
@@ -442,7 +431,52 @@ export class ClaudeCodeConnector extends SubprocessConnector<ClaudeCodeExecution
   }
 
   /**
-   * Override execute to apply connectorConfig
+   * Translate `ClaudeCodeConnectorConfig` (the agent's `connectorConfig`) into
+   * the effective per-execution subprocess config. Pure: builds a fresh
+   * snapshot from the constructor defaults — `this.config` is never written,
+   * so concurrent executions on the shared singleton cannot compound each
+   * other's flags (spawns were once observed with --append-system-prompt /
+   * --allowed-tools duplicated up to 5× at concurrency 3) or swap env /
+   * timeout / cwd.
+   */
+  protected override resolveExecutionConfig(request: ConnectorRequest) {
+    const ccConfig = (request.connectorConfig || {}) as ClaudeCodeConnectorConfig;
+    const base = super.resolveExecutionConfig({
+      ...request,
+      // Only `env` / `timeout` / `workingDir` are base-shaped on the Claude
+      // Code config; everything else is translated to CLI flags below.
+      connectorConfig: {
+        ...(ccConfig.env ? { env: ccConfig.env } : {}),
+        ...(ccConfig.timeout !== undefined ? { timeout: ccConfig.timeout } : {}),
+        ...(ccConfig.workingDir ? { workingDir: ccConfig.workingDir } : {}),
+      },
+    });
+    const configArgs = this.buildConfigArgs(ccConfig);
+    if (configArgs.length > 0) this.debug('Config args added:', configArgs);
+
+    let env = base.env || {};
+    // When using Bedrock, clear any Anthropic API key to prevent
+    // login-managed key from taking precedence and triggering a credit
+    // balance check instead of routing through Bedrock.
+    if (env.CLAUDE_CODE_USE_BEDROCK === '1') {
+      env = { ...env, ANTHROPIC_API_KEY: '' };
+      this.debug('Bedrock mode: cleared ANTHROPIC_API_KEY to bypass credit check');
+    }
+
+    // The agent's model is owned by its agent-health.config.ts connector
+    // config (env.ANTHROPIC_MODEL, or a `--model` flag in connectorConfig.args)
+    // — there is no run-level / user-selected agent model. We intentionally do
+    // NOT inject a model from the run here.
+    return {
+      ...base,
+      env,
+      args: [...(this.config.args || []), ...configArgs],
+      ...(ccConfig.usePromptArg ? { inputMode: 'arg' as const } : {}),
+    };
+  }
+
+  /**
+   * Override execute for debug logging around the base implementation.
    */
   override async execute(
     endpoint: string,
@@ -454,95 +488,11 @@ export class ClaudeCodeConnector extends SubprocessConnector<ClaudeCodeExecution
     this.debug('========== execute() STARTED ==========');
     this.debug('Endpoint:', endpoint);
     this.debug('Test case:', request.testCase.name);
-    this.debug('Config:', this['config']);
-
-    // Capture the pristine base args once (first execution wins — constructor
-    // args never change). See `pristineArgs` doc for why we must not snapshot
-    // `this.config.args` per-execution under concurrency.
-    this.pristineArgs ??= this.config.args ? [...this.config.args] : [];
-
-    // Save original config for restoration after execution.
-    // Uses structured clone for env to prevent leaking nested mutations
-    // between consecutive executions in a benchmark run.
-    const originalEnv = this.config.env ? structuredClone(this.config.env) : {};
-    const originalArgs = [...this.pristineArgs];
-    const originalInputMode = this.config.inputMode;
-    const originalTimeout = this.config.timeout;
-    const originalWorkingDir = this.config.workingDir;
-
-    // Apply connectorConfig if provided
-    const ccConfig = request.connectorConfig as ClaudeCodeConnectorConfig | undefined;
-    if (ccConfig) {
-      this.debug('Applying connectorConfig:', Object.keys(ccConfig));
-
-      // Merge environment variables
-      if (ccConfig.env) {
-        this.config.env = { ...this.config.env, ...ccConfig.env };
-      }
-
-      // Switch input mode if requested
-      if (ccConfig.usePromptArg) {
-        this.config.inputMode = 'arg';
-      }
-
-      // Override timeout if specified
-      if (ccConfig.timeout !== undefined) {
-        this.config.timeout = ccConfig.timeout;
-      }
-
-      // Override working directory if specified
-      if (ccConfig.workingDir) {
-        this.config.workingDir = ccConfig.workingDir;
-      }
-    }
-
-    // When using Bedrock, clear any Anthropic API key to prevent
-    // login-managed key from taking precedence and triggering a credit
-    // balance check instead of routing through Bedrock.
-    if (this.config.env?.CLAUDE_CODE_USE_BEDROCK === '1') {
-      this.config.env = { ...this.config.env, ANTHROPIC_API_KEY: '' };
-      this.debug('Bedrock mode: cleared ANTHROPIC_API_KEY to bypass credit check');
-    }
-
-    // The agent's model is owned by its agent-health.config.ts connector
-    // config (env.ANTHROPIC_MODEL, or a `--model` flag in connectorConfig.args)
-    // — there is no run-level / user-selected agent model. We intentionally do
-    // NOT inject a model from the run here.
-
-    // Build per-execution args from the PRISTINE base (never from the live
-    // `this.config.args`, which may carry another in-flight execution's
-    // appended config args). `super.execute()` (SubprocessConnector) reads
-    // `this.config.args` synchronously at its very top (`const args =
-    // this.config.args || []`, before any `await`) — traced end-to-end: there
-    // is no `await` anywhere between this write and that read, so no other
-    // concurrent `execute()` call can interleave in between (JS run-to-
-    // completion semantics). This DOES depend on that base-class read staying
-    // synchronous-before-first-await; if `SubprocessConnector.execute()` is
-    // ever refactored to do async work before reading `config.args`, this
-    // invariant breaks silently — the concurrency test below is the guard.
-    if (ccConfig) {
-      const configArgs = this.buildConfigArgs(ccConfig);
-      this.config.args = [...this.pristineArgs, ...configArgs];
-      if (configArgs.length > 0) {
-        this.debug('Config args added:', configArgs);
-      }
-    }
-
-    try {
-      this.debug('Calling super.execute()...');
-      const result = await super.execute(endpoint, request, auth, onProgress, onRawEvent);
-      this.debug('super.execute() returned with', result.trajectory.length, 'steps');
-      this.debug('========== execute() COMPLETED ==========');
-      return result;
-    } finally {
-      // Restore config to pre-execution state. Uses deep copies to prevent
-      // config pollution between consecutive executions in a benchmark run.
-      this.config.env = originalEnv;
-      this.config.args = originalArgs;
-      this.config.inputMode = originalInputMode;
-      this.config.timeout = originalTimeout;
-      this.config.workingDir = originalWorkingDir;
-    }
+    if (request.connectorConfig) this.debug('Applying connectorConfig:', Object.keys(request.connectorConfig));
+    const result = await super.execute(endpoint, request, auth, onProgress, onRawEvent);
+    this.debug('super.execute() returned with', result.trajectory.length, 'steps');
+    this.debug('========== execute() COMPLETED ==========');
+    return result;
   }
 
   /**
