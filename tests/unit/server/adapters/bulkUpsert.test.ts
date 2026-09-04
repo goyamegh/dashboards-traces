@@ -69,8 +69,11 @@ describe('bulkUpsert', () => {
   // Per-test SDK definition capture is a passthrough field too, and — the
   // important half — adding it must NOT bump versions: the hash inputs are
   // unchanged, so a re-import of the same file with `definition` now
-  // attached classifies as `unchanged` and keeps the existing record.
-  it('persists definition on create and does not version-bump when only definition is added on re-import', async () => {
+  // attached classifies as `unchanged`, keeps the existing id + version, and
+  // BACKFILLS the definition in place (otherwise a record imported before
+  // the field existed could never gain it — every re-import of an unchanged
+  // file takes the equal-hash path).
+  it('backfills definition in place on equal-hash re-import (no version bump), never overwriting an existing one', async () => {
     const base = {
       name: 'Defined Test',
       initialPrompt: 'p',
@@ -82,14 +85,24 @@ describe('bulkUpsert', () => {
     expect(first.created).toBe(1);
     expect(first.testCases[0].definition).toBeUndefined();
 
-    const second = await storage.testCases.bulkUpsert([{
-      ...base,
-      definition: { registeredAs: 'sdk' as const, options: { prompt: 'p' }, bodySource: '() => {}' },
-    }]);
+    const def = { registeredAs: 'sdk' as const, options: { prompt: 'p' }, bodySource: '() => {}' };
+    const second = await storage.testCases.bulkUpsert([{ ...base, definition: def }]);
     expect(second.unchanged).toBe(1);
     expect(second.updated).toBe(0);
     expect(second.testCases[0].id).toBe(first.testCases[0].id);
     expect(second.testCases[0].currentVersion).toBe(1);
+    // Backfilled in place: re-reading the record shows the definition on v1.
+    const reread = await storage.testCases.getById(first.testCases[0].id);
+    expect(reread?.definition).toEqual(def);
+    expect(reread?.currentVersion).toBe(1);
+    expect((await storage.testCases.getVersions(first.testCases[0].id))).toHaveLength(1);
+
+    // A third import with a DIFFERENT definition but the same hash must not
+    // overwrite what's stored (equal hash ⇒ same file ⇒ same capture; any
+    // divergence here would be a loader-version artifact, not a user edit).
+    const third = await storage.testCases.bulkUpsert([{ ...base, definition: { ...def, bodySource: 'CHANGED' } }]);
+    expect(third.unchanged).toBe(1);
+    expect((await storage.testCases.getById(first.testCases[0].id))?.definition).toEqual(def);
 
     // A fresh record created WITH definition persists it verbatim.
     const created = await storage.testCases.bulkUpsert([{
