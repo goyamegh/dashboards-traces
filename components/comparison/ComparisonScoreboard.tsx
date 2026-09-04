@@ -10,6 +10,7 @@ import { cn, formatRelativeTime, getModelName } from '@/lib/utils';
 import { formatCost, formatDuration, formatTokens } from '@/services/metrics';
 import type { RunAggregateMetrics, BenchmarkRun } from '@/types';
 import type { TestCaseOverlap } from '@/services/comparisonService';
+import { runReportPath } from '@/lib/runReportPath';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
@@ -28,21 +29,6 @@ export interface ComparisonScoreboardProps {
   onSwapRuns: () => void;
   getAgentName: (key: string) => string;
 }
-
-// ─── Run report route ────────────────────────────────────────────────────────
-
-/**
- * Canonical run-report path for a run on the compare page. Benchmark runs
- * resolve at /evaluations/benchmarks/:benchmarkId/runs/:runId; everything
- * else (ad-hoc / SDK eval-runs, or runs whose benchmarkId is only a label)
- * goes to the bare /evaluations/runs/:runId route. Shared by the scoreboard's
- * run-name link, its "Open run" icon, and the per-case table's run headers so
- * all three can never disagree.
- */
-export const runReportPath = (runId: string, benchmarkId?: string): string =>
-  benchmarkId
-    ? `/evaluations/benchmarks/${benchmarkId}/runs/${runId}`
-    : `/evaluations/runs/${runId}`;
 
 // ─── Column definitions ──────────────────────────────────────────────────────
 
@@ -66,7 +52,7 @@ export const SCOREBOARD_COLUMNS: ReadonlyArray<{ key: string; label: string; too
 ];
 
 /** Tooltip on the delta footer's row label. */
-export const DELTA_ROW_TOOLTIP = 'A minus B for each column; blue/green is better for A, red is worse';
+export const DELTA_ROW_TOOLTIP = 'A minus B per column; blue/green when A is better on that metric, red when worse';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

@@ -29,7 +29,7 @@ import { extractFirstDivergence } from '@/services/trajectoryDiffService';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { ArrowRightLeft, Plus, Minus } from 'lucide-react';
 import { getClusterDotColor } from './FailureClusterPanel';
-import { runReportPath } from './ComparisonScoreboard';
+import { runReportPath } from '@/lib/runReportPath';
 
 // Helper to get agent display name from key
 const getAgentName = (agentKey: string): string => {
@@ -322,7 +322,7 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
                   {/* Distinguishable header: index + run name, then agent·model,
                       then relative date — so two runs with the same name (e.g.
                       repeated "CLI Run") are still tellable apart. */}
-                  <div className="font-medium truncate">
+                  <div className="font-medium truncate" title={run.name}>
                     <span className="text-muted-foreground mr-1">#{idx + 1}</span>
                     <Link
                       to={runReportPath(run.id, runBenchmarkIdById?.get(run.id))}

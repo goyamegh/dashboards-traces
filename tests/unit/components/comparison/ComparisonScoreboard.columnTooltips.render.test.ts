@@ -28,8 +28,8 @@ import {
   ComparisonScoreboard,
   SCOREBOARD_COLUMNS,
   DELTA_ROW_TOOLTIP,
-  runReportPath,
 } from '@/components/comparison/ComparisonScoreboard';
+import { runReportPath } from '@/lib/runReportPath';
 import { UseCaseComparisonTable } from '@/components/comparison/UseCaseComparisonTable';
 import type { RunAggregateMetrics, BenchmarkRun, TestCaseComparisonRow } from '@/types';
 import type { TestCaseOverlap } from '@/services/comparisonService';
@@ -201,6 +201,8 @@ describe('runReportPath', () => {
     expect(runReportPath('r1', 'b1')).toBe('/evaluations/benchmarks/b1/runs/r1');
     expect(runReportPath('r1', undefined)).toBe('/evaluations/runs/r1');
     expect(runReportPath('r1', '')).toBe('/evaluations/runs/r1');
+    // Ids are path-segment encoded so a stray '/' or '?' can't break the route.
+    expect(runReportPath('r/1', 'b?1')).toBe('/evaluations/benchmarks/b%3F1/runs/r%2F1');
   });
 });
 

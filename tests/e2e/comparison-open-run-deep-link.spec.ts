@@ -209,8 +209,17 @@ test.describe('Comparison scoreboard — "Open run" deep link', () => {
     await expect(page.locator('[data-testid="scoreboard-col-avgScore"]')).toHaveAttribute(
       'title', 'Mean per-case overall score: accuracy if present, else primary rubric, else mean of all rubric metrics');
 
-    // Clicking the name navigates to the run report.
-    await nameA.click();
+    // Keyboard: the name link is focusable and Enter activates it (the
+    // sticky header must not swallow the event).
+    await nameA.focus();
+    await expect(nameA).toBeFocused();
+    await page.keyboard.press('Enter');
     await page.waitForURL(`**/evaluations/benchmarks/${BENCH_ID}/runs/${BENCH_RUN_ID}/inspect`, { timeout: 15000 });
+
+    // Mouse: clicking the per-case header link navigates too.
+    await page.goBack();
+    await page.waitForSelector('[data-testid="comparison-scoreboard"]', { timeout: 30000 });
+    await page.locator(`[data-testid="case-table-run-link-${ADHOC_RUN_ID}"]`).click();
+    await page.waitForURL(`**/evaluations/runs/${ADHOC_RUN_ID}`, { timeout: 15000 });
   });
 });

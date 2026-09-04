@@ -156,8 +156,7 @@ describe('ComparisonScoreboard structure', () => {
     // Route selection now lives in the shared runReportPath helper (also used
     // by the run-name link and the per-case table headers).
     expect(src).toContain('runBenchmarkIdById');
-    expect(src).toContain('/evaluations/benchmarks/${benchmarkId}/runs/${runId}');
-    expect(src).toContain('/evaluations/runs/${runId}');
+    expect(src).toContain("import { runReportPath } from '@/lib/runReportPath'");
     expect(src).toContain('to={runReportPath(run.runId, benchmarkId)}');
     expect(src).toContain('data-testid={`open-run-${run.runId}`}');
   });
