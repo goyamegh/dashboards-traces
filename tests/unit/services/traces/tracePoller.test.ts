@@ -853,6 +853,127 @@ describe('TracePollingManager', () => {
       expect(actionSteps[0].toolName).toBe('add_to_cart');
     });
 
+    // Regression (P0, judge evidence loss): the default span→trajectory
+    // conversion used to REPLACE the connector trajectory wholesale, keeping
+    // only its response steps. When the agent's spans carry no tool payloads
+    // the connector/afterResponse-hook `tool_result` steps (with `toolOutput`)
+    // were discarded — measured live: ~50% of a REST agent's reports ended
+    // with NO tool steps and the judge wrote "no intermediate retrieval
+    // steps". Replacement must never lose evidence (services/traces/
+    // trajectoryMerge.ts).
+    describe('evidence-preserving merge (no buildTrajectory hook)', () => {
+      const connectorTrajectory = [
+        { id: 'c-1', timestamp: 1, type: 'action', content: '{"index":"kb"}', toolName: 'dsl_executor', toolArgs: { index: 'kb' } },
+        { id: 'c-2', timestamp: 2, type: 'tool_result', content: '[{"id":597374}]', toolName: 'dsl_executor', toolOutput: '[{"id":597374}]', status: 'SUCCESS' },
+        { id: 'c-3', timestamp: 3, type: 'response', content: 'The product is 597374.' },
+      ];
+      const baseReport = {
+        id: 'report-merge',
+        timestamp: '2024-01-01T00:00:00Z',
+        testCaseId: 'test-1',
+        status: 'completed',
+        agentName: 'REST Agent',
+        agentKey: 'rest-agent',
+        connectorProtocol: 'rest',
+        modelName: 'Test Model',
+        modelId: 'test-model',
+        metricsStatus: 'pending',
+        traceId: 'trace-merge',
+        metrics: {},
+        llmJudgeReasoning: '',
+      };
+
+      it('keeps hook-built tool_result steps (with toolOutput) when the spans carry NO tool payloads', async () => {
+        // Generic (non-Claude) spans with only prompt/completion attributes —
+        // spansToTrajectory yields thinking + response, zero tool steps.
+        const spans: Span[] = [{
+          traceId: 'trace-merge',
+          spanId: 'span-root',
+          name: 'invoke_agent retrieval-agent',
+          startTime: '2024-01-01T00:00:00Z',
+          endTime: '2024-01-01T00:00:03Z',
+          duration: 3000,
+          status: 'OK',
+          attributes: { 'gen_ai.prompt': 'find the away kit', 'gen_ai.completion': 'The product is 597374.' },
+        }];
+        const report = { ...baseReport, id: 'report-merge-notools', trajectory: connectorTrajectory } as any;
+        const onTracesFound = jest.fn();
+        mockFetchTracesForRun.mockResolvedValue({ spans, total: 1 });
+        mockUpdateReport.mockResolvedValue(undefined);
+        mockGetReportById.mockResolvedValue(report);
+
+        tracePollingManager.startPolling('report-merge-notools', 'run-merge', { onTracesFound, onError: jest.fn() }, {
+          agentConfig: { key: 'rest-agent', name: 'REST Agent', endpoint: 'http://test.com' },
+        });
+        await jest.runAllTimersAsync();
+
+        expect(onTracesFound).toHaveBeenCalledTimes(1);
+        const judged = onTracesFound.mock.calls[0][1].trajectory;
+        const toolResults = judged.filter((s: any) => s.type === 'tool_result');
+        expect(toolResults).toHaveLength(1);
+        expect(toolResults[0].toolOutput).toBe('[{"id":597374}]');
+        expect(judged.filter((s: any) => s.type === 'action')).toHaveLength(1);
+        expect(judged.some((s: any) => s.type === 'response' && s.content === 'The product is 597374.')).toBe(true);
+      });
+
+      it('keeps connector outputs over span-derived "tool succeeded" stubs and folds span timing onto them', async () => {
+        // Claude-native shape: `tool` + `tool.execution` spans without payload
+        // attributes → action + "tool succeeded" tool_result stubs.
+        const spans: Span[] = [
+          {
+            traceId: 'trace-merge', spanId: 'sp-tool', name: 'claude_code.tool',
+            startTime: '2024-01-01T00:00:01Z', endTime: '2024-01-01T00:00:01.5Z', duration: 500, status: 'OK',
+            attributes: { 'span.type': 'tool', tool_name: 'dsl_executor', tool_use_id: 'toolu_1', duration_ms: 500 },
+          },
+          {
+            traceId: 'trace-merge', spanId: 'sp-exec', name: 'claude_code.tool.execution',
+            startTime: '2024-01-01T00:00:01.1Z', endTime: '2024-01-01T00:00:01.4Z', duration: 300, status: 'OK',
+            attributes: { 'span.type': 'tool.execution', tool_use_id: 'toolu_1', success: true, duration_ms: 300 },
+          },
+        ];
+        const report = { ...baseReport, id: 'report-merge-stubs', trajectory: connectorTrajectory } as any;
+        const onTracesFound = jest.fn();
+        mockFetchTracesForRun.mockResolvedValue({ spans, total: 2 });
+        mockUpdateReport.mockResolvedValue(undefined);
+        mockGetReportById.mockResolvedValue(report);
+
+        tracePollingManager.startPolling('report-merge-stubs', 'run-merge-2', { onTracesFound, onError: jest.fn() }, {
+          agentConfig: { key: 'rest-agent', name: 'REST Agent', endpoint: 'http://test.com' },
+        });
+        await jest.runAllTimersAsync();
+
+        const judged = onTracesFound.mock.calls[0][1].trajectory;
+        const toolResults = judged.filter((s: any) => s.type === 'tool_result');
+        expect(toolResults).toHaveLength(1);
+        expect(toolResults[0].content).not.toBe('tool succeeded');
+        expect(toolResults[0].toolOutput).toBe('[{"id":597374}]');
+        expect(toolResults[0].latencyMs).toBe(300); // folded from the tool.execution span
+        expect(judged.find((s: any) => s.type === 'action').latencyMs).toBe(500);
+        expect(judged.filter((s: any) => s.type === 'response')).toHaveLength(1);
+      });
+
+      it('still lets an explicit buildTrajectory hook replace the trajectory wholesale (#320)', async () => {
+        const spans: Span[] = [{
+          traceId: 'trace-merge', spanId: 'span-h', name: 'x',
+          startTime: '2024-01-01T00:00:00Z', endTime: '2024-01-01T00:00:01Z', duration: 1000, status: 'OK', attributes: {},
+        }];
+        const hookTrajectory = [{ type: 'response', content: 'hook says so' }];
+        mockExecuteBuildTrajectoryHook.mockResolvedValue(hookTrajectory as any);
+        const report = { ...baseReport, id: 'report-merge-hook', trajectory: connectorTrajectory } as any;
+        const onTracesFound = jest.fn();
+        mockFetchTracesForRun.mockResolvedValue({ spans, total: 1 });
+        mockUpdateReport.mockResolvedValue(undefined);
+        mockGetReportById.mockResolvedValue(report);
+
+        tracePollingManager.startPolling('report-merge-hook', 'run-merge-3', { onTracesFound, onError: jest.fn() }, {
+          agentConfig: { key: 'rest-agent', name: 'REST Agent', endpoint: 'http://test.com', hooks: { buildTrajectory: { enabled: true, script: 'x.js' } } } as any,
+        });
+        await jest.runAllTimersAsync();
+
+        expect(onTracesFound.mock.calls[0][1].trajectory).toEqual(hookTrajectory);
+      });
+    });
+
     it('preserves existing trajectory when buildTrajectory hook throws', async () => {
       const mockSpans: Span[] = [
         {

@@ -18,6 +18,7 @@ import { asyncRunStorage } from '../storage/asyncRunStorage';
 import { executeBuildTrajectoryHook } from '@/lib/hooks';
 import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
 import { spansToTrajectory } from './spansToTrajectory';
+import { mergeSpanTrajectory } from './trajectoryMerge';
 
 // Polling configuration. Defaults are overridable via env vars so that
 // CI / E2E runs without a real OpenSearch trace backend can fail fast
@@ -411,32 +412,25 @@ class TracePollingManager {
           return;
         }
 
-        // Trajectory replacement policy:
+        // Trajectory replacement policy (full rationale + rules in
+        // services/traces/trajectoryMerge.ts):
         //  - an agent's explicit buildTrajectory HOOK is intentional — its
         //    output always wins (issue #320);
-        //  - the DEFAULT span→trajectory conversion replaces the connector
-        //    trajectory so tool calls are visible to the judge (#320) — BUT
-        //    if the span-built steps carry no response content (e.g. Claude
-        //    Code tool spans: prompts/responses live in OTel LOGS, not span
-        //    attributes), the connector trajectory's response steps are
-        //    appended so the judge still sees the agent's actual answer.
-        //    Replacing wholesale with content-less span stubs made the judge
-        //    fail every case of a live benchmark.
+        //  - the DEFAULT span→trajectory conversion is MERGED with the
+        //    connector trajectory so replacement never loses evidence: the
+        //    connector's `action`/`tool_result` steps (with `toolOutput`) are
+        //    kept whenever the span-derived steps would drop tool steps or
+        //    their outputs (agents whose spans carry no tool payloads), and
+        //    the connector's response is appended when the span-built steps
+        //    carry no response content (Claude Code keeps prompts/responses
+        //    in OTel LOGS, not span attributes). Wholesale replacement with
+        //    content-less span stubs made the judge fail every case of a
+        //    live benchmark and grade ~50% of a REST agent's cases with no
+        //    retrieval evidence at all.
         if (trajectory.length > 0) {
-          if (fromHook) {
-            report.trajectory = trajectory;
-          } else {
-            const hasResponseContent = trajectory.some(
-              (st: any) => st?.type === 'response' && typeof st.content === 'string' && st.content.trim().length > 0
-            );
-            const originalResponses = (report.trajectory || []).filter(
-              (st: any) => (st?.type === 'response' || st?.type === 'assistant') &&
-                typeof st.content === 'string' && st.content.trim().length > 0
-            );
-            report.trajectory = !hasResponseContent && originalResponses.length > 0
-              ? [...trajectory, ...originalResponses]
-              : trajectory;
-          }
+          report.trajectory = fromHook
+            ? trajectory
+            : mergeSpanTrajectory(report.trajectory, trajectory);
         }
 
         // Stop polling and notify success
