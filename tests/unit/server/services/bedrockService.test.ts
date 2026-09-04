@@ -80,6 +80,38 @@ describe('BedrockService', () => {
   });
 
   describe('compactTrajectory', () => {
+    // Connectors commonly store a tool result's text on BOTH `content` and
+    // `toolOutput`; serializing it twice doubles the judged JSON for the
+    // largest steps (codex_review finding on the connector-evidence fixes).
+    it('collapses a tool_result whose content duplicates toolOutput to a short pointer', () => {
+      const payload = JSON.stringify({ hits: Array.from({ length: 40 }, (_, i) => ({ id: i, title: `item ${i}` })) });
+      const trajectory: TrajectoryStep[] = [
+        createStep({ type: 'tool_result', content: payload, toolOutput: payload }),
+      ];
+      const [result] = compactTrajectory(trajectory);
+      expect(result.toolOutput).toBe(payload);
+      expect(result.content).toBe(`[see toolOutput — ${payload.length} chars]`);
+    });
+
+    it('collapses the duplicate when toolOutput is an object serializing to the content', () => {
+      const obj = { rows: Array.from({ length: 30 }, (_, i) => ({ i, v: `value-${i}` })) };
+      const content = JSON.stringify(obj);
+      const [result] = compactTrajectory([createStep({ type: 'tool_result', content, toolOutput: obj as any })]);
+      expect(result.content).toBe(`[see toolOutput — ${content.length} chars]`);
+    });
+
+    it('leaves content alone when it differs from toolOutput, is short, or the step is not a tool_result', () => {
+      const out = 'x'.repeat(500);
+      const differs = compactTrajectory([createStep({ type: 'tool_result', content: `search(q) -> ${out}`, toolOutput: out })])[0];
+      expect(differs.content).toBe(`search(q) -> ${out}`);
+      const short = compactTrajectory([createStep({ type: 'tool_result', content: 'ok', toolOutput: 'ok' })])[0];
+      expect(short.content).toBe('ok');
+      const action = compactTrajectory([createStep({ type: 'action', content: out, toolOutput: out })])[0];
+      expect(action.content).toBe(out);
+      const noOut = compactTrajectory([createStep({ type: 'tool_result', content: out })])[0];
+      expect(noOut.content).toBe(out);
+    });
+
     it('should truncate long content fields', () => {
       // Use 60_000 chars so it crosses the new default cap (50_000) without
       // depending on the env-var override path.

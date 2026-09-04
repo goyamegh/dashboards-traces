@@ -57,7 +57,7 @@ connectorRegistry.register(new CustomConnector());
   and `serviceName` (service-name + time-window fallback; defaults
   `claude-code-agent` / `kiro-agent` / `pi-agent` / `observio-sample-agent`).
   See the "Trace correlation conventions" section in `AGENTS.md`.
-- **Subprocess connectors** can override `parseStderrChunk(chunk)` to turn
+- **Subprocess connectors** can override `parseStderrChunk(chunk, trajectory, onProgress, state)` to turn
   stderr markers into trajectory steps (how `kiro` surfaces `[tool]` markers as
   `action` + `tool_result` steps). The base class persists `stderr` to
   `rawOutput` and honors per-request `connectorConfig` overrides.

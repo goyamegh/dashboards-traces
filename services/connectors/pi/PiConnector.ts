@@ -11,13 +11,14 @@
 
 import type { TrajectoryStep } from '@/types';
 import { ToolCallStatus } from '@/types';
-import { SubprocessConnector } from '@/services/connectors/subprocess/SubprocessConnector';
+import {
+  SubprocessConnector,
+  type SubprocessExecutionState,
+} from '@/services/connectors/subprocess/SubprocessConnector';
 import type {
   ConnectorAuth,
   ConnectorRequest,
-  ConnectorResponse,
   ConnectorProgressCallback,
-  ConnectorRawEventCallback,
   SubprocessConfig,
 } from '@/services/connectors/types';
 
@@ -52,21 +53,32 @@ const PI_DEFAULT_CONFIG: Partial<SubprocessConfig> = {
 };
 
 /**
+ * Per-invocation parse state (see `SubprocessExecutionState`: the registry
+ * shares ONE connector instance across concurrent runs, so buffers must not
+ * live on `this`).
+ */
+interface PiExecutionState extends SubprocessExecutionState {
+  piOutputBuffer: string;
+  piThinkingBuffer: string;
+  piTextBuffer: string;
+}
+
+/**
  * Pi CLI Connector
  * Invokes pi.dev as a subprocess for agent evaluation
  */
-export class PiConnector extends SubprocessConnector {
+export class PiConnector extends SubprocessConnector<PiExecutionState> {
   readonly type = 'pi' as const;
   override readonly name = 'Pi (pi.dev)';
 
   override traceContext = { propagateEnv: true, serviceName: 'pi-agent' };
 
-  private piOutputBuffer = '';
-  private piThinkingBuffer = '';
-  private piTextBuffer = '';
-
   constructor(config?: Partial<SubprocessConfig>) {
     super({ ...PI_DEFAULT_CONFIG, ...config });
+  }
+
+  protected override createExecutionState(): PiExecutionState {
+    return { ...super.createExecutionState(), piOutputBuffer: '', piThinkingBuffer: '', piTextBuffer: '' };
   }
 
   /**
@@ -99,13 +111,14 @@ export class PiConnector extends SubprocessConnector {
   protected override parseStreamingOutput(
     chunk: string,
     trajectory: TrajectoryStep[],
-    onProgress?: ConnectorProgressCallback
+    onProgress: ConnectorProgressCallback | undefined,
+    state: PiExecutionState
   ): void {
-    this.piOutputBuffer += chunk;
+    state.piOutputBuffer += chunk;
 
     // Parse complete JSON lines (NDJSON format)
-    const lines = this.piOutputBuffer.split('\n');
-    this.piOutputBuffer = lines.pop() || ''; // Keep incomplete line
+    const lines = state.piOutputBuffer.split('\n');
+    state.piOutputBuffer = lines.pop() || ''; // Keep incomplete line
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -113,7 +126,7 @@ export class PiConnector extends SubprocessConnector {
 
       try {
         const event = JSON.parse(trimmed);
-        const steps = this.parsePiEvent(event);
+        const steps = this.parsePiEvent(event, state);
         for (const step of steps) {
           trajectory.push(step);
           onProgress?.(step);
@@ -138,7 +151,7 @@ export class PiConnector extends SubprocessConnector {
    *  - message_start / message_end — full message with content blocks
    *  - message_update — streaming deltas with assistantMessageEvent
    */
-  private parsePiEvent(event: any): TrajectoryStep[] {
+  private parsePiEvent(event: any, state: PiExecutionState): TrajectoryStep[] {
     const steps: TrajectoryStep[] = [];
 
     // message_end contains the full final message with all content blocks
@@ -162,9 +175,9 @@ export class PiConnector extends SubprocessConnector {
       // Streaming deltas — accumulate into buffers
       const assistantEvent = event.assistantMessageEvent;
       if (assistantEvent?.type === 'text_delta' && assistantEvent.delta) {
-        this.piTextBuffer += assistantEvent.delta;
+        state.piTextBuffer += assistantEvent.delta;
       } else if (assistantEvent?.type === 'thinking_delta' && assistantEvent.delta) {
-        this.piThinkingBuffer += assistantEvent.delta;
+        state.piThinkingBuffer += assistantEvent.delta;
       }
     } else if (event.type === 'tool_result') {
       const content = event.content || event.output || JSON.stringify(event);
@@ -174,13 +187,13 @@ export class PiConnector extends SubprocessConnector {
       ));
     } else if (event.type === 'agent_end') {
       // Flush any remaining buffers on agent_end
-      if (this.piThinkingBuffer) {
-        steps.push(this.createStep('thinking', this.piThinkingBuffer));
-        this.piThinkingBuffer = '';
+      if (state.piThinkingBuffer) {
+        steps.push(this.createStep('thinking', state.piThinkingBuffer));
+        state.piThinkingBuffer = '';
       }
-      if (this.piTextBuffer) {
-        steps.push(this.createStep('response', this.piTextBuffer));
-        this.piTextBuffer = '';
+      if (state.piTextBuffer) {
+        steps.push(this.createStep('response', state.piTextBuffer));
+        state.piTextBuffer = '';
       }
     }
 
@@ -212,116 +225,86 @@ export class PiConnector extends SubprocessConnector {
    */
   protected override onBeforeStreamEnd(
     trajectory: TrajectoryStep[],
-    onProgress?: ConnectorProgressCallback
+    onProgress: ConnectorProgressCallback | undefined,
+    state: PiExecutionState
   ): void {
-    if (this.piOutputBuffer.trim()) {
+    if (state.piOutputBuffer.trim()) {
       try {
-        const event = JSON.parse(this.piOutputBuffer.trim());
-        const steps = this.parsePiEvent(event);
+        const event = JSON.parse(state.piOutputBuffer.trim());
+        const steps = this.parsePiEvent(event, state);
         for (const step of steps) {
           trajectory.push(step);
           onProgress?.(step);
         }
       } catch {
-        const step = this.createStep('assistant', this.piOutputBuffer.trim());
+        const step = this.createStep('assistant', state.piOutputBuffer.trim());
         trajectory.push(step);
         onProgress?.(step);
       }
-      this.piOutputBuffer = '';
+      state.piOutputBuffer = '';
     }
 
-    if (this.piThinkingBuffer) {
-      const step = this.createStep('thinking', this.piThinkingBuffer);
+    if (state.piThinkingBuffer) {
+      const step = this.createStep('thinking', state.piThinkingBuffer);
       trajectory.push(step);
       onProgress?.(step);
-      this.piThinkingBuffer = '';
+      state.piThinkingBuffer = '';
     }
 
-    if (this.piTextBuffer) {
-      const step = this.createStep('response', this.piTextBuffer);
+    if (state.piTextBuffer) {
+      const step = this.createStep('response', state.piTextBuffer);
       trajectory.push(step);
       onProgress?.(step);
-      this.piTextBuffer = '';
+      state.piTextBuffer = '';
     }
   }
 
   /**
-   * Reset state and apply connectorConfig
+   * Translate `PiConnectorConfig` into the effective per-execution subprocess
+   * config. Pure — `this.config` is never written, so concurrent executions
+   * on the shared singleton cannot see each other's args / env / timeout.
    */
-  override async execute(
-    endpoint: string,
-    request: ConnectorRequest,
-    auth: ConnectorAuth,
-    onProgress?: ConnectorProgressCallback,
-    onRawEvent?: ConnectorRawEventCallback
-  ): Promise<ConnectorResponse> {
-    this.piOutputBuffer = '';
-    this.piThinkingBuffer = '';
-    this.piTextBuffer = '';
+  protected override resolveExecutionConfig(request: ConnectorRequest) {
+    const piConfig = (request.connectorConfig || {}) as PiConnectorConfig;
+    const base = super.resolveExecutionConfig({
+      ...request,
+      connectorConfig: {
+        ...(piConfig.env ? { env: piConfig.env } : {}),
+        ...(piConfig.timeout !== undefined ? { timeout: piConfig.timeout } : {}),
+        ...(piConfig.workingDir ? { workingDir: piConfig.workingDir } : {}),
+      },
+    });
 
-    // Save original config
-    const originalArgs = this.config.args ? [...this.config.args] : [];
-    const originalEnv = this.config.env ? structuredClone(this.config.env) : {};
-    const originalTimeout = this.config.timeout;
-    const originalWorkingDir = this.config.workingDir;
-
-    // Apply connectorConfig
-    const piConfig = request.connectorConfig as PiConnectorConfig | undefined;
-    if (piConfig) {
-      if (piConfig.env) {
-        this.config.env = { ...this.config.env, ...piConfig.env };
-      }
-      if (piConfig.timeout !== undefined) {
-        this.config.timeout = piConfig.timeout;
-      }
-      if (piConfig.workingDir) {
-        this.config.workingDir = piConfig.workingDir;
-      }
-
-      // Build additional args from config
-      const extraArgs: string[] = [];
-      if (piConfig.packagePath) {
-        // Pi uses --skill and --extension to load package components
-        extraArgs.push('--skill', `${piConfig.packagePath}/skills/*`);
-        extraArgs.push('--extension', `${piConfig.packagePath}/extensions/agent-health.ts`);
-        extraArgs.push('--append-system-prompt', `${piConfig.packagePath}/prompts/agent-health.md`);
-      }
-      if (piConfig.model) {
-        extraArgs.push('--model', piConfig.model);
-      }
-      if (piConfig.additionalArgs) {
-        extraArgs.push(...piConfig.additionalArgs);
-      }
-      if (extraArgs.length > 0) {
-        this.config.args = [...(this.config.args || []), ...extraArgs];
-      }
+    // Build additional args from config
+    const extraArgs: string[] = [];
+    if (piConfig.packagePath) {
+      // Pi uses --skill and --extension to load package components
+      extraArgs.push('--skill', `${piConfig.packagePath}/skills/*`);
+      extraArgs.push('--extension', `${piConfig.packagePath}/extensions/agent-health.ts`);
+      extraArgs.push('--append-system-prompt', `${piConfig.packagePath}/prompts/agent-health.md`);
     }
+    if (piConfig.model) {
+      extraArgs.push('--model', piConfig.model);
+    }
+    if (piConfig.additionalArgs) {
+      extraArgs.push(...piConfig.additionalArgs);
+    }
+    let args = [...(this.config.args || []), ...extraArgs];
 
     // Pass --model flag from request if specified. request.modelId always
     // wins over connectorConfig.model above — strip any --model pair the
     // config block may have already pushed so the final argv carries exactly
     // one --model flag instead of two.
     if (request.modelId) {
-      this.config.args = [...this.stripModelFlag(this.config.args || []), '--model', request.modelId];
+      args = [...this.stripModelFlag(args), '--model', request.modelId];
     }
 
     // Inherit AWS credentials
-    if (process.env.AWS_PROFILE) {
-      this.config.env = { ...this.config.env, AWS_PROFILE: process.env.AWS_PROFILE };
-    }
-    if (process.env.AWS_REGION) {
-      this.config.env = { ...this.config.env, AWS_REGION: process.env.AWS_REGION };
-    }
+    const env = { ...(base.env || {}) };
+    if (process.env.AWS_PROFILE) env.AWS_PROFILE = process.env.AWS_PROFILE;
+    if (process.env.AWS_REGION) env.AWS_REGION = process.env.AWS_REGION;
 
-    try {
-      return await super.execute(endpoint, request, auth, onProgress, onRawEvent);
-    } finally {
-      // Restore config
-      this.config.args = originalArgs;
-      this.config.env = originalEnv;
-      this.config.timeout = originalTimeout;
-      this.config.workingDir = originalWorkingDir;
-    }
+    return { ...base, args, env };
   }
 
   /**

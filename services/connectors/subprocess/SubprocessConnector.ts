@@ -23,6 +23,37 @@ import type {
 } from '@/services/connectors/types';
 
 /**
+ * Per-invocation streaming state.
+ *
+ * The connector registry hands out a SINGLETON connector instance that every
+ * concurrent evaluation task shares. Any mutable field on the instance is
+ * therefore shared across in-flight `execute()` calls — line buffers, the
+ * captured session id, pending tool names… — and under `concurrency > 1`
+ * one run's data lands on another run's report (measured live: 11/62
+ * reports of a subprocess-agent benchmark carried a sibling case's
+ * `sessionId`, so the trace poller then judged them on the sibling's
+ * spans). Everything a single execution accumulates while parsing its own
+ * child process's stdout/stderr MUST live on this object, which is created
+ * per `execute()` call and threaded through every parse hook.
+ *
+ * Subclasses extend it via the `TState` generic and `createExecutionState()`.
+ */
+export interface SubprocessExecutionState {
+  /** Clean stdout lines accumulated during streaming (base text parser). */
+  streamBuffer: string[];
+}
+
+/**
+ * The effective, immutable configuration for ONE `execute()` call:
+ * constructor defaults overlaid with the request's `connectorConfig` (and, for
+ * subclasses, whatever `resolveExecutionConfig()` derives from it). Resolved
+ * once per call and captured by that call's closures — `this.config` (the
+ * shared defaults) is never written during execution, so concurrent runs on
+ * the shared singleton cannot see each other's args/env/timeout.
+ */
+export type ResolvedSubprocessConfig = Readonly<SubprocessConfig>;
+
+/**
  * Default subprocess configuration
  */
 const DEFAULT_SUBPROCESS_CONFIG: SubprocessConfig = {
@@ -38,7 +69,9 @@ const DEFAULT_SUBPROCESS_CONFIG: SubprocessConfig = {
  * Subprocess Connector for CLI tools
  * Spawns a child process and captures output
  */
-export class SubprocessConnector extends BaseConnector {
+export class SubprocessConnector<
+  TState extends SubprocessExecutionState = SubprocessExecutionState,
+> extends BaseConnector {
   readonly type: ConnectorProtocol = 'subprocess';
   override readonly name: string = 'Subprocess (CLI)';
   readonly supportsStreaming = true;
@@ -87,25 +120,22 @@ export class SubprocessConnector extends BaseConnector {
   ): Promise<ConnectorResponse> {
     this.debug('========== execute() STARTED ==========');
 
-    // Reset per-run streaming state so consecutive calls don't bleed.
-    this.streamBuffer = [];
+    // Fresh per-invocation parse state. Never stored on `this` — see
+    // `SubprocessExecutionState` for why (shared singleton, concurrent runs).
+    const state = this.createExecutionState();
 
-    // Apply per-request connectorConfig overrides (from agent-health.config.ts).
-    // The base SubprocessConnector previously ignored these and only used the
-    // constructor defaults. Specialized subclasses (ClaudeCode, Pi) already do
-    // this — we replicate the pattern here so any agent registered with
-    // connectorType: 'subprocess' can specify command/args/inputMode/etc.
-    const cfgOverride = (request.connectorConfig || {}) as Partial<SubprocessConfig>;
-    if (cfgOverride.command !== undefined) this.config.command = cfgOverride.command as string;
-    if (cfgOverride.args !== undefined) this.config.args = cfgOverride.args as string[];
-    if (cfgOverride.env !== undefined) this.config.env = { ...(this.config.env || {}), ...(cfgOverride.env as Record<string, string>) };
-    if (cfgOverride.inputMode !== undefined) this.config.inputMode = cfgOverride.inputMode as any;
-    if (cfgOverride.outputParser !== undefined) this.config.outputParser = cfgOverride.outputParser as any;
-    if (cfgOverride.timeout !== undefined) this.config.timeout = cfgOverride.timeout as number;
-    if (cfgOverride.workingDir !== undefined) this.config.workingDir = cfgOverride.workingDir as string;
+    // Resolve the effective config for THIS call without touching
+    // `this.config`. Every read below (spawn args, env, timeout, cwd, parser
+    // mode — including the ones inside the async stdout/stderr/close
+    // callbacks) goes through this local snapshot, so a concurrent
+    // `execute()` on the shared singleton can never redirect them. (The
+    // previous mutate-then-restore-in-`finally` pattern only held because no
+    // `await` sat between the write and the synchronous reads; it silently
+    // broke the moment a callback read `this.config` after the first await.)
+    const config = this.resolveExecutionConfig(request);
 
-    const command = endpoint || this.config.command;
-    const args = this.config.args || [];
+    const command = endpoint || config.command;
+    const args = config.args || [];
     // Use pre-built payload from hook if available, otherwise build fresh
     const input = request.payload || this.buildPayload(request);
 
@@ -114,11 +144,11 @@ export class SubprocessConnector extends BaseConnector {
 
     this.debug('Command:', command);
     this.debug('Args:', args);
-    this.debug('Input mode:', this.config.inputMode);
-    this.debug('Output parser:', this.config.outputParser);
-    this.debug('Timeout:', this.config.timeout);
+    this.debug('Input mode:', config.inputMode);
+    this.debug('Output parser:', config.outputParser);
+    this.debug('Timeout:', config.timeout);
     this.debug('Input (first 500 chars):', input.substring(0, 500));
-    this.debug('Working dir:', this.config.workingDir || process.cwd());
+    this.debug('Working dir:', config.workingDir || process.cwd());
     this.debug('Run ID:', runId);
 
     // Merge environment variables.
@@ -127,7 +157,7 @@ export class SubprocessConnector extends BaseConnector {
     const env = {
       ...process.env,
       ...this.buildAuthEnv(auth),
-      ...this.config.env,
+      ...config.env,
       // W3C trace context (Strategy A): TRACEPARENT/TRACESTATE from the active
       // eval `test_case` span. Agents whose OTel SDK honors TRACEPARENT (pi —
       // verified) emit their spans under the eval span's traceId, giving the
@@ -161,7 +191,7 @@ export class SubprocessConnector extends BaseConnector {
       // a command-injection hole — a prompt containing `'$(rm -rf ~)'` would
       // get evaluated by /bin/sh. Switching to `shell: false` removes the
       // attack surface entirely; quoting is no longer the connector's job.
-      const finalArgs = this.config.inputMode === 'arg'
+      const finalArgs = config.inputMode === 'arg'
         ? [...args, input]
         : args;
 
@@ -169,7 +199,7 @@ export class SubprocessConnector extends BaseConnector {
       this.debug('Full command:', command, finalArgs.join(' '));
       const proc = spawn(command, finalArgs, {
         env,
-        cwd: this.config.workingDir,
+        cwd: config.workingDir,
         shell: false,
       });
       this.debug('Process spawned, PID:', proc.pid);
@@ -180,11 +210,11 @@ export class SubprocessConnector extends BaseConnector {
         settled = true;
         this.debug('TIMEOUT reached, killing process');
         proc.kill('SIGTERM');
-        reject(new Error(`Subprocess timed out after ${this.config.timeout}ms`));
-      }, this.config.timeout);
+        reject(new Error(`Subprocess timed out after ${config.timeout}ms`));
+      }, config.timeout);
 
       // Send input via stdin if inputMode is 'stdin'
-      if (this.config.inputMode === 'stdin') {
+      if (config.inputMode === 'stdin') {
         this.debug('Writing input to stdin...');
         proc.stdin.write(input);
         proc.stdin.end();
@@ -201,8 +231,8 @@ export class SubprocessConnector extends BaseConnector {
         onRawEvent?.({ type: 'stdout', data: chunk });
 
         // For streaming mode, try to parse and emit steps
-        if (this.config.outputParser === 'streaming') {
-          this.parseStreamingOutput(chunk, trajectory, onProgress);
+        if (config.outputParser === 'streaming') {
+          this.parseStreamingOutput(chunk, trajectory, onProgress, state);
         }
       });
 
@@ -226,8 +256,8 @@ export class SubprocessConnector extends BaseConnector {
         rawOutput.push({ type: 'stderr', data: chunk, timestamp: Date.now() });
         onRawEvent?.({ type: 'stderr', data: chunk });
 
-        if (this.config.outputParser === 'streaming') {
-          this.parseStderrChunk(chunk, trajectory, onProgress);
+        if (config.outputParser === 'streaming') {
+          this.parseStderrChunk(chunk, trajectory, onProgress, state);
         }
       });
 
@@ -246,8 +276,8 @@ export class SubprocessConnector extends BaseConnector {
         }
 
         // Flush subclass buffers before finalizing streaming trajectory
-        if (this.config.outputParser === 'streaming') {
-          this.onBeforeStreamEnd(trajectory, onProgress);
+        if (config.outputParser === 'streaming') {
+          this.onBeforeStreamEnd(trajectory, onProgress, state);
 
           // Surface error when streaming produced no steps
           if (code !== 0 && trajectory.length === 0) {
@@ -263,12 +293,12 @@ export class SubprocessConnector extends BaseConnector {
         }
 
         // Parse final output
-        const finalTrajectory = this.config.outputParser === 'streaming'
+        const finalTrajectory = config.outputParser === 'streaming'
           ? trajectory
-          : this.parseResponse({ stdout, stderr, exitCode: code });
+          : this.parseResponse({ stdout, stderr, exitCode: code }, config);
 
         // Emit steps if not already streamed
-        if (this.config.outputParser !== 'streaming') {
+        if (config.outputParser !== 'streaming') {
           finalTrajectory.forEach(step => onProgress?.(step));
         }
 
@@ -282,7 +312,7 @@ export class SubprocessConnector extends BaseConnector {
             args: finalArgs,
             exitCode: code,
             stderr: stderr || undefined,
-            ...this.extraResultMetadata(),
+            ...this.extraResultMetadata(state),
           },
         });
       });
@@ -313,32 +343,64 @@ export class SubprocessConnector extends BaseConnector {
     this.debug('========== execute() COMPLETED ==========');
   }
 
-  /** Buffer of clean stdout lines accumulated during streaming.
-   *  Used by onBeforeStreamEnd() to emit a consolidated `response` step. */
-  private streamBuffer: string[] = [];
+  /**
+   * Create the per-invocation parse state for one `execute()` call.
+   * Subclasses that buffer anything while streaming (partial NDJSON lines,
+   * pending tool names, captured ids) override this to add their fields —
+   * and must NOT keep that data on the instance.
+   */
+  protected createExecutionState(): TState {
+    return { streamBuffer: [] } as unknown as TState;
+  }
+
+  /**
+   * Resolve the effective config for one `execute()` call: constructor
+   * defaults overlaid with the request's `connectorConfig` (so any agent
+   * registered with `connectorType: 'subprocess'` can specify command / args /
+   * inputMode / outputParser / timeout / workingDir / env per agent). Pure —
+   * MUST NOT write to `this.config`. Subclasses override to translate their
+   * own `connectorConfig` shape (Claude Code flags, Pi package/model) into the
+   * base fields, typically by calling `super.resolveExecutionConfig()` on a
+   * request whose `connectorConfig` has been rewritten into base shape.
+   */
+  protected resolveExecutionConfig(request: ConnectorRequest): ResolvedSubprocessConfig {
+    const o = (request.connectorConfig || {}) as Partial<SubprocessConfig>;
+    return {
+      ...this.config,
+      ...(o.command !== undefined ? { command: o.command as string } : {}),
+      ...(o.args !== undefined ? { args: [...(o.args as string[])] } : { args: [...(this.config.args || [])] }),
+      env: { ...(this.config.env || {}), ...((o.env as Record<string, string>) || {}) },
+      ...(o.inputMode !== undefined ? { inputMode: o.inputMode } : {}),
+      ...(o.outputParser !== undefined ? { outputParser: o.outputParser } : {}),
+      ...(o.timeout !== undefined ? { timeout: o.timeout as number } : {}),
+      ...(o.workingDir !== undefined ? { workingDir: o.workingDir as string } : {}),
+    };
+  }
 
   /**
    * Parse a stderr chunk in streaming mode. Default is a no-op.
    *
    * Override in subclasses for CLIs that carry tool-event markers on stderr.
    * Implementations should buffer partial lines (chunks rarely align with
-   * line boundaries) and emit steps via `onProgress` AND push them onto
-   * `trajectory` so they appear in the final response.
+   * line boundaries) in `state` and emit steps via `onProgress` AND push them
+   * onto `trajectory` so they appear in the final response.
    */
   protected parseStderrChunk(
     _chunk: string,
     _trajectory: TrajectoryStep[],
-    _onProgress?: ConnectorProgressCallback
+    _onProgress: ConnectorProgressCallback | undefined,
+    _state: TState
   ): void {
     // No-op by default; KiroConnector overrides this.
   }
 
   /**
    * Subclass hook: extra protocol-specific fields to merge into the
-   * connector result `metadata`. Default: none. Claude Code overrides this to
-   * surface the captured `sessionId` (Strategy D trace correlation).
+   * connector result `metadata`, read from the per-invocation `state` (Claude
+   * Code surfaces its captured `sessionId` for Strategy D trace correlation).
+   * Default: none.
    */
-  protected extraResultMetadata(): Record<string, any> {
+  protected extraResultMetadata(_state: TState): Record<string, any> {
     return {};
   }
 
@@ -356,8 +418,15 @@ export class SubprocessConnector extends BaseConnector {
   protected parseStreamingOutput(
     chunk: string,
     trajectory: TrajectoryStep[],
-    onProgress?: ConnectorProgressCallback
+    onProgress: ConnectorProgressCallback | undefined,
+    state: TState
   ): void {
+    // Legacy subclasses compiled against the pre-`state` signature call
+    // `super.parseStreamingOutput(chunk, trajectory, onProgress)`; tolerate
+    // the missing argument by falling back to a throwaway buffer rather than
+    // crashing mid-stream (they lose the consolidated `response` step, which
+    // is what they had before this hook existed).
+    const buf = state?.streamBuffer ?? [];
     // Strip ANSI: CSI sequences (\x1b[...m, cursor moves, etc.) and OSC
     const stripped = chunk
       .replace(/\x1b\][^\x07\x1b]*(\x07|\x1b\\)/g, '')   // OSC ... BEL
@@ -375,7 +444,7 @@ export class SubprocessConnector extends BaseConnector {
       // Skip very short lines that are likely artifacts
       if (line.length < 2 && !/[A-Za-z0-9]/.test(line)) continue;
 
-      this.streamBuffer.push(line);
+      buf.push(line);
       const step = this.createStep('assistant', line);
       trajectory.push(step);
       onProgress?.(step);
@@ -389,11 +458,12 @@ export class SubprocessConnector extends BaseConnector {
    */
   protected onBeforeStreamEnd(
     trajectory: TrajectoryStep[],
-    onProgress?: ConnectorProgressCallback
+    onProgress: ConnectorProgressCallback | undefined,
+    state: TState
   ): void {
-    if (this.streamBuffer.length > 0) {
-      const finalText = this.streamBuffer.join('\n').trim();
-      this.streamBuffer = [];
+    if (state?.streamBuffer?.length) {
+      const finalText = state.streamBuffer.join('\n').trim();
+      state.streamBuffer = [];
       if (finalText) {
         const step = this.createStep('response', finalText);
         trajectory.push(step);
@@ -405,10 +475,13 @@ export class SubprocessConnector extends BaseConnector {
   /**
    * Parse final subprocess output
    */
-  parseResponse(data: { stdout: string; stderr: string; exitCode: number }): TrajectoryStep[] {
+  parseResponse(
+    data: { stdout: string; stderr: string; exitCode: number },
+    config: ResolvedSubprocessConfig = this.config
+  ): TrajectoryStep[] {
     const steps: TrajectoryStep[] = [];
 
-    if (this.config.outputParser === 'json') {
+    if (config.outputParser === 'json') {
       // Try to parse as JSON
       try {
         const parsed = JSON.parse(data.stdout);

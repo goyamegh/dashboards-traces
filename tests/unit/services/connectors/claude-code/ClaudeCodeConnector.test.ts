@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { ClaudeCodeConnector, claudeCodeConnector, createBedrockClaudeCodeConnector } from '@/services/connectors/claude-code/ClaudeCodeConnector';
+import { ClaudeCodeConnector, claudeCodeConnector, createBedrockClaudeCodeConnector, boundToolOutput, CLAUDE_CODE_MAX_TOOL_OUTPUT_CHARS } from '@/services/connectors/claude-code/ClaudeCodeConnector';
 import type { ClaudeCodeConnectorConfig } from '@/services/connectors/claude-code/ClaudeCodeConnector';
 import type { ConnectorRequest, ConnectorAuth } from '@/services/connectors/types';
 import type { TestCase, TrajectoryStep } from '@/types';
@@ -1041,6 +1041,321 @@ describe('ClaudeCodeConnector', () => {
       }
       const lastArgs = (spawn as jest.Mock).mock.calls.at(-1)![1] as string[];
       expect(lastArgs.filter((a) => a === '--append-system-prompt').length).toBe(1);
+    });
+
+    // Regression (P0, cross-run data corruption): `sessionId` used to be
+    // INSTANCE state on the shared singleton. With two evaluation runs in
+    // flight, whichever child process emitted its stream-json last set
+    // `this.sessionId`, and BOTH results reported it — one run's report
+    // carried the other run's session id, so the trace poller (Strategy D,
+    // session.id correlation) fetched the FOREIGN case's spans and replaced
+    // the trajectory: cases were judged on another case's tool calls
+    // (measured live: 11/62 reports cross-wired). Session capture must be
+    // per-invocation.
+    it('two interleaved executions each return their OWN session id (no cross-wiring)', async () => {
+      const procs: any[] = [];
+      (spawn as jest.Mock).mockClear();
+      (spawn as jest.Mock).mockImplementation(() => {
+        const proc: any = new EventEmitter();
+        proc.stdout = new EventEmitter();
+        proc.stderr = new EventEmitter();
+        proc.stdin = { write: jest.fn(), end: jest.fn() };
+        proc.pid = 200 + procs.length;
+        proc.kill = jest.fn();
+        procs.push(proc);
+        return proc;
+      });
+
+      const e1 = connector.execute('claude', { testCase: { ...mockTestCase, id: 'tc-A' }, modelId: 'm' }, mockAuth);
+      const e2 = connector.execute('claude', { testCase: { ...mockTestCase, id: 'tc-B' }, modelId: 'm' }, mockAuth);
+      await new Promise((r) => setTimeout(r, 5));
+      expect(procs.length).toBe(2);
+      const [pA, pB] = procs;
+
+      // Deterministic interleaving of the real race window. Every stream-json
+      // event carries `session_id`, so the instance field was re-stamped on
+      // each data event — the corruption needs a SIBLING's data event to land
+      // between a run's last stdout chunk and its `close` (separate event-loop
+      // ticks in a real child process; routine under concurrency > 1):
+      //   A: init + result (sess-A) → B: init (sess-B) → A: close.
+      // Pre-fix, A's result read `this.sessionId === 'sess-B'`.
+      pA.stdout.emit('data', Buffer.from('{"type":"system","subtype":"init","session_id":"sess-A"}\n'));
+      pA.stdout.emit('data', Buffer.from('{"type":"result","result":"answer A","session_id":"sess-A"}\n'));
+      pB.stdout.emit('data', Buffer.from('{"type":"system","subtype":"init","session_id":"sess-B"}\n'));
+      pA.emit('close', 0, null);
+      const rA = await e1;
+
+      pB.stdout.emit('data', Buffer.from('{"type":"result","result":"answer B","session_id":"sess-B"}\n'));
+      pB.emit('close', 0, null);
+      const rB = await e2;
+
+      expect(rA.metadata?.sessionId).toBe('sess-A');
+      expect(rB.metadata?.sessionId).toBe('sess-B');
+      // Trajectories must not bleed either (the NDJSON line buffer was also
+      // instance state).
+      expect(rA.trajectory.map((s) => s.content)).toEqual(['answer A']);
+      expect(rB.trajectory.map((s) => s.content)).toEqual(['answer B']);
+    });
+
+    it('interleaved partial NDJSON chunks are buffered per execution, not per instance', async () => {
+      const procs: any[] = [];
+      (spawn as jest.Mock).mockClear();
+      (spawn as jest.Mock).mockImplementation(() => {
+        const proc: any = new EventEmitter();
+        proc.stdout = new EventEmitter();
+        proc.stderr = new EventEmitter();
+        proc.stdin = { write: jest.fn(), end: jest.fn() };
+        proc.pid = 300 + procs.length;
+        proc.kill = jest.fn();
+        procs.push(proc);
+        return proc;
+      });
+
+      const e1 = connector.execute('claude', { testCase: { ...mockTestCase, id: 'tc-A' }, modelId: 'm' }, mockAuth);
+      const e2 = connector.execute('claude', { testCase: { ...mockTestCase, id: 'tc-B' }, modelId: 'm' }, mockAuth);
+      await new Promise((r) => setTimeout(r, 5));
+      const [pA, pB] = procs;
+
+      // Each process delivers ONE JSON line split across two chunks, and the
+      // chunks of A and B arrive interleaved at arbitrary byte boundaries.
+      const lineA = '{"type":"assistant","message":{"content":[{"type":"text","text":"from A"}]},"session_id":"sess-A"}\n';
+      const lineB = '{"type":"assistant","message":{"content":[{"type":"text","text":"from B"}]},"session_id":"sess-B"}\n';
+      pA.stdout.emit('data', Buffer.from(lineA.slice(0, 37)));
+      pB.stdout.emit('data', Buffer.from(lineB.slice(0, 22)));
+      pA.stdout.emit('data', Buffer.from(lineA.slice(37)));
+      pB.stdout.emit('data', Buffer.from(lineB.slice(22)));
+      pA.emit('close', 0, null);
+      pB.emit('close', 0, null);
+      const [rA, rB] = await Promise.all([e1, e2]);
+
+      expect(rA.trajectory.map((s) => s.content)).toEqual(['from A']);
+      expect(rB.trajectory.map((s) => s.content)).toEqual(['from B']);
+      expect(rA.metadata?.sessionId).toBe('sess-A');
+      expect(rB.metadata?.sessionId).toBe('sess-B');
+    });
+  });
+
+  // Regression (codex_review finding on this fix): per-execution options used
+  // to be applied by MUTATING the shared singleton's `this.config` and
+  // restoring it in `finally`. That only held while no `await` separated the
+  // write from every read; a callback reading `this.config` after the first
+  // await saw whichever concurrent execution wrote last. Options are now
+  // resolved into an immutable per-call snapshot and `this.config` is never
+  // written during execution.
+  describe('per-execution config isolation (shared singleton instance)', () => {
+    function spawnCollector() {
+      const procs: any[] = [];
+      (spawn as jest.Mock).mockClear();
+      (spawn as jest.Mock).mockImplementation(() => {
+        const proc: any = new EventEmitter();
+        proc.stdout = new EventEmitter();
+        proc.stderr = new EventEmitter();
+        proc.stdin = { write: jest.fn(), end: jest.fn() };
+        proc.pid = 400 + procs.length;
+        proc.kill = jest.fn();
+        procs.push(proc);
+        return proc;
+      });
+      return procs;
+    }
+
+    it('concurrent executions with different connectorConfigs each spawn with their own args/env/cwd', async () => {
+      const procs = spawnCollector();
+      const e1 = connector.execute('claude', {
+        testCase: { ...mockTestCase, id: 'tc-A' }, modelId: 'm',
+        connectorConfig: { appendSystemPrompt: 'prompt A', env: { WHO: 'A' }, workingDir: '/tmp/a', allowedTools: ['Read'] } as any,
+      }, mockAuth);
+      const e2 = connector.execute('claude', {
+        testCase: { ...mockTestCase, id: 'tc-B' }, modelId: 'm',
+        connectorConfig: { systemPrompt: 'prompt B', env: { WHO: 'B' }, workingDir: '/tmp/b', usePromptArg: true } as any,
+      }, mockAuth);
+      await new Promise((r) => setTimeout(r, 5));
+      expect(procs.length).toBe(2);
+      for (const p of procs) p.emit('close', 0, null);
+      await Promise.all([e1, e2]);
+
+      const [[, argsA, optsA], [, argsB, optsB]] = (spawn as jest.Mock).mock.calls;
+      expect(argsA).toContain('--append-system-prompt');
+      expect(argsA[argsA.indexOf('--append-system-prompt') + 1]).toBe('prompt A');
+      expect(argsA).toContain('--allowed-tools');
+      expect(argsA).not.toContain('--system-prompt');
+      expect(optsA.env.WHO).toBe('A');
+      expect(optsA.cwd).toBe('/tmp/a');
+      // A used stdin; B used --print with the prompt as an argv slot.
+      expect(procs[0].stdin.write).toHaveBeenCalled();
+
+      expect(argsB).toContain('--system-prompt');
+      expect(argsB[argsB.indexOf('--system-prompt') + 1]).toBe('prompt B');
+      expect(argsB).not.toContain('--append-system-prompt');
+      expect(argsB).not.toContain('--allowed-tools');
+      expect(optsB.env.WHO).toBe('B');
+      expect(optsB.cwd).toBe('/tmp/b');
+      expect(argsB.at(-1)).toContain('## Task'); // usePromptArg → prompt appended as arg
+      expect(procs[1].stdin.write).not.toHaveBeenCalled();
+    });
+
+    it('never writes per-execution options onto the shared this.config (not even transiently)', async () => {
+      const procs = spawnCollector();
+      const cfg = (connector as any).config;
+      const before = JSON.stringify(cfg);
+      const pending = connector.execute('claude', {
+        testCase: mockTestCase, modelId: 'm',
+        connectorConfig: { appendSystemPrompt: 'p', env: { X: '1' }, timeout: 123, workingDir: '/tmp/x', usePromptArg: true } as any,
+      }, mockAuth);
+      // Mid-execution (child spawned, not yet closed): the shared config is untouched.
+      await new Promise((r) => setTimeout(r, 5));
+      expect(JSON.stringify((connector as any).config)).toBe(before);
+      expect((connector as any).config.args).not.toContain('--append-system-prompt');
+      procs[0].emit('close', 0, null);
+      await pending;
+      expect(JSON.stringify((connector as any).config)).toBe(before);
+      // …while the spawned child DID get the per-execution options.
+      const [, args, opts] = (spawn as jest.Mock).mock.calls[0];
+      expect(args).toContain('--append-system-prompt');
+      expect(opts.env.X).toBe('1');
+      expect(opts.cwd).toBe('/tmp/x');
+    });
+  });
+
+  // Regression (P1, evidence fidelity): tool results used to be persisted
+  // without a `toolName` or `toolOutput` (only `content`), so the span-derived
+  // "tool succeeded" stubs replaced them and the judge saw 0 bytes of output
+  // while `report.rawEvents` held the full results (up to ~28 KB each).
+  // Results are now paired with their `tool_use` by `tool_use_id` and carry
+  // the (bounded) output on both `content` and `toolOutput`.
+  describe('tool_use ↔ tool_result pairing with real outputs', () => {
+    /**
+     * Synthesized stream-json session (no internal data): an init event, an
+     * assistant turn with two tool_use blocks, the two matching tool_result
+     * user events (one string content, one content-block array like MCP tools
+     * emit), and the final result. Emitted as raw stdout chunks split at
+     * arbitrary byte boundaries — the connector must concatenate and re-split
+     * on newlines exactly like it does against a real child process.
+     */
+    const bigOutput = 'x'.repeat(20_000);
+    const events = [
+      { type: 'system', subtype: 'init', session_id: 'sess-fixture' },
+      {
+        type: 'assistant',
+        session_id: 'sess-fixture',
+        message: {
+          role: 'assistant',
+          content: [
+            { type: 'tool_use', id: 'toolu_01', name: 'Read', input: { file_path: '/tmp/a.txt' } },
+            { type: 'tool_use', id: 'toolu_02', name: 'mcp__search__SearchIndexTool', input: { index: 'kb', query: 'q' } },
+          ],
+        },
+      },
+      {
+        type: 'user',
+        session_id: 'sess-fixture',
+        message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'toolu_01', content: 'line1\nline2' }] },
+        tool_use_result: { type: 'text', file: { filePath: '/tmp/a.txt', content: 'line1\nline2' } },
+      },
+      {
+        type: 'user',
+        session_id: 'sess-fixture',
+        message: {
+          role: 'user',
+          content: [{
+            type: 'tool_result',
+            tool_use_id: 'toolu_02',
+            content: [{ type: 'text', text: `Search results (JSON): ${bigOutput}` }],
+          }],
+        },
+        tool_use_result: [{ type: 'text', text: `Search results (JSON): ${bigOutput}` }],
+      },
+      { type: 'result', subtype: 'success', result: 'Final answer', session_id: 'sess-fixture' },
+    ];
+    const stream = events.map((e) => JSON.stringify(e)).join('\n') + '\n';
+
+    function emitInArbitraryChunks(proc: any, text: string, sizes = [11, 97, 4000, 250]) {
+      let i = 0; let k = 0;
+      while (i < text.length) {
+        const n = sizes[k++ % sizes.length];
+        proc.stdout.emit('data', Buffer.from(text.slice(i, i + n)));
+        i += n;
+      }
+    }
+
+    it('pairs each tool_result with its tool_use and populates toolName + toolOutput', async () => {
+      const request: ConnectorRequest = { testCase: mockTestCase, modelId: 'm' };
+      setTimeout(() => {
+        emitInArbitraryChunks(mockProcess, stream);
+        mockProcess.emit('close', 0, null);
+      }, 5);
+      const result = await connector.execute('claude', request, mockAuth);
+
+      const results = result.trajectory.filter((s) => s.type === 'tool_result');
+      expect(results).toHaveLength(2);
+
+      expect(results[0].toolName).toBe('Read');
+      expect(results[0].content).toBe('line1\nline2');
+      expect(results[0].toolOutput).toBe('line1\nline2');
+      expect(results[0].status).toBe('SUCCESS');
+
+      // Content-block arrays are flattened to the text the model saw.
+      expect(results[1].toolName).toBe('mcp__search__SearchIndexTool');
+      expect(results[1].content.startsWith('Search results (JSON): xxxx')).toBe(true);
+      expect(results[1].toolOutput).toBe(results[1].content);
+      expect((results[1].toolOutput as string).length).toBeGreaterThan(20_000);
+
+      // Actions still carry the tool name/args, and the answer is intact.
+      const actions = result.trajectory.filter((s) => s.type === 'action');
+      expect(actions.map((a) => a.toolName)).toEqual(['Read', 'mcp__search__SearchIndexTool']);
+      expect(result.trajectory.at(-1)).toMatchObject({ type: 'response', content: 'Final answer' });
+      expect(result.metadata?.sessionId).toBe('sess-fixture');
+    });
+
+    it('bounds oversized outputs with an explicit truncation marker carrying the full length', async () => {
+      const huge = 'y'.repeat(CLAUDE_CODE_MAX_TOOL_OUTPUT_CHARS + 5_000);
+      const line =
+        JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'cat big' } }] } }) + '\n' +
+        JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1', content: huge }] } }) + '\n';
+      setTimeout(() => {
+        emitInArbitraryChunks(mockProcess, line, [8192]);
+        mockProcess.emit('close', 0, null);
+      }, 5);
+      const result = await connector.execute('claude', { testCase: mockTestCase, modelId: 'm' }, mockAuth);
+      const tr = result.trajectory.find((s) => s.type === 'tool_result')!;
+      expect(tr.toolName).toBe('Bash');
+      expect((tr.toolOutput as string).length).toBeLessThan(huge.length);
+      expect(tr.toolOutput).toMatch(/\[tool output truncated: showing \d+ of \d+ chars\]$/);
+      expect(tr.toolOutput).toContain(`of ${huge.length} chars`);
+      expect((tr.toolOutput as string).startsWith('y'.repeat(CLAUDE_CODE_MAX_TOOL_OUTPUT_CHARS))).toBe(true);
+    });
+
+    it('falls back to the event-level tool_use_result when the block has no content', async () => {
+      const line =
+        JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'ToolSearch', input: { query: 'q' } }] } }) + '\n' +
+        JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 't1' }] }, tool_use_result: { matches: ['a', 'b'] } }) + '\n';
+      setTimeout(() => {
+        mockProcess.stdout.emit('data', Buffer.from(line));
+        mockProcess.emit('close', 0, null);
+      }, 5);
+      const result = await connector.execute('claude', { testCase: mockTestCase, modelId: 'm' }, mockAuth);
+      const tr = result.trajectory.find((s) => s.type === 'tool_result')!;
+      expect(tr.toolName).toBe('ToolSearch');
+      expect(tr.toolOutput).toBe(JSON.stringify({ matches: ['a', 'b'] }));
+    });
+
+    it('an unmatched tool_result (unknown tool_use_id) still keeps its output, without a toolName', async () => {
+      const line = JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'ghost', content: 'orphan output', is_error: true }] } }) + '\n';
+      setTimeout(() => {
+        mockProcess.stdout.emit('data', Buffer.from(line));
+        mockProcess.emit('close', 0, null);
+      }, 5);
+      const result = await connector.execute('claude', { testCase: mockTestCase, modelId: 'm' }, mockAuth);
+      const tr = result.trajectory.find((s) => s.type === 'tool_result')!;
+      expect(tr.toolName).toBeUndefined();
+      expect(tr.toolOutput).toBe('orphan output');
+      expect(tr.status).toBe('FAILURE');
+    });
+
+    it('boundToolOutput is the identity below the cap', () => {
+      expect(boundToolOutput('short')).toBe('short');
+      expect(boundToolOutput('abc', 3)).toBe('abc');
+      expect(boundToolOutput('abcd', 3)).toBe('abc\n… [tool output truncated: showing 3 of 4 chars]');
     });
   });
 });
