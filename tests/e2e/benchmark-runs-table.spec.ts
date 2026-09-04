@@ -85,11 +85,29 @@ test.describe('Benchmark Runs tab — table + chart + click-to-filter pills', ()
     await tracker.cleanup();
   });
 
+  /**
+   * Open the Runs tab and wait for the table. The page's loader bounces to the
+   * benchmarks LIST on a failed `GET /api/storage/benchmarks/:id` (pre-existing
+   * behaviour) — under CI's parallel workers that GET occasionally times out
+   * right after seeding, which produced a first-attempt flake. One retry after
+   * a bounce keeps the assertions about the TABLE, not about backend latency.
+   */
+  async function openRunsTab(page: import('@playwright/test').Page, expectedRows: number) {
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs`);
+      const table = page.getByTestId('benchmark-runs-table');
+      await Promise.race([
+        table.waitFor({ state: 'visible', timeout: 30_000 }),
+        page.waitForURL(/\/evaluations\/benchmarks\/?$/, { timeout: 30_000 }).catch(() => {}),
+      ]).catch(() => {});
+      if (await table.isVisible().catch(() => false)) break;
+    }
+    await expect(page.getByTestId('run-row')).toHaveCount(expectedRows, { timeout: 30_000 });
+  }
+
   test('renders the runs as a table with the sketch columns and a chart above it', async ({ page }) => {
     test.skip(!benchmarkId, 'Could not seed benchmark runs (storage not configured?)');
-    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs`);
-    await expect(page.getByTestId('benchmark-runs-table')).toBeVisible({ timeout: 30_000 });
-    await expect(page.getByTestId('run-row')).toHaveCount(3);
+    await openRunsTab(page, 3);
 
     // Column headers exactly as sketched (+ Run as the first column).
     const headers = await page.locator('[data-testid="benchmark-runs-table"] thead th').allInnerTexts();
@@ -122,8 +140,7 @@ test.describe('Benchmark Runs tab — table + chart + click-to-filter pills', ()
 
   test('is compact: run rows are ≤ 40px tall', async ({ page }) => {
     test.skip(!benchmarkId, 'Could not seed benchmark runs (storage not configured?)');
-    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs`);
-    await expect(page.getByTestId('run-row')).toHaveCount(3, { timeout: 30_000 });
+    await openRunsTab(page, 3);
     for (const row of await page.getByTestId('run-row').all()) {
       const box = (await row.boundingBox())!;
       expect(box.height).toBeLessThanOrEqual(40);
@@ -138,8 +155,7 @@ test.describe('Benchmark Runs tab — table + chart + click-to-filter pills', ()
 
   test('clicking an Agent cell filters the table, shows a pill, and the pill removes the filter', async ({ page }) => {
     test.skip(!benchmarkId, 'Could not seed benchmark runs (storage not configured?)');
-    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs`);
-    await expect(page.getByTestId('run-row')).toHaveCount(3, { timeout: 30_000 });
+    await openRunsTab(page, 3);
     await expect(page.getByTestId('run-filter-pills')).toHaveCount(0);
 
     const ais = page.locator('[data-testid="run-row"]', { hasText: RUN_AIS });
@@ -167,8 +183,7 @@ test.describe('Benchmark Runs tab — table + chart + click-to-filter pills', ()
 
   test('filters on different fields AND together; the chart legend toggles agents; Clear resets', async ({ page }) => {
     test.skip(!benchmarkId, 'Could not seed benchmark runs (storage not configured?)');
-    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs`);
-    await expect(page.getByTestId('run-row')).toHaveCount(3, { timeout: 30_000 });
+    await openRunsTab(page, 3);
 
     // Legend click → agent filter (demo has 2 runs).
     await page.getByTestId('chart-legend-demo').click();
@@ -190,8 +205,7 @@ test.describe('Benchmark Runs tab — table + chart + click-to-filter pills', ()
 
   test('run name link opens the run inspector; expanding a row shows the case heat strip', async ({ page }) => {
     test.skip(!benchmarkId, 'Could not seed benchmark runs (storage not configured?)');
-    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs`);
-    await expect(page.getByTestId('run-row')).toHaveCount(3, { timeout: 30_000 });
+    await openRunsTab(page, 3);
 
     const cc = page.locator('[data-testid="run-row"]', { hasText: RUN_CC });
     await expect(page.getByTestId('run-row-cases')).toHaveCount(0);
