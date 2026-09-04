@@ -77,7 +77,8 @@ export function extractJudgeFailureReason(report: CaseFailureLike | null | undef
  * `undefined` for cases that weren't a judge failure) into one run-level
  * summary line.
  *
- * Only fires when judge failures are the DOMINANT outcome (>=50% of total
+ * Only fires when judge failures are the DOMINANT outcome (a strict majority,
+ * > 50% of total
  * cases) -- a couple of incidental judge failures amid an otherwise-healthy
  * run don't need a run-level banner; the per-case badge already covers
  * that. Ties on the most-frequent distinct message break in first-seen
@@ -95,7 +96,7 @@ export function computeJudgeFailureSummary(
   if (total <= 0) return undefined;
   const judgeFailed = reasons.filter((r): r is string => !!r);
   if (judgeFailed.length === 0) return undefined;
-  if (judgeFailed.length < total / 2) return undefined;
+  if (judgeFailed.length * 2 <= total) return undefined;
 
   const counts = new Map<string, number>();
   for (const r of judgeFailed) counts.set(r, (counts.get(r) ?? 0) + 1);

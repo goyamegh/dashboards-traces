@@ -78,10 +78,15 @@ describe('computeJudgeFailureSummary', () => {
     expect(computeJudgeFailureSummary(reasons, 3)).toBeUndefined();
   });
 
-  it('surfaces a summary when judge failures are exactly half of the total', () => {
+  it('does NOT surface a summary on an exact 50/50 tie (requires a strict majority)', () => {
     const reasons = ['Bedrock Judge validation error', undefined];
-    expect(computeJudgeFailureSummary(reasons, 2)).toBe(
-      '1/2 case failed at the judge step: Bedrock Judge validation error'
+    expect(computeJudgeFailureSummary(reasons, 2)).toBeUndefined();
+  });
+
+  it('surfaces a summary at a strict majority (2 of 3)', () => {
+    const reasons = ['Bedrock Judge validation error', 'Bedrock Judge validation error', undefined];
+    expect(computeJudgeFailureSummary(reasons, 3)).toBe(
+      '2/3 cases failed at the judge step: Bedrock Judge validation error'
     );
   });
 

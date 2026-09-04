@@ -42,7 +42,7 @@ import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
 import { spansToTrajectory } from '@/services/traces/spansToTrajectory';
 import { fetchSpansForRun } from '@/services/traces/fetchSpansForRun';
 import { computeRunStats } from '@/lib/runStats';
-import { extractJudgeFailureReason } from '@/lib/judgeFailureSummary';
+import { extractJudgeFailureReason, computeJudgeFailureSummary } from '@/lib/judgeFailureSummary';
 import { loadConfigSync } from '@/lib/config/index';
 import { getCustomAgents } from '@/server/services/customAgentStore';
 import { debug } from '@/lib/debug';
@@ -413,10 +413,21 @@ export async function retryJudgementForRun(
 
   const updatedRun = { ...run, results: updatedResults };
   const stats = computeRunStats(updatedRun);
+  // Recompute the run-level judge-failure summary from the FRESH report docs
+  // so it clears (`null`, not omitted -- storage merges updates) once the
+  // salvage resolves the cases, instead of a stale banner outliving the
+  // failure it described (codex_review finding on this PR).
+  const freshReports = await fetchReportsById(updatedRun, storage);
+  const reasons = Object.values(updatedResults)
+    .map((r: any) => (r?.reportId ? freshReports[r.reportId] : null))
+    .filter(Boolean)
+    .map((rep) => extractJudgeFailureReason(rep as any));
+  const judgeFailureSummary = computeJudgeFailureSummary(reasons, stats.total) ?? null;
   await storage.evaluationRuns.update(run.id, {
     results: updatedResults,
     stats: { ...(run.stats || {}), ...stats } as any,
-  });
+    judgeFailureSummary,
+  } as any);
 
   // Deterministic order (not insertion/completion order, which varies with
   // the concurrency fan-out) so callers/tests can rely on a stable summary.

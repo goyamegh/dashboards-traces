@@ -1364,7 +1364,9 @@ async function refreshBenchmarkRunStats(
     const judgeFailureSummary = computeJudgeFailureSummary(judgeFailureReasons, total);
     await storage.benchmarks.updateRun(benchmarkId, targetRun.id, {
       stats: { passed, failed, pending, errored, total },
-      ...(judgeFailureSummary ? { judgeFailureSummary } : {}),
+      // `null` (not omitted) so a stale summary is CLEARED once retry-judgement
+      // or a trace-poll verdict resolves the cases (codex_review finding).
+      judgeFailureSummary: judgeFailureSummary ?? null,
     } as any);
   } catch (err) {
     console.warn(`[BenchmarkRunner] Failed to refresh stats for benchmark ${benchmarkId}:`, err instanceof Error ? err.message : err);

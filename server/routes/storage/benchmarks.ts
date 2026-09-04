@@ -115,7 +115,7 @@ async function backfillRunStats(
       debug('StorageAPI', `[Backfill] Computed stats for run ${run.id}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
 
       // Persist via adapter (fire-and-forget)
-      storage.benchmarks.updateRun(benchmarkId, run.id, { stats, ...(judgeFailureSummary ? { judgeFailureSummary } : {}) } as any)
+      storage.benchmarks.updateRun(benchmarkId, run.id, { stats, judgeFailureSummary: judgeFailureSummary ?? null } as any)
         .catch((e: any) => {
           console.warn('[StorageAPI] Failed to persist backfilled stats for run', run.id, ':', e.message);
         })
@@ -1529,7 +1529,7 @@ router.post('/api/storage/benchmarks/:id/refresh-all-stats', async (req: Request
         debug('StorageAPI', `[RefreshStats] Computed stats for run ${run.id}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
 
         // Persist via adapter
-        await storage.benchmarks.updateRun(id, run.id, { stats, ...(judgeFailureSummary ? { judgeFailureSummary } : {}) } as any);
+        await storage.benchmarks.updateRun(id, run.id, { stats, judgeFailureSummary: judgeFailureSummary ?? null } as any);
 
         debug('StorageAPI', `[RefreshStats] Successfully updated stats for run ${run.id}`);
       } catch (e: any) {
@@ -1580,7 +1580,7 @@ router.post('/api/storage/benchmarks/:id/runs/:runId/refresh-stats', async (req:
     debug('StorageAPI', `[RefreshStats] Computed stats for run ${runId}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
 
     // Persist via adapter
-    await storage.benchmarks.updateRun(id, runId, { stats, ...(judgeFailureSummary ? { judgeFailureSummary } : {}) } as any);
+    await storage.benchmarks.updateRun(id, runId, { stats, judgeFailureSummary: judgeFailureSummary ?? null } as any);
 
     debug('StorageAPI', `[RefreshStats] Successfully updated stats for run ${runId}`);
     res.json({ refreshed: true, runId, stats, judgeFailureSummary });
