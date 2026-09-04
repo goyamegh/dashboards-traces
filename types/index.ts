@@ -1274,7 +1274,23 @@ export interface RunAggregateMetrics {
   failedCount: number;
   /** Test cases the evaluator couldn't verdict (#242); excluded from pass rate. */
   erroredCount?: number;
-  avgAccuracy: number;
+  /**
+   * Mean `metrics.accuracy` over the reports that actually carry one.
+   * `undefined` when no report in the run has an accuracy score (e.g.
+   * custom evaluators scoring different metric keys) — renders "--", not 0%.
+   */
+  avgAccuracy?: number;
+  /**
+   * Run-level "Avg score" — mean, over test cases that have a derivable
+   * score, of each case's overall score. Unlike `avgAccuracy` (accuracy-
+   * only, `undefined` whenever a run's reports carry no `metrics.accuracy`),
+   * this is defined for custom-evaluator runs too: per case the derivation
+   * is `metrics.accuracy` -> the primary rubric -> the mean of every numeric
+   * metric on the report (see `computeOverallScore` / `getPrimaryRubric` in
+   * services/comparisonService.ts for the exact tiering and why). Only
+   * `undefined` when NOT ONE case in the run has any numeric metric at all.
+   */
+  avgScore?: number;
   passRatePercent: number;
   // Trace metrics (optional - populated from metrics API)
   totalTokens?: number;
@@ -1304,6 +1320,20 @@ export interface TestCaseRunResult {
   faithfulness?: number;
   trajectoryAlignment?: number;
   latencyScore?: number;
+  /**
+   * The report's PRIMARY RUBRIC — a heuristic single evaluator metric
+   * MetricCell falls back to showing when `accuracy` is absent (custom
+   * evaluators carry no accuracy field at all; e.g. fact_precision /
+   * provenance_verifiability / abstention_integrity / payload_economy). See
+   * `getPrimaryRubric` in services/comparisonService.ts for how the key is
+   * chosen (alphabetically-first numeric metric — NOT necessarily the
+   * evaluator's own declared/highest-weight rubric; see that function's doc
+   * for why). Only populated when the report has no numeric `accuracy` —
+   * `undefined` whenever `accuracy` IS present, since MetricCell never reads
+   * it in that case and an unconditionally-populated "primary" field would
+   * read as more authoritative than the heuristic actually is.
+   */
+  primaryRubric?: { key: string; value: number };
   testCaseVersion?: string;
   /** Error message if status is 'failed' */
   error?: string;

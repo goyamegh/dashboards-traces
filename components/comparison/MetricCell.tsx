@@ -91,8 +91,15 @@ export const MetricCell: React.FC<MetricCellProps> = ({
   }
 
   const isPassed = result.passFailStatus === 'passed';
-  const accuracy = result.accuracy ?? 0;
-  const accDelta = !isReference && baselineAccuracy !== undefined
+  // Same fabricated-zero trap as the scoreboard's Avg Accuracy: reports scored
+  // by a custom evaluator carry entirely different metric keys (e.g.
+  // fact_precision / provenance_verifiability) and no `metrics.accuracy` at
+  // all. The old `?? 0` fallback rendered a "0%" accuracy chip on EVERY
+  // per-case cell of such a comparison — indistinguishable from a case that
+  // genuinely scored zero. When the report carries no numeric accuracy, the
+  // chip is omitted entirely; a real accuracy of 0 still renders "0%".
+  const accuracy = typeof result.accuracy === 'number' ? result.accuracy : undefined;
+  const accDelta = !isReference && accuracy !== undefined && baselineAccuracy !== undefined
     ? round1(accuracy - baselineAccuracy)
     : undefined;
 
@@ -106,9 +113,9 @@ export const MetricCell: React.FC<MetricCellProps> = ({
         <span className={cn('text-[11px] font-medium', isPassed ? 'text-green-600 dark:text-green-400' : 'text-red-500 dark:text-red-400')}>
           {isPassed ? 'Passed' : 'Failed'}
         </span>
-        {show('accuracy') && (
+        {show('accuracy') && accuracy !== undefined && (
           <>
-            <span className="text-[11px] font-medium tabular-nums ml-1" title="Accuracy">{round1(accuracy)}%</span>
+            <span className="text-[11px] font-medium tabular-nums ml-1" title="Accuracy" data-testid="metric-cell-accuracy">{round1(accuracy)}%</span>
             {accDelta !== undefined && accDelta !== 0 && (
               <span className={cn(
                 'inline-flex items-center gap-0.5 px-1 py-0 rounded-full text-[9px] font-medium tabular-nums',
@@ -121,6 +128,30 @@ export const MetricCell: React.FC<MetricCellProps> = ({
               </span>
             )}
           </>
+        )}
+        {/* No metrics.accuracy on this report (custom evaluator) — fall back
+            to the PRIMARY RUBRIC (see comparisonService.getPrimaryRubric) so
+            the cell shows SOME per-case number instead of just a bare verdict.
+            Compact: the rubric name truncates in a fixed-width span; the
+            full metric name lives in the title tooltip. No delta chip here —
+            unlike accuracy/faithfulness, MetricCell has no
+            baselinePrimaryRubric prop wired from the caller, so there is no
+            baseline value to diff against yet (a plumbing gap, not a "this
+            metric can't be compared" judgment — see ComparisonScoreboard's
+            run-level "Avg score" delta, which DOES compare it, aggregated
+            over many cases instead of one; that delta is only meaningful
+            when both runs share the same evaluator, since a different
+            evaluator's alphabetically-first metric is a different quantity —
+            see its tooltip). */}
+        {show('accuracy') && accuracy === undefined && result.primaryRubric && (
+          <span
+            className="inline-flex items-center gap-1 ml-1 max-w-[92px]"
+            title={`Primary rubric: ${result.primaryRubric.key} (this report carries no metrics.accuracy — showing the evaluator's own metric instead)`}
+            data-testid="metric-cell-primary-rubric"
+          >
+            <span className="truncate text-[10px] text-muted-foreground">{result.primaryRubric.key}</span>
+            <span className="text-[11px] font-medium tabular-nums flex-shrink-0">{round1(result.primaryRubric.value)}%</span>
+          </span>
         )}
       </div>
 

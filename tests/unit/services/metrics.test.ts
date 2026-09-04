@@ -136,6 +136,33 @@ describe('metrics API functions', () => {
       );
     });
 
+    it('should append a traceId query param when provided (Strategy A correlator)', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({}),
+      });
+
+      const { fetchRunMetrics } = await import('@/services/metrics');
+      await fetchRunMetrics('run-1', 'trace-abc');
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/metrics/run-1?traceId=trace-abc')
+      );
+    });
+
+    it('should not append a traceId query param when omitted', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({}),
+      });
+
+      const { fetchRunMetrics } = await import('@/services/metrics');
+      await fetchRunMetrics('run-1');
+
+      const calledUrl = (global.fetch as jest.Mock).mock.calls[0][0];
+      expect(calledUrl).not.toContain('traceId');
+    });
+
     it('should throw error on non-OK response', async () => {
       (global.fetch as jest.Mock).mockResolvedValue({
         ok: false,
@@ -196,6 +223,23 @@ describe('metrics API functions', () => {
       );
       expect(result.metrics).toHaveLength(2);
       expect(result.aggregate.totalRuns).toBe(2);
+    });
+
+    it('should include a traceIds map in the request body when provided (Strategy A correlator)', async () => {
+      (global.fetch as jest.Mock).mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ metrics: [], aggregate: {} }),
+      });
+
+      const { fetchBatchMetrics } = await import('@/services/metrics');
+      await fetchBatchMetrics(['run-1'], undefined, { 'run-1': 'trace-1' });
+
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining('/api/metrics/batch'),
+        expect.objectContaining({
+          body: JSON.stringify({ runIds: ['run-1'], traceIds: { 'run-1': 'trace-1' } }),
+        })
+      );
     });
 
     it('should throw error on non-OK response', async () => {

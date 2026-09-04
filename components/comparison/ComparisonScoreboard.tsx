@@ -10,6 +10,7 @@ import { cn, formatRelativeTime, getModelName } from '@/lib/utils';
 import { formatCost, formatDuration, formatTokens } from '@/services/metrics';
 import type { RunAggregateMetrics, BenchmarkRun } from '@/types';
 import type { TestCaseOverlap } from '@/services/comparisonService';
+import { runReportPath } from '@/lib/runReportPath';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
@@ -28,6 +29,30 @@ export interface ComparisonScoreboardProps {
   onSwapRuns: () => void;
   getAgentName: (key: string) => string;
 }
+
+// ─── Column definitions ──────────────────────────────────────────────────────
+
+/**
+ * Every scoreboard column header carries a one-line hover explanation
+ * (owner: "each column should be explainable by a hover with a one line
+ * description"). Kept as data so tests can assert the exact wording — the
+ * Average accuracy vs Avg score distinction in particular is subtle.
+ */
+export const SCOREBOARD_COLUMNS: ReadonlyArray<{ key: string; label: string; tooltip: string }> = [
+  { key: 'run', label: 'Run', tooltip: 'Run name — click to open the run report' },
+  { key: 'passRate', label: 'Pass Rate', tooltip: '% of test cases whose verdict is pass' },
+  { key: 'avgAccuracy', label: 'Average accuracy', tooltip: 'Mean of the judge-graded accuracy over test cases that report one' },
+  { key: 'avgScore', label: 'Avg score', tooltip: 'Mean per-case overall score: accuracy if present, else primary rubric, else mean of all rubric metrics' },
+  { key: 'cost', label: 'Cost', tooltip: 'Total LLM cost across all test cases in the run' },
+  { key: 'avgDuration', label: 'Avg Duration', tooltip: 'Mean wall-clock duration per test case' },
+  { key: 'tokens', label: 'Tokens', tooltip: 'Total tokens across all test cases' },
+  { key: 'llmCalls', label: 'LLM Calls', tooltip: 'Total LLM calls across all test cases' },
+  { key: 'toolCalls', label: 'Tool Calls', tooltip: 'Total tool invocations across all test cases' },
+  { key: 'coverage', label: 'Coverage', tooltip: 'Test cases this run shares with the comparison set' },
+];
+
+/** Tooltip on the delta footer's row label. */
+export const DELTA_ROW_TOOLTIP = 'A minus B per column; blue/green when A is better on that metric, red when worse';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -243,6 +268,13 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
   const accuracyDelta = (runB && runA.avgAccuracy !== undefined && runB.avgAccuracy !== undefined)
     ? runA.avgAccuracy - runB.avgAccuracy
     : undefined;
+  // Only directly comparable when both runs' reports were scored by the same
+  // evaluator — a custom evaluator's "primary rubric" is an
+  // alphabetically-picked metric name, not a fixed quantity across
+  // evaluators (see the delta cell's tooltip below).
+  const avgScoreDelta = (runB && runA.avgScore !== undefined && runB.avgScore !== undefined)
+    ? runA.avgScore - runB.avgScore
+    : undefined;
   const costDelta = (runB && runA.totalCostUsd !== undefined && runB.totalCostUsd !== undefined)
     ? runA.totalCostUsd - runB.totalCostUsd
     : undefined;
@@ -280,15 +312,19 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
               <table className="w-full text-xs">
                 <thead>
                   <tr className="border-b border-border/50 text-[10px] uppercase tracking-wide text-muted-foreground">
-                    <th className="px-4 py-2 text-left w-[240px]">Run</th>
-                    <th className="px-3 py-2 text-right">Pass Rate</th>
-                    <th className="px-3 py-2 text-right">Avg Accuracy</th>
-                    <th className="px-3 py-2 text-right">Cost</th>
-                    <th className="px-3 py-2 text-right">Avg Duration</th>
-                    <th className="px-3 py-2 text-right">Tokens</th>
-                    <th className="px-3 py-2 text-right">LLM Calls</th>
-                    <th className="px-3 py-2 text-right">Tool Calls</th>
-                    <th className="px-3 py-2 text-right">Coverage</th>
+                    {SCOREBOARD_COLUMNS.map(col => (
+                      <th
+                        key={col.key}
+                        data-testid={`scoreboard-col-${col.key}`}
+                        title={col.tooltip}
+                        className={cn(
+                          'py-2 cursor-help',
+                          col.key === 'run' ? 'px-4 text-left w-[240px]' : 'px-3 text-right'
+                        )}
+                      >
+                        {col.label}
+                      </th>
+                    ))}
                     <th className="px-2 py-2 w-16"></th>
                   </tr>
                 </thead>
@@ -312,9 +348,14 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                               {/* Run name leads (owner: "runs info should be
                                   communicated — what are we comparing here?") —
                                   agent/model/time move to a secondary line. */}
-                              <div className="font-medium text-[12px] truncate max-w-[220px]" title={run.runName || getAgentName(run.agentKey)}>
+                              <Link
+                                to={runReportPath(run.runId, benchmarkId)}
+                                data-testid={`run-name-link-${run.runId}`}
+                                title={run.runName || getAgentName(run.agentKey)}
+                                className="block font-medium text-[12px] truncate max-w-[220px] hover:text-blue-400 hover:underline transition-colors"
+                              >
                                 {run.runName || getAgentName(run.agentKey)}
-                              </div>
+                              </Link>
                               <div className="text-muted-foreground text-[10px] truncate max-w-[220px]">
                                 {getAgentName(run.agentKey)} — {getModelName(run.modelId)} · {formatRelativeTime(run.createdAt)}
                               </div>
@@ -334,6 +375,9 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                           <span data-testid={`run-accuracy-${run.runId}`}>
                             {formatPercent(run.avgAccuracy)}
                           </span>
+                        </td>
+                        <td className="px-3 py-2 text-right tabular-nums" data-testid={`run-avgscore-${run.runId}`}>
+                          {formatPercent(run.avgScore)}
                         </td>
                         <td className="px-3 py-2 text-right tabular-nums">
                           {formatCostSafe(run.totalCostUsd)}
@@ -387,9 +431,7 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                         <td className="px-2 py-2">
                           <div className="flex items-center justify-end gap-1.5">
                             <Link
-                              to={benchmarkId
-                                ? `/evaluations/benchmarks/${benchmarkId}/runs/${run.runId}`
-                                : `/evaluations/runs/${run.runId}`}
+                              to={runReportPath(run.runId, benchmarkId)}
                               data-testid={`open-run-${run.runId}`}
                               title="Open run"
                               className="inline-flex items-center text-muted-foreground hover:text-blue-400 transition-colors"
@@ -415,7 +457,13 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                   <tr className="border-t border-border/50 bg-muted/20">
                     <td className="px-4 py-1.5">
                       <div className="flex items-center gap-2">
-                        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">Delta</span>
+                        <span
+                          className="text-[10px] uppercase tracking-wide text-muted-foreground cursor-help"
+                          data-testid="scoreboard-delta-label"
+                          title={DELTA_ROW_TOOLTIP}
+                        >
+                          Delta
+                        </span>
                         <button
                           onClick={onSwapRuns}
                           className="text-muted-foreground hover:text-foreground transition-colors"
@@ -448,6 +496,24 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                           title={accuracyDelta === 0 ? 'No change' : undefined}
                         >
                           {formatDelta(runA.avgAccuracy, runB.avgAccuracy, 'pp')}
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-3 py-1.5 text-right">
+                      {avgScoreDelta !== undefined && (
+                        <span
+                          data-testid="scoreboard-delta-avgscore"
+                          className={cn(
+                            'tabular-nums text-[11px]',
+                            avgScoreDelta > 0 ? 'text-blue-400' : avgScoreDelta < 0 ? 'text-red-400' : 'text-muted-foreground'
+                          )}
+                          title={
+                            avgScoreDelta === 0
+                              ? 'No change'
+                              : "Only directly comparable when both runs' reports were scored by the same evaluator — a custom evaluator's \"primary rubric\" is an alphabetically-picked metric name, not a fixed quantity across evaluators."
+                          }
+                        >
+                          {formatDelta(runA.avgScore, runB.avgScore)}
                         </span>
                       )}
                     </td>

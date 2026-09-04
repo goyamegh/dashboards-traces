@@ -29,6 +29,7 @@ import { extractFirstDivergence } from '@/services/trajectoryDiffService';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { ArrowRightLeft, Plus, Minus } from 'lucide-react';
 import { getClusterDotColor } from './FailureClusterPanel';
+import { runReportPath } from '@/lib/runReportPath';
 
 // Helper to get agent display name from key
 const getAgentName = (agentKey: string): string => {
@@ -226,6 +227,11 @@ interface UseCaseComparisonTableProps {
   spanDeepLink?: { testCaseId: string; runId: string; spanId: string; nonce: number } | null;
   /** Trace-window hints (serviceName + window) per agent runId, for span fetch. */
   windowAgentsByRunId?: Map<string, { serviceName?: string; startedAt: number; endedAt: number }>;
+  /**
+   * runId -> benchmarkId (undefined for ad-hoc/eval-runs) so the run-name
+   * header links resolve to the right run-report route (see runReportPath).
+   */
+  runBenchmarkIdById?: Map<string, string | undefined>;
 }
 
 const rowStatusStyles: Record<RowStatus, string> = {
@@ -248,6 +254,7 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
   onTrajectoryRequest,
   spanDeepLink,
   windowAgentsByRunId,
+  runBenchmarkIdById,
 }) => {
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
 
@@ -317,7 +324,14 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
                       repeated "CLI Run") are still tellable apart. */}
                   <div className="font-medium truncate" title={run.name}>
                     <span className="text-muted-foreground mr-1">#{idx + 1}</span>
-                    {run.name}
+                    <Link
+                      to={runReportPath(run.id, runBenchmarkIdById?.get(run.id))}
+                      data-testid={`case-table-run-link-${run.id}`}
+                      title={run.name}
+                      className="hover:text-blue-400 hover:underline transition-colors"
+                    >
+                      {run.name}
+                    </Link>
                   </div>
                   <div
                     className="text-[10px] text-muted-foreground font-normal truncate"

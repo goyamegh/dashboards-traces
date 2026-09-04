@@ -412,7 +412,7 @@ describe('RunDetailsContent', () => {
 
       await renderAndWait(report);
 
-      expect(mockFetchRunMetrics).toHaveBeenCalledWith('run-abc');
+      expect(mockFetchRunMetrics).toHaveBeenCalledWith('run-abc', undefined);
     });
   });
 

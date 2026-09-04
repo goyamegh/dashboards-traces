@@ -130,8 +130,13 @@ test.describe('Comparison page \u2014 run-name prominence, no summary line, cove
 
     // Owner (iteration 5): a truncated run name must be FULLY readable on
     // hover -- the title attribute carries the complete name.
-    const runNameCell = rowA.locator('div[title="stark-retail smoke (6 tests, subset ingest)"]');
+    // The name is also a link to the run report (owner: "run names should be
+    // clickable to the run link, complete name should show up on hover").
+    const runNameCell = rowA.locator('a[title="stark-retail smoke (6 tests, subset ingest)"]');
     await expect(runNameCell).toHaveCount(1);
+    // These fixtures are first-class eval-run docs (the benchmark's runs[] is
+    // empty), so the canonical target is the bare eval-run route.
+    await expect(runNameCell).toHaveAttribute('href', `/evaluations/runs/${RUN_A}`);
   });
 
   test('does NOT render a "Comparing A vs B" summary line (iteration 5: removed, no new vertical space) -- benchmark identity lives only in the breadcrumb', async ({ page }) => {
