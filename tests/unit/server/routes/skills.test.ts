@@ -369,6 +369,17 @@ describe('Skills router', () => {
       expect(mockParseSkill).toHaveBeenCalledWith(resolve('/home/tester', '.claude/skills/user-skill'));
     });
 
+    it('expands the Windows-style ~\\ display path too (discover joins with the platform separator)', async () => {
+      mockParseSkill.mockReturnValueOnce({ valid: true, skill: { metadata: { name: 'x' } }, errors: [] });
+
+      await request(app).post('/api/skills/validate').send({ path: '~\\.claude\\skills\\user-skill' });
+
+      // The `~\` prefix is replaced by the home dir; the remainder is handed
+      // to path.resolve as-is (this suite runs on POSIX, which does not
+      // rewrite backslashes — on Windows it would).
+      expect(mockParseSkill).toHaveBeenCalledWith(resolve('/home/tester', '.claude\\skills\\user-skill'));
+    });
+
     it('does NOT expand a ~-prefixed relative directory name (e.g. ~backup/)', async () => {
       mockParseSkill.mockReturnValueOnce({ valid: true, skill: { metadata: { name: 'x' } }, errors: [] });
 

@@ -37,8 +37,12 @@ const router = Router();
  * so there's no security benefit in restricting paths.
  */
 export function resolveSkillPath(inputPath: string): string {
-  if (inputPath === '~' || inputPath.startsWith('~/')) {
-    return resolve(homedir(), inputPath === '~' ? '' : inputPath.slice(2));
+  // `~`, `~/...` and (Windows) `~\...` — discover builds the display path as
+  // '~' + absDir.slice(home.length), so the separator after `~` is whatever
+  // the platform produced. A `~`-prefixed *name* (e.g. `~backup/skill`) is
+  // deliberately left alone: it is a real relative directory, not home.
+  if (/^~(?:$|[\\/])/.test(inputPath)) {
+    return resolve(homedir(), inputPath.slice(2));
   }
   const cwd = process.cwd();
   return resolve(cwd, inputPath);
