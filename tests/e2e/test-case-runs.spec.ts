@@ -58,9 +58,28 @@ async function openSeededTestCase(page: Page, seeded: SeededTestCase): Promise<v
   await page.goto('/test-cases');
   await page.waitForSelector('[data-testid="test-cases-page"]', { timeout: 30000 });
 
-  // Search by the unique seed name so exactly one row remains.
-  await page.fill('[data-testid="search-test-cases"]', seeded.name);
+  // Search by the unique seed name so exactly one row remains. The search
+  // box filters CLIENT-side over the loaded pages (100 newest by createdAt),
+  // and a zero-match filter swaps the list (and its "Load More" button) for
+  // the no-results state. Under fullyParallel a sibling suite bulk-seeding
+  // many cases between our seed and this navigation (benchmark-cases-scroll
+  // seeds 90 at once) can push our row past page 1 — so if the filter finds
+  // nothing, clear it, page through "Load More" (bounded) until the row is
+  // loaded, then re-apply the filter to isolate it.
+  const search = page.locator('[data-testid="search-test-cases"]');
   const row = page.locator(`text=${seeded.name}`).first();
+  await search.fill(seeded.name);
+  const foundOnFirstPage = await row.waitFor({ state: 'visible', timeout: 3000 }).then(() => true, () => false);
+  if (!foundOnFirstPage) {
+    await search.fill('');
+    for (let attempt = 0; attempt < 10 && !(await row.isVisible().catch(() => false)); attempt++) {
+      const loadMore = page.getByRole('button', { name: 'Load More' });
+      if (!(await loadMore.isVisible().catch(() => false))) break;
+      await loadMore.click();
+      await page.waitForTimeout(500);
+    }
+    await search.fill(seeded.name);
+  }
   await expect(row).toBeVisible({ timeout: 10000 });
   await row.click();
 
@@ -177,13 +196,49 @@ test.describe('Test Case Runs - Run Actions', () => {
 });
 
 test.describe('Test Case Runs - Run Cards', () => {
+  // These tests need REAL run cards, so each one seeds two report docs for its
+  // own freshly-created test case (one passed, one failed — the failed one is
+  // older so the passed one is "Latest"). No conditional empty-state
+  // fallbacks: if the cards don't render, the test fails.
   let seeded: SeededTestCase | null = null;
+  let reportIds: string[] = [];
+
+  async function seedReports(request: APIRequestContext, testCaseId: string): Promise<string[]> {
+    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const base = (id: string, passFailStatus: 'passed' | 'failed', ageMs: number, accuracy: number) => ({
+      id,
+      testCaseId,
+      testCaseVersionId: `${testCaseId}-v1`,
+      agentId: 'demo',
+      agentName: 'Demo Agent',
+      modelId: 'demo-model',
+      modelName: 'demo-model',
+      iteration: 1,
+      status: 'completed',
+      passFailStatus,
+      metricsStatus: 'ready',
+      timestamp: new Date(Date.now() - ageMs).toISOString(),
+      trajectory: [{ type: 'assistant', content: 'answer text' }],
+      metrics: { accuracy, faithfulness: accuracy },
+    });
+    const ids = [`report-e2e-tcruns-pass-${stamp}`, `report-e2e-tcruns-fail-${stamp}`];
+    const res = await request.post('/api/storage/runs/bulk', {
+      data: { runs: [base(ids[0], 'passed', 1_000, 90), base(ids[1], 'failed', 60_000, 20)] },
+    });
+    expect(res.ok()).toBeTruthy();
+    return ids;
+  }
 
   test.beforeEach(async ({ request }) => {
     seeded = await seedTestCase(request);
+    if (seeded) reportIds = await seedReports(request, seeded.id);
   });
 
   test.afterEach(async ({ request }) => {
+    for (const id of reportIds) {
+      await request.delete(`/api/storage/runs/${encodeURIComponent(id)}`).catch(() => {});
+    }
+    reportIds = [];
     await deleteSeededTestCase(request, seeded);
     seeded = null;
   });
@@ -192,61 +247,44 @@ test.describe('Test Case Runs - Run Cards', () => {
     test.skip(!seeded, 'Seed test case unavailable');
     await openSeededTestCase(page, seeded!);
 
-    // If there are runs, they should show pass/fail status
-    const runCards = page.locator('text=/PASSED|FAILED/');
-    const count = await runCards.count();
-
-    if (count > 0) {
-      await expect(runCards.first()).toBeVisible();
-    } else {
-      // A freshly-seeded test case has no runs — empty state must render.
-      await expect(page.locator('text=No runs yet')).toBeVisible();
-    }
+    await expect(page.getByText('PASSED', { exact: true })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByText('FAILED', { exact: true })).toBeVisible();
+    await expect(page.locator('text=No runs yet')).toHaveCount(0);
   });
 
-  test('should show Latest badge on most recent run', async ({ page }) => {
+  test('should show Latest badge on most recent run only', async ({ page }) => {
     test.skip(!seeded, 'Seed test case unavailable');
     await openSeededTestCase(page, seeded!);
 
-    // Only run-populated environments show the badge; the fresh seed's
-    // contract is the empty state (was a literal expect(true) no-op before).
-    const runCards = page.locator('text=/PASSED|FAILED/');
-    if ((await runCards.count()) > 0) {
-      await expect(page.locator('text=Latest').first()).toBeVisible();
-    } else {
-      await expect(page.locator('text=No runs yet')).toBeVisible();
-    }
+    const latest = page.getByText('Latest', { exact: true });
+    await expect(latest).toHaveCount(1, { timeout: 15000 });
+    // The newest seeded report is the PASSED one, so the badge sits on it.
+    const latestCard = page.locator('[class*="card"]').filter({ has: latest }).first();
+    await expect(latestCard).toContainText('PASSED');
+    await expect(latestCard).not.toContainText('FAILED');
   });
 
-  test('should show accuracy and faithfulness metrics on run cards', async ({ page }) => {
+  test('should show a score on run cards', async ({ page }) => {
     test.skip(!seeded, 'Seed test case unavailable');
     await openSeededTestCase(page, seeded!);
 
-    // Metrics render only on judged runs; assert the empty state for the
-    // fresh seed (was a literal expect(true) no-op before).
-    const runCards = page.locator('text=/PASSED|FAILED/');
-    if ((await runCards.count()) > 0) {
-      await expect(page.locator('text=/Accuracy|Faithfulness/').first()).toBeVisible();
-    } else {
-      await expect(page.locator('text=No runs yet')).toBeVisible();
-    }
+    // Each RunCard renders a RunScore (mean of the run's metrics) with a
+    // "Score" label — one per seeded report.
+    await expect(page.getByText('Score', { exact: true })).toHaveCount(2, { timeout: 15000 });
+    await expect(page.getByText('90%', { exact: true })).toBeVisible();
+    await expect(page.getByText('20%', { exact: true })).toBeVisible();
   });
 
   test('should navigate to run details on run card click', async ({ page }) => {
     test.skip(!seeded, 'Seed test case unavailable');
     await openSeededTestCase(page, seeded!);
 
-    // Click on a run card if any exist (the seeded case has none by design;
-    // this branch exercises environments where runs were produced).
-    const runCard = page.locator('[class*="card"]').filter({ hasText: /PASSED|FAILED/ }).first();
-    if (await runCard.isVisible().catch(() => false)) {
-      await runCard.click();
+    const passedCard = page.locator('[class*="card"]').filter({ hasText: 'PASSED' }).first();
+    await expect(passedCard).toBeVisible({ timeout: 15000 });
+    await passedCard.click();
 
-      // Should navigate to run details or show some content
-      await expect(page.locator('body')).toBeVisible();
-    } else {
-      // No run cards — the empty state is the contract for a fresh seed.
-      await expect(page.locator('text=No runs yet')).toBeVisible();
-    }
+    // RunCard onClick navigates to /runs/:reportId (the report detail page).
+    await expect(page).toHaveURL(new RegExp(`/runs/${reportIds[0]}$`), { timeout: 15000 });
+    await expect(page.locator('[data-testid="test-case-runs-page"]')).toHaveCount(0);
   });
 });
