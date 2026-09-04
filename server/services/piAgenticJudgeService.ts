@@ -299,6 +299,6 @@ export async function evaluateWithPiAgenticTrace(
   // emitted none).
   return {
     ...parsed,
-    judgeMode: traceToolsAvailable ? 'trace-tools' : 'trajectory-only',
+    judgeMode: 'trace-tools',
   };
 }

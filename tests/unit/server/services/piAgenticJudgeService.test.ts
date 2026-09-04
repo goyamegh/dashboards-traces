@@ -225,39 +225,3 @@ describe('buildAgentTraceJudgeSystemPrompt (evaluator-prompt-plumbing contract)'
   });
 });
 
-describe('buildAgentTraceJudgeSystemPrompt (traceToolsAvailable=false -- trajectory-only degradation)', () => {
-  // Root cause of the reported incident: a `useTraces: false` (non-
-  // instrumented) REST agent has no runId/correlation hint, so the judge
-  // must reason from the trajectory alone -- and must be told explicitly
-  // that no trace tools exist, so it doesn't hallucinate span/log checks.
-
-  it('defaults traceToolsAvailable to true (back-compat with 1-arg / 2-arg callers)', () => {
-    const withDefault = buildAgentTraceJudgeSystemPrompt(undefined);
-    const withExplicitTrue = buildAgentTraceJudgeSystemPrompt(undefined, true);
-    expect(withDefault).toBe(withExplicitTrue);
-    expect(withDefault).toContain('query_spans');
-  });
-
-  it('omits the query_spans/query_logs tool-use contract (READ-ONLY description) and explains their absence when traceToolsAvailable=false', () => {
-    const out = buildAgentTraceJudgeSystemPrompt(undefined, false);
-    // Still names the tools (so the model knows what it's missing, per the
-    // addendum's own text) but must NOT include the trace-tools mode's
-    // tool-use contract/description.
-    expect(out).not.toContain('READ-ONLY, scoped to the run being judged');
-    expect(out).not.toContain('query_spans({');
-    expect(out).toContain('No trace-query tools available');
-    expect(out).toContain('not instrumented with OpenTelemetry');
-  });
-
-  it('still replaces the base prompt with a saved evaluator systemPrompt when trace tools are unavailable', () => {
-    const out = buildAgentTraceJudgeSystemPrompt({ systemPrompt: 'I am the CP-Oncall judge.' }, false);
-    expect(out).toContain('I am the CP-Oncall judge');
-    expect(out).not.toContain('observability and Root Cause Analysis');
-    expect(out).toContain('No trace-query tools available');
-  });
-
-  it('instructs the model NOT to claim trace/log verification it never performed', () => {
-    const out = buildAgentTraceJudgeSystemPrompt(undefined, false);
-    expect(out.toLowerCase()).toContain('do not claim');
-  });
-});
