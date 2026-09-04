@@ -447,27 +447,30 @@ router.post('/api/judge', async (req: Request, res: Response) => {
     if (provider === 'agent') {
       // Agent trace judge: an LLM judge with read-only, trace-scoped tools
       // (query_spans/query_logs) so it can verify claims against the run's real
-      // OTel spans/logs instead of trusting the trajectory text. Fail loudly
-      // rather than spawn a judge that can only report "no run id" (see
-      // piAgenticJudgeService) when there's truly nothing to scope on.
-      // Accept EITHER a runId (Strategy B, possibly already the caller's
-      // traceId fallback — see resolveJudgeRunId) OR at least one Strategy
-      // C/D correlation hint in `agents` (serviceName+window or sessionId,
-      // from buildJudgeAgentsHints — #264). Pre-fix this hard-required
-      // `runId` even when `agents` hints were already on the request,
-      // 400-ing every REST-connector agent that picks this judge provider
-      // without trace-mode polling (REST connectors never mint a runId —
-      // see services/evaluation/index.ts's "STANDARD MODE" judge call,
-      // which forwards `agents` hints but no runId). Reject only when
-      // NEITHER is present — there is then truly nothing to scope the
-      // trace tools to.
-      if (!hasTraceCorrelation(runId, agents)) {
-        return res.status(400).json({
-          error:
-            'The agent (trace) judge provider needs a runId or at least one trace ' +
-            'correlation hint (agents: serviceName+window, or sessionId) to scope its ' +
-            'trace tools — this request had neither.'
-        });
+      // OTel spans/logs instead of trusting the trajectory text.
+      //
+      // `traceToolsAvailable` gates WHICH mode the judge runs in — it no
+      // longer gates whether the judge runs at all. Accept EITHER a runId
+      // (Strategy B, possibly already the caller's traceId fallback — see
+      // resolveJudgeRunId) OR at least one Strategy C/D correlation hint in
+      // `agents` (serviceName+window or sessionId, from buildJudgeAgentsHints
+      // — #264) to enable the trace tools. Pre-fix (see #461/#462 lineage)
+      // this hard-required a correlation hint and 400'd otherwise, even for
+      // agents that declare `useTraces: false` and were never going to have
+      // one — every case of a non-instrumented agent's 62-case run hard-
+      // failed at the judge step with a validation error instead of a
+      // verdict. A non-instrumented (or uncorrelated) agent still has a
+      // trajectory + final response worth judging — degrade to
+      // trajectory-only reasoning (no query_spans/query_logs tool pack)
+      // instead of erroring. See piAgenticJudgeService.evaluateWithPiAgenticTrace's
+      // `traceToolsAvailable` param and the persisted `judgeMode` field.
+      const traceToolsAvailable = hasTraceCorrelation(runId, agents);
+      if (!traceToolsAvailable) {
+        debug(
+          'JudgeAPI',
+          'Agent trace judge - no runId/correlation hint available; degrading to ' +
+            'trajectory-only judging (query_spans/query_logs tools withheld) instead of failing.'
+        );
       }
       // Defense in depth against cross-run/cross-tenant exfiltration: the trace
       // tools will happily read spans/logs for whatever runId they're given, so
@@ -498,17 +501,20 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       }
       debug(
         'JudgeAPI',
-        'Agent trace judge - evaluating with trace-scoped tools (runId=' +
+        'Agent trace judge - evaluating (runId=' +
           (runId ?? 'none — hints-only') +
-          ', hints=' + (Array.isArray(agents) ? agents.length : 0) + ')'
+          ', hints=' + (Array.isArray(agents) ? agents.length : 0) +
+          ', traceToolsAvailable=' + traceToolsAvailable + ')'
       );
       // Pass the resolved evaluator so a saved `systemPrompt` replaces the
-      // default base prompt (the trace-tool addendum is still appended
-      // inside the service so the judge always knows query_spans/query_logs
-      // exist).
+      // default base prompt (the trace-tool addendum, or its trajectory-only
+      // counterpart, is still appended inside the service). `traceToolsAvailable`
+      // decides whether the service wires up query_spans/query_logs at all —
+      // see evaluateWithPiAgenticTrace's doc comment.
       const result = await evaluateWithPiAgenticTrace(
         { trajectory, expectedOutcomes, expectedTrajectory, logs, runId, modelId: resolvedModelId, agents },
-        evaluator
+        evaluator,
+        traceToolsAvailable
       );
       return res.json(result);
     }

@@ -512,6 +512,17 @@ export interface TestCaseRun {
   lastTraceFetchAt?: string; // Timestamp of last trace fetch attempt
   traceError?: string; // Error message if trace fetch failed
   spans?: Span[]; // Fetched trace spans for debugging
+  /**
+   * Set exclusively by the agent (trace) judge provider (`judgeModelId:
+   * 'agent-trace-judge'`) to record whether this verdict was backed by real
+   * OTel spans/logs (`'trace-tools'`) or had to reason from the trajectory
+   * alone because the run carried no trace correlation hint
+   * (`'trajectory-only'` — the normal case for an agent declared `useTraces:
+   * false`, i.e. not OTel-instrumented). Undefined for every other judge
+   * provider, and for agent-trace-judge reports persisted before this field
+   * existed. See server/services/piAgenticJudgeService.ts.
+   */
+  judgeMode?: 'trajectory-only' | 'trace-tools';
 }
 
 // Alias for backwards compatibility during migration
@@ -1059,6 +1070,20 @@ export interface BenchmarkRun {
   // Optional during migration period - will be populated by migration CLI or on next run completion
   stats?: RunStats;
 
+  /**
+   * One-line aggregate reason when a dominant share (>=50%) of this run's
+   * cases failed AT THE JUDGE STEP specifically (not the agent) -- e.g.
+   * every case hitting the agent-trace-judge's "needs a runId or trace
+   * correlation hint" validation error before that error was fixed to
+   * degrade instead of hard-failing (see piAgenticJudgeService.ts /
+   * judgeAgentsHints.ts). Computed by `lib/judgeFailureSummary.ts` from the
+   * per-case reports at run-completion time; undefined when no dominant
+   * judge-failure pattern is present. Surfaced in the runs list and run
+   * inspector so "62 errored" isn't silent about *why* -- pre-fix a run
+   * like this showed only a bare warning-triangle count with no reason.
+   */
+  judgeFailureSummary?: string;
+
   // Server-side performance metrics (populated after run completes)
   performanceMetrics?: RunPerformanceMetrics;
 
@@ -1203,6 +1228,15 @@ export interface EvaluationRun {
 
   // Denormalized stats
   stats?: RunStats;
+
+  /**
+   * One-line aggregate reason when a dominant share (>=50%) of this run's
+   * cases failed at the judge step specifically. See
+   * {@link BenchmarkRun.judgeFailureSummary} for the full doc — same field,
+   * same computation (`lib/judgeFailureSummary.ts`), duplicated here because
+   * `EvaluationRun` and `BenchmarkRun` are independent doc shapes.
+   */
+  judgeFailureSummary?: string;
 
   // Performance metrics
   performanceMetrics?: RunPerformanceMetrics;

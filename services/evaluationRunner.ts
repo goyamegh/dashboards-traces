@@ -53,6 +53,7 @@ import { expect } from '@/lib/matchers/expect';
 import type { TrajectoryStep } from '@/types';
 import { createHookOrchestrator, type TestDescriptor } from './hookOrchestrator';
 import { bucketRunResults } from '@/lib/runStats';
+import { extractJudgeFailureReason, computeJudgeFailureSummary } from '@/lib/judgeFailureSummary';
 import { loadConfigSync } from '@/lib/config/index';
 import { getBackendUrl } from '@/lib/portConfig';
 import { DEFAULT_CONFIG } from '@/lib/constants';
@@ -220,6 +221,11 @@ export async function executeEvaluationRun(
   // Shared throttle signal for rate-limit backoff
   let throttleUntil = 0;
   let consecutiveThrottles = 0;
+
+  // Per-case judge-failure reasons (undefined for cases that weren't a judge
+  // failure), accumulated for the run-level `judgeFailureSummary` computed
+  // after the loop below. See lib/judgeFailureSummary.ts.
+  const judgeFailureReasons: Array<string | undefined> = [];
 
   try {
     await runWithConcurrencyLimit(
@@ -747,6 +753,13 @@ export async function executeEvaluationRun(
             status,
             ...(reportPassFail ? { passFailStatus: reportPassFail } : {}),
           };
+          // Track judge-failure reasons for the run-level judgeFailureSummary
+          // (see lib/judgeFailureSummary.ts). `savedReport` reflects the
+          // pre-trace-poll state for trace-mode agents (see comment above) --
+          // extractJudgeFailureReason correctly returns undefined for those
+          // (metricsStatus is 'pending', not 'error'), so this only captures
+          // the synchronous/deterministic judge-failure path today.
+          judgeFailureReasons.push(extractJudgeFailureReason(savedReport as any));
 
           // Finalize the OTel test_case span with the evaluation outcome.
           if (caseSpan) {
@@ -841,6 +854,16 @@ export async function executeEvaluationRun(
     // assignment above for how passFailStatus/metricsStatus land here.
     const bucketed = bucketRunResults(run.results as Record<string, { status?: string; passFailStatus?: string }>);
     run.stats = { ...bucketed, total: totalTestCases };
+
+    // Run-level judge-failure surfacing (see lib/judgeFailureSummary.ts):
+    // when a dominant share of cases failed AT THE JUDGE STEP specifically,
+    // stamp a one-line reason onto the run doc so the runs list/inspector
+    // isn't silent about *why* -- pre-fix a run like this showed only a
+    // bare warning-triangle count with no reason (the reported incident).
+    const judgeFailureSummary = computeJudgeFailureSummary(judgeFailureReasons, totalTestCases);
+    if (judgeFailureSummary) {
+      run.judgeFailureSummary = judgeFailureSummary;
+    }
 
     // Compute performance metrics
     const totalDuration = Date.now() - runStartTime;
@@ -951,6 +974,9 @@ async function waitForTracesAndJudge(
               passFailStatus: judgment.passFailStatus,
               metrics: judgment.metrics,
               llmJudgeReasoning: judgment.llmJudgeReasoning,
+              // Set only by the agent (trace) judge provider -- see
+              // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
+              ...(judgment.judgeMode ? { judgeMode: judgment.judgeMode } : {}),
               // Unified judge surface (issue #230 follow-up).
               // The deterministic path doesn't reach here — trace-mode
               // judge runs only when the test case has no SDK body —

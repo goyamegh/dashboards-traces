@@ -19,6 +19,7 @@ import { buildJudgeMatcherEntry, formatExpectedOutcomesAsClaim } from '@/lib/mat
 import type { MatcherResult } from '@/lib/matchers/types';
 import type { TracesAccessor } from '@/lib/matchers/traces';
 import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
+import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
 
 // Re-export for use by experimentRunner when calling judge after trace polling
 export { callBedrockJudge };
@@ -612,33 +613,78 @@ export async function runEvaluationWithConnector(
       process.env.BEDROCK_MODEL_ID ||
       modelConfig?.model_id ||
       modelId;
-    const judgment = await callBedrockJudge(
-      fullTrajectory,
-      {
-        expectedOutcomes: testCase.expectedOutcomes,
-        expectedTrajectory: testCase.expectedTrajectory,
-      },
-      undefined, // No logs in direct connector mode
-      (chunk) => debug('Eval', 'Judge progress:', chunk.slice(0, 100)),
-      judgeModelId,
-      evaluatorId,
-      // Forward agent runId so the `agent` (trace) judge provider can
-      // scope its query_spans/query_logs tools. See callBedrockJudge.
-      agentRunId || undefined,
-      // Strategy C correlation hints (#264) so the trace judge tool can
-      // find spans the agent emits under its OWN correlation (claude-code
-      // session ids etc.), not just spans matching agent-health's runId
-      // via gen_ai.request.id.
-      buildJudgeAgentsHints(
+
+    // The judge call gets its OWN try/catch, separate from agent invocation
+    // above. Pre-fix, a judge failure here (e.g. the agent-trace-judge's
+    // "needs a runId or trace correlation hint" validation error for a
+    // `useTraces: false` REST agent -- the reported incident) fell through
+    // to the OUTER catch below and was indistinguishable from a genuine
+    // agent crash: `status: 'failed'`, no `metricsStatus`, generic
+    // "Evaluation failed: ..." reasoning. That shape is invisible to
+    // retry-judgement's `isJudgeFailedCase` (requires `metricsStatus:
+    // 'error'` on a `'completed'` result) and buckets as `failed` instead of
+    // `errored` in the runs list/stats (lib/runStats.ts), silently
+    // misattributing an evaluator problem as "the agent did badly". The
+    // agent DID complete here (we have `fullTrajectory`) -- use the
+    // canonical `buildEvaluatorErrorPatch('judge_failed', ...)` shape so
+    // this case is `status: 'completed'` + `metricsStatus: 'error'`,
+    // exactly like every other judge-failure code path in this codebase
+    // (evaluationRunner.ts, benchmarkRunner.ts, retryJudgement.ts,
+    // browserRecovery.ts).
+    let judgment: Awaited<ReturnType<typeof callBedrockJudge>>;
+    try {
+      judgment = await callBedrockJudge(
+        fullTrajectory,
         {
-          agentKey: agent.key,
-          connectorProtocol: (agent.connectorType as any),
-          timestamp: new Date().toISOString(),
-          performanceMetrics: { durationMs: Date.now() - evalStartTime, agentDurationMs },
+          expectedOutcomes: testCase.expectedOutcomes,
+          expectedTrajectory: testCase.expectedTrajectory,
         },
-        agent.traceServiceName
-      )
-    );
+        undefined, // No logs in direct connector mode
+        (chunk) => debug('Eval', 'Judge progress:', chunk.slice(0, 100)),
+        judgeModelId,
+        evaluatorId,
+        // Forward agent runId so the `agent` (trace) judge provider can
+        // scope its query_spans/query_logs tools. See callBedrockJudge.
+        agentRunId || undefined,
+        // Strategy C correlation hints (#264) so the trace judge tool can
+        // find spans the agent emits under its OWN correlation (claude-code
+        // session ids etc.), not just spans matching agent-health's runId
+        // via gen_ai.request.id.
+        buildJudgeAgentsHints(
+          {
+            agentKey: agent.key,
+            connectorProtocol: (agent.connectorType as any),
+            timestamp: new Date().toISOString(),
+            performanceMetrics: { durationMs: Date.now() - evalStartTime, agentDurationMs },
+          },
+          agent.traceServiceName
+        )
+      );
+    } catch (judgeError) {
+      console.error('[Eval] Judge call failed:', judgeError instanceof Error ? judgeError.message : judgeError);
+      return {
+        id: reportId,
+        timestamp: new Date().toISOString(),
+        agentName: agent.name,
+        agentKey: agent.key,
+        modelName: modelId,
+        modelId,
+        testCaseId: testCase.id,
+        testCaseVersion: testCase.currentVersion ?? 1,
+        status: 'completed',
+        trajectory: fullTrajectory,
+        ...buildEvaluatorErrorPatch('judge_failed', judgeError),
+        improvementStrategies: [],
+        runId: agentRunId || undefined,
+        sessionId: agentSessionId || undefined,
+        rawEvents,
+        connectorProtocol: connector.type as ConnectorProtocol,
+        performanceMetrics: {
+          durationMs: Date.now() - evalStartTime,
+          agentDurationMs,
+        },
+      };
+    }
 
     debug('Eval', 'Metrics:', judgment.metrics);
 
@@ -673,6 +719,9 @@ export async function runEvaluationWithConnector(
       trajectory: fullTrajectory,
       metrics: judgment.metrics,
       llmJudgeReasoning: judgment.llmJudgeReasoning,
+      // Set only by the agent (trace) judge provider -- see
+      // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
+      ...(judgment.judgeMode ? { judgeMode: judgment.judgeMode } : {}),
       // Unified judge surface (Option-B BC: legacy field above kept).
       matcherResults: [
         buildJudgeMatcherEntry(judgment, {
@@ -938,6 +987,9 @@ export async function runEvaluation(
       trajectory: fullTrajectory,
       metrics: judgment.metrics,
       llmJudgeReasoning: judgment.llmJudgeReasoning,
+      // Set only by the agent (trace) judge provider -- see
+      // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
+      ...(judgment.judgeMode ? { judgeMode: judgment.judgeMode } : {}),
       // Unified judge surface (Option-B BC: legacy field above kept).
       matcherResults: [
         buildJudgeMatcherEntry(judgment, {

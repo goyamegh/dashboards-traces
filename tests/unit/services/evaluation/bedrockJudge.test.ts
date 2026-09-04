@@ -81,6 +81,39 @@ describe('bedrockJudge', () => {
       expect(result.warning).toMatch(/MOCK_JUDGE/);
     });
 
+    it('should forward `judgeMode` from the agent (trace) judge provider ("trajectory-only" -- non-instrumented agent)', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          passFailStatus: 'failed',
+          metrics: { accuracy: 40 },
+          llmJudgeReasoning: 'Judged from trajectory alone; no trace tools available for this run.',
+          improvementStrategies: [],
+          judgeMode: 'trajectory-only',
+        }),
+      });
+
+      const result = await callBedrockJudge(mockTrajectory, mockExpectedBehavior);
+
+      expect(result.judgeMode).toBe('trajectory-only');
+    });
+
+    it('should leave `judgeMode` undefined for every judge provider except agent-trace-judge', async () => {
+      mockFetch.mockResolvedValueOnce({
+        ok: true,
+        json: () => Promise.resolve({
+          passFailStatus: 'passed',
+          metrics: { accuracy: 92 },
+          llmJudgeReasoning: 'The agent performed well.',
+          improvementStrategies: [],
+        }),
+      });
+
+      const result = await callBedrockJudge(mockTrajectory, mockExpectedBehavior);
+
+      expect(result.judgeMode).toBeUndefined();
+    });
+
     it('should leave `warning` undefined when the route response omits it (real judge)', async () => {
       mockFetch.mockResolvedValueOnce({
         ok: true,

@@ -40,6 +40,15 @@ interface JudgeResult {
     systemPrompt?: string;
     userPrompt?: string;
   };
+  /**
+   * Forwarded from `/api/judge`'s agent (trace) judge provider (see
+   * `JudgeResponse.judgeMode`). `'trace-tools'` when the verdict was backed
+   * by real query_spans/query_logs; `'trajectory-only'` when the run had no
+   * trace correlation hint and the judge reasoned from the trajectory alone
+   * (the normal case for a `useTraces: false` agent). Undefined for every
+   * other judge provider.
+   */
+  judgeMode?: 'trajectory-only' | 'trace-tools';
 }
 
 /**
@@ -168,6 +177,7 @@ export async function callBedrockJudge(
         extraFields: result.extraFields,
         overallScore: result.overallScore,
         judgeDebug: result.judgeDebug,
+        judgeMode: result.judgeMode,
       };
     } catch (error) {
       const isLastAttempt = attempt === maxRetries;

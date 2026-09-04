@@ -103,6 +103,10 @@ function toBenchmarkRun(stored: StorageBenchmarkRunConfig): BenchmarkRun {
     status: stored.status as BenchmarkRunStatus | undefined,
     error: stored.error,
     stats: stored.stats as RunStats | undefined,
+    // Run-level judge-failure reason (lib/judgeFailureSummary.ts) — mapped
+    // explicitly because this mapper is an allow-list; without it the
+    // inspector banner never renders for benchmark-embedded runs.
+    judgeFailureSummary: (stored as any).judgeFailureSummary,
     results,
     performanceMetrics: (stored as any).performanceMetrics,
   };
@@ -145,6 +149,7 @@ function toStorageFormat(benchmark: Partial<Benchmark>): Record<string, any> {
       benchmarkVersion: run.benchmarkVersion,
       testCaseSnapshots: run.testCaseSnapshots,
       results: run.results,
+      ...(run.judgeFailureSummary && { judgeFailureSummary: run.judgeFailureSummary }),
       ...(run.performanceMetrics && { performanceMetrics: run.performanceMetrics }),
     }));
   }
@@ -301,6 +306,7 @@ class AsyncBenchmarkStorage {
       benchmarkVersion: r.benchmarkVersion,
       testCaseSnapshots: r.testCaseSnapshots,
       results: r.results,
+      ...(r.judgeFailureSummary && { judgeFailureSummary: r.judgeFailureSummary }),
     }));
 
     console.log('[asyncBenchmarkStorage] Saving updated runs:', storageRuns.length);

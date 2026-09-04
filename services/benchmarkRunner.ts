@@ -35,6 +35,7 @@ import { buildEvaluatorErrorPatch } from './evaluation/evaluatorError';
 import { connectorRegistry } from '@/services/connectors/server';
 import { readEnv } from '@/lib/envCompat';
 import { buildJudgeAgentsHints, resolveJudgeRunId } from '@/services/traces/judgeAgentsHints';
+import { extractJudgeFailureReason, computeJudgeFailureSummary } from '@/lib/judgeFailureSummary';
 import {
   runInSession,
   recordVerdict,
@@ -873,6 +874,9 @@ async function saveReportWithModule(storage: IStorageModule, report: any): Promi
     traceError: report.traceError,
     spans: report.spans,
     connectorProtocol: report.connectorProtocol,
+    // Set only by the agent (trace) judge provider -- see
+    // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
+    judgeMode: report.judgeMode,
   } as any);
   return { ...report, id: saved.id, timestamp: saved.timestamp };
 }
@@ -994,6 +998,9 @@ export async function runSingleUseCase(
       traceError: report.traceError,
       spans: report.spans,
       connectorProtocol: report.connectorProtocol,
+      // Set only by the agent (trace) judge provider -- see
+      // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
+      judgeMode: (report as any).judgeMode,
     } as Partial<TestCaseRun>;
     const updated = await storage.runs.update(existingReportId, updates);
     savedReport = { ...report, id: updated.id, timestamp: updated.timestamp };
@@ -1112,6 +1119,9 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
             passFailStatus: judgment.passFailStatus,
             metrics: judgment.metrics,
             llmJudgeReasoning: judgment.llmJudgeReasoning,
+            // Set only by the agent (trace) judge provider -- see
+            // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
+            ...(judgment.judgeMode ? { judgeMode: judgment.judgeMode } : {}),
             // Unified judge surface (issue #230 follow-up).
             matcherResults: [
               buildJudgeMatcherEntry(judgment, {
@@ -1235,6 +1245,9 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
             passFailStatus: judgment.passFailStatus,
             metrics: judgment.metrics,
             llmJudgeReasoning: judgment.llmJudgeReasoning,
+            // Set only by the agent (trace) judge provider -- see
+            // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
+            ...(judgment.judgeMode ? { judgeMode: judgment.judgeMode } : {}),
             // Unified judge surface (issue #230 follow-up).
             matcherResults: [
               buildJudgeMatcherEntry(judgment, {
@@ -1323,6 +1336,7 @@ async function refreshBenchmarkRunStats(
 
     let passed = 0, failed = 0, pending = 0, errored = 0;
     const total = Object.keys(targetRun.results || {}).length;
+    const judgeFailureReasons: Array<string | undefined> = [];
 
     for (const rid of reportIds) {
       try {
@@ -1334,10 +1348,12 @@ async function refreshBenchmarkRunStats(
         } else if (ms === 'error') {
           // Evaluator failed to produce a verdict (issue #242).
           errored++;
+          judgeFailureReasons.push(extractJudgeFailureReason(report as any));
         } else if (report.passFailStatus === 'passed') {
           passed++;
         } else {
           failed++;
+          judgeFailureReasons.push(extractJudgeFailureReason(report as any));
         }
       } catch {
         pending++;
@@ -1345,8 +1361,12 @@ async function refreshBenchmarkRunStats(
     }
     pending += total - reportIds.length;
 
+    const judgeFailureSummary = computeJudgeFailureSummary(judgeFailureReasons, total);
     await storage.benchmarks.updateRun(benchmarkId, targetRun.id, {
       stats: { passed, failed, pending, errored, total },
+      // `null` (not omitted) so a stale summary is CLEARED once retry-judgement
+      // or a trace-poll verdict resolves the cases (codex_review finding).
+      judgeFailureSummary: judgeFailureSummary ?? null,
     } as any);
   } catch (err) {
     console.warn(`[BenchmarkRunner] Failed to refresh stats for benchmark ${benchmarkId}:`, err instanceof Error ? err.message : err);

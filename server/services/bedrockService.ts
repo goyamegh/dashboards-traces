@@ -98,6 +98,17 @@ export interface JudgeResponse {
     systemPrompt?: string;
     userPrompt?: string;
   };
+  /**
+   * Set exclusively by the agent (trace) judge provider
+   * (piAgenticJudgeService.evaluateWithPiAgenticTrace) to record whether this
+   * verdict was backed by real OTel spans/logs (`'trace-tools'`) or had to
+   * fall back to trajectory-only reasoning because the run carried no
+   * correlation hint (`'trajectory-only'` — the normal case for an agent
+   * declared `useTraces: false`). Undefined for every other provider.
+   * Persisted onto `TestCaseRun.judgeMode` so reports/comparisons can show
+   * which cases had trace evidence behind them.
+   */
+  judgeMode?: 'trajectory-only' | 'trace-tools';
 }
 
 // ============================================================================

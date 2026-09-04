@@ -28,6 +28,7 @@ import { resolveCodeFnMapForStoredTestCases } from '../../../services/sourceReso
 import { computeImageDigest, buildImageDoc } from '../../../lib/benchmarkImage.js';
 import { loadConfigSync } from '../../../lib/config/index.js';
 import { getCustomAgents } from '../../services/customAgentStore.js';
+import { extractJudgeFailureReason, computeJudgeFailureSummary } from '../../../lib/judgeFailureSummary.js';
 
 /**
  * Normalize benchmark data for legacy documents without version fields.
@@ -107,13 +108,14 @@ async function backfillRunStats(
   const storage = getStorageModule();
   await Promise.all(runsNeedingStats.map(async (run) => {
     try {
-      const stats = await computeStatsForRun(run);
+      const { judgeFailureSummary, ...stats } = await computeStatsForRun(run);
       run.stats = stats;
+      if (judgeFailureSummary) run.judgeFailureSummary = judgeFailureSummary;
 
       debug('StorageAPI', `[Backfill] Computed stats for run ${run.id}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
 
       // Persist via adapter (fire-and-forget)
-      storage.benchmarks.updateRun(benchmarkId, run.id, { stats } as any)
+      storage.benchmarks.updateRun(benchmarkId, run.id, { stats, judgeFailureSummary: judgeFailureSummary ?? null } as any)
         .catch((e: any) => {
           console.warn('[StorageAPI] Failed to persist backfilled stats for run', run.id, ':', e.message);
         })
@@ -134,7 +136,7 @@ async function backfillRunStats(
 async function computeStatsForRun(
   run: BenchmarkRun,
   client?: any
-): Promise<RunStats> {
+): Promise<RunStats & { judgeFailureSummary?: string }> {
   // Collect report IDs from run results
   const reportIds = Object.values(run.results || {})
     .map(r => r.reportId)
@@ -145,6 +147,12 @@ async function computeStatsForRun(
   let pending = 0;
   let errored = 0;
   const total = Object.keys(run.results || {}).length;
+  // One entry per case that reached a report -- undefined for
+  // pass/fail/pending cases, a human-readable reason for judge failures
+  // (see lib/judgeFailureSummary.ts). Aggregated into `judgeFailureSummary`
+  // below so the runs list/inspector isn't silent about *why* a run's
+  // cases errored (the reported incident: a bare "⚠ 62" with no reason).
+  const judgeFailureReasons: Array<string | undefined> = [];
 
   // Fetch reports to get passFailStatus
   if (reportIds.length > 0) {
@@ -158,7 +166,7 @@ async function computeStatsForRun(
           body: {
             size: reportIds.length,
             query: { terms: { 'id': reportIds } },
-            _source: ['id', 'passFailStatus', 'metricsStatus', 'status'],
+            _source: ['id', 'passFailStatus', 'metricsStatus', 'status', 'traceError', 'llmJudgeReasoning'],
           },
         });
         (reportsResult.body.hits?.hits || []).forEach((hit: any) => {
@@ -206,6 +214,7 @@ async function computeStatsForRun(
           // aggregate pass rates.
           if (report.metricsStatus === 'error') {
             errored++;
+            judgeFailureReasons.push(extractJudgeFailureReason(report));
             return;
           }
 
@@ -213,6 +222,7 @@ async function computeStatsForRun(
             passed++;
           } else {
             failed++;
+            judgeFailureReasons.push(extractJudgeFailureReason(report));
           }
         } else {
           pending++;
@@ -242,7 +252,8 @@ async function computeStatsForRun(
     });
   }
 
-  return { passed, failed, pending, errored, total };
+  const judgeFailureSummary = computeJudgeFailureSummary(judgeFailureReasons, total);
+  return { passed, failed, pending, errored, total, ...(judgeFailureSummary ? { judgeFailureSummary } : {}) };
 }
 
 /**
@@ -1293,13 +1304,14 @@ router.post('/api/storage/benchmarks/:id/execute', async (req: Request, res: Res
 
       // Compute final stats from reports
       debug('StorageAPI', '[StatsUpdate] Computing final stats for completed run:', run.id);
-      const stats = await computeStatsForRun(completedRun, client);
+      const { judgeFailureSummary, ...stats } = await computeStatsForRun(completedRun, client);
       debug('StorageAPI', `[StatsUpdate] Final stats for run ${run.id}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
 
       const finalRun = {
         ...completedRun,
         status: wasCancelled ? 'cancelled' as const : 'completed' as const,
         stats,
+        ...(judgeFailureSummary ? { judgeFailureSummary } : {}),
       };
 
       // Update benchmark with final run results
@@ -1510,13 +1522,14 @@ router.post('/api/storage/benchmarks/:id/refresh-all-stats', async (req: Request
     // Recompute stats for ALL runs (not just those missing stats)
     await Promise.all(runs.map(async (run) => {
       try {
-        const stats = await computeStatsForRun(run);
+        const { judgeFailureSummary, ...stats } = await computeStatsForRun(run);
         run.stats = stats;
+        if (judgeFailureSummary) run.judgeFailureSummary = judgeFailureSummary;
 
         debug('StorageAPI', `[RefreshStats] Computed stats for run ${run.id}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
 
         // Persist via adapter
-        await storage.benchmarks.updateRun(id, run.id, { stats } as any);
+        await storage.benchmarks.updateRun(id, run.id, { stats, judgeFailureSummary: judgeFailureSummary ?? null } as any);
 
         debug('StorageAPI', `[RefreshStats] Successfully updated stats for run ${run.id}`);
       } catch (e: any) {
@@ -1562,15 +1575,15 @@ router.post('/api/storage/benchmarks/:id/runs/:runId/refresh-stats', async (req:
     debug('StorageAPI', `[RefreshStats] Manually refreshing stats for run ${runId} in benchmark ${id}`);
 
     // Recompute stats for the run
-    const stats = await computeStatsForRun(run);
+    const { judgeFailureSummary, ...stats } = await computeStatsForRun(run);
 
     debug('StorageAPI', `[RefreshStats] Computed stats for run ${runId}: passed=${stats.passed}, failed=${stats.failed}, pending=${stats.pending}, total=${stats.total}`);
 
     // Persist via adapter
-    await storage.benchmarks.updateRun(id, runId, { stats } as any);
+    await storage.benchmarks.updateRun(id, runId, { stats, judgeFailureSummary: judgeFailureSummary ?? null } as any);
 
     debug('StorageAPI', `[RefreshStats] Successfully updated stats for run ${runId}`);
-    res.json({ refreshed: true, runId, stats });
+    res.json({ refreshed: true, runId, stats, judgeFailureSummary });
   } catch (error: any) {
     if (error.meta?.statusCode === 404) {
       return res.status(404).json({ error: 'Benchmark not found' });
