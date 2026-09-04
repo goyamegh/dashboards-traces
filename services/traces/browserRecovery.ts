@@ -115,6 +115,9 @@ export function ensureTracePollingForReport(
             passFailStatus: judgment.passFailStatus,
             metrics: judgment.metrics,
             llmJudgeReasoning: judgment.llmJudgeReasoning,
+            // Set only by the agent (trace) judge provider -- see
+            // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
+            ...(judgment.judgeMode ? { judgeMode: judgment.judgeMode } : {}),
             // Unified judge surface (issue #230 follow-up).
             matcherResults: [
               buildJudgeMatcherEntry(judgment, {

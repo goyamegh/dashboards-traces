@@ -330,6 +330,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
           id: run.id, name: run.name, createdAt: run.createdAt, completedAt,
           status: finalStatus, agentKey: run.agentKey, modelId: run.modelId,
           judgeModelId: run.judgeModelId, results: completedRun.results, stats: completedRun.stats,
+          ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
           ...(run.description ? { description: run.description } : {}),
           ...(run.evaluatorId ? { evaluatorId: run.evaluatorId } : {}),
           ...(run.headers ? { headers: run.headers } : {}),
@@ -342,6 +343,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
 
       const updatedRun = await storage.evaluationRuns.update(runId, {
         status: finalStatus, stats: completedRun.stats, completedAt, results: completedRun.results,
+        ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
       });
       sendSSE(res, 'completed', updatedRun);
     } catch (error: any) {
@@ -529,6 +531,7 @@ router.post('/api/storage/evaluation-runs/:id/rerun', async (req: Request, res: 
           stats: completedRun.stats,
           completedAt: new Date().toISOString(),
           results: completedRun.results,
+          ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
         });
       })
       .catch(async (error: any) => {

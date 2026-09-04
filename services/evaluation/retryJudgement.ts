@@ -42,6 +42,7 @@ import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
 import { spansToTrajectory } from '@/services/traces/spansToTrajectory';
 import { fetchSpansForRun } from '@/services/traces/fetchSpansForRun';
 import { computeRunStats } from '@/lib/runStats';
+import { extractJudgeFailureReason } from '@/lib/judgeFailureSummary';
 import { loadConfigSync } from '@/lib/config/index';
 import { getCustomAgents } from '@/server/services/customAgentStore';
 import { debug } from '@/lib/debug';
@@ -97,8 +98,21 @@ export function isJudgeFailedCase(
 ): boolean {
   if (!report || !result) return false;
   if (result.status !== 'completed') return false;
-  if (report.metricsStatus !== 'error') return false;
-  return Array.isArray(report.trajectory) && report.trajectory.length > 0;
+  const hasTrajectory = Array.isArray(report.trajectory) && report.trajectory.length > 0;
+  if (!hasTrajectory) return false;
+  if (report.metricsStatus === 'error') return true;
+  // Legacy pre-fix shape: before services/evaluation/index.ts split the judge
+  // call into its own catch, a judge-step failure after a SUCCESSFUL agent run
+  // landed as `status: 'failed'` with no `metricsStatus` and a generic
+  // "Evaluation failed: <judge error>" reasoning -- indistinguishable from an
+  // agent crash except that the trajectory exists (agent completed) and the
+  // message names the judge. Runs persisted before the fix (e.g. a 62-case run
+  // against a non-instrumented REST agent whose every case hit the
+  // agent-trace-judge's old "needs a runId or trace correlation hint" 400)
+  // must remain salvageable at judge cost only -- that is exactly this
+  // feature's purpose. `extractJudgeFailureReason` (lib/judgeFailureSummary.ts)
+  // is the single definition of that legacy shape.
+  return report.status === 'failed' && !report.passFailStatus && !!extractJudgeFailureReason(report);
 }
 
 /**
@@ -212,6 +226,9 @@ export async function retryJudgementForCase(
       passFailStatus: judgment.passFailStatus,
       metrics: judgment.metrics,
       llmJudgeReasoning: judgment.llmJudgeReasoning,
+      // Set only by the agent (trace) judge provider -- see
+      // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
+      ...(judgment.judgeMode ? { judgeMode: judgment.judgeMode } : {}),
       matcherResults: [
         buildJudgeMatcherEntry(judgment, {
           claim: formatExpectedOutcomesAsClaim(testCase.expectedOutcomes),

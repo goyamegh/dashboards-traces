@@ -627,6 +627,20 @@ export const RunInspectorPage: React.FC = () => {
             </Button>
           </div>
         </div>
+        {/* Run-level judge-failure banner (lib/judgeFailureSummary.ts). Before
+            this existed, a run whose cases all failed AT THE JUDGE STEP
+            (e.g. the agent-trace-judge's pre-fix "needs a runId or trace
+            correlation hint" validation error for a non-instrumented agent)
+            showed only the bare "N ⚠" errored count above -- no reason. */}
+        {run?.judgeFailureSummary && (
+          <div
+            data-testid="run-judge-failure-banner"
+            className="mt-2 flex items-start gap-1.5 rounded border border-amber-200 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 px-2.5 py-1.5 text-[11px] text-amber-800 dark:text-amber-300"
+          >
+            <AlertTriangle size={12} className="shrink-0 mt-0.5" />
+            <span>{run.judgeFailureSummary}</span>
+          </div>
+        )}
       </div>
 
       {/* Re-run Confirm Dialog (EvaluationRun only) -- doc concern, see above. */}

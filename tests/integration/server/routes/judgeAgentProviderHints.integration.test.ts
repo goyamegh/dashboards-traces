@@ -140,23 +140,37 @@ describe('POST /api/judge — agent provider, hints-only scoping (integration)',
     expect(mockEvaluateWithPiAgenticTrace).toHaveBeenCalledTimes(1);
   });
 
-  it('still 400s over real HTTP when NEITHER runId nor usable agents hints are present', async () => {
+  it('degrades to trajectory-only judging over real HTTP (no 400, no query_spans/query_logs) when NEITHER runId nor usable agents hints are present -- the useTraces:false / non-instrumented-agent case', async () => {
+    mockEvaluateWithPiAgenticTrace.mockResolvedValue({
+      passFailStatus: 'failed',
+      metrics: { accuracy: 40, faithfulness: 50, latency_score: 60, trajectory_alignment_score: 30 },
+      llmJudgeReasoning: 'Judged from trajectory alone; no trace tools available for this run.',
+      improvementStrategies: [],
+      judgeMode: 'trajectory-only',
+    });
+
     const res = await request(buildApp())
       .post('/api/judge')
       .send({
         trajectory: restTrajectory,
         expectedOutcomes: ['Identifies the CPU spike as root cause'],
         evaluatorId: 'rest-trace-eval',
-        // no runId, no agents at all
+        // no runId, no agents at all -- e.g. a `useTraces: false` REST agent's report.
       })
       .set('Content-Type', 'application/json');
 
-    expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/runId/i);
-    expect(mockEvaluateWithPiAgenticTrace).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(res.body.judgeMode).toBe('trajectory-only');
+    expect(mockEvaluateWithPiAgenticTrace).toHaveBeenCalledTimes(1);
+    // traceToolsAvailable=false is the 3rd positional arg -- no query_spans/query_logs pack.
+    expect(mockEvaluateWithPiAgenticTrace.mock.calls[0][2]).toBe(false);
   });
 
-  it('still 400s when agents hints are present but empty of any usable field', async () => {
+  it('degrades to trajectory-only judging when agents hints are present but empty of any usable field', async () => {
+    mockEvaluateWithPiAgenticTrace.mockResolvedValue({
+      passFailStatus: 'failed', metrics: {}, llmJudgeReasoning: 'ok', improvementStrategies: [], judgeMode: 'trajectory-only',
+    });
+
     const res = await request(buildApp())
       .post('/api/judge')
       .send({
@@ -167,8 +181,8 @@ describe('POST /api/judge — agent provider, hints-only scoping (integration)',
       })
       .set('Content-Type', 'application/json');
 
-    expect(res.status).toBe(400);
-    expect(mockEvaluateWithPiAgenticTrace).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(mockEvaluateWithPiAgenticTrace.mock.calls[0][2]).toBe(false);
   });
 
   it('regression: a runId-carrying request still works unchanged (Strategy B alone)', async () => {
