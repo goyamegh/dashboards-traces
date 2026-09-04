@@ -10,13 +10,52 @@
 
 import type { TrajectoryStep } from '@/types';
 import { ToolCallStatus } from '@/types';
-import { SubprocessConnector } from '@/services/connectors/subprocess/SubprocessConnector';
+import {
+  SubprocessConnector,
+  type SubprocessExecutionState,
+} from '@/services/connectors/subprocess/SubprocessConnector';
 import type {
   ConnectorAuth,
   ConnectorRequest,
   ConnectorProgressCallback,
   SubprocessConfig,
 } from '@/services/connectors/types';
+
+/**
+ * Upper bound on the tool output text persisted per `tool_result` step
+ * (`content` + `toolOutput`). Larger outputs are cut here with an explicit
+ * truncation marker carrying the original length, so the judge knows it saw
+ * a prefix. The full stream stays in `report.rawEvents`. Sized to cover the
+ * largest single results observed live (~28 KB) without doubling every
+ * report; the judge's own per-step cap (`AH_JUDGE_TOOL_OUTPUT_CAP`, default
+ * 100 KB) is the outer bound.
+ */
+export const CLAUDE_CODE_MAX_TOOL_OUTPUT_CHARS = 32 * 1024;
+
+/**
+ * Per-invocation parse state for one Claude Code subprocess. See
+ * {@link SubprocessExecutionState} for why none of this may live on the
+ * (singleton) connector instance.
+ */
+interface ClaudeCodeExecutionState extends SubprocessExecutionState {
+  /** Partial trailing NDJSON line carried between stdout chunks. */
+  outputBuffer: string;
+  thinkingBuffer: string;
+  textBuffer: string;
+  /**
+   * Claude Code's `session_id` (present on every stream-json event). Captured
+   * for Strategy D trace correlation — it equals the `session.id` attribute
+   * Claude Code stamps on its OTel spans. Surfaced to the report via
+   * {@link extraResultMetadata} → `report.sessionId`.
+   */
+  sessionId?: string;
+  /**
+   * `tool_use` blocks seen so far, keyed by their id, so the matching
+   * `tool_result` block (which only carries `tool_use_id`) can be attributed
+   * to a tool name. Entries are consumed on pairing.
+   */
+  pendingToolUses: Map<string, { name: string; input: unknown }>;
+}
 
 /**
  * MCP server definition for Claude Code --mcp-config flag
@@ -71,26 +110,45 @@ const CLAUDE_CODE_DEFAULT_CONFIG: Partial<SubprocessConfig> = {
 };
 
 /**
+ * Flatten a stream-json `tool_result` block into the text the model saw.
+ * Claude Code emits either a plain string or an array of content blocks
+ * (`{type:'text', text}` for MCP/Bash/Read results, `tool_reference` for
+ * ToolSearch, …). Text blocks are joined verbatim; anything else is
+ * JSON-encoded so no evidence is dropped. Falls back to the event-level
+ * `tool_use_result` (a structured mirror of the same result) when the block
+ * carries no content at all.
+ */
+function toolResultText(block: any, event: any): string {
+  const c = block?.content;
+  if (typeof c === 'string') return c;
+  if (Array.isArray(c)) {
+    return c
+      .map((part: any) =>
+        part && part.type === 'text' && typeof part.text === 'string' ? part.text : JSON.stringify(part)
+      )
+      .join('\n');
+  }
+  if (c != null) return JSON.stringify(c);
+  const mirror = event?.tool_use_result;
+  if (mirror === undefined || mirror === null) return '';
+  return typeof mirror === 'string' ? mirror : JSON.stringify(mirror);
+}
+
+/** Cut `text` at `max` chars with an explicit marker carrying the full length. */
+export function boundToolOutput(text: string, max: number = CLAUDE_CODE_MAX_TOOL_OUTPUT_CHARS): string {
+  if (text.length <= max) return text;
+  return `${text.slice(0, max)}\n… [tool output truncated: showing ${max} of ${text.length} chars]`;
+}
+
+/**
  * Claude Code CLI Connector
  * Invokes Claude Code as a subprocess for agent evaluation
  */
-export class ClaudeCodeConnector extends SubprocessConnector {
+export class ClaudeCodeConnector extends SubprocessConnector<ClaudeCodeExecutionState> {
   readonly type = 'claude-code' as const;
   override readonly name = 'Claude Code CLI';
 
   override traceContext = { propagateEnv: true, serviceName: 'claude-code-agent' };
-
-  private outputBuffer = '';
-  private thinkingBuffer = '';
-  private textBuffer = '';
-  private isInThinking = false;
-  /**
-   * Claude Code's `session_id` (present on every stream-json event). Captured
-   * for Strategy D trace correlation — it equals the `session.id` attribute
-   * Claude Code stamps on its OTel spans. Surfaced to the report via
-   * {@link extraResultMetadata}.
-   */
-  private sessionId?: string;
 
   /**
    * The connector's pristine constructor-time args, captured on first execute.
@@ -131,6 +189,16 @@ export class ClaudeCodeConnector extends SubprocessConnector {
     return parts.join('\n');
   }
 
+  protected override createExecutionState(): ClaudeCodeExecutionState {
+    return {
+      ...super.createExecutionState(),
+      outputBuffer: '',
+      thinkingBuffer: '',
+      textBuffer: '',
+      pendingToolUses: new Map(),
+    };
+  }
+
   /**
    * Parse Claude Code streaming output (stream-json format)
    * Each line is a JSON object with type and content
@@ -138,13 +206,14 @@ export class ClaudeCodeConnector extends SubprocessConnector {
   protected override parseStreamingOutput(
     chunk: string,
     trajectory: TrajectoryStep[],
-    onProgress?: ConnectorProgressCallback
+    onProgress: ConnectorProgressCallback | undefined,
+    state: ClaudeCodeExecutionState
   ): void {
-    this.outputBuffer += chunk;
+    state.outputBuffer += chunk;
 
     // Parse complete JSON lines (NDJSON format)
-    const lines = this.outputBuffer.split('\n');
-    this.outputBuffer = lines.pop() || ''; // Keep incomplete line
+    const lines = state.outputBuffer.split('\n');
+    state.outputBuffer = lines.pop() || ''; // Keep incomplete line
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -152,7 +221,7 @@ export class ClaudeCodeConnector extends SubprocessConnector {
 
       try {
         const event = JSON.parse(trimmed);
-        const steps = this.parseJsonEvent(event);
+        const steps = this.parseJsonEvent(event, state);
         for (const step of steps) {
           trajectory.push(step);
           onProgress?.(step);
@@ -171,13 +240,13 @@ export class ClaudeCodeConnector extends SubprocessConnector {
   /**
    * Parse a single JSON event from stream-json output
    */
-  private parseJsonEvent(event: any): TrajectoryStep[] {
+  private parseJsonEvent(event: any, state: ClaudeCodeExecutionState): TrajectoryStep[] {
     const steps: TrajectoryStep[] = [];
 
     // Capture the session id (present on system/init, assistant, user, result
     // events). Used for Strategy D trace correlation (attributes.session.id).
     if (typeof event.session_id === 'string' && event.session_id) {
-      this.sessionId = event.session_id;
+      state.sessionId = event.session_id;
     }
 
     // Handle different event types from Claude Code stream-json
@@ -188,6 +257,9 @@ export class ClaudeCodeConnector extends SubprocessConnector {
         } else if (block.type === 'text' && block.text) {
           steps.push(this.createStep('assistant', block.text));
         } else if (block.type === 'tool_use') {
+          if (typeof block.id === 'string' && block.id) {
+            state.pendingToolUses.set(block.id, { name: block.name, input: block.input });
+          }
           steps.push(this.createStep('action', JSON.stringify(block.input || {}), {
             toolName: block.name,
             toolArgs: block.input,
@@ -199,15 +271,24 @@ export class ClaudeCodeConnector extends SubprocessConnector {
       // content blocks (referenced back to the assistant's tool_use_id).
       // Without this branch, tool outputs are silently dropped — the trajectory
       // shows the tool calls but not their results.
+      //
+      // Each result is paired with its `tool_use` by id so the step carries
+      // the tool name, and the (bounded) output text is stored on BOTH
+      // `content` and `toolOutput`. `toolOutput` is what the judge and the
+      // trajectory-merge policy (services/traces/trajectoryMerge.ts) treat as
+      // evidence; without it a span-derived "tool succeeded" stub could
+      // replace a 28 KB retrieval result.
       for (const block of event.message.content) {
         if (block.type === 'tool_result') {
-          const content =
-            typeof block.content === 'string'
-              ? block.content
-              : JSON.stringify(block.content);
+          const paired =
+            typeof block.tool_use_id === 'string' ? state.pendingToolUses.get(block.tool_use_id) : undefined;
+          if (paired && typeof block.tool_use_id === 'string') state.pendingToolUses.delete(block.tool_use_id);
+          const output = boundToolOutput(toolResultText(block, event));
           steps.push(
-            this.createStep('tool_result', content, {
+            this.createStep('tool_result', output, {
               status: block.is_error ? ToolCallStatus.FAILURE : ToolCallStatus.SUCCESS,
+              ...(paired?.name ? { toolName: paired.name } : {}),
+              ...(output ? { toolOutput: output } : {}),
             })
           );
         } else if (block.type === 'text' && block.text) {
@@ -218,21 +299,21 @@ export class ClaudeCodeConnector extends SubprocessConnector {
     } else if (event.type === 'content_block_delta') {
       // Streaming delta updates — accumulate into buffers
       if (event.delta?.type === 'thinking_delta' && event.delta.thinking) {
-        this.thinkingBuffer += event.delta.thinking;
+        state.thinkingBuffer += event.delta.thinking;
       } else if (event.delta?.type === 'text_delta' && event.delta.text) {
         // Accumulate text deltas; the 'result' event will emit the final response
-        this.textBuffer += event.delta.text;
+        state.textBuffer += event.delta.text;
       }
     } else if (event.type === 'content_block_stop') {
       // Flush thinking buffer when block ends
-      if (this.thinkingBuffer) {
-        steps.push(this.createStep('thinking', this.thinkingBuffer));
-        this.thinkingBuffer = '';
+      if (state.thinkingBuffer) {
+        steps.push(this.createStep('thinking', state.thinkingBuffer));
+        state.thinkingBuffer = '';
       }
       // Flush text buffer when block ends (consolidated assistant step)
-      if (this.textBuffer) {
-        steps.push(this.createStep('assistant', this.textBuffer));
-        this.textBuffer = '';
+      if (state.textBuffer) {
+        steps.push(this.createStep('assistant', state.textBuffer));
+        state.textBuffer = '';
       }
     } else if (event.type === 'result' && event.result) {
       // Final result message
@@ -278,53 +359,44 @@ export class ClaudeCodeConnector extends SubprocessConnector {
   }
 
   /**
-   * Reset state for new execution
-   */
-  private resetState(): void {
-    this.outputBuffer = '';
-    this.thinkingBuffer = '';
-    this.textBuffer = '';
-    this.isInThinking = false;
-  }
-
-  /**
    * Flush remaining buffers when the subprocess stream ends.
    */
   protected override onBeforeStreamEnd(
     trajectory: TrajectoryStep[],
-    onProgress?: ConnectorProgressCallback
+    onProgress: ConnectorProgressCallback | undefined,
+    state: ClaudeCodeExecutionState
   ): void {
     // Flush outputBuffer (incomplete NDJSON line)
-    if (this.outputBuffer.trim()) {
+    if (state.outputBuffer.trim()) {
       try {
-        const event = JSON.parse(this.outputBuffer.trim());
-        const steps = this.parseJsonEvent(event);
+        const event = JSON.parse(state.outputBuffer.trim());
+        const steps = this.parseJsonEvent(event, state);
         for (const step of steps) {
           trajectory.push(step);
           onProgress?.(step);
         }
       } catch {
-        const step = this.createStep('assistant', this.outputBuffer.trim());
+        const step = this.createStep('assistant', state.outputBuffer.trim());
         trajectory.push(step);
         onProgress?.(step);
       }
-      this.outputBuffer = '';
+      state.outputBuffer = '';
     }
 
     // Flush thinkingBuffer
-    if (this.thinkingBuffer) {
-      const step = this.createStep('thinking', this.thinkingBuffer);
+    if (state.thinkingBuffer) {
+      const step = this.createStep('thinking', state.thinkingBuffer);
       trajectory.push(step);
       onProgress?.(step);
-      this.thinkingBuffer = '';
+      state.thinkingBuffer = '';
     }
 
     // Flush textBuffer (text deltas received without a result event)
-    if (this.textBuffer) {
-      const step = this.createStep('response', this.textBuffer);
+    if (state.textBuffer) {
+      const step = this.createStep('response', state.textBuffer);
       trajectory.push(step);
       onProgress?.(step);
-      this.textBuffer = '';
+      state.textBuffer = '';
     }
   }
 
@@ -370,7 +442,7 @@ export class ClaudeCodeConnector extends SubprocessConnector {
   }
 
   /**
-   * Override execute to reset state and apply connectorConfig
+   * Override execute to apply connectorConfig
    */
   override async execute(
     endpoint: string,
@@ -383,7 +455,6 @@ export class ClaudeCodeConnector extends SubprocessConnector {
     this.debug('Endpoint:', endpoint);
     this.debug('Test case:', request.testCase.name);
     this.debug('Config:', this['config']);
-    this.resetState();
 
     // Capture the pristine base args once (first execution wins — constructor
     // args never change). See `pristineArgs` doc for why we must not snapshot
@@ -458,8 +529,7 @@ export class ClaudeCodeConnector extends SubprocessConnector {
     }
 
     try {
-      this.debug('State reset, calling super.execute()...');
-      this.sessionId = undefined;
+      this.debug('Calling super.execute()...');
       const result = await super.execute(endpoint, request, auth, onProgress, onRawEvent);
       this.debug('super.execute() returned with', result.trajectory.length, 'steps');
       this.debug('========== execute() COMPLETED ==========');
@@ -484,10 +554,15 @@ export class ClaudeCodeConnector extends SubprocessConnector {
 
   /**
    * Surface the captured Claude Code `session_id` so the runner can persist it
-   * as `report.sessionId` for Strategy D trace correlation.
+   * as `report.sessionId` for Strategy D trace correlation. Read from the
+   * per-invocation state — never from the instance — so concurrent runs on
+   * the shared singleton can't swap session ids.
    */
-  protected override extraResultMetadata(): Record<string, any> {
-    return this.sessionId ? { sessionId: this.sessionId } : {};
+  protected override extraResultMetadata(state: ClaudeCodeExecutionState): Record<string, any> {
+    return {
+      ...super.extraResultMetadata(state),
+      ...(state.sessionId ? { sessionId: state.sessionId } : {}),
+    };
   }
 }
 

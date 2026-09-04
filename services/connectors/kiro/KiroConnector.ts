@@ -36,7 +36,10 @@
 
 import { ToolCallStatus } from '@/types';
 import type { TrajectoryStep } from '@/types';
-import { SubprocessConnector } from '@/services/connectors/subprocess/SubprocessConnector';
+import {
+  SubprocessConnector,
+  type SubprocessExecutionState,
+} from '@/services/connectors/subprocess/SubprocessConnector';
 import type {
   ConnectorAuth,
   ConnectorProgressCallback,
@@ -68,61 +71,72 @@ const KIRO_DEFAULT_CONFIG: Partial<SubprocessConfig> = {
   timeout: 600000, // 10 minutes
 };
 
-export class KiroConnector extends SubprocessConnector {
+/**
+ * Per-invocation parse state (see `SubprocessExecutionState`: the registry
+ * shares ONE connector instance across concurrent runs, so buffers must not
+ * live on `this`).
+ */
+interface KiroExecutionState extends SubprocessExecutionState {
+  /** Carry-over for a partial last line on stderr stream */
+  stderrLineBuffer: string;
+  /** Tool name from the last unmatched `[tool] Running:` line, used to
+   *  attach the same toolName to the corresponding `[tool] status:` row. */
+  pendingToolName: string | null;
+}
+
+export class KiroConnector extends SubprocessConnector<KiroExecutionState> {
   override readonly type = 'kiro' as const;
   override readonly name = 'Kiro CLI';
 
   override traceContext = { propagateEnv: true, serviceName: 'kiro-agent' };
 
-  /** Carry-over for a partial last line on stderr stream */
-  private stderrLineBuffer = '';
-
-  /** Tool name from the last unmatched `[tool] Running:` line, used to
-   *  attach the same toolName to the corresponding `[tool] status:` row. */
-  private pendingToolName: string | null = null;
-
   constructor(config?: Partial<SubprocessConfig>) {
     super({ ...KIRO_DEFAULT_CONFIG, ...config });
+  }
+
+  protected override createExecutionState(): KiroExecutionState {
+    return { ...super.createExecutionState(), stderrLineBuffer: '', pendingToolName: null };
   }
 
   /**
    * Convert kiro-cli's stderr `[tool]` markers into trajectory steps.
    *
    * Each chunk may straddle line boundaries, so we accumulate into
-   * `stderrLineBuffer` and only consume complete lines (the trailing
+   * `state.stderrLineBuffer` and only consume complete lines (the trailing
    * partial line is held until the next chunk or `onBeforeStreamEnd`).
    */
   protected override parseStderrChunk(
     chunk: string,
     trajectory: TrajectoryStep[],
-    onProgress?: ConnectorProgressCallback
+    onProgress: ConnectorProgressCallback | undefined,
+    state: KiroExecutionState
   ): void {
-    this.stderrLineBuffer += chunk;
-    const lines = this.stderrLineBuffer.split('\n');
-    this.stderrLineBuffer = lines.pop() || '';
+    state.stderrLineBuffer += chunk;
+    const lines = state.stderrLineBuffer.split('\n');
+    state.stderrLineBuffer = lines.pop() || '';
 
     for (const raw of lines) {
-      this.processStderrLine(raw, trajectory, onProgress);
+      this.processStderrLine(raw, trajectory, onProgress, state);
     }
   }
 
   /**
-   * Drain any held partial line from the stderr buffer and reset
-   * per-run state, then defer to the base class to flush the
-   * consolidated stdout response step.
+   * Drain any held partial line from the stderr buffer, then defer to the
+   * base class to flush the consolidated stdout response step.
    */
   protected override onBeforeStreamEnd(
     trajectory: TrajectoryStep[],
-    onProgress?: ConnectorProgressCallback
+    onProgress: ConnectorProgressCallback | undefined,
+    state: KiroExecutionState
   ): void {
-    if (this.stderrLineBuffer.trim()) {
-      this.processStderrLine(this.stderrLineBuffer, trajectory, onProgress);
+    if (state.stderrLineBuffer.trim()) {
+      this.processStderrLine(state.stderrLineBuffer, trajectory, onProgress, state);
     }
-    this.stderrLineBuffer = '';
-    this.pendingToolName = null;
+    state.stderrLineBuffer = '';
+    state.pendingToolName = null;
 
     // Base class emits the consolidated `response` step from buffered stdout.
-    super.onBeforeStreamEnd(trajectory, onProgress);
+    super.onBeforeStreamEnd(trajectory, onProgress, state);
   }
 
   /**
@@ -138,7 +152,8 @@ export class KiroConnector extends SubprocessConnector {
   private processStderrLine(
     raw: string,
     trajectory: TrajectoryStep[],
-    onProgress?: ConnectorProgressCallback
+    onProgress: ConnectorProgressCallback | undefined,
+    state: KiroExecutionState
   ): void {
     // Drop NUL/control bytes that occasionally slip into stderr
     const line = raw.replace(/[\x00-\x08\x0b-\x1f\x7f]/g, '').trim();
@@ -158,7 +173,7 @@ export class KiroConnector extends SubprocessConnector {
       // so SDK matchers and judges can pattern-match on it.
       const toolName = payload.split(/\s+/)[0] || 'unknown';
       const toolArgs = { command: payload };
-      this.pendingToolName = toolName;
+      state.pendingToolName = toolName;
 
       const step = this.createStep('action', JSON.stringify(toolArgs), {
         toolName,
@@ -176,12 +191,12 @@ export class KiroConnector extends SubprocessConnector {
         `status: ${payload}`,
         {
           status: success ? ToolCallStatus.SUCCESS : ToolCallStatus.FAILURE,
-          toolName: this.pendingToolName ?? undefined,
+          toolName: state.pendingToolName ?? undefined,
         }
       );
       trajectory.push(step);
       onProgress?.(step);
-      this.pendingToolName = null;
+      state.pendingToolName = null;
     }
   }
 

@@ -62,7 +62,11 @@ connectorRegistry.register(new CustomConnector());
   - `propagateHeader: true` → inject a `traceparent` HTTP header into HTTP/SSE agents (`injectTraceparentHeaders()`).
   - `serviceName: '<otel-service-name>'` → service-name + time-window fallback. Defaults: `claude-code-agent`, `kiro-agent`, `pi-agent`, `observio-sample-agent`. See the "Trace correlation conventions" section in `AGENTS.md`.
 - **Subprocess connectors** (`SubprocessConnector` subclasses) can override
-  `parseStderrChunk(chunk)` to turn stderr markers into trajectory steps (how
+  `parseStderrChunk(chunk, trajectory, onProgress, state)` to turn stderr markers into trajectory steps (how
   `kiro` surfaces `[tool] Running:` / `[tool] status:` as `action` +
   `tool_result` steps). The base class persists `stderr` to `rawOutput` and
   honors per-request `connectorConfig` overrides (`args` / `inputMode` / `timeout`).
+  Keep ALL streaming state (partial-line buffers, pending tool names, captured
+  ids) on the per-invocation `state` object (extend `SubprocessExecutionState`
+  via `createExecutionState()`), never on `this` — the registry shares one
+  connector instance across concurrent runs.

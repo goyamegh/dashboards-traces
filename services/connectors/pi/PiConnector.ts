@@ -11,7 +11,10 @@
 
 import type { TrajectoryStep } from '@/types';
 import { ToolCallStatus } from '@/types';
-import { SubprocessConnector } from '@/services/connectors/subprocess/SubprocessConnector';
+import {
+  SubprocessConnector,
+  type SubprocessExecutionState,
+} from '@/services/connectors/subprocess/SubprocessConnector';
 import type {
   ConnectorAuth,
   ConnectorRequest,
@@ -52,21 +55,32 @@ const PI_DEFAULT_CONFIG: Partial<SubprocessConfig> = {
 };
 
 /**
+ * Per-invocation parse state (see `SubprocessExecutionState`: the registry
+ * shares ONE connector instance across concurrent runs, so buffers must not
+ * live on `this`).
+ */
+interface PiExecutionState extends SubprocessExecutionState {
+  piOutputBuffer: string;
+  piThinkingBuffer: string;
+  piTextBuffer: string;
+}
+
+/**
  * Pi CLI Connector
  * Invokes pi.dev as a subprocess for agent evaluation
  */
-export class PiConnector extends SubprocessConnector {
+export class PiConnector extends SubprocessConnector<PiExecutionState> {
   readonly type = 'pi' as const;
   override readonly name = 'Pi (pi.dev)';
 
   override traceContext = { propagateEnv: true, serviceName: 'pi-agent' };
 
-  private piOutputBuffer = '';
-  private piThinkingBuffer = '';
-  private piTextBuffer = '';
-
   constructor(config?: Partial<SubprocessConfig>) {
     super({ ...PI_DEFAULT_CONFIG, ...config });
+  }
+
+  protected override createExecutionState(): PiExecutionState {
+    return { ...super.createExecutionState(), piOutputBuffer: '', piThinkingBuffer: '', piTextBuffer: '' };
   }
 
   /**
@@ -99,13 +113,14 @@ export class PiConnector extends SubprocessConnector {
   protected override parseStreamingOutput(
     chunk: string,
     trajectory: TrajectoryStep[],
-    onProgress?: ConnectorProgressCallback
+    onProgress: ConnectorProgressCallback | undefined,
+    state: PiExecutionState
   ): void {
-    this.piOutputBuffer += chunk;
+    state.piOutputBuffer += chunk;
 
     // Parse complete JSON lines (NDJSON format)
-    const lines = this.piOutputBuffer.split('\n');
-    this.piOutputBuffer = lines.pop() || ''; // Keep incomplete line
+    const lines = state.piOutputBuffer.split('\n');
+    state.piOutputBuffer = lines.pop() || ''; // Keep incomplete line
 
     for (const line of lines) {
       const trimmed = line.trim();
@@ -113,7 +128,7 @@ export class PiConnector extends SubprocessConnector {
 
       try {
         const event = JSON.parse(trimmed);
-        const steps = this.parsePiEvent(event);
+        const steps = this.parsePiEvent(event, state);
         for (const step of steps) {
           trajectory.push(step);
           onProgress?.(step);
@@ -138,7 +153,7 @@ export class PiConnector extends SubprocessConnector {
    *  - message_start / message_end — full message with content blocks
    *  - message_update — streaming deltas with assistantMessageEvent
    */
-  private parsePiEvent(event: any): TrajectoryStep[] {
+  private parsePiEvent(event: any, state: PiExecutionState): TrajectoryStep[] {
     const steps: TrajectoryStep[] = [];
 
     // message_end contains the full final message with all content blocks
@@ -162,9 +177,9 @@ export class PiConnector extends SubprocessConnector {
       // Streaming deltas — accumulate into buffers
       const assistantEvent = event.assistantMessageEvent;
       if (assistantEvent?.type === 'text_delta' && assistantEvent.delta) {
-        this.piTextBuffer += assistantEvent.delta;
+        state.piTextBuffer += assistantEvent.delta;
       } else if (assistantEvent?.type === 'thinking_delta' && assistantEvent.delta) {
-        this.piThinkingBuffer += assistantEvent.delta;
+        state.piThinkingBuffer += assistantEvent.delta;
       }
     } else if (event.type === 'tool_result') {
       const content = event.content || event.output || JSON.stringify(event);
@@ -174,13 +189,13 @@ export class PiConnector extends SubprocessConnector {
       ));
     } else if (event.type === 'agent_end') {
       // Flush any remaining buffers on agent_end
-      if (this.piThinkingBuffer) {
-        steps.push(this.createStep('thinking', this.piThinkingBuffer));
-        this.piThinkingBuffer = '';
+      if (state.piThinkingBuffer) {
+        steps.push(this.createStep('thinking', state.piThinkingBuffer));
+        state.piThinkingBuffer = '';
       }
-      if (this.piTextBuffer) {
-        steps.push(this.createStep('response', this.piTextBuffer));
-        this.piTextBuffer = '';
+      if (state.piTextBuffer) {
+        steps.push(this.createStep('response', state.piTextBuffer));
+        state.piTextBuffer = '';
       }
     }
 
@@ -212,41 +227,42 @@ export class PiConnector extends SubprocessConnector {
    */
   protected override onBeforeStreamEnd(
     trajectory: TrajectoryStep[],
-    onProgress?: ConnectorProgressCallback
+    onProgress: ConnectorProgressCallback | undefined,
+    state: PiExecutionState
   ): void {
-    if (this.piOutputBuffer.trim()) {
+    if (state.piOutputBuffer.trim()) {
       try {
-        const event = JSON.parse(this.piOutputBuffer.trim());
-        const steps = this.parsePiEvent(event);
+        const event = JSON.parse(state.piOutputBuffer.trim());
+        const steps = this.parsePiEvent(event, state);
         for (const step of steps) {
           trajectory.push(step);
           onProgress?.(step);
         }
       } catch {
-        const step = this.createStep('assistant', this.piOutputBuffer.trim());
+        const step = this.createStep('assistant', state.piOutputBuffer.trim());
         trajectory.push(step);
         onProgress?.(step);
       }
-      this.piOutputBuffer = '';
+      state.piOutputBuffer = '';
     }
 
-    if (this.piThinkingBuffer) {
-      const step = this.createStep('thinking', this.piThinkingBuffer);
+    if (state.piThinkingBuffer) {
+      const step = this.createStep('thinking', state.piThinkingBuffer);
       trajectory.push(step);
       onProgress?.(step);
-      this.piThinkingBuffer = '';
+      state.piThinkingBuffer = '';
     }
 
-    if (this.piTextBuffer) {
-      const step = this.createStep('response', this.piTextBuffer);
+    if (state.piTextBuffer) {
+      const step = this.createStep('response', state.piTextBuffer);
       trajectory.push(step);
       onProgress?.(step);
-      this.piTextBuffer = '';
+      state.piTextBuffer = '';
     }
   }
 
   /**
-   * Reset state and apply connectorConfig
+   * Apply connectorConfig
    */
   override async execute(
     endpoint: string,
@@ -255,10 +271,6 @@ export class PiConnector extends SubprocessConnector {
     onProgress?: ConnectorProgressCallback,
     onRawEvent?: ConnectorRawEventCallback
   ): Promise<ConnectorResponse> {
-    this.piOutputBuffer = '';
-    this.piThinkingBuffer = '';
-    this.piTextBuffer = '';
-
     // Save original config
     const originalArgs = this.config.args ? [...this.config.args] : [];
     const originalEnv = this.config.env ? structuredClone(this.config.env) : {};

@@ -529,7 +529,7 @@ See `services/connectors/claude-code/ClaudeCodeConnector.ts` for a complete exam
 ### Kiro Connector
 
 See `services/connectors/kiro/KiroConnector.ts` for a `SubprocessConnector`
-subclass that overrides `parseStderrChunk()` to convert Kiro's stderr-borne
+subclass that overrides `parseStderrChunk(chunk, trajectory, onProgress, state)` to convert Kiro's stderr-borne
 `[tool] Running:` / `[tool] status:` markers into structured `action` +
 `tool_result` steps. The base `SubprocessConnector` also persists `stderr` to
 `rawOutput` and honors per-request `connectorConfig` overrides (`args` /

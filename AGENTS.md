@@ -337,9 +337,17 @@ connector captures that id, Strategy D correlates **precisely** on
 `attributes.session.id` — far tighter than the service-name + time-window
 fallback (Strategy C).
 
-- **Capture:** `SubprocessConnector` exposes an `extraResultMetadata()` hook;
-  `ClaudeCodeConnector` reads `session_id` from the stream-json events and
-  returns `{ sessionId }`. The runner persists it as `report.sessionId`.
+- **Capture:** `SubprocessConnector` exposes an `extraResultMetadata(state)`
+  hook; `ClaudeCodeConnector` reads `session_id` from the stream-json events
+  into the **per-invocation** execution state and returns `{ sessionId }`.
+  The runner persists it as `report.sessionId`. The registry shares ONE
+  connector instance across all concurrent runs, so nothing captured while
+  parsing a child's output may live on the instance — every streaming hook
+  (`parseStreamingOutput` / `parseStderrChunk` / `onBeforeStreamEnd` /
+  `extraResultMetadata`) receives a `SubprocessExecutionState` created by
+  `execute()`; subclasses extend it via `createExecutionState()`. (An earlier
+  instance-field capture cross-wired 11/62 reports of a concurrent run — each
+  then judged on a sibling case's spans.)
 - **Correlate:** `buildJudgeAgentsHints(report)` adds `sessionId` to each
   `agents` hint, and the run-report Traces tab adds it to its `windowAgents`.
   The query builder turns each hint into `(session.id == sessionId) OR
