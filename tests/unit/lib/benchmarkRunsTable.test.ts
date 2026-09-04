@@ -16,7 +16,7 @@ import {
 } from '@/lib/benchmarkRunsTable';
 
 const resolvers = {
-  agentName: (k: string) => ({ 'agent-cc': 'Claude Code', 'agent-ais': 'AI Search' } as Record<string, string>)[k] || k || 'Unknown',
+  agentName: (k: string) => ({ 'agent-cc': 'Agent A', 'agent-ais': 'Agent B' } as Record<string, string>)[k] || k || 'Unknown',
   modelName: (id: string) => ({ 'm-sonnet': 'Sonnet 4.6' } as Record<string, string>)[id] || id,
   judgeLabel: (id?: string | null) => (id ? `J:${id}` : '—'),
   evaluatorLabel: (id?: string | null) => (id ? `E:${id}` : '—'),
@@ -70,12 +70,12 @@ describe('buildRunTableRow', () => {
 
   it('resolves display labels and keeps raw ids for filtering', () => {
     const row = buildRunTableRow(run({ id: 'a', judgeModelId: 'jm', evaluatorId: 'ev' }), resolvers);
-    expect(row.agentName).toBe('Claude Code');
+    expect(row.agentName).toBe('Agent A');
     expect(row.modelName).toBe('Sonnet 4.6');
     expect(row.judgeLabel).toBe('J:jm');
     expect(row.evaluatorLabel).toBe('E:ev');
     expect(rowFieldValue(row, 'agent')).toBe('agent-cc');
-    expect(rowFieldLabel(row, 'agent')).toBe('Claude Code');
+    expect(rowFieldLabel(row, 'agent')).toBe('Agent A');
     expect(rowFieldValue(row, 'judge')).toBe('jm');
     expect(rowFieldValue(row, 'evaluator')).toBe('ev');
     expect(rowFieldValue(row, 'model')).toBe('m-sonnet');
@@ -99,8 +99,8 @@ describe('filters', () => {
     run({ id: 'ais1', agentKey: 'agent-ais', evaluatorId: 'ev-a', status: 'running' }),
   ].map(r => buildRunTableRow(r, resolvers));
 
-  const fAgentCC: RunFilter = { field: 'agent', value: 'agent-cc', label: 'Claude Code' };
-  const fAgentAIS: RunFilter = { field: 'agent', value: 'agent-ais', label: 'AI Search' };
+  const fAgentCC: RunFilter = { field: 'agent', value: 'agent-cc', label: 'Agent A' };
+  const fAgentAIS: RunFilter = { field: 'agent', value: 'agent-ais', label: 'Agent B' };
   const fEvA: RunFilter = { field: 'evaluator', value: 'ev-a', label: 'E:ev-a' };
   const fRunning: RunFilter = { field: 'status', value: 'running', label: 'Running' };
 
@@ -185,12 +185,12 @@ describe('buildPassRateSeries', () => {
     const series = buildPassRateSeries(rows);
     // Alphabetical by label — NOT by point count — so the index→colour mapping
     // is stable while polling adds runs.
-    expect(series.map(s => s.key)).toEqual(['agent-ais', 'agent-cc']);
-    expect(series[1].label).toBe('Claude Code');
-    expect(series[1].points.map(p => p.runId)).toEqual(['cc-early', 'cc-late']);
-    expect(series[1].points.map(p => p.passRate)).toEqual([0, 100]);
-    expect(series[0].points).toHaveLength(1);
-    expect(series[0].points[0]).toMatchObject({ runId: 'ais', passRate: 50, passed: 1, failed: 1, total: 2 });
+    expect(series.map(s => s.key)).toEqual(['agent-cc', 'agent-ais']); // 'Agent A' < 'Agent B'
+    expect(series[0].label).toBe('Agent A');
+    expect(series[0].points.map(p => p.runId)).toEqual(['cc-early', 'cc-late']);
+    expect(series[0].points.map(p => p.passRate)).toEqual([0, 100]);
+    expect(series[1].points).toHaveLength(1);
+    expect(series[1].points[0]).toMatchObject({ runId: 'ais', passRate: 50, passed: 1, failed: 1, total: 2 });
     for (const s of series) for (const p of s.points) expect(typeof p.t).toBe('number');
   });
 
