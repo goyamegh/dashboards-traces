@@ -242,7 +242,7 @@ describe('metrics correlation + span-schema + vendor token reads (comparison-pag
       // traceId correlator (Strategy A) does, and the doc is stored in the
       // legacy @-flattened schema (Gap 2), with vendor (not registry) token
       // key names (Gap 3).
-      const m = await computeMetrics('subprocess-1788335139441', { client }, CLAUDE_CODE_TRACE_ID);
+      const m = await computeMetrics('subprocess-1788335139441', { client }, undefined, CLAUDE_CODE_TRACE_ID);
 
       expect(m.status).toBe('success');
       // 34947+1200 input, 313+87 output — the eval span is excluded.
@@ -256,7 +256,7 @@ describe('metrics correlation + span-schema + vendor token reads (comparison-pag
     it('Strategy A also reaches a REST-connector run whose runId IS the traceId (report.runId falls back to report.traceId upstream)', async () => {
       const client = createFakeClient();
 
-      const m = await computeMetrics(REST_TRACE_ID, { client }, REST_TRACE_ID);
+      const m = await computeMetrics(REST_TRACE_ID, { client }, undefined, REST_TRACE_ID);
 
       expect(m.status).toBe('success');
       expect(m.inputTokens).toBe(812);
@@ -273,6 +273,7 @@ describe('metrics correlation + span-schema + vendor token reads (comparison-pag
       const results = await computeBatchMetrics(
         ['subprocess-1788335139441', REST_TRACE_ID],
         { client },
+        undefined,
         { 'subprocess-1788335139441': CLAUDE_CODE_TRACE_ID, [REST_TRACE_ID]: REST_TRACE_ID }
       );
 
@@ -295,6 +296,7 @@ describe('metrics correlation + span-schema + vendor token reads (comparison-pag
       await computeBatchMetrics(
         ['subprocess-1788335139441'],
         { client },
+        undefined,
         { 'subprocess-1788335139441': CLAUDE_CODE_TRACE_ID }
       );
 

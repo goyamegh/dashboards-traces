@@ -99,7 +99,8 @@ describe('ComparisonScoreboard structure', () => {
 
   it('shows every RunAggregateMetrics metric directly on the run row', () => {
     expect(src).toContain('>Pass Rate<');
-    expect(src).toContain('>Avg Accuracy<');
+    expect(src).toContain('>Average accuracy<');
+    expect(src).toContain('Avg score');
     expect(src).toContain('>Cost<');
     expect(src).toContain('>Avg Duration<');
     expect(src).toContain('>Tokens<');
@@ -107,6 +108,7 @@ describe('ComparisonScoreboard structure', () => {
     expect(src).toContain('>Tool Calls<');
     expect(src).toContain('run-passrate-${run.runId}');
     expect(src).toContain('run-accuracy-${run.runId}');
+    expect(src).toContain('run-avgscore-${run.runId}');
   });
 
   it('renders a single judge line instead of per-row judge info', () => {

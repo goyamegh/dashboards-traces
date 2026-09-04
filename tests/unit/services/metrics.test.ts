@@ -232,7 +232,7 @@ describe('metrics API functions', () => {
       });
 
       const { fetchBatchMetrics } = await import('@/services/metrics');
-      await fetchBatchMetrics(['run-1'], { 'run-1': 'trace-1' });
+      await fetchBatchMetrics(['run-1'], undefined, { 'run-1': 'trace-1' });
 
       expect(global.fetch).toHaveBeenCalledWith(
         expect.stringContaining('/api/metrics/batch'),

@@ -538,7 +538,7 @@ export const Dashboard: React.FC = () => {
     for (const r of reportsWithRunId) {
       if (r.traceId && !traceIdByRunId[r.runId!]) traceIdByRunId[r.runId!] = r.traceId;
     }
-    fetchBatchMetrics(runIds, traceIdByRunId)
+    fetchBatchMetrics(runIds, undefined, traceIdByRunId)
       .then(({ metrics }) => {
         const m = new Map<string, { costUsd: number; durationMs: number; tokens: number }>();
         for (const x of metrics) {

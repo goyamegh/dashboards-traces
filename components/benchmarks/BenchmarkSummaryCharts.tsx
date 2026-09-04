@@ -169,7 +169,7 @@ export const BenchmarkSummaryCharts: React.FC<BenchmarkSummaryChartsProps> = ({
       }
 
       try {
-        const result = await fetchBatchMetrics(runIds, traceIdByRunId);
+        const result = await fetchBatchMetrics(runIds, undefined, traceIdByRunId);
         setTraceMetrics({
           totalTokens: result.aggregate.totalInputTokens + result.aggregate.totalOutputTokens,
           totalCostUsd: result.aggregate.totalCostUsd,

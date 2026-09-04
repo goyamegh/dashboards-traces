@@ -102,7 +102,7 @@ export const ReportsPage: React.FC = () => {
         for (const r of reports) {
           if (r.runId && r.traceId && !traceIdByRunId[r.runId]) traceIdByRunId[r.runId] = r.traceId;
         }
-        const { metrics } = await fetchBatchMetrics(runIds, traceIdByRunId);
+        const { metrics } = await fetchBatchMetrics(runIds, undefined, traceIdByRunId);
         const map = new Map<string, TraceMetrics>();
         metrics.forEach(m => {
           if (m.runId && !('error' in m)) {
