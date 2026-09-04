@@ -314,6 +314,43 @@ describe('POST /api/storage/evaluation-runs/:id/retry-judgement', () => {
     expect(persistedRun.stats).toMatchObject({ passed: 2, failed: 0, errored: 0, total: 2 });
   }, 30000);
 
+  it('salvages a LEGACY pre-fix judge-failure report (status: failed, no metricsStatus, judge-named reasoning) — the shape the un-fixed trace judge left on every case of a non-instrumented agent run', async () => {
+    if (!backendAvailable) return;
+
+    const tcLegacy = await createTestCase('Retry Judgement — legacy judge-failure shape');
+    cleanupIds.testCases.push(tcLegacy);
+
+    const reportLegacy = await createReport(`report-retry-legacy-${Date.now()}`, {
+      testCaseId: tcLegacy,
+      status: 'failed',
+      // deliberately NO metricsStatus / traceError — pre-fix shape
+      llmJudgeReasoning:
+        'Evaluation failed: Bedrock Judge validation error (not retryable): The agent (trace) judge provider needs a runId or at least one trace correlation hint (agents: serviceName+window, or sessionId) to scope its trace tools — this request had neither.',
+    });
+    cleanupIds.reports.push(reportLegacy.id);
+
+    const run = await seedEvalRun({
+      testCaseSnapshots: [{ id: tcLegacy, version: 1, name: 'Retry Judgement — legacy judge-failure shape' }],
+      results: { [tcLegacy]: { reportId: reportLegacy.id, status: 'completed' } },
+    });
+    cleanupIds.evalRuns.push(run.id);
+
+    const startRes = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${run.id}/retry-judgement`, { method: 'POST' });
+    expect(startRes.status).toBe(202);
+    const started = await startRes.json();
+    expect(started.total).toBe(1); // pre-fix: 0 — the legacy shape was invisible to the selector
+
+    const job = await pollRetryJudgement(run.id);
+    expect(job.status).toBe('completed');
+    expect(job.summary.retried).toBe(1);
+    expect(job.summary.succeeded).toBe(1);
+
+    const persistedReport = await (await fetch(`${BASE_URL}/api/storage/runs/${reportLegacy.id}`)).json();
+    expect(persistedReport.metricsStatus).toBe('completed');
+    expect(persistedReport.passFailStatus).toBe('passed');
+    expect(persistedReport.llmJudgeReasoning).not.toMatch(/^Evaluation failed:/);
+  }, 30000);
+
   it('does not retry a judge-failed case with no stored trajectory (agent crash — nothing to salvage)', async () => {
     if (!backendAvailable) return;
 

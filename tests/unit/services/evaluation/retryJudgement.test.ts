@@ -109,6 +109,40 @@ describe('isJudgeFailedCase', () => {
     const report = makeReport({ metricsStatus: 'error' as any, trajectory: [] });
     expect(isJudgeFailedCase(report, { status: 'completed' })).toBe(false);
   });
+
+  describe('legacy pre-fix judge-failure shape (status: failed, no metricsStatus)', () => {
+    // Before services/evaluation/index.ts split the judge call into its own
+    // catch, a judge-step failure after a SUCCESSFUL agent run landed as
+    // status:'failed' + "Evaluation failed: <judge error>" with no
+    // metricsStatus. Runs persisted in that shape (e.g. every case of a
+    // 62-case run against a non-instrumented REST agent hitting the old
+    // agent-trace-judge 400) must still be salvageable.
+    const legacy = makeReport({
+      status: 'failed',
+      metricsStatus: undefined,
+      passFailStatus: undefined,
+      llmJudgeReasoning:
+        'Evaluation failed: Bedrock Judge validation error (not retryable): The agent (trace) judge provider needs a runId or at least one trace correlation hint',
+    });
+
+    it('is true when the trajectory exists and the reasoning names the judge', () => {
+      expect(isJudgeFailedCase(legacy, { status: 'completed' })).toBe(true);
+    });
+
+    it('is false for a legacy-shape AGENT failure (reasoning does not name the judge)', () => {
+      const agentFail = makeReport({ ...legacy, llmJudgeReasoning: 'Evaluation failed: ECONNREFUSED' } as any);
+      expect(isJudgeFailedCase(agentFail, { status: 'completed' })).toBe(false);
+    });
+
+    it('is false when the legacy-shape report has no trajectory (nothing to re-judge)', () => {
+      expect(isJudgeFailedCase(makeReport({ ...legacy, trajectory: [] } as any), { status: 'completed' })).toBe(false);
+    });
+
+    it('is selected by selectRetryableCases under the default errored scope', () => {
+      const run = makeRun({ results: { 'tc-1': { reportId: 'report-1', status: 'completed' } } as any });
+      expect(selectRetryableCases(run, { 'report-1': legacy }, 'errored')).toEqual(['tc-1']);
+    });
+  });
 });
 
 describe('hasRejudgeableOutput', () => {
