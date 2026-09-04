@@ -342,7 +342,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
   // ─── Run Stats ───────────────────────────────────────────────────────────
 
-  const getRunStats = useCallback((run: BenchmarkRun): RunStats & { running: number; errored: number } => {
+  const getRunStats = useCallback((run: BenchmarkRun): RunStats & { running: number; errored: number; notRun: number } => {
     let running = 0;
     Object.values(run.results || {}).forEach(r => { if (r.status === 'running') running++; });
 
@@ -350,9 +350,12 @@ export const BenchmarkRunsPage2: React.FC = () => {
     // than trusting the denormalized run.stats, which historically counted
     // errored cases as passed. Falls back to run.stats only when per-case
     // results aren't present (e.g. very old runs).
-    const { passed, failed, errored, total } = computeRunStats(run);
-    const pending = Math.max(0, total - passed - failed - errored - running);
-    return { passed, failed, pending, running, errored, total };
+    // Terminal-aware (2026-09-04): `notRun` = planned cases a cancelled/failed
+    // run never reached. Subtracted from `pending` so a terminal run never
+    // shows an in-progress count/spinner for cases that will never start.
+    const { passed, failed, errored, notRun, total } = computeRunStats(run);
+    const pending = Math.max(0, total - passed - failed - errored - running - notRun);
+    return { passed, failed, pending, running, errored, notRun, total };
   }, []);
 
   const hasPendingEvaluations = useMemo(() => {
@@ -749,6 +752,15 @@ export const BenchmarkRunsPage2: React.FC = () => {
                                   title="Evaluator could not run (e.g. judge validation error). Excluded from pass-rate aggregation."
                                 >
                                   <AlertTriangle size={14} /> {stats.errored}
+                                </span>
+                              )}
+                              {stats.notRun > 0 && (
+                                <span
+                                  data-testid="run-not-run-count"
+                                  className="flex items-center gap-1 text-muted-foreground"
+                                  title="Planned test cases that never ran (run cancelled or failed first). Not failures; excluded from the pass rate."
+                                >
+                                  <Ban size={14} /> {stats.notRun} not run
                                 </span>
                               )}
                               <span className="text-muted-foreground">/ {stats.total}</span>

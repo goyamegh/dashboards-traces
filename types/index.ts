@@ -1001,6 +1001,17 @@ export interface RunStats {
    * read as 0.
    */
   errored?: number;
+  /**
+   * Number of planned test cases that never executed (or never finished)
+   * because the run reached a terminal status first — cancelled part-way, or
+   * the executor crashed. Not a pass, not a fail, not pending: excluded from
+   * the pass-rate denominator and rendered as "n not run" (never a spinner).
+   * See `lib/runStats.bucketRunResults`.
+   *
+   * Optional for backward-compat: stats persisted before this field read as 0
+   * (and `computeRunStats` re-homes a terminal run's stale `pending` here).
+   */
+  notRun?: number;
   /** Total number of test cases in the run */
   total: number;
 }
@@ -1218,9 +1229,21 @@ export interface EvaluationRun {
   // Resolved test cases (snapshotted at execution time for reproducibility)
   testCaseSnapshots: TestCaseSnapshot[];
 
-  // Results (testCaseId → individual result)
+  // Results (testCaseId → individual result).
+  //
+  // Lifecycle contract: an entry is written per case as it STARTS
+  // (`running`) and again as it FINISHES (`completed` / `failed`), each via
+  // an atomic per-key server-side merge (`evaluationRuns.updateResult`) —
+  // never by rewriting the whole map, so concurrent cases can't clobber
+  // each other. When a run is CANCELLED, every planned case that never
+  // started is written explicitly as `{ reportId: '', status: 'cancelled' }`
+  // at finalization (`services/evaluationRunFinalize.ts`), so consumers can
+  // tell "never ran" from "still to come" without inference; a `failed` run
+  // (executor crash) may leave planned cases absent — `lib/runStats` buckets
+  // both shapes as `notRun` once the run status is terminal.
   results: Record<string, {
     reportId: string;
+    /** `cancelled` = never started (run cancelled first); see contract above. */
     status: RunResultStatus;
     error?: string;
     performanceMetrics?: TestCasePerformanceMetrics;
