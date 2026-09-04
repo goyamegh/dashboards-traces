@@ -23,6 +23,7 @@ import { MetricCell, EvaluatorType } from './MetricCell';
 import { Skeleton } from '@/components/ui/skeleton';
 import { VersionIndicator } from './VersionIndicator';
 import { UseCaseExpandedRow } from './UseCaseExpandedRow';
+import { TestCasePromptHoverCard } from './TestCasePromptHoverCard';
 import { cn, getLabelColor, getModelName, formatRelativeTime } from '@/lib/utils';
 import { calculateRowStatus, calculateCombinedScore, RowStatus } from '@/services/comparisonService';
 import { extractFirstDivergence } from '@/services/trajectoryDiffService';
@@ -350,6 +351,12 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
             {rows.map((row) => {
               const referenceResult = row.results[referenceRunId];
               const referenceAccuracy = referenceResult?.accuracy;
+              // The version the REFERENCE run actually used, sourced from the
+              // report doc (populated server-side at run time) rather than the
+              // row's own `testCaseVersion` string, which today is only wired
+              // up for mock/demo data — see services/comparisonService.ts.
+              const referenceReport = referenceResult?.reportId ? reports[referenceResult.reportId] : undefined;
+              const referenceTestCaseVersion = referenceReport?.testCaseVersion;
               const isExpanded = expandedRows.has(row.testCaseId);
               const rowStatus = calculateRowStatus(row, referenceRunId);
               const ranRuns = runs.filter(r => (row.results[r.id]?.status ?? 'missing') !== 'missing');
@@ -387,13 +394,22 @@ export const UseCaseComparisonTable: React.FC<UseCaseComparisonTableProps> = ({
                                 aria-hidden
                               />
                             )}
-                            <Link
-                              to={`/evaluations/test-cases/${row.testCaseId}`}
-                              className="font-medium text-[12px] truncate max-w-48 hover:underline text-foreground"
-                              onClick={(e) => e.stopPropagation()}
+                            <TestCasePromptHoverCard
+                              testCaseId={row.testCaseId}
+                              testCaseName={row.testCaseName}
+                              version={referenceTestCaseVersion}
+                              labels={row.labels}
+                              category={row.category}
+                              difficulty={row.difficulty}
                             >
-                              {row.testCaseName}
-                            </Link>
+                              <Link
+                                to={`/evaluations/test-cases/${row.testCaseId}`}
+                                className="font-medium text-[12px] truncate max-w-48 hover:underline text-foreground"
+                                onClick={(e) => e.stopPropagation()}
+                              >
+                                {row.testCaseName}
+                              </Link>
+                            </TestCasePromptHoverCard>
                             {row.hasVersionDifference && (
                               <VersionIndicator versions={row.versions} />
                             )}
