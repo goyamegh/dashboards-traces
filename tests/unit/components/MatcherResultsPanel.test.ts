@@ -35,7 +35,7 @@ jest.mock('@/components/ui/markdown', () => ({
 const panel = (results: MatcherResult[]) =>
   render(React.createElement(MatcherResultsPanel, { results }));
 
-// Verbatim reasoning from a real persisted run (wixqa smoke, logos-human-persona).
+// Verbatim reasoning shape from a real persisted run of a custom evaluator.
 const REAL_REASONING = `The expected source document is article 49d9e88fadbf11fa4e685c847590078ff9394c2fe7566094f504f53ca4aca465. However, the agent retrieved a different article (b6c9353c0a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5). Required facts evaluation: 1. 'You can start accepting payments almost immediately' — PARTIALLY stated. The agent frames it around a status with caveats. 2. 'Identity verification needed before full activation' — PARTIALLY stated. Not clearly stated.`;
 
 function failedJudgeMatcher(overrides: Partial<MatcherResult> = {}): MatcherResult {
