@@ -403,11 +403,18 @@ router.post('/api/storage/evaluation-runs/:id/cancel', async (req: Request, res:
     const cancellationToken = activeCancellationTokens.get(id);
     if (cancellationToken) {
       cancellationToken.cancel();
+      // Do NOT write `status: 'cancelled'` here. The executor still has up to
+      // `concurrency` cases in flight; they drain and land as real verdicts,
+      // and only then does finalization (services/evaluationRunFinalize.ts)
+      // write the terminal status + explicit `cancelled` markers for the cases
+      // that never started. Publishing a terminal status early made every
+      // terminal-aware reader count the still-finishing cases as "not run" for
+      // the length of the drain window (codex review of the 2026-09-04 fix).
+      // `cancelRequestedAt` lets the UI show "Cancelling…" meanwhile.
       await storage.evaluationRuns.update(id, {
-        status: 'cancelled',
-        completedAt: new Date().toISOString(),
+        cancelRequestedAt: new Date().toISOString(),
       });
-      return res.json({ success: true });
+      return res.json({ success: true, draining: true });
     }
 
     // No in-memory cancellation token for this run id. This happens whenever
@@ -435,6 +442,11 @@ router.post('/api/storage/evaluation-runs/:id/cancel', async (req: Request, res:
       });
     }
 
+    // Zombie fallback (no live executor): nothing is draining, so a direct
+    // terminal write is correct here — there are no in-flight cases whose
+    // verdicts could still land. (The graceful in-process path above is a
+    // REQUEST — it stamps cancelRequestedAt and lets finalization publish
+    // the terminal status once the executor has drained.)
     const cancelNote = 'Cancelled: no active executor found for this run (process restarted or crashed) — marked cancelled directly.';
     await storage.evaluationRuns.update(id, {
       status: 'cancelled',

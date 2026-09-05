@@ -99,13 +99,19 @@ export async function finalizeEvaluationRun(
     ? buildCancelledMarkers(plannedIds, completedRun.results)
     : {};
 
-  // Add-if-absent merge: in-memory verdicts heal any lost per-case write;
-  // cancelled markers fill the never-started gaps. Nothing persisted is
-  // overwritten.
-  await storage.evaluationRuns.mergeMissingResults(runId, {
-    ...(completedRun.results || {}),
-    ...cancelledMarkers,
-  });
+  // Add-if-absent merge: in-memory verdicts heal a per-case write that the
+  // runner's `persistResult` reported as failed; cancelled markers fill the
+  // never-started gaps. Nothing persisted is overwritten. Only SETTLED
+  // in-memory entries are eligible — a `running`/`pending` entry is never
+  // written to the doc by design and must not be introduced here. (Nothing
+  // deletes `results` keys while a run is executing — retry-judgement refuses
+  // non-terminal runs — so "absent from the doc" can only mean "never
+  // written", not "intentionally removed".)
+  const healable: Record<string, EvaluationRunResultEntry> = {};
+  for (const [id, entry] of Object.entries(completedRun.results || {})) {
+    if (entry.status === 'completed' || entry.status === 'failed' || entry.status === 'cancelled') healable[id] = entry;
+  }
+  await storage.evaluationRuns.mergeMissingResults(runId, { ...healable, ...cancelledMarkers });
 
   const persisted = await storage.evaluationRuns.getById(runId);
   if (!persisted) throw new Error(`Evaluation run ${runId} not found during finalization`);

@@ -166,12 +166,23 @@ describe('evaluation runs — status integrity (concurrency, cancel, rename)', (
     await new Promise(r => setTimeout(r, 1200));
     const cancelRes = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}/cancel`, { method: 'POST' });
     expect(cancelRes.ok).toBe(true);
+    expect((await cancelRes.json()).draining).toBe(true);
+    // Drain window: the doc is NOT terminal yet (an in-flight case is still
+    // finishing) — it carries cancelRequestedAt and stays `running`, so no
+    // reader can misreport the in-flight case as "not run".
+    const draining = await getRun(runId);
+    expect(draining.cancelRequestedAt).toBeTruthy();
+    if (draining.status === 'running') {
+      expect(isRunInProgress(draining)).toBe(true);
+      expect(computeRunStats(draining).notRun).toBe(0);
+    }
     await done; // SSE stream ends once the executor has drained + finalized
     const run = await waitForTerminal(runId);
     trackReports(run);
 
     expect(run.status).toBe('cancelled');
     expect(run.completedAt).toBeTruthy();
+    expect(run.cancelRequestedAt).toBeTruthy();
     // R3: every planned case is accounted for — the never-started ones explicitly.
     expect(Object.keys(run.results)).toHaveLength(N);
     const markers = Object.values(run.results as Record<string, any>).filter(r => r.status === 'cancelled');

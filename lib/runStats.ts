@@ -123,7 +123,11 @@ export function bucketRunResults(
       else errored++; // completed without a verdict = judge errored (#242)
       continue;
     }
-    if (terminal) notRun++; else pending++; // unknown / no status
+    // Unknown / missing status: while the run is live this is "not settled
+    // yet" (pending). On a TERMINAL run an entry with no recognised status is
+    // schema drift or a bad writer — surface it as `errored` (amber ⚠) rather
+    // than hide it in the neutral notRun bucket (codex review).
+    if (terminal) errored++; else pending++;
   }
   if (plannedTotal !== undefined && plannedTotal > total) {
     if (terminal) notRun += plannedTotal - total;
@@ -134,15 +138,18 @@ export function bucketRunResults(
 }
 
 /**
- * Pass rate (0-100) over the EXECUTED, judged set: `passed / (passed +
- * failed)`. Errored (no verdict), pending (not finished) and notRun (never
- * started) cases are all excluded — so a run cancelled at 34/62 reports the
- * pass rate of the 34 cases that actually ran, and a run still in flight
- * doesn't read as "12%" because 50 cases haven't happened yet. Returns `null`
- * when nothing has been judged so callers can render "—" rather than a
- * fabricated 0%.
+ * Pass rate (0-100) over the JUDGED set only: `passed / (passed + failed)`.
+ * Excluded: errored (executed, but the evaluator produced no verdict — the
+ * repo-wide #242 convention, same as the benchmark runs table and the run
+ * inspector), pending (not finished) and notRun (never started). So a run
+ * cancelled at 34/62 reports the pass rate of the cases that were actually
+ * judged, and an in-flight run doesn't read as "12%" because 50 cases
+ * haven't happened yet. Named for what it is — callers that surface it
+ * should footnote the excluded errored/notRun counts (the detail page does).
+ * Returns `null` when nothing has been judged so callers can render "—"
+ * rather than a fabricated 0%.
  */
-export function passRateOverExecuted(stats: { passed: number; failed: number }): number | null {
+export function passRateOverJudged(stats: { passed: number; failed: number }): number | null {
   const judged = stats.passed + stats.failed;
   return judged > 0 ? Math.round((stats.passed / judged) * 100) : null;
 }
