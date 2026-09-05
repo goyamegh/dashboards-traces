@@ -11,16 +11,10 @@
  * traceJudgeTools.test.ts) that don't need a model.
  */
 
-import {
-  pickJudgeModel,
-  pickNewestClaudeModel,
-  scoreJudgeModel,
-  scoreNewestClaudeModel,
-  parseClaudeVersion,
-  extractFinalAssistantText,
-  findRequestedModel,
-  buildAgentTraceJudgeSystemPrompt,
-} from '@/server/services/piAgenticJudgeService';
+// Deep-dive model-selection helpers (kept as a separate import so this hunk
+// stays independent of the judge-regression tests' import lines).
+import { pickNewestClaudeModel, scoreJudgeModel, scoreNewestClaudeModel, parseClaudeVersion } from '@/server/services/piAgenticJudgeService';
+import { pickJudgeModel, extractFinalAssistantText, findRequestedModel, buildAgentTraceJudgeSystemPrompt } from '@/server/services/piAgenticJudgeService';
 
 describe('pickJudgeModel', () => {
   const m = (provider: string, id: string) => ({ provider, id });
