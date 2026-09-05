@@ -258,10 +258,8 @@ test.describe('Evaluation Runner - Run Detail Page', () => {
       await page.goto(`/evaluations/runs/${runId}`);
       await page.waitForTimeout(3000);
 
-      // Exact, case-sensitive matches: the loose `text=Failed` selector also
-      // matched the lowercase `failed` status badge in the header whenever
-      // the newest run happened to be a FAILED run (e.g. a sibling suite's
-      // deliberately-unresolvable-agent run), tripping strict mode.
+      // exact: true — avoids a strict-mode collision with the StatusBadge's
+      // lowercase "failed" text when the picked run's status is 'failed'.
       await expect(page.getByText('Passed', { exact: true })).toBeVisible({ timeout: 10000 });
       await expect(page.getByText('Failed', { exact: true })).toBeVisible();
       await expect(page.getByText('Total', { exact: true })).toBeVisible();
