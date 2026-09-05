@@ -20,8 +20,10 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
-import { Loader2, Clock, XCircle, Calendar, GitCompare, AlertTriangle, RotateCcw, RotateCw, Link2, Ban } from 'lucide-react';
+import { Loader2, Clock, XCircle, Calendar, GitCompare, AlertTriangle, RotateCcw, RotateCw, Link2 } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
+// Not-run marker for cases a cancelled run never started.
+import { Ban } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';

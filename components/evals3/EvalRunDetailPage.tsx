@@ -15,7 +15,7 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  Loader2, CheckCircle2, XCircle, Clock, AlertTriangle, Ban,
+  Loader2, CheckCircle2, XCircle, Clock, AlertTriangle,
   ChevronDown, ChevronRight, ArrowLeft, Bookmark, RotateCcw, Link2,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -27,8 +27,11 @@ import {
 } from '@/components/ui/dialog';
 import { EvaluationRun, TestCaseSnapshot } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
-import { computeRunStats, passRateOverJudged } from '@/lib/runStats';
+import { computeRunStats } from '@/lib/runStats';
 import { formatRelativeTime, getModelName } from '@/lib/utils';
+// Terminal-aware stats (notRun bucket + pass rate over judged cases only).
+import { passRateOverJudged } from '@/lib/runStats';
+import { Ban } from 'lucide-react';
 import {
   getEvaluationRun,
   cancelEvaluationRun,
