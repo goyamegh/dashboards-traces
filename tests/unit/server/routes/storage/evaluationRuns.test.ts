@@ -399,9 +399,13 @@ describe('Evaluation Runs API', () => {
       const cancelRes = await request(app).post(`/api/storage/evaluation-runs/${runId}/cancel`);
 
       expect(cancelRes.status).toBe(200);
-      expect(cancelRes.body).toEqual({ success: true });
+      expect(cancelRes.body).toEqual({ success: true, draining: true });
       expect(cancelFn).toHaveBeenCalled();
-      expect(mockEvaluationRunsUpdate).toHaveBeenCalledWith(runId, expect.objectContaining({ status: 'cancelled' }));
+      // Cancel is a REQUEST: it stamps cancelRequestedAt and must NOT publish a
+      // terminal status while in-flight cases are still draining — the
+      // executor's finalization writes `cancelled` once it has drained.
+      expect(mockEvaluationRunsUpdate).toHaveBeenCalledWith(runId, expect.objectContaining({ cancelRequestedAt: expect.any(String) }));
+      expect(mockEvaluationRunsUpdate).not.toHaveBeenCalledWith(runId, expect.objectContaining({ status: 'cancelled' }));
 
       resolveExec!({ results: {}, stats: {} });
       await postPromise;

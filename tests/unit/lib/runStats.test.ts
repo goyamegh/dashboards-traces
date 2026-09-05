@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import { calculateRunStats, getReportIdsFromRun, bucketRunResults, computeRunStats, getEffectiveRunStatus, isRunInProgress, isTerminalRunStatus, passRateOverExecuted } from '@/lib/runStats';
+import { calculateRunStats, getReportIdsFromRun, bucketRunResults, computeRunStats, getEffectiveRunStatus, isRunInProgress, isTerminalRunStatus, passRateOverJudged } from '@/lib/runStats';
 import type { BenchmarkRun, EvaluationReport } from '@/types';
 
 describe('runStats', () => {
@@ -628,7 +628,7 @@ describe('runStats', () => {
       expect(stats.total).toBe(62);
       expect(stats.passed + stats.failed).toBe(34);
       // A cancelled run's pass rate is over the EXECUTED cases only.
-      expect(passRateOverExecuted(stats)).toBe(Math.round((stats.passed / 34) * 100));
+      expect(passRateOverJudged(stats)).toBe(Math.round((stats.passed / 34) * 100));
       expect(isRunInProgress(run)).toBe(false);
       expect(getEffectiveRunStatus(run)).toBe('cancelled');
     });
@@ -660,6 +660,12 @@ describe('runStats', () => {
       expect(computeRunStats(run)).toEqual({ passed: 0, failed: 0, errored: 0, pending: 0, notRun: 7, total: 7 });
     });
 
+    it('an entry with an unrecognised status is pending on a live run but surfaces as errored (not hidden in notRun) on a terminal run', () => {
+      const results = { a: { status: 'bogus' }, b: { status: 'completed', passFailStatus: 'passed' } };
+      expect(bucketRunResults(results, 2, 'running')).toEqual({ passed: 1, failed: 0, errored: 0, pending: 1, notRun: 0, total: 2 });
+      expect(bucketRunResults(results, 2, 'completed')).toEqual({ passed: 1, failed: 0, errored: 1, pending: 0, notRun: 0, total: 2 });
+    });
+
     it('isTerminalRunStatus', () => {
       expect(isTerminalRunStatus('completed')).toBe(true);
       expect(isTerminalRunStatus('cancelled')).toBe(true);
@@ -669,9 +675,9 @@ describe('runStats', () => {
       expect(isTerminalRunStatus(undefined)).toBe(false);
     });
 
-    it('passRateOverExecuted: judged-only denominator, null when nothing judged', () => {
-      expect(passRateOverExecuted({ passed: 3, failed: 1 })).toBe(75);
-      expect(passRateOverExecuted({ passed: 0, failed: 0 })).toBeNull();
+    it('passRateOverJudged: judged-only denominator, null when nothing judged', () => {
+      expect(passRateOverJudged({ passed: 3, failed: 1 })).toBe(75);
+      expect(passRateOverJudged({ passed: 0, failed: 0 })).toBeNull();
     });
   });
 

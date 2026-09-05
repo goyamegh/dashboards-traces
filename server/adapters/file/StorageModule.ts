@@ -977,6 +977,10 @@ class FileEvaluationRunOperations implements IEvaluationRunOperations {
    * the write, two concurrent per-case `updateResult` calls (concurrency>1)
    * interleave as read-A, read-B, write-A, write-B and A's entry is lost —
    * the file-backend twin of the OpenSearch version-conflict bug.
+   *
+   * Scope: this only serialises writers within THIS process (the file
+   * backend is the single-process dev/CI default — see server/adapters/index.ts).
+   * It is not a cross-process lock or a compare-and-swap.
    */
   private readSync(id: string): EvaluationRun | null {
     const doc = readJsonFile<any>(path.join(this.dir, `${id}.json`));

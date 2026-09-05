@@ -1564,6 +1564,9 @@ class OpenSearchEvaluationRunOperations implements IEvaluationRunOperations {
         if (error.meta?.statusCode === 404) return false;
         const isConflict = error.meta?.statusCode === 409;
         if (!isConflict || attempt === MAX_OUTER_ATTEMPTS) throw error;
+        // Short jittered backoff so N writers that all exhausted the
+        // server-side retry budget together don't immediately collide again.
+        await new Promise(r => setTimeout(r, 25 * attempt + Math.floor(Math.random() * 50)));
       }
     }
     return false; // unreachable — loop either returns or throws

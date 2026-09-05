@@ -1206,7 +1206,17 @@ export interface EvaluationRun {
   description?: string;
   createdAt: string;
   completedAt?: string;
+  /**
+   * `status` is TERMINAL only once the executor has drained: `cancelled` is
+   * written by finalization (`services/evaluationRunFinalize.ts`) after every
+   * in-flight case has landed, never by the cancel request itself. A cancel
+   * request stamps `cancelRequestedAt` and leaves `status: 'running'` so
+   * readers don't misreport still-finishing cases as "not run" during the
+   * drain window. UI: running + cancelRequestedAt = "Cancelling…".
+   */
   status: BenchmarkRunStatus;
+  /** Set by POST /:id/cancel; the run is draining and will become `cancelled`. */
+  cancelRequestedAt?: string;
   error?: string;
 
   // Execution config

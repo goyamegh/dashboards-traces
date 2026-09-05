@@ -530,6 +530,20 @@ describe('EvalRunsPage — in-flight (running) run indication (bug #5, 2026-09-0
     }
   });
 
+  it('a run with cancelRequestedAt that is still draining shows "Cancelling…" (in progress, NOT "not run") — cancel is a request, not a terminal state', async () => {
+    mockListEvaluationRuns.mockResolvedValue({
+      evaluationRuns: [makeRunningEvalRun({ id: 'eval-run-draining-1', name: 'Draining Run', status: 'running', cancelRequestedAt: new Date().toISOString() })],
+    });
+    await renderPage();
+    await waitFor(() => expect(screen.getByText('Draining Run')).toBeTruthy());
+    const row = screen.getByText('Draining Run').closest('tr') as HTMLElement;
+    expect(row.querySelector('[data-testid="run-row-status-cancelling"]')).toBeTruthy();
+    expect(row.querySelector('[data-testid="run-row-status-running"]')).toBeNull();
+    expect(row.querySelector('[data-testid="run-row-status-cancelled"]')).toBeNull();
+    // Still in progress: the 53 unstarted/in-flight cases are pending, not "not run".
+    expect(row.querySelector('[data-testid="run-row-not-run"]')).toBeNull();
+  });
+
   it('a completed run shows neither a Cancelled nor a Failed badge nor a "not run" annotation', async () => {
     mockListEvaluationRuns.mockResolvedValue({
       evaluationRuns: [makeRunningEvalRun({ id: 'eval-run-done-3', name: 'Finished Run 3', status: 'completed', testCaseSnapshots: [{}], results: { 'tc-0': { reportId: 'r-0', status: 'completed', passFailStatus: 'passed' } } })],

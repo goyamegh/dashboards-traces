@@ -27,7 +27,7 @@ import {
 } from '@/components/ui/dialog';
 import { EvaluationRun, TestCaseSnapshot } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
-import { computeRunStats, passRateOverExecuted } from '@/lib/runStats';
+import { computeRunStats, passRateOverJudged } from '@/lib/runStats';
 import { formatRelativeTime, getModelName } from '@/lib/utils';
 import {
   getEvaluationRun,
@@ -193,7 +193,7 @@ export const EvalRunDetailPage: React.FC = () => {
   // issue #242), pending (not finished) and notRun (cancelled before it
   // started) are all excluded — a run cancelled at 34/62 reports the score
   // of the 34 that ran, not 34 divided by 62.
-  const passRate = passRateOverExecuted(stats) ?? 0;
+  const passRate = passRateOverJudged(stats) ?? 0;
 
   const results = Object.entries(run.results || {}).map(([testCaseId, result]) => {
     const snapshot = run.testCaseSnapshots?.find(s => s.id === testCaseId);

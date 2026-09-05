@@ -675,13 +675,22 @@ export const EvalRunsPage: React.FC = () => {
             ) : (
               <span className="text-xs font-medium">{rr.run.name}</span>
             )}
-            {rr.status === 'running' && (
+            {rr.status === 'running' && !(rr.run as { cancelRequestedAt?: string }).cancelRequestedAt && (
               <span
                 data-testid="run-row-status-running"
                 className="inline-flex items-center gap-1 px-1.5 py-0 rounded-full text-[9px] font-medium bg-blue-500/15 text-blue-600 dark:text-blue-400 border border-blue-500/30 animate-pulse"
                 title="This run is still in progress"
               >
                 <Loader2 size={9} className="animate-spin" /> Running
+              </span>
+            )}
+            {rr.status === 'running' && (rr.run as { cancelRequestedAt?: string }).cancelRequestedAt && (
+              <span
+                data-testid="run-row-status-cancelling"
+                className="inline-flex items-center gap-1 px-1.5 py-0 rounded-full text-[9px] font-medium bg-muted text-muted-foreground border border-border animate-pulse"
+                title="Cancel requested — waiting for in-flight test cases to finish; no new cases will start"
+              >
+                <Loader2 size={9} className="animate-spin" /> Cancelling…
               </span>
             )}
             {rr.status === 'cancelled' && (
