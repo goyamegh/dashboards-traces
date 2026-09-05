@@ -181,7 +181,7 @@ describe('subprocess-agent run persists an auditable agentSession (integration, 
     // DENIED
     expect(s.permissionDenials).toHaveLength(1);
     expect(s.permissionDenials[0].tool_name).toBe('Bash');
-    expect(s.toolErrors).toEqual([{ toolName: 'ToolSearch', count: 1 }]);
+    expect(s.toolErrors).toEqual([{ toolName: 'ToolSearch', count: 1, firstError: 'No matching deferred tools found' }]);
     // COST
     expect(s.numTurns).toBe(4);
     expect(s.totalCostUsd).toBe(0.0421);

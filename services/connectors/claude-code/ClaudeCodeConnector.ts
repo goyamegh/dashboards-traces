@@ -64,8 +64,8 @@ interface ClaudeCodeExecutionState extends SubprocessExecutionState {
    * `metadata.agentSession` → `report.agentSession`.
    */
   session?: AgentSessionInfo;
-  /** Per-tool count of `tool_result` blocks flagged `is_error`. */
-  toolErrorCounts: Map<string, number>;
+  /** Per-tool count of `tool_result` blocks flagged `is_error` + first message. */
+  toolErrorCounts: Map<string, { count: number; firstError?: string }>;
   /**
    * `tool_use` blocks seen so far, keyed by their id, so the matching
    * `tool_result` block (which only carries `tool_use_id`) can be attributed
@@ -388,13 +388,19 @@ export class ClaudeCodeConnector extends SubprocessConnector<ClaudeCodeExecution
           const paired =
             typeof block.tool_use_id === 'string' ? state.pendingToolUses.get(block.tool_use_id) : undefined;
           if (paired && typeof block.tool_use_id === 'string') state.pendingToolUses.delete(block.tool_use_id);
-          if (block.is_error && paired?.name) {
-            // A disallowed tool often never shows up in `permission_denials`
-            // (the agent probes via ToolSearch and gets an error result
-            // instead), so errored results are the second audit signal.
-            state.toolErrorCounts.set(paired.name, (state.toolErrorCounts.get(paired.name) || 0) + 1);
-          }
           const output = boundToolOutput(toolResultText(block, event));
+          if (block.is_error && paired?.name) {
+            // Errored tool calls are an audit signal distinct from
+            // `permission_denials`: a disallowed tool often never shows up
+            // there (the agent probes via ToolSearch and gets an error result
+            // instead). Keep the first error line so the reader can tell a
+            // ToolSearch miss from an ordinary file-not-found.
+            const prev = state.toolErrorCounts.get(paired.name);
+            state.toolErrorCounts.set(paired.name, {
+              count: (prev?.count ?? 0) + 1,
+              firstError: prev?.firstError ?? str(output.split('\n', 1)[0]),
+            });
+          }
           steps.push(
             this.createStep('tool_result', output, {
               status: block.is_error ? ToolCallStatus.FAILURE : ToolCallStatus.SUCCESS,
@@ -643,7 +649,7 @@ export class ClaudeCodeConnector extends SubprocessConnector<ClaudeCodeExecution
         ...(agentSession || {}),
         toolErrors: [...state.toolErrorCounts.entries()]
           .slice(0, AGENT_SESSION_MAX_LIST)
-          .map(([toolName, count]) => ({ toolName, count })),
+          .map(([toolName, { count, firstError }]) => ({ toolName, count, ...(firstError ? { firstError } : {}) })),
       };
     }
     return {

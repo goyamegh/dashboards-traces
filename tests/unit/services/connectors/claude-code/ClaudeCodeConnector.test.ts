@@ -1477,7 +1477,7 @@ describe('ClaudeCodeConnector', () => {
       const s = r.metadata?.agentSession!;
       expect(s.toolsUsed).toEqual(['Skill', 'Read', 'ToolSearch']);
       expect(s.skillsInvoked).toEqual(['opensearch-dsl', 'not-offered']);
-      expect(s.toolErrors).toEqual([{ toolName: 'ToolSearch', count: 2 }]);
+      expect(s.toolErrors).toEqual([{ toolName: 'ToolSearch', count: 2, firstError: 'No matching deferred tools found' }]);
     });
 
     it('tolerates a sparse init (no skills/plugins/tools) and a result without usage or denials', async () => {

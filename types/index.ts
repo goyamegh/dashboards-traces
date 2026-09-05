@@ -473,8 +473,16 @@ export interface AgentSessionInfo {
    * `tool_name` is the common key.
    */
   permissionDenials?: Array<Record<string, unknown>>;
-  /** Tool invocations that returned an error result (`tool_result.is_error`). */
-  toolErrors?: Array<{ toolName: string; count: number }>;
+  /**
+   * Tool invocations that returned an error result (`tool_result.is_error`),
+   * per tool, with the first error message seen (one line, truncated). These
+   * are NOT permission denials — a file-not-found `Read` lands here too. They
+   * are surfaced because a disallowed tool often never reaches
+   * `permissionDenials` (the agent probes via `ToolSearch` and gets "No
+   * matching deferred tools found" instead); `firstError` lets a reviewer
+   * tell the two apart.
+   */
+  toolErrors?: Array<{ toolName: string; count: number; firstError?: string }>;
   /** Whether the runtime reported the run as an error. */
   isError?: boolean;
   /** Runtime's stop reason / result subtype (e.g. `success`, `error_max_turns`). */

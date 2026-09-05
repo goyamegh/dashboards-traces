@@ -681,6 +681,10 @@ export async function runEvaluationWithConnector(
         improvementStrategies: [],
         runId: agentRunId || undefined,
         sessionId: agentSessionId || undefined,
+        // The agent DID run here — its session audit is exactly as valid as
+        // on the success path (and arguably more useful: "the judge failed
+        // AND the agent was denied Bash" is a real diagnosis).
+        agentSession,
         rawEvents,
         connectorProtocol: connector.type as ConnectorProtocol,
         performanceMetrics: {

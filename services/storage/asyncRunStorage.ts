@@ -173,10 +173,9 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     // (`services/comparisonService.ts:collectRunIdsFromReports`, keyed by
     // `report.runId`) used the wrong Strategy-B correlator for those agents.
     traceId: (stored as any).traceId,
-    sessionId: (stored as any).sessionId,
-    // Session audit info (what the agent had access to / used / was denied);
-    // same not-on-StorageRun pattern as sessionId above.
-    agentSession: (stored as any).agentSession,
+    sessionId: stored.sessionId,
+    // Session audit info (what the agent had access to / used / was denied).
+    agentSession: stored.agentSession,
     rawEvents: stored.rawEvents as any[] | undefined,
     logs: (stored.logs || []) as OpenSearchLog[],
     improvementStrategies: stored.improvementStrategies as any[] | undefined,
@@ -228,8 +227,8 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
 
   // Add trace-mode fields if present
   if (report.metricsStatus !== undefined) base.metricsStatus = report.metricsStatus;
-  if ((report as any).sessionId !== undefined) (base as any).sessionId = (report as any).sessionId;
-  if (report.agentSession !== undefined) (base as any).agentSession = report.agentSession;
+  if (report.sessionId !== undefined) base.sessionId = report.sessionId;
+  if (report.agentSession !== undefined) base.agentSession = report.agentSession;
   // Judge inputs: the read mapper (toTestCaseRun) and the server-side save
   // path (server/services/storage/index.ts) both carry evaluatorId +
   // judgeModelId, but this client-side write mapper silently dropped them —
@@ -439,8 +438,8 @@ class AsyncRunStorage {
     if (updates.rawEvents !== undefined) storageUpdates.rawEvents = updates.rawEvents;
     if (updates.logs !== undefined) storageUpdates.logs = updates.logs;
     if (updates.runId !== undefined) storageUpdates.traceId = updates.runId;
-    if ((updates as any).sessionId !== undefined) (storageUpdates as any).sessionId = (updates as any).sessionId;
-    if (updates.agentSession !== undefined) (storageUpdates as any).agentSession = updates.agentSession;
+    if (updates.sessionId !== undefined) storageUpdates.sessionId = updates.sessionId;
+    if (updates.agentSession !== undefined) storageUpdates.agentSession = updates.agentSession;
     if (updates.improvementStrategies !== undefined) storageUpdates.improvementStrategies = updates.improvementStrategies;
     if ((updates as any).matcherResults !== undefined) (storageUpdates as any).matcherResults = (updates as any).matcherResults;
 

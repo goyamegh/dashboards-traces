@@ -179,7 +179,7 @@ export const AgentSessionPanel: React.FC<AgentSessionPanelProps> = ({ session, d
           {toolErrors.length > 0 && (
             <Row label="Tool errors" testId="agent-session-tool-errors">
               {toolErrors.map(e => (
-                <Chip key={e.toolName} tone="warn">
+                <Chip key={e.toolName} tone="warn" title={e.firstError ? `First error: ${e.firstError}` : 'Tool returned an error result (not necessarily a permission denial)'}>
                   {e.toolName} ×{e.count}
                 </Chip>
               ))}

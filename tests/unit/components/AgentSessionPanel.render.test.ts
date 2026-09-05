@@ -35,7 +35,7 @@ const full: AgentSessionInfo = {
   durationApiMs: 3210,
   usage: { inputTokens: 1200, outputTokens: 250, cacheCreationInputTokens: 300, cacheReadInputTokens: 4000 },
   permissionDenials: [{ tool_name: 'Bash', tool_input: { command: 'rm' } }, { toolName: 'Write' }, { other: 1 }],
-  toolErrors: [{ toolName: 'ToolSearch', count: 2 }],
+  toolErrors: [{ toolName: 'ToolSearch', count: 2, firstError: 'No matching deferred tools found' }],
   isError: true,
   stopReason: 'error_max_turns',
 };
@@ -75,6 +75,7 @@ describe('AgentSessionPanel', () => {
     expect(denials.textContent).toContain('unknown tool');
 
     expect(screen.getByTestId('agent-session-tool-errors').textContent).toContain('ToolSearch ×2');
+    expect(screen.getByTestId('agent-session-tool-errors').querySelector('[title]')?.getAttribute('title')).toBe('First error: No matching deferred tools found');
 
     // Used-but-unlisted tool is flagged
     const used = screen.getByTestId('agent-session-tools-used');

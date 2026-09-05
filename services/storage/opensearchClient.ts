@@ -11,6 +11,7 @@
  */
 
 import { ENV_CONFIG } from '@/lib/config';
+import type { AgentSessionInfo } from '@/types';
 
 const STORAGE_BASE_URL = ENV_CONFIG.storageApiUrl;
 
@@ -173,6 +174,10 @@ export interface StorageRun {
     priority: 'high' | 'medium' | 'low';
   }[];
   connectorProtocol?: string;
+  /** Agent-emitted session id (Strategy D trace correlation). */
+  sessionId?: string;
+  /** Session audit: what the agent had access to / used / was denied. */
+  agentSession?: AgentSessionInfo;
 }
 
 export interface StorageAnalyticsRecord {
