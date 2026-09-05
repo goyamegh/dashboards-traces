@@ -224,9 +224,8 @@ describe('comparisonDeepDiveService — optional systemPrompt override (browser-
           },
         })),
         SessionManager: { inMemory: jest.fn(() => ({})) },
-        AuthStorage: { create: jest.fn(() => ({})) },
-        ModelRegistry: {
-          create: jest.fn(() => ({
+        ModelRuntime: {
+          create: jest.fn(async () => ({
             getAvailable: jest.fn(async () => [mockModel]),
           })),
         },
@@ -461,9 +460,8 @@ describe('comparisonDeepDiveService — DEEP_DIVE_DEADLINE_MS is a long safety b
           },
         })),
         SessionManager: { inMemory: jest.fn(() => ({})) },
-        AuthStorage: { create: jest.fn(() => ({})) },
-        ModelRegistry: {
-          create: jest.fn(() => ({
+        ModelRuntime: {
+          create: jest.fn(async () => ({
             getAvailable: jest.fn(async () => [mockModel]),
           })),
         },
