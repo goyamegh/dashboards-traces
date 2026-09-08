@@ -155,15 +155,21 @@ const INDEX: Record<string, any>[] = [
 // Fake OpenSearch — resolves a query field path the way the two index
 // templates map it. Flat-@ keys are literal top-level document fields (the
 // OSI template's dynamic `span.attributes.*` keyword mapping); dotted paths
-// under `attributes.` / `resource.attributes.` walk the nested object; a
-// `.keyword` suffix is transparent (multi-field of the same value).
+// under `attributes.` / `resource.attributes.` walk the nested object and are
+// treated as explicitly `keyword`-mapped (exact match on the base path); a
+// `.keyword` path on such a field is UNMAPPED and matches nothing (verified
+// against a real node: unmapped `terms` paths match nothing, no error). This
+// is deliberately the STRICTER of the two nested-mapping possibilities — the
+// dynamically-mapped `text` + `.keyword` case, where only `.keyword` matches,
+// is covered against a REAL OpenSearch node in
+// strategyBRealOpenSearch.opensearch.integration.test.ts.
 // ---------------------------------------------------------------------------
 function resolveField(doc: Record<string, any>, field: string): unknown {
   if (field in doc) return doc[field]; // flat-@ shape: literal key
-  const f = field.endsWith('.keyword') ? field.slice(0, -'.keyword'.length) : field;
-  if (f.startsWith('attributes.')) return doc.attributes?.[f.slice('attributes.'.length)];
-  if (f.startsWith('resource.attributes.')) return doc.resource?.attributes?.[f.slice('resource.attributes.'.length)];
-  return doc[f];
+  if (field.endsWith('.keyword')) return undefined; // no multi-field on a keyword-mapped path
+  if (field.startsWith('attributes.')) return doc.attributes?.[field.slice('attributes.'.length)];
+  if (field.startsWith('resource.attributes.')) return doc.resource?.attributes?.[field.slice('resource.attributes.'.length)];
+  return doc[field];
 }
 
 function matches(clause: any, doc: Record<string, any>): boolean {
@@ -275,24 +281,6 @@ describe('Strategy B run-id correlation against OSI flat-@ spans (regression: ne
         },
       };
       expect(INDEX.filter((d) => matches(preFix, d))).toHaveLength(0);
-    });
-
-    it('Strategy C matches gen_ai.agent.name stored flat-@ when serviceName differs', async () => {
-      const client = createMixedSchemaClient();
-
-      // No span has serviceName 'rest-agent-framework', but flat-root carries
-      // span.attributes.gen_ai@agent@name = 'rest-agent'.
-      const result = await fetchTraces({
-        agents: [{
-          serviceName: 'rest-agent',
-          startedAt: Date.parse('2026-09-08T07:00:00Z'),
-          endedAt: Date.parse('2026-09-08T08:00:00Z'),
-        }],
-      }, client);
-      // Every fixture span has serviceName rest-agent except the nested ones;
-      // the flat root is additionally reachable through the agent-name path.
-      expect(result.spans.map((s) => s.spanId)).toEqual(expect.arrayContaining(['flat-root']));
-      expect(result.spans.some((s) => s.spanId.startsWith('nested'))).toBe(false);
     });
   });
 

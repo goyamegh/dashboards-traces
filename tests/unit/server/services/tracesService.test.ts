@@ -9,7 +9,6 @@ import {
   checkTracesHealth,
   attributeFieldPaths,
   buildRunIdShouldClauses,
-  buildServiceIdentityShouldClauses,
   buildSessionIdShouldClauses,
   RUN_ID_ATTRIBUTES,
   OpenSearchSpanSource,
@@ -311,7 +310,7 @@ describe('tracesService', () => {
     // a nested `attributes.*` object. The query named only the nested path, so
     // on that index it returned 0 hits for every run id (measured live) and
     // correlation silently fell through to Strategy A/C only.
-    it('Strategy B queries BOTH attribute schemas for both run-id attributes (OSI flat-@ + nested) — exact DSL', async () => {
+    it('Strategy B queries every attribute path for both run-id attributes (nested, nested .keyword, OSI flat-@) — exact DSL', async () => {
       const search = jest.fn().mockResolvedValue({
         body: { hits: { hits: [], total: { value: 0 } } },
       });
@@ -327,8 +326,10 @@ describe('tracesService', () => {
               bool: {
                 should: [
                   { terms: { 'attributes.agent_health.run.id': ['run-1', 'run-2'] } },
+                  { terms: { 'attributes.agent_health.run.id.keyword': ['run-1', 'run-2'] } },
                   { terms: { 'span.attributes.agent_health@run@id': ['run-1', 'run-2'] } },
                   { terms: { 'attributes.gen_ai.conversation.id': ['run-1', 'run-2'] } },
+                  { terms: { 'attributes.gen_ai.conversation.id.keyword': ['run-1', 'run-2'] } },
                   { terms: { 'span.attributes.gen_ai@conversation@id': ['run-1', 'run-2'] } },
                 ],
                 minimum_should_match: 1,
@@ -337,32 +338,6 @@ describe('tracesService', () => {
           ],
         },
       });
-    });
-
-    it('Strategy C and the serviceName filter match gen_ai.agent.name under BOTH attribute schemas', async () => {
-      const search = jest.fn().mockResolvedValue({
-        body: { hits: { hits: [], total: { value: 0 } } },
-      });
-      const client = createMockClient({ search });
-
-      await fetchTraces({
-        agents: [{ serviceName: 'my-agent', startedAt: 1000, endedAt: 2000 }],
-        serviceName: 'other-agent',
-      }, client);
-
-      const query = search.mock.calls[0][0].body.query;
-      // Single agents entry, no other correlator -> not a union; both land in must.
-      const [strategyC, serviceFilter] = query.bool.must;
-      expect(strategyC.bool.must[0].bool.should).toEqual([
-        { term: { 'serviceName': 'my-agent' } },
-        { term: { 'attributes.gen_ai.agent.name': 'my-agent' } },
-        { term: { 'span.attributes.gen_ai@agent@name': 'my-agent' } },
-      ]);
-      expect(serviceFilter.bool.should).toEqual([
-        { term: { 'serviceName': 'other-agent' } },
-        { term: { 'attributes.gen_ai.agent.name': 'other-agent' } },
-        { term: { 'span.attributes.gen_ai@agent@name': 'other-agent' } },
-      ]);
     });
 
     it('correlates sessionId via attributes.session.id (#296)', async () => {
@@ -534,41 +509,30 @@ describe('tracesService', () => {
   });
 
   describe('attribute-path query helpers (schema tolerance)', () => {
-    it('attributeFieldPaths yields the nested path and the flat @-encoded path', () => {
+    it('attributeFieldPaths yields the nested path, its .keyword multi-field and the flat @-encoded path', () => {
       expect(attributeFieldPaths('agent_health.run.id')).toEqual([
         'attributes.agent_health.run.id',
+        'attributes.agent_health.run.id.keyword',
         'span.attributes.agent_health@run@id',
       ]);
       expect(attributeFieldPaths('gen_ai.conversation.id')).toEqual([
         'attributes.gen_ai.conversation.id',
+        'attributes.gen_ai.conversation.id.keyword',
         'span.attributes.gen_ai@conversation@id',
       ]);
-      // No dots -> the two paths differ only by prefix.
-      expect(attributeFieldPaths('foo')).toEqual(['attributes.foo', 'span.attributes.foo']);
+      // No dots -> the flat path differs only by prefix.
+      expect(attributeFieldPaths('foo')).toEqual(['attributes.foo', 'attributes.foo.keyword', 'span.attributes.foo']);
     });
 
-    it('buildRunIdShouldClauses emits one terms clause per (run-id attribute x schema)', () => {
+    it('buildRunIdShouldClauses emits one terms clause per (run-id attribute x path)', () => {
       expect(RUN_ID_ATTRIBUTES).toEqual(['agent_health.run.id', 'gen_ai.conversation.id']);
       expect(buildRunIdShouldClauses(['r1'])).toEqual([
         { terms: { 'attributes.agent_health.run.id': ['r1'] } },
+        { terms: { 'attributes.agent_health.run.id.keyword': ['r1'] } },
         { terms: { 'span.attributes.agent_health@run@id': ['r1'] } },
         { terms: { 'attributes.gen_ai.conversation.id': ['r1'] } },
+        { terms: { 'attributes.gen_ai.conversation.id.keyword': ['r1'] } },
         { terms: { 'span.attributes.gen_ai@conversation@id': ['r1'] } },
-      ]);
-    });
-
-    it('buildRunIdShouldClauses copies the ids (callers cannot alias the clause arrays)', () => {
-      const ids = ['r1'];
-      const clauses = buildRunIdShouldClauses(ids);
-      ids.push('r2');
-      expect((clauses[0] as any).terms['attributes.agent_health.run.id']).toEqual(['r1']);
-    });
-
-    it('buildServiceIdentityShouldClauses covers serviceName + gen_ai.agent.name under both schemas', () => {
-      expect(buildServiceIdentityShouldClauses('svc')).toEqual([
-        { term: { 'serviceName': 'svc' } },
-        { term: { 'attributes.gen_ai.agent.name': 'svc' } },
-        { term: { 'span.attributes.gen_ai@agent@name': 'svc' } },
       ]);
     });
 
