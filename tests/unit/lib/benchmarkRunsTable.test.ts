@@ -50,6 +50,7 @@ describe('buildRunTableRow', () => {
   it('recomputes pass/fail/errored from results and excludes errored from the pass rate', () => {
     const row = buildRunTableRow(run({
       id: 'a',
+      status: 'running',
       results: {
         t1: res('completed', 'passed'),
         t2: res('completed', 'failed'),
@@ -64,8 +65,65 @@ describe('buildRunTableRow', () => {
     expect(row.running).toBe(1);
     expect(row.total).toBe(6);       // planned total from snapshots
     expect(row.pending).toBe(2);     // 6 - 1 - 1 - 1 - 1(running)
+    expect(row.notRun).toBe(0);      // live run: nothing is "never going to run" yet
     expect(row.size).toBe(6);
     expect(row.passRate).toBe(50);   // 1 / (1+1), NOT 1/6
+  });
+
+  // Owner report (2026-09-08): cancelled runs on the benchmark page still
+  // rendered "/n ⟳" as if in progress — the planned-but-never-started
+  // remainder was re-derived as `pending` regardless of the terminal status.
+  describe('terminal runs (cancelled / failed) never report pending or running', () => {
+    const partial = (status: BenchmarkRun['status'], extra: Record<string, any> = {}) => run({
+      id: `t-${status}`,
+      status,
+      results: {
+        t1: res('completed', 'passed'),
+        t2: res('completed', 'passed'),
+        t3: res('completed', 'failed'),
+        t4: res('completed'),           // errored (#242)
+        ...extra,
+      },
+      testCaseSnapshots: Array.from({ length: 10 }, () => ({})) as any,
+    });
+
+    it('cancelled at 4/10: the 6 unstarted cases are notRun, pending is 0, status is cancelled', () => {
+      const row = buildRunTableRow(partial('cancelled'), resolvers);
+      expect(row.status).toBe('cancelled');
+      expect(row).toMatchObject({ passed: 2, failed: 1, errored: 1, pending: 0, running: 0, notRun: 6, total: 10 });
+      expect(row.passRate).toBe(66.7); // 2 / (2+1): notRun is excluded from the denominator
+      expect(row.size).toBe(10);
+    });
+
+    it('failed at 4/10 with a per-case entry the dead executor left `running`: that entry is notRun too', () => {
+      const row = buildRunTableRow(partial('failed', { t5: res('running') }), resolvers);
+      expect(row.status).toBe('failed');
+      expect(row).toMatchObject({ pending: 0, running: 0, notRun: 6, total: 10 });
+    });
+
+    it('invariant: total = passed + failed + errored + pending + running + notRun for every status', () => {
+      for (const status of ['running', 'completed', 'failed', 'cancelled'] as const) {
+        const row = buildRunTableRow(partial(status, { t5: res('running'), t6: res('pending') }), resolvers);
+        expect(row.passed + row.failed + row.errored + row.pending + row.running + row.notRun).toBe(row.total);
+        if (status === 'running') {
+          expect(row.notRun).toBe(0);
+          expect(row.running).toBe(1);
+          expect(row.pending).toBe(5); // 10 - 4 settled - 1 running
+        } else {
+          expect(row.pending).toBe(0);
+          expect(row.running).toBe(0);
+        }
+      }
+    });
+
+    it('a status-less legacy run is NOT treated as terminal (the results-derived fallback is not trusted for bucketing)', () => {
+      const legacy = partial(undefined as any);
+      delete (legacy as any).status;
+      const row = buildRunTableRow(legacy, resolvers);
+      expect(row.status).toBe('completed'); // effective status for display
+      expect(row.notRun).toBe(0);
+      expect(row.pending).toBe(6);
+    });
   });
 
   it('resolves display labels and keeps raw ids for filtering', () => {

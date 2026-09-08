@@ -119,6 +119,44 @@ describe('BenchmarkRunsTable', () => {
     expect(within(rows[2]).queryByLabelText('Cancel run')).toBeNull();
   });
 
+  // Owner report (2026-09-08): cancelled runs still looked in progress on the
+  // benchmark page — "Cancelled" badge next to "/19 ⟳". A terminal row must
+  // read "n not run" and never carry a spinner or a Running badge.
+  it('cancelled partial run: Cancelled badge + "n not run", no spinner, no Running badge; failed run gets a Failed badge', () => {
+    const snaps = Array.from({ length: 6 }, (_, i) => ({ id: `tc-${i}`, version: 1, name: `tc-${i}` })) as any;
+    const partialResults = {
+      'tc-0': { reportId: 'r0', status: 'completed', passFailStatus: 'passed' },
+      'tc-1': { reportId: 'r1', status: 'completed', passFailStatus: 'failed' },
+    } as any;
+    const cancelled = buildRunTableRow(mkRun({ id: 'run-cancelled', status: 'cancelled', results: partialResults, testCaseSnapshots: snaps }), resolvers);
+    const failed = buildRunTableRow(mkRun({ id: 'run-failed', status: 'failed', error: 'executor died', results: { ...partialResults, 'tc-2': { reportId: '', status: 'running' } }, testCaseSnapshots: snaps }), resolvers);
+    const live = buildRunTableRow(mkRun({ id: 'run-live', status: 'running', results: { ...partialResults, 'tc-2': { reportId: '', status: 'running' } }, testCaseSnapshots: snaps }), resolvers);
+    const { props } = renderTable({ rows: [cancelled, failed, live] });
+    const [rowCancelled, rowFailed, rowLive] = screen.getAllByTestId('run-row');
+
+    // Cancelled: badge, "4 not run", pass rate over judged cases only, NO in-progress affordances.
+    expect(within(rowCancelled).getByTestId('run-status-cancelled')).toBeTruthy();
+    expect(within(rowCancelled).queryByTestId('run-status-running')).toBeNull();
+    expect(within(rowCancelled).queryByTestId('run-stats-pending')).toBeNull();
+    expect(rowCancelled.querySelector('.animate-spin')).toBeNull();
+    expect(within(rowCancelled).getByTestId('run-stats-not-run').textContent).toContain('4 not run');
+    expect(within(rowCancelled).getByTestId('run-passrate-cell').textContent).toContain('50%');
+    expect(within(rowCancelled).getByTestId('run-size-cell').textContent).toBe('6');
+    expect(within(rowCancelled).queryByLabelText('Cancel run')).toBeNull();
+
+    // Failed: badge filters by status; the dead executor's `running` entry is "not run", not a spinner.
+    fireEvent.click(within(rowFailed).getByTestId('run-status-failed'));
+    expect(props.onToggleFilter).toHaveBeenCalledWith({ field: 'status', value: 'failed', label: 'Failed' });
+    expect(within(rowFailed).getByTestId('run-status-failed').getAttribute('title')).toContain('executor died');
+    expect(rowFailed.querySelector('.animate-spin')).toBeNull();
+    expect(within(rowFailed).getByTestId('run-stats-not-run').textContent).toContain('4 not run');
+
+    // Live run keeps the in-progress rendering and shows no "not run".
+    expect(within(rowLive).getByTestId('run-status-running')).toBeTruthy();
+    expect(within(rowLive).getByTestId('run-stats-pending').textContent).toContain('/4');
+    expect(within(rowLive).queryByTestId('run-stats-not-run')).toBeNull();
+  });
+
   it('shows an outdated version badge only when the run version is behind the benchmark', () => {
     const old = buildRunTableRow(mkRun({ id: 'old', benchmarkVersion: 1 }), resolvers);
     const cur = buildRunTableRow(mkRun({ id: 'cur', benchmarkVersion: 2 }), resolvers);

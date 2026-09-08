@@ -13,7 +13,7 @@
  */
 
 import React from 'react';
-import { ChevronDown, Loader2, StopCircle, Trash2, AlertTriangle, X, ArrowUpRight } from 'lucide-react';
+import { ChevronDown, Loader2, StopCircle, Trash2, AlertTriangle, X, ArrowUpRight, Ban, XCircle } from 'lucide-react';
 import { Checkbox } from '@/components/ui/checkbox';
 import { formatDate } from '@/lib/utils';
 import {
@@ -259,10 +259,23 @@ export const BenchmarkRunsTable: React.FC<BenchmarkRunsTableProps> = (props) => 
                           type="button"
                           data-testid="run-status-cancelled"
                           onClick={e => { e.stopPropagation(); onToggleFilter({ field: 'status', value: 'cancelled', label: 'Cancelled' }); }}
-                          className="inline-flex items-center px-1.5 rounded-full text-[9px] font-medium bg-gray-500/15 text-gray-600 dark:text-gray-400 border border-gray-500/30 shrink-0"
-                          title="Filter to cancelled runs"
+                          className="inline-flex items-center gap-1 px-1.5 rounded-full text-[9px] font-medium bg-gray-500/15 text-gray-600 dark:text-gray-400 border border-gray-500/30 shrink-0"
+                          title={row.notRun > 0
+                            ? `Cancelled — ${row.notRun} planned case${row.notRun === 1 ? '' : 's'} never ran. Filter to cancelled runs`
+                            : 'Filter to cancelled runs'}
                         >
-                          Cancelled
+                          <Ban size={9} /> Cancelled
+                        </button>
+                      )}
+                      {row.status === 'failed' && (
+                        <button
+                          type="button"
+                          data-testid="run-status-failed"
+                          onClick={e => { e.stopPropagation(); onToggleFilter({ field: 'status', value: 'failed', label: 'Failed' }); }}
+                          className="inline-flex items-center gap-1 px-1.5 rounded-full text-[9px] font-medium bg-red-500/10 text-red-600 dark:text-red-400 border border-red-500/30 shrink-0"
+                          title={run.error ? `Run failed: ${run.error}. Filter to failed runs` : 'This run failed before finishing. Filter to failed runs'}
+                        >
+                          <XCircle size={9} /> Failed
                         </button>
                       )}
                       {isLatest && (
@@ -301,9 +314,18 @@ export const BenchmarkRunsTable: React.FC<BenchmarkRunsTableProps> = (props) => 
                         </span>
                       )}
                       {(row.pending > 0 || row.running > 0) && (
-                        <span className="text-blue-700 dark:text-blue-400 ml-0.5" title="Pending / running">
+                        <span className="text-blue-700 dark:text-blue-400 ml-0.5" title="Pending / running" data-testid="run-stats-pending">
                           /{row.pending + row.running}
                           <Loader2 size={9} className="inline ml-0.5 animate-spin" />
+                        </span>
+                      )}
+                      {row.notRun > 0 && (
+                        <span
+                          className="text-muted-foreground ml-1"
+                          data-testid="run-stats-not-run"
+                          title="Planned test cases that never executed because the run was cancelled or failed first. Not counted as failures and excluded from the pass rate."
+                        >
+                          · {row.notRun} not run
                         </span>
                       )}
                     </span>

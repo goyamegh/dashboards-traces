@@ -41,8 +41,17 @@ export interface RunTableRow {
   passed: number;
   failed: number;
   errored: number;
+  /** Still to come — only ever non-zero while the run is live. */
   pending: number;
+  /** Per-case entries currently executing — only ever non-zero while the run is live. */
   running: number;
+  /**
+   * Planned test cases that never executed because the run reached a
+   * TERMINAL status first (cancelled mid-way, or the executor died). Neither
+   * a pass, a fail nor "pending": nothing will ever happen to them, so they
+   * must never render with an in-progress spinner.
+   */
+  notRun: number;
   total: number;
   /**
    * Pass rate over the *evaluable* set (total − errored − pending − running),
@@ -68,11 +77,35 @@ export function computePassRate(
   return Math.round((passed / evaluable) * 1000) / 10;
 }
 
+/**
+ * Run statuses after which no further per-case progress can happen. Only the
+ * EXPLICIT persisted status counts: the results-derived fallback in
+ * getEffectiveRunStatus reports 'completed' for any status-less legacy run
+ * whose observed results all happen to be settled — exactly what an in-flight
+ * legacy run looks like between two cases — so it must not gate bucketing.
+ */
+function isTerminalStatus(status: BenchmarkRun['status']): boolean {
+  return status === 'completed' || status === 'failed' || status === 'cancelled';
+}
+
 export function buildRunTableRow(run: BenchmarkRun, resolve: RowLabelResolvers): RunTableRow {
-  let running = 0;
-  Object.values(run.results || {}).forEach(r => { if (r.status === 'running') running++; });
+  const status = getEffectiveRunStatus(run);
+  const terminal = isTerminalStatus(run.status);
   const { passed, failed, errored, total } = computeRunStats(run);
-  const pending = Math.max(0, total - passed - failed - errored - running);
+  const settled = passed + failed + errored;
+  // Bug (owner report, 2026-09-08): a run cancelled at 43/62 rendered
+  // "11/32 /19 ⟳" — the never-started remainder (planned − observed) was
+  // re-derived as `pending` here regardless of the run's TERMINAL status, so
+  // every cancelled/failed run on the benchmark page looked in progress
+  // forever. Once the run is terminal nothing can start those cases (nor
+  // finish a per-case entry an executor left `running` when it died), so
+  // the remainder is `notRun`, and pending/running are zero by definition.
+  let running = 0;
+  if (!terminal) {
+    Object.values(run.results || {}).forEach(r => { if (r.status === 'running') running++; });
+  }
+  const notRun = terminal ? Math.max(0, total - settled) : 0;
+  const pending = terminal ? 0 : Math.max(0, total - settled - running);
   const size = run.testCaseSnapshots?.length || total;
   const agentKey = run.agentKey || '';
   const modelId = run.modelId || '';
@@ -88,8 +121,8 @@ export function buildRunTableRow(run: BenchmarkRun, resolve: RowLabelResolvers):
     judgeLabel: resolve.judgeLabel(judgeModelId || undefined),
     evaluatorId,
     evaluatorLabel: resolve.evaluatorLabel(evaluatorId || undefined),
-    status: getEffectiveRunStatus(run),
-    passed, failed, errored, pending, running, total,
+    status,
+    passed, failed, errored, pending, running, notRun, total,
     passRate: computePassRate(passed, failed),
     size,
   };
