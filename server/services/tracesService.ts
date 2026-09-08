@@ -216,6 +216,101 @@ export function transformSpan(source: OpenSearchSpanSource): NormalizedSpan {
 }
 
 // ============================================================================
+// Query helpers — span-attribute field paths
+// ============================================================================
+
+/**
+ * The two OpenSearch field paths a single OTel span attribute may be indexed
+ * under, depending on which ingestion pipeline wrote the document:
+ *
+ *   - **nested / plain-raw** (stock Data Prepper `trace-analytics-plain-raw`,
+ *     our own `lib/telemetry/opensearchExporter.ts`, OTLP-file mode):
+ *     `attributes.<literal.dotted.key>` — e.g. `attributes.agent_health.run.id`.
+ *   - **flat @-encoded** (OpenSearch Ingestion / Data Prepper
+ *     `otel-v1-apm-span-*` template — the live observability cluster this was
+ *     measured against, and the index pattern this service defaults to):
+ *     `span.attributes.<key with '.' → '@'>` — e.g.
+ *     `span.attributes.agent_health@run@id`, dynamically mapped as `keyword`.
+ *
+ * {@link transformSpan} has always tolerated both shapes on the READ side, so
+ * any span that was found rendered correctly — but a `term`/`terms` clause
+ * that names only ONE of the two paths silently matches nothing on a cluster
+ * using the other. Measured live (`_count` on `otel-v1-apm-span-*`): the
+ * nested path returned 0 hits for every run id on the cluster; the flat path
+ * returned the run's spans. Every attribute-path QUERY must therefore fan out
+ * over both paths via this helper; never hard-code one.
+ */
+export function attributeFieldPaths(attributeName: string): string[] {
+  return [
+    `attributes.${attributeName}`,
+    `span.attributes.${attributeName.replace(/\./g, '@')}`,
+  ];
+}
+
+/**
+ * Span attributes that carry Agent Health's run id (Strategy B correlation):
+ * our own `agent_health.run.id` and the OTEL-standard `gen_ai.conversation.id`
+ * (both stamped `= runId` by our producers; see AGENTS.md → Trace correlation
+ * conventions and `lib/telemetry/constants.ts`).
+ */
+export const RUN_ID_ATTRIBUTES = ['agent_health.run.id', 'gen_ai.conversation.id'] as const;
+
+/**
+ * Strategy B `should` clauses for a set of run ids — one `terms` clause per
+ * (run-id attribute × attribute field path), so a span correlates if ANY of
+ * `attributes.agent_health.run.id`, `span.attributes.agent_health@run@id`,
+ * `attributes.gen_ai.conversation.id`, `span.attributes.gen_ai@conversation@id`
+ * holds one of `runIds`. Wrap in `{ bool: { should, minimum_should_match: 1 } }`.
+ *
+ * This is the SINGLE place the run-id query paths are spelled out — both
+ * `fetchTraces` (Traces tab, `/api/traces`, judge/comparison trace tools) and
+ * `metricsService` (`/api/metrics`, `/api/metrics/batch`) build their
+ * Strategy-B clause through it, so a schema-tolerance fix can't land in one
+ * reader and miss the other again (PR #469 fixed the read side of exactly this
+ * mismatch for metrics; this helper closes the query side for everyone).
+ *
+ * Callers must pass non-empty string ids: a `terms` clause with `[null]` makes
+ * OpenSearch reject the whole request (`x_content_parse_exception`).
+ */
+export function buildRunIdShouldClauses(runIds: readonly string[]): Record<string, unknown>[] {
+  const ids = [...runIds];
+  return RUN_ID_ATTRIBUTES.flatMap((attr) =>
+    attributeFieldPaths(attr).map((field) => ({ terms: { [field]: ids } }))
+  );
+}
+
+/**
+ * `should` clauses matching a span whose service identity is `serviceName`:
+ * the top-level `serviceName` keyword (both schemas) OR the `gen_ai.agent.name`
+ * span attribute under either field path (agent frameworks that stamp the
+ * agent name but export under a generic service name). Used by Strategy C and
+ * the `serviceName` filter so both stay schema-tolerant together.
+ */
+export function buildServiceIdentityShouldClauses(serviceName: string): Record<string, unknown>[] {
+  return [
+    { term: { 'serviceName': serviceName } },
+    ...attributeFieldPaths('gen_ai.agent.name').map((field) => ({ term: { [field]: serviceName } })),
+  ];
+}
+
+/**
+ * `should` clauses matching a span whose OTel `session.id` attribute equals
+ * `sessionId` (Strategy D). Three paths, not two: on the nested schema the
+ * attribute is often mapped as analyzed `text` with a `.keyword` sub-field —
+ * a hyphenated UUID is tokenized on `-`, so a plain `term` on the analyzed
+ * field never matches and `.keyword` is what actually correlates. The flat
+ * schema maps `span.attributes.session@id` as `keyword` directly.
+ */
+export function buildSessionIdShouldClauses(sessionIds: readonly string[]): Record<string, unknown>[] {
+  const ids = [...sessionIds];
+  return [
+    { terms: { 'attributes.session.id': ids } },
+    { terms: { 'attributes.session.id.keyword': ids } },
+    { terms: { 'span.attributes.session@id': ids } },
+  ];
+}
+
+// ============================================================================
 // Query Functions
 // ============================================================================
 
@@ -288,13 +383,13 @@ export async function fetchTraces(
       // Strategy B: match either Agent Health's own correlation attribute or
       // the OTEL-standard gen_ai.conversation.id — our producers (eval +
       // sample-agent spans) stamp both = runId, so a span matching EITHER
-      // correlates. Nested should keeps it as one OR-group within `sink`.
+      // correlates — under EITHER index schema (nested `attributes.*` or flat
+      // `span.attributes.*@*`; see buildRunIdShouldClauses — pre-fix this
+      // named only the nested path and never matched on the live
+      // OSI-ingested index). Nested should keeps it as one OR-group within `sink`.
       sink.push({
         bool: {
-          should: [
-            { terms: { 'attributes.agent_health.run.id': validRunIds } },
-            { terms: { 'attributes.gen_ai.conversation.id': validRunIds } },
-          ],
+          should: buildRunIdShouldClauses(validRunIds),
           minimum_should_match: 1,
         },
       });
@@ -309,10 +404,7 @@ export async function fetchTraces(
           must: [
             {
               bool: {
-                should: [
-                  { term: { 'serviceName': a.serviceName } },
-                  { term: { 'attributes.gen_ai.agent.name': a.serviceName } },
-                ],
+                should: buildServiceIdentityShouldClauses(a.serviceName),
                 minimum_should_match: 1,
               },
             },
@@ -334,14 +426,11 @@ export async function fetchTraces(
         // Match BOTH `attributes.session.id` and its `.keyword` sub-field: a
         // UUID like `faee44ca-...` is text-analyzed (split on `-`), so a plain
         // `term` on the analyzed field never matches — the `.keyword` exact field
-        // is what actually correlates.
+        // is what actually correlates (see buildSessionIdShouldClauses).
         sink.push({
           bool: {
             should: [
-              { term: { 'attributes.session.id': a.sessionId } },
-              { term: { 'attributes.session.id.keyword': a.sessionId } },
-              // Data Prepper `otel-v1-apm-span-*` schema stores it here (@ = dot).
-              { term: { 'span.attributes.session@id': a.sessionId } },
+              ...buildSessionIdShouldClauses([a.sessionId]),
               strategyC,
             ],
             minimum_should_match: 1,
@@ -363,12 +452,7 @@ export async function fetchTraces(
     // can't zero out spans that traceId/runId already matched.
     sink.push({
       bool: {
-        should: [
-          { term: { 'attributes.session.id': sessionId } },
-          { term: { 'attributes.session.id.keyword': sessionId } },
-          // Data Prepper `otel-v1-apm-span-*` schema stores it here (@ = dot).
-          { term: { 'span.attributes.session@id': sessionId } },
-        ],
+        should: buildSessionIdShouldClauses([sessionId]),
         minimum_should_match: 1,
       },
     });
@@ -385,10 +469,7 @@ export async function fetchTraces(
   if (serviceName) {
     must.push({
       bool: {
-        should: [
-          { term: { 'serviceName': serviceName } },
-          { term: { 'attributes.gen_ai.agent.name': serviceName } }
-        ],
+        should: buildServiceIdentityShouldClauses(serviceName),
         minimum_should_match: 1
       }
     });
