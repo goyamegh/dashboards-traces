@@ -50,7 +50,7 @@ function renderTable(partial: Partial<BenchmarkRunsTableProps> = {}) {
   const props: BenchmarkRunsTableProps = {
     rows: [], filters: [], onToggleFilter: jest.fn(), sort: { field: 'date', dir: 'desc' }, onSort: jest.fn(),
     benchmarkId: 'bench-1', currentVersion: 2, latestRunId: null, selectable: true, selectedRunIds: [],
-    onToggleSelect: jest.fn(), onOpenRun: jest.fn(), onOpenEvaluator: jest.fn(), actionsDisabledIds: new Set(),
+    onToggleSelect: jest.fn(), onOpenRun: jest.fn(), onOpenEvaluator: jest.fn(),
     onDelete: jest.fn(), deletingId: null, onCancel: jest.fn(), isCancelling: () => false,
     testCases: [], reportsById: {}, onSelectCase: jest.fn(), expandedRunIds: new Set(), onToggleExpand: jest.fn(),
     ...partial,
@@ -96,11 +96,13 @@ describe('BenchmarkRunsTable', () => {
     expect(screen.queryByTestId('run-cell-evaluator')).toBeNull();
   });
 
-  it('status badges filter by status; Running row offers Cancel, terminal row offers Delete; disabled ids get neither', () => {
+  // Owner ask (2026-09-08): Delete on EVERY row — the table no longer has an
+  // "actions disabled" set; the page dispatches per run kind instead.
+  it('status badges filter by status; every row offers Delete; only a Running row offers Cancel', () => {
     const running = buildRunTableRow(mkRun({ id: 'run-running', status: 'running' }), resolvers);
     const done = buildRunTableRow(mkRun({ id: 'run-done' }), resolvers);
     const ext = buildRunTableRow(mkRun({ id: 'run-ext', status: 'cancelled' }), resolvers);
-    const { props } = renderTable({ rows: [running, done, ext], actionsDisabledIds: new Set(['run-ext']) });
+    const { props } = renderTable({ rows: [running, done, ext] });
 
     const rows = screen.getAllByTestId('run-row');
     fireEvent.click(within(rows[0]).getByTestId('run-status-running'));
@@ -113,10 +115,23 @@ describe('BenchmarkRunsTable', () => {
     fireEvent.click(within(rows[1]).getByLabelText('Delete run'));
     expect(props.onDelete).toHaveBeenCalledWith(done);
 
+    // The running row has Delete too.
+    expect(within(rows[0]).getByLabelText('Delete run')).toBeTruthy();
+
     fireEvent.click(within(rows[2]).getByTestId('run-status-cancelled'));
     expect(props.onToggleFilter).toHaveBeenCalledWith({ field: 'status', value: 'cancelled', label: 'Cancelled' });
-    expect(within(rows[2]).queryByLabelText('Delete run')).toBeNull();
+    expect(within(rows[2]).getByLabelText('Delete run')).toBeTruthy();
     expect(within(rows[2]).queryByLabelText('Cancel run')).toBeNull();
+    expect(screen.getAllByLabelText('Delete run')).toHaveLength(3);
+  });
+
+  it('a deleting row shows its Delete button disabled (spinner) while others stay enabled', () => {
+    const a = buildRunTableRow(mkRun({ id: 'run-a' }), resolvers);
+    const b = buildRunTableRow(mkRun({ id: 'run-b' }), resolvers);
+    renderTable({ rows: [a, b], deletingId: 'run-a' });
+    const rows = screen.getAllByTestId('run-row');
+    expect((within(rows[0]).getByLabelText('Delete run') as HTMLButtonElement).disabled).toBe(true);
+    expect((within(rows[1]).getByLabelText('Delete run') as HTMLButtonElement).disabled).toBe(false);
   });
 
   // Owner report (2026-09-08): cancelled runs still looked in progress on the

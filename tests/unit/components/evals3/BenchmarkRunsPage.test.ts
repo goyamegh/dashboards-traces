@@ -21,8 +21,10 @@
  * These tests cover:
  *  - associated (non-embedded) eval-runs are merged into the rendered list
  *  - a running associated eval-run shows the "Running" badge
- *  - Delete/Cancel are NOT offered on merged-in rows (they'd call
- *    benchmark-embedded-run-specific APIs that don't apply)
+ *  - Delete is offered on EVERY row (owner ask, 2026-09-08) and dispatches
+ *    on the run's kind: evaluation-run docs → the evaluation-runs API,
+ *    legacy embedded-only runs → the benchmark nested-run API (the wrong
+ *    endpoint 404s — which is why the button used to be hidden instead)
  */
 
 import * as React from 'react';
@@ -50,15 +52,20 @@ jest.mock('@/services/storage', () => ({
 }));
 
 const mockListEvaluationRuns = jest.fn();
+const mockDeleteEvaluationRun = jest.fn(async () => true);
+const mockCancelEvaluationRun = jest.fn(async () => true);
 jest.mock('@/services/client', () => ({
   executeBenchmarkRun: jest.fn(),
   listEvaluationRuns: (...a: unknown[]) => mockListEvaluationRuns(...a),
+  deleteEvaluationRun: (...a: unknown[]) => mockDeleteEvaluationRun(...a),
+  cancelEvaluationRun: (...a: unknown[]) => mockCancelEvaluationRun(...a),
 }));
 
+const mockHandleCancelRun = jest.fn();
 jest.mock('@/hooks/useBenchmarkCancellation', () => ({
   useBenchmarkCancellation: () => ({
     isCancelling: () => false,
-    handleCancelRun: jest.fn(),
+    handleCancelRun: (...a: unknown[]) => mockHandleCancelRun(...a),
   }),
 }));
 
@@ -222,24 +229,81 @@ describe('BenchmarkRunsPage2 — associated (non-embedded) eval-runs merge (bug 
     expect(screen.getAllByText('Migrated Run')).toHaveLength(1);
   });
 
-  it('does not render Delete/Cancel for a merged-in (non-embedded) associated run — those APIs are benchmark-embedded-run-specific', async () => {
+  // Owner report (2026-09-08): "Delete button should be present for all runs
+  // on the benchmark details page." Merged-in (non-embedded) rows used to get
+  // no Delete/Cancel at all because the row actions only knew the
+  // benchmark-embedded API; they now dispatch on the run's kind.
+  it('renders Delete AND Cancel on a merged-in (non-embedded) running eval-run row; Delete → evaluation-runs API, Cancel → evaluation-run cancel', async () => {
     mockGetById.mockResolvedValue(makeBenchmark());
     mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [makeAssociatedEvalRun()] });
+    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    const { asyncBenchmarkStorage } = require('@/services/storage');
     await renderPage();
 
     await waitFor(() => expect(screen.getByText('Claude-code with traces')).toBeTruthy());
     const row = screen.getByText('Claude-code with traces').closest('[data-testid="run-row"]') as HTMLElement;
-    expect(row.querySelector('[title="Delete run"]')).toBeNull();
-    expect(row.querySelector('[aria-label="Cancel run"]')).toBeNull();
+    const cancelBtn = row.querySelector('[aria-label="Cancel run"]') as HTMLButtonElement;
+    const deleteBtn = row.querySelector('[aria-label="Delete run"]') as HTMLButtonElement;
+    expect(cancelBtn).toBeTruthy();
+    expect(deleteBtn).toBeTruthy();
+
+    fireEvent.click(cancelBtn);
+    await waitFor(() => expect(mockCancelEvaluationRun).toHaveBeenCalledWith('eval-run-running-1'));
+    expect(mockHandleCancelRun).not.toHaveBeenCalled();
+
+    fireEvent.click(deleteBtn);
+    // The confirm names the run, flags it is running, and states reports are kept.
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/Claude-code with traces.*still running.*reports are kept/s));
+    await waitFor(() => expect(mockDeleteEvaluationRun).toHaveBeenCalledWith('eval-run-running-1'));
+    expect(asyncBenchmarkStorage.deleteRun).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
   });
 
-  it('still renders Delete for a genuinely embedded run', async () => {
+  it('a dual-written row (embedded AND an evaluation-run doc) deletes via the evaluation-runs API (the server removes both forms)', async () => {
     mockGetById.mockResolvedValue(makeBenchmark());
+    // Same id as the embedded run — the doc form takes precedence for dispatch.
+    mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [makeAssociatedEvalRun({ id: 'run-embedded-1', name: 'Embedded Run', status: 'completed' })] });
+    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    const { asyncBenchmarkStorage } = require('@/services/storage');
+    await renderPage();
+
+    await waitFor(() => expect(screen.getByText('Embedded Run')).toBeTruthy());
+    const row = screen.getByText('Embedded Run').closest('[data-testid="run-row"]') as HTMLElement;
+    fireEvent.click(row.querySelector('[aria-label="Delete run"]') as HTMLButtonElement);
+    await waitFor(() => expect(mockDeleteEvaluationRun).toHaveBeenCalledWith('run-embedded-1'));
+    expect(asyncBenchmarkStorage.deleteRun).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it('a legacy embedded-only run (no evaluation-run doc) deletes via the benchmark nested-run API', async () => {
+    mockGetById.mockResolvedValue(makeBenchmark());
+    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(true);
+    const { asyncBenchmarkStorage } = require('@/services/storage');
     await renderPage();
 
     await waitFor(() => expect(screen.getByText('Embedded Run')).toBeTruthy());
     const row = screen.getByText('Embedded Run').closest('[data-testid="run-row"]') as HTMLElement;
     expect(row.querySelector('[title="Delete run"]')).toBeTruthy();
+    fireEvent.click(row.querySelector('[aria-label="Delete run"]') as HTMLButtonElement);
+    expect(confirmSpy).toHaveBeenCalledWith(expect.stringMatching(/Embedded Run.*reports are kept/s));
+    expect(confirmSpy.mock.calls[0][0]).not.toMatch(/still running/);
+    await waitFor(() => expect(asyncBenchmarkStorage.deleteRun).toHaveBeenCalledWith('bench-1', 'run-embedded-1'));
+    expect(mockDeleteEvaluationRun).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
+  });
+
+  it('declining the confirm deletes nothing', async () => {
+    mockGetById.mockResolvedValue(makeBenchmark());
+    const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(false);
+    const { asyncBenchmarkStorage } = require('@/services/storage');
+    await renderPage();
+
+    await waitFor(() => expect(screen.getByText('Embedded Run')).toBeTruthy());
+    const row = screen.getByText('Embedded Run').closest('[data-testid="run-row"]') as HTMLElement;
+    fireEvent.click(row.querySelector('[aria-label="Delete run"]') as HTMLButtonElement);
+    expect(asyncBenchmarkStorage.deleteRun).not.toHaveBeenCalled();
+    expect(mockDeleteEvaluationRun).not.toHaveBeenCalled();
+    confirmSpy.mockRestore();
   });
 
   it('is resilient to the evaluation-runs fetch failing (embedded runs still render)', async () => {

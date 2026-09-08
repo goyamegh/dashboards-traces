@@ -67,9 +67,10 @@ test.describe('Benchmark-scoped Runs page — associated (non-embedded) eval-run
     // Planned size (10 snapshots), not the 1 case that has started.
     await expect(runCard.getByTestId('run-size-cell')).toHaveText('10');
 
-    // Delete is NOT offered for a merged-in (non-embedded) row — it would
-    // call the benchmark-embedded-run-specific delete API, which doesn't
-    // apply to a standalone evaluation-run doc.
-    await expect(runCard.locator('[title="Delete run"]')).toHaveCount(0);
+    // Owner ask (2026-09-08): Delete (and Cancel, while running) ARE offered
+    // on a merged-in (non-embedded) row — the page dispatches them to the
+    // evaluation-runs API rather than the benchmark-embedded one.
+    await expect(runCard.locator('[title="Delete run"]')).toHaveCount(1);
+    await expect(runCard.locator('[aria-label="Cancel run"]')).toHaveCount(1);
   });
 });

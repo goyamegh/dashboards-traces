@@ -157,8 +157,6 @@ export interface BenchmarkRunsTableProps {
   onToggleSelect: (runId: string) => void;
   onOpenRun: (runId: string) => void;
   onOpenEvaluator?: (evaluatorId: string) => void;
-  /** Rows for which row-level Delete/Cancel are NOT applicable (standalone eval-run docs). */
-  actionsDisabledIds: Set<string>;
   onDelete: (row: RunTableRow) => void;
   deletingId: string | null;
   onCancel: (row: RunTableRow) => void;
@@ -175,7 +173,7 @@ export const BenchmarkRunsTable: React.FC<BenchmarkRunsTableProps> = (props) => 
   const {
     rows, filters, onToggleFilter, sort, onSort, currentVersion, latestRunId,
     selectable, selectedRunIds, onToggleSelect, onOpenRun, onOpenEvaluator,
-    actionsDisabledIds, onDelete, deletingId, onCancel, isCancelling,
+    onDelete, deletingId, onCancel, isCancelling,
     testCases, reportsById, onSelectCase, expandedRunIds, onToggleExpand, benchmarkId,
   } = props;
 
@@ -212,7 +210,6 @@ export const BenchmarkRunsTable: React.FC<BenchmarkRunsTableProps> = (props) => 
             const isLatest = run.id === latestRunId;
             const outdated = run.benchmarkVersion !== undefined && currentVersion !== undefined && run.benchmarkVersion < currentVersion;
             const expanded = expandedRunIds.has(run.id);
-            const actionable = !actionsDisabledIds.has(run.id);
             return (
               <React.Fragment key={run.id}>
                 <tr
@@ -376,7 +373,7 @@ export const BenchmarkRunsTable: React.FC<BenchmarkRunsTableProps> = (props) => 
                     </button>
                   </td>
                   <td className="px-1 py-1 align-middle text-right whitespace-nowrap" onClick={e => e.stopPropagation()}>
-                    {actionable && row.status === 'running' && (
+                    {row.status === 'running' && (
                       <button
                         type="button"
                         disabled={isCancelling(run.id)}
@@ -388,18 +385,18 @@ export const BenchmarkRunsTable: React.FC<BenchmarkRunsTableProps> = (props) => 
                         {isCancelling(run.id) ? <Loader2 size={12} className="animate-spin" /> : <StopCircle size={12} />}
                       </button>
                     )}
-                    {actionable && (
-                      <button
-                        type="button"
-                        onClick={() => onDelete(row)}
-                        disabled={deletingId === run.id}
-                        className="h-5 w-5 inline-flex items-center justify-center rounded text-muted-foreground hover:text-red-700 dark:hover:text-red-400 hover:bg-red-500/10 disabled:opacity-50"
-                        title="Delete run"
-                        aria-label="Delete run"
-                      >
-                        {deletingId === run.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
-                      </button>
-                    )}
+                    {/* Delete is offered on EVERY row (owner ask); the page
+                        dispatches to the right API per run kind. */}
+                    <button
+                      type="button"
+                      onClick={() => onDelete(row)}
+                      disabled={deletingId === run.id}
+                      className="h-5 w-5 inline-flex items-center justify-center rounded text-muted-foreground hover:text-red-700 dark:hover:text-red-400 hover:bg-red-500/10 disabled:opacity-50"
+                      title="Delete run"
+                      aria-label="Delete run"
+                    >
+                      {deletingId === run.id ? <Loader2 size={12} className="animate-spin" /> : <Trash2 size={12} />}
+                    </button>
                   </td>
                 </tr>
                 {expanded && (

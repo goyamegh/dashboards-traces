@@ -36,8 +36,8 @@ import { JudgeModelSelect } from '@/components/JudgeModelSelect';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { asyncBenchmarkStorage, asyncRunStorage, asyncTestCaseStorage } from '@/services/storage';
-import { isRunInProgress } from '@/lib/runStats';
-import { executeBenchmarkRun, listEvaluationRuns } from '@/services/client';
+import { isRunInProgress, getEffectiveRunStatus } from '@/lib/runStats';
+import { executeBenchmarkRun, listEvaluationRuns, deleteEvaluationRun, cancelEvaluationRun } from '@/services/client';
 import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
 import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, Evaluator, EvaluationRun } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
@@ -146,6 +146,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
   const [runFilters, setRunFilters] = useState<RunFilter[]>([]);
   const [runSort, setRunSort] = useState<RunSort>(DEFAULT_RUN_SORT);
   const [expandedRunIds, setExpandedRunIds] = useState<Set<string>>(new Set());
+
+  // Cancel-in-flight marker for rows backed by an evaluation-run doc (the
+  // benchmark-scoped hook below tracks legacy embedded rows).
+  const [cancellingEvalRunId, setCancellingEvalRunId] = useState<string | null>(null);
 
   // Delete state
   const [deleteState, setDeleteState] = useState<{
@@ -345,16 +349,18 @@ export const BenchmarkRunsPage2: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reportIdsKey]);
 
-  // Ids of merged-in rows that are standalone evaluation-run docs, not
-  // embedded in benchmark.runs[]. Row-level Delete/Cancel call
-  // benchmark-embedded-run-specific APIs (asyncBenchmarkStorage.deleteRun /
-  // cancelBenchmarkRun scoped by benchmarkId+runId) that don't apply to
-  // these — gate those actions off for this set rather than risk a wrong-API
-  // 404 or silent no-op.
-  const evalRunOnlyIds = useMemo(() => {
-    const embeddedIds = new Set((benchmark?.runs || []).map(r => r.id));
-    return new Set(associatedEvalRuns.filter(er => !embeddedIds.has(er.id)).map(er => er.id));
-  }, [benchmark?.runs, associatedEvalRuns]);
+  // Ids of merged-in rows that exist as first-class evaluation-run documents
+  // (whether or not a projection is ALSO embedded in benchmark.runs[]). Used
+  // to dispatch row-level Delete/Cancel to the right API — evaluation-run docs
+  // to /api/storage/evaluation-runs/:id, legacy embedded-only runs to the
+  // benchmark nested-run endpoints. This set used to HIDE Delete/Cancel for
+  // non-embedded rows instead (owner report: "Delete button should be present
+  // for all runs on the benchmark details page") — and since the #399
+  // dual-write most runs are not embedded, so most rows had no Delete at all.
+  const evalRunDocIds = useMemo(
+    () => new Set(associatedEvalRuns.map(er => er.id)),
+    [associatedEvalRuns]
+  );
 
   const hasMultipleVersions = versionData.length > 1;
 
@@ -510,12 +516,27 @@ export const BenchmarkRunsPage2: React.FC = () => {
     }
   };
 
+  // Delete is offered on EVERY row. Dispatch on the run's kind: a row backed
+  // by a first-class evaluation-run doc goes to the evaluation-runs API
+  // (the benchmark nested-run endpoint 404s for a run that isn't embedded —
+  // the silent no-op the old gate was avoiding by hiding the button); a
+  // legacy embedded-only run goes to the benchmark nested-run endpoint.
+  // Removing BOTH persisted forms of a dual-written run is the server's job
+  // (either endpoint), not something to reconstruct client-side from a
+  // best-effort listing. Reports are intentionally NOT deleted (AGENTS.md
+  // policy) and the confirm says so.
   const handleDeleteRun = async (run: BenchmarkRun) => {
     if (!benchmarkId) return;
-    if (!window.confirm(`Delete run "${run.name}"? This cannot be undone.`)) return;
+    const running = getEffectiveRunStatus(run) === 'running';
+    const confirmText = `Delete run "${run.name}"?` +
+      (running ? ' It is still running.' : '') +
+      ' Its per-test-case reports are kept and stay reachable from each test case. This cannot be undone.';
+    if (!window.confirm(confirmText)) return;
     setDeleteState({ isDeleting: true, deletingId: run.id, status: 'idle', message: '' });
     try {
-      const success = await asyncBenchmarkStorage.deleteRun(benchmarkId, run.id);
+      const success = evalRunDocIds.has(run.id)
+        ? await deleteEvaluationRun(run.id)
+        : await asyncBenchmarkStorage.deleteRun(benchmarkId, run.id);
       if (success) {
         setDeleteState({ isDeleting: false, deletingId: null, status: 'success', message: `"${run.name}" deleted` });
         setTimeout(() => setDeleteState(s => ({ ...s, status: 'idle', message: '' })), 3000);
@@ -526,6 +547,27 @@ export const BenchmarkRunsPage2: React.FC = () => {
     } catch (error) {
       setDeleteState({ isDeleting: false, deletingId: null, status: 'error',
         message: `Error: ${error instanceof Error ? error.message : 'Unknown error'}` });
+    }
+  };
+
+  // Cancel dispatches the same way: evaluation-run docs have their own cancel
+  // endpoint (with the zombie fallback); legacy embedded runs keep the
+  // benchmark-scoped hook.
+  const handleCancelRow = async (run: BenchmarkRun) => {
+    if (!benchmarkId) return;
+    if (evalRunDocIds.has(run.id)) {
+      setCancellingEvalRunId(run.id);
+      try {
+        await cancelEvaluationRun(run.id);
+        await loadBenchmark();
+      } catch (error) {
+        setDeleteState({ isDeleting: false, deletingId: null, status: 'error',
+          message: `Failed to cancel "${run.name}": ${error instanceof Error ? error.message : 'Unknown error'}` });
+      } finally {
+        setCancellingEvalRunId(null);
+      }
+    } else {
+      await handleCancelRun(benchmarkId, run.id, loadBenchmark);
     }
   };
 
@@ -726,11 +768,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
                 onToggleSelect={toggleRunSelection}
                 onOpenRun={runId => navigate(`/evaluations/benchmarks/${benchmarkId}/runs/${runId}/inspect`)}
                 onOpenEvaluator={evaluatorId => navigate(`/evaluators/${evaluatorId}`)}
-                actionsDisabledIds={evalRunOnlyIds}
                 onDelete={row => handleDeleteRun(row.run)}
                 deletingId={deleteState.isDeleting ? deleteState.deletingId : null}
-                onCancel={row => { if (benchmarkId) handleCancelRun(benchmarkId, row.run.id, loadBenchmark); }}
-                isCancelling={isCancelling}
+                onCancel={row => handleCancelRow(row.run)}
+                isCancelling={runId => isCancelling(runId) || cancellingEvalRunId === runId}
                 testCases={benchmarkTestCases}
                 reportsById={reportSummaries}
                 onSelectCase={testCaseId => navigate(`/evaluations/benchmarks/${benchmark.id}/cases/${testCaseId}`)}
