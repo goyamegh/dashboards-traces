@@ -82,7 +82,10 @@ export function computePassRate(
  * EXPLICIT persisted status counts: the results-derived fallback in
  * getEffectiveRunStatus reports 'completed' for any status-less legacy run
  * whose observed results all happen to be settled — exactly what an in-flight
- * legacy run looks like between two cases — so it must not gate bucketing.
+ * legacy run looks like between two cases — so it must not gate bucketing
+ * (a status-less run therefore keeps the pre-existing pending rendering).
+ * Mirrors `TERMINAL_RUN_STATUSES` in the terminal-aware `lib/runStats`
+ * (#486); collapse onto `isTerminalRunStatus` from there once it lands.
  */
 function isTerminalStatus(status: BenchmarkRun['status']): boolean {
   return status === 'completed' || status === 'failed' || status === 'cancelled';

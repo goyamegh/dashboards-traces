@@ -116,6 +116,15 @@ describe('buildRunTableRow', () => {
       }
     });
 
+    it('explicit per-case `cancelled` markers on a cancelled run never double count (invariant holds whichever bucket the shared lib puts them in)', () => {
+      const row = buildRunTableRow(partial('cancelled', { t5: res('cancelled'), t6: res('cancelled') }), resolvers);
+      expect(row.pending).toBe(0);
+      expect(row.running).toBe(0);
+      expect(row.passed + row.failed + row.errored + row.notRun).toBe(row.total);
+      // The 4 planned cases with no entry at all are always "not run".
+      expect(row.notRun).toBeGreaterThanOrEqual(4);
+    });
+
     it('a status-less legacy run is NOT treated as terminal (the results-derived fallback is not trusted for bucketing)', () => {
       const legacy = partial(undefined as any);
       delete (legacy as any).status;
@@ -164,6 +173,20 @@ describe('filters', () => {
 
   it('returns all rows with no filters (same reference)', () => {
     expect(applyRunFilters(rows, [])).toBe(rows);
+  });
+
+  it('status filter works for every run status the badges can emit (running / cancelled / failed)', () => {
+    const mixed = [
+      run({ id: 'r', status: 'running' }),
+      run({ id: 'c', status: 'cancelled' }),
+      run({ id: 'f', status: 'failed' }),
+      run({ id: 'd', status: 'completed' }),
+    ].map(r => buildRunTableRow(r, resolvers));
+    for (const status of ['running', 'cancelled', 'failed'] as const) {
+      const out = applyRunFilters(mixed, [{ field: 'status', value: status, label: status }]);
+      expect(out.map(r => r.run.id)).toEqual([status[0]]);
+      expect(rowFieldValue(out[0], 'status')).toBe(status);
+    }
   });
 
   it('ANDs across fields and ORs within a field', () => {
