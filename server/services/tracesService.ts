@@ -220,12 +220,18 @@ export function transformSpan(source: OpenSearchSpanSource): NormalizedSpan {
 // ============================================================================
 
 /**
- * The two OpenSearch field paths a single OTel span attribute may be indexed
- * under, depending on which ingestion pipeline wrote the document:
+ * The OpenSearch field paths a single OTel span attribute may be exactly
+ * matchable under, depending on which ingestion pipeline wrote the document
+ * and how the index mapped it:
  *
  *   - **nested / plain-raw** (stock Data Prepper `trace-analytics-plain-raw`,
  *     our own `lib/telemetry/opensearchExporter.ts`, OTLP-file mode):
  *     `attributes.<literal.dotted.key>` — e.g. `attributes.agent_health.run.id`.
+ *     With an explicit template this is a `keyword`; with plain DYNAMIC mapping
+ *     (verified on a stock OpenSearch node) a string attribute becomes analyzed
+ *     `text` plus a `.keyword` multi-field — a hyphenated id like
+ *     `run-1788552723776-j9o0h2p4` is tokenized on `-`, so `terms` on the base
+ *     path matches nothing and ONLY `attributes.<key>.keyword` correlates.
  *   - **flat @-encoded** (OpenSearch Ingestion / Data Prepper
  *     `otel-v1-apm-span-*` template — the live observability cluster this was
  *     measured against, and the index pattern this service defaults to):
@@ -234,15 +240,22 @@ export function transformSpan(source: OpenSearchSpanSource): NormalizedSpan {
  *
  * {@link transformSpan} has always tolerated both shapes on the READ side, so
  * any span that was found rendered correctly — but a `term`/`terms` clause
- * that names only ONE of the two paths silently matches nothing on a cluster
- * using the other. Measured live (`_count` on `otel-v1-apm-span-*`): the
- * nested path returned 0 hits for every run id on the cluster; the flat path
- * returned the run's spans. Every attribute-path QUERY must therefore fan out
- * over both paths via this helper; never hard-code one.
+ * that names only ONE path silently matches nothing on a cluster using
+ * another. Measured live (`_count` on `otel-v1-apm-span-*`): the nested path
+ * returned 0 hits for every run id on the cluster; the flat path returned the
+ * run's spans. Every attribute-path QUERY must therefore fan out over all
+ * three paths via this helper; never hard-code one.
+ *
+ * Safety of the fan-out (verified against a real OpenSearch node, including a
+ * multi-index search spanning a text-mapped and a keyword-mapped index): a
+ * `terms` clause on an unmapped path — `.keyword` under a field that is
+ * already `keyword`, or `span.attributes.*` on a nested-schema index — simply
+ * matches nothing; it does not error.
  */
 export function attributeFieldPaths(attributeName: string): string[] {
   return [
     `attributes.${attributeName}`,
+    `attributes.${attributeName}.keyword`,
     `span.attributes.${attributeName.replace(/\./g, '@')}`,
   ];
 }
@@ -258,9 +271,10 @@ export const RUN_ID_ATTRIBUTES = ['agent_health.run.id', 'gen_ai.conversation.id
 /**
  * Strategy B `should` clauses for a set of run ids — one `terms` clause per
  * (run-id attribute × attribute field path), so a span correlates if ANY of
- * `attributes.agent_health.run.id`, `span.attributes.agent_health@run@id`,
- * `attributes.gen_ai.conversation.id`, `span.attributes.gen_ai@conversation@id`
- * holds one of `runIds`. Wrap in `{ bool: { should, minimum_should_match: 1 } }`.
+ * the six paths holds one of `runIds`. Callers MUST wrap the result in
+ * `{ bool: { should, minimum_should_match: 1 } }` — a `bool` that also has
+ * `must`/`filter` defaults `minimum_should_match` to 0, which would turn the
+ * group into a no-op instead of a filter.
  *
  * This is the SINGLE place the run-id query paths are spelled out — both
  * `fetchTraces` (Traces tab, `/api/traces`, judge/comparison trace tools) and
@@ -270,44 +284,24 @@ export const RUN_ID_ATTRIBUTES = ['agent_health.run.id', 'gen_ai.conversation.id
  * mismatch for metrics; this helper closes the query side for everyone).
  *
  * Callers must pass non-empty string ids: a `terms` clause with `[null]` makes
- * OpenSearch reject the whole request (`x_content_parse_exception`).
+ * OpenSearch reject the whole request (`x_content_parse_exception`). Sizing:
+ * the batch path chunks at 50 ids, far below `index.max_terms_count` (65,536).
  */
 export function buildRunIdShouldClauses(runIds: readonly string[]): Record<string, unknown>[] {
-  const ids = [...runIds];
   return RUN_ID_ATTRIBUTES.flatMap((attr) =>
-    attributeFieldPaths(attr).map((field) => ({ terms: { [field]: ids } }))
+    attributeFieldPaths(attr).map((field) => ({ terms: { [field]: runIds } }))
   );
 }
 
 /**
- * `should` clauses matching a span whose service identity is `serviceName`:
- * the top-level `serviceName` keyword (both schemas) OR the `gen_ai.agent.name`
- * span attribute under either field path (agent frameworks that stamp the
- * agent name but export under a generic service name). Used by Strategy C and
- * the `serviceName` filter so both stay schema-tolerant together.
- */
-export function buildServiceIdentityShouldClauses(serviceName: string): Record<string, unknown>[] {
-  return [
-    { term: { 'serviceName': serviceName } },
-    ...attributeFieldPaths('gen_ai.agent.name').map((field) => ({ term: { [field]: serviceName } })),
-  ];
-}
-
-/**
  * `should` clauses matching a span whose OTel `session.id` attribute equals
- * `sessionId` (Strategy D). Three paths, not two: on the nested schema the
- * attribute is often mapped as analyzed `text` with a `.keyword` sub-field —
- * a hyphenated UUID is tokenized on `-`, so a plain `term` on the analyzed
- * field never matches and `.keyword` is what actually correlates. The flat
- * schema maps `span.attributes.session@id` as `keyword` directly.
+ * one of `sessionIds` (Strategy D) — the same three paths as any other
+ * attribute (see {@link attributeFieldPaths}; here the `.keyword` case is the
+ * common one: Claude Code's hyphenated UUID session ids on a dynamically
+ * mapped nested index).
  */
 export function buildSessionIdShouldClauses(sessionIds: readonly string[]): Record<string, unknown>[] {
-  const ids = [...sessionIds];
-  return [
-    { terms: { 'attributes.session.id': ids } },
-    { terms: { 'attributes.session.id.keyword': ids } },
-    { terms: { 'span.attributes.session@id': ids } },
-  ];
+  return attributeFieldPaths('session.id').map((field) => ({ terms: { [field]: sessionIds } }));
 }
 
 // ============================================================================
@@ -399,12 +393,23 @@ export async function fetchTraces(
   if (agents && agents.length > 0) {
     for (const a of agents) {
       // Strategy C: service.name (or gen_ai.agent.name) within the run window.
+      // NOTE (schema audit): `attributes.gen_ai.agent.name` is the nested path
+      // only — on a flat-@ index the attribute lives at
+      // `span.attributes.gen_ai@agent@name` and this alternate never matches;
+      // `serviceName` (top-level in both schemas) is what carries Strategy C
+      // there. Deliberately NOT widened here: doing so changes Strategy C's
+      // false-positive surface (agents sharing one gen_ai.agent.name across
+      // several service names), which is a separate decision from the
+      // Strategy-B fix. Tracked as a follow-up.
       const strategyC = {
         bool: {
           must: [
             {
               bool: {
-                should: buildServiceIdentityShouldClauses(a.serviceName),
+                should: [
+                  { term: { 'serviceName': a.serviceName } },
+                  { term: { 'attributes.gen_ai.agent.name': a.serviceName } },
+                ],
                 minimum_should_match: 1,
               },
             },
@@ -469,7 +474,10 @@ export async function fetchTraces(
   if (serviceName) {
     must.push({
       bool: {
-        should: buildServiceIdentityShouldClauses(serviceName),
+        should: [
+          { term: { 'serviceName': serviceName } },
+          { term: { 'attributes.gen_ai.agent.name': serviceName } }
+        ],
         minimum_should_match: 1
       }
     });
