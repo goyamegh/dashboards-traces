@@ -1139,12 +1139,13 @@ describe('metricsService', () => {
     it('computeMetrics ORs a service.name + startTime-window clause into the union (exact DSL, same as /api/traces)', async () => {
       mockFetch.mockResolvedValue(emptyHits());
 
-      await computeMetrics('report-no-runid', defaultConfig, undefined, undefined, [hint]);
+      // A real run id + a traceId (so the key is NOT a surrogate) + one hint.
+      await computeMetrics('run-1', defaultConfig, undefined, 'trace-1', [hint]);
 
       const should = JSON.parse(mockFetch.mock.calls[0][1].body).query.bool.must[0].bool.should;
-      // 6 Strategy-B clauses + exactly one Strategy-C clause.
-      expect(should).toHaveLength(7);
-      expect(should[6]).toEqual({
+      // 6 Strategy-B clauses + 1 Strategy-A traceId clause + exactly one Strategy-C clause.
+      expect(should).toHaveLength(8);
+      expect(should[7]).toEqual({
         bool: {
           must: [
             {
@@ -1305,6 +1306,83 @@ describe('metricsService', () => {
       const byKey = new Map(results.map(r => [r.runId, r]));
       expect(byKey.get('run-precise')!.inputTokens).toBe(5);
       expect(byKey.get('report-windowed')!.hasSpans).toBe(false);
+    });
+
+    it('a window-only key is a SURROGATE (e.g. a report id): it is NOT sent as a Strategy-B run-id terms value, only its window clause is', async () => {
+      mockFetch.mockResolvedValue(emptyHits());
+      await computeBatchMetrics(['report-surrogate', 'run-real'], defaultConfig, undefined, undefined, {
+        'report-surrogate': [hint],
+      });
+      const should = JSON.parse(mockFetch.mock.calls[0][1].body).query.bool.must[0].bool.should;
+      const runIdTerms = should.filter((c: any) => c.terms?.['attributes.agent_health.run.id']);
+      expect(runIdTerms).toHaveLength(1);
+      expect(runIdTerms[0].terms['attributes.agent_health.run.id']).toEqual(['run-real']);
+      expect(JSON.stringify(should)).not.toContain('report-surrogate');
+      // ...and a span that happens to carry the surrogate string as its run id is NOT attributed to it.
+    });
+
+    it('a span carrying the surrogate key string as agent_health.run.id is not attributed to the surrogate (only the window can)', async () => {
+      const base = Date.parse('2026-03-01T10:00:00.000Z');
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ hits: { hits: [{
+          _source: { name: 'chat', traceId: 't', serviceName: 'other-service', startTime: new Date(base + 5000).toISOString(), durationInNanos: 1, status: { code: 1 },
+            attributes: { 'agent_health.run.id': 'report-surrogate', 'gen_ai.request.model': 'm', 'gen_ai.usage.input_tokens': 9, 'gen_ai.usage.output_tokens': 0 } },
+        }] } }),
+      });
+      const [m] = await computeBatchMetrics(['report-surrogate'], defaultConfig, undefined, undefined, {
+        'report-surrogate': [{ serviceName: 'example-agent', startedAt: base, endedAt: base + 60_000 }],
+      });
+      expect(m.hasSpans).toBe(false);
+    });
+
+    it('computeMetrics (single) applies the same surrogate rule and stamps correlatedBy', async () => {
+      mockFetch.mockResolvedValue(emptyHits());
+      await computeMetrics('report-surrogate', defaultConfig, undefined, undefined, [hint]);
+      const should = JSON.parse(mockFetch.mock.calls[0][1].body).query.bool.must[0].bool.should;
+      expect(JSON.stringify(should)).not.toContain('report-surrogate');
+      expect(should).toHaveLength(1); // the window clause only
+    });
+
+    it('stamps correlatedBy = ids / window / mixed per key', async () => {
+      const base = Date.parse('2026-03-01T10:00:00.000Z');
+      const mk = (attrs: Record<string, unknown>, offsetS: number, serviceName = 'example-agent') => ({
+        _source: { name: 'chat', traceId: 't', serviceName, startTime: new Date(base + offsetS * 1000).toISOString(), durationInNanos: 1, status: { code: 1 },
+          attributes: { 'gen_ai.request.model': 'm', 'gen_ai.usage.input_tokens': 1, 'gen_ai.usage.output_tokens': 0, ...attrs } },
+      });
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ hits: { hits: [
+          mk({ 'agent_health.run.id': 'run-ids' }, 5, 'svc-ids'),          // ids only
+          mk({}, 5),                                                        // window only -> report-w
+          mk({ 'agent_health.run.id': 'run-mixed' }, 100, 'svc-mixed'),     // ids
+          mk({}, 105, 'svc-mixed'),                                         // + window for the same key -> mixed
+        ] } }),
+      });
+      const results = await computeBatchMetrics(['run-ids', 'report-w', 'run-mixed'], defaultConfig, undefined, undefined, {
+        'report-w': [{ serviceName: 'example-agent', startedAt: base, endedAt: base + 60_000 }],
+        'run-mixed': [{ serviceName: 'svc-mixed', startedAt: base + 90_000, endedAt: base + 120_000, sessionId: 'sess-mixed' }],
+      });
+      const byKey = new Map(results.map(r => [r.runId, r]));
+      expect(byKey.get('run-ids')!.correlatedBy).toBe('ids');
+      expect(byKey.get('report-w')!.correlatedBy).toBe('window');
+      expect(byKey.get('run-mixed')!.correlatedBy).toBe('mixed');
+      expect(byKey.get('run-ids')!.partial).toBeUndefined();
+    });
+
+    it('flags every key in a chunk `partial` when the query hit its size cap (counts are a lower bound)', async () => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: () => Promise.resolve({ hits: { total: { value: 25_000 }, hits: [{
+          _source: { name: 'chat', traceId: 't', attributes: { 'agent_health.run.id': 'run-1', 'gen_ai.request.model': 'm', 'gen_ai.usage.input_tokens': 1, 'gen_ai.usage.output_tokens': 0 } },
+        }] } }),
+      });
+      const results = await computeBatchMetrics(['run-1', 'run-2'], defaultConfig);
+      expect(results.every(r => r.partial === true)).toBe(true);
+      // Single-run path: same flag at its own cap.
+      mockFetch.mockResolvedValue({ ok: true, json: () => Promise.resolve({ hits: { total: { value: 600 }, hits: [] } }) });
+      const single = await computeMetrics('run-1', defaultConfig);
+      expect(single.partial).toBe(true);
     });
 
     it('a hint sessionId is registered as a Strategy-D correlator for its key (attribution by session.id beats the window)', async () => {
