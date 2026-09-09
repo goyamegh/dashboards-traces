@@ -21,6 +21,7 @@ import {
   type ScoringComparability,
 } from '@/lib/comparison/scoringDisplay';
 import { JudgeModelLabel, judgeModelText } from '@/components/JudgeModelLabel';
+import { AgentFingerprintChip, AgentConfigChangedBadge } from '@/components/evals3/AgentFingerprintChip';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
@@ -301,6 +302,12 @@ const CondensedBand: React.FC<CondensedBandProps> = ({ runs, overlap, getAgentNa
             >
               {deltaStr}
             </span>
+            {/* Same agent, different config between A and this run (agent-config provenance). */}
+            <AgentConfigChangedBadge
+              a={a}
+              b={b}
+              data-testid={i === 0 ? 'scoreboard-condensed-config-changed-badge' : `scoreboard-condensed-config-changed-badge-${runLetter(i + 1)}`}
+            />
           </React.Fragment>
         );
       })}
@@ -567,6 +574,25 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                               <div className="text-muted-foreground text-[10px] truncate max-w-[220px]">
                                 {getAgentName(run.agentKey)} — {getModelName(run.modelId)} · {formatRelativeTime(run.createdAt)}
                               </div>
+                              {/* Agent-config provenance: the chip names WHICH
+                                  config version each row measured; the amber
+                                  badge (row A only, once) fires when both rows
+                                  are the SAME agent but DIFFERENT fingerprints
+                                  — i.e. the pass-rate delta is confounded by a
+                                  prompt/config change, not just the agent. */}
+                              {(run.agentFingerprint || (idx === 0 && comparedRuns.length > 0) || idx > 1) && (
+                                <div className="mt-0.5 flex items-center gap-1.5 flex-wrap" data-testid={`scoreboard-provenance-${label}`}>
+                                  <AgentFingerprintChip run={run} compact data-testid={`scoreboard-fingerprint-${run.runId}`} />
+                                  {/* Row A carries the A-vs-B badge (the primary comparison); with
+                                      3+ runs every further row carries its own A-vs-this badge. */}
+                                  {idx === 0 && comparedRuns.length > 0 && (
+                                    <AgentConfigChangedBadge a={runA} b={comparedRuns[0]} data-testid="scoreboard-config-changed-badge" />
+                                  )}
+                                  {idx > 1 && (
+                                    <AgentConfigChangedBadge a={runA} b={run} data-testid={`scoreboard-config-changed-badge-${label}`} />
+                                  )}
+                                </div>
+                              )}
                             </div>
                           </div>
                         </td>
