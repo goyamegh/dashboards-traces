@@ -1462,6 +1462,34 @@ describe('comparisonService', () => {
       expect(merged.totalCostUsd).toBe(1.5);
       expect(merged.totalLlmCalls).toBe(5);
       expect(merged.avgDurationMs).toBe(2000);
+      // Neither honesty flag when every contributing result was precise and complete.
+      expect(merged.traceMetricsPartial).toBeUndefined();
+      expect(merged.traceMetricsWindowCorrelated).toBeUndefined();
+    });
+
+    it('mergeTraceMetrics propagates `partial` (lower bound) and window-correlation honesty flags from any contributing result', () => {
+      const base = calculateRunAggregates(runs[0], reports);
+      const tm = (runId: string, extra: Partial<TraceMetrics>): TraceMetrics => ({
+        runId, inputTokens: 10, outputTokens: 1, totalTokens: 11, costUsd: 0.1, durationMs: 100, llmCalls: 1, toolCalls: 0, toolsUsed: [], status: 'success', ...extra,
+      });
+      const partialMap = new Map<string, TraceMetrics>([
+        ['report-r1', tm('report-r1', { correlatedBy: 'ids' })],
+        ['report-r2', tm('report-r2', { correlatedBy: 'ids', partial: true })],
+      ]);
+      expect(mergeTraceMetrics(base, runs[0], reports, partialMap)).toEqual(expect.objectContaining({ totalTokens: 22, traceMetricsPartial: true }));
+      expect(mergeTraceMetrics(base, runs[0], reports, partialMap).traceMetricsWindowCorrelated).toBeUndefined();
+
+      const windowMap = new Map<string, TraceMetrics>([
+        ['report-r1', tm('report-r1', { correlatedBy: 'window' })],
+      ]);
+      const w = mergeTraceMetrics(base, runs[0], reports, windowMap);
+      expect(w.traceMetricsWindowCorrelated).toBe(true);
+      expect(w.traceMetricsPartial).toBeUndefined();
+      // A pending placeholder flagged partial contributes nothing (still skipped).
+      const pendingPartial = new Map<string, TraceMetrics>([
+        ['report-r1', tm('report-r1', { status: 'pending', partial: true })],
+      ]);
+      expect(mergeTraceMetrics(base, runs[0], reports, pendingPartial).traceMetricsPartial).toBeUndefined();
     });
   });
 

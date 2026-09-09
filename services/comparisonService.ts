@@ -239,12 +239,15 @@ export function mergeTraceMetrics(
   traceMetricsMap: Map<string, TraceMetrics>
 ): RunAggregateMetrics {
   let totalTokens = 0, totalInputTokens = 0, totalOutputTokens = 0, totalCostUsd = 0, totalDurationMs = 0, totalLlmCalls = 0, totalToolCalls = 0, mc = 0;
+  let anyPartial = false, anyWindow = false;
   for (const result of Object.values(run.results)) {
     const report = reports[result.reportId];
     const key = report ? metricsKeyForReport(report) : undefined;
     if (key) {
       const tm = traceMetricsMap.get(key);
       if (tm && tm.status !== 'pending') {
+        if (tm.partial) anyPartial = true;
+        if (tm.correlatedBy === 'window' || tm.correlatedBy === 'mixed') anyWindow = true;
         totalTokens += tm.totalTokens || 0;
         totalInputTokens += tm.inputTokens || 0;
         totalOutputTokens += tm.outputTokens || 0;
@@ -306,6 +309,8 @@ export function mergeTraceMetrics(
     // in a tool-calling loop). Stays a dash without real trace data.
     totalLlmCalls: mc > 0 ? totalLlmCalls : undefined,
     totalToolCalls: mc > 0 ? totalToolCalls : (toolCallFallbackKnown ? fallbackToolCalls : undefined),
+    ...(mc > 0 && anyPartial ? { traceMetricsPartial: true } : {}),
+    ...(mc > 0 && anyWindow ? { traceMetricsWindowCorrelated: true } : {}),
   };
 }
 
