@@ -140,10 +140,16 @@ test.describe('Agent-error surfacing — inspector + run detail', () => {
     // Header tallies split by stage; retry judgement counts only the judge case.
     await expect(page.getByTestId('inspector-agent-error-count')).toHaveText('1');
     await expect(page.getByTestId('inspector-judge-error-count')).toHaveText('1');
-    const retryBtn = page.getByTestId('inspector-retry-judgement-btn');
-    await expect(retryBtn).toBeVisible();
-    await expect(retryBtn).toContainText('Retry judgement (1)');
-    await expect(retryBtn).toBeEnabled();
+    // Retry judgement lives in the actions kebab (owner papercut: no
+    // standalone header buttons; see tests/e2e/run-actions-menu.spec.ts).
+    await page.locator(`[data-testid="run-actions-menu-trigger-${RUN_ID}"]`).click();
+    const menu = page.getByRole('menu');
+    await expect(menu).toBeVisible({ timeout: 10000 });
+    const retryItem = page.locator(`[data-testid="run-action-retry-judgement-${RUN_ID}"]`);
+    await expect(retryItem).toBeVisible();
+    await expect(retryItem).toContainText('Retry judgement (1)');
+    await expect(retryItem).not.toHaveAttribute('aria-disabled', 'true');
+    await page.keyboard.press('Escape');
 
     // Right pane: inspector badge + the agent-error card at the top of Test Case Output.
     await expect(page.getByTestId('inspector-status-badge')).toHaveText('AGENT ERROR', { timeout: 15000 });
