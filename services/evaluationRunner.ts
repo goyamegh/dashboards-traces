@@ -20,6 +20,7 @@ import type { IStorageModule } from '@/server/adapters/types';
 import {
   runEvaluationWithConnector,
   callBedrockJudge,
+  judgeErrorDetailFrom,
   invokeAgent,
   computeSdkMatcherSessionMetrics,
   stampObjectiveActuals,
@@ -54,6 +55,7 @@ import type { TrajectoryStep } from '@/types';
 import { createHookOrchestrator, type TestDescriptor } from './hookOrchestrator';
 import { bucketRunResults } from '@/lib/runStats';
 import { extractJudgeFailureReason, computeJudgeFailureSummary } from '@/lib/judgeFailureSummary';
+import { describeAgentError, agentErrorContextFrom } from '@/services/evaluation/agentFailure';
 import { buildCancelledMarkers } from '@/services/evaluationRunFinalize';
 import { buildJudgeIdentityPatch, buildLlmJudgeResponseIdentity, buildSdkJudgeIdentityPatch, assertJudgeIdentityConsistent, JUDGE_PROVIDER_NONE } from '@/lib/judgeIdentity';
 import { loadConfigSync } from '@/lib/config/index';
@@ -632,11 +634,14 @@ export async function executeEvaluationRun(
               (report as any).skipJudge = true;
             } else if (agentFailed) {
               // #335: the agent never produced a trajectory (timeout/crash).
-              // Surface the underlying message (e.g. "Subprocess timed out after
-              // 600000ms") on the report instead of a silent empty `failed`.
+              // Surface the underlying (unwrapped) cause — e.g. "Subprocess
+              // timed out after 600000ms" or undici's HeadersTimeoutError —
+              // on the report instead of a silent empty `failed`.
               Object.assign(
                 report,
-                buildEvaluatorErrorPatch('agent_failed', (evalError as any)?.message ?? String(evalError)),
+                buildEvaluatorErrorPatch('agent_failed', evalError, {
+                  agentError: describeAgentError(evalError, agentErrorContextFrom(evalError, { endpoint: agentConfig.endpoint })),
+                }),
               );
               (report as any).skipJudge = true;
             } else {
@@ -785,6 +790,11 @@ export async function executeEvaluationRun(
               noteJudgeModel(judgeModel);
               noteJudgeProvider(judgeProvider);
             });
+          } else if ((savedReport as any).failureStage === 'agent') {
+            // The agent request failed (timeout / connection / non-2xx): the
+            // report is already final with the real cause. Log it at the
+            // runner level so the run log names the stage, and never judge.
+            console.warn(`[EvaluationRunner] [${testCaseId}] Agent request failed — not judged: ${(savedReport as any).error ?? savedReport.traceError}`);
           } else {
             noteJudgeModel((savedReport as any).judgeModel ?? (report as any).judgeModel);
             noteJudgeProvider((savedReport as any).judgeProvider ?? (report as any).judgeProvider);
@@ -1094,6 +1104,7 @@ async function waitForTracesAndJudge(
             await storage.runs.update(report.id, buildEvaluatorErrorPatch(
               'judge_failed',
               error,
+              { judgeError: judgeErrorDetailFrom(error) },
             ) as any).catch(() => {});
             resolve(null); // Don't fail the whole run, just mark metrics as error
           }
