@@ -379,19 +379,19 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                         <td className="px-3 py-2 text-right tabular-nums" data-testid={`run-avgscore-${run.runId}`}>
                           {formatPercent(run.avgScore)}
                         </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
+                        <td className="px-3 py-2 text-right tabular-nums" data-testid={`run-cost-${run.runId}`}>
                           {formatCostSafe(run.totalCostUsd)}
                         </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
+                        <td className="px-3 py-2 text-right tabular-nums" data-testid={`run-duration-${run.runId}`}>
                           {formatDurationSafe(run.avgDurationMs)}
                         </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
+                        <td className="px-3 py-2 text-right tabular-nums" data-testid={`run-tokens-${run.runId}`}>
                           {formatTokensSafe(run.totalTokens)}
                         </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
+                        <td className="px-3 py-2 text-right tabular-nums" data-testid={`run-llmcalls-${run.runId}`}>
                           {formatCountSafe(run.totalLlmCalls)}
                         </td>
-                        <td className="px-3 py-2 text-right tabular-nums">
+                        <td className="px-3 py-2 text-right tabular-nums" data-testid={`run-toolcalls-${run.runId}`}>
                           {formatCountSafe(run.totalToolCalls)}
                         </td>
                         <td className="px-3 py-2 text-right">
