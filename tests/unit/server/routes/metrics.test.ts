@@ -305,6 +305,19 @@ describe('Metrics Routes', () => {
       });
     });
 
+    it.each([
+      ['a null element', ['run-1', null]],
+      ['a numeric element', [42]],
+      ['an empty-string element', ['']],
+    ])('returns 400 (not 500) when runIds contains %s', async (_label, runIds) => {
+      const { req, res } = createMocks({}, { runIds });
+      const handler = getRouteHandler(metricsRoutes, 'post', '/api/metrics/batch');
+      await handler(req, res);
+      expect(res.status).toHaveBeenCalledWith(400);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ error: expect.stringMatching(/runIds must contain only non-empty strings/) }));
+      expect(mockComputeBatchMetrics).not.toHaveBeenCalled();
+    });
+
     it('should return 400 when sessionIds is not a plain object (array/string/null)', async () => {
       const handler = getRouteHandler(metricsRoutes, 'post', '/api/metrics/batch');
       for (const badSessionIds of ['not-an-object', ['a', 'b'], null]) {
@@ -367,6 +380,7 @@ describe('Metrics Routes', () => {
         ['a hint with a non-numeric startedAt', [{ serviceName: 'x', startedAt: '1', endedAt: 2 }]],
         ['a hint with a NaN endedAt', [{ serviceName: 'x', startedAt: 1, endedAt: NaN }]],
         ['a hint with a non-string sessionId', [{ serviceName: 'x', startedAt: 1, endedAt: 2, sessionId: 7 }]],
+        ['a hint whose window is inverted (endedAt < startedAt)', [{ serviceName: 'x', startedAt: 2000, endedAt: 1000 }]],
         ['a value that is not an array of hints', { serviceName: 'x', startedAt: 1, endedAt: 2 }],
       ])('rejects %s with 400 and never queries the cluster', async (_label, hints) => {
         const { req, res } = createMocks({}, { runIds: ['run-1'], agents: { 'run-1': hints } });

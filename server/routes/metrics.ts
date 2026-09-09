@@ -26,6 +26,7 @@ function parseAgentHint(raw: unknown): ServiceWindowHint | string {
   if (typeof a.serviceName !== 'string' || !a.serviceName) return 'agents[].serviceName must be a non-empty string';
   if (typeof a.startedAt !== 'number' || !Number.isFinite(a.startedAt)) return 'agents[].startedAt must be a number (epoch ms)';
   if (typeof a.endedAt !== 'number' || !Number.isFinite(a.endedAt)) return 'agents[].endedAt must be a number (epoch ms)';
+  if (a.endedAt < a.startedAt) return 'agents[].endedAt must not be before startedAt';
   if (a.sessionId !== undefined && typeof a.sessionId !== 'string') return 'agents[].sessionId must be a string when present';
   return {
     serviceName: a.serviceName,
@@ -152,6 +153,12 @@ router.post('/api/metrics/batch', async (req: Request, res: Response) => {
 
     if (!Array.isArray(runIds)) {
       return res.status(400).json({ error: 'runIds must be an array' });
+    }
+    // Every element must be a non-empty string: a `terms` clause with `[null]`
+    // makes OpenSearch reject the whole request, and `.startsWith` below would
+    // throw on a non-string — either way a client bug surfaced as a 500.
+    if (!runIds.every((id: unknown) => typeof id === 'string' && id.length > 0)) {
+      return res.status(400).json({ error: 'runIds must contain only non-empty strings' });
     }
     let sessionIdByRunId: Record<string, string> | undefined;
     if (sessionIds !== undefined) {
