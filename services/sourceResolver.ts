@@ -324,6 +324,7 @@ export async function resolveCodeFnMapForStoredTestCases(
       // Re-derive the relative key the stored docs were keyed on — through
       // the SAME normaliser, so the join cannot miss on separators.
       const loadedKey = sourceFileKey(loaded.filePath, cwd);
+      const drifted: string[] = [];
       for (const tc of loaded.testCases) {
         const stored = tcByKeyAndName.get(`${loadedKey}\u0000${tc.name}`) ?? tcByKeyAndName.get(`${key}\u0000${tc.name}`);
         if (stored && tc.evaluate) {
@@ -332,7 +333,22 @@ export async function resolveCodeFnMapForStoredTestCases(
             sourceFile: loaded.filePath,
             describePath: tc.benchmarkPath,
           });
+          // The file on disk is the executable truth (that is the SDK's
+          // contract), but the stored doc remembers the hash it was
+          // imported at. Say so loudly when they disagree — the run is
+          // executing a body the stored test case never saw. Not fatal:
+          // editing an eval file and re-running from the UI is a normal
+          // loop; re-import (`benchmark -f`) refreshes the stored hash.
+          const storedHash = (stored as any).sourceHash as string | undefined;
+          if (storedHash && tc.hash && storedHash !== tc.hash) drifted.push(tc.name);
         }
+      }
+      if (drifted.length > 0) {
+        console.warn(
+          `[SourceResolver] source drift: "${sourceFile}" on disk no longer matches the stored sourceHash for ` +
+          `${drifted.length} test case(s) (${drifted.map(n => JSON.stringify(n)).join(', ')}) — running the CURRENT file; ` +
+          `re-import with \`benchmark -f ${sourceFile}\` to refresh the stored definition.`
+        );
       }
       if (loaded.hooks && loaded.hooks.length > 0) {
         hooksByFile.set(loaded.filePath, loaded.hooks);
