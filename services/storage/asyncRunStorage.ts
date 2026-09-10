@@ -405,9 +405,16 @@ class AsyncRunStorage {
     // trajectory/messages bloat #429 fixed - safe to include in the summary.
     // `scoringSnapshot` (small, bounded object) rides along with `metrics` so
     // summary-only readers can derive the snapshot score without the full doc.
+    // `runId` / `connectorProtocol` / `performanceMetrics` added for the
+    // benchmark Runs table's telemetry columns (useRunTelemetry): the batch
+    // metrics request is keyed by the connector's native runId (falling back
+    // to traceId, see toTestCaseRun) and carries Strategy-C hints derived
+    // from the protocol + the per-case wall-clock (a 2-field object) —
+    // still KBs per 100 reports, no trajectory/messages bloat.
     const fields = [
-      'status', 'passFailStatus', 'metricsStatus', 'traceId', 'sessionId',
+      'status', 'passFailStatus', 'metricsStatus', 'traceId', 'runId', 'sessionId',
       'judgeModelId', 'judgeModel', 'judgeProvider', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations', 'metrics',
+      'connectorProtocol', 'performanceMetrics',
       'scoringSnapshot',
       // Failure stage so list rows can badge 'Agent error' vs 'Judge error'
       // without loading the full report (tiny keyword field).
