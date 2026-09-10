@@ -229,12 +229,20 @@ describe('ComparisonDeepDive — no client-side deadline; legible long waits', (
     expect(screen.getByTestId('deep-dive-loading')).toBeTruthy();
     expect(screen.getByTestId('deep-dive-loading-model').textContent).toContain('Claude Fable 5.1 (US)');
     expect(screen.getByTestId('deep-dive-loading-elapsed').textContent).toBe('(1s)');
+    // Regression guard: the model name must render on the SAME row as the
+    // spinner/elapsed text from the very first 'loading' frame -- no
+    // separate "hint" paragraph should exist yet (folding it into a second,
+    // later-appearing paragraph is what caused a real CI e2e flake: the
+    // panel's height changing mid-load shifted a hovered link's Radix
+    // Tooltip out from under the pointer during its open-intent window --
+    // see comparison-hover-prompt-preview.spec.ts).
+    expect(screen.queryByTestId('deep-dive-loading-hint')).toBeNull();
     // Selector is locked while a generation is in flight.
     expect((screen.getByTestId('deep-dive-model-select') as HTMLSelectElement).disabled).toBe(true);
 
     await flush(94_000);
     expect(screen.getByTestId('deep-dive-loading-elapsed').textContent).toBe('(1m 35s)');
-    expect(screen.getByTestId('deep-dive-loading-model').textContent).toMatch(/no time limit/);
+    expect(screen.getByTestId('deep-dive-loading-hint').textContent).toMatch(/no time limit/);
 
     // 6 minutes in (well past the old 200s client budget): still loading,
     // still polling, NO "Timed out" error.

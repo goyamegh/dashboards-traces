@@ -598,15 +598,33 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
 
       {status === 'loading' && (
         <div className="flex flex-col items-center gap-1 py-6 justify-center text-sm text-muted-foreground" data-testid="deep-dive-loading">
-          <div className="flex items-center gap-2">
+          {/*
+           * Everything in the first row below renders on the VERY FIRST
+           * 'loading' frame, so its height must be identical from t=0 -- no
+           * piece may pop in a moment later (e.g. once the models fetch
+           * resolves) and shift whatever sits below this panel, such as a
+           * hovered link's Radix Tooltip open-intent window elsewhere on the
+           * page (see comparison-hover-prompt-preview.spec.ts / the CI
+           * failure it regression-tests). The model name is folded into
+           * this SAME row rather than a second paragraph for that reason.
+           * The "no time limit" hint below IS genuinely new content that
+           * only exists past 30s, so it stays a separate, conditionally
+           * rendered paragraph exactly like on main -- it never shifts
+           * anything during the first ~30s a real page interaction happens.
+           */}
+          <div className="flex items-center gap-2 flex-wrap justify-center">
             <Loader2 size={15} className="animate-spin" />
             Inspecting both runs' spans &amp; logs…
             <span className="tabular-nums" data-testid="deep-dive-loading-elapsed">({formatElapsedSec(elapsedSec)})</span>
+            <span className="text-[11px] text-muted-foreground/70" data-testid="deep-dive-loading-model">
+              {loadingModelLabel ? `· Model: ${loadingModelLabel}` : '· Model: server default'}
+            </span>
           </div>
-          <p className="text-[11px] text-muted-foreground/70" data-testid="deep-dive-loading-model">
-            {loadingModelLabel ? `Model: ${loadingModelLabel}` : 'Model: server default'}
-            {elapsedSec >= 30 && ' · a reasoning model over many cases can take several minutes — still working, no time limit.'}
-          </p>
+          {elapsedSec >= 30 && (
+            <p className="text-[11px] text-muted-foreground/70" data-testid="deep-dive-loading-hint">
+              a reasoning model over many cases can take several minutes — still working, no time limit.
+            </p>
+          )}
         </div>
       )}
 
