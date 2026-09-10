@@ -4,6 +4,7 @@
  */
 
 import { test, expect } from './fixtures/test-fixtures';
+import { uniqueTestName } from '../helpers/testDataTracker';
 
 test.describe('Evals3 Benchmarks Page', () => {
   test.beforeEach(async ({ page }) => {
@@ -350,24 +351,17 @@ test.describe('Evals3 Benchmark CRUD', () => {
  * one that just had its test cases edited surfaces at the top.
  */
 test.describe('Evals3 Benchmarks Page — default sort by Last Activity', () => {
-  const SORT_BENCH_PREFIX = 'E2E Evals3 Sort ';
-  const createdBenchmarkIds: string[] = [];
-
-  test.afterAll(async ({ request }) => {
-    for (const id of createdBenchmarkIds) {
-      await request.delete(`/api/storage/benchmarks/${encodeURIComponent(id)}`).catch(() => {});
-    }
-  });
-
-  test('a freshly-created benchmark sorts above older benchmarks in the default sort', async ({ page, request }) => {
-    // 1. Create TWO benchmarks directly via the storage API, in order. The
-    //    default sort contract (Last Activity DESC) means the newer one must
-    //    render ABOVE the older one. Asserting "my seed is the FIRST row" is
+  test('a freshly-created benchmark sorts above older benchmarks in the default sort', async ({ page, request, testData }) => {
+    // 1. Create TWO benchmarks directly via the storage API. The default sort
+    //    contract (Last Activity DESC) means the one with the newer updatedAt
+    //    must render ABOVE the other. Asserting "my seed is the FIRST row" is
     //    inherently racy under fullyParallel — any concurrently-running suite
     //    that creates/edits a benchmark after our seed steals the top row —
     //    so assert the RELATIVE order of two rows this test owns instead.
-    const olderName = `${SORT_BENCH_PREFIX}older ${Date.now()}`;
-    const newerName = `${SORT_BENCH_PREFIX}newer ${Date.now()}`;
+    //    Both are named via uniqueTestName and registered with the testData
+    //    tracker AT CREATION, so even a killed worker leaves reapable ids.
+    const olderName = uniqueTestName('evals3-sort-older');
+    const newerName = uniqueTestName('evals3-sort-newer');
     const seedBenchmark = async (name: string) => {
       const res = await request.post('/api/storage/benchmarks', {
         data: {
@@ -383,30 +377,57 @@ test.describe('Evals3 Benchmarks Page — default sort by Last Activity', () => 
       const created = await res.json();
       const id = created.id || created.benchmark?.id;
       expect(id, 'created benchmark must have an id').toBeTruthy();
-      createdBenchmarkIds.push(id);
-      return id;
+      testData.benchmark(id);
+      return id as string;
     };
-    await seedBenchmark(olderName);
-    // updatedAt has millisecond resolution — space the two seeds out so their
-    // last-activity timestamps cannot tie.
-    await new Promise(r => setTimeout(r, 50));
-    await seedBenchmark(newerName);
+    const olderId = await seedBenchmark(olderName);
+    const newerId = await seedBenchmark(newerName);
 
-    // 2. Wipe localStorage BEFORE navigation so the new default sort key (
+    // 2. Deterministic ordering — no sleep gamble: explicitly TOUCH the
+    //    "newer" benchmark via PUT so the server stamps it a strictly newer
+    //    updatedAt, then read BOTH persisted docs back and hard-assert the
+    //    precondition the UI assertion depends on. If the backend ever stops
+    //    bumping updatedAt on PUT, this fails here — loudly — not as a flaky
+    //    row-order mismatch.
+    const getDoc = async (id: string) => {
+      const r = await request.get(`/api/storage/benchmarks/${encodeURIComponent(id)}`);
+      expect(r.ok(), `GET seeded benchmark ${id} status ${r.status()}`).toBeTruthy();
+      return r.json();
+    };
+    const newerDoc = await getDoc(newerId);
+    const touch = await request.put(`/api/storage/benchmarks/${encodeURIComponent(newerId)}`, {
+      data: {
+        name: newerDoc.name,
+        description: 'sort regression seed — touched to bump updatedAt',
+        testCaseIds: newerDoc.testCaseIds ?? [],
+        runs: newerDoc.runs ?? [],
+      },
+    });
+    expect(touch.ok(), `touch PUT status ${touch.status()}`).toBeTruthy();
+
+    const olderPersisted = await getDoc(olderId);
+    const newerPersisted = await getDoc(newerId);
+    const olderStamp = Date.parse(olderPersisted.updatedAt || olderPersisted.createdAt);
+    const newerStamp = Date.parse(newerPersisted.updatedAt || newerPersisted.createdAt);
+    expect(Number.isFinite(olderStamp), 'older seed must have a parseable updatedAt/createdAt').toBeTruthy();
+    expect(Number.isFinite(newerStamp), 'newer seed must have a parseable updatedAt/createdAt').toBeTruthy();
+    expect(newerStamp, 'touched seed must have a strictly newer persisted timestamp').toBeGreaterThan(olderStamp);
+
+    // 3. Wipe localStorage BEFORE navigation so the new default sort key (
     //    'benchmarks:sort:v2') applies to this run — not whatever the user happens
     //    to have saved.
     await page.addInitScript(() => { try { localStorage.clear(); } catch {} });
     await page.goto('/evaluations/benchmarks');
     await page.waitForSelector('[data-testid="benchmarks-page"]', { timeout: 30_000 });
 
-    // 3. The header must read "Last Activity" with a sort indicator (the active
+    // 4. The header must read "Last Activity" with a sort indicator (the active
     //    SortHeader renders a ChevronDown next to the label).
     const headerCell = page.locator('th:has-text("Last Activity")');
     await expect(headerCell).toBeVisible();
     await expect(headerCell.locator('svg').first()).toBeVisible(); // active-sort chevron
 
-    // 4. Both seeded rows must be visible, and the newer one must render ABOVE
-    //    the older one (Last Activity DESC).
+    // 5. Both seeded rows must be visible, and the UI order must match the
+    //    persisted timestamps verified above (newer strictly above older).
     await expect(page.locator('tbody tr', { hasText: newerName }).first()).toBeVisible({ timeout: 10_000 });
     await expect(page.locator('tbody tr', { hasText: olderName }).first()).toBeVisible({ timeout: 10_000 });
     const rowNames = await page.locator('tbody tr td:first-child').allTextContents();
@@ -416,7 +437,7 @@ test.describe('Evals3 Benchmarks Page — default sort by Last Activity', () => 
     expect(olderIdx, 'older seed must be in the table').toBeGreaterThanOrEqual(0);
     expect(newerIdx, 'newer seed must sort above the older seed').toBeLessThan(olderIdx);
 
-    // 5. The Last Activity cell on the newer seed's row must be "Updated
+    // 6. The Last Activity cell on the newer seed's row must be "Updated
     //    <relative>" — the cell explicitly differentiates updated-vs-run
     //    signals so users see why a brand-new benchmark with no runs is high
     //    in the sort.

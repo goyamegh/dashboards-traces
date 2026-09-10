@@ -4,6 +4,7 @@
  */
 
 import { test, expect } from './fixtures/test-fixtures';
+import { uniqueTestName } from '../helpers/testDataTracker';
 
 test.describe('Benchmark Runs Page', () => {
   test.beforeEach(async ({ page }) => {
@@ -109,20 +110,22 @@ test.describe('Benchmark Runs Page', () => {
     }
   });
 
-  test('completed runs should show passed or failed counts, not all pending', async ({ page, request }) => {
+  test('completed runs should show passed or failed counts, not all pending', async ({ page, request, testData }) => {
     // This test used to click the FIRST "View Latest" on whatever benchmark
     // happened to exist and require a non-zero passed/failed count on it —
     // nondeterministic under fullyParallel (another suite's freshly-started,
     // all-pending run can be the first card) and its locators were stale
     // (the passed count renders text-green-700 now, not text-opensearch-blue).
     // Seed our OWN benchmark with a completed run (1 passed + 1 failed
-    // verdict) and assert against exactly that page.
-    const stamp = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    // verdict) and assert against exactly that page. Every entity is named
+    // via uniqueTestName and registered with the testData tracker AT CREATION
+    // (crash-ledger-backed), so a killed worker can never strand fixtures.
+    const runName = uniqueTestName('bmruns-stats-run');
     const tcIds: string[] = [];
     for (let i = 0; i < 2; i++) {
       const r = await request.post('/api/storage/test-cases', {
         data: {
-          name: `e2e-bmruns-stats-tc-${i}-${stamp}`,
+          name: uniqueTestName(`bmruns-stats-tc-${i}`),
           category: 'E2E',
           difficulty: 'Easy',
           initialPrompt: 'p',
@@ -131,70 +134,70 @@ test.describe('Benchmark Runs Page', () => {
       });
       expect(r.ok(), `seed test case ${i} should succeed`).toBeTruthy();
       const j = await r.json();
-      tcIds.push(j.id || j.testCase?.id);
+      const tcId = j.id || j.testCase?.id;
+      expect(tcId, `seed test case ${i} must have an id`).toBeTruthy();
+      testData.testCase(tcId);
+      tcIds.push(tcId);
     }
 
-    let benchmarkId: string | null = null;
-    try {
-      const bmRes = await request.post('/api/storage/benchmarks', {
-        data: {
-          name: `E2E BmRuns Stats ${stamp}`,
-          description: 'stats pass-through E2E seed',
-          testCaseIds: tcIds,
-          runs: [],
-          currentVersion: 1,
-          versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: tcIds }],
-        },
-      });
-      expect(bmRes.ok(), 'seed benchmark should succeed').toBeTruthy();
-      benchmarkId = (await bmRes.json()).id;
+    const bmRes = await request.post('/api/storage/benchmarks', {
+      data: {
+        name: uniqueTestName('bmruns-stats-benchmark'),
+        description: 'stats pass-through E2E seed',
+        testCaseIds: tcIds,
+        runs: [],
+        currentVersion: 1,
+        versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: tcIds }],
+      },
+    });
+    expect(bmRes.ok(), 'seed benchmark should succeed').toBeTruthy();
+    const benchmarkId = (await bmRes.json()).id;
+    expect(benchmarkId, 'seed benchmark must have an id').toBeTruthy();
+    testData.benchmark(benchmarkId);
 
-      const get = await request.get(`/api/storage/benchmarks/${benchmarkId}`);
-      const bm = await get.json();
-      const put = await request.put(`/api/storage/benchmarks/${benchmarkId}`, {
-        data: {
-          name: bm.name,
-          description: bm.description,
-          testCaseIds: bm.testCaseIds,
-          runs: [{
-            id: `run-bmruns-stats-${stamp}`,
-            name: 'Stats E2E Run',
-            agentKey: 'demo',
-            modelId: 'demo-model',
-            createdAt: new Date().toISOString(),
-            status: 'completed',
-            benchmarkVersion: 1,
-            testCaseSnapshots: [],
-            results: {
-              [tcIds[0]]: { reportId: `report-bmruns-stats-1-${stamp}`, status: 'completed', passFailStatus: 'passed' },
-              [tcIds[1]]: { reportId: `report-bmruns-stats-2-${stamp}`, status: 'completed', passFailStatus: 'failed' },
-            },
-            stats: { passed: 1, failed: 1, pending: 0, errored: 0, total: 2 },
-          }],
-        },
-      });
-      expect(put.ok(), 'seeding the completed run should succeed').toBeTruthy();
+    const get = await request.get(`/api/storage/benchmarks/${benchmarkId}`);
+    expect(get.ok(), 'seeded benchmark must be fetchable').toBeTruthy();
+    const bm = await get.json();
+    const stamp = `${process.pid}-${Date.now()}`;
+    const put = await request.put(`/api/storage/benchmarks/${benchmarkId}`, {
+      data: {
+        name: bm.name,
+        description: bm.description,
+        testCaseIds: bm.testCaseIds,
+        runs: [{
+          id: `run-bmruns-stats-${stamp}`,
+          name: runName,
+          agentKey: 'demo',
+          modelId: 'demo-model',
+          createdAt: new Date().toISOString(),
+          status: 'completed',
+          benchmarkVersion: 1,
+          testCaseSnapshots: [],
+          results: {
+            [tcIds[0]]: { reportId: `report-bmruns-stats-1-${stamp}`, status: 'completed', passFailStatus: 'passed' },
+            [tcIds[1]]: { reportId: `report-bmruns-stats-2-${stamp}`, status: 'completed', passFailStatus: 'failed' },
+          },
+          stats: { passed: 1, failed: 1, pending: 0, errored: 0, total: 2 },
+        }],
+      },
+    });
+    expect(put.ok(), 'seeding the completed run should succeed').toBeTruthy();
 
-      await page.goto(`/benchmarks/${benchmarkId}/runs`);
-      await expect(page.locator('[data-testid="benchmark-runs-page"]')).toBeVisible({ timeout: 30000 });
-      await expect(page.locator('text=Stats E2E Run')).toBeVisible({ timeout: 15000 });
+    await page.goto(`/benchmarks/${benchmarkId}/runs`);
+    await expect(page.locator('[data-testid="benchmark-runs-page"]')).toBeVisible({ timeout: 30000 });
 
-      // The completed run's row must show 1 passed (green) and 1 failed (red)
-      // — non-zero verdict counts, not an all-pending row.
-      const passedSpan = page.locator('[class*="text-green-700"]', { hasText: '1' }).first();
-      const failedSpan = page.locator('[class*="text-red-700"]', { hasText: '1' }).first();
-      await expect(passedSpan).toBeVisible({ timeout: 15000 });
-      await expect(failedSpan).toBeVisible({ timeout: 15000 });
-      await expect(page.locator('span.text-muted-foreground:has-text("/")').first()).toBeVisible();
-    } finally {
-      // Delete exactly what this test created (ids only — shared backend).
-      if (benchmarkId) {
-        await request.delete(`/api/storage/benchmarks/${encodeURIComponent(benchmarkId)}`).catch(() => {});
-      }
-      for (const id of tcIds) {
-        await request.delete(`/api/storage/test-cases/${encodeURIComponent(id)}`).catch(() => {});
-      }
-    }
+    // Scope every stats assertion to the seeded run's OWN row card (deepest
+    // [class*="card"] containing the unique run name — ancestors match too,
+    // document order puts the row card last), not the page: page-wide count
+    // scans can match another run's numbers.
+    const runRow = page.locator('[class*="card"]').filter({ hasText: runName }).last();
+    await expect(runRow).toBeVisible({ timeout: 15000 });
+
+    // The completed run's row must show 1 passed (green) and 1 failed (red)
+    // — non-zero verdict counts, not an all-pending row — and the "/ 2" total.
+    await expect(runRow.locator('[class*="text-green-700"]', { hasText: '1' }).first()).toBeVisible({ timeout: 15000 });
+    await expect(runRow.locator('[class*="text-red-700"]', { hasText: '1' }).first()).toBeVisible({ timeout: 15000 });
+    await expect(runRow.locator('span.text-muted-foreground', { hasText: '/ 2' }).first()).toBeVisible();
   });
 
   test('should show Compare button when multiple runs exist', async ({ page }) => {
