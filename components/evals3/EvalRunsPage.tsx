@@ -702,14 +702,22 @@ export const EvalRunsPage: React.FC = () => {
               dual-written benchmark-embedded run. */}
           <div className="flex items-center gap-1.5">
             {rr.canRename ? (
+              // max-w-[220px] matches the truncated-name convention used for
+              // list rows elsewhere (BenchmarksPage/TestCasesPage row names).
+              // This table has no `table-fixed`/column-width cap, so an
+              // auto-layout column otherwise sizes to the widest cell's
+              // max-content width (a single very long run name would widen
+              // the whole column) -- the cap keeps this row's footprint
+              // stable regardless of name length.
               <InlineRenameField
                 value={rr.run.name}
                 onSave={newName => handleRenameEvalRun(rr.run.id, newName)}
+                className="max-w-[220px]"
                 textClassName="text-xs font-medium"
                 testId={`run-row-rename-${rr.run.id}`}
               />
             ) : (
-              <span className="text-xs font-medium">{rr.run.name}</span>
+              <span className="text-xs font-medium truncate max-w-[220px]">{rr.run.name}</span>
             )}
             {rr.status === 'running' && (
               <span
