@@ -51,7 +51,6 @@ export {
   deleteEvaluationRun,
   promoteEvaluationRun,
   rerunEvaluationRun,
-  retryJudgementEvaluationRun,
   updateEvaluationRun,
   retryJudgement,
   getRetryJudgementStatus,
