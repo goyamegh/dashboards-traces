@@ -496,8 +496,9 @@ describe('BenchmarkRunsPage2 — Runs tab table, chart and click-to-filter', () 
  * without a `completed` event. The button must derive from the polled run
  * DOCUMENT instead.
  */
-describe('BenchmarkRunsPage2 — Add Run header tracks the run document, not the SSE connection', () => {
+describe('BenchmarkRunsPage2 — Add Run is never blocked by running runs; launched runs are tracked by their polled docs', () => {
   const LAUNCHED_ID = 'eval-run-launched-1';
+  const SECOND_ID = 'eval-run-launched-2';
 
   /** Drive Add Run → Start Run through the dialog. */
   async function launchRun() {
@@ -508,25 +509,37 @@ describe('BenchmarkRunsPage2 — Add Run header tracks the run document, not the
     });
   }
 
-  /** The mocked SSE call: fires `started` with LAUNCHED_ID, then settles per `outcome`. */
-  function mockStream(outcome: 'drop' | 'complete' | 'hang') {
-    let resolveStream!: (v: unknown) => void;
+  type Outcome = 'drop' | 'complete' | 'hang';
+  /**
+   * The mocked SSE call: each launch fires `started` with the next id in
+   * `launches`, one live per-case progress event, then settles per its outcome.
+   */
+  function mockStreams(launches: Array<{ id: string; outcome: Outcome }>) {
+    const resolvers: Record<string, (v: unknown) => void> = {};
+    let n = 0;
     mockExecuteBenchmarkRun.mockImplementation(async (_bm: unknown, _rc: unknown, onProgress: any, onStarted: any) => {
-      onStarted?.({ runId: LAUNCHED_ID, testCases: [{ id: 'tc-1', name: 'Case 1', status: 'pending' }] });
-      // One live per-case progress event while the stream is up.
-      onProgress?.({ currentRunId: LAUNCHED_ID, currentTestCaseId: 'tc-1', currentTestCaseIndex: 0, status: 'running', startedCount: 1, completedCount: 0, totalTestCases: 1 });
+      const { id, outcome } = launches[Math.min(n, launches.length - 1)];
+      n += 1;
+      onStarted?.({ runId: id, testCases: [{ id: 'tc-1', name: 'Case 1', status: 'pending' }] });
+      onProgress?.({ currentRunId: id, currentTestCaseId: 'tc-1', currentTestCaseIndex: 0, status: 'running', startedCount: 1, completedCount: 0, totalTestCases: 1 });
       if (outcome === 'drop') throw new Error('Evaluation run completed without returning result');
-      if (outcome === 'complete') return { id: LAUNCHED_ID, status: 'completed', results: {} };
-      return new Promise(resolve => { resolveStream = resolve; });
+      if (outcome === 'complete') return { id, status: 'completed', results: {} };
+      return new Promise(resolve => { resolvers[id] = resolve; });
     });
-    return { finish: () => resolveStream?.({ id: LAUNCHED_ID, status: 'completed' }) };
+    return { finish: (id: string = launches[0].id) => resolvers[id]?.({ id, status: 'completed' }) };
   }
+  const mockStream = (outcome: Outcome) => mockStreams([{ id: LAUNCHED_ID, outcome }]);
 
-  const launchedDoc = (status: string, results?: Record<string, unknown>) => makeAssociatedEvalRun({
-    id: LAUNCHED_ID, name: 'Launched Run', status,
+  const runDoc = (id: string, status: string, results?: Record<string, unknown>, name = 'Launched Run') => makeAssociatedEvalRun({
+    id, name, status,
     testCaseSnapshots: [{ id: 'tc-1', version: 1, name: 'Case 1' }],
     results: results ?? (status === 'running' ? { 'tc-1': { reportId: '', status: 'running' } } : { 'tc-1': { reportId: 'r-l', status: 'completed', passFailStatus: 'passed' } }),
   });
+  const launchedDoc = (status: string, results?: Record<string, unknown>) => runDoc(LAUNCHED_ID, status, results);
+
+  const button = () => screen.getByTestId('add-run-button') as HTMLButtonElement;
+  const pill = () => screen.queryByTestId('runs-in-flight-pill');
+  const panels = () => screen.queryAllByTestId('run-progress-panel');
 
   beforeEach(() => {
     jest.useFakeTimers();
@@ -538,45 +551,131 @@ describe('BenchmarkRunsPage2 — Add Run header tracks the run document, not the
     (console.error as jest.Mock).mockRestore?.();
   });
 
-  it('THE BUG: the SSE stream dropping after `started` keeps "Running…" while the polled doc is running, then resets to "Add Run" once the doc is terminal — no reload', async () => {
+  it('THE REGRESSION (owner, 2026-09-13): with a launched run in flight the header button stays an ENABLED "Add Run" — no "Running…", no disabled state — and the pill counts the run', async () => {
+    mockStream('hang');
+    mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [launchedDoc('running')] });
+    await renderPage();
+    await act(async () => { await Promise.resolve(); });
+
+    await launchRun();
+    await waitFor(() => expect(panels()).toHaveLength(1));
+    expect(button().disabled).toBe(false);
+    expect(button().getAttribute('data-run-state')).toBe('idle');
+    expect(button().textContent).toContain('Add Run');
+    expect(button().textContent).not.toContain('Running');
+    await waitFor(() => expect(pill()?.textContent).toContain('1 running'));
+
+    // Several poll cycles later nothing has changed: still enabled, still one block.
+    await act(async () => { jest.advanceTimersByTime(6000); });
+    expect(button().disabled).toBe(false);
+    expect(panels()).toHaveLength(1);
+  });
+
+  it('Add Run opens the dialog while a run is in flight — there is no "already in progress" alert any more', async () => {
+    mockStream('hang');
+    mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [launchedDoc('running')] });
+    const alertSpy = jest.spyOn(window, 'alert').mockImplementation(() => {});
+    await renderPage();
+    await act(async () => { await Promise.resolve(); });
+
+    await launchRun();
+    await waitFor(() => expect(panels()).toHaveLength(1));
+    fireEvent.click(button());
+    await waitFor(() => expect(screen.getByTestId('run-config-dialog')).toBeTruthy());
+    expect(alertSpy).not.toHaveBeenCalled();
+    alertSpy.mockRestore();
+  });
+
+  it('launching a second run while the first is running adds a second progress block WITHOUT resetting the first; the pill reads 2 running; each block drops out on its own terminal doc', async () => {
+    mockStreams([{ id: LAUNCHED_ID, outcome: 'hang' }, { id: SECOND_ID, outcome: 'hang' }]);
+    const docs: Record<string, string> = { [LAUNCHED_ID]: 'running', [SECOND_ID]: 'running' };
+    mockListEvaluationRuns.mockImplementation(async () => ({
+      evaluationRuns: [
+        runDoc(LAUNCHED_ID, docs[LAUNCHED_ID], undefined, 'Arm A'),
+        runDoc(SECOND_ID, docs[SECOND_ID], undefined, 'Arm B'),
+      ],
+    }));
+    await renderPage();
+    await act(async () => { await Promise.resolve(); });
+
+    await launchRun();
+    await waitFor(() => expect(panels()).toHaveLength(1));
+    expect(panels()[0].getAttribute('data-run-id')).toBe(LAUNCHED_ID);
+
+    await launchRun();
+    expect(mockExecuteBenchmarkRun).toHaveBeenCalledTimes(2);
+    await waitFor(() => expect(panels()).toHaveLength(2));
+    expect(panels().map(p => p.getAttribute('data-run-id'))).toEqual([LAUNCHED_ID, SECOND_ID]);
+    // Names come from the polled docs once they are visible.
+    await waitFor(() => expect(screen.getAllByTestId('run-progress-name').map(n => n.textContent)).toEqual(['Arm A', 'Arm B']));
+    await waitFor(() => expect(pill()?.textContent).toContain('2 running'));
+    expect(button().disabled).toBe(false);
+
+    // The FIRST run finishes (doc terminal) → only its block leaves.
+    docs[LAUNCHED_ID] = 'completed';
+    await act(async () => { jest.advanceTimersByTime(2500); });
+    await waitFor(() => expect(panels()).toHaveLength(1));
+    expect(panels()[0].getAttribute('data-run-id')).toBe(SECOND_ID);
+    await waitFor(() => expect(pill()?.textContent).toContain('1 running'));
+
+    docs[SECOND_ID] = 'cancelled';
+    await act(async () => { jest.advanceTimersByTime(2500); });
+    await waitFor(() => expect(panels()).toHaveLength(0));
+    await waitFor(() => expect(pill()).toBeNull());
+  });
+
+  it('the pill follows the POLLED docs: it counts in-flight runs launched elsewhere too, and clicking it filters the table to status: running', async () => {
+    mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [
+      makeAssociatedEvalRun({ id: 'foreign-1', status: 'running' }),
+      makeAssociatedEvalRun({ id: 'foreign-2', status: 'running', name: 'CLI run' }),
+      makeAssociatedEvalRun({ id: 'foreign-3', status: 'completed', name: 'Done run' }),
+    ] });
+    await renderPage();
+    await act(async () => { await Promise.resolve(); });
+
+    await waitFor(() => expect(pill()?.textContent).toContain('2 running'));
+    // Nothing was launched from this page → no progress blocks, button free.
+    expect(panels()).toHaveLength(0);
+    expect(button().disabled).toBe(false);
+
+    fireEvent.click(pill()!);
+    await waitFor(() => expect(screen.getByTestId('run-filter-pills')).toBeTruthy());
+    expect(within(screen.getByTestId('run-filter-pills')).getByText(/running/).textContent).toContain('running');
+    // The completed run is filtered out; only running rows remain.
+    await waitFor(() => expect(screen.getAllByTestId('run-row')).toHaveLength(2));
+    // Clicking again does not add a duplicate filter.
+    fireEvent.click(pill()!);
+    expect(screen.getAllByTestId('run-filter-pill')).toHaveLength(1);
+  });
+
+  it('the SSE stream dropping after `started` keeps the run\'s progress block (polled doc still running) — not flipped to failed — and removes it once the doc is terminal, no reload', async () => {
     mockStream('drop');
-    // The polled doc reads `running` until the test flips it to `completed`.
     let docStatus = 'running';
     mockListEvaluationRuns.mockImplementation(async () => ({ evaluationRuns: [launchedDoc(docStatus)] }));
     await renderPage();
-    // Fake timers: flush the initial load's microtasks.
     await act(async () => { await Promise.resolve(); });
 
     await launchRun();
     expect(mockExecuteBenchmarkRun).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(panels()).toHaveLength(1));
+    expect(button().disabled).toBe(false);
+    // The progress block fell back to the polled doc, so the case was not marked failed.
+    expect(within(panels()[0]).queryByText('Case 1')!.className).not.toContain('text-red');
+    expect(screen.queryByTestId('run-launch-error')).toBeNull();
 
-    // The stream is gone (rejected) but the run is still running server-side:
-    // the header stays on Running… and is NOT flipped to failed.
-    const button = screen.getByTestId('add-run-button') as HTMLButtonElement;
-    await waitFor(() => expect(button.getAttribute('data-run-state')).toBe('running'));
-    expect(button.textContent).toContain('Running');
-    expect(button.disabled).toBe(true);
-    expect(screen.getByTestId('run-progress-panel')).toBeTruthy();
-    // The progress panel fell back to the polled doc, so the case was not marked failed.
-    expect(within(screen.getByTestId('run-progress-panel')).queryByText('Case 1')!.className).not.toContain('text-red');
-
-    // Several poll cycles later the doc is still running → still Running….
     const pollsBefore = mockListEvaluationRuns.mock.calls.length;
     await act(async () => { jest.advanceTimersByTime(6000); });
     expect(mockListEvaluationRuns.mock.calls.length).toBeGreaterThan(pollsBefore);
-    expect(button.getAttribute('data-run-state')).toBe('running');
+    expect(panels()).toHaveLength(1);
 
-    // …then the server finishes the run: the next poll sees a terminal doc
-    // and the header resets, without any page reload.
     docStatus = 'completed';
     await act(async () => { jest.advanceTimersByTime(2000); });
-    await waitFor(() => expect(button.getAttribute('data-run-state')).toBe('idle'));
-    expect(button.textContent).toContain('Add Run');
-    expect(button.disabled).toBe(false);
-    expect(screen.queryByTestId('run-progress-panel')).toBeNull();
+    await waitFor(() => expect(panels()).toHaveLength(0));
+    expect(pill()).toBeNull();
+    expect(button().disabled).toBe(false);
   });
 
-  it('after the stream drops, the progress panel follows the polled doc\'s per-case results (completed / failed / cancelled / running / not started)', async () => {
+  it('after the stream drops, the progress block follows the polled doc\'s per-case results (completed / failed / cancelled / running / not started)', async () => {
     mockGetById.mockResolvedValue(makeBenchmark({ testCaseIds: ['tc-1', 'tc-2', 'tc-3', 'tc-4', 'tc-5'] }));
     mockGetByIds.mockResolvedValue([1, 2, 3, 4, 5].map(i => ({ id: `tc-${i}`, name: `Case ${i}` })));
     mockStream('drop');
@@ -592,30 +691,35 @@ describe('BenchmarkRunsPage2 — Add Run header tracks the run document, not the
 
     await launchRun();
     const panel = await waitFor(() => screen.getByTestId('run-progress-panel'));
-    await waitFor(() => expect(within(panel).getByText('1 / 5')).toBeTruthy());
-    // Icons: one per state — check via the per-row color classes.
+    await waitFor(() => expect(within(panel).getByTestId('run-progress-count').textContent).toBe('1 / 5'));
     const rowClass = (name: string) => within(panel).getByText(name).className;
     expect(rowClass('Case 4')).toContain('text-blue');   // running per doc
     expect(rowClass('Case 3')).toContain('text-amber');  // cancelled per doc
     expect(rowClass('Case 1')).toContain('text-muted');  // completed
     expect(rowClass('Case 5')).toContain('text-muted');  // not started → pending
     expect(panel.querySelectorAll('.lucide-circle-x, .lucide-x-circle').length).toBeGreaterThanOrEqual(1); // failed icon
+
+    // Collapsing hides the per-case list but keeps the header + count.
+    fireEvent.click(within(panel).getByTestId('run-progress-toggle'));
+    expect(within(panel).queryByText('Case 4')).toBeNull();
+    expect(within(panel).getByTestId('run-progress-count').textContent).toBe('1 / 5');
+    fireEvent.click(within(panel).getByTestId('run-progress-toggle'));
+    expect(within(panel).getByText('Case 4')).toBeTruthy();
   });
 
-  it('happy path: the stream delivering `completed` resets the header immediately', async () => {
+  it('happy path: the stream delivering `completed` removes the block immediately', async () => {
     mockStream('complete');
     mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [launchedDoc('completed')] });
     await renderPage();
     await act(async () => { await Promise.resolve(); });
 
     await launchRun();
-    const button = screen.getByTestId('add-run-button') as HTMLButtonElement;
-    await waitFor(() => expect(button.getAttribute('data-run-state')).toBe('idle'));
-    expect(button.textContent).toContain('Add Run');
-    expect(button.disabled).toBe(false);
+    await waitFor(() => expect(panels()).toHaveLength(0));
+    expect(button().getAttribute('data-run-state')).toBe('idle');
+    expect(button().disabled).toBe(false);
   });
 
-  it('the header is bound to the DOCUMENT even while the stream is alive: a run cancelled from another tab (doc → cancelled) resets the button although the SSE call never returned', async () => {
+  it('a launched run is bound to its DOCUMENT even while the stream is alive: cancelled from another tab (doc → cancelled) removes the block although the SSE call never returned', async () => {
     const { finish } = mockStream('hang');
     let docStatus = 'running';
     mockListEvaluationRuns.mockImplementation(async () => ({ evaluationRuns: [launchedDoc(docStatus)] }));
@@ -623,34 +727,65 @@ describe('BenchmarkRunsPage2 — Add Run header tracks the run document, not the
     await act(async () => { await Promise.resolve(); });
 
     await launchRun();
-    const button = screen.getByTestId('add-run-button') as HTMLButtonElement;
-    await waitFor(() => expect(button.getAttribute('data-run-state')).toBe('running'));
+    await waitFor(() => expect(panels()).toHaveLength(1));
     await act(async () => { jest.advanceTimersByTime(4000); });
-    expect(button.getAttribute('data-run-state')).toBe('running');
+    expect(panels()).toHaveLength(1);
 
     docStatus = 'cancelled';
     await act(async () => { jest.advanceTimersByTime(2000); });
-    await waitFor(() => expect(button.getAttribute('data-run-state')).toBe('idle'));
-    expect(button.textContent).toContain('Add Run');
+    await waitFor(() => expect(panels()).toHaveLength(0));
     // Late stream completion is harmless.
     await act(async () => { finish(); });
-    expect(button.getAttribute('data-run-state')).toBe('idle');
+    expect(panels()).toHaveLength(0);
+    expect(button().disabled).toBe(false);
   });
 
-  it('a POST that fails before `started` (no runId) resets to Add Run and marks the panel failed (nothing is running server-side)', async () => {
+  it('the button is disabled only for the launching window (POST sent, no `started` yet) and re-enables as soon as `started` arrives', async () => {
+    let started!: (ev: unknown) => void;
+    mockExecuteBenchmarkRun.mockImplementation((_bm: unknown, _rc: unknown, _p: any, onStarted: any) => {
+      started = onStarted;
+      return new Promise(() => {}); // stays open
+    });
+    mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [] });
+    await renderPage();
+    await act(async () => { await Promise.resolve(); });
+
+    await launchRun();
+    expect(button().getAttribute('data-run-state')).toBe('launching');
+    expect(button().disabled).toBe(true);
+    expect(button().textContent).toContain('Add Run');
+
+    await act(async () => { started({ runId: LAUNCHED_ID, testCases: [{ id: 'tc-1', name: 'Case 1', status: 'pending' }] }); });
+    expect(button().getAttribute('data-run-state')).toBe('idle');
+    expect(button().disabled).toBe(false);
+    // The doc hasn't been polled yet — the block is shown optimistically within the grace.
+    expect(panels()).toHaveLength(1);
+  });
+
+  it('a POST that fails before `started` (no runId) re-enables Add Run, shows a dismissible error and tracks nothing (nothing is running server-side)', async () => {
     mockExecuteBenchmarkRun.mockRejectedValue(new Error('Benchmark not found: bench-1'));
     await renderPage();
     await act(async () => { await Promise.resolve(); });
 
     await launchRun();
-    const button = screen.getByTestId('add-run-button') as HTMLButtonElement;
-    await waitFor(() => expect(button.getAttribute('data-run-state')).toBe('idle'));
-    expect(button.disabled).toBe(false);
+    await waitFor(() => expect(button().getAttribute('data-run-state')).toBe('idle'));
+    expect(button().disabled).toBe(false);
+    expect(panels()).toHaveLength(0);
     expect(console.error).toHaveBeenCalledWith('Error running benchmark:', expect.any(Error));
+    const err = screen.getByTestId('run-launch-error');
+    expect(err.textContent).toContain('Benchmark not found: bench-1');
+    fireEvent.click(within(err).getByRole('button'));
+    expect(screen.queryByTestId('run-launch-error')).toBeNull();
   });
 
   it('a fast double-click on Start Run posts exactly once (synchronous re-entrancy guard)', async () => {
-    const { finish } = mockStream('hang');
+    // `started` arrives asynchronously (network round-trip), so a same-tick
+    // second click lands inside the launching window.
+    let started!: (ev: unknown) => void;
+    mockExecuteBenchmarkRun.mockImplementation((_bm: unknown, _rc: unknown, _p: any, onStarted: any) => {
+      started = onStarted;
+      return new Promise(() => {});
+    });
     mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [launchedDoc('running')] });
     await renderPage();
     await act(async () => { await Promise.resolve(); });
@@ -663,23 +798,7 @@ describe('BenchmarkRunsPage2 — Add Run header tracks the run document, not the
       fireEvent.click(startBtn); // same tick — before React re-renders/disables anything
     });
     expect(mockExecuteBenchmarkRun).toHaveBeenCalledTimes(1);
-    await act(async () => { finish(); });
-  });
-
-  it('the "already in progress" guard uses the derived state (alert while running, dialog when idle)', async () => {
-    const { finish } = mockStream('hang');
-    mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [launchedDoc('running')] });
-    const alertSpy = jest.spyOn(window, 'alert').mockImplementation(() => {});
-    await renderPage();
-    await act(async () => { await Promise.resolve(); });
-
-    await launchRun();
-    const button = screen.getByTestId('add-run-button') as HTMLButtonElement;
-    await waitFor(() => expect(button.getAttribute('data-run-state')).toBe('running'));
-    // The button is disabled, but the handler must still be guarded.
-    fireEvent.click(button);
-    expect(screen.queryByTestId('run-config-dialog')).toBeNull();
-    await act(async () => { finish(); });
-    alertSpy.mockRestore();
+    await act(async () => { started({ runId: LAUNCHED_ID, testCases: [] }); });
+    expect(panels()).toHaveLength(1);
   });
 });
