@@ -206,6 +206,7 @@ export const BenchmarksPage4: React.FC = () => {
       console.error('Failed to load:', err);
     } finally {
       setLoading(false);
+      markPageReady('benchmarks');
     }
   }, [showSampleData]);
 
