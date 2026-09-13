@@ -23,7 +23,16 @@
  *      moved on: markPageReady is a no-op unless it still matches the
  *      currently active navigation.
  *   3. While a navigation is active, `window.fetch` calls to `/api/*` are
- *      counted (count + total ms) into that navigation's record.
+ *      counted (count + total ms) into whichever record was current WHEN
+ *      THE CALL STARTED (not whichever is current when it resolves -- a
+ *      slow request must count against the page that made it, not
+ *      whichever page the user has since navigated to), and only until
+ *      that record is finalized by `markPageReady` (a background
+ *      poll/refresh firing after "ready" must not keep inflating a number
+ *      already reported as final) or `isPageLatencyActive()` goes false
+ *      (so toggling debug off stops polluting the hidden record even
+ *      before the next navigation gets a chance to actually restore
+ *      `window.fetch`).
  *
  * Finalized records are pushed to a capped (10) history and logged via the
  * existing `debug()` logger so they land in the console/server debug log.
@@ -113,13 +122,26 @@ function wrapFetch(): void {
   const wrapped: typeof fetch = async (...args: Parameters<typeof fetch>) => {
     const url = apiUrlFrom(args[0]);
     const isApiCall = url.includes('/api/');
+    // Attribute to whichever navigation is active WHEN THE CALL STARTS, not
+    // whichever is active when it resolves -- a slow request started on
+    // page A that resolves after the user has already navigated to page B
+    // must count against A's window, not silently pollute B's (codex_review
+    // finding). Captured once, up front, deliberately NOT re-read from the
+    // mutable module-level `current` inside `finally`.
+    const recordAtCallStart = current;
     const t0 = performance.now();
     try {
       return await boundOriginal(...args);
     } finally {
-      if (isApiCall && current) {
-        current.apiCount += 1;
-        current.apiTotalMs += Math.round(performance.now() - t0);
+      // Also stop counting once the record has been finalized (markPageReady
+      // already fired) -- a background poll/refresh firing after "ready"
+      // must not keep inflating a number the HUD already reported as final
+      // -- and once debug/dev mode is turned off, even before the NEXT
+      // navigation gets a chance to actually unwrap `window.fetch` (both
+      // codex_review findings).
+      if (isApiCall && recordAtCallStart && recordAtCallStart.readyMs === null && isPageLatencyActive()) {
+        recordAtCallStart.apiCount += 1;
+        recordAtCallStart.apiTotalMs += Math.round(performance.now() - t0);
         notify();
       }
     }
@@ -186,6 +208,14 @@ export function markPageReady(routeKey: string): void {
   if (!isPageLatencyActive() || !current) return;
   if (current.route !== routeKey) return;
   if (current.readyMs !== null) return;
+  // Render is measured 2 animation frames after navigation start; by the
+  // time a page's primary data load resolves that has virtually always
+  // already fired, but finalize it here too (rather than leaving it a
+  // permanent "—" in this record's history entry) for the rare case a page
+  // reports ready before its own first paint has been observed.
+  if (current.renderMs === null) {
+    current.renderMs = Math.round(performance.now() - currentStartPerf);
+  }
   current.readyMs = Math.round(performance.now() - currentStartPerf);
   debug(
     'pageLatency',
