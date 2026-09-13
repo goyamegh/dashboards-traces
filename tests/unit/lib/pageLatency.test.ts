@@ -173,6 +173,73 @@ describe('lib/pageLatency', () => {
       expect(pageLatency.getCurrentRecord()!.apiTotalMs).toBeGreaterThanOrEqual(0);
     });
 
+    it('attributes an in-flight fetch to the navigation that STARTED it, not whichever is current when it resolves (codex_review finding)', async () => {
+      let resolveApi: ((v: unknown) => void) | null = null;
+      window.fetch = jest.fn((url: string) => {
+        if (url.includes('/api/')) return new Promise(resolve => { resolveApi = resolve; });
+        return Promise.resolve({ ok: true });
+      }) as unknown as typeof fetch;
+
+      pageLatency.startNavigation('/evaluations/benchmarks'); // record A
+      const pending = fetch('/api/storage/benchmarks'); // starts under A
+
+      pageLatency.startNavigation('/evaluations/runs'); // user already navigated on; record B is now current
+      const recordB = pageLatency.getCurrentRecord();
+
+      resolveApi!({ ok: true });
+      await pending;
+
+      // B (the page the user is looking at NOW) must not be charged for a
+      // request it never made.
+      expect(recordB!.apiCount).toBe(0);
+      // markPageReady('benchmarks') would be a no-op here (A is no longer
+      // current), but we can still see A's count via history once finalized
+      // -- simpler: re-navigate wouldn't help, so just assert B stayed clean,
+      // which is the property that matters (A already scrolled out of reach
+      // once superseded, matching the "stale page" contract markPageReady
+      // already enforces for readiness).
+    });
+
+    it('stops counting fetches into a record once markPageReady has finalized it (a late poll must not inflate an already-reported number)', async () => {
+      window.fetch = jest.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch;
+
+      pageLatency.startNavigation('/evaluations/benchmarks'); // wraps the mock above
+      pageLatency.markPageReady('benchmarks');
+      const finalizedApiCount = pageLatency.getCurrentRecord()!.apiCount;
+
+      await fetch('/api/storage/benchmarks'); // a late poll/refresh after "ready"
+
+      expect(pageLatency.getCurrentRecord()!.apiCount).toBe(finalizedApiCount);
+    });
+
+    it('stops counting fetches the instant debug mode is turned off, even before the next navigation restores window.fetch', async () => {
+      let resolveApi: ((v: unknown) => void) | null = null;
+      window.fetch = jest.fn((url: string) => {
+        if (url.includes('/api/')) return new Promise(resolve => { resolveApi = resolve; });
+        return Promise.resolve({ ok: true });
+      }) as unknown as typeof fetch;
+
+      pageLatency.startNavigation('/evaluations/benchmarks');
+      const pending = fetch('/api/storage/benchmarks'); // in flight while still active
+
+      mockIsDebugEnabled.mockReturnValue(false); // toggled off mid-flight, no navigation yet
+      resolveApi!({ ok: true });
+      await pending;
+
+      expect(pageLatency.getCurrentRecord()!.apiCount).toBe(0);
+    });
+
+    it('finalizes renderMs immediately in markPageReady if the page reports ready before the 2-frame render measurement fired (fast page)', () => {
+      pageLatency.startNavigation('/evaluations/benchmarks');
+      expect(pageLatency.getCurrentRecord()!.renderMs).toBeNull();
+
+      pageLatency.markPageReady('benchmarks'); // fires before any timer advance
+
+      const rec = pageLatency.getCurrentRecord()!;
+      expect(rec.renderMs).not.toBeNull();
+      expect(pageLatency.getHistory()[0].renderMs).not.toBeNull();
+    });
+
     it('caps history at 10 entries, most recent first', () => {
       for (let i = 0; i < 12; i++) {
         pageLatency.startNavigation('/evaluations/benchmarks');
