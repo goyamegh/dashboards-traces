@@ -28,7 +28,7 @@
  */
 
 import type { BenchmarkRunStatus } from '@/types';
-import { getEffectiveRunStatus, isTerminalRunStatus } from '@/lib/runStats';
+import { isRunInProgress, isTerminalRunStatus } from '@/lib/runStats';
 
 /** A run this page launched; `launchedAt` anchors the missing-doc grace. */
 export interface LaunchedRun {
@@ -73,14 +73,15 @@ export function pruneLaunchedRuns<T extends LaunchedRun>(
 }
 
 /**
- * Number of in-flight runs for the `● N running` header pill — every
- * non-terminal run in the polled list, whether or not this page launched it.
- * Uses the same effective status the runs table renders, so the pill agrees
- * with the table's `status: running` filter it links to (legacy status-less
- * docs resolve through their per-case results the same way there).
+ * Number of in-flight runs for the `● N running` header pill — every run in
+ * the polled list whose EFFECTIVE status is `running`, whether or not this
+ * page launched it. Deliberately the same predicate the runs table's
+ * `status: running` filter applies (`getEffectiveRunStatus`), so clicking the
+ * pill always lands on exactly N rows; legacy status-less docs resolve
+ * through their per-case results the same way there.
  */
 export function countRunsInFlight(runs: ReadonlyArray<PolledRunDoc>): number {
-  return runs.filter(r => !isTerminalRunStatus(getEffectiveRunStatus(r))).length;
+  return runs.filter(r => isRunInProgress(r)).length;
 }
 
 export interface LaunchedCaseStatus {
