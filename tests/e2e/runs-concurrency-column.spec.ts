@@ -17,9 +17,10 @@
  */
 
 import { test, expect } from './fixtures/test-fixtures';
-import { uniqueTestName } from '../helpers/testDataTracker';
+import { createTestDataTracker, uniqueTestName } from '../helpers/testDataTracker';
 
 test.describe('Run concurrency — benchmark Runs tab + Evaluation Runs list + inspector header', () => {
+  const tracker = createTestDataTracker();
   let benchmarkId: string | null = null;
   const testCaseIds: string[] = [];
   const RUN_SEQ = uniqueTestName('conc-seq');
@@ -29,7 +30,7 @@ test.describe('Run concurrency — benchmark Runs tab + Evaluation Runs list + i
   const RUN_ID_PAR = `run-conc-par-${Date.now()}`;
   const RUN_ID_LEGACY = `run-conc-legacy-${Date.now()}`;
 
-  test.beforeAll(async ({ request, testData }) => {
+  test.beforeAll(async ({ request }) => {
     for (let i = 0; i < 2; i++) {
       const r = await request.post('/api/storage/test-cases', {
         data: {
@@ -40,7 +41,7 @@ test.describe('Run concurrency — benchmark Runs tab + Evaluation Runs list + i
       if (!r.ok()) return;
       const j = await r.json();
       const id = j.id || j.testCase?.id;
-      testData.testCase(id);
+      tracker.testCase(id);
       testCaseIds.push(id);
     }
     if (testCaseIds.length !== 2) return;
@@ -55,7 +56,7 @@ test.describe('Run concurrency — benchmark Runs tab + Evaluation Runs list + i
     });
     if (!bmRes.ok()) return;
     benchmarkId = (await bmRes.json()).id;
-    testData.benchmark(benchmarkId);
+    tracker.benchmark(benchmarkId);
 
     const get = await request.get(`/api/storage/benchmarks/${benchmarkId}`);
     const bm = await get.json();
@@ -80,6 +81,10 @@ test.describe('Run concurrency — benchmark Runs tab + Evaluation Runs list + i
       },
     });
     if (!put.ok()) { benchmarkId = null; return; }
+  });
+
+  test.afterAll(async () => {
+    await tracker.cleanup();
   });
 
   async function openRunsTab(page: import('@playwright/test').Page) {
@@ -126,7 +131,7 @@ test.describe('Run concurrency — benchmark Runs tab + Evaluation Runs list + i
     await expect(page.getByTestId('run-inspector-concurrency')).toContainText('conc 3', { timeout: 15_000 });
 
     await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs/${RUN_ID_LEGACY}/inspect`);
-    await expect(page.getByText('demo-model')).toBeVisible({ timeout: 15_000 });
+    await expect(page.getByText('Demo Model')).toBeVisible({ timeout: 15_000 });
     await expect(page.getByTestId('run-inspector-concurrency')).toHaveCount(0);
   });
 

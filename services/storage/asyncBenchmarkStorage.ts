@@ -98,6 +98,10 @@ function toBenchmarkRun(stored: StorageBenchmarkRunConfig): BenchmarkRun {
     judgeModelId: stored.judgeModelId,
     evaluatorId: stored.evaluatorId,
     headers: stored.headers,
+    // Parallel test case execution limit (1 = sequential, undefined = legacy
+    // run persisted before this field existed) — surfaced as the "Conc."
+    // column on the benchmark Runs tab / Evaluation Runs list.
+    concurrency: (stored as any).concurrency,
     benchmarkVersion: (stored as any).benchmarkVersion ?? 1,
     testCaseSnapshots: (stored as any).testCaseSnapshots ?? [],
     status: stored.status as BenchmarkRunStatus | undefined,
@@ -145,6 +149,7 @@ function toStorageFormat(benchmark: Partial<Benchmark>): Record<string, any> {
       judgeModelId: run.judgeModelId,
       evaluatorId: run.evaluatorId,
       headers: run.headers,
+      ...(run.concurrency !== undefined && { concurrency: run.concurrency }),
       createdAt: run.createdAt,
       benchmarkVersion: run.benchmarkVersion,
       testCaseSnapshots: run.testCaseSnapshots,
@@ -301,6 +306,7 @@ class AsyncBenchmarkStorage {
       judgeModelId: r.judgeModelId,
       evaluatorId: r.evaluatorId,
       headers: r.headers,
+      ...(r.concurrency !== undefined && { concurrency: r.concurrency }),
       createdAt: r.createdAt,
       status: r.status,
       benchmarkVersion: r.benchmarkVersion,
