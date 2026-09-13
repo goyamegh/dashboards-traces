@@ -146,6 +146,15 @@ describe('AsyncBenchmarkStorage', () => {
       const legacyResult = await asyncBenchmarkStorage.getById('exp-1');
       expect(legacyResult?.runs[0].concurrency).toBeUndefined();
     });
+
+    it('normalizes a schemaless stored `null` concurrency to `undefined` (codex_review finding: render sites only check `=== undefined`)', async () => {
+      const withNullConcurrency = createMockStorageExperiment();
+      (withNullConcurrency.runs[0] as any).concurrency = null;
+      mockOsExperiments.getById.mockResolvedValueOnce(withNullConcurrency);
+
+      const result = await asyncBenchmarkStorage.getById('exp-1');
+      expect(result?.runs[0].concurrency).toBeUndefined();
+    });
   });
 
   describe('create', () => {

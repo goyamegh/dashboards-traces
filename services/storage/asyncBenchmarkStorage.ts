@@ -100,8 +100,11 @@ function toBenchmarkRun(stored: StorageBenchmarkRunConfig): BenchmarkRun {
     headers: stored.headers,
     // Parallel test case execution limit (1 = sequential, undefined = legacy
     // run persisted before this field existed) — surfaced as the "Conc."
-    // column on the benchmark Runs tab / Evaluation Runs list.
-    concurrency: stored.concurrency,
+    // column on the benchmark Runs tab / Evaluation Runs list. Normalized to
+    // `undefined` (never `null`) so every render site's `=== undefined`
+    // check is the single source of truth for "missing" (codex_review
+    // finding: a schemaless stored `null` would otherwise slip past it).
+    concurrency: stored.concurrency ?? undefined,
     benchmarkVersion: (stored as any).benchmarkVersion ?? 1,
     testCaseSnapshots: (stored as any).testCaseSnapshots ?? [],
     status: stored.status as BenchmarkRunStatus | undefined,
