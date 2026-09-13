@@ -301,7 +301,7 @@ describe('POST /api/storage/evaluation-runs/:id/retry-judgement — evaluator / 
     expect(job.summary.retried).toBe(1);
 
     const persisted = await getReport(report.id);
-    expect(persisted.evaluatorId).toBe('system-tool-usage'); // inherited from the run
+    expect(persisted.evaluatorId).toBe('system-tool-usage'); // inherited from the run (the report had none)
     expect(persisted.judgeModelId).toBe('demo-model');
     expect(persisted.judgementRetryCount).toBe(1);
     expect((await getRun(run.id)).lastJudgementRetry).toEqual({

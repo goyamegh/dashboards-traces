@@ -314,10 +314,6 @@ export async function rerunEvaluationRun(id: string, overrides?: RerunOverrides)
  * counts the same "completed agent, no judge verdict" cases the server's
  * `scope=errored` selection re-judges.
  */
-export async function retryJudgementEvaluationRun(id: string): Promise<RetryJudgementSummary> {
-  return retryJudgement(id, 'errored');
-}
-
 /**
  * Update an evaluation run (partial).
  */
@@ -406,14 +402,13 @@ export interface RetryJudgementRequest {
 
 export async function retryJudgement(
   id: string,
-  request: RetryJudgementRequest | 'errored' | 'all' = 'errored',
+  request: RetryJudgementRequest = {},
   onProgress?: (completed: number, total: number) => void
 ): Promise<RetryJudgementSummary> {
-  const body: RetryJudgementRequest = typeof request === 'string' ? { scope: request } : request;
   const response = await fetch(`/api/storage/evaluation-runs/${id}/retry-judgement`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scope: 'errored', ...body }),
+    body: JSON.stringify({ scope: 'errored', ...request }),
   });
 
   if (!response.ok) {

@@ -440,9 +440,9 @@ describe('retryJudgementForRun', () => {
         expect(resolveRetryJudgeConfig(report, run, { judgeModelId: null }).judgeModelId).toBe('agent-model');
       });
 
-      it('falls through run → report → default for the judge model when the run has none', () => {
+      it('falls through run → report → default for the judge model when the run has none; an unset evaluator resolves to the CONCRETE built-in default (what /api/judge would use anyway) so the report is stamped truthfully', () => {
         expect(resolveRetryJudgeConfig(report, { judgeModelId: undefined, evaluatorId: undefined }))
-          .toEqual({ judgeModelId: 'report-model', evaluatorId: undefined });
+          .toEqual({ judgeModelId: 'report-model', evaluatorId: 'system-rca-default' });
       });
     });
 
@@ -486,6 +486,20 @@ describe('retryJudgementForRun', () => {
       // Agent output untouched.
       expect(updated.trajectory).toEqual(originalTrajectory);
       expect(updated.rawEvents).toEqual([{ type: 'RUN_STARTED' }]);
+    });
+
+    it('replaces a stale report.evaluatorId with the evaluator that actually judged the retry (default when neither override nor run pins one) — codex_review finding', async () => {
+      mockedCallBedrockJudge.mockResolvedValue(passing);
+      const reports: Record<string, EvaluationReport> = {
+        'r-stale': makeReport({ id: 'r-stale', testCaseId: 'tc-s', metricsStatus: 'error' as any, evaluatorId: 'custom-that-was-deleted' }),
+      };
+      const storage = makeStorage(reports);
+      const run = makeRun({ evaluatorId: undefined, results: { 'tc-s': { reportId: 'r-stale', status: 'completed' } as any } });
+
+      await retryJudgementForRun(run, storage as any);
+
+      expect(mockedCallBedrockJudge.mock.calls[0][5]).toBe('system-rca-default');
+      expect((reports['r-stale'] as any).evaluatorId).toBe('system-rca-default');
     });
 
     it('increments judgementRetryCount on a second retry and still keeps exactly one judgement', async () => {
