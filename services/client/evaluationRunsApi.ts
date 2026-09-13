@@ -396,13 +396,24 @@ const RETRY_JUDGEMENT_POLL_MAX_ATTEMPTS = 900;
  * the server kept working. `onProgress(completed, total)` fires after the
  * initial POST and after every poll, so callers can render live progress.
  */
+export interface RetryJudgementRequest {
+  scope?: 'errored' | 'all';
+  /** Evaluator to judge with; omitted → the run's own evaluator. */
+  evaluatorId?: string;
+  /** Judge model; `null` = evaluator default; omitted → the run's own judge model. */
+  judgeModelId?: string | null;
+}
+
 export async function retryJudgement(
   id: string,
-  scope: 'errored' | 'all' = 'errored',
+  request: RetryJudgementRequest | 'errored' | 'all' = 'errored',
   onProgress?: (completed: number, total: number) => void
 ): Promise<RetryJudgementSummary> {
-  const response = await fetch(`/api/storage/evaluation-runs/${id}/retry-judgement?scope=${scope}`, {
+  const body: RetryJudgementRequest = typeof request === 'string' ? { scope: request } : request;
+  const response = await fetch(`/api/storage/evaluation-runs/${id}/retry-judgement`, {
     method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scope: 'errored', ...body }),
   });
 
   if (!response.ok) {

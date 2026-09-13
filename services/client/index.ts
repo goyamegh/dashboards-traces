@@ -59,6 +59,7 @@ export {
   type EvaluationRunProgress,
   type EvaluationRunStartedEvent,
   type RetryJudgementSummary,
+  type RetryJudgementRequest,
   type RetryJudgementCaseResult,
   type RetryJudgementJobStatus,
   type RerunOverrides,
