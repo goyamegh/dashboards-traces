@@ -74,8 +74,8 @@ export const RunFilterPills: React.FC<{
 
 // ─── Table ───────────────────────────────────────────────────────────────────
 
-function SortHeader({ label, field, sort, onSort, className }: {
-  label: string; field: RunSortField; sort: RunSort; onSort: (f: RunSortField) => void; className?: string;
+function SortHeader({ label, field, sort, onSort, className, title }: {
+  label: string; field: RunSortField; sort: RunSort; onSort: (f: RunSortField) => void; className?: string; title?: string;
 }) {
   const active = sort.field === field;
   return (
@@ -84,6 +84,7 @@ function SortHeader({ label, field, sort, onSort, className }: {
       aria-sort={active ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
       className={`h-7 px-2 text-left align-middle font-medium text-[11px] text-muted-foreground bg-background border-b cursor-pointer select-none hover:text-foreground transition-colors whitespace-nowrap ${className || ''}`}
       onClick={() => onSort(field)}
+      title={title}
     >
       <span className="inline-flex items-center gap-1">
         {label}
@@ -189,18 +190,14 @@ export const BenchmarkRunsTable: React.FC<BenchmarkRunsTableProps> = (props) => 
             <SortHeader label="Agent" field="agent" sort={sort} onSort={onSort} />
             <SortHeader label="Model" field="model" sort={sort} onSort={onSort} />
             <SortHeader label="Size" field="size" sort={sort} onSort={onSort} className="text-right" />
-            <th
-              scope="col"
-              aria-sort={sort.field === 'concurrency' ? (sort.dir === 'asc' ? 'ascending' : 'descending') : 'none'}
-              className="h-7 px-2 text-right align-middle font-medium text-[11px] text-muted-foreground bg-background border-b cursor-pointer select-none hover:text-foreground transition-colors whitespace-nowrap"
-              onClick={() => onSort('concurrency')}
+            <SortHeader
+              label="Conc."
+              field="concurrency"
+              sort={sort}
+              onSort={onSort}
+              className="text-right"
               title="Concurrency — parallel test cases"
-            >
-              <span className="inline-flex items-center gap-1">
-                Conc.
-                {sort.field === 'concurrency' && <ChevronDown size={10} className={sort.dir === 'asc' ? 'rotate-180' : ''} />}
-              </span>
-            </th>
+            />
             <SortHeader label="Pass %" field="passRate" sort={sort} onSort={onSort} className="text-right" />
             <SortHeader label="Judge" field="evaluator" sort={sort} onSort={onSort} />
             <SortHeader label="J. Model" field="judge" sort={sort} onSort={onSort} />
