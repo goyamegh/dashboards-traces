@@ -778,6 +778,92 @@ describe('BenchmarkRunsPage2 — Add Run is never blocked by running runs; launc
     expect(screen.queryByTestId('run-launch-error')).toBeNull();
   });
 
+  it('a POST that is accepted but never delivers `started` releases the button after the bounded launching timeout (never a forever-disable); a late `started` still gets its block', async () => {
+    let started!: (ev: unknown) => void;
+    mockExecuteBenchmarkRun.mockImplementation((_bm: unknown, _rc: unknown, _p: any, onStarted: any) => {
+      started = onStarted;
+      return new Promise(() => {}); // stalls before `started`
+    });
+    mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [] });
+    await renderPage();
+    await act(async () => { await Promise.resolve(); });
+
+    await launchRun();
+    expect(button().disabled).toBe(true);
+    await act(async () => { jest.advanceTimersByTime(29_000); });
+    expect(button().disabled).toBe(true);
+    await act(async () => { jest.advanceTimersByTime(1_500); });
+    expect(button().disabled).toBe(false);
+    expect(button().getAttribute('data-run-state')).toBe('idle');
+    expect(screen.getByTestId('run-launch-error').textContent).toMatch(/did not report starting/);
+
+    // A late `started` is still honoured — but must NOT touch a newer launch's window.
+    await act(async () => { started({ runId: LAUNCHED_ID, testCases: [] }); });
+    expect(panels()).toHaveLength(1);
+    expect(button().disabled).toBe(false);
+  });
+
+  it('a stale `started` from an older launch never releases a NEWER launch\'s launching window', async () => {
+    const starters: Array<(ev: unknown) => void> = [];
+    mockExecuteBenchmarkRun.mockImplementation((_bm: unknown, _rc: unknown, _p: any, onStarted: any) => {
+      starters.push(onStarted);
+      return new Promise(() => {});
+    });
+    mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [] });
+    await renderPage();
+    await act(async () => { await Promise.resolve(); });
+
+    await launchRun();                                   // launch #1 — stalls
+    await act(async () => { jest.advanceTimersByTime(31_000); }); // timed out → window released
+    expect(button().disabled).toBe(false);
+    await launchRun();                                   // launch #2 — owns the window now
+    expect(button().disabled).toBe(true);
+    await act(async () => { starters[0]({ runId: LAUNCHED_ID, testCases: [] }); }); // stale #1 `started`
+    expect(button().disabled).toBe(true);                // #2 still launching
+    await act(async () => { starters[1]({ runId: SECOND_ID, testCases: [] }); });
+    expect(button().disabled).toBe(false);
+    expect(panels().map(p => p.getAttribute('data-run-id'))).toEqual([LAUNCHED_ID, SECOND_ID]);
+  });
+
+  it('Edit stays disabled while runs launched from THIS page are in flight (their blocks pin a snapshot), but not for runs launched elsewhere', async () => {
+    mockStream('hang');
+    let docStatus = 'running';
+    mockListEvaluationRuns.mockImplementation(async () => ({ evaluationRuns: [
+      launchedDoc(docStatus),
+      makeAssociatedEvalRun({ id: 'foreign-1', status: 'running' }),
+    ] }));
+    await renderPage();
+    await act(async () => { await Promise.resolve(); });
+    const edit = () => screen.getByTestId('edit-benchmark-button') as HTMLButtonElement;
+    // Running runs launched elsewhere (the mocked list already serves two
+    // running docs) do not block Edit — only THIS page's launches do.
+    await waitFor(() => expect(pill()?.textContent).toContain('2 running'));
+    expect(edit().disabled).toBe(false);
+
+    await launchRun();
+    await waitFor(() => expect(panels()).toHaveLength(1));
+    expect(edit().disabled).toBe(true);
+    expect(button().disabled).toBe(false); // Add Run is still free
+
+    docStatus = 'completed';
+    await act(async () => { jest.advanceTimersByTime(2500); });
+    await waitFor(() => expect(panels()).toHaveLength(0));
+    expect(edit().disabled).toBe(false);
+  });
+
+  it('the default run name numbers off every run the page knows about (embedded + associated), so back-to-back arms do not all suggest the same "Run N"', async () => {
+    mockListEvaluationRuns.mockResolvedValue({ evaluationRuns: [
+      makeAssociatedEvalRun({ id: 'assoc-1', status: 'completed' }),
+      makeAssociatedEvalRun({ id: 'assoc-2', status: 'running' }),
+    ] });
+    await renderPage();
+    await act(async () => { await Promise.resolve(); });
+    await waitFor(() => expect(screen.getAllByTestId('run-row')).toHaveLength(3)); // 1 embedded + 2 associated
+    fireEvent.click(button());
+    await waitFor(() => expect(screen.getByTestId('run-config-dialog')).toBeTruthy());
+    expect((screen.getByTestId('run-config-name-input') as HTMLInputElement).value).toBe('Run 4');
+  });
+
   it('a fast double-click on Start Run posts exactly once (synchronous re-entrancy guard)', async () => {
     // `started` arrives asynchronously (network round-trip), so a same-tick
     // second click lands inside the launching window.
