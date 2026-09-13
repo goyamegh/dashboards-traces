@@ -1174,7 +1174,13 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
               <div data-testid="improvement-strategies-section">
                 <h3 className="text-lg font-semibold mb-3 flex items-center">
                   <Lightbulb size={18} className="mr-2" />
-                  Improvement Strategies
+                  {/* Own span so pre-existing exact-text locators for the
+                      "Improvement Strategies" heading (e.g. the agent-trace-judge
+                      regression spec) keep matching now that the count Badge is a
+                      sibling inside the same h3 — the h3's OWN text content is
+                      "Improvement Strategies" + the badge digits, which no longer
+                      equals the exact string. */}
+                  <span>Improvement Strategies</span>
                   <Badge variant="secondary" className="ml-2 text-xs">{strategies.length}</Badge>
                 </h3>
                 {recovered && (
