@@ -23,7 +23,7 @@ import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   GitCompare, CheckCircle2, XCircle, Play,
   Plus, X, Loader2, Circle, Check,
-  Ban, Pencil,
+  Ban, Pencil, ChevronDown, ChevronRight,
 } from 'lucide-react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -34,7 +34,9 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { asyncBenchmarkStorage, asyncRunStorage, asyncTestCaseStorage } from '@/services/storage';
 import { isRunInProgress, getEffectiveRunStatus } from '@/lib/runStats';
-import { deriveAddRunButtonState } from '@/lib/runLaunchState';
+import {
+  LaunchedRun, pruneLaunchedRuns, countRunsInFlight, progressFromPolledDoc,
+} from '@/lib/runLaunchState';
 import { debug } from '@/lib/debug';
 import { executeBenchmarkRun, listEvaluationRuns, deleteEvaluationRun, cancelEvaluationRun } from '@/services/client';
 import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
@@ -68,6 +70,11 @@ interface UseCaseRunStatus {
   id: string;
   name: string;
   status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled';
+}
+
+/** A run launched from this page plus the case list its progress block renders. */
+interface LaunchedRunEntry extends LaunchedRun {
+  cases: UseCaseRunStatus[];
 }
 
 const POLL_INTERVAL_MS = 2000;
@@ -128,31 +135,28 @@ export const BenchmarkRunsPage2: React.FC = () => {
     return () => { cancelled = true; };
   }, []);
 
-  // Running state for the run THIS page launched via Add Run.
-  //
-  // Bug (owner report, 2026-09-09): the header button used to be bound to a
-  // single `isRunning` boolean that was only reset when the launching SSE
-  // stream ended. On 30–60+ min runs an idle proxy/tunnel/browser closes that
-  // stream long before `completed` arrives, so the button spun forever even
-  // though the run finished server-side (the per-row status on the same page
-  // was correct — it comes from the polled run docs). The button now derives
-  // from the polled RUN DOCUMENT: `isLaunching` covers the window between
-  // POST and the `started` event (no runId yet); after that `launchedRunId`
-  // is looked up in the merged, polled run list and the button stays
-  // "Running…" exactly until that doc is terminal — whether or not the SSE
-  // stream is still alive. See lib/runLaunchState.ts.
+  // Runs THIS page launched via Add Run — a LIST, because launching several
+  // arms (agent/model variants) on one benchmark back-to-back is the normal
+  // flow (owner, 2026-09-13). The header button is never disabled by running
+  // runs; it only pauses for the ~1 s `isLaunching` window between the POST
+  // and the `started` event (no runId yet). Each launched run is tracked by
+  // its polled RUN DOCUMENT — not by the SSE connection that launched it,
+  // which idle proxies/tunnels close long before `completed` on long runs
+  // (owner, 2026-09-09) — and drops out of `launchedRuns` when that doc is
+  // terminal. See lib/runLaunchState.ts.
   const [isLaunching, setIsLaunching] = useState(false);
-  const [launchedRun, setLaunchedRun] = useState<{ id: string; at: number } | null>(null);
-  // True while the launching SSE stream is still delivering per-case
-  // progress; once it drops (or ends without `completed`) the progress panel
-  // falls back to the polled doc's `results` counts.
-  const [isStreamLive, setIsStreamLive] = useState(false);
+  const [launchedRuns, setLaunchedRuns] = useState<LaunchedRunEntry[]>([]);
+  // Per-run rows fed by a LIVE launching SSE stream (keyed by runId). An
+  // entry is removed when its stream drops or ends; from then on that run's
+  // progress block is rebuilt from the polled doc's `results`.
+  const [liveStreamRows, setLiveStreamRows] = useState<Record<string, UseCaseRunStatus[]>>({});
+  const [collapsedLaunchedRunIds, setCollapsedLaunchedRunIds] = useState<Set<string>>(new Set());
+  // A POST that failed before `started` (nothing is running server-side).
+  const [launchError, setLaunchError] = useState<string | null>(null);
   // Synchronous re-entrancy guard for handleStartRun: React state (and the
   // disabled attribute) only catch a second click after the next render, so
-  // a fast double-click on "Start Run" could otherwise POST twice and the
-  // second `started` would overwrite the run this page tracks.
+  // a fast double-click on "Start Run" could otherwise POST twice.
   const launchInFlightRef = useRef(false);
-  const [useCaseStatuses, setUseCaseStatuses] = useState<UseCaseRunStatus[]>([]);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Selection for comparison
@@ -436,59 +440,65 @@ export const BenchmarkRunsPage2: React.FC = () => {
     return filteredRuns.some(run => isRunInProgress(run));
   }, [filteredRuns]);
 
-  // Header-button state, derived from the polled run docs (see the comment on
-  // `launchedRun` above). Looked up in the UNFILTERED merged list so a version
-  // filter that hides the new run can't make the button lie either way.
-  const addRunButtonState = deriveAddRunButtonState({
-    launching: isLaunching,
-    launchedRunId: launchedRun?.id ?? null,
-    launchedAt: launchedRun?.at ?? null,
-    runs: allMergedRuns,
-  });
-  const isRunning = addRunButtonState !== 'idle';
-  const launchedRunDoc = useMemo(
-    () => (launchedRun ? allMergedRuns.find(r => r.id === launchedRun.id) ?? null : null),
-    [allMergedRuns, launchedRun]
-  );
-
-  // Once the polled doc says the launched run is terminal, forget it — the
-  // button is back to "Add Run" and the next launch starts clean. Also drops
-  // the progress panel (it only renders while `isRunning`).
+  // Launched-run bookkeeping against the polled docs (see the comment on
+  // `launchedRuns` above). Looked up in the UNFILTERED merged list so a
+  // version filter that hides a new run can't make the header lie. A launched
+  // run whose doc is terminal — or that never appeared within the grace —
+  // drops out, taking its progress block with it.
   useEffect(() => {
-    if (launchedRun && addRunButtonState === 'idle' && !isLaunching) {
-      debug('BenchmarkRunsPage', `Launched run ${launchedRun.id} is terminal per polled doc — header reset`);
-      setLaunchedRun(null);
-      setIsStreamLive(false);
-    }
-  }, [launchedRun, addRunButtonState, isLaunching]);
-
-  // Progress panel rows. While the SSE stream is live they come from its
-  // per-case events; after it drops they are rebuilt from the polled doc's
-  // `results` so the panel keeps moving (and finishes) without the stream.
-  const progressStatuses = useMemo<UseCaseRunStatus[]>(() => {
-    if (isStreamLive || !launchedRunDoc) return useCaseStatuses;
-    const results = launchedRunDoc.results || {};
-    return useCaseStatuses.map(uc => {
-      const status = (results[uc.id] as { status?: string } | undefined)?.status;
-      if (status === 'completed' || status === 'failed' || status === 'cancelled' || status === 'running') {
-        return { ...uc, status };
+    setLaunchedRuns(prev => {
+      const next = pruneLaunchedRuns(prev, allMergedRuns);
+      if (next !== prev) {
+        const dropped = prev.filter(l => !next.includes(l)).map(l => l.runId);
+        debug('BenchmarkRunsPage', `Launched run(s) ${dropped.join(', ')} terminal per polled doc — progress block(s) removed`);
       }
-      // No result for this case yet: it hasn't started (a stale `running`
-      // from the dropped stream goes back to pending until the doc says so).
-      return uc.status === 'running' ? { ...uc, status: 'pending' as const } : uc;
+      return next;
     });
-  }, [isStreamLive, launchedRunDoc, useCaseStatuses]);
+  }, [allMergedRuns]);
+
+  // Non-blocking header indicator: every in-flight run for this benchmark,
+  // launched here or anywhere else.
+  const runsInFlightCount = useMemo(() => countRunsInFlight(allMergedRuns), [allMergedRuns]);
+  const hasLaunchedRuns = launchedRuns.length > 0;
+
+  // Progress rows per launched run. While its SSE stream is live they come
+  // from the per-case events; after it drops they are rebuilt from the polled
+  // doc's `results` so the block keeps moving (and finishes) without the stream.
+  const launchedRunProgress = useMemo(() => launchedRuns.map(launched => {
+    const live = liveStreamRows[launched.runId];
+    const doc = allMergedRuns.find(r => r.id === launched.runId) ?? null;
+    const rows: UseCaseRunStatus[] = live ?? progressFromPolledDoc(launched.cases, doc);
+    const name = doc?.name || launched.name;
+    return { launched, name, rows };
+  }), [launchedRuns, liveStreamRows, allMergedRuns]);
 
   // Polling
   useEffect(() => {
-    const shouldPoll = isRunning || hasPendingEvaluations || hasServerInProgressRuns;
+    const shouldPoll = isLaunching || hasLaunchedRuns || hasPendingEvaluations || hasServerInProgressRuns;
     if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; }
     if (shouldPoll) {
-      const interval = isRunning ? POLL_INTERVAL_MS : 5000;
+      const interval = hasLaunchedRuns ? POLL_INTERVAL_MS : 5000;
       pollIntervalRef.current = setInterval(() => { loadBenchmark(); }, interval);
     }
     return () => { if (pollIntervalRef.current) { clearInterval(pollIntervalRef.current); pollIntervalRef.current = null; } };
-  }, [isRunning, hasPendingEvaluations, hasServerInProgressRuns, loadBenchmark]);
+  }, [isLaunching, hasLaunchedRuns, hasPendingEvaluations, hasServerInProgressRuns, loadBenchmark]);
+
+  // `● N running` pill → the Runs table, narrowed to running rows.
+  const handleShowRunningRuns = useCallback(() => {
+    if (activeTab !== 'runs') navigate(`/evaluations/benchmarks/${benchmarkId}/runs`);
+    const running: RunFilter = { field: 'status', value: 'running', label: 'running' };
+    setRunFilters(prev => prev.some(f => f.field === running.field && f.value === running.value) ? prev : [...prev, running]);
+    // The table may not be mounted yet when switching tabs; best effort.
+    setTimeout(() => {
+      document.querySelector('[data-testid="benchmark-runs-table"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 0);
+  }, [activeTab, benchmarkId, navigate]);
+
+  const toggleLaunchedRunCollapsed = useCallback((runId: string) => setCollapsedLaunchedRunIds(prev => {
+    const next = new Set(prev);
+    if (next.has(runId)) next.delete(runId); else next.add(runId);
+    return next;
+  }), []);
 
   // ─── Actions ─────────────────────────────────────────────────────────────
 
@@ -501,7 +511,8 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
   const handleAddRun = () => {
     if (!benchmark) return;
-    if (isRunning) { alert('A run is already in progress.'); return; }
+    // Deliberately NOT gated on running runs: launching the next arm while
+    // the previous one runs is the normal flow.
     const latestRun = getLatestRun(benchmark);
     const runNumber = (benchmark.runs?.length || 0) + 1;
     // Use latest run's config, fall back to persisted preferences, then defaults
@@ -536,20 +547,21 @@ export const BenchmarkRunsPage2: React.FC = () => {
     launchInFlightRef.current = true;
     setRunConfigValues(values);
     setIsRunConfigOpen(false);
-    const initialStatuses: UseCaseRunStatus[] = (benchmark.testCaseIds || []).map(id => {
+    setLaunchError(null);
+    const initialCases: UseCaseRunStatus[] = (benchmark.testCaseIds || []).map(id => {
       const testCase = testCases.find(tc => tc.id === id);
       return { id, name: testCase?.name || id, status: 'pending' as const };
     });
-    setUseCaseStatuses(initialStatuses);
     setIsLaunching(true);
-    setLaunchedRun(null);
-    setIsStreamLive(true);
     let launchedId: string | null = null;
+    const updateLiveRows = (runId: string, update: (rows: UseCaseRunStatus[]) => UseCaseRunStatus[]) =>
+      setLiveStreamRows(prev => (prev[runId] ? { ...prev, [runId]: update(prev[runId]) } : prev));
     try {
       await executeBenchmarkRun(
         benchmark.id, values,
         (progress: BenchmarkProgress) => {
-          setUseCaseStatuses(prev => prev.map((uc, index) => {
+          if (!launchedId) return;
+          updateLiveRows(launchedId, rows => rows.map((uc, index) => {
             if (index < progress.currentTestCaseIndex) return { ...uc, status: 'completed' as const };
             if (index === progress.currentTestCaseIndex) {
               const statusMap: Record<BenchmarkProgress['status'], UseCaseRunStatus['status']> = {
@@ -561,25 +573,30 @@ export const BenchmarkRunsPage2: React.FC = () => {
           }));
         },
         (startedEvent: BenchmarkStartedEvent) => {
-          // From here on the header tracks the run DOCUMENT (polled), not
-          // this connection. Poll immediately so the new doc shows up.
+          // From here on this run is tracked by its DOCUMENT (polled), not by
+          // this connection. Poll immediately so the new doc shows up, and
+          // free the header for the next launch right away.
           launchedId = startedEvent.runId;
-          setLaunchedRun({ id: startedEvent.runId, at: Date.now() });
-          setIsLaunching(false);
-          loadBenchmark();
-          setUseCaseStatuses(prev => prev.map(uc => {
+          const cases = initialCases.map(uc => {
             const serverTc = startedEvent.testCases.find(tc => tc.id === uc.id);
             return serverTc ? { ...uc, name: serverTc.name } : uc;
-          }));
+          });
+          setLaunchedRuns(prev => [...prev, { runId: startedEvent.runId, name: values.name, launchedAt: Date.now(), cases }]);
+          setLiveStreamRows(prev => ({ ...prev, [startedEvent.runId]: cases }));
+          // The launching window is over: the header (and the guard) are free
+          // for the next launch even though THIS stream stays open.
+          launchInFlightRef.current = false;
+          setIsLaunching(false);
+          loadBenchmark();
         }
       );
       // Stream delivered `completed` — the server has already persisted the
-      // terminal doc, so this is server truth too: reset the header now
-      // rather than waiting a poll cycle, then refresh the rows.
-      setUseCaseStatuses(prev => prev.map(uc =>
-        uc.status === 'pending' || uc.status === 'running' ? { ...uc, status: 'completed' as const } : uc
-      ));
-      setLaunchedRun(null);
+      // terminal doc, so drop this run's block now rather than waiting a poll
+      // cycle, then refresh the rows.
+      if (launchedId) {
+        const doneId = launchedId;
+        setLaunchedRuns(prev => prev.filter(l => l.runId !== doneId));
+      }
       loadBenchmark();
     } catch (error) {
       if (launchedId) {
@@ -587,21 +604,31 @@ export const BenchmarkRunsPage2: React.FC = () => {
         // `completed`, but the run keeps executing server-side by design
         // (the route's sendSSE treats the stream as an observer). Do NOT
         // flip the UI to failed — fall back to polling the run doc, which
-        // is what the header and the progress panel derive from now.
+        // is what this run's progress block derives from now.
         debug('BenchmarkRunsPage', `SSE stream for run ${launchedId} ended before completion; falling back to polling:`, error);
         loadBenchmark();
       } else {
         // Never got a runId: the POST itself failed (validation, source
         // resolution, benchmark missing). Nothing is running server-side.
         console.error('Error running benchmark:', error);
-        setUseCaseStatuses(prev => prev.map(uc =>
-          uc.status === 'pending' || uc.status === 'running' ? { ...uc, status: 'failed' as const } : uc
-        ));
+        setLaunchError(error instanceof Error ? error.message : 'Failed to start run');
       }
     } finally {
-      launchInFlightRef.current = false;
-      setIsLaunching(false);
-      setIsStreamLive(false);
+      if (!launchedId) {
+        // Pre-`started` exit (POST failed): release the launching window here.
+        // Otherwise it was already released in the `started` handler and
+        // MUST NOT be touched — a newer launch may own it by now.
+        launchInFlightRef.current = false;
+        setIsLaunching(false);
+      } else {
+        const endedId = launchedId;
+        setLiveStreamRows(prev => {
+          if (!(endedId in prev)) return prev;
+          const rest = { ...prev };
+          delete rest[endedId];
+          return rest;
+        });
+      }
     }
   };
 
@@ -715,21 +742,32 @@ export const BenchmarkRunsPage2: React.FC = () => {
             size="sm"
             className="h-7 text-xs"
             onClick={() => { setEditorError(null); setShowEditor(true); }}
-            disabled={isRunning}
+            disabled={isLaunching}
             title="Edit benchmark (changing test cases creates a new version)"
           >
             <Pencil size={12} className="mr-1" />Edit
           </Button>
+          {runsInFlightCount > 0 && (
+            <button
+              type="button"
+              data-testid="runs-in-flight-pill"
+              onClick={handleShowRunningRuns}
+              title="Show running runs in the table"
+              className="inline-flex items-center gap-1 h-7 px-2 rounded-full text-[11px] font-medium bg-blue-500/10 text-blue-700 dark:text-blue-400 border border-blue-500/30 hover:bg-blue-500/20 whitespace-nowrap"
+            >
+              <span className="animate-pulse">●</span> {runsInFlightCount} running
+            </button>
+          )}
           <Button
             size="sm"
             className="h-7 text-xs bg-opensearch-blue hover:bg-blue-600"
             onClick={handleAddRun}
-            disabled={isRunning}
+            disabled={isLaunching}
             data-testid="add-run-button"
-            data-run-state={addRunButtonState}
+            data-run-state={isLaunching ? 'launching' : 'idle'}
           >
-            {isRunning
-              ? <><Loader2 size={12} className="mr-1 animate-spin" />Running...</>
+            {isLaunching
+              ? <><Loader2 size={12} className="mr-1 animate-spin" />Add Run</>
               : <><Plus size={12} className="mr-1" />Add Run</>}
           </Button>
         </>}
@@ -755,39 +793,64 @@ export const BenchmarkRunsPage2: React.FC = () => {
         // ── Reusable body fragments — identical in both layouts ──────────
         const runsBody = (
           <>
-          {/* Running Progress */}
-          {isRunning && progressStatuses.length > 0 && (
-            <Card className="mb-3 border-blue-500/50" data-testid="run-progress-panel">
-              <CardContent className="p-3">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-sm font-medium flex items-center gap-2">
-                    <Loader2 size={14} className="animate-spin" /> Running...
-                  </span>
-                  <span className="text-xs text-muted-foreground">
-                    {progressStatuses.filter(uc => uc.status === 'completed').length} / {progressStatuses.length}
-                  </span>
-                </div>
-                <Progress
-                  value={(progressStatuses.filter(uc => uc.status === 'completed' || uc.status === 'failed' || uc.status === 'cancelled').length / progressStatuses.length) * 100}
-                  className="h-2 mb-3"
-                />
-                <div className="space-y-1 max-h-32 overflow-y-auto">
-                  {progressStatuses.map(uc => (
-                    <div key={uc.id} className="flex items-center gap-2 text-xs">
-                      {uc.status === 'pending' && <Circle size={12} className="text-muted-foreground" />}
-                      {uc.status === 'running' && <Loader2 size={12} className="text-blue-700 dark:text-blue-400 animate-spin" />}
-                      {uc.status === 'completed' && <CheckCircle2 size={12} className="text-green-700 dark:text-green-400" />}
-                      {uc.status === 'failed' && <XCircle size={12} className="text-red-700 dark:text-red-400" />}
-                      {uc.status === 'cancelled' && <Ban size={12} className="text-amber-700 dark:text-amber-400" />}
-                      <span className={uc.status === 'running' ? 'text-blue-700 dark:text-blue-400' : uc.status === 'cancelled' ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}>
-                        {uc.name}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </CardContent>
-            </Card>
+          {/* Launch failure (POST failed before `started`; nothing is running server-side) */}
+          {launchError && (
+            <div className="flex items-center gap-2 text-sm mb-3 p-2 rounded-lg bg-red-100 text-red-700 border border-red-300 dark:bg-red-500/10 dark:text-red-400 dark:border-red-500/20" data-testid="run-launch-error">
+              <XCircle size={16} />
+              <span>Failed to start run: {launchError}</span>
+              <Button variant="ghost" size="sm" onClick={() => setLaunchError(null)} className="ml-auto h-6 px-2">
+                <X size={14} />
+              </Button>
+            </div>
           )}
+
+          {/* Running Progress — one collapsible block per run launched from this page */}
+          {launchedRunProgress.map(({ launched, name, rows }) => {
+            const collapsed = collapsedLaunchedRunIds.has(launched.runId);
+            const completed = rows.filter(uc => uc.status === 'completed').length;
+            const settled = rows.filter(uc => uc.status === 'completed' || uc.status === 'failed' || uc.status === 'cancelled').length;
+            return (
+              <Card key={launched.runId} className="mb-3 border-blue-500/50" data-testid="run-progress-panel" data-run-id={launched.runId}>
+                <CardContent className="p-3">
+                  <div className="flex items-center justify-between">
+                    <button
+                      type="button"
+                      className="text-sm font-medium flex items-center gap-2 text-left"
+                      onClick={() => toggleLaunchedRunCollapsed(launched.runId)}
+                      aria-expanded={!collapsed}
+                      data-testid="run-progress-toggle"
+                    >
+                      {collapsed ? <ChevronRight size={14} /> : <ChevronDown size={14} />}
+                      <Loader2 size={14} className="animate-spin" />
+                      <span data-testid="run-progress-name">{name}</span>
+                    </button>
+                    <span className="text-xs text-muted-foreground" data-testid="run-progress-count">
+                      {completed} / {rows.length}
+                    </span>
+                  </div>
+                  {!collapsed && rows.length > 0 && (
+                    <>
+                      <Progress value={(settled / rows.length) * 100} className="h-2 mt-2 mb-3" />
+                      <div className="space-y-1 max-h-32 overflow-y-auto">
+                        {rows.map(uc => (
+                          <div key={uc.id} className="flex items-center gap-2 text-xs">
+                            {uc.status === 'pending' && <Circle size={12} className="text-muted-foreground" />}
+                            {uc.status === 'running' && <Loader2 size={12} className="text-blue-700 dark:text-blue-400 animate-spin" />}
+                            {uc.status === 'completed' && <CheckCircle2 size={12} className="text-green-700 dark:text-green-400" />}
+                            {uc.status === 'failed' && <XCircle size={12} className="text-red-700 dark:text-red-400" />}
+                            {uc.status === 'cancelled' && <Ban size={12} className="text-amber-700 dark:text-amber-400" />}
+                            <span className={uc.status === 'running' ? 'text-blue-700 dark:text-blue-400' : uc.status === 'cancelled' ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}>
+                              {uc.name}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
 
           {/* Delete Feedback */}
           {deleteState.message && (
