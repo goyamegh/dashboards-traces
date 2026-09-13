@@ -101,7 +101,7 @@ function toBenchmarkRun(stored: StorageBenchmarkRunConfig): BenchmarkRun {
     // Parallel test case execution limit (1 = sequential, undefined = legacy
     // run persisted before this field existed) — surfaced as the "Conc."
     // column on the benchmark Runs tab / Evaluation Runs list.
-    concurrency: (stored as any).concurrency,
+    concurrency: stored.concurrency,
     benchmarkVersion: (stored as any).benchmarkVersion ?? 1,
     testCaseSnapshots: (stored as any).testCaseSnapshots ?? [],
     status: stored.status as BenchmarkRunStatus | undefined,
