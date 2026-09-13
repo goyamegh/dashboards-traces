@@ -330,8 +330,7 @@ describe('comparisonDeepDiveService — model selection (owner: "I want it to be
           };
         }),
         SessionManager: { inMemory: jest.fn(() => ({})) },
-        AuthStorage: { create: jest.fn(() => ({})) },
-        ModelRegistry: { create: jest.fn(() => ({ getAvailable: jest.fn(async () => registry) })) },
+        ModelRuntime: { create: jest.fn(async () => ({ getAvailable: jest.fn(async () => registry) })) },
         DefaultResourceLoader: jest.fn().mockImplementation(() => ({ reload: jest.fn(async () => {}) })),
         getAgentDir: jest.fn(() => '/tmp/mock-agent-dir'),
       }),

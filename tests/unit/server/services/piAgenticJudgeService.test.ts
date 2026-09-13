@@ -209,8 +209,7 @@ describe('evaluateWithPiAgenticTrace (regression: keeps improvement strategies +
           },
         }),
         SessionManager: { inMemory: () => ({}) },
-        AuthStorage: { create: () => ({}) },
-        ModelRegistry: {
+        ModelRuntime: {
           create: () => ({
             getAvailable: jest.fn().mockResolvedValue([{ provider: 'anthropic', id: 'claude-sonnet-4-5' }]),
           }),
