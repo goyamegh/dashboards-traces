@@ -75,11 +75,12 @@ describe('pruneLaunchedRuns', () => {
 });
 
 describe('countRunsInFlight', () => {
-  it('counts every non-terminal run in the polled list — ours or anyone else\'s', () => {
+  it('counts every run whose effective status is `running` — ours or anyone else\'s — and nothing else, so the count matches the table\'s status: running filter exactly', () => {
     expect(countRunsInFlight([])).toBe(0);
     expect(countRunsInFlight([
       { id: 'a', status: 'running' },
-      { id: 'b', status: 'pending' },
+      { id: 'a2', status: 'running' },
+      { id: 'b', status: 'pending' }, // not a table `running` row → not counted
       { id: 'c', status: 'completed' },
       { id: 'd', status: 'failed' },
       { id: 'e', status: 'cancelled' },

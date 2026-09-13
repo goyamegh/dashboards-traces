@@ -78,6 +78,16 @@ interface LaunchedRunEntry extends LaunchedRun {
 }
 
 const POLL_INTERVAL_MS = 2000;
+/**
+ * How long the header waits for the launch POST's `started` event before it
+ * gives the button back. The server emits `started` right after creating the
+ * run doc (before executing anything), so a stall here is an intermediary or
+ * backend problem — without a bound the "launching" disable would be a
+ * forever-disable, the very thing this page must never do. A late `started`
+ * is still honoured (the run gets its progress block); it just no longer owns
+ * the launching window.
+ */
+const LAUNCH_STARTED_TIMEOUT_MS = 30_000;
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 // getEffectiveRunStatus moved to @/lib/runStats (shared with EvalRunsPage.tsx
@@ -155,8 +165,11 @@ export const BenchmarkRunsPage2: React.FC = () => {
   const [launchError, setLaunchError] = useState<string | null>(null);
   // Synchronous re-entrancy guard for handleStartRun: React state (and the
   // disabled attribute) only catch a second click after the next render, so
-  // a fast double-click on "Start Run" could otherwise POST twice.
-  const launchInFlightRef = useRef(false);
+  // a fast double-click on "Start Run" could otherwise POST twice. Holds the
+  // token of the launch that currently owns the launching window (null when
+  // free) so a late callback from an OLDER launch can never release a newer
+  // launch's window.
+  const launchOwnerRef = useRef<object | null>(null);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Selection for comparison
@@ -514,7 +527,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
     // Deliberately NOT gated on running runs: launching the next arm while
     // the previous one runs is the normal flow.
     const latestRun = getLatestRun(benchmark);
-    const runNumber = (benchmark.runs?.length || 0) + 1;
+    // Number off EVERY run this page knows about (embedded + associated docs,
+    // including ones launched seconds ago) so back-to-back arms don't all
+    // default to the same "Run N".
+    const runNumber = allMergedRuns.length + 1;
     // Use latest run's config, fall back to persisted preferences, then defaults
     let defaultAgent = DEFAULT_CONFIG.agents[0]?.key || '';
     let defaultModel = Object.keys(DEFAULT_CONFIG.models)[0] || '';
@@ -543,8 +559,17 @@ export const BenchmarkRunsPage2: React.FC = () => {
 
   const handleStartRun = async (values: RunConfigValues) => {
     if (!benchmark) return;
-    if (launchInFlightRef.current) return;
-    launchInFlightRef.current = true;
+    if (launchOwnerRef.current) return;
+    const owner = {};
+    launchOwnerRef.current = owner;
+    // Give the launching window back to whoever still owns it — only this
+    // launch, and only once (a later launch may own it by the time a stale
+    // callback fires).
+    const releaseLaunchWindow = () => {
+      if (launchOwnerRef.current !== owner) return;
+      launchOwnerRef.current = null;
+      setIsLaunching(false);
+    };
     setRunConfigValues(values);
     setIsRunConfigOpen(false);
     setLaunchError(null);
@@ -554,6 +579,12 @@ export const BenchmarkRunsPage2: React.FC = () => {
     });
     setIsLaunching(true);
     let launchedId: string | null = null;
+    const startedTimeout = setTimeout(() => {
+      if (launchedId || launchOwnerRef.current !== owner) return;
+      debug('BenchmarkRunsPage', `No \`started\` event within ${LAUNCH_STARTED_TIMEOUT_MS} ms — releasing the Add Run button`);
+      setLaunchError(`The run did not report starting within ${LAUNCH_STARTED_TIMEOUT_MS / 1000}s. It may still be running — check the runs table.`);
+      releaseLaunchWindow();
+    }, LAUNCH_STARTED_TIMEOUT_MS);
     const updateLiveRows = (runId: string, update: (rows: UseCaseRunStatus[]) => UseCaseRunStatus[]) =>
       setLiveStreamRows(prev => (prev[runId] ? { ...prev, [runId]: update(prev[runId]) } : prev));
     try {
@@ -577,6 +608,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
           // this connection. Poll immediately so the new doc shows up, and
           // free the header for the next launch right away.
           launchedId = startedEvent.runId;
+          clearTimeout(startedTimeout);
           const cases = initialCases.map(uc => {
             const serverTc = startedEvent.testCases.find(tc => tc.id === uc.id);
             return serverTc ? { ...uc, name: serverTc.name } : uc;
@@ -585,8 +617,7 @@ export const BenchmarkRunsPage2: React.FC = () => {
           setLiveStreamRows(prev => ({ ...prev, [startedEvent.runId]: cases }));
           // The launching window is over: the header (and the guard) are free
           // for the next launch even though THIS stream stays open.
-          launchInFlightRef.current = false;
-          setIsLaunching(false);
+          releaseLaunchWindow();
           loadBenchmark();
         }
       );
@@ -614,13 +645,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
         setLaunchError(error instanceof Error ? error.message : 'Failed to start run');
       }
     } finally {
-      if (!launchedId) {
-        // Pre-`started` exit (POST failed): release the launching window here.
-        // Otherwise it was already released in the `started` handler and
-        // MUST NOT be touched — a newer launch may own it by now.
-        launchInFlightRef.current = false;
-        setIsLaunching(false);
-      } else {
+      clearTimeout(startedTimeout);
+      // No-op if `started` (or the timeout) already released the window.
+      releaseLaunchWindow();
+      if (launchedId) {
         const endedId = launchedId;
         setLiveStreamRows(prev => {
           if (!(endedId in prev)) return prev;
@@ -742,8 +770,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
             size="sm"
             className="h-7 text-xs"
             onClick={() => { setEditorError(null); setShowEditor(true); }}
-            disabled={isLaunching}
-            title="Edit benchmark (changing test cases creates a new version)"
+            disabled={isLaunching || hasLaunchedRuns}
+            title={hasLaunchedRuns
+              ? 'Edit is available once the runs launched from this page finish'
+              : 'Edit benchmark (changing test cases creates a new version)'}
           >
             <Pencil size={12} className="mr-1" />Edit
           </Button>
