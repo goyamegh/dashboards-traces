@@ -257,8 +257,10 @@ export function selectDeepDiveModelOptions<T extends { provider: string; id: str
  */
 export async function listDeepDiveModels(): Promise<DeepDiveModelList> {
   try {
-    const { AuthStorage, ModelRegistry } = await loadPiSdk();
-    const available = await ModelRegistry.create(AuthStorage.create()).getAvailable();
+    // pi >= 0.80.8 replaced AuthStorage/ModelRegistry with the async
+    // ModelRuntime facade (see generateComparisonDeepDive above).
+    const { ModelRuntime } = await loadPiSdk();
+    const available = await (await ModelRuntime.create()).getAvailable();
     return selectDeepDiveModelOptions(available as Array<{ provider: string; id: string; name?: string }>);
   } catch (err: any) {
     debug('CompareDeepDive', 'listDeepDiveModels unavailable:', err?.message ?? String(err));
@@ -380,18 +382,21 @@ export async function generateComparisonDeepDive(opts: {
     `http://localhost:${readEnv('AH_PORT', 'AGENT_HEALTH_PORT') || '4001'}`;
   const startTime = Date.now();
 
-  const { createAgentSession, SessionManager, AuthStorage, ModelRegistry, DefaultResourceLoader, getAgentDir } =
+  const { createAgentSession, SessionManager, ModelRuntime, DefaultResourceLoader, getAgentDir } =
     await loadPiSdk();
 
-  const authStorage = AuthStorage.create();
-  const modelRegistry = ModelRegistry.create(authStorage);
-  const available = await modelRegistry.getAvailable();
+  // pi >= 0.80.8 replaced the `AuthStorage` + `ModelRegistry` pair with the
+  // async `ModelRuntime` facade (~/.pi/agent/auth.json + models.json by
+  // default). `getAvailable()` still returns the credentialed models.
+  //
   // Explicit request wins (selector in the panel header). Otherwise the
   // default is PINNED to Fable 5.1 (DEEP_DIVE_PREFERRED_MODEL_ID), falling
   // back to the newest Claude the registry offers — unlike the agentic judge,
   // whose fallback deliberately stays on Claude 4.x for verdict comparability
   // (see scoreJudgeModel). Before this the panel silently ran a 4.x Sonnet
   // profile even with Fable 5.1 configured.
+  const modelRuntime = await ModelRuntime.create();
+  const available = await modelRuntime.getAvailable();
   const model = findRequestedModel(available, opts.modelId) ?? resolveDefaultDeepDiveModel(available);
   if (!model) {
     throw new Error('Comparison deep-dive: no model available (configure a Bedrock/Anthropic model with valid credentials).');
@@ -428,8 +433,7 @@ export async function generateComparisonDeepDive(opts: {
 
   const { session } = await createAgentSession({
     model,
-    authStorage,
-    modelRegistry,
+    modelRuntime,
     resourceLoader,
     // Only the run-scoped trace tools + the structured-output recorder — no filesystem/bash access.
     tools: ['query_spans', 'query_logs', 'record_deepdive_extras'],
