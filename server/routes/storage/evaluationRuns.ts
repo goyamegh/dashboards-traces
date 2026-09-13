@@ -31,6 +31,7 @@ import { getCustomAgents } from '../../services/customAgentStore.js';
 import { resolveAgentModel } from '../../../lib/resolveAgentModel.js';
 import { computeImageDigest, buildImageDoc } from '../../../lib/benchmarkImage.js';
 import { validateRunNameUpdate } from '../../../lib/runName.js';
+import { finalizeEvaluationRun } from '../../../services/evaluationRunFinalize.js';
 
 const router = Router();
 
@@ -324,14 +325,22 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       const finalStatus = cancellationToken.isCancelled ? 'cancelled' : 'completed';
       const completedAt = new Date().toISOString();
 
-      // Link the terminal projection before finalizing the first-class run.
-      // If finalization crashes, retrying is safe because addRun is idempotent;
-      // a terminal evaluation-run can therefore never be orphaned from its benchmark.
+      // Terminal write: merge-if-absent results (+ `cancelled` markers for
+      // never-started cases), recompute stats from the PERSISTED doc, then a
+      // scripted partial status/stats/completedAt update — never a wholesale
+      // `results` overwrite. See services/evaluationRunFinalize.ts.
+      const finalized = await finalizeEvaluationRun(storage, {
+        runId, finalStatus, completedRun, completedAt,
+      });
+
+      // Link the terminal projection into the benchmark. addRun is idempotent,
+      // so a crash here can be retried without orphaning the run; the
+      // projection carries the reconciled (persisted) results and stats.
       if (benchmarkId) {
         const benchmarkRun: BenchmarkRun = {
           id: run.id, name: run.name, createdAt: run.createdAt, completedAt,
           status: finalStatus, agentKey: run.agentKey, modelId: run.modelId,
-          judgeModelId: run.judgeModelId, results: completedRun.results, stats: completedRun.stats,
+          judgeModelId: run.judgeModelId, results: finalized.run.results, stats: finalized.stats,
           ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
           ...(run.description ? { description: run.description } : {}),
           ...(run.evaluatorId ? { evaluatorId: run.evaluatorId } : {}),
@@ -343,11 +352,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
         if (!linked) throw new Error(`Benchmark not found while linking completed run: ${benchmarkId}`);
       }
 
-      const updatedRun = await storage.evaluationRuns.update(runId, {
-        status: finalStatus, stats: completedRun.stats, completedAt, results: completedRun.results,
-        ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
-      });
-      sendSSE(res, 'completed', updatedRun);
+      sendSSE(res, 'completed', finalized.run);
     } catch (error: any) {
       console.error(`[StorageAPI] Evaluation run failed: ${runId}`, error.message);
 
@@ -398,11 +403,18 @@ router.post('/api/storage/evaluation-runs/:id/cancel', async (req: Request, res:
     const cancellationToken = activeCancellationTokens.get(id);
     if (cancellationToken) {
       cancellationToken.cancel();
+      // Do NOT write `status: 'cancelled'` here. The executor still has up to
+      // `concurrency` cases in flight; they drain and land as real verdicts,
+      // and only then does finalization (services/evaluationRunFinalize.ts)
+      // write the terminal status + explicit `cancelled` markers for the cases
+      // that never started. Publishing a terminal status early made every
+      // terminal-aware reader count the still-finishing cases as "not run" for
+      // the length of the drain window (codex review of the 2026-09-04 fix).
+      // `cancelRequestedAt` lets the UI show "Cancelling…" meanwhile.
       await storage.evaluationRuns.update(id, {
-        status: 'cancelled',
-        completedAt: new Date().toISOString(),
+        cancelRequestedAt: new Date().toISOString(),
       });
-      return res.json({ success: true });
+      return res.json({ success: true, draining: true });
     }
 
     // No in-memory cancellation token for this run id. This happens whenever
@@ -430,6 +442,11 @@ router.post('/api/storage/evaluation-runs/:id/cancel', async (req: Request, res:
       });
     }
 
+    // Zombie fallback (no live executor): nothing is draining, so a direct
+    // terminal write is correct here — there are no in-flight cases whose
+    // verdicts could still land. (The graceful in-process path above is a
+    // REQUEST — it stamps cancelRequestedAt and lets finalization publish
+    // the terminal status once the executor has drained.)
     const cancelNote = 'Cancelled: no active executor found for this run (process restarted or crashed) — marked cancelled directly.';
     await storage.evaluationRuns.update(id, {
       status: 'cancelled',
@@ -579,13 +596,7 @@ router.post('/api/storage/evaluation-runs/:id/rerun', async (req: Request, res: 
     })
       .then(async (completedRun) => {
         const finalStatus = cancellationToken.isCancelled ? 'cancelled' : 'completed';
-        await storage.evaluationRuns.update(newRunId, {
-          status: finalStatus,
-          stats: completedRun.stats,
-          completedAt: new Date().toISOString(),
-          results: completedRun.results,
-          ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
-        });
+        await finalizeEvaluationRun(storage, { runId: newRunId, finalStatus, completedRun });
       })
       .catch(async (error: any) => {
         console.error(`[StorageAPI] Rerun evaluation run failed: ${newRunId}`, error.message);
