@@ -730,6 +730,7 @@ export interface TestCaseRun {
    * Absent on every report judged before snapshots existed → "legacy scoring".
    */
   scoringSnapshot?: ScoringSnapshot;
+  /**
    * Set when this report's judgement was re-run via "Retry judgement"
    * (`POST /api/storage/evaluation-runs/:id/retry-judgement`). Only the
    * LATEST judgement is kept — the judgement fields above (`passFailStatus`,
