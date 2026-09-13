@@ -45,6 +45,7 @@ import { computeRunStats } from '@/lib/runStats';
 import { extractJudgeFailureReason, computeJudgeFailureSummary } from '@/lib/judgeFailureSummary';
 import { loadConfigSync } from '@/lib/config/index';
 import { getCustomAgents } from '@/server/services/customAgentStore';
+import { getDefaultEvaluator } from '@/server/prompts/evaluatorTemplates';
 import { debug } from '@/lib/debug';
 import { readEnv } from '@/lib/envCompat';
 
@@ -187,12 +188,18 @@ function resolveAgentConfig(agentKey: string | undefined): AgentConfig | undefin
  * explicit per-retry {@link RetryJudgementOverrides} > the run's values >
  * the report's own value (judge model only) > server default. Exported for
  * unit tests.
+ *
+ * The evaluator always resolves to a CONCRETE id: an unset evaluator means
+ * the built-in default (`getDefaultEvaluator()` — exactly what /api/judge
+ * falls back to when no `evaluatorId` is sent), so the retried report is
+ * stamped with the evaluator that actually judged it instead of keeping a
+ * possibly stale `evaluatorId` from before (codex_review finding).
  */
 export function resolveRetryJudgeConfig(
   report: Pick<EvaluationReport, 'judgeModelId' | 'modelId'>,
   run: Pick<EvaluationRun, 'judgeModelId' | 'evaluatorId'>,
   overrides: RetryJudgementOverrides = {}
-): { judgeModelId: string; evaluatorId: string | undefined } {
+): { judgeModelId: string; evaluatorId: string } {
   const serverDefault = readEnv('BEDROCK_MODEL_ID', 'AGENT_HEALTH_BEDROCK_MODEL_ID') || report.modelId || '';
   let judgeModelId: string;
   if (overrides.judgeModelId === null) {
@@ -200,7 +207,7 @@ export function resolveRetryJudgeConfig(
   } else {
     judgeModelId = overrides.judgeModelId || run.judgeModelId || report.judgeModelId || serverDefault;
   }
-  const evaluatorId = overrides.evaluatorId || run.evaluatorId || undefined;
+  const evaluatorId = overrides.evaluatorId || run.evaluatorId || getDefaultEvaluator().id;
   return { judgeModelId, evaluatorId };
 }
 
@@ -286,7 +293,7 @@ export async function retryJudgementForCase(
       // The judge config that produced THIS verdict — may differ from the
       // run's when the caller overrode them for the retry.
       judgeModelId,
-      ...(evaluatorId ? { evaluatorId } : {}),
+      evaluatorId,
       // Set only by the agent (trace) judge provider -- see
       // JudgeResponse.judgeMode / TestCaseRun.judgeMode. `null` (not
       // omitted) when this judge didn't set it, so a prior trace-judge

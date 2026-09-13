@@ -91,14 +91,14 @@ export const RetryJudgementConfirmDialog: React.FC<RetryJudgementConfirmDialogPr
   const [evaluators, setEvaluators] = useState<Evaluator[]>([]);
 
   // Re-seed on every open (keyed on the run's identity, not the object —
-  // parents refetch the run while the dialog is open).
+  // parents refetch the run while the dialog is open, and a fresh object
+  // must NOT wipe the user's in-progress selection).
   const runId = run?.id ?? null;
-  const lastRetryAt = run?.lastJudgementRetry?.at ?? null;
   useEffect(() => {
     if (!open || !run) return;
     setSelection(seedRetryJudgementDefaults(run, judgeFailedCount));
     setError(null);
-  }, [open, runId, lastRetryAt]);
+  }, [open, runId]);
 
   useEffect(() => {
     if (!open) return;
