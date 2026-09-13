@@ -166,6 +166,17 @@ describe('RetryJudgementConfirmDialog', () => {
     expect((screen.getByTestId('retry-judge-model') as HTMLInputElement).value).toBe('picked');
   });
 
+  it('a parent refetch that swaps in a fresh run object (same id) does NOT wipe the user\'s in-progress selection', async () => {
+    const { rerender } = renderDialog();
+    await waitFor(() => expect(screen.getByTestId('retry-judgement-evaluator-system-factuality')).toBeTruthy());
+    fireEvent.change(screen.getByTestId('select-native'), { target: { value: 'system-factuality' } });
+    rerender(React.createElement(RetryJudgementConfirmDialog, {
+      run: { ...baseRun, lastJudgementRetry: { evaluatorId: 'custom-1', judgeModelId: 'run-model', scope: 'all', at: 'later' } },
+      judgeFailedCount: 1, rejudgeableCount: 3, open: true, onOpenChange: jest.fn(), onComplete: jest.fn(),
+    }));
+    expect(screen.getByTestId('select-native')).toHaveProperty('value', 'system-factuality');
+  });
+
   it('with no judge-failed cases: "Only judge-failed" is disabled, "All cases" preselected, count = all', () => {
     renderDialog({ judgeFailedCount: 0 });
     expect((screen.getByTestId('retry-judgement-scope-errored') as HTMLInputElement).disabled).toBe(true);
