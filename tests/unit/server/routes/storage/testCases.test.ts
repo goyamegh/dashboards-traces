@@ -595,13 +595,15 @@ describe('Test Cases Storage Routes', () => {
     });
 
     it('passes a well-formed describePath through to bulkUpsert and drops a malformed one', async () => {
-      mockStorage.testCases.bulkUpsert.mockResolvedValue({ created: 2, updated: 0, unchanged: 0, testCases: [] });
+      mockStorage.testCases.bulkUpsert.mockResolvedValue({ created: 4, updated: 0, unchanged: 0, testCases: [] });
       const { req, res } = createMocks(
         {},
         {
           testCases: [
             { name: 'Grouped', sourceFile: 'evals/demo.eval.mjs', sourceHash: 'h', describePath: ['Suite', 'Inner'] },
             { name: 'Broken', sourceFile: 'evals/demo.eval.mjs', sourceHash: 'h', describePath: 'Suite' },
+            { name: 'TooDeep', sourceFile: 'evals/demo.eval.mjs', sourceHash: 'h', describePath: Array.from({ length: 33 }, (_, i) => `d${i}`) },
+            { name: 'TooLong', sourceFile: 'evals/demo.eval.mjs', sourceHash: 'h', describePath: ['x'.repeat(257)] },
           ],
         }
       );
@@ -612,8 +614,10 @@ describe('Test Cases Storage Routes', () => {
       expect(mockStorage.testCases.bulkUpsert).toHaveBeenCalledWith([
         expect.objectContaining({ name: 'Grouped', describePath: ['Suite', 'Inner'] }),
         expect.not.objectContaining({ describePath: expect.anything() }),
+        expect.not.objectContaining({ describePath: expect.anything() }),
+        expect.not.objectContaining({ describePath: expect.anything() }),
       ]);
-      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ created: 2 }));
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ created: 4 }));
     });
 
     it('should reject a batch containing a nameless item with 400 and never call bulkCreate/bulkUpsert (regression: a nameless item on the bulkUpsert path threw uncaught -> 500)', async () => {
