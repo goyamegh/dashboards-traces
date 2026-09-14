@@ -1123,8 +1123,14 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                         </div>
                       ))}
                     </div>
-                    <div className="mt-2 text-xs text-muted-foreground">
-                      Pass Threshold: {evaluator.scoringConfig.passThreshold}%
+                    <div className="mt-2 text-xs text-muted-foreground" data-testid="evaluator-pass-policy">
+                      {evaluator.kind === 'deterministic' && evaluator.passPolicy
+                        ? evaluator.passPolicy.kind === 'gates'
+                          ? `Pass policy: gates (${evaluator.passPolicy.gates.map(g => `${g.metric} ≥ ${g.min}`).join(', ')}) · deterministic, no LLM`
+                          : evaluator.passPolicy.kind === 'threshold'
+                            ? `Pass policy: weighted score ≥ ${evaluator.passPolicy.minScore} · deterministic, no LLM`
+                            : 'Pass policy: judge verdict'
+                        : `Pass Threshold: ${evaluator.scoringConfig.passThreshold}%`}
                     </div>
                   </div>
                 </CardContent></Card>
