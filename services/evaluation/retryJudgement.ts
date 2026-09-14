@@ -347,11 +347,21 @@ async function applyDeterministicJudgement(
       improvementStrategies: [],
       llmJudgeReasoning: '',
       llmJudgeResponse: null,
+      // Verdict-engine fields (lib/scoring/verdictEngine.ts) are ALWAYS
+      // written: no LLM was involved, so an earlier LLM judgement's verdict /
+      // conflict flag must not survive next to code-computed metrics.
+      llmVerdict: null,
+      verdictConflict: null,
+      score: result.score,
     };
     if (!result.evaluable) {
       await storage.runs.update(report.id, {
         ...common,
         ...buildEvaluatorErrorPatch('judge_failed', `Not evaluable by ${evaluator.name}: ${result.summary}`),
+        // The generic error patch clears the snapshot (an LLM judge that
+        // failed produced nothing); a deterministic scorer DID run, and its
+        // snapshot records which metrics were unevaluable and why.
+        scoringSnapshot: result.snapshot,
         // No metrics on a not-evaluable report — never the legacy zeroed
         // RCA keys the generic patch carries.
         metrics: {},

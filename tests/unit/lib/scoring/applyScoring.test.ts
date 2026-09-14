@@ -9,7 +9,7 @@ import {
   buildScoringSnapshot,
   evaluatorContentHash,
 } from '@/lib/scoring/applyScoring';
-import { isDeterministicEvaluator, validateScoringConfig } from '@/lib/scoring/validateScoringConfig';
+import { validateScoringConfig } from '@/lib/scoring/validateScoringConfig';
 import type { Evaluator } from '@/types';
 
 function evaluator(overrides: Partial<Evaluator> = {}, scoring: Partial<Evaluator['scoringConfig']> = {}): Evaluator {
@@ -180,17 +180,8 @@ describe('validateScoringConfig', () => {
     expect(validateScoringConfig(cfg)).toMatch(re);
   });
 
-  it('rejects llm-verdict (explicit or defaulted) for a deterministic evaluator', () => {
-    expect(validateScoringConfig(ok, { deterministic: true })).toMatch(/deterministic evaluator has no LLM verdict/);
-    expect(validateScoringConfig({ ...ok, passPolicy: { kind: 'llm-verdict' } }, { deterministic: true })).toMatch(/no LLM verdict/);
-    expect(validateScoringConfig({ ...ok, passPolicy: { kind: 'threshold', minScore: 0.5 } }, { deterministic: true })).toBeNull();
-  });
-
-  it('isDeterministicEvaluator detects the structural markers', () => {
-    expect(isDeterministicEvaluator({ kind: 'deterministic' })).toBe(true);
-    expect(isDeterministicEvaluator({ inferenceConfig: { provider: 'deterministic' } })).toBe(true);
-    expect(isDeterministicEvaluator({ scoringConfig: { metrics: [{ name: 'hit1', kind: 'deterministic' }] } })).toBe(true);
-    expect(isDeterministicEvaluator({ scoringConfig: ok })).toBe(false);
-    expect(isDeterministicEvaluator(null)).toBe(false);
+  it('accepts a missing / llm-verdict policy (the default); `kind: \'deterministic\'` evaluators are validated by lib/evaluators/deterministic instead', () => {
+    expect(validateScoringConfig(ok)).toBeNull();
+    expect(validateScoringConfig({ ...ok, passPolicy: { kind: 'llm-verdict' } })).toBeNull();
   });
 });
