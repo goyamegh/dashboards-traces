@@ -242,7 +242,7 @@ describe('comparisonService', () => {
       expect(aggregates.passRatePercent).toBe(100);
     });
 
-    // Live-tunnel regression (compare page, real STaRK-retail runs): reports
+    // Live-tunnel regression (compare page, real retrieval-benchmark runs): reports
     // scored by a custom evaluator carry ONLY that evaluator's metric keys
     // (fact_precision / provenance_verifiability / abstention_integrity /
     // payload_economy — the exact real shape) and NO `metrics.accuracy`. The
