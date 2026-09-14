@@ -601,6 +601,22 @@ export class ApiClient {
 
 
   /**
+   * Server configuration status (no credentials). Used by the CLI to learn
+   * where THIS server resolves relative code-SDK `sourceFile`s
+   * (`evalRoots`). Returns null on any failure — callers treat it as a
+   * best-effort hint source, never a gate.
+   */
+  async getConfigStatus(): Promise<{ evalRoots?: { roots: string[]; source: string } } | null> {
+    try {
+      const res = await fetch(`${this.baseUrl}/api/storage/config/status`);
+      if (!res.ok) return null;
+      return await res.json();
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Get a single test case by ID
    */
   async getTestCase(id: string): Promise<TestCase | null> {
