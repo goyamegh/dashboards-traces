@@ -137,12 +137,19 @@ export function idsFromToolResult(parsed: unknown, opts: Required<Pick<ToolHitsO
 
 const escapeRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-/** Ids that occur as whole tokens in `text`, ordered by first mention. */
+/**
+ * Ids that occur as whole tokens in `text`, ordered by first mention.
+ *
+ * A token boundary is anything that is not a letter, digit, `_`, `-` or `.`
+ * — so `41` is NOT cited by the price `$41.16` (`.1` follows), `16` is not
+ * cited by `41.16` (`.` precedes), and `2024` is not cited by `v1.2024-01`.
+ * A sentence-ending period still counts as a boundary (`… (id: 202).`).
+ */
 export function citedIdsInText(text: string, ids: ReadonlyArray<string>): string[] {
   if (!text) return [];
   const positions: Array<{ id: string; at: number }> = [];
   for (const id of ids) {
-    const re = new RegExp(`(^|[^A-Za-z0-9_])${escapeRe(id)}(?=$|[^A-Za-z0-9_])`);
+    const re = new RegExp(`(^|[^A-Za-z0-9_.\\-])${escapeRe(id)}(?=$|[^A-Za-z0-9_.\\-]|\\.(?!\\d))`);
     const m = re.exec(text);
     if (m) positions.push({ id, at: m.index + m[1].length });
   }

@@ -104,6 +104,7 @@ describe('retry judgement with a deterministic evaluator (override)', () => {
     const a = reports['rep-a'];
     expect(a.judgeMode).toBe('deterministic');
     expect(a.evaluatorId).toBe('eval-det');
+    expect(a.judgeModelId).toBeNull(); // no judge model was used
     expect(a.metrics).toEqual({ 'hit@1': 1, mrr: 1 });
     expect(a.passFailStatus).toBe('passed');
     expect(a.metricsStatus).toBe('completed');
@@ -136,6 +137,16 @@ describe('retry judgement with a deterministic evaluator (override)', () => {
     expect(runUpdate.results['tc-b'].passFailStatus).toBe('failed');
     expect(runUpdate.results['tc-c'].passFailStatus).toBeUndefined();
     expect(runUpdate.stats).toMatchObject({ passed: 1, failed: 1, errored: 1, total: 3 });
+  });
+
+  it("refuses scope 'errored' with a deterministic evaluator (would mix two scoring snapshots in one run)", async () => {
+    const reports = { 'rep-a': makeReport('rep-a', 'tc-a', { metricsStatus: 'error' as any, passFailStatus: null as any }) };
+    const storage = makeStorage(reports, { 'eval-det': evaluator });
+    await expect(
+      retryJudgementForRun(run({ 'tc-a': { reportId: 'rep-a', status: 'completed' } }), storage, { scope: 'errored', overrides: { evaluatorId: 'eval-det' } })
+    ).rejects.toThrow(/use scope 'all'/);
+    expect(storage.runs.update).not.toHaveBeenCalled();
+    expect(mockedJudge).not.toHaveBeenCalled();
   });
 
   it("uses the run's own evaluator when no override is given and it is deterministic", async () => {
