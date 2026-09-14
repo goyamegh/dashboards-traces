@@ -14,6 +14,7 @@ import { Router, Request, Response } from 'express';
 import { debug } from '@/lib/debug';
 import { getStorageModule } from '@/server/adapters';
 import { SYSTEM_EVALUATORS, toEvaluator, isSystemEvaluatorId, getSystemEvaluatorById } from '@/server/prompts/evaluatorTemplates';
+import { isDeterministicEvaluator, validateScoringConfig } from '@/lib/scoring/validateScoringConfig';
 import type { Evaluator, StorageMetadata } from '@/types';
 import {
   isDeterministicEvaluator,
@@ -233,6 +234,10 @@ router.post('/api/storage/evaluators', async (req: Request, res: Response) => {
     if (!evaluator.scoringConfig) {
       return res.status(400).json({ error: 'Evaluator scoring config is required' });
     }
+    const scoringError = validateScoringConfig(evaluator.scoringConfig, { deterministic: isDeterministicEvaluator(evaluator) });
+    if (scoringError) {
+      return res.status(400).json({ error: scoringError });
+    }
 
     const storage = getStorageModule();
     const created = await storage.evaluators.create(evaluator);
@@ -253,6 +258,16 @@ router.put('/api/storage/evaluators/:id', async (req: Request, res: Response) =>
     // Reject modifying system evaluators
     if (isSystemId(id)) {
       return res.status(400).json({ error: 'Cannot modify system evaluators. Duplicate them to create a custom version.' });
+    }
+
+    // A scoring change (weights / scale / passPolicy / primaryMetrics)
+    // changes the content hash new reports are stamped with; reports judged
+    // earlier keep their own frozen snapshot untouched.
+    if (req.body?.scoringConfig !== undefined) {
+      const scoringError = validateScoringConfig(req.body.scoringConfig, { deterministic: isDeterministicEvaluator(req.body) });
+      if (scoringError) {
+        return res.status(400).json({ error: scoringError });
+      }
     }
 
     const storage = getStorageModule();
