@@ -494,23 +494,37 @@ Related compare-page surfaces built on the same data
 
 - **Judge caption** — resolved per report: `report.judgeModel` →
   `report.llmJudgeResponse.modelId` → `report.judgeModelId` →
-  `run.judgeModelId`; never the agent model (`modelId`). Runs with no judge
+  `run.judgeModelId`; never the agent model (`modelId`). A run whose reports
+  resolved to several judges reads "mixed (a · b)"; runs with no judge
   recorded read "not recorded".
 - **Pass rate** — labelled with its policy ("judge verdict" for legacy;
   "score ≥ 0.7" / "gates" from the snapshot) and shown as
-  `passed / evaluated (errored N)`; errored cases are excluded from the
-  denominator.
+  `passed / evaluated (errored N, pending M)`. "Evaluated" is the JUDGED set
+  (`passed + failed`, the same denominator as `lib/runStats`
+  `passRateOverJudged` and the runs list); errored, pending and not-run cases
+  are excluded from it and called out separately.
 - **Coverage gate** — the Δ row is disabled ("Not comparable — different
-  scoring") when the runs carry different snapshot content hashes, one is
-  legacy and the other snapshot-scored, or shared test cases ran at different
-  versions. "Compare anyway" is an explicit, session-scoped override keyed by
-  the compared run set. The coverage cell says "same case IDs" unless the
-  scoring provenance also matches ("same cases, same scoring").
+  scoring") when the runs carry different snapshot content hashes, a run mixes
+  snapshots, one is legacy and the other snapshot-scored, shared test cases
+  ran at different versions, or (for snapshot-scored runs) a shared case has
+  no recorded version on one side — unknown provenance is not matching
+  provenance. "Compare anyway" is an explicit, session-scoped override keyed
+  by the compared run set. Two fully legacy runs stay comparable (blocking
+  them would disable the Δ row for every pre-snapshot run); their Δ cells
+  carry a caveat that both sides lack scoring provenance. The coverage cell
+  says "same case IDs" unless the scoring provenance also matches ("same
+  cases, same scoring").
 - **Verdict changes vs Split** — `calculateRowStatus` and the insights band's
   `partitionByAgreement` share one predicate
   ([`lib/comparison/verdictAgreement.ts`](../lib/comparison/verdictAgreement.ts)),
-  so "N verdict changes" always equals "Split". Score-only moves (verdicts
-  agree, per-case score moved > 5 points) are counted and labelled separately.
+  so "N verdict changes" always equals "Split". In-flight (`pending` /
+  `running`) and `cancelled` cases carry no verdict (they render "Not run"
+  and stay out of both counts); only a run-level `failed` (agent crashed) is
+  a fail verdict. Score-only moves (verdicts agree, per-case score moved > 5
+  points) are counted and labelled separately, and are computed only from
+  like quantities — snapshot score vs snapshot score, or `accuracy` vs
+  `accuracy` for legacy reports; never from an invented zero-filled
+  combination of rubrics.
 
 R1 (this section) adds the type, storage mapping and read model; the snapshot
 WRITE path (a canonical verdict engine that computes the verdict from the

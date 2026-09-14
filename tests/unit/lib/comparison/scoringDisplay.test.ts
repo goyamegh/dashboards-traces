@@ -13,7 +13,9 @@ import {
   compareAnywayKey,
   countVersionMismatches,
   formatMetricInScale,
+  countVersionUnknown,
   formatPassRateDetail,
+  judgeCaption,
   passPolicyLabel,
   passRateHeaderLabel,
   readCompareAnyway,
@@ -77,11 +79,23 @@ describe('pass-rate policy labels + denominators', () => {
     expect(passRateHeaderLabel([{ scoring: snapshotScoring() }, { scoring: { source: 'legacy' } }])).toBe('Pass rate (mixed policies)');
   });
 
-  it('detail reads "passed / evaluated" with errored excluded from the denominator and called out', () => {
+  it('detail reads "passed / evaluated" with errored AND pending excluded from the denominator and called out', () => {
     expect(formatPassRateDetail({ passedCount: 32, failedCount: 39, evaluatedCount: 71, erroredCount: 1 })).toBe('32 / 71 (errored 1)');
     expect(formatPassRateDetail({ passedCount: 36, failedCount: 36, evaluatedCount: 72, erroredCount: 0 })).toBe('36 / 72');
+    // One passed + one still running is "1 / 1 (pending 1)", never "1 / 2".
+    expect(formatPassRateDetail({ passedCount: 1, failedCount: 0, evaluatedCount: 1, erroredCount: 0, pendingCount: 1 })).toBe('1 / 1 (pending 1)');
+    expect(formatPassRateDetail({ passedCount: 1, failedCount: 1, evaluatedCount: 2, erroredCount: 2, pendingCount: 3 })).toBe('1 / 2 (errored 2, pending 3)');
     // Fixtures without evaluatedCount: the judged set is passed + failed.
     expect(formatPassRateDetail({ passedCount: 5, failedCount: 0 })).toBe('5 / 5');
+  });
+
+  it('judgeCaption: single judge by name, several → "mixed", none → "not recorded"', () => {
+    expect(judgeCaption({ judgeModelId: 'j1', judgeModelIds: ['j1'] })).toBe('j1');
+    expect(judgeCaption({ judgeModelIds: ['j1', 'j2'] }, id => id.toUpperCase())).toBe('mixed (J1 · J2)');
+    expect(judgeCaption({ judgeModelIds: [] })).toBe('not recorded');
+    expect(judgeCaption({})).toBe('not recorded');
+    // Older fixtures with only judgeModelId still resolve.
+    expect(judgeCaption({ judgeModelId: 'only' })).toBe('only');
   });
 });
 
@@ -156,6 +170,23 @@ describe('coverage gate — assessScoringComparability', () => {
     expect(countVersionMismatches([{ tc1: 1 }, { tc1: 2 }, { tc1: 1 }])).toBe(1);
     expect(countVersionMismatches([{ tc1: 1 }])).toBe(0);
     expect(countVersionMismatches([undefined, { tc1: 1 }])).toBe(0);
+  });
+
+  it('snapshot runs with a shared case lacking a recorded version on one side → not comparable (unknown ≠ matching)', () => {
+    const r = assessScoringComparability([
+      base({ runId: 'a', scoring: snapshotScoring(), testCaseVersions: { tc1: 1, tc2: 1 } }),
+      base({ runId: 'b', scoring: snapshotScoring(), testCaseVersions: { tc1: 1 } }),
+    ]);
+    expect(r.comparable).toBe(false);
+    expect(r.reasons).toEqual(['1 shared test case has no recorded version on one side']);
+    expect(countVersionUnknown([{ tc1: 1, tc2: 1 }, { tc1: 1 }])).toBe(1);
+    expect(countVersionUnknown([{ tc1: 1 }, {}])).toBe(1);
+    expect(countVersionUnknown([{ tc1: 1 }])).toBe(0);
+    // Legacy runs are not held to version provenance (missing versions are what legacy means).
+    expect(assessScoringComparability([
+      base({ runId: 'a', testCaseVersions: { tc1: 1 } }),
+      base({ runId: 'b', testCaseVersions: {} }),
+    ]).comparable).toBe(true);
   });
 
   it('tolerates aggregates built without scoring/testCaseVersions (treated as legacy)', () => {

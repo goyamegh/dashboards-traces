@@ -233,9 +233,13 @@ describe('comparisonService', () => {
       expect(aggregates.failedCount).toBe(0);
       // Accuracy averaged over the evaluable (non-pending) case only.
       expect(aggregates.avgAccuracy).toBe(90);
-      // Pending stays in the denominator (total - errored = 2), matching
-      // lib/runStats: 1 passed / 2 = 50%.
-      expect(aggregates.passRatePercent).toBe(50);
+      // Pending is NOT in the denominator — the pass rate is over the JUDGED
+      // set (passed + failed), the same convention as lib/runStats
+      // passRateOverJudged and the runs list: 1 passed / 1 judged = 100%,
+      // with the pending case called out separately.
+      expect(aggregates.evaluatedCount).toBe(1);
+      expect(aggregates.pendingCount).toBe(1);
+      expect(aggregates.passRatePercent).toBe(100);
     });
 
     // Live-tunnel regression (compare page, real STaRK-retail runs): reports
@@ -1667,8 +1671,11 @@ describe('comparisonService', () => {
         { name: 'hit_at_1', mean: 0.5, scale: { min: 0, max: 100 } },
       ]);
       expect(aggregates.testCaseVersions).toEqual({ 'tc-1': 2, 'tc-2': 2 });
-      // Judge resolves from the report's judge response, not the agent model.
-      expect(aggregates.judgeModelId).toBe('judge-from-response');
+      // Judge resolves per report (s1: judge response; s2: the run-level
+      // configured judge) — two distinct judges → mixed, never the agent model.
+      expect(aggregates.judgeModelId).toBeUndefined();
+      expect(aggregates.judgeModelIds).toEqual(['judge-from-response', 'configured-judge']);
+      expect(aggregates.judgeModelIds).not.toContain('model-1');
     });
 
     it('mixed run (one snapshot report, one legacy): whole run is legacy — never a mean over half the cases', () => {
@@ -1712,6 +1719,80 @@ describe('comparisonService', () => {
       const aggregates = calculateRunAggregates({ ...mockRun, results: {} }, {});
       expect(aggregates.avgScore).toBeUndefined();
       expect(aggregates.scoring).toEqual({ source: 'legacy' });
+    });
+  });
+
+  describe('calculateRunAggregates — denominators and judge identity (codex review)', () => {
+    const mockRun: BenchmarkRun = {
+      id: 'run-d', name: 'Denominators', createdAt: '2024-01-01T00:00:00Z', agentKey: 'agent-1', modelId: 'AGENT-MODEL',
+      status: 'running', results: {},
+    } as BenchmarkRun;
+
+    it('evaluated = passed + failed; pending/running cases are neither evaluated nor errored', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        results: {
+          'tc-1': { reportId: 'r1', status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { reportId: 'r2', status: 'running' },
+          'tc-3': { reportId: 'r3', status: 'completed' }, // completed without a verdict = errored (#242)
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        r1: { id: 'r1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready', metrics: { accuracy: 90 } } as EvaluationReport,
+        r2: { id: 'r2', testCaseId: 'tc-2', metricsStatus: 'pending', metrics: {} } as unknown as EvaluationReport,
+        r3: { id: 'r3', testCaseId: 'tc-3', metricsStatus: 'error', metrics: {} } as unknown as EvaluationReport,
+      };
+      const agg = calculateRunAggregates(run, reports);
+      expect(agg.passedCount).toBe(1);
+      expect(agg.failedCount).toBe(0);
+      expect(agg.erroredCount).toBe(1);
+      expect(agg.pendingCount).toBe(1);
+      expect(agg.evaluatedCount).toBe(1); // NOT 2 (total − errored)
+      expect(agg.passRatePercent).toBe(100);
+    });
+
+    it('judge identity: one distinct judge → judgeModelId; several → judgeModelIds only (mixed)', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        results: {
+          'tc-1': { reportId: 'r1', status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { reportId: 'r2', status: 'completed', passFailStatus: 'failed' },
+        },
+      };
+      const same = calculateRunAggregates(run, {
+        r1: { id: 'r1', testCaseId: 'tc-1', judgeModelId: 'judge-x', metricsStatus: 'ready', metrics: {} } as unknown as EvaluationReport,
+        r2: { id: 'r2', testCaseId: 'tc-2', judgeModelId: 'judge-x', metricsStatus: 'ready', metrics: {} } as unknown as EvaluationReport,
+      });
+      expect(same.judgeModelId).toBe('judge-x');
+      expect(same.judgeModelIds).toEqual(['judge-x']);
+
+      const mixed = calculateRunAggregates(run, {
+        r1: { id: 'r1', testCaseId: 'tc-1', judgeModelId: 'judge-x', metricsStatus: 'ready', metrics: {} } as unknown as EvaluationReport,
+        r2: { id: 'r2', testCaseId: 'tc-2', llmJudgeResponse: { modelId: 'judge-y' }, metricsStatus: 'ready', metrics: {} } as unknown as EvaluationReport,
+      });
+      expect(mixed.judgeModelId).toBeUndefined();
+      expect(mixed.judgeModelIds).toEqual(['judge-x', 'judge-y']);
+      // The agent model never leaks in.
+      expect(mixed.judgeModelIds).not.toContain('AGENT-MODEL');
+    });
+  });
+
+  describe('buildTestCaseComparisonRows — in-flight / cancelled cases carry no verdict', () => {
+    it('maps pending/running/cancelled to "missing" (Not run), only run-level failed to "failed"', () => {
+      const runs: BenchmarkRun[] = [{
+        id: 'run-1', name: 'Run 1', createdAt: '2024-01-01T00:00:00Z', agentKey: 'a', modelId: 'm', status: 'running',
+        results: {
+          'tc-p': { reportId: 'rp', status: 'pending' },
+          'tc-r': { reportId: 'rr', status: 'running' },
+          'tc-c': { reportId: 'rc', status: 'cancelled' },
+          'tc-f': { reportId: 'rf', status: 'failed' },
+        },
+      } as BenchmarkRun];
+      const mk = (id: string) => ({ id, testCaseId: id, metrics: {} }) as unknown as EvaluationReport;
+      const reports = { rp: mk('rp'), rr: mk('rr'), rc: mk('rc'), rf: mk('rf') };
+      const rows = buildTestCaseComparisonRows(runs, reports, () => undefined, () => undefined);
+      const byId = Object.fromEntries(rows.map(r => [r.testCaseId, r.results['run-1'].status]));
+      expect(byId).toEqual({ 'tc-p': 'missing', 'tc-r': 'missing', 'tc-c': 'missing', 'tc-f': 'failed' });
     });
   });
 
