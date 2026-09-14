@@ -60,6 +60,12 @@ describe('toolHitsOrdered — parsing helpers', () => {
     expect(citedIdsInText('', ['1'])).toEqual([]);
     expect(citedIdsInText('a.b', ['a.b'])).toEqual(['a.b']); // regex metachars escaped
   });
+
+  it('citedIdsInText: numeric ids inside prices, decimals, versions and hyphenated codes are NOT citations (codex_review)', () => {
+    const text = 'Item (id: 41) costs $41.16; see v1.2024-01 and SKU 55-7; ends with (id: 202).';
+    expect(citedIdsInText(text, ['16', '2024', '01', '1', '55', '7'])).toEqual([]);
+    expect(citedIdsInText(text, ['41', '202'])).toEqual(['41', '202']); // sentence-ending period is a boundary
+  });
 });
 
 describe('toolHitsOrdered — extraction rule', () => {
