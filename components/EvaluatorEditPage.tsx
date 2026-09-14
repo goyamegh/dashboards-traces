@@ -933,7 +933,7 @@ export const EvaluatorEditPage: React.FC = () => {
                             </Select>
                           </div>
                           <div className="space-y-1 w-28">
-                            <Label className="text-xs">Min</Label>
+                            <Label className="text-xs">Min (0–{metrics.find(m => m.name === gate.metric)?.scale ?? 100})</Label>
                             <Input
                               type="number"
                               className="h-8 text-sm"

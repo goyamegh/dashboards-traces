@@ -29,7 +29,7 @@ const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Num
  * (metrics sorted by name, object keys sorted) so cosmetic reorderings
  * don't change the hash; anything that changes a number or the prompt does.
  */
-export function evaluatorScoringContent(evaluator: Pick<Evaluator, 'systemPrompt' | 'scoringConfig'>) {
+function evaluatorScoringContent(evaluator: Pick<Evaluator, 'systemPrompt' | 'scoringConfig'>) {
   const sc: Partial<ScoringConfig> = evaluator.scoringConfig ?? {};
   const metrics = [...(sc.metrics ?? [])]
     .map(m => ({

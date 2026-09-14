@@ -34,7 +34,7 @@
 import type { PassFailStatus, ScoringPassPolicy, ScoringSnapshot } from '@/types';
 import { normalizeRubric, rubricScale, scoreFromSnapshot } from './snapshotScore';
 
-export const LLM_VERDICT_POLICY: ScoringPassPolicy = { kind: 'llm-verdict' };
+const LLM_VERDICT_POLICY: ScoringPassPolicy = { kind: 'llm-verdict' };
 
 /** The subset of a snapshot the engine needs; a full {@link ScoringSnapshot} qualifies. */
 export type VerdictSnapshot = Pick<ScoringSnapshot, 'weights' | 'scale' | 'passPolicy' | 'unevaluable'>;
@@ -61,7 +61,6 @@ export interface VerdictResult {
   scored: number;
   /** Weighted rubrics the snapshot declares. */
   total: number;
-  policyApplied: ScoringPassPolicy;
   /** Machine-readable reasons behind a `failed` computed verdict (empty for llm-verdict / passes). */
   reasons: string[];
 }
@@ -158,7 +157,6 @@ export function computeVerdict(input: VerdictInput): VerdictResult {
     unevaluable,
     scored: scoredCount,
     total,
-    policyApplied: policy,
     reasons,
   };
 }
@@ -168,14 +166,20 @@ export function computeVerdict(input: VerdictInput): VerdictResult {
  * producer spreads THIS onto its report / update payload instead of copying
  * `passFailStatus` / `metrics` by hand, so no producer can drift from the
  * engine (e.g. by persisting the LLM's verdict as the report's).
+ *
+ * Every scoring field is ALWAYS present — `null` when this judgement did not
+ * produce it. Both storage backends merge updates over the existing document
+ * (`{...existing, ...updates}`) and drop `undefined` keys on serialization,
+ * so an omitted key would silently keep the PREVIOUS judgement's snapshot /
+ * score / verdict on a re-judge. Explicit `null` clears it.
  */
 export interface ReportScoringFields {
   passFailStatus: PassFailStatus;
   metrics: Record<string, number | undefined>;
-  llmVerdict?: PassFailStatus;
-  verdictConflict?: boolean;
-  score?: number;
-  scoringSnapshot?: ScoringSnapshot;
+  llmVerdict: PassFailStatus | null;
+  verdictConflict: boolean | null;
+  score: number | null;
+  scoringSnapshot: ScoringSnapshot | null;
 }
 
 export function scoringFieldsFromJudgment(judgment: {
@@ -186,19 +190,22 @@ export function scoringFieldsFromJudgment(judgment: {
   score?: number | null;
   scoringSnapshot?: ScoringSnapshot;
 }): ReportScoringFields {
-  const out: ReportScoringFields = {
+  return {
     passFailStatus: judgment.passFailStatus,
     metrics: judgment.metrics ?? {},
+    llmVerdict: judgment.llmVerdict ?? null,
+    verdictConflict: typeof judgment.verdictConflict === 'boolean' ? judgment.verdictConflict : null,
+    score: isFiniteNumber(judgment.score) ? judgment.score : null,
+    scoringSnapshot: judgment.scoringSnapshot ?? null,
   };
-  if (judgment.llmVerdict !== undefined) out.llmVerdict = judgment.llmVerdict;
-  if (judgment.verdictConflict !== undefined) out.verdictConflict = judgment.verdictConflict;
-  if (isFiniteNumber(judgment.score)) out.score = judgment.score;
-  if (judgment.scoringSnapshot) out.scoringSnapshot = judgment.scoringSnapshot;
-  return out;
 }
 
 /**
  * Report-level scoring provenance for an SDK matcher-session run.
+ *
+ * Unlike {@link scoringFieldsFromJudgment} this returns only the keys it can
+ * assert (the SDK report is built fresh per run, never merged over an older
+ * judgement, so omitted keys cannot resurrect stale values).
  *
  * In the SDK path the verdict is the matcher session's gate outcome (every
  * `expect()` / `judge()` gate must pass) — the evaluator's pass policy is
@@ -210,9 +217,18 @@ export function scoringFieldsFromJudgment(judgment: {
  * Returns `{}` when no judge matcher carries a snapshot (pure code tests,
  * pre-R2 servers) or when the judge matchers were scored by DIFFERENT
  * evaluator versions (one report cannot honestly carry two snapshots).
- * `llmVerdict` / `verdictConflict` are lifted only when exactly one judge
- * matcher ran, since they are per-judgement facts.
+ * `llmVerdict` is lifted only when exactly one judge matcher ran (it is a
+ * per-judgement fact); `verdictConflict` is `true` when ANY judge matcher
+ * disagreed with its LLM, so a disagreement never disappears behind an
+ * aggregate.
  */
+export interface SdkSessionScoringFields {
+  scoringSnapshot?: ScoringSnapshot;
+  score?: number;
+  llmVerdict?: PassFailStatus;
+  verdictConflict?: boolean;
+}
+
 export function sdkSessionScoring(
   matcherResults: ReadonlyArray<{
     method: string;
@@ -223,7 +239,7 @@ export function sdkSessionScoring(
     verdictConflict?: boolean;
   }>,
   metrics: Record<string, number | undefined> | undefined
-): Pick<ReportScoringFields, 'scoringSnapshot' | 'score' | 'llmVerdict' | 'verdictConflict'> {
+): SdkSessionScoringFields {
   const judged = matcherResults.filter(m => m.method === 'llm-judge' && !m.errored && !m.notReached && m.scoringSnapshot);
   if (judged.length === 0) return {};
   const hashes = new Set(judged.map(m => m.scoringSnapshot!.contentHash));
@@ -232,15 +248,14 @@ export function sdkSessionScoring(
   const { unevaluable: _perCall, ...frozen } = judged[0].scoringSnapshot!;
   const snapshot: ScoringSnapshot = { ...frozen };
   const scored = scoreFromSnapshot({ metrics: (metrics ?? {}) as any, scoringSnapshot: snapshot });
-  const out: Pick<ReportScoringFields, 'scoringSnapshot' | 'score' | 'llmVerdict' | 'verdictConflict'> = {};
+  const out: SdkSessionScoringFields = {};
   if (scored.source === 'snapshot') {
     if (scored.unevaluable.length > 0) snapshot.unevaluable = scored.unevaluable;
     if (scored.score !== null) out.score = scored.score;
   }
   out.scoringSnapshot = snapshot;
-  if (judged.length === 1) {
-    if (judged[0].llmVerdict !== undefined) out.llmVerdict = judged[0].llmVerdict;
-    if (judged[0].verdictConflict !== undefined) out.verdictConflict = judged[0].verdictConflict;
-  }
+  if (judged.length === 1 && judged[0].llmVerdict !== undefined) out.llmVerdict = judged[0].llmVerdict;
+  const conflicts = judged.filter(m => typeof m.verdictConflict === 'boolean');
+  if (conflicts.length > 0) out.verdictConflict = conflicts.some(m => m.verdictConflict === true);
   return out;
 }
