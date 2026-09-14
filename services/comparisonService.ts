@@ -73,7 +73,12 @@ export function summarizeRunScoring(
     scoredReports: aggregate.scoredReports,
     scoredRubrics: aggregate.scoredRubrics,
     totalRubrics: aggregate.totalRubrics,
-    primaryMetrics: primaryNames.map(name => ({ name, mean: means[name], scale: rubricScale(snapshot, name) })),
+    // Scale from the first snapshot that declares one for the metric (a
+    // mixed-snapshot run is already flagged by the coverage gate).
+    primaryMetrics: primaryNames.map(name => {
+      const declaring = aggregate.snapshots.find(s => s.scale?.[name]) ?? snapshot;
+      return { name, mean: means[name], scale: rubricScale(declaring, name) };
+    }),
   };
 }
 
@@ -126,22 +131,29 @@ export function calculateRunAggregates(
   let accuracyCount = 0;
   const runReports: Array<EvaluationReport | undefined> = [];
   const testCaseVersions: Record<string, number> = {};
-  let judgeModelId: string | undefined;
+  // Every DISTINCT judge the run's reports resolve to (never the agent
+  // model). Exactly one → the caption names it; several → "mixed" (a run
+  // re-judged half-way through, or a fallback judge kicking in) is surfaced
+  // rather than hidden behind whichever report came first (codex review).
+  const judgeModelIds: string[] = [];
   for (const testCaseId of testCaseIds) {
     const result = run.results[testCaseId];
     const report = reports[result.reportId];
     if (!report) continue;
     runReports.push(report);
     if (typeof report.testCaseVersion === 'number') testCaseVersions[testCaseId] = report.testCaseVersion;
-    // Resolved judge: first report that names one (never the agent model).
-    if (!judgeModelId) judgeModelId = resolveJudgeModelId(report, run as { judgeModelId?: string });
+    const judge = resolveJudgeModelId(report, run as { judgeModelId?: string });
+    if (judge && !judgeModelIds.includes(judge)) judgeModelIds.push(judge);
     if (report.metricsStatus === 'error' || report.metricsStatus === 'pending' || report.metricsStatus === 'calculating') continue;
     if (typeof report.metrics?.accuracy === 'number') {
       accuracyCount++;
       totalAccuracy += report.metrics.accuracy;
     }
   }
-  if (!judgeModelId) judgeModelId = resolveJudgeModelId(undefined, run as { judgeModelId?: string });
+  if (judgeModelIds.length === 0) {
+    const runJudge = resolveJudgeModelId(undefined, run as { judgeModelId?: string });
+    if (runJudge) judgeModelIds.push(runJudge);
+  }
 
   // "Avg score": the ONLY run-level score. Derived from each report's frozen
   // ScoringSnapshot (weighted mean of its rubrics, normalized to [0,1]); a
@@ -154,7 +166,13 @@ export function calculateRunAggregates(
   const avgScore = aggregate.source === 'snapshot' && aggregate.score !== null
     ? Math.round(aggregate.score * 100)
     : undefined;
-  const evaluable = Math.max(0, testCaseIds.length - erroredCount);
+  // "Evaluated" = the JUDGED set (passed + failed) — the same denominator as
+  // the runs list (lib/runStats). Errored (judge produced no verdict), pending
+  // (not finished) and not-run cases are all excluded, and each is called out
+  // separately in the pass-rate detail so "1 / 2" can never mean "1 passed of
+  // 2 evaluated" while the second case is still running.
+  const evaluable = passedCount + failedCount;
+  const pendingCount = buckets.pending + buckets.notRun;
 
   return {
     runId: run.id,
@@ -170,8 +188,10 @@ export function calculateRunAggregates(
     avgScore,
     scoring,
     evaluatedCount: evaluable,
+    pendingCount,
     passRatePercent: evaluable > 0 ? Math.round((passedCount / evaluable) * 100) : 0,
-    judgeModelId,
+    judgeModelId: judgeModelIds.length === 1 ? judgeModelIds[0] : undefined,
+    judgeModelIds,
     testCaseVersions,
     // Trace metrics will be populated separately via fetchBatchMetrics
     totalTokens: undefined,
@@ -400,7 +420,15 @@ export function buildTestCaseComparisonRows(
 
       results[run.id] = {
         reportId: report.id,
-        status: runResult.status === 'completed' ? 'completed' : 'failed',
+        // Only a run-level `failed` (agent crashed on the case) is a fail; an
+        // in-flight (`pending`/`running`) or `cancelled` case has NO verdict
+        // and must never be counted as one — it renders "Not run" and stays
+        // out of Split / verdict-change counts (codex review).
+        status: runResult.status === 'completed'
+          ? 'completed'
+          : (runResult.status === 'pending' || runResult.status === 'running' || runResult.status === 'cancelled')
+            ? 'missing'
+            : 'failed',
         passFailStatus: report.passFailStatus,
         // Issue #242: surface evaluator-error reports so the comparison
         // surface (MetricCell) can light up the amber `Errored` chip
@@ -572,13 +600,18 @@ export const SCORE_ONLY_THRESHOLD = 5;
 
 /**
  * The per-case number used for the secondary "score moved" signal. Snapshot
- * scores are only compared with snapshot scores and legacy combined scores
- * only with legacy ones — never across the two (different quantities).
+ * scores are only compared with snapshot scores. For legacy reports the only
+ * quantity honest enough to diff is a metric both sides actually carry under
+ * the same name — `accuracy` — never the invented 40/30/20/10 zero-filled
+ * combination (`calculateCombinedScore`), which would flag "moves" on
+ * rubrics a report never emitted (codex review). No shared quantity → no
+ * score-only signal.
  */
 function comparableScores(a: TestCaseRunResult, b: TestCaseRunResult): [number, number] | null {
   if (typeof a.score === 'number' && typeof b.score === 'number') return [a.score, b.score];
   if (typeof a.score === 'number' || typeof b.score === 'number') return null;
-  return [calculateCombinedScore(a), calculateCombinedScore(b)];
+  if (typeof a.accuracy === 'number' && typeof b.accuracy === 'number') return [a.accuracy, b.accuracy];
+  return null;
 }
 
 /**

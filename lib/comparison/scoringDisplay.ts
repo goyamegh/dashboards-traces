@@ -76,15 +76,39 @@ export function passRateHeaderLabel(runs: ReadonlyArray<Pick<RunAggregateMetrics
   return 'Pass rate (mixed policies)';
 }
 
-/** "passed / evaluated (errored N)" — the denominators behind the percentage. */
+/**
+ * "passed / evaluated (errored N, pending M)" — the denominators behind the
+ * percentage. `evaluated` is the judged set (passed + failed); errored and
+ * pending/not-run cases are excluded from it and called out separately.
+ */
 export function formatPassRateDetail(
-  run: Pick<RunAggregateMetrics, 'passedCount' | 'failedCount' | 'erroredCount'> & Partial<Pick<RunAggregateMetrics, 'evaluatedCount'>>
+  run: Pick<RunAggregateMetrics, 'passedCount' | 'failedCount' | 'erroredCount'> & Partial<Pick<RunAggregateMetrics, 'evaluatedCount' | 'pendingCount'>>
 ): string {
   const errored = run.erroredCount ?? 0;
+  const pending = run.pendingCount ?? 0;
   // Fixtures built before `evaluatedCount` existed: the judged set is passed + failed.
   const evaluated = run.evaluatedCount ?? run.passedCount + run.failedCount;
+  const notes: string[] = [];
+  if (errored > 0) notes.push(`errored ${errored}`);
+  if (pending > 0) notes.push(`pending ${pending}`);
   const base = `${run.passedCount} / ${evaluated}`;
-  return errored > 0 ? `${base} (errored ${errored})` : base;
+  return notes.length > 0 ? `${base} (${notes.join(', ')})` : base;
+}
+
+/**
+ * Judge caption text for one run: the single resolved judge, "mixed (a · b)"
+ * when its reports resolved to several, or "not recorded".
+ */
+export function judgeCaption(
+  run: Partial<Pick<RunAggregateMetrics, 'judgeModelId' | 'judgeModelIds'>>,
+  displayName: (id: string) => string = id => id
+): string {
+  const ids = run.judgeModelIds && run.judgeModelIds.length > 0
+    ? run.judgeModelIds
+    : (run.judgeModelId ? [run.judgeModelId] : []);
+  if (ids.length === 0) return 'not recorded';
+  if (ids.length === 1) return displayName(ids[0]);
+  return `mixed (${ids.map(displayName).join(' · ')})`;
 }
 
 // ─── Avg score hover ─────────────────────────────────────────────────────────
@@ -116,10 +140,12 @@ export interface ScoringComparability {
  *     evaluator content ⇒ scores/verdicts measure different things);
  *   - a run mixes several snapshots internally;
  *   - one run is snapshot-scored and another is legacy;
- *   - any test case they share ran at different versions.
+ *   - any test case they share ran at different versions, or has no recorded
+ *     version on one side (unknown provenance is not "matching" provenance).
  * Two fully legacy runs carry no scoring provenance and are treated as
- * comparable (the historical behaviour) — the overlap banner still says only
- * "same case IDs" for them.
+ * comparable (the historical behaviour — blocking them would disable the Δ
+ * row for every run persisted before snapshots existed); the coverage cell
+ * still says only "same case IDs" for them and the Δ tooltip says why.
  */
 export function assessScoringComparability(
   runs: ReadonlyArray<Pick<RunAggregateMetrics, 'runId' | 'runName'> & Partial<Pick<RunAggregateMetrics, 'scoring' | 'testCaseVersions'>>>
@@ -161,8 +187,33 @@ export function assessScoringComparability(
   if (versionMismatches > 0) {
     reasons.push(`${versionMismatches} shared test case${versionMismatches === 1 ? '' : 's'} ran at different versions`);
   }
+  // Only snapshot-scored runs are held to full version provenance: a legacy
+  // run's missing versions are part of what "legacy" already means.
+  if (scorings.every(s => s.source === 'snapshot')) {
+    const unknown = countVersionUnknown(runs.map(r => r.testCaseVersions));
+    if (unknown > 0) {
+      reasons.push(`${unknown} shared test case${unknown === 1 ? '' : 's'} ${unknown === 1 ? 'has' : 'have'} no recorded version on one side`);
+    }
+  }
 
   return { comparable: reasons.length === 0, reasons };
+}
+
+/**
+ * Shared test cases (present in every run's results) whose version is not
+ * recorded on at least one side. Uses the union of ids across the maps as
+ * the case set, so a run that recorded nothing still counts as unknown.
+ */
+export function countVersionUnknown(versionMaps: ReadonlyArray<Record<string, number> | undefined>): number {
+  if (versionMaps.length < 2) return 0;
+  const maps = versionMaps.map(m => m ?? {});
+  const ids = new Set<string>();
+  maps.forEach(m => Object.keys(m).forEach(id => ids.add(id)));
+  let unknown = 0;
+  for (const id of ids) {
+    if (maps.some(m => typeof m[id] !== 'number')) unknown++;
+  }
+  return unknown;
 }
 
 /** Shared test cases whose recorded version differs between any two runs. */

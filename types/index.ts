@@ -1488,15 +1488,20 @@ export interface RunAggregateMetrics {
   avgScore?: number;
   /** Provenance behind `avgScore` (evaluator, weights, policy, coverage). */
   scoring: RunScoringSummary;
-  /** Cases the evaluator produced a verdict for (`totalTestCases - errored`); the pass-rate denominator. */
+  /** Cases with a verdict (`passed + failed`) — the pass-rate denominator; errored / pending / not-run are excluded. */
   evaluatedCount: number;
+  /** Cases still pending or never run (excluded from `evaluatedCount`; shown in the pass-rate detail). */
+  pendingCount: number;
   passRatePercent: number;
   /**
    * The judge that produced this run's verdicts, resolved per report
    * (`report.judgeModel` → `report.llmJudgeResponse.modelId` →
    * `report.judgeModelId` → `run.judgeModelId`). Never the agent model.
+   * Set only when every report resolves to the SAME judge; see `judgeModelIds`.
    */
   judgeModelId?: string;
+  /** Every distinct judge the run's reports resolved to (first-seen order); >1 = mixed judges. */
+  judgeModelIds: string[];
   /** testCaseId → version each report ran at (coverage gate input). */
   testCaseVersions: Record<string, number>;
   // Trace metrics (optional - populated from metrics API)

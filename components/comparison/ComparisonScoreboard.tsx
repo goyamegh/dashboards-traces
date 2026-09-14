@@ -15,6 +15,7 @@ import {
   avgScoreTooltip,
   formatMetricInScale,
   formatPassRateDetail,
+  judgeCaption,
   passRateHeaderLabel,
   runPassPolicyLabel,
   type ScoringComparability,
@@ -260,23 +261,23 @@ const CondensedBand: React.FC<CondensedBandProps> = ({ runs, overlap, getAgentNa
  * lib/comparison/scoringDisplay.ts), never the agent model under test — the
  * old caption read `run.modelId` and labelled the agent as the judge. Same
  * judge across all runs collapses to one name; differing judges show both,
- * labelled A/B. Runs with no judge information at all read "not recorded" —
- * an honest blank, never the agent model standing in.
+ * labelled A/B. A run whose reports resolved to several judges reads
+ * "mixed (a · b)"; runs with no judge information at all read "not recorded"
+ * — an honest blank, never the agent model standing in.
  */
 const JudgeLine: React.FC<{ runs: RunAggregateMetrics[] }> = ({ runs }) => {
-  const judges = runs.slice(0, 2).map(r => r.judgeModelId);
-  if (judges.length === 0) return null;
-  const allSame = judges.every(j => j === judges[0]);
-  const name = (j: string | undefined) => (j ? getModelName(j) : 'not recorded');
+  const captions = runs.slice(0, 2).map(r => judgeCaption(r, getModelName));
+  if (captions.length === 0) return null;
+  const allSame = captions.every(c => c === captions[0]);
 
   return (
     <div className="px-4 py-1.5 text-[11px] text-muted-foreground" data-testid="scoreboard-judge-line">
       {allSame ? (
-        <span>Judge: {name(judges[0])}</span>
+        <span>Judge: {captions[0]}</span>
       ) : (
         <span>
-          Judge: A {name(judges[0])}
-          {judges.length > 1 && <> · B {name(judges[1])}</>}
+          Judge: A {captions[0]}
+          {captions.length > 1 && <> · B {captions[1]}</>}
         </span>
       )}
     </div>
@@ -377,6 +378,14 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
     ? runA.totalTokens - runB.totalTokens
     : undefined;
   const deltaBlocked = !!runB && !comparability.comparable && !compareAnyway;
+  // Tooltip caveat on the Δ cells: why an overridden comparison is shaky, or
+  // that two legacy runs carry no scoring provenance at all.
+  const bothLegacy = !!runB && runs.slice(0, 2).every(r => scoringOf(r).source === 'legacy');
+  const deltaCaveat = compareAnyway && !comparability.comparable
+    ? `Compared anyway — ${comparability.reasons.join(' · ')}`
+    : bothLegacy
+      ? 'Both runs are legacy-scored: evaluator version and verdict policy were not recorded, so this Δ compares two opaque judge-verdict streams.'
+      : undefined;
   const primaryMean = (run: RunAggregateMetrics, name: string) => {
     const scoring = scoringOf(run);
     return scoring.source === 'snapshot' ? scoring.primaryMetrics.find(pm => pm.name === name) : undefined;
@@ -639,7 +648,7 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                           'font-semibold tabular-nums text-[11px]',
                           passRateDelta > 0 ? 'text-blue-400' : passRateDelta < 0 ? 'text-red-400' : 'text-muted-foreground'
                         )}
-                        title={passRateDelta === 0 ? 'No change' : (compareAnyway && !comparability.comparable ? `Compared anyway — ${comparability.reasons.join(' · ')}` : undefined)}
+                        title={passRateDelta === 0 ? 'No change' : deltaCaveat}
                       >
                         {formatDelta(runA.passRatePercent, runB.passRatePercent, 'pp')}
                       </span>
@@ -649,7 +658,7 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                         testId="scoreboard-delta-avgscore"
                         delta={avgScoreDelta}
                         text={formatDelta(runA.avgScore, runB.avgScore)}
-                        title={compareAnyway && !comparability.comparable ? `Compared anyway — ${comparability.reasons.join(' · ')}` : 'A minus B, both from scoring snapshots'}
+                        title={deltaCaveat ?? 'A minus B, both from scoring snapshots'}
                       />
                     </td>
                     {columns.filter(c => c.primaryMetric).map(col => {
