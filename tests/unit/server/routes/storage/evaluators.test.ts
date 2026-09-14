@@ -465,6 +465,26 @@ describe('Evaluators router', () => {
         const res = await post({ ...VALID_SCORING, passPolicy: { kind: 'threshold', minScore: 0.7 }, primaryMetrics: ['a'] });
         expect(res.status).toBe(201);
       });
+
+      it("applies the LLM scoringConfig rules only to LLM evaluators: a kind: 'deterministic' body (whose synthesized mirror has no passPolicy) is validated by its own validator, and a client-sent scoringConfig on it is ignored", async () => {
+        mockEvaluatorsCreate.mockImplementation(async (doc: any) => ({ id: 'det-2', ...doc }));
+        const body = {
+          name: 'Ranked retrieval',
+          kind: 'deterministic',
+          metrics: [{ name: 'hit@1', compute: { type: 'ranked-hit', k: 1 }, weight: 1, primary: true }],
+          passPolicy: { kind: 'gates', gates: [{ metric: 'hit@1', min: 1 }] },
+          inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'tool-hits-ordered' } },
+          // Would be a 400 for an LLM evaluator (weight 0); the server replaces it with the synthesized mirror.
+          scoringConfig: { metrics: [{ name: 'a', weight: 0, scale: 100 }], passThreshold: 70, scale: 100 },
+        };
+        const res = await request(app).post('/api/storage/evaluators').send(body);
+        expect(res.status).toBe(201);
+        expect(mockEvaluatorsCreate.mock.calls[0][0].scoringConfig).toEqual({
+          metrics: [{ name: 'hit@1', description: 'ranked-hit@1', weight: 1, scale: 1 }],
+          passThreshold: 0,
+          scale: 100,
+        });
+      });
     });
   });
 
