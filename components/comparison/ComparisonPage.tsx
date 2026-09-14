@@ -949,10 +949,15 @@ export const ComparisonPage: React.FC = () => {
                           onClick={() => setRowStatusFilter('differences')}
                           title="Show only the rows where the runs disagree — verdict changes (same count as “Split” above) plus score-only moves"
                         >
-                          <span data-testid="verdict-differences-count">{verdictDifferences}</span> verdict change{verdictDifferences === 1 ? '' : 's'}
-                          {scoreOnlyDifferences > 0 && (
-                            <> · <span data-testid="score-only-differences-count">{scoreOnlyDifferences}</span> score-only</>
-                          )}
+                          {/* One text run: the Badge is a flex container, which
+                              would trim a leading space in a bare text node. */}
+                          <span>
+                            <span data-testid="verdict-differences-count">{verdictDifferences}</span>
+                            {` verdict change${verdictDifferences === 1 ? '' : 's'}`}
+                            {scoreOnlyDifferences > 0 && (
+                              <>{' · '}<span data-testid="score-only-differences-count">{scoreOnlyDifferences}</span>{' score-only'}</>
+                            )}
+                          </span>
                         </Badge>
                       );
                     })()}

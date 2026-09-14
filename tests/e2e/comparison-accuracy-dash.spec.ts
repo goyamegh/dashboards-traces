@@ -192,10 +192,13 @@ test.describe('Comparison — Avg Accuracy dash when no report carries accuracy'
     const chips = page.locator('[data-testid="metric-cell-rubrics"]');
     await expect(chips.first()).toBeVisible({ timeout: 15000 });
     const texts = await chips.allTextContents();
-    // Stored order leads with fact_precision; abstention_integrity is still
-    // there by name — but nothing calls either of them "the score".
-    expect(texts.some(t => t.includes('fact_precision') && t.includes('abstention_integrity'))).toBe(true);
+    // Stored order leads with fact_precision / provenance_verifiability inline
+    // (+N for the rest); abstention_integrity is still there by name in the
+    // hover — but nothing calls any of them "the score".
+    expect(texts.some(t => t.includes('fact_precision') && t.includes('provenance_verifiability') && t.includes('+2'))).toBe(true);
     const titles = await chips.evaluateAll(els => els.map(e => e.getAttribute('title') || ''));
     expect(titles.every(t => t.startsWith('Legacy scoring'))).toBe(true);
+    expect(titles.some(t => t.includes('abstention_integrity 100%'))).toBe(true);
+    expect(titles.some(t => t.includes('abstention_integrity 60%'))).toBe(true);
   });
 });
