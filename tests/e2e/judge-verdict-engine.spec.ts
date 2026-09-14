@@ -238,7 +238,9 @@ test.describe('Evaluator editor — pass policy', () => {
       expect(updated.scoringConfig.passPolicy).toEqual({ kind: 'threshold', minScore: 0.75 });
       expect(updated.scoringConfig.primaryMetrics).toEqual(['relevance']);
 
-      // Version bumped in the UI, policy reloaded into the (now read-only) form.
+      // The header shows the evaluator document's new currentVersion (the pre-existing evaluator
+      // history; scoring identity stays evaluatorId + contentHash — no separate versioning scheme)
+      // and the policy is reloaded into the (now read-only) form.
       await expect(page.getByText('v2', { exact: true }).first()).toBeVisible({ timeout: 10_000 });
       await expect(page.getByTestId('pass-policy-select')).toContainText(/score threshold/i);
     } finally {

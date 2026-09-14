@@ -549,7 +549,15 @@ Inputs: the parsed rubric values (`metrics`), the evaluator's
 0–N range, default 100; `passPolicy`, default `{ kind: 'llm-verdict' }`;
 optional `primaryMetrics`) and, when an LLM judged, its `pass_fail_status`.
 `applyScoring(metrics, evaluator, llmVerdict?)` is callable WITHOUT an LLM
-verdict so deterministic scoring uses the same path.
+verdict. `kind: 'deterministic'` evaluators (see
+[EVALUATORS.md](EVALUATORS.md)) currently score through
+[`lib/scoring/deterministicScoring.ts`](../lib/scoring/deterministicScoring.ts),
+which builds the same `ScoringSnapshot` shape and writes the same report
+fields (`score`, `llmVerdict: null`, `verdictConflict: null`) but keeps its
+own verdict pass — its unevaluable rule is stricter (ANY unevaluable metric
+fails the verdict under `gates` too, and an all-unevaluable report is "not
+evaluable" rather than `failed`). Folding it onto `computeVerdict` is a
+follow-up once those semantics are reconciled.
 
 Truth table (`passPolicy.kind`):
 
@@ -593,8 +601,10 @@ rate), never `failed`.
 the evaluator POST/PUT routes and mirrored in the editor): metric names
 unique and non-empty, weights > 0, scales > 0, threshold `minScore` in
 [0, 1], gate metrics / primary metrics must be declared, gate `min` within the
-metric's scale; a deterministic evaluator (structurally detected) may not use
-`llm-verdict`.
+metric's scale. `kind: 'deterministic'` evaluators are validated by
+`lib/evaluators/deterministic.ts` instead (their `scoringConfig` is a
+server-synthesized mirror) — that validator is the one that rejects
+`llm-verdict`, since a deterministic evaluator has no LLM verdict to defer to.
 
 **SDK matcher-session runs** keep the matcher session's gate outcome as the
 report verdict (every `expect()` / `judge()` gate must pass); the evaluator's

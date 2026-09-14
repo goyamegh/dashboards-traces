@@ -4,38 +4,24 @@
  */
 
 /**
- * Structural validation of an evaluator's `scoringConfig`, shared by the
+ * Structural validation of an LLM evaluator's `scoringConfig`, shared by the
  * evaluator CRUD routes (reject on POST/PUT) and the editor (inline hint).
  * Pure; returns the first problem as a human-readable string, `null` when
  * the config is acceptable.
+ *
+ * `kind: 'deterministic'` evaluators are NOT validated here: their scoring
+ * definition lives in the top-level `metrics[]` / `passPolicy` / `inputs`
+ * and is validated by `lib/evaluators/deterministic.ts`
+ * (`validateDeterministicEvaluator`, which rejects `llm-verdict` — a
+ * deterministic evaluator has no LLM verdict to defer to); their
+ * `scoringConfig` is a server-synthesized mirror, never user input.
  */
 
 import type { ScoringConfig } from '@/types';
 
 const isFiniteNumber = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
 
-/**
- * Whether an evaluator scores without an LLM judge. Detected structurally
- * (any of: `evaluator.kind === 'deterministic'`, `inferenceConfig.provider
- * === 'deterministic'`, or a metric tagged `kind`/`source: 'deterministic'`)
- * so this stays decoupled from the deterministic-scoring module's exact
- * shape; reconcile when that lands.
- */
-export function isDeterministicEvaluator(evaluator: unknown): boolean {
-  if (!evaluator || typeof evaluator !== 'object') return false;
-  const e = evaluator as Record<string, any>;
-  if (e.kind === 'deterministic') return true;
-  if (e.inferenceConfig?.provider === 'deterministic') return true;
-  const metrics = e.scoringConfig?.metrics;
-  return Array.isArray(metrics) && metrics.some((m: any) => m?.kind === 'deterministic' || m?.source === 'deterministic');
-}
-
-export interface ValidateScoringOptions {
-  /** A deterministic evaluator has no LLM verdict to defer to, so `llm-verdict` is rejected. */
-  deterministic?: boolean;
-}
-
-export function validateScoringConfig(config: unknown, options: ValidateScoringOptions = {}): string | null {
+export function validateScoringConfig(config: unknown): string | null {
   if (!config || typeof config !== 'object') return 'scoringConfig must be an object';
   const c = config as Partial<ScoringConfig> & Record<string, unknown>;
 
@@ -66,9 +52,6 @@ export function validateScoringConfig(config: unknown, options: ValidateScoringO
   }
 
   const policy = c.passPolicy as Record<string, unknown> | undefined;
-  if (options.deterministic && (policy === undefined || policy?.kind === 'llm-verdict')) {
-    return "scoringConfig.passPolicy: a deterministic evaluator has no LLM verdict — use 'threshold' or 'gates'";
-  }
   if (policy !== undefined) {
     if (!policy || typeof policy !== 'object') return 'scoringConfig.passPolicy must be an object';
     switch (policy.kind) {
