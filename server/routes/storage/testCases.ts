@@ -42,6 +42,10 @@ function toSummary(doc: any): any {
   };
 }
 
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every(v => typeof v === 'string');
+}
+
 /**
  * Check if an ID belongs to sample data (read-only)
  */
@@ -455,6 +459,15 @@ router.post('/api/storage/test-cases/bulk', async (req: Request, res: Response) 
     }
 
     const storage = getStorageModule();
+
+    // `describePath` is an additive display/grouping field: keep it only when
+    // it is a string array (outermost describe first); anything else is
+    // dropped rather than persisted as garbage the UI would render.
+    for (const tc of testCases) {
+      if (tc && 'describePath' in tc && !isStringArray(tc.describePath)) {
+        delete tc.describePath;
+      }
+    }
 
     // Provenance gate. Reject mixed batches — in `bulkUpsert` an item without
     // `sourceFile` matches an existing record by `name` ALONE

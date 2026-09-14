@@ -594,6 +594,28 @@ describe('Test Cases Storage Routes', () => {
       );
     });
 
+    it('passes a well-formed describePath through to bulkUpsert and drops a malformed one', async () => {
+      mockStorage.testCases.bulkUpsert.mockResolvedValue({ created: 2, updated: 0, unchanged: 0, testCases: [] });
+      const { req, res } = createMocks(
+        {},
+        {
+          testCases: [
+            { name: 'Grouped', sourceFile: 'evals/demo.eval.mjs', sourceHash: 'h', describePath: ['Suite', 'Inner'] },
+            { name: 'Broken', sourceFile: 'evals/demo.eval.mjs', sourceHash: 'h', describePath: 'Suite' },
+          ],
+        }
+      );
+      const handler = getRouteHandler(testCasesRoutes, 'post', '/api/storage/test-cases/bulk');
+
+      await handler(req, res);
+
+      expect(mockStorage.testCases.bulkUpsert).toHaveBeenCalledWith([
+        expect.objectContaining({ name: 'Grouped', describePath: ['Suite', 'Inner'] }),
+        expect.not.objectContaining({ describePath: expect.anything() }),
+      ]);
+      expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ created: 2 }));
+    });
+
     it('should reject a batch containing a nameless item with 400 and never call bulkCreate/bulkUpsert (regression: a nameless item on the bulkUpsert path threw uncaught -> 500)', async () => {
       const { req, res } = createMocks(
         {},
