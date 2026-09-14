@@ -128,10 +128,19 @@ describe('classifyRow', () => {
     expect(classifyRow(row({ a: passed(70), b: passed(74) }), 'a')).toEqual({ status: 'neutral', kind: null });
   });
 
-  it('never compares a snapshot score against a legacy combined score', () => {
+  it('never compares a snapshot score against a legacy metric', () => {
     const a: TestCaseRunResult = { status: 'completed', passFailStatus: 'passed', score: 90 };
     const b: TestCaseRunResult = { status: 'completed', passFailStatus: 'passed', accuracy: 10 };
     expect(classifyRow(row({ a, b }), 'a')).toEqual({ status: 'neutral', kind: null });
+  });
+
+  it('legacy reports: score-only moves use `accuracy` when BOTH carry it — never an invented zero-filled combination', () => {
+    const passed = (extra: Partial<TestCaseRunResult>): TestCaseRunResult => ({ status: 'completed', passFailStatus: 'passed', ...extra });
+    expect(classifyRow(row({ a: passed({ accuracy: 90 }), b: passed({ accuracy: 60 }) }), 'a')).toEqual({ status: 'regression', kind: 'score-only' });
+    // One side has no accuracy (custom rubrics only) → nothing honest to diff → neutral.
+    expect(classifyRow(row({ a: passed({ accuracy: 90 }), b: passed({ faithfulness: 10 }) }), 'a')).toEqual({ status: 'neutral', kind: null });
+    // Faithfulness alone (the old 30%-weighted input) no longer produces a "move".
+    expect(classifyRow(row({ a: passed({ faithfulness: 100 }), b: passed({ faithfulness: 0 }) }), 'a')).toEqual({ status: 'neutral', kind: null });
   });
 
   it('is neutral when the baseline or another run has no verdict (evaluator-errored is not a regression)', () => {
