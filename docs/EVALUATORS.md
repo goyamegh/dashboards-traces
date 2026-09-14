@@ -180,7 +180,10 @@ curl -X POST http://localhost:4001/api/storage/evaluation-runs/<runId>/retry-jud
 ```
 
 `evaluatorId` must name an existing evaluator (`400` otherwise); when it is
-deterministic no judge model is used at all. Run stats are recomputed and the
+deterministic no judge model is used at all, and `scope` must be `'all'` —
+re-scoring only the errored subset would leave a run whose reports carry two
+different scoring snapshots while the run doc claims one evaluator (`400`).
+The report's `judgeModelId` is cleared (`null`) since no judge model ran. Run stats are recomputed and the
 run's `evaluatorId` is updated to the evaluator that produced the current
 verdicts. On the compare page (`/compare?runs=a,b`) each `primary` metric is a
 column and the pass-rate header carries the policy ("Pass rate (gates)").

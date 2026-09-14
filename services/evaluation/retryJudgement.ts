@@ -80,6 +80,10 @@ export interface RetryJudgementOverrides {
   judgeModelId?: string | null;
 }
 
+/** Error text for a deterministic evaluator requested with `scope: 'errored'` (route → 400). */
+export const DETERMINISTIC_SCOPE_ERROR =
+  "a deterministic evaluator re-scores the whole run; use scope 'all' (re-scoring only the errored cases would mix two scoring snapshots in one run)";
+
 export interface RetryJudgementCaseResult {
   testCaseId: string;
   reportId: string;
@@ -402,6 +406,9 @@ async function applyDeterministicJudgement(
     const result = scoreDeterministic(evaluator, testCase, report);
     const common = {
       evaluatorId: evaluator.id,
+      // No judge model was involved — clear the one a previous LLM judgement
+      // may have stamped so the report never names a judge it did not use.
+      judgeModelId: null,
       judgeMode: 'deterministic' as const,
       scoringSnapshot: result.snapshot,
       matcherResults: result.matcherResults,
@@ -538,6 +545,14 @@ export async function retryJudgementForRun(
   // Resolve the evaluator ONCE per run (not per case) so every report in this
   // retry is scored against the same document.
   const resolvedEvaluator = await resolveEvaluatorDoc(overrides.evaluatorId || run.evaluatorId, storage);
+  if (isDeterministicEvaluator(resolvedEvaluator) && scope !== 'all') {
+    // codex_review: re-scoring only the errored subset with a different
+    // (deterministic) scorer would leave a run whose reports carry two
+    // scoring snapshots while the run doc claims one evaluator — a
+    // mixed-truth run. A deterministic evaluator is cheap; always re-score
+    // the whole run. The route surfaces this as a 400 before starting a job.
+    throw new Error(DETERMINISTIC_SCOPE_ERROR);
+  }
 
   // "Defaults will be the last selected ones": remember what THIS retry was
   // launched with so the next Retry-judgement dialog can preselect it.
