@@ -27,7 +27,9 @@ import {
   type RetryJudgementScope,
   type RetryJudgementSummary,
   type RetryJudgementOverrides,
+  DETERMINISTIC_SCOPE_ERROR,
 } from '../../../services/evaluation/retryJudgement.js';
+import { isDeterministicEvaluator } from '../../../lib/evaluators/deterministic.js';
 import { isSystemEvaluatorId, getSystemEvaluatorById } from '../../prompts/evaluatorTemplates.js';
 import { isOldEnoughForZombieCancel, ZOMBIE_CANCEL_MIN_AGE_MS } from '../../../lib/runActions.js';
 import { loadConfigSync } from '../../../lib/config/index.js';
@@ -685,11 +687,16 @@ router.post('/api/storage/evaluation-runs/:id/retry-judgement', async (req: Requ
       if (typeof evaluatorId !== 'string' || !evaluatorId.trim()) {
         return res.status(400).json({ error: 'evaluatorId must be a non-empty string' });
       }
-      const exists = isSystemEvaluatorId(evaluatorId)
-        ? !!getSystemEvaluatorById(evaluatorId)
-        : !!(await storage.evaluators.getById(evaluatorId).catch(() => null));
-      if (!exists) {
+      const evaluatorDoc = isSystemEvaluatorId(evaluatorId)
+        ? getSystemEvaluatorById(evaluatorId)
+        : await storage.evaluators.getById(evaluatorId).catch(() => null);
+      if (!evaluatorDoc) {
         return res.status(400).json({ error: `Evaluator not found: ${evaluatorId}` });
+      }
+      // A deterministic evaluator must re-score the WHOLE run (see
+      // DETERMINISTIC_SCOPE_ERROR in services/evaluation/retryJudgement.ts).
+      if (scope !== 'all' && isDeterministicEvaluator(evaluatorDoc)) {
+        return res.status(400).json({ error: DETERMINISTIC_SCOPE_ERROR });
       }
       overrides.evaluatorId = evaluatorId;
     }
