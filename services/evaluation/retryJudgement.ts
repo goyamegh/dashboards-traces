@@ -30,6 +30,7 @@
 import type {
   EvaluationRun,
   EvaluationReport,
+  Evaluator,
   TestCase,
   AgentConfig,
   PassFailStatus,
@@ -47,8 +48,25 @@ import { loadConfigSync } from '@/lib/config/index';
 import { getCustomAgents } from '@/server/services/customAgentStore';
 import { debug } from '@/lib/debug';
 import { readEnv } from '@/lib/envCompat';
+import { isSystemEvaluatorId, getSystemEvaluatorById } from '@/server/prompts/evaluatorTemplates';
+import { isDeterministicEvaluator } from '@/lib/evaluators/deterministic';
+import { scoreDeterministic } from '@/lib/scoring/deterministicScoring';
 
 export type RetryJudgementScope = 'errored' | 'all';
+
+/**
+ * Per-retry judge configuration chosen by the caller (the request body of
+ * POST .../retry-judgement). Field name mirrors PR #509's picker so the two
+ * reconcile trivially:
+ *   - key absent          → inherit the run's evaluator (pre-existing behaviour).
+ *   - `evaluatorId: string` → judge with that evaluator (validated to exist by
+ *     the route). When it is a `kind: 'deterministic'` evaluator NO LLM is
+ *     called: every selected report is re-scored in code from its stored
+ *     trajectory (see lib/scoring/deterministicScoring.ts).
+ */
+export interface RetryJudgementOverrides {
+  evaluatorId?: string;
+}
 
 export interface RetryJudgementCaseResult {
   testCaseId: string;
@@ -178,8 +196,20 @@ export async function retryJudgementForCase(
   testCase: TestCase,
   run: Pick<EvaluationRun, 'judgeModelId' | 'evaluatorId' | 'agentKey'>,
   storage: IStorageModule,
-  agentConfig: AgentConfig | undefined
+  agentConfig: AgentConfig | undefined,
+  overrides: RetryJudgementOverrides = {},
+  resolvedEvaluator?: Evaluator | null
 ): Promise<{ passFailStatus: PassFailStatus | null; error?: string }> {
+  const evaluatorId = overrides.evaluatorId || run.evaluatorId;
+
+  // Deterministic evaluator: score the STORED trajectory in code. No trace
+  // re-fetch (the extractor reads the persisted tool results the agent
+  // actually returned), no judge model, no LLM call of any kind.
+  const evaluator = resolvedEvaluator === undefined ? await resolveEvaluatorDoc(evaluatorId, storage) : resolvedEvaluator;
+  if (evaluator && isDeterministicEvaluator(evaluator)) {
+    return applyDeterministicJudgement(report, testCase, evaluator, storage);
+  }
+
   let trajectory = report.trajectory || [];
 
   if (agentConfig?.useTraces) {
@@ -216,7 +246,7 @@ export async function retryJudgementForCase(
       undefined,
       () => {},
       judgeModelId,
-      run.evaluatorId,
+      evaluatorId,
       report.runId,
       buildJudgeAgentsHints(report, agentConfig?.traceServiceName)
     );
@@ -258,6 +288,79 @@ export async function retryJudgementForCase(
     // Clear both alongside the canonical error patch.
     await storage.runs.update(report.id, {
       ...buildEvaluatorErrorPatch('judge_failed', `Retry judgement: ${message}`),
+      matcherResults: [],
+      improvementStrategies: [],
+    } as any).catch(() => {});
+    return { passFailStatus: null, error: message };
+  }
+}
+
+/** Resolve an evaluator id to its document (system template or stored). `null` when unset/unknown. */
+export async function resolveEvaluatorDoc(evaluatorId: string | undefined, storage: IStorageModule): Promise<Evaluator | null> {
+  if (!evaluatorId) return null;
+  if (isSystemEvaluatorId(evaluatorId)) {
+    const sys = getSystemEvaluatorById(evaluatorId);
+    return sys ?? null;
+  }
+  try {
+    return (await storage.evaluators.getById(evaluatorId)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist a deterministic judgement onto the report. Only the LATEST
+ * judgement is kept (same policy as the LLM path): every judge-derived field
+ * is overwritten together, and the LLM-only fields are cleared so a report
+ * re-scored deterministically never shows a stale judge reasoning or
+ * response next to code-computed metrics. The agent output is untouched.
+ *
+ * Not-evaluable reports (no gold / no candidates ⇒ EVERY metric unevaluable)
+ * get the canonical evaluator-error patch (`metricsStatus: 'error'`,
+ * `passFailStatus: null`) — they render as errored/not evaluable and are
+ * excluded from the pass rate rather than counted as failures. See the
+ * module comment in lib/scoring/deterministicScoring.ts.
+ */
+async function applyDeterministicJudgement(
+  report: EvaluationReport,
+  testCase: TestCase,
+  evaluator: Evaluator,
+  storage: IStorageModule
+): Promise<{ passFailStatus: PassFailStatus | null; error?: string }> {
+  try {
+    const result = scoreDeterministic(evaluator, testCase, report);
+    const common = {
+      evaluatorId: evaluator.id,
+      judgeMode: 'deterministic' as const,
+      scoringSnapshot: result.snapshot,
+      matcherResults: result.matcherResults,
+      improvementStrategies: [],
+      llmJudgeReasoning: '',
+      llmJudgeResponse: null,
+    };
+    if (!result.evaluable) {
+      await storage.runs.update(report.id, {
+        ...common,
+        ...buildEvaluatorErrorPatch('judge_failed', `Not evaluable by ${evaluator.name}: ${result.summary}`),
+        // No metrics on a not-evaluable report — never the legacy zeroed
+        // RCA keys the generic patch carries.
+        metrics: {},
+      } as any);
+      return { passFailStatus: null, error: result.summary };
+    }
+    await storage.runs.update(report.id, {
+      ...common,
+      passFailStatus: result.passFailStatus,
+      metrics: result.metrics,
+      metricsStatus: 'completed',
+      traceError: undefined,
+    } as any);
+    return { passFailStatus: result.passFailStatus };
+  } catch (error: any) {
+    const message = error?.message ?? String(error);
+    await storage.runs.update(report.id, {
+      ...buildEvaluatorErrorPatch('judge_failed', `Deterministic scoring: ${message}`),
       matcherResults: [],
       improvementStrategies: [],
     } as any).catch(() => {});
@@ -346,15 +449,24 @@ export async function countRetryableCases(
 export async function retryJudgementForRun(
   run: EvaluationRun,
   storage: IStorageModule,
-  options?: { scope?: RetryJudgementScope; concurrency?: number; onProgress?: (completed: number, total: number) => void }
+  options?: {
+    scope?: RetryJudgementScope;
+    concurrency?: number;
+    overrides?: RetryJudgementOverrides;
+    onProgress?: (completed: number, total: number) => void;
+  }
 ): Promise<RetryJudgementSummary> {
   const scope = options?.scope ?? 'errored';
   const concurrency = Math.max(1, Math.min(options?.concurrency ?? MAX_RETRY_CONCURRENCY, MAX_RETRY_CONCURRENCY));
+  const overrides = options?.overrides ?? {};
 
   const reportsById = await fetchReportsById(run, storage);
 
   const testCaseIds = selectRetryableCases(run, reportsById, scope);
   const agentConfig = resolveAgentConfig(run.agentKey);
+  // Resolve the evaluator ONCE per run (not per case) so every report in this
+  // retry is scored against the same document.
+  const resolvedEvaluator = await resolveEvaluatorDoc(overrides.evaluatorId || run.evaluatorId, storage);
 
   const results: RetryJudgementCaseResult[] = [];
   const updatedResults: Record<string, any> = { ...run.results };
@@ -397,7 +509,9 @@ export async function retryJudgementForRun(
         return;
       }
 
-      const { passFailStatus, error } = await retryJudgementForCase(report, testCase, run, storage, agentConfig);
+      const { passFailStatus, error } = await retryJudgementForCase(
+        report, testCase, run, storage, agentConfig, overrides, resolvedEvaluator
+      );
 
       const nextResult: any = { ...result, status: 'completed' };
       if (passFailStatus) {
@@ -439,6 +553,9 @@ export async function retryJudgementForRun(
     results: updatedResults,
     stats: { ...(run.stats || {}), ...stats } as any,
     judgeFailureSummary,
+    // The evaluator that produced the run's CURRENT verdicts (when the caller
+    // overrode it) — keeps the run doc truthful about what it was judged with.
+    ...(overrides.evaluatorId ? { evaluatorId: overrides.evaluatorId } : {}),
   } as any);
 
   // Deterministic order (not insertion/completion order, which varies with
