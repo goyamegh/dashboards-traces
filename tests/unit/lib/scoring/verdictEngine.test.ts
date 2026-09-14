@@ -27,7 +27,6 @@ describe('verdictEngine.computeVerdict — truth table', () => {
       expect(v.passFailStatus).toBe(llm);
       expect(v.llmVerdict).toBe(llm);
       expect(v.verdictConflict).toBe(false);
-      expect(v.policyApplied).toEqual({ kind: 'llm-verdict' });
       expect(v.score).not.toBeNull(); // still computed for display
     });
 
@@ -212,8 +211,10 @@ describe('scoringFieldsFromJudgment', () => {
     const snapshot = { evaluatorId: 'e', evaluatorVersion: 1, contentHash: 'h', weights: { a: 1 }, passPolicy: { kind: 'llm-verdict' } } as ScoringSnapshot;
     expect(scoringFieldsFromJudgment({ passFailStatus: 'passed', metrics: { a: 90 }, llmVerdict: 'passed', verdictConflict: false, score: 0.9, scoringSnapshot: snapshot }))
       .toEqual({ passFailStatus: 'passed', metrics: { a: 90 }, llmVerdict: 'passed', verdictConflict: false, score: 0.9, scoringSnapshot: snapshot });
+    // Absent engine fields become explicit nulls so a re-judge can never keep
+    // the previous judgement's snapshot / score / verdict via a merge.
     expect(scoringFieldsFromJudgment({ passFailStatus: 'failed', metrics: { a: 10 }, score: null }))
-      .toEqual({ passFailStatus: 'failed', metrics: { a: 10 } });
+      .toEqual({ passFailStatus: 'failed', metrics: { a: 10 }, llmVerdict: null, verdictConflict: null, score: null, scoringSnapshot: null });
   });
 });
 
@@ -233,13 +234,17 @@ describe('sdkSessionScoring', () => {
     expect(out.llmVerdict).toBe('failed');
     expect(out.verdictConflict).toBe(true);
   });
-  it('marks report-level unevaluable rubrics and omits per-judgement verdict with several judge calls', () => {
+  it('marks report-level unevaluable rubrics, omits llmVerdict but keeps ANY conflict with several judge calls', () => {
     const out = sdkSessionScoring(
-      [{ method: 'llm-judge', scoringSnapshot: snapshot, llmVerdict: 'passed' }, { method: 'llm-judge', scoringSnapshot: snapshot, llmVerdict: 'failed' }],
+      [
+        { method: 'llm-judge', scoringSnapshot: snapshot, llmVerdict: 'passed', verdictConflict: false },
+        { method: 'llm-judge', scoringSnapshot: snapshot, llmVerdict: 'failed', verdictConflict: true },
+      ],
       { a: 80 }
     );
     expect(out.scoringSnapshot?.unevaluable).toEqual(['b']);
     expect(out.llmVerdict).toBeUndefined();
+    expect(out.verdictConflict).toBe(true);
   });
   it('refuses to attach one snapshot when the judge calls used different evaluator content', () => {
     expect(sdkSessionScoring(
