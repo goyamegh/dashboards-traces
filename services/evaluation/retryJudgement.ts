@@ -40,6 +40,7 @@ import { callBedrockJudge } from '@/services/evaluation';
 import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 import { buildJudgeMatcherEntry, formatExpectedOutcomesAsClaim } from '@/lib/matchers/index';
 import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
+import { scoringFieldsFromJudgment } from '@/lib/scoring/verdictEngine';
 import { spansToTrajectory } from '@/services/traces/spansToTrajectory';
 import { fetchSpansForRun } from '@/services/traces/fetchSpansForRun';
 import { computeRunStats } from '@/lib/runStats';
@@ -257,8 +258,9 @@ export async function retryJudgementForCase(
 
     await storage.runs.update(report.id, {
       trajectory,
-      passFailStatus: judgment.passFailStatus,
-      metrics: judgment.metrics,
+      // Re-judge REPLACES the scoring snapshot + verdict (no history kept —
+      // owner decision; #509 stays narrow). Same shared shape as first-judge.
+      ...scoringFieldsFromJudgment(judgment),
       llmJudgeReasoning: judgment.llmJudgeReasoning,
       // Set only by the agent (trace) judge provider -- see
       // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
