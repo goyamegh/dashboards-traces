@@ -42,8 +42,18 @@ function toSummary(doc: any): any {
   };
 }
 
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every(v => typeof v === 'string');
+/**
+ * Bounds for the additive `describePath` (describe() chain) field — it is a
+ * `keyword` array in OpenSearch, so reject junk-drawer inputs: at most
+ * MAX_DESCRIBE_DEPTH nesting levels of at most MAX_DESCRIBE_TITLE_CHARS each.
+ */
+const MAX_DESCRIBE_DEPTH = 32;
+const MAX_DESCRIBE_TITLE_CHARS = 256;
+
+function isValidDescribePath(value: unknown): value is string[] {
+  return Array.isArray(value)
+    && value.length <= MAX_DESCRIBE_DEPTH
+    && value.every(v => typeof v === 'string' && v.length <= MAX_DESCRIBE_TITLE_CHARS);
 }
 
 /**
@@ -461,10 +471,10 @@ router.post('/api/storage/test-cases/bulk', async (req: Request, res: Response) 
     const storage = getStorageModule();
 
     // `describePath` is an additive display/grouping field: keep it only when
-    // it is a string array (outermost describe first); anything else is
-    // dropped rather than persisted as garbage the UI would render.
+    // it is a bounded string array (outermost describe first); anything else
+    // is dropped rather than persisted as garbage the UI would render.
     for (const tc of testCases) {
-      if (tc && 'describePath' in tc && !isStringArray(tc.describePath)) {
+      if (tc && 'describePath' in tc && !isValidDescribePath(tc.describePath)) {
         delete tc.describePath;
       }
     }

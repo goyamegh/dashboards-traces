@@ -53,7 +53,7 @@ describe('collectEvalRootsHints', () => {
     return {
       getConfigStatus: jest.fn(async () => overrides.status === undefined ? { evalRoots: { roots: ROOTS, source: 'environment' } } : overrides.status),
       getBenchmark: jest.fn(async () => overrides.benchmark === undefined ? { testCaseIds: Object.keys(cases) } : overrides.benchmark),
-      getTestCase: jest.fn(async (id: string) => cases[id] ?? null),
+      getTestCaseSummaries: jest.fn(async (ids: string[]) => ids.map(id => cases[id]).filter(Boolean)),
     };
   }
 
@@ -65,7 +65,9 @@ describe('collectEvalRootsHints', () => {
       { type: 'code-import', filenames: ['x.eval.js'], testCaseIds: [] }, // skipped: server resolves this itself
     ];
     const hints = await collectEvalRootsHints(a, sources, () => false);
-    expect(a.getTestCase).toHaveBeenCalledTimes(2);
+    // ONE batched request for the deduped id set — not a GET per test case.
+    expect(a.getTestCaseSummaries).toHaveBeenCalledTimes(1);
+    expect((a.getTestCaseSummaries.mock.calls[0][0] as string[]).sort()).toEqual(['t1', 't2']);
     expect(hints).toEqual([{ sourceFile: 'dist/suite.eval.js', testCaseNames: ['case-t1'], roots: ROOTS }]);
   });
 
@@ -81,6 +83,6 @@ describe('collectEvalRootsHints', () => {
     const ids = Array.from({ length: EVAL_ROOTS_HINT_MAX_CASES + 1 }, (_, i) => `t${i}`);
     const a = api({ benchmark: { testCaseIds: ids } });
     expect(await collectEvalRootsHints(a, [{ type: 'benchmark', benchmarkId: 'bm' }], () => false)).toEqual([]);
-    expect(a.getTestCase).not.toHaveBeenCalled();
+    expect(a.getTestCaseSummaries).not.toHaveBeenCalled();
   });
 });
