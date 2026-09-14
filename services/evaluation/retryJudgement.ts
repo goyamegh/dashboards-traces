@@ -41,6 +41,7 @@ import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 import { buildJudgeMatcherEntry, formatExpectedOutcomesAsClaim } from '@/lib/matchers/index';
 import { buildJudgeIdentityPatch, buildLlmJudgeResponseIdentity } from '@/lib/judgeIdentity';
 import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
+import { scoringFieldsFromJudgment } from '@/lib/scoring/verdictEngine';
 import { spansToTrajectory } from '@/services/traces/spansToTrajectory';
 import { fetchSpansForRun } from '@/services/traces/fetchSpansForRun';
 import { computeRunStats } from '@/lib/runStats';
@@ -304,8 +305,9 @@ export async function retryJudgementForCase(
     // trace-refresh above.
     await storage.runs.update(report.id, {
       trajectory,
-      passFailStatus: judgment.passFailStatus,
-      metrics: judgment.metrics,
+      // Re-judge REPLACES the scoring snapshot + verdict (no history kept —
+      // owner decision; #509 stays narrow). Same shared shape as first-judge.
+      ...scoringFieldsFromJudgment(judgment),
       llmJudgeReasoning: judgment.llmJudgeReasoning,
       // The judge config that produced THIS verdict — may differ from the
       // run's when the caller overrode them for the retry.
