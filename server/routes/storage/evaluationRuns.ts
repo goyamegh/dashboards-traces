@@ -755,6 +755,9 @@ router.post('/api/storage/evaluation-runs/:id/rerun', async (req: Request, res: 
 // (system or stored) evaluator → 400 otherwise; `judgeModelId` must be a
 // non-empty string, or `null` for "use the evaluator default". Absent keys
 // inherit the run's own evaluator / judge model (pre-existing behaviour).
+// A `kind: 'deterministic'` evaluator re-scores every selected report in
+// code from its stored trajectory — no LLM is called (see
+// services/evaluation/retryJudgement.ts).
 router.post('/api/storage/evaluation-runs/:id/retry-judgement', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
