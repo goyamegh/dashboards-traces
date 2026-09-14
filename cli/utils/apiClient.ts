@@ -617,6 +617,22 @@ export class ApiClient {
   }
 
   /**
+   * Summary projection of several test cases in ONE request
+   * (`GET /api/storage/test-cases?ids=…&fields=summary`) — name/labels/
+   * provenance (`sourceFile`, …) without prompt/context/source bodies.
+   */
+  async getTestCaseSummaries(ids: string[]): Promise<TestCase[]> {
+    if (ids.length === 0) return [];
+    const params = new URLSearchParams({ ids: ids.join(','), fields: 'summary' });
+    const res = await fetch(`${this.baseUrl}/api/storage/test-cases?${params.toString()}`);
+    if (!res.ok) {
+      throw new Error(`Failed to fetch test case summaries: ${res.status} ${res.statusText}`);
+    }
+    const data = await res.json();
+    return (data.testCases ?? data.items ?? []) as TestCase[];
+  }
+
+  /**
    * Get a single test case by ID
    */
   async getTestCase(id: string): Promise<TestCase | null> {

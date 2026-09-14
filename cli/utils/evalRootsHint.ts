@@ -22,7 +22,11 @@ import * as path from 'path';
 import type { TestCase, TestCaseSource } from '@/types/index.js';
 import { isCodeFile } from '@/lib/testCases/loader.js';
 
-/** Max stored test cases to fetch for the check; larger sets skip it. */
+/**
+ * Max stored test cases to check; larger sets skip the hint entirely (never
+ * a partial check). The fetch is ONE batched summary request, so the cost is
+ * bounded by response size, not request count.
+ */
 export const EVAL_ROOTS_HINT_MAX_CASES = 200;
 
 export interface EvalRootsHint {
@@ -75,7 +79,8 @@ export function formatEvalRootsHint(hint: EvalRootsHint): string {
 export interface EvalRootsHintApi {
   getConfigStatus(): Promise<{ evalRoots?: { roots: string[] } } | null>;
   getBenchmark(id: string): Promise<{ testCaseIds?: string[] } | null>;
-  getTestCase(id: string): Promise<TestCase | null>;
+  /** One batched summary request — never one GET per test case. */
+  getTestCaseSummaries(ids: string[]): Promise<Array<Pick<TestCase, 'name' | 'sourceFile'>>>;
 }
 
 /**
@@ -105,8 +110,7 @@ export async function collectEvalRootsHints(
     const roots = status?.evalRoots?.roots;
     if (!roots || roots.length === 0) return [];
 
-    const fetched = await Promise.all([...ids].map(id => api.getTestCase(id).catch(() => null)));
-    const testCases = fetched.filter((tc): tc is TestCase => !!tc);
+    const testCases = await api.getTestCaseSummaries([...ids]);
     return findUnresolvableSourceFiles(testCases, roots, exists);
   } catch {
     return [];
