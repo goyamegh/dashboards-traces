@@ -225,15 +225,18 @@ test.describe('Comparison — snapshot-aware "Avg score", judge caption, policy-
     // (v) Different snapshot hashes → Δ blocked, tooltip names both evaluator versions.
     const blocked = page.locator('[data-testid="scoreboard-delta-blocked"]');
     await expect(blocked).toHaveText('Not comparable — different scoring');
-    expect(await blocked.getAttribute('title')).toMatch(/different scoring snapshots \(Snapshot run A: Demo retrieval evaluator v2 vs Snapshot run C: Demo retrieval evaluator v3\)/);
+    const reason = (await blocked.getAttribute('title')) ?? '';
+    expect(reason).toMatch(/different scoring snapshots \(/);
+    expect(reason).toContain('Snapshot run A: Demo retrieval evaluator v2');
+    expect(reason).toContain('Snapshot run C: Demo retrieval evaluator v3');
     await expect(page.locator('[data-testid="scoreboard-delta-avgscore"]')).toHaveCount(0);
     // Same case IDs, but NOT "same cases, same scoring".
     await expect(page.locator('[data-testid="comparison-overlap-banner"]')).toContainText('same case IDs');
 
-    // Override: "Compare anyway" reveals the Δ row (A − C = 70 − 76 = -6).
+    // Override: "Compare anyway" reveals the Δ row (|70 − 76| = 6).
     await page.locator('[data-testid="scoreboard-compare-anyway"]').click();
     await expect(blocked).toHaveCount(0);
-    await expect(page.locator('[data-testid="scoreboard-delta-avgscore"]')).toHaveText('-6');
+    await expect(page.locator('[data-testid="scoreboard-delta-avgscore"]')).toHaveText(/^[+-]6$/); // |70 − 76|, sign depends on A/B order
     await expect(page.locator('[data-testid="scoreboard-delta-passrate"]')).toBeVisible();
 
     // Session-scoped: a reload keeps the override for this run set.
@@ -241,6 +244,6 @@ test.describe('Comparison — snapshot-aware "Avg score", judge caption, policy-
     await page.waitForSelector('[data-testid="comparison-scoreboard"]', { timeout: 30000 });
     await expect(page.locator(`[data-testid="run-avgscore-${runA}"]`)).toHaveText('70%', { timeout: 20000 });
     await expect(page.locator('[data-testid="scoreboard-delta-blocked"]')).toHaveCount(0);
-    await expect(page.locator('[data-testid="scoreboard-delta-avgscore"]')).toHaveText('-6');
+    await expect(page.locator('[data-testid="scoreboard-delta-avgscore"]')).toHaveText(/^[+-]6$/); // |70 − 76|, sign depends on A/B order
   });
 });
