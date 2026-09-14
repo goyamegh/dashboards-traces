@@ -81,6 +81,7 @@ const mockCountRetryableCases = jest.fn();
 jest.mock('@/services/evaluation/retryJudgement', () => ({
   retryJudgementForRun: (...args: any[]) => mockRetryJudgementForRun(...args),
   countRetryableCases: (...args: any[]) => mockCountRetryableCases(...args),
+  DETERMINISTIC_SCOPE_ERROR: jest.requireActual('@/services/evaluation/retryJudgement').DETERMINISTIC_SCOPE_ERROR,
 }));
 
 import express, { Application } from 'express';
@@ -650,6 +651,14 @@ describe('Evaluation Runs API', () => {
           expect.anything(), expect.anything(), expect.objectContaining({ scope: 'errored', overrides: { evaluatorId: 'system-rca-default' } })
         );
         await pollStatus('run-body-2');
+      });
+
+      it("400s a deterministic evaluator with scope 'errored' (codex_review: no mixed-truth runs)", async () => {
+        mockEvaluationRunsGetById.mockResolvedValue(terminalRun('run-body-4'));
+        const res = await request(app).post('/api/storage/evaluation-runs/run-body-4/retry-judgement').send({ scope: 'errored', evaluatorId: 'eval-stored' });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatch(/re-scores the whole run; use scope 'all'/);
+        expect(mockRetryJudgementForRun).not.toHaveBeenCalled();
       });
 
       it('400s an invalid scope, an empty evaluatorId and an unknown evaluatorId — nothing is started', async () => {
