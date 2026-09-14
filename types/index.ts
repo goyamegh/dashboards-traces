@@ -273,8 +273,23 @@ export interface ScoringMetric {
  */
 export interface ScoringConfig {
   metrics: ScoringMetric[];  // Metrics to evaluate
-  passThreshold: number;     // Minimum score to pass (0-100)
+  passThreshold: number;     // Minimum score to pass (0-100) — display hint; the enforced rule is `passPolicy`
   scale: number;             // Overall scale (typically 100)
+  /**
+   * How the pass/fail verdict is decided for reports judged with this
+   * evaluator (see {@link ScoringPassPolicy}). Absent == `{ kind: 'llm-verdict' }`:
+   * the judge's own `pass_fail_status` is authoritative, which is the frozen
+   * historical behaviour every pre-existing evaluator keeps. Opting into a
+   * computed policy (`threshold` / `gates`) is an evaluator change and
+   * therefore a new evaluator version + content hash.
+   */
+  passPolicy?: ScoringPassPolicy;
+  /**
+   * Metric names this evaluator declares as headline metrics. Copied verbatim
+   * onto each report's {@link ScoringSnapshot.primaryMetrics}; the compare
+   * page renders each as its own column. Every name must exist in `metrics`.
+   */
+  primaryMetrics?: string[];
 }
 
 /**
@@ -506,8 +521,11 @@ export type MetricsStatus = 'pending' | 'calculating' | 'ready' | 'error';
  *
  *  - `threshold`   — pass iff the weighted score (normalized to [0,1]) is
  *                    >= `minScore`.
- *  - `gates`       — pass iff every listed metric (in its own raw scale) is
- *                    >= its `min`.
+ *  - `gates`       — pass iff every listed metric is >= its `min`. `min` is
+ *                    expressed in the metric's own raw scale (e.g. 80 on a
+ *                    0–100 rubric); the engine compares after normalizing
+ *                    both sides, so out-of-range values are clamped the same
+ *                    way the score is.
  *  - `llm-verdict` — the judge's own `pass_fail_status` is authoritative
  *                    (the historical behaviour; every pre-snapshot report is
  *                    implicitly this).
@@ -526,8 +544,9 @@ export type ScoringPassPolicy =
  * and render as "legacy scoring": their rubric values are shown by name but
  * are never aggregated into a single score (see `lib/scoring/snapshotScore.ts`).
  *
- * This PR (R1) adds the type, storage mapping and the read model only; the
- * write path (R2, canonical verdict engine) populates it for new judgements.
+ * This object is written by the canonical verdict engine
+ * (`lib/scoring/applyScoring.ts`) on every new judgement and never rewritten
+ * afterwards except by an explicit re-judge, which REPLACES it.
  */
 export interface ScoringSnapshot {
   /** Evaluator document id at judge time. */
@@ -611,7 +630,29 @@ export interface TestCaseRun {
 
   // Results
   status: 'running' | 'completed' | 'failed';
-  passFailStatus?: PassFailStatus; // LLM judge determination of pass/fail
+  /**
+   * The report's verdict. Decided by the canonical verdict engine
+   * (`lib/scoring/verdictEngine.ts`) from the evaluator's `passPolicy`:
+   * the judge's own verdict under `llm-verdict` (historical behaviour), or
+   * computed from the rubric values under `threshold` / `gates`. Absent when
+   * the judge never produced a verdict (`metricsStatus: 'error'`).
+   */
+  passFailStatus?: PassFailStatus;
+  /**
+   * What the LLM judge itself said (`pass_fail_status`), preserved verbatim
+   * so a computed verdict can be audited against it. Equal to
+   * `passFailStatus` under the `llm-verdict` policy.
+   */
+  llmVerdict?: PassFailStatus;
+  /** `true` when `llmVerdict` disagrees with the computed `passFailStatus`. Recorded, never overriding. */
+  verdictConflict?: boolean;
+  /**
+   * Weighted mean of the evaluator's rubrics, normalized to [0,1] via each
+   * rubric's scale (see `lib/scoring/snapshotScore.ts`). Rubrics the judge
+   * did not return are excluded, never scored 0. Absent when nothing could
+   * be scored or the report predates scoring snapshots.
+   */
+  score?: number;
   trajectory: TrajectoryStep[];
   metrics: EvaluationMetrics;
   /**
