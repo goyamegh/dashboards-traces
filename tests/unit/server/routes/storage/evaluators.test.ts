@@ -67,6 +67,8 @@ function makeStorage() {
   };
 }
 
+const VALID_SCORING = { metrics: [{ name: 'a', weight: 1, scale: 100 }], passThreshold: 70, scale: 100 };
+
 describe('Evaluators router', () => {
   let app: Application;
 
@@ -343,16 +345,17 @@ describe('Evaluators router', () => {
     });
 
     it('creates a custom evaluator', async () => {
+      const scoringConfig = { metrics: [{ name: 'latency', weight: 1, scale: 100 }], passThreshold: 80, scale: 100 };
       mockEvaluatorsCreate.mockResolvedValue({
         id: 'custom-created',
         name: 'Latency Judge',
         systemPrompt: 'judge',
-        scoringConfig: { passThreshold: 0.8 },
+        scoringConfig,
       });
 
       const res = await request(app)
         .post('/api/storage/evaluators')
-        .send({ name: 'Latency Judge', systemPrompt: 'judge', scoringConfig: { passThreshold: 0.8 } });
+        .send({ name: 'Latency Judge', systemPrompt: 'judge', scoringConfig });
 
       expect(res.status).toBe(201);
       expect(res.body.id).toBe('custom-created');
@@ -425,10 +428,43 @@ describe('Evaluators router', () => {
 
       const res = await request(app)
         .post('/api/storage/evaluators')
-        .send({ name: 'Eval', systemPrompt: 'judge', scoringConfig: {} });
+        .send({ name: 'Eval', systemPrompt: 'judge', scoringConfig: VALID_SCORING });
 
       expect(res.status).toBe(500);
       expect(res.body).toEqual({ error: 'create failed' });
+    });
+
+    describe('scoringConfig validation (verdict engine)', () => {
+      const post = (scoringConfig: unknown) =>
+        request(app).post('/api/storage/evaluators').send({ name: 'Eval', systemPrompt: 'judge', scoringConfig });
+
+      it('rejects a metric with weight <= 0', async () => {
+        const res = await post({ metrics: [{ name: 'a', weight: 0, scale: 100 }], passThreshold: 70, scale: 100 });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatch(/weight must be a number > 0/);
+        expect(mockEvaluatorsCreate).not.toHaveBeenCalled();
+      });
+
+      it('rejects a threshold policy outside [0,1]', async () => {
+        const res = await post({ ...VALID_SCORING, passPolicy: { kind: 'threshold', minScore: 70 } });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatch(/minScore must be a number in \[0, 1\]/);
+      });
+
+      it('rejects gates / primaryMetrics that reference undeclared metrics', async () => {
+        const gates = await post({ ...VALID_SCORING, passPolicy: { kind: 'gates', gates: [{ metric: 'nope', min: 50 }] } });
+        expect(gates.status).toBe(400);
+        expect(gates.body.error).toMatch(/unknown metric 'nope'/);
+        const primary = await post({ ...VALID_SCORING, primaryMetrics: ['nope'] });
+        expect(primary.status).toBe(400);
+        expect(primary.body.error).toMatch(/unknown metric 'nope'/);
+      });
+
+      it('accepts a valid threshold policy + primary metrics', async () => {
+        mockEvaluatorsCreate.mockResolvedValue({ id: 'ok' });
+        const res = await post({ ...VALID_SCORING, passPolicy: { kind: 'threshold', minScore: 0.7 }, primaryMetrics: ['a'] });
+        expect(res.status).toBe(201);
+      });
     });
   });
 
@@ -450,6 +486,16 @@ describe('Evaluators router', () => {
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ id: 'custom-1', currentVersion: 4, name: 'Updated' });
       expect(mockDebug).toHaveBeenCalledWith('StorageAPI', 'Updated evaluator: custom-1 → v4');
+    });
+
+    it('rejects a scoringConfig change that is invalid (no new version is created)', async () => {
+      const res = await request(app)
+        .put('/api/storage/evaluators/custom-1')
+        .send({ scoringConfig: { ...VALID_SCORING, passPolicy: { kind: 'bogus' } } });
+
+      expect(res.status).toBe(400);
+      expect(res.body.error).toMatch(/passPolicy.kind/);
+      expect(mockEvaluatorsUpdate).not.toHaveBeenCalled();
     });
 
     it('returns 500 when update fails', async () => {
