@@ -254,6 +254,9 @@ The server now resolves a relative `sourceFile` against an ordered list of
 
 Relative roots are resolved against the server's cwd. A configured list
 **replaces** the default — add `.` explicitly to keep the cwd as a fallback.
+Because a stored `sourceFile` is relative, the same relative path under two
+roots resolves to the **first** root that has it — keep relative eval paths
+unique across roots (e.g. one suite repo per root, or distinct sub-directories).
 The effective list is exposed on `GET /api/storage/config/status` as
 `evalRoots: { roots, source }`, and the CLI `benchmark` command prints a
 one-line hint before a run when a stored case's `sourceFile` is under none of
