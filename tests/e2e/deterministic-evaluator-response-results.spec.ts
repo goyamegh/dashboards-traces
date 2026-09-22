@@ -164,7 +164,7 @@ test.describe('Deterministic evaluator — response-results source + abstain met
     await expect(page.getByText('abstain (abstain) ≥ 1', { exact: true })).toBeVisible();
     await expect(page.getByTestId('matcher-not-applicable')).toHaveCount(1);
     await expect(page.getByTestId('matcher-not-applicable')).toHaveText('n/a');
-    await expect(page.getByText(/3\/3 passed/)).toBeVisible(); // n/a rows are skipped, never failed
+    await expect(page.getByText(/2\/2 passed, 1 n\/a/)).toBeVisible(); // n/a rows are excluded from the tally
     await gateRow.click();
     // The RETURNED list (9, 202) — not the retrieved 101 / 8.
     await expect(page.getByTestId('matcher-predicted-ids').first()).toHaveText(/^9\s*202$/);
@@ -181,7 +181,7 @@ test.describe('Deterministic evaluator — response-results source + abstain met
     await expect(page.getByText('abstain (abstain) ≥ 1', { exact: true })).toBeVisible({ timeout: 15_000 });
     await expect(page.getByTestId('matcher-not-applicable')).toHaveCount(2); // hit@5, recall@20
     await expect(page.getByTestId('matcher-role-primary')).toHaveCount(1);   // only the abstain gate applies
-    await expect(page.getByText(/3\/3 passed/)).toBeVisible();
+    await expect(page.getByText(/1\/1 passed, 2 n\/a/)).toBeVisible();
     await page.getByText('abstain (abstain) ≥ 1', { exact: true }).click();
     await expect(page.getByText('value:').first()).toBeVisible();
     await expect(page.getByText('(gate ≥ 1)').first()).toBeVisible();

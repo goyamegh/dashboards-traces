@@ -130,6 +130,7 @@ export function validateDeterministicEvaluator(doc: unknown): string[] {
     }
 
     const pred = inputs.prediction as Record<string, unknown> | undefined;
+    const hasAbstain = Array.isArray(metrics) && metrics.some(m => m && typeof m === 'object' && (m as Record<string, unknown>).compute && ((m as Record<string, Record<string, unknown>>).compute.type === 'abstain'));
     if (!pred || typeof pred !== 'object') errors.push('inputs.prediction is required');
     else if (pred.source === 'response-results') {
       for (const key of ['path', 'idField', 'rankField'] as const) {
@@ -138,6 +139,12 @@ export function validateDeterministicEvaluator(doc: unknown): string[] {
     } else if (pred.source !== 'tool-hits-ordered') {
       errors.push(`inputs.prediction.source must be 'tool-hits-ordered' or 'response-results' (got ${JSON.stringify(pred.source)})`);
     } else {
+      if (hasAbstain) {
+        // Abstention is about what the agent RETURNED. `tool-hits-ordered`
+        // only sees retrieved ids, so an empty ranking there means "the
+        // extractor found no stored hits", not "the agent abstained".
+        errors.push("an 'abstain' metric requires inputs.prediction.source 'response-results' (tool-hits-ordered cannot observe an abstention)");
+      }
       if (pred.idFields !== undefined && !isStringArray(pred.idFields)) errors.push('inputs.prediction.idFields must be an array of non-empty strings');
       if (pred.hitsPaths !== undefined && !isStringArray(pred.hitsPaths)) errors.push('inputs.prediction.hitsPaths must be an array of non-empty strings');
       if (pred.anchorTools !== undefined) {

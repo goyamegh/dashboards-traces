@@ -96,6 +96,16 @@ describe('validateDeterministicEvaluator — response-results source and abstain
     expect(n.inputs.prediction).toEqual({ source: 'response-results', path: 'data.results', idField: 'doc_id', rankField: 'rank' });
   });
 
+  it("rejects an 'abstain' metric with tool-hits-ordered (that extractor cannot observe an abstention)", () => {
+    const errors = validateDeterministicEvaluator({
+      ...valid(),
+      metrics: [{ name: 'abstain', compute: { type: 'abstain' }, weight: 1 }],
+      passPolicy: { kind: 'threshold', minScore: 1 },
+      inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'tool-hits-ordered' } },
+    });
+    expect(errors).toEqual(["an 'abstain' metric requires inputs.prediction.source 'response-results' (tool-hits-ordered cannot observe an abstention)"]);
+  });
+
   it('the error for an unknown prediction source names both sources', () => {
     const errors = validateDeterministicEvaluator({ ...valid(), inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'nope' } } });
     expect(errors.join('\n')).toMatch(/must be 'tool-hits-ordered' or 'response-results' \(got "nope"\)/);

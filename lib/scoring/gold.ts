@@ -21,9 +21,11 @@
  *      whitespace into ids; a capture that is empty or one of
  *      {@link GOLD_EMPTY_TOKENS} (`none`, `n/a`, `-`) means "explicitly no
  *      gold".
- *   3. `testCase.expected.ids` present but EMPTY (`[]`) → explicitly no gold.
- *      (An empty structured list does not shadow a gold line — a test case
- *      may carry both — but on its own it is a deliberate "nothing".)
+ *   3. When the evaluator declares `gold.source: 'testCase.expected.ids'`
+ *      and the field is present but EMPTY (`[]`) → explicitly no gold. Under
+ *      the pattern source an empty structured list is NOT read as "no gold":
+ *      clients routinely serialize `[]` for "unset", and only an evaluator
+ *      that opted into the structured field gets to interpret it.
  *   4. Nothing → `null` (gold not declared).
  *
  * The pattern is evaluator DATA: Agent Health does not know what any
@@ -78,7 +80,7 @@ export function resolveGold(
       return { ids: splitGoldIds(m[1] ?? ''), rule: 'expected-outcomes-pattern' };
     }
   }
-  // `expected.ids: []` with no gold line → explicitly no gold.
-  if (structuredIds) return { ids: [], rule: 'expected.ids' };
+  // `expected.ids: []` is "explicitly no gold" only for evaluators that read that field.
+  if (structuredIds && gold.source === 'testCase.expected.ids') return { ids: [], rule: 'expected.ids' };
   return null;
 }

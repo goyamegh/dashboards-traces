@@ -21,29 +21,37 @@
  *                    text whose body is a JSON object / array.
  *   3. `raw-event` — a non-streaming connector's single raw response payload
  *                    (`report.rawEvents` holding exactly ONE plain object,
- *                    e.g. the REST connector's `rawEvents: [data]`). The
- *                    trajectory's response step is then a RENDERING of that
- *                    payload; the structured payload is more reliable than
- *                    re-parsing the rendering. Streaming connectors store
- *                    many raw events and are never consulted.
- *   4. `text`      — best-effort: list lines (`1.` / `-` / `*` / `•`) carrying
- *                    an explicit `id` label, e.g. `1. id 2079 — title` or
- *                    `- Some title (id: 123)`. The label is REQUIRED — bare
- *                    numbers in prose are never taken as ids.
- *   5. `none`      — a response step exists but no list could be found →
- *                    EMPTY prediction (a retrieval agent that returned
- *                    nothing is a real, scorable outcome).
+ *                    e.g. the REST connector's `rawEvents: [data]`), consulted
+ *                    ONLY when a response step exists: the step is then a
+ *                    RENDERING of that payload and the structured payload is
+ *                    more reliable than re-parsing the rendering. It never
+ *                    stands in for a missing answer. Streaming connectors
+ *                    store many raw events and are never consulted.
+ *   4. `text`      — best-effort: list lines (`1.` / `-` / `*` / `•`) whose
+ *                    item text STARTS with an `id` label or carries one in
+ *                    brackets, e.g. `1. id 2079 — title` or
+ *                    `- Some title (id: 123)`. The label is REQUIRED and
+ *                    mid-sentence prose (`- user id 123 was checked`) is
+ *                    ignored, so bare numbers are never taken as ids.
+ *   5. `none`      — no list could be recognised → `present: false` ⇒ the
+ *                    engine treats every metric as UNEVALUABLE. "Could not
+ *                    extract" is NOT "the agent returned nothing": to score an
+ *                    abstention the agent must return an explicit EMPTY list
+ *                    (`results: []`, parsed as one of the forms above), which
+ *                    is a real, scorable outcome (`present: true`, ranked
+ *                    metrics 0, `abstain` 1).
  *
  * "Final response step" = the last `response` step of the trajectory, or the
  * last `assistant` step when there is no `response` step at all. No such step
- * AND no raw payload ⇒ `present: false` ⇒ the engine treats every metric as
- * UNEVALUABLE (we cannot tell an abstaining agent from a crashed one).
+ * ⇒ nothing is parsed (`hasAnswer: false`, `present: false`).
  *
  * Inside a parsed JSON value the list is found at `path` (dotted) when the
- * evaluator declares one, else auto-detected: the root array itself, then
- * the conventional keys `results` / `hits` / `items`, then the first array
- * (root keys in order, one level deep) whose elements are objects carrying
- * `idField`. Items are ordered by `rankField` (ascending, when the field is
+ * evaluator declares one — it must resolve to an array that is empty or whose
+ * elements are objects carrying `idField`, otherwise nothing is found — else
+ * auto-detected: the root array itself, then the conventional keys `results`
+ * / `hits` / `items`, then the first root-level array whose elements are
+ * objects carrying `idField` (no deeper recursion — declare `path` for nested
+ * shapes). Items are ordered by `rankField` (ascending, when the field is
  * numeric on every item) else by array order; ids are deduped keeping the
  * first occurrence and capped at {@link MAX_CANDIDATES}.
  */
@@ -59,6 +67,7 @@ export const DEFAULT_RESPONSE_RANK_FIELD = 'rank';
 export const DEFAULT_RESPONSE_LIST_KEYS: ReadonlyArray<string> = ['results', 'hits', 'items'];
 
 export type ResponseResultsParsedFrom = 'json' | 'fenced' | 'raw-event' | 'text' | 'none';
+export const RESPONSE_RESULTS_FORMS = 'a JSON object/array with a results list, a fenced JSON block, or list lines labelled `id`';
 
 export interface ResponseResultsOptions {
   /** Dotted path to the array inside the parsed JSON (default: auto-detect). */
@@ -75,9 +84,9 @@ export interface ResponseResultsPrediction {
   ranked: string[];
   /** Ids found before dedupe / cap. */
   candidateCount: number;
-  /** Which source produced the list (`none` = a response existed but carried no list). */
+  /** Which form produced the list (`none` = no ranked list could be recognised). */
   parsedFrom: ResponseResultsParsedFrom;
-  /** A final response step (or a single raw payload) existed — false ⇒ unevaluable. */
+  /** A ranked list WAS recognised (possibly empty) — false ⇒ every metric unevaluable. */
   present: boolean;
   /** Whether a `response` / `assistant` step was found in the trajectory. */
   hasAnswer: boolean;
@@ -104,38 +113,33 @@ const rankOf = (item: unknown, rankField: string): number | undefined => {
   return undefined;
 };
 
-/** An array whose elements are objects carrying `idField` (at least one). */
+/** A NON-EMPTY array whose elements are all objects, at least one carrying `idField`. */
 const looksLikeResultList = (value: unknown, idField: string): value is unknown[] =>
   Array.isArray(value) && value.length > 0 && value.every(v => v && typeof v === 'object' && !Array.isArray(v)) && value.some(v => idOf(v, idField) !== null);
 
+/** An EMPTY array, or a result list — the two shapes accepted as "the agent's ranked list". */
+const isResultList = (value: unknown, idField: string): value is unknown[] =>
+  Array.isArray(value) && (value.length === 0 || looksLikeResultList(value, idField));
+
 /**
  * Locate the results array in a parsed JSON value. Returns the array (possibly
- * empty) or `undefined` when no list could be found.
+ * empty) or `undefined` when no list could be found. A declared `path` that
+ * resolves to anything other than an empty / id-carrying array is NOT found —
+ * a misconfigured path must surface as unevaluable, never as "returned nothing".
  */
 export function findResultsArray(root: unknown, opts: Required<Pick<ResponseResultsOptions, 'idField'>> & Pick<ResponseResultsOptions, 'path'>): unknown[] | undefined {
   if (opts.path) {
     const v = getPath(root, opts.path);
-    return Array.isArray(v) ? v : undefined;
+    return isResultList(v, opts.idField) ? v : undefined;
   }
-  if (Array.isArray(root)) {
-    // A root array is the list itself when empty or when its items are id-carrying objects.
-    return root.length === 0 || looksLikeResultList(root, opts.idField) ? root : undefined;
-  }
+  if (Array.isArray(root)) return isResultList(root, opts.idField) ? root : undefined;
   if (!root || typeof root !== 'object') return undefined;
   const obj = root as Record<string, unknown>;
   for (const key of DEFAULT_RESPONSE_LIST_KEYS) {
-    const v = obj[key];
-    if (Array.isArray(v) && (v.length === 0 || looksLikeResultList(v, opts.idField))) return v;
+    if (isResultList(obj[key], opts.idField)) return obj[key] as unknown[];
   }
   for (const key of Object.keys(obj)) {
     if (looksLikeResultList(obj[key], opts.idField)) return obj[key] as unknown[];
-  }
-  // One level deep (e.g. `{ data: { results: [...] } }`).
-  for (const key of Object.keys(obj)) {
-    const child = obj[key];
-    if (!child || typeof child !== 'object' || Array.isArray(child)) continue;
-    const nested = findResultsArray(child, { idField: opts.idField });
-    if (nested) return nested;
   }
   return undefined;
 }
@@ -182,16 +186,19 @@ export function fencedJsonBlocks(text: string): unknown[] {
 
 /**
  * Best-effort text fallback: list lines with an explicit `id` label.
- *   `1. id 2079 — Some title (score 6.3)`   → 2079
- *   `- Some title (id: 123)`                → 123
+ *   `1. id 2079 — Some title (score 6.3)`   → 2079   (label starts the item)
+ *   `- Some title (id: 123)`                → 123    (label in brackets)
  *   `* ID #A-77`                            → A-77
  * A line must start like a list item (`1.` `1)` `-` `*` `•`) AND carry the
- * whole word `id` (case-insensitive) followed by an optional `:`/`=`/`#` and
- * the id token. Lines without the label are ignored, so prose numbers, scores
- * and prices are never mistaken for ids.
+ * whole word `id` (case-insensitive) either as the FIRST word of the item or
+ * opening a `(…)` / `[…]` group, followed by an optional `:`/`=`/`#` and the
+ * id token. Mid-sentence prose (`- user id 123 was checked`) and lines
+ * without the label are ignored, so prose numbers, scores and prices are
+ * never mistaken for ids; null-ish tokens (`id: none`, `id: null`) are not ids.
  */
 const LIST_LINE_RE = /^\s*(?:\d+[.)]|[-*•])\s+(.*)$/;
-const ID_LABEL_RE = /\bid\b[`"']?\s*[:=#]?\s*[`"'(]?([A-Za-z0-9][A-Za-z0-9_.:-]*)/i;
+const ID_LABEL_RE = /(?:^|[(\[]\s*)[`*_"']*id[`*_"']*(?![A-Za-z0-9])\s*[:=#]?\s*[`"']?([A-Za-z0-9][A-Za-z0-9_.:\/-]*)/i;
+const NOT_AN_ID = new Set(['null', 'none', 'n/a', 'na', 'undefined', 'nil']);
 
 export function idsFromTextList(text: string): string[] {
   const ids: string[] = [];
@@ -201,7 +208,9 @@ export function idsFromTextList(text: string): string[] {
     const m = ID_LABEL_RE.exec(line[1]);
     if (!m) continue;
     // Trim a trailing sentence period (`id 42.`) but keep dotted ids (`doc.42`).
-    ids.push(m[1].replace(/\.$/, ''));
+    const id = m[1].replace(/\.$/, '');
+    if (NOT_AN_ID.has(id.toLowerCase())) continue;
+    ids.push(id);
   }
   return ids;
 }
@@ -234,7 +243,8 @@ export function extractResponseResults(
   const rankField = options.rankField?.trim() || DEFAULT_RESPONSE_RANK_FIELD;
   const path = options.path?.trim() || undefined;
   const step = finalResponseStep(report?.trajectory);
-  const rawPayload = singleRawPayload(report?.rawEvents);
+  // The raw payload only ever structures an EXISTING answer.
+  const rawPayload = step ? singleRawPayload(report?.rawEvents) : undefined;
   const text = step?.content ?? '';
 
   const finish = (ids: string[], parsedFrom: ResponseResultsParsedFrom): ResponseResultsPrediction => ({
@@ -242,7 +252,7 @@ export function extractResponseResults(
     ranked: dedupeIds(ids).slice(0, MAX_CANDIDATES),
     candidateCount: ids.length,
     parsedFrom,
-    present: step !== undefined || rawPayload !== undefined,
+    present: parsedFrom !== 'none',
     hasAnswer: step !== undefined,
   });
   const fromValue = (value: unknown): string[] | undefined => {
@@ -269,7 +279,7 @@ export function extractResponseResults(
   // 4. Rendered text list with explicit id labels.
   const textIds = text ? idsFromTextList(text) : [];
   if (textIds.length > 0) return finish(textIds, 'text');
-  // 5. A response existed but carried no list → empty prediction.
+  // 5. No ranked list recognised → unevaluable (NOT an empty prediction).
   return finish([], 'none');
 }
 
