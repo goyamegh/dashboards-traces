@@ -811,11 +811,12 @@ export const EvalRunsPage: React.FC = () => {
                 className="flex items-center gap-0.5 text-amber-500 font-medium ml-0.5"
                 data-testid="run-row-errored-badge"
                 title={
-                  rr.run.agentFailureSummary
-                    ? rr.run.agentFailureSummary
-                    : rr.run.judgeFailureSummary
-                      ? `Judge failure: ${rr.run.judgeFailureSummary}`
-                      : 'Evaluator could not run on these (e.g. judge validation error). Excluded from pass-rate aggregation.'
+                  rr.run.agentFailureSummary || rr.run.judgeFailureSummary
+                    ? [
+                        rr.run.agentFailureSummary,
+                        rr.run.judgeFailureSummary ? `Judge failure: ${rr.run.judgeFailureSummary}` : undefined,
+                      ].filter(Boolean).join(' · ')
+                    : 'Evaluator could not run on these (e.g. judge validation error). Excluded from pass-rate aggregation.'
                 }
               >
                 <AlertTriangle size={10} />
