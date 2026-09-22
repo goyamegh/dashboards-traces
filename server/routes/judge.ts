@@ -16,6 +16,7 @@ import { evaluateWithLiteLLM, parseLiteLLMError } from '@/server/services/litell
 import { evaluateWithClaudeCode, parseClaudeCodeError } from '@/server/services/claudeCodeJudgeService';
 import { evaluateWithPi, parsePiError } from '@/server/services/piJudgeService';
 import { evaluateWithPiAgenticTrace } from '@/server/services/piAgenticJudgeService';
+import { isJudgeError, toJudgeError } from '@/server/services/judgeErrors';
 import { evaluateWithAgenticJudge, parseAgenticJudgeError } from '@/server/services/agenticJudgeService';
 import { hasTraceCorrelation } from '@/services/traces/judgeAgentsHints';
 import { loadConfigSync } from '@/lib/config/index';
@@ -346,6 +347,12 @@ router.get('/api/judge/github-models', async (_req: Request, res: Response) => {
  * POST /api/judge - Evaluate agent trajectory
  */
 router.post('/api/judge', async (req: Request, res: Response) => {
+  // The provider actually used, recorded once resolved so the catch block
+  // below formats the error with the RIGHT provider's parser. It used to be
+  // re-derived from `config.models[modelId]` alone — which ignores the
+  // evaluator's `inferenceConfig.provider` (how the pi / agent judges are
+  // normally selected) and fell through to the Bedrock parser.
+  let resolvedProvider: string | undefined;
   try {
     const { trajectory, expectedOutcomes, expectedTrajectory, logs, modelId, evaluatorId, runId, agents } = req.body;
 
@@ -399,6 +406,7 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       modelConfig = Object.values(config.models).find(m => m.model_id === modelId);
     }
     const provider = evaluator.inferenceConfig?.provider || modelConfig?.provider || 'bedrock';
+    resolvedProvider = provider;
 
     // Use the resolved model_id: evaluator override > config > provided
     const resolvedModelId = evaluator.inferenceConfig?.modelId || modelConfig?.model_id || modelId;
@@ -569,7 +577,7 @@ router.post('/api/judge', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('[JudgeAPI] Error during evaluation:', error);
 
-    const provider = (() => {
+    const provider = resolvedProvider ?? (() => {
       try {
         const config = loadConfigSync();
         const { modelId } = req.body;
@@ -581,7 +589,13 @@ router.post('/api/judge', async (req: Request, res: Response) => {
       }
     })();
 
-    const errorMessage = provider === 'agentic'
+    // A JudgeError's message already names the real cause (context overflow,
+    // CLI crash + stderr tail, empty stdout, ...). Only the pi/agent parser
+    // knows how to phrase its classes; every other provider's legacy
+    // heuristic parser would collapse it back into a generic message.
+    const errorMessage = isJudgeError(error) && provider !== 'pi' && provider !== 'agent'
+      ? error.message
+      : provider === 'agentic'
       ? parseAgenticJudgeError(error)
       : provider === 'pi' || provider === 'agent'
         ? parsePiError(error)
@@ -593,9 +607,19 @@ router.post('/api/judge', async (req: Request, res: Response) => {
               ? parseOpenAICompatibleError(error)
               : parseBedrockError(error);
 
-    res.status(500).json({
+    // Classify so the caller's retry loop (services/evaluation/bedrockJudge.ts)
+    // can stop immediately on deterministic failures — a context overflow,
+    // expired credentials or an empty verdict come back identical on every
+    // re-send of the same input; only throttling/timeouts/network blips are
+    // worth the exponential-backoff budget. Deterministic classes answer 422
+    // (the request as given cannot be judged), transient ones 500.
+    const classified = toJudgeError(error);
+    res.status(classified.retryable ? 500 : 422).json({
       error: `Judge evaluation failed: ${errorMessage}`,
-      details: error.message
+      details: error.message,
+      errorClass: classified.errorClass,
+      retryable: classified.retryable,
+      ...(classified.stderrTail ? { stderrTail: classified.stderrTail } : {}),
     });
   }
 });
