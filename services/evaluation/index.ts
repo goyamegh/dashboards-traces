@@ -467,6 +467,17 @@ export async function invokeAgent(
   const endpointKey = endpointKeyFor(agentWithConnector, effectiveEndpoint);
   breaker?.assertClosed(endpointKey);
 
+  // Stage awareness: once the connector has surfaced ANY step or raw event the
+  // agent was reached and is answering — a later ECONNRESET / EPIPE is a
+  // mid-stream failure of THIS case, not an unreachable endpoint. It must
+  // neither count toward the breaker nor be relabelled as a connection
+  // failure.
+  // Every streaming connector reports progress per step, so a tracking
+  // `onStep` is always passed; `onRawEvent` keeps its optional contract.
+  let receivedAny = false;
+  const trackedOnStep: NonNullable<typeof onStep> = step => { receivedAny = true; onStep?.(step); };
+  const trackedOnRawEvent: typeof onRawEvent = onRawEvent ? event => { receivedAny = true; onRawEvent(event); } : undefined;
+
   // Execute via connector (with timing)
   const agentStartTime = Date.now();
   let result: ConnectorResponse;
@@ -475,16 +486,17 @@ export async function invokeAgent(
       effectiveEndpoint,
       request,
       auth,
-      onStep,
-      onRawEvent
+      trackedOnStep,
+      trackedOnRawEvent
     );
   } catch (error) {
-    // Transport-level failure: the request never reached (or was rejected
-    // outright by) the agent. Count it against the endpoint and rethrow with
-    // the failure class + host in the message so the report's failure
-    // summary is actionable (`fetch failed` on its own is not). Everything
-    // else (timeouts, in-stream errors, hook errors) propagates unchanged.
-    if (isAgentReachabilityError(error)) throw error;
+    // Transport-level failure BEFORE any response content: the request never
+    // reached (or was rejected outright by) the agent. Count it against the
+    // endpoint and rethrow with the failure class + host in the message so
+    // the report's failure summary is actionable (`fetch failed` on its own
+    // is not). Everything else — timeouts, mid-stream errors, hook errors —
+    // propagates unchanged.
+    if (isAgentReachabilityError(error) || receivedAny) throw error;
     const failure = breaker ? breaker.recordFailure(endpointKey, error) : classifyTransportFailure(error);
     if (failure) {
       const host = endpointKey.startsWith('command:') ? endpointKey.slice('command:'.length) : describeEndpointHost(effectiveEndpoint);
