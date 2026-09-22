@@ -32,24 +32,29 @@
  *   - NOT APPLICABLE — the metric does not speak to this case by its own
  *     definition (a ranked metric when the test case explicitly has no gold;
  *     `abstain` when it has gold). Skipped: not in the mean, not a failure
- *     reason, listed in `snapshot.notApplicable`. Without this state an
- *     evaluator could never mix `abstain` with ranked metrics.
+ *     reason, listed in `snapshot.notApplicable`, matcher row flagged
+ *     `notApplicable: true`. Without this state an evaluator could never mix
+ *     `abstain` with ranked metrics. A `gates` policy whose EVERY gate is not
+ *     applicable to the case yields NO verdict (see below) — a gate that was
+ *     never enforced must not read as a pass.
  *   - UNEVALUABLE — the metric applies but an input is missing (gold not
- *     declared at all; no response / no candidates to score). Semantics
- *     unchanged from the pilot (never a silent pass, never a fake zero):
+ *     declared at all; no ranked list recognised / no candidates to score).
+ *     Semantics unchanged from the pilot (never a silent pass, never a fake
+ *     zero):
  *       · SOME metrics unevaluable ⇒ verdict `failed`, reason
  *         `unevaluable:<metric>`; listed in `snapshot.unevaluable`, excluded
  *         from the mean.
- *       · NO metric produced a value ⇒ NOT a verdict: `passFailStatus: null`,
- *         `metricsStatus: 'error'`, `traceError` explains why. The report
- *         renders as "errored/not evaluable", the run's pass rate excludes it
- *         — flipping it to `failed` would punish the agent for a missing gold
- *         label or an un-parseable artifact.
+ *       · NO metric produced a value (or no gate applies) ⇒ NOT a verdict:
+ *         `passFailStatus: null`, `metricsStatus: 'error'`, `traceError`
+ *         explains why. The report renders as "errored/not evaluable", the
+ *         run's pass rate excludes it — flipping it to `failed` would punish
+ *         the agent for a missing gold label or an un-parseable artifact.
  *
  * Empty prediction vs absent prediction: `response-results` distinguishes an
- * agent that RETURNED an empty list (`present: true`, ranked metrics compute
- * to 0 via `emptyRanking: 'zero'`, `abstain` = 1) from a report with no final
- * response at all (`present: false` ⇒ unevaluable). `tool-hits-ordered`
+ * agent that RETURNED an explicit empty list (`present: true`, ranked metrics
+ * compute to 0 via `emptyRanking: 'zero'`, `abstain` = 1) from a report whose
+ * answer carried no recognisable ranked list at all (`present: false` ⇒
+ * unevaluable — "could not extract" is never scored). `tool-hits-ordered`
  * keeps its pilot behaviour: no candidates ⇒ ranked metrics unevaluable.
  */
 
@@ -70,6 +75,7 @@ import { extractToolHitsOrdered, toolHitsOptionsFromInputs, type ExtractedPredic
 import {
   extractResponseResults,
   responseResultsOptionsFromInputs,
+  RESPONSE_RESULTS_FORMS,
   type ResponseResultsPrediction,
 } from '@/lib/scoring/prediction/responseResults';
 import { deterministicEvaluatorCanonical, metricScale } from '@/lib/evaluators/deterministic';
@@ -167,7 +173,11 @@ export function scoreDeterministic(
       notApplicable.push(spec.name);
       continue;
     }
-    const value = goldDeclared && prediction.present
+    // `abstain` is about what the agent RETURNED; `tool-hits-ordered` cannot
+    // observe that (the validator rejects the pairing — this is the guard for
+    // documents stored before it existed).
+    const observable = !(spec.compute.type === 'abstain' && prediction.rule !== 'response-results');
+    const value = goldDeclared && prediction.present && observable
       ? computeMetric(spec.compute, { gold: goldIds, ranked, emptyRanking })
       : null;
     if (value === null) {
@@ -180,8 +190,12 @@ export function scoreDeterministic(
     weighted += spec.weight * value;
   }
 
-  const evaluable = Object.keys(metrics).length > 0;
-  const score = evaluable && weightSum > 0 ? weighted / weightSum : null;
+  // A gates policy needs at least one gate that applies to this case; a case
+  // whose every gate is not applicable has no verdict (never a silent pass).
+  const applicableGates = passPolicy.kind === 'gates' ? passPolicy.gates.filter(g => !notApplicable.includes(g.metric)) : null;
+  const noApplicableGate = applicableGates !== null && applicableGates.length === 0;
+  const evaluable = Object.keys(metrics).length > 0 && !noApplicableGate;
+  const score = Object.keys(metrics).length > 0 && weightSum > 0 ? weighted / weightSum : null;
 
   // Verdict.
   const failReasons: string[] = [];
@@ -190,10 +204,8 @@ export function scoreDeterministic(
   if (evaluable) {
     if (passPolicy.kind === 'threshold') {
       if (score === null || score < passPolicy.minScore) failReasons.push(`threshold:${fmt(score ?? 0)}<${fmt(passPolicy.minScore)}`);
-    } else if (passPolicy.kind === 'gates') {
-      for (const g of passPolicy.gates) {
-        // A gate on a metric that does not apply to this case is skipped.
-        if (notApplicable.includes(g.metric)) continue;
+    } else if (applicableGates) {
+      for (const g of applicableGates) {
         const v = metrics[g.metric];
         const ok = typeof v === 'number' && v >= g.min;
         gateOutcomes[g.metric] = ok;
@@ -238,7 +250,8 @@ export function scoreDeterministic(
       pass,
       method: 'code-assertion',
       role: isGate && !isNotApplicable ? 'primary' : 'observe',
-      ...(isUnevaluable ? { errored: true, errorMessage: unevaluableReason(goldDeclared, goldIds, prediction) } : {}),
+      ...(isNotApplicable ? { notApplicable: true } : {}),
+      ...(isUnevaluable ? { errored: true, errorMessage: unevaluableReason(goldDeclared, goldIds, prediction, spec) } : {}),
       score: isUnevaluable || isNotApplicable ? undefined : normalizedByName[spec.name],
       actual: isUnevaluable || isNotApplicable ? undefined : value,
       expected: isNotApplicable ? undefined : gateMin,
@@ -256,7 +269,7 @@ export function scoreDeterministic(
     return row;
   });
 
-  const summary = buildSummary(goldDeclared, goldIds, prediction, metrics, unevaluable, notApplicable, passFailStatus, failReasons);
+  const summary = buildSummary(goldDeclared, goldIds, prediction, metrics, unevaluable, notApplicable, passFailStatus, failReasons, noApplicableGate);
 
   return {
     evaluable,
@@ -288,10 +301,17 @@ function notApplicableReason(spec: DeterministicMetricSpec, goldIds: string[]): 
     : 'ranked metrics only score cases with gold ids (this case explicitly declares none)';
 }
 
-function unevaluableReason(goldDeclared: boolean, goldIds: string[], prediction: DeterministicPrediction): string {
+function unevaluableReason(goldDeclared: boolean, goldIds: string[], prediction: DeterministicPrediction, spec?: DeterministicMetricSpec): string {
   if (!goldDeclared) return 'no gold ids on the test case (expected.ids / matching expectedOutcomes line)';
+  if (spec?.compute.type === 'abstain' && prediction.rule !== 'response-results') {
+    return `abstain cannot be observed through ${prediction.rule} (use prediction source response-results)`;
+  }
   if (prediction.rule === 'response-results') {
-    if (!prediction.present) return 'no final response step in the stored trajectory (rule: response-results)';
+    if (!prediction.present) {
+      return prediction.hasAnswer
+        ? `no ranked list recognised in the final response (expected ${RESPONSE_RESULTS_FORMS}; an explicit empty list scores as an abstention) (rule: response-results)`
+        : 'no final response step in the stored trajectory (rule: response-results)';
+    }
     return 'metric could not be computed';
   }
   if (prediction.ranked.length === 0) {
@@ -310,9 +330,14 @@ function buildSummary(
   unevaluable: string[],
   notApplicable: string[],
   verdict: PassFailStatus | null,
-  failReasons: string[]
+  failReasons: string[],
+  noApplicableGate: boolean
 ): string {
   if (verdict === null) {
+    if (noApplicableGate && Object.keys(metrics).length > 0) {
+      const metricText = Object.entries(metrics).map(([k, v]) => `${k}=${fmt(v)}`).join(', ');
+      return `Not evaluable: none of the pass-policy gates applies to this case (not applicable: ${notApplicable.join(', ')}); observed ${metricText}. Add a gate on a metric that speaks to ${goldIds.length === 0 ? 'gold-empty cases (e.g. abstain)' : 'cases with gold ids'}.`;
+    }
     if (unevaluable.length === 0 && notApplicable.length > 0) {
       return `Not evaluable: no metric applies to this case (${goldIds.length === 0 ? 'gold is explicitly empty and the evaluator declares no abstain metric' : 'the evaluator declares only abstain metrics and this case has gold ids'}).`;
     }

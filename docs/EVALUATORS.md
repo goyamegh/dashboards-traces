@@ -105,11 +105,15 @@ not a byte-for-byte reproduction. Say so in the evaluator `description`.
 answer is "nothing" — a query with no relevant item, an out-of-scope request).
 A metric that does not apply to a case is **not applicable**: skipped, not in
 the weighted mean, never a failure reason, listed in
-`scoringSnapshot.notApplicable` and rendered with an `n/a` badge on the Judge
-tab. This is what lets one evaluator mix `hit@5` with `abstain` and score every
-case by the metrics that speak to it. `abstain` is deliberately *not* 0 on
-gold-non-empty cases — that would punish every ordinary retrieval case for
-having answered.
+`scoringSnapshot.notApplicable`, flagged `notApplicable: true` on its matcher
+row and rendered with an `n/a` badge on the Judge tab (excluded from the
+passed/failed tally). This is what lets one evaluator mix `hit@5` with
+`abstain` and score every case by the metrics that speak to it. `abstain` is
+deliberately *not* 0 on gold-non-empty cases — that would punish every
+ordinary retrieval case for having answered. `abstain` requires
+`prediction.source: "response-results"` (validated with `400`): it is about
+what the agent *returned*, and `tool-hits-ordered` only sees what was
+retrieved — an empty ranking there means "no stored hits", not "abstained".
 
 `MetricInputs.emptyRanking` (`'unevaluable'` default | `'zero'`) tells the
 ranked metrics what an empty ranking means; the engine sets `'zero'` for
@@ -129,8 +133,11 @@ unevaluable).
    authoritative; the captured text is split on `,` `;` and whitespace. A
    capture that is empty or one of `none` · `n/a` · `-` · `—` · `[]` · `null`
    (case-insensitive) means **explicitly no gold**.
-3. `testCase.expected.ids: []` (present but empty, no gold line) → **explicitly
-   no gold**.
+3. `source: "testCase.expected.ids"` with the field present but empty (`[]`)
+   → **explicitly no gold**. (Under the pattern source an empty structured
+   list is *not* read as "no gold" — clients routinely serialize `[]` for
+   "unset"; only an evaluator that opted into the structured field interprets
+   it.)
 4. Nothing → gold **not declared**: every metric is unevaluable (see below).
 
 "Explicitly no gold" and "gold not declared" are different outcomes on
@@ -151,7 +158,7 @@ without re-invoking the agent. They answer different questions:
 | `inputs.prediction.source` | Ranking = …                                                                    | Use when                                                                                                                                                   | Caveat                                                                                                                                                                                                       |
 |----------------------------|--------------------------------------------------------------------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------|--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `tool-hits-ordered`        | every id the agent **retrieved** (all stored tool hits; cited ids first)         | the agent answers in prose and the retrieved set *is* what it surfaced; historical runs whose answer carries no explicit list                              | **over-credits**: a gold id fetched by an exploratory tool call but never recommended still counts, so Hit@k / Recall@k are upper bounds on what a user would have seen                                          |
-| `response-results`         | the ranked list the agent **returned as its answer** (`results[]` of `{id, rank?, …}`) | the agent's final answer is (or contains) an ordered result list — a search / recommendation agent; you want to score what was *recommended*, not retrieved | an agent that returns an **empty** list scores 0 on the ranked metrics (and 1 on `abstain` when gold is empty) — that is a real outcome, not a data gap; only a report with **no final response at all** is unevaluable |
+| `response-results`         | the ranked list the agent **returned as its answer** (`results[]` of `{id, rank?, …}`) | the agent's final answer is (or contains) an ordered result list — a search / recommendation agent; you want to score what was *recommended*, not retrieved | an agent that returns an **explicit empty** list scores 0 on the ranked metrics (and 1 on `abstain` when gold is empty) — that is a real outcome, not a data gap; a response in which **no ranked list can be recognised** (prose, unsupported shape, wrong `path`) is unevaluable, never 0 |
 
 Every report records which one produced its ranking
 (`scoringSnapshot.extractionRule`, and `extractionRule` on each matcher row),
@@ -191,24 +198,28 @@ yields a list wins and is recorded as `scoringSnapshot.extraction.parsedFrom`:
 |--------------|-----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
 | `json`       | the response content **is** a JSON object or array, e.g. `{"answer": null, "results": [{"id": "9", "rank": 1, "score": 0.8, "title": "…"}, …]}`                                                                       |
 | `fenced`     | a ```` ```json ```` (or bare ```` ``` ````) block inside the response text whose body is such an object / array                                                                                                          |
-| `raw-event`  | a **non-streaming** connector's single raw response payload (`report.rawEvents` holding exactly one plain object — the REST connector's `[data]`); used when the response step is only a rendering of that payload. Streaming connectors store many raw events and are never consulted. |
-| `text`       | **best-effort** fallback: list lines (`1.` `1)` `-` `*` `•`) that carry an explicit `id` label — `1. id 2079 — Some title (score 6.3)`, `- Some title (id: 123)`, `* ID #A-77`. The label is required; bare numbers in prose are never taken as ids. |
-| `none`       | a response exists but carries no list → **empty prediction** (scorable)                                                                                                                                              |
+| `raw-event`  | a **non-streaming** connector's single raw response payload (`report.rawEvents` holding exactly one plain object — the REST connector's `[data]`), consulted only when a response step exists and is a rendering of that payload; it never stands in for a missing answer. Streaming connectors store many raw events and are never consulted. |
+| `text`       | **best-effort** fallback: list lines (`1.` `1)` `-` `*` `•`) whose item text *starts* with an `id` label or carries one in brackets — `1. id 2079 — Some title (score 6.3)`, `- Some title (id: 123)`, `* ID #A-77`. The label is required; mid-sentence prose (`- user id 123 was checked`) and bare numbers are never taken as ids; `id: none` / `id: null` are not ids. |
+| `none`       | **no ranked list recognised** → `present: false` → every metric **unevaluable**. "Could not extract" is never scored; to score an abstention the agent must return an explicit empty list (`results: []`, `[]`, or a fenced `{"results": []}`). |
 
-Inside a parsed JSON value the list is at `path` (dotted) when declared, else
-auto-detected: the root array itself, then the keys `results` / `hits` /
-`items`, then the first array (root keys in order, one level deep) whose
-elements are objects carrying `idField` (default `id`). Items are ordered by
-`rankField` (default `rank`, ascending, when numeric on every item) else by
-array order; ids are deduped keeping the first occurrence and capped at 100.
+Inside a parsed JSON value the list is at `path` (dotted) when declared — it
+must resolve to an array that is empty or whose elements are objects carrying
+`idField`, otherwise nothing is found (a misconfigured path surfaces as
+unevaluable, never as "returned nothing") — else auto-detected: the root array
+itself, then the keys `results` / `hits` / `items`, then the first *root-level*
+array whose elements are objects carrying `idField` (default `id`); nested
+shapes need an explicit `path`. Items are ordered by `rankField` (default
+`rank`, ascending, when numeric on every item) else by array order; ids are
+deduped keeping the first occurrence and capped at 100.
 `scoringSnapshot.extraction = { candidateCount, parsedFrom }`. Tool results are
 **never** read by this source — that is `tool-hits-ordered`'s job.
 
-Empty vs absent: a response step with an empty or missing list is an empty
+Empty vs absent: an **explicit empty list** in the response is an empty
 prediction (`present: true`) — the ranked metrics compute to 0 and `abstain`
-to 1. No `response` / `assistant` step and no raw payload is an **absent**
-prediction (`present: false`) — every metric is unevaluable, because an
-abstaining agent is indistinguishable from one that crashed before answering.
+to 1. No `response` / `assistant` step, or a response in which no ranked list
+can be recognised, is an **absent** prediction (`present: false`) — every
+metric is unevaluable: a parser miss must never look like an abstention, and an
+agent that never answered is indistinguishable from one that crashed.
 
 A **native connector output mapping** (the connector declaring the agent's
 ranked candidates at run time as typed report output) remains the follow-up;
@@ -224,9 +235,12 @@ both sources stay available as explicitly labelled extractors for stored runs.
 - `report.passFailStatus` by `passPolicy`. **Any** unevaluable metric ⇒ `failed`
   with reason `unevaluable:<metric>` — never a silent pass. *Not-applicable*
   metrics are skipped entirely (no reason, no failure); a `gates` entry naming
-  a not-applicable metric is skipped for that case.
-- **No** metric produced a value (gold not declared, no candidates / no final
-  response, or no metric applies to the case) ⇒ *not a verdict*:
+  a not-applicable metric is skipped for that case — and when **every** gate
+  is skipped the case has **no verdict** (a gate that was never enforced must
+  not read as a pass; the `traceError` tells you which gate to add).
+- **No** metric produced a value (gold not declared, no candidates / no
+  recognisable ranked list, or no metric applies to the case), or no gate
+  applies ⇒ *not a verdict*:
   `metricsStatus: "error"`, `passFailStatus: null`, `traceError` says why
   (`Not evaluable by <evaluator>: …`), `metrics: {}`. The report renders as
   errored / not evaluable and is excluded from the pass rate; flipping it to
@@ -304,7 +318,8 @@ iff the top-ranked item is gold (and abstain correctly on gold-empty cases).
 
 On a case with gold, `abstain` is not applicable (its gate is skipped); on a
 gold-empty case the ranked metrics are not applicable and only the `abstain`
-gate decides. Apply either with Retry judgement (below) to a completed run and
+gate decides. Both examples gate on `abstain` *and* a ranked metric on
+purpose: a gates policy with no gate that applies to a case yields no verdict. Apply either with Retry judgement (below) to a completed run and
 compare against the same evaluator using `tool-hits-ordered` to see how much
 the retrieved-set protocol over-credits.
 

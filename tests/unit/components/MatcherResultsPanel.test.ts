@@ -348,16 +348,16 @@ describe('MatcherResultsPanel — deterministic rows: response-results provenanc
     expect(rule.textContent).not.toContain('parsed from');
   });
 
-  it('renders an n/a badge + reason for a not-applicable metric, counted as passed (skipped, never failed)', () => {
+  it('renders an n/a badge + reason for a not-applicable metric and EXCLUDES it from the passed/failed tally', () => {
     const reason = 'abstain only scores cases whose gold is explicitly empty (this case has 2 gold ids)';
     panel([
       detRow({}),
       detRow({
-        description: 'abstain (abstain) ≥ 1', role: 'observe', actual: undefined, expected: undefined, score: undefined,
-        details: { gold: ['g1', 'g2'], goldTotal: 2, predicted: ['x', 'g2'], predictedTotal: 2, extractionRule: 'response-results', parsedFrom: 'json', notApplicable: true, notApplicableReason: reason },
+        description: 'abstain (abstain) ≥ 1', role: 'observe', notApplicable: true, actual: undefined, expected: undefined, score: undefined,
+        details: { gold: ['g1', 'g2'], goldTotal: 2, predicted: ['x', 'g2'], predictedTotal: 2, extractionRule: 'response-results', parsedFrom: 'json', notApplicableReason: reason },
       }),
     ]);
-    expect(screen.getByText(/2\/2 passed/)).toBeTruthy();
+    expect(screen.getByText(/1\/1 passed, 1 n\/a/)).toBeTruthy();
     const badge = screen.getByTestId('matcher-not-applicable');
     expect(badge.textContent).toBe('n/a');
     expect(badge.getAttribute('title')).toBe(reason);
