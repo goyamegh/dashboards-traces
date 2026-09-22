@@ -79,6 +79,11 @@ describe('classifyEmptyResponse — truth table', () => {
       expect(v).toMatchObject({ empty: true, payload: 'empty' });
     });
 
+    it('a step-type without content (empty assistant / thinking stub) is not agent activity (codex_review)', () => {
+      const v = classifyEmptyResponse({ trajectory: [step('assistant', ''), step('thinking', '   '), response('{}')], rawEvents: [{}] });
+      expect(v).toMatchObject({ empty: true, agentSteps: 0 });
+    });
+
     it('a `user` step is not agent activity', () => {
       const v = classifyEmptyResponse({ trajectory: [step('user', 'search products'), response('')], rawEvents: [{}] });
       expect(v).toMatchObject({ empty: true, agentSteps: 0 });
@@ -121,6 +126,19 @@ describe('classifyEmptyResponse — truth table', () => {
       const v = classifyEmptyResponse({ trajectory: [response('answer')], rawEvents: [] });
       expect(v).toMatchObject({ empty: false, payload: 'unknown' });
       expect(classifyEmptyResponse({ trajectory: [response('answer')] }).empty).toBe(false);
+    });
+
+    it('structured data under an UNKNOWN key with all known keys empty is NOT classified (codex_review: schema we cannot read)', () => {
+      const payload = { answer: null, results: [], custom_results: [{ id: 'p1', title: 'Trail shoe' }] };
+      const v = classifyEmptyResponse({ trajectory: [response(JSON.stringify(payload, null, 2))], rawEvents: [payload] });
+      expect(v).toMatchObject({ empty: false, payload: 'unknown' });
+      // Scalar metadata under unknown keys does not rescue an empty payload.
+      expect(payloadContentState([{ answer: null, results: [], session_id: 's', status: 'ok', latency_ms: 12, ids: [] }])).toBe('empty');
+    });
+
+    it('a tool step (action / tool_result) IS agent activity even with blank content — a tool call happened', () => {
+      expect(classifyEmptyResponse({ trajectory: [{ type: 'action', content: '' }, response('')], rawEvents: [{}] }).empty).toBe(false);
+      expect(classifyEmptyResponse({ trajectory: [{ type: 'tool_result', content: '' }, response('')], rawEvents: [{}] }).empty).toBe(false);
     });
 
     it('response text over an UNKNOWN payload shape (no known content key) is trusted', () => {
@@ -191,12 +209,13 @@ describe('payloadContentState', () => {
 });
 
 describe('readExplicitEmptyFlag', () => {
-  it('reads empty / isEmpty (top-level) and response.isEmpty / response.empty', () => {
+  it('reads empty / isEmpty (top-level) and response.isEmpty — nothing else', () => {
     expect(readExplicitEmptyFlag({ empty: true, response: {}, trajectory: [] })).toBe(true);
     expect(readExplicitEmptyFlag({ isEmpty: true, response: {}, trajectory: [] })).toBe(true);
     expect(readExplicitEmptyFlag({ response: { isEmpty: true }, trajectory: [] })).toBe(true);
-    expect(readExplicitEmptyFlag({ response: { empty: false }, trajectory: [] })).toBe(false);
     expect(readExplicitEmptyFlag({ empty: false })).toBe(false);
+    // `response.empty` is a plausible AGENT payload field, not a contract field.
+    expect(readExplicitEmptyFlag({ response: { empty: true }, trajectory: [] })).toBeUndefined();
   });
   it('is undefined when the hook said nothing (or returned a non-object / non-boolean)', () => {
     expect(readExplicitEmptyFlag({ response: {}, trajectory: [] })).toBeUndefined();
@@ -211,10 +230,15 @@ describe('resolveEmptyResponseTripsBreaker', () => {
     expect(resolveEmptyResponseTripsBreaker(undefined, {})).toBe(true);
     expect(resolveEmptyResponseTripsBreaker({}, {})).toBe(true);
   });
-  it('connectorConfig wins over env', () => {
+  it('connectorConfig (boolean only) wins over env; a non-boolean is warned about and ignored', () => {
     expect(resolveEmptyResponseTripsBreaker({ emptyResponseTripsBreaker: false }, { [EMPTY_RESPONSE_TRIPS_BREAKER_ENV]: '1' })).toBe(false);
     expect(resolveEmptyResponseTripsBreaker({ emptyResponseTripsBreaker: true }, { [EMPTY_RESPONSE_TRIPS_BREAKER_ENV]: '0' })).toBe(true);
-    expect(resolveEmptyResponseTripsBreaker({ emptyResponseTripsBreaker: 'off' }, {})).toBe(false);
+    const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      expect(resolveEmptyResponseTripsBreaker({ emptyResponseTripsBreaker: 'off' }, { [EMPTY_RESPONSE_TRIPS_BREAKER_ENV]: '0' })).toBe(false);
+      expect(resolveEmptyResponseTripsBreaker({ emptyResponseTripsBreaker: 'off' }, {})).toBe(true);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('Ignoring non-boolean connectorConfig.emptyResponseTripsBreaker'));
+    } finally { warn.mockRestore(); }
   });
   it('env accepts 0/false/no/off as disabling, anything else enables', () => {
     for (const v of ['0', 'false', 'NO', 'off']) expect(resolveEmptyResponseTripsBreaker(undefined, { [EMPTY_RESPONSE_TRIPS_BREAKER_ENV]: v })).toBe(false);

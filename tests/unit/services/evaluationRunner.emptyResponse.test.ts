@@ -266,6 +266,27 @@ describe('executeEvaluationRun — empty agent responses are agent failures, nev
     expect(result.agentFailureSummary).toBe('4 cases returned an empty response (no steps, no answer, no results) — not judged');
   });
 
+  it('a hook that THROWS resets the breaker streak (the endpoint answered): empty, empty, hook-error, empty, empty → no circuit', async () => {
+    let calls = 0;
+    const throwingAgent = { key: 'throwing-hook-agent', name: 'Throwing Hook', endpoint: 'http://agent.internal:9000/run', connectorType: 'rest', useTraces: false,
+      hooks: { afterResponse: async (ctx: any) => { if (++calls === 3) throw new Error('hook bug'); return ctx; } } };
+    AGENTS.push(throwingAgent as any);
+    try {
+      mockExecute.mockImplementation(() => Promise.resolve(restResult({})));
+      const result = await executeEvaluationRun(makeRun('throwing-hook-agent'), makeCases(5), { storageModule: storage, onProgress: noop });
+      expect(mockExecute).toHaveBeenCalledTimes(5);
+      expect(result.agentFailureSummary).toBe('4 cases returned an empty response (no steps, no answer, no results) — not judged');
+      const reports = finalReports(storage);
+      expect(reports.filter(r => r.agentError?.kind === 'empty-response')).toHaveLength(4);
+      // The hook-error case is a plain agent_failed (no structured classification), not an empty response.
+      const hookFailed = reports.find(r => /hook bug/.test(r.traceError ?? ''));
+      expect(hookFailed?.agentError).toBeUndefined();
+      expect(hookFailed?.traceError).toMatch(/kind=agent_failed/);
+    } finally {
+      AGENTS.pop();
+    }
+  });
+
   it('SDK path: agent.run() rejects with the empty-response error; the report is stamped agent_empty_response and keeps the payload', async () => {
     mockExecute.mockImplementation(() => Promise.resolve(restResult({})));
     const cases = makeCases(2);
