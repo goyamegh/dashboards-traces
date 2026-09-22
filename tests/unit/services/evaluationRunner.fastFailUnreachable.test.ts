@@ -181,6 +181,42 @@ describe('executeEvaluationRun — fast-fail for unreachable agent endpoints', (
     }
   });
 
+  it('a connection reset AFTER the agent started answering is a mid-stream failure of that case — not counted, not relabelled', async () => {
+    mockExecute.mockImplementation((_endpoint: string, _req: any, _auth: any, onStep?: (s: any) => void) => {
+      onStep?.({ type: 'assistant', content: 'partial…' });
+      const e = new Error('read ECONNRESET') as Error & { code: string };
+      e.code = 'ECONNRESET';
+      return Promise.reject(e);
+    });
+    const result = await executeEvaluationRun(makeRun('dead-agent'), makeCases(4), { storageModule: storage, onProgress: noop });
+    expect(mockExecute).toHaveBeenCalledTimes(4);
+    expect(mockStartPolling).not.toHaveBeenCalled();
+    expect(result.agentFailureSummary).toBeUndefined();
+    for (const r of finalReports(storage)) {
+      expect(r.metricsStatus).toBe('error');
+      expect(r.traceError).toContain('(kind=agent_failed): read ECONNRESET');
+      expect(r.traceError).not.toContain('while calling agent endpoint');
+    }
+  });
+
+  it('a prompt-specific 500 from an agent that is UP fast-fails the case with HTTP_500 but never opens the breaker', async () => {
+    mockExecute.mockImplementation(() => Promise.reject(new Error('REST request failed: 500 - internal error')));
+    const result = await executeEvaluationRun(makeRun('dead-agent'), makeCases(5), { storageModule: storage, onProgress: noop });
+    expect(mockExecute).toHaveBeenCalledTimes(5);
+    expect(mockStartPolling).not.toHaveBeenCalled();
+    expect(result.agentFailureSummary).toBeUndefined();
+    for (const r of finalReports(storage)) {
+      expect(r.traceError).toContain('HTTP_500 — endpoint rejected the request with HTTP 500 while calling agent endpoint agent.internal:9000');
+    }
+  });
+
+  it('gateway 503s DO open the breaker (the endpoint itself is down behind a proxy)', async () => {
+    mockExecute.mockImplementation(() => Promise.reject(new Error('REST request failed: 503 - Service Unavailable')));
+    const result = await executeEvaluationRun(makeRun('dead-agent'), makeCases(5), { storageModule: storage, onProgress: noop });
+    expect(mockExecute).toHaveBeenCalledTimes(3);
+    expect(result.agentFailureSummary).toContain('(HTTP_503, agent.internal:9000); 2 further cases were not attempted');
+  });
+
   it('a success resets the consecutive count (SDK path, agent.run() rejects then answers)', async () => {
     // fail, fail, ok, fail, fail, ok, fail, fail → never 3 in a row → no open circuit.
     const script = ['fail', 'fail', 'ok', 'fail', 'fail', 'ok', 'fail', 'fail'];

@@ -251,6 +251,7 @@ export async function executeEvaluationRun(
       run.judgeProvider = judgeProvider;
     }
   };
+
   // Fast-fail for unreachable endpoints (services/evaluation/agentReachability.ts):
   // one breaker per run, keyed by endpoint host. After N consecutive
   // transport failures the remaining cases fail immediately instead of each
