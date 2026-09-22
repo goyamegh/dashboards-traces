@@ -508,6 +508,63 @@ Three layered strategies, applied in priority order:
 See the full "Trace correlation conventions" section in
 [AGENTS.md](../AGENTS.md) for the convention map and window-derivation rules.
 
+## Unreachable Endpoints: Fast-Fail and Circuit Breaker
+
+A connector call that fails at the **transport level** — the request never
+reached the agent, or was rejected before the agent did any work — is not
+something to wait on. `invokeAgent()` (`services/evaluation/index.ts`)
+classifies such failures with `services/evaluation/agentReachability.ts` and
+the runners treat them as final:
+
+| Failure class                                             | Examples                                                              |
+| --------------------------------------------------------- | --------------------------------------------------------------------- |
+| connection (`ECONNREFUSED`, `ECONNRESET`, `EHOSTUNREACH`) | endpoint down, port closed, load balancer dropping the connection    |
+| DNS (`ENOTFOUND`, `EAI_AGAIN`)                            | typo in the hostname, split-horizon DNS                               |
+| TLS (`CERT_HAS_EXPIRED`, `DEPTH_ZERO_SELF_SIGNED_CERT`, …) | certificate problems on the agent side                              |
+| rejected status (`HTTP_4xx` / `HTTP_5xx`, except 408/429)  | `REST request failed: 503 - …`, `401` from a missing API key         |
+| spawn failure (`ENOENT`, `EACCES`, `EPERM`)               | subprocess connector whose CLI binary is not installed / executable   |
+
+Timeouts, in-stream parse errors, hook errors and non-zero subprocess exits
+are **not** transport failures — the agent answered (or was answering) and
+they keep their normal handling.
+
+What happens:
+
+1. **Per case** — the case is finalised immediately as an agent failure
+   (`metricsStatus: 'error'`, `failure kind=agent_failed`, bucketed as
+   *errored*, never judged). The report's reason names the failure class and
+   the endpoint **host only** (never the full URL), e.g.
+   `ECONNREFUSED — connection refused while calling agent endpoint
+   agent.example.com:9000: fetch failed`. Trace polling is **not** started —
+   before this, a `useTraces` agent whose endpoint was down still waited the
+   whole `TRACE_POLL_INTERVAL_MS × TRACE_POLL_MAX_ATTEMPTS` budget (10 min by
+   default) on every case before erroring it as a trace timeout.
+2. **Per run** — a circuit breaker keyed by endpoint host (or subprocess
+   command) counts *consecutive* transport failures. After the threshold
+   (default **3**) the remaining cases of that run fail at once with
+   `agent endpoint unreachable — 3 consecutive connection failures
+   (ECONNREFUSED, host:port); this case was not attempted`, the run doc gets
+   `agentFailureSummary`, and the UI shows an **Agent unreachable** badge on
+   the runs list plus a banner on the run page / inspector. Any successful
+   call resets the count, so a flapping endpoint is not tripped. The breaker
+   is per run: a new run is a fresh attempt.
+
+Configuration (per agent wins over env; `0` disables the breaker):
+
+```typescript
+{
+  key: 'my-agent',
+  connectorType: 'rest',
+  connectorConfig: {
+    unreachableThreshold: 3,   // consecutive transport failures before fast-failing the run
+  },
+}
+```
+
+```bash
+AGENT_UNREACHABLE_THRESHOLD=3   # default for agents that don't set connectorConfig.unreachableThreshold
+```
+
 ## Examples
 
 ### Observio Sample Agent
