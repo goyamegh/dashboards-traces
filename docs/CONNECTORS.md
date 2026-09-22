@@ -574,6 +574,106 @@ Configuration (per agent wins over env; `0` disables the breaker):
 AGENT_UNREACHABLE_THRESHOLD=3   # default for agents that don't set connectorConfig.unreachableThreshold
 ```
 
+## Empty Responses: Nothing to Judge
+
+An agent that answers `2xx` with **nothing** — no tool calls, no assistant
+text, no answer, no results (typically because its own model call failed and
+it returned an empty body instead of an error) — is an **agent failure**, not
+a candidate answer. Before this rule the REST connector's fallback rendered the
+empty body as the response step (`200 {}` → a response step reading `{}`), or
+an `afterResponse` hook rendered a placeholder such as "no results", and the
+LLM judge scored that text — on a lenient rubric ("any reply at all") it
+**passed**.
+
+`invokeAgent()` now runs `classifyEmptyResponse()`
+(`services/evaluation/emptyResponse.ts`) on every connector result, after the
+`afterResponse` hook and before trace polling / judging. A result is EMPTY when
+**any** of these holds:
+
+| Rule | Condition |
+| --- | --- |
+| hook flag | the `afterResponse` hook returned `{ empty: true }` (or `isEmpty: true`, top-level or on `response`) |
+| blank trajectory | no agent-originated step (`tool_result` / `action` / `thinking` / `assistant`), the final response text is blank, and the raw payload carries no content under a known content key |
+| unbacked text | no agent-originated step, a non-blank response step, and a raw payload whose every known content key (`answer`, `response`, `content`, `text`, `message(s)`, `output(s)`, `result(s)`, `steps`, `toolCalls`, `data`, `items`, `hits`, `documents`, …) is null / blank / an empty collection — i.e. the text is the connector's JSON echo of an empty body, or a placeholder a hook rendered |
+
+Structured results with a null answer (`{ answer: null, results: [{…}] }`) are
+**not** empty — for retrieval agents the results are the answer. A payload with
+no known content key at all (unknown shape), or a connector that reports no raw
+events, never classifies as "unbacked text"; detection is deliberately
+conservative because a false positive would silently error a real run. A hook
+can always override: `{ empty: false }` suppresses the built-in detection.
+
+What happens to an empty result:
+
+1. **Per case** — finalised immediately as an agent failure:
+   `metricsStatus: 'error'`, `passFailStatus: null`, `traceError` =
+   `Agent returned an empty response (kind=agent_empty_response): EMPTY_RESPONSE
+   — agent returned an empty response (no steps, no answer, no results) from
+   agent endpoint <host>: <which rule fired>`, and a structured
+   `agentError: { stage: 'agent', kind: 'empty-response', code:
+   'EMPTY_RESPONSE', message }`. Bucketed as *errored* (never *passed*, never
+   *pending*), never trace-polled, **never judged** — and "Retry judgement"
+   skips it, so a lenient re-judge cannot flip it either. The trajectory and
+   raw payload the agent returned stay on the report so you can see what came
+   back.
+2. **Judge guard** — `POST /api/judge` refuses (HTTP `422`, `code:
+   'EMPTY_RESPONSE'`, `notJudged: true`) a trajectory with no agent step and
+   no answer text without calling a model. Belt and braces for direct callers
+   and the SDK `judge()` fixture.
+3. **Per run** — by default an empty response counts toward the endpoint
+   circuit breaker above (an endpoint returning nothing repeatedly is as dead
+   as one refusing connections): three consecutive empty responses open the
+   breaker and the summary reads `Agent endpoint unreachable — 3 consecutive
+   empty responses (EMPTY_RESPONSE, host:port); N further cases were not
+   attempted`. When the breaker does not trip the run still gets
+   `agentFailureSummary` = `N cases returned an empty response (no steps, no
+   answer, no results) — not judged`, shown as an **Empty responses** badge on
+   the runs list and a banner on the run page / inspector.
+
+### Hook contract for synthesized text
+
+If your `afterResponse` hook builds trajectory text from a structured payload,
+**flag emptiness yourself** — the hook knows the payload's schema; agent-health
+only knows the common keys:
+
+```typescript
+hooks: {
+  afterResponse: async (ctx) => {
+    const body = ctx.rawEvents?.[0] ?? ctx.response;
+    const steps = Array.isArray(body?.steps) ? body.steps.length : 0;
+    const results = Array.isArray(body?.results) ? body.results.length : 0;
+    const prose = typeof body?.answer === 'string' && body.answer.trim().length > 0;
+    const trajectory = renderTrajectory(body);            // may render "No results" when everything is empty
+    return {
+      ...ctx,
+      trajectory,
+      // Nothing the agent did or said: never let the placeholder be judged.
+      empty: steps === 0 && results === 0 && !prose,
+    };
+  },
+},
+```
+
+`empty: true` forces the agent-failure path even if the rendered text looks
+like an answer; `empty: false` tells agent-health the payload IS an answer in a
+shape it does not recognise; leaving it unset defers to the built-in rules.
+
+Configuration:
+
+```typescript
+{
+  key: 'my-agent',
+  connectorType: 'rest',
+  connectorConfig: {
+    emptyResponseTripsBreaker: false,   // empty responses fail the case but do not count toward unreachableThreshold
+  },
+}
+```
+
+```bash
+AGENT_EMPTY_RESPONSE_TRIPS_BREAKER=0   # same, for agents that don't set connectorConfig.emptyResponseTripsBreaker
+```
+
 ## Examples
 
 ### Observio Sample Agent

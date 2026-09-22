@@ -26,6 +26,7 @@ import {
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { presentAgentFailureSummary } from '@/lib/agentFailureSummary';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -749,7 +750,7 @@ export const EvalRunsPage: React.FC = () => {
                 className="inline-flex items-center gap-1 px-1.5 py-0 rounded-full text-[9px] font-medium bg-amber-500/10 text-amber-700 dark:text-amber-400 border border-amber-500/30"
                 title={rr.run.agentFailureSummary}
               >
-                <Unplug size={9} /> Agent unreachable
+                <Unplug size={9} /> {presentAgentFailureSummary(rr.run.agentFailureSummary).badge}
               </span>
             )}
           </div>
