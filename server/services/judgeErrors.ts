@@ -64,8 +64,8 @@ export class JudgeError extends Error {
   /** Wire shape returned by `/api/judge` on failure. */
   toResponseBody(): { error: string; details: string; errorClass: JudgeErrorClass; retryable: boolean; stderrTail?: string } {
     const body: { error: string; details: string; errorClass: JudgeErrorClass; retryable: boolean; stderrTail?: string } = {
-      error: `Judge evaluation failed: ${this.message}`,
-      details: this.message,
+      error: `Judge evaluation failed: ${redactSecrets(this.message)}`,
+      details: redactSecrets(this.message),
       errorClass: this.errorClass,
       retryable: this.retryable,
     };
@@ -128,6 +128,14 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
   [/(api[_-]?key|authorization|token|password|secret)(["']?\s*[=:]\s*["']?)[^\s"',;]+/gi, '$1$2<redacted>'],
 ];
 
+/** Mask obvious credentials in free text (no truncation). */
+export function redactSecrets(text: string | undefined | null): string {
+  if (!text) return '';
+  let s = text;
+  for (const [re, rep] of SECRET_PATTERNS) s = s.replace(re, rep);
+  return s;
+}
+
 /**
  * Keep the LAST `maxChars` of a CLI's stderr (where the actual failure
  * usually is) with obvious secrets masked so it can be surfaced in an error
@@ -135,8 +143,7 @@ const SECRET_PATTERNS: Array<[RegExp, string]> = [
  */
 export function redactStderrTail(stderr: string | undefined | null, maxChars = 600): string {
   if (!stderr) return '';
-  let s = stderr.replace(/\u001b\[[0-9;]*[A-Za-z]/g, ''); // strip ANSI
-  for (const [re, rep] of SECRET_PATTERNS) s = s.replace(re, rep);
+  let s = redactSecrets(stderr.replace(/\u001b\[[0-9;]*[A-Za-z]/g, '')); // strip ANSI, mask secrets
   s = s.trim();
   if (s.length > maxChars) s = '…' + s.slice(-maxChars);
   return s;

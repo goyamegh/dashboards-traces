@@ -515,20 +515,30 @@ export async function evaluateWithPiAgenticTrace(
   }
   const duration = Date.now() - startTime;
 
+  // Verdict first: if the final assistant text parses, that IS the result —
+  // regardless of what the last observed turn event says (the SDK's own
+  // retry/compaction flow can leave a stale intermediate error event behind
+  // a later successful turn; a real verdict must never be discarded for it).
+  // Only when there is no parseable verdict does the observed outcome
+  // explain WHY (overflow / throttling / aborted / empty), else it's the one
+  // genuine "invalid JSON" case.
   const outcomeError = classifyAssistantOutcome(lastAssistant, finalText);
-  if (outcomeError) {
-    debug('AgentJudge', 'judge did not produce a verdict:', outcomeError.errorClass, outcomeError.message);
-    throw outcomeError;
-  }
-
   let parsed: JudgeResponse;
   try {
+    if (outcomeError?.errorClass === 'empty_response') throw outcomeError;
     parsed = parseJudgeResponse(finalText, {
       evaluator,
       duration,
       source: 'AgentJudge',
     });
+    if (outcomeError) {
+      debug('AgentJudge', 'verdict parsed despite a trailing non-stop assistant turn:', outcomeError.errorClass);
+    }
   } catch (err: any) {
+    if (outcomeError) {
+      debug('AgentJudge', 'judge did not produce a verdict:', outcomeError.errorClass, outcomeError.message);
+      throw outcomeError;
+    }
     // The judge DID answer, just not with a parseable verdict — the only case
     // that genuinely is "invalid JSON". A `length` stop means the verdict was
     // cut off by the output-token limit; say so, it's actionable.

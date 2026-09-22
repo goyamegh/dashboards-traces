@@ -46,7 +46,7 @@ describe('callBedrockJudge — retry classification', () => {
 
   it('stops after ONE attempt on a server-classified deterministic failure (context_overflow), naming the class', async () => {
     mockFetch.mockResolvedValue(
-      failure(422, {
+      failure(500, {
         error: 'Judge evaluation failed: Judge context overflow — Input is too long for requested model.',
         details: 'Input is too long for requested model.',
         errorClass: 'context_overflow',
@@ -61,7 +61,7 @@ describe('callBedrockJudge — retry classification', () => {
 
   it('appends the redacted stderr tail when the route provides one', async () => {
     mockFetch.mockResolvedValue(
-      failure(422, { error: 'Judge evaluation failed: Pi CLI exited 0 but printed nothing to stdout', errorClass: 'empty_response', retryable: false, stderrTail: 'warn: no model configured' }),
+      failure(500, { error: 'Judge evaluation failed: Pi CLI exited 0 but printed nothing to stdout', errorClass: 'empty_response', retryable: false, stderrTail: 'warn: no model configured' }),
     );
     // empty_response gets a budget of 2: one re-roll, then stop.
     await expect(callBedrockJudge(trajectory, expected)).rejects.toThrow(/\[stderr: warn: no model configured\]$/);
@@ -70,7 +70,7 @@ describe('callBedrockJudge — retry classification', () => {
 
   it('gives invalid_json exactly one re-roll (2 attempts) — LLM output is stochastic, but not 10× worth', async () => {
     mockFetch.mockResolvedValue(
-      failure(422, { error: 'Judge evaluation failed: judge response did not contain a JSON object', errorClass: 'invalid_json', retryable: false }),
+      failure(500, { error: 'Judge evaluation failed: judge response did not contain a JSON object', errorClass: 'invalid_json', retryable: false }),
     );
     await expect(callBedrockJudge(trajectory, expected)).rejects.toThrow(/\(invalid_json, not retryable\)/);
     expect(mockFetch).toHaveBeenCalledTimes(2);
@@ -78,7 +78,7 @@ describe('callBedrockJudge — retry classification', () => {
 
   it('a re-roll that succeeds returns normally with judgeAttempts=2', async () => {
     mockFetch
-      .mockResolvedValueOnce(failure(422, { error: 'no JSON', errorClass: 'invalid_json', retryable: false }))
+      .mockResolvedValueOnce(failure(500, { error: 'no JSON', errorClass: 'invalid_json', retryable: false }))
       .mockResolvedValueOnce({ ok: true, json: () => Promise.resolve(okBody) });
     const res = await callBedrockJudge(trajectory, expected);
     expect(res.passFailStatus).toBe('passed');
@@ -115,6 +115,12 @@ describe('callBedrockJudge — retry classification', () => {
     const res = await callBedrockJudge(trajectory, expected);
     expect(res.judgeAttempts).toBe(2);
   }, 10_000);
+
+  it('bounds an `unknown` server-classified failure at 3 attempts instead of 10', async () => {
+    mockFetch.mockResolvedValue(failure(500, { error: 'weird', errorClass: 'unknown', retryable: true }));
+    await expect(callBedrockJudge(trajectory, expected)).rejects.toThrow(/failed after 3 attempts \(unknown\)/);
+    expect(mockFetch).toHaveBeenCalledTimes(3);
+  }, 15_000);
 
   it('tolerates a non-JSON error body', async () => {
     mockFetch.mockResolvedValueOnce({ ok: false, status: 400, json: () => Promise.reject(new Error('not json')) });

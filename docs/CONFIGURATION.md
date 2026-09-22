@@ -248,7 +248,7 @@ and only transient classes are retried.
 | `AH_JUDGE_TOOL_OUTPUT_CAP` | Max chars of a single step's `toolOutput` sent to the judge | `100000` |
 | `AH_JUDGE_NO_TRUNCATE` | `1` disables the two per-step caps above | unset |
 | `AH_JUDGE_PROMPT_BUDGET_TOKENS` | Whole-prompt budget for the pi / agent-trace judges (overrides the default of half the model's context window; ~2.5 chars per token) | half the context window |
-| `AH_JUDGE_TOOL_RESULT_CAP` | Max chars of one `query_spans` / `query_logs` result returned to the agent-trace judge (long attribute values are cut first, then trailing spans/logs are dropped with a note) | `100000` |
+| `AH_JUDGE_TOOL_RESULT_CAP` | Max chars of one `query_spans` / `query_logs` result returned to the agent-trace judge (long attribute values are cut first, then middle spans / trailing log lines are dropped with a note) | `100000` |
 | `AH_PI_JUDGE_TIMEOUT_MS` | Timeout for the spawned `pi` CLI judge | `300000` |
 
 ## TypeScript Config File (Optional)

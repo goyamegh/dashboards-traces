@@ -16,7 +16,7 @@ import { evaluateWithLiteLLM, parseLiteLLMError } from '@/server/services/litell
 import { evaluateWithClaudeCode, parseClaudeCodeError } from '@/server/services/claudeCodeJudgeService';
 import { evaluateWithPi, parsePiError } from '@/server/services/piJudgeService';
 import { evaluateWithPiAgenticTrace } from '@/server/services/piAgenticJudgeService';
-import { isJudgeError, toJudgeError } from '@/server/services/judgeErrors';
+import { isJudgeError, redactSecrets, toJudgeError } from '@/server/services/judgeErrors';
 import { evaluateWithAgenticJudge, parseAgenticJudgeError } from '@/server/services/agenticJudgeService';
 import { hasTraceCorrelation } from '@/services/traces/judgeAgentsHints';
 import { loadConfigSync } from '@/lib/config/index';
@@ -611,12 +611,14 @@ router.post('/api/judge', async (req: Request, res: Response) => {
     // can stop immediately on deterministic failures — a context overflow,
     // expired credentials or an empty verdict come back identical on every
     // re-send of the same input; only throttling/timeouts/network blips are
-    // worth the exponential-backoff budget. Deterministic classes answer 422
-    // (the request as given cannot be judged), transient ones 500.
+    // worth the exponential-backoff budget. The HTTP status stays 500 for
+    // every judge-side failure (unchanged wire contract); `errorClass` +
+    // `retryable` carry the semantics. Provider/SDK error text can quote
+    // headers or tokens — mask obvious secrets before it leaves the server.
     const classified = toJudgeError(error);
-    res.status(classified.retryable ? 500 : 422).json({
-      error: `Judge evaluation failed: ${errorMessage}`,
-      details: error.message,
+    res.status(500).json({
+      error: `Judge evaluation failed: ${redactSecrets(errorMessage)}`,
+      details: redactSecrets(error.message),
       errorClass: classified.errorClass,
       retryable: classified.retryable,
       ...(classified.stderrTail ? { stderrTail: classified.stderrTail } : {}),
