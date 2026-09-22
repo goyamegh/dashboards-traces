@@ -130,7 +130,7 @@ export interface AgentHooks {
    * hooks: {
    *   judge: async ({ trajectory, traces, expectedOutcomes, fetchTraces }) => {
    *     // Custom evaluation logic using traces
-   *     const relevantSpans = traces.filter(s => s.attributes?.['gen_ai.system']);
+   *     const relevantSpans = traces.filter(s => s.attributes?.['gen_ai.provider.name']);
    *     return {
    *       passFailStatus: relevantSpans.length > 0 ? 'passed' : 'failed',
    *       metrics: { accuracy: 85 },
@@ -716,6 +716,8 @@ export interface TraceMetrics {
    * Optional for backwards compatibility with older callers.
    */
   hasSpans?: boolean;
+  /** See MetricsResult.usageAggregatesSkipped. */
+  usageAggregatesSkipped?: number;
 }
 
 // ============ Trace Types ============
@@ -1611,6 +1613,12 @@ export interface MetricsResult {
   status: 'pending' | 'success' | 'error';
   /** See TraceMetrics.hasSpans -- same semantics. */
   hasSpans?: boolean;
+  /**
+   * Number of spans whose `gen_ai.usage.*` was NOT summed because a descendant
+   * span also carried usage (the parent is a roll-up of its children — see
+   * lib/usageAggregates.ts). 0 when every usage-carrying span was a leaf.
+   */
+  usageAggregatesSkipped?: number;
 }
 
 // ============ Data Source Configuration Types ============
