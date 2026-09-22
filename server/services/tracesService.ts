@@ -12,6 +12,7 @@
 
 import { Client } from '@opensearch-project/opensearch';
 import { debug } from '../../lib/debug.js';
+import { resolveSpanKind, type SpanKindName } from '../../lib/spanKind.js';
 
 // ============================================================================
 // Types
@@ -25,7 +26,8 @@ export interface OpenSearchSpanSource {
   startTime?: string;
   endTime?: string;
   durationInNanos?: number;
-  kind?: string;
+  /** Protobuf enum name (`SPAN_KIND_SERVER`), bare name, or OTLP number 0-5. */
+  kind?: string | number;
   serviceName?: string;
   'status.code'?: number;
   'instrumentationScope.name'?: string;
@@ -46,6 +48,8 @@ export interface NormalizedSpan {
   endTime?: string;
   duration: number | null;
   status: 'ERROR' | 'OK' | 'UNSET';
+  /** Canonical OTel span kind (see lib/spanKind.ts); undefined when the doc has none. */
+  kind?: SpanKindName;
   attributes: Record<string, any>;
   events: Array<{
     name: string;
@@ -177,7 +181,12 @@ export function transformSpan(source: OpenSearchSpanSource): NormalizedSpan {
     }
   }
 
-  attributes['spanKind'] = source.kind;
+  // Top-level `kind` is what the API exposes; the raw value is also kept under
+  // `attributes.spanKind` for the flat attribute table / legacy consumers.
+  // Fall back to the `span.kind` / `spanKind` attributes when the document
+  // itself has no kind field (some pipelines only copy it into attributes).
+  const kind = resolveSpanKind(source.kind, attributes);
+  attributes['spanKind'] = source.kind ?? attributes['spanKind'] ?? attributes['span.kind'];
   attributes['serviceName'] = source.serviceName;
 
   // Process events
@@ -210,6 +219,7 @@ export function transformSpan(source: OpenSearchSpanSource): NormalizedSpan {
     endTime: source.endTime,
     duration: source.durationInNanos ? source.durationInNanos / 1000000 : null,
     status: statusCode === 2 ? 'ERROR' : (statusCode === 1 ? 'OK' : 'UNSET'),
+    ...(kind ? { kind } : {}),
     attributes,
     events
   };

@@ -735,6 +735,11 @@ export interface Span {
   endTime: string;
   duration?: number;
   status: 'OK' | 'ERROR' | 'UNSET';
+  /**
+   * OTel SpanKind, normalised to the canonical uppercase name by every reader
+   * (see lib/spanKind.ts). Absent when the source document carried no kind.
+   */
+  kind?: 'INTERNAL' | 'SERVER' | 'CLIENT' | 'PRODUCER' | 'CONSUMER';
   attributes?: Record<string, any>;
   events?: SpanEvent[];
   children?: Span[];
