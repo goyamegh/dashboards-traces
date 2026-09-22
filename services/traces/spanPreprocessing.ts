@@ -57,9 +57,9 @@ export function preprocessSpanTree(
    * @param depth - Current depth in tree (for visualization)
    * @returns Categorized span with all metadata
    */
-  function processNode(span: Span, depth: number): CategorizedSpan {
+  function processNode(span: Span, depth: number, ancestors: readonly Span[]): CategorizedSpan {
     // Categorize span (same fields as categorizeSpan, incl. isEntrypoint)
-    const categoryFields = buildCategoryFields(span);
+    const categoryFields = buildCategoryFields(span, ancestors);
     const category = categoryFields.category;
     const categorizedSpan: CategorizedSpan = {
       ...span,
@@ -94,14 +94,14 @@ export function preprocessSpanTree(
 
     // Process children recursively
     if (span.children && span.children.length > 0) {
-      categorizedSpan.children = span.children.map(child => processNode(child, depth + 1));
+      categorizedSpan.children = span.children.map(child => processNode(child, depth + 1, [...ancestors, span]));
     }
 
     return categorizedSpan;
   }
 
   // Process all root spans
-  const categorizedTree = spanTree.map(span => processNode(span, 0));
+  const categorizedTree = spanTree.map(span => processNode(span, 0, []));
 
   // Calculate sum of all category durations for percentage calculation
   let sumOfAllDurations = 0;
