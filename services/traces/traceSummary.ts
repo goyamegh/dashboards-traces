@@ -18,6 +18,7 @@
 import { Span } from '@/types';
 import { categorizeSpanTree, countByCategory } from './spanCategorization';
 import { flattenSpans } from './traceStats';
+import { findUsageAggregateSpans } from '@/lib/usageAggregates';
 
 export interface TraceSummary {
   llm: number;
@@ -41,7 +42,11 @@ export interface TraceSummary {
  * tree. The token counters look at every span (including children) and
  * sum the OTel GenAI usage attributes, with `prompt_tokens` /
  * `completion_tokens` accepted as fallbacks for older instrumentation
- * that pre-dates the input/output rename. Models are collected and
+ * that pre-dates the input/output rename. A span whose descendants also
+ * carry usage is a roll-up and is skipped (leaf-usage invariant, see
+ * lib/usageAggregates.ts) so agent-level totals aren't added on top of the
+ * per-call numbers; the peak is still taken over leaf spans only, since an
+ * aggregate's "input" is not one request. Models are collected and
  * deduplicated across the trace because some agents fan out to multiple
  * models in one trace (e.g. a planner + a tool-using model).
  */
@@ -56,16 +61,25 @@ export function computeTraceSummary(spanTree: Span[]): TraceSummary {
   let peakInputTokens = 0;
   const modelSet = new Set<string>();
 
+  const readIn = (a: Record<string, any>) =>
+    Number(a['gen_ai.usage.input_tokens'] ?? a['gen_ai.usage.prompt_tokens'] ?? a['input_tokens'] ?? 0) || 0;
+  const readOut = (a: Record<string, any>) =>
+    Number(a['gen_ai.usage.output_tokens'] ?? a['gen_ai.usage.completion_tokens'] ?? a['output_tokens'] ?? 0) || 0;
+  const aggregates = findUsageAggregateSpans(flat, s => {
+    const a = s.attributes || {};
+    return readIn(a) > 0 || readOut(a) > 0;
+  });
+
   for (const s of flat) {
     const a = s.attributes || {};
-    const it =
-      Number(a['gen_ai.usage.input_tokens'] ?? a['gen_ai.usage.prompt_tokens'] ?? a['input_tokens'] ?? 0) || 0;
-    const ot =
-      Number(a['gen_ai.usage.output_tokens'] ?? a['gen_ai.usage.completion_tokens'] ?? a['output_tokens'] ?? 0) || 0;
-    inputTokens += it;
-    outputTokens += ot;
-    totalTokens += it + ot;
-    if (it > peakInputTokens) peakInputTokens = it;
+    if (!aggregates.has(s)) {
+      const it = readIn(a);
+      const ot = readOut(a);
+      inputTokens += it;
+      outputTokens += ot;
+      totalTokens += it + ot;
+      if (it > peakInputTokens) peakInputTokens = it;
+    }
     const m = a['gen_ai.request.model'] || a['gen_ai.response.model'] || a['model'];
     if (typeof m === 'string' && m.trim()) modelSet.add(m.trim());
   }
