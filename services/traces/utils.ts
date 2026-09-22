@@ -15,6 +15,13 @@ import {
   ATTR_GEN_AI_REQUEST_TEMPERATURE,
   ATTR_GEN_AI_TOOL_NAME,
   ATTR_GEN_AI_TOOL_CALL_ID,
+  ATTR_DB_SYSTEM_NAME,
+  ATTR_DB_SYSTEM,
+  ATTR_DB_OPERATION_NAME,
+  ATTR_DB_COLLECTION_NAME,
+  ATTR_DB_NAMESPACE,
+  ATTR_DB_RESPONSE_RETURNED_ROWS,
+  ATTR_DB_RESPONSE_STATUS_CODE,
 } from '@opentelemetry/semantic-conventions/incubating';
 
 /**
@@ -46,6 +53,18 @@ export function getKeyAttributes(span: Span): Record<string, string | number | n
       'Result': attrs['test.case.result.status'],
       'Suite': attrs['test.suite.name'],
       'Service': attrs['service.name'] || attrs['serviceName'],
+    };
+  }
+
+  // Retrieval (DB semconv) spans
+  if (attrs[ATTR_DB_SYSTEM_NAME] || attrs[ATTR_DB_SYSTEM]) {
+    return {
+      'System': attrs[ATTR_DB_SYSTEM_NAME] || attrs[ATTR_DB_SYSTEM],
+      'Operation': attrs[ATTR_DB_OPERATION_NAME],
+      'Collection': attrs[ATTR_DB_COLLECTION_NAME],
+      'Namespace': attrs[ATTR_DB_NAMESPACE],
+      'Returned Rows': attrs[ATTR_DB_RESPONSE_RETURNED_ROWS],
+      'Status Code': attrs[ATTR_DB_RESPONSE_STATUS_CODE],
     };
   }
 

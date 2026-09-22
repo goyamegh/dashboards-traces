@@ -334,6 +334,62 @@ This pattern means:
 - **Swapping backends is a one-line change** at startup via `setStorageModule()`
 - **Testing is simple** - inject a mock `IStorageModule` for unit tests
 
+## Trace Span Categorization
+
+Every span the Traces UI renders is bucketed into one `SpanCategory` by
+[`services/traces/spanCategorization.ts`](../services/traces/spanCategorization.ts)
+(`getSpanCategory`). The rules are standards-first — OTel semantic conventions
+decide; span-name patterns are only a fallback for legacy agents — and are
+applied in this order:
+
+| Order | Rule | Category |
+|-------|------|----------|
+| 0 | `status === 'ERROR'` | `ERROR` |
+| 1 | OTel **DB** semconv: `db.system.name` (or legacy `db.system`) present | `RETRIEVAL` |
+| 2 | OTel **GenAI** `gen_ai.operation.name` is a known value: `evaluation` / `create_agent`,`invoke_agent` / `chat`,`text_completion`,`generate_content` / `execute_tool` | `EVAL` / `AGENT` / `LLM` / `TOOL` |
+| 2b | Unknown (framework-specific) `gen_ai.operation.name` **with** GenAI context (`gen_ai.provider.name`, `gen_ai.system` or `gen_ai.agent.name`) — e.g. an agent-loop iteration span | `AGENT` |
+| 3 | HTTP **SERVER** span (`http.request.method` / legacy `http.method`, kind SERVER) — the agent service's inbound request boundary. Also flagged `isEntrypoint: true` on the `CategorizedSpan` so time attribution can use self time. | `AGENT` |
+| 4 | Span-name patterns (`bedrock`, `converse`, `llm`, `executetool`, `test_case`, `agent.run`, …) for legacy / un-instrumented agents | `LLM` / `TOOL` / `EVAL` / `AGENT` |
+| 5 | Anything else — the explicit "we do not know" bucket | `OTHER` |
+
+**Precedence when a span carries both `gen_ai.*` and `db.*`:** `db.*` wins. A
+span that describes a database/search call made on behalf of the agent is the
+leaf semantic; the GenAI attributes on it are inherited context. Outbound HTTP
+**CLIENT** spans with no `db.*` are not retrieval and stay `OTHER` unless a
+name pattern matches.
+
+| Category | Colour | Icon | Compliance expectation (`checkOTelCompliance`) |
+|----------|--------|------|-----------------------------------------------|
+| `AGENT` | indigo | Bot | `gen_ai.operation.name`, `gen_ai.agent.name` |
+| `LLM` | purple | Zap | `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.system` |
+| `TOOL` | amber | Wrench | `gen_ai.operation.name`, `gen_ai.tool.name` |
+| `RETRIEVAL` | cyan | Database | `db.system.name`, and `db.query.text` **or** `db.operation.name` |
+| `EVAL` | emerald | ClipboardCheck | `gen_ai.operation.name` |
+| `ERROR` | red | AlertCircle | — |
+| `OTHER` | slate | Circle | — |
+
+### RETRIEVAL span display
+
+[`services/traces/retrievalSpan.ts`](../services/traces/retrievalSpan.ts)
+(`extractRetrievalIO`) turns a DB-semconv span into what the span-detail
+surfaces show:
+
+- **Input** — `db.query.text` (legacy `db.statement`), pretty-printed when it
+  is JSON, captioned `{db.operation.name} {db.collection.name | db.namespace} ({db.system.name})`.
+- **Output** — `db.response.returned_rows`, `db.response.status_code`, and any
+  retrieved-id list (below).
+- **Display name** — `{db.operation.name} {collection}` per the DB span-name
+  convention (falls back to the span name).
+
+**Retrieved-id convention.** The DB conventions have no attribute for *which*
+documents came back, which is exactly what a retrieval-quality judge needs.
+Agents can expose it with any attribute whose key ends in `.hit_ids` or
+`.result_ids`, or the neutral key `retrieval.ids` (e.g.
+`myagent.search.hit_ids`). The value may be an OTel string array or a
+stringified list (JSON or a language-native repr such as `['a', 'b']`). Agent
+Health renders each such attribute as an id list in the span's output; nothing
+about it is specific to one agent.
+
 ## Claude Code Judge
 
 The Claude Code judge is an alternative evaluation provider that spawns the `claude` CLI to evaluate agent trajectories, giving the judge access to full tool use and the AGENT_HEALTH.md skill context.
