@@ -19,6 +19,8 @@ import { Span, CategorizedSpan } from '@/types';
 import { formatDuration, getKeyAttributes } from '@/services/traces/utils';
 import { checkOTelCompliance, getSpanCategory, isDbSpan } from '@/services/traces/spanCategorization';
 import { extractRetrievalIO } from '@/services/traces/retrievalSpan';
+import { formatClockTime, formatIsoTime } from '@/services/traces/spanTime';
+import RetrievedReturnedLists from './RetrievedReturnedLists';
 import ContextWindowBar from './ContextWindowBar';
 import FormattedMessages from './FormattedMessages';
 import { ATTR_GEN_AI_USAGE_INPUT_TOKENS } from '@opentelemetry/semantic-conventions/incubating';
@@ -182,12 +184,22 @@ const SpanDetailsPanel: React.FC<SpanDetailsPanelProps> = ({ span, onClose, onCo
     <div className="h-full flex flex-col overflow-hidden min-w-0 bg-muted/30 border-l rounded-tr-lg" data-testid="span-details-panel">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-2 border-b shrink-0 rounded-tr-lg">
-        <div className="min-w-0 flex-1 flex items-center gap-2">
-          <h3 className="text-sm font-semibold truncate" data-testid="span-details-name">
+        <div className="min-w-0 flex-1 flex items-center gap-2 flex-wrap">
+          {/* Full name, wrapping rather than truncating: the tree row may have
+              ellipsized a long `invoke_agent <service>` / `execute_tool <tool>`
+              and the panel header is the recourse. */}
+          <h3 className="text-sm font-semibold break-words min-w-0" data-testid="span-details-name" title={span.name}>
             {span.name}
           </h3>
           <span className="text-[10px] font-mono text-muted-foreground truncate hidden sm:inline">
             {span.spanId}
+          </span>
+          <span
+            className="text-[10px] font-mono text-muted-foreground"
+            title={`Started ${formatIsoTime(span.startTime)}`}
+            data-testid="span-details-start"
+          >
+            {formatClockTime(span.startTime)}
           </span>
         </div>
         <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0" onClick={onCollapse || onClose} data-testid="span-details-close">
@@ -314,6 +326,10 @@ const SpanDetailsPanel: React.FC<SpanDetailsPanelProps> = ({ span, onClose, onCo
               )
             )}
           </div>
+
+          {/* RETRIEVED vs RETURNED — labelled id-list pair (renders nothing
+              when the span has neither key family). */}
+          <RetrievedReturnedLists span={span} />
 
           {/* Timing & Key Info section - Combined */}
           <div className="space-y-3 bg-muted/30 rounded-md p-3 border">
