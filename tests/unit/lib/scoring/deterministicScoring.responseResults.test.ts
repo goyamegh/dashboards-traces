@@ -49,6 +49,9 @@ const toolHits = (...ids: string[]) => step({ type: 'tool_result', toolName: 'se
 const jsonAnswer = (ids: string[], extra: Record<string, unknown> = {}) =>
   step({ type: 'response', content: JSON.stringify({ answer: null, results: ids.map((id, i) => ({ id, rank: i + 1, score: 1 })), ...extra }) });
 
+const hitRowHasNoFlag = (rows: Array<{ description: string; notApplicable?: boolean }>) =>
+  rows.filter(m => !m.description.startsWith('abstain')).every(m => m.notApplicable === undefined);
+
 const withGold = { expectedOutcomes: ['prose', 'Gold: g1, g2'] };
 const noGold = { expectedOutcomes: ['prose', 'Gold: none'] };
 const undeclared = { expectedOutcomes: ['prose only'] };
@@ -69,7 +72,8 @@ describe('scoreDeterministic — response-results + abstain', () => {
     expect(r.snapshot).toMatchObject({ extractionRule: 'response-results', extraction: { candidateCount: 2, parsedFrom: 'json' }, notApplicable: ['abstain'], unevaluable: [] });
     expect(r.snapshot.extraction).not.toHaveProperty('citedCount');
     const abstainRow = r.matcherResults.find(m => m.description.startsWith('abstain'))!;
-    expect(abstainRow).toMatchObject({ pass: true, role: 'observe', actual: undefined, expected: undefined });
+    expect(abstainRow).toMatchObject({ pass: true, role: 'observe', notApplicable: true, actual: undefined, expected: undefined });
+    expect(hitRowHasNoFlag(r.matcherResults)).toBe(true);
     expect(abstainRow.details).toMatchObject({ notApplicable: true, parsedFrom: 'json', extractionRule: 'response-results' });
     expect(abstainRow.details!.notApplicableReason).toMatch(/abstain only scores cases whose gold is explicitly empty/);
     expect(abstainRow.errored).toBeUndefined();
@@ -100,10 +104,15 @@ describe('scoreDeterministic — response-results + abstain', () => {
       expect(r.failReasons).toEqual(['gate:abstain<1']);
     });
 
-    it('gold explicitly empty via expected.ids = [] behaves the same (rule recorded)', () => {
-      const r = scoreDeterministic(makeEvaluator(), { expected: { ids: [] }, expectedOutcomes: ['prose'] }, { trajectory: [jsonAnswer([])] });
+    it('gold explicitly empty via expected.ids = [] behaves the same when the evaluator reads that field (rule recorded)', () => {
+      const ev = makeEvaluator({ inputs: { gold: { source: 'testCase.expected.ids' }, prediction: { source: 'response-results' } } });
+      const r = scoreDeterministic(ev, { expected: { ids: [] }, expectedOutcomes: ['prose'] }, { trajectory: [jsonAnswer([])] });
       expect(r.metrics).toEqual({ abstain: 1 });
       expect(r.snapshot).toMatchObject({ goldRule: 'expected.ids', goldIdsUsed: [] });
+      // Under the pattern source, `expected.ids: []` is NOT "no gold" — it is unset → gold undeclared.
+      const r2 = scoreDeterministic(makeEvaluator(), { expected: { ids: [] }, expectedOutcomes: ['prose'] }, { trajectory: [jsonAnswer([])] });
+      expect(r2.evaluable).toBe(false);
+      expect(r2.goldDeclared).toBe(false);
     });
 
     it('gold present + empty returned list → ranked metrics 0 (a real outcome), abstain not applicable → failed on the gate', () => {
@@ -115,10 +124,31 @@ describe('scoreDeterministic — response-results + abstain', () => {
       expect(r.failReasons).toEqual(['gate:hit@5<1']);
     });
 
-    it('gold present + a response with no list at all → same as an empty list (parsedFrom none)', () => {
+    it('gold present + a response with NO recognisable list → unevaluable (a parser miss is never scored as 0)', () => {
       const r = scoreDeterministic(makeEvaluator(), withGold, { trajectory: [step({ type: 'response', content: 'Nothing relevant found.' })] });
-      expect(r.metrics).toEqual({ 'hit@5': 0, 'recall@20': 0 });
+      expect(r.evaluable).toBe(false);
+      expect(r.passFailStatus).toBeNull();
+      expect(r.metrics).toEqual({});
+      expect(r.unevaluable).toEqual(['hit@5', 'recall@20', 'abstain']);
       expect(r.snapshot.extraction).toEqual({ candidateCount: 0, parsedFrom: 'none' });
+      expect(r.matcherResults[0].errorMessage).toMatch(/no ranked list recognised in the final response .*an explicit empty list scores as an abstention/);
+      expect(r.summary).toMatch(/Not evaluable: no ranked list recognised/);
+    });
+
+    it('a gates policy whose every gate is not applicable to the case → NO verdict (never a silent pass)', () => {
+      // Only ranked gates; gold-empty case with abstain declared as observe-only.
+      const ev = makeEvaluator({ passPolicy: { kind: 'gates', gates: [{ metric: 'hit@5', min: 1 }] } });
+      const r = scoreDeterministic(ev, noGold, { trajectory: [jsonAnswer([])] });
+      expect(r.metrics).toEqual({ abstain: 1 }); // observed, but…
+      expect(r.evaluable).toBe(false);
+      expect(r.passFailStatus).toBeNull();
+      expect(r.notApplicable).toEqual(['hit@5', 'recall@20']);
+      expect(r.summary).toMatch(/none of the pass-policy gates applies to this case .*observed abstain=1\. Add a gate on a metric that speaks to gold-empty cases/);
+      // Conversely an abstain-only gate on a gold case has no applicable gate either.
+      const ev2 = makeEvaluator({ passPolicy: { kind: 'gates', gates: [{ metric: 'abstain', min: 1 }] } });
+      const r2 = scoreDeterministic(ev2, withGold, { trajectory: [jsonAnswer(['g1'])] });
+      expect(r2.passFailStatus).toBeNull();
+      expect(r2.summary).toMatch(/speaks to cases with gold ids/);
     });
 
     it('gold NOT declared → every metric unevaluable, not a verdict (never an abstain credit)', () => {
@@ -212,10 +242,13 @@ describe('scoreDeterministic — tool-hits-ordered keeps its pilot behaviour', (
     expect(r.unevaluable).toEqual(['hit@5', 'recall@20', 'abstain']);
   });
 
-  it('abstain with tool-hits-ordered: gold-empty case, an answer but no tool hits → abstain 1', () => {
-    const r = scoreDeterministic(toolEv(METRICS), noGold, { trajectory: [step({ type: 'response', content: 'No matching items.' })] });
-    expect(r.metrics).toEqual({ abstain: 1 });
+  it('abstain with tool-hits-ordered (stored before the validator forbade it) is UNEVALUABLE, never a fake abstention credit', () => {
+    const r = scoreDeterministic(toolEv(METRICS), noGold, { trajectory: [step({ type: 'response', content: 'Best match: (id: 77).' })] });
+    expect(r.metrics).toEqual({});
+    expect(r.unevaluable).toEqual(['abstain']);
     expect(r.notApplicable).toEqual(['hit@5', 'recall@20']);
+    expect(r.passFailStatus).toBeNull();
+    expect(r.matcherResults.find(m => m.description.startsWith('abstain'))!.errorMessage).toMatch(/abstain cannot be observed through tool-hits-ordered/);
   });
 
   it('extractPrediction dispatches by source', () => {

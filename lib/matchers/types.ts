@@ -120,6 +120,17 @@ export interface MatcherResult {
   notReached?: boolean;
 
   /**
+   * True when a deterministic-evaluator metric does not speak to this case
+   * by its own definition (a ranked metric on an explicitly gold-empty case,
+   * `abstain` on a case with gold ids) — see lib/scoring/deterministicScoring.ts.
+   * The row was SKIPPED, not judged: `pass` is `true` only so legacy
+   * consumers that count `!pass` as failures never fail a case for it, and
+   * `role` is `'observe'`. Aware consumers exclude these rows from
+   * passed/failed tallies (the Judge tab shows them as `n/a`).
+   */
+  notApplicable?: boolean;
+
+  /**
    * Structured, non-metric judge output beyond the typed wire fields — the
    * SDK-side mirror of `JudgeResponse.extraFields`. Any JSON key a judge
    * prompt emits beyond the known schema lands here (captured by
