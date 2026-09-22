@@ -9,6 +9,7 @@ import {
   isJudgeError,
   isRetryableJudgeErrorClass,
   maxJudgeAttemptsFor,
+  redactSecrets,
   redactStderrTail,
   toJudgeError,
 } from '@/server/services/judgeErrors';
@@ -50,9 +51,12 @@ describe('judgeErrors — retry policy', () => {
     for (const c of deterministic) expect(isRetryableJudgeErrorClass(c)).toBe(false);
   });
 
-  it('grants the full budget to transient classes, 2 attempts to model-output failures, 1 to deterministic ones', () => {
+  it('grants the full budget to known-transient classes, 3 to unknown/cli_crash, 2 to model-output failures, 1 to deterministic ones', () => {
     expect(maxJudgeAttemptsFor('throttling', 10)).toBe(10);
-    expect(maxJudgeAttemptsFor('unknown', 10)).toBe(10);
+    expect(maxJudgeAttemptsFor('timeout', 10)).toBe(10);
+    // retryable in principle, but usually a deterministic bug → bounded
+    expect(maxJudgeAttemptsFor('unknown', 10)).toBe(3);
+    expect(maxJudgeAttemptsFor('cli_crash', 10)).toBe(3);
     expect(maxJudgeAttemptsFor('invalid_json', 10)).toBe(2);
     expect(maxJudgeAttemptsFor('empty_response', 10)).toBe(2);
     expect(maxJudgeAttemptsFor('context_overflow', 10)).toBe(1);
@@ -110,5 +114,16 @@ describe('redactStderrTail', () => {
   it('returns empty for empty input', () => {
     expect(redactStderrTail('')).toBe('');
     expect(redactStderrTail(undefined)).toBe('');
+  });
+
+  it('redactSecrets masks without truncating, and JudgeError.toResponseBody applies it', () => {
+    const msg = 'x'.repeat(2000) + ' Authorization: Bearer abc.def.ghi failed';
+    const out = redactSecrets(msg);
+    expect(out.length).toBeGreaterThan(2000);
+    expect(out).not.toContain('abc.def.ghi');
+    expect(redactSecrets(undefined)).toBe('');
+    const body = new JudgeError('provider said: api_key=sk-secretsecretsecret rejected', { errorClass: 'auth' }).toResponseBody();
+    expect(body.error).not.toContain('sk-secretsecretsecret');
+    expect(body.details).not.toContain('sk-secretsecretsecret');
   });
 });

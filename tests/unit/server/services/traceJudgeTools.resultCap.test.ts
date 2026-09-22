@@ -74,14 +74,19 @@ describe('boundSpansPayload', () => {
     expect(out.truncation!.note).toContain('nameFilter');
   });
 
-  it('drops trailing spans when attribute capping alone is not enough', () => {
-    const spans = Array.from({ length: 400 }, bigSpan);
+  it('drops spans from the MIDDLE (head + tail kept) when attribute capping alone is not enough', () => {
+    const spans = Array.from({ length: 400 }, (_, i) => bigSpan(i));
     const out = boundSpansPayload(spans, 30_000);
     expect(out.spans.length).toBeLessThan(400);
     expect(out.spans.length).toBeGreaterThan(0);
     expect(JSON.stringify(out.spans).length).toBeLessThanOrEqual(30_000);
     expect(out.truncation!.droppedSpans).toBe(400 - out.spans.length);
-    expect(out.truncation!.note).toMatch(/last \d+ of 400 spans were dropped/);
+    // The first span (setup/intent) and the last span (outcome/failure evidence) survive.
+    expect(out.spans[0].spanId).toBe('s0');
+    expect(out.spans[out.spans.length - 1].spanId).toBe('s399');
+    expect(out.truncation!.note).toMatch(/\d+ of 400 spans were dropped from the middle/);
+    // Attribute values were tightened to the quarter cap before any span was dropped.
+    expect(out.truncation!.note).toMatch(/cut to 500 chars/);
   });
 
   it('does not mutate the input spans', () => {

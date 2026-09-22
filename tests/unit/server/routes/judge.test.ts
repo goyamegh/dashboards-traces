@@ -508,9 +508,9 @@ describe('Judge Routes', () => {
       await handler(req, res);
 
       // A 401 from the endpoint is an `auth` failure: deterministic, so the
-      // route answers 422 + retryable:false (the client stops after one try)
-      // while still carrying the provider-specific message.
-      expect(res.status).toHaveBeenCalledWith(422);
+      // body carries errorClass/retryable:false (the client stops after one
+      // try); the status stays 500 (unchanged wire contract).
+      expect(res.status).toHaveBeenCalledWith(500);
       expect(res.json).toHaveBeenCalledWith(
         expect.objectContaining({
           error: expect.stringContaining('Judge evaluation failed'),

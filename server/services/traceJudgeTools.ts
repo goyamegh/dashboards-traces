@@ -70,8 +70,11 @@ function capAttributeValues(attrs: unknown, cap: number): unknown {
 /**
  * Bound a `query_spans` payload to `capChars` when serialized:
  *   1. cut long attribute values (the usual culprit: tool call inputs/outputs
- *      echoed into span attributes) to ATTRIBUTE_VALUE_CAP_CHARS;
- *   2. if still too big, drop trailing spans and say how many were dropped.
+ *      echoed into span attributes) to ATTRIBUTE_VALUE_CAP_CHARS, then to a
+ *      quarter of that if still too big;
+ *   2. if still too big, drop spans from the MIDDLE — the first spans carry
+ *      the run's setup/intent and the last ones carry the outcome/failure
+ *      evidence, which is what a judge needs most — and say how many.
  * Returns the (possibly) reduced span list plus a `truncation` note the
  * model can act on (narrow with `nameFilter`).
  */
@@ -81,23 +84,32 @@ export function boundSpansPayload<T extends { attributes?: unknown }>(
 ): { spans: T[]; truncation?: { attributeValuesCapped: boolean; droppedSpans: number; note: string } } {
   const size = (s: T[]) => JSON.stringify(s).length;
   if (size(spans) <= capChars) return { spans };
-  let reduced = spans.map((s) => ({ ...s, attributes: capAttributeValues(s.attributes, ATTRIBUTE_VALUE_CAP_CHARS) }));
+  let attrCap = ATTRIBUTE_VALUE_CAP_CHARS;
+  let reduced = spans.map((s) => ({ ...s, attributes: capAttributeValues(s.attributes, attrCap) }));
+  if (size(reduced) > capChars) {
+    attrCap = Math.floor(ATTRIBUTE_VALUE_CAP_CHARS / 4);
+    reduced = spans.map((s) => ({ ...s, attributes: capAttributeValues(s.attributes, attrCap) }));
+  }
   let dropped = 0;
-  while (reduced.length > 0 && size(reduced) > capChars) {
-    // Drop in chunks proportional to the overshoot so we don't loop 500 times.
+  while (reduced.length > 1 && size(reduced) > capChars) {
+    // Remove a middle slice proportional to the overshoot so we don't loop
+    // hundreds of times; keep the head and the tail.
     const overshoot = size(reduced) / capChars;
-    const drop = Math.max(1, Math.floor(reduced.length * (1 - 1 / overshoot)));
-    reduced = reduced.slice(0, Math.max(0, reduced.length - drop));
+    const drop = Math.min(reduced.length - 1, Math.max(1, Math.floor(reduced.length * (1 - 1 / overshoot))));
+    const keep = reduced.length - drop;
+    const head = Math.ceil(keep / 2);
+    const tail = keep - head;
+    reduced = [...reduced.slice(0, head), ...(tail > 0 ? reduced.slice(reduced.length - tail) : [])];
     dropped += drop;
   }
   return {
     spans: reduced,
     truncation: {
       attributeValuesCapped: true,
-      droppedSpans: Math.min(dropped, spans.length),
+      droppedSpans: dropped,
       note:
-        `Result exceeded the ${capChars}-char tool budget: long attribute values were cut to ${ATTRIBUTE_VALUE_CAP_CHARS} chars` +
-        (dropped > 0 ? ` and the last ${Math.min(dropped, spans.length)} of ${spans.length} spans were dropped` : '') +
+        `Result exceeded the ${capChars}-char tool budget: long attribute values were cut to ${attrCap} chars` +
+        (dropped > 0 ? ` and ${dropped} of ${spans.length} spans were dropped from the middle (first and last spans kept)` : '') +
         '. Pass nameFilter to narrow the query if you need the rest.',
     },
   };
