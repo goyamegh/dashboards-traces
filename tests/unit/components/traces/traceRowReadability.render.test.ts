@@ -121,18 +121,26 @@ describe('TraceTreeTable — name is a button that selects the span (E3) with th
     expect(onSelect).toHaveBeenCalledTimes(1);
   });
 
-  it('exposes a resize handle for the name column', () => {
+  it('exposes ONE keyboard-operable resize handle (in the header) for the name column', () => {
     renderTree();
-    const handle = screen.getAllByTestId('span-name-col-resize')[0];
+    const handles = screen.getAllByTestId('span-name-col-resize');
+    expect(handles).toHaveLength(1);
+    const handle = handles[0];
     expect(handle.getAttribute('role')).toBe('separator');
+    expect(handle.getAttribute('tabindex')).toBe('0');
+    const before = Number(handle.getAttribute('aria-valuenow'));
     fireEvent.mouseDown(handle, { clientX: 300 });
     fireEvent.mouseMove(document, { clientX: 400 });
     fireEvent.mouseUp(document);
-    // Width is inline style on the name column wrapper: it grew by 100px.
+    // Width is inline style on every row's name column wrapper: it grew by 100px.
     const nameCols = screen.getAllByTestId('span-row-name').map(b => b.parentElement as HTMLElement);
     const widths = new Set(nameCols.map(c => c.style.width));
     expect(widths.size).toBe(1);
-    expect(parseInt([...widths][0], 10)).toBeGreaterThanOrEqual(380);
+    expect(parseInt([...widths][0], 10)).toBe(before + 100);
+    fireEvent.keyDown(handle, { key: 'ArrowLeft' });
+    expect(parseInt((screen.getAllByTestId('span-row-name')[0].parentElement as HTMLElement).style.width, 10)).toBe(before + 100 - 16);
+    fireEvent.keyDown(handle, { key: 'Home' });
+    expect(parseInt((screen.getAllByTestId('span-row-name')[0].parentElement as HTMLElement).style.width, 10)).toBe(before);
   });
 });
 

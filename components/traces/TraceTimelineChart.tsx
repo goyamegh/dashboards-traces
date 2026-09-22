@@ -87,8 +87,11 @@ const TraceTimelineChart: React.FC<TraceTimelineChartProps> = ({
     return map;
   }, [visibleSpans]);
 
-  // Dynamic chart height based on visible spans
-  const chartHeight = Math.max(100, visibleSpans.length * ROW_HEIGHT + HEADER_HEIGHT + AXIS_HEIGHT);
+  // Dynamic chart height: exactly one ROW_HEIGHT band per visible span plus
+  // header and axis, so the HTML label rows and the ECharts category bands
+  // share the same geometry (no minimum-height floor — that would stretch the
+  // bands of a 1–2 row trace away from the labels).
+  const chartHeight = Math.max(1, visibleSpans.length) * ROW_HEIGHT + HEADER_HEIGHT + AXIS_HEIGHT;
 
   // t=0 for per-row offsets and the header anchor: the trace root's start.
   const anchorMs = useMemo(
@@ -356,7 +359,6 @@ const TraceTimelineChart: React.FC<TraceTimelineChartProps> = ({
           className="absolute top-0 left-0 select-none"
           style={{ width: labelCol.width, height: chartHeight }}
           data-testid="trace-timeline-labels"
-          onMouseDown={(e) => e.stopPropagation()}
         >
           <div
             className="flex items-center gap-2 px-2 text-[10px] font-mono text-muted-foreground border-b border-border/60 bg-background/80"
@@ -378,12 +380,15 @@ const TraceTimelineChart: React.FC<TraceTimelineChartProps> = ({
               <div
                 key={span.spanId}
                 className={cn(
-                  'absolute left-0 right-0 flex items-center gap-1 pr-1 text-xs',
+                  'absolute left-0 right-0 flex items-center gap-1 pr-1 text-xs cursor-pointer',
                   isSelected ? 'bg-opensearch-blue/20 dark:bg-opensearch-blue/30' : 'hover:bg-muted/50'
                 )}
                 style={{ top: HEADER_HEIGHT + idx * ROW_HEIGHT, height: ROW_HEIGHT, paddingLeft: 4 + (span.depth || 0) * INDENT_PX }}
                 data-testid="timeline-row"
                 data-span-id={span.spanId}
+                // Clicking anywhere on the label row selects the span (same as
+                // the tree table); the caret and name buttons stop propagation.
+                onClick={() => onSelectSpan(span)}
               >
                 {span.hasChildren ? (
                   <button
@@ -436,7 +441,7 @@ const TraceTimelineChart: React.FC<TraceTimelineChartProps> = ({
           <div
             {...labelCol.handleProps}
             className={cn(
-              'absolute top-0 bottom-0 w-1 -right-0.5 cursor-col-resize rounded hover:bg-opensearch-blue/50',
+              'absolute top-0 bottom-0 w-1 -right-0.5 cursor-col-resize rounded hover:bg-opensearch-blue/50 focus-visible:outline-none focus-visible:bg-opensearch-blue/70',
               labelCol.isResizing && 'bg-opensearch-blue'
             )}
             data-testid="span-name-col-resize"
@@ -446,11 +451,10 @@ const TraceTimelineChart: React.FC<TraceTimelineChartProps> = ({
         {/* Absolute anchor for the relative axis: t=0 is the root's start. */}
         {anchorMs !== null && (
           <div
-            className="absolute top-0 flex items-center px-1.5 text-[10px] font-mono text-muted-foreground whitespace-nowrap pointer-events-auto"
+            className="absolute top-0 flex items-center px-1.5 text-[10px] font-mono text-muted-foreground whitespace-nowrap"
             style={{ left: labelCol.width + 4, height: HEADER_HEIGHT }}
             title={`t=0 is the trace root's start: ${formatIsoTime(anchorMs)}`}
             data-testid="trace-anchor-time"
-            onMouseDown={(e) => e.stopPropagation()}
           >
             t=0 = {formatClockTime(anchorMs)}
           </div>

@@ -13,6 +13,7 @@
  * across the different views. `Array.prototype.sort` is stable in every
  * supported runtime, but the explicit tie-break means two spans that start on
  * the same millisecond never swap places between the tree and the timeline.
+ * Spans with an unparseable `startTime` sort last.
  *
  * Time: rows show the span's wall-clock start (`HH:MM:SS.mmm`, local time) and
  * its offset from the trace root (`+1.234 s`) so a reader can line spans up
@@ -21,9 +22,10 @@
 
 import { Span } from '@/types';
 
+/** Start in epoch ms; an unparseable startTime sorts LAST (+Infinity), not at the epoch. */
 export function spanStartMs(span: Pick<Span, 'startTime'>): number {
   const ms = new Date(span.startTime).getTime();
-  return Number.isFinite(ms) ? ms : 0;
+  return Number.isFinite(ms) ? ms : Number.POSITIVE_INFINITY;
 }
 
 /** Total order: startTime ascending, then spanId (code-point order). */
@@ -41,20 +43,18 @@ export function sortSpansByStartTime<T extends Span>(spans: readonly T[]): T[] {
 }
 
 /**
- * Earliest start among the given spans (roots are enough — a child cannot
- * start before its parent in a well-formed trace, but we walk everything so a
- * clock-skewed child still yields the true minimum). `null` when empty.
+ * t=0 for offsets: the start of the trace ROOT — the earliest of the
+ * top-level spans when the tree has several roots (e.g. a time-window fetch
+ * that pulled in sibling traces). Children are not consulted: a child whose
+ * clock ran ahead of its root shows a negative offset rather than silently
+ * moving t=0. `null` when there are no roots with a parseable start.
  */
-export function getTraceAnchorMs(spans: readonly Span[]): number | null {
+export function getTraceAnchorMs(roots: readonly Span[]): number | null {
   let min = Infinity;
-  const walk = (list: readonly Span[]) => {
-    for (const s of list) {
-      const ms = new Date(s.startTime).getTime();
-      if (Number.isFinite(ms) && ms < min) min = ms;
-      if (s.children?.length) walk(s.children);
-    }
-  };
-  walk(spans);
+  for (const s of roots) {
+    const ms = new Date(s.startTime).getTime();
+    if (Number.isFinite(ms) && ms < min) min = ms;
+  }
   return min === Infinity ? null : min;
 }
 

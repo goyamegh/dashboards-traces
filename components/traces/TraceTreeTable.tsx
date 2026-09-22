@@ -165,21 +165,38 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
 
   return (
     <div className="space-y-0">
-      {/* List header: ordering guarantee + absolute anchor for the offsets. */}
+      {/* List header: ordering guarantee + absolute anchor for the offsets.
+          In the timeline layout it also carries the (single) name-column
+          resize handle, aligned with the rows' name column. */}
       <div
-        className="flex items-center gap-2 px-2 pt-1 pb-1 text-[10px] text-muted-foreground font-mono select-none"
+        className="flex items-center gap-2 pt-1 pb-1 text-[10px] text-muted-foreground font-mono select-none"
         data-testid="trace-list-header"
       >
-        <span data-testid="trace-list-sort-hint" title="Rows are ordered by span start time (ties by span id), at every depth">
-          sorted by start time
-        </span>
-        {anchorMs !== null && (
-          <>
-            <span>·</span>
-            <span data-testid="trace-anchor-time" title={`t=0 is the trace root's start: ${formatIsoTime(anchorMs)}`}>
-              t=0 = {formatClockTime(anchorMs)}
-            </span>
-          </>
+        <div
+          className="flex items-center gap-2 px-2 min-w-0"
+          style={timeRange ? { width: nameCol.width, flexShrink: 0 } : undefined}
+        >
+          <span data-testid="trace-list-sort-hint" title="Rows are ordered by span start time (ties by span id), at every depth">
+            sorted by start time
+          </span>
+          {anchorMs !== null && (
+            <>
+              <span>·</span>
+              <span data-testid="trace-anchor-time" title={`t=0 is the trace root's start: ${formatIsoTime(anchorMs)}`}>
+                t=0 = {formatClockTime(anchorMs)}
+              </span>
+            </>
+          )}
+        </div>
+        {timeRange && (
+          <div
+            {...nameCol.handleProps}
+            className={cn(
+              'w-1 h-4 cursor-col-resize flex-shrink-0 rounded bg-border hover:bg-opensearch-blue/60 focus-visible:outline-none focus-visible:bg-opensearch-blue',
+              nameCol.isResizing && 'bg-opensearch-blue'
+            )}
+            data-testid="span-name-col-resize"
+          />
         )}
       </div>
       {visibleSpans.map((span, index) => {
@@ -376,18 +393,6 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
                   </div>
                   {nameButton}
                 </div>
-                {/* Column resize handle — only on the first row is it
-                    needed for a11y, but every row gets one so the boundary
-                    is grabbable anywhere along the list. */}
-                <div
-                  {...nameCol.handleProps}
-                  className={cn(
-                    'w-1 self-stretch -my-2 cursor-col-resize flex-shrink-0 rounded hover:bg-opensearch-blue/50',
-                    nameCol.isResizing && 'bg-opensearch-blue'
-                  )}
-                  onClick={(e) => e.stopPropagation()}
-                  data-testid="span-name-col-resize"
-                />
                 {timeCell}
 
                 {/* Timeline column — flex-1 fills all remaining horizontal

@@ -5,8 +5,9 @@
 
 /**
  * useResizableColumn — drag-to-resize width for the span label column shared
- * by the trace tree table and the timeline chart. Pointer-only; the width is
- * clamped to [min, max] and reset to the default on double-click of the handle.
+ * by the trace tree table and the timeline chart. Drag with the mouse or use
+ * ArrowLeft / ArrowRight on the focused handle; the width is clamped to
+ * [min, max] and reset to the default on double-click (or Home).
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -48,37 +49,46 @@ export interface ResizableColumn {
   handleProps: {
     onMouseDown: (e: React.MouseEvent) => void;
     onDoubleClick: () => void;
+    onKeyDown: (e: React.KeyboardEvent) => void;
+    tabIndex: 0;
     role: 'separator';
     'aria-orientation': 'vertical';
+    'aria-valuenow': number;
+    'aria-valuemin': number;
+    'aria-valuemax': number;
     'aria-label': string;
     title: string;
   };
 }
 
+const KEY_STEP_PX = 16;
+
 export function useResizableColumn(defaultWidth: number, min: number, max: number, label = 'Resize name column'): ResizableColumn {
+  // The default is read once on mount; a user's drag sticks for the life of
+  // the component, and double-click / Home brings the default back.
   const [width, setWidth] = useState(defaultWidth);
   const [isResizing, setIsResizing] = useState(false);
   const drag = useRef<{ startX: number; startWidth: number } | null>(null);
-  const userResized = useRef(false);
-
-  // A new default (e.g. a different trace with longer names) applies until
-  // the user has dragged the handle; their choice then sticks.
-  useEffect(() => {
-    if (!userResized.current) setWidth(defaultWidth);
-  }, [defaultWidth]);
 
   const onMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation(); // the timeline chart pans on mousedown — don't start a pan
     drag.current = { startX: e.clientX, startWidth: width };
-    userResized.current = true;
     setIsResizing(true);
   }, [width]);
 
-  const onDoubleClick = useCallback(() => {
-    userResized.current = false;
-    setWidth(defaultWidth);
-  }, [defaultWidth]);
+  const onDoubleClick = useCallback(() => setWidth(defaultWidth), [defaultWidth]);
+
+  const onKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const delta = e.key === 'ArrowRight' ? KEY_STEP_PX : e.key === 'ArrowLeft' ? -KEY_STEP_PX : 0;
+    if (delta !== 0) {
+      e.preventDefault();
+      setWidth(w => Math.max(min, Math.min(max, w + delta)));
+    } else if (e.key === 'Home') {
+      e.preventDefault();
+      setWidth(defaultWidth);
+    }
+  }, [min, max, defaultWidth]);
 
   useEffect(() => {
     if (!isResizing) return;
@@ -109,10 +119,15 @@ export function useResizableColumn(defaultWidth: number, min: number, max: numbe
     handleProps: {
       onMouseDown,
       onDoubleClick,
+      onKeyDown,
+      tabIndex: 0,
       role: 'separator',
       'aria-orientation': 'vertical',
+      'aria-valuenow': width,
+      'aria-valuemin': min,
+      'aria-valuemax': max,
       'aria-label': label,
-      title: 'Drag to resize · double-click to reset',
+      title: 'Drag or use ← → to resize · double-click to reset',
     },
   };
 }
