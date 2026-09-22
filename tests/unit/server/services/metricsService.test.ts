@@ -858,6 +858,22 @@ describe('metricsService', () => {
         expect(result.llmCalls).toBe(2);
       });
 
+      it('parent carrying MORE usage than its children ⇒ remainder is counted, parent still an LLM call', () => {
+        // A real request span with a nested span that records only part of the usage.
+        const spans = [
+          {
+            name: 'chat', traceId: 'trace-agg', spanId: 'req', durationInNanos: 1, status: { code: 1 },
+            attributes: { 'gen_ai.request.model': 'm', 'gen_ai.usage.input_tokens': 1000, 'gen_ai.usage.output_tokens': 100 },
+          },
+          { name: 'stream', traceId: 'trace-agg', spanId: 'st', parentSpanId: 'req', durationInNanos: 1, status: { code: 1 }, attributes: { 'gen_ai.usage.input_tokens': 700, 'gen_ai.usage.output_tokens': 100 } },
+        ];
+        const result = computeMetricsFromSpans('run-agg', spans);
+        expect(result.inputTokens).toBe(1000);
+        expect(result.outputTokens).toBe(100);
+        expect(result.llmCalls).toBe(1);
+        expect(result.usageAggregatesSkipped).toBe(0);
+      });
+
       it('vendor-total-only span: aws.genai.token_count_total / gen_ai.usage.total_tokens are never added', () => {
         const spans = [
           {

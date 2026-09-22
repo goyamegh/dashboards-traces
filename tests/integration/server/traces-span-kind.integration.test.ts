@@ -153,8 +153,8 @@ describe('/api/traces exposes a normalised top-level span kind (integration)', (
       expect(byId.llm.kind).toBe('CLIENT');
       expect(byId.tool.kind).toBe('INTERNAL');
       expect(byId.nokind.kind).toBeUndefined();
-      // Raw pipeline value is preserved for the attribute table.
-      expect(byId.root.attributes.spanKind).toBe('SPAN_KIND_SERVER');
+      // The attribute table reads the same canonical name as the OTLP path.
+      expect(byId.root.attributes.spanKind).toBe('SERVER');
     });
   });
 });
