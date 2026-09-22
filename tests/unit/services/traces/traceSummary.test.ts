@@ -112,6 +112,49 @@ describe('computeTraceSummary', () => {
     expect(s.peakInputTokens).toBe(100);
   });
 
+  it('does not double-count an aggregate parent whose children also carry usage (leaf-usage invariant)', () => {
+    // An invoke_agent-style wrapper stamped with the SUM of its chat children.
+    const tree: Span[] = [
+      baseSpan({
+        spanId: 'agent',
+        attributes: {
+          'gen_ai.operation.name': 'invoke_agent',
+          'gen_ai.usage.input_tokens': 150,
+          'gen_ai.usage.output_tokens': 275,
+        },
+        children: [
+          baseSpan({
+            spanId: 'llm-1', parentSpanId: 'agent',
+            attributes: { 'gen_ai.usage.input_tokens': 100, 'gen_ai.usage.output_tokens': 200 },
+          }),
+          baseSpan({
+            spanId: 'llm-2', parentSpanId: 'agent',
+            attributes: { 'gen_ai.usage.input_tokens': 50, 'gen_ai.usage.output_tokens': 75 },
+          }),
+        ],
+      }),
+    ];
+    const s = computeTraceSummary(tree);
+    expect(s.inputTokens).toBe(150);
+    expect(s.outputTokens).toBe(275);
+    expect(s.totalTokens).toBe(425);
+    // The aggregate's 150 is not "one request" — peak comes from leaves only.
+    expect(s.peakInputTokens).toBe(100);
+  });
+
+  it('still counts a parent that carries usage when no descendant does', () => {
+    const tree: Span[] = [
+      baseSpan({
+        spanId: 'agent',
+        attributes: { 'gen_ai.usage.input_tokens': 10, 'gen_ai.usage.output_tokens': 5 },
+        children: [baseSpan({ spanId: 'tool', parentSpanId: 'agent', attributes: { 'gen_ai.tool.name': 'search' } })],
+      }),
+    ];
+    const s = computeTraceSummary(tree);
+    expect(s.totalTokens).toBe(15);
+    expect(s.peakInputTokens).toBe(10);
+  });
+
   it('falls back to legacy prompt_tokens / completion_tokens attribute names', () => {
     const tree: Span[] = [
       baseSpan({
