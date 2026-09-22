@@ -19,13 +19,27 @@
  *                duplicates are collapsed here (first occurrence keeps its
  *                rank) so a repeated id can never be counted twice.
  *   - Result   — a number in [0, 1], or `null` when the metric is
- *                UNEVALUABLE (empty gold or empty ranking). `null` is
+ *                UNEVALUABLE (empty gold, or an empty ranking unless the
+ *                caller opted into `emptyRanking: 'zero'`). `null` is
  *                deliberately not 0: "nothing to score against" must never
  *                look like "scored zero".
  *
+ * Two kinds of metric live here:
+ *   - RANKED metrics (`ranked-hit`, `ranked-recall`, `mrr`) speak only to
+ *     cases WITH gold ids.
+ *   - `abstain` speaks only to cases WITHOUT gold ids (the right answer is
+ *     "nothing"): 1 when the ranking is empty too, 0 when the agent returned
+ *     something anyway, `null` when gold is non-empty.
+ *   {@link metricApplies} tells a caller which kind applies to a case, so an
+ *   evaluator can mix both and each case is scored by the metrics that speak
+ *   to it. Whether "gold is empty" means "explicitly no gold" or "gold not
+ *   declared" is the CALLER's job (see lib/scoring/gold.ts) — this registry
+ *   only ever sees an id list.
+ *
  * Metric NAMES are not defined here on purpose. Agent Health only knows
- * compute TYPES (`ranked-hit`, `ranked-recall`, `mrr`); the human-facing name
- * ("Hit@5", "recall_at_20", …) is free-form data on the evaluator document.
+ * compute TYPES (`ranked-hit`, `ranked-recall`, `mrr`, `abstain`); the
+ * human-facing name ("Hit@5", "recall_at_20", …) is free-form data on the
+ * evaluator document.
  */
 
 export type MetricInputs = {
@@ -33,6 +47,18 @@ export type MetricInputs = {
   gold: ReadonlyArray<string>;
   /** Predicted ids in rank order (best first). */
   ranked: ReadonlyArray<string>;
+  /**
+   * What an EMPTY ranking means for the ranked metrics (gold non-empty):
+   *   - `'unevaluable'` (default): nothing to score → `null`. Right when the
+   *     ranking was reconstructed from artifacts that may simply be missing
+   *     (e.g. `tool-hits-ordered` found no stored tool results).
+   *   - `'zero'`: the agent explicitly returned an empty list → every ranked
+   *     metric computes naturally over zero candidates (hit 0, recall 0,
+   *     mrr 0). Right for `response-results`, where "returned nothing" is a
+   *     real, scorable outcome.
+   * Ignored by `abstain`, which has its own semantics for an empty ranking.
+   */
+  emptyRanking?: 'unevaluable' | 'zero';
 };
 
 /** Denominator semantics for `rankedRecall`. */
@@ -41,11 +67,25 @@ export type RecallDenominator = 'full-gold' | 'min-k-gold';
 export type MetricCompute =
   | { type: 'ranked-hit'; k: number }
   | { type: 'ranked-recall'; k: number; denominator?: RecallDenominator }
-  | { type: 'mrr' };
+  | { type: 'mrr' }
+  | { type: 'abstain' };
 
 export type MetricComputeType = MetricCompute['type'];
 
-export const METRIC_COMPUTE_TYPES: ReadonlyArray<MetricComputeType> = ['ranked-hit', 'ranked-recall', 'mrr'];
+export const METRIC_COMPUTE_TYPES: ReadonlyArray<MetricComputeType> = ['ranked-hit', 'ranked-recall', 'mrr', 'abstain'];
+
+/** Compute types that score a ranking against a NON-EMPTY gold set. */
+export const RANKED_METRIC_TYPES: ReadonlyArray<MetricComputeType> = ['ranked-hit', 'ranked-recall', 'mrr'];
+
+/**
+ * Whether a metric speaks to a case with this gold set: ranked metrics need
+ * gold ids; `abstain` needs the gold set to be empty. A metric that does not
+ * apply is neither 0 nor unevaluable — it is simply not about this case.
+ */
+export function metricApplies(compute: Pick<MetricCompute, 'type'>, gold: ReadonlyArray<string>): boolean {
+  const goldEmpty = dedupeIds(gold ?? []).length === 0;
+  return compute.type === 'abstain' ? goldEmpty : !goldEmpty;
+}
 
 export class MetricValidationError extends Error {
   constructor(message: string) {
@@ -77,7 +117,8 @@ export function dedupeIds(ids: ReadonlyArray<unknown>): string[] {
 function prepare(inputs: MetricInputs): { gold: Set<string>; ranked: string[] } | null {
   const gold = new Set(dedupeIds(inputs?.gold ?? []));
   const ranked = dedupeIds(inputs?.ranked ?? []);
-  if (gold.size === 0 || ranked.length === 0) return null;
+  if (gold.size === 0) return null;
+  if (ranked.length === 0 && inputs?.emptyRanking !== 'zero') return null;
   return { gold, ranked };
 }
 
@@ -137,6 +178,18 @@ export function mrr(args: MetricInputs): number | null {
 }
 
 /**
+ * Abstain — for cases whose correct answer is NOTHING (empty gold): 1 when
+ * the ranking is empty too, 0 when the agent returned candidates anyway.
+ * `null` when gold is non-empty (the metric does not speak to that case —
+ * see {@link metricApplies}).
+ */
+export function abstain(args: MetricInputs): number | null {
+  const gold = dedupeIds(args?.gold ?? []);
+  if (gold.length > 0) return null;
+  return dedupeIds(args?.ranked ?? []).length === 0 ? 1 : 0;
+}
+
+/**
  * Validate a `compute` descriptor (as stored on an evaluator document).
  * Throws {@link MetricValidationError} with a human-readable message.
  */
@@ -158,6 +211,8 @@ export function validateMetricCompute(compute: unknown): MetricCompute {
     }
     case 'mrr':
       return { type: 'mrr' };
+    case 'abstain':
+      return { type: 'abstain' };
     default:
       throw new MetricValidationError(
         `unknown compute type ${JSON.stringify(c.type)}; supported: ${METRIC_COMPUTE_TYPES.join(', ')}`
@@ -179,6 +234,8 @@ export function computeMetric(compute: MetricCompute | Record<string, unknown>, 
       return rankedRecall({ ...inputs, k: c.k, denominator: c.denominator });
     case 'mrr':
       return mrr(inputs);
+    case 'abstain':
+      return abstain(inputs);
   }
 }
 
@@ -191,5 +248,7 @@ export function describeMetricCompute(compute: MetricCompute): string {
       return `ranked-recall@${compute.k}${compute.denominator === 'min-k-gold' ? ' (min-k-gold)' : ''}`;
     case 'mrr':
       return 'mrr';
+    case 'abstain':
+      return 'abstain';
   }
 }

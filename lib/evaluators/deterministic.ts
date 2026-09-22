@@ -131,8 +131,12 @@ export function validateDeterministicEvaluator(doc: unknown): string[] {
 
     const pred = inputs.prediction as Record<string, unknown> | undefined;
     if (!pred || typeof pred !== 'object') errors.push('inputs.prediction is required');
-    else if (pred.source !== 'tool-hits-ordered') {
-      errors.push(`inputs.prediction.source must be 'tool-hits-ordered' (got ${JSON.stringify(pred.source)})`);
+    else if (pred.source === 'response-results') {
+      for (const key of ['path', 'idField', 'rankField'] as const) {
+        if (pred[key] !== undefined && !isNonEmptyString(pred[key])) errors.push(`inputs.prediction.${key} must be a non-empty string`);
+      }
+    } else if (pred.source !== 'tool-hits-ordered') {
+      errors.push(`inputs.prediction.source must be 'tool-hits-ordered' or 'response-results' (got ${JSON.stringify(pred.source)})`);
     } else {
       if (pred.idFields !== undefined && !isStringArray(pred.idFields)) errors.push('inputs.prediction.idFields must be an array of non-empty strings');
       if (pred.hitsPaths !== undefined && !isStringArray(pred.hitsPaths)) errors.push('inputs.prediction.hitsPaths must be an array of non-empty strings');
