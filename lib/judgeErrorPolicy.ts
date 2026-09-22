@@ -70,12 +70,17 @@ export function isRetryableJudgeErrorClass(cls: JudgeErrorClass): boolean {
 /**
  * Attempt budget the client retry loop grants per class. `defaultMax` is
  * the loop's configured ceiling (historically 10).
- *   - transient classes: full budget
+ *   - known-transient classes (throttling/timeout/network/provider_error): full budget
+ *   - `unknown` / `cli_crash`: 3 (retryable, but usually a deterministic bug)
  *   - `invalid_json` / `empty_response`: 2 (one re-roll)
  *   - other deterministic classes: 1 (no retry)
  */
 export function maxJudgeAttemptsFor(cls: JudgeErrorClass | undefined, defaultMax: number): number {
   if (!cls) return defaultMax;
+  // Unclassified failures and CLI crashes are retryable in principle, but
+  // most of them are deterministic bugs — a bounded budget (3) catches a
+  // one-off blip without the 10× stall.
+  if (cls === 'unknown' || cls === 'cli_crash') return Math.min(3, defaultMax);
   if (isRetryableJudgeErrorClass(cls)) return defaultMax;
   if (cls === 'invalid_json' || cls === 'empty_response') return Math.min(2, defaultMax);
   return 1;

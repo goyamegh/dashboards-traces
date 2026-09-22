@@ -141,6 +141,19 @@ describe('evaluateWithPiAgenticTrace — failure classification', () => {
     ).rejects.toMatchObject({ errorClass: 'context_overflow' });
   });
 
+  it('a parseable verdict WINS over a stale trailing error event (SDK retry/compaction leftovers never discard a real verdict)', async () => {
+    installSdkMock(
+      fakeSession([
+        { stopReason: 'stop', text: verdict },
+        // e.g. an intermediate provider error the SDK later recovered from, observed last
+        { stopReason: 'error', errorMessage: 'ThrottlingException: Too many requests', keepInMessages: false },
+      ]),
+    );
+    const { evaluateWithPiAgenticTrace } = require('@/server/services/piAgenticJudgeService');
+    const res = await evaluateWithPiAgenticTrace({ trajectory: smallTrajectory, expectedOutcomes: ['x'], runId: 'run-1' }, undefined, true);
+    expect(res.passFailStatus).toBe('passed');
+  });
+
   it('a normal stop with no text at all is an empty_response, with the stopReason named', async () => {
     installSdkMock(fakeSession([{ stopReason: 'stop', text: '' }]));
     const { evaluateWithPiAgenticTrace } = require('@/server/services/piAgenticJudgeService');

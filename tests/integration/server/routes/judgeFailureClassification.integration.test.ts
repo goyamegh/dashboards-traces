@@ -11,16 +11,16 @@
  * CLI (tests/helpers/stubPiCli.cjs; only `resolvePiCommand` is mocked to
  * point at it) so the route's error body is produced by the real
  * spawn → classify → respond chain:
- *   (i)   CLI prints nothing, exits 0      → 422 empty_response, retryable:false
+ *   (i)   CLI prints nothing, exits 0      → 500 empty_response, retryable:false
  *   (ii)  CLI exits non-zero with stderr   → 500 cli_crash, retryable:true, redacted stderrTail
  *   (iii) CLI prints prose then JSON       → 200 verdict
  *   (iv)  prompt exceeds the size cap      → truncated (marker reaches the CLI), 200 verdict;
- *         an un-fittable prompt            → 422 context_overflow WITHOUT spawning
+ *         an un-fittable prompt            → 500 context_overflow WITHOUT spawning
  *
  * Provider 'agent' is mocked at its module boundary (it needs the pi SDK +
  * Bedrock credentials) to throw the classified JudgeError the real service
  * now produces for a Bedrock "Input is too long" overflow — asserting the
- * route turns it into 422 + errorClass/retryable, the contract the client
+ * route turns it into errorClass/retryable, the contract the client
  * retry loop (services/evaluation/bedrockJudge.ts) relies on.
  *
  * Run:
@@ -91,10 +91,10 @@ describe('POST /api/judge — failure classification (integration)', () => {
   describe("provider 'pi' — real spawn against the stubbed CLI", () => {
     beforeEach(() => mockGetEvaluatorById.mockResolvedValue(piEvaluator));
 
-    it('(i) CLI prints nothing and exits 0 → 422 empty_response, not retryable, no "invalid JSON" wording', async () => {
+    it('(i) CLI prints nothing and exits 0 → 500 empty_response, not retryable, no "invalid JSON" wording', async () => {
       process.env.STUB_PI_MODE = 'empty';
       const res = await request(buildApp()).post('/api/judge').send({ trajectory, expectedOutcomes: ['ranks 5000 first'], evaluatorId: 'pi-eval' });
-      expect(res.status).toBe(422);
+      expect(res.status).toBe(500);
       expect(res.body).toMatchObject({ errorClass: 'empty_response', retryable: false });
       expect(res.body.error).toMatch(/printed nothing to stdout/);
       expect(res.body.error).not.toMatch(/may have returned invalid JSON/);
@@ -111,10 +111,10 @@ describe('POST /api/judge — failure classification (integration)', () => {
       expect(res.body.error).toContain('exited with code 2');
     });
 
-    it("(ii') CLI exits non-zero with a provider overflow on stderr → 422 context_overflow", async () => {
+    it("(ii') CLI exits non-zero with a provider overflow on stderr → 500 context_overflow", async () => {
       process.env.STUB_PI_MODE = 'overflow';
       const res = await request(buildApp()).post('/api/judge').send({ trajectory, expectedOutcomes: ['x'], evaluatorId: 'pi-eval' });
-      expect(res.status).toBe(422);
+      expect(res.status).toBe(500);
       expect(res.body).toMatchObject({ errorClass: 'context_overflow', retryable: false });
       expect(res.body.error).toContain('Input is too long');
     });
@@ -148,12 +148,12 @@ describe('POST /api/judge — failure classification (integration)', () => {
       expect(m![2]).toBe('true'); // the CLI saw the truncation marker
     });
 
-    it("(iv') a trajectory that cannot fit the budget → 422 context_overflow, and the CLI is never spawned", async () => {
+    it("(iv') a trajectory that cannot fit the budget → 500 context_overflow, and the CLI is never spawned", async () => {
       process.env.STUB_PI_MODE = 'echo';
       process.env.AH_JUDGE_PROMPT_BUDGET_TOKENS = '800'; // 2k chars
       const many = Array.from({ length: 25 }, () => ({ type: 'tool_result', toolName: 't', content: 'c'.repeat(600), status: 'SUCCESS' }));
       const res = await request(buildApp()).post('/api/judge').send({ trajectory: many, expectedOutcomes: ['x'], evaluatorId: 'pi-eval' });
-      expect(res.status).toBe(422);
+      expect(res.status).toBe(500);
       expect(res.body).toMatchObject({ errorClass: 'context_overflow', retryable: false });
       expect(res.body.error).toMatch(/even after truncating/);
       // The 'echo' stub would have produced a 200 verdict had it been spawned.
@@ -163,7 +163,7 @@ describe('POST /api/judge — failure classification (integration)', () => {
   describe("provider 'agent' — classified JudgeError → wire contract", () => {
     beforeEach(() => mockGetEvaluatorById.mockResolvedValue(agentEvaluator));
 
-    it('a Bedrock context overflow surfaces as 422 context_overflow with the provider message, not "invalid JSON"', async () => {
+    it('a Bedrock context overflow surfaces as context_overflow with the provider message, not "invalid JSON"', async () => {
       mockEvaluateWithPiAgenticTrace.mockRejectedValue(
         new JudgeError(
           "Judge context overflow — the evaluation prompt (plus any trace-tool results) exceeds the judge model's context window: Validation error: The model returned the following errors: Input is too long for requested model.",
@@ -171,7 +171,7 @@ describe('POST /api/judge — failure classification (integration)', () => {
         ),
       );
       const res = await request(buildApp()).post('/api/judge').send({ trajectory, expectedOutcomes: ['x'], evaluatorId: 'agent-eval', runId: 'run-1' });
-      expect(res.status).toBe(422);
+      expect(res.status).toBe(500);
       expect(res.body).toMatchObject({ errorClass: 'context_overflow', retryable: false });
       expect(res.body.error).toContain('Input is too long for requested model');
       expect(res.body.error).not.toMatch(/invalid JSON/);
@@ -186,12 +186,12 @@ describe('POST /api/judge — failure classification (integration)', () => {
       expect(res.body).toMatchObject({ errorClass: 'throttling', retryable: true });
     });
 
-    it('a genuinely unparseable verdict is the one case still reported as invalid JSON (422, invalid_json)', async () => {
+    it('a genuinely unparseable verdict is the one case still reported as invalid JSON (invalid_json)', async () => {
       mockEvaluateWithPiAgenticTrace.mockRejectedValue(
         new JudgeError('AgentJudge: judge response did not contain a JSON object. First 200 chars: I think it passed', { errorClass: 'invalid_json' }),
       );
       const res = await request(buildApp()).post('/api/judge').send({ trajectory, expectedOutcomes: ['x'], evaluatorId: 'agent-eval', runId: 'run-1' });
-      expect(res.status).toBe(422);
+      expect(res.status).toBe(500);
       expect(res.body).toMatchObject({ errorClass: 'invalid_json', retryable: false });
       expect(res.body.error).toMatch(/Failed to parse Pi judge response — the judge answered but not with a JSON verdict/);
     });
