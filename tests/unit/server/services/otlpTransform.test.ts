@@ -151,18 +151,22 @@ describe('otlpTransform', () => {
   });
 
   describe('spanKindName', () => {
-    it('maps numeric codes, numeric strings, enum names and bare words', () => {
+    it('maps numeric codes, decimal strings and exact enum names only', () => {
       expect(spanKindName(2)).toBe('SPAN_KIND_SERVER');
       expect(spanKindName('3')).toBe('SPAN_KIND_CLIENT');
       expect(spanKindName('SPAN_KIND_PRODUCER')).toBe('SPAN_KIND_PRODUCER');
-      expect(spanKindName('consumer')).toBe('SPAN_KIND_CONSUMER');
       expect(spanKindName(0)).toBe('SPAN_KIND_UNSPECIFIED');
     });
-    it('returns undefined for unknown / missing input', () => {
+    it('returns undefined for unknown / missing / look-alike input instead of laundering it', () => {
       expect(spanKindName(undefined)).toBeUndefined();
       expect(spanKindName(null)).toBeUndefined();
       expect(spanKindName('')).toBeUndefined();
       expect(spanKindName(9)).toBeUndefined();
+      expect(spanKindName('9')).toBeUndefined();
+      expect(spanKindName('consumer')).toBeUndefined();
+      expect(spanKindName('server')).toBeUndefined();
+      expect(spanKindName('SPAN_KIND_API_SERVER')).toBeUndefined();
+      expect(spanKindName('2.5')).toBeUndefined();
     });
   });
 });

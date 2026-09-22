@@ -81,9 +81,17 @@ describe('RETRIEVAL: OTel DB semconv spans', () => {
     expect(isDbSpan(span({ spanId: 'y', attributes: undefined }))).toBe(false);
   });
 
-  it('db.* wins over gen_ai.* when a span carries both (leaf semantic)', () => {
+  it('a KNOWN gen_ai.operation.name wins over db.* on a hybrid span (stays in tool stats)', () => {
     const s = searchSpan();
     s.attributes = { ...s.attributes, 'gen_ai.operation.name': 'execute_tool', 'gen_ai.tool.name': 'search_index', 'gen_ai.provider.name': 'openai' };
+    expect(getSpanCategory(s)).toBe('TOOL');
+    // The DB details are still available to the detail views.
+    expect(isDbSpan(s)).toBe(true);
+  });
+
+  it('db.* wins over an UNKNOWN gen_ai.operation.name + GenAI context (leaf semantic)', () => {
+    const s = searchSpan();
+    s.attributes = { ...s.attributes, 'gen_ai.operation.name': 'vector_lookup', 'gen_ai.provider.name': 'openai' };
     expect(getSpanCategory(s)).toBe('RETRIEVAL');
   });
 
@@ -150,6 +158,12 @@ describe('AGENT: framework-specific gen_ai.operation.name with GenAI context', (
     expect(getSpanCategory(span({ spanId: 'b', name: 'plan', attributes: { 'gen_ai.operation.name': 'plan_step', 'gen_ai.agent.name': 'planner' } }))).toBe('AGENT');
   });
 
+  it('an unknown operation that reports a model or token usage is a model call → LLM, not AGENT', () => {
+    expect(getSpanCategory(span({ spanId: 'r1', name: 'rerank', attributes: { 'gen_ai.operation.name': 'rerank', 'gen_ai.provider.name': 'cohere', 'gen_ai.request.model': 'rerank-v3' } }))).toBe('LLM');
+    expect(getSpanCategory(span({ spanId: 'r2', name: 'moderation', attributes: { 'gen_ai.operation.name': 'moderation', 'gen_ai.system': 'openai', 'gen_ai.usage.input_tokens': 12 } }))).toBe('LLM');
+    expect(getSpanCategory(span({ spanId: 'r3', name: 'embed', attributes: { 'gen_ai.operation.name': 'embeddings', 'gen_ai.provider.name': 'openai' } }))).toBe('LLM'); // now a known op
+  });
+
   it('an unknown operation name WITHOUT GenAI context keeps the name-pattern fallbacks', () => {
     // name pattern → LLM
     expect(getSpanCategory(span({ spanId: 'c', name: 'bedrock.converse', attributes: { 'gen_ai.operation.name': 'weird_op' } }))).toBe('LLM');
@@ -177,11 +191,37 @@ describe('AGENT entrypoint: HTTP SERVER span of the agent service', () => {
     expect(buildCategoryFields(s).isEntrypoint).toBe(true);
   });
 
-  it('accepts the legacy http.method attribute and several span-kind encodings', () => {
+  it('accepts the legacy http.method attribute and exactly the OTLP/OTel kind encodings', () => {
     expect(isEntrypointSpan(httpServer('SPAN_KIND_SERVER', 'http.method'))).toBe(true);
     expect(isEntrypointSpan(httpServer('SERVER'))).toBe(true);
     expect(isEntrypointSpan(httpServer('server'))).toBe(true);
     expect(isEntrypointSpan(httpServer(2))).toBe(true);
+  });
+
+  it('rejects look-alike / garbage span kinds', () => {
+    expect(isEntrypointSpan(httpServer('SPAN_KIND_API_SERVER'))).toBe(false);
+    expect(isEntrypointSpan(httpServer('CLIENT'))).toBe(false);
+    expect(isEntrypointSpan(httpServer('2'))).toBe(false);
+    expect(isEntrypointSpan(httpServer(3))).toBe(false);
+    expect(isEntrypointSpan(httpServer(undefined))).toBe(false);
+  });
+
+  it('only the OUTERMOST HTTP SERVER span is the entrypoint; nested server spans are AGENT but not entrypoints', () => {
+    const outer = httpServer('SPAN_KIND_SERVER');
+    const inner = span({ spanId: 'inner', name: 'POST /internal/tool', attributes: { spanKind: 'SPAN_KIND_SERVER', 'http.request.method': 'POST' } });
+    outer.children = [inner];
+    const tree = categorizeSpanTree([outer]);
+    expect(tree[0].isEntrypoint).toBe(true);
+    const innerCat = (tree[0].children as any[])[0];
+    expect(innerCat.category).toBe('AGENT');
+    expect(innerCat.isEntrypoint).toBeUndefined();
+    // Same via the single-pass preprocessor
+    const pre = preprocessSpanTree([outer], { startTime: 0, endTime: 1000, duration: 1000 });
+    expect(pre.categorizedTree[0].isEntrypoint).toBe(true);
+    expect((pre.categorizedTree[0].children as any[])[0].isEntrypoint).toBeUndefined();
+    // Explicit ancestors on the per-span API
+    expect(isEntrypointSpan(inner, [outer])).toBe(false);
+    expect(isEntrypointSpan(inner, [span({ spanId: 'x', attributes: {} })])).toBe(true);
   });
 
   it('does not flag a span whose parent is missing but that is not an HTTP SERVER span', () => {
@@ -196,10 +236,18 @@ describe('AGENT entrypoint: HTTP SERVER span of the agent service', () => {
     expect(categorizeSpan(s).isEntrypoint).toBe(true);
   });
 
-  it('an entrypoint span is judged against HTTP semconv, not GenAI expectations', () => {
-    const r = checkOTelCompliance(categorizeSpan(httpServer('SPAN_KIND_SERVER')));
+  it('an entrypoint span is judged against HTTP server-span semconv, not GenAI expectations', () => {
+    const s = httpServer('SPAN_KIND_SERVER');
+    s.attributes!['http.response.status_code'] = 200;
+    const r = checkOTelCompliance(categorizeSpan(s));
     expect(r.isCompliant).toBe(true);
     expect(r.missingAttributes).toEqual([]);
+    // Method alone is not enough: route/path and status are expected too.
+    const bare = categorizeSpan(span({ spanId: 'b', name: 'POST', attributes: { spanKind: 'SPAN_KIND_SERVER', 'http.request.method': 'POST' } }));
+    expect(checkOTelCompliance(bare).missingAttributes).toEqual([
+      'http.route|url.path|http.target',
+      'http.response.status_code|http.status_code',
+    ]);
     // A plain (non-entrypoint) AGENT span keeps the GenAI expectations.
     const loop = categorizeSpan(span({ spanId: 'l', name: 'loop', attributes: { 'gen_ai.operation.name': 'loop_cycle', 'gen_ai.provider.name': 'openai' } }));
     expect(checkOTelCompliance(loop).missingAttributes).toEqual(['gen_ai.agent.name']);

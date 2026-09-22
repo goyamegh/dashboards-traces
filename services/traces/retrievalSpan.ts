@@ -20,9 +20,11 @@
  * The DB conventions have no attribute for "which documents came back", yet
  * that is exactly what a retrieval-quality judge needs. Agents can expose it
  * with ANY attribute whose key ends in `.hit_ids` or `.result_ids`, or the
- * neutral key `retrieval.ids` — e.g. `myagent.search.hit_ids`. The value may
- * be an OTel string array or a stringified list (JSON, or a language-native
- * repr such as `['a', 'b']`). Nothing here is specific to one agent.
+ * neutral key `retrieval.ids` — e.g. `myagent.search.hit_ids`. The value
+ * should be an OTel string array or a JSON array serialised to text; a
+ * single-quoted list literal (what `str(list)` yields in Python) is accepted
+ * as well. Anything else is shown verbatim rather than guessed at. Nothing
+ * here is specific to one agent.
  *
  * @see https://opentelemetry.io/docs/specs/semconv/db/db-spans/
  */
@@ -43,7 +45,10 @@ import {
 export interface RetrievalIdList {
   /** The attribute the ids were read from (e.g. `myagent.search.hit_ids`). */
   attribute: string;
+  /** Parsed ids; empty when the value could not be parsed as a list. */
   ids: string[];
+  /** The attribute value verbatim when it was NOT parseable as a list. */
+  raw?: string;
 }
 
 export interface RetrievalIO {
@@ -96,40 +101,60 @@ export function prettyPrintIfJson(text: string): string {
   }
 }
 
-/**
- * Coerce an id-list attribute value into `string[]`.
- * Accepts arrays, JSON arrays as text, and bracketed lists with quoted or
- * bare comma-separated items (e.g. a Python `repr`).
- */
-export function parseIdList(value: unknown): string[] {
-  if (value === null || value === undefined) return [];
-  if (Array.isArray(value)) {
-    return value.map(v => String(v)).filter(v => v.length > 0);
+/** Scalar list items are stringified; nested objects/arrays are not ids. */
+function scalarsToIds(items: unknown[]): string[] | null {
+  const ids: string[] = [];
+  for (const v of items) {
+    if (v === null || v === undefined) continue;
+    if (typeof v === 'object') return null;
+    const s = String(v);
+    if (s.length > 0) ids.push(s);
   }
-  if (typeof value !== 'string') return [String(value)];
-  const trimmed = value.trim();
-  if (trimmed.length === 0) return [];
-  try {
-    const parsed = JSON.parse(trimmed);
-    if (Array.isArray(parsed)) return parsed.map(v => String(v)).filter(v => v.length > 0);
-  } catch {
-    /* not JSON — fall through to the lenient parser */
-  }
-  const inner = trimmed.replace(/^[\[(]/, '').replace(/[\])]$/, '');
-  return inner
-    .split(',')
-    .map(part => part.trim().replace(/^['"]|['"]$/g, ''))
-    .filter(part => part.length > 0);
+  return ids;
 }
 
-/** Collect every id list on the span following the convention. */
+/**
+ * Parse an id-list attribute value into `string[]`, or `null` when the value
+ * is not a list. Accepts a native array, a JSON array serialised to text, and
+ * a Python-style list literal (`['a', 'b']` — JSON with single quotes). No
+ * comma-splitting of arbitrary strings: an unparseable value is left to the
+ * caller to show verbatim.
+ */
+export function parseIdList(value: unknown): string[] | null {
+  if (value === null || value === undefined) return null;
+  if (Array.isArray(value)) return scalarsToIds(value);
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!(trimmed.startsWith('[') && trimmed.endsWith(']'))) return null;
+  for (const candidate of [trimmed, trimmed.replace(/'/g, '"')]) {
+    try {
+      const parsed = JSON.parse(candidate);
+      if (Array.isArray(parsed)) return scalarsToIds(parsed);
+      return null;
+    } catch {
+      /* try the next candidate encoding */
+    }
+  }
+  return null;
+}
+
+/**
+ * Collect every id-list attribute on the span following the convention.
+ * Unparseable values are kept with `raw` set so nothing is silently dropped.
+ */
 export function extractRetrievalIdLists(span: Span): RetrievalIdList[] {
   const attrs = span.attributes || {};
   const lists: RetrievalIdList[] = [];
   for (const key of Object.keys(attrs)) {
     if (!isRetrievalIdListKey(key)) continue;
-    const ids = parseIdList(attrs[key]);
-    if (ids.length > 0) lists.push({ attribute: key, ids });
+    const value = attrs[key];
+    if (value === null || value === undefined || value === '') continue;
+    const ids = parseIdList(value);
+    if (ids) {
+      if (ids.length > 0) lists.push({ attribute: key, ids });
+    } else {
+      lists.push({ attribute: key, ids: [], raw: typeof value === 'string' ? value : JSON.stringify(value) });
+    }
   }
   return lists;
 }
@@ -170,6 +195,10 @@ export function extractRetrievalIO(span: Span): RetrievalIO {
   if (returnedRows !== null) outputLines.push(`returned_rows: ${returnedRows}`);
   if (statusCode) outputLines.push(`status_code: ${statusCode}`);
   for (const list of idLists) {
+    if (list.raw !== undefined) {
+      outputLines.push(`${list.attribute}: ${list.raw}`);
+      continue;
+    }
     outputLines.push(`${list.attribute} (${list.ids.length}):`);
     outputLines.push(...list.ids.map(id => `  - ${id}`));
   }
