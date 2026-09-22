@@ -78,6 +78,29 @@ function nanosToIso(nanos: unknown): string {
   return new Date(n / 1e6).toISOString();
 }
 
+/**
+ * OTLP span kind → the `SPAN_KIND_*` enum name the OpenSearch ingest path
+ * stores under `attributes.spanKind` (used e.g. to recognise HTTP SERVER
+ * entrypoint spans). Accepts the numeric code or the enum name.
+ */
+const SPAN_KIND_NAMES: Record<number, string> = {
+  0: 'SPAN_KIND_UNSPECIFIED',
+  1: 'SPAN_KIND_INTERNAL',
+  2: 'SPAN_KIND_SERVER',
+  3: 'SPAN_KIND_CLIENT',
+  4: 'SPAN_KIND_PRODUCER',
+  5: 'SPAN_KIND_CONSUMER',
+};
+export function spanKindName(kind: unknown): string | undefined {
+  if (typeof kind === 'number') return SPAN_KIND_NAMES[kind];
+  if (typeof kind === 'string' && kind.length > 0) {
+    const n = Number(kind);
+    if (Number.isInteger(n)) return SPAN_KIND_NAMES[n];
+    return kind.startsWith('SPAN_KIND_') ? kind : `SPAN_KIND_${kind.toUpperCase()}`;
+  }
+  return undefined;
+}
+
 function statusFromCode(code: unknown): Span['status'] {
   // OTLP status code: 0 UNSET, 1 OK, 2 ERROR
   if (code === 2 || code === 'STATUS_CODE_ERROR') return 'ERROR';
@@ -110,6 +133,8 @@ export function otlpToSpans(body: any): Span[] {
           attributes['serviceName'] = serviceName;
         }
         if (scopeName) attributes['instrumentation.scope.name'] = scopeName;
+        const kindName = spanKindName(sp?.kind);
+        if (kindName && attributes['spanKind'] === undefined) attributes['spanKind'] = kindName;
 
         const startTime = nanosToIso(sp?.startTimeUnixNano);
         const endTime = nanosToIso(sp?.endTimeUnixNano);

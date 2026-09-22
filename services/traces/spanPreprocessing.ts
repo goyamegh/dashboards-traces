@@ -18,7 +18,7 @@
  */
 
 import { Span, CategorizedSpan, TimeRange, SpanCategory } from '@/types';
-import { getSpanCategory, getCategoryMeta, buildDisplayName } from './spanCategorization';
+import { buildCategoryFields } from './spanCategorization';
 import type { CategoryStats, ToolInfo } from './traceStats';
 
 /**
@@ -58,16 +58,12 @@ export function preprocessSpanTree(
    * @returns Categorized span with all metadata
    */
   function processNode(span: Span, depth: number): CategorizedSpan {
-    // Categorize span
-    const category = getSpanCategory(span);
-    const meta = getCategoryMeta(category);
+    // Categorize span (same fields as categorizeSpan, incl. isEntrypoint)
+    const categoryFields = buildCategoryFields(span);
+    const category = categoryFields.category;
     const categorizedSpan: CategorizedSpan = {
       ...span,
-      category,
-      categoryLabel: meta.label,
-      categoryColor: meta.color,
-      categoryIcon: meta.icon,
-      displayName: buildDisplayName(span, category),
+      ...categoryFields,
       depth,
       children: [], // Will be populated below
     };
