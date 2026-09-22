@@ -572,6 +572,31 @@ describe('EvalRunsPage — in-flight (running) run indication (bug #5, 2026-09-0
     expect(row.querySelector('.animate-spin')).toBeNull();
   });
 
+  it('a run whose cases came back empty (breaker not tripped) shows an "Empty responses" badge with the count summary; the cases count as errored', async () => {
+    const summary = '3 cases returned an empty response (no steps, no answer, no results) — not judged';
+    const results: Record<string, unknown> = {};
+    for (let i = 0; i < 3; i++) results[`tc-${i}`] = { reportId: `r-${i}`, status: 'completed' }; // agent_empty_response → no verdict → errored
+    results['tc-3'] = { reportId: 'r-3', status: 'completed', passFailStatus: 'passed' };
+    mockListEvaluationRuns.mockResolvedValue({
+      evaluationRuns: [makeRunningEvalRun({
+        id: 'eval-run-empty-1', name: 'Empty Body Run', status: 'completed', results,
+        testCaseSnapshots: Array.from({ length: 4 }, (_, i) => ({ id: `tc-${i}` })),
+        agentFailureSummary: summary,
+      } as any)],
+    });
+    await renderPage();
+    await waitFor(() => expect(screen.getByText('Empty Body Run')).toBeTruthy());
+    const row = screen.getByText('Empty Body Run').closest('tr') as HTMLElement;
+    const badge = row.querySelector('[data-testid="run-row-agent-unreachable"]') as HTMLElement;
+    expect(badge).toBeTruthy();
+    expect(badge.textContent).toContain('Empty responses');
+    expect(badge.textContent).not.toContain('Agent unreachable');
+    expect(badge.getAttribute('title')).toBe(summary);
+    expect(row.querySelector('[data-testid="run-row-errored-badge"]')?.textContent).toContain('3');
+    expect(row.querySelector('[data-testid="run-row-status-failed"]')).toBeNull();
+    expect(row.querySelector('.animate-spin')).toBeNull();
+  });
+
   it('a completed run shows neither a Cancelled nor a Failed badge nor a "not run" annotation', async () => {
     mockListEvaluationRuns.mockResolvedValue({
       evaluationRuns: [makeRunningEvalRun({ id: 'eval-run-done-3', name: 'Finished Run 3', status: 'completed', testCaseSnapshots: [{}], results: { 'tc-0': { reportId: 'r-0', status: 'completed', passFailStatus: 'passed' } } })],

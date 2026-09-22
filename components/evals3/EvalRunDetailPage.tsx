@@ -19,6 +19,7 @@ import {
   ChevronDown, ChevronRight, ArrowLeft, Bookmark, Link2, Unplug,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { presentAgentFailureSummary } from '@/lib/agentFailureSummary';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { Skeleton } from '@/components/ui/skeleton';
@@ -386,7 +387,7 @@ export const EvalRunDetailPage: React.FC = () => {
               <Unplug size={12} className="shrink-0 mt-0.5" />
               <span>
                 {run.agentFailureSummary}
-                <span className="text-amber-700/80 dark:text-amber-400/80"> — check the agent endpoint and re-run; nothing was judged.</span>
+                <span className="text-amber-700/80 dark:text-amber-400/80"> — {presentAgentFailureSummary(run.agentFailureSummary).remedy}</span>
               </span>
             </div>
           )}
