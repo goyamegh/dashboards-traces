@@ -91,6 +91,24 @@ describe('SpanDetailsPanel — RETRIEVAL span I/O', () => {
     expect(screen.getByText('db.query.text|db.operation.name')).toBeTruthy();
   });
 
+  it('a hybrid execute_tool + db.* span keeps its tool I/O and still shows the DB caption', () => {
+    const s = searchSpan();
+    s.attributes = {
+      ...s.attributes,
+      'gen_ai.operation.name': 'execute_tool',
+      'gen_ai.tool.name': 'search_index',
+      'gen_ai.tool.call.arguments': '{"q":"from-tool-args"}',
+      'gen_ai.tool.call.result': '{"hits":3}',
+    };
+    const c = categorizeSpan(s);
+    expect(c.category).toBe('TOOL');
+    render(React.createElement(SpanDetailsPanel, { span: c, onClose: jest.fn() }));
+    expect(screen.getByTestId('span-details-input').textContent).toContain('from-tool-args');
+    expect(screen.getByTestId('span-details-input').textContent).not.toContain('desk lamp');
+    expect(screen.getByTestId('span-details-output').textContent).toContain('hits');
+    expect(screen.getByTestId('span-details-retrieval-caption').textContent).toBe('search products (opensearch)');
+  });
+
   it('does not show a retrieval caption for non-db spans', () => {
     const s = searchSpan();
     s.attributes = { 'gen_ai.operation.name': 'chat' };
@@ -107,10 +125,18 @@ describe('SpanInputOutput — RETRIEVAL category', () => {
     expect(io.output).toContain('returned_rows: 20');
   });
 
-  it('db.* wins over a gen_ai.tool.name on the same span', () => {
+  it('db.* wins over a bare gen_ai.tool.name (no known operation) on the same span', () => {
     const s = searchSpan();
     s.attributes = { ...s.attributes, 'gen_ai.tool.name': 'search_index' };
     expect(extractSpanIO(s).category).toBe('retrieval');
+  });
+
+  it('a known execute_tool operation keeps the span in the tool bucket of the I/O tab', () => {
+    const s = searchSpan();
+    s.attributes = { ...s.attributes, 'gen_ai.operation.name': 'execute_tool', 'gen_ai.tool.name': 'search_index', 'gen_ai.tool.call.arguments': '{"q":1}' };
+    const io = extractSpanIO(s);
+    expect(io.category).toBe('tool');
+    expect(io.input).toContain('"q"');
   });
 
   it('renders a Retrieval badge and the span card', () => {

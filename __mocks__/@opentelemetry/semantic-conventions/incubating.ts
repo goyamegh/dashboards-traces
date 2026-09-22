@@ -71,6 +71,10 @@ export const ATTR_HTTP_REQUEST_METHOD = 'http.request.method';
 export const ATTR_HTTP_METHOD = 'http.method';
 export const ATTR_HTTP_ROUTE = 'http.route';
 export const ATTR_URL_PATH = 'url.path';
+export const ATTR_HTTP_TARGET = 'http.target';
+export const ATTR_HTTP_RESPONSE_STATUS_CODE = 'http.response.status_code';
+export const ATTR_HTTP_STATUS_CODE = 'http.status_code';
+export const GEN_AI_OPERATION_NAME_VALUE_EMBEDDINGS = 'embeddings';
 
 export default {
   ATTR_GEN_AI_OPERATION_NAME,
@@ -115,4 +119,8 @@ export default {
   ATTR_HTTP_METHOD,
   ATTR_HTTP_ROUTE,
   ATTR_URL_PATH,
+  ATTR_HTTP_TARGET,
+  ATTR_HTTP_RESPONSE_STATUS_CODE,
+  ATTR_HTTP_STATUS_CODE,
+  GEN_AI_OPERATION_NAME_VALUE_EMBEDDINGS,
 };
