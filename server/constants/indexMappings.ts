@@ -292,6 +292,7 @@ export function getIndexMappings(): IndexMappings {
               judgeModelId: { type: 'keyword' },
               primaryMetrics: { type: 'keyword' },
               unevaluable: { type: 'keyword' },
+              notApplicable: { type: 'keyword' },
               extractionRule: { type: 'keyword' },
               goldIdsUsed: { type: 'keyword' },
               goldRule: { type: 'keyword' },
@@ -300,6 +301,7 @@ export function getIndexMappings(): IndexMappings {
                   candidateCount: { type: 'integer' },
                   citedCount: { type: 'integer' },
                   anchorsRemoved: { type: 'integer' },
+                  parsedFrom: { type: 'keyword' },
                 },
               },
               passPolicy: {
