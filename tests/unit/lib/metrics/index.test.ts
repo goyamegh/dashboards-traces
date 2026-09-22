@@ -75,7 +75,7 @@ describe('lib/metrics — fixture table', () => {
 
 describe('lib/metrics — registry', () => {
   it('lists exactly the supported compute types', () => {
-    expect([...METRIC_COMPUTE_TYPES]).toEqual(['ranked-hit', 'ranked-recall', 'mrr']);
+    expect([...METRIC_COMPUTE_TYPES]).toEqual(['ranked-hit', 'ranked-recall', 'mrr', 'abstain']);
   });
 
   it('computeMetric dispatches by type', () => {
