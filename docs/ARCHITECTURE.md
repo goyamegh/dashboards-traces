@@ -393,8 +393,52 @@ Agents can expose it with any attribute whose key ends in `.hit_ids` or
 array serialised to text (a Python-style single-quoted list literal is accepted
 too). Agent Health renders each such attribute as an id list in the span's
 output; a value that is not list-shaped is shown verbatim rather than guessed
-at (no comma-splitting of arbitrary strings). Nothing about it is specific to
-one agent.
+at (no comma-splitting of arbitrary strings). A list of objects that each carry
+exactly one id-like key (`id`, `_id`, `doc_id`, `document_id`) is reduced to
+those ids. Nothing about it is specific to one agent.
+
+**Retrieved vs returned (labelled pair).** A root / agent span frequently
+carries *two* id lists: the union of everything the agent looked at, and the
+subset it actually handed back. Readers mistake the former for the answer, so
+Agent Health labels the two key families and shows them side by side (span
+drawer and details panel, `RetrievedReturnedLists`), each with its attribute
+name(s), a distinct-id count and the ids:
+
+| Key family (any prefix) | Label | Meaning |
+|-------------------------|-------|---------|
+| `*.retrieved.*` — a `retrieved` key segment, e.g. `myagent.retrieved.doc_ids` | **Retrieved (seen)** | candidates pulled in from any source (search hits, graph traversals, …) |
+| `*.results*` / `*.returned.*` / `*.recommended.*` — a segment that is `returned`, `recommended`, or starts with `results`, e.g. `myagent.results`, `myagent.results.ids` | **Returned (recommended)** | what the agent surfaced to the caller |
+
+When a span carries both, the overlap is reported ("12 of 20 retrieved were
+returned", plus a note when a returned id was never retrieved). Scalar siblings
+of the `results` family (`x.results.source`, `x.results.count`) are not id
+lists and stay in the plain attribute table. The neutral `*.hit_ids` /
+`*.result_ids` / `retrieval.ids` keys are NOT part of the pair — on a search
+span they are simply that call's hits.
+
+**Canonical names for new instrumentation:** `retrieval.retrieved.ids` (seen)
+and `retrieval.results.ids` (returned), both OTel string arrays, on the span
+that represents the whole request (the HTTP entrypoint or `invoke_agent`
+span). Any prefix matching the families above is recognised, so existing
+agents need not rename.
+
+### Trace row ordering and absolute time
+
+Every span list the UI renders — tree roots, children at each depth, the
+flattened visible list, and the execution-order flow's siblings — is sorted by
+`startTime` ascending with `spanId` as the tie-break
+([`services/traces/spanTime.ts`](../services/traces/spanTime.ts),
+`compareSpansByStartTime`), so two views never disagree about the order and
+same-millisecond spans never swap between renders. The list header states
+"sorted by start time".
+
+Each row shows the span's absolute start (`HH:MM:SS.mmm`, viewer's local zone;
+the full ISO timestamp is in the tooltip) and its offset from the trace root
+(`+1.234 s`). The timeline axis stays relative and the header pins `t=0` to the
+root's wall-clock start. The span name on a row is a button (click / Enter /
+Space) that opens the details drawer, always carries the full name in `title`,
+and the drawer header shows the full name un-truncated; the name column is
+drag-resizable.
 
 ## Claude Code Judge
 
