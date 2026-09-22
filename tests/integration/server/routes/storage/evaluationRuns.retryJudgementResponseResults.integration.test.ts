@@ -15,8 +15,9 @@
  *   POST .../retry-judgement { scope: 'all', evaluatorId }
  *     → matcher rows show the ids parsed from the RESPONSE (not the tool
  *       hits), `parsedFrom` per report, the abstain row (n/a on gold cases,
- *       scored on the gold-empty case), ranked metrics 0 on an empty list,
- *       the no-response report not evaluable.
+ *       scored on the gold-empty case), ranked metrics 0 on an explicit
+ *       empty list, the no-response AND the unrecognisable-response reports
+ *       not evaluable; an abstain metric with tool-hits-ordered → 400.
  *
  * Requires a backend (AH_PORT). Every created id is deleted in afterAll.
  */
@@ -97,6 +98,9 @@ describe('deterministic evaluators — response-results source + abstain metric'
     const badSource = await post('/api/storage/evaluators', { ...evaluatorBody(), inputs: { ...evaluatorBody().inputs, prediction: { source: 'report.output' } } });
     expect(badSource.status).toBe(400);
     expect((await badSource.json()).error).toMatch(/must be 'tool-hits-ordered' or 'response-results'/);
+    const abstainWithToolHits = await post('/api/storage/evaluators', { ...evaluatorBody(), inputs: { ...evaluatorBody().inputs, prediction: { source: 'tool-hits-ordered' } } });
+    expect(abstainWithToolHits.status).toBe(400);
+    expect((await abstainWithToolHits.json()).error).toMatch(/'abstain' metric requires inputs.prediction.source 'response-results'/);
   });
 
   it('creates the evaluator, re-scores a completed run from the RETURNED lists, and scores abstain on the gold-empty case', async () => {
@@ -131,6 +135,7 @@ describe('deterministic evaluators — response-results source + abstain metric'
     const tcAbstainOk = await mkCase('abstain-ok', 'Gold id(s): none');
     const tcAbstainBad = await mkCase('abstain-bad', 'Gold id(s): none');
     const tcNoResponse = await mkCase('noresponse', 'Gold id(s): 707');
+    const tcProse = await mkCase('prose', 'Gold id(s): 808');
 
     // 3. Completed run with stored trajectories. Every report also carries a
     //    tool result with the gold id RETRIEVED, so a tool-hits scorer would
@@ -163,10 +168,12 @@ describe('deterministic evaluators — response-results source + abstain metric'
     const repAbstainBad = await mkReport(tcAbstainBad, [retrievedStep(['1', '2']), responseStep(rankedJson(['1']))]);
     // no response step at all → not evaluable
     const repNoResponse = await mkReport(tcNoResponse, [retrievedStep(['707'])]);
+    // a prose answer with no recognisable list → not evaluable (never scored as 0)
+    const repProse = await mkReport(tcProse, [retrievedStep(['808']), responseStep('I found a few things but nothing definitive; product 808 might be relevant.')]);
 
     const cases: Record<string, string> = {
       [tcJson]: repJson, [tcFenced]: repFenced, [tcText]: repText, [tcEmptyList]: repEmpty,
-      [tcAbstainOk]: repAbstainOk, [tcAbstainBad]: repAbstainBad, [tcNoResponse]: repNoResponse,
+      [tcAbstainOk]: repAbstainOk, [tcAbstainBad]: repAbstainBad, [tcNoResponse]: repNoResponse, [tcProse]: repProse,
     };
     const runId = `eval-run-det-rr-int-${stamp()}`;
     const runRes = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`, {
@@ -188,7 +195,7 @@ describe('deterministic evaluators — response-results source + abstain metric'
     expect(start.status).toBe(202);
     const job = await pollRetryJudgement(runId);
     expect(job.status).toBe('completed');
-    expect(job.summary).toMatchObject({ retried: 7, succeeded: 6, failed: 1 });
+    expect(job.summary).toMatchObject({ retried: 8, succeeded: 6, failed: 2 });
 
     // 5. Reports.
     const get = async (id: string) => (await fetch(`${BASE_URL}/api/storage/runs/${id}`)).json();
@@ -208,8 +215,7 @@ describe('deterministic evaluators — response-results source + abstain metric'
     expect(rowOf(json, 'hit@5').details).toMatchObject({ gold: ['101', '202'], predicted: ['9', '202'], predictedTotal: 2, k: 5, extractionRule: 'response-results', parsedFrom: 'json' });
     expect(rowOf(json, 'hit@5')).toMatchObject({ pass: true, role: 'primary', actual: 1, expected: 1 });
     const abstainRow = rowOf(json, 'abstain');
-    expect(abstainRow).toMatchObject({ pass: true, role: 'observe', method: 'code-assertion' });
-    expect(abstainRow.details).toMatchObject({ notApplicable: true });
+    expect(abstainRow).toMatchObject({ pass: true, role: 'observe', method: 'code-assertion', notApplicable: true });
     expect(abstainRow.details.notApplicableReason).toMatch(/abstain only scores cases whose gold is explicitly empty/);
     expect(abstainRow.errored ?? undefined).toBeUndefined();
     expect(json.llmJudgeReasoning).toBe('');
@@ -239,8 +245,8 @@ describe('deterministic evaluators — response-results source + abstain metric'
     expect(abstainOk.metrics).toEqual({ abstain: 1 });
     expect(abstainOk.scoringSnapshot).toMatchObject({ goldIdsUsed: [], goldRule: 'expected-outcomes-pattern', notApplicable: ['hit@5', 'recall@20', 'mrr'], unevaluable: [] });
     expect(rowOf(abstainOk, 'abstain')).toMatchObject({ pass: true, role: 'primary', actual: 1, expected: 1 });
-    expect(rowOf(abstainOk, 'hit@5')).toMatchObject({ pass: true, role: 'observe' });
-    expect(rowOf(abstainOk, 'hit@5').details).toMatchObject({ notApplicable: true, gold: [], predicted: [] });
+    expect(rowOf(abstainOk, 'hit@5')).toMatchObject({ pass: true, role: 'observe', notApplicable: true });
+    expect(rowOf(abstainOk, 'hit@5').details).toMatchObject({ gold: [], predicted: [] });
 
     const abstainBad = await get(repAbstainBad);
     expect(abstainBad.passFailStatus).toBe('failed');
@@ -254,9 +260,16 @@ describe('deterministic evaluators — response-results source + abstain metric'
     expect(noResp.traceError).toMatch(/Not evaluable by .*no final response step/);
     expect(noResp.scoringSnapshot.unevaluable).toEqual(['hit@5', 'recall@20', 'mrr', 'abstain']);
 
+    const prose = await get(repProse);
+    expect(prose.metricsStatus).toBe('error');
+    expect(prose.passFailStatus ?? null).toBeNull();
+    expect(prose.metrics).toEqual({});
+    expect(prose.traceError).toMatch(/no ranked list recognised in the final response/);
+    expect(prose.scoringSnapshot.extraction).toEqual({ candidateCount: 0, parsedFrom: 'none' });
+
     // 6. Run doc.
     const run = await (await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`)).json();
     expect(run.evaluatorId).toBe(evaluator.id);
-    expect(run.stats).toMatchObject({ passed: 4, failed: 2, errored: 1, total: 7 });
+    expect(run.stats).toMatchObject({ passed: 4, failed: 2, errored: 2, total: 8 });
   }, 60000);
 });
