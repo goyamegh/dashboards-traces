@@ -20,6 +20,16 @@ import {
   ATTR_GEN_AI_REQUEST_MODEL,
   ATTR_GEN_AI_TOOL_NAME,
   ATTR_GEN_AI_SYSTEM,
+  // OTel DB semconv (stable + legacy)
+  ATTR_DB_SYSTEM_NAME,
+  ATTR_DB_SYSTEM,
+  ATTR_DB_QUERY_TEXT,
+  ATTR_DB_OPERATION_NAME,
+  ATTR_DB_NAMESPACE,
+  ATTR_DB_COLLECTION_NAME,
+  // OTel HTTP semconv (stable + legacy)
+  ATTR_HTTP_REQUEST_METHOD,
+  ATTR_HTTP_METHOD,
   // Operation name values
   GEN_AI_OPERATION_NAME_VALUE_CREATE_AGENT,
   GEN_AI_OPERATION_NAME_VALUE_INVOKE_AGENT,
@@ -52,6 +62,57 @@ const LLM_OPERATIONS = [
 const TOOL_OPERATIONS = [GEN_AI_OPERATION_NAME_VALUE_EXECUTE_TOOL];
 
 /**
+ * A span is a database / search client call when it carries the OTel DB
+ * semconv system attribute (stable `db.system.name`, or legacy `db.system`).
+ * @see https://opentelemetry.io/docs/specs/semconv/db/db-spans/
+ */
+export function isDbSpan(span: Span): boolean {
+  const attrs = span.attributes || {};
+  return Boolean(attrs[ATTR_DB_SYSTEM_NAME] || attrs[ATTR_DB_SYSTEM]);
+}
+
+/**
+ * True when the span carries GenAI context beyond `gen_ai.operation.name`
+ * (a provider / system / agent identity). Used to classify framework-specific
+ * operation names (e.g. an agent-loop iteration span) as AGENT orchestration
+ * rather than OTHER.
+ */
+function hasGenAiContext(attrs: Record<string, any>): boolean {
+  return Boolean(
+    attrs[ATTR_GEN_AI_PROVIDER_NAME] || attrs[ATTR_GEN_AI_SYSTEM] || attrs[ATTR_GEN_AI_AGENT_NAME]
+  );
+}
+
+/**
+ * Normalise the span kind we persist (`attributes.spanKind`) — the OpenSearch
+ * and OTLP paths store the OTLP enum name (`SPAN_KIND_SERVER`), other
+ * pipelines may store the bare word (`SERVER`) or the numeric OTLP code (2).
+ */
+function isServerKind(attrs: Record<string, any>): boolean {
+  const kind = attrs['spanKind'] ?? attrs['span.kind'] ?? attrs['kind'];
+  if (kind === undefined || kind === null) return false;
+  if (typeof kind === 'number') return kind === 2;
+  return /(^|_)SERVER$/i.test(String(kind));
+}
+
+/**
+ * An entrypoint span is the inbound request boundary of the agent service: an
+ * HTTP SERVER span (`http.request.method`, or legacy `http.method`, with
+ * kind SERVER). Such spans are the agent invocation itself, so they are
+ * categorised as AGENT — but their wall-clock duration is the whole request,
+ * so consumers attributing time per category should only count their SELF
+ * time (the `isEntrypoint` flag on `CategorizedSpan` signals this).
+ *
+ * Note: the eval `test_case` span is usually the W3C parent of this span, so
+ * "has no parent" is deliberately NOT part of the check.
+ */
+export function isEntrypointSpan(span: Span): boolean {
+  const attrs = span.attributes || {};
+  const hasHttpMethod = Boolean(attrs[ATTR_HTTP_REQUEST_METHOD] || attrs[ATTR_HTTP_METHOD]);
+  return hasHttpMethod && isServerKind(attrs);
+}
+
+/**
  * Category metadata (color, icon, label)
  */
 interface CategoryMeta {
@@ -79,6 +140,12 @@ const CATEGORY_META: Record<SpanCategory, CategoryMeta> = {
     bgColor: 'bg-amber-500/20',
     icon: 'Wrench',
     label: 'Tool',
+  },
+  RETRIEVAL: {
+    color: 'text-cyan-400',
+    bgColor: 'bg-cyan-500/20',
+    icon: 'Database',
+    label: 'Retrieval',
   },
   EVAL: {
     color: 'text-emerald-400',
@@ -108,8 +175,22 @@ export function getCategoryMeta(category: SpanCategory): CategoryMeta {
 }
 
 /**
- * Determine span category based on OTel gen_ai.operation.name attribute,
- * with fallback to name-based pattern matching for legacy agents (e.g., Langgraph).
+ * Determine span category, standards-first:
+ *
+ *  0. `status === 'ERROR'`                       → ERROR
+ *  1. OTel DB semconv (`db.system.name`/`db.system`) → RETRIEVAL. Checked before
+ *     GenAI because a span carrying both describes a data-store call made on
+ *     behalf of the agent — the DB attributes are the leaf semantic, the
+ *     GenAI ones are inherited context.
+ *  2. OTel GenAI `gen_ai.operation.name`:
+ *       - a known value                          → EVAL / AGENT / LLM / TOOL
+ *       - an unknown (framework-specific) value **with** GenAI context
+ *         (`gen_ai.provider.name` / `gen_ai.system` / `gen_ai.agent.name`)
+ *                                                → AGENT (orchestration)
+ *       - an unknown value without that context falls through to (4)
+ *  3. HTTP SERVER span (inbound request boundary)  → AGENT (see isEntrypointSpan)
+ *  4. Name-based pattern matching for legacy agents (e.g. Langgraph)
+ *  5. Otherwise                                   → OTHER ("we do not know")
  */
 export function getSpanCategory(span: Span): SpanCategory {
   // Error status takes precedence
@@ -117,8 +198,15 @@ export function getSpanCategory(span: Span): SpanCategory {
     return 'ERROR';
   }
 
-  // 1. Standards-first: OTel GenAI semantic conventions
-  const operationName = span.attributes?.[ATTR_GEN_AI_OPERATION_NAME];
+  const attrs = span.attributes || {};
+
+  // 1. OTel DB semantic conventions — leaf semantic wins over GenAI context
+  if (isDbSpan(span)) {
+    return 'RETRIEVAL';
+  }
+
+  // 2. Standards-first: OTel GenAI semantic conventions
+  const operationName = attrs[ATTR_GEN_AI_OPERATION_NAME];
 
   if (operationName) {
     if (operationName === 'evaluation') {
@@ -133,9 +221,19 @@ export function getSpanCategory(span: Span): SpanCategory {
     if (TOOL_OPERATIONS.includes(operationName)) {
       return 'TOOL';
     }
+    // Framework-specific operation name (e.g. an agent-loop cycle) that still
+    // identifies itself as GenAI → agent orchestration, not "unknown".
+    if (hasGenAiContext(attrs)) {
+      return 'AGENT';
+    }
   }
 
-  // 2. Fallback: Name-based pattern matching (for Langgraph, legacy agents)
+  // 3. Inbound HTTP request boundary of the agent service
+  if (isEntrypointSpan(span)) {
+    return 'AGENT';
+  }
+
+  // 4. Fallback: Name-based pattern matching (for Langgraph, legacy agents)
   const name = span.name?.toLowerCase() || '';
 
   // LLM patterns - check first as they're most specific
@@ -189,6 +287,15 @@ export function buildDisplayName(span: Span, category: SpanCategory): string {
       return operationName ? `${operationName} ${toolName}` : toolName;
     }
 
+    case 'RETRIEVAL': {
+      // OTel DB span-name convention: `{db.operation.name} {target}` where the
+      // target is the collection (table / index) or, failing that, the namespace.
+      const op = attrs[ATTR_DB_OPERATION_NAME] || '';
+      const target = attrs[ATTR_DB_COLLECTION_NAME] || attrs[ATTR_DB_NAMESPACE] || '';
+      const parts = [op, target].filter(Boolean);
+      return parts.length > 0 ? parts.join(' ') : span.name;
+    }
+
     case 'EVAL': {
       const testName = attrs['test.case.name'] || attrs['test.suite.name'] || '';
       return testName ? `evaluation ${testName}` : span.name;
@@ -202,19 +309,32 @@ export function buildDisplayName(span: Span, category: SpanCategory): string {
 }
 
 /**
- * Categorize a single span with full metadata
+ * The category-derived fields added to a span by categorization. Shared by
+ * `categorizeSpan` and the single-pass `preprocessSpanTree` so both produce
+ * identical metadata.
  */
-export function categorizeSpan(span: Span): CategorizedSpan {
+export function buildCategoryFields(
+  span: Span
+): Pick<CategorizedSpan, 'category' | 'categoryLabel' | 'categoryColor' | 'categoryIcon' | 'displayName' | 'isEntrypoint'> {
   const category = getSpanCategory(span);
   const meta = getCategoryMeta(category);
-
-  return {
-    ...span,
+  const fields = {
     category,
     categoryLabel: meta.label,
     categoryColor: meta.color,
     categoryIcon: meta.icon,
     displayName: buildDisplayName(span, category),
+  };
+  return isEntrypointSpan(span) ? { ...fields, isEntrypoint: true } : fields;
+}
+
+/**
+ * Categorize a single span with full metadata
+ */
+export function categorizeSpan(span: Span): CategorizedSpan {
+  return {
+    ...span,
+    ...buildCategoryFields(span),
   };
 }
 
@@ -295,6 +415,7 @@ export function countByCategory(spans: CategorizedSpan[]): Record<SpanCategory, 
     AGENT: 0,
     LLM: 0,
     TOOL: 0,
+    RETRIEVAL: 0,
     EVAL: 0,
     ERROR: 0,
     OTHER: 0,
@@ -316,24 +437,40 @@ export function countByCategory(spans: CategorizedSpan[]): Record<SpanCategory, 
 // ============ OTEL Compliance Checking ============
 
 /**
- * Expected OTEL GenAI attributes by category
+ * Expected OTEL attributes by category. Each entry is either a single
+ * attribute name or a list of alternatives (any one satisfies the expectation;
+ * reported as `a|b` when all are missing).
  * @see https://opentelemetry.io/docs/specs/semconv/gen-ai/
+ * @see https://opentelemetry.io/docs/specs/semconv/db/db-spans/
  */
-const EXPECTED_ATTRIBUTES: Record<SpanCategory, string[]> = {
+type ExpectedAttribute = string | string[];
+
+const EXPECTED_ATTRIBUTES: Record<SpanCategory, ExpectedAttribute[]> = {
   LLM: [ATTR_GEN_AI_OPERATION_NAME, ATTR_GEN_AI_REQUEST_MODEL, ATTR_GEN_AI_SYSTEM],
   TOOL: [ATTR_GEN_AI_OPERATION_NAME, ATTR_GEN_AI_TOOL_NAME],
   AGENT: [ATTR_GEN_AI_OPERATION_NAME, ATTR_GEN_AI_AGENT_NAME],
+  // DB semconv: the system is required; a span should describe WHAT it did via
+  // the query text (Recommended) or at least the operation name.
+  RETRIEVAL: [ATTR_DB_SYSTEM_NAME, [ATTR_DB_QUERY_TEXT, ATTR_DB_OPERATION_NAME]],
   EVAL: [ATTR_GEN_AI_OPERATION_NAME],
   ERROR: [],  // Errors just need status
   OTHER: [],  // No expectations for OTHER
 };
 
 /**
- * Check if a span follows OTEL GenAI semantic conventions
+ * Check if a span follows OTEL semantic conventions for its category
  */
 export function checkOTelCompliance(span: CategorizedSpan): OTelComplianceResult {
-  const expected = EXPECTED_ATTRIBUTES[span.category] || [];
-  const missing = expected.filter(attr => !span.attributes?.[attr]);
+  // The HTTP SERVER entrypoint is categorised AGENT but is an HTTP-semconv
+  // span, not a GenAI one — judge it against the HTTP convention instead of
+  // flagging it for missing gen_ai.* attributes.
+  const expected: ExpectedAttribute[] = span.isEntrypoint
+    ? [[ATTR_HTTP_REQUEST_METHOD, ATTR_HTTP_METHOD]]
+    : EXPECTED_ATTRIBUTES[span.category] || [];
+  const attrs = span.attributes || {};
+  const missing = expected
+    .filter(attr => (Array.isArray(attr) ? !attr.some(a => attrs[a]) : !attrs[attr]))
+    .map(attr => (Array.isArray(attr) ? attr.join('|') : attr));
 
   return {
     isCompliant: missing.length === 0,
