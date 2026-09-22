@@ -23,8 +23,28 @@
  * neutral key `retrieval.ids` — e.g. `myagent.search.hit_ids`. The value
  * should be an OTel string array or a JSON array serialised to text; a
  * single-quoted list literal (what `str(list)` yields in Python) is accepted
- * as well. Anything else is shown verbatim rather than guessed at. Nothing
- * here is specific to one agent.
+ * as well. A list of objects that each carry exactly one id-like key (`id`,
+ * `_id`, `doc_id`, `document_id`) is reduced to those ids. Anything else is
+ * shown verbatim rather than guessed at. Nothing here is specific to one agent.
+ *
+ * ## Retrieved vs returned (labelled pair)
+ *
+ * A root / agent span often carries BOTH the union of everything the agent
+ * looked at and the subset it actually handed back; readers mistake the
+ * former for the answer. Two key families are therefore labelled:
+ *
+ * - `*.retrieved.*` (a `retrieved` key segment, e.g. `retrieval.retrieved.ids`,
+ *   `myagent.retrieved.doc_ids`) → **Retrieved (seen)** — candidates the agent
+ *   pulled in from any source.
+ * - `*.results*` / `*.returned.*` / `*.recommended.*` (a key segment that is
+ *   `returned`, `recommended`, or starts with `results`, e.g.
+ *   `retrieval.results.ids`, `myagent.results`) → **Returned (recommended)** —
+ *   what the agent surfaced to the caller.
+ *
+ * Canonical names: `retrieval.retrieved.ids` and `retrieval.results.ids`. When
+ * a span carries both, the UI reports the overlap ("12 of 20 retrieved were
+ * returned"). `*.hit_ids` / `*.result_ids` / `retrieval.ids` stay neutral: on a
+ * search span they are simply the hits of that one call.
  *
  * @see https://opentelemetry.io/docs/specs/semconv/db/db-spans/
  */
@@ -42,6 +62,13 @@ import {
   ATTR_DB_RESPONSE_STATUS_CODE,
 } from '@opentelemetry/semantic-conventions/incubating';
 
+/**
+ * Which side of the retrieved/returned pair an id-list attribute belongs to.
+ * `ids` is the neutral #527 convention (`*.hit_ids` / `*.result_ids` /
+ * `retrieval.ids`) — the hits of one search call, no claim about the answer.
+ */
+export type RetrievalIdListRole = 'retrieved' | 'returned' | 'ids';
+
 export interface RetrievalIdList {
   /** The attribute the ids were read from (e.g. `myagent.search.hit_ids`). */
   attribute: string;
@@ -49,6 +76,25 @@ export interface RetrievalIdList {
   ids: string[];
   /** The attribute value verbatim when it was NOT parseable as a list. */
   raw?: string;
+  /** Role derived from the key (see module doc). */
+  role: RetrievalIdListRole;
+}
+
+export interface RetrievedVsReturned {
+  /** Lists whose key marks them as candidates the agent saw. */
+  retrieved: RetrievalIdList[];
+  /** Lists whose key marks them as what the agent returned / recommended. */
+  returned: RetrievalIdList[];
+  /** Distinct ids across all `retrieved` lists. */
+  retrievedIds: string[];
+  /** Distinct ids across all `returned` lists. */
+  returnedIds: string[];
+  /**
+   * Overlap when BOTH sides parsed to at least one id: how many distinct
+   * retrieved ids also appear in the returned set, and how many returned ids
+   * were never retrieved (a hint the "returned" list came from elsewhere).
+   */
+  overlap: { returnedFromRetrieved: number; returnedNotRetrieved: number } | null;
 }
 
 export interface RetrievalIO {
@@ -77,9 +123,21 @@ export interface RetrievalIO {
 /** Attribute keys that carry retrieved ids (see module doc). */
 const ID_LIST_KEY_RE = /(^|\.)(hit_ids|result_ids)$/;
 const ID_LIST_EXACT_KEY = 'retrieval.ids';
+/** A `retrieved` key segment anywhere: `x.retrieved.ids`, `retrieved.doc_ids`, `x.retrieved`. */
+const RETRIEVED_KEY_RE = /(^|\.)retrieved(\.|$)/;
+/** A `returned` / `recommended` / `results…` key segment: `x.results`, `x.results.ids`, `x.returned.ids`. */
+const RETURNED_KEY_RE = /(^|\.)(results[a-z0-9_]*|returned|recommended)(\.|$)/;
+
+/** `retrieved` for the seen-candidates family, `returned` for the answer family, else `null`. */
+export function classifyRetrievalIdListKey(key: string): RetrievalIdListRole | null {
+  if (RETRIEVED_KEY_RE.test(key)) return 'retrieved';
+  if (RETURNED_KEY_RE.test(key)) return 'returned';
+  if (key === ID_LIST_EXACT_KEY || ID_LIST_KEY_RE.test(key)) return 'ids';
+  return null;
+}
 
 export function isRetrievalIdListKey(key: string): boolean {
-  return key === ID_LIST_EXACT_KEY || ID_LIST_KEY_RE.test(key);
+  return classifyRetrievalIdListKey(key) !== null;
 }
 
 function toStr(v: unknown): string | null {
@@ -101,12 +159,37 @@ export function prettyPrintIfJson(text: string): string {
   }
 }
 
-/** Scalar list items are stringified; nested objects/arrays are not ids. */
+/** Object items are reduced to their single id-like key; the key must be the same on every item. */
+const OBJECT_ID_KEYS = ['id', '_id', 'doc_id', 'document_id'] as const;
+
+function objectId(v: Record<string, unknown>): string | null {
+  const present = OBJECT_ID_KEYS.filter(k => v[k] !== null && v[k] !== undefined && v[k] !== '');
+  if (present.length !== 1) return null;
+  const val = v[present[0]];
+  return typeof val === 'object' ? null : String(val);
+}
+
+/**
+ * Scalar list items are stringified. A list made ONLY of objects that each
+ * carry exactly one id-like key yields those ids; any other structured item
+ * makes the whole value "not an id list" (shown verbatim by the caller).
+ */
 function scalarsToIds(items: unknown[]): string[] | null {
   const ids: string[] = [];
+  let sawScalar = false;
+  let sawObject = false;
   for (const v of items) {
     if (v === null || v === undefined) continue;
-    if (typeof v === 'object') return null;
+    if (typeof v === 'object') {
+      if (Array.isArray(v) || sawScalar) return null;
+      const id = objectId(v as Record<string, unknown>);
+      if (id === null) return null;
+      sawObject = true;
+      ids.push(id);
+      continue;
+    }
+    if (sawObject) return null;
+    sawScalar = true;
     const s = String(v);
     if (s.length > 0) ids.push(s);
   }
@@ -146,17 +229,62 @@ export function extractRetrievalIdLists(span: Span): RetrievalIdList[] {
   const attrs = span.attributes || {};
   const lists: RetrievalIdList[] = [];
   for (const key of Object.keys(attrs)) {
-    if (!isRetrievalIdListKey(key)) continue;
+    const role = classifyRetrievalIdListKey(key);
+    if (!role) continue;
     const value = attrs[key];
     if (value === null || value === undefined || value === '') continue;
     const ids = parseIdList(value);
     if (ids) {
-      if (ids.length > 0) lists.push({ attribute: key, ids });
-    } else {
-      lists.push({ attribute: key, ids: [], raw: typeof value === 'string' ? value : JSON.stringify(value) });
+      if (ids.length > 0) lists.push({ attribute: key, ids, role });
+      continue;
+    }
+    // Not list-shaped. The neutral `*.hit_ids` keys PROMISE a list, so their
+    // value is kept verbatim rather than dropped. The broader retrieved /
+    // returned families also match scalar siblings (`x.results.source`,
+    // `x.results.count`) that were never id lists — those stay in the plain
+    // attribute table; only a bracketed-but-unparseable value is kept raw.
+    const looksList = typeof value === 'string' && value.trim().startsWith('[');
+    if (role === 'ids' || looksList || Array.isArray(value)) {
+      lists.push({ attribute: key, ids: [], raw: typeof value === 'string' ? value : JSON.stringify(value), role });
     }
   }
   return lists;
+}
+
+function distinct(lists: RetrievalIdList[]): string[] {
+  const seen = new Set<string>();
+  for (const l of lists) for (const id of l.ids) seen.add(id);
+  return [...seen];
+}
+
+/**
+ * Split a span's id lists into the labelled retrieved/returned pair and
+ * compute the overlap. Works on any span (root, agent, tool, retrieval); both
+ * sides are empty when the span uses neither key family.
+ */
+export function extractRetrievedVsReturned(span: Span): RetrievedVsReturned {
+  const lists = extractRetrievalIdLists(span);
+  const retrieved = lists.filter(l => l.role === 'retrieved');
+  const returned = lists.filter(l => l.role === 'returned');
+  const retrievedIds = distinct(retrieved);
+  const returnedIds = distinct(returned);
+  let overlap: RetrievedVsReturned['overlap'] = null;
+  if (retrievedIds.length > 0 && returnedIds.length > 0) {
+    const seen = new Set(retrievedIds);
+    const returnedFromRetrieved = returnedIds.filter(id => seen.has(id)).length;
+    overlap = { returnedFromRetrieved, returnedNotRetrieved: returnedIds.length - returnedFromRetrieved };
+  }
+  return { retrieved, returned, retrievedIds, returnedIds, overlap };
+}
+
+/** `"12 of 20 retrieved were returned"` (+ a note when some returned ids were never retrieved). */
+export function describeOverlap(rr: RetrievedVsReturned): string | null {
+  if (!rr.overlap) return null;
+  const { returnedFromRetrieved, returnedNotRetrieved } = rr.overlap;
+  const base = `${returnedFromRetrieved} of ${rr.retrievedIds.length} retrieved were returned`;
+  return returnedNotRetrieved > 0
+    ? `${base}; ${returnedNotRetrieved} returned id${returnedNotRetrieved === 1 ? ' was' : 's were'} not in the retrieved set`
+    : base;
 }
 
 /**
@@ -199,7 +327,8 @@ export function extractRetrievalIO(span: Span): RetrievalIO {
       outputLines.push(`${list.attribute}: ${list.raw}`);
       continue;
     }
-    outputLines.push(`${list.attribute} (${list.ids.length}):`);
+    const label = list.role === 'retrieved' ? 'Retrieved (seen) ' : list.role === 'returned' ? 'Returned (recommended) ' : '';
+    outputLines.push(`${label}${list.attribute} (${list.ids.length}):`);
     outputLines.push(...list.ids.map(id => `  - ${id}`));
   }
 
