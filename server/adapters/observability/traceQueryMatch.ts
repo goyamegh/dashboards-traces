@@ -49,7 +49,6 @@ export function matchesQuery(s: Span, options: TracesQueryOptions, useUnion: boo
   const a = s.attributes || {};
 
   // ---- must-filters (always required) ----
-  if (sessionId && a['session.id'] !== sessionId) return false;
   if (startTime !== undefined && spanMs(s) < toMs(startTime)) return false;
   if (endTime !== undefined && spanMs(s) > toMs(endTime)) return false;
   if (serviceName && !serviceMatches(s, serviceName)) return false;
@@ -82,6 +81,10 @@ export function matchesQuery(s: Span, options: TracesQueryOptions, useUnion: boo
       clauses.push(strategyC || strategyD);
     }
   }
+  // Strategy D (top-level sessionId): a unioned correlation clause, NOT a
+  // must-filter — mirrors tracesService.ts so a stale report sessionId can't
+  // zero out a traceId/runId match.
+  if (sessionId) clauses.push(a['session.id'] === sessionId);
 
   // useUnion → at least one correlation clause (should); else → all clauses (must).
   // No correlation clauses (pure time-range browse) → matches on must-filters alone.
