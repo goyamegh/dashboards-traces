@@ -91,13 +91,9 @@ describe('id-list key convention', () => {
     ]);
   });
 
-  it('reduces a list of objects with one id-like key to those ids (mixed shapes are not ids)', () => {
-    expect(parseIdList([{ id: 'a' }, { id: 7 }])).toEqual(['a', '7']);
-    expect(parseIdList('[{"doc_id":"d1"},{"doc_id":"d2"}]')).toEqual(['d1', 'd2']);
-    expect(parseIdList([{ id: 'a', _id: 'b' }])).toBeNull(); // ambiguous
-    expect(parseIdList([{ title: 'no id here' }])).toBeNull();
-    expect(parseIdList([{ id: 'a' }, 'b'])).toBeNull(); // objects and scalars mixed
-    expect(parseIdList([{ id: { nested: true } }])).toBeNull();
+  it('does NOT reduce lists of objects to ids — a result object is not an id', () => {
+    expect(parseIdList([{ id: 'a' }, { id: 7 }])).toBeNull();
+    expect(parseIdList('[{"doc_id":"d1"}]')).toBeNull();
   });
 
   it('renders a raw (unparseable) id attribute verbatim in the output text', () => {
@@ -114,8 +110,17 @@ describe('retrieved vs returned (labelled pair)', () => {
     expect(classifyRetrievalIdListKey('retrieval.results.ids')).toBe('returned');
     expect(classifyRetrievalIdListKey('myagent.results')).toBe('returned');
     expect(classifyRetrievalIdListKey('myagent.results_ids')).toBe('returned');
+    expect(classifyRetrievalIdListKey('myagent.results_doc_ids')).toBe('returned');
     expect(classifyRetrievalIdListKey('x.returned.ids')).toBe('returned');
+    expect(classifyRetrievalIdListKey('x.returned_ids')).toBe('returned');
     expect(classifyRetrievalIdListKey('x.recommended.ids')).toBe('returned');
+    expect(classifyRetrievalIdListKey('x.retrieved_ids')).toBe('retrieved');
+    expect(classifyRetrievalIdListKey('x.docs_retrieved')).toBe('retrieved');
+    expect(classifyRetrievalIdListKey('x.top_retrieved.ids')).toBe('retrieved');
+    // Counts / metadata siblings are not id lists.
+    expect(classifyRetrievalIdListKey('x.results_count')).toBeNull();
+    expect(classifyRetrievalIdListKey('x.results_metadata')).toBeNull();
+    expect(classifyRetrievalIdListKey('http.response.returned_bytes')).toBeNull();
     expect(classifyRetrievalIdListKey('search.hit_ids')).toBe('ids');
     expect(classifyRetrievalIdListKey('search.result_ids')).toBe('ids');
     expect(classifyRetrievalIdListKey('retrieval.ids')).toBe('ids');
@@ -151,15 +156,19 @@ describe('retrieved vs returned (labelled pair)', () => {
     expect(none.returned).toEqual([]);
   });
 
-  it('ignores scalar siblings of the results family but keeps bracketed-unparseable values raw', () => {
+  it('only list-shaped values join the pair: scalar siblings, object lists and unparseable blobs are left to the attribute table', () => {
     const rr = extractRetrievedVsReturned(span({
       'agent.results': ['1'],
       'agent.results.source': 'return_results',
-      'agent.results.count': 1,
+      'agent.results_count': 1,
+      'agent.results_metadata': [{ id: '1', score: 0.9 }],
       'agent.returned.ids': '[oops',
     }));
-    expect(rr.returned.map(l => l.attribute)).toEqual(['agent.results', 'agent.returned.ids']);
-    expect(rr.returned[1]).toEqual({ attribute: 'agent.returned.ids', ids: [], raw: '[oops', role: 'returned' });
+    expect(rr.returned.map(l => l.attribute)).toEqual(['agent.results']);
+    // …whereas the neutral hit_ids keys still keep an unparseable value verbatim (#527).
+    expect(extractRetrievalIdLists(span({ 'search.hit_ids': 'p1, p2' }))).toEqual([
+      { attribute: 'search.hit_ids', ids: [], raw: 'p1, p2', role: 'ids' },
+    ]);
   });
 
   it('labels the sides in the RETRIEVAL output text', () => {

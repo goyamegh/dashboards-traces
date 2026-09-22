@@ -20,7 +20,7 @@ import { formatDuration } from '@/services/traces/utils';
 import { Input } from '@/components/ui/input';
 import { Search, Copy, Check, Database } from 'lucide-react';
 import { isDbSpan } from '@/services/traces/spanCategorization';
-import { extractRetrievalIO, extractRetrievedVsReturned } from '@/services/traces/retrievalSpan';
+import { extractRetrievalIO } from '@/services/traces/retrievalSpan';
 import { formatClockTime, formatIsoTime } from '@/services/traces/spanTime';
 import RetrievedReturnedLists from './RetrievedReturnedLists';
 
@@ -245,7 +245,7 @@ const SimpleSpanAttributesTable: React.FC<SimpleSpanAttributesTableProps> = ({ s
           the reader sees "seen" and "returned" side by side before the raw
           attributes, where the two lists look identical. */}
       <div className="flex-1 overflow-auto">
-        <RetrievedReturnedListsBlock span={span} />
+        <RetrievedReturnedLists span={span} compact className="px-3 py-2 border-b bg-background" />
         {/* Plain attributes table. Two columns: key, value. Long values wrap
             and use a monospace font so JSON / IDs stay readable. */}
         {filtered.length === 0 ? (
@@ -297,17 +297,6 @@ const SimpleSpanAttributesTable: React.FC<SimpleSpanAttributesTableProps> = ({ s
           </table>
         )}
       </div>
-    </div>
-  );
-};
-
-/** Wraps the pair in the drawer's padding only when the span has either list. */
-const RetrievedReturnedListsBlock: React.FC<{ span: Span }> = ({ span }) => {
-  const rr = useMemo(() => extractRetrievedVsReturned(span), [span]);
-  if (rr.retrieved.length === 0 && rr.returned.length === 0) return null;
-  return (
-    <div className="px-3 py-2 border-b bg-background">
-      <RetrievedReturnedLists span={span} compact />
     </div>
   );
 };

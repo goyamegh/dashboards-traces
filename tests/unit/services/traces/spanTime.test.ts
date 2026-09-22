@@ -58,9 +58,9 @@ describe('compareSpansByStartTime / sortSpansByStartTime', () => {
     expect(input).toEqual(copy);
   });
 
-  it('treats an unparseable startTime as t=0 rather than throwing', () => {
+  it('sorts spans with an unparseable startTime LAST rather than throwing or faking the epoch', () => {
     const bad = { ...mk('bad', 5), startTime: 'not-a-date' };
-    expect(sortSpansByStartTime([mk('a', 1), bad]).map(s => s.spanId)).toEqual(['bad', 'a']);
+    expect(sortSpansByStartTime([bad, mk('a', 1)]).map(s => s.spanId)).toEqual(['a', 'bad']);
   });
 });
 
@@ -104,10 +104,14 @@ describe('processSpansIntoTree ordering guarantee', () => {
 });
 
 describe('absolute time + offset labels', () => {
-  it('getTraceAnchorMs is the earliest start in the tree (walking children)', () => {
+  it('getTraceAnchorMs is the earliest ROOT start; a clock-skewed child gets a negative offset instead of moving t=0', () => {
     const tree = processSpansIntoTree([mk('root', 100, undefined, 1000), mk('skewed', 90, 'root')]);
-    expect(getTraceAnchorMs(tree)).toBe(T0 + 90);
+    expect(getTraceAnchorMs(tree)).toBe(T0 + 100);
+    expect(getSpanTimeLabels(tree[0].children![0], getTraceAnchorMs(tree)).offset).toBe('-0.010 s');
+    // Several roots (window-fetched sibling traces): the earliest root anchors.
+    expect(getTraceAnchorMs(processSpansIntoTree([mk('r2', 500), mk('r1', 200)]))).toBe(T0 + 200);
     expect(getTraceAnchorMs([])).toBeNull();
+    expect(getTraceAnchorMs([{ ...mk('x', 0), startTime: 'nope' }])).toBeNull();
   });
 
   it('formatClockTime renders local HH:MM:SS.mmm and tolerates bad input', () => {

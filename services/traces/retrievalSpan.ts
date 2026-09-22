@@ -23,9 +23,8 @@
  * neutral key `retrieval.ids` — e.g. `myagent.search.hit_ids`. The value
  * should be an OTel string array or a JSON array serialised to text; a
  * single-quoted list literal (what `str(list)` yields in Python) is accepted
- * as well. A list of objects that each carry exactly one id-like key (`id`,
- * `_id`, `doc_id`, `document_id`) is reduced to those ids. Anything else is
- * shown verbatim rather than guessed at. Nothing here is specific to one agent.
+ * as well. Anything else is shown verbatim rather than guessed at. Nothing
+ * here is specific to one agent.
  *
  * ## Retrieved vs returned (labelled pair)
  *
@@ -33,18 +32,24 @@
  * looked at and the subset it actually handed back; readers mistake the
  * former for the answer. Two key families are therefore labelled:
  *
- * - `*.retrieved.*` (a `retrieved` key segment, e.g. `retrieval.retrieved.ids`,
- *   `myagent.retrieved.doc_ids`) → **Retrieved (seen)** — candidates the agent
- *   pulled in from any source.
- * - `*.results*` / `*.returned.*` / `*.recommended.*` (a key segment that is
- *   `returned`, `recommended`, or starts with `results`, e.g.
- *   `retrieval.results.ids`, `myagent.results`) → **Returned (recommended)** —
- *   what the agent surfaced to the caller.
+ * - `*.retrieved.*` — a `retrieved` key segment (`retrieval.retrieved.ids`,
+ *   `myagent.retrieved.doc_ids`), or a segment ending in `_retrieved` /
+ *   starting `retrieved_…ids` (`docs_retrieved`, `retrieved_ids`) →
+ *   **Retrieved (seen)** — candidates the agent pulled in from any source.
+ * - `*.results*` / `*.returned.*` / `*.recommended.*` — a key segment that is
+ *   exactly `results`, `returned` or `recommended`, or one of those followed
+ *   by `_…ids` (`retrieval.results.ids`, `myagent.results`, `x.returned_ids`)
+ *   → **Returned (recommended)** — what the agent surfaced to the caller.
+ *   Siblings such as `x.results_count` / `x.results.source` are NOT id lists
+ *   and are left alone.
  *
- * Canonical names: `retrieval.retrieved.ids` and `retrieval.results.ids`. When
- * a span carries both, the UI reports the overlap ("12 of 20 retrieved were
- * returned"). `*.hit_ids` / `*.result_ids` / `retrieval.ids` stay neutral: on a
- * search span they are simply the hits of that one call.
+ * Only list-shaped values count for the pair (a scalar or an unparseable blob
+ * under one of these keys stays in the plain attribute table). Canonical
+ * names: `retrieval.retrieved.ids` and `retrieval.results.ids`. When a span
+ * carries both, the UI reports the overlap ("12 of 20 retrieved were
+ * returned", over distinct ids). `*.hit_ids` / `*.result_ids` /
+ * `retrieval.ids` stay neutral: on a search span they are simply the hits of
+ * that one call.
  *
  * @see https://opentelemetry.io/docs/specs/semconv/db/db-spans/
  */
@@ -123,10 +128,10 @@ export interface RetrievalIO {
 /** Attribute keys that carry retrieved ids (see module doc). */
 const ID_LIST_KEY_RE = /(^|\.)(hit_ids|result_ids)$/;
 const ID_LIST_EXACT_KEY = 'retrieval.ids';
-/** A `retrieved` key segment anywhere: `x.retrieved.ids`, `retrieved.doc_ids`, `x.retrieved`. */
-const RETRIEVED_KEY_RE = /(^|\.)retrieved(\.|$)/;
-/** A `returned` / `recommended` / `results…` key segment: `x.results`, `x.results.ids`, `x.returned.ids`. */
-const RETURNED_KEY_RE = /(^|\.)(results[a-z0-9_]*|returned|recommended)(\.|$)/;
+/** `retrieved` as a segment (or `…_retrieved`, `retrieved_…ids`): `x.retrieved.ids`, `docs_retrieved`, `retrieved_ids`. */
+const RETRIEVED_KEY_RE = /(^|[._])retrieved(_[a-z0-9_]*ids)?(\.|$)/;
+/** `results` / `returned` / `recommended` as a segment (or followed by `_…ids`): `x.results`, `x.results.ids`, `x.returned_ids`. */
+const RETURNED_KEY_RE = /(^|\.)(results|returned|recommended)(_[a-z0-9_]*ids)?(\.|$)/;
 
 /** `retrieved` for the seen-candidates family, `returned` for the answer family, else `null`. */
 export function classifyRetrievalIdListKey(key: string): RetrievalIdListRole | null {
@@ -159,37 +164,12 @@ export function prettyPrintIfJson(text: string): string {
   }
 }
 
-/** Object items are reduced to their single id-like key; the key must be the same on every item. */
-const OBJECT_ID_KEYS = ['id', '_id', 'doc_id', 'document_id'] as const;
-
-function objectId(v: Record<string, unknown>): string | null {
-  const present = OBJECT_ID_KEYS.filter(k => v[k] !== null && v[k] !== undefined && v[k] !== '');
-  if (present.length !== 1) return null;
-  const val = v[present[0]];
-  return typeof val === 'object' ? null : String(val);
-}
-
-/**
- * Scalar list items are stringified. A list made ONLY of objects that each
- * carry exactly one id-like key yields those ids; any other structured item
- * makes the whole value "not an id list" (shown verbatim by the caller).
- */
+/** Scalar list items are stringified; nested objects/arrays are not ids. */
 function scalarsToIds(items: unknown[]): string[] | null {
   const ids: string[] = [];
-  let sawScalar = false;
-  let sawObject = false;
   for (const v of items) {
     if (v === null || v === undefined) continue;
-    if (typeof v === 'object') {
-      if (Array.isArray(v) || sawScalar) return null;
-      const id = objectId(v as Record<string, unknown>);
-      if (id === null) return null;
-      sawObject = true;
-      ids.push(id);
-      continue;
-    }
-    if (sawObject) return null;
-    sawScalar = true;
+    if (typeof v === 'object') return null;
     const s = String(v);
     if (s.length > 0) ids.push(s);
   }
@@ -239,12 +219,11 @@ export function extractRetrievalIdLists(span: Span): RetrievalIdList[] {
       continue;
     }
     // Not list-shaped. The neutral `*.hit_ids` keys PROMISE a list, so their
-    // value is kept verbatim rather than dropped. The broader retrieved /
-    // returned families also match scalar siblings (`x.results.source`,
-    // `x.results.count`) that were never id lists — those stay in the plain
-    // attribute table; only a bracketed-but-unparseable value is kept raw.
-    const looksList = typeof value === 'string' && value.trim().startsWith('[');
-    if (role === 'ids' || looksList || Array.isArray(value)) {
+    // value is kept verbatim rather than dropped (#527 behaviour). The
+    // retrieved / returned families are matched by looser key patterns, so a
+    // non-list value there (`x.results.source`, a list of result objects) is
+    // simply not part of the pair — it stays in the plain attribute table.
+    if (role === 'ids') {
       lists.push({ attribute: key, ids: [], raw: typeof value === 'string' ? value : JSON.stringify(value), role });
     }
   }
