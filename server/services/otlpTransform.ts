@@ -81,7 +81,9 @@ function nanosToIso(nanos: unknown): string {
 /**
  * OTLP span kind → the `SPAN_KIND_*` enum name the OpenSearch ingest path
  * stores under `attributes.spanKind` (used e.g. to recognise HTTP SERVER
- * entrypoint spans). Accepts the numeric code or the enum name.
+ * entrypoint spans). Strict: accepts only the OTLP/JSON encodings the spec
+ * allows — the numeric code (or its decimal string) or the exact enum name.
+ * Anything else yields `undefined` rather than a laundered look-alike.
  */
 const SPAN_KIND_NAMES: Record<number, string> = {
   0: 'SPAN_KIND_UNSPECIFIED',
@@ -91,12 +93,12 @@ const SPAN_KIND_NAMES: Record<number, string> = {
   4: 'SPAN_KIND_PRODUCER',
   5: 'SPAN_KIND_CONSUMER',
 };
+const SPAN_KIND_NAME_SET = new Set(Object.values(SPAN_KIND_NAMES));
 export function spanKindName(kind: unknown): string | undefined {
   if (typeof kind === 'number') return SPAN_KIND_NAMES[kind];
   if (typeof kind === 'string' && kind.length > 0) {
-    const n = Number(kind);
-    if (Number.isInteger(n)) return SPAN_KIND_NAMES[n];
-    return kind.startsWith('SPAN_KIND_') ? kind : `SPAN_KIND_${kind.toUpperCase()}`;
+    if (/^\d+$/.test(kind)) return SPAN_KIND_NAMES[Number(kind)];
+    return SPAN_KIND_NAME_SET.has(kind) ? kind : undefined;
   }
   return undefined;
 }

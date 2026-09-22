@@ -8,6 +8,7 @@
  */
 
 import { Span } from '@/types';
+import { getSpanCategory } from './spanCategorization';
 import {
   ATTR_GEN_AI_REQUEST_MODEL,
   ATTR_GEN_AI_USAGE_INPUT_TOKENS,
@@ -56,8 +57,9 @@ export function getKeyAttributes(span: Span): Record<string, string | number | n
     };
   }
 
-  // Retrieval (DB semconv) spans
-  if (attrs[ATTR_DB_SYSTEM_NAME] || attrs[ATTR_DB_SYSTEM]) {
+  // Retrieval (DB semconv) spans — only when that is the span's category, so a
+  // tool span that also carries db.* keeps its tool key attributes.
+  if (getSpanCategory(span) === 'RETRIEVAL') {
     return {
       'System': attrs[ATTR_DB_SYSTEM_NAME] || attrs[ATTR_DB_SYSTEM],
       'Operation': attrs[ATTR_DB_OPERATION_NAME],

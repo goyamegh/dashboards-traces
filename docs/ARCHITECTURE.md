@@ -345,18 +345,21 @@ applied in this order:
 | Order | Rule | Category |
 |-------|------|----------|
 | 0 | `status === 'ERROR'` | `ERROR` |
-| 1 | OTel **DB** semconv: `db.system.name` (or legacy `db.system`) present | `RETRIEVAL` |
-| 2 | OTel **GenAI** `gen_ai.operation.name` is a known value: `evaluation` / `create_agent`,`invoke_agent` / `chat`,`text_completion`,`generate_content` / `execute_tool` | `EVAL` / `AGENT` / `LLM` / `TOOL` |
-| 2b | Unknown (framework-specific) `gen_ai.operation.name` **with** GenAI context (`gen_ai.provider.name`, `gen_ai.system` or `gen_ai.agent.name`) — e.g. an agent-loop iteration span | `AGENT` |
-| 3 | HTTP **SERVER** span (`http.request.method` / legacy `http.method`, kind SERVER) — the agent service's inbound request boundary. Also flagged `isEntrypoint: true` on the `CategorizedSpan` so time attribution can use self time. | `AGENT` |
-| 4 | Span-name patterns (`bedrock`, `converse`, `llm`, `executetool`, `test_case`, `agent.run`, …) for legacy / un-instrumented agents | `LLM` / `TOOL` / `EVAL` / `AGENT` |
-| 5 | Anything else — the explicit "we do not know" bucket | `OTHER` |
+| 1 | OTel **GenAI** `gen_ai.operation.name` is a **known** value: `evaluation` / `create_agent`,`invoke_agent` / `chat`,`text_completion`,`generate_content`,`embeddings` / `execute_tool` | `EVAL` / `AGENT` / `LLM` / `TOOL` |
+| 2 | OTel **DB** semconv: `db.system.name` (or legacy `db.system`) present | `RETRIEVAL` |
+| 3 | Unknown (framework-specific) `gen_ai.operation.name` **with** GenAI context (`gen_ai.provider.name`, `gen_ai.system` or `gen_ai.agent.name`): reporting `gen_ai.request.model` or token usage ⇒ a model call; otherwise orchestration (e.g. an agent-loop iteration span) | `LLM` / `AGENT` |
+| 4 | HTTP **SERVER** span (`http.request.method` / legacy `http.method`, `spanKind` exactly `SPAN_KIND_SERVER` / `SERVER` / `2`) — the agent service's inbound request boundary. The **outermost** such span in the tree is additionally flagged `isEntrypoint: true` on the `CategorizedSpan` so time attribution can use self time; nested server spans are not entrypoints. | `AGENT` |
+| 5 | Span-name patterns (`bedrock`, `converse`, `llm`, `executetool`, `test_case`, `agent.run`, …) for legacy / un-instrumented agents | `LLM` / `TOOL` / `EVAL` / `AGENT` |
+| 6 | Anything else — the explicit "we do not know" bucket | `OTHER` |
 
-**Precedence when a span carries both `gen_ai.*` and `db.*`:** `db.*` wins. A
-span that describes a database/search call made on behalf of the agent is the
-leaf semantic; the GenAI attributes on it are inherited context. Outbound HTTP
-**CLIENT** spans with no `db.*` are not retrieval and stay `OTHER` unless a
-name pattern matches.
+**Precedence when a span carries both `gen_ai.*` and `db.*`:** a *known* GenAI
+operation is authoritative — an `execute_tool` span that also carries `db.*`
+stays `TOOL` (it keeps its place in tool stats and tool-similarity grouping;
+its DB details are still surfaced in the span detail views). Only when no known
+GenAI operation claims the span do the `db.*` attributes — the span's own leaf
+semantic — make it `RETRIEVAL`, including over an unknown framework-specific
+operation name. Outbound HTTP **CLIENT** spans with no `db.*` are not retrieval
+and stay `OTHER` unless a name pattern matches.
 
 | Category | Colour | Icon | Compliance expectation (`checkOTelCompliance`) |
 |----------|--------|------|-----------------------------------------------|
@@ -364,6 +367,7 @@ name pattern matches.
 | `LLM` | purple | Zap | `gen_ai.operation.name`, `gen_ai.request.model`, `gen_ai.system` |
 | `TOOL` | amber | Wrench | `gen_ai.operation.name`, `gen_ai.tool.name` |
 | `RETRIEVAL` | cyan | Database | `db.system.name`, and `db.query.text` **or** `db.operation.name` |
+| `AGENT` (entrypoint) | indigo | Bot | HTTP server-span semconv instead of GenAI: `http.request.method`\|`http.method`, `http.route`\|`url.path`\|`http.target`, `http.response.status_code`\|`http.status_code` |
 | `EVAL` | emerald | ClipboardCheck | `gen_ai.operation.name` |
 | `ERROR` | red | AlertCircle | — |
 | `OTHER` | slate | Circle | — |
@@ -385,10 +389,12 @@ surfaces show:
 documents came back, which is exactly what a retrieval-quality judge needs.
 Agents can expose it with any attribute whose key ends in `.hit_ids` or
 `.result_ids`, or the neutral key `retrieval.ids` (e.g.
-`myagent.search.hit_ids`). The value may be an OTel string array or a
-stringified list (JSON or a language-native repr such as `['a', 'b']`). Agent
-Health renders each such attribute as an id list in the span's output; nothing
-about it is specific to one agent.
+`myagent.search.hit_ids`). The value should be an OTel string array or a JSON
+array serialised to text (a Python-style single-quoted list literal is accepted
+too). Agent Health renders each such attribute as an id list in the span's
+output; a value that is not list-shaped is shown verbatim rather than guessed
+at (no comma-splitting of arbitrary strings). Nothing about it is specific to
+one agent.
 
 ## Claude Code Judge
 

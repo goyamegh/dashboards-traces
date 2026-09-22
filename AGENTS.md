@@ -420,13 +420,14 @@ Use the Agent Health trace viewer to validate your instrumentation:
 
 Spans are bucketed into `AGENT` / `LLM` / `TOOL` / `RETRIEVAL` / `EVAL` /
 `ERROR` / `OTHER` by [`services/traces/spanCategorization.ts`](./services/traces/spanCategorization.ts).
-Standards decide: GenAI semconv (`gen_ai.operation.name`, with unknown
-framework-specific values that still carry `gen_ai.provider.name` /
-`gen_ai.system` / `gen_ai.agent.name` treated as `AGENT` orchestration), DB
-semconv (`db.system.name` / legacy `db.system` → `RETRIEVAL`, which wins over
-`gen_ai.*` on the same span), and HTTP SERVER spans (the agent's inbound
-request boundary → `AGENT` + `isEntrypoint`). `OTHER` is the explicit "we do
-not know" bucket. Retrieval spans show `db.query.text` as input and
+Standards decide, in order: a known GenAI `gen_ai.operation.name` is
+authoritative (an `execute_tool` span that also carries `db.*` stays `TOOL`);
+then DB semconv (`db.system.name` / legacy `db.system` → `RETRIEVAL`); then an
+unknown framework-specific operation name that still carries
+`gen_ai.provider.name` / `gen_ai.system` / `gen_ai.agent.name` (→ `LLM` if it
+reports a model / token usage, else `AGENT` orchestration); then HTTP SERVER
+spans (the agent's inbound request boundary → `AGENT`, the outermost one
+flagged `isEntrypoint`). `OTHER` is the explicit "we do not know" bucket. Retrieval spans show `db.query.text` as input and
 `db.response.returned_rows` (+ any `*.hit_ids` / `*.result_ids` /
 `retrieval.ids` attribute, rendered as an id list) as output. Adding a category
 means updating every exhaustive `Record<SpanCategory, …>` map (tsc will point

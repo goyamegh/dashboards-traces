@@ -17,7 +17,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { PanelRightClose, Layers, ChevronRight, ChevronDown, Info, MessageSquare, Bot, PieChart, AlertTriangle, Copy, Check } from 'lucide-react';
 import { Span, CategorizedSpan } from '@/types';
 import { formatDuration, getKeyAttributes } from '@/services/traces/utils';
-import { checkOTelCompliance, isDbSpan } from '@/services/traces/spanCategorization';
+import { checkOTelCompliance, getSpanCategory, isDbSpan } from '@/services/traces/spanCategorization';
 import { extractRetrievalIO } from '@/services/traces/retrievalSpan';
 import ContextWindowBar from './ContextWindowBar';
 import FormattedMessages from './FormattedMessages';
@@ -41,13 +41,18 @@ const SpanDetailsPanel: React.FC<SpanDetailsPanelProps> = ({ span, onClose, onCo
   const toolMessageEvent = span.events?.find(e => e.name === 'gen_ai.tool.message');
   const toolChoiceEvent = span.events?.find(e => e.name === 'gen_ai.choice');
 
-  // Retrieval (DB semconv) spans: the query is the input, rows/status/ids the
-  // output. Computed first so a db.* span never falls through to the generic
-  // `input` / `output` attribute guesses below.
+  // DB-semconv details (query / rows / ids) for any span carrying db.*. They
+  // become the INPUT/OUTPUT only when the span's category IS RETRIEVAL; a
+  // hybrid span (e.g. an execute_tool that also carries db.*) keeps its tool
+  // arguments/result as I/O and shows the DB caption alongside.
   const retrieval = useMemo(() => (isDbSpan(span) ? extractRetrievalIO(span) : null), [span]);
+  const retrievalIO = useMemo(
+    () => (retrieval && getSpanCategory(span) === 'RETRIEVAL' ? retrieval : null),
+    [retrieval, span]
+  );
 
   // Extract input/output data from span attributes OR events
-  const inputData = retrieval?.queryText ||
+  const inputData = retrievalIO?.queryText ||
                     span.attributes?.['gen_ai.tool.call.arguments'] ||
                     toolMessageEvent?.attributes?.['content'] ||
                     span.attributes?.['gen_ai.tool.input'] ||
@@ -56,7 +61,7 @@ const SpanDetailsPanel: React.FC<SpanDetailsPanelProps> = ({ span, onClose, onCo
                     span.attributes?.['test.case.input'] ||
                     llmRequestEvent?.attributes?.['llm.prompt'] ||
                     llmRequestEvent?.attributes?.['llm.system_prompt'];
-  const outputData = retrieval?.outputText ||
+  const outputData = retrievalIO?.outputText ||
                      span.attributes?.['gen_ai.tool.call.result'] ||
                      toolChoiceEvent?.attributes?.['message'] ||
                      toolChoiceEvent?.attributes?.['content'] ||
