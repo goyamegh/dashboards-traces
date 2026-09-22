@@ -593,15 +593,18 @@ LLM judge scored that text — on a lenient rubric ("any reply at all") it
 | Rule | Condition |
 | --- | --- |
 | hook flag | the `afterResponse` hook returned `{ empty: true }` (or `isEmpty: true`, top-level or on `response`) |
-| blank trajectory | no agent-originated step (`tool_result` / `action` / `thinking` / `assistant`), the final response text is blank, and the raw payload carries no content under a known content key |
-| unbacked text | no agent-originated step, a non-blank response step, and a raw payload whose every known content key (`answer`, `response`, `content`, `text`, `message(s)`, `output(s)`, `result(s)`, `steps`, `toolCalls`, `data`, `items`, `hits`, `documents`, …) is null / blank / an empty collection — i.e. the text is the connector's JSON echo of an empty body, or a placeholder a hook rendered |
+| blank trajectory | no agent-originated step (`tool_result` / `action` by type; `thinking` / `assistant` only with non-blank content), the final response text is blank, and the raw payload carries no content under a known content key |
+| unbacked text | no agent-originated step, a non-blank response step, and a raw payload whose every known content key (`answer`, `response`, `content`, `text`, `message(s)`, `output(s)`, `result(s)`, `steps`, `toolCalls`, `data`, `items`, `hits`, `documents`, …) is null / blank / an empty collection **and** no other key holds a non-empty array / object — i.e. the text is the connector's JSON echo of an empty body, or a placeholder a hook rendered |
 
 Structured results with a null answer (`{ answer: null, results: [{…}] }`) are
-**not** empty — for retrieval agents the results are the answer. A payload with
-no known content key at all (unknown shape), or a connector that reports no raw
-events, never classifies as "unbacked text"; detection is deliberately
-conservative because a false positive would silently error a real run. A hook
-can always override: `{ empty: false }` suppresses the built-in detection.
+**not** empty — for retrieval agents the results are the answer. Structured
+data under a key agent-health does not know (`{ answer: null, custom_results:
+[{…}] }`), a payload with no known content key at all, or a connector that
+reports no raw events never classify as "unbacked text"; detection is
+deliberately conservative because a false positive would silently error a real
+run. Scalar metadata under unknown keys (`session_id`, `status`, `latency_ms`)
+does not rescue an otherwise empty payload. A hook can always override:
+`{ empty: false }` suppresses the built-in detection.
 
 What happens to an empty result:
 
@@ -627,8 +630,10 @@ What happens to an empty result:
    empty responses (EMPTY_RESPONSE, host:port); N further cases were not
    attempted`. When the breaker does not trip the run still gets
    `agentFailureSummary` = `N cases returned an empty response (no steps, no
-   answer, no results) — not judged`, shown as an **Empty responses** badge on
-   the runs list and a banner on the run page / inspector.
+   answer, no results) — not judged`. Both shapes show as an **Empty
+   responses** badge on the runs list (the endpoint answers — it is not
+   "unreachable") and a banner on the run page / inspector; a mixed streak of
+   connection failures and empties keeps the **Agent unreachable** badge.
 
 ### Hook contract for synthesized text
 
@@ -657,6 +662,10 @@ hooks: {
 `empty: true` forces the agent-failure path even if the rendered text looks
 like an answer; `empty: false` tells agent-health the payload IS an answer in a
 shape it does not recognise; leaving it unset defers to the built-in rules.
+`isEmpty` (top-level) and `response.isEmpty` are accepted aliases. A hook that
+*throws* is a local bug, not an empty response: the case fails as
+`agent_failed` and the endpoint's breaker streak is reset (the endpoint did
+answer).
 
 Configuration:
 

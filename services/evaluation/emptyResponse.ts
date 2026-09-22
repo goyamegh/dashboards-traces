@@ -123,7 +123,14 @@ export function hasAnyLeaf(value: unknown, depth = 0): boolean {
   return false;
 }
 
-/** Content state of ONE raw event / payload object. */
+/**
+ * Content state of ONE raw event / payload object. `empty` requires BOTH that
+ * every known content key is null / blank / an empty collection AND that no
+ * other key holds a non-empty array or object — structured data under a key
+ * we do not know (`custom_results: [{…}]`) is evidence of an answer we cannot
+ * read, so the shape is `unknown` (never classified). Scalar metadata under
+ * unknown keys (`session_id`, `status`, `latency_ms`) is ignored.
+ */
 function eventContentState(event: unknown): PayloadContentState {
   if (event === null || event === undefined) return 'empty';
   if (typeof event === 'string') return event.trim().length > 0 ? 'unknown' : 'empty';
@@ -133,7 +140,9 @@ function eventContentState(event: unknown): PayloadContentState {
   if (entries.length === 0) return 'empty';
   const known = entries.filter(([k]) => CONTENT_KEYS.has(k));
   if (known.length === 0) return 'unknown';
-  return known.some(([, v]) => hasAnyLeaf(v)) ? 'content' : 'empty';
+  if (known.some(([, v]) => hasAnyLeaf(v))) return 'content';
+  const unknownStructured = entries.some(([k, v]) => !CONTENT_KEYS.has(k) && v !== null && typeof v === 'object' && hasAnyLeaf(v));
+  return unknownStructured ? 'unknown' : 'empty';
 }
 
 /**
@@ -158,21 +167,29 @@ export function payloadContentState(rawEvents: unknown): PayloadContentState {
 
 /**
  * Read the explicit empty flag off an `afterResponse` hook result:
- * `empty` / `isEmpty` (top-level) or `response.isEmpty`. `true` forces the
- * empty classification, `false` suppresses the built-in detection,
- * `undefined` leaves the decision to {@link classifyEmptyResponse}.
+ * `empty` (top-level, the documented contract), or its accepted aliases
+ * `isEmpty` (top-level) / `response.isEmpty`. `true` forces the empty
+ * classification, `false` suppresses the built-in detection, `undefined`
+ * leaves the decision to {@link classifyEmptyResponse}.
  */
 export function readExplicitEmptyFlag(hookResult: unknown): boolean | undefined {
   if (!hookResult || typeof hookResult !== 'object') return undefined;
   const r = hookResult as Record<string, any>;
-  for (const v of [r.empty, r.isEmpty, r.response?.isEmpty, r.response?.empty]) {
+  for (const v of [r.empty, r.isEmpty, r.response?.isEmpty]) {
     if (typeof v === 'boolean') return v;
   }
   return undefined;
 }
 
+type StepLike = Pick<TrajectoryStep, 'type' | 'content'>;
+
+function isContentfulStep(s: StepLike): boolean {
+  if (s.type === 'action' || s.type === 'tool_result') return true;
+  return typeof s.content === 'string' ? s.content.trim().length > 0 : s.content != null;
+}
+
 export interface ClassifyEmptyResponseInput {
-  trajectory: ReadonlyArray<Pick<TrajectoryStep, 'type' | 'content'>> | undefined | null;
+  trajectory: ReadonlyArray<StepLike> | undefined | null;
   /** The connector's raw payload(s). Absent / empty array = no evidence. */
   rawEvents?: unknown;
   /** Explicit flag from the connector hook (see {@link readExplicitEmptyFlag}). */
@@ -185,7 +202,10 @@ export interface ClassifyEmptyResponseInput {
  */
 export function classifyEmptyResponse(input: ClassifyEmptyResponseInput): EmptyResponseVerdict {
   const steps = Array.isArray(input.trajectory) ? input.trajectory : [];
-  const agentSteps = steps.filter(s => s && AGENT_ACTIVITY_STEP_TYPES.has(s.type)).length;
+  // Tool activity (`action` / `tool_result`) counts by type — a tool call
+  // happened. Text activity (`assistant` / `thinking`) must carry non-blank
+  // content: an empty stub is not evidence the agent did anything.
+  const agentSteps = steps.filter(s => s && AGENT_ACTIVITY_STEP_TYPES.has(s.type) && isContentfulStep(s)).length;
   const responseText = steps
     .filter(s => s && s.type === 'response')
     .map(s => (typeof s.content === 'string' ? s.content : s.content == null ? '' : String(s.content)))
@@ -227,8 +247,10 @@ export function classifyEmptyResponse(input: ClassifyEmptyResponseInput): EmptyR
 
 /**
  * Resolve whether empty responses count toward the endpoint circuit breaker:
- * `connectorConfig.emptyResponseTripsBreaker` (per agent) wins over
- * `AGENT_EMPTY_RESPONSE_TRIPS_BREAKER` (env) over the default `true`.
+ * `connectorConfig.emptyResponseTripsBreaker` (per agent, boolean only — a
+ * non-boolean is ignored with a warning) wins over
+ * `AGENT_EMPTY_RESPONSE_TRIPS_BREAKER` (env; `0`/`false`/`no`/`off` disable)
+ * over the default `true`.
  */
 export function resolveEmptyResponseTripsBreaker(
   connectorConfig: Record<string, any> | undefined,
@@ -236,7 +258,9 @@ export function resolveEmptyResponseTripsBreaker(
 ): boolean {
   const perAgent = connectorConfig?.emptyResponseTripsBreaker;
   if (typeof perAgent === 'boolean') return perAgent;
-  if (typeof perAgent === 'string' && perAgent.trim() !== '') return !FALSY.has(perAgent.trim().toLowerCase());
+  if (perAgent !== undefined && perAgent !== null) {
+    console.warn(`[emptyResponse] Ignoring non-boolean connectorConfig.emptyResponseTripsBreaker=${JSON.stringify(perAgent)}`);
+  }
   const fromEnv = env[EMPTY_RESPONSE_TRIPS_BREAKER_ENV];
   if (typeof fromEnv === 'string' && fromEnv.trim() !== '') return !FALSY.has(fromEnv.trim().toLowerCase());
   return true;

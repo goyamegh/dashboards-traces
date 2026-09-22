@@ -522,6 +522,8 @@ export interface ScoringSnapshot {
    * but still counted in the rubric total so "scored X / Y" is honest.
    */
   unevaluable?: string[];
+}
+
 /**
  * Why the AGENT step of a case failed (see {@link TestCaseRun.agentError}).
  * One family, three members:
