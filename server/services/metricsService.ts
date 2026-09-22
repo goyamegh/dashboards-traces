@@ -13,7 +13,7 @@ import { Client } from '@opensearch-project/opensearch';
 import { MetricsResult, AggregateMetrics, OpenSearchConfig, Span } from '@/types';
 import { getSampleSpansForRunIds } from '../../cli/demo/sampleTraces.js';
 import { transformSpan, buildRunIdShouldClauses, buildSessionIdShouldClauses } from './tracesService.js';
-import { findUsageAggregateSpans } from '../../lib/usageAggregates.js';
+import { attributeLeafUsage, type AttributedUsage } from '../../lib/usageAggregates.js';
 
 // ============================================================================
 // Model Pricing
@@ -128,26 +128,30 @@ function readOutputTokens(attrs: Record<string, any>): number {
 }
 
 /**
- * True when the span carries any token usage this reader understands.
+ * Apply the leaf-usage invariant (see lib/usageAggregates.ts): each span's
+ * countable usage is its stamped usage minus what its descendants already
+ * account for, so roll-up parents contribute nothing while a parent carrying
+ * MORE than its children still contributes the remainder.
+ *
  * Vendor-specific TOTALS (e.g. `aws.genai.token_count_total`,
  * `gen_ai.usage.total_tokens`) are deliberately NOT read anywhere in this
  * file: they are redundant with input + output and adding them would count
  * the same tokens twice. A span carrying only such a total contributes 0.
  */
-function hasTokenUsage(attrs: Record<string, any>): boolean {
-  return readInputTokens(attrs) > 0 || readOutputTokens(attrs) > 0;
-}
-
-/**
- * Apply the leaf-usage invariant (see lib/usageAggregates.ts) to a list of
- * spans: returns the spans whose usage is a roll-up of descendants' usage and
- * must be skipped when summing tokens.
- */
-function findTokenAggregateSpans<T extends { traceId?: string; spanId?: string; parentSpanId?: string }>(
+function attributeTokenUsage<T extends { traceId?: string; spanId?: string; parentSpanId?: string }>(
   spans: readonly T[],
   attrsOf: (span: T) => Record<string, any>,
-): Set<T> {
-  return findUsageAggregateSpans(spans, span => hasTokenUsage(attrsOf(span)));
+): Map<T, AttributedUsage> {
+  return attributeLeafUsage(spans, span => {
+    const attrs = attrsOf(span);
+    return { input: readInputTokens(attrs), output: readOutputTokens(attrs) };
+  });
+}
+
+function countAggregates(usage: Map<unknown, AttributedUsage>): number {
+  let n = 0;
+  usage.forEach(u => { if (u.isAggregate) n++; });
+  return n;
 }
 
 /**
@@ -278,17 +282,16 @@ export function computeMetricsFromSampleSpans(runId: string): MetricsResult | nu
   let llmCalls = 0;
   const toolsUsed = new Set<string>();
   let modelId = 'default';
-  const aggregates = findTokenAggregateSpans(spans, s => s.attributes || {});
+  const usage = attributeTokenUsage(spans, s => s.attributes || {});
 
   for (const span of spans) {
     const attrs = span.attributes || {};
 
-    // Extract token usage from LLM spans (leaf usage only — a parent whose
-    // descendants also carry usage is a roll-up and is skipped).
-    if (!aggregates.has(span)) {
-      inputTokens += readInputTokens(attrs);
-      outputTokens += readOutputTokens(attrs);
-    }
+    // Extract token usage from LLM spans (leaf-attributed — a parent whose
+    // descendants already account for its usage contributes nothing).
+    const counted = usage.get(span)!;
+    inputTokens += counted.input;
+    outputTokens += counted.output;
 
     // Count LLM calls (spans with gen_ai.operation.name = 'chat')
     if (attrs['gen_ai.operation.name'] === 'chat') {
@@ -334,7 +337,7 @@ export function computeMetricsFromSampleSpans(runId: string): MetricsResult | nu
     toolCalls: toolsUsed.size,
     toolsUsed: Array.from(toolsUsed),
     status: 'success',
-    usageAggregatesSkipped: aggregates.size,
+    usageAggregatesSkipped: countAggregates(usage),
   };
 }
 
@@ -410,7 +413,7 @@ export function computeMetricsFromSpans(
   // share the merged map.
   const attrsBySpan = new Map<OpenSearchSpanSource, Record<string, any>>();
   for (const span of spans) attrsBySpan.set(span, readAttrs(span));
-  const aggregates = findTokenAggregateSpans(spans, s => attrsBySpan.get(s)!);
+  const usage = attributeTokenUsage(spans, s => attrsBySpan.get(s)!);
 
   for (const span of spans) {
     const attrs = attrsBySpan.get(span)!;
@@ -418,18 +421,17 @@ export function computeMetricsFromSpans(
     // can include agent-health's own eval/judge spans — exclude them so the
     // agent's own tokens/cost/LLM-call count aren't inflated by ours.
     if (isEvalOrJudgeSpan(attrs, span.name)) continue;
-    // Leaf-usage invariant: a span whose descendants also carry usage is a
-    // roll-up (e.g. an invoke_agent span totalling its chat children) — its
-    // tokens are already counted via the leaves, and it is not an LLM call.
-    const isUsageAggregate = aggregates.has(span);
-    if (!isUsageAggregate) {
-      inputTokens += readInputTokens(attrs);
-      outputTokens += readOutputTokens(attrs);
-    }
+    // Leaf-usage invariant: a span whose descendants already account for its
+    // usage is a roll-up (e.g. an invoke_agent span totalling its chat
+    // children) — it contributes nothing and is not an LLM call. A parent
+    // carrying more than its descendants still contributes the remainder.
+    const counted = usage.get(span)!;
+    inputTokens += counted.input;
+    outputTokens += counted.output;
 
     const spanModel = attrs['gen_ai.request.model'];
     if (spanModel) {
-      if (!isUsageAggregate) llmCalls++;
+      if (!counted.isAggregate) llmCalls++;
       modelId = spanModel;
     }
 
@@ -479,7 +481,7 @@ export function computeMetricsFromSpans(
     toolsUsed: Array.from(toolsUsed),
     status,
     hasSpans: true,
-    usageAggregatesSkipped: aggregates.size,
+    usageAggregatesSkipped: countAggregates(usage),
   };
 }
 

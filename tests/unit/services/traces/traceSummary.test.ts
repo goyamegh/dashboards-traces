@@ -142,6 +142,21 @@ describe('computeTraceSummary', () => {
     expect(s.peakInputTokens).toBe(100);
   });
 
+  it('counts the remainder when a parent carries more usage than its children (nothing dropped)', () => {
+    const tree: Span[] = [
+      baseSpan({
+        spanId: 'req',
+        attributes: { 'gen_ai.usage.input_tokens': 1000, 'gen_ai.usage.output_tokens': 100 },
+        children: [baseSpan({ spanId: 'stream', parentSpanId: 'req', attributes: { 'gen_ai.usage.input_tokens': 700 } })],
+      }),
+    ];
+    const s = computeTraceSummary(tree);
+    expect(s.inputTokens).toBe(1000);
+    expect(s.outputTokens).toBe(100);
+    // The parent is a real request → it is the peak.
+    expect(s.peakInputTokens).toBe(1000);
+  });
+
   it('still counts a parent that carries usage when no descendant does', () => {
     const tree: Span[] = [
       baseSpan({
