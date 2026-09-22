@@ -143,6 +143,11 @@ interface IdListDetails {
   predictedTotal?: number;
   k?: number;
   extractionRule?: string;
+  /** `response-results` only: which form of the answer the list was read from. */
+  parsedFrom?: string;
+  /** The metric does not speak to this case (skipped, not judged). */
+  notApplicable?: boolean;
+  notApplicableReason?: string;
 }
 
 function idListDetails(details: Record<string, unknown> | undefined): IdListDetails | null {
@@ -157,6 +162,9 @@ function idListDetails(details: Record<string, unknown> | undefined): IdListDeta
     predictedTotal: typeof details.predictedTotal === 'number' ? details.predictedTotal : undefined,
     k: typeof details.k === 'number' ? details.k : undefined,
     extractionRule: typeof details.extractionRule === 'string' ? details.extractionRule : undefined,
+    parsedFrom: typeof details.parsedFrom === 'string' ? details.parsedFrom : undefined,
+    notApplicable: details.notApplicable === true,
+    notApplicableReason: typeof details.notApplicableReason === 'string' ? details.notApplicableReason : undefined,
   };
 }
 
@@ -234,6 +242,11 @@ const MatcherRow: React.FC<RowProps> = ({ result }) => {
                 not evaluable
               </Badge>
             )}
+            {idLists?.notApplicable && (
+              <Badge variant="outline" className="text-[9px] px-1.5 py-0 shrink-0 text-muted-foreground" data-testid="matcher-not-applicable" title={idLists.notApplicableReason}>
+                n/a
+              </Badge>
+            )}
             {typeof result.score === 'number' && (
               <span className="text-[10px] text-muted-foreground shrink-0">
                 score {(result.score * 100).toFixed(0)}%
@@ -277,9 +290,17 @@ const MatcherRow: React.FC<RowProps> = ({ result }) => {
                 </span>{' '}
                 <IdChips ids={idLists.predicted} total={idLists.predictedTotal} goldSet={new Set(idLists.gold)} testId="matcher-predicted-ids" />
               </div>
+              {idLists.notApplicable && idLists.notApplicableReason && (
+                <div className="text-muted-foreground italic" data-testid="matcher-not-applicable-reason">{idLists.notApplicableReason}</div>
+              )}
               {idLists.extractionRule && (
-                <div className="text-muted-foreground">
+                <div className="text-muted-foreground" data-testid="matcher-extraction-rule">
                   extraction rule: <code className="bg-muted px-1 py-0.5 rounded">{idLists.extractionRule}</code>
+                  {idLists.parsedFrom && (
+                    <>
+                      {' '}· parsed from <code className="bg-muted px-1 py-0.5 rounded">{idLists.parsedFrom}</code>
+                    </>
+                  )}
                 </div>
               )}
             </div>
