@@ -17,7 +17,8 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { PanelRightClose, Layers, ChevronRight, ChevronDown, Info, MessageSquare, Bot, PieChart, AlertTriangle, Copy, Check } from 'lucide-react';
 import { Span, CategorizedSpan } from '@/types';
 import { formatDuration, getKeyAttributes } from '@/services/traces/utils';
-import { checkOTelCompliance } from '@/services/traces/spanCategorization';
+import { checkOTelCompliance, isDbSpan } from '@/services/traces/spanCategorization';
+import { extractRetrievalIO } from '@/services/traces/retrievalSpan';
 import ContextWindowBar from './ContextWindowBar';
 import FormattedMessages from './FormattedMessages';
 import { ATTR_GEN_AI_USAGE_INPUT_TOKENS } from '@opentelemetry/semantic-conventions/incubating';
@@ -40,8 +41,14 @@ const SpanDetailsPanel: React.FC<SpanDetailsPanelProps> = ({ span, onClose, onCo
   const toolMessageEvent = span.events?.find(e => e.name === 'gen_ai.tool.message');
   const toolChoiceEvent = span.events?.find(e => e.name === 'gen_ai.choice');
 
+  // Retrieval (DB semconv) spans: the query is the input, rows/status/ids the
+  // output. Computed first so a db.* span never falls through to the generic
+  // `input` / `output` attribute guesses below.
+  const retrieval = useMemo(() => (isDbSpan(span) ? extractRetrievalIO(span) : null), [span]);
+
   // Extract input/output data from span attributes OR events
-  const inputData = span.attributes?.['gen_ai.tool.call.arguments'] ||
+  const inputData = retrieval?.queryText ||
+                    span.attributes?.['gen_ai.tool.call.arguments'] ||
                     toolMessageEvent?.attributes?.['content'] ||
                     span.attributes?.['gen_ai.tool.input'] ||
                     span.attributes?.['input'] ||
@@ -49,7 +56,8 @@ const SpanDetailsPanel: React.FC<SpanDetailsPanelProps> = ({ span, onClose, onCo
                     span.attributes?.['test.case.input'] ||
                     llmRequestEvent?.attributes?.['llm.prompt'] ||
                     llmRequestEvent?.attributes?.['llm.system_prompt'];
-  const outputData = span.attributes?.['gen_ai.tool.call.result'] ||
+  const outputData = retrieval?.outputText ||
+                     span.attributes?.['gen_ai.tool.call.result'] ||
                      toolChoiceEvent?.attributes?.['message'] ||
                      toolChoiceEvent?.attributes?.['content'] ||
                      span.attributes?.['gen_ai.tool.output'] ||
@@ -226,10 +234,15 @@ const SpanDetailsPanel: React.FC<SpanDetailsPanelProps> = ({ span, onClose, onCo
                 </div>
               )}
             </div>
+            {expandedSections.input && retrieval?.caption && (
+              <div className="text-[10px] font-mono text-cyan-700 dark:text-cyan-300" data-testid="span-details-retrieval-caption">
+                {retrieval.caption}
+              </div>
+            )}
             {expandedSections.input && (
               inputData ? (
                 <div className="w-full max-h-64 overflow-auto rounded-md border border-border bg-muted/30 dark:bg-slate-900/50">
-                  <pre className="p-3 text-[11px] font-mono text-foreground m-0" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                  <pre className="p-3 text-[11px] font-mono text-foreground m-0" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere' }} data-testid="span-details-input">
                     {formatData(inputData, inputViewMode)}
                   </pre>
                 </div>
@@ -285,7 +298,7 @@ const SpanDetailsPanel: React.FC<SpanDetailsPanelProps> = ({ span, onClose, onCo
             {expandedSections.output && (
               outputData ? (
                 <div className="w-full max-h-64 overflow-auto rounded-md border border-border bg-muted/30 dark:bg-slate-900/50">
-                  <pre className="p-3 text-[11px] font-mono text-foreground m-0" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere' }}>
+                  <pre className="p-3 text-[11px] font-mono text-foreground m-0" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', overflowWrap: 'anywhere' }} data-testid="span-details-output">
                     {formatData(outputData, outputViewMode)}
                   </pre>
                 </div>
