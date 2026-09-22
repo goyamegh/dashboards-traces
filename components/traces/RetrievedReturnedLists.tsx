@@ -27,6 +27,8 @@ interface RetrievedReturnedListsProps {
   span: Span;
   /** Compact = drawer strip (smaller type, shorter id list before scrolling). */
   compact?: boolean;
+  /** Applied to the root only when there is something to render. */
+  className?: string;
 }
 
 const IdColumn: React.FC<{
@@ -71,13 +73,13 @@ const IdColumn: React.FC<{
   );
 };
 
-const RetrievedReturnedLists: React.FC<RetrievedReturnedListsProps> = ({ span, compact = false }) => {
+const RetrievedReturnedLists: React.FC<RetrievedReturnedListsProps> = ({ span, compact = false, className }) => {
   const rr = useMemo(() => extractRetrievedVsReturned(span), [span]);
   if (rr.retrieved.length === 0 && rr.returned.length === 0) return null;
   const overlap = describeOverlap(rr);
 
   return (
-    <div className="space-y-1.5" data-testid="retrieved-returned-panel">
+    <div className={['space-y-1.5', className].filter(Boolean).join(' ')} data-testid="retrieved-returned-panel">
       <div className="flex gap-2 min-w-0">
         {rr.retrieved.length > 0 && (
           <IdColumn

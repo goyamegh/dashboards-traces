@@ -338,17 +338,6 @@ export {
   hasAnyWarnings,
 } from './spanCategorization';
 
-// Re-export span ordering + absolute-time helpers
-export {
-  compareSpansByStartTime,
-  sortSpansByStartTime,
-  getTraceAnchorMs,
-  formatClockTime,
-  formatIsoTime,
-  formatTraceOffset,
-  getSpanTimeLabels,
-} from './spanTime';
-
 // Re-export tool similarity functions
 export {
   extractCommonArgKeys,

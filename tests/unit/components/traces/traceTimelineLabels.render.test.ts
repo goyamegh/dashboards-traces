@@ -106,6 +106,21 @@ describe('TraceTimelineChart — HTML label column', () => {
     fireEvent.click(carets[1]);
     expect(onToggleExpand).toHaveBeenCalledWith('a');
     expect(onSelectSpan).toHaveBeenCalledTimes(1); // caret does not select
+
+    // Clicking the row background (not a button) also selects, like the tree table.
+    fireEvent.click(screen.getAllByTestId('timeline-row')[2]);
+    expect(onSelectSpan).toHaveBeenCalledTimes(2);
+    expect(onSelectSpan.mock.calls[1][0].spanId).toBe('b');
+  });
+
+  it('a one-row trace keeps the band geometry (no minimum-height floor stretching the bands)', () => {
+    const only: Span = { traceId: 't', spanId: 'solo', name: 'solo', status: 'OK', startTime: iso(T0), endTime: iso(T0 + 10), attributes: {} };
+    renderChart({ spanTree: processSpansIntoTree([only]), timeRange: calculateTimeRange([only]) });
+    const labels = screen.getByTestId('trace-timeline-labels') as HTMLElement;
+    expect(parseInt(labels.style.height, 10)).toBe(22 + 20 + 30);
+    const option = setOption.mock.calls.at(-1)[0];
+    expect(option.grid.top).toBe(22);
+    expect(option.grid.bottom).toBe(30);
   });
 
   it('the resize handle widens the label column and the grid follows', () => {
