@@ -31,27 +31,37 @@ function span(attributes: Record<string, any>, name = 'search products'): Span {
   };
 }
 
-describe('parseIdList', () => {
-  it('accepts native arrays', () => {
+describe('parseIdList (strict: list-shaped values only)', () => {
+  it('accepts native arrays of scalars', () => {
     expect(parseIdList(['a', 'b', 3])).toEqual(['a', 'b', '3']);
   });
   it('accepts JSON array text', () => {
     expect(parseIdList('["a","b"]')).toEqual(['a', 'b']);
+    expect(parseIdList('[1, 2]')).toEqual(['1', '2']);
   });
-  it('accepts a language-native repr with quoted items', () => {
+  it('accepts a Python-style single-quoted list literal', () => {
     expect(parseIdList("['2079', '41927', '84478']")).toEqual(['2079', '41927', '84478']);
   });
-  it('accepts bare comma-separated items', () => {
-    expect(parseIdList('(x, y ,z)')).toEqual(['x', 'y', 'z']);
+  it('keeps ids that contain commas intact (no naive comma-splitting)', () => {
+    expect(parseIdList('["doc,1", "doc,2"]')).toEqual(['doc,1', 'doc,2']);
   });
-  it('returns [] for empty / null input', () => {
-    expect(parseIdList(null)).toEqual([]);
-    expect(parseIdList(undefined)).toEqual([]);
-    expect(parseIdList('')).toEqual([]);
+  it('returns null for values that are not a list', () => {
+    expect(parseIdList(null)).toBeNull();
+    expect(parseIdList(undefined)).toBeNull();
+    expect(parseIdList('')).toBeNull();
+    expect(parseIdList('(x, y ,z)')).toBeNull();
+    expect(parseIdList('a, b, c')).toBeNull();
+    expect(parseIdList(42)).toBeNull();
+    expect(parseIdList('{"ids":[1]}')).toBeNull();
+    expect(parseIdList('[not json')).toBeNull();
+  });
+  it('returns null for lists of structured items (not ids)', () => {
+    expect(parseIdList([{ id: 1 }])).toBeNull();
+    expect(parseIdList('[{"id":1}]')).toBeNull();
+  });
+  it('returns [] for an empty list', () => {
     expect(parseIdList('[]')).toEqual([]);
-  });
-  it('stringifies non-string scalars', () => {
-    expect(parseIdList(42)).toEqual(['42']);
+    expect(parseIdList([])).toEqual([]);
   });
 });
 
@@ -66,14 +76,20 @@ describe('id-list key convention', () => {
     expect(isRetrievalIdListKey('something.ids')).toBe(false);
   });
 
-  it('collects every matching attribute with a non-empty list', () => {
+  it('collects every matching attribute; unparseable values are kept verbatim as raw', () => {
     const lists = extractRetrievalIdLists(
-      span({ 'a.hit_ids': ['1', '2'], 'b.result_ids': '["x"]', 'retrieval.ids': '', 'c.hit_ids': [] })
+      span({ 'a.hit_ids': ['1', '2'], 'b.result_ids': '["x"]', 'retrieval.ids': '', 'c.hit_ids': [], 'd.hit_ids': 'p1, p2' })
     );
     expect(lists).toEqual([
       { attribute: 'a.hit_ids', ids: ['1', '2'] },
       { attribute: 'b.result_ids', ids: ['x'] },
+      { attribute: 'd.hit_ids', ids: [], raw: 'p1, p2' },
     ]);
+  });
+
+  it('renders a raw (unparseable) id attribute verbatim in the output text', () => {
+    const io = extractRetrievalIO(span({ 'db.system.name': 'x', 'search.hit_ids': 'p1, p2' }));
+    expect(io.outputText).toBe('search.hit_ids: p1, p2');
   });
 });
 
@@ -160,6 +176,14 @@ describe('extractRetrievalIO', () => {
 });
 
 describe('getKeyAttributes for DB spans', () => {
+  it('keeps TOOL key attributes on a hybrid execute_tool + db.* span', () => {
+    const attrs = getKeyAttributes(
+      span({ 'gen_ai.operation.name': 'execute_tool', 'gen_ai.tool.name': 'search_index', 'db.system.name': 'opensearch' }, 'execute_tool search_index')
+    );
+    expect(attrs.Tool).toBe('search_index');
+    expect(attrs.System).toBeUndefined();
+  });
+
   it('surfaces system / operation / collection / namespace / rows / status', () => {
     const attrs = getKeyAttributes(
       span({

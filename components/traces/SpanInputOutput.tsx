@@ -39,7 +39,7 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Span } from '@/types';
 import { formatDuration } from '@/services/traces/utils';
-import { isDbSpan } from '@/services/traces/spanCategorization';
+import { getSpanCategory } from '@/services/traces/spanCategorization';
 import { extractRetrievalIO } from '@/services/traces/retrievalSpan';
 
 interface SpanInputOutputProps {
@@ -120,10 +120,10 @@ export function extractSpanIO(span: Span): SpanIOData {
   const attrs = span.attributes || {};
   const name = span.name.toLowerCase();
 
-  // Determine category. DB semconv first: a search/database call is the leaf
-  // semantic even when the span also carries GenAI context.
+  // Determine category. Retrieval follows the shared categorizer so a hybrid
+  // span (known GenAI operation + db.*) keeps its tool/LLM I/O here.
   let category: SpanIOData['category'] = 'other';
-  if (isDbSpan(span)) {
+  if (getSpanCategory(span) === 'RETRIEVAL') {
     category = 'retrieval';
   } else if (name.includes('test_case') || attrs['test.case.name']) {
     category = 'eval';
