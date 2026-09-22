@@ -12,7 +12,11 @@
  *     empty responses);
  *   - `N cases returned an empty response (no steps, no answer, no results) —
  *     not judged` when cases came back empty but the breaker never tripped.
- * The runs-list badge and the run-page banners word themselves accordingly.
+ * The runs-list badge and the run-page banners word themselves accordingly;
+ * a breaker that opened on empty responses alone is presented as "Empty
+ * responses" (the endpoint answers, with nothing), not as unreachable. The
+ * coupling to the summary wording is locked by tests on both ends
+ * (`EndpointCircuitBreaker.summary()` and this helper).
  */
 
 export interface AgentFailureSummaryPresentation {
@@ -26,15 +30,25 @@ export interface AgentFailureSummaryPresentation {
 
 export function presentAgentFailureSummary(summary: string): AgentFailureSummaryPresentation {
   const unreachable = summary.startsWith('Agent endpoint unreachable');
-  return unreachable
-    ? {
-        unreachable,
-        badge: 'Agent unreachable',
-        remedy: 'check the agent endpoint and re-run; nothing was judged.',
-      }
-    : {
-        unreachable,
-        badge: 'Empty responses',
-        remedy: 'the agent answered with nothing to judge on these cases; check the agent and re-run them.',
-      };
+  if (!unreachable) {
+    return {
+      unreachable,
+      badge: 'Empty responses',
+      remedy: 'the agent answered with nothing to judge on these cases; check the agent and re-run them.',
+    };
+  }
+  // The breaker opened on empty responses ALONE: the endpoint is reachable
+  // but returns nothing — say that, not "unreachable" (codex_review).
+  if (/consecutive empty responses?\b/.test(summary) && !/connection failure|agent failure/.test(summary)) {
+    return {
+      unreachable,
+      badge: 'Empty responses',
+      remedy: 'the endpoint answers but returns nothing to judge; check the agent and re-run — the remaining cases were not attempted.',
+    };
+  }
+  return {
+    unreachable,
+    badge: 'Agent unreachable',
+    remedy: 'check the agent endpoint and re-run; nothing was judged.',
+  };
 }

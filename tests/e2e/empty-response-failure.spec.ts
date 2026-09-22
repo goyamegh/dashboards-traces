@@ -15,9 +15,9 @@
  * a local stub that answers `200 {}` through the API, then asserts the rendered
  * surfaces:
  *   - runs list: the row counts the cases as errored (not passed), with the
- *     "Empty responses" badge (2-case run, breaker not tripped) / the
- *     "Agent unreachable" badge whose reason says "3 consecutive empty
- *     responses" (5-case run, breaker tripped);
+ *     "Empty responses" badge — count form (2-case run, breaker not tripped)
+ *     and breaker form whose tooltip says "3 consecutive empty responses"
+ *     (5-case run, breaker tripped);
  *   - run inspector: banner with the reason, every row ERRORED, and the
  *     selected case's panel shows "Agent returned an empty response … Not judged.";
  *   - per-case report page: the failure card titled "Agent returned an empty
@@ -122,8 +122,10 @@ test.describe('Empty agent response → agent failure, never judged', () => {
 
     const tripped = page.locator('[data-testid="run-row"]', { hasText: RUN_NAME_TRIPPED });
     await expect(tripped).toBeVisible();
+    // The breaker opened on empty responses alone: the endpoint answers, so the
+    // badge still says "Empty responses" (not "unreachable"); the tooltip carries the breaker summary.
     const trippedBadge = tripped.locator('[data-testid="run-row-agent-unreachable"]');
-    await expect(trippedBadge).toContainText('Agent unreachable');
+    await expect(trippedBadge).toContainText('Empty responses');
     await expect(trippedBadge).toHaveAttribute('title', trippedSummary);
     await expect(tripped.locator('[data-testid="run-row-errored-badge"]')).toContainText('5');
   });

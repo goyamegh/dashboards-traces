@@ -548,6 +548,10 @@ export async function invokeAgent(
         runId: hookResult.runId
       });
     } catch (hookError: any) {
+      // The endpoint DID answer — a bug in the local hook says nothing about
+      // endpoint health, so the breaker's consecutive count is reset here
+      // exactly as for a judgeable answer (codex_review).
+      breaker?.recordSuccess(endpointKey);
       const errorMsg = hookError instanceof Error ? hookError.message : String(hookError);
       console.error(`[Eval] afterResponse hook failed for agent "${agent.key}":`, errorMsg);
       debug('Eval', `afterResponse hook error details:`, {
