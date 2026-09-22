@@ -10,7 +10,9 @@
  * - Visual tree branches showing parent-child relationships
  * - Expand/collapse functionality
  * - Span icons, names, durations, and status
- * - Click to select span for details
+ * - Absolute start time (local HH:MM:SS.mmm) + offset from the trace root per row
+ * - Click the row OR the span name (button, Enter/Space) to select it
+ * - Resizable name column; the full name is always in `title`
  */
 
 import React from 'react';
@@ -19,6 +21,8 @@ import { Span, TimeRange } from '@/types';
 import { getSpanColor, flattenVisibleSpans } from '@/services/traces';
 import { getSpanCategory, getCategoryMeta } from '@/services/traces/spanCategorization';
 import { formatDuration } from '@/services/traces/utils';
+import { getTraceAnchorMs, getSpanTimeLabels, formatClockTime, formatIsoTime } from '@/services/traces/spanTime';
+import { useResizableColumn, estimateNameColumnWidth } from './useResizableColumn';
 import { Badge } from '@/components/ui/badge';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
@@ -75,6 +79,21 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
   
   // Flatten tree respecting expanded state
   const visibleSpans = flattenVisibleSpans(spanTree, expandedSpans);
+
+  // t=0 for the per-row offsets: the trace root's start (earliest span).
+  const anchorMs = React.useMemo(
+    () => getTraceAnchorMs(spanTree) ?? (timeRange && timeRange.startTime > 0 ? timeRange.startTime : null),
+    [spanTree, timeRange]
+  );
+
+  // Name column (timeline layout only): wide enough for `execute_tool <name>`
+  // by default, and draggable when it is not. Long names still ellipsize, but
+  // the full name is always in the title attribute and in the details drawer.
+  const defaultNameWidth = React.useMemo(
+    () => estimateNameColumnWidth(spanTree, { indentPx: 24, fixedPx: 60, charPx: 7, min: 280, max: 600 }),
+    [spanTree]
+  );
+  const nameCol = useResizableColumn(defaultNameWidth, 180, 720, 'Resize span name column');
 
   // Keyboard navigation
   React.useEffect(() => {
@@ -145,7 +164,25 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
   };
 
   return (
-    <div className="space-y-0">{visibleSpans.map((span, index) => {
+    <div className="space-y-0">
+      {/* List header: ordering guarantee + absolute anchor for the offsets. */}
+      <div
+        className="flex items-center gap-2 px-2 pt-1 pb-1 text-[10px] text-muted-foreground font-mono select-none"
+        data-testid="trace-list-header"
+      >
+        <span data-testid="trace-list-sort-hint" title="Rows are ordered by span start time (ties by span id), at every depth">
+          sorted by start time
+        </span>
+        {anchorMs !== null && (
+          <>
+            <span>·</span>
+            <span data-testid="trace-anchor-time" title={`t=0 is the trace root's start: ${formatIsoTime(anchorMs)}`}>
+              t=0 = {formatClockTime(anchorMs)}
+            </span>
+          </>
+        )}
+      </div>
+      {visibleSpans.map((span, index) => {
         const duration = new Date(span.endTime).getTime() - new Date(span.startTime).getTime();
         const isSelected = selectedSpan?.spanId === span.spanId;
         const isHovered = hoveredSpan === span.spanId;
@@ -155,6 +192,36 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
         const depth = span.depth || 0;
         const inSelectedPath = isInSelectedPath(span);
         const inHoveredPath = isInHoveredPath(span);
+        const time = getSpanTimeLabels(span, anchorMs);
+        const timeCell = time.clock ? (
+          <span
+            className="font-mono text-[10px] text-muted-foreground whitespace-nowrap flex-shrink-0 tabular-nums"
+            title={`Started ${time.iso}${time.offset ? ` (${time.offset} from trace start)` : ''}`}
+            data-testid="span-row-time"
+          >
+            <span data-testid="span-row-clock">{time.clock}</span>
+            {time.offset && <span className="ml-1.5 opacity-80" data-testid="span-row-offset">{time.offset}</span>}
+          </span>
+        ) : null;
+        const nameButton = (
+          <button
+            type="button"
+            className={cn(
+              'flex-1 min-w-0 font-medium text-sm truncate text-left bg-transparent border-0 p-0 cursor-pointer',
+              'hover:underline focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-opensearch-blue rounded-sm',
+              isError && 'text-red-500 dark:text-red-400'
+            )}
+            title={span.name}
+            aria-label={`Open details for ${span.name}`}
+            data-testid="span-row-name"
+            onClick={(e) => {
+              e.stopPropagation();
+              onSelect(span);
+            }}
+          >
+            {span.name}
+          </button>
+        );
 
         return (
           <div
@@ -297,7 +364,7 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
                 <div
                   className="flex items-center gap-2 flex-shrink-0 min-w-0"
                   style={{
-                    width: 220,
+                    width: nameCol.width,
                     paddingLeft: `${depth * 24 + (depth > 0 ? 12 : 0)}px`,
                   }}
                 >
@@ -307,10 +374,21 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
                   >
                     <SpanIcon size={14} style={{ color: getSpanColor(span) }} />
                   </div>
-                  <div className={cn('flex-1 min-w-0 font-medium text-sm truncate', isError && 'text-red-500 dark:text-red-400')} title={span.name}>
-                    {span.name}
-                  </div>
+                  {nameButton}
                 </div>
+                {/* Column resize handle — only on the first row is it
+                    needed for a11y, but every row gets one so the boundary
+                    is grabbable anywhere along the list. */}
+                <div
+                  {...nameCol.handleProps}
+                  className={cn(
+                    'w-1 self-stretch -my-2 cursor-col-resize flex-shrink-0 rounded hover:bg-opensearch-blue/50',
+                    nameCol.isResizing && 'bg-opensearch-blue'
+                  )}
+                  onClick={(e) => e.stopPropagation()}
+                  data-testid="span-name-col-resize"
+                />
+                {timeCell}
 
                 {/* Timeline column — flex-1 fills all remaining horizontal
                     space (from end of name column to the start of the
@@ -373,6 +451,9 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
                           onToggleExpand(span.spanId);
                         }}
                         className="hover:bg-muted rounded p-0.5"
+                        type="button"
+                        aria-label={isExpanded ? 'Collapse children' : 'Expand children'}
+                        data-testid="span-row-expand"
                       >
                         <ChevronDown
                           size={14}
@@ -396,10 +477,9 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
                   <SpanIcon size={14} style={{ color: getSpanColor(span) }} />
                 </div>
 
-                {/* Span name - allows truncation */}
-                <div className={cn('flex-1 min-w-0 font-medium text-sm truncate', isError && 'text-red-500 dark:text-red-400')}>
-                  {span.name}
-                </div>
+                {/* Span name - allows truncation; full name in title + drawer */}
+                {nameButton}
+                {timeCell}
 
                 {/* Right side elements - fixed width container */}
                 <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -423,6 +503,9 @@ const TraceTreeTable: React.FC<TraceTreeTableProps> = ({
                           onToggleExpand(span.spanId);
                         }}
                         className="hover:bg-muted rounded p-0.5"
+                        type="button"
+                        aria-label={isExpanded ? 'Collapse children' : 'Expand children'}
+                        data-testid="span-row-expand"
                       >
                         <ChevronDown
                           size={14}
