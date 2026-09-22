@@ -12,6 +12,9 @@ import { Span } from '@/types';
 import {
   extractRetrievalIO,
   extractRetrievalIdLists,
+  extractRetrievedVsReturned,
+  classifyRetrievalIdListKey,
+  describeOverlap,
   isRetrievalIdListKey,
   parseIdList,
   prettyPrintIfJson,
@@ -55,9 +58,10 @@ describe('parseIdList (strict: list-shaped values only)', () => {
     expect(parseIdList('{"ids":[1]}')).toBeNull();
     expect(parseIdList('[not json')).toBeNull();
   });
-  it('returns null for lists of structured items (not ids)', () => {
-    expect(parseIdList([{ id: 1 }])).toBeNull();
-    expect(parseIdList('[{"id":1}]')).toBeNull();
+  it('returns null for lists of structured items without a single id-like key (not ids)', () => {
+    expect(parseIdList([{ title: 'x', score: 1 }])).toBeNull();
+    expect(parseIdList('[{"title":"x"}]')).toBeNull();
+    expect(parseIdList([[1, 2]])).toBeNull();
   });
   it('returns [] for an empty list', () => {
     expect(parseIdList('[]')).toEqual([]);
@@ -81,15 +85,86 @@ describe('id-list key convention', () => {
       span({ 'a.hit_ids': ['1', '2'], 'b.result_ids': '["x"]', 'retrieval.ids': '', 'c.hit_ids': [], 'd.hit_ids': 'p1, p2' })
     );
     expect(lists).toEqual([
-      { attribute: 'a.hit_ids', ids: ['1', '2'] },
-      { attribute: 'b.result_ids', ids: ['x'] },
-      { attribute: 'd.hit_ids', ids: [], raw: 'p1, p2' },
+      { attribute: 'a.hit_ids', ids: ['1', '2'], role: 'ids' },
+      { attribute: 'b.result_ids', ids: ['x'], role: 'ids' },
+      { attribute: 'd.hit_ids', ids: [], raw: 'p1, p2', role: 'ids' },
     ]);
+  });
+
+  it('reduces a list of objects with one id-like key to those ids (mixed shapes are not ids)', () => {
+    expect(parseIdList([{ id: 'a' }, { id: 7 }])).toEqual(['a', '7']);
+    expect(parseIdList('[{"doc_id":"d1"},{"doc_id":"d2"}]')).toEqual(['d1', 'd2']);
+    expect(parseIdList([{ id: 'a', _id: 'b' }])).toBeNull(); // ambiguous
+    expect(parseIdList([{ title: 'no id here' }])).toBeNull();
+    expect(parseIdList([{ id: 'a' }, 'b'])).toBeNull(); // objects and scalars mixed
+    expect(parseIdList([{ id: { nested: true } }])).toBeNull();
   });
 
   it('renders a raw (unparseable) id attribute verbatim in the output text', () => {
     const io = extractRetrievalIO(span({ 'db.system.name': 'x', 'search.hit_ids': 'p1, p2' }));
     expect(io.outputText).toBe('search.hit_ids: p1, p2');
+  });
+});
+
+describe('retrieved vs returned (labelled pair)', () => {
+  it('classifies keys: `retrieved` segment → retrieved; results*/returned/recommended → returned; hit_ids stay neutral', () => {
+    expect(classifyRetrievalIdListKey('retrieval.retrieved.ids')).toBe('retrieved');
+    expect(classifyRetrievalIdListKey('myagent.retrieved.doc_ids')).toBe('retrieved');
+    expect(classifyRetrievalIdListKey('retrieved.candidates')).toBe('retrieved');
+    expect(classifyRetrievalIdListKey('retrieval.results.ids')).toBe('returned');
+    expect(classifyRetrievalIdListKey('myagent.results')).toBe('returned');
+    expect(classifyRetrievalIdListKey('myagent.results_ids')).toBe('returned');
+    expect(classifyRetrievalIdListKey('x.returned.ids')).toBe('returned');
+    expect(classifyRetrievalIdListKey('x.recommended.ids')).toBe('returned');
+    expect(classifyRetrievalIdListKey('search.hit_ids')).toBe('ids');
+    expect(classifyRetrievalIdListKey('search.result_ids')).toBe('ids');
+    expect(classifyRetrievalIdListKey('retrieval.ids')).toBe('ids');
+    // Not the pattern: `results` must be a whole segment start, `retrieved` a whole segment.
+    expect(classifyRetrievalIdListKey('db.query.text')).toBeNull();
+    expect(classifyRetrievalIdListKey('unretrieved.ids')).toBeNull();
+    expect(classifyRetrievalIdListKey('x.myresults')).toBeNull();
+    expect(isRetrievalIdListKey('retrieval.retrieved.ids')).toBe(true);
+  });
+
+  it('splits a root span into the two sides and computes the overlap (distinct ids)', () => {
+    const rr = extractRetrievedVsReturned(span({
+      'agent.retrieved.doc_ids': ['1', '2', '3', '4', '4'],
+      'agent.results': ['2', '4', '9'],
+    }, 'POST /ask'));
+    expect(rr.retrieved.map(l => l.attribute)).toEqual(['agent.retrieved.doc_ids']);
+    expect(rr.returned.map(l => l.attribute)).toEqual(['agent.results']);
+    expect(rr.retrievedIds).toEqual(['1', '2', '3', '4']);
+    expect(rr.returnedIds).toEqual(['2', '4', '9']);
+    expect(rr.overlap).toEqual({ returnedFromRetrieved: 2, returnedNotRetrieved: 1 });
+    expect(describeOverlap(rr)).toBe('2 of 4 retrieved were returned; 1 returned id was not in the retrieved set');
+  });
+
+  it('phrases a clean subset without the extra clause and returns null overlap when one side is missing', () => {
+    const both = extractRetrievedVsReturned(span({ 'retrieval.retrieved.ids': ['a', 'b', 'c'], 'retrieval.results.ids': ['a', 'b'] }));
+    expect(describeOverlap(both)).toBe('2 of 3 retrieved were returned');
+    const only = extractRetrievedVsReturned(span({ 'retrieval.retrieved.ids': ['a'] }));
+    expect(only.returned).toEqual([]);
+    expect(only.overlap).toBeNull();
+    expect(describeOverlap(only)).toBeNull();
+    const none = extractRetrievedVsReturned(span({ 'db.system.name': 'x', 'search.hit_ids': ['a'] }));
+    expect(none.retrieved).toEqual([]);
+    expect(none.returned).toEqual([]);
+  });
+
+  it('ignores scalar siblings of the results family but keeps bracketed-unparseable values raw', () => {
+    const rr = extractRetrievedVsReturned(span({
+      'agent.results': ['1'],
+      'agent.results.source': 'return_results',
+      'agent.results.count': 1,
+      'agent.returned.ids': '[oops',
+    }));
+    expect(rr.returned.map(l => l.attribute)).toEqual(['agent.results', 'agent.returned.ids']);
+    expect(rr.returned[1]).toEqual({ attribute: 'agent.returned.ids', ids: [], raw: '[oops', role: 'returned' });
+  });
+
+  it('labels the sides in the RETRIEVAL output text', () => {
+    const io = extractRetrievalIO(span({ 'db.system.name': 'x', 'q.retrieved.ids': ['a'], 'q.results.ids': ['a'] }));
+    expect(io.outputText).toBe('Retrieved (seen) q.retrieved.ids (1):\n  - a\nReturned (recommended) q.results.ids (1):\n  - a');
   });
 });
 
@@ -126,7 +201,7 @@ describe('extractRetrievalIO', () => {
     expect(io.queryText).toBe('{\n  "query": {\n    "match_all": {}\n  }\n}');
     expect(io.returnedRows).toBe(20);
     expect(io.statusCode).toBe('200');
-    expect(io.idLists).toEqual([{ attribute: 'retrieval-agent.search.hit_ids', ids: ['p1', 'p2'] }]);
+    expect(io.idLists).toEqual([{ attribute: 'retrieval-agent.search.hit_ids', ids: ['p1', 'p2'], role: 'ids' }]);
     expect(io.outputText).toBe(
       ['returned_rows: 20', 'status_code: 200', 'retrieval-agent.search.hit_ids (2):', '  - p1', '  - p2'].join('\n')
     );
