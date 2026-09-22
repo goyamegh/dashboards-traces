@@ -61,6 +61,15 @@ export interface TransportFailure {
   description: string;
   /** HTTP status when the failure was a rejected request. */
   httpStatus?: number;
+  /**
+   * Whether this failure counts toward the run-level breaker. Connection /
+   * DNS / TLS / spawn failures and infrastructural gateway statuses (502 /
+   * 503 / 504) do — they say something about the ENDPOINT. Other rejected
+   * statuses (401, 404, 422, 500, …) still fast-fail the CASE with the right
+   * class, but are prompt- or config-specific and must not suppress the rest
+   * of the run.
+   */
+  breakerEligible: boolean;
 }
 
 const CONNECTION_CODES: Record<string, string> = {
@@ -117,17 +126,30 @@ function causeChain(error: unknown): Array<{ code?: string; message: string; sta
   return chain;
 }
 
-// Connectors word rejected responses as "<X> request failed: 503 - body",
-// "HTTP 502" or "status 504"; AggregateError from undici wraps ECONNREFUSED
-// in its message when `cause` has no code (Node 18).
-const STATUS_IN_MESSAGE_RE = /(?:request failed:|HTTP|status(?: code)?)\s*(\d{3})\b/i;
-const CODE_IN_MESSAGE_RE = /\b(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|ECONNRESET|EHOSTUNREACH|ENETUNREACH|EPIPE|ENOENT|EACCES|CERT_HAS_EXPIRED|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|UNABLE_TO_VERIFY_LEAF_SIGNATURE|ERR_TLS_CERT_ALTNAME_INVALID)\b/;
+// Every HTTP connector words a rejected response as "<Name> request failed:
+// <status> - <body>" (RESTConnector / OpenAICompatibleConnector /
+// LangGraphConnector). Anchored on that connector-generated prefix so a
+// status code quoted inside an agent's error BODY is never mistaken for one.
+const CONNECTOR_STATUS_RE = /\brequest failed:\s*(\d{3})\b/i;
+// Node's own network/spawn error wording when the code did not survive as a
+// property (e.g. Node 18's AggregateError): `connect ECONNREFUSED 1.2.3.4:80`,
+// `getaddrinfo ENOTFOUND host`, `read ECONNRESET`, `spawn foo ENOENT`.
+// Anchored at the start of the message so "ECONNREFUSED" quoted inside an
+// agent's response body does not classify.
+// Also accepts a message that IS a bare code (`cause: 'ECONNREFUSED'`).
+const NODE_SYSCALL_CODE_RE = /^(?:(?:connect|getaddrinfo|read|write|spawn(?: \S+)?) (E[A-Z_]+)\b|(E[A-Z_]+)$)/;
+const BREAKER_ELIGIBLE_STATUSES = new Set([502, 503, 504]);
 
 /**
  * Decide whether an agent-step error is a transport-level failure (the
  * request never reached, or was rejected outright by, the agent). Returns
  * `undefined` for everything else — timeouts, hook errors, parse errors,
  * subprocess non-zero exits — which keep their normal handling.
+ *
+ * Only structured signals are trusted: an error `code` on any hop of the
+ * cause chain, Node's own syscall wording at the START of a message, or the
+ * connectors' own `… request failed: <status>` prefix. Free text inside a
+ * response body never classifies.
  */
 export function classifyTransportFailure(error: unknown): TransportFailure | undefined {
   if (error === undefined || error === null) return undefined;
@@ -135,17 +157,23 @@ export function classifyTransportFailure(error: unknown): TransportFailure | und
 
   for (const hop of chain) {
     if (hop.code && CONNECTION_CODES[hop.code]) {
-      return { code: hop.code, description: CONNECTION_CODES[hop.code] };
+      return { code: hop.code, description: CONNECTION_CODES[hop.code], breakerEligible: true };
     }
   }
   for (const hop of chain) {
-    const m = hop.message.match(CODE_IN_MESSAGE_RE);
-    if (m && CONNECTION_CODES[m[1]]) return { code: m[1], description: CONNECTION_CODES[m[1]] };
+    const m = hop.message.match(NODE_SYSCALL_CODE_RE);
+    const code = m?.[1] ?? m?.[2];
+    if (code && CONNECTION_CODES[code]) return { code, description: CONNECTION_CODES[code], breakerEligible: true };
   }
   for (const hop of chain) {
-    const status = hop.status ?? (() => { const m = hop.message.match(STATUS_IN_MESSAGE_RE); return m ? Number(m[1]) : undefined; })();
+    const status = hop.status ?? (() => { const m = hop.message.match(CONNECTOR_STATUS_RE); return m ? Number(m[1]) : undefined; })();
     if (typeof status === 'number' && isRejectedStatus(status)) {
-      return { code: `HTTP_${status}`, description: `endpoint rejected the request with HTTP ${status}`, httpStatus: status };
+      return {
+        code: `HTTP_${status}`,
+        description: `endpoint rejected the request with HTTP ${status}`,
+        httpStatus: status,
+        breakerEligible: BREAKER_ELIGIBLE_STATUSES.has(status),
+      };
     }
   }
   return undefined;
@@ -167,21 +195,29 @@ export function describeEndpointHost(endpoint: string | undefined): string {
 }
 
 /**
- * Circuit-breaker key for an agent: the endpoint host for HTTP agents, the
- * command for subprocess agents. Two agents sharing a host share a key —
- * intentionally: an unreachable host is unreachable for both.
+ * Circuit-breaker key for an agent: `host[:port]/path` for HTTP agents (the
+ * hook-resolved effective endpoint, so two routes on one host never suppress
+ * each other; query string and credentials dropped), `command:<binary>` for
+ * subprocess agents.
  */
 export function endpointKeyFor(agent: { endpoint?: string; connectorConfig?: Record<string, any> }, effectiveEndpoint?: string): string {
   const endpoint = effectiveEndpoint ?? agent.endpoint;
-  if (endpoint && /^https?:\/\//i.test(endpoint)) return describeEndpointHost(endpoint);
+  if (endpoint && /^https?:\/\//i.test(endpoint)) {
+    try {
+      const url = new URL(endpoint);
+      return `${url.host}${url.pathname === '/' ? '' : url.pathname.replace(/\/+$/, '')}`;
+    } catch { /* fall through */ }
+  }
   const command = agent.connectorConfig?.command;
-  if (typeof command === 'string' && command.trim()) return `command:${command.trim()}`;
+  if (typeof command === 'string' && command.trim()) return `command:${command.trim().split(/\s+/)[0]}`;
   return endpoint ? describeEndpointHost(endpoint) : 'unknown endpoint';
 }
 
-/** Strip the `command:` prefix for display. */
+/** What a key is shown as on reports: the host (or the binary) only. */
 function displayKey(key: string): string {
-  return key.startsWith('command:') ? key.slice('command:'.length) : key;
+  if (key.startsWith('command:')) return key.slice('command:'.length);
+  const slash = key.indexOf('/');
+  return slash > 0 ? key.slice(0, slash) : key;
 }
 
 /**
@@ -194,14 +230,27 @@ export function resolveUnreachableThreshold(
   connectorConfig: Record<string, any> | undefined,
   env: Record<string, string | undefined> = typeof process !== 'undefined' ? process.env : {},
 ): number {
-  const candidates = [connectorConfig?.unreachableThreshold, env[UNREACHABLE_THRESHOLD_ENV]];
-  for (const raw of candidates) {
+  const candidates: Array<[string, unknown]> = [
+    ['connectorConfig.unreachableThreshold', connectorConfig?.unreachableThreshold],
+    [UNREACHABLE_THRESHOLD_ENV, env[UNREACHABLE_THRESHOLD_ENV]],
+  ];
+  for (const [source, raw] of candidates) {
     if (raw === undefined || raw === null || raw === '') continue;
     const n = typeof raw === 'number' ? raw : Number(raw);
-    if (!Number.isFinite(n)) continue;
+    if (!Number.isFinite(n)) {
+      // A typo must not silently change protection either way: say so and
+      // fall through to the next source / the default.
+      console.warn(`[agentReachability] Ignoring non-numeric ${source}=${JSON.stringify(raw)} (expected a positive integer, 0 to disable)`);
+      continue;
+    }
     return n <= 0 ? Infinity : Math.floor(n);
   }
   return DEFAULT_UNREACHABLE_THRESHOLD;
+}
+
+function truncate(text: string, max: number): string {
+  const oneLine = text.replace(/\s+/g, ' ').trim();
+  return oneLine.length > max ? `${oneLine.slice(0, max - 1)}…` : oneLine;
 }
 
 /**
@@ -215,7 +264,9 @@ export class AgentTransportError extends Error {
   readonly httpStatus?: number;
 
   constructor(failure: TransportFailure, endpointHost: string, cause: unknown) {
-    const original = cause instanceof Error ? cause.message : String(cause);
+    // The upstream message is kept for context but bounded: connector
+    // errors embed the response body, which can be arbitrarily long.
+    const original = truncate(cause instanceof Error ? cause.message : String(cause), 200);
     super(`${failure.code} — ${failure.description} while calling agent endpoint ${endpointHost}: ${original}`);
     this.name = 'AgentTransportError';
     this.code = failure.code;
@@ -299,24 +350,32 @@ export class EndpointCircuitBreaker {
     throw new AgentUnreachableError(displayKey(key), c.consecutiveFailures, c.lastFailureCode ?? 'connection failure');
   }
 
-  /** The agent answered (well or badly): reset the consecutive count. */
+  /**
+   * The agent answered (well or badly): reset the consecutive count. An OPEN
+   * circuit stays open — the breaker is monotonic within a run so a straggler
+   * that was already in flight when it opened cannot re-arm the remaining
+   * cases against the endpoint (concurrency > 1 makes that order-dependent
+   * otherwise). A new run is a fresh breaker.
+   */
   recordSuccess(key: string): void {
     const c = this.circuits.get(key);
-    if (!c) return;
+    if (!c || c.open) return;
     c.consecutiveFailures = 0;
     c.lastFailureCode = undefined;
-    c.open = false;
   }
 
   /**
-   * Record a connector error. Only transport failures count; anything else
-   * leaves the circuit untouched (and does NOT reset it — an agent that
-   * times out did not prove the endpoint reachable). Returns the classified
-   * failure when the error counted.
+   * Record a connector error. Only breaker-eligible transport failures
+   * (connection / DNS / TLS / spawn, gateway 502/503/504) count; other
+   * rejected statuses are classified (returned) but leave the count alone,
+   * and non-transport errors leave the circuit untouched entirely (and do
+   * NOT reset it — an agent that timed out did not prove the endpoint
+   * reachable). Returns the classified failure, if any.
    */
   recordFailure(key: string, error: unknown): TransportFailure | undefined {
     const failure = classifyTransportFailure(error);
     if (!failure) return undefined;
+    if (!failure.breakerEligible) return failure;
     const c = this.circuit(key);
     c.consecutiveFailures++;
     c.lastFailureCode = failure.code;
