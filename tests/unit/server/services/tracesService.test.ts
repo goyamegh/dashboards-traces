@@ -109,9 +109,11 @@ describe('tracesService', () => {
         expect('kind' in result).toBe(false);
       });
 
-      it('keeps the raw value under attributes.spanKind for the flat attribute table', () => {
-        expect(transformSpan({ kind: 'SPAN_KIND_SERVER' }).attributes.spanKind).toBe('SPAN_KIND_SERVER');
-        expect(transformSpan({ attributes: { 'span.kind': 'CLIENT' } } as any).attributes.spanKind).toBe('CLIENT');
+      it('mirrors the canonical name into attributes.spanKind (same on every ingest path), raw only when unknown', () => {
+        expect(transformSpan({ kind: 'SPAN_KIND_SERVER' }).attributes.spanKind).toBe('SERVER');
+        expect(transformSpan({ kind: 3 }).attributes.spanKind).toBe('CLIENT');
+        expect(transformSpan({ attributes: { 'span.kind': 'Client' } } as any).attributes.spanKind).toBe('CLIENT');
+        expect(transformSpan({ kind: 'SPAN_KIND_UNSPECIFIED' }).attributes.spanKind).toBe('SPAN_KIND_UNSPECIFIED');
       });
     });
 

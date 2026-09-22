@@ -181,12 +181,14 @@ export function transformSpan(source: OpenSearchSpanSource): NormalizedSpan {
     }
   }
 
-  // Top-level `kind` is what the API exposes; the raw value is also kept under
-  // `attributes.spanKind` for the flat attribute table / legacy consumers.
-  // Fall back to the `span.kind` / `spanKind` attributes when the document
-  // itself has no kind field (some pipelines only copy it into attributes).
+  // Top-level `kind` is what the API exposes. Fall back to the `span.kind` /
+  // `spanKind` attributes when the document itself has no kind field (some
+  // pipelines only copy it into attributes). `attributes.spanKind` (read by
+  // the flat attribute table / legacy consumers) carries the SAME canonical
+  // name on every ingest path — the OTLP receiver does likewise — falling
+  // back to the raw value only when it could not be normalised.
   const kind = resolveSpanKind(source.kind, attributes);
-  attributes['spanKind'] = source.kind ?? attributes['spanKind'] ?? attributes['span.kind'];
+  attributes['spanKind'] = kind ?? source.kind ?? attributes['spanKind'] ?? attributes['span.kind'];
   attributes['serviceName'] = source.serviceName;
 
   // Process events

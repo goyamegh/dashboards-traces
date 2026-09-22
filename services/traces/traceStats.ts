@@ -111,28 +111,30 @@ function toMs(value: string | undefined): number {
 }
 
 /**
- * A span's [start, end] in epoch ms, derived from its timestamps or, when the
- * end timestamp is missing/invalid, from `startTime + duration`.
+ * Inclusive duration of a span in ms: the explicit `duration` when present
+ * (what the API and every fixture carry), otherwise derived from the
+ * timestamps. This is the ONE length basis used for both a parent's own time
+ * and its children's occupancy — see {@link spanInterval}.
+ */
+function inclusiveDuration(span: Pick<CategorizedSpan, 'startTime' | 'endTime' | 'duration'>): number {
+  if (typeof span.duration === 'number' && !Number.isNaN(span.duration)) return Math.max(0, span.duration);
+  const start = toMs(span.startTime);
+  const end = toMs(span.endTime);
+  if (Number.isNaN(start) || Number.isNaN(end) || end < start) return 0;
+  return end - start;
+}
+
+/**
+ * A span's [start, end] in epoch ms, placed at its start timestamp and
+ * extended by {@link inclusiveDuration}. Deliberately NOT `endTime`: the
+ * child-occupancy union and the parent's inclusive time must be measured on
+ * the same clock, otherwise a `duration` that disagrees with the timestamps
+ * would produce self times the numbers don't support.
  */
 function spanInterval(span: Pick<CategorizedSpan, 'startTime' | 'endTime' | 'duration'>): SpanInterval | null {
   const start = toMs(span.startTime);
   if (Number.isNaN(start)) return null;
-  let end = toMs(span.endTime);
-  if (Number.isNaN(end)) {
-    if (typeof span.duration !== 'number') return null;
-    end = start + span.duration;
-  }
-  return end >= start ? { start, end } : null;
-}
-
-/**
- * Inclusive duration of a span in ms: the explicit `duration` when present,
- * otherwise derived from the timestamps.
- */
-function inclusiveDuration(span: Pick<CategorizedSpan, 'startTime' | 'endTime' | 'duration'>): number {
-  if (typeof span.duration === 'number' && !Number.isNaN(span.duration)) return Math.max(0, span.duration);
-  const interval = spanInterval(span);
-  return interval ? interval.end - interval.start : 0;
+  return { start, end: start + inclusiveDuration(span) };
 }
 
 /**
@@ -166,7 +168,9 @@ function unionLength(intervals: SpanInterval[], bounds: SpanInterval): number {
  * parent to subtract from, and count their own full self time.
  *
  * Keyed by `spanId`; spans without an id fall back to their inclusive
- * duration (they cannot be anyone's parent).
+ * duration (they cannot be anyone's parent). Spans without a `traceId` are
+ * only matched with children that also lack one — callers are expected to
+ * pass one trace at a time, as every trace view does.
  */
 export function calculateSelfDurations(spans: CategorizedSpan[]): Map<CategorizedSpan, number> {
   const childrenByParent = new Map<string, CategorizedSpan[]>();
