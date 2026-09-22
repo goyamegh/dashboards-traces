@@ -59,21 +59,32 @@ describe('response-results — form (a): the response IS JSON', () => {
       { path: 'data.recommendations', idField: 'doc_id' }
     );
     expect(p.ranked).toEqual(['d2', 'd1']);
-    // Without idField the auto-detect finds no id-carrying list → empty prediction, not a crash.
+    // Without idField / path the auto-detect finds no id-carrying list → NOT present (unevaluable), never an empty prediction.
     const q = extractResponseResults({ trajectory: [step('response', JSON.stringify(payload))] });
-    expect(q).toMatchObject({ ranked: [], parsedFrom: 'none', present: true });
+    expect(q).toMatchObject({ ranked: [], parsedFrom: 'none', present: false, hasAnswer: true });
+    // A declared path that resolves to a non-list (or a list without the id field) is likewise not found.
+    expect(extractResponseResults({ trajectory: [step('response', JSON.stringify({ data: { recs: 'x' } }))] }, { path: 'data.recs' })).toMatchObject({ present: false });
+    expect(extractResponseResults({ trajectory: [step('response', JSON.stringify({ data: { recs: [{ name: 'no id' }] } }))] }, { path: 'data.recs' })).toMatchObject({ present: false });
+    // …but an explicitly EMPTY array at the path is a real empty prediction.
+    expect(extractResponseResults({ trajectory: [step('response', JSON.stringify({ data: { recs: [] } }))] }, { path: 'data.recs' })).toMatchObject({ ranked: [], present: true, parsedFrom: 'json' });
   });
 
-  it('auto-detects: root array, then results / hits / items, then any id-carrying array, then one level deep', () => {
+  it('auto-detects: root array, then results / hits / items, then any root-level id-carrying array — never deeper', () => {
     expect(findResultsArray([{ id: 1 }], { idField: 'id' })).toEqual([{ id: 1 }]);
     expect(findResultsArray({ hits: [{ id: 1 }], other: [{ id: 2 }] }, { idField: 'id' })).toEqual([{ id: 1 }]);
     expect(findResultsArray({ candidates: [{ id: 2 }] }, { idField: 'id' })).toEqual([{ id: 2 }]);
-    expect(findResultsArray({ data: { results: [{ id: 3 }] } }, { idField: 'id' })).toEqual([{ id: 3 }]);
+    // Nested shapes need an explicit path (auto-detect does not recurse into unrelated objects).
+    expect(findResultsArray({ data: { results: [{ id: 3 }] } }, { idField: 'id' })).toBeUndefined();
+    expect(findResultsArray({ data: { results: [{ id: 3 }] } }, { idField: 'id', path: 'data.results' })).toEqual([{ id: 3 }]);
     // Arrays of scalars / arrays of objects without the id field are not result lists.
     expect(findResultsArray({ tags: ['a', 'b'] }, { idField: 'id' })).toBeUndefined();
     expect(findResultsArray({ rows: [{ name: 'x' }] }, { idField: 'id' })).toBeUndefined();
+    expect(findResultsArray([{ name: 'x' }], { idField: 'id' })).toBeUndefined();
     expect(findResultsArray('text', { idField: 'id' })).toBeUndefined();
     expect(findResultsArray({ results: 'not an array' }, { idField: 'id', path: 'results' })).toBeUndefined();
+    // An empty conventional key is the list (explicit abstention); an empty unconventional key is not picked.
+    expect(findResultsArray({ answer: 'none', results: [] }, { idField: 'id' })).toEqual([]);
+    expect(findResultsArray({ answer: 'none', foo: [] }, { idField: 'id' })).toBeUndefined();
   });
 
   it('an explicitly EMPTY results[] is an empty prediction with parsedFrom json (scorable, not unevaluable)', () => {
@@ -107,9 +118,9 @@ describe('response-results — raw payload of a non-streaming connector', () => 
     });
     expect(p).toMatchObject({ ranked: ['301', '302'], parsedFrom: 'raw-event', present: true, hasAnswer: true });
   });
-  it('is present even without a response step (payload only)', () => {
+  it('never stands in for a missing answer (payload only, no response step → absent)', () => {
     const p = extractResponseResults({ trajectory: [step('tool_result', '{}')], rawEvents: [payload] });
-    expect(p).toMatchObject({ ranked: ['301', '302'], parsedFrom: 'raw-event', present: true, hasAnswer: false });
+    expect(p).toMatchObject({ ranked: [], parsedFrom: 'none', present: false, hasAnswer: false });
   });
   it('never consults streaming event lists (more than one raw event) or non-object payloads', () => {
     const streaming = [{ type: 'RUN_STARTED' }, { type: 'MESSAGES_SNAPSHOT', messages: [{ id: 'm1' }] }];
@@ -138,17 +149,22 @@ describe('response-results — form (c): rendered text list (best-effort)', () =
     expect(p).toMatchObject({ ranked: ['2079', '41927', '84478'], candidateCount: 3, parsedFrom: 'text' });
   });
 
-  it('accepts -, *, • and 1) bullets and id=/id#/`id` spellings; ignores lines without the label', () => {
+  it('accepts -, *, • and 1) bullets and id=/id#/`id`/**id** spellings at the item start or in brackets; ignores prose and null-ish tokens', () => {
     const text = [
       '- id: A-77',
       '* id=B_8',
       '• Item nine (id #9)',
-      '4) doc `id` 10.',
+      '4) `id` 10.',
+      '5. **id**: 11 — bold label',
+      '6. Item twelve [ID: 12]',
       '- 42 is a number, not an id',
+      '- user id 123 was checked (mid-sentence label is prose, not a list item id)',
       'The price was $41.16 and id 999 is prose, not a list line',
       '1. ids 55 are plural, not a label',
+      '2. id: none',
+      '3. id: null',
     ].join('\n');
-    expect(idsFromTextList(text)).toEqual(['A-77', 'B_8', '9', '10']);
+    expect(idsFromTextList(text)).toEqual(['A-77', 'B_8', '9', '10', '11', '12']);
   });
 
   it('dedupes text ids', () => {
@@ -157,11 +173,17 @@ describe('response-results — form (c): rendered text list (best-effort)', () =
 });
 
 describe('response-results — empty vs absent', () => {
-  it('a response with no list at all → empty prediction, present (scorable)', () => {
+  it('a response with no recognisable list → ABSENT (unevaluable): "could not extract" is never "returned nothing"', () => {
     const p = extractResponseResults({ trajectory: [step('response', 'I could not find anything relevant.')] });
-    expect(p).toMatchObject({ ranked: [], candidateCount: 0, parsedFrom: 'none', present: true, hasAnswer: true });
+    expect(p).toMatchObject({ ranked: [], candidateCount: 0, parsedFrom: 'none', present: false, hasAnswer: true });
+    // JSON without a list is equally absent.
+    expect(extractResponseResults({ trajectory: [step('response', JSON.stringify({ answer: 'nothing relevant' }))] })).toMatchObject({ present: false, hasAnswer: true });
   });
-  it('no response / assistant step and no raw payload → absent (unevaluable)', () => {
+  it('an explicit EMPTY list is a present, empty prediction (scorable abstention)', () => {
+    expect(extractResponseResults({ trajectory: [step('response', '[]')] })).toMatchObject({ ranked: [], present: true, parsedFrom: 'json' });
+    expect(extractResponseResults({ trajectory: [step('response', 'Nothing.\n```json\n{"results": []}\n```')] })).toMatchObject({ ranked: [], present: true, parsedFrom: 'fenced' });
+  });
+  it('no response / assistant step → absent (unevaluable)', () => {
     const p = extractResponseResults({ trajectory: [step('tool_result', JSON.stringify({ hits: [{ id: 'h1' }] }))] });
     expect(p).toMatchObject({ ranked: [], parsedFrom: 'none', present: false, hasAnswer: false });
     expect(extractResponseResults({ trajectory: [] })).toMatchObject({ present: false });

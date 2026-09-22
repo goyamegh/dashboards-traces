@@ -43,9 +43,10 @@ describe('lib/scoring/gold — resolveGold', () => {
       expect(resolveGold({ expectedOutcomes: [`Gold id(s): ${token}`] }, PATTERN)).toEqual({ ids: [], rule: 'expected-outcomes-pattern' });
     });
 
-    it('expected.ids = [] with no gold line is explicitly no gold (both gold sources)', () => {
-      expect(resolveGold({ expected: { ids: [] }, expectedOutcomes: ['prose only'] }, PATTERN)).toEqual({ ids: [], rule: 'expected.ids' });
+    it('expected.ids = [] is explicitly no gold ONLY for the structured gold source; under the pattern source it is "unset"', () => {
       expect(resolveGold({ expected: { ids: [] } }, STRUCTURED)).toEqual({ ids: [], rule: 'expected.ids' });
+      // Clients serialize [] for "unset"; a pattern evaluator never reads it as an abstain case.
+      expect(resolveGold({ expected: { ids: [] }, expectedOutcomes: ['prose only'] }, PATTERN)).toBeNull();
     });
 
     it('expected.ids = [] does not shadow a gold line (ids from the line win)', () => {
