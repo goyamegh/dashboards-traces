@@ -446,6 +446,14 @@ Do not stop at unit tests. Each change ships with regression tests at the levels
 
 Rule of thumb: if a human could see or hit it, there must be an integration and/or Playwright test that fails if the bug returns. Reviewers should reject feature/bugfix PRs that only add unit tests for UI- or API-visible behavior.
 
+**Customer-surface regression matrix** — [docs/SURFACE_MATRIX.md](docs/SURFACE_MATRIX.md)
+(`tests/integration/surface-matrix/`, `tests/e2e/surface-matrix/`, `npm run test:surface-matrix`)
+pins every CLI / API / UI way of running benchmarks, single tests and independent
+evaluations by what the customer sees (exit code + printed summary, HTTP status +
+body shape, rendered state) — never internals. When you change or remove an
+execution path, the matrix is what must stay green; when you add a customer-facing
+operation, add its row + spec there.
+
 ```bash
 npm test                                    # All tests
 npm run test:unit                           # Unit tests only
