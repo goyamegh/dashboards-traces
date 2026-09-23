@@ -25,9 +25,12 @@
  *
  * On boot, scan benchmarks for runs that are:
  *   - `status === 'running'` AND
- *   - older than `BENCHMARK_RUN_STALE_AFTER_MS` (default 1h) AND
- *   - not in the *current* process's active-run registry (so we don't kill an
- *     in-flight resumption from another concurrent boot path)
+ *   - older than `BENCHMARK_RUN_STALE_AFTER_MS` (default 1h)
+ *
+ * No "is it active in this process" guard: recovery runs before any executor
+ * exists in this process, and the evaluation-runs runner only links a run into
+ * `benchmark.runs[]` once it is terminal, so an embedded `running` run can only
+ * ever be a legacy-runner orphan (or a projection whose process died).
  *
  * For each such run:
  *   - Mark every `runResult` whose `status` is still `'running'` or `'pending'`
@@ -40,7 +43,6 @@
 
 import type { IStorageModule } from '../adapters/types.js';
 import type { Benchmark, BenchmarkRun } from '../../types/index.js';
-import { isEvaluationRunActiveInThisProcess as isRunActiveInThisProcess } from '../routes/storage/evaluationRuns.js';
 import { refreshBenchmarkRunStatsByRunId } from './benchmarkRunStats.js';
 
 function envInt(name: string, fallback: number): number {
@@ -127,12 +129,6 @@ export async function recoverOrphanBenchmarkRuns(storage: IStorageModule): Promi
         const runStart = new Date(run.createdAt || 0).getTime();
         const ageMs = Number.isFinite(runStart) && runStart > 0 ? now - runStart : Infinity;
         if (ageMs < staleAfterMs) {
-          updatedRuns.push(run);
-          continue;
-        }
-
-        if (isRunActiveInThisProcess(run.id)) {
-          // Resumed in the current process — leave alone.
           updatedRuns.push(run);
           continue;
         }

@@ -224,7 +224,7 @@ Key endpoints used by CLI:
 | `/api/storage/benchmarks/:id` | GET | Get benchmark by ID |
 | `/api/storage/evaluation-runs` | POST | Execute a benchmark / ad-hoc sources against an agent (SSE) — what `agent-health benchmark` uses for every mode |
 | `/api/storage/benchmarks/:id/execute` | POST | **Removed** — answers `410 Gone` (`code: LEGACY_EXECUTE_REMOVED`, `Deprecation`/`Sunset` headers) with the replacement route in the body. Route kept only so old clients get an explicit error (see [CLI.md → Execution path](./CLI.md#benchmark-execution-path)) |
-| `/api/storage/benchmarks/:id/cancel` | POST | Cancel a run embedded in `benchmark.runs[]` (stops a live executor via the shared canceller registry, or marks a stale `running` run cancelled) — the UI uses `POST /api/storage/evaluation-runs/:id/cancel` |
+| `/api/storage/benchmarks/:id/cancel` | POST | Embedded runs only: marks a stale `running` run in `benchmark.runs[]` cancelled (zombie fallback). In-flight runs are cancelled with `POST /api/storage/evaluation-runs/:id/cancel` (what the UI/CLI use) |
 | `/api/storage/runs/by-benchmark-run/:benchmarkId/:runId` | GET | Get reports for a run |
 
 ## Why This Architecture?

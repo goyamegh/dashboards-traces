@@ -997,15 +997,15 @@ router.patch('/api/storage/benchmarks/:id/runs/:runId/stats', async (req: Reques
   }
 });
 
-// POST /api/storage/benchmarks/:id/cancel - Cancel an in-progress run
+// POST /api/storage/benchmarks/:id/cancel - Cancel a run embedded in benchmark.runs[]
 //
-// Runs execute through the evaluation-runs API (`POST
-// /api/storage/evaluation-runs/:id/cancel` is the primary cancel path). This
-// route remains for the projection embedded in `benchmark.runs[]`: it asks
-// every in-process executor registry to stop the run and, when none holds it
-// (executor finished, or the process that ran it is gone while the doc still
-// says 'running' — the "zombie" run), marks the embedded run cancelled
-// directly once it is old enough that an executor cannot still be starting.
+// EMBEDDED RUNS ONLY. Runs execute through the evaluation-runs API and are
+// linked into `benchmark.runs[]` only once terminal, so an in-flight run is
+// never found here — cancel those with `POST /api/storage/evaluation-runs/:id/cancel`
+// (what the UI and CLI do). What this route still handles is the "zombie"
+// left behind by the removed legacy runner (or a dead process): an embedded
+// run whose doc still says `running` with no executor anywhere. It is marked
+// cancelled directly once old enough that an executor cannot still be starting.
 router.post('/api/storage/benchmarks/:id/cancel', async (req: Request, res: Response) => {
   const { id } = req.params;
   const { runId } = req.body;
@@ -1018,36 +1018,32 @@ router.post('/api/storage/benchmarks/:id/cancel', async (req: Request, res: Resp
   const benchmark = await storage.benchmarks.getById(id);
   const run = benchmark?.runs?.find(r => r.id === runId);
   if (!run) {
-    return res.status(404).json({ error: 'Run not found or already completed' });
+    return res.status(404).json({
+      error: 'Run not found or already completed',
+      hint: `In-flight runs are not embedded in the benchmark until they finish; cancel them with POST /api/storage/evaluation-runs/${encodeURIComponent(runId)}/cancel`,
+    });
   }
   if (run.status !== 'running') {
     return res.status(400).json({ error: `Run is not currently running (status: ${run.status})` });
   }
-
-  const stoppedExecutor = cancelActiveRun(runId);
-  if (!stoppedExecutor && !isOldEnoughForZombieCancel(run.createdAt)) {
+  if (!isOldEnoughForZombieCancel(run.createdAt)) {
     return res.status(409).json({
       error: `Run was created less than ${ZOMBIE_CANCEL_MIN_AGE_MS / 1000}s ago; its executor may not have started yet. Try cancelling again in a moment.`,
     });
   }
 
-  const cancelNote = stoppedExecutor
-    ? undefined
-    : 'Cancelled: no active executor found for this run (process restarted or crashed) — marked cancelled directly.';
+  const cancelNote = 'Cancelled: no active executor found for this run (process restarted or crashed) — marked cancelled directly.';
   try {
     await storage.benchmarks.updateRun(id, runId, {
       status: 'cancelled',
       completedAt: new Date().toISOString(),
-      ...(cancelNote ? { cancelNote } : {}),
+      cancelNote,
     } as any);
   } catch (error: any) {
-    console.error('[StorageAPI] Cancel run doc update failed:', error.message);
+    console.error('[StorageAPI] Zombie-cancel doc update failed:', error.message);
     return res.status(500).json({ error: error.message });
   }
 
-  if (stoppedExecutor) {
-    return res.json({ cancelled: true, runId });
-  }
   return res.json({ cancelled: true, runId, viaFallback: true, note: cancelNote });
 });
 

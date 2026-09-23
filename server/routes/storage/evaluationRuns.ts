@@ -54,16 +54,6 @@ export function cancelActiveEvaluationRun(runId: string): boolean {
 }
 registerRunCanceller(cancelActiveEvaluationRun);
 
-/**
- * Read-only accessor for the in-memory active-run registry. Used by
- * `server/services/benchmarkRunRecoveryOnBoot.ts` to distinguish runs that
- * are *actually* in-flight in this process from runs whose `status: 'running'`
- * was orphaned by a previous restart.
- */
-export function isEvaluationRunActiveInThisProcess(runId: string): boolean {
-  return activeCancellationTokens.has(runId);
-}
-
 // codex_review (retry-judgement): the 409-if-running gate on
 // /retry-judgement checks the run's PERSISTED status, which is not a lock —
 // two concurrent retry-judgement requests against the SAME terminal run
