@@ -27,7 +27,7 @@
  * `aria-expanded`).
  */
 
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { ChevronDown, ChevronRight, Copy, Check } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Markdown } from '@/components/ui/markdown';
@@ -52,8 +52,6 @@ export interface PrettyContentProps {
    * `content`; pass `step.content` when `content` is `step.toolArgs`.
    */
   raw?: string;
-  /** Initial view. Defaults to `table` when tabular, else `tree` (or `text`). */
-  defaultMode?: PrettyMode;
   /** Levels expanded by default in the tree. Default 2. */
   defaultExpandedDepth?: number;
   className?: string;
@@ -88,7 +86,7 @@ type ExpandMode = 'default' | 'all' | 'none';
 interface TreeContext {
   mode: ExpandMode;
   overrides: Map<string, boolean>;
-  toggle: (path: string) => void;
+  toggle: (path: string, depth: number) => void;
   defaultDepth: number;
 }
 
@@ -127,7 +125,6 @@ interface NodeProps {
   depth: number;
   path: string;
   ctx: TreeContext;
-  isLast?: boolean;
 }
 
 const JsonNode: React.FC<NodeProps> = ({ keyLabel, value, depth, path, ctx }) => {
@@ -151,16 +148,17 @@ const JsonNode: React.FC<NodeProps> = ({ keyLabel, value, depth, path, ctx }) =>
     );
   }
 
-  const entries: Array<[string, unknown]> =
-    type === 'array'
-      ? (value as unknown[]).map((v, i) => [String(i), v] as [string, unknown])
-      : Object.entries(value as Record<string, unknown>);
   const open = isExpanded(ctx, path, depth);
-  const count = entries.length;
   const bracketOpen = type === 'array' ? '[' : '{';
   const bracketClose = type === 'array' ? ']' : '}';
-  const summary = summarizeValue(value);
-  const shown = entries.slice(0, page * CHILD_PAGE);
+  const count = type === 'array' ? (value as unknown[]).length : Object.keys(value as object).length;
+  // Only pay for the shape scan when the node is collapsed, and once per value.
+  const summary = useMemo(() => (open ? '' : summarizeValue(value)), [open, value]);
+  const shown: Array<[string, unknown]> = !open
+    ? []
+    : type === 'array'
+      ? (value as unknown[]).slice(0, page * CHILD_PAGE).map((v, i) => [String(i), v] as [string, unknown])
+      : Object.entries(value as Record<string, unknown>).slice(0, page * CHILD_PAGE);
 
   return (
     <div>
@@ -169,7 +167,7 @@ const JsonNode: React.FC<NodeProps> = ({ keyLabel, value, depth, path, ctx }) =>
           type="button"
           aria-expanded={open}
           aria-label={`${open ? 'Collapse' : 'Expand'} ${keyLabel ?? 'root'}`}
-          onClick={() => ctx.toggle(path)}
+          onClick={() => ctx.toggle(path, depth)}
           className="w-[14px] h-5 flex-shrink-0 inline-flex items-center justify-center text-muted-foreground hover:text-foreground rounded focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
           {count === 0 ? null : open ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -230,12 +228,12 @@ export const JsonTree: React.FC<JsonTreeProps> = ({ value, defaultDepth, testId 
   const [overrides, setOverrides] = useState<Map<string, boolean>>(() => new Map());
 
   const toggle = useCallback(
-    (path: string) => {
+    (path: string, depth: number) => {
       setOverrides((prev) => {
         const next = new Map(prev);
         // Compute the current state from the *previous* override / mode so a
-        // toggle always flips what the user sees.
-        const depth = path === '' ? 0 : path.split('/').length - 1;
+        // toggle always flips what the user sees. `depth` is passed in rather
+        // than derived from the path — keys may themselves contain '/'.
         const current = prev.has(path)
           ? (prev.get(path) as boolean)
           : mode === 'all'
@@ -299,6 +297,15 @@ function cellText(v: unknown): { text: string; full: string; type: string } {
 
 export const JsonTable: React.FC<{ table: TabularShape; testId?: string }> = ({ table, testId }) => {
   const [page, setPage] = useState(1);
+  // Cells the user opened to read in full ("row:col").
+  const [openCells, setOpenCells] = useState<Set<string>>(() => new Set());
+  const toggleCell = (k: string) =>
+    setOpenCells((prev) => {
+      const next = new Set(prev);
+      if (next.has(k)) next.delete(k);
+      else next.add(k);
+      return next;
+    });
   const rows = table.rows.slice(0, page * TABLE_PAGE);
   return (
     <div data-testid={testId} className="overflow-x-auto">
@@ -319,13 +326,33 @@ export const JsonTable: React.FC<{ table: TabularShape; testId?: string }> = ({ 
               <td className="px-2 py-1 text-muted-foreground border-b border-border/30">{i}</td>
               {table.columns.map((c) => {
                 const cell = cellText(row[c]);
+                const truncated = cell.full !== cell.text;
+                const cellKey = `${i}:${c}`;
+                const opened = openCells.has(cellKey);
                 return (
                   <td
                     key={c}
-                    title={cell.full !== cell.text ? cell.full : undefined}
-                    className={cn('px-2 py-1 border-b border-border/30 max-w-[24rem] truncate', TYPE_COLOR[cell.type])}
+                    className={cn(
+                      'px-2 py-1 border-b border-border/30 max-w-[24rem]',
+                      opened ? 'whitespace-pre-wrap break-words' : 'truncate',
+                      TYPE_COLOR[cell.type]
+                    )}
                   >
-                    {cell.text}
+                    {truncated ? (
+                      // Truncated cells are buttons: keyboard / touch users can
+                      // open the full value; the title is a bonus for mouse hover.
+                      <button
+                        type="button"
+                        title={opened ? undefined : cell.full}
+                        aria-expanded={opened}
+                        onClick={() => toggleCell(cellKey)}
+                        className="text-left w-full truncate hover:underline decoration-dotted"
+                      >
+                        {opened ? cell.full : cell.text}
+                      </button>
+                    ) : (
+                      cell.text
+                    )}
                   </td>
                 );
               })}
@@ -400,7 +427,7 @@ const ModeButton: React.FC<{
   </button>
 );
 
-const CopyPretty: React.FC<{ text: string }> = ({ text }) => {
+const CopyPretty: React.FC<{ text: string; label: string }> = ({ text, label }) => {
   const [copied, setCopied] = useState(false);
   const onClick = async () => {
     try {
@@ -415,8 +442,8 @@ const CopyPretty: React.FC<{ text: string }> = ({ text }) => {
     <button
       type="button"
       onClick={onClick}
-      aria-label="Copy content"
-      title={copied ? 'Copied!' : 'Copy'}
+      aria-label={label}
+      title={copied ? 'Copied!' : label}
       className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] text-muted-foreground hover:text-foreground hover:bg-muted"
     >
       {copied ? <Check size={11} className="text-green-500" /> : <Copy size={11} />}
@@ -437,10 +464,25 @@ function describeUnwrapped(n: NormalizedContent): string | null {
   return `unwrapped ${layers.map((l) => names[l] ?? l).join(' → ')}`;
 }
 
+/**
+ * Scalar siblings of the table key, shown above the table so choosing Table
+ * doesn't hide `status: "ok" · total: 91`. Containers are left to Tree view.
+ */
+function scalarSiblings(root: unknown, exceptKey: string, max = 8): Array<[string, string]> {
+  if (typeof root !== 'object' || root === null || Array.isArray(root)) return [];
+  const out: Array<[string, string]> = [];
+  for (const [k, v] of Object.entries(root as Record<string, unknown>)) {
+    if (k === exceptKey) continue;
+    if (v !== null && typeof v === 'object') continue;
+    out.push([k, formatScalar(v)]);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
 export const PrettyContent: React.FC<PrettyContentProps> = ({
   content,
   raw,
-  defaultMode,
   defaultExpandedDepth = 2,
   className,
   testId = 'pretty-content',
@@ -450,11 +492,25 @@ export const PrettyContent: React.FC<PrettyContentProps> = ({
   const isJson = normalized.kind === 'json';
   const tableCandidate = useMemo(() => (isJson ? findTableCandidate(normalized.value) : undefined), [isJson, normalized.value]);
 
-  const initialMode: PrettyMode = defaultMode ?? (isJson ? (tableCandidate ? 'table' : 'tree') : 'text');
-  const [mode, setMode] = useState<PrettyMode>(initialMode);
+  // View state is tied to the content it was chosen for: when a live step's
+  // content changes shape under us (streaming assistant text that becomes
+  // JSON, a tool result that arrives later) the mode, tree expansion and
+  // paging must not carry over to a value they were never about.
+  const initialMode: PrettyMode = isJson ? (tableCandidate ? 'table' : 'tree') : 'text';
+  const [modeState, setModeState] = useState<{ mode: PrettyMode; forContent: unknown }>({ mode: initialMode, forContent: content });
+  const mode = modeState.forContent === content ? modeState.mode : initialMode;
+  const setMode = (m: PrettyMode) => setModeState({ mode: m, forContent: content });
+  const contentVersion = useRef(0);
+  const lastContent = useRef<unknown>(content);
+  if (lastContent.current !== content) {
+    lastContent.current = content;
+    contentVersion.current += 1;
+  }
+  const bodyKey = contentVersion.current;
 
   const summary = isJson ? summarizeValue(normalized.value) : normalized.kind === 'markdown' ? 'markdown' : `text · ${normalized.raw.length} chars`;
   const unwrappedNote = describeUnwrapped(normalized);
+  const truncatedNote = normalized.truncated ? 'nested parsing capped — some JSON strings left as text (see Raw)' : null;
   const pretty = useMemo(() => (isJson ? stringifyPretty(normalized.value) : String(normalized.value)), [isJson, normalized.value]);
   // Plain text that didn't unwrap anything: showing a Raw toggle would show
   // the same thing twice.
@@ -469,6 +525,11 @@ export const PrettyContent: React.FC<PrettyContentProps> = ({
         {unwrappedNote && (
           <span className="text-muted-foreground/70" data-testid={`${testId}-unwrapped`}>
             · {unwrappedNote}
+          </span>
+        )}
+        {truncatedNote && (
+          <span className="text-amber-700 dark:text-amber-400" data-testid={`${testId}-truncated`}>
+            · {truncatedNote}
           </span>
         )}
         <span className="flex-1" />
@@ -494,7 +555,7 @@ export const PrettyContent: React.FC<PrettyContentProps> = ({
             </ModeButton>
           )}
         </div>
-        <CopyPretty text={mode === 'raw' ? rawText : pretty} />
+        <CopyPretty text={mode === 'raw' ? rawText : pretty} label={mode === 'raw' ? 'Copy raw string' : 'Copy as pretty JSON'} />
       </div>
 
       <div className="p-2 overflow-x-auto">
@@ -506,14 +567,21 @@ export const PrettyContent: React.FC<PrettyContentProps> = ({
         {mode === 'table' && tableCandidate && (
           <div>
             {tableCandidate.key !== undefined && (
-              <div className="text-[11px] text-muted-foreground mb-1 font-mono">
-                {tableCandidate.key} · {tableCandidate.table.rows.length} rows — other keys in Tree view
+              <div className="text-[11px] text-muted-foreground mb-1 font-mono flex flex-wrap gap-x-3" data-testid={`${testId}-table-context`}>
+                {scalarSiblings(normalized.value, tableCandidate.key).map(([k, v]) => (
+                  <span key={k}>
+                    <span className="text-foreground/70">{k}</span>: <span className="text-foreground/90">{v}</span>
+                  </span>
+                ))}
+                <span>
+                  {tableCandidate.key} · {tableCandidate.table.rows.length} rows — nested keys in Tree view
+                </span>
               </div>
             )}
-            <JsonTable table={tableCandidate.table} testId={`${testId}-table`} />
+            <JsonTable key={bodyKey} table={tableCandidate.table} testId={`${testId}-table`} />
           </div>
         )}
-        {mode === 'tree' && isJson && <JsonTree value={normalized.value} defaultDepth={defaultExpandedDepth} testId={`${testId}-tree`} />}
+        {mode === 'tree' && isJson && <JsonTree key={bodyKey} value={normalized.value} defaultDepth={defaultExpandedDepth} testId={`${testId}-tree`} />}
         {mode === 'text' &&
           (normalized.kind === 'markdown' ? (
             <Markdown>{String(normalized.value)}</Markdown>

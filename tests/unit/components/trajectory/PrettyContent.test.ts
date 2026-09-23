@@ -59,7 +59,7 @@ describe('PrettyContent', () => {
     expect(within(table).getByText('inStock')).toBeTruthy();
     expect(within(table).getByText('Product 7')).toBeTruthy();
     // The table came from a key of the root object, and says so.
-    expect(screen.getByText(/hits · 20 rows/)).toBeTruthy();
+    expect(screen.getByTestId('pretty-content-table-context').textContent).toContain('hits · 20 rows');
   });
 
   it('Raw shows the original (escaped) string untouched', () => {
@@ -192,21 +192,78 @@ describe('PrettyContent', () => {
     const raw = '{"a":1}';
     render(React.createElement(PrettyContent, { content: raw }));
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Copy content'));
+      fireEvent.click(screen.getByLabelText('Copy as pretty JSON'));
     });
     expect(writeText).toHaveBeenLastCalledWith('{\n  "a": 1\n}');
     expect(screen.getByTitle('Copied!')).toBeTruthy();
     fireEvent.click(screen.getByTestId('pretty-content-mode-raw'));
     await act(async () => {
-      fireEvent.click(screen.getByLabelText('Copy content'));
+      fireEvent.click(screen.getByLabelText('Copy raw string'));
     });
     expect(writeText).toHaveBeenLastCalledWith(raw);
   });
 
-  it('honours defaultMode', () => {
-    render(React.createElement(PrettyContent, { content: makeHits(5), defaultMode: 'tree' }));
+  it('shows scalar siblings of the table key above the table', () => {
+    render(React.createElement(PrettyContent, { content: mcpEnvelope(searchResult) }));
+    const ctx = screen.getByTestId('pretty-content-table-context');
+    expect(ctx.textContent).toContain('status: "ok"');
+    expect(ctx.textContent).toContain('total: 91');
+    expect(ctx.textContent).toContain('hits · 20 rows');
+    // Containers are not listed inline.
+    expect(ctx.textContent).not.toContain('rewrites');
+  });
+
+  it('truncated table cells are buttons that open the full value (keyboard-operable)', () => {
+    const rows = Array.from({ length: 3 }, (_, i) => ({ id: i, blob: `${i}-` + 'y'.repeat(300) }));
+    render(React.createElement(PrettyContent, { content: rows }));
+    const table = screen.getByTestId('pretty-content-table');
+    const cellBtn = within(table).getByTitle('1-' + 'y'.repeat(300));
+    expect(cellBtn.tagName).toBe('BUTTON');
+    expect(cellBtn.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(cellBtn);
+    expect(cellBtn.textContent).toBe('1-' + 'y'.repeat(300));
+    expect(cellBtn.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.click(cellBtn);
+    expect(cellBtn.textContent!.length).toBeLessThan(100);
+  });
+
+  it('resets the view mode and tree state when the content changes shape in place (live steps)', () => {
+    const { rerender } = render(React.createElement(PrettyContent, { content: 'Thinking about the query…' }));
+    expect(screen.getByTestId('pretty-content-text')).toBeTruthy();
+    // Content becomes JSON → must switch to the tree, not keep rendering "text".
+    rerender(React.createElement(PrettyContent, { content: '{"a": {"b": {"c": 1}}}' }));
     expect(screen.getByTestId('pretty-content-tree')).toBeTruthy();
-    expect(screen.queryByTestId('pretty-content-table')).toBeNull();
+    expect(screen.queryByTestId('pretty-content-text')).toBeNull();
+    // User expands a deep node, then the content changes → expansion resets.
+    fireEvent.click(screen.getByLabelText('Expand b'));
+    expect(screen.getByText('c')).toBeTruthy();
+    rerender(React.createElement(PrettyContent, { content: '{"a": {"b": {"c": 2}}}' }));
+    expect(screen.queryByText('c')).toBeNull();
+    expect(screen.getByLabelText('Expand b')).toBeTruthy();
+    // And a user-chosen mode survives re-renders with the SAME content.
+    fireEvent.click(screen.getByTestId('pretty-content-mode-raw'));
+    rerender(React.createElement(PrettyContent, { content: '{"a": {"b": {"c": 2}}}' }));
+    expect(screen.getByTestId('pretty-content-raw')).toBeTruthy();
+  });
+
+  it('toggles nodes whose keys contain "/" correctly (depth is not derived from the path)', () => {
+    render(React.createElement(PrettyContent, { content: { 'a/b': { 'c/d': { e: 1 } } }, defaultExpandedDepth: 2 }));
+    const tree = screen.getByTestId('pretty-content-tree');
+    // depth-2 node "c/d" is collapsed by default; one click must open it.
+    fireEvent.click(within(tree).getByLabelText('Expand c/d'));
+    expect(within(tree).getByText('e')).toBeTruthy();
+    fireEvent.click(within(tree).getByLabelText('Collapse c/d'));
+    expect(within(tree).queryByText('e')).toBeNull();
+  });
+
+  it('flags capped nested parsing in the header', () => {
+    // Four string hops: the innermost stays a string → truncated note shown.
+    const l4 = JSON.stringify({ leaf: true });
+    const l3 = JSON.stringify({ l4 });
+    const l2 = JSON.stringify({ l3 });
+    const l1 = JSON.stringify({ l2 });
+    render(React.createElement(PrettyContent, { content: JSON.stringify({ l1 }) }));
+    expect(screen.getByTestId('pretty-content-truncated').textContent).toContain('nested parsing capped');
   });
 
   it('renders an empty container without a chevron, and hides expand/collapse-all on a flat value', () => {
