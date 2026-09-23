@@ -52,6 +52,12 @@ export interface NormalizedContent {
   unwrapped: UnwrapLayer[];
   /** The original input as a string (what the "Raw" toggle shows). */
   raw: string;
+  /**
+   * True when the nested-string walk stopped early (node budget exhausted or
+   * depth limit hit while a deeper string still looked like JSON), so some
+   * string values that are JSON documents were left as strings.
+   */
+  truncated?: boolean;
 }
 
 export interface NormalizeOptions {
@@ -71,7 +77,16 @@ const DEFAULT_MAX_DEPTH = 3;
 const DEFAULT_NODE_BUDGET = 20_000;
 
 /** Keys that are pure metadata on a content envelope — dropping them loses nothing. */
-const ENVELOPE_META_KEYS = new Set(['type', 'role', 'isError', 'is_error', 'id', 'tool_use_id', 'name']);
+const ENVELOPE_META_KEYS = new Set(['type', 'role', 'id', 'tool_use_id', 'name']);
+/** Error flags are metadata only while falsy — a `true` must stay visible. */
+const ENVELOPE_FLAG_KEYS = new Set(['isError', 'is_error']);
+
+/** Is `key` on `obj` an envelope-metadata key whose value can be dropped without losing information? */
+function isDroppableEnvelopeKey(obj: Record<string, unknown>, key: string): boolean {
+  if (ENVELOPE_META_KEYS.has(key)) return true;
+  if (ENVELOPE_FLAG_KEYS.has(key)) return !obj[key];
+  return false;
+}
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
@@ -108,7 +123,7 @@ function isTextItem(v: unknown): v is { text: string; type?: string } {
   if (typeof v.text !== 'string') return false;
   if ('type' in v && v.type !== undefined && v.type !== 'text') return false;
   for (const k of Object.keys(v)) {
-    if (k !== 'text' && !ENVELOPE_META_KEYS.has(k)) return false;
+    if (k !== 'text' && !isDroppableEnvelopeKey(v, k)) return false;
   }
   return true;
 }
@@ -133,7 +148,7 @@ function unwrapOnce(v: unknown): { layer: UnwrapLayer; value: unknown } | undefi
   }
   if (isPlainObject(v)) {
     const keys = Object.keys(v);
-    const others = keys.filter((k) => !ENVELOPE_META_KEYS.has(k));
+    const others = keys.filter((k) => !isDroppableEnvelopeKey(v, k));
     if (others.length === 1 && others[0] === 'content' && isTextItemList(v.content)) {
       return { layer: 'content', value: joinTextItems(v.content) };
     }
@@ -153,9 +168,14 @@ function unwrapOnce(v: unknown): { layer: UnwrapLayer; value: unknown } | undefi
 function deepParseStrings(
   value: unknown,
   depth: number,
-  budget: { left: number }
+  budget: { left: number; truncated: boolean }
 ): { value: unknown; changed: boolean } {
-  if (depth <= 0 || budget.left <= 0) return { value, changed: false };
+  if (budget.left <= 0 || depth <= 0) {
+    // Out of budget / hops: anything below that still looks like JSON stays a
+    // string. Record that so the UI can say so instead of looking complete.
+    if (!budget.truncated && containsJsonLikeString(value, 200)) budget.truncated = true;
+    return { value, changed: false };
+  }
 
   if (typeof value === 'string') {
     const parsed = tryParseJsonDocument(value);
@@ -191,6 +211,24 @@ function deepParseStrings(
   return { value, changed: false };
 }
 
+/** Bounded scan: does this value (or anything under it, visiting ≤ `limit` values) hold a JSON-looking string? */
+function containsJsonLikeString(value: unknown, limit: number): boolean {
+  const stack: unknown[] = [value];
+  let visited = 0;
+  while (stack.length > 0 && visited < limit) {
+    const v = stack.pop();
+    visited += 1;
+    if (typeof v === 'string') {
+      if (looksLikeJsonDocument(v)) return true;
+    } else if (Array.isArray(v)) {
+      for (const item of v) stack.push(item);
+    } else if (isPlainObject(v)) {
+      for (const item of Object.values(v)) stack.push(item);
+    }
+  }
+  return false;
+}
+
 function toRawString(content: unknown): string {
   if (typeof content === 'string') return content;
   if (content === undefined) return '';
@@ -212,7 +250,7 @@ function classifyText(s: string): NormalizedContent['kind'] {
  */
 export function normalizeStepContent(content: string | unknown, options: NormalizeOptions = {}): NormalizedContent {
   const maxDepth = options.maxDepth ?? DEFAULT_MAX_DEPTH;
-  const budget = { left: options.nodeBudget ?? DEFAULT_NODE_BUDGET };
+  const budget = { left: options.nodeBudget ?? DEFAULT_NODE_BUDGET, truncated: false };
   const raw = toRawString(content);
   const unwrapped: UnwrapLayer[] = [];
 
@@ -253,7 +291,9 @@ export function normalizeStepContent(content: string | unknown, options: Normali
     const walked = deepParseStrings(value, maxDepth, budget);
     if (walked.changed) unwrapped.push('nested-json');
 
-    return { kind: 'json', value: walked.value, unwrapped, raw };
+    const result: NormalizedContent = { kind: 'json', value: walked.value, unwrapped, raw };
+    if (budget.truncated) result.truncated = true;
+    return result;
   } catch {
     return { kind: classifyText(raw), value: raw, unwrapped: [], raw };
   }
@@ -319,9 +359,9 @@ export function typeOfValue(v: unknown): ValueType {
 /**
  * One-line description of a value: `object · 6 keys`, `array · 20 items`,
  * `table · 20 rows × 7 cols` for a homogeneous array, `string · 8178 chars`.
+ * Pass a precomputed `detectTabular` result to avoid a second scan.
  */
-export function summarizeValue(value: unknown): string {
-  const table = detectTabular(value);
+export function summarizeValue(value: unknown, table: TabularShape | null = detectTabular(value)): string {
   if (table) return `table · ${table.rows.length} rows × ${table.columns.length} cols`;
   switch (typeOfValue(value)) {
     case 'array': {
@@ -358,22 +398,23 @@ export function formatScalar(v: unknown): string {
  * never an escaped blob. Always ≤ `maxLength` characters.
  */
 export function compactPreview(value: unknown, maxLength = 120): string {
-  const summary = summarizeValue(value);
+  const table = detectTabular(value);
+  const summary = summarizeValue(value, table);
   let detail = '';
-  if (isPlainObject(value)) {
+  if (table) {
+    const cols = table.columns;
+    const shown = cols.slice(0, 6).join(', ');
+    detail = cols.length > 6 ? `${shown}, …` : shown;
+  } else if (isPlainObject(value)) {
     const keys = Object.keys(value);
     const shown = keys.slice(0, 6).join(', ');
     detail = keys.length > 6 ? `${shown}, …` : shown;
-  } else if (Array.isArray(value) && value.length > 0 && !detectTabular(value)) {
+  } else if (Array.isArray(value) && value.length > 0) {
     const scalars = value.filter((x) => x === null || typeof x !== 'object');
     if (scalars.length === value.length) {
       const shown = value.slice(0, 5).map(formatScalar).join(', ');
       detail = value.length > 5 ? `${shown}, …` : shown;
     }
-  } else if (detectTabular(value)) {
-    const cols = detectTabular(value)!.columns;
-    const shown = cols.slice(0, 6).join(', ');
-    detail = cols.length > 6 ? `${shown}, …` : shown;
   }
   const out = detail ? `${summary} · ${detail}` : summary;
   return out.length > maxLength ? out.slice(0, maxLength - 1).trimEnd() + '…' : out;
