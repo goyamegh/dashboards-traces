@@ -27,6 +27,7 @@ import type {
   ConnectorProtocol,
 } from '@/types';
 import { fetchChunked } from '@/lib/chunkedFetch';
+import { resolveReportTraceId } from '@/lib/traceIdentity';
 
 // Re-export search types for convenience
 export interface SearchQuery {
@@ -215,7 +216,10 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
     iteration: 1, // Default to 1, can be overridden
     status: report.status,
     passFailStatus: report.passFailStatus,
-    traceId: report.runId,
+    // `traceId` is reserved for the OTel W3C trace id; the connector run id
+    // is its own field (mirrors server/services/storage/index.ts).
+    runId: report.runId,
+    traceId: resolveReportTraceId(undefined, report.traceId),
     tags: [],
     actualOutcomes: [],
     llmJudgeReasoning: report.llmJudgeReasoning,
