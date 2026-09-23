@@ -223,154 +223,15 @@ export class ApiClient {
   }
 
   /**
-   * Execute benchmark run via the LEGACY `POST /api/storage/benchmarks/:id/execute`
-   * route (SSE stream).
-   *
-   * @deprecated The CLI no longer calls this. The legacy route runs every test
-   * case of the run under ONE OTel trace (all `test_case` spans were children of
-   * the `test_suite_run` span), so agents that honour the propagated
-   * `traceparent` put every case's spans into a single trace and trace-mode
-   * judging could not tell them apart. Use {@link executeBenchmarkAsEvaluationRun}
-   * — the same benchmark + agent, run through `POST /api/storage/evaluation-runs`
-   * (the unified runner: one trace per test case, real W3C `traceId` on each
-   * report, Strategy-B `runId` correlation for REST agents). The route itself is
-   * kept for API compatibility.
-   */
-  async executeBenchmark(
-    benchmarkId: string,
-    runConfig: RunConfigInput,
-    onProgress?: ProgressCallback
-  ): Promise<BenchmarkRun> {
-    const res = await fetch(
-      `${this.baseUrl}/api/storage/benchmarks/${encodeURIComponent(benchmarkId)}/execute`,
-      {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(runConfig),
-      }
-    );
-
-    if (!res.ok) {
-      const errorBody = await res.text();
-      let errorMessage: string;
-      try {
-        const parsed = JSON.parse(errorBody);
-        errorMessage = parsed.error || errorBody;
-      } catch {
-        errorMessage = errorBody;
-      }
-      throw new Error(`Failed to execute benchmark: ${errorMessage}`);
-    }
-
-    // Parse SSE stream
-    if (!res.body) {
-      throw new Error('Response body is missing');
-    }
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = '';
-    let finalRun: BenchmarkRun | null = null;
-    let runId: string | null = null;
-
-    try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n\n');
-        buffer = lines.pop() || '';
-
-        for (const line of lines) {
-          if (line.startsWith('data: ')) {
-            try {
-              const event: BenchmarkExecutionEvent = JSON.parse(line.slice(6));
-              onProgress?.(event);
-
-              // Capture runId from started event for fallback polling
-              if (event.type === 'started') {
-                runId = event.runId;
-              } else if (event.type === 'completed' || event.type === 'cancelled') {
-                finalRun = event.run;
-              } else if (event.type === 'error') {
-                throw new ServerError(event.error);
-              }
-            } catch (e) {
-              // Skip non-JSON lines (incomplete chunks)
-              if (e instanceof SyntaxError) continue;
-              throw e;
-            }
-          }
-        }
-      }
-    } catch (streamError) {
-      // Server-sent error events are explicit failures - don't attempt recovery
-      if (streamError instanceof ServerError) {
-        throw streamError;
-      }
-
-      // Stream disconnected - check if we can recover by polling
-      if (runId) {
-        console.warn(`[ApiClient] SSE stream disconnected: ${streamError instanceof Error ? streamError.message : streamError}`);
-        console.warn(`[ApiClient] Falling back to polling for run ${runId}...`);
-
-        // Wait a moment for any in-flight operations to settle
-        await new Promise(resolve => setTimeout(resolve, 2000));
-
-        // Poll for final status
-        const polledRun = await this.pollRunStatus(benchmarkId, runId, (run) => {
-          // Create a progress event from the polled run state
-          const completedCount = Object.values(run.results || {}).filter(
-            r => r.status === 'completed' || r.status === 'failed'
-          ).length;
-          const totalCount = Object.keys(run.results || {}).length;
-
-          onProgress?.({
-            type: 'progress',
-            currentTestCaseIndex: completedCount - 1,
-            totalTestCases: totalCount,
-            currentTestCase: { id: 'polling', name: 'Polling for status...' },
-          });
-        });
-
-        if (polledRun) {
-          return polledRun;
-        }
-      }
-
-      // Re-throw if we couldn't recover
-      throw streamError;
-    } finally {
-      try {
-        await reader.cancel();
-      } catch {
-        // Ignore cancellation errors
-      }
-    }
-
-    if (!finalRun) {
-      // Stream ended without final event - try polling
-      if (runId) {
-        console.warn('[ApiClient] SSE stream ended without completion event, polling for status...');
-        const polledRun = await this.pollRunStatus(benchmarkId, runId);
-        if (polledRun) {
-          return polledRun;
-        }
-      }
-      throw new Error('No final run received from server');
-    }
-
-    return finalRun;
-  }
-
-  /**
    * Execute an existing benchmark against one agent through the unified
    * evaluation-runs API (`POST /api/storage/evaluation-runs` with a single
    * `{ type: 'benchmark' }` source), streaming progress as the same
-   * {@link BenchmarkExecutionEvent}s the legacy `/execute` stream produced so
-   * callers' progress handling is unchanged.
+   * {@link BenchmarkExecutionEvent}s the removed legacy `/execute` stream
+   * produced so callers' progress handling is unchanged.
    *
-   * Why not `/execute`: see {@link executeBenchmark}'s deprecation note.
+   * The legacy route (`POST /api/storage/benchmarks/:id/execute`) ran every
+   * test case of the run under ONE OTel trace and now answers `410 Gone`; this
+   * is the only benchmark execution path.
    *
    * The server links the completed run into `benchmark.runs[]` (same id), so
    * `getRun(benchmarkId, runId)` and the `/report?runIds=` export work exactly
