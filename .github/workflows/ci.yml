@@ -302,7 +302,7 @@ jobs:
           # Emit agent-health's own eval spans into the server's embedded OTLP
           # receiver (file trace store) so trace-correlation integration tests
           # can assert on the real `test_case` spans / W3C trace ids — e.g.
-          # tests/integration/server/routes/storage/benchmarkExecuteTracePerCase.
+          # tests/integration/server/routes/storage/benchmarkRunTracePerCase.
           OTEL_EVAL_ENABLED: 'true'
           OTEL_EVAL_EXPORTER_ENDPOINT: http://localhost:4001/v1/traces
           # No external trace backend here; fail trace polls fast instead of
