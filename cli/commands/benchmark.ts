@@ -163,12 +163,12 @@ async function fetchReportsForRun(
 /**
  * One-line notice printed once per command when a mode that used to call the
  * legacy `/execute` route (named benchmark, JSON `-f`, quick mode) runs. The
- * route is deprecated (see docs/CLI.md → "Benchmark execution path"); the CLI
- * now executes those modes through the evaluation-runs API.
+ * route has been removed (see docs/CLI.md → "Benchmark execution path"); the
+ * CLI executes those modes through the evaluation-runs API.
  */
 export const LEGACY_EXECUTE_ROUTE_NOTICE =
   'Note: running through the evaluation-runs API (one trace per test case). ' +
-  'The legacy POST /api/storage/benchmarks/:id/execute route is deprecated and no longer used by the CLI.';
+  'The legacy POST /api/storage/benchmarks/:id/execute route has been removed.';
 
 /**
  * Decide which execution path `benchmark` takes for a given set of flags.
@@ -905,8 +905,8 @@ export function createBenchmarkCommand(): Command {
       }
 
       // Every remaining mode (named benchmark, JSON -f import, quick mode)
-      // used to execute through the legacy /execute route. It now runs through
-      // the evaluation-runs API (see runBenchmarkForAgent) — say so once.
+      // used to execute through the removed legacy /execute route. It runs
+      // through the evaluation-runs API (see runBenchmarkForAgent) — say so once.
       console.log(chalk.gray(`  ${LEGACY_EXECUTE_ROUTE_NOTICE}`));
 
       // Check if server is already running (for smart defaults)
