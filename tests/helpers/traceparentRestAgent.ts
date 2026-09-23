@@ -13,9 +13,14 @@
  *
  * Used by the legacy-runner integration test and the CLI e2e harness to prove
  * per-test-case trace isolation end-to-end (see
- * tests/integration/services/legacyRunnerTracePerCase.integration.test.ts and
- * tests/e2e/cli/benchmark-named.spec.ts). Zero dependencies beyond node:http so
- * it runs the same way under jest and Playwright.
+ * tests/integration/server/routes/storage/benchmarkExecuteTracePerCase.integration.test.ts
+ * and tests/e2e/cli/benchmark-named.spec.ts), and by every spec of the
+ * customer-surface regression matrix (docs/SURFACE_MATRIX.md) as "the
+ * customer's agent": its answer is deterministic (`answer for: <prompt>` plus one
+ * `search_products` tool call), which is what lets the built-in demo/mock judge
+ * grade every run without an LLM. `emitSpans: false` turns it into a plain,
+ * un-instrumented REST agent (standard-mode judging, no trace poll). Zero
+ * dependencies beyond node:http so it runs the same way under jest and Playwright.
  */
 
 import * as http from 'http';
@@ -45,6 +50,15 @@ export interface TraceparentRestAgentOptions {
   stampRunIdAttribute?: boolean;
   /** Optional per-request response delay (ms) to widen run windows. */
   delayMs?: number;
+  /**
+   * Export OTLP spans for every invocation (default: true). Set `false` to
+   * model a plain REST agent with no instrumentation at all: the connector
+   * then judges the `{ answer, toolCalls, steps }` body directly (standard
+   * mode, `useTraces: false`) instead of waiting for spans. The answer stays
+   * deterministic either way (`answer for: <prompt>` + one tool call), which
+   * is what lets the built-in demo/mock judge grade it without an LLM.
+   */
+  emitSpans?: boolean;
 }
 
 export interface TraceparentRestAgent {
@@ -188,6 +202,7 @@ export async function startTraceparentRestAgent(
 ): Promise<TraceparentRestAgent> {
   const serviceName = options.serviceName ?? 'retrieval-agent';
   const adopt = options.adoptTraceparent !== false;
+  const emitSpans = options.emitSpans !== false;
   const invocations: RecordedInvocation[] = [];
 
   const server = http.createServer(async (req, res) => {
@@ -215,14 +230,16 @@ export async function startTraceparentRestAgent(
       });
       // Export BEFORE answering so the spans are queryable by the time the
       // caller's trace poller makes its first attempt.
-      const exportRes = await fetch(options.otlpEndpoint, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ resourceSpans: payload.resourceSpans }),
-      });
-      if (!exportRes.ok) {
-        const text = await exportRes.text().catch(() => '');
-        throw new Error(`OTLP export failed: ${exportRes.status} ${text}`);
+      if (emitSpans) {
+        const exportRes = await fetch(options.otlpEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ resourceSpans: payload.resourceSpans }),
+        });
+        if (!exportRes.ok) {
+          const text = await exportRes.text().catch(() => '');
+          throw new Error(`OTLP export failed: ${exportRes.status} ${text}`);
+        }
       }
 
       invocations.push({
