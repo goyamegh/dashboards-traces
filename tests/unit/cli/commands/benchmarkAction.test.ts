@@ -112,7 +112,7 @@ import {
 type MockApiClient = {
   bulkCreateTestCases: jest.Mock;
   createBenchmark: jest.Mock;
-  /** Legacy `/execute` route — the CLI must NEVER call this any more. */
+  /** Removed legacy `/execute` client method — kept on the mock only to prove the CLI never reaches for it. */
   executeBenchmark: jest.Mock;
   /** Unified evaluation-runs execution — what every mode calls now. */
   executeBenchmarkAsEvaluationRun: jest.Mock;
@@ -487,7 +487,7 @@ describe('Benchmark Command - Real Module Coverage', () => {
       );
       expect(joinedConsoleOutput(logSpy)).toContain('"runId": "run-file"');
       // JSON `-f` import mode now executes through the evaluation-runs API —
-      // never the deprecated /execute route — and says so once.
+      // never the removed /execute route — and says so once.
       expect(currentApi.executeBenchmark).not.toHaveBeenCalled();
       expect(joinedConsoleOutput(logSpy)).toContain(LEGACY_EXECUTE_ROUTE_NOTICE);
       expect(cleanupSpy).toHaveBeenCalled();

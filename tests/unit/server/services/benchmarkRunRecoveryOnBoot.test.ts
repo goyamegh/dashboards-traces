@@ -7,20 +7,20 @@ import {
   recoverOrphanBenchmarkRuns,
   recoverOrphanBenchmarkRunsSafely,
 } from '@/server/services/benchmarkRunRecoveryOnBoot';
-import * as benchmarksRoute from '@/server/routes/storage/benchmarks';
+import * as evaluationRunsRoute from '@/server/routes/storage/evaluationRuns';
 import * as statsModule from '@/server/services/benchmarkRunStats';
 import type { IStorageModule } from '@/server/adapters/types';
 
-jest.mock('@/server/routes/storage/benchmarks', () => ({
-  isRunActiveInThisProcess: jest.fn().mockReturnValue(false),
+jest.mock('@/server/routes/storage/evaluationRuns', () => ({
+  isEvaluationRunActiveInThisProcess: jest.fn().mockReturnValue(false),
 }));
 
 jest.mock('@/server/services/benchmarkRunStats', () => ({
   refreshBenchmarkRunStatsByRunId: jest.fn().mockResolvedValue(undefined),
 }));
 
-const mockIsActive = benchmarksRoute.isRunActiveInThisProcess as jest.MockedFunction<
-  typeof benchmarksRoute.isRunActiveInThisProcess
+const mockIsActive = evaluationRunsRoute.isEvaluationRunActiveInThisProcess as jest.MockedFunction<
+  typeof evaluationRunsRoute.isEvaluationRunActiveInThisProcess
 >;
 const mockRefresh = statsModule.refreshBenchmarkRunStatsByRunId as jest.MockedFunction<
   typeof statsModule.refreshBenchmarkRunStatsByRunId
