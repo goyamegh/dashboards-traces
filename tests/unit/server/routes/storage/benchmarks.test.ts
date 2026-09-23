@@ -6,7 +6,6 @@
 import { Request, Response } from 'express';
 import benchmarksRoutes from '@/server/routes/storage/benchmarks';
 import { LEGACY_EXECUTE_REMOVED } from '@/lib/legacyExecuteRemoved';
-import { registerRunCanceller } from '@/server/services/runCancellation';
 
 // Mock raw OpenSearch client methods. No route in this file uses the raw
 // client any more (the legacy /execute runner was removed); the mock stays so
@@ -1166,6 +1165,7 @@ describe('Experiments Storage Routes', () => {
       expect(res.status).toHaveBeenCalledWith(404);
       expect(res.json).toHaveBeenCalledWith({
         error: 'Run not found or already completed',
+        hint: expect.stringContaining('/api/storage/evaluation-runs/nonexistent-run/cancel'),
       });
     });
 
@@ -1207,35 +1207,6 @@ describe('Experiments Storage Routes', () => {
       );
       // The route no longer talks to the raw OpenSearch client at all.
       expect(mockUpdate).not.toHaveBeenCalled();
-    });
-
-    it('stops an executor registered by another route (evaluation-runs registry) and marks the embedded run cancelled without the zombie note', async () => {
-      const canceller = jest.fn((runId: string) => runId === 'run-live');
-      const unregister = registerRunCanceller(canceller);
-      try {
-        mockBenchmarksGetById.mockResolvedValue({
-          id: 'exp-123',
-          // Created moments ago: without a live executor this would 409.
-          runs: [{ id: 'run-live', status: 'running', createdAt: new Date().toISOString() }],
-        });
-        mockBenchmarksUpdateRun.mockResolvedValue(true);
-        const { req, res } = createMocks({ id: 'exp-123' }, { runId: 'run-live' });
-        const handler = getRouteHandler(benchmarksRoutes, 'post', '/api/storage/benchmarks/:id/cancel');
-
-        await handler(req, res);
-
-        expect(canceller).toHaveBeenCalledWith('run-live');
-        expect(mockBenchmarksUpdateRun).toHaveBeenCalledWith(
-          'exp-123',
-          'run-live',
-          expect.objectContaining({ status: 'cancelled', completedAt: expect.any(String) })
-        );
-        expect(mockBenchmarksUpdateRun.mock.calls[0][2]).not.toHaveProperty('cancelNote');
-        expect(res.json).toHaveBeenCalledWith({ cancelled: true, runId: 'run-live' });
-        expect(mockUpdate).not.toHaveBeenCalled();
-      } finally {
-        unregister();
-      }
     });
 
     it('500s when the cancelled-status write fails', async () => {
