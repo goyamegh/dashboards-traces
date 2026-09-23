@@ -40,10 +40,27 @@ const typeBgColors: Record<string, string> = {
   user: 'bg-cyan-500/5 border-cyan-500/20',
 };
 
+/**
+ * Size of what the row will actually display. For `action` steps that is the
+ * parsed `toolArgs` (which may be far larger than a short `content` echo), so
+ * a big argument tree is collapsed by default like any other big payload.
+ */
+const displayedLength = (step: TrajectoryStep): number => {
+  if (step.type === 'action' && step.toolArgs && typeof step.toolArgs === 'object') {
+    try {
+      return Math.max(step.content.length, JSON.stringify(step.toolArgs).length);
+    } catch {
+      return step.content.length;
+    }
+  }
+  return step.content.length;
+};
+
 const isCollapsible = (step: TrajectoryStep): boolean => {
+  const len = displayedLength(step);
   return step.type === 'thinking' ||
-         (step.type === 'tool_result' && step.content.length > 100) ||
-         step.content.length > 200;
+         (step.type === 'tool_result' && len > 100) ||
+         len > 200;
 };
 
 const formatLabel = (step: TrajectoryStep): string => {
@@ -85,7 +102,7 @@ interface StepRowProps {
 }
 
 const StepRow: React.FC<StepRowProps> = React.memo(({ step, isExpanded, onToggle }) => {
-  const collapsible = isCollapsible(step);
+  const collapsible = useMemo(() => isCollapsible(step), [step]);
   const latency = formatLatency(step.latencyMs);
   const failed = step.status === ToolCallStatus.FAILURE;
   const typeColor = failed ? 'text-red-600 dark:text-red-400' : (typeColors[step.type] || 'text-muted-foreground');
@@ -181,6 +198,10 @@ StepRow.displayName = 'TrajectoryStepRow';
 
 export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }) => {
   const [expandedSteps, setExpandedSteps] = useState<Set<string>>(new Set());
+  // Hoisted so legacy-shape steps get a stable normalised object per `steps`
+  // identity (normalizeLegacyUserStep returns a fresh object for those, which
+  // would otherwise defeat StepRow's memo on every toggle).
+  const normalizedSteps = useMemo(() => steps.map(normalizeLegacyUserStep), [steps]);
 
   // Stable identity so React.memo on StepRow holds: toggling one step must
   // not re-render the other 499 (each of which may hold an expanded tree).
@@ -213,17 +234,14 @@ export const TrajectoryView: React.FC<TrajectoryViewProps> = ({ steps, loading }
         </div>
       )}
 
-      {steps.map((rawStep) => {
-        const step = normalizeLegacyUserStep(rawStep);
-        return (
-          <StepRow
-            key={step.id}
-            step={step}
-            isExpanded={expandedSteps.has(step.id)}
-            onToggle={toggleStep}
-          />
-        );
-      })}
+      {normalizedSteps.map((step) => (
+        <StepRow
+          key={step.id}
+          step={step}
+          isExpanded={expandedSteps.has(step.id)}
+          onToggle={toggleStep}
+        />
+      ))}
 
       {/* Loading indicator */}
       {loading && steps.length > 0 && (

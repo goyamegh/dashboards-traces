@@ -107,6 +107,16 @@ describe('normalizeStepContent', () => {
       expect(r.unwrapped).toEqual(['json-string', 'content']);
     });
 
+    it('does NOT unwrap when an error flag is set — `isError: true` is information', () => {
+      const obj = { isError: true, content: [{ type: 'text', text: 'boom' }] };
+      const r = normalizeStepContent(JSON.stringify(obj));
+      expect(r.value).toEqual(obj);
+      expect(r.unwrapped).toEqual(['json-string']);
+      // …but a falsy flag is plain metadata.
+      const ok = normalizeStepContent(JSON.stringify({ isError: false, content: [{ type: 'text', text: '{"n":1}' }] }));
+      expect(ok.value).toEqual({ n: 1 });
+    });
+
     it('keeps a {content:[…], data:…} object intact — the extra key carries information', () => {
       const obj = { content: [{ type: 'text', text: 'x' }], data: { a: 1 } };
       const r = normalizeStepContent(JSON.stringify(obj));
@@ -163,6 +173,12 @@ describe('normalizeStepContent', () => {
       expect(typeof v.l1.l2).toBe('object');
       expect(typeof v.l1.l2.l3).toBe('object');
       expect(typeof v.l1.l2.l3.l4).toBe('string');
+      expect(r.truncated).toBe(true);
+    });
+
+    it('does not flag truncation when everything parsed', () => {
+      const r = normalizeStepContent(JSON.stringify({ a: JSON.stringify({ b: 1 }) }));
+      expect(r.truncated).toBeUndefined();
     });
 
     it('honours a custom maxDepth', () => {
@@ -199,6 +215,7 @@ describe('normalizeStepContent', () => {
       // Budget exhausted early: later rows keep their string form.
       const rows = (r.value as any).rows as any[];
       expect(typeof rows[rows.length - 1].s).toBe('string');
+      expect(r.truncated).toBe(true);
     });
   });
 

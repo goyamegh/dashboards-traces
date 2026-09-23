@@ -167,6 +167,14 @@ describe('TrajectoryView — prettified structured content', () => {
     expect(screen.getByTestId('pretty-a2-tree')).toBeTruthy();
   });
 
+  it('large toolArgs with a tiny content echo are still collapsed by default', () => {
+    const bigArgs = { index: 'products', filters: Array.from({ length: 40 }, (_, i) => ({ term: { [`f${i}`]: i } })) };
+    render(React.createElement(TrajectoryView, { steps: [makeStep({ id: 'a3', type: 'action', toolName: 'search_index', toolArgs: bigArgs, content: 'search_index' })] }));
+    expect(screen.queryByTestId('pretty-a3')).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /object · 2 keys · index, filters/ }));
+    expect(screen.getByTestId('pretty-a3')).toBeTruthy();
+  });
+
   it('a JSON response renders as a table of ranked results; a prose response stays markdown', () => {
     const ranked = JSON.stringify({ results: [{ rank: 1, id: 'a' }, { rank: 2, id: 'b' }, { rank: 3, id: 'c' }] });
     render(
