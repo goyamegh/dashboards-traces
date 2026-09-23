@@ -4,41 +4,41 @@
  */
 
 /**
- * Integration: the LEGACY `POST /api/storage/benchmarks/:id/execute` route must
- * give every test case its OWN OTel trace, stamp each report with the real W3C
- * trace id of its eval span, keep the connector run id on `runId`, and let the
- * trace poller resolve every report.
+ * Integration: a benchmark run through `POST /api/storage/evaluation-runs`
+ * (a single `{ type: 'benchmark' }` source — the ONLY benchmark execution path
+ * now that the legacy `/execute` runner is gone) must give every test case its
+ * OWN OTel trace, stamp each report with the real W3C trace id of its eval
+ * span, keep the connector run id on `runId`, let the trace poller resolve
+ * every report, and link the finished run into `benchmark.runs[]`.
  *
  * Real path end-to-end against the running backend, with a real REST agent:
- *   POST /execute → services/benchmarkRunner.executeRun
+ *   POST /api/storage/evaluation-runs → services/evaluationRunner.executeEvaluationRun
  *     → RESTConnector (propagateHeader) → fixture agent adopts `traceparent`,
  *       exports OTLP spans to the backend's own `/v1/traces` receiver, answers
  *       `{ id: 'conv-…' }` (→ report.runId)
  *     → report persisted (metricsStatus: pending) → trace poller → judge
  *       (`demo-model` → mock judge) → metricsStatus: ready.
  *
- * Pre-fix (measured on a 3-case benchmark, `-c 3`):
- *   - every `test_case` span was a CHILD of the run's `test_suite_run` span, so
- *     all three agent invocations received the SAME `traceparent` trace id and
- *     one trace file held 25+ spans of unrelated cases;
- *   - `saveReportWithClient` wrote `traceId: report.runId`, so reports came back
- *     with `traceId === runId === 'conv-…'`;
- *   - the poller then filtered fetched spans with `span.traceId === 'conv-…'`
- *     → 0 spans → `Traces never arrived (kind=trace_timeout)` on 3/3 reports
- *     ("0/3 passed (3 errored — evaluator could not run)").
+ * History: the removed legacy runner started every `test_case` span as a CHILD
+ * of one `test_suite_run` span, so all N agent invocations received the SAME
+ * `traceparent` trace id, and wrote `traceId: report.runId` — 0/N reports
+ * resolved. This spec pins the per-case isolation on the surviving path.
  *
- * Requires the backend to be running (AH_PORT) with OpenSearch storage — the
- * legacy route refuses file storage. Strategy-A assertions (report.traceId ==
- * the trace id the agent was handed) additionally need eval telemetry enabled
- * on the backend (`OTEL_EVAL_ENABLED=true`, exporter → the backend's own
- * `/v1/traces`); when it is off the test still asserts per-case isolation via
- * the agent's own trace ids and that every report resolves.
+ * Also asserts the legacy route answers `410 Gone` with the documented body.
+ *
+ * Requires the backend to be running (AH_PORT); file or OpenSearch storage
+ * both work. Strategy-A assertions (report.traceId == the trace id the agent
+ * was handed) additionally need eval telemetry enabled on the backend
+ * (`OTEL_EVAL_ENABLED=true`, exporter → the backend's own `/v1/traces`); when
+ * it is off the test still asserts per-case isolation via the agent's own
+ * trace ids and that every report resolves.
  */
 
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
 import { createTestDataTracker, uniqueTestName } from '../../../../helpers/testDataTracker';
 import { startTraceparentRestAgent, type TraceparentRestAgent } from '../../../../helpers/traceparentRestAgent';
 import { isW3CTraceId } from '@/lib/traceIdentity';
+import { LEGACY_EXECUTE_REMOVED } from '@/lib/legacyExecuteRemoved';
 
 const BASE_URL = getTestBackendUrl();
 const TEST_TIMEOUT = 180_000;
@@ -55,9 +55,12 @@ async function backendReady(): Promise<boolean> {
   }
 }
 
-/** Read the /execute SSE stream to its end; returns every `data:` event. */
-async function readExecuteStream(res: Response): Promise<any[]> {
-  const events: any[] = [];
+/**
+ * Read the evaluation-runs SSE stream to its end; returns every frame as
+ * `{ event, data }` (frames are `event: <type>\ndata: <json>`).
+ */
+async function readRunStream(res: Response): Promise<Array<{ event: string; data: any }>> {
+  const events: Array<{ event: string; data: any }> = [];
   const reader = res.body!.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
@@ -68,11 +71,14 @@ async function readExecuteStream(res: Response): Promise<any[]> {
     const frames = buffer.split('\n\n');
     buffer = frames.pop() || '';
     for (const frame of frames) {
+      let event = '';
+      let data = '';
       for (const line of frame.split('\n')) {
-        if (line.startsWith('data: ')) {
-          try { events.push(JSON.parse(line.slice(6))); } catch { /* partial */ }
-        }
+        if (line.startsWith('event: ')) event = line.slice(7);
+        else if (line.startsWith('data: ')) data = line.slice(6);
       }
+      if (!data) continue;
+      try { events.push({ event, data: JSON.parse(data) }); } catch { /* partial */ }
     }
   }
   return events;
@@ -93,7 +99,7 @@ async function fetchTraceUntil(traceId: string, ready: (spans: any[]) => boolean
   return last;
 }
 
-describe('legacy POST /api/storage/benchmarks/:id/execute — one OTel trace per test case', () => {
+describe('benchmark run via POST /api/storage/evaluation-runs — one OTel trace per test case', () => {
   const tracker = createTestDataTracker();
   let ready = false;
   let agent: TraceparentRestAgent | null = null;
@@ -105,7 +111,7 @@ describe('legacy POST /api/storage/benchmarks/:id/execute — one OTel trace per
   beforeAll(async () => {
     ready = await backendReady();
     if (!ready) {
-      console.warn(`[skip] backend at ${BASE_URL} is not up with OpenSearch storage — legacy /execute needs it`);
+      console.warn(`[skip] backend at ${BASE_URL} is not up`);
       return;
     }
 
@@ -131,7 +137,7 @@ describe('legacy POST /api/storage/benchmarks/:id/execute — one OTel trace per
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          name: uniqueTestName(`legacy-trace-case-${i}`),
+          name: uniqueTestName(`trace-per-case-${i}`),
           category: 'RCA',
           difficulty: 'Easy',
           initialPrompt: prompt,
@@ -149,7 +155,7 @@ describe('legacy POST /api/storage/benchmarks/:id/execute — one OTel trace per
     const bench = await fetch(`${BASE_URL}/api/storage/benchmarks`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name: uniqueTestName('legacy-trace-per-case'), description: 'integration', testCaseIds }),
+      body: JSON.stringify({ name: uniqueTestName('trace-per-case'), description: 'integration', testCaseIds }),
     });
     const benchBody = await bench.json();
     benchmarkId = (benchBody.benchmark ?? benchBody).id;
@@ -166,20 +172,41 @@ describe('legacy POST /api/storage/benchmarks/:id/execute — one OTel trace per
     async () => {
       if (!ready) return;
 
-      const res = await fetch(`${BASE_URL}/api/storage/benchmarks/${encodeURIComponent(benchmarkId)}/execute`, {
+      const res = await fetch(`${BASE_URL}/api/storage/evaluation-runs`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: 'legacy-route trace isolation', agentKey, modelId: 'demo-model', concurrency: CASE_COUNT }),
+        body: JSON.stringify({
+          name: uniqueTestName('trace isolation'),
+          sources: [{ type: 'benchmark', benchmarkId }],
+          benchmarkId,
+          agentKey,
+          modelId: 'demo-model',
+          concurrency: CASE_COUNT,
+          trigger: 'manual',
+        }),
       });
       expect(res.ok).toBe(true);
-      const events = await readExecuteStream(res);
-      const terminal = events.find(e => e.type === 'completed' || e.type === 'cancelled' || e.type === 'error');
-      expect(terminal?.type).toBe('completed');
-      const run = terminal.run;
+      const events = await readRunStream(res);
+      const started = events.find(e => e.event === 'started');
+      expect(started?.data.runId).toEqual(expect.any(String));
+      tracker.evaluationRun(started!.data.runId);
+      const terminal = events.find(e => e.event === 'completed' || e.event === 'error');
+      expect(terminal?.event).toBe('completed');
+      const run = terminal!.data;
+      expect(run.id).toBe(started!.data.runId);
+      expect(run.status).toBe('completed');
       const results = Object.entries(run.results) as Array<[string, any]>;
       expect(results).toHaveLength(CASE_COUNT);
       for (const [, r] of results) tracker.run(r.reportId);
       expect(results.every(([, r]) => r.status === 'completed' && r.reportId)).toBe(true);
+
+      // The finished run is linked into the benchmark (the projection every
+      // benchmark-scoped reader — runs list, inspector, comparison — reads).
+      const benchBody = await (await fetch(`${BASE_URL}/api/storage/benchmarks/${encodeURIComponent(benchmarkId)}`)).json();
+      const embedded = (benchBody.benchmark ?? benchBody).runs?.find((r: any) => r.id === run.id);
+      expect(embedded).toBeDefined();
+      expect(embedded.status).toBe('completed');
+      expect(Object.keys(embedded.results)).toHaveLength(CASE_COUNT);
 
       // --- the agent's view: one invocation per case, each in its own trace ---
       expect(agent!.invocations).toHaveLength(CASE_COUNT);
@@ -232,15 +259,11 @@ describe('legacy POST /api/storage/benchmarks/:id/execute — one OTel trace per
         if (telemetryOn) {
           expect(Array.from(convIds)).toEqual([invocation!.conversationId]);
           // The eval test_case span that carried the traceparent is the trace
-          // ROOT — the suite relationship is a span link, not parentage — and
-          // the run's test_suite_run span lives in ITS OWN trace.
+          // ROOT; no run-wide suite span shares the trace.
           const spans = traces.spans as any[];
           expect(spans.some(s => s.name.startsWith('test_suite_run'))).toBe(false);
           const rootEvalSpans = spans.filter(s => s.name === 'test_case' && !s.parentSpanId);
           expect(rootEvalSpans.length).toBeGreaterThan(0);
-          expect(rootEvalSpans[0].links).toEqual([
-            expect.objectContaining({ attributes: { 'agent_health.link.type': 'test_suite_run' } }),
-          ]);
           // The agent's root span hangs off that eval span (W3C context adopted).
           const agentRoot = spans.find(s => s.name.startsWith('invoke_agent'));
           expect(agentRoot?.parentSpanId).toBe(invocation!.parentSpanId);
@@ -250,4 +273,35 @@ describe('legacy POST /api/storage/benchmarks/:id/execute — one OTel trace per
     },
     TEST_TIMEOUT
   );
+
+  it('the legacy POST /api/storage/benchmarks/:id/execute route answers 410 Gone and starts nothing', async () => {
+    if (!ready) return;
+
+    const before = await (await fetch(`${BASE_URL}/api/storage/benchmarks/${encodeURIComponent(benchmarkId)}`)).json();
+    const runsBefore = ((before.benchmark ?? before).runs ?? []).length;
+    const invocationsBefore = agent!.invocations.length;
+
+    const res = await fetch(`${BASE_URL}/api/storage/benchmarks/${encodeURIComponent(benchmarkId)}/execute`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'legacy client', agentKey, modelId: 'demo-model' }),
+    });
+
+    expect(res.status).toBe(410);
+    expect(res.headers.get('content-type')).toMatch(/application\/json/);
+    expect(res.headers.get('deprecation')).toBe(LEGACY_EXECUTE_REMOVED.deprecationHeader);
+    expect(res.headers.get('sunset')).toBe(LEGACY_EXECUTE_REMOVED.sunsetHeader);
+    expect(await res.json()).toEqual({
+      error: LEGACY_EXECUTE_REMOVED.error,
+      code: 'LEGACY_EXECUTE_REMOVED',
+      replacement: 'POST /api/storage/evaluation-runs',
+      docs: 'docs/CLI.md#benchmark-execution-path',
+    });
+
+    // Nothing ran and nothing was persisted.
+    await new Promise(r => setTimeout(r, 500));
+    expect(agent!.invocations.length).toBe(invocationsBefore);
+    const after = await (await fetch(`${BASE_URL}/api/storage/benchmarks/${encodeURIComponent(benchmarkId)}`)).json();
+    expect(((after.benchmark ?? after).runs ?? []).length).toBe(runsBefore);
+  });
 });
