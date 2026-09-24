@@ -52,6 +52,8 @@ function makeReport(id: string, testCaseId: string, overrides: Partial<Evaluatio
     status: 'completed', metricsStatus: 'ready' as any, passFailStatus: 'passed',
     trajectory: [hits('g1', 'x')], metrics: { accuracy: 90 }, llmJudgeReasoning: 'old LLM reasoning',
     llmJudgeResponse: { modelId: 'judge', timestamp: '', promptTokens: 1, completionTokens: 1, latencyMs: 1, rawResponse: '{}' },
+    // Verdict-engine fields from the earlier LLM judgement (lib/scoring/verdictEngine.ts).
+    llmVerdict: 'passed', verdictConflict: true, score: 0.9,
     matcherResults: [{ description: 'judge: expected outcomes', pass: true, method: 'llm-judge' }],
     ...overrides,
   } as EvaluationReport;
@@ -115,6 +117,10 @@ describe('retry judgement with a deterministic evaluator (override)', () => {
     expect(a.llmJudgeReasoning).toBe('');
     expect(a.llmJudgeResponse).toBeNull();
     expect(a.improvementStrategies).toEqual([]);
+    // No LLM was involved: the earlier judgement's verdict-engine fields are cleared, the score is the deterministic weighted mean.
+    expect(a.llmVerdict).toBeNull();
+    expect(a.verdictConflict).toBeNull();
+    expect(a.score).toBe(1);
     // The stored trajectory is untouched (no trace refresh, no rewrite).
     expect(storage.runs.update).toHaveBeenCalledWith('rep-a', expect.not.objectContaining({ trajectory: expect.anything() }));
 
@@ -128,6 +134,9 @@ describe('retry judgement with a deterministic evaluator (override)', () => {
     expect(c.metrics).toEqual({});
     expect(c.traceError).toMatch(/Not evaluable by Ranked retrieval: Not evaluable: no candidate ids/);
     expect(c.scoringSnapshot?.unevaluable).toEqual(['hit@1', 'mrr']);
+    expect(c.score).toBeNull();
+    expect(c.llmVerdict).toBeNull();
+    expect(c.verdictConflict).toBeNull();
     expect(c.matcherResults?.every(m => m.errored)).toBe(true);
 
     // Run doc: results + stats recomputed, evaluatorId stamped with the override.

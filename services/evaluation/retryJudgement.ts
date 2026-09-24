@@ -40,6 +40,7 @@ import { callBedrockJudge } from '@/services/evaluation';
 import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 import { buildJudgeMatcherEntry, formatExpectedOutcomesAsClaim } from '@/lib/matchers/index';
 import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
+import { scoringFieldsFromJudgment } from '@/lib/scoring/verdictEngine';
 import { spansToTrajectory } from '@/services/traces/spansToTrajectory';
 import { fetchSpansForRun } from '@/services/traces/fetchSpansForRun';
 import { computeRunStats } from '@/lib/runStats';
@@ -300,8 +301,9 @@ export async function retryJudgementForCase(
     // trace-refresh above.
     await storage.runs.update(report.id, {
       trajectory,
-      passFailStatus: judgment.passFailStatus,
-      metrics: judgment.metrics,
+      // Re-judge REPLACES the scoring snapshot + verdict (no history kept —
+      // owner decision; #509 stays narrow). Same shared shape as first-judge.
+      ...scoringFieldsFromJudgment(judgment),
       llmJudgeReasoning: judgment.llmJudgeReasoning,
       llmJudgeResponse: {
         modelId: judgeModelId,
@@ -407,11 +409,21 @@ async function applyDeterministicJudgement(
       improvementStrategies: [],
       llmJudgeReasoning: '',
       llmJudgeResponse: null,
+      // Verdict-engine fields (lib/scoring/verdictEngine.ts) are ALWAYS
+      // written: no LLM was involved, so an earlier LLM judgement's verdict /
+      // conflict flag must not survive next to code-computed metrics.
+      llmVerdict: null,
+      verdictConflict: null,
+      score: result.score,
     };
     if (!result.evaluable) {
       await storage.runs.update(report.id, {
         ...common,
         ...buildEvaluatorErrorPatch('judge_failed', `Not evaluable by ${evaluator.name}: ${result.summary}`),
+        // The generic error patch clears the snapshot (an LLM judge that
+        // failed produced nothing); a deterministic scorer DID run, and its
+        // snapshot records which metrics were unevaluable and why.
+        scoringSnapshot: result.snapshot,
         // No metrics on a not-evaluable report — never the legacy zeroed
         // RCA keys the generic patch carries.
         metrics: {},

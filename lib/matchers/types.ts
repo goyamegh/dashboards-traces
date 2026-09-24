@@ -132,4 +132,16 @@ export interface MatcherResult {
    *   - `evidence`: { expected_sources?: string[]; cited_sources?: Array<string | { id: string; title?: string }> }
    */
   judgeExtraFields?: Record<string, unknown>;
+
+  /**
+   * Verdict-engine provenance for an `llm-judge` entry (from `/api/judge`,
+   * lib/scoring/applyScoring.ts). `pass` above already follows the
+   * evaluator's pass policy; `llmVerdict` is what the model itself said and
+   * `verdictConflict` flags a disagreement. `scoringSnapshot` is the frozen
+   * evaluator version the runner lifts onto the report so SDK runs carry the
+   * same scoring provenance as classic-judge runs.
+   */
+  llmVerdict?: 'passed' | 'failed';
+  verdictConflict?: boolean;
+  scoringSnapshot?: import('../../types/index.js').ScoringSnapshot;
 }

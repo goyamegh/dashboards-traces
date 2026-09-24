@@ -321,6 +321,11 @@ export function getIndexMappings(): IndexMappings {
               scale: { type: 'object', enabled: false },
             },
           },
+          // Verdict-engine outputs written alongside the snapshot on every
+          // new judgement (lib/scoring/verdictEngine.ts).
+          llmVerdict: { type: 'keyword' },
+          verdictConflict: { type: 'boolean' },
+          score: { type: 'float' },
           // Retry-judgement stamp (services/evaluation/retryJudgement.ts).
           judgementRetriedAt: { type: 'date' },
           judgementRetryCount: { type: 'integer' },
