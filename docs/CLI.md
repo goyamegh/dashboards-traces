@@ -446,10 +446,37 @@ agent-health kill <target>      # target: sample-agent
 
 ---
 
+## Server lifecycle: reusing an already-running server
+
+Commands that need the backend (`benchmark`, `run`, `list`, `export`, …) call
+`ensureServer()`: if nothing listens on the configured port they start a server;
+if one is already running they decide whether to reuse it.
+
+| `reuseExistingServer` | Port | Versions | Result |
+|---|---|---|---|
+| `true` (dev default) | any | match | reuse (`Reusing existing server`) |
+| `true` (dev default) | any | differ | stop it, start a matching one |
+| `false` (**CI default**, `CI=true`) | **explicit** (`AH_PORT` / `server.port`) | match | reuse — prints `Using existing server on :PORT (explicit port)` |
+| `false` (CI default) | implicit (defaulted 4001) | match | error: `Server already running on port … In CI mode …` |
+| `false` (CI default) | any | differ | error (never reused, never killed) |
+
+The CI-mode guard exists so a CLI never talks to a stray server *by accident*.
+A port you named explicitly is explicit intent — the canonical case is a CI
+job that already started the server (e.g. Playwright's `webServer`) and then
+drives `agent-health benchmark …` against it with `AH_PORT` set. To force the
+old behaviour in that situation, unset `AH_PORT` or set
+`server.reuseExistingServer` in `agent-health.config.ts`. A server that
+belongs to a *different checkout* is refused regardless (see
+`AH_REUSE_FOREIGN_SERVER`).
+
+---
+
 ## Environment Variables
 
 | Variable | Description |
 |----------|-------------|
+| `AH_PORT` | Backend port (default `4001`). Also marks the port as *explicit* for CI-mode reuse — see "Server lifecycle" above |
+| `CI` | Set by CI runners; flips `server.reuseExistingServer` to `false` and makes the CLI stop servers it started |
 | `AWS_PROFILE` | AWS profile for Bedrock judge |
 | `AWS_REGION` | AWS region |
 | `DEBUG` | Enable verbose debug logging (`true`/`false`) |
