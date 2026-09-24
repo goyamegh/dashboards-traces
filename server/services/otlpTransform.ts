@@ -16,7 +16,7 @@
  * `service.name`) are merged onto each span so service-name correlation works.
  */
 
-import type { Span, SpanEvent } from '../../types/index.js';
+import type { Span, SpanEvent, SpanLink } from '../../types/index.js';
 import { normalizeSpanKind } from '../../lib/spanKind.js';
 
 interface OtlpAnyValue {
@@ -150,6 +150,14 @@ export function otlpToSpans(body: any): Span[] {
           attributes: attrsToObject(e?.attributes),
         }));
 
+        const links: SpanLink[] = (sp?.links || [])
+          .map((l: any) => ({
+            traceId: normalizeId(l?.traceId),
+            spanId: normalizeId(l?.spanId),
+            attributes: attrsToObject(l?.attributes),
+          }))
+          .filter((l: SpanLink) => l.traceId && l.spanId);
+
         const traceId = normalizeId(sp?.traceId);
         const spanId = normalizeId(sp?.spanId);
         // Skip spans missing valid ids: an empty spanId would collide in the
@@ -173,6 +181,7 @@ export function otlpToSpans(body: any): Span[] {
           ...(kind ? { kind } : {}),
           attributes,
           events,
+          ...(links.length > 0 ? { links } : {}),
         });
       }
     }
