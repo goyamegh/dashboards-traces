@@ -27,6 +27,8 @@ import {
 import { context } from '@opentelemetry/api';
 import { ATTR_AGENT_HEALTH_AGENT_RUN_ID } from '@/lib/telemetry/constants';
 import { resolveReportTraceId } from '@/lib/traceIdentity';
+import { finalizeAgentFailedReport } from './agentReachability';
+import { pickReportFailureFields } from '@/lib/reportFailureFields';
 
 /**
  * Save an evaluation report using the storage adapter (works with both file and OpenSearch backends).
@@ -48,7 +50,13 @@ async function saveReportWithModule(storage: IStorageModule, report: any): Promi
     // "agent: <m1> judge: <m2>" and the audit trail is intact. Inherits
     // from the run-level cx input (BenchmarkRun.judgeModelId).
     judgeModelId: report.judgeModelId,
+    // Underlying LLM that judged (see lib/judgeIdentity) -- distinct from
+    // judgeModelId, which for the agent trace judge is a provider name.
+    judgeModel: report.judgeModel,
     evaluatorId: report.evaluatorId,
+    // What the SDK judge binding actually applied + any overridden body pins.
+    ...(report.judgeApplied !== undefined ? { judgeApplied: report.judgeApplied } : {}),
+    ...(report.judgeSelectionConflicts !== undefined ? { judgeSelectionConflicts: report.judgeSelectionConflicts } : {}),
     status: report.status,
     passFailStatus: report.passFailStatus,
     // Real W3C OTel trace id when we have it (extracted from polled spans),
@@ -81,6 +89,8 @@ async function saveReportWithModule(storage: IStorageModule, report: any): Promi
     traceFetchAttempts: report.traceFetchAttempts,
     lastTraceFetchAt: report.lastTraceFetchAt,
     traceError: report.traceError,
+    // Structured agent-step failure (transport / unreachable / empty-response).
+    agentError: report.agentError,
     spans: report.spans,
     connectorProtocol: report.connectorProtocol,
     // Set only by the agent (trace) judge provider -- see
@@ -142,6 +152,13 @@ export async function runSingleUseCase(
     ? await context.with(caseSpanContext, runEval)
     : await runEval();
 
+  // Agent step failed (connector threw / empty response): the report is
+  // FINAL — canonical agent-failure patch, never trace-polled or judged.
+  // Same seam as executeEvaluationRun.
+  if (finalizeAgentFailedReport(report as any)) {
+    console.warn(`[RunSingleUseCase] [${testCase.id}] Agent request failed — not polled or judged: ${(report as any).traceError}`);
+  }
+
   // Stamp `judgeModelId` onto the report BEFORE saving so both code
   // paths (placeholder-update and create) persist the run-level cx
   // input. The connector return path doesn't carry it, but `run` does.
@@ -183,6 +200,8 @@ export async function runSingleUseCase(
       // it from the run config in case the placeholder pre-creation skipped
       // the field (storage transient failures during /api/evaluate).
       judgeModelId: run.judgeModelId,
+      // Underlying LLM that judged this report (lib/judgeIdentity).
+      judgeModel: (report as any).judgeModel,
       // Re-stamp evaluatorId for the same reason. /api/evaluate sets it
       // on the placeholder, but if that step failed silently the doc has
       // no evaluatorId — and the trace-mode polled judge then reads it
@@ -210,6 +229,12 @@ export async function runSingleUseCase(
       traceFetchAttempts: report.traceFetchAttempts,
       lastTraceFetchAt: report.lastTraceFetchAt,
       traceError: report.traceError,
+      // Failure detail (failureStage / error / agentError / judgeError) —
+      // without this the placeholder-update path dropped the real agent
+      // cause the runner recorded (lib/reportFailureFields.ts). `agentError`
+      // is the structured agent-step failure (transport / unreachable /
+      // empty-response / timeout …).
+      ...pickReportFailureFields(report as any),
       spans: report.spans,
       connectorProtocol: report.connectorProtocol,
       // Set only by the agent (trace) judge provider -- see

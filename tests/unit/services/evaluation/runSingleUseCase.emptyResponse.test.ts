@@ -4,16 +4,16 @@
  */
 
 /**
- * Empty-response failure — benchmark-runner path (services/benchmarkRunner.ts
- * `executeRun` and `runSingleUseCase`), mirroring
+ * Empty-response failure — /api/evaluate path
+ * (services/evaluation/runSingleUseCase.ts), mirroring
  * evaluationRunner.emptyResponse.test.ts: REAL evaluation primitives against a
  * fake REST connector; an empty result is a final `agent_empty_response`
- * report (never polled, never judged), a real answer is judged, and the run
- * carries `agentFailureSummary`.
+ * report (never polled, never judged) on both the create and the
+ * placeholder-update persistence paths.
  */
-import { executeRun, runSingleUseCase } from '@/services/benchmarkRunner';
+import { runSingleUseCase } from '@/services/evaluation/runSingleUseCase';
 import { callBedrockJudge } from '@/services/evaluation/bedrockJudge';
-import type { Benchmark, BenchmarkRun, TestCase } from '@/types';
+import type { BenchmarkRun, TestCase } from '@/types';
 
 const mockExecute = jest.fn();
 jest.mock('@/services/connectors/server', () => ({
@@ -75,11 +75,6 @@ const testCases: TestCase[] = Array.from({ length: 5 }, (_, i) => ({
   id: `tc-${i + 1}`, name: `TC ${i + 1}`, initialPrompt: `search products ${i + 1}`, context: [], expectedOutcomes: ['Any reply at all.'],
 })) as unknown as TestCase[];
 
-const benchmark: Benchmark = {
-  id: 'bench-1', name: 'Bench', description: '', testCaseIds: testCases.map(t => t.id), runs: [],
-  createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(),
-} as unknown as Benchmark;
-
 function makeRun(agentKey = 'rest-agent'): BenchmarkRun {
   return {
     id: 'run-1', name: 'Run', agentKey, modelId: 'claude-sonnet', judgeModelId: 'demo-model', status: 'running', results: {},
@@ -87,52 +82,6 @@ function makeRun(agentKey = 'rest-agent'): BenchmarkRun {
   } as unknown as BenchmarkRun;
 }
 const PASS = { passFailStatus: 'passed', metrics: { accuracy: 100 }, llmJudgeReasoning: 'ok', improvementStrategies: [], judgeDurationMs: 1, judgeAttempts: 1 };
-
-describe('executeRun (benchmark path) — empty agent responses', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    savedReports.length = 0;
-    mockJudge.mockResolvedValue(PASS);
-  });
-
-  it('`200 {}` everywhere: 3 dials then the breaker refuses 2; every report final as agent_empty_response / unreachable; judge never called', async () => {
-    mockExecute.mockImplementation(() => Promise.resolve(restResult({})));
-    const storageModule = { testCases: { getAll: jest.fn().mockResolvedValue({ items: testCases }) } } as any;
-
-    const result = await executeRun(benchmark, makeRun(), () => {}, { client: {} as any, storageModule });
-
-    expect(mockExecute).toHaveBeenCalledTimes(3);
-    expect(mockJudge).not.toHaveBeenCalled();
-    expect(mockStartPolling).not.toHaveBeenCalled();
-    expect(savedReports).toHaveLength(5);
-    for (const r of savedReports) {
-      expect(r.status).toBe('failed');
-      expect(r.metricsStatus).toBe('error');
-      expect(r.passFailStatus).toBeNull();
-      expect(r.agentError?.stage).toBe('agent');
-    }
-    const empties = savedReports.filter(r => r.agentError.kind === 'empty-response');
-    expect(empties).toHaveLength(3);
-    for (const r of empties) {
-      expect(r.traceError).toMatch(/^Agent returned an empty response \(kind=agent_empty_response\)/);
-      expect(r.trajectory).toEqual([expect.objectContaining({ content: '{}' })]);
-    }
-    expect(savedReports.filter(r => r.agentError.kind === 'unreachable')).toHaveLength(2);
-    expect(result.agentFailureSummary).toBe(
-      'Agent endpoint unreachable — 3 consecutive empty responses (EMPTY_RESPONSE, agent.internal:9000); 2 further cases were not attempted',
-    );
-    expect(Object.values(result.results).every(r => r.status === 'completed' && r.reportId)).toBe(true);
-  });
-
-  it('a real answer on every case is judged as before (no summary, no agentError)', async () => {
-    mockExecute.mockImplementation(() => Promise.resolve(restResult({ answer: 'Here are the products.' })));
-    const storageModule = { testCases: { getAll: jest.fn().mockResolvedValue({ items: testCases.slice(0, 2) }) } } as any;
-    const result = await executeRun({ ...benchmark, testCaseIds: ['tc-1', 'tc-2'] }, makeRun(), () => {}, { client: {} as any, storageModule });
-    expect(mockJudge).toHaveBeenCalledTimes(2);
-    expect(savedReports.every(r => r.passFailStatus === 'passed' && r.agentError === undefined)).toBe(true);
-    expect(result.agentFailureSummary).toBeUndefined();
-  });
-});
 
 describe('runSingleUseCase (/api/evaluate path) — empty agent responses', () => {
   beforeEach(() => {

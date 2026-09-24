@@ -16,7 +16,10 @@
 import type { EvaluationReport, TestCase } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
 import { callBedrockJudge } from './index';
+import { judgeErrorDetailFrom } from './bedrockJudge';
 import { buildEvaluatorErrorPatch } from './evaluatorError';
+import { scoringFieldsFromJudgment } from '@/lib/scoring/verdictEngine';
+import { buildJudgeIdentityPatch, buildLlmJudgeResponseIdentity } from '@/lib/judgeIdentity';
 import { findConfiguredAgent, getBedrockModelId } from './runAgentConfig';
 import { readEnv } from '@/lib/envCompat';
 import { buildJudgeAgentsHints, resolveJudgeRunId } from '@/services/traces/judgeAgentsHints';
@@ -87,12 +90,13 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
           await storage.runs.update(report.id, {
             trajectory: finalTrajectory,
             metricsStatus: 'ready',
-            passFailStatus: judgment.passFailStatus,
-            metrics: judgment.metrics,
+            ...scoringFieldsFromJudgment(judgment),
             llmJudgeReasoning: judgment.llmJudgeReasoning,
             // Set only by the agent (trace) judge provider -- see
             // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
             ...(judgment.judgeMode ? { judgeMode: judgment.judgeMode } : {}),
+            // Underlying LLM that judged (TestCaseRun.judgeModel) -- see lib/judgeIdentity.
+            ...buildJudgeIdentityPatch(judgment, judgeModelId),
             // Unified judge surface (issue #230 follow-up).
             matcherResults: [
               buildJudgeMatcherEntry(judgment, {
@@ -108,7 +112,7 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
             // dropped llmJudgeResponse, mirroring the placeholder-update
             // bug fixed earlier for the standard path.
             llmJudgeResponse: {
-              modelId: judgeModelId || '',
+              ...buildLlmJudgeResponseIdentity(judgment, judgeModelId),
               timestamp: new Date().toISOString(),
               promptTokens: 0,
               completionTokens: 0,
@@ -124,8 +128,7 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
           // Emit deferred OTel eval span now that judge is complete
           const completedReport = {
             ...report,
-            passFailStatus: judgment.passFailStatus,
-            metrics: judgment.metrics,
+            ...scoringFieldsFromJudgment(judgment),
             llmJudgeReasoning: judgment.llmJudgeReasoning,
           } as EvaluationReport;
           emitDeferredTestCaseSpan(
@@ -149,6 +152,7 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
           await storage.runs.update(report.id, buildEvaluatorErrorPatch(
             'judge_failed',
             error,
+            { judgeError: judgeErrorDetailFrom(error) },
           ) as any);
 
           // Update parent benchmark run stats (error counts as failed)
