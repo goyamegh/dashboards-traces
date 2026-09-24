@@ -353,8 +353,14 @@ describe('useBenchmarkCancellation Integration Tests', () => {
     const terminalRun = await waitForTerminalRun(runId);
     expect(terminalRun).toBeDefined();
     expect(terminalRun.status).toBe('cancelled');
-    const benchmark = await getBenchmark(benchmarkId);
-    const run = benchmark.runs?.find((r: any) => r.id === runId);
+    // The projection is linked into the benchmark right AFTER the terminal
+    // doc write — poll for it instead of a single GET.
+    let run: any;
+    for (let i = 0; i < 40 && !run; i++) {
+      const benchmark = await getBenchmark(benchmarkId);
+      run = benchmark.runs?.find((r: any) => r.id === runId);
+      if (!run) await new Promise((r) => setTimeout(r, 500));
+    }
     expect(run).toBeDefined();
     expect(run.status).toBe('cancelled');
 
