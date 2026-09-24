@@ -30,6 +30,7 @@
 import type {
   EvaluationRun,
   EvaluationReport,
+  Evaluator,
   TestCase,
   AgentConfig,
   PassFailStatus,
@@ -48,19 +49,26 @@ import { getCustomAgents } from '@/server/services/customAgentStore';
 import { getDefaultEvaluator } from '@/server/prompts/evaluatorTemplates';
 import { debug } from '@/lib/debug';
 import { readEnv } from '@/lib/envCompat';
+import { isSystemEvaluatorId, getSystemEvaluatorById } from '@/server/prompts/evaluatorTemplates';
+import { isDeterministicEvaluator } from '@/lib/evaluators/deterministic';
+import { scoreDeterministic } from '@/lib/scoring/deterministicScoring';
 
 export type RetryJudgementScope = 'errored' | 'all';
 
 /**
- * Judge configuration the caller picks for THIS retry (the "Retry judgement"
- * dialog's evaluator / judge-model selects). Owner requirement (follow-up to
- * #468): "the judgement should allow for evaluator type and prompt evaluator
- * when retrying; defaults will be the last selected ones."
+ * Judge configuration the caller picks for THIS retry (the request body of
+ * POST .../retry-judgement — the "Retry judgement" dialog's evaluator /
+ * judge-model selects). Owner requirement (follow-up to #468): "the
+ * judgement should allow for evaluator type and prompt evaluator when
+ * retrying; defaults will be the last selected ones."
  *
  *   - key absent  → inherit the run's value (`run.evaluatorId` /
  *                   `run.judgeModelId`), i.e. the pre-existing behaviour.
  *   - `evaluatorId: string` → judge with that evaluator (validated to exist
- *                   by the route).
+ *                   by the route). When it is a `kind: 'deterministic'`
+ *                   evaluator NO LLM is called: every selected report is
+ *                   re-scored in code from its stored trajectory (see
+ *                   lib/scoring/deterministicScoring.ts).
  *   - `judgeModelId: string` → judge with that model.
  *   - `judgeModelId: null` → the dialog's "Use evaluator default": skip the
  *                   run's/report's pinned model and let the server-default
@@ -71,6 +79,10 @@ export interface RetryJudgementOverrides {
   evaluatorId?: string;
   judgeModelId?: string | null;
 }
+
+/** Error text for a deterministic evaluator requested with `scope: 'errored'` (route → 400). */
+export const DETERMINISTIC_SCOPE_ERROR =
+  "a deterministic evaluator re-scores the whole run; use scope 'all' (re-scoring only the errored cases would mix two scoring snapshots in one run)";
 
 export interface RetryJudgementCaseResult {
   testCaseId: string;
@@ -229,8 +241,21 @@ export async function retryJudgementForCase(
   run: Pick<EvaluationRun, 'judgeModelId' | 'evaluatorId' | 'agentKey'>,
   storage: IStorageModule,
   agentConfig: AgentConfig | undefined,
-  overrides: RetryJudgementOverrides = {}
+  overrides: RetryJudgementOverrides = {},
+  resolvedEvaluator?: Evaluator | null
 ): Promise<{ passFailStatus: PassFailStatus | null; error?: string }> {
+  // Judge config for THIS retry: the caller's overrides (#509 picker) over
+  // the run's own values, with the server/evaluator defaults as fallback.
+  const { judgeModelId, evaluatorId } = resolveRetryJudgeConfig(report, run, overrides);
+
+  // Deterministic evaluator: score the STORED trajectory in code. No trace
+  // re-fetch (the extractor reads the persisted tool results the agent
+  // actually returned), no judge model, no LLM call of any kind.
+  const evaluator = resolvedEvaluator === undefined ? await resolveEvaluatorDoc(evaluatorId, storage) : resolvedEvaluator;
+  if (evaluator && isDeterministicEvaluator(evaluator)) {
+    return applyDeterministicJudgement(report, testCase, evaluator, storage);
+  }
+
   let trajectory = report.trajectory || [];
 
   if (agentConfig?.useTraces) {
@@ -252,7 +277,6 @@ export async function retryJudgementForCase(
     }
   }
 
-  const { judgeModelId, evaluatorId } = resolveRetryJudgeConfig(report, run, overrides);
   try {
     const judgment = await callBedrockJudge(
       trajectory,
@@ -330,6 +354,82 @@ export async function retryJudgementForCase(
     // Clear both alongside the canonical error patch.
     await storage.runs.update(report.id, {
       ...buildEvaluatorErrorPatch('judge_failed', `Retry judgement: ${message}`),
+      matcherResults: [],
+      improvementStrategies: [],
+    } as any).catch(() => {});
+    return { passFailStatus: null, error: message };
+  }
+}
+
+/** Resolve an evaluator id to its document (system template or stored). `null` when unset/unknown. */
+export async function resolveEvaluatorDoc(evaluatorId: string | undefined, storage: IStorageModule): Promise<Evaluator | null> {
+  if (!evaluatorId) return null;
+  if (isSystemEvaluatorId(evaluatorId)) {
+    const sys = getSystemEvaluatorById(evaluatorId);
+    return sys ?? null;
+  }
+  try {
+    return (await storage.evaluators.getById(evaluatorId)) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist a deterministic judgement onto the report. Only the LATEST
+ * judgement is kept (same policy as the LLM path): every judge-derived field
+ * is overwritten together, and the LLM-only fields are cleared so a report
+ * re-scored deterministically never shows a stale judge reasoning or
+ * response next to code-computed metrics. The agent output is untouched.
+ *
+ * Not-evaluable reports (no gold / no candidates ⇒ EVERY metric unevaluable)
+ * get the canonical evaluator-error patch (`metricsStatus: 'error'`,
+ * `passFailStatus: null`) — they render as errored/not evaluable and are
+ * excluded from the pass rate rather than counted as failures. See the
+ * module comment in lib/scoring/deterministicScoring.ts.
+ */
+async function applyDeterministicJudgement(
+  report: EvaluationReport,
+  testCase: TestCase,
+  evaluator: Evaluator,
+  storage: IStorageModule
+): Promise<{ passFailStatus: PassFailStatus | null; error?: string }> {
+  try {
+    const result = scoreDeterministic(evaluator, testCase, report);
+    const common = {
+      evaluatorId: evaluator.id,
+      // No judge model was involved — clear the one a previous LLM judgement
+      // may have stamped so the report never names a judge it did not use.
+      judgeModelId: null,
+      judgeMode: 'deterministic' as const,
+      scoringSnapshot: result.snapshot,
+      matcherResults: result.matcherResults,
+      improvementStrategies: [],
+      llmJudgeReasoning: '',
+      llmJudgeResponse: null,
+    };
+    if (!result.evaluable) {
+      await storage.runs.update(report.id, {
+        ...common,
+        ...buildEvaluatorErrorPatch('judge_failed', `Not evaluable by ${evaluator.name}: ${result.summary}`),
+        // No metrics on a not-evaluable report — never the legacy zeroed
+        // RCA keys the generic patch carries.
+        metrics: {},
+      } as any);
+      return { passFailStatus: null, error: result.summary };
+    }
+    await storage.runs.update(report.id, {
+      ...common,
+      passFailStatus: result.passFailStatus,
+      metrics: result.metrics,
+      metricsStatus: 'completed',
+      traceError: undefined,
+    } as any);
+    return { passFailStatus: result.passFailStatus };
+  } catch (error: any) {
+    const message = error?.message ?? String(error);
+    await storage.runs.update(report.id, {
+      ...buildEvaluatorErrorPatch('judge_failed', `Deterministic scoring: ${message}`),
       matcherResults: [],
       improvementStrategies: [],
     } as any).catch(() => {});
@@ -421,9 +521,9 @@ export async function retryJudgementForRun(
   options?: {
     scope?: RetryJudgementScope;
     concurrency?: number;
-    onProgress?: (completed: number, total: number) => void;
     /** Per-retry judge config; see {@link RetryJudgementOverrides}. */
     overrides?: RetryJudgementOverrides;
+    onProgress?: (completed: number, total: number) => void;
   }
 ): Promise<RetryJudgementSummary> {
   const scope = options?.scope ?? 'errored';
@@ -434,6 +534,17 @@ export async function retryJudgementForRun(
 
   const testCaseIds = selectRetryableCases(run, reportsById, scope);
   const agentConfig = resolveAgentConfig(run.agentKey);
+  // Resolve the evaluator ONCE per run (not per case) so every report in this
+  // retry is scored against the same document.
+  const resolvedEvaluator = await resolveEvaluatorDoc(overrides.evaluatorId || run.evaluatorId, storage);
+  if (isDeterministicEvaluator(resolvedEvaluator) && scope !== 'all') {
+    // codex_review: re-scoring only the errored subset with a different
+    // (deterministic) scorer would leave a run whose reports carry two
+    // scoring snapshots while the run doc claims one evaluator — a
+    // mixed-truth run. A deterministic evaluator is cheap; always re-score
+    // the whole run. The route surfaces this as a 400 before starting a job.
+    throw new Error(DETERMINISTIC_SCOPE_ERROR);
+  }
 
   // "Defaults will be the last selected ones": remember what THIS retry was
   // launched with so the next Retry-judgement dialog can preselect it.
@@ -490,7 +601,9 @@ export async function retryJudgementForRun(
         return;
       }
 
-      const { passFailStatus, error } = await retryJudgementForCase(report, testCase, run, storage, agentConfig, overrides);
+      const { passFailStatus, error } = await retryJudgementForCase(
+        report, testCase, run, storage, agentConfig, overrides, resolvedEvaluator
+      );
 
       const nextResult: any = { ...result, status: 'completed' };
       if (passFailStatus) {
@@ -532,6 +645,9 @@ export async function retryJudgementForRun(
     results: updatedResults,
     stats: { ...(run.stats || {}), ...stats } as any,
     judgeFailureSummary,
+    // The evaluator that produced the run's CURRENT verdicts (when the caller
+    // overrode it) — keeps the run doc truthful about what it was judged with.
+    ...(overrides.evaluatorId ? { evaluatorId: overrides.evaluatorId } : {}),
   } as any);
 
   // Deterministic order (not insertion/completion order, which varies with
