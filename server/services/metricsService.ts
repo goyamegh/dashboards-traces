@@ -12,7 +12,7 @@
 import { Client } from '@opensearch-project/opensearch';
 import { MetricsResult, AggregateMetrics, OpenSearchConfig, Span } from '@/types';
 import { getSampleSpansForRunIds } from '../../cli/demo/sampleTraces.js';
-import { transformSpan, buildRunIdShouldClauses, buildSessionIdShouldClauses, buildAgentHintClause, type ServiceWindowHint } from './tracesService.js';
+import { transformSpan, buildRunIdShouldClauses, buildSessionIdShouldClauses, buildAgentHintClause, isEvalOrJudgeSpan, type ServiceWindowHint } from './tracesService.js';
 import { attributeLeafUsage, type AttributedUsage } from '../../lib/usageAggregates.js';
 
 // ============================================================================
@@ -155,23 +155,6 @@ function countAggregates(usage: Map<unknown, AttributedUsage>): number {
 }
 
 /**
- * True when a span is one of AGENT HEALTH's OWN eval/judge spans (the
- * `test_case` / `test_suite_run` eval spans, or a judge LLM call tagged
- * `gen_ai.operation.name = 'evaluation'`). Strategy A (traceId) correlation
- * below pulls in every span on the shared trace, which can include these —
- * they are not the agent's own work and must not inflate its token/cost/LLM
- * counts.
- */
-function isEvalOrJudgeSpan(attrs: Record<string, any>, spanName?: string): boolean {
-  return (
-    attrs['gen_ai.operation.name'] === 'evaluation' ||
-    spanName === 'test_case' ||
-    spanName === 'test_suite_run' ||
-    (typeof spanName === 'string' && spanName.startsWith('test_suite_run '))
-  );
-}
-
-/**
  * Correlation `should` clauses for a single runId — Strategy B
  * (`agent_health.run.id` / the OTEL-standard `gen_ai.conversation.id`, under
  * BOTH index schemas via the shared {@link buildRunIdShouldClauses}) OR'd
@@ -203,7 +186,7 @@ function isEvalOrJudgeSpan(attrs: Record<string, any>, spanName?: string): boole
  * all, so it inherits an existing invariant rather than introducing a new
  * one. Spans on that ONE trace that are agent-health's own (the eval/judge
  * spans, possible when Strategy A pulls in the whole trace) are excluded
- * via {@link isEvalOrJudgeSpan} above so they can't inflate the agent's own
+ * via the shared {@link isEvalOrJudgeSpan} (tracesService) so they can't inflate the agent's own
  * token/LLM-call count.
  */
 function buildCorrelationShouldClauses(runId: string, sessionId?: string, traceId?: string, agents?: ServiceWindowHint[]): Record<string, unknown>[] {
