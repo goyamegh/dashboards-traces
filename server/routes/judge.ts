@@ -22,6 +22,7 @@ import {
 } from '@/server/services/piAgenticJudgeService';
 import { isJudgeError, redactSecrets, toJudgeError } from '@/server/services/judgeErrors';
 import { evaluateWithAgenticJudge, parseAgenticJudgeError } from '@/server/services/agenticJudgeService';
+import { isJudgeParseError } from '@/server/services/judgeResponseParser';
 import { hasTraceCorrelation } from '@/services/traces/judgeAgentsHints';
 import { classifyEmptyResponse, EMPTY_RESPONSE_CODE } from '@/services/evaluation/emptyResponse';
 import { loadConfigSync } from '@/lib/config/index';
@@ -657,6 +658,29 @@ router.post('/api/judge', async (req: Request, res: Response) => {
 
   } catch (error: any) {
     console.error('[JudgeAPI] Error during evaluation:', error);
+
+    // A judge reply with no parseable verdict (empty final turn, malformed
+    // JSON) is NOT a transient provider error — retrying the same prompt ten
+    // times with exponential backoff just burns ~8 minutes per case (owner
+    // incident). Return a distinct 422 + code so the client caps retries and
+    // keeps the raw text for the report. Provider-agnostic: every provider
+    // funnels through parseJudgeResponse, so the wording can't misattribute
+    // the failure to the wrong CLI (pre-fix the `agent` provider's empty
+    // reply was reported as "Failed to parse Pi judge response. The CLI may
+    // have returned invalid JSON."). `errorClass` / `retryable` ride along
+    // so the client's class-based retry loop (services/evaluation/bedrockJudge.ts)
+    // reads the same semantics off this response as off a 500.
+    if (isJudgeParseError(error)) {
+      const classified = toJudgeError(error);
+      return res.status(422).json({
+        error: `Judge evaluation failed: ${redactSecrets(error.message)}`,
+        code: error.code,
+        rawResponse: error.rawResponse,
+        details: redactSecrets(error.message),
+        errorClass: classified.errorClass,
+        retryable: false,
+      });
+    }
 
     const provider = resolvedProvider ?? (() => {
       try {

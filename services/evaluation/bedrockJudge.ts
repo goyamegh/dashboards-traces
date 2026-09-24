@@ -86,6 +86,15 @@ interface ExpectedBehavior {
 }
 
 /**
+ * How many times to ask the judge again when its reply had NO parseable
+ * verdict (empty final turn, malformed JSON). Two total attempts: models
+ * are stochastic so one retry is worth it; ten (the transient-error budget
+ * above) is not — owner incident: 5 cases × 10 attempts × exponential
+ * backoff ≈ 8.5 min wasted per case on a judge that had nothing to judge.
+ */
+export const PARSE_FAILURE_MAX_ATTEMPTS = 2;
+
+/**
  * Real Bedrock Judge implementation via backend proxy with exponential backoff retry
  * Calls the backend API which handles AWS Bedrock communication
  * The backend routes to the appropriate provider (demo/bedrock/ollama) based on modelId
@@ -130,6 +139,9 @@ export async function callBedrockJudge(
 
   const judgeStartTime = Date.now();
   let lastErrorClass: JudgeErrorClass | undefined;
+  // Raw text of the most recent unparseable judge reply (kept so the
+  // terminal error carries it for `report.judgeError.rawResponse`).
+  let lastRawResponse: string | undefined;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
@@ -174,16 +186,28 @@ export async function callBedrockJudge(
         const errorClass: JudgeErrorClass | undefined =
           typeof errorData.errorClass === 'string' ? (errorData.errorClass as JudgeErrorClass) : undefined;
         if (errorClass) lastErrorClass = errorClass;
+        // 422 JUDGE_UNPARSEABLE: the model replied but produced no verdict
+        // (empty turn / malformed JSON). Not a throttle — allow ONE more
+        // attempt (models are stochastic; PARSE_FAILURE_MAX_ATTEMPTS) then
+        // stop, keeping the raw text for `report.judgeError.rawResponse`.
+        const unparseable = response.status === 422 || errorData.code === 'JUDGE_UNPARSEABLE';
+        if (unparseable) {
+          lastRawResponse = typeof errorData.rawResponse === 'string' ? errorData.rawResponse : lastRawResponse;
+        }
+        const unparseableFields = unparseable ? { unparseable: true, rawResponse: lastRawResponse } : {};
         if (errorClass && errorData.retryable === false) {
           if (maxJudgeAttemptsFor(errorClass, maxRetries) <= attempt) {
             const tail = typeof errorData.stderrTail === 'string' && errorData.stderrTail ? ` [stderr: ${errorData.stderrTail}]` : '';
             throw Object.assign(
               new Error(`Judge failed (${errorClass}, not retryable): ${errorMessage}${tail}`),
-              { nonRetryable: true, errorClass },
+              { nonRetryable: true, errorClass, judgeAttempts: attempt, ...unparseableFields },
             );
           }
           // Reduced-budget class (e.g. invalid_json): one more roll of the dice.
-          throw new Error(errorMessage);
+          throw Object.assign(new Error(errorMessage), unparseableFields);
+        }
+        if (unparseable) {
+          throw Object.assign(new Error(errorMessage), unparseableFields);
         }
         // 4xx client errors are validation failures — retrying won't help
         if (response.status >= 400 && response.status < 500 && errorData.retryable !== true) {
@@ -258,12 +282,24 @@ export async function callBedrockJudge(
         throw error;
       }
 
+      // Unparseable verdict: cap at PARSE_FAILURE_MAX_ATTEMPTS total attempts
+      // (not the transient-error budget of 10) and surface the raw text.
+      if ((error as any)?.unparseable && attempt >= PARSE_FAILURE_MAX_ATTEMPTS) {
+        throw Object.assign(
+          new Error(`Bedrock Judge evaluation failed after ${attempt} attempts: ${errorMessage}`),
+          { unparseable: true, rawResponse: lastRawResponse, judgeAttempts: attempt },
+        );
+      }
+
       // If this is the last attempt for this failure class, throw the error.
       // A class with a reduced budget (e.g. invalid_json → 2) stops early
       // instead of re-rolling the same prompt ten times.
       const attemptsAllowed = maxJudgeAttemptsFor(lastErrorClass, maxRetries);
       if (isLastAttempt || attempt >= attemptsAllowed) {
-        throw new Error(`Bedrock Judge evaluation failed after ${attempt} attempt${attempt === 1 ? '' : 's'}${lastErrorClass ? ` (${lastErrorClass})` : ''}: ${errorMessage}`);
+        throw Object.assign(
+          new Error(`Bedrock Judge evaluation failed after ${attempt} attempt${attempt === 1 ? '' : 's'}${lastErrorClass ? ` (${lastErrorClass})` : ''}: ${errorMessage}`),
+          { judgeAttempts: attempt, ...(lastRawResponse !== undefined ? { rawResponse: lastRawResponse } : {}) },
+        );
       }
 
       // Calculate exponential backoff delay: 1s, 2s, 4s
@@ -315,4 +351,17 @@ export function simulateBedrockJudge(
       }
     ]
   };
+}
+
+/**
+ * Extract the judge-step failure detail (raw reply text + attempt count) a
+ * failed `callBedrockJudge` error carries, for `report.judgeError`.
+ */
+export function judgeErrorDetailFrom(error: unknown): { message: string; rawResponse?: string; attempts?: number } {
+  const e = error as any;
+  const message = e instanceof Error ? e.message : typeof e === 'string' ? e : 'Unknown judge error';
+  const detail: { message: string; rawResponse?: string; attempts?: number } = { message };
+  if (typeof e?.rawResponse === 'string') detail.rawResponse = e.rawResponse;
+  if (typeof e?.judgeAttempts === 'number') detail.attempts = e.judgeAttempts;
+  return detail;
 }

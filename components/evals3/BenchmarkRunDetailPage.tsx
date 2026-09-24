@@ -29,7 +29,7 @@ import { getLabelColor, formatDate, getModelName, getRunOverallScore } from '@/l
 import { runAggregate } from '@/lib/scoring/snapshotScore';
 import { RunScore } from '@/components/RunScore';
 import { RunDetailsFlyout } from './RunDetailsFlyout';
-import { ResultStatus, getResultStatus, StatusIcon, StatusLabel } from './ResultStatus';
+import { ResultStatus, getResultStatus, StatusIcon, StatusLabel, getErrorStage } from './ResultStatus';
 import { Breadcrumbs } from './Breadcrumbs';
 import { RunTelemetryStrip } from './RunTelemetryStrip';
 import { useRunTelemetry } from '@/hooks/useRunTelemetry';
@@ -328,7 +328,7 @@ export const BenchmarkRunDetailPage: React.FC = () => {
                 onClick={() => r.report && setFlyoutResult(r)}
               >
                 <div className="w-8 shrink-0 flex justify-center">
-                  <StatusIcon status={r.status} />
+                  <StatusIcon status={r.status} stage={getErrorStage(r.status, r.report)} />
                 </div>
                 <div className="flex-1 min-w-0">
                   <div className="text-sm font-medium truncate">{r.testCase?.name || r.testCaseId}</div>
@@ -352,7 +352,7 @@ export const BenchmarkRunDetailPage: React.FC = () => {
                     : <span className="text-xs text-muted-foreground">—</span>}
                 </div>
                 <div className="w-16 shrink-0 text-right">
-                  <StatusLabel status={r.status} />
+                  <StatusLabel status={r.status} stage={getErrorStage(r.status, r.report)} />
                 </div>
               </div>
             ))

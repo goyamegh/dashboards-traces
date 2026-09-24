@@ -30,9 +30,11 @@
  * `{ metricsStatus: 'error', traceError: ... }`.
  */
 
+import type { AgentErrorInfo, FailureStage } from '@/types';
+
 export type EvaluatorErrorKind =
   | 'judge_failed'         // Judge call itself threw (e.g. Bedrock validation, network)
-  | 'agent_failed'         // Agent never produced a result (subprocess timeout / crash / unreachable endpoint)
+  | 'agent_failed'         // Agent never produced a result (HTTP timeout / connection refused / subprocess crash / unreachable endpoint)
   | 'agent_empty_response' // Agent answered, but with no steps, no answer text and no results (nothing to judge)
   | 'trace_timeout'        // Trace polling exceeded max attempts with no spans
   | 'trace_incomplete'     // Spans arrived but never converged (no root span)
@@ -70,6 +72,17 @@ export interface EvaluatorErrorPatch {
   llmVerdict: null;
   verdictConflict: null;
   score: null;
+  /**
+   * Which stage failed — the explicit signal consumers should key on instead
+   * of regexing `traceError` for `kind=…`. Derived from `kind`.
+   */
+  failureStage: FailureStage;
+  /** The underlying cause as one line (same text as after `): ` in traceError). */
+  error: string;
+  /** Structured agent-request failure detail (agent_failed / agent_empty_response only). */
+  agentError?: AgentErrorInfo;
+  /** Judge-step failure detail (judge_failed only). */
+  judgeError?: { message: string; rawResponse?: string; attempts?: number };
 }
 
 const KIND_LABEL: Record<EvaluatorErrorKind, string> = {
@@ -83,30 +96,56 @@ const KIND_LABEL: Record<EvaluatorErrorKind, string> = {
   unknown: 'Evaluator error',
 };
 
+const KIND_STAGE: Record<EvaluatorErrorKind, FailureStage> = {
+  judge_failed: 'judge',
+  agent_failed: 'agent',
+  agent_empty_response: 'agent',
+  trace_timeout: 'trace',
+  trace_incomplete: 'trace',
+  trace_callback_failed: 'trace',
+  trace_fetch_failed: 'trace',
+  unknown: 'judge',
+};
+
+/** Map an evaluator-error kind to its {@link FailureStage}. */
+export function failureStageForKind(kind: EvaluatorErrorKind): FailureStage {
+  return KIND_STAGE[kind];
+}
+
+export interface EvaluatorErrorPatchOptions {
+  /** Structured detail persisted as `report.agentError` (agent_failed / agent_empty_response). */
+  agentError?: AgentErrorInfo;
+  /** Judge-step detail persisted as `report.judgeError` (judge_failed). */
+  judgeError?: { message: string; rawResponse?: string; attempts?: number };
+}
+
 /**
  * Build the canonical "evaluator could not run" patch for `runs.update()`.
  *
  * @param kind   short tag used in logs and as the `traceError` prefix
  * @param error  the underlying error or message; we extract `.message`
  *               when given an Error so logs aren't `[object Object]`
+ * @param options structured detail (agentError / judgeError) to persist
  */
 export function buildEvaluatorErrorPatch(
   kind: EvaluatorErrorKind,
   error: unknown,
+  options: EvaluatorErrorPatchOptions = {},
 ): EvaluatorErrorPatch {
   const message =
-    error instanceof Error
+    options.agentError?.message ??
+    (error instanceof Error
       ? error.message
       : typeof error === 'string'
         ? error
-        : 'Unknown error';
+        : 'Unknown error');
   const label = KIND_LABEL[kind];
   // `agent_failed` is not an *evaluator* failure — the agent itself never
   // produced a trajectory (timeout/crash). Use prose that says so, instead of
   // the misleading "the evaluator failed" wording, so the Judge tab is honest.
   const isAgent = kind === 'agent_failed';
   const isEmptyResponse = kind === 'agent_empty_response';
-  return {
+  const patch: EvaluatorErrorPatch = {
     metricsStatus: 'error',
     // Both the human label AND the machine-readable kind token are
     // included — logs / dashboards can grep by `kind=judge_failed`
@@ -124,9 +163,9 @@ export function buildEvaluatorErrorPatch(
         `**Reason (${kind}):** ${message}`
       : isAgent
       ? `**Agent run did not complete.**\n\n` +
-        `The agent failed to produce a result (e.g. a subprocess timeout or crash) before ` +
-        `the evaluation could run, so there is no trajectory to judge. This run is excluded ` +
-        `from pass-rate aggregation.\n\n` +
+        `The agent produced no output (request timed out, connection failed, the agent returned an error, ` +
+        `or a subprocess crashed) so there is no trajectory to judge. The judge was skipped. This run is ` +
+        `excluded from pass-rate aggregation; re-run the case to retry the agent.\n\n` +
         `**Reason (${kind}):** ${message}`
       : `**Evaluator could not run.**\n\n` +
         `The agent may have completed normally, but the evaluator (judge or trace pipeline) ` +
@@ -138,5 +177,10 @@ export function buildEvaluatorErrorPatch(
     llmVerdict: null,
     verdictConflict: null,
     score: null,
+    failureStage: KIND_STAGE[kind],
+    error: message,
   };
+  if (options.agentError) patch.agentError = options.agentError;
+  if (options.judgeError) patch.judgeError = options.judgeError;
+  return patch;
 }

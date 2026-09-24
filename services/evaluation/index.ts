@@ -14,7 +14,7 @@ import { executeBeforeRequestHook, executeAfterResponseHook } from '@/lib/hooks'
 import { AGUIToTrajectoryConverter, consumeSSEStream, buildAgentPayload } from '@/services/agent';
 import { AGUIEvent } from '@/types/agui';
 import { generateMockTrajectory } from './mockTrajectory';
-import { callBedrockJudge } from './bedrockJudge';
+import { callBedrockJudge, judgeErrorDetailFrom } from './bedrockJudge';
 import { buildJudgeMatcherEntry, formatExpectedOutcomesAsClaim } from '@/lib/matchers/judgeAccessor';
 import type { MatcherResult } from '@/lib/matchers/types';
 import type { TracesAccessor } from '@/lib/matchers/traces';
@@ -28,6 +28,7 @@ import {
   describeAgentFailure,
   describeEndpointHost,
   endpointKeyFor,
+  evaluatorKindForAgentFailure,
   isAgentReachabilityError,
 } from '@/services/evaluation/agentReachability';
 import {
@@ -36,9 +37,52 @@ import {
   isAgentEmptyResponseError,
   readExplicitEmptyFlag,
 } from '@/services/evaluation/emptyResponse';
+import {
+  classifyAgentError,
+  describeAgentError,
+  agentErrorContextFrom,
+  type DescribeAgentErrorContext,
+} from '@/services/evaluation/agentFailure';
+import type { AgentFailure } from '@/types';
+
+/**
+ * The ONE `agentError` record for an agent-step failure. Composes the two
+ * classification axes so neither is lost:
+ *  - the failure FAMILY (`transport` / `unreachable` / `empty-response`,
+ *    services/evaluation/agentReachability.ts) — `kind` + `code` when one
+ *    applies; `finalizeAgentFailedReport` / the inspector panel / retry-
+ *    judgement branch on it;
+ *  - the unwrapped coarse CAUSE + connector context (`timeout` /
+ *    `connection` / `http_<status>` / `unknown`, elapsedMs / endpoint /
+ *    timeoutMs / httpStatus, services/evaluation/agentFailure.ts) — `kind`
+ *    when no family applies (timeouts, subprocess crashes, hook errors),
+ *    always mirrored on `cause` for transport failures.
+ * The connector's own `AgentRequestError` context is read one hop down too,
+ * since `invokeAgent` rethrows transport failures wrapped in an
+ * `AgentTransportError` with the connector's error on `cause`.
+ */
+export function describeAgentStepFailure(error: unknown, ctx: DescribeAgentErrorContext = {}): AgentFailure {
+  const family = describeAgentFailure(error);
+  const context = agentErrorContextFrom(error, agentErrorContextFrom((error as any)?.cause, ctx));
+  const detail = describeAgentError(error, context);
+  const cause = classifyAgentError(error).kind;
+  if (!family) return { stage: 'agent', ...detail, cause };
+  const out: AgentFailure = { stage: 'agent', kind: family.kind, code: family.code, message: family.message };
+  // `unreachable` / `empty-response` are exact records already: the host is
+  // in the message, the agent's wall-clock lives in performanceMetrics and
+  // no request-level cause applies. Only a transport failure gains the
+  // coarse cause + the connector's request context.
+  if (family.kind !== 'transport') return out;
+  out.cause = cause;
+  if (detail.elapsedMs !== undefined) out.elapsedMs = detail.elapsedMs;
+  if (detail.endpoint) out.endpoint = detail.endpoint;
+  if (detail.timeoutMs !== undefined) out.timeoutMs = detail.timeoutMs;
+  if (detail.httpStatus !== undefined) out.httpStatus = detail.httpStatus;
+  return out;
+}
 
 // Re-export for use by experimentRunner when calling judge after trace polling
-export { callBedrockJudge };
+export { callBedrockJudge, judgeErrorDetailFrom };
 import { openSearchClient } from '@/services/opensearch';
 import { debug } from '@/lib/debug';
 import { buildJudgeIdentityPatch, buildLlmJudgeResponseIdentity } from '@/lib/judgeIdentity';
@@ -778,7 +822,7 @@ export async function runEvaluationWithConnector(
         testCaseVersion: testCase.currentVersion ?? 1,
         status: 'completed',
         trajectory: fullTrajectory,
-        ...buildEvaluatorErrorPatch('judge_failed', judgeError),
+        ...buildEvaluatorErrorPatch('judge_failed', judgeError, { judgeError: judgeErrorDetailFrom(judgeError) }),
         improvementStrategies: [],
         runId: agentRunId || undefined,
         sessionId: agentSessionId || undefined,
@@ -854,7 +898,21 @@ export async function runEvaluationWithConnector(
       },
     };
   } catch (error) {
-    console.error('[Eval] Error:', error instanceof Error ? error.message : error);
+    // The AGENT step failed: the connector threw (undici `fetch failed` /
+    // HeadersTimeoutError, ECONNREFUSED, non-2xx, subprocess crash, or a
+    // hook exploded). Owner incident: this used to log the bare `fetch
+    // failed`, persist `llmJudgeReasoning: 'Evaluation failed: fetch
+    // failed'` with NO structured cause, and — on the trace-mode path — the
+    // caller then still ran the judge on the empty trajectory, producing a
+    // misleading "Evaluator could not run" 10-retry storm. Persist the REAL
+    // cause (unwrapped `error.cause`), classify it, and stamp
+    // `failureStage: 'agent'` so every consumer (UI card, badge,
+    // retry-judgement, trace poller) knows there is nothing to judge.
+    const agentError = describeAgentStepFailure(error, {
+      endpoint: agent.endpoint,
+      elapsedMs: Date.now() - evalStartTime,
+    });
+    console.error(`[Eval] Agent request failed (${agentError.kind}${agentError.cause && agentError.cause !== agentError.kind ? `/${agentError.cause}` : ''}) for agent "${agent.key}": ${agentError.message}`);
 
     // Enhanced debug logging for connection failures
     if (error instanceof Error) {
@@ -896,10 +954,13 @@ export async function runEvaluationWithConnector(
       agentSessionId = error.payload.metadata?.sessionId ?? undefined;
       agentDurationMs = error.payload.agentDurationMs;
     }
-    // Structured classification for the transport / unreachable /
-    // empty-response family (`finalizeAgentFailedReport` picks the label from
-    // it); other errors keep the plain shape.
-    const agentError = describeAgentFailure(error);
+    // Structured classification: the transport / unreachable / empty-response
+    // family (picks the label — `agent_empty_response` vs `agent_failed`)
+    // composed with the unwrapped cause + connector context; see
+    // describeAgentStepFailure. The patch makes the report FINAL here
+    // (`metricsStatus: 'error'`, `failureStage: 'agent'`, `error`), so the
+    // runners' `finalizeAgentFailedReport` is a no-op for it.
+    const patch = buildEvaluatorErrorPatch(evaluatorKindForAgentFailure(agentError), error, { agentError });
 
     return {
       id: reportId,
@@ -910,21 +971,26 @@ export async function runEvaluationWithConnector(
       modelId,
       testCaseId: testCase.id,
       testCaseVersion: testCase.currentVersion ?? 1,
+      // `status: 'failed'` = the execution itself failed (stats bucket it as
+      // failed-to-run, never as a verdict). The evaluator-error patch adds
+      // metricsStatus:'error' + failureStage:'agent' + the structured cause.
+      // `passFailStatus` stays unset/null: there is no verdict.
       status: 'failed',
       trajectory: fullTrajectory,
-      // The agent never completed ⇒ nothing was judged ⇒ no metrics.
-      metrics: {},
-      llmJudgeReasoning: `Evaluation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      ...patch,
       improvementStrategies: [],
       rawEvents,
       connectorProtocol: connectorType,
-      ...(agentError ? { agentError } : {}),
+      // Mark the report final: the trace poller / runner must NOT poll for
+      // traces or run the judge on an agent that produced nothing.
+      skipJudge: true,
       ...(agentRunId ? { runId: agentRunId } : {}),
       ...(agentSessionId ? { sessionId: agentSessionId } : {}),
-      ...(agentDurationMs !== undefined
-        ? { performanceMetrics: { durationMs: Date.now() - evalStartTime, agentDurationMs } }
-        : {}),
-    };
+      performanceMetrics: {
+        durationMs: Date.now() - evalStartTime,
+        agentDurationMs: agentDurationMs ?? agentError.elapsedMs,
+      },
+    } as EvaluationReport;
   }
 }
 
