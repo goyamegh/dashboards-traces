@@ -24,6 +24,7 @@ import chalk from 'chalk';
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'fs';
 import { join, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { getOwnPackageName } from '@/lib/ownPackageName.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -39,11 +40,7 @@ const HOOK_MATCHER = 'Bash';
  * file.
  */
 function resolveInvoke(): string {
-  let pkgName = '@opensearch-project/agent-health';
-  for (const p of [join(__dirname, '..', '..', 'package.json'), join(__dirname, '..', '..', '..', 'package.json')]) {
-    try { pkgName = JSON.parse(readFileSync(p, 'utf-8')).name || pkgName; break; } catch { /* keep default */ }
-  }
-  return `npx ${pkgName}`;
+  return `npx ${getOwnPackageName()}`;
 }
 
 /**

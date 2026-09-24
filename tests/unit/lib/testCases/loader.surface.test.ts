@@ -67,4 +67,27 @@ describe('loader — authoring surface unification (#232)', () => {
       expect((pkg as any)[name]).toBeDefined();
     }
   });
+
+  it('a .js file written against a fork-scoped publish gets the same SDK surface', async () => {
+    // A fork renames the package (e.g. `@myorg/agent-health`); eval files
+    // authored against that install must still hand back our test()
+    // registrar instead of falling through to Node's resolver.
+    const filePath = write('fork-scope.eval.js', `
+      const { test } = require('@myorg/agent-health');
+      test('fork-scoped', { prompt: 'hi' }, async () => {});
+    `);
+    const result = await loadTestCasesFromModule(filePath);
+    expect(result.testCases).toHaveLength(1);
+    expect(result.testCases[0].name).toBe('fork-scoped');
+  });
+
+  it('a bare `agent-health` require still resolves to the SDK surface', async () => {
+    const filePath = write('bare-name.eval.js', `
+      const sdk = require('agent-health');
+      sdk.test('bare-name', { prompt: 'hi' }, async () => {});
+    `);
+    const result = await loadTestCasesFromModule(filePath);
+    expect(result.testCases).toHaveLength(1);
+    expect(result.testCases[0].name).toBe('bare-name');
+  });
 });
