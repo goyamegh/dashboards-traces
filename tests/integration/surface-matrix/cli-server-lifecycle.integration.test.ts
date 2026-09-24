@@ -24,20 +24,31 @@
  *     "Benchmark name required when server is already running";
  *   - `--stop-server` against a server the CLI did NOT start leaves that
  *     server running (a customer's long-lived server is never killed);
- *   - `CI=1` + an already-running server: the CLI refuses to reuse it (exit 1,
- *     "In CI mode (reuseExistingServer=false)").
+ *   - `CI=1` + an already-running server (`reuseExistingServer` defaults to
+ *     false under CI):
+ *       - the port was named EXPLICITLY (`AH_PORT` / `server.port`) and a
+ *         healthy, version-matching server answers on it ⇒ the CLI reuses it
+ *         (exit 0, prints "Using existing server on :PORT (explicit port)") —
+ *         the canonical CI job that started its own server first;
+ *       - the port is IMPLICIT (no `AH_PORT`, no `server.port` → defaulted
+ *         4001) ⇒ refusal (exit 1, "Server already running on port … In CI
+ *         mode (reuseExistingServer=false)", hinting at `AH_PORT`);
+ *       - the server's version differs from the CLI's ⇒ refusal (exit 1,
+ *         "Server version mismatch"), and that server is never killed.
  *
  * On the reusing-an-existing-server cases the shared backend (AH_PORT) is the
- * server; those never write anything.
+ * server; those never write anything except the runs the reuse case records
+ * (tracked and deleted).
  */
 
 import * as fs from 'fs';
+import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import { startTraceparentRestAgent, type TraceparentRestAgent } from '../../helpers/traceparentRestAgent';
 import { createTestDataTracker, uniqueTestName } from '../../helpers/testDataTracker';
 import {
-  BACKEND_PORT, BASE_URL, backendReady, caseInput, createBenchmark, createTestCase, isPortServing,
+  BACKEND_PORT, BASE_URL, REPO_ROOT, backendReady, caseInput, createBenchmark, createTestCase, isPortServing,
   listTerminalRunsForBenchmark, reportIdsOf, reserveSparePort, runCli, serveHeadless, stopServerOnPort,
 } from '../../helpers/surfaceMatrix';
 
@@ -46,6 +57,8 @@ const CASES = 2;
 // Chosen at runtime (a free OS port) so parallel workers never collide; see reserveSparePort.
 let SPARE_PORT = 0;
 let SPARE_URL = '';
+/** The port the CLI falls back to when neither `AH_PORT` nor `server.port` names one. */
+const IMPLICIT_DEFAULT_PORT = '4001';
 
 async function spareApi<T = any>(method: string, pathname: string, body?: unknown): Promise<T> {
   const res = await fetch(`${SPARE_URL}${pathname}`, {
@@ -190,13 +203,71 @@ describe('surface-matrix · CLI · serve / quick mode / --stop-server / CI=1', (
       expect(await isPortServing(Number(BACKEND_PORT))).toBe(true);
     }, TEST_TIMEOUT);
 
-    it('`CI=1` refuses to reuse an already-running server (exit 1, explicit message)', async () => {
+    it('`CI=1` + explicit `AH_PORT`: reuses the healthy, version-matching server (exit 0, "Using existing server on :PORT (explicit port)")', async () => {
       if (!ready) return;
-      const result = await runCli(['benchmark', '-n', benchmarkName, '-a', 'demo'], { env: { CI: 'true' }, timeoutMs: 60_000 });
+      // cliEnv always names the backend port explicitly (AH_PORT) — the shape of
+      // a CI job that started its own server and then drives the CLI against it.
+      const result = await runCli(['benchmark', '-n', benchmarkName, '-a', 'demo'], { env: { CI: 'true' } });
+      for (const run of await listTerminalRunsForBenchmark(benchmarkId)) {
+        tracker.evaluationRun(run.id);
+        for (const id of reportIdsOf(run)) tracker.run(id);
+      }
+      expect(result.code).toBe(0);
+      expect(result.out).toContain(`Connected to existing server on port ${BACKEND_PORT}`);
+      expect(result.out).toContain(`Using existing server on :${BACKEND_PORT} (explicit port)`);
+      expect(result.out).not.toContain('In CI mode (reuseExistingServer=false)');
+      expect(result.out).toContain('Benchmark Summary');
+      expect(await isPortServing(Number(BACKEND_PORT))).toBe(true);
+    }, TEST_TIMEOUT);
+
+    it('`CI=1` + implicit port (no `AH_PORT`): refuses the already-running server (exit 1, hints at `AH_PORT`)', async () => {
+      if (!ready) return;
+      // The implicit port IS 4001, so this can only be exercised when the backend
+      // under test listens there (CI does; a local run on another port would dial
+      // whatever occupies 4001 on the box, which is not ours to touch).
+      if (BACKEND_PORT !== IMPLICIT_DEFAULT_PORT) {
+        console.warn(`[surface-matrix] backend is on :${BACKEND_PORT}, not the implicit default :${IMPLICIT_DEFAULT_PORT}; skipping the implicit-port refusal case`);
+        return;
+      }
+      const result = await runCli(['benchmark', '-n', benchmarkName, '-a', 'demo'], {
+        env: { CI: 'true', AH_PORT: undefined, AGENT_HEALTH_PORT: undefined },
+        timeoutMs: 60_000,
+      });
       expect(result.code).toBe(1);
       expect(result.out).toContain(`Server already running on port ${BACKEND_PORT}`);
       expect(result.out).toContain('In CI mode (reuseExistingServer=false)');
+      expect(result.out).toContain(`AH_PORT=${BACKEND_PORT}`);
+      expect(result.out).not.toContain('Using existing server on');
       expect(await isPortServing(Number(BACKEND_PORT))).toBe(true);
+    }, TEST_TIMEOUT);
+
+    it('`CI=1` + version mismatch: refuses (exit 1, "Server version mismatch") and never kills the server, even on an explicit port', async () => {
+      // A stand-in "agent-health server" that answers /health like ours (same cwd,
+      // so ownership passes) but with a version the CLI can never match.
+      const fake = http.createServer((req, res) => {
+        if (req.url === '/health') {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(JSON.stringify({ status: 'ok', service: 'agent-health', version: '0.0.0-surface-matrix', instance: { pid: process.pid, cwd: REPO_ROOT, port: fakePort } }));
+          return;
+        }
+        res.statusCode = 404;
+        res.end();
+      });
+      const fakePort = await new Promise<number>((resolve, reject) => {
+        fake.once('error', reject);
+        fake.listen(0, '127.0.0.1', () => resolve((fake.address() as { port: number }).port));
+      });
+      try {
+        const result = await runCli(['benchmark', '-n', 'irrelevant', '-a', 'demo'], { env: { CI: 'true', AH_PORT: String(fakePort) }, timeoutMs: 60_000 });
+        expect(result.code).toBe(1);
+        expect(result.out).toContain('Version mismatch detected');
+        expect(result.out).toContain('Server version mismatch: server=0.0.0-surface-matrix');
+        expect(result.out).not.toContain('Using existing server on');
+        // Never killed: the stand-in still answers.
+        expect(await isPortServing(fakePort)).toBe(true);
+      } finally {
+        await new Promise<void>((resolve) => fake.close(() => resolve()));
+      }
     }, TEST_TIMEOUT);
   });
 });

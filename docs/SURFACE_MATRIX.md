@@ -57,7 +57,9 @@ run (`Verify the customer-surface matrix ran` steps in
 | `serve --headless -p <port>` | `/health` → `{ status:'ok', version, instance:{ pid, cwd, port } }` · storage/agents/models APIs work out of the box (file storage, `demo`, `demo-model`) · stops on SIGTERM | `cli-server-lifecycle` |
 | `benchmark` with no `-n`/`-f` while a server runs | exit 1 · `Benchmark name required when server is already running` | `cli-server-lifecycle` |
 | `--stop-server` on a server the CLI did not start | server keeps running | `cli-server-lifecycle` |
-| `CI=1` with a running server | exit 1 · `Server already running on port … In CI mode (reuseExistingServer=false)` | `cli-server-lifecycle` |
+| `CI=1` + running server on an **explicit** port (`AH_PORT` / `server.port`), versions match | reused · exit 0 · `Using existing server on :PORT (explicit port)` (the CI job that started its own server first) | `cli-server-lifecycle` |
+| `CI=1` + running server on the **implicit** port (no `AH_PORT`, no `server.port` → 4001) | exit 1 · `Server already running on port … In CI mode (reuseExistingServer=false)` · hints `AH_PORT=<port>` (exercised when the backend under test is on 4001, as in CI) | `cli-server-lifecycle` |
+| `CI=1` + running server whose version differs | exit 1 · `Server version mismatch: server=… CLI=…` · the server is never killed | `cli-server-lifecycle` |
 | `run -t <id> -a demo` | exit 0 · `Test Case: <name> (<id>)` · `PASSED`/`FAILED` (never ERROR / NO VERDICT / PENDING) · table Agent/Status/Accuracy/Steps/Report ID · report persisted, `status: completed`, verdict, trajectory | `cli-run-single-case` |
 | `run -t <name> -o json` | resolves by name · `[{ agent, report }]` | `cli-run-single-case` |
 | `run -t <unknown>` / `run -a <unknown>` | exit 1 · `Test case not found` / `Agent not found` | `cli-run-single-case` |
