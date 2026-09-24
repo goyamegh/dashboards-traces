@@ -429,10 +429,18 @@ reports a model / token usage, else `AGENT` orchestration); then HTTP SERVER
 spans (the agent's inbound request boundary → `AGENT`, the outermost one
 flagged `isEntrypoint`). `OTHER` is the explicit "we do not know" bucket. Retrieval spans show `db.query.text` as input and
 `db.response.returned_rows` (+ any `*.hit_ids` / `*.result_ids` /
-`retrieval.ids` attribute, rendered as an id list) as output. Adding a category
+`retrieval.ids` attribute, rendered as an id list) as output. Root / agent
+spans may carry a **retrieved vs returned** id pair: `*.retrieved.*` keys render
+as **Retrieved (seen)** and `*.results*` / `*.returned.*` / `*.recommended.*`
+keys as **Returned (recommended)**, with the overlap count when both exist —
+canonical names `retrieval.retrieved.ids` / `retrieval.results.ids`
+([services/traces/retrievalSpan.ts](./services/traces/retrievalSpan.ts)). Adding a category
 means updating every exhaustive `Record<SpanCategory, …>` map (tsc will point
 at them). Full rule order + category table:
 [docs/ARCHITECTURE.md → Trace Span Categorization](docs/ARCHITECTURE.md#trace-span-categorization).
+Trace rows everywhere are sorted by `startTime` (ties by `spanId`,
+[services/traces/spanTime.ts](./services/traces/spanTime.ts)) and show the
+absolute start time + offset from the root.
 
 ### Additional Resources
 

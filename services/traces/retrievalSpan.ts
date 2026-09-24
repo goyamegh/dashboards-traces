@@ -26,6 +26,31 @@
  * as well. Anything else is shown verbatim rather than guessed at. Nothing
  * here is specific to one agent.
  *
+ * ## Retrieved vs returned (labelled pair)
+ *
+ * A root / agent span often carries BOTH the union of everything the agent
+ * looked at and the subset it actually handed back; readers mistake the
+ * former for the answer. Two key families are therefore labelled:
+ *
+ * - `*.retrieved.*` — a `retrieved` key segment (`retrieval.retrieved.ids`,
+ *   `myagent.retrieved.doc_ids`), or a segment ending in `_retrieved` /
+ *   starting `retrieved_…ids` (`docs_retrieved`, `retrieved_ids`) →
+ *   **Retrieved (seen)** — candidates the agent pulled in from any source.
+ * - `*.results*` / `*.returned.*` / `*.recommended.*` — a key segment that is
+ *   exactly `results`, `returned` or `recommended`, or one of those followed
+ *   by `_…ids` (`retrieval.results.ids`, `myagent.results`, `x.returned_ids`)
+ *   → **Returned (recommended)** — what the agent surfaced to the caller.
+ *   Siblings such as `x.results_count` / `x.results.source` are NOT id lists
+ *   and are left alone.
+ *
+ * Only list-shaped values count for the pair (a scalar or an unparseable blob
+ * under one of these keys stays in the plain attribute table). Canonical
+ * names: `retrieval.retrieved.ids` and `retrieval.results.ids`. When a span
+ * carries both, the UI reports the overlap ("12 of 20 retrieved were
+ * returned", over distinct ids). `*.hit_ids` / `*.result_ids` /
+ * `retrieval.ids` stay neutral: on a search span they are simply the hits of
+ * that one call.
+ *
  * @see https://opentelemetry.io/docs/specs/semconv/db/db-spans/
  */
 
@@ -42,6 +67,13 @@ import {
   ATTR_DB_RESPONSE_STATUS_CODE,
 } from '@opentelemetry/semantic-conventions/incubating';
 
+/**
+ * Which side of the retrieved/returned pair an id-list attribute belongs to.
+ * `ids` is the neutral #527 convention (`*.hit_ids` / `*.result_ids` /
+ * `retrieval.ids`) — the hits of one search call, no claim about the answer.
+ */
+export type RetrievalIdListRole = 'retrieved' | 'returned' | 'ids';
+
 export interface RetrievalIdList {
   /** The attribute the ids were read from (e.g. `myagent.search.hit_ids`). */
   attribute: string;
@@ -49,6 +81,25 @@ export interface RetrievalIdList {
   ids: string[];
   /** The attribute value verbatim when it was NOT parseable as a list. */
   raw?: string;
+  /** Role derived from the key (see module doc). */
+  role: RetrievalIdListRole;
+}
+
+export interface RetrievedVsReturned {
+  /** Lists whose key marks them as candidates the agent saw. */
+  retrieved: RetrievalIdList[];
+  /** Lists whose key marks them as what the agent returned / recommended. */
+  returned: RetrievalIdList[];
+  /** Distinct ids across all `retrieved` lists. */
+  retrievedIds: string[];
+  /** Distinct ids across all `returned` lists. */
+  returnedIds: string[];
+  /**
+   * Overlap when BOTH sides parsed to at least one id: how many distinct
+   * retrieved ids also appear in the returned set, and how many returned ids
+   * were never retrieved (a hint the "returned" list came from elsewhere).
+   */
+  overlap: { returnedFromRetrieved: number; returnedNotRetrieved: number } | null;
 }
 
 export interface RetrievalIO {
@@ -77,9 +128,21 @@ export interface RetrievalIO {
 /** Attribute keys that carry retrieved ids (see module doc). */
 const ID_LIST_KEY_RE = /(^|\.)(hit_ids|result_ids)$/;
 const ID_LIST_EXACT_KEY = 'retrieval.ids';
+/** `retrieved` as a segment (or `…_retrieved`, `retrieved_…ids`): `x.retrieved.ids`, `docs_retrieved`, `retrieved_ids`. */
+const RETRIEVED_KEY_RE = /(^|[._])retrieved(_[a-z0-9_]*ids)?(\.|$)/;
+/** `results` / `returned` / `recommended` as a segment (or followed by `_…ids`): `x.results`, `x.results.ids`, `x.returned_ids`. */
+const RETURNED_KEY_RE = /(^|\.)(results|returned|recommended)(_[a-z0-9_]*ids)?(\.|$)/;
+
+/** `retrieved` for the seen-candidates family, `returned` for the answer family, else `null`. */
+export function classifyRetrievalIdListKey(key: string): RetrievalIdListRole | null {
+  if (RETRIEVED_KEY_RE.test(key)) return 'retrieved';
+  if (RETURNED_KEY_RE.test(key)) return 'returned';
+  if (key === ID_LIST_EXACT_KEY || ID_LIST_KEY_RE.test(key)) return 'ids';
+  return null;
+}
 
 export function isRetrievalIdListKey(key: string): boolean {
-  return key === ID_LIST_EXACT_KEY || ID_LIST_KEY_RE.test(key);
+  return classifyRetrievalIdListKey(key) !== null;
 }
 
 function toStr(v: unknown): string | null {
@@ -146,17 +209,61 @@ export function extractRetrievalIdLists(span: Span): RetrievalIdList[] {
   const attrs = span.attributes || {};
   const lists: RetrievalIdList[] = [];
   for (const key of Object.keys(attrs)) {
-    if (!isRetrievalIdListKey(key)) continue;
+    const role = classifyRetrievalIdListKey(key);
+    if (!role) continue;
     const value = attrs[key];
     if (value === null || value === undefined || value === '') continue;
     const ids = parseIdList(value);
     if (ids) {
-      if (ids.length > 0) lists.push({ attribute: key, ids });
-    } else {
-      lists.push({ attribute: key, ids: [], raw: typeof value === 'string' ? value : JSON.stringify(value) });
+      if (ids.length > 0) lists.push({ attribute: key, ids, role });
+      continue;
+    }
+    // Not list-shaped. The neutral `*.hit_ids` keys PROMISE a list, so their
+    // value is kept verbatim rather than dropped (#527 behaviour). The
+    // retrieved / returned families are matched by looser key patterns, so a
+    // non-list value there (`x.results.source`, a list of result objects) is
+    // simply not part of the pair — it stays in the plain attribute table.
+    if (role === 'ids') {
+      lists.push({ attribute: key, ids: [], raw: typeof value === 'string' ? value : JSON.stringify(value), role });
     }
   }
   return lists;
+}
+
+function distinct(lists: RetrievalIdList[]): string[] {
+  const seen = new Set<string>();
+  for (const l of lists) for (const id of l.ids) seen.add(id);
+  return [...seen];
+}
+
+/**
+ * Split a span's id lists into the labelled retrieved/returned pair and
+ * compute the overlap. Works on any span (root, agent, tool, retrieval); both
+ * sides are empty when the span uses neither key family.
+ */
+export function extractRetrievedVsReturned(span: Span): RetrievedVsReturned {
+  const lists = extractRetrievalIdLists(span);
+  const retrieved = lists.filter(l => l.role === 'retrieved');
+  const returned = lists.filter(l => l.role === 'returned');
+  const retrievedIds = distinct(retrieved);
+  const returnedIds = distinct(returned);
+  let overlap: RetrievedVsReturned['overlap'] = null;
+  if (retrievedIds.length > 0 && returnedIds.length > 0) {
+    const seen = new Set(retrievedIds);
+    const returnedFromRetrieved = returnedIds.filter(id => seen.has(id)).length;
+    overlap = { returnedFromRetrieved, returnedNotRetrieved: returnedIds.length - returnedFromRetrieved };
+  }
+  return { retrieved, returned, retrievedIds, returnedIds, overlap };
+}
+
+/** `"12 of 20 retrieved were returned"` (+ a note when some returned ids were never retrieved). */
+export function describeOverlap(rr: RetrievedVsReturned): string | null {
+  if (!rr.overlap) return null;
+  const { returnedFromRetrieved, returnedNotRetrieved } = rr.overlap;
+  const base = `${returnedFromRetrieved} of ${rr.retrievedIds.length} retrieved were returned`;
+  return returnedNotRetrieved > 0
+    ? `${base}; ${returnedNotRetrieved} returned id${returnedNotRetrieved === 1 ? ' was' : 's were'} not in the retrieved set`
+    : base;
 }
 
 /**
@@ -199,7 +306,8 @@ export function extractRetrievalIO(span: Span): RetrievalIO {
       outputLines.push(`${list.attribute}: ${list.raw}`);
       continue;
     }
-    outputLines.push(`${list.attribute} (${list.ids.length}):`);
+    const label = list.role === 'retrieved' ? 'Retrieved (seen) ' : list.role === 'returned' ? 'Returned (recommended) ' : '';
+    outputLines.push(`${label}${list.attribute} (${list.ids.length}):`);
     outputLines.push(...list.ids.map(id => `  - ${id}`));
   }
 
