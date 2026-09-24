@@ -359,11 +359,16 @@ export const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
  * `NODE_OPTIONS` shims break undici inside the child's `/health` probe (see
  * tests/integration/cli/benchmarkCodeSdk.integration.test.ts) and new runner
  * variables keep appearing. `CI` is deliberately NOT carried: a customer's
- * shell does not set it, and under `CI=1` the CLI refuses to reuse an
- * already-running server — that refusal is pinned on its own in
- * cli-server-lifecycle (`env: { CI: 'true' }`).
+ * shell does not set it, and `CI=1` changes how the CLI treats an
+ * already-running server (`reuseExistingServer: false` — reused only when the
+ * port was named explicitly, refused otherwise). That contract is pinned on
+ * its own in cli-server-lifecycle (`env: { CI: 'true' }`).
+ *
+ * An override whose value is `undefined` UNSETS the variable in the child —
+ * `{ AH_PORT: undefined }` is how the lifecycle spec spawns a CLI with an
+ * implicit (defaulted) port.
  */
-export function cliEnv(overrides: Record<string, string> = {}): Record<string, string> {
+export function cliEnv(overrides: Record<string, string | undefined> = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v !== 'string') continue;
@@ -375,7 +380,7 @@ export function cliEnv(overrides: Record<string, string> = {}): Record<string, s
       env[k] = v;
     }
   }
-  return {
+  const merged: Record<string, string> = {
     ...env,
     AH_PORT: BACKEND_PORT,
     // `bin/cli.js` runs the TypeScript source through tsx when the checkout is
@@ -388,13 +393,18 @@ export function cliEnv(overrides: Record<string, string> = {}): Record<string, s
     NO_COLOR: '1',
     AH_SUPPRESS_EXPERIMENTAL: '1',
     AH_QUIET_DEPRECATIONS: '1',
-    ...overrides,
   };
+  for (const [k, v] of Object.entries(overrides)) {
+    if (v === undefined) delete merged[k];
+    else merged[k] = v;
+  }
+  return merged;
 }
 
 export interface RunCliOptions {
   cwd?: string;
-  env?: Record<string, string>;
+  /** Extra child env; a value of `undefined` unsets that variable (see cliEnv). */
+  env?: Record<string, string | undefined>;
   timeoutMs?: number;
 }
 
