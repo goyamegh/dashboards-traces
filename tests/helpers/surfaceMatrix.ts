@@ -188,10 +188,15 @@ export async function reserveSparePort(): Promise<number> {
   });
 }
 
-/** Which storage backend the server under test runs on (customer-visible via `/api/storage/health`). */
+/**
+ * Which storage backend the server under test runs on — read from
+ * `/api/storage/config/status` (`runtime.storage.backend`), which names it on
+ * both backends; `/api/storage/health` only says `backend: 'file'` on file
+ * storage and returns the cluster health otherwise.
+ */
 export async function storageBackend(): Promise<'file' | 'opensearch' | 'unknown'> {
-  const res = await httpRequest('GET', '/api/storage/health');
-  const backend = res.body?.backend;
+  const res = await httpRequest('GET', '/api/storage/config/status');
+  const backend = res.body?.runtime?.storage?.backend;
   return backend === 'file' || backend === 'opensearch' ? backend : 'unknown';
 }
 

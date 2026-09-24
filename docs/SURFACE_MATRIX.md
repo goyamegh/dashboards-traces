@@ -97,7 +97,7 @@ stdout.
 | legacy `POST /api/storage/benchmarks/:id/execute` | `LEGACY_EXECUTE_EXPECTED = 200` today (route runs + streams; file backend answers 400 "OpenSearch not configured" before it would start); sample ids refused · **the removal PR flips the constant to 410 and changes nothing else** | `api-legacy-execute` |
 | `GET /api/storage/runs/by-test-case/:id` · `POST /api/storage/runs/search {testCaseId}` · `GET /api/storage/runs/:id` | reports listed under their case · full report (`trajectory`, verdict, `metricsStatus`, `runId`) · 404 unknown | `api-reads` |
 | `POST /api/traces` · `GET /api/traces/health` | the agent's span tree (`invoke_agent`, `chat`, `execute_tool`) for a report's `traceId`/`runIds`, all in one trace · `backend` named · 400 without correlator/time range · health `{ status, backend }` | `api-reads` |
-| `GET /health` · `GET /api/storage/health` · `GET /api/storage/config/status` | `{ status:'ok', version, instance:{pid,cwd,port} }` · `{ status:'ok', backend }` · `{ storage, observability, runtime }` | `api-reads` |
+| `GET /health` · `GET /api/storage/health` · `GET /api/storage/config/status` | `{ status:'ok', version, instance:{pid,cwd,port} }` · `{ status:'ok', backend:'file' }` / `{ status:'ok', cluster }` · `{ storage, observability, runtime.storage.backend }` | `api-reads` |
 | `GET /api/agents[?filter=custom]` · `GET /api/models` · `POST/DELETE /api/agents/custom` | built-ins (`demo`, `builtIn: true`) + custom agents · `demo-model` listed · 400 without name/endpoint/bad connectorType · 201 create · 204 delete · 404 after | `api-reads` |
 
 ## UI — `tests/e2e/surface-matrix/ui-*.spec.ts` (Playwright, real runs, no mocked routes)

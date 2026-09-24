@@ -17,7 +17,8 @@
  *     correlator and no time range → 400;
  *   - `GET /api/traces/health` → `{ status, backend }`;
  *   - `GET /health` → `{ status: 'ok', version, instance: { pid, cwd, port } }`;
- *   - `GET /api/storage/health` → `{ status: 'ok', backend }`;
+ *   - `GET /api/storage/health` → `{ status: 'ok', backend: 'file' }` on file
+ *     storage, `{ status: 'ok', cluster: { name, status } }` on OpenSearch;
  *   - `GET /api/storage/config/status` → `{ storage, observability, runtime }`;
  *   - `GET /api/agents` lists built-ins (`demo`) AND UI-registered custom
  *     agents with `builtIn` flags; `GET /api/models` lists `demo-model`;
@@ -117,9 +118,11 @@ describe('surface-matrix · API · reads: reports by case · traces · health/co
     expect(typeof health.instance.pid).toBe('number');
     expect(typeof health.instance.cwd).toBe('string');
 
+    // File storage says so (`backend: 'file'`); OpenSearch storage returns the
+    // cluster health (`cluster: { name, status }`).
     const storage = await api<any>('GET', '/api/storage/health');
     expect(storage.status).toBe('ok');
-    expect(['file', 'opensearch']).toContain(storage.backend);
+    expect(storage.backend === 'file' || typeof storage.cluster?.name === 'string').toBe(true);
 
     const status = await api<any>('GET', '/api/storage/config/status');
     expect(status).toHaveProperty('storage.configured');
