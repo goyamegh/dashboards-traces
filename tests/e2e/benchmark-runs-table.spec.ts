@@ -141,9 +141,10 @@ test.describe('Benchmark Runs tab — table + chart + click-to-filter pills', ()
 
     // Column headers exactly as sketched (+ Run as the first column).
     const headers = await page.locator('[data-testid="benchmark-runs-table"] thead th').allInnerTexts();
-    // Telemetry columns (Tokens · Cost · LLM calls · Time/case) sit between
-    // Pass % and Judge — see benchmark-runs-telemetry.spec.ts for their content.
-    expect(headers.map(h => h.trim()).filter(Boolean)).toEqual(['Run', 'Agent', 'Model', 'Size', 'Pass %', 'Tokens', 'Cost', 'LLM calls', 'Time/case', 'Judge', 'J. Model', 'Date']);
+    // Conc. (concurrency) sits between Size and Pass %; the telemetry columns
+    // (Tokens · Cost · LLM calls · Time/case) sit between Pass % and Judge —
+    // see benchmark-runs-telemetry.spec.ts for their content.
+    expect(headers.map(h => h.trim()).filter(Boolean)).toEqual(['Run', 'Agent', 'Model', 'Size', 'Conc.', 'Pass %', 'Tokens', 'Cost', 'LLM calls', 'Time/case', 'Judge', 'J. Model', 'Date']);
 
     // Chart sits ABOVE the table with one legend entry per agent.
     const chart = page.getByTestId('benchmark-passrate-chart');
