@@ -200,6 +200,9 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     judgementRetryCount: (stored as any).judgementRetryCount,
     spans: storedAny.spans as any[] | undefined,
     connectorProtocol: storedAny.connectorProtocol as ConnectorProtocol | undefined,
+    // Frozen scoring provenance — the compare page's "Avg score" reads ONLY
+    // this + `metrics`; absent on pre-snapshot reports (legacy scoring).
+    scoringSnapshot: stored.scoringSnapshot,
   };
 }
 
@@ -257,6 +260,7 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
   if (report.connectorProtocol !== undefined) base.connectorProtocol = report.connectorProtocol;
   // SDK matcher verdicts: persist alongside the report
   if (report.matcherResults !== undefined) (base as any).matcherResults = report.matcherResults;
+  if (report.scoringSnapshot !== undefined) base.scoringSnapshot = report.scoringSnapshot;
 
   return base;
 }
@@ -386,6 +390,8 @@ class AsyncRunStorage {
     // `metrics` added for RunInsightsPane's "Avg Score" detail (run-report-insights):
     // it's a small dynamic object of a handful of numeric fields, not the
     // trajectory/messages bloat #429 fixed - safe to include in the summary.
+    // `scoringSnapshot` (small, bounded object) rides along with `metrics` so
+    // summary-only readers can derive the snapshot score without the full doc.
     // `runId` / `connectorProtocol` / `performanceMetrics` added for the
     // benchmark Runs table's telemetry columns (useRunTelemetry): the batch
     // metrics request is keyed by the connector's native runId (falling back
@@ -395,6 +401,7 @@ class AsyncRunStorage {
     const fields = [
       'status', 'passFailStatus', 'metricsStatus', 'traceId', 'runId', 'sessionId',
       'judgeModelId', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations', 'metrics',
+      'scoringSnapshot',
       'connectorProtocol', 'performanceMetrics',
     ];
     // Chunk to keep the URL well under practical limits for large benchmarks.
@@ -475,6 +482,7 @@ class AsyncRunStorage {
     if (updates.lastTraceFetchAt !== undefined) storageUpdates.lastTraceFetchAt = updates.lastTraceFetchAt;
     if (updates.traceError !== undefined) storageUpdates.traceError = updates.traceError;
     if ((updates as any).judgeMode !== undefined) storageUpdates.judgeMode = (updates as any).judgeMode;
+    if (updates.scoringSnapshot !== undefined) storageUpdates.scoringSnapshot = updates.scoringSnapshot;
     if (updates.spans !== undefined) storageUpdates.spans = updates.spans;
 
     const updated = await opensearchRuns.partialUpdate(reportId, storageUpdates);
