@@ -128,6 +128,7 @@ agent-health benchmark [options]
 - **Named mode** (`-n <name>`): Runs a specific existing benchmark
 - **File mode** (`-f <path>`): Imports test cases from a JSON file **or runs a code SDK file** (`.eval.js` / `.eval.ts` — see [SDK.md](./SDK.md)), creates a benchmark, and runs it. `.eval.ts` is executed as synthetic CJS (like `.eval.js`) and works from anywhere on disk; only `.eval.mjs` resolves `@opensearch-project/agent-health` through normal Node module resolution, so an `.eval.mjs` file needs the package reachable as a real dependency from its location (see the note in [SDK.md](./SDK.md#migrating-v1--v2))
 
+<a id="benchmark-execution-path"></a>
 **Execution path (all modes):** every mode above executes through the
 evaluation-runs API (`POST /api/storage/evaluation-runs`, the same runner the
 UI uses). Named mode and JSON file mode used to go through the legacy
@@ -137,12 +138,29 @@ a child of the run's `test_suite_run` span), so agents that honour the
 propagated `traceparent` — any `rest` connector agent with a standards-compliant
 OTel SDK — put *all* cases' spans into a single trace, and `useTraces` runs came
 back `0/N passed (N errored — evaluator could not run)`. The CLI prints a
-one-line notice when it runs a mode that used to take the legacy route. The
-`/execute` route itself is **deprecated** but still served for API
-compatibility; it now also starts one trace per test case (the suite
-relationship is kept as a span **link**), stamps each report with the real
-W3C trace id of its eval span, and keeps connector/hook-provided run ids on
-`runId` (never on `traceId`).
+one-line notice when it runs a mode that used to take the legacy route.
+
+The legacy runner has been **removed**. `POST /api/storage/benchmarks/:id/execute`
+stays registered but answers `410 Gone` with
+`{ error, code: 'LEGACY_EXECUTE_REMOVED', replacement: 'POST /api/storage/evaluation-runs', docs }`
+plus `Deprecation` / `Sunset` headers, so an old API client gets an actionable
+error instead of a 404. Migrating a direct API caller:
+
+```bash
+# before (removed)
+curl -X POST :4001/api/storage/benchmarks/<benchmarkId>/execute \
+  -d '{ "name": "nightly", "agentKey": "my-agent" }'
+# after — same benchmark, same agent, one trace per test case
+curl -X POST :4001/api/storage/evaluation-runs \
+  -d '{ "name": "nightly", "sources": [{ "type": "benchmark", "benchmarkId": "<benchmarkId>" }],
+        "benchmarkId": "<benchmarkId>", "agentKey": "my-agent" }'
+```
+
+The response is the same `event:`-prefixed SSE stream the UI consumes
+(`started` → `progress` / `testCaseComplete` → `completed`), and the finished
+run is linked into `benchmark.runs[]` exactly as before, so every reader of
+historical runs (Runs tab, inspector, comparison, delete) keeps working for both
+legacy `run-<ts>-<rand>` runs and new `eval-run-…` runs.
 
 `-a <key>` accepts any agent the **server** knows — the agents in
 `agent-health.config.ts` *and* custom endpoints added in the Settings UI — not

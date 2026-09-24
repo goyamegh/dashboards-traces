@@ -71,10 +71,10 @@ import { getCustomAgents } from '@/server/services/customAgentStore';
 import { debug } from '@/lib/debug';
 import { tracePollingManager } from './traces/tracePoller';
 import { fetchSpansForRun, type TraceWindowAgent } from './traces/fetchSpansForRun';
-import { CancellationToken, createCancellationToken } from './benchmarkRunner';
+import { CancellationToken, createCancellationToken } from './evaluation/cancellation';
 
-export type { CancellationToken } from './benchmarkRunner';
-export { createCancellationToken } from './benchmarkRunner';
+export type { CancellationToken } from './evaluation/cancellation';
+export { createCancellationToken } from './evaluation/cancellation';
 
 export interface EvaluationRunProgress {
   runId: string;
@@ -461,7 +461,7 @@ export async function executeEvaluationRun(
                 ...(options?.env ? { env: options.env } : {}),
               });
               // Wrap in the eval span's context so connectors propagate W3C
-              // trace context to the agent (Strategy A). Mirrors benchmarkRunner.
+              // trace context to the agent (Strategy A). Mirrors runSingleUseCase.
               const inv = caseSpanContext
                 ? await context.with(caseSpanContext, doInvoke)
                 : await doInvoke();
@@ -487,7 +487,7 @@ export async function executeEvaluationRun(
                 agentDurationMs: inv.agentDurationMs,
               };
               (report as any).connectorProtocol = inv.connector.type;
-              // Strategy-C correlation (see benchmarkRunner.ts): pass the
+              // Strategy-C correlation (see services/evaluation/runSingleUseCase.ts): pass the
               // connector's service.name + the run window so agents that emit
               // OTel under their own traceId (Claude Code / subprocess agents)
               // get their spans correlated to the judge + `traces` fixture.
@@ -688,7 +688,7 @@ export async function executeEvaluationRun(
             // Bedrock judge (or, for useTraces agents, return a pending report
             // that the trace-polling block below completes). Wrapped in the
             // eval span's context so connectors propagate trace context
-            // (Strategy A), matching benchmarkRunner and the SDK path above.
+            // (Strategy A), matching runSingleUseCase and the SDK path above.
             const runEval = () => runEvaluationWithConnector(
               agentConfig,
               bedrockModelId,
@@ -724,7 +724,7 @@ export async function executeEvaluationRun(
             // never clears a key the report doesn't carry), and the runner
             // then trace-polls a NON-traced agent for the full timeout
             // (10 min for a mock/demo run) before erroring the report.
-            // benchmarkRunner clears this explicitly; mirror it here.
+            // Stamp an explicit value here so the merge cannot inherit the placeholder.
             if ((report as any).metricsStatus === undefined) {
               (report as any).metricsStatus = agentConfig.useTraces ? 'pending' : 'completed';
             }
