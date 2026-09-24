@@ -7,7 +7,8 @@
  * Benchmark detail — Evals 3
  *
  * Cases is the default master-detail review surface; Runs is a compact table
- * (Run · Agent · Model · Size · Pass % · Judge · J. Model · Date) with a
+ * (Run · Agent · Model · Size · Pass % · Tokens · Cost · LLM calls · Time/case
+ * · Judge · J. Model · Date) with a
  * pass-rate-over-time chart (one line per agent) above it. Clicking any
  * categorical cell or chart legend entry filters the table; active filters
  * render as removable pills. Per-run case-verdict heat strips are available
@@ -40,6 +41,7 @@ import {
 import { debug } from '@/lib/debug';
 import { executeBenchmarkRun, listEvaluationRuns, deleteEvaluationRun, cancelEvaluationRun } from '@/services/client';
 import { useBenchmarkCancellation } from '@/hooks/useBenchmarkCancellation';
+import { useRunTelemetry } from '@/hooks/useRunTelemetry';
 import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedEvent, Evaluator, EvaluationRun } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatDate, getModelName } from '@/lib/utils';
@@ -385,6 +387,18 @@ export const BenchmarkRunsPage2: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reportIdsKey]);
 
+  // Telemetry columns (Tokens · Cost · LLM calls · Time/case): ONE batch
+  // metrics request per page visit for every run on the tab, keyed by the
+  // summaries above (runId / sessionId / traceId / connectorProtocol /
+  // performanceMetrics ride along as A/B/C/D correlation hints). Cached; a
+  // poll tick that finishes no run issues no request.
+  const {
+    byRunId: telemetryByRunId,
+    loadingRunIds: telemetryLoadingRunIds,
+    error: telemetryError,
+    refetch: refetchTelemetry,
+  } = useRunTelemetry(filteredRuns, reportSummaries, { enabled: activeTab === 'runs' });
+
   // Ids of merged-in rows that exist as first-class evaluation-run documents
   // (whether or not a projection is ALSO embedded in benchmark.runs[]). Used
   // to dispatch row-level Delete/Cancel to the right API — evaluation-run docs
@@ -419,8 +433,8 @@ export const BenchmarkRunsPage2: React.FC = () => {
   })), [filteredRuns, evaluatorNames]);
 
   const visibleRows = useMemo(
-    () => sortRunRows(applyRunFilters(allRows, runFilters), runSort),
-    [allRows, runFilters, runSort]
+    () => sortRunRows(applyRunFilters(allRows, runFilters), runSort, telemetryByRunId),
+    [allRows, runFilters, runSort, telemetryByRunId]
   );
 
   // Chart follows every NON-agent filter (so it never disagrees with the table
@@ -966,7 +980,15 @@ export const BenchmarkRunsPage2: React.FC = () => {
                 onSelectCase={testCaseId => navigate(`/evaluations/benchmarks/${benchmark.id}/cases/${testCaseId}`)}
                 expandedRunIds={expandedRunIds}
                 onToggleExpand={handleToggleExpand}
+                telemetryByRunId={telemetryByRunId}
+                telemetryLoadingRunIds={telemetryLoadingRunIds}
               />
+              {telemetryError && (
+                <div className="mt-1 text-[11px] text-muted-foreground flex items-center gap-1" data-testid="telemetry-unavailable-note">
+                  Telemetry metrics unavailable for some runs
+                  <button type="button" onClick={refetchTelemetry} className="underline underline-offset-2 hover:text-foreground" data-testid="telemetry-retry">Retry</button>
+                </div>
+              )}
             </>
           )}
 
