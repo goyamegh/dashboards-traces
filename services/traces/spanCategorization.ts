@@ -48,6 +48,26 @@ import {
 } from '@opentelemetry/semantic-conventions/incubating';
 
 /**
+ * Keys that identify the GenAI provider, preferred first. `gen_ai.system` is
+ * the pre-1.37 semconv name and is still accepted as an alias wherever the
+ * provider is read.
+ */
+export const GEN_AI_PROVIDER_KEYS: readonly string[] = [ATTR_GEN_AI_PROVIDER_NAME, ATTR_GEN_AI_SYSTEM];
+
+/**
+ * Read the GenAI provider from span attributes, accepting the current
+ * `gen_ai.provider.name` and the deprecated `gen_ai.system` alias.
+ */
+export function readGenAiProvider(attrs: Record<string, any> | undefined | null): string | undefined {
+  if (!attrs) return undefined;
+  for (const key of GEN_AI_PROVIDER_KEYS) {
+    const value = attrs[key];
+    if (value !== undefined && value !== null && value !== '') return String(value);
+  }
+  return undefined;
+}
+
+/**
  * OTel operation names that map to AGENT category
  */
 const AGENT_OPERATIONS = [
@@ -313,7 +333,7 @@ export function buildDisplayName(span: Span, category: SpanCategory): string {
     }
 
     case 'LLM': {
-      const provider = attrs[ATTR_GEN_AI_PROVIDER_NAME] || '';
+      const provider = readGenAiProvider(attrs) || '';
       const model = attrs[ATTR_GEN_AI_REQUEST_MODEL] || '';
       // Get short model name (last part after dots)
       const shortModel = model.split('.').pop() || model;
@@ -480,44 +500,87 @@ export function countByCategory(spans: CategorizedSpan[]): Record<SpanCategory, 
 // ============ OTEL Compliance Checking ============
 
 /**
- * Expected OTEL attributes by category. Each entry is either a single
- * attribute name or a list of alternatives (any one satisfies the expectation;
- * reported as `a|b` when all are missing).
+ * One expected attribute, or a group of keys any one of which satisfies the
+ * expectation. Two group shapes, distinguished by how they are REPORTED when
+ * the whole group is missing:
+ *
+ *  - `readonly string[]` — the FIRST entry is the preferred (current semconv)
+ *    key and the rest are accepted aliases, typically the key a previous
+ *    semconv release used before renaming it. Reported as
+ *    `preferred (or deprecated alias, …)`.
+ *  - `{ anyOf: readonly string[] }` — equally valid alternatives under the
+ *    current semconv (e.g. `db.query.text` vs `db.operation.name`); none is
+ *    deprecated, so the label must not claim so. Reported as `a|b`.
+ */
+export type AttributeExpectation = string | readonly string[] | { readonly anyOf: readonly string[] };
+
+/**
+ * Expected OTEL attributes by category.
  * @see https://opentelemetry.io/docs/specs/semconv/gen-ai/
  * @see https://opentelemetry.io/docs/specs/semconv/db/db-spans/
+ *
+ * `gen_ai.system` was deprecated in semconv 1.37 in favour of
+ * `gen_ai.provider.name`; spans stamping either key are compliant.
  */
-type ExpectedAttribute = string | string[];
-
-const EXPECTED_ATTRIBUTES: Record<SpanCategory, ExpectedAttribute[]> = {
-  LLM: [ATTR_GEN_AI_OPERATION_NAME, ATTR_GEN_AI_REQUEST_MODEL, ATTR_GEN_AI_SYSTEM],
+const EXPECTED_ATTRIBUTES: Record<SpanCategory, AttributeExpectation[]> = {
+  LLM: [ATTR_GEN_AI_OPERATION_NAME, ATTR_GEN_AI_REQUEST_MODEL, GEN_AI_PROVIDER_KEYS],
   TOOL: [ATTR_GEN_AI_OPERATION_NAME, ATTR_GEN_AI_TOOL_NAME],
   AGENT: [ATTR_GEN_AI_OPERATION_NAME, ATTR_GEN_AI_AGENT_NAME],
   // DB semconv: the system is required; a span should describe WHAT it did via
   // the query text (Recommended) or at least the operation name.
-  RETRIEVAL: [ATTR_DB_SYSTEM_NAME, [ATTR_DB_QUERY_TEXT, ATTR_DB_OPERATION_NAME]],
+  RETRIEVAL: [ATTR_DB_SYSTEM_NAME, { anyOf: [ATTR_DB_QUERY_TEXT, ATTR_DB_OPERATION_NAME] }],
   EVAL: [ATTR_GEN_AI_OPERATION_NAME],
   ERROR: [],  // Errors just need status
   OTHER: [],  // No expectations for OTHER
 };
 
 /**
+ * The HTTP SERVER entrypoint is categorised AGENT but is an HTTP-semconv span,
+ * not a GenAI one — judge it against the HTTP server-span convention (method +
+ * route/path + status) instead of flagging missing gen_ai.*.
+ */
+const ENTRYPOINT_EXPECTED_ATTRIBUTES: AttributeExpectation[] = [
+  { anyOf: [ATTR_HTTP_REQUEST_METHOD, ATTR_HTTP_METHOD] },
+  { anyOf: [ATTR_HTTP_ROUTE, ATTR_URL_PATH, ATTR_HTTP_TARGET] },
+  { anyOf: [ATTR_HTTP_RESPONSE_STATUS_CODE, ATTR_HTTP_STATUS_CODE] },
+];
+
+function expectationKeys(expectation: AttributeExpectation): readonly string[] {
+  if (typeof expectation === 'string') return [expectation];
+  if (Array.isArray(expectation)) return expectation as readonly string[];
+  return (expectation as { anyOf: readonly string[] }).anyOf;
+}
+
+function isExpectationSatisfied(attrs: Record<string, any> | undefined, expectation: AttributeExpectation): boolean {
+  return expectationKeys(expectation).some(key => !!attrs?.[key]);
+}
+
+/**
+ * Human-readable label for a missing expectation: the preferred key, with any
+ * accepted (deprecated) aliases named so users know what would ALSO satisfy it;
+ * or `a|b` for an any-of group of equally valid alternatives.
+ */
+export function describeAttributeExpectation(expectation: AttributeExpectation): string {
+  if (typeof expectation === 'string') return expectation;
+  if (!Array.isArray(expectation)) {
+    return (expectation as { anyOf: readonly string[] }).anyOf.join('|');
+  }
+  const [preferred, ...aliases] = expectation as readonly string[];
+  return aliases.length > 0
+    ? `${preferred} (or deprecated ${aliases.join(', ')})`
+    : preferred;
+}
+
+/**
  * Check if a span follows OTEL semantic conventions for its category
  */
 export function checkOTelCompliance(span: CategorizedSpan): OTelComplianceResult {
-  // The HTTP SERVER entrypoint is categorised AGENT but is an HTTP-semconv
-  // span, not a GenAI one — judge it against the HTTP server-span convention
-  // (method + route/path + status) instead of flagging missing gen_ai.*.
-  const expected: ExpectedAttribute[] = span.isEntrypoint
-    ? [
-        [ATTR_HTTP_REQUEST_METHOD, ATTR_HTTP_METHOD],
-        [ATTR_HTTP_ROUTE, ATTR_URL_PATH, ATTR_HTTP_TARGET],
-        [ATTR_HTTP_RESPONSE_STATUS_CODE, ATTR_HTTP_STATUS_CODE],
-      ]
+  const expected = span.isEntrypoint
+    ? ENTRYPOINT_EXPECTED_ATTRIBUTES
     : EXPECTED_ATTRIBUTES[span.category] || [];
-  const attrs = span.attributes || {};
   const missing = expected
-    .filter(attr => (Array.isArray(attr) ? !attr.some(a => attrs[a]) : !attrs[attr]))
-    .map(attr => (Array.isArray(attr) ? attr.join('|') : attr));
+    .filter(expectation => !isExpectationSatisfied(span.attributes, expectation))
+    .map(describeAttributeExpectation);
 
   return {
     isCompliant: missing.length === 0,
