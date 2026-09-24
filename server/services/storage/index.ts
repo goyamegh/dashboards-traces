@@ -239,6 +239,13 @@ export async function saveReportWithClient(
     // Underlying LLM that judged (lib/judgeIdentity) -- `judgeModelId` may be a provider name.
     judgeModel: report.judgeModel,
     evaluatorId: report.evaluatorId,
+    // Agent-configuration provenance mirror (lib/agentFingerprint.ts) so
+    // case-level comparisons can tell "same agent, different prompt" apart.
+    ...(report.agentFingerprint ? {
+      agentFingerprint: report.agentFingerprint,
+      agentFingerprintShort: report.agentFingerprintShort,
+      ...(report.agentPromptHash ? { agentPromptHash: report.agentPromptHash } : {}),
+    } : {}),
     // SDK matcher verdicts: persist alongside the report so the inspect
     // page can render the per-matcher breakdown.
     ...(report.matcherResults !== undefined ? { matcherResults: report.matcherResults } : {}),
