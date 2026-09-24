@@ -40,6 +40,7 @@ import { callBedrockJudge } from '@/services/evaluation';
 import { classifyEmptyResponse } from '@/services/evaluation/emptyResponse';
 import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 import { buildJudgeMatcherEntry, formatExpectedOutcomesAsClaim } from '@/lib/matchers/index';
+import { buildJudgeIdentityPatch, buildLlmJudgeResponseIdentity } from '@/lib/judgeIdentity';
 import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
 import { scoringFieldsFromJudgment } from '@/lib/scoring/verdictEngine';
 import { spansToTrajectory } from '@/services/traces/spansToTrajectory';
@@ -338,8 +339,10 @@ export async function retryJudgementForCase(
       // owner decision; #509 stays narrow). Same shared shape as first-judge.
       ...scoringFieldsFromJudgment(judgment),
       llmJudgeReasoning: judgment.llmJudgeReasoning,
+      // Keep the judge sidecar's identity in step with the re-judged verdict
+      // (real model id + judge kind -- see lib/judgeIdentity).
       llmJudgeResponse: {
-        modelId: judgeModelId,
+        ...buildLlmJudgeResponseIdentity(judgment, judgeModelId),
         timestamp: new Date().toISOString(),
         promptTokens: 0,
         completionTokens: 0,
@@ -347,6 +350,7 @@ export async function retryJudgementForCase(
         rawResponse: judgment.rawResponse ?? judgment.llmJudgeReasoning,
         parsedMetrics: judgment.metrics,
         improvementStrategies: judgment.improvementStrategies,
+        ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
         ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
       },
       // The judge config that produced THIS verdict — may differ from the
@@ -358,6 +362,8 @@ export async function retryJudgementForCase(
       // omitted) when this judge didn't set it, so a prior trace-judge
       // verdict's mode can't outlive the verdict it described.
       judgeMode: judgment.judgeMode ?? null,
+      // Underlying LLM that judged (TestCaseRun.judgeModel) -- see lib/judgeIdentity.
+      ...buildJudgeIdentityPatch(judgment, judgeModelId),
       judgementRetriedAt: new Date().toISOString(),
       judgementRetryCount: (report.judgementRetryCount ?? 0) + 1,
       matcherResults: [

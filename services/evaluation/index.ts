@@ -41,6 +41,7 @@ import {
 export { callBedrockJudge };
 import { openSearchClient } from '@/services/opensearch';
 import { debug } from '@/lib/debug';
+import { buildJudgeIdentityPatch, buildLlmJudgeResponseIdentity } from '@/lib/judgeIdentity';
 import { ENV_CONFIG } from '@/lib/config';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 
@@ -793,7 +794,9 @@ export async function runEvaluationWithConnector(
     debug('Eval', 'Metrics:', judgment.metrics);
 
     const llmJudgeResponse: LLMJudgeResponse = {
-      modelId: judgeModelId,
+      // Real underlying LLM when the provider resolved one (agent-trace-judge
+      // is a provider, not a model) + the provider kind; see lib/judgeIdentity.
+      ...buildLlmJudgeResponseIdentity(judgment, judgeModelId),
       timestamp: new Date().toISOString(),
       promptTokens: 0,
       completionTokens: 0,
@@ -828,6 +831,8 @@ export async function runEvaluationWithConnector(
       // Set only by the agent (trace) judge provider -- see
       // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
       ...(judgment.judgeMode ? { judgeMode: judgment.judgeMode } : {}),
+      // Underlying LLM that judged (TestCaseRun.judgeModel) -- see lib/judgeIdentity.
+      ...buildJudgeIdentityPatch(judgment, judgeModelId),
       // Unified judge surface (Option-B BC: legacy field above kept).
       matcherResults: [
         buildJudgeMatcherEntry(judgment, {
@@ -1078,7 +1083,9 @@ export async function runEvaluation(
     debug('Eval', 'Metrics:', judgment.metrics);
 
     const llmJudgeResponse: LLMJudgeResponse = {
-      modelId: judgeModelId,
+      // Real underlying LLM when the provider resolved one (agent-trace-judge
+      // is a provider, not a model) + the provider kind; see lib/judgeIdentity.
+      ...buildLlmJudgeResponseIdentity(judgment, judgeModelId),
       timestamp: new Date().toISOString(),
       promptTokens: 0,
       completionTokens: 0,
@@ -1112,6 +1119,8 @@ export async function runEvaluation(
       // Set only by the agent (trace) judge provider -- see
       // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
       ...(judgment.judgeMode ? { judgeMode: judgment.judgeMode } : {}),
+      // Underlying LLM that judged (TestCaseRun.judgeModel) -- see lib/judgeIdentity.
+      ...buildJudgeIdentityPatch(judgment, judgeModelId),
       // Unified judge surface (Option-B BC: legacy field above kept).
       matcherResults: [
         buildJudgeMatcherEntry(judgment, {
