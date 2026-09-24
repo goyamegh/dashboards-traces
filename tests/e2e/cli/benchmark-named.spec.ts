@@ -52,6 +52,7 @@ function runCli(args: string[], timeoutMs = 150_000): Promise<CliResult> {
       cwd: REPO_ROOT,
       env: {
         ...process.env,
+        // Explicit port → the CLI reuses the harness' server even in CI mode.
         AH_PORT: backendPort,
         FORCE_COLOR: '0',
         NO_COLOR: '1',
@@ -189,6 +190,13 @@ test.describe('CLI: benchmark against a traceparent-adopting REST agent', () => 
     const out = strip(result.stdout + result.stderr);
 
     expect(result.code, out).toBe(0);
+    // The harness always names the backend port explicitly (AH_PORT), so the
+    // CLI must reuse the already-running server even under CI=true — where the
+    // implicit-port guard ("Server already running … In CI mode … this is an
+    // error") would otherwise refuse (this exact failure was CI-red on the
+    // first version of this spec). See cli/utils/serverLifecycle.ts.
+    expect(out).toContain('Connected to existing server on port');
+    if (process.env.CI) expect(out).toContain(`Using existing server on :${backendPort} (explicit port)`);
     expect(out).toContain('running through the evaluation-runs API');
     expect(out).toContain(`Benchmark: ${benchName} (${benchmarkId})`);
     expect(out).toContain('Benchmark Summary');
@@ -227,6 +235,8 @@ test.describe('CLI: benchmark against a traceparent-adopting REST agent', () => 
     for (const id of bench.testCaseIds || []) testData.testCase(id);
 
     expect(result.code, out).toBe(0);
+    expect(out).toContain('Connected to existing server on port');
+    if (process.env.CI) expect(out).toContain(`Using existing server on :${backendPort} (explicit port)`);
     expect(out).toContain('Running in file mode');
     expect(out).toContain('running through the evaluation-runs API');
     expect(out).toContain(`Imported ${CASES} test cases`);
