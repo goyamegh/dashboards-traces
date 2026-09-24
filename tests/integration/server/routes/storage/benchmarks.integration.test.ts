@@ -263,6 +263,24 @@ const startExecutionAndGetRunId = async (benchmarkId: string): Promise<string> =
   return runId;
 };
 
+/**
+ * Poll `benchmark.runs[]` until the run's projection is embedded. The runner
+ * writes the terminal evaluation-run doc FIRST and links the projection into
+ * the benchmark right after (two writes, plus index refresh on OpenSearch), so
+ * a single GET straight after the doc turns terminal can miss it.
+ */
+const waitForEmbeddedRun = async (benchmarkId: string, runId: string, timeoutMs = 20000): Promise<any> => {
+  const deadline = Date.now() + timeoutMs;
+  let run: any = undefined;
+  while (Date.now() < deadline) {
+    const benchmark = await getBenchmark(benchmarkId);
+    run = benchmark.runs?.find((r: any) => r.id === runId);
+    if (run) return run;
+    await new Promise((r) => setTimeout(r, 500));
+  }
+  return run;
+};
+
 /** Poll the evaluation-run document until it leaves `running`. */
 const waitForTerminalRun = async (runId: string, timeoutMs = 30000): Promise<any> => {
   const deadline = Date.now() + timeoutMs;
@@ -378,8 +396,7 @@ describe('Benchmark Cancel Integration Tests', () => {
     const terminal = await waitForTerminalRun(runId);
     expect(terminal?.status).toBe('cancelled');
 
-    const benchmark = await getBenchmark(benchmarkId);
-    const run = benchmark.runs?.find((r: any) => r.id === runId);
+    const run = await waitForEmbeddedRun(benchmarkId, runId);
     expect(run).toBeDefined();
     expect(run.status).toBe('cancelled');
 
