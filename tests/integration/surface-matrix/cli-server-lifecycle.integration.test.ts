@@ -7,9 +7,9 @@
  * Surface matrix · CLI · server lifecycle: `serve`, quick mode, `--stop-server`, `CI=1`
  *
  * Everything a customer sees about WHO owns the server. Runs in an ISOLATED
- * project directory (its own `.agent-health/` state + file storage) on the
- * spare port `SURFACE_MATRIX_SPARE_PORT` (default AH_PORT+2) so nothing here
- * can touch the shared backend under test. Pinned:
+ * project directory (its own `.agent-health/` state + file storage) on a
+ * spare port picked from the OS at runtime (`SURFACE_MATRIX_SPARE_PORT` to
+ * pin one) so nothing here can touch the shared backend under test. Pinned:
  *   - `serve --headless -p <port>` answers `/health` with
  *     `{ status: 'ok', version, instance: { pid, cwd, port } }` and the
  *     storage/agents/models APIs work out of the box (file storage, built-in
@@ -38,13 +38,14 @@ import { startTraceparentRestAgent, type TraceparentRestAgent } from '../../help
 import { createTestDataTracker, uniqueTestName } from '../../helpers/testDataTracker';
 import {
   BACKEND_PORT, BASE_URL, backendReady, caseInput, createBenchmark, createTestCase, isPortServing,
-  listTerminalRunsForBenchmark, reportIdsOf, runCli, serveHeadless, stopServerOnPort,
+  listTerminalRunsForBenchmark, reportIdsOf, reserveSparePort, runCli, serveHeadless, stopServerOnPort,
 } from '../../helpers/surfaceMatrix';
 
 const TEST_TIMEOUT = 300_000;
-const SPARE_PORT = Number(process.env.SURFACE_MATRIX_SPARE_PORT || Number(BACKEND_PORT) + 2);
-const SPARE_URL = `http://127.0.0.1:${SPARE_PORT}`;
 const CASES = 2;
+// Chosen at runtime (a free OS port) so parallel workers never collide; see reserveSparePort.
+let SPARE_PORT = 0;
+let SPARE_URL = '';
 
 async function spareApi<T = any>(method: string, pathname: string, body?: unknown): Promise<T> {
   const res = await fetch(`${SPARE_URL}${pathname}`, {
@@ -61,6 +62,8 @@ describe('surface-matrix · CLI · serve / quick mode / --stop-server / CI=1', (
   let agent: TraceparentRestAgent;
 
   beforeAll(async () => {
+    SPARE_PORT = await reserveSparePort();
+    SPARE_URL = `http://127.0.0.1:${SPARE_PORT}`;
     projectDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ah-surface-project-'));
     // Tell the CLI-started servers where their OTLP receiver is; the fixture
     // agent exports there so trace-mode judging resolves in quick mode too.
@@ -74,20 +77,20 @@ describe('surface-matrix · CLI · serve / quick mode / --stop-server / CI=1', (
     if (projectDir) fs.rmSync(projectDir, { recursive: true, force: true });
   }, 60_000);
 
-  const spareEnv = {
+  const spareEnv = () => ({
     AH_PORT: String(SPARE_PORT),
     // Make trace polling fail fast if spans ever don't arrive; recovery off (test server).
     TRACE_POLL_MAX_ATTEMPTS: '3',
     TRACE_POLL_INTERVAL_MS: '1000',
     BENCHMARK_RUN_RECOVERY_DISABLED: '1',
     EVALUATION_RUN_RECOVERY_DISABLED: '1',
-  };
+  });
 
   it('`serve --headless` boots a working server in the project directory; quick mode then runs every stored case and stops its own server', async () => {
-    if (await isPortServing(SPARE_PORT)) throw new Error(`spare port ${SPARE_PORT} is already in use — pick another with SURFACE_MATRIX_SPARE_PORT`);
+    if (await isPortServing(SPARE_PORT)) throw new Error(`spare port ${SPARE_PORT} is already in use — set SURFACE_MATRIX_SPARE_PORT to a free one`);
 
     // ── 1. `serve --headless`: health contract + out-of-the-box APIs ──────────
-    const served = await serveHeadless(SPARE_PORT, { cwd: projectDir, env: spareEnv });
+    const served = await serveHeadless(SPARE_PORT, { cwd: projectDir, env: spareEnv() });
     let agentKey: string;
     try {
       expect(served.health).toMatchObject({ status: 'ok', service: 'agent-health' });
@@ -111,7 +114,7 @@ describe('surface-matrix · CLI · serve / quick mode / --stop-server / CI=1', (
     expect(await isPortServing(SPARE_PORT)).toBe(false);
 
     // ── 2. Quick mode: no server running, no -n / -f ───────────────────────
-    const result = await runCli(['benchmark', '-a', agentKey!], { cwd: projectDir, env: spareEnv, timeoutMs: 240_000 });
+    const result = await runCli(['benchmark', '-a', agentKey!], { cwd: projectDir, env: spareEnv(), timeoutMs: 240_000 });
     expect(result.code).toBe(0);
     expect(result.out).toContain('Running in quick mode (auto-creating benchmark from test cases)');
     expect(result.out).toContain(`Started server on port ${SPARE_PORT}`);
@@ -127,7 +130,7 @@ describe('surface-matrix · CLI · serve / quick mode / --stop-server / CI=1', (
     expect(await isPortServing(SPARE_PORT)).toBe(false);
 
     // ── 3. What quick mode left behind is visible on the next `serve` ────────
-    const served2 = await serveHeadless(SPARE_PORT, { cwd: projectDir, env: spareEnv });
+    const served2 = await serveHeadless(SPARE_PORT, { cwd: projectDir, env: spareEnv() });
     try {
       const { benchmarks } = await spareApi<{ benchmarks: any[] }>('GET', '/api/storage/benchmarks');
       const quick = benchmarks.filter((b) => /^quick-\d+$/.test(b.name));

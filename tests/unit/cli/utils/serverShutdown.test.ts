@@ -21,7 +21,7 @@ describe('installShutdownHandlers', () => {
   beforeEach(() => {
     registered.SIGTERM = [];
     registered.SIGINT = [];
-    onSpy = jest.spyOn(process, 'on').mockImplementation(((event: string, handler: () => void) => {
+    onSpy = jest.spyOn(process, 'once').mockImplementation(((event: string, handler: () => void) => {
       (registered[event] ??= []).push(handler);
       return process;
     }) as any);
@@ -45,6 +45,9 @@ describe('installShutdownHandlers', () => {
     registered.SIGTERM[0]();
     expect(close).toHaveBeenCalledTimes(1);
     expect(exitSpy).toHaveBeenCalledWith(0);
+    // A second signal while shutting down does not close twice.
+    registered.SIGINT[0]();
+    expect(close).toHaveBeenCalledTimes(1);
   });
 
   it('exits after the 5s backstop even if the listener never finishes closing', () => {

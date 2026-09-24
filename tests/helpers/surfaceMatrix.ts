@@ -135,7 +135,7 @@ export function parseSse(text: string): SseEvent[] {
     let data: string | undefined;
     for (const line of frame.split('\n')) {
       if (line.startsWith('event: ')) event = line.slice(7).trim();
-      else if (line.startsWith('data: ')) data = (data ?? '') + line.slice(6);
+      else if (line.startsWith('data: ')) data = data === undefined ? line.slice(6) : `${data}\n${line.slice(6)}`;
     }
     if (data === undefined) continue;
     try { events.push({ event, data: JSON.parse(data) }); } catch { /* partial frame */ }
@@ -145,15 +145,44 @@ export function parseSse(text: string): SseEvent[] {
 
 // ── Backend probes ────────────────────────────────────────────────────────
 
+/**
+ * Is the backend under test up? Locally a missing server means "skip with a
+ * warning" (repo convention for integration suites); under `CI` it is a hard
+ * failure — a matrix that silently skips every assertion is a false green.
+ */
 export async function backendReady(): Promise<boolean> {
+  let ready = false;
   try {
     const health = await httpRequest('GET', '/health');
-    if (health.status !== 200) return false;
-    const storage = await httpRequest('GET', '/api/storage/health');
-    return storage.status === 200 && storage.body?.status === 'ok';
+    if (health.status === 200) {
+      const storage = await httpRequest('GET', '/api/storage/health');
+      ready = storage.status === 200 && storage.body?.status === 'ok';
+    }
   } catch {
-    return false;
+    ready = false;
   }
+  if (!ready && process.env.CI) {
+    throw new Error(`[surface-matrix] backend not reachable at ${BASE_URL} under CI — refusing to skip the matrix`);
+  }
+  return ready;
+}
+
+/**
+ * A free TCP port on 127.0.0.1 for a server the test itself boots. Asked of the
+ * OS (bind :0, read, release) so parallel workers / shards never collide on a
+ * fixed offset; `SURFACE_MATRIX_SPARE_PORT` pins one when a range is reserved.
+ */
+export async function reserveSparePort(): Promise<number> {
+  if (process.env.SURFACE_MATRIX_SPARE_PORT) return Number(process.env.SURFACE_MATRIX_SPARE_PORT);
+  const net = await import('net');
+  return new Promise((resolve, reject) => {
+    const srv = net.createServer();
+    srv.once('error', reject);
+    srv.listen(0, '127.0.0.1', () => {
+      const { port } = srv.address() as { port: number };
+      srv.close(() => resolve(port));
+    });
+  });
 }
 
 /** Which storage backend the server under test runs on (customer-visible via `/api/storage/health`). */
@@ -316,18 +345,25 @@ export interface CliResult {
 export const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, '');
 
 /**
- * Environment for a spawned CLI: what a customer's shell would carry, and
- * nothing the test runner injects. In particular `CI` is dropped — under
- * `CI=1` the CLI refuses to reuse an already-running server (that IS a
- * pinned behaviour, see cli-server-lifecycle) — and jest/Playwright
- * `NODE_OPTIONS` shims are dropped because they break undici inside the
- * child's `/health` probe (see tests/integration/cli/benchmarkCodeSdk.integration.test.ts).
+ * Environment for a spawned CLI: what a customer's shell would carry (PATH,
+ * HOME, locale, proxy / CA config, AWS_*), and nothing the test runner
+ * injects. An allow-list rather than a deny-list because jest/Playwright
+ * `NODE_OPTIONS` shims break undici inside the child's `/health` probe (see
+ * tests/integration/cli/benchmarkCodeSdk.integration.test.ts) and new runner
+ * variables keep appearing. `CI` is deliberately NOT carried: a customer's
+ * shell does not set it, and under `CI=1` the CLI refuses to reuse an
+ * already-running server — that refusal is pinned on its own in
+ * cli-server-lifecycle (`env: { CI: 'true' }`).
  */
 export function cliEnv(overrides: Record<string, string> = {}): Record<string, string> {
   const env: Record<string, string> = {};
   for (const [k, v] of Object.entries(process.env)) {
     if (typeof v !== 'string') continue;
-    if (k === 'PATH' || k === 'HOME' || k === 'USER' || k === 'TMPDIR' || k === 'LANG' || k === 'SHELL' || k.startsWith('AWS_')) {
+    if (
+      k === 'PATH' || k === 'HOME' || k === 'USER' || k === 'TMPDIR' || k === 'LANG' || k === 'TZ' || k === 'SHELL' ||
+      k === 'NODE_EXTRA_CA_CERTS' || k === 'SSL_CERT_FILE' || /^(HTTPS?_PROXY|NO_PROXY|https?_proxy|no_proxy)$/.test(k) ||
+      k.startsWith('AWS_')
+    ) {
       env[k] = v;
     }
   }

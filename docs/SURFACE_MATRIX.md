@@ -22,9 +22,11 @@ behaviours it pins in its header comment.
 
 Server requirements for the specs: file or OpenSearch storage; a short trace-poll
 budget (`TRACE_POLL_MAX_ATTEMPTS=2 TRACE_POLL_INTERVAL_MS=1000`, as CI sets) so
-the deliberately errored run in `ui-run-actions` lands quickly; a free spare
-port `AH_PORT + 2` (or `SURFACE_MATRIX_SPARE_PORT`) for the `serve` / quick-mode
-spec, which boots its own isolated servers.
+the deliberately errored run in `ui-run-actions` lands quickly. The `serve` /
+quick-mode spec boots its own isolated servers on a free port picked from the OS
+(`SURFACE_MATRIX_SPARE_PORT` pins one). Under `CI` an unreachable backend fails
+the matrix instead of skipping it (`backendReady()`), so the matrix can never go
+green by doing nothing.
 
 CI runs both halves on every PR — `integration-tests` (OpenSearch backend)
 and `e2e-tests` (file backend) — and each job fails if the matrix specs did not

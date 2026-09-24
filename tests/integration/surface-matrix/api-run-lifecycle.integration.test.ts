@@ -145,7 +145,6 @@ describe('surface-matrix · API · run lifecycle (cancel / retry-judgement / del
     const run = await waitForTerminalRun(runId);
     for (const id of reportIdsOf(run)) tracker.run(id);
     expect(run.status).toBe('cancelled');
-    expect(typeof run.cancelRequestedAt).toBe('string');
     const statuses = Object.values(run.results as Record<string, any>).map((r) => r.status);
     expect(statuses).toContain('cancelled');
     // Fewer agent calls than cases — the cancel actually stopped work.

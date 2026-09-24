@@ -17,11 +17,14 @@
  * not. Pinned by tests/integration/surface-matrix/cli-server-lifecycle.
  */
 export function installShutdownHandlers(server: { close(cb?: () => void): unknown }): void {
+  let shuttingDown = false;
   const shutdown = (signal: string) => {
+    if (shuttingDown) return; // SIGINT + SIGTERM back-to-back: close once
+    shuttingDown = true;
     console.log(`\n  Received ${signal}, shutting down...`);
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 5000).unref();
   };
-  process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('SIGINT', () => shutdown('SIGINT'));
+  process.once('SIGTERM', () => shutdown('SIGTERM'));
+  process.once('SIGINT', () => shutdown('SIGINT'));
 }
