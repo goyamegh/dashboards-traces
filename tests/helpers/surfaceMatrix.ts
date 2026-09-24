@@ -146,9 +146,12 @@ export function parseSse(text: string): SseEvent[] {
 // ── Backend probes ────────────────────────────────────────────────────────
 
 /**
- * Is the backend under test up? Locally a missing server means "skip with a
- * warning" (repo convention for integration suites); under `CI` it is a hard
- * failure — a matrix that silently skips every assertion is a false green.
+ * Is the backend under test up? A missing server means "skip with a warning"
+ * (repo convention for integration suites — `npm test` in the release
+ * rehearsal job runs with no server at all). When a job explicitly points the
+ * suite at a backend (`AH_PORT` set) under `CI`, an unreachable server is a
+ * hard failure instead — a matrix that silently skips every assertion is a
+ * false green.
  */
 export async function backendReady(): Promise<boolean> {
   let ready = false;
@@ -161,8 +164,8 @@ export async function backendReady(): Promise<boolean> {
   } catch {
     ready = false;
   }
-  if (!ready && process.env.CI) {
-    throw new Error(`[surface-matrix] backend not reachable at ${BASE_URL} under CI — refusing to skip the matrix`);
+  if (!ready && process.env.CI && process.env.AH_PORT) {
+    throw new Error(`[surface-matrix] backend not reachable at ${BASE_URL} under CI (AH_PORT=${process.env.AH_PORT}) — refusing to skip the matrix`);
   }
   return ready;
 }
