@@ -23,6 +23,7 @@ import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import { Loader2, Clock, XCircle, Calendar, AlertTriangle, Link2, Ban, Unplug } from 'lucide-react';
 import { Skeleton } from '@/components/ui/skeleton';
 import { Button } from '@/components/ui/button';
+import { presentAgentFailureSummary } from '@/lib/agentFailureSummary';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from '@/components/ui/resizable';
 import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
@@ -733,7 +734,7 @@ export const RunInspectorPage: React.FC = () => {
             <Unplug size={12} className="shrink-0 mt-0.5" />
             <span>
               {run.agentFailureSummary}
-              <span className="text-amber-700/80 dark:text-amber-400/80"> — check the agent endpoint and re-run; nothing was judged.</span>
+              <span className="text-amber-700/80 dark:text-amber-400/80"> — {presentAgentFailureSummary(run.agentFailureSummary).remedy}</span>
             </span>
           </div>
         )}

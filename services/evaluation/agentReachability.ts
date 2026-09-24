@@ -36,12 +36,22 @@
  * trace-polled, never judged) — see `finalizeAgentFailedReport` in
  * `services/evaluationRunner.ts` / `services/benchmarkRunner.ts`.
  *
+ * A third member of the same family lives in `./emptyResponse.ts`: an agent
+ * that answers 2xx with NOTHING (no steps, no answer, no results) is an
+ * `AgentEmptyResponseError` → `agent_empty_response`. By default such
+ * responses also count toward the breaker (`recordEmptyResponse`) — an
+ * endpoint that returns nothing repeatedly is as dead as one that refuses
+ * connections; `connectorConfig.emptyResponseTripsBreaker: false` /
+ * `AGENT_EMPTY_RESPONSE_TRIPS_BREAKER=0` opts out.
+ *
  * Pure and dependency-free so both the server bundle and unit tests can
  * import it; endpoint text is reduced to `host[:port]` so no credentials,
  * paths or query strings ever land on a report.
  */
 
-import { buildEvaluatorErrorPatch } from './evaluatorError';
+import { buildEvaluatorErrorPatch, type EvaluatorErrorKind } from './evaluatorError';
+import { AgentEmptyResponseError, EMPTY_RESPONSE_CODE } from './emptyResponse';
+import type { AgentFailure } from '@/types';
 
 /** Default number of consecutive transport failures that trips the breaker. */
 export const DEFAULT_UNREACHABLE_THRESHOLD = 3;
@@ -286,9 +296,9 @@ export class AgentUnreachableError extends Error {
   readonly consecutiveFailures: number;
   readonly lastFailureCode: string;
 
-  constructor(endpointHost: string, consecutiveFailures: number, lastFailureCode: string) {
+  constructor(endpointHost: string, consecutiveFailures: number, lastFailureCode: string, noun: string = 'connection failure') {
     super(
-      `agent endpoint unreachable — ${consecutiveFailures} consecutive connection failure${consecutiveFailures === 1 ? '' : 's'} ` +
+      `agent endpoint unreachable — ${consecutiveFailures} consecutive ${noun}${consecutiveFailures === 1 ? '' : 's'} ` +
       `(${lastFailureCode}, ${endpointHost}); this case was not attempted`,
     );
     this.name = 'AgentUnreachableError';
@@ -303,6 +313,52 @@ export function isAgentReachabilityError(error: unknown): error is AgentTranspor
   return error instanceof AgentTransportError || error instanceof AgentUnreachableError;
 }
 
+/**
+ * Structured `agentError` for a classified agent-step failure — the three
+ * members of the family (`transport` / `unreachable` / `empty-response`), or
+ * `undefined` for anything else (timeouts, hook errors, …, which keep the
+ * plain `agent_failed` shape without a structured classification).
+ */
+export function describeAgentFailure(error: unknown): AgentFailure | undefined {
+  if (error instanceof AgentTransportError) {
+    return { stage: 'agent', kind: 'transport', code: error.code, message: error.message };
+  }
+  if (error instanceof AgentUnreachableError) {
+    return { stage: 'agent', kind: 'unreachable', code: error.code, message: error.message };
+  }
+  if (error instanceof AgentEmptyResponseError) {
+    return { stage: 'agent', kind: 'empty-response', code: error.code, message: error.message };
+  }
+  return undefined;
+}
+
+/** Evaluator-error kind for an agent failure: empty responses get their own label. */
+export function evaluatorKindForAgentFailure(failure: AgentFailure | undefined): EvaluatorErrorKind {
+  return failure?.kind === 'empty-response' ? 'agent_empty_response' : 'agent_failed';
+}
+
+/**
+ * SDK / deterministic path: `agent.run()` rejected. Stamp the canonical
+ * agent-failure patch (kind chosen from the error class), the structured
+ * `agentError` when classifiable, and `skipJudge`. When the connector DID
+ * return something before the failure was declared (an empty response), its
+ * trajectory / raw payload are put on the report so the UI shows what came
+ * back.
+ */
+export function stampAgentFailure(report: Record<string, any>, error: unknown): void {
+  const failure = describeAgentFailure(error);
+  const message = error instanceof Error ? error.message : String(error);
+  Object.assign(report, buildEvaluatorErrorPatch(evaluatorKindForAgentFailure(failure), message));
+  if (failure) report.agentError = failure;
+  if (error instanceof AgentEmptyResponseError) {
+    report.trajectory = error.payload.trajectory;
+    report.rawEvents = error.payload.rawEvents;
+    if (error.payload.runId) report.runId = error.payload.runId;
+    if (error.payload.metadata?.sessionId) report.sessionId = error.payload.metadata.sessionId;
+  }
+  report.skipJudge = true;
+}
+
 export interface CircuitState {
   key: string;
   consecutiveFailures: number;
@@ -310,6 +366,27 @@ export interface CircuitState {
   /** Cases refused without calling the agent because the circuit was open. */
   rejected: number;
   open: boolean;
+  /** Empty responses seen on this key over the whole run (counted or not). */
+  emptyResponses: number;
+  /** Failure classes seen in the CURRENT consecutive streak. */
+  streakTransport: boolean;
+  streakEmpty: boolean;
+}
+
+export interface EndpointCircuitBreakerOptions {
+  /**
+   * Count empty responses (2xx with no steps / answer / results) toward the
+   * consecutive-failure threshold. Default true — see
+   * `resolveEmptyResponseTripsBreaker` in `./emptyResponse.ts`.
+   */
+  countEmptyResponses?: boolean;
+}
+
+/** Noun for the streak: what kind of failures tripped it. */
+function streakNoun(c: Pick<CircuitState, 'streakTransport' | 'streakEmpty'>): string {
+  if (c.streakEmpty && !c.streakTransport) return 'empty response';
+  if (c.streakTransport && !c.streakEmpty) return 'connection failure';
+  return 'agent failure';
 }
 
 /**
@@ -319,7 +396,11 @@ export interface CircuitState {
 export class EndpointCircuitBreaker {
   private readonly circuits = new Map<string, CircuitState>();
 
-  constructor(readonly threshold: number = DEFAULT_UNREACHABLE_THRESHOLD) {}
+  readonly countEmptyResponses: boolean;
+
+  constructor(readonly threshold: number = DEFAULT_UNREACHABLE_THRESHOLD, options: EndpointCircuitBreakerOptions = {}) {
+    this.countEmptyResponses = options.countEmptyResponses ?? true;
+  }
 
   /** Breaker disabled (threshold 0 / Infinity): never opens. */
   get enabled(): boolean {
@@ -329,7 +410,7 @@ export class EndpointCircuitBreaker {
   private circuit(key: string): CircuitState {
     let c = this.circuits.get(key);
     if (!c) {
-      c = { key, consecutiveFailures: 0, rejected: 0, open: false };
+      c = { key, consecutiveFailures: 0, rejected: 0, open: false, emptyResponses: 0, streakTransport: false, streakEmpty: false };
       this.circuits.set(key, c);
     }
     return c;
@@ -347,7 +428,7 @@ export class EndpointCircuitBreaker {
     const c = this.circuits.get(key);
     if (!c?.open) return;
     c.rejected++;
-    throw new AgentUnreachableError(displayKey(key), c.consecutiveFailures, c.lastFailureCode ?? 'connection failure');
+    throw new AgentUnreachableError(displayKey(key), c.consecutiveFailures, c.lastFailureCode ?? 'connection failure', streakNoun(c));
   }
 
   /**
@@ -362,6 +443,31 @@ export class EndpointCircuitBreaker {
     if (!c || c.open) return;
     c.consecutiveFailures = 0;
     c.lastFailureCode = undefined;
+    c.streakTransport = false;
+    c.streakEmpty = false;
+  }
+
+  /**
+   * The agent answered with NOTHING (see `./emptyResponse.ts`). Always
+   * tallied for the run summary; counts toward the consecutive threshold
+   * only when {@link countEmptyResponses} (the default). Never resets the
+   * streak: an empty answer does not prove the endpoint healthy.
+   */
+  recordEmptyResponse(key: string): void {
+    const c = this.circuit(key);
+    c.emptyResponses++;
+    if (!this.countEmptyResponses) return;
+    c.consecutiveFailures++;
+    c.lastFailureCode = EMPTY_RESPONSE_CODE;
+    c.streakEmpty = true;
+    if (this.enabled && c.consecutiveFailures >= this.threshold) c.open = true;
+  }
+
+  /** Empty responses seen across every key this run. */
+  get totalEmptyResponses(): number {
+    let n = 0;
+    for (const c of this.circuits.values()) n += c.emptyResponses;
+    return n;
   }
 
   /**
@@ -379,6 +485,7 @@ export class EndpointCircuitBreaker {
     const c = this.circuit(key);
     c.consecutiveFailures++;
     c.lastFailureCode = failure.code;
+    c.streakTransport = true;
     if (this.enabled && c.consecutiveFailures >= this.threshold) c.open = true;
     return failure;
   }
@@ -389,16 +496,22 @@ export class EndpointCircuitBreaker {
   }
 
   /**
-   * One-line run-level summary for the runs list / inspector, or `undefined`
-   * when no circuit opened during the run.
+   * One-line run-level summary for the runs list / inspector: the open
+   * circuit(s) when the breaker tripped, else a count of empty responses
+   * when any case came back empty, else `undefined`.
    */
   summary(): string | undefined {
     const open = this.openCircuits();
-    if (open.length === 0) return undefined;
+    if (open.length === 0) {
+      const empties = this.totalEmptyResponses;
+      if (empties === 0) return undefined;
+      return `${empties} case${empties === 1 ? '' : 's'} returned an empty response (no steps, no answer, no results) — not judged`;
+    }
     return open
       .map(c => {
         const n = c.consecutiveFailures;
-        const base = `Agent endpoint unreachable — ${n} consecutive connection failure${n === 1 ? '' : 's'} (${c.lastFailureCode ?? 'connection failure'}, ${displayKey(c.key)})`;
+        const noun = streakNoun(c);
+        const base = `Agent endpoint unreachable — ${n} consecutive ${noun}${n === 1 ? '' : 's'} (${c.lastFailureCode ?? 'connection failure'}, ${displayKey(c.key)})`;
         return c.rejected > 0
           ? `${base}; ${c.rejected} further case${c.rejected === 1 ? ' was' : 's were'} not attempted`
           : base;
@@ -419,13 +532,16 @@ export interface AgentFailedReportLike {
   llmJudgeReasoning?: string;
   traceError?: string;
   skipJudge?: boolean;
+  /** Structured classification stamped by `runEvaluationWithConnector`'s connector catch. */
+  agentError?: AgentFailure;
 }
 
 const LEGACY_REASON_PREFIX = /^Evaluation failed:\s*/;
 
 /**
  * Make an agent-step failure report FINAL so the runner never trace-polls or
- * judges it.
+ * judges it. Covers transport failures, breaker refusals AND empty responses
+ * (`report.agentError.kind === 'empty-response'` → `agent_empty_response`).
  *
  * Pre-fix the classic (non-SDK) runner path stamped `metricsStatus:
  * 'pending'` onto every trace-mode report that had none — including the
@@ -443,7 +559,10 @@ const LEGACY_REASON_PREFIX = /^Evaluation failed:\s*/;
 export function finalizeAgentFailedReport(report: AgentFailedReportLike): boolean {
   if (report.status !== 'failed' || report.metricsStatus !== undefined) return false;
   const reason = (report.llmJudgeReasoning ?? '').replace(LEGACY_REASON_PREFIX, '').trim() || 'agent request failed';
-  Object.assign(report, buildEvaluatorErrorPatch('agent_failed', reason));
+  // `agentError` (when the connector catch could classify the error) picks the
+  // label: an empty response is "Agent returned an empty response", not
+  // "Agent run did not complete" — the agent DID complete, with nothing.
+  Object.assign(report, buildEvaluatorErrorPatch(evaluatorKindForAgentFailure(report.agentError), reason));
   report.skipJudge = true;
   return true;
 }

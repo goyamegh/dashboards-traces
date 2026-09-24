@@ -64,6 +64,20 @@ export interface AfterResponseContext {
   rawEvents?: any[];
   /** Connector metadata (e.g., threadId, sessionId, exitCode) */
   metadata?: Record<string, any>;
+  /**
+   * Empty-response flag (see `services/evaluation/emptyResponse.ts`). An
+   * `afterResponse` hook that SYNTHESIZES trajectory text from a structured
+   * payload (e.g. renders "no results" when the agent's `results[]` is empty
+   * and `answer` is null) must set `empty: true` on what it returns, so the
+   * placeholder is never sent to the judge as the agent's answer — the case
+   * is finalised as an agent failure (`kind=agent_empty_response`) instead.
+   * `empty: false` suppresses the built-in detection for a payload shape it
+   * does not recognise. `isEmpty` (top-level or on `response`) is accepted as
+   * an alias. Unset = let agent-health decide from the trajectory + payload.
+   */
+  empty?: boolean;
+  /** Alias of {@link AfterResponseContext.empty}. */
+  isEmpty?: boolean;
 }
 
 export interface BuildTrajectoryContext {
@@ -618,6 +632,28 @@ export interface ScoringSnapshot {
   notApplicable?: string[];
 }
 
+/**
+ * Why the AGENT step of a case failed (see {@link TestCaseRun.agentError}).
+ * One family, three members:
+ *  - `transport`      — connection / DNS / TLS / spawn failure or a rejected
+ *                       status before any stream (`AgentTransportError`);
+ *  - `unreachable`    — the run's endpoint circuit breaker was open, the case
+ *                       was never attempted (`AgentUnreachableError`);
+ *  - `empty-response` — the agent answered 2xx but with no steps, no answer
+ *                       text and no results (`AgentEmptyResponseError`).
+ */
+export type AgentFailureKind = 'transport' | 'unreachable' | 'empty-response';
+
+export interface AgentFailure {
+  /** Always `'agent'` — distinguishes from evaluator (judge / trace) failures. */
+  stage: 'agent';
+  kind: AgentFailureKind;
+  /** Machine-readable class: `ECONNREFUSED`, `HTTP_503`, `AGENT_ENDPOINT_UNREACHABLE`, `EMPTY_RESPONSE`, … */
+  code: string;
+  /** One-line human reason (host only, never a full URL). */
+  message: string;
+}
+
 // TestCaseRun = result of running a specific test case version (renamed from EvaluationReport)
 export interface TestCaseRun {
   id: string;
@@ -734,6 +770,16 @@ export interface TestCaseRun {
   traceFetchAttempts?: number; // Number of polling attempts for traces
   lastTraceFetchAt?: string; // Timestamp of last trace fetch attempt
   traceError?: string; // Error message if trace fetch failed
+  /**
+   * Structured classification when the AGENT step failed (as opposed to the
+   * evaluator): the request never reached the endpoint (`transport`), the
+   * run's endpoint circuit breaker refused the case (`unreachable`), or the
+   * agent answered with nothing to judge (`empty-response`). Stamped by the
+   * runners from `services/evaluation/agentReachability.ts` /
+   * `emptyResponse.ts`; `traceError` / `llmJudgeReasoning` carry the human
+   * text. Reports carrying this are never (re-)judged.
+   */
+  agentError?: AgentFailure;
   spans?: Span[]; // Fetched trace spans for debugging
   /**
    * Set exclusively by the agent (trace) judge provider (`judgeModelId:

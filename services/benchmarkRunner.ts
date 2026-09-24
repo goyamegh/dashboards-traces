@@ -41,7 +41,9 @@ import {
   EndpointCircuitBreaker,
   finalizeAgentFailedReport,
   resolveUnreachableThreshold,
+  stampAgentFailure,
 } from '@/services/evaluation/agentReachability';
+import { resolveEmptyResponseTripsBreaker } from '@/services/evaluation/emptyResponse';
 import {
   runInSession,
   recordVerdict,
@@ -310,8 +312,10 @@ export async function executeRun(
   // a dead endpoint. Mirrors evaluationRunner.
   // (An unknown agentKey keeps its per-case error path below — resolve the
   // threshold leniently here.)
+  const runConnectorConfig = (() => { try { return buildAgentConfigForRun(run).connectorConfig; } catch { return undefined; } })();
   const endpointBreaker = new EndpointCircuitBreaker(
-    resolveUnreachableThreshold((() => { try { return buildAgentConfigForRun(run).connectorConfig; } catch { return undefined; } })()),
+    resolveUnreachableThreshold(runConnectorConfig),
+    { countEmptyResponses: resolveEmptyResponseTripsBreaker(runConnectorConfig) },
   );
 
   try {
@@ -575,11 +579,9 @@ export async function executeRun(
             } else if (agentFailed) {
               // #335: agent never produced a trajectory (timeout/crash) — surface
               // the underlying message instead of a silent empty `failed`.
-              Object.assign(
-                report,
-                buildEvaluatorErrorPatch('agent_failed', (evalError as any)?.message ?? String(evalError)),
-              );
-              (report as any).skipJudge = true;
+              // Transport / unreachable / empty-response errors additionally get
+              // the structured `agentError` (and the empty-response label).
+              stampAgentFailure(report as any, evalError);
             } else {
               (report as any).passFailStatus = failed ? 'failed' : 'passed';
               // Option B BC shim: legacy field empty for SDK runs;
@@ -923,6 +925,8 @@ async function saveReportWithModule(storage: IStorageModule, report: any): Promi
     traceFetchAttempts: report.traceFetchAttempts,
     lastTraceFetchAt: report.lastTraceFetchAt,
     traceError: report.traceError,
+    // Structured agent-step failure (transport / unreachable / empty-response).
+    agentError: report.agentError,
     spans: report.spans,
     connectorProtocol: report.connectorProtocol,
     // Set only by the agent (trace) judge provider -- see
@@ -981,6 +985,13 @@ export async function runSingleUseCase(
   const report = caseSpanContext
     ? await context.with(caseSpanContext, runEval)
     : await runEval();
+
+  // Agent step failed (connector threw / empty response): the report is
+  // FINAL — canonical agent-failure patch, never trace-polled or judged.
+  // Same seam as executeRun / executeEvaluationRun.
+  if (finalizeAgentFailedReport(report as any)) {
+    console.warn(`[BenchmarkRunner] [${testCase.id}] Agent request failed — not polled or judged: ${(report as any).traceError}`);
+  }
 
   // Stamp `judgeModelId` onto the report BEFORE saving so both code
   // paths (placeholder-update and create) persist the run-level cx
@@ -1050,6 +1061,8 @@ export async function runSingleUseCase(
       traceFetchAttempts: report.traceFetchAttempts,
       lastTraceFetchAt: report.lastTraceFetchAt,
       traceError: report.traceError,
+      // Structured agent-step failure (transport / unreachable / empty-response).
+      agentError: (report as any).agentError,
       spans: report.spans,
       connectorProtocol: report.connectorProtocol,
       // Set only by the agent (trace) judge provider -- see
