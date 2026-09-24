@@ -23,7 +23,10 @@ import { validateDeterministicEvaluator } from '@/lib/evaluators/deterministic';
 /**
  * Starting point for a deterministic evaluator's JSON definition. Metric
  * NAMES are free-form; only `compute.type` (ranked-hit | ranked-recall |
- * mrr) is interpreted. See docs/EVALUATORS.md "Deterministic evaluators".
+ * mrr | abstain) is interpreted. The prediction source is `tool-hits-ordered`
+ * (everything the agent retrieved) or `response-results` (the ranked list
+ * the agent returned as its answer). See docs/EVALUATORS.md "Deterministic
+ * evaluators" → "Prediction sources".
  */
 export const DETERMINISTIC_DEFINITION_TEMPLATE = {
   metrics: [
@@ -694,10 +697,11 @@ export const EvaluatorEditPage: React.FC = () => {
                   <CardTitle className="text-base">Deterministic definition *</CardTitle>
                   <CardDescription>
                     JSON with <code>metrics</code> (free-form names; <code>compute.type</code> ∈{' '}
-                    <code>ranked-hit</code> · <code>ranked-recall</code> · <code>mrr</code>), a{' '}
+                    <code>ranked-hit</code> · <code>ranked-recall</code> · <code>mrr</code> · <code>abstain</code>), a{' '}
                     <code>passPolicy</code> (<code>threshold</code> or <code>gates</code>) and <code>inputs</code>{' '}
                     (gold from <code>testCase.expected.ids</code> or an <code>expectedOutcomes</code> pattern;
-                    prediction via the <code>tool-hits-ordered</code> extractor). See docs/EVALUATORS.md.
+                    prediction via <code>tool-hits-ordered</code> — every id the agent retrieved — or{' '}
+                    <code>response-results</code> — the ranked list the agent returned as its answer). See docs/EVALUATORS.md.
                   </CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-2">

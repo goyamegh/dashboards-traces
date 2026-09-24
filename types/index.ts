@@ -316,7 +316,7 @@ export type EvaluatorKind = 'llm' | 'deterministic';
  * One metric of a deterministic evaluator. `name` is FREE-FORM data (the
  * evaluator author picks "Hit@5", "recall_at_20", …); Agent Health only
  * interprets `compute.type`, which must be one of the typed registry entries
- * in `lib/metrics` (`ranked-hit` | `ranked-recall` | `mrr`).
+ * in `lib/metrics` (`ranked-hit` | `ranked-recall` | `mrr` | `abstain`).
  */
 export interface DeterministicMetricSpec {
   name: string;
@@ -347,20 +347,38 @@ export interface DeterministicEvaluatorInputs {
         source: 'expectedOutcomes-pattern';
         pattern: string;
       };
-  prediction: {
-    /**
-     * Labelled LEGACY extractor over the report's stored trajectory — see
-     * `lib/scoring/prediction/toolHitsOrdered.ts` for the exact rule. A
-     * native connector output mapping is the follow-up.
-     */
-    source: 'tool-hits-ordered';
-    /** Keys that carry an item's id inside a hit object (default `['id', '_id']`). */
-    idFields?: string[];
-    /** Dotted paths (relative to the parsed tool result) whose value is an array of hits (default `['hits', 'results']`). */
-    hitsPaths?: string[];
-    /** Tool calls whose `toolArgs[argKey]` (string or string[]) names ids to EXCLUDE from the candidates (the query's own anchors). */
-    anchorTools?: Array<{ tool: string; argKey: string }>;
-  };
+  prediction:
+    | {
+        /**
+         * Labelled LEGACY extractor over the report's stored trajectory — see
+         * `lib/scoring/prediction/toolHitsOrdered.ts` for the exact rule.
+         * Credits everything the agent RETRIEVED (every stored tool hit).
+         */
+        source: 'tool-hits-ordered';
+        /** Keys that carry an item's id inside a hit object (default `['id', '_id']`). */
+        idFields?: string[];
+        /** Dotted paths (relative to the parsed tool result) whose value is an array of hits (default `['hits', 'results']`). */
+        hitsPaths?: string[];
+        /** Tool calls whose `toolArgs[argKey]` (string or string[]) names ids to EXCLUDE from the candidates (the query's own anchors). */
+        anchorTools?: Array<{ tool: string; argKey: string }>;
+      }
+    | {
+        /**
+         * The ranked list the agent RETURNED as its final answer — see
+         * `lib/scoring/prediction/responseResults.ts`. Read from the last
+         * `response` (else `assistant`) step: a JSON object/array, a fenced
+         * JSON block, a non-streaming connector's single raw payload, or
+         * (best-effort) list lines with an explicit `id` label. An empty or
+         * missing list is an EMPTY prediction (scorable), not unevaluable.
+         */
+        source: 'response-results';
+        /** Dotted path to the array inside the parsed JSON (default: auto-detect `results` / `hits` / `items` / first id-carrying array). */
+        path?: string;
+        /** Key carrying an item's id (default `id`). */
+        idField?: string;
+        /** Key carrying an item's 1-based rank (default `rank`); array order when absent. */
+        rankField?: string;
+      };
 }
 
 /**
@@ -578,16 +596,26 @@ export interface ScoringSnapshot {
   goldIdsUsed?: string[];
   /** Which gold source produced `goldIdsUsed` (R3). */
   goldRule?: 'expected.ids' | 'expected-outcomes-pattern';
-  /** Identifier of the rule used to extract the prediction from the agent output (R3). */
+  /** Identifier of the rule used to extract the prediction from the agent output (R3): `tool-hits-ordered` | `response-results`. */
   extractionRule?: string;
-  /** Extraction statistics for the labelled legacy extractor (R3). */
-  extraction?: { candidateCount: number; citedCount: number; anchorsRemoved: number };
+  /**
+   * Extraction statistics (R3). `citedCount` / `anchorsRemoved` are set by
+   * `tool-hits-ordered`; `parsedFrom` by `response-results`
+   * (`json` | `fenced` | `raw-event` | `text` | `none`).
+   */
+  extraction?: { candidateCount: number; citedCount?: number; anchorsRemoved?: number; parsedFrom?: string };
   /**
    * Rubrics that could not be computed for this report (input missing, judge
    * omitted the key, …). Excluded from the weighted mean — never scored as 0 —
    * but still counted in the rubric total so "scored X / Y" is honest.
    */
   unevaluable?: string[];
+  /**
+   * Metrics that by definition do not speak to this case (a ranked metric on
+   * an explicitly gold-empty case, `abstain` on a case with gold). Skipped:
+   * not in the mean, not a failure reason, not an error.
+   */
+  notApplicable?: string[];
 }
 
 // TestCaseRun = result of running a specific test case version (renamed from EvaluationReport)
