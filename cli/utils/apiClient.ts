@@ -23,6 +23,11 @@ export class ServerError extends Error {
   }
 }
 
+// The single stable benchmark CLI quick mode attaches every run to (defined
+// next to the find-or-create helper; re-exported here for callers that only
+// import the client).
+export { QUICK_MODE_BENCHMARK_NAME, QUICK_MODE_BENCHMARK_DESCRIPTION } from './quickModeBenchmark.js';
+
 /**
  * Health check response from server
  */
