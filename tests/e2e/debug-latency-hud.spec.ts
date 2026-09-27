@@ -9,9 +9,9 @@
  * Owner's information design (2026-09-27): the collapsed pill is the CURRENT
  * page + ONE number (time-to-ready) + a colour dot; expanded shows plain
  * rows -- Page ready / First paint / API count + wall span + slowest
- * requests / "Slow steps on this page" (only when recorded) / a one-line
- * prev-page footnote -- no legend, no navigation history, no summed API
- * duration. Everything resets on every route change.
+ * requests / "Slow steps on this page" (only when recorded) -- no legend,
+ * no navigation history, no previous page, no summed API duration.
+ * Everything resets on every route change.
  *
  * Debug mode is enabled through BOTH halves of the real mechanism (see
  * lib/debug.ts + App.tsx's `DebugStateSync`): `POST /api/debug` sets the
@@ -51,18 +51,16 @@ test.describe('Debug latency HUD', () => {
     await expect(pill).toHaveText(/^● benchmarks · \d+(\.\d)? (ms|s)$/, { timeout: 15_000 });
     await expect(pill).not.toContainText(/render|paint|api/i);
     await expect(page.getByTestId('debug-latency-hud-dot')).toHaveAttribute('data-band', /fast|ok|slow/);
-    const benchmarksReady = (await pill.innerText()).replace(/^● benchmarks · /, '');
 
     // Client-side nav (NOT page.goto -- a full reload would reset module state).
     await page.getByTestId('nav-evals3-runs').click();
     await expect(pill).toHaveText(/^● eval-runs · \d+(\.\d)? (ms|s)$/, { timeout: 15_000 });
 
-    // Expanded: current page only, the previous page is a one-line footnote.
+    // Expanded: current page only -- nothing about the page we came from.
     await page.getByTestId('debug-latency-hud').click();
     const panel = page.getByTestId('debug-latency-hud-panel');
     await expect(panel).toBeVisible();
-    await expect(page.getByTestId('debug-latency-hud-prev')).toHaveText(`prev page: benchmarks ${benchmarksReady}`);
-    await expect(panel).not.toContainText(/Last \d+ navigations/);
+    await expect(panel).not.toContainText(/Last \d+ navigations|prev page|● benchmarks/);
   });
 
   test('expanded view: plain-language rows, the slowest requests, API wall span ≤ page ready, no legend, steps only when recorded', async ({ page, request }) => {
@@ -108,7 +106,7 @@ test.describe('Debug latency HUD', () => {
 
     // No legend, no history, no "Operations", no summed api duration anywhere.
     const panelText = await panel.innerText();
-    expect(panelText).not.toMatch(/< 50 ms|< 200 ms|≥ 200 ms|Last \d+ navigations|Operations|measurements|render /);
+    expect(panelText).not.toMatch(/< 50 ms|< 200 ms|≥ 200 ms|Last \d+ navigations|prev page|Operations|measurements|render /);
     // No steps recorded on this page → the section is absent, and there is no placeholder sentence for it.
     await expect(page.getByTestId('debug-latency-hud-operations')).toHaveCount(0);
     expect(panelText).not.toMatch(/Slow steps|No operation timings/);
@@ -128,9 +126,8 @@ test.describe('Debug latency HUD', () => {
     await expect(page.getByTestId('debug-latency-hud-op')).toContainText('flowTransform');
     await expect(ops).not.toContainText(/< 50 ms|Clear/);
 
-    // Line budget: 3 summary rows + ≤5 request rows + the steps block + the prev-page footnote,
-    // and the steps block holds at most 3 rows.
-    expect(await panel.locator(':scope > div').count()).toBeLessThanOrEqual(3 + 5 + 1 + 1);
+    // Line budget: 3 summary rows + ≤5 request rows + the steps block (≤3 rows).
+    expect(await panel.locator(':scope > div').count()).toBeLessThanOrEqual(3 + 5 + 1);
     expect(await page.getByTestId('debug-latency-hud-op').count()).toBeLessThanOrEqual(3);
 
     // Everything is reset on the next route change: steps are gone, the pill is the new page's.

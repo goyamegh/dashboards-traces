@@ -278,9 +278,9 @@ first request start to the last response end; requests overlap, so durations
 are never summed) followed by the 5 slowest requests as method + path template
 (`GET /api/storage/evaluation-runs/:id 4.2 s`), a `Slow steps on this page`
 section only when the page recorded `lib/performance.ts` step timings
-(`startMeasure` / `endMeasure`, e.g. the trace flow transform), and a one-line
-`prev page: eval-runs 812 ms` footnote. Everything resets on every route
-change; there is no history and no legend. A `hide` control dismisses it until
+(`startMeasure` / `endMeasure`, e.g. the trace flow transform). Everything
+resets on every route change; nothing is kept about earlier pages, and there
+is no legend. A `hide` control dismisses it until
 the next page load. While active, `window.__agentHealthPerf` exposes
 `startMeasure` / `endMeasure` / `getMetrics` / `getOperationStats` /
 `getCurrentRecord` / `clearMetrics` / `logSummary` for ad-hoc timings from

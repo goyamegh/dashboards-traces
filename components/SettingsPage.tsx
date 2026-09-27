@@ -1067,7 +1067,7 @@ export const SettingsPage: React.FC = () => {
                     <strong>Latency HUD:</strong> A pill in the bottom-right corner shows the current page's time-to-ready (route change → data loaded and rendered) with a colour dot: green &lt; 1 s · amber &lt; 3 s · red otherwise. Click it (or hover / hold ⌥) to expand.
                   </div>
                   <div className="text-xs opacity-80">
-                    <strong>Expanded:</strong> Page ready · First paint · API request count + wall-clock span with the 5 slowest requests · slow internal steps (when the page recorded any) · previous page
+                    <strong>Expanded:</strong> Page ready · First paint · API request count + wall-clock span with the 5 slowest requests · slow internal steps (when the page recorded any)
                   </div>
                 </div>
               </AlertDescription>

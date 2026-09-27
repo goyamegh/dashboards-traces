@@ -60,7 +60,6 @@ API            37 requests · 13.2 s wall
   …(5 slowest)
 Slow steps on this page                  (only if the page recorded any)
   ● flowTransform · TraceFlowView        120 ms
-prev page: eval-runs 812 ms
 ```
 
 - **Page ready** — reported by the page itself on the instrumented pages;
@@ -76,7 +75,7 @@ prev page: eval-runs 812 ms
   (green < 50 ms, amber < 200 ms, red otherwise). Rendered only when there
   are any.
 
-Everything resets on every route change. There is no history and no legend.
+Everything resets on every route change. Nothing is kept about earlier pages, and there is no legend.
 
 ## Key Metrics to Monitor
 

@@ -10,9 +10,11 @@
  * exported function is a no-op: no timers, no `fetch` wrapping, no state kept
  * — zero behaviour change for normal users.
  *
- * ONE record per navigation — the current page only (the previous page's
- * route + ready time is kept as a one-line footnote, nothing else):
- *   1. `startNavigation(pathname)` — called by the top-level Layout on every
+ * ONE record per navigation — the current page only, nothing is kept about
+ * earlier pages:
+ *   1. `startNavigation(pathname)` — called from `PageLatencyNavigationBoundary`
+ *      (a sibling rendered BEFORE the page in Layout, in a layout effect, so it
+ *      runs before the new page's own effects fire its first fetches) on every
  *      route change. Resets everything (record, in-flight bookkeeping, the
  *      `lib/performance` step timings), maps the pathname to a stable route
  *      key so dynamic segments don't fragment the same page into many routes,
@@ -21,20 +23,23 @@
  *      makes once its own primary data fetch(es) settle. `routeKey` must be
  *      the SAME key `routeKeyFromPath` produces for that page's route: a
  *      stale call from a page the user has since navigated away from is
- *      ignored. Pages that don't report readiness get an automatic estimate
- *      instead (`settledMs`): first paint + every `/api/*` request settled,
- *      with a 1 s quiet period — i.e. "route change → last data fetch
- *      settled". The HUD shows `readyMs ?? settledMs`.
- *   3. While a navigation is active, `window.fetch` calls to `/api/*` are
- *      recorded (method, path template with ids collapsed to `:id`, duration)
- *      into whichever record was current WHEN THE CALL STARTED — a slow
- *      request must count against the page that made it, not whichever page
- *      the user has since navigated to — and only until that record is
- *      finalized by `markPageReady` (a background poll firing after "ready"
- *      must not keep inflating a number already reported as final) or
- *      instrumentation goes inactive. `apiWallMs` is the wall-clock span from
- *      the first request start to the last response end (requests overlap,
- *      so a plain sum of durations is meaningless).
+ *      ignored. Pages whose route is NOT in `ROUTE_KEY_PATTERNS` (i.e. that
+ *      don't report readiness) get an automatic, final estimate instead
+ *      (`settledMs`): first paint + every `/api/*` request settled, then 1 s
+ *      of quiet — i.e. "route change → last data fetch settled". The HUD
+ *      shows `readyMs ?? settledMs`. Instrumented routes never auto-settle
+ *      (a >1 s pause between their request bursts must not cut them short).
+ *   3. While a navigation is active, `window.fetch` calls to `/api/*` that
+ *      START before the record is final (`readyMs` / `settledMs` stamped) are
+ *      recorded (method, path template with ids collapsed to `:id`,
+ *      duration) into whichever record was current WHEN THE CALL STARTED — a
+ *      slow request must count against the page that made it, not whichever
+ *      page the user has since navigated to, and a request still in flight
+ *      when the page reports ready still belongs to it. Requests that start
+ *      AFTER the record is final (background polls) are not counted.
+ *      `apiWallMs` is the wall-clock span from the first request start to
+ *      the last response end (requests overlap, so a plain sum of durations
+ *      is meaningless).
  *
  * The named step timings recorded through `lib/performance.ts`
  * (`startMeasure` / `endMeasure`, e.g. `TraceFlowView.flowTransform`) are
@@ -84,14 +89,12 @@ export interface PageLatencyRecord {
   apiCount: number;
   /** Wall-clock span (ms) from the first `/api/*` request start to the last response end. */
   apiWallMs: number;
-  /** Every observed request (capped at {@link API_REQUEST_CAP}); the HUD lists the slowest 5. */
+  /**
+   * Observed requests, capped at {@link API_REQUEST_CAP}; once full, a new
+   * request only replaces the fastest kept one, so the slowest requests are
+   * always retained (the HUD lists the slowest 5). `apiCount` is uncapped.
+   */
   apiRequests: ApiRequestRecord[];
-}
-
-/** The previous page's footnote: route + the ready time it ended with. */
-export interface PreviousPageSummary {
-  route: string;
-  readyMs: number | null;
 }
 
 /** Per-operation aggregate of `lib/performance` measurements (one row in the HUD's "Slow steps" section). */
@@ -170,13 +173,18 @@ const SETTLE_QUIET_MS = 1000;
 
 let current: PageLatencyRecord | null = null;
 let currentStartPerf = 0; // performance.now() at navigation start (monotonic, for accurate deltas)
-let previous: PreviousPageSummary | null = null;
-// Per-navigation request bookkeeping (not displayed): in-flight count and
-// the raw perf timestamps the wall-clock span is derived from.
-let inFlight = 0;
-let firstRequestStartPerf: number | null = null;
-let lastResponseEndPerf: number | null = null;
 let settleTimer: ReturnType<typeof setTimeout> | null = null;
+
+/** Per-record request bookkeeping (not displayed), kept off the public record shape. */
+interface Bookkeeping {
+  startPerf: number;
+  inFlight: number;
+  firstRequestStartPerf: number | null;
+  lastResponseEndPerf: number | null;
+  /** Route is one of the instrumented pages that will call markPageReady itself. */
+  reportsReady: boolean;
+}
+const bookkeeping = new WeakMap<PageLatencyRecord, Bookkeeping>();
 
 type Listener = () => void;
 let listeners: Listener[] = [];
@@ -203,6 +211,11 @@ export function routeKeyFromPath(pathname: string): string {
   return pathname;
 }
 
+/** Whether a route key belongs to a page that reports readiness itself (so it must not auto-settle). */
+function isInstrumentedRoute(routeKey: string): boolean {
+  return ROUTE_KEY_PATTERNS.some(([, key]) => key === routeKey);
+}
+
 /**
  * Collapses id-like path segments (uuids, numbers, `tc-<ts>-<rand>`-style
  * generated ids, percent-encoded values) to `:id` and drops the query string,
@@ -222,10 +235,11 @@ export function templatePath(url: string): string {
       if (!seg) return seg;
       if (/^\d+$/.test(seg)) return ':id';
       if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg)) return ':id';
-      if (seg.includes('%')) return ':id';
-      if (/^[a-z]+[-_]\d{6,}/i.test(seg)) return ':id'; // tc-1716800000000-abc123 style
-      if (/\d/.test(seg) && seg.length >= 16) return ':id'; // long opaque ids
-      return seg;
+      if (seg.includes('%')) return ':id'; // percent-encoded user-chosen ids (names with spaces, …)
+      if (/^[a-z]+[-_]\d{6,}/i.test(seg)) return ':id'; // tc-1716800000000-abc123 style generated ids
+      if (seg.length >= 16 && /^[0-9a-f]+$/i.test(seg)) return ':id'; // long hex (trace/span ids)
+      if ((seg.match(/\d/g) ?? []).length >= 6) return ':id'; // digit-heavy opaque ids
+      return seg; // resource names and human slugs (`my-benchmark-2024`) stay as-is
     })
     .join('/');
 }
@@ -320,22 +334,41 @@ function clearSettleTimer(): void {
  * (Re)arms the automatic-readiness timer for the current record: fires after
  * {@link SETTLE_QUIET_MS} of no `/api/*` activity and stamps `settledMs` with
  * the moment the last thing settled (last response end, or first paint when
- * the page made no requests). Ignored once the page reported ready itself.
+ * the page made no requests). Never used for instrumented routes -- they
+ * report readiness themselves -- and ignored once a record is final.
  */
 function scheduleSettle(record: PageLatencyRecord): void {
   clearSettleTimer();
-  if (record.readyMs !== null) return;
+  const bk = bookkeeping.get(record);
+  if (!bk || bk.reportsReady || record.readyMs !== null || record.settledMs !== null) return;
   settleTimer = setTimeout(() => {
     settleTimer = null;
-    if (current !== record || record.readyMs !== null || inFlight > 0) return;
-    const lastPerf = lastResponseEndPerf ?? null;
-    const settled = lastPerf !== null
-      ? Math.round(lastPerf - currentStartPerf)
+    if (current !== record || record.readyMs !== null || record.settledMs !== null || bk.inFlight > 0) return;
+    const settled = bk.lastResponseEndPerf !== null
+      ? Math.round(bk.lastResponseEndPerf - bk.startPerf)
       : record.renderMs;
-    if (settled === null) return;
+    if (settled === null) return; // no paint observed yet (background tab): the paint callback re-arms
     record.settledMs = Math.max(settled, record.renderMs ?? 0);
     notify();
   }, SETTLE_QUIET_MS);
+}
+
+/** A record is final once the page reported ready or the automatic estimate was stamped. */
+function isFinal(record: PageLatencyRecord): boolean {
+  return record.readyMs !== null || record.settledMs !== null;
+}
+
+/** Keeps the request list bounded while guaranteeing the slowest requests survive. */
+function pushRequest(record: PageLatencyRecord, req: ApiRequestRecord): void {
+  if (record.apiRequests.length < API_REQUEST_CAP) {
+    record.apiRequests.push(req);
+    return;
+  }
+  let fastest = 0;
+  for (let i = 1; i < record.apiRequests.length; i++) {
+    if (record.apiRequests[i].ms < record.apiRequests[fastest].ms) fastest = i;
+  }
+  if (req.ms > record.apiRequests[fastest].ms) record.apiRequests[fastest] = req;
 }
 
 function wrapFetch(): void {
@@ -352,43 +385,40 @@ function wrapFetch(): void {
     // once, up front, deliberately NOT re-read from the mutable
     // module-level `current` inside `finally`.
     const recordAtCallStart = current;
-    const counts = isApiCall && recordAtCallStart !== null && recordAtCallStart.readyMs === null;
+    const bk = recordAtCallStart ? bookkeeping.get(recordAtCallStart) : undefined;
+    // Only requests that START before the record is final belong to it: a
+    // background poll firing after "ready" must not inflate a number already
+    // reported as final -- but a request still in flight WHEN the page
+    // reports ready is the page's own and is kept.
+    const counts = isApiCall && recordAtCallStart !== null && bk !== undefined && !isFinal(recordAtCallStart);
     const t0 = performance.now();
     if (counts) {
-      inFlight += 1;
-      if (firstRequestStartPerf === null) firstRequestStartPerf = t0;
+      bk!.inFlight += 1;
+      if (bk!.firstRequestStartPerf === null) bk!.firstRequestStartPerf = t0;
     }
     try {
       return await boundOriginal(...args);
     } finally {
       if (counts) {
-        // Only decrement the counter we incremented: a request that outlives
-        // its navigation must not touch the NEXT navigation's bookkeeping.
-        if (current === recordAtCallStart) inFlight = Math.max(0, inFlight - 1);
+        const record = recordAtCallStart!;
+        const b = bk!;
+        b.inFlight = Math.max(0, b.inFlight - 1);
         const t1 = performance.now();
-        // Also stop counting once the record has been finalized (markPageReady
-        // already fired) -- a background poll/refresh firing after "ready"
-        // must not keep inflating a number the HUD already reported as final
-        // -- and once debug/dev mode is turned off, even before the NEXT
-        // navigation gets a chance to actually unwrap `window.fetch`.
-        if (recordAtCallStart!.readyMs === null && isPageLatencyActive()) {
-          const record = recordAtCallStart!;
+        // Stop recording the instant debug/dev mode is turned off, even
+        // before the next navigation gets a chance to unwrap `window.fetch`.
+        if (isPageLatencyActive()) {
           record.apiCount += 1;
-          if (record.apiRequests.length < API_REQUEST_CAP) {
-            record.apiRequests.push({
-              method: apiMethodFrom(args[0], args[1]),
-              path: templatePath(url),
-              startMs: Math.round(t0 - currentStartPerf),
-              ms: Math.round(t1 - t0),
-            });
+          pushRequest(record, {
+            method: apiMethodFrom(args[0], args[1]),
+            path: templatePath(url),
+            startMs: Math.round(t0 - b.startPerf),
+            ms: Math.round(t1 - t0),
+          });
+          if (b.lastResponseEndPerf === null || t1 > b.lastResponseEndPerf) b.lastResponseEndPerf = t1;
+          if (b.firstRequestStartPerf !== null) {
+            record.apiWallMs = Math.round(b.lastResponseEndPerf - b.firstRequestStartPerf);
           }
-          if (current === record) {
-            if (lastResponseEndPerf === null || t1 > lastResponseEndPerf) lastResponseEndPerf = t1;
-            if (firstRequestStartPerf !== null) {
-              record.apiWallMs = Math.round(lastResponseEndPerf - firstRequestStartPerf);
-            }
-            if (inFlight === 0) scheduleSettle(record);
-          }
+          if (current === record && b.inFlight === 0) scheduleSettle(record);
           notify();
         }
       }
@@ -406,12 +436,6 @@ function unwrapFetch(): void {
   originalFetch = null;
 }
 
-function resetNavigationState(): void {
-  clearSettleTimer();
-  inFlight = 0;
-  firstRequestStartPerf = null;
-  lastResponseEndPerf = null;
-}
 
 /**
  * Called on every route change (Layout). Resets everything to the new page:
@@ -420,10 +444,7 @@ function resetNavigationState(): void {
  * instrumentation isn't active — e.g. the user just turned debug mode off.
  */
 export function startNavigation(pathname: string): void {
-  if (current) {
-    previous = { route: current.route, readyMs: current.readyMs ?? current.settledMs };
-  }
-  resetNavigationState();
+  clearSettleTimer();
   if (!isPageLatencyActive()) {
     current = null;
     unwrapFetch();
@@ -444,6 +465,14 @@ export function startNavigation(pathname: string): void {
     apiRequests: [],
   };
   const record = current;
+  const bk: Bookkeeping = {
+    startPerf: currentStartPerf,
+    inFlight: 0,
+    firstRequestStartPerf: null,
+    lastResponseEndPerf: null,
+    reportsReady: isInstrumentedRoute(route),
+  };
+  bookkeeping.set(record, bk);
   if (typeof requestAnimationFrame === 'function') {
     // Two frames: the first fires before the browser has necessarily
     // painted the just-committed DOM; by the second, paint has happened.
@@ -452,7 +481,7 @@ export function startNavigation(pathname: string): void {
         if (current === record && record.renderMs === null) {
           record.renderMs = Math.round(performance.now() - currentStartPerf);
           // A page that never fetches anything is "ready" at first paint.
-          if (inFlight === 0 && record.apiCount === 0) scheduleSettle(record);
+          if (bk.inFlight === 0 && record.apiCount === 0) scheduleSettle(record);
           notify();
         }
       });
@@ -494,17 +523,11 @@ export function getCurrentRecord(): PageLatencyRecord | null {
   return current;
 }
 
-/** The previous page's route + ready time (one-line footnote), or null. */
-export function getPreviousPage(): PreviousPageSummary | null {
-  return previous;
-}
-
-/** Test-only: reset all module state (record, previous page, fetch wrapping, listeners). */
+/** Test-only: reset all module state (record, timers, fetch wrapping, listeners). */
 export function __resetPageLatencyForTests(): void {
   current = null;
   currentStartPerf = 0;
-  previous = null;
-  resetNavigationState();
+  clearSettleTimer();
   unwrapFetch();
   removeConsoleApi();
   clearMetrics();
