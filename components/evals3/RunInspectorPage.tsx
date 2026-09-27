@@ -69,6 +69,10 @@ export const RunInspectorPage: React.FC = () => {
   // clicked. Resolve to a testCaseId once results are loaded.
   const [searchParams] = useSearchParams();
   const targetReportId = searchParams.get('reportId');
+  // The retired `/benchmarks/:id/runs/:runId?testCase=<id>` page selected a
+  // case by TEST CASE id; that URL now redirects here with the query string
+  // intact, so honour it as a second selector (reportId wins when both are set).
+  const targetTestCaseId = searchParams.get('testCase');
 
   // `mode` is derived from the route. Benchmark mode reads from
   // asyncBenchmarkStorage and PREFERS the run embedded in benchmark.runs[]
@@ -271,7 +275,9 @@ export const RunInspectorPage: React.FC = () => {
         // still did it until now.
         const targeted = targetReportId
           ? resultRows.find(r => r.reportId === targetReportId)
-          : null;
+          : targetTestCaseId
+            ? resultRows.find(r => r.testCaseId === targetTestCaseId)
+            : null;
         if (targeted) {
           setSelectedTcId(targeted.testCaseId);
           // Make sure a deep-linked row is actually revealed by the windowed list.
@@ -314,7 +320,7 @@ export const RunInspectorPage: React.FC = () => {
     } finally {
       setLoading(false);
     }
-  }, [benchmarkId, runId, mode, navigate, targetReportId]);
+  }, [benchmarkId, runId, mode, navigate, targetReportId, targetTestCaseId]);
 
   useEffect(() => { loadData(); }, [loadData]);
 
@@ -420,14 +426,19 @@ export const RunInspectorPage: React.FC = () => {
   // Reset per-run UI state when navigating between runs. React Router reuses
   // the component instance across param changes, so without this the previous
   // run's selection/window/deep-link handling would leak into the next run.
-  const lastRunIdRef = React.useRef(runId);
+  // The deep-link selectors are part of that identity too: an in-place
+  // navigation from `?reportId=a` to `?reportId=b` must re-run the one-shot
+  // selection rather than keep `a` selected.
+  const selectionKey = `${runId}|${targetReportId ?? ''}|${targetTestCaseId ?? ''}`;
+  const lastSelectionKeyRef = React.useRef(selectionKey);
   useEffect(() => {
-    if (lastRunIdRef.current === runId) return;
-    lastRunIdRef.current = runId;
+    if (lastSelectionKeyRef.current === selectionKey) return;
+    const runChanged = !lastSelectionKeyRef.current.startsWith(`${runId}|`);
+    lastSelectionKeyRef.current = selectionKey;
     initialSelectionDone.current = false;
     setSelectedTcId(null);
-    setVisibleCount(ROWS_PER_PAGE);
-  }, [runId]);
+    if (runChanged) setVisibleCount(ROWS_PER_PAGE);
+  }, [selectionKey, runId]);
 
   // Infinite scroll: reveal the next page of rows when the sentinel at the
   // bottom of the left list becomes visible.

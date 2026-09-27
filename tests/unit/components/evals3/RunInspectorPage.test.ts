@@ -1608,3 +1608,39 @@ describe('RunInspectorPage — "not run" tally is planned-aware on terminal runs
     expect(screen.getByText('/ 1')).toBeTruthy();
   });
 });
+
+describe('RunInspectorPage — legacy `?testCase=<id>` selector (redirected /benchmarks/:id/runs/:runId?testCase= links)', () => {
+  it('preselects the row for the given TEST CASE id when no ?reportId is present', async () => {
+    mockParams = { benchmarkId: 'bench-1', runId: 'run-1' };
+    mockSearchParams = new URLSearchParams('testCase=tc-2');
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(3));
+    const { getEvaluationRun } = require('@/services/client');
+    getEvaluationRun.mockRejectedValue(new Error('404 not found'));
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(3));
+    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(3));
+    mockGetReportById.mockResolvedValue({ id: 'rep-2', testCaseId: 'tc-2', trajectory: [] });
+    mockTestCaseGetById.mockResolvedValue({ id: 'tc-2', name: 'Case 2' });
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId('inspector-panel').getAttribute('data-tc-id')).toBe('tc-2'));
+    mockSearchParams = new URLSearchParams();
+  });
+
+  it('?reportId wins over ?testCase when both are present', async () => {
+    mockParams = { benchmarkId: 'bench-1', runId: 'run-1' };
+    mockSearchParams = new URLSearchParams('reportId=rep-1&testCase=tc-2');
+    mockBenchmarkGetById.mockResolvedValue(makeBenchmark(3));
+    const { getEvaluationRun } = require('@/services/client');
+    getEvaluationRun.mockRejectedValue(new Error('404 not found'));
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(3));
+    mockGetReportSummariesByIds.mockResolvedValue(makeSummaries(3));
+    mockGetReportById.mockResolvedValue({ id: 'rep-1', testCaseId: 'tc-1', trajectory: [] });
+    mockTestCaseGetById.mockResolvedValue({ id: 'tc-1', name: 'Case 1' });
+
+    renderPage();
+
+    await waitFor(() => expect(screen.getByTestId('inspector-panel').getAttribute('data-tc-id')).toBe('tc-1'));
+    mockSearchParams = new URLSearchParams();
+  });
+});

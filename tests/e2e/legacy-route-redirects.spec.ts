@@ -123,6 +123,13 @@ test.describe('Retired legacy routes redirect to their evals3 twin', () => {
     await expect(page.locator(`[data-testid="run-actions-menu-trigger-${RUN_ID}"]`)).toBeVisible({ timeout: 30000 });
   });
 
+  test('/benchmarks/:id/runs/:runId?testCase=<id> (retired page\'s case selector) → inspector with that case preselected', async ({ page }) => {
+    test.skip(!seeded, 'Could not seed fixtures (storage not configured?)');
+    await page.goto(`/benchmarks/${benchmarkId}/runs/${RUN_ID}?testCase=${testCaseId}`);
+    await page.waitForURL(`**/evaluations/benchmarks/${benchmarkId}/runs/${RUN_ID}/inspect?testCase=${testCaseId}`, { timeout: 15000 });
+    await expect(page.getByRole('tab', { name: /Judge Evaluation/ })).toBeVisible({ timeout: 30000 });
+  });
+
   test('/evaluations/runs/:runId (older detail page) → the run inspector, query string preserved', async ({ page }) => {
     test.skip(!seeded, 'Could not seed fixtures (storage not configured?)');
     await page.goto(`/evaluations/runs/${RUN_ID}?reportId=${RUN_REPORT_ID}`);
