@@ -61,7 +61,7 @@ const evaluatorBody = () => ({
   passPolicy: { kind: 'gates', gates: [{ metric: 'hit@5', min: 1 }] },
   inputs: {
     gold: { source: 'expectedOutcomes-pattern', pattern: '^Gold product id\\(s\\):\\s*(.+)$' },
-    prediction: { source: 'tool-hits-ordered', anchorTools: [{ tool: 'expand_relations', argKey: 'anchor_ids' }] },
+    prediction: { source: 'tool-hits-ordered', anchorTools: [{ tool: 'expand_relations', argKey: 'seed_ids' }] },
   },
 });
 
@@ -124,7 +124,7 @@ describe('retry-judgement pre-flight (read-only evaluability check)', () => {
     const repGold = await mkReport(tcGold, [
       step('a1', 'action', { toolName: 'search', toolArgs: { q: 'gel hand wraps' } }),
       step('r1', 'tool_result', { toolName: 'search', content: wrapped({ status: 'ok', hits: [{ id: '44793' }] }) }),
-      step('a2', 'action', { toolName: 'expand_relations', toolArgs: { anchor_ids: ['44793'] } }),
+      step('a2', 'action', { toolName: 'expand_relations', toolArgs: { seed_ids: ['44793'] } }),
       step('r2', 'tool_result', { toolName: 'expand_relations', content: wrapped({ status: 'ok', forward: { records: [{ id: '290226' }, { id: '706155' }, { id: '116770' }] } }) }),
       step('a3', 'action', { toolName: 'return_results', toolArgs: { ids: ['290226', '706155', '116770'] } }),
       step('r3', 'tool_result', { toolName: 'return_results', content: wrapped({ status: 'ok', records: [{ id: '290226' }, { id: '706155' }, { id: '116770' }] }) }),

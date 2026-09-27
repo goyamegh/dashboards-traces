@@ -20,7 +20,7 @@ import {
 import { parseToolResultContent } from '@/lib/scoring/prediction/toolHitsOrdered';
 import type { DeterministicEvaluatorInputs } from '@/types';
 
-const TOOL_HITS: DeterministicEvaluatorInputs['prediction'] = { source: 'tool-hits-ordered', anchorTools: [{ tool: 'expand_relations', argKey: 'anchor_ids' }] };
+const TOOL_HITS: DeterministicEvaluatorInputs['prediction'] = { source: 'tool-hits-ordered', anchorTools: [{ tool: 'expand_relations', argKey: 'seed_ids' }] };
 const RESPONSE: DeterministicEvaluatorInputs['prediction'] = { source: 'response-results' };
 
 const step = (type: string, extra: Record<string, unknown>) => ({ id: `${type}-${Math.random()}`, timestamp: 1, type, ...extra }) as any;
@@ -155,7 +155,7 @@ describe('extractCandidates — a response-results evaluator never falls through
 });
 
 describe('extractCandidates — anchor filter AFTER extraction', () => {
-  const anchorCall = step('action', { toolName: 'expand_relations', toolArgs: { anchor_ids: ['anchor'] } });
+  const anchorCall = step('action', { toolName: 'expand_relations', toolArgs: { seed_ids: ['anchor'] } });
 
   it('removes anchors from the winning source and reports the count; a list emptied by the filter still names its source', () => {
     const r = extractCandidates({ trajectory: [anchorCall, hits('search', 'anchor', 'x')] }, { prediction: TOOL_HITS });

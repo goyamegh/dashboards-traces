@@ -324,7 +324,7 @@ describe('owner incident — misreported "not evaluable" cases (synthetic)', () 
       passPolicy: { kind: 'gates', gates: [{ metric: 'hit@5', min: 1 }] },
       inputs: {
         gold: { source: 'expectedOutcomes-pattern', pattern: '^Gold product id\\(s\\):\\s*(.+)$' },
-        prediction: { source: 'tool-hits-ordered', idFields: ['id', '_id'], hitsPaths: ['hits', 'results'], anchorTools: [{ tool: 'expand_relations', argKey: 'anchor_ids' }] },
+        prediction: { source: 'tool-hits-ordered', idFields: ['id', '_id'], hitsPaths: ['hits', 'results'], anchorTools: [{ tool: 'expand_relations', argKey: 'seed_ids' }] },
       },
     }),
   } as Evaluator;
@@ -338,20 +338,20 @@ describe('owner incident — misreported "not evaluable" cases (synthetic)', () 
   const trajectoryAnchorOnlyHits = [
     t('a1', 'action', { toolName: 'search', toolArgs: { q: 'gel hand wraps' } }),
     t('r1', 'tool_result', { toolName: 'search', content: wrapped({ status: 'ok', hit_count: 1, hits: [{ id: '44793', title: 'anchor product' }] }) }),
-    t('a2', 'action', { toolName: 'expand_relations', toolArgs: { anchor_ids: ['44793'], relationship: 'ALSO_BOUGHT' } }),
+    t('a2', 'action', { toolName: 'expand_relations', toolArgs: { seed_ids: ['44793'], relationship: 'ALSO_BOUGHT' } }),
     t('r2', 'tool_result', { toolName: 'expand_relations', content: wrapped({ status: 'ok', forward: { records: [{ id: '290226' }, { id: '706155' }, { id: '116770' }] }, reverse: { records: [] } }) }),
     t('a3', 'action', { toolName: 'return_results', toolArgs: { ids: ['290226', '116770', '706155'] } }),
     t('r3', 'tool_result', { toolName: 'return_results', content: wrapped({ status: 'ok', result_count: 3, records: [{ id: '290226' }, { id: '706155' }, { id: '116770' }] }) }),
     t('resp', 'response', { content: 'Ranked results (3):\n1. id 290226 — first gel wrap\n2. id 706155 — other wrap\n3. id 116770 — second gel wrap\nAnchor ids (excluded): 44793' }),
   ];
-  const rawEventsCase1 = [{ answer: null, results: [{ id: '290226', rank: 1 }, { id: '706155', rank: 2 }, { id: '116770', rank: 3 }], anchor_ids: ['44793'], results_source: 'return_results' }];
+  const rawEventsCase1 = [{ answer: null, results: [{ id: '290226', rank: 1 }, { id: '706155', rank: 2 }, { id: '116770', rank: 3 }], seed_ids: ['44793'], results_source: 'return_results' }];
 
   /** Case 2: every tool result is a rendered `tool(args) -> [{text}]` string (unparseable as a whole); gold at rank 4. */
   const trajectoryRendered = [
     t('a1', 'action', { toolName: 'search', toolArgs: { q: 'daypack' } }),
     t('r1', 'tool_result', { toolName: 'search', content: wrapped({ status: 'ok', hits: [{ id: '292003' }] }, 'search({"q":"daypack"})') }),
-    t('a2', 'action', { toolName: 'expand_relations', toolArgs: { anchor_ids: ['292003'] } }),
-    t('r2', 'tool_result', { toolName: 'expand_relations', content: wrapped({ status: 'ok', forward: { records: [{ id: '151903' }, { id: '399426' }, { id: '233140' }, { id: '428457' }, { id: '610678' }] } }, 'expand_relations({"anchor_ids":["292003"]})') }),
+    t('a2', 'action', { toolName: 'expand_relations', toolArgs: { seed_ids: ['292003'] } }),
+    t('r2', 'tool_result', { toolName: 'expand_relations', content: wrapped({ status: 'ok', forward: { records: [{ id: '151903' }, { id: '399426' }, { id: '233140' }, { id: '428457' }, { id: '610678' }] } }, 'expand_relations({"seed_ids":["292003"]})') }),
     t('a3', 'action', { toolName: 'return_results', toolArgs: { ids: ['151903', '399426', '233140', '428457', '610678'] } }),
     t('r3', 'tool_result', { toolName: 'return_results', content: wrapped({ status: 'ok', result_count: 5, records: ['151903', '399426', '233140', '428457', '610678'].map(id => ({ id })) }, 'return_results({"ids":[…]})') }),
     t('resp', 'response', { content: 'Ranked results (5):\n1. id 151903 — pack A\n2. id 399426 — pack B\n3. id 233140 — pack C\n4. id 428457 — daypack\n5. id 610678 — pack E' }),
@@ -361,11 +361,11 @@ describe('owner incident — misreported "not evaluable" cases (synthetic)', () 
   const trajectoryAbstain = [
     t('a1', 'action', { toolName: 'search', toolArgs: { q: 'arrow rest' } }),
     t('r1', 'tool_result', { toolName: 'search', content: wrapped({ status: 'ok', hits: [{ id: '956711' }] }) }),
-    t('a2', 'action', { toolName: 'expand_relations', toolArgs: { anchor_ids: ['956711'] } }),
+    t('a2', 'action', { toolName: 'expand_relations', toolArgs: { seed_ids: ['956711'] } }),
     t('r2', 'tool_result', { toolName: 'expand_relations', content: wrapped({ status: 'ok', forward: { records: [] }, reverse: { records: [] }, neighbour_count: 0 }) }),
     t('resp', 'response', { content: 'No results committed (results_source=abstain).\nAnchor ids (resolved, excluded from results): 956711' }),
   ];
-  const rawEventsAbstain = [{ answer: null, results: [], anchor_ids: ['956711'], results_source: 'abstain' }];
+  const rawEventsAbstain = [{ answer: null, results: [], seed_ids: ['956711'], results_source: 'abstain' }];
 
   const testCases: Record<string, { expectedOutcomes: string[] }> = {
     'tc-1': { expectedOutcomes: ['Gold product id(s): 290226, 116770 (First Gel Hand Wrap; Second Gel Hand Wrap)', 'The agent resolves the anchor and keeps only gel hand wraps.'] },
