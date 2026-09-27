@@ -36,8 +36,8 @@ import {
   deleteEvaluationRun,
   promoteEvaluationRun,
 } from '@/services/client/evaluationRunsApi';
-import { startRetryJudgementJob } from '@/services/client/retryJudgementJobs';
 import { RunConfigDialog } from './RunConfigDialog';
+import { RetryJudgementConfirmDialog } from './RetryJudgementConfirmDialog';
 import { RunActionsMenu } from './RunActionsMenu';
 import { Breadcrumbs } from './Breadcrumbs';
 import { useOnRetryJudgementFinished } from '@/hooks/useRetryJudgementJob';
@@ -88,6 +88,7 @@ export const EvalRunDetailPage: React.FC = () => {
   const [promoteName, setPromoteName] = useState('');
   const [promoting, setPromoting] = useState(false);
   const [rerunDialogOpen, setRerunDialogOpen] = useState(false);
+  const [retryJudgementDialogOpen, setRetryJudgementDialogOpen] = useState(false);
   // Provenance: when this run was itself created via re-run, look up the
   // source run's name for the chip (falls back to a truncated id if the
   // source run was since deleted — the link is a point-in-time provenance
@@ -161,12 +162,10 @@ export const EvalRunDetailPage: React.FC = () => {
     navigate('/evaluations/runs');
   };
 
-  // Fire-and-forget (client job store polls; the toaster announces the
-  // summary) — refresh when a job for this run finishes.
-  const handleRetryJudgement = async () => {
-    if (!runId) return;
-    await startRetryJudgementJob(runId, { scope: 'errored' }, run?.name);
-  };
+  // Opens the evaluator / judge-model / scope picker (#509); the dialog hands
+  // the 202 job to the client job store and we refresh — silently — when a
+  // job for this run finishes (the dialog may have been closed long before).
+  const handleRetryJudgement = () => { setRetryJudgementDialogOpen(true); };
   useOnRetryJudgementFinished(job => { if (job.runId === runId) void loadRun(); });
 
   if (loading) {
@@ -322,7 +321,7 @@ export const EvalRunDetailPage: React.FC = () => {
                 onRerun={() => setRerunDialogOpen(true)}
                 canRetryJudgement={getRunActionVisibility(run).canRetryJudgement}
                 retryJudgementDisabledReason={getRunActionVisibility(run).retryJudgementDisabledReason}
-                judgeFailedCount={getRunActionVisibility(run).judgeFailedCount}
+                retryJudgementCount={getRunActionVisibility(run).retryJudgementCount}
                 onDelete={handleDelete}
                 onCancel={handleCancel}
                 onRetryJudgement={handleRetryJudgement}
@@ -500,6 +499,16 @@ export const EvalRunDetailPage: React.FC = () => {
         open={rerunDialogOpen}
         onOpenChange={setRerunDialogOpen}
         onRerun={newRunId => navigate(`/evaluations/runs/${newRunId}`)}
+      />
+
+      {/* Retry judgement picker (evaluator / judge model / scope) */}
+      <RetryJudgementConfirmDialog
+        run={run}
+        judgeFailedCount={getRunActionVisibility(run).judgeFailedCount}
+        rejudgeableCount={getRunActionVisibility(run).rejudgeableCount}
+        open={retryJudgementDialogOpen}
+        onOpenChange={setRetryJudgementDialogOpen}
+        onComplete={() => { loadRun(); }}
       />
     </div>
   );

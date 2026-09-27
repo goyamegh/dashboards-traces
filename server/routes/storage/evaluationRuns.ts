@@ -658,14 +658,18 @@ router.post('/api/storage/evaluation-runs/:id/rerun', async (req: Request, res: 
 // the background, let the caller poll for progress/completion — see GET
 // .../retry-judgement/status below.
 //
-// BODY (optional): `{ scope?: 'errored' | 'all', evaluatorId?: string }`.
-// `?scope=` on the query string is still honoured; the body wins when both
-// are present. `evaluatorId` must name an existing (system or stored)
-// evaluator → 400 otherwise; absent → the run's own evaluator (pre-existing
-// behaviour). A `kind: 'deterministic'` evaluator re-scores every selected
-// report in code from its stored trajectory — no LLM is called (see
-// services/evaluation/retryJudgement.ts). Field names mirror PR #509's
-// picker so the two reconcile trivially.
+// BODY (all optional; the dialog sends all three — see
+// components/evals3/RetryJudgementConfirmDialog.tsx):
+//   { scope?: 'errored' | 'all', evaluatorId?: string, judgeModelId?: string | null }
+// `?scope=` on the query string is still honoured for older callers; the
+// body wins when both are present. `evaluatorId` must name an existing
+// (system or stored) evaluator → 400 otherwise; `judgeModelId` must be a
+// non-empty string, or `null` for "use the evaluator default". Absent keys
+// inherit the run's own evaluator / judge model (pre-existing behaviour).
+// A `kind: 'deterministic'` evaluator (override OR the run's own) re-scores
+// every selected report in code from its stored trajectory — no LLM is
+// called — and requires scope 'all' (400 otherwise; see
+// DETERMINISTIC_SCOPE_ERROR in services/evaluation/retryJudgement.ts).
 router.post('/api/storage/evaluation-runs/:id/retry-judgement', async (req: Request, res: Response) => {
   try {
     const { id } = req.params;
@@ -709,6 +713,16 @@ router.post('/api/storage/evaluation-runs/:id/retry-judgement', async (req: Requ
         : await storage.evaluators.getById(run.evaluatorId).catch(() => null);
       if (own && isDeterministicEvaluator(own)) {
         return res.status(400).json({ error: DETERMINISTIC_SCOPE_ERROR });
+      }
+    }
+    if (body.judgeModelId !== undefined) {
+      const judgeModelId = body.judgeModelId;
+      if (judgeModelId === null) {
+        overrides.judgeModelId = null;
+      } else if (typeof judgeModelId === 'string' && judgeModelId.trim()) {
+        overrides.judgeModelId = judgeModelId;
+      } else {
+        return res.status(400).json({ error: 'judgeModelId must be a non-empty string, or null for the evaluator default' });
       }
     }
 

@@ -314,10 +314,6 @@ export async function rerunEvaluationRun(id: string, overrides?: RerunOverrides)
  * counts the same "completed agent, no judge verdict" cases the server's
  * `scope=errored` selection re-judges.
  */
-export async function retryJudgementEvaluationRun(id: string): Promise<RetryJudgementSummary> {
-  return retryJudgement(id, 'errored');
-}
-
 /**
  * Update an evaluation run (partial).
  */
@@ -385,7 +381,10 @@ export function groupNotEvaluableReasons(results: ReadonlyArray<Pick<RetryJudgem
 
 export interface RetryJudgementRequest {
   scope?: 'errored' | 'all';
+  /** Evaluator to judge with; omitted → the run's own evaluator. */
   evaluatorId?: string;
+  /** Judge model; `null` = evaluator default; omitted → the run's own judge model. */
+  judgeModelId?: string | null;
 }
 
 /** Mirrors services/evaluation/retryJudgement.ts `RetryJudgementPreflight`. */
@@ -434,7 +433,8 @@ export async function startRetryJudgement(id: string, request: RetryJudgementReq
   const response = await fetch(`/api/storage/evaluation-runs/${id}/retry-judgement?scope=${scope}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ scope, ...(request.evaluatorId ? { evaluatorId: request.evaluatorId } : {}) }),
+    // Full #509 body: { scope, evaluatorId?, judgeModelId? (null = evaluator default) }.
+    body: JSON.stringify({ scope: 'errored', ...request }),
   });
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));
@@ -487,12 +487,13 @@ const RETRY_JUDGEMENT_POLL_MAX_ATTEMPTS = 900;
  * the server kept working. `onProgress(completed, total)` fires after the
  * initial POST and after every poll, so callers can render live progress.
  */
+
 export async function retryJudgement(
   id: string,
-  scope: 'errored' | 'all' = 'errored',
+  request: RetryJudgementRequest = {},
   onProgress?: (completed: number, total: number) => void
 ): Promise<RetryJudgementSummary> {
-  const started = await startRetryJudgement(id, { scope });
+  const started = await startRetryJudgement(id, request);
   onProgress?.(0, started.total);
 
   for (let attempt = 0; attempt < RETRY_JUDGEMENT_POLL_MAX_ATTEMPTS; attempt++) {

@@ -31,7 +31,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
-import { listEvaluationRuns, updateEvaluationRun, deleteEvaluationRun, cancelEvaluationRun, startRetryJudgementJob } from '@/services/client';
+import { listEvaluationRuns, updateEvaluationRun, deleteEvaluationRun, cancelEvaluationRun } from '@/services/client';
 import { RetryJudgementJobPill } from './RetryJudgementJobs';
 import { useOnRetryJudgementFinished } from '@/hooks/useRetryJudgementJob';
 import { cancelBenchmarkRun } from '@/services/client/benchmarkApi';
@@ -45,6 +45,7 @@ import { formatRelativeTime, getModelName, getJudgeModelLabel, getEvaluatorLabel
 import { Breadcrumbs } from './Breadcrumbs';
 import { InlineRenameField } from './InlineRenameField';
 import { RunConfigDialog } from './RunConfigDialog';
+import { RetryJudgementConfirmDialog } from './RetryJudgementConfirmDialog';
 import { RunActionsMenu } from './RunActionsMenu';
 
 // ─── Time Filter ─────────────────────────────────────────────────────────────
@@ -191,6 +192,7 @@ export const EvalRunsPage: React.FC = () => {
   // benchmark-embedded runs aren't supported — see renderRunRow).
   const [rerunTarget, setRerunTarget] = useState<EvaluationRun | null>(null);
   const [rerunDialogOpen, setRerunDialogOpen] = useState(false);
+  const [retryJudgementTarget, setRetryJudgementTarget] = useState<EvaluationRun | null>(null);
 
   // Annotation counts: runId → { totalAnnotations, testCasesWithAnnotations, firstTestCaseId }
   const [annotationMap, setAnnotationMap] = useState<Map<string, { total: number; tcCount: number; firstTcId: string }>>(new Map());
@@ -471,13 +473,13 @@ export const EvalRunsPage: React.FC = () => {
     await loadData();
   };
 
-  // Fire-and-forget: the job runs in the background (client job store); the
-  // row shows a "Re-judging n/N…" pill meanwhile and the list refreshes when
-  // the job finishes (useOnRetryJudgementFinished below). Only the 202 is
-  // awaited, so a refused retry (409/400) still surfaces through the kebab's
-  // inline error.
-  const handleRetryJudgementRow = async (rr: RunRow) => {
-    await startRetryJudgementJob(rr.run.id, { scope: 'errored' }, rr.run.name);
+  // Opens the evaluator / judge-model / scope picker (#509) for this row's
+  // run; Confirm hands the 202 job to the client job store, the row shows a
+  // "Re-judging n/N…" pill meanwhile and the list refreshes when the job
+  // finishes (useOnRetryJudgementFinished below) — the dialog may be closed
+  // long before that.
+  const handleRetryJudgementRow = (rr: RunRow) => {
+    setRetryJudgementTarget(rr.run as unknown as EvaluationRun);
   };
   useOnRetryJudgementFinished(() => { void loadData(); });
 
@@ -859,6 +861,7 @@ export const EvalRunsPage: React.FC = () => {
                 isRunning={visibility.canCancel}
                 canRetryJudgement={visibility.canRetryJudgement}
                 retryJudgementDisabledReason={visibility.retryJudgementDisabledReason}
+                retryJudgementCount={visibility.retryJudgementCount}
                 onDelete={() => handleDeleteRow(rr)}
                 onCancel={() => handleCancelRow(rr)}
                 onRetryJudgement={() => handleRetryJudgementRow(rr)}
@@ -1254,6 +1257,16 @@ export const EvalRunsPage: React.FC = () => {
         open={rerunDialogOpen}
         onOpenChange={open => { setRerunDialogOpen(open); if (!open) setRerunTarget(null); }}
         onRerun={newRunId => navigate(`/evaluations/runs/${newRunId}`)}
+      />
+
+      {/* Retry judgement picker (evaluator / judge model / scope) — shared with the run pages */}
+      <RetryJudgementConfirmDialog
+        run={retryJudgementTarget}
+        judgeFailedCount={getRunActionVisibility(retryJudgementTarget).judgeFailedCount}
+        rejudgeableCount={getRunActionVisibility(retryJudgementTarget).rejudgeableCount}
+        open={retryJudgementTarget !== null}
+        onOpenChange={open => { if (!open) setRetryJudgementTarget(null); }}
+        onComplete={() => { loadData(); }}
       />
     </div>
   );
