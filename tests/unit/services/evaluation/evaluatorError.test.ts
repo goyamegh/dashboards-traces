@@ -74,3 +74,18 @@ describe('buildEvaluatorErrorPatch (issue #242)', () => {
     expect(patch.llmJudgeReasoning).toMatch(/excluded from pass-rate aggregation/i);
   });
 });
+
+describe("buildEvaluatorErrorPatch('not_evaluable') — a deterministic evaluator whose rules do not apply", () => {
+  it('is tagged not_evaluable (never judge_failed), keeps the errored bucket, and explains without blaming a judge', () => {
+    const patch = buildEvaluatorErrorPatch('not_evaluable', 'Ranked retrieval: no candidate ids found in the final answer, a results tool or the stored tool results');
+    expect(patch.metricsStatus).toBe('error');
+    expect(patch.passFailStatus).toBeNull();
+    expect(patch.traceError).toBe('Not evaluable (kind=not_evaluable): Ranked retrieval: no candidate ids found in the final answer, a results tool or the stored tool results');
+    expect(patch.traceError).not.toMatch(/judge_failed/);
+    expect(patch.llmJudgeReasoning).toMatch(/^\*\*Not evaluable by this evaluator\.\*\*/);
+    expect(patch.llmJudgeReasoning).toMatch(/neither a failed verdict nor a judge error/);
+    expect(patch.llmJudgeReasoning).toMatch(/pick an evaluator that fits these cases or add gold ids/i);
+    expect(patch.llmJudgeReasoning).not.toMatch(/Evaluator could not run/);
+    expect(patch.llmJudgeReasoning).toMatch(/\*\*Reason:\*\* Ranked retrieval: no candidate ids found/);
+  });
+});

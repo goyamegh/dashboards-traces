@@ -166,6 +166,8 @@ export interface StorageRun {
   annotations?: StorageRunAnnotation[];
   trajectory?: unknown[];
   rawEvents?: unknown[];
+  /** Connector-declared typed output (see TestCaseRun.output). */
+  output?: unknown;
   logs?: unknown[];
   /** Which evaluator produced this run's verdict (see EvaluationReport/BenchmarkRun.evaluatorId). */
   evaluatorId?: string;

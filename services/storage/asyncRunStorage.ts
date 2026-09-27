@@ -102,6 +102,7 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     spans?: unknown[];
     connectorProtocol?: string;
     judgeMode?: 'trajectory-only' | 'trace-tools';
+    output?: unknown;
   };
 
   return {
@@ -175,6 +176,7 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     traceId: (stored as any).traceId,
     sessionId: (stored as any).sessionId,
     rawEvents: stored.rawEvents as any[] | undefined,
+    output: storedAny.output,
     logs: (stored.logs || []) as OpenSearchLog[],
     improvementStrategies: stored.improvementStrategies as any[] | undefined,
     // The judge's full persisted response (raw model text, token counts,
@@ -231,6 +233,7 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
     metrics: report.metrics as StorageRun['metrics'],
     trajectory: report.trajectory,
     rawEvents: report.rawEvents,
+    ...(report.output !== undefined ? { output: report.output } : {}),
     logs: report.logs || report.openSearchLogs,
     improvementStrategies: report.improvementStrategies,
   };

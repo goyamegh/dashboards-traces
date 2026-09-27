@@ -41,6 +41,7 @@ import { fetchRunMetrics, formatCost, formatDuration, formatTokens } from '@/ser
 import { TrajectoryView } from './TrajectoryView';
 import { RawEventsPanel } from './RawEventsPanel';
 import { MatcherResultsPanel } from './MatcherResultsPanel';
+import { ScoringDiagnosticsView } from './evals3/ScoringDiagnosticsView';
 import { getJudgeReasoningText, getJudgeMatcherResults } from '@/lib/matchers/judgeAccessor';
 import { resolveImprovementStrategies } from '@/lib/judgeStrategies';
 import TraceVisualization from './traces/TraceVisualization';
@@ -519,26 +520,40 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
           </Card>
         )}
 
-        {/* Trace Mode: Error state */}
-        {!hideMetrics && liveReport.metricsStatus === 'error' && (
-          <Card className="bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 mt-4">
-            <CardContent className="p-3 flex items-center gap-3">
-              <AlertCircle className="text-red-700 dark:text-red-400" size={18} />
-              <div>
-                <div className="text-sm font-medium text-red-700 dark:text-red-400">
-                  {/* Derive the title from the error kind label (e.g. "Agent run
-                      did not complete", "Judge evaluation failed") instead of
-                      always saying "Failed to fetch traces" — which is wrong for
-                      agent timeouts / judge errors (#335). */}
-                  {(liveReport.traceError || '').match(/^(.*?) \(kind=/)?.[1] || 'Evaluation error'}
+        {/* Trace Mode: Error state. `kind=not_evaluable` (a deterministic
+            evaluator whose rules did not apply) is amber, not red — it is
+            neither a failed verdict nor a judge error — and shows the
+            structured diagnostics (gold source, candidate sources tried). */}
+        {!hideMetrics && liveReport.metricsStatus === 'error' && (() => {
+          const notEvaluable = /kind=not_evaluable/.test(liveReport.traceError || '');
+          return (
+            <Card
+              data-testid={notEvaluable ? 'report-not-evaluable-card' : 'report-evaluator-error-card'}
+              className={notEvaluable
+                ? 'bg-amber-50 dark:bg-amber-500/10 border-amber-300 dark:border-amber-500/30 mt-4'
+                : 'bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 mt-4'}
+            >
+              <CardContent className="p-3 flex items-start gap-3">
+                <AlertCircle className={notEvaluable ? 'text-amber-700 dark:text-amber-400 mt-0.5' : 'text-red-700 dark:text-red-400 mt-0.5'} size={18} />
+                <div className="min-w-0 space-y-1">
+                  <div className={`text-sm font-medium ${notEvaluable ? 'text-amber-800 dark:text-amber-300' : 'text-red-700 dark:text-red-400'}`}>
+                    {/* Derive the title from the error kind label (e.g. "Agent run
+                        did not complete", "Judge evaluation failed") instead of
+                        always saying "Failed to fetch traces" — which is wrong for
+                        agent timeouts / judge errors (#335). */}
+                    {(liveReport.traceError || '').match(/^(.*?) \(kind=/)?.[1] || 'Evaluation error'}
+                  </div>
+                  <div className="text-xs text-muted-foreground break-words">
+                    {liveReport.traceError || 'Unknown error'}
+                  </div>
+                  {notEvaluable && liveReport.scoringSnapshot?.diagnostics && (
+                    <ScoringDiagnosticsView diagnostics={liveReport.scoringSnapshot.diagnostics} testId="report-not-evaluable-diagnostics" className="pt-1" />
+                  )}
                 </div>
-                <div className="text-xs text-muted-foreground">
-                  {liveReport.traceError || 'Unknown error'}
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        )}
+              </CardContent>
+            </Card>
+          );
+        })()}
 
         {/* Evaluation Error: Agent endpoint failed — hidden in inspector panel (status shown in compact bar) */}
         {!hideMetrics && liveReport.status === 'failed' && getJudgeReasoningText(liveReport) && (
@@ -1164,7 +1179,19 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                 m => m.method !== 'llm-judge'
               );
               const merged = [...codeEntries, ...judgeEntries];
-              return merged.length > 0 ? <MatcherResultsPanel results={merged} /> : null;
+              return (
+                <>
+                  {merged.length > 0 ? <MatcherResultsPanel results={merged} /> : null}
+                  {/* Deterministic provenance: where the gold and the candidate
+                      ids came from (every source tried, in order). */}
+                  {liveReport.scoringSnapshot?.diagnostics && (
+                    <div className="mt-3 rounded-md border bg-muted/30 p-2.5" data-testid="judge-tab-scoring-diagnostics">
+                      <div className="text-[10px] uppercase tracking-wide text-muted-foreground mb-1">Deterministic scoring provenance</div>
+                      <ScoringDiagnosticsView diagnostics={liveReport.scoringSnapshot.diagnostics} />
+                    </div>
+                  )}
+                </>
+              );
             })()}
 
             {/* Judge Reasoning card removed — judge data now flows through

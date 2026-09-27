@@ -346,6 +346,13 @@ export interface DeterministicEvaluatorInputs {
         hitsPaths?: string[];
         /** Tool calls whose `toolArgs[argKey]` (string or string[]) names ids to EXCLUDE from the candidates (the query's own anchors). */
         anchorTools?: Array<{ tool: string; argKey: string }>;
+        /**
+         * Regex (case-insensitive) over tool NAMES identifying the tool whose
+         * result IS the agent's returned ranked list (candidate-chain source
+         * `results-tool`; default matches `return_results` / `final_results` /
+         * `submit_results` / `results`).
+         */
+        resultsTool?: string;
       }
     | {
         /**
@@ -364,6 +371,36 @@ export interface DeterministicEvaluatorInputs {
         /** Key carrying an item's 1-based rank (default `rank`); array order when absent. */
         rankField?: string;
       };
+}
+
+/**
+ * Why a deterministic scoring produced what it did — attached to the
+ * snapshot, the retry-judgement case result and the pre-flight so the user
+ * sees "gold 2 ids from expectedOutcomes[0]; candidates: 0 from tool 'search'
+ * hits, 3 from tool 'return_results' records (used); anchor removed 1"
+ * instead of a bare "no candidate ids found".
+ */
+export interface ScoringDiagnostics {
+  gold: {
+    /** `expected.ids` | `expectedOutcomes[<i>]` | `expectedOutcomes[<i>] (explicitly none)` | `not declared`. */
+    source: string;
+    ids: string[];
+    /** The test case explicitly declares "no gold" (abstain case). */
+    explicitlyEmpty: boolean;
+  };
+  candidates: {
+    /** Every source attempted, in chain order, with the ids it found. */
+    sourceTried: Array<{ source: string; count: number; detail: string }>;
+    sourceUsed: string;
+    /** Ids from the winning source before the anchor filter. */
+    count: number;
+    anchorRemoved: number;
+    /** Winning source is a "what the agent returned" source (empty = abstention). */
+    returned: boolean;
+    weak: boolean;
+  };
+  /** Distinct tool names whose results were inspected. */
+  toolsScanned: string[];
 }
 
 /**
@@ -575,16 +612,26 @@ export interface ScoringSnapshot {
   judgeModelId?: string;
   /** Structured gold ids the deterministic rubrics were computed against (R3). */
   goldIdsUsed?: string[];
-  /** Which gold source produced `goldIdsUsed` (R3). */
-  goldRule?: 'expected.ids' | 'expected-outcomes-pattern';
-  /** Identifier of the rule used to extract the prediction from the agent output (R3): `tool-hits-ordered` | `response-results`. */
+  /** Which gold source produced `goldIdsUsed` (R3); `expected-outcomes-none` = an explicit "NONE …" line (abstain case). */
+  goldRule?: 'expected.ids' | 'expected-outcomes-pattern' | 'expected-outcomes-none';
+  /** The evaluator's DECLARED prediction source (R3): `tool-hits-ordered` | `response-results`. The source actually used is `extraction.sourceUsed`. */
   extractionRule?: string;
   /**
-   * Extraction statistics (R3). `citedCount` / `anchorsRemoved` are set by
-   * `tool-hits-ordered`; `parsedFrom` by `response-results`
-   * (`json` | `fenced` | `raw-event` | `text` | `none`).
+   * Extraction statistics (R3). `sourceUsed` names the step of the ordered
+   * candidate chain (lib/scoring/prediction/candidates.ts) that produced the
+   * ranked list — `report.output` | `response-results` | `results-tool` |
+   * `tool-hits` | `generic-scan` | `none`; `weak` = the generic scan was the
+   * only source. `citedCount` / `anchorsRemoved` describe the tool-hits path;
+   * `parsedFrom` the response form (`json` | `fenced` | `raw-event` | `text`).
    */
-  extraction?: { candidateCount: number; citedCount?: number; anchorsRemoved?: number; parsedFrom?: string };
+  extraction?: { candidateCount: number; citedCount?: number; anchorsRemoved?: number; parsedFrom?: string; sourceUsed?: string; weak?: boolean };
+  /**
+   * Structured provenance the dialog / Judge tab render when a case scored
+   * nothing (or unexpectedly): where the gold came from and every candidate
+   * source tried, in order, with its count (R3). See
+   * `lib/scoring/deterministicScoring.ts` `ScoringDiagnostics`.
+   */
+  diagnostics?: ScoringDiagnostics;
   /**
    * Rubrics that could not be computed for this report (input missing, judge
    * omitted the key, …). Excluded from the weighted mean — never scored as 0 —
@@ -678,6 +725,13 @@ export interface TestCaseRun {
   sessionId?: string;
   logs?: OpenSearchLog[]; // OpenSearch logs for the run (master version)
   rawEvents?: any[]; // Raw AG UI events for debugging
+  /**
+   * Typed output a connector declared for the run (optional, connector-
+   * specific). Deterministic scoring reads a ranked id list from it first
+   * (`{ results: [{ id, rank? }] }`, `{ ids: [] }` or a bare array) — see
+   * lib/scoring/prediction/candidates.ts. Never interpreted otherwise.
+   */
+  output?: unknown;
   connectorProtocol?: ConnectorProtocol; // Protocol used to execute this run (for trajectory parsing)
 
   // Per-matcher verdicts captured by the SDK during the test body

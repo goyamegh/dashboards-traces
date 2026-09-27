@@ -406,7 +406,7 @@ describe('retryJudgementForRun', () => {
 
     const summary = await retryJudgementForRun(run, storage as any);
 
-    expect(summary).toEqual({ retried: 0, succeeded: 0, failed: 0, results: [] });
+    expect(summary).toEqual({ retried: 0, succeeded: 0, failed: 0, notEvaluable: 0, abstain: 0, results: [] });
     expect(mockedCallBedrockJudge).not.toHaveBeenCalled();
     // Run doc still gets its stats recomputed/persisted even with zero retries.
     expect(storage.evaluationRuns.update).toHaveBeenCalledTimes(1);

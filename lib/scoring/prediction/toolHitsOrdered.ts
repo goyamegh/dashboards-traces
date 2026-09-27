@@ -61,18 +61,22 @@ export interface ExtractedPrediction {
   hasAnswer: boolean;
 }
 
-/** Parse a tool-result `content` into a JSON value (handles `[{text}]` wrapping and plain objects). */
+/**
+ * Parse a tool-result `content` into a JSON value (handles `[{text}]`
+ * wrapping and plain objects). Some connectors store the result as a
+ * RENDERING — `tool_name({"arg": …}) -> [{"text": "…"}]` — so a string that
+ * does not parse as a whole is retried from its ` -> ` separator, then from
+ * the first `{` / `[`; the payload is what matters, not the prefix.
+ */
 export function parseToolResultContent(content: unknown): unknown {
   let value: unknown = content;
   for (let depth = 0; depth < 3; depth++) {
     if (typeof value === 'string') {
       const t = value.trim();
       if (!t) return undefined;
-      try {
-        value = JSON.parse(t);
-      } catch {
-        return undefined;
-      }
+      const parsed = parseJsonLenient(t);
+      if (parsed === undefined) return undefined;
+      value = parsed;
       continue;
     }
     if (Array.isArray(value) && value.length > 0 && value.every(v => v && typeof v === 'object' && typeof (v as any).text === 'string')) {
@@ -94,6 +98,27 @@ export function parseToolResultContent(content: unknown): unknown {
     return value;
   }
   return value;
+}
+
+function parseJsonLenient(text: string): unknown {
+  try {
+    return JSON.parse(text);
+  } catch {
+    /* fall through */
+  }
+  const candidates: string[] = [];
+  const arrow = text.indexOf(' -> ');
+  if (arrow >= 0) candidates.push(text.slice(arrow + 4).trim());
+  const brace = text.search(/[[{]/);
+  if (brace > 0) candidates.push(text.slice(brace).trim());
+  for (const c of candidates) {
+    try {
+      return JSON.parse(c);
+    } catch {
+      /* try the next */
+    }
+  }
+  return undefined;
 }
 
 /** Walk a dotted path (`forward.records`) through nested objects. */

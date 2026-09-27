@@ -222,6 +222,8 @@ export function getIndexMappings(): IndexMappings {
           trajectory: { type: 'object', enabled: false },
           logs: { type: 'object', enabled: false },
           rawEvents: { type: 'object', enabled: false },
+          // Connector-declared typed output (optional); read, never queried.
+          output: { type: 'object', enabled: false },
           improvementStrategies: { type: 'object', enabled: false },
           // Per-matcher verdicts captured by the SDK during the test body.
           // Stored as a nested array so we can filter / aggregate by
@@ -302,8 +304,12 @@ export function getIndexMappings(): IndexMappings {
                   citedCount: { type: 'integer' },
                   anchorsRemoved: { type: 'integer' },
                   parsedFrom: { type: 'keyword' },
+                  sourceUsed: { type: 'keyword' },
+                  weak: { type: 'boolean' },
                 },
               },
+              // Free-form provenance for humans (source attempts, tool names) — not queried.
+              diagnostics: { type: 'object', enabled: false },
               passPolicy: {
                 dynamic: false,
                 properties: { kind: { type: 'keyword' }, minScore: { type: 'float' } },

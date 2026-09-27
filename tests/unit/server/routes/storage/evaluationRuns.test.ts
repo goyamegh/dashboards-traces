@@ -78,9 +78,11 @@ jest.mock('@/lib/resolveAgentModel', () => ({
 
 const mockRetryJudgementForRun = jest.fn();
 const mockCountRetryableCases = jest.fn();
+const mockPreflightRetryJudgement = jest.fn();
 jest.mock('@/services/evaluation/retryJudgement', () => ({
   retryJudgementForRun: (...args: any[]) => mockRetryJudgementForRun(...args),
   countRetryableCases: (...args: any[]) => mockCountRetryableCases(...args),
+  preflightRetryJudgement: (...args: any[]) => mockPreflightRetryJudgement(...args),
   DETERMINISTIC_SCOPE_ERROR: jest.requireActual('@/services/evaluation/retryJudgement').DETERMINISTIC_SCOPE_ERROR,
 }));
 
@@ -682,6 +684,48 @@ describe('Evaluation Runs API', () => {
         expect(unknown.status).toBe(400);
         expect(unknown.body.error).toMatch(/Evaluator not found: eval-missing/);
         expect(mockRetryJudgementForRun).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('POST .../retry-judgement/preflight (read-only dry run for the dialog)', () => {
+      const terminalRun = (id: string) => ({ id, docType: 'evaluation-run', status: 'completed', results: { tc1: { status: 'completed', reportId: 'r1' } } });
+      const preflight = { evaluatorId: 'eval-stored', evaluatorName: 'Stored', deterministic: true, scope: 'all', total: 1, evaluable: 0, notEvaluable: 1, abstain: 0, reasons: { 'no gold ids on the test case (no expected.ids, no line matching the gold pattern, no explicit NONE line)': 1 }, cases: [{ testCaseId: 'tc1', evaluable: false, reason: 'no gold ids on the test case (no expected.ids, no line matching the gold pattern, no explicit NONE line)' }] };
+      beforeEach(() => { mockPreflightRetryJudgement.mockReset(); mockPreflightRetryJudgement.mockResolvedValue(preflight); });
+
+      it('returns the pre-flight for the run with the validated body; starts no job, writes nothing', async () => {
+        mockEvaluationRunsGetById.mockResolvedValueOnce(terminalRun('run-pre'));
+        const res = await request(app).post('/api/storage/evaluation-runs/run-pre/retry-judgement/preflight').send({ evaluatorId: 'eval-stored', scope: 'errored' });
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual(preflight);
+        expect(mockPreflightRetryJudgement).toHaveBeenCalledWith(expect.objectContaining({ id: 'run-pre' }), expect.anything(), { scope: 'errored', overrides: { evaluatorId: 'eval-stored' } });
+        expect(mockRetryJudgementForRun).not.toHaveBeenCalled();
+        // No job was registered.
+        const status = await request(app).get('/api/storage/evaluation-runs/run-pre/retry-judgement/status');
+        expect(status.status).toBe(404);
+      });
+
+      it('no body → the run\'s own evaluator, default scope', async () => {
+        mockEvaluationRunsGetById.mockResolvedValueOnce(terminalRun('run-pre2'));
+        const res = await request(app).post('/api/storage/evaluation-runs/run-pre2/retry-judgement/preflight');
+        expect(res.status).toBe(200);
+        expect(mockPreflightRetryJudgement).toHaveBeenCalledWith(expect.anything(), expect.anything(), { scope: 'errored', overrides: {} });
+      });
+
+      it('404 unknown run; 400 bad scope / empty or unknown evaluatorId — same validation as the POST', async () => {
+        mockEvaluationRunsGetById.mockResolvedValueOnce(null);
+        expect((await request(app).post('/api/storage/evaluation-runs/nope/retry-judgement/preflight')).status).toBe(404);
+        mockEvaluationRunsGetById.mockResolvedValue(terminalRun('run-bad'));
+        expect((await request(app).post('/api/storage/evaluation-runs/run-bad/retry-judgement/preflight').send({ scope: 'some' })).status).toBe(400);
+        expect((await request(app).post('/api/storage/evaluation-runs/run-bad/retry-judgement/preflight').send({ evaluatorId: '' })).status).toBe(400);
+        const unknown = await request(app).post('/api/storage/evaluation-runs/run-bad/retry-judgement/preflight').send({ evaluatorId: 'eval-missing' });
+        expect(unknown.status).toBe(400);
+        expect(unknown.body.error).toMatch(/Evaluator not found/);
+        expect(mockPreflightRetryJudgement).not.toHaveBeenCalled();
+      });
+
+      it('a running run can still be pre-flighted (read-only) — only the POST is gated on terminal status', async () => {
+        mockEvaluationRunsGetById.mockResolvedValueOnce({ ...terminalRun('run-live'), status: 'running' });
+        expect((await request(app).post('/api/storage/evaluation-runs/run-live/retry-judgement/preflight')).status).toBe(200);
       });
     });
 

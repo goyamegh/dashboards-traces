@@ -34,6 +34,7 @@ import type {
   TestCase,
   AgentConfig,
   PassFailStatus,
+  ScoringDiagnostics,
 } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
 import { callBedrockJudge } from '@/services/evaluation';
@@ -50,7 +51,7 @@ import { debug } from '@/lib/debug';
 import { readEnv } from '@/lib/envCompat';
 import { isSystemEvaluatorId, getSystemEvaluatorById } from '@/server/prompts/evaluatorTemplates';
 import { isDeterministicEvaluator } from '@/lib/evaluators/deterministic';
-import { scoreDeterministic } from '@/lib/scoring/deterministicScoring';
+import { scoreDeterministic, describeDiagnostics } from '@/lib/scoring/deterministicScoring';
 
 export type RetryJudgementScope = 'errored' | 'all';
 
@@ -72,19 +73,85 @@ export interface RetryJudgementOverrides {
 export const DETERMINISTIC_SCOPE_ERROR =
   "a deterministic evaluator re-scores the whole run; use scope 'all' (re-scoring only the errored cases would mix two scoring snapshots in one run)";
 
+/**
+ * Per-case outcome of a retry:
+ *   - `succeeded`     — a verdict was produced (passed OR failed — "succeeded"
+ *                       is about the judgement happening, not the agent).
+ *   - `not-evaluable` — a deterministic evaluator ran but its gold /
+ *                       extraction rules do not apply to this case (no gold
+ *                       ids on the test case, no candidate ids in the stored
+ *                       tool results, …). NOT a failure and NOT a judge error:
+ *                       the report gets the `not_evaluable` evaluator-error
+ *                       patch (no verdict, excluded from the pass rate) and
+ *                       `reason` says why. Owner incident: a 5-case run
+ *                       re-scored with an evaluator whose rules fit none of
+ *                       the cases read "0 succeeded · 3 still failed".
+ *   - `failed`        — the judgement itself could not be made (judge call
+ *                       threw, report / test case missing, scorer crashed).
+ */
+export type RetryJudgementOutcome = 'succeeded' | 'not-evaluable' | 'failed';
+
 export interface RetryJudgementCaseResult {
   testCaseId: string;
   reportId: string;
-  outcome: 'succeeded' | 'failed';
+  outcome: RetryJudgementOutcome;
   passFailStatus?: PassFailStatus | null;
+  /** Why the judgement failed (`outcome: 'failed'`). */
   error?: string;
+  /** Why the case is not evaluable (`outcome: 'not-evaluable'`) — stable wording, groupable. */
+  reason?: string;
+  /** Deterministic only: the case is an ABSTAIN case (gold explicitly empty) and was judged by abstention. */
+  abstain?: boolean;
+  /** Deterministic only: gold source + every candidate source tried (rendered by the dialog / Judge tab). */
+  diagnostics?: ScoringDiagnostics;
 }
 
 export interface RetryJudgementSummary {
   retried: number;
   succeeded: number;
+  /** Judgement could not be made (see {@link RetryJudgementOutcome}). */
   failed: number;
+  /** Deterministic evaluator ran, rules did not apply — not failures. */
+  notEvaluable: number;
+  /** Of `succeeded`: cases judged by abstention (gold explicitly empty). */
+  abstain: number;
   results: RetryJudgementCaseResult[];
+}
+
+/** Outcome of {@link retryJudgementForCase}. */
+export interface RetryJudgementCaseOutcome {
+  passFailStatus: PassFailStatus | null;
+  error?: string;
+  /** Set (with `reason`) when a deterministic evaluator could not score the case at all. */
+  notEvaluable?: boolean;
+  reason?: string;
+  abstain?: boolean;
+  diagnostics?: ScoringDiagnostics;
+}
+
+/**
+ * Result of {@link preflightRetryJudgement}: what a retry with this
+ * evaluator WOULD do, computed read-only.
+ */
+export interface RetryJudgementPreflight {
+  /** The evaluator the retry would use (override or the run's own); `null` when the run has none. */
+  evaluatorId: string | null;
+  evaluatorName: string | null;
+  /** True when that evaluator is `kind: 'deterministic'` — the only kind whose evaluability can be known up front. */
+  deterministic: boolean;
+  /** Scope the retry would run with (a deterministic evaluator always re-scores the whole run). */
+  scope: RetryJudgementScope;
+  /** Cases the retry would select. */
+  total: number;
+  /** Deterministic only: cases that would produce a verdict / that the rules do not apply to. Equal `total` / 0 otherwise. */
+  evaluable: number;
+  notEvaluable: number;
+  /** Deterministic only: of `evaluable`, abstain cases (gold explicitly empty). */
+  abstain: number;
+  /** Deterministic only: not-evaluable reason → number of cases. */
+  reasons: Record<string, number>;
+  /** Deterministic only: per-case breakdown (`abstain` = gold explicitly empty, judged by abstention). */
+  cases: Array<{ testCaseId: string; evaluable: boolean; abstain?: boolean; reason?: string; diagnostics?: ScoringDiagnostics }>;
 }
 
 /**
@@ -203,7 +270,7 @@ export async function retryJudgementForCase(
   agentConfig: AgentConfig | undefined,
   overrides: RetryJudgementOverrides = {},
   resolvedEvaluator?: Evaluator | null
-): Promise<{ passFailStatus: PassFailStatus | null; error?: string }> {
+): Promise<RetryJudgementCaseOutcome> {
   const evaluatorId = overrides.evaluatorId || run.evaluatorId;
 
   // Deterministic evaluator: score the STORED trajectory in code. No trace
@@ -321,17 +388,19 @@ export async function resolveEvaluatorDoc(evaluatorId: string | undefined, stora
  * response next to code-computed metrics. The agent output is untouched.
  *
  * Not-evaluable reports (no gold / no candidates ⇒ EVERY metric unevaluable)
- * get the canonical evaluator-error patch (`metricsStatus: 'error'`,
- * `passFailStatus: null`) — they render as errored/not evaluable and are
- * excluded from the pass rate rather than counted as failures. See the
- * module comment in lib/scoring/deterministicScoring.ts.
+ * get the `not_evaluable` evaluator-error patch (`metricsStatus: 'error'`,
+ * `passFailStatus: null`, `traceError` tagged `kind=not_evaluable` — never
+ * `judge_failed`): they render as "not evaluable", are excluded from the
+ * pass rate rather than counted as failures, and the run-level judge-failure
+ * banner (lib/judgeFailureSummary.ts keys on `kind=judge_failed`) ignores
+ * them. See the module comment in lib/scoring/deterministicScoring.ts.
  */
 async function applyDeterministicJudgement(
   report: EvaluationReport,
   testCase: TestCase,
   evaluator: Evaluator,
   storage: IStorageModule
-): Promise<{ passFailStatus: PassFailStatus | null; error?: string }> {
+): Promise<RetryJudgementCaseOutcome> {
   try {
     const result = scoreDeterministic(evaluator, testCase, report);
     const common = {
@@ -347,14 +416,15 @@ async function applyDeterministicJudgement(
       llmJudgeResponse: null,
     };
     if (!result.evaluable) {
+      const reason = result.notEvaluableReason ?? result.summary;
       await storage.runs.update(report.id, {
         ...common,
-        ...buildEvaluatorErrorPatch('judge_failed', `Not evaluable by ${evaluator.name}: ${result.summary}`),
+        ...buildEvaluatorErrorPatch('not_evaluable', `${evaluator.name}: ${reason}. ${describeDiagnostics(result.diagnostics)}`),
         // No metrics on a not-evaluable report — never the legacy zeroed
         // RCA keys the generic patch carries.
         metrics: {},
       } as any);
-      return { passFailStatus: null, error: result.summary };
+      return { passFailStatus: null, notEvaluable: true, reason, diagnostics: result.diagnostics };
     }
     await storage.runs.update(report.id, {
       ...common,
@@ -363,7 +433,7 @@ async function applyDeterministicJudgement(
       metricsStatus: 'completed',
       traceError: undefined,
     } as any);
-    return { passFailStatus: result.passFailStatus };
+    return { passFailStatus: result.passFailStatus, ...(result.kind === 'abstain' ? { abstain: true } : {}), diagnostics: result.diagnostics };
   } catch (error: any) {
     const message = error?.message ?? String(error);
     await storage.runs.update(report.id, {
@@ -509,13 +579,7 @@ export async function retryJudgementForRun(
       // different criteria" and the run's verdicts stop being comparable
       // with each other. Falls back to the current doc only for legacy runs
       // that recorded no snapshot version.
-      const snapshotVersion = run.testCaseSnapshots?.find(s => s.id === testCaseId)?.version;
-      let testCase: TestCase | null = null;
-      try {
-        testCase = snapshotVersion != null
-          ? await storage.testCases.getVersion(testCaseId, snapshotVersion)
-          : await storage.testCases.getById(testCaseId);
-      } catch { /* handled below via null check */ }
+      const { testCase, snapshotVersion } = await resolveSnapshottedTestCase(run, testCaseId, storage);
       if (!testCase) {
         results.push({
           testCaseId, reportId: report.id, outcome: 'failed',
@@ -524,7 +588,7 @@ export async function retryJudgementForRun(
         return;
       }
 
-      const { passFailStatus, error } = await retryJudgementForCase(
+      const { passFailStatus, error, notEvaluable, reason, abstain, diagnostics } = await retryJudgementForCase(
         report, testCase, run, storage, agentConfig, overrides, resolvedEvaluator
       );
 
@@ -542,9 +606,14 @@ export async function retryJudgementForRun(
       results.push({
         testCaseId,
         reportId: report.id,
-        outcome: passFailStatus ? 'succeeded' : 'failed',
+        outcome: passFailStatus ? 'succeeded' : notEvaluable ? 'not-evaluable' : 'failed',
         passFailStatus,
         ...(error ? { error } : {}),
+        ...(reason ? { reason } : {}),
+        ...(abstain ? { abstain: true } : {}),
+        // Diagnostics ride along only where they explain something (not a
+        // plain scored case) — the summary stays small for large runs.
+        ...(diagnostics && (!passFailStatus || abstain) ? { diagnostics } : {}),
       });
     } finally {
       completedCount += 1;
@@ -581,6 +650,95 @@ export async function retryJudgementForRun(
     retried: testCaseIds.length,
     succeeded: results.filter(r => r.outcome === 'succeeded').length,
     failed: results.filter(r => r.outcome === 'failed').length,
+    notEvaluable: results.filter(r => r.outcome === 'not-evaluable').length,
+    abstain: results.filter(r => r.outcome === 'succeeded' && r.abstain).length,
     results,
   };
+}
+
+/**
+ * Judge against the test-case version the run actually SNAPSHOTTED
+ * (`testCaseSnapshots[].version`), not today's possibly-edited definition —
+ * otherwise "retry" silently becomes "re-grade against different criteria"
+ * and the run's verdicts stop being comparable with each other. Falls back
+ * to the current doc only for legacy runs that recorded no snapshot version.
+ */
+async function resolveSnapshottedTestCase(
+  run: Pick<EvaluationRun, 'testCaseSnapshots'>,
+  testCaseId: string,
+  storage: IStorageModule
+): Promise<{ testCase: TestCase | null; snapshotVersion: number | undefined }> {
+  const snapshotVersion = run.testCaseSnapshots?.find(s => s.id === testCaseId)?.version;
+  let testCase: TestCase | null = null;
+  try {
+    testCase = snapshotVersion != null
+      ? await storage.testCases.getVersion(testCaseId, snapshotVersion)
+      : await storage.testCases.getById(testCaseId);
+  } catch { /* caller handles null */ }
+  return { testCase, snapshotVersion };
+}
+
+/**
+ * Read-only pre-flight for the retry-judgement dialog: which cases a retry
+ * with `overrides.evaluatorId ?? run.evaluatorId` would select and — for a
+ * `kind: 'deterministic'` evaluator, whose rules are pure functions of the
+ * stored test case + report — how many of them the evaluator can actually
+ * score, grouped by not-evaluable reason. Runs the same extractor
+ * (`scoreDeterministic`) the retry would, WITHOUT persisting anything, so the
+ * dialog can say "n of N cases evaluable by this evaluator" and refuse to
+ * start a retry that would score nothing. An LLM evaluator's evaluability
+ * cannot be known up front: `deterministic: false`, counts = the selection.
+ */
+export async function preflightRetryJudgement(
+  run: EvaluationRun,
+  storage: IStorageModule,
+  options?: { scope?: RetryJudgementScope; overrides?: RetryJudgementOverrides }
+): Promise<RetryJudgementPreflight> {
+  const overrides = options?.overrides ?? {};
+  const evaluatorId = overrides.evaluatorId || run.evaluatorId || null;
+  const evaluator = await resolveEvaluatorDoc(evaluatorId ?? undefined, storage);
+  const deterministic = isDeterministicEvaluator(evaluator);
+  // A deterministic evaluator always re-scores the whole run (DETERMINISTIC_SCOPE_ERROR).
+  const scope: RetryJudgementScope = deterministic ? 'all' : (options?.scope ?? 'errored');
+  const reportsById = await fetchReportsById(run, storage);
+  const testCaseIds = selectRetryableCases(run, reportsById, scope);
+
+  const base = {
+    evaluatorId,
+    evaluatorName: evaluator?.name ?? null,
+    deterministic,
+    scope,
+    total: testCaseIds.length,
+  };
+  if (!deterministic || !evaluator) {
+    return { ...base, evaluable: testCaseIds.length, notEvaluable: 0, abstain: 0, reasons: {}, cases: [] };
+  }
+
+  const cases: RetryJudgementPreflight['cases'] = [];
+  const reasons: Record<string, number> = {};
+  for (const testCaseId of testCaseIds) {
+    const result = run.results?.[testCaseId] as RunResultLike | undefined;
+    const report = result?.reportId ? reportsById[result.reportId] : null;
+    const { testCase, snapshotVersion } = await resolveSnapshottedTestCase(run, testCaseId, storage);
+    let reason: string | undefined;
+    let abstain = false;
+    let diagnostics: ScoringDiagnostics | undefined;
+    if (!report) reason = 'report not found';
+    else if (!testCase) reason = snapshotVersion != null ? `test case version ${snapshotVersion} not found` : 'test case not found';
+    else {
+      try {
+        const scored = scoreDeterministic(evaluator, testCase, report);
+        diagnostics = scored.diagnostics;
+        abstain = scored.kind === 'abstain';
+        if (!scored.evaluable) reason = scored.notEvaluableReason ?? scored.summary;
+      } catch (error: any) {
+        reason = `deterministic scoring: ${error?.message ?? String(error)}`;
+      }
+    }
+    if (reason) reasons[reason] = (reasons[reason] ?? 0) + 1;
+    cases.push({ testCaseId, evaluable: !reason, ...(abstain ? { abstain: true } : {}), ...(reason ? { reason } : {}), ...(diagnostics ? { diagnostics } : {}) });
+  }
+  cases.sort((a, b) => a.testCaseId.localeCompare(b.testCaseId));
+  const notEvaluable = cases.filter(c => !c.evaluable).length;
+  return { ...base, evaluable: cases.length - notEvaluable, notEvaluable, abstain: cases.filter(c => c.evaluable && c.abstain).length, reasons, cases };
 }

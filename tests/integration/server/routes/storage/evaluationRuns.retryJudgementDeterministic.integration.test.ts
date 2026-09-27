@@ -193,7 +193,7 @@ describe('deterministic evaluators — create, validate, Retry judgement on a co
     expect((await start.json()).total).toBe(4);
     const job = await pollRetryJudgement(runId);
     expect(job.status).toBe('completed');
-    expect(job.summary).toMatchObject({ retried: 4, succeeded: 2, failed: 2 });
+    expect(job.summary).toMatchObject({ retried: 4, succeeded: 2, failed: 0, notEvaluable: 2, abstain: 0 });
 
     // 5. Reports.
     const get = async (id: string) => (await fetch(`${BASE_URL}/api/storage/runs/${id}`)).json();
@@ -210,8 +210,13 @@ describe('deterministic evaluators — create, validate, Retry judgement on a co
       primaryMetrics: ['hit@1', 'hit@3', 'recall@5'],
       goldRule: 'expected-outcomes-pattern', goldIdsUsed: ['101', '202'],
       extractionRule: 'tool-hits-ordered',
-      extraction: { candidateCount: 5, citedCount: 1, anchorsRemoved: 1 },
+      extraction: { candidateCount: 5, citedCount: 1, anchorsRemoved: 1, sourceUsed: 'tool-hits' },
       unevaluable: [],
+    });
+    expect(hit.scoringSnapshot.diagnostics).toMatchObject({
+      gold: { source: 'expectedOutcomes[1]', ids: ['101', '202'], explicitlyEmpty: false },
+      candidates: { sourceUsed: 'tool-hits', count: 5, anchorRemoved: 1, returned: false, weak: false },
+      toolsScanned: ['search'], // both hitsStep() results are stored under the 'search' tool name
     });
     expect(hit.scoringSnapshot.contentHash).toMatch(/^sha256:/);
     expect(hit.matcherResults).toHaveLength(4);
@@ -230,12 +235,14 @@ describe('deterministic evaluators — create, validate, Retry judgement on a co
     expect(miss.metrics).toEqual({ 'hit@1': 0, 'hit@3': 0, 'recall@5': 0, mrr: 0 });
     expect(miss.matcherResults[1]).toMatchObject({ role: 'primary', pass: false });
 
-    for (const [id, reason] of [[repNoHits, /no candidate ids/], [repNoGold, /no gold ids/]] as const) {
+    for (const [id, reason] of [[repNoHits, /no ranked list recognised in the final response/], [repNoGold, /no gold ids/]] as const) {
       const rep = await get(id);
       expect(rep.metricsStatus).toBe('error');
       expect(rep.passFailStatus ?? null).toBeNull();
       expect(rep.metrics).toEqual({});
-      expect(rep.traceError).toMatch(/Not evaluable by/);
+      expect(rep.traceError).toMatch(/^Not evaluable \(kind=not_evaluable\): /);
+      expect(rep.traceError).not.toMatch(/judge_failed/);
+      expect(rep.scoringSnapshot.diagnostics.candidates.sourceTried.length).toBeGreaterThan(0);
       expect(rep.scoringSnapshot.unevaluable).toEqual(['hit@1', 'hit@3', 'recall@5', 'mrr']);
       expect(rep.matcherResults.every((m: any) => m.errored === true)).toBe(true);
       expect(rep.matcherResults[0].errorMessage).toMatch(reason);

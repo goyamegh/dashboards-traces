@@ -24,6 +24,7 @@ import {
 import {
   retryJudgementForRun,
   countRetryableCases,
+  preflightRetryJudgement,
   type RetryJudgementScope,
   type RetryJudgementSummary,
   type RetryJudgementOverrides,
@@ -760,6 +761,50 @@ router.post('/api/storage/evaluation-runs/:id/retry-judgement', async (req: Requ
     if (!res.headersSent) {
       res.status(500).json({ error: error.message });
     }
+  }
+});
+
+// POST /api/storage/evaluation-runs/:id/retry-judgement/preflight - READ-ONLY
+// dry run for the confirm dialog: which cases a retry with the given
+// evaluator would select and, for a `kind: 'deterministic'` evaluator, how
+// many of them it can actually score (grouped not-evaluable reasons). Writes
+// nothing, starts no job. Same body as the POST above
+// (`{ scope?, evaluatorId? }`, same validation) so the dialog can pre-flight
+// exactly what it is about to submit; a deterministic evaluator is reported
+// with `scope: 'all'` regardless of the requested scope (the retry itself
+// would 400 / fail on 'errored' — see DETERMINISTIC_SCOPE_ERROR).
+router.post('/api/storage/evaluation-runs/:id/retry-judgement/preflight', async (req: Request, res: Response) => {
+  try {
+    const { id } = req.params;
+    const body = (req.body && typeof req.body === 'object' ? req.body : {}) as Record<string, unknown>;
+    const rawScope = body.scope ?? req.query.scope;
+    if (rawScope !== undefined && rawScope !== 'errored' && rawScope !== 'all') {
+      return res.status(400).json({ error: "scope must be 'errored' or 'all'" });
+    }
+    const scope: RetryJudgementScope = rawScope === 'all' ? 'all' : 'errored';
+    const storage = getStorageModule();
+    const run = await storage.evaluationRuns.getById(id);
+    if (!run) {
+      return res.status(404).json({ error: 'Evaluation run not found' });
+    }
+    const overrides: RetryJudgementOverrides = {};
+    if (body.evaluatorId !== undefined) {
+      const evaluatorId = body.evaluatorId;
+      if (typeof evaluatorId !== 'string' || !evaluatorId.trim()) {
+        return res.status(400).json({ error: 'evaluatorId must be a non-empty string' });
+      }
+      const evaluatorDoc = isSystemEvaluatorId(evaluatorId)
+        ? getSystemEvaluatorById(evaluatorId)
+        : await storage.evaluators.getById(evaluatorId).catch(() => null);
+      if (!evaluatorDoc) {
+        return res.status(400).json({ error: `Evaluator not found: ${evaluatorId}` });
+      }
+      overrides.evaluatorId = evaluatorId;
+    }
+    res.json(await preflightRetryJudgement(run, storage, { scope, overrides }));
+  } catch (error: any) {
+    console.error('[StorageAPI] Retry judgement preflight failed:', error.message);
+    res.status(500).json({ error: error.message });
   }
 });
 

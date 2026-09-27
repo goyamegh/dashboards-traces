@@ -24,6 +24,14 @@ describe('extractJudgeFailureReason', () => {
     expect(extractJudgeFailureReason(report)).toBeUndefined();
   });
 
+  it('returns undefined for a deterministic "not evaluable" report (kind=not_evaluable) — the run-level judge-failure banner must not claim a judge broke', () => {
+    const report = {
+      metricsStatus: 'error',
+      traceError: 'Not evaluable (kind=not_evaluable): Ranked retrieval: no gold ids on the test case (no expected.ids, no line matching the gold pattern, no explicit NONE line)',
+    };
+    expect(extractJudgeFailureReason(report)).toBeUndefined();
+  });
+
   it('extracts the human-readable reason from the canonical buildEvaluatorErrorPatch(judge_failed) shape', () => {
     const report = {
       status: 'completed',
