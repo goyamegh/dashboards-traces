@@ -128,6 +128,10 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     status: stored.status,
     passFailStatus: stored.passFailStatus as 'passed' | 'failed' | undefined,
     evaluatorId: stored.evaluatorId,
+    // Agent-configuration provenance mirror (lib/agentFingerprint.ts).
+    agentFingerprint: stored.agentFingerprint,
+    agentFingerprintShort: stored.agentFingerprintShort,
+    agentPromptHash: stored.agentPromptHash,
     trajectory: (stored.trajectory || []) as TrajectoryStep[],
     // Preserve every metric the judge emitted, not just the four legacy keys.
     // Custom evaluators (and even system evaluators other than RCA Default)
@@ -267,6 +271,9 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
   if (report.evaluatorId !== undefined) base.evaluatorId = report.evaluatorId;
   if (report.judgeModelId !== undefined) base.judgeModelId = report.judgeModelId;
   if (report.judgeModel !== undefined) base.judgeModel = report.judgeModel;
+  if (report.agentFingerprint !== undefined) base.agentFingerprint = report.agentFingerprint;
+  if (report.agentFingerprintShort !== undefined) base.agentFingerprintShort = report.agentFingerprintShort;
+  if (report.agentPromptHash !== undefined) base.agentPromptHash = report.agentPromptHash;
   if (report.traceFetchAttempts !== undefined) base.traceFetchAttempts = report.traceFetchAttempts;
   if (report.lastTraceFetchAt !== undefined) base.lastTraceFetchAt = report.lastTraceFetchAt;
   if (report.traceError !== undefined) base.traceError = report.traceError;
@@ -429,6 +436,9 @@ class AsyncRunStorage {
       // Failure stage so list rows can badge 'Agent error' vs 'Judge error'
       // without loading the full report (tiny keyword field).
       'failureStage',
+      // Agent-configuration provenance (three short strings) for case-level
+      // "same agent, different config" detection in the run inspector.
+      'agentFingerprint', 'agentFingerprintShort', 'agentPromptHash',
     ];
     // Chunk to keep the URL well under practical limits for large benchmarks.
     const stored = await fetchChunked(reportIds, REPORT_ID_CHUNK_SIZE, chunk => opensearchRuns.getByIds(chunk, { fields }));

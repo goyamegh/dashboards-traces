@@ -143,6 +143,15 @@ export function getIndexMappings(): IndexMappings {
               at: { type: 'date' },
             },
           },
+          // Agent-configuration provenance on top-level EvaluationRun docs
+          // (lib/agentFingerprint.ts): exact-match hashes as keyword; the
+          // config-source object is opaque (path/sha/dirty are never queried).
+          // Same best-effort putMapping caveat as `results` above for indexes
+          // that already dynamically mapped these fields.
+          agentFingerprint: { type: 'keyword' },
+          agentFingerprintShort: { type: 'keyword' },
+          agentPromptHash: { type: 'keyword' },
+          agentConfigSource: { type: 'object', enabled: false },
           runs: {
             type: 'nested',
             properties: {
@@ -163,6 +172,12 @@ export function getIndexMappings(): IndexMappings {
               testCaseSnapshots: { type: 'object', enabled: false },
               stats: { type: 'object', enabled: false },
               performanceMetrics: { type: 'object', enabled: false },
+              // Agent-configuration provenance (lib/agentFingerprint.ts):
+              // exact-match hashes, keyword on purpose (never analyzed).
+              agentFingerprint: { type: 'keyword' },
+              agentFingerprintShort: { type: 'keyword' },
+              agentPromptHash: { type: 'keyword' },
+              agentConfigSource: { type: 'object', enabled: false },
             },
           },
         },
@@ -215,6 +230,10 @@ export function getIndexMappings(): IndexMappings {
           traceId: { type: 'keyword' },
           // Agent-emitted session id (Strategy D).
           sessionId: { type: 'keyword' },
+          // Agent-configuration provenance mirror (lib/agentFingerprint.ts).
+          agentFingerprint: { type: 'keyword' },
+          agentFingerprintShort: { type: 'keyword' },
+          agentPromptHash: { type: 'keyword' },
           tags: { type: 'keyword' },
           actualOutcomes: { type: 'object', enabled: false },
           llmJudgeReasoning: { type: 'text' },

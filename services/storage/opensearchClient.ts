@@ -110,6 +110,11 @@ export interface StorageBenchmarkRunConfig {
   /** Parallel test case execution limit (1 = sequential). See BenchmarkRun.concurrency in types/index.ts. */
   concurrency?: number;
   createdAt: string;
+  /** Agent-configuration provenance (lib/agentFingerprint.ts); absent on older runs. */
+  agentFingerprint?: string;
+  agentFingerprintShort?: string;
+  agentPromptHash?: string;
+  agentConfigSource?: { path: string; gitSha?: string; dirty?: boolean };
   results?: Record<string, { reportId: string; status: string; error?: string }>;
   status?: string;
   error?: string;
@@ -184,6 +189,10 @@ export interface StorageRun {
   judgeModelId?: string;
   /** The UNDERLYING LLM that judged (see TestCaseRun.judgeModel) -- `judgeModelId` may name a provider. */
   judgeModel?: string;
+  /** Agent-configuration provenance mirror (lib/agentFingerprint.ts); absent on older docs. */
+  agentFingerprint?: string;
+  agentFingerprintShort?: string;
+  agentPromptHash?: string;
   improvementStrategies?: {
     category: string;
     issue: string;
