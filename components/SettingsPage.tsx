@@ -1062,14 +1062,14 @@ export const SettingsPage: React.FC = () => {
                     • <strong>Safari:</strong> Develop → Show JavaScript Console → All levels
                   </div>
 
-                  {/* Performance Monitoring Info */}
+                  {/* Latency HUD Info */}
                   <div className="text-sm mt-3 pt-3 border-t border-amber-700/30">
-                    <strong>Performance Monitoring:</strong> A metrics overlay will appear in the bottom-right corner on instrumented pages (Agent Traces, etc.).
+                    <strong>Latency HUD:</strong> A one-line HUD in the bottom-right corner shows the current page's render / data-ready time and its <code>/api/*</code> call count. Click it (or hover / hold ⌥) to expand.
                   </div>
                   <div className="text-xs opacity-80">
-                    <strong>Color coding:</strong> 🟢 Fast (&lt; 50ms) · 🟡 OK (&lt; 200ms) · 🔴 Slow (&gt; 200ms)
+                    <strong>Expanded:</strong> last 10 navigations plus per-operation timings (avg · min–max · count) from instrumented views such as Agent Traces
                     <br />
-                    <strong>Tracked:</strong> API calls, tree processing, render performance
+                    <strong>Color coding:</strong> 🟢 Fast (&lt; 50ms) · 🟡 OK (&lt; 200ms) · 🔴 Slow (&gt; 200ms)
                   </div>
                 </div>
               </AlertDescription>
