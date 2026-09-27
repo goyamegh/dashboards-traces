@@ -408,9 +408,10 @@ announces the summary (`Retried 3 · 2 scored (1 abstain) · 1 not evaluable`).
 deterministic no judge model is used at all, and `scope` must be `'all'` —
 re-scoring only the errored subset would leave a run whose reports carry two
 different scoring snapshots while the run doc claims one evaluator (`400`).
-The report's `judgeModelId` is cleared (`null`) since no judge model ran. Run stats are recomputed and the
-run's `evaluatorId` is updated to the evaluator that produced the current
-verdicts. On the compare page (`/compare?runs=a,b`) each `primary` metric is a
+The report's `judgeModelId` is cleared (`null`) since no judge model ran. Run stats are recomputed; the
+run's ORIGINAL `evaluatorId` is not rewritten — the selection is remembered in
+`run.lastJudgementRetry` (it seeds the dialog's defaults next time) and each
+report carries the evaluator that produced its current verdict. On the compare page (`/compare?runs=a,b`) each `primary` metric is a
 column and the pass-rate header carries the policy ("Pass rate (gates)").
 
 ### SDK: the same functions in code tests

@@ -254,7 +254,9 @@ describe('deterministic evaluators — create, validate, Retry judgement on a co
 
     // 6. Run doc: stats recomputed, evaluator stamped; per-report primary metrics reachable for compare.
     const run = await (await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`)).json();
-    expect(run.evaluatorId).toBe(evaluator.id);
+    // #509 contract: the run's ORIGINAL evaluatorId stays; the selection is remembered in lastJudgementRetry.
+    expect(run.evaluatorId ?? undefined).toBeUndefined();
+    expect(run.lastJudgementRetry).toMatchObject({ scope: 'all', evaluatorId: evaluator.id });
     // The two preserved cases still count as passed (their seeded verdict).
     expect(run.stats).toMatchObject({ passed: 3, failed: 1, errored: 0, total: 4 });
     expect(run.results[tcHit].passFailStatus).toBe('passed');

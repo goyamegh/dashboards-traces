@@ -285,7 +285,7 @@ describe('deterministic evaluators — response-results source + abstain metric'
 
     // 6. Run doc.
     const run = await (await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`)).json();
-    expect(run.evaluatorId).toBe(evaluator.id);
+    expect(run.lastJudgementRetry).toMatchObject({ scope: 'all', evaluatorId: evaluator.id }); // #509: run.evaluatorId itself is not rewritten
     // The two preserved cases still count as passed (their seeded verdict).
     expect(run.stats).toMatchObject({ passed: 6, failed: 2, errored: 0, total: 8 });
     expect(run.lastRetryAttempt).toMatchObject({ retried: 8, succeeded: 6, notEvaluable: 2, failed: 0 });

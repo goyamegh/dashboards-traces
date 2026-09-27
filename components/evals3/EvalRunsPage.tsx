@@ -202,8 +202,10 @@ export const EvalRunsPage: React.FC = () => {
   const [visibleRunCount, setVisibleRunCount] = useState(RUNS_PER_PAGE);
   const loadMoreSentinelRef = useRef<HTMLTableRowElement | null>(null);
 
-  const loadData = useCallback(async () => {
-    setLoading(true);
+  // `silent` re-fetches without the page-level spinner — a background
+  // retry-judgement refresh must not unmount the list (and the open dialog).
+  const loadData = useCallback(async (silent = false) => {
+    if (!silent) setLoading(true);
     try {
       // Fetch both run models in parallel (see RunRow convergence note). The
       // eval-runs fetch is best-effort so a failure there still shows
@@ -481,7 +483,7 @@ export const EvalRunsPage: React.FC = () => {
   const handleRetryJudgementRow = (rr: RunRow) => {
     setRetryJudgementTarget(rr.run as unknown as EvaluationRun);
   };
-  useOnRetryJudgementFinished(() => { void loadData(); });
+  useOnRetryJudgementFinished(() => { void loadData(true); });
 
   const toggleGroup = (id: string) => {
     setCollapsedGroups(prev => {
@@ -1012,7 +1014,7 @@ export const EvalRunsPage: React.FC = () => {
               <List size={11} /> Flat
             </button>
           </div>
-          <Button variant="outline" size="sm" onClick={loadData} disabled={loading} className="h-7">
+          <Button variant="outline" size="sm" onClick={() => loadData()} disabled={loading} className="h-7">
             <RefreshCw size={12} className={loading ? 'animate-spin' : ''} />
           </Button>
           {(() => {
@@ -1266,7 +1268,7 @@ export const EvalRunsPage: React.FC = () => {
         rejudgeableCount={getRunActionVisibility(retryJudgementTarget).rejudgeableCount}
         open={retryJudgementTarget !== null}
         onOpenChange={open => { if (!open) setRetryJudgementTarget(null); }}
-        onComplete={() => { loadData(); }}
+        onComplete={() => { loadData(true); }}
       />
     </div>
   );

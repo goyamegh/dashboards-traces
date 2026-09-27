@@ -147,7 +147,12 @@ test.describe('Retry judgement — deterministic pre-flight ("not evaluable" is 
     await expect(confirm).toBeDisabled();
     await expect(confirm).toHaveAttribute('title', 'This evaluator cannot score any case of this run');
     // Deterministic wording.
-    await expect(page.locator('[data-testid="retry-judgement-dialog"]')).toContainText('Cases to re-score:');
+    await expect(page.locator('[data-testid="retry-judgement-dialog"]')).toContainText('Cases to re-judge:');
+    // #509's picker: a deterministic evaluator locks the scope to "All cases" and marks the judge model unused.
+    await expect(page.locator('[data-testid="retry-judgement-scope-all"]')).toBeChecked();
+    await expect(page.locator('[data-testid="retry-judgement-scope-errored"]')).toBeDisabled();
+    await expect(page.locator('[data-testid="retry-judgement-scope-forced"]')).toBeVisible();
+    await expect(page.locator('[data-testid="retry-judgement-no-judge-model"]')).toBeVisible();
     await expect(page.locator('[data-testid="retry-judgement-count"]')).toHaveText('1');
   });
 

@@ -161,7 +161,10 @@ describe('retry judgement with a deterministic evaluator (override)', () => {
 
     // Run doc: results + stats recomputed, evaluatorId stamped with the override.
     const runUpdate = storage.evaluationRuns.update.mock.calls.at(-1)![1] as any; // final write (#509 writes lastJudgementRetry up front)
-    expect(runUpdate.evaluatorId).toBe('eval-det');
+    // #509 contract: the run's ORIGINAL evaluatorId is not rewritten; the selection lives in lastJudgementRetry.
+    expect(runUpdate.evaluatorId).toBeUndefined();
+    const firstUpdate = storage.evaluationRuns.update.mock.calls[0][1] as any;
+    expect(firstUpdate.lastJudgementRetry).toMatchObject({ scope: 'all', evaluatorId: 'eval-det' });
     expect(runUpdate.results['tc-a'].passFailStatus).toBe('passed');
     expect(runUpdate.results['tc-b'].passFailStatus).toBe('failed');
     // tc-c keeps its PREVIOUS verdict (passed) — a failed attempt never demotes a case to errored.

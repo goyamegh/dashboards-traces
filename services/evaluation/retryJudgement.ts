@@ -763,9 +763,9 @@ export async function retryJudgementForRun(
     stats: { ...(run.stats || {}), ...stats } as any,
     judgeFailureSummary,
     lastRetryAttempt,
-    // The evaluator that produced the run's CURRENT verdicts (when the caller
-    // overrode it) — keeps the run doc truthful about what it was judged with.
-    ...(overrides.evaluatorId ? { evaluatorId: overrides.evaluatorId } : {}),
+    // The run's ORIGINAL evaluatorId / judgeModelId are NOT rewritten (#509
+    // contract): what the latest retry used lives in `lastJudgementRetry`
+    // (written up front) and on each report's own evaluator stamp.
   } as any);
 
   // Deterministic order (not insertion/completion order, which varies with

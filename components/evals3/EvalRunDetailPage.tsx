@@ -101,9 +101,11 @@ export const EvalRunDetailPage: React.FC = () => {
   const [sourceRunName, setSourceRunName] = useState<string | null>(null);
   const [sourceRunMissing, setSourceRunMissing] = useState(false);
 
-  const loadRun = useCallback(async () => {
+  // `silent` re-fetches without the loading skeleton — a background
+  // retry-judgement refresh must not unmount the page (and the open dialog).
+  const loadRun = useCallback(async (silent = false) => {
     if (!runId) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     try {
       const data = await getEvaluationRun(runId);
       setRun(data);
@@ -166,7 +168,7 @@ export const EvalRunDetailPage: React.FC = () => {
   // the 202 job to the client job store and we refresh — silently — when a
   // job for this run finishes (the dialog may have been closed long before).
   const handleRetryJudgement = () => { setRetryJudgementDialogOpen(true); };
-  useOnRetryJudgementFinished(job => { if (job.runId === runId) void loadRun(); });
+  useOnRetryJudgementFinished(job => { if (job.runId === runId) void loadRun(true); });
 
   if (loading) {
     return (
@@ -508,7 +510,7 @@ export const EvalRunDetailPage: React.FC = () => {
         rejudgeableCount={getRunActionVisibility(run).rejudgeableCount}
         open={retryJudgementDialogOpen}
         onOpenChange={setRetryJudgementDialogOpen}
-        onComplete={() => { loadRun(); }}
+        onComplete={() => { loadRun(true); }}
       />
     </div>
   );
