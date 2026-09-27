@@ -96,7 +96,7 @@ function SortHeader({ label, field, sort, onSort, className, title }: {
 
 /** A cell whose value doubles as a click-to-filter target. */
 const CELL_MAX_W: Record<RunFilterField, string> = {
-  agent: 'max-w-[150px]', model: 'max-w-[140px]', judge: 'max-w-[120px]', evaluator: 'max-w-[140px]', status: 'max-w-[100px]',
+  agent: 'max-w-[150px]', model: 'max-w-[140px]', judge: 'max-w-[300px]', evaluator: 'max-w-[140px]', status: 'max-w-[100px]',
 };
 
 function FilterCell({ row, field, filters, onToggle, className, mono }: {
