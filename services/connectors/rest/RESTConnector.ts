@@ -10,6 +10,7 @@
 
 import type { TrajectoryStep, ToolCallStatus } from '@/types';
 import { BaseConnector } from '@/services/connectors/base/BaseConnector';
+import { agentPromptContext } from '@/services/connectors/types';
 import { fetchWithTimeout, resolveConnectorTimeoutMs } from '@/services/connectors/base/fetchWithTimeout';
 import { AgentRequestError } from '@/services/evaluation/agentFailure';
 import type {
@@ -38,7 +39,7 @@ export class RESTConnector extends BaseConnector {
   buildPayload(request: ConnectorRequest): any {
     return {
       prompt: request.testCase.initialPrompt,
-      context: request.testCase.context,
+      context: agentPromptContext(request.testCase.context),
       model: request.modelId,
       tools: request.testCase.tools,
     };
