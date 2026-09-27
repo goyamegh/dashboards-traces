@@ -11,11 +11,13 @@
  * a debug-mode toggle in another tab / the Settings page is picked up
  * without a hard refresh.
  *
- * Collapsed: one line -- `route · render X ms · ready Y ms · N api / M ms`.
- * Expanded (click to pin, hover or hold ⌥/Alt to peek): the last 10
- * navigations, plus the per-operation timings recorded via
- * `lib/performance.ts` (avg / min / max / count, colour-coded dots, with the
- * former overlay's "Clear" action).
+ * Collapsed: one line -- `route · render X ms · ready Y ms · N api / M ms`
+ * (or a "navigate to start measuring" placeholder when debug mode was just
+ * switched on and no navigation has happened yet). Expanded (click to pin,
+ * hover or hold ⌥/Alt to peek): the last 10 navigations, plus the
+ * per-operation timings recorded via `lib/performance.ts` (avg / min / max /
+ * count, colour-coded dots, with the former overlay's "Clear" action) and a
+ * "hide" control that dismisses the HUD until the next page load.
  */
 
 import React, { useEffect, useState } from 'react';
@@ -26,6 +28,8 @@ import {
   getOperationStats,
   clearOperationStats,
   classifyDuration,
+  exposeConsoleApi,
+  removeConsoleApi,
   subscribe,
   type PageLatencyRecord,
   type OperationStat,
@@ -75,6 +79,7 @@ export const DebugLatencyHud: React.FC = () => {
   const [pinned, setPinned] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [altHeld, setAltHeld] = useState(false);
+  const [dismissed, setDismissed] = useState(false);
   const expanded = pinned || hovered || altHeld;
 
   // Poll for the debug-mode toggle (Settings page / another tab flips
@@ -95,12 +100,19 @@ export const DebugLatencyHud: React.FC = () => {
     return subscribe(refresh);
   }, [active]);
 
+  // DevTools console API lives exactly as long as the HUD is active.
+  useEffect(() => {
+    if (!active) return;
+    exposeConsoleApi();
+    return removeConsoleApi;
+  }, [active]);
+
   // Hold ⌥ / Alt to peek at the expanded view without reaching for the mouse.
   // `blur` resets the flag in case the keyup is swallowed (e.g. Alt+Tab).
   useEffect(() => {
     if (!active) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Alt') setAltHeld(true);
+      if (e.key === 'Alt' && !e.repeat) setAltHeld(true);
     };
     const onKeyUp = (e: KeyboardEvent) => {
       if (e.key === 'Alt') setAltHeld(false);
@@ -116,7 +128,7 @@ export const DebugLatencyHud: React.FC = () => {
     };
   }, [active]);
 
-  if (!active || !current) return null;
+  if (!active || dismissed) return null;
 
   return (
     <div
@@ -132,6 +144,22 @@ export const DebugLatencyHud: React.FC = () => {
           data-testid="debug-latency-hud-panel"
           className="mb-1 w-[28rem] max-h-80 overflow-auto rounded-md border border-slate-700 bg-slate-900/95 backdrop-blur text-[10px] text-slate-200 shadow-xl p-2 space-y-2 font-mono"
         >
+          <div className="flex items-center justify-between text-slate-400">
+            <span>Latency HUD</span>
+            <button
+              type="button"
+              data-testid="debug-latency-hud-hide"
+              title="Hide until the next page load"
+              onClick={e => {
+                e.stopPropagation();
+                setDismissed(true);
+              }}
+              className="rounded border border-slate-600 px-1 leading-4 hover:bg-slate-700"
+            >
+              hide
+            </button>
+          </div>
+
           {history.length > 0 && (
             <div data-testid="debug-latency-hud-history" className="space-y-1">
               <div className="text-slate-400">Last {history.length} navigations</div>
@@ -175,7 +203,7 @@ export const DebugLatencyHud: React.FC = () => {
         </div>
       )}
       <div className="rounded-md border border-slate-700 bg-slate-900/90 backdrop-blur text-[10px] text-slate-200 font-mono px-2 py-1 shadow-lg cursor-pointer">
-        {formatRecord(current)}
+        {current ? formatRecord(current) : '— · navigate to start measuring'}
       </div>
     </div>
   );
