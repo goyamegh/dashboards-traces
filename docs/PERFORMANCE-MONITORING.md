@@ -35,6 +35,9 @@ Turn debug mode off in Settings, or:
 localStorage.removeItem('DEBUG_PERFORMANCE')
 ```
 
+To hide the HUD for the rest of the current page load only (e.g. in a dev
+build, where it is always active), expand it and click **hide**.
+
 ## Using the Latency HUD
 
 Collapsed, the HUD is a single line for the current page:
@@ -122,18 +125,18 @@ Click it to pin it open (hover or hold ⌥/Alt to peek). The expanded view shows
 
 ## Console API
 
-While the HUD is active, `window.agentHealthPerf` exposes the measurement API
+While the HUD is active, `window.__agentHealthPerf` exposes the measurement API
 so ad-hoc timings can be taken from DevTools and show up in the HUD:
 
 ```javascript
-agentHealthPerf.startMeasure('myFeature.step')
+__agentHealthPerf.startMeasure('myFeature.step')
 // ... do the thing ...
-agentHealthPerf.endMeasure('myFeature.step')
+__agentHealthPerf.endMeasure('myFeature.step')
 
-agentHealthPerf.getMetrics()          // raw samples
-agentHealthPerf.getOperationStats()   // grouped avg / min / max / count
-agentHealthPerf.logSummary()          // console.group summary
-agentHealthPerf.clearMetrics()
+__agentHealthPerf.getMetrics()          // raw samples
+__agentHealthPerf.getOperationStats()   // grouped avg / min / max / count
+__agentHealthPerf.logSummary()          // console.group summary
+__agentHealthPerf.clearMetrics()
 ```
 
 In code, import the same functions from `@/lib/performance`.

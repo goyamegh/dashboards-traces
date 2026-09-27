@@ -76,9 +76,9 @@ test.describe('Debug latency HUD', () => {
 
     // Record two samples of one operation through the console API the HUD
     // exposes while active (same lib/performance path TraceFlowView uses).
-    await page.waitForFunction(() => typeof (window as any).agentHealthPerf?.startMeasure === 'function');
+    await page.waitForFunction(() => typeof (window as any).__agentHealthPerf?.startMeasure === 'function');
     await page.evaluate(async () => {
-      const api = (window as any).agentHealthPerf;
+      const api = (window as any).__agentHealthPerf;
       api.startMeasure('e2eSample.flowTransform');
       await new Promise(r => setTimeout(r, 60));
       api.endMeasure('e2eSample.flowTransform', false);
