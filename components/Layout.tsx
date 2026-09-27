@@ -47,8 +47,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { AssistantProvider } from "@/components/assistant-ui/AssistantProvider";
 import { AssistantModal } from "@/components/assistant-ui/AssistantModal";
-import { DebugLatencyHud } from "@/components/DebugLatencyHud";
-import { startNavigation } from "@/lib/pageLatency";
+import { DebugLatencyHud, PageLatencyNavigationBoundary } from "@/components/DebugLatencyHud";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -99,20 +98,6 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
 
   // Route changes close the off-canvas navigation after a mobile selection.
   useEffect(() => setMobileNavOpen(false), [location.pathname]);
-
-  // Debug/dev-mode page-latency instrumentation (lib/pageLatency.ts) --
-  // a no-op when neither is active. Every route change starts a fresh
-  // navigation window; the page itself reports when it's done loading via
-  // markPageReady(). Deliberately done during render, keyed on the pathname,
-  // NOT in a useEffect: React runs a child's effects before its parent's, so
-  // the new page's very first data fetches (fired from its own useEffect)
-  // would start BEFORE a Layout effect could open the window and be charged
-  // to the previous, already-finalized record. Rendering is parent-first.
-  const latencyPathRef = useRef<string | null>(null);
-  if (latencyPathRef.current !== location.pathname) {
-    latencyPathRef.current = location.pathname;
-    startNavigation(location.pathname);
-  }
 
   // Chrome-vertical-tabs-style hover-open: when the sidebar is pinned
   // collapsed to the icon rail, hovering (or keyboard-focusing) it temporarily
@@ -545,6 +530,8 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           <span className="text-sm font-semibold">AgentHealth</span>
           <span className="w-10" aria-hidden="true" />
         </div>
+        {/* Must stay BEFORE {children}: see PageLatencyNavigationBoundary. */}
+        <PageLatencyNavigationBoundary />
         <AssistantProvider>
           {children}
           <AssistantModal />

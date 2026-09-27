@@ -18,16 +18,16 @@
  *   First paint  9 ms
  *   API          37 requests · 13.2 s wall     + the 5 slowest requests
  *   Slow steps on this page                     (only if the page recorded any)
- *   prev page: eval-runs 0.8 s                  (one-line footnote)
  * Everything resets on every route change.
  */
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 import {
   isPageLatencyActive,
   getCurrentRecord,
-  getPreviousPage,
   getOperationStats,
+  startNavigation,
   classifyDuration,
   classifyPageReady,
   formatMs,
@@ -35,11 +35,28 @@ import {
   removeConsoleApi,
   subscribe,
   type PageLatencyRecord,
-  type PreviousPageSummary,
   type OperationStat,
   type ApiRequestRecord,
   type DurationBand,
 } from '@/lib/pageLatency';
+
+/**
+ * Opens the latency window for each navigation. Rendered by Layout as a
+ * sibling BEFORE the page content, in a layout effect: React runs children's
+ * effects before their parent's, so a plain useEffect in Layout fired AFTER
+ * the new page's own effects had already started its first fetches -- those
+ * were then charged to the previous, already-final record. Layout effects of
+ * an earlier sibling run before any passive effect of a later one, and this
+ * is a commit-phase call (never a render-phase side effect). Keyed on
+ * `location.key` so same-path navigations (query changes) start a new window.
+ */
+export const PageLatencyNavigationBoundary: React.FC = () => {
+  const location = useLocation();
+  useLayoutEffect(() => {
+    startNavigation(location.pathname);
+  }, [location.key, location.pathname]);
+  return null;
+};
 
 const SLOWEST_REQUESTS = 5;
 const MAX_STEPS = 3;
@@ -91,7 +108,6 @@ const StepRow: React.FC<{ stat: OperationStat }> = ({ stat }) => {
 export const DebugLatencyHud: React.FC = () => {
   const [active, setActive] = useState(() => isPageLatencyActive());
   const [current, setCurrent] = useState<PageLatencyRecord | null>(() => getCurrentRecord());
-  const [previous, setPrevious] = useState<PreviousPageSummary | null>(() => getPreviousPage());
   const [ops, setOps] = useState(() => getOperationStats());
   const [pinned, setPinned] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -110,14 +126,12 @@ export const DebugLatencyHud: React.FC = () => {
     if (!active) return;
     const refresh = () => {
       setCurrent(getCurrentRecord());
-      setPrevious(getPreviousPage());
       setOps(getOperationStats());
     };
     refresh();
-    // Notifications can arrive while another component is rendering
-    // (Layout opens the navigation window during ITS render, see Layout.tsx)
-    // and in bursts (every settled request) -- defer + coalesce to a microtask
-    // so this never setStates mid-render and re-renders once per burst.
+    // Notifications arrive in bursts (every settled request) and from other
+    // components' commit phases -- defer + coalesce to a microtask so the HUD
+    // re-renders once per burst.
     let queued = false;
     let unsubscribed = false;
     const onChange = () => {
@@ -234,11 +248,6 @@ export const DebugLatencyHud: React.FC = () => {
             <div data-testid="debug-latency-hud-operations" className="pt-1">
               <div className="text-slate-400">Slow steps on this page</div>
               {steps.map(stat => <StepRow key={stat.name} stat={stat} />)}
-            </div>
-          )}
-          {previous && (
-            <div data-testid="debug-latency-hud-prev" className="pt-1 text-slate-500 truncate">
-              prev page: {previous.route} {previous.readyMs === null ? '—' : formatMs(previous.readyMs)}
             </div>
           )}
         </div>

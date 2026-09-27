@@ -14,8 +14,8 @@
  * Covers: complete no-op when inactive (the "zero behaviour change when
  * debug is off" contract), routeKeyFromPath's route-pattern mapping,
  * render/ready timing, /api/* fetch aggregation scoped to the active
- * navigation, the stale-routeKey guard, the previous-page footnote, the
- * automatic settle estimate, request templating/wall-clock span, and the
+ * navigation, the stale-routeKey guard, the automatic settle estimate for
+ * non-instrumented routes, request templating / wall-clock span, and the
  * debug() logger call on finalize.
  */
 
@@ -92,6 +92,8 @@ describe('lib/pageLatency', () => {
     it('leaves plain resource segments alone', () => {
       expect(pageLatency.templatePath('/api/storage/runs/search')).toBe('/api/storage/runs/search');
       expect(pageLatency.templatePath('/api/debug')).toBe('/api/debug');
+      // human slugs with a few digits are names, not ids
+      expect(pageLatency.templatePath('/api/storage/benchmarks/my-benchmark-2024/runs')).toBe('/api/storage/benchmarks/my-benchmark-2024/runs');
     });
   });
 
@@ -121,7 +123,6 @@ describe('lib/pageLatency', () => {
     it('markPageReady is a no-op with no active record', () => {
       pageLatency.markPageReady('benchmarks');
       expect(pageLatency.getCurrentRecord()).toBeNull();
-      expect(pageLatency.getPreviousPage()).toBeNull();
       expect(debugLog).not.toHaveBeenCalled();
     });
 
@@ -234,20 +235,25 @@ describe('lib/pageLatency', () => {
       // B (the page the user is looking at NOW) must not be charged for a
       // request it never made.
       expect(recordB!.apiCount).toBe(0);
-      // ...and A (superseded, no longer current) is where it was charged.
-      expect(pageLatency.getPreviousPage()).toMatchObject({ route: 'benchmarks' });
     });
 
-    it('stops counting fetches into a record once markPageReady has finalized it (a late poll must not inflate an already-reported number)', async () => {
-      window.fetch = jest.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch;
+    it('does not count a request that STARTS after markPageReady (background poll), but keeps one still in flight when the page reports ready', async () => {
+      let resolveApi: ((v: unknown) => void) | null = null;
+      window.fetch = jest.fn((url: string) => {
+        if (url.includes('/in-flight')) return new Promise(resolve => { resolveApi = resolve; });
+        return Promise.resolve({ ok: true });
+      }) as unknown as typeof fetch;
 
       pageLatency.startNavigation('/evaluations/benchmarks'); // wraps the mock above
+      const inFlight = fetch('/api/storage/in-flight'); // started BEFORE ready: the page's own request
       pageLatency.markPageReady('benchmarks');
-      const finalizedApiCount = pageLatency.getCurrentRecord()!.apiCount;
+      await fetch('/api/storage/benchmarks'); // started AFTER ready: a late poll/refresh
+      expect(pageLatency.getCurrentRecord()!.apiCount).toBe(0);
 
-      await fetch('/api/storage/benchmarks'); // a late poll/refresh after "ready"
-
-      expect(pageLatency.getCurrentRecord()!.apiCount).toBe(finalizedApiCount);
+      resolveApi!({ ok: true });
+      await inFlight;
+      expect(pageLatency.getCurrentRecord()!.apiCount).toBe(1);
+      expect(pageLatency.getCurrentRecord()!.apiRequests[0].path).toBe('/api/storage/in-flight');
     });
 
     it('stops counting fetches the instant debug mode is turned off, even before the next navigation restores window.fetch', async () => {
@@ -277,18 +283,14 @@ describe('lib/pageLatency', () => {
       expect(rec.renderMs).not.toBeNull();
     });
 
-    it('keeps only the previous page as a one-line footnote (route + ready time), never a history', () => {
+    it('keeps nothing about earlier pages: no history, no previous-page accessor', () => {
       pageLatency.startNavigation('/evaluations/benchmarks');
-      jest.advanceTimersByTime(50);
       pageLatency.markPageReady('benchmarks');
-      const benchmarksReady = pageLatency.getCurrentRecord()!.readyMs;
-
       pageLatency.startNavigation('/evaluations/runs');
-      expect(pageLatency.getPreviousPage()).toEqual({ route: 'benchmarks', readyMs: benchmarksReady });
-      expect((pageLatency as unknown as Record<string, unknown>).getHistory).toBeUndefined();
-
-      pageLatency.startNavigation('/compare');
-      expect(pageLatency.getPreviousPage()).toEqual({ route: 'eval-runs', readyMs: null }); // eval-runs never reported ready
+      const api = pageLatency as unknown as Record<string, unknown>;
+      expect(api.getHistory).toBeUndefined();
+      expect(api.getPreviousPage).toBeUndefined();
+      expect(pageLatency.getCurrentRecord()!.route).toBe('eval-runs');
     });
 
     it('resets the lib/performance step timings on every navigation so "Slow steps" only covers the current page', () => {
@@ -355,11 +357,61 @@ describe('lib/pageLatency', () => {
       window.fetch = jest.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch;
       pageLatency.startNavigation('/settings');
       await fetch('/api/debug');
-      pageLatency.startNavigation('/evaluations/benchmarks'); // navigated on before the 1 s quiet period
+      pageLatency.startNavigation('/evaluators'); // navigated on before the 1 s quiet period
       jest.advanceTimersByTime(1500);
       const rec = pageLatency.getCurrentRecord()!;
       expect(rec.apiCount).toBe(0); // the previous page's request was not carried over
       expect(rec.settledMs).toBe(rec.renderMs); // settled at ITS OWN first paint, not the old page's response
+    });
+
+    it('never auto-settles an instrumented route: a >1 s pause between its request bursts must not cut it short', async () => {
+      window.fetch = jest.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch;
+      pageLatency.startNavigation('/evaluations/benchmarks/bench-1/runs'); // benchmark-runs reports ready itself
+      jest.advanceTimersByTime(50);
+      await fetch('/api/storage/benchmarks/bench-1');
+      jest.advanceTimersByTime(5000); // long quiet gap (e.g. before a per-run cascade)
+      expect(pageLatency.getCurrentRecord()!.settledMs).toBeNull();
+
+      await fetch('/api/storage/evaluation-runs/run-1'); // second burst still counts
+      expect(pageLatency.getCurrentRecord()!.apiCount).toBe(2);
+      pageLatency.markPageReady('benchmark-runs');
+      expect(pageLatency.getCurrentRecord()!.readyMs).not.toBeNull();
+    });
+
+    it('once auto-settled, the estimate is final: a later background request is not counted and does not move the number', async () => {
+      window.fetch = jest.fn(() => Promise.resolve({ ok: true })) as unknown as typeof fetch;
+      pageLatency.startNavigation('/settings');
+      jest.advanceTimersByTime(50);
+      await fetch('/api/debug');
+      jest.advanceTimersByTime(1000);
+      const rec = pageLatency.getCurrentRecord()!;
+      const settled = rec.settledMs;
+      expect(settled).not.toBeNull();
+
+      jest.advanceTimersByTime(30_000);
+      await fetch('/api/debug'); // a 30 s poll
+      expect(rec.apiCount).toBe(1);
+      expect(rec.settledMs).toBe(settled);
+    });
+
+    it('caps the request list at 200 but always keeps the slowest ones (apiCount stays exact)', async () => {
+      const nowSpy = jest.spyOn(performance, 'now');
+      let now = 1000;
+      nowSpy.mockImplementation(() => now);
+      let durationMs = 1;
+      window.fetch = jest.fn(() => { now += durationMs; return Promise.resolve({ ok: true }); }) as unknown as typeof fetch;
+
+      pageLatency.startNavigation('/evaluators');
+      for (let i = 0; i < 200; i++) { durationMs = 10; await fetch(`/api/storage/evaluators/${i}`); }
+      durationMs = 9999; await fetch('/api/storage/slow'); // #201, the slowest of all
+      durationMs = 1; await fetch('/api/storage/fast');    // #202, faster than everything kept
+
+      const rec = pageLatency.getCurrentRecord()!;
+      expect(rec.apiCount).toBe(202);
+      expect(rec.apiRequests).toHaveLength(200);
+      expect(rec.apiRequests.some(r => r.path === '/api/storage/slow' && r.ms === 9999)).toBe(true);
+      expect(rec.apiRequests.some(r => r.path === '/api/storage/fast')).toBe(false);
+      nowSpy.mockRestore();
     });
 
     it('subscribe() fires on navigation start and on markPageReady, and unsubscribe stops further notifications', () => {

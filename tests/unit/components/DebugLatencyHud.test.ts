@@ -18,7 +18,7 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 
 const mockIsActive = jest.fn();
 const mockGetCurrentRecord = jest.fn();
-const mockGetPreviousPage = jest.fn();
+const mockStartNavigation = jest.fn();
 const mockSubscribe = jest.fn();
 const mockGetOperationStats = jest.fn();
 const mockExposeConsoleApi = jest.fn();
@@ -31,7 +31,7 @@ jest.mock('@/lib/pageLatency', () => {
     removeConsoleApi: () => mockRemoveConsoleApi(),
     isPageLatencyActive: () => mockIsActive(),
     getCurrentRecord: () => mockGetCurrentRecord(),
-    getPreviousPage: () => mockGetPreviousPage(),
+    startNavigation: (p: string) => mockStartNavigation(p),
     getOperationStats: () => mockGetOperationStats(),
     subscribe: (fn: () => void) => mockSubscribe(fn),
     // pure helpers: use the real ones so the rendered text is the real text
@@ -41,7 +41,8 @@ jest.mock('@/lib/pageLatency', () => {
   };
 });
 
-import { DebugLatencyHud } from '@/components/DebugLatencyHud';
+import { MemoryRouter, Routes, Route } from 'react-router-dom';
+import { DebugLatencyHud, PageLatencyNavigationBoundary } from '@/components/DebugLatencyHud';
 
 const NO_OPS = { stats: [], totalMeasurements: 0 };
 
@@ -78,7 +79,7 @@ describe('DebugLatencyHud', () => {
     jest.useFakeTimers();
     mockIsActive.mockReset().mockReturnValue(false);
     mockGetCurrentRecord.mockReset().mockReturnValue(null);
-    mockGetPreviousPage.mockReset().mockReturnValue(null);
+    mockStartNavigation.mockReset();
     mockSubscribe.mockReset().mockReturnValue(() => {});
     mockGetOperationStats.mockReset().mockReturnValue(NO_OPS);
     mockExposeConsoleApi.mockReset();
@@ -193,12 +194,11 @@ describe('DebugLatencyHud', () => {
       expect(SLOW_PAGE.apiWallMs).toBeLessThanOrEqual(SLOW_PAGE.readyMs);
     });
 
-    it('never shows a legend, a navigation history, or a summed API duration', () => {
-      mockGetPreviousPage.mockReturnValue({ route: 'eval-runs', readyMs: 812 });
+    it('never shows a legend, a navigation history, a previous page, or a summed API duration', () => {
       render(React.createElement(DebugLatencyHud));
       fireEvent.click(screen.getByTestId('debug-latency-hud'));
       const text = screen.getByTestId('debug-latency-hud-panel').textContent!;
-      expect(text).not.toMatch(/< 50 ms|< 200 ms|≥ 200 ms|Last \d+ navigations|Operations|measurements|render /);
+      expect(text).not.toMatch(/< 50 ms|< 200 ms|≥ 200 ms|Last \d+ navigations|prev page|Operations|measurements|render /);
       expect(text).not.toContain('185'); // 37 × ~5 s summed would be ~185 s -- must not appear anywhere
     });
 
@@ -241,13 +241,6 @@ describe('DebugLatencyHud', () => {
       expect(ops.textContent).not.toMatch(/< 50 ms/); // no legend
     });
 
-    it('shows the previous page as a one-line footnote', () => {
-      mockGetPreviousPage.mockReturnValue({ route: 'eval-runs', readyMs: 812 });
-      render(React.createElement(DebugLatencyHud));
-      fireEvent.click(screen.getByTestId('debug-latency-hud'));
-      expect(screen.getByTestId('debug-latency-hud-prev').textContent).toBe('prev page: eval-runs 812 ms');
-    });
-
     it('"hide" dismisses the HUD for the rest of the page load without toggling anything else', () => {
       render(React.createElement(DebugLatencyHud));
       fireEvent.click(screen.getByTestId('debug-latency-hud'));
@@ -283,6 +276,24 @@ describe('DebugLatencyHud', () => {
     mockGetCurrentRecord.mockReturnValue(FAST_PAGE);
     act(() => { jest.advanceTimersByTime(1100); });
     expect(screen.getByTestId('debug-latency-hud')).toBeTruthy();
+  });
+
+  describe('PageLatencyNavigationBoundary', () => {
+    it('opens the navigation window BEFORE a sibling page rendered after it runs its own effect (where pages fire their first fetches)', () => {
+      const order: string[] = [];
+      mockStartNavigation.mockImplementation((p: string) => order.push(`startNavigation:${p}`));
+      const Page: React.FC = () => {
+        React.useEffect(() => { order.push('page-effect'); }, []);
+        return null;
+      };
+      render(
+        React.createElement(MemoryRouter, { initialEntries: ['/evaluations/benchmarks'] },
+          React.createElement(PageLatencyNavigationBoundary),
+          React.createElement(Routes, null, React.createElement(Route, { path: '*', element: React.createElement(Page) })),
+        ),
+      );
+      expect(order).toEqual(['startNavigation:/evaluations/benchmarks', 'page-effect']);
+    });
   });
 
   it('exposes the DevTools console API while active and removes it on unmount', () => {
