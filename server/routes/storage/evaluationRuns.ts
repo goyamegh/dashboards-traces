@@ -117,6 +117,19 @@ function sendSSE(res: Response, event: string, data: any): void {
   }
 }
 
+/**
+ * The benchmark a run's embedded `BenchmarkRun` projection lives in, if any.
+ * `benchmarkId` is stamped at creation for benchmark-scoped runs; the
+ * `sources[]` entry is the fallback for docs promoted/linked later.
+ */
+function resolveLinkedBenchmarkId(run: EvaluationRun): string | undefined {
+  if (run.benchmarkId) return run.benchmarkId;
+  const source = (run.sources || []).find(
+    (s): s is Extract<TestCaseSource, { type: 'benchmark' }> => s.type === 'benchmark',
+  );
+  return source?.benchmarkId;
+}
+
 // GET /api/storage/evaluation-runs - List evaluation runs
 router.get('/api/storage/evaluation-runs', async (req: Request, res: Response) => {
   try {
@@ -352,13 +365,20 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       // Link the terminal projection into the benchmark. addRun is idempotent,
       // so a crash here can be retried without orphaning the run; the
       // projection carries the reconciled (persisted) results and stats.
+      // `name`/`description` come from the PERSISTED doc too, not the
+      // in-memory creation-time `run`: a rename issued while the run was still
+      // in flight (before this projection existed) lives only on the doc, and
+      // projecting `run.name` here would resurrect the pre-rename name in
+      // `benchmark.runs[]` (#465 follow-up, codex_review finding).
       if (benchmarkId) {
+        const persistedName = finalized.run.name ?? run.name;
+        const persistedDescription = finalized.run.description ?? run.description;
         const benchmarkRun: BenchmarkRun = {
-          id: run.id, name: run.name, createdAt: run.createdAt, completedAt,
+          id: run.id, name: persistedName, createdAt: run.createdAt, completedAt,
           status: finalStatus, agentKey: run.agentKey, modelId: run.modelId,
           judgeModelId: run.judgeModelId, results: finalized.run.results, stats: finalized.stats,
           ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
-          ...(run.description ? { description: run.description } : {}),
+          ...(persistedDescription ? { description: persistedDescription } : {}),
           ...(run.evaluatorId ? { evaluatorId: run.evaluatorId } : {}),
           ...(run.headers ? { headers: run.headers } : {}),
           ...(run.concurrency ? { concurrency: run.concurrency } : {}),
@@ -869,6 +889,31 @@ router.patch('/api/storage/evaluation-runs/:id', async (req: Request, res: Respo
     if (benchmarkId !== undefined) allowedFields.benchmarkId = benchmarkId;
 
     const updated = await storage.evaluationRuns.update(id, allowedFields);
+
+    // Dual-write sync (#465 owner report: "it did show on the page, but a
+    // refresh doesn't show the new name"). A run created WITH a benchmarkId
+    // is dual-written (#399): this first-class doc AND a legacy-shaped
+    // BenchmarkRun projection embedded in `benchmark.runs[]`, which the
+    // benchmark Runs tab and every legacy benchmark surface render. The
+    // projection was written once at completion and never updated again, so
+    // a rename that only touched the top-level doc came back stale on any
+    // reload of those surfaces. Mirror the projected display fields onto the
+    // embedded copy. Best-effort on purpose: the canonical rename above has
+    // already succeeded (and is what this route returns); a projection that
+    // does not exist yet (run still in flight, linked only at completion) or
+    // a transient failure here must not turn a successful rename into a 500.
+    const projectionUpdates: Partial<BenchmarkRun> = {};
+    if ('name' in allowedFields) projectionUpdates.name = allowedFields.name;
+    if ('description' in allowedFields) projectionUpdates.description = allowedFields.description;
+    const linkedBenchmarkId = resolveLinkedBenchmarkId(existing);
+    if (linkedBenchmarkId && Object.keys(projectionUpdates).length > 0) {
+      try {
+        await storage.benchmarks.updateRun(linkedBenchmarkId, id, projectionUpdates);
+      } catch (syncError: any) {
+        console.warn(`[StorageAPI] Renamed evaluation run ${id} but failed to sync the embedded projection in benchmark ${linkedBenchmarkId}: ${syncError.message}`);
+      }
+    }
+
     res.json(updated);
   } catch (error: any) {
     if (error.meta?.statusCode === 404) {

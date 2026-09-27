@@ -803,7 +803,7 @@ describe('OpenSearchStorageModule', () => {
 
     describe('updateRun', () => {
       it('should update a specific run within a benchmark', async () => {
-        mockClient.update.mockResolvedValue({});
+        mockClient.update.mockResolvedValue({ body: { result: 'updated' } });
 
         const result = await mod.benchmarks.updateRun('bench-1', 'run-1', { name: 'Updated' } as any);
 
@@ -828,6 +828,37 @@ describe('OpenSearchStorageModule', () => {
         const result = await mod.benchmarks.updateRun('missing', 'run-1', {} as any);
 
         expect(result).toBe(false);
+      });
+
+      // #465 rename write-through relies on updateRun being a safe no-op for a
+      // run that is not (yet) embedded, and on the script tolerating a
+      // benchmark with no runs[] at all.
+      it('returns false when the script reports noop (run id not embedded in runs[]) — matches the file adapter', async () => {
+        mockClient.update.mockResolvedValue({ body: { result: 'noop' } });
+
+        const result = await mod.benchmarks.updateRun('bench-1', 'not-embedded', { name: 'x' } as any);
+
+        expect(result).toBe(false);
+      });
+
+      it('returns true on an applied update and only bumps updatedAt when a run matched (script is null-safe on runs[])', async () => {
+        mockClient.update.mockResolvedValue({ body: { result: 'updated' } });
+
+        const result = await mod.benchmarks.updateRun('bench-1', 'run-1', { name: 'Renamed' } as any);
+
+        expect(result).toBe(true);
+        const source: string = mockClient.update.mock.calls[0][0].body.script.source;
+        expect(source).toContain('ctx._source.runs != null');
+        expect(source).toContain("ctx.op = 'noop'");
+        // updatedAt is inside the matched branch, not unconditional.
+        expect(source.indexOf('matched')).toBeLessThan(source.indexOf('ctx._source.updatedAt = params.now'));
+      });
+
+      it('fails CLOSED on an unrecognized update result instead of assuming the projection was patched (same contract as deleteRun)', async () => {
+        mockClient.update.mockResolvedValue({});
+
+        await expect(mod.benchmarks.updateRun('bench-1', 'run-1', { name: 'x' } as any))
+          .rejects.toThrow(/unrecognized OpenSearch update result/);
       });
     });
 
@@ -1862,6 +1893,20 @@ describe('OpenSearchStorageModule', () => {
       expect(call.body.script.params.fields).toEqual({ status: 'cancelled', completedAt: 't' });
       expect(call.body.script.source).toContain("ctx._source.docType != 'evaluation-run'");
       expect(updated.status).toBe('cancelled');
+    });
+
+    it('update({ name }) writes `name` into the scripted partial-update body and the read-back returns it (#465 rename path)', async () => {
+      mockClient.update.mockResolvedValue({ body: { result: 'updated' } });
+      mockClient.get.mockResolvedValue({ body: { found: true, _source: { ...runDoc, name: 'Renamed run' } } });
+
+      const updated = await mod.evaluationRuns.update('eval-run-1', { name: 'Renamed run' });
+
+      const call = mockClient.update.mock.calls[0][0];
+      expect(call.index).toBe('evals_experiments');
+      expect(call.body.script.params.fields).toEqual({ name: 'Renamed run' });
+      expect(call.refresh).toBe('wait_for');
+      expect(mockClient.get).toHaveBeenCalledWith(expect.objectContaining({ index: 'evals_experiments', id: 'eval-run-1' }));
+      expect(updated.name).toBe('Renamed run');
     });
 
     it('update() passes `results` through only when a caller explicitly provides it (retry-judgement / PUT import)', async () => {
