@@ -40,7 +40,8 @@ import { Breadcrumbs } from './Breadcrumbs';
 import { ensureTracePollingForReport } from '@/services/traces/browserRecovery';
 import { RunConfigDialog } from './RunConfigDialog';
 import { RetryJudgementConfirmDialog } from './RetryJudgementConfirmDialog';
-import type { RetryJudgementSummary } from '@/services/client';
+import { RetryJudgementJobPill } from './RetryJudgementJobs';
+import { useOnRetryJudgementFinished } from '@/hooks/useRetryJudgementJob';
 import { RunActionsMenu } from './RunActionsMenu';
 
 interface TestCaseResult {
@@ -131,9 +132,12 @@ export const RunInspectorPage: React.FC = () => {
   const [sourceRunMissing, setSourceRunMissing] = useState(false);
 
   // Load data — fetch reports to get real pass/fail status
-  const loadData = useCallback(async () => {
+  // `silent` re-fetches WITHOUT the loading skeleton: the whole page (and any
+  // open dialog) would otherwise unmount for the duration — the background
+  // retry-judgement refresh must not yank the dialog showing its summary.
+  const loadData = useCallback(async (silent = false) => {
     if (!runId) return;
-    setLoading(true);
+    if (!silent) setLoading(true);
     setLoadError(false);
     setNotFoundReason(null);
     try {
@@ -335,9 +339,12 @@ export const RunInspectorPage: React.FC = () => {
   };
 
   // Retry judgement from the kebab opens the RetryJudgementConfirmDialog —
-  // one code path (dialog → retryJudgement() with progress polling), not a
-  // second fire-and-forget one.
+  // one code path (dialog → background job in the client job store), not a
+  // second one.
   const handleRetryJudgement = () => { setRetryJudgementDialogOpen(true); };
+  // The job runs in the background (the dialog may be closed) — refresh the
+  // verdicts when a job for THIS run finishes.
+  useOnRetryJudgementFinished(job => { if (job.runId === runId) void loadData(true); });
 
   // Resolve the source run name for the rerunOf provenance chip (EvaluationRun only).
   useEffect(() => {
@@ -562,6 +569,7 @@ export const RunInspectorPage: React.FC = () => {
             ) : (
               <h2 className="text-lg font-bold truncate" title={run.name}>{run.name}</h2>
             )}
+            {evalRun && <RetryJudgementJobPill runId={evalRun.id} runName={evalRun.name} className="ml-2 align-middle" />}
             {/* Provenance chip visibility is a DOC concern (does this run
                 object actually carry rerunOf data?), not a route concern --
                 isEvaluationRun() narrows `run` so `.rerunOf` is type-safe.
@@ -709,7 +717,7 @@ export const RunInspectorPage: React.FC = () => {
           count={erroredCount}
           open={retryJudgementDialogOpen}
           onOpenChange={setRetryJudgementDialogOpen}
-          onComplete={(_summary: RetryJudgementSummary) => loadData()}
+          onComplete={() => loadData(true)}
         />
       )}
 

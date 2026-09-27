@@ -34,12 +34,13 @@ import {
   getEvaluationRun,
   cancelEvaluationRun,
   deleteEvaluationRun,
-  retryJudgementEvaluationRun,
   promoteEvaluationRun,
 } from '@/services/client/evaluationRunsApi';
+import { startRetryJudgementJob } from '@/services/client/retryJudgementJobs';
 import { RunConfigDialog } from './RunConfigDialog';
 import { RunActionsMenu } from './RunActionsMenu';
 import { Breadcrumbs } from './Breadcrumbs';
+import { useOnRetryJudgementFinished } from '@/hooks/useRetryJudgementJob';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -160,11 +161,13 @@ export const EvalRunDetailPage: React.FC = () => {
     navigate('/evaluations/runs');
   };
 
+  // Fire-and-forget (client job store polls; the toaster announces the
+  // summary) — refresh when a job for this run finishes.
   const handleRetryJudgement = async () => {
     if (!runId) return;
-    await retryJudgementEvaluationRun(runId);
-    await loadRun();
+    await startRetryJudgementJob(runId, { scope: 'errored' }, run?.name);
   };
+  useOnRetryJudgementFinished(job => { if (job.runId === runId) void loadRun(); });
 
   if (loading) {
     return (

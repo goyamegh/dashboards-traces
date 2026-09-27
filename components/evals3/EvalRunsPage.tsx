@@ -31,7 +31,9 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { asyncBenchmarkStorage, asyncTestCaseStorage, asyncRunStorage } from '@/services/storage';
-import { listEvaluationRuns, updateEvaluationRun, deleteEvaluationRun, cancelEvaluationRun, retryJudgementEvaluationRun } from '@/services/client';
+import { listEvaluationRuns, updateEvaluationRun, deleteEvaluationRun, cancelEvaluationRun, startRetryJudgementJob } from '@/services/client';
+import { RetryJudgementJobPill } from './RetryJudgementJobs';
+import { useOnRetryJudgementFinished } from '@/hooks/useRetryJudgementJob';
 import { cancelBenchmarkRun } from '@/services/client/benchmarkApi';
 import { Benchmark, TestCase, BenchmarkRun, EvaluationRun } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
@@ -469,10 +471,15 @@ export const EvalRunsPage: React.FC = () => {
     await loadData();
   };
 
+  // Fire-and-forget: the job runs in the background (client job store); the
+  // row shows a "Re-judging n/N…" pill meanwhile and the list refreshes when
+  // the job finishes (useOnRetryJudgementFinished below). Only the 202 is
+  // awaited, so a refused retry (409/400) still surfaces through the kebab's
+  // inline error.
   const handleRetryJudgementRow = async (rr: RunRow) => {
-    await retryJudgementEvaluationRun(rr.run.id);
-    await loadData();
+    await startRetryJudgementJob(rr.run.id, { scope: 'errored' }, rr.run.name);
   };
+  useOnRetryJudgementFinished(() => { void loadData(); });
 
   const toggleGroup = (id: string) => {
     setCollapsedGroups(prev => {
@@ -707,6 +714,7 @@ export const EvalRunsPage: React.FC = () => {
             ) : (
               <span className="text-xs font-medium">{rr.run.name}</span>
             )}
+            {rr.kind === 'eval-run' && <RetryJudgementJobPill runId={rr.run.id} runName={rr.run.name} />}
             {rr.status === 'running' && !(rr.run as { cancelRequestedAt?: string }).cancelRequestedAt && (
               <span
                 data-testid="run-row-status-running"
