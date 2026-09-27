@@ -197,7 +197,11 @@ export const BenchmarksPage4: React.FC = () => {
     try {
       const [bms, tcs] = await Promise.all([
         asyncBenchmarkStorage.getAll({ includeSample: showSampleData === true ? true : undefined }),
-        asyncTestCaseStorage.getAll({ includeSample: showSampleData === true ? true : undefined }),
+        // Summary projection (no context / expectedOutcomes / versions /
+        // sourceCode): this page only keys test cases by id. The retired
+        // pre-evals3 Benchmarks page already fetched the summary; the full
+        // corpus is ~168 MB on large installs (see test-cases-summary-fetch e2e).
+        asyncTestCaseStorage.getAll({ summary: true, includeSample: showSampleData === true ? true : undefined }),
       ]);
       setBenchmarks(bms);
       setTestCases(tcs as TestCase[]);
@@ -375,7 +379,7 @@ export const BenchmarksPage4: React.FC = () => {
             <Upload size={12} /> {isImporting ? 'Importing...' : 'Import JSON'}
           </Button>
           {/* New Benchmark */}
-          <Button size="sm" onClick={() => { setEditingBenchmark(null); setEditorError(null); setShowEditor(true); }} className="h-7 gap-1.5 text-xs">
+          <Button size="sm" data-testid="new-benchmark-button" onClick={() => { setEditingBenchmark(null); setEditorError(null); setShowEditor(true); }} className="h-7 gap-1.5 text-xs">
             <Plus size={12} /> New Benchmark
           </Button>
           {/* Sample data toggle */}

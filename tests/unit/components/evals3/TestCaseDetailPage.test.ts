@@ -21,9 +21,11 @@ jest.mock('react-markdown', () => ({
 }));
 jest.mock('remark-gfm', () => () => {});
 
+let mockSearchParams = new URLSearchParams();
 jest.mock('react-router-dom', () => ({
   useParams: () => ({ testCaseId: 'tc-hero' }),
   useNavigate: () => mockNavigate,
+  useSearchParams: () => [mockSearchParams, jest.fn()],
 }));
 
 jest.mock('@/services/storage', () => ({
@@ -123,6 +125,7 @@ const report = {
 
 beforeEach(() => {
   jest.clearAllMocks();
+  mockSearchParams = new URLSearchParams();
   mockGetTestCase.mockResolvedValue(testCase);
   mockGetReports.mockResolvedValue({ reports: [report], total: 1 });
   global.fetch = jest.fn().mockResolvedValue({ ok: false }) as jest.Mock;
@@ -324,5 +327,50 @@ describe('TestCaseDetailPage definition-first hierarchy', () => {
     } finally {
       jest.useRealTimers();
     }
+  });
+});
+
+describe('TestCaseDetailPage — `?run=<reportId>` deep link (share URL / retired /runs/:id redirect)', () => {
+  const older = { ...report, id: 'report-0', name: 'Older run', timestamp: '2025-01-02T00:00:00Z' };
+
+  it('preselects the requested run and expands the run history', async () => {
+    mockSearchParams = new URLSearchParams('run=report-0');
+    mockGetReports.mockResolvedValue({ reports: [report, older], total: 2 });
+    render(React.createElement(TestCaseDetailPage));
+
+    const row = await screen.findByTestId('test-case-run-row-report-0');
+    expect(row.getAttribute('aria-selected')).toBe('true');
+    expect(screen.getByTestId('test-case-run-row-report-1').getAttribute('aria-selected')).toBe('false');
+    expect(screen.getByTestId('run-inspector')).toBeTruthy();
+    const disclosure = within(screen.getByTestId('test-case-runs-section')).getByRole('button', { name: /Run history/i });
+    expect(disclosure.getAttribute('aria-expanded')).toBe('true');
+  });
+
+  it('falls back to the latest run (history collapsed) when the requested run is unknown', async () => {
+    mockSearchParams = new URLSearchParams('run=does-not-exist');
+    mockGetReports.mockResolvedValue({ reports: [report, older], total: 2 });
+    render(React.createElement(TestCaseDetailPage));
+
+    const runsSection = await screen.findByTestId('test-case-runs-section');
+    const disclosure = within(runsSection).getByRole('button', { name: /Run history/i });
+    expect(disclosure.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(disclosure);
+    expect(screen.getByTestId('test-case-run-row-report-1').getAttribute('aria-selected')).toBe('true');
+  });
+
+  it('copies this page\'s own ?run= share URL (the retired /runs/:id route is no longer generated)', async () => {
+    const writeText = jest.fn().mockResolvedValue(undefined);
+    Object.assign(navigator, { clipboard: { writeText } });
+    render(React.createElement(TestCaseDetailPage));
+
+    const runsSection = await screen.findByTestId('test-case-runs-section');
+    fireEvent.click(within(runsSection).getByRole('button', { name: /Run history/i }));
+    await waitFor(() => expect(screen.getByTestId('test-case-run-row-report-1')).toBeTruthy());
+    fireEvent.click(within(screen.getByTestId('test-case-run-row-report-1')).getByLabelText('Copy run URL'));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledTimes(1));
+    const url = writeText.mock.calls[0][0] as string;
+    expect(url.endsWith('/evaluations/test-cases/tc-hero?run=report-1')).toBe(true);
+    expect(url).not.toContain('/runs/report-1');
   });
 });
