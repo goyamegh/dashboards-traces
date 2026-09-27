@@ -19,7 +19,7 @@
  */
 
 import * as React from 'react';
-import { render, screen, waitFor, act, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, act, fireEvent, within } from '@testing-library/react';
 import { RunDetailsContent, getLogLevelColor } from '@/components/RunDetailsContent';
 import { EvaluationReport } from '@/types';
 
@@ -95,6 +95,11 @@ jest.mock('@/lib/utils', () => ({
   // function". Provide faithful stubs: a numeric score and an empty breakdown.
   getRunOverallScore: jest.fn().mockReturnValue(null),
   formatMetricsBreakdown: jest.fn().mockReturnValue([]),
+  // JudgeModelLabel (rendered in the judge tab) reads this from @/lib/utils.
+  // Stub returns the em-dash "no judge recorded" shape so components that
+  // render it don't crash; tests covering the judge-model label itself live
+  // in tests/unit/components/JudgeModelLabel.test.ts against the real impl.
+  getJudgeModelDisplay: jest.fn().mockReturnValue({ label: '—', title: 'No judge recorded for this run' }),
 }));
 
 jest.mock('react-markdown', () => {
@@ -447,6 +452,117 @@ describe('RunDetailsContent', () => {
 
       expect(screen.queryByText(/Waiting for traces/i)).toBeNull();
       expect(screen.queryByText(/Running LLM judge evaluation/i)).toBeNull();
+    });
+  });
+
+  // ── Judge Evaluation tab: judge identity for code-SDK reports ────────────
+  //
+  // SDK reports carry their judge data in `matcherResults` and have no
+  // `llmJudgeResponse` (so no "Judge Output" card). The tab must still say
+  // which LLM the judge() calls ran on -- from the rolled-up `report.judgeModel`
+  // -- or that no LLM judge ran at all.
+  describe('judge tab — code-SDK judge identity strip', () => {
+    const SONNET_45 = 'amazon-bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0';
+    // `getJudgeModelDisplay` is stubbed for this file (see the @/lib/utils
+    // mock above); return the real-shaped display so the label's spans render.
+    const { getJudgeModelDisplay } = jest.requireMock('@/lib/utils') as { getJudgeModelDisplay: jest.Mock };
+    beforeEach(() => {
+      getJudgeModelDisplay.mockImplementation((run: any) =>
+        run?.judgeModel
+          ? { label: 'Agent Trace Judge', detail: 'claude-sonnet-4-5', title: `Agent Trace Judge · ${run.judgeModel}` }
+          : { label: '—', title: 'No judge recorded for this run' });
+    });
+    afterEach(() => {
+      getJudgeModelDisplay.mockReset();
+      getJudgeModelDisplay.mockReturnValue({ label: '—', title: 'No judge recorded for this run' });
+    });
+
+    async function openJudgeTab() {
+      const tab = screen.getByRole('tab', { name: /Judge Evaluation/ });
+      await act(async () => { fireEvent.mouseDown(tab, { button: 0 }); });
+    }
+
+    it('SDK report with judge() calls: shows the resolved model, the judge kind and the call count', async () => {
+      const report = createReport({
+        passFailStatus: 'passed',
+        evaluationType: 'deterministic',
+        judgeModelId: 'agent-trace-judge',
+        judgeModel: SONNET_45,
+        judgeProvider: 'agent',
+        llmJudgeResponse: undefined,
+        matcherResults: [
+          { description: 'result.trajectory to have length above 0', pass: true, method: 'code-assertion' },
+          { description: 'judge: 2 claims', pass: true, method: 'llm-judge', role: 'observe', model: 'agent-trace-judge', judgeModel: SONNET_45, judgeProvider: 'agent' },
+          { description: 'judge: names the fix', pass: true, method: 'llm-judge', role: 'gate', model: 'agent-trace-judge', judgeModel: SONNET_45, judgeProvider: 'agent' },
+        ],
+      } as any);
+      mockGetReportById.mockResolvedValue(report);
+      await renderAndWait(report);
+      await openJudgeTab();
+
+      const strip = screen.getByTestId('sdk-judge-identity');
+      expect(screen.queryByTestId('sdk-judge-none')).toBeNull();
+      expect(within(strip).getByTestId('judge-model-resolved').textContent).toContain('claude-sonnet-4-5');
+      // the label was fed the REPORT's rolled-up identity (judgeModel + kind), not the matcher's requested id
+      expect(getJudgeModelDisplay).toHaveBeenCalledWith(expect.objectContaining({ judgeModelId: 'agent-trace-judge', judgeModel: SONNET_45, judgeProvider: 'agent' }));
+      expect(screen.getByTestId('sdk-judge-call-count').textContent).toBe('2 judge calls');
+    });
+
+    it("deterministic-only SDK report (judgeProvider 'none'): says 'No LLM judge — code assertions only'", async () => {
+      const report = createReport({
+        passFailStatus: 'passed',
+        evaluationType: 'deterministic',
+        judgeModelId: 'agent-trace-judge',
+        judgeProvider: 'none',
+        llmJudgeResponse: undefined,
+        matcherResults: [
+          { description: 'result.trajectory to have length above 0', pass: true, method: 'code-assertion' },
+        ],
+      } as any);
+      mockGetReportById.mockResolvedValue(report);
+      await renderAndWait(report);
+      await openJudgeTab();
+
+      expect(screen.getByTestId('sdk-judge-none').textContent).toContain('No LLM judge — code assertions only');
+      expect(screen.queryByTestId('sdk-judge-model')).toBeNull();
+    });
+
+    it("a stale 'none' marker never overrides matcher evidence: rows with a judge() call render the model, not 'No LLM judge'", async () => {
+      const report = createReport({
+        passFailStatus: 'passed',
+        evaluationType: 'deterministic',
+        judgeModelId: 'agent-trace-judge',
+        judgeModel: SONNET_45,
+        judgeProvider: 'none',
+        llmJudgeResponse: undefined,
+        matcherResults: [
+          { description: 'judge: claim', pass: true, method: 'llm-judge', role: 'gate', model: 'agent-trace-judge', judgeModel: SONNET_45, judgeProvider: 'agent' },
+        ],
+      } as any);
+      mockGetReportById.mockResolvedValue(report);
+      await renderAndWait(report);
+      await openJudgeTab();
+
+      expect(screen.queryByTestId('sdk-judge-none')).toBeNull();
+      expect(screen.getByTestId('sdk-judge-call-count').textContent).toBe('1 judge call');
+    });
+
+    it('classic report (llmJudgeResponse present): no SDK strip -- the Judge Output card owns the identity', async () => {
+      const report = createReport({
+        judgeModelId: 'agent-trace-judge',
+        judgeModel: SONNET_45,
+        llmJudgeResponse: {
+          modelId: SONNET_45, judgeProvider: 'agent', timestamp: '2024-01-01T00:00:00Z',
+          promptTokens: 1, completionTokens: 1, latencyMs: 1, rawResponse: '{}',
+        },
+        matcherResults: [{ description: 'judge: expected outcomes', pass: true, method: 'llm-judge' }],
+      } as any);
+      mockGetReportById.mockResolvedValue(report);
+      await renderAndWait(report);
+      await openJudgeTab();
+
+      expect(screen.queryByTestId('sdk-judge-identity')).toBeNull();
+      expect(screen.getByTestId('judge-output-model').textContent).toContain('claude-sonnet-4-5');
     });
   });
 

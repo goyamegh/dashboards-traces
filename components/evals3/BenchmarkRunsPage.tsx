@@ -44,6 +44,7 @@ import { Benchmark, BenchmarkRun, TestCase, BenchmarkProgress, BenchmarkStartedE
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatDate, getModelName } from '@/lib/utils';
 import { Breadcrumbs } from '@/components/evals3/Breadcrumbs';
+import { judgeModelText } from '@/components/JudgeModelLabel';
 import {
   computeVersionData,
   filterRunsByVersion,
@@ -428,9 +429,10 @@ export const BenchmarkRunsPage2: React.FC = () => {
   const allRows = useMemo<RunTableRow[]>(() => filteredRuns.map(run => buildRunTableRow(run, {
     agentName: key => DEFAULT_CONFIG.agents.find(a => a.key === key)?.name || key || 'Unknown',
     modelName: id => getModelName(id),
-    // Judge model ids share DEFAULT_CONFIG.models with agent model ids; an
-    // evaluator that was deleted since the run falls back to its raw id.
-    judgeLabel: id => (id ? getModelName(id) : '—'),
+    // Full judge identity: judge kind · underlying LLM (lib/judgeIdentity),
+    // "No LLM judge · code assertions only" for code-SDK runs that never
+    // called judge(), '—' when the run recorded no judge at all.
+    judgeLabel: (_id, run) => judgeModelText(run),
     evaluatorLabel: id => (id ? evaluatorNames.get(id) || id : '—'),
   })), [filteredRuns, evaluatorNames]);
 

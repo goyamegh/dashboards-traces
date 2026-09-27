@@ -150,6 +150,18 @@ describe('buildRunTableRow', () => {
     expect(rowFieldLabel(row, 'status')).toBe('completed');
   });
 
+  it('hands the judge-label resolver the RUN too (so the J. Model column can show the resolved LLM / "No LLM judge")', () => {
+    const judgeLabel = jest.fn((_id: string | undefined, r: BenchmarkRun) =>
+      r.judgeProvider === 'none' ? 'No LLM judge · code assertions only' : `${r.judgeModelId} · ${r.judgeModel}`);
+    const sdkRun = run({ id: 'sdk', judgeModelId: 'agent-trace-judge', judgeModel: 'amazon-bedrock/global.anthropic.claude-sonnet-4-5', judgeProvider: 'agent' });
+    expect(buildRunTableRow(sdkRun, { ...resolvers, judgeLabel }).judgeLabel).toBe('agent-trace-judge · amazon-bedrock/global.anthropic.claude-sonnet-4-5');
+    expect(judgeLabel).toHaveBeenCalledWith('agent-trace-judge', sdkRun);
+    const detRun = run({ id: 'det', judgeModelId: 'agent-trace-judge', judgeProvider: 'none' });
+    expect(buildRunTableRow(detRun, { ...resolvers, judgeLabel }).judgeLabel).toBe('No LLM judge · code assertions only');
+    // filtering still keys on the raw configured id
+    expect(rowFieldValue(buildRunTableRow(detRun, { ...resolvers, judgeLabel }), 'judge')).toBe('agent-trace-judge');
+  });
+
   it('handles missing judge/evaluator with em dashes and empty ids', () => {
     const row = buildRunTableRow(run({ id: 'a' }), resolvers);
     expect(row.judgeModelId).toBe('');

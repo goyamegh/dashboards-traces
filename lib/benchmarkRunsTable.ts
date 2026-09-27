@@ -72,7 +72,13 @@ export interface RunTableRow {
 export interface RowLabelResolvers {
   agentName: (agentKey: string) => string;
   modelName: (modelId: string) => string;
-  judgeLabel: (judgeModelId?: string | null) => string;
+  /**
+   * Label for the "J. Model" column. Receives the configured judge id AND the
+   * run itself so callers can render the full judge identity ("judge kind ·
+   * underlying LLM", or "No LLM judge" for code-SDK runs that never called
+   * `judge()`) -- see lib/judgeIdentity / components/JudgeModelLabel.
+   */
+  judgeLabel: (judgeModelId: string | undefined, run: BenchmarkRun) => string;
   evaluatorLabel: (evaluatorId?: string | null) => string;
 }
 
@@ -129,7 +135,7 @@ export function buildRunTableRow(run: BenchmarkRun, resolve: RowLabelResolvers):
     modelId,
     modelName: resolve.modelName(modelId),
     judgeModelId,
-    judgeLabel: resolve.judgeLabel(judgeModelId || undefined),
+    judgeLabel: resolve.judgeLabel(judgeModelId || undefined, run),
     evaluatorId,
     evaluatorLabel: resolve.evaluatorLabel(evaluatorId || undefined),
     status,

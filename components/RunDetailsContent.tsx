@@ -42,6 +42,7 @@ import { TrajectoryView } from './TrajectoryView';
 import { RawEventsPanel } from './RawEventsPanel';
 import { MatcherResultsPanel } from './MatcherResultsPanel';
 import { getJudgeReasoningText, getJudgeMatcherResults } from '@/lib/matchers/judgeAccessor';
+import { resolveJudgeIdentityFromMatchers } from '@/lib/judgeIdentity';
 import { resolveImprovementStrategies } from '@/lib/judgeStrategies';
 import TraceVisualization from './traces/TraceVisualization';
 import SimpleSpanAttributesTable from './traces/SimpleSpanAttributesTable';
@@ -60,6 +61,7 @@ import { getResultStatus as getSharedResultStatus, StatusIcon as SharedStatusIco
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Card, CardContent } from '@/components/ui/card';
+import { JudgeModelLabel } from '@/components/JudgeModelLabel';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Progress } from '@/components/ui/progress';
@@ -1131,6 +1133,40 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
               </div>
             )}
 
+            {/* Judge identity for code-SDK reports. The classic path renders
+                its identity strip inside the "Judge Output" card below (it has
+                an `llmJudgeResponse`); SDK reports have none -- their judge
+                data lives in `matcherResults` -- so pre-fix the Judge tab
+                never said WHICH LLM the `judge()` calls ran on (or that none
+                ran). Reads the persisted `report.judgeModel` / `judgeProvider`
+                (runner rollup, lib/judgeIdentity) and counts the judge calls. */}
+            {!liveReport.llmJudgeResponse && Array.isArray(liveReport.matcherResults) && liveReport.matcherResults.length > 0 && (() => {
+              // The matcher rows are the evidence: "no LLM judge" only when no
+              // `judge()` call was attempted — a stale `'none'` marker never
+              // overrides rows that show an actual judge call.
+              const { judgeCallCount } = resolveJudgeIdentityFromMatchers(liveReport.matcherResults, liveReport.judgeModelId);
+              const noLlmJudge = judgeCallCount === 0;
+              return (
+                <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-muted-foreground" data-testid="sdk-judge-identity">
+                  {noLlmJudge ? (
+                    <span data-testid="sdk-judge-none">
+                      <strong>Judge:</strong> No LLM judge — code assertions only
+                    </span>
+                  ) : (
+                    <>
+                      <span data-testid="sdk-judge-model">
+                        <strong>Judge model:</strong>{' '}
+                        <JudgeModelLabel run={liveReport} />
+                      </span>
+                      <span data-testid="sdk-judge-call-count">
+                        {judgeCallCount} judge {judgeCallCount === 1 ? 'call' : 'calls'}
+                      </span>
+                    </>
+                  )}
+                </div>
+              );
+            })()}
+
             {/* Matcher results — the canonical surface for SDK matchers AND
                 LLM judge entries (legacy auto-judge results are pushed into
                 the same array via lib/matchers/judgeAccessor). For old
@@ -1276,11 +1312,24 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                   <CardContent className="p-4 space-y-5">
                     {/* Identity / metadata strip — always visible. */}
                     <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground border-b pb-3">
-                      {liveReport.llmJudgeResponse?.judgeDebug?.provider && (
-                        <span><strong>Provider:</strong> {liveReport.llmJudgeResponse.judgeDebug.provider}</span>
+                      {(liveReport.llmJudgeResponse?.judgeProvider || liveReport.llmJudgeResponse?.judgeDebug?.provider) && (
+                        <span><strong>Provider:</strong> {liveReport.llmJudgeResponse?.judgeProvider || liveReport.llmJudgeResponse?.judgeDebug?.provider}</span>
                       )}
-                      {(liveReport.llmJudgeResponse?.judgeDebug?.modelId || liveReport.llmJudgeResponse?.modelId) && (
-                        <span><strong>Judge model:</strong> {liveReport.llmJudgeResponse?.judgeDebug?.modelId || liveReport.llmJudgeResponse?.modelId}</span>
+                      {/* Judge identity: the configured judge kind and the LLM that
+                          actually produced the verdict (`judgeModel`, always
+                          recorded now -- pre-fix only `judgeDebug.modelId` had it,
+                          and only under AH_JUDGE_DEBUG=1). Old agent-trace-judge
+                          reports fall back to "model not recorded". */}
+                      {(liveReport.judgeModel || liveReport.judgeModelId || liveReport.llmJudgeResponse?.judgeDebug?.modelId || liveReport.llmJudgeResponse?.modelId) && (
+                        <span data-testid="judge-output-model">
+                          <strong>Judge model:</strong>{' '}
+                          <JudgeModelLabel
+                            run={{
+                              judgeModel: liveReport.judgeModel || liveReport.llmJudgeResponse?.judgeDebug?.modelId || undefined,
+                              judgeModelId: liveReport.judgeModelId || liveReport.llmJudgeResponse?.modelId || undefined,
+                            }}
+                          />
+                        </span>
                       )}
                       {liveReport.llmJudgeResponse?.judgeDebug?.evaluatorId && (
                         <span><strong>Evaluator:</strong> {liveReport.llmJudgeResponse.judgeDebug.evaluatorId}</span>

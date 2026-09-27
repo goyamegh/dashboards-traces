@@ -20,12 +20,13 @@ import {
   runPassPolicyLabel,
   type ScoringComparability,
 } from '@/lib/comparison/scoringDisplay';
+import { JudgeModelLabel, judgeModelText } from '@/components/JudgeModelLabel';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
 export interface ComparisonScoreboardProps {
   runs: RunAggregateMetrics[];
-  /** The raw selected runs (kept for callers; the judge caption now reads the resolved judge off `runs`). */
+  /** The raw selected runs — the judge line reads their run-level judge identity (`judgeModel` / `judgeModelId`). */
   selectedRuns?: BenchmarkRun[];
   overlap: TestCaseOverlap;
   /**
@@ -286,19 +287,49 @@ const CondensedBand: React.FC<CondensedBandProps> = ({ runs, overlap, getAgentNa
  * "mixed (a · b)"; runs with no judge information at all read "not recorded"
  * — an honest blank, never the agent model standing in.
  */
-const JudgeLine: React.FC<{ runs: RunAggregateMetrics[] }> = ({ runs }) => {
-  const captions = runs.slice(0, 2).map(r => judgeCaption(r, getModelName));
-  if (captions.length === 0) return null;
-  const allSame = captions.every(c => c === captions[0]);
+/**
+ * One judge entry per run. Precedence:
+ *   1. The run's reports resolved to SEVERAL judges → the plain "mixed (a · b)"
+ *      caption (per-report resolution, lib/comparison/scoringDisplay.ts).
+ *   2. The run recorded its judge identity (`judgeModel` = underlying LLM,
+ *      `judgeModelId` = configured judge kind; lib/judgeIdentity) → the shared
+ *      <JudgeModelLabel> ("agent-trace-judge · claude-sonnet-4-5", or a
+ *      "model not recorded" hint for old agent-judge runs).
+ *   3. Otherwise the single per-report judge, or "not recorded".
+ */
+type JudgeEntry =
+  | { kind: 'label'; run: { judgeModel?: string; judgeModelId?: string }; text: string }
+  | { kind: 'text'; text: string };
+
+function judgeEntryFor(run: RunAggregateMetrics, selected: BenchmarkRun | undefined): JudgeEntry {
+  const ids = run.judgeModelIds && run.judgeModelIds.length > 0
+    ? run.judgeModelIds
+    : (run.judgeModelId ? [run.judgeModelId] : []);
+  if (ids.length > 1) return { kind: 'text', text: judgeCaption(run, getModelName) };
+  if (selected && (selected.judgeModel || selected.judgeModelId)) {
+    const identity = { judgeModel: selected.judgeModel, judgeModelId: selected.judgeModelId };
+    return { kind: 'label', run: identity, text: judgeModelText(identity) };
+  }
+  return { kind: 'text', text: judgeCaption(run, getModelName) };
+}
+
+const JudgeEntryView: React.FC<{ entry: JudgeEntry }> = ({ entry }) =>
+  entry.kind === 'label' ? <JudgeModelLabel run={entry.run} /> : <>{entry.text}</>;
+
+const JudgeLine: React.FC<{ runs: RunAggregateMetrics[]; selectedRuns: BenchmarkRun[] }> = ({ runs, selectedRuns }) => {
+  const selectedById = new Map(selectedRuns.map(r => [r.id, r]));
+  const entries = runs.slice(0, 2).map(r => judgeEntryFor(r, selectedById.get(r.runId)));
+  if (entries.length === 0) return null;
+  const allSame = entries.every(e => e.text === entries[0].text);
 
   return (
     <div className="px-4 py-1.5 text-[11px] text-muted-foreground" data-testid="scoreboard-judge-line">
       {allSame ? (
-        <span>Judge: {captions[0]}</span>
+        <span className="inline-flex items-baseline gap-1">Judge: <JudgeEntryView entry={entries[0]} /></span>
       ) : (
-        <span>
-          Judge: A {captions[0]}
-          {captions.length > 1 && <> · B {captions[1]}</>}
+        <span className="inline-flex items-baseline gap-1 flex-wrap">
+          Judge: A <JudgeEntryView entry={entries[0]} />
+          {entries.length > 1 && <> · B <JudgeEntryView entry={entries[1]} /></>}
         </span>
       )}
     </div>
@@ -334,6 +365,7 @@ const DeltaCell: React.FC<{
 
 export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
   runs,
+  selectedRuns = [],
   overlap,
   runBenchmarkIdById,
   onRemoveRun,
@@ -734,7 +766,7 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
 
             {/* Judge info — once, not per-row (replaces the old per-run drawer). */}
             <div className="border-t border-border/50">
-              <JudgeLine runs={runs} />
+              <JudgeLine runs={runs} selectedRuns={selectedRuns} />
             </div>
           </>
         )}

@@ -558,3 +558,91 @@ describe('judge() — verdict recording (headline score, dedupe, extraFields)', 
     expect(entry.judgeExtraFields).toBeUndefined();
   });
 });
+
+describe('judge() — judge identity on the recorded matcher (judgeModel / judgeProvider)', () => {
+  const SONNET_45 = 'amazon-bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0';
+  const trajectory = [{ type: 'response', content: 'ok' }] as any;
+
+  beforeEach(() => {
+    clearJudgeCache();
+    process.env.AH_JUDGE_RETRY_BACKOFF_MS = '0';
+    delete process.env.AH_SKIP_JUDGE;
+  });
+  afterEach(() => {
+    jest.restoreAllMocks();
+    delete process.env.AH_JUDGE_RETRY_BACKOFF_MS;
+  });
+
+  function mockFullJudgeFetch(payload: Record<string, unknown>): void {
+    (global as any).fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => payload,
+      text: async () => '',
+    }) as unknown as typeof fetch;
+  }
+
+  it('stores the RESOLVED LLM as judgeModel and the kind as judgeProvider, keeping model = the requested (provider) id', async () => {
+    // This is the owner-reported miss: a run bound to the agent trace judge
+    // recorded `model: 'agent-trace-judge'` and nothing else, so the report
+    // could not say which LLM judged it.
+    mockFullJudgeFetch({ passFailStatus: 'passed', metrics: { accuracy: 90 }, llmJudgeReasoning: 'ok', judgeModel: SONNET_45, judgeProvider: 'agent' });
+    const bound = bindJudge({ evaluatorId: 'system-rca-default', model: 'agent-trace-judge', serverUrl: 'http://127.0.0.1:1' });
+    startSession();
+    await bound({ trajectory } as any, ['claim 1', 'claim 2']);
+    const [entry] = endSession();
+    expect(entry.method).toBe('llm-judge');
+    expect(entry.model).toBe('agent-trace-judge');   // backward compatible: the requested id
+    expect(entry.judgeModel).toBe(SONNET_45);         // the LLM that actually judged
+    expect(entry.judgeProvider).toBe('agent');
+    expect(entry.skipped).toBeUndefined();
+  });
+
+  it('never stores a provider pseudo-id as judgeModel (old server echoing the requested id); kind still inferred', async () => {
+    mockFullJudgeFetch({ passFailStatus: 'passed', metrics: { accuracy: 90 }, llmJudgeReasoning: 'ok', judgeModel: 'agent-trace-judge' });
+    startSession();
+    await judge({ trajectory } as any, 'claim', { model: 'agent-trace-judge', serverUrl: 'http://127.0.0.1:1' });
+    const [entry] = endSession();
+    expect(entry.judgeModel).toBeUndefined();
+    expect('judgeModel' in entry).toBe(false);
+    expect(entry.judgeProvider).toBe('agent');
+  });
+
+  it('old server (no identity in the response) + plain model id: judgeModel is that id, no provider key', async () => {
+    mockFullJudgeFetch({ passFailStatus: 'passed', metrics: { accuracy: 90 }, llmJudgeReasoning: 'ok' });
+    startSession();
+    await judge({ trajectory } as any, 'claim', { model: 'us.anthropic.claude-sonnet-4-6', serverUrl: 'http://127.0.0.1:1' });
+    const [entry] = endSession();
+    expect(entry.judgeModel).toBe('us.anthropic.claude-sonnet-4-6');
+    expect(entry.judgeProvider).toBeUndefined();
+  });
+
+  it('old server + no model requested at all: neither identity key is written', async () => {
+    mockFullJudgeFetch({ passFailStatus: 'passed', metrics: { accuracy: 90 }, llmJudgeReasoning: 'ok' });
+    startSession();
+    await judge({ trajectory } as any, 'claim', { serverUrl: 'http://127.0.0.1:1' });
+    const [entry] = endSession();
+    expect('judgeModel' in entry).toBe(false);
+    expect('judgeProvider' in entry).toBe(false);
+  });
+
+  it('the cached second call carries the same identity as the first', async () => {
+    mockFullJudgeFetch({ passFailStatus: 'passed', metrics: { accuracy: 90 }, llmJudgeReasoning: 'ok', judgeModel: SONNET_45, judgeProvider: 'agent' });
+    startSession();
+    await judge({ trajectory } as any, 'claim', { model: 'agent-trace-judge', serverUrl: 'http://127.0.0.1:1' });
+    await judge({ trajectory } as any, 'claim', { model: 'agent-trace-judge', serverUrl: 'http://127.0.0.1:1' });
+    const entries = endSession();
+    expect((global as any).fetch).toHaveBeenCalledTimes(1);
+    expect(entries.map(e => e.judgeModel)).toEqual([SONNET_45, SONNET_45]);
+  });
+
+  it('a skipped judge() records skipped: true (no LLM call → does not count toward the report judge identity)', async () => {
+    mockFullJudgeFetch({ passFailStatus: 'passed' });
+    startSession();
+    await judge({ trajectory } as any, 'claim', { skip: true, serverUrl: 'http://127.0.0.1:1' });
+    const [entry] = endSession();
+    expect(entry.skipped).toBe(true);
+    expect(entry.judgeModel).toBeUndefined();
+    expect((global as any).fetch).not.toHaveBeenCalled();
+  });
+});
