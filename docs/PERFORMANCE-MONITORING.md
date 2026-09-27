@@ -40,25 +40,43 @@ build, where it is always active), expand it and click **hide**.
 
 ## Using the Latency HUD
 
-Collapsed, the HUD is a single line for the current page:
+Collapsed, the HUD is a pill for the **current page only** — a colour dot and
+one number, the time from route change until the page's data settled and its
+content rendered:
 
 ```
-benchmark-runs · render 120 ms · ready 840 ms · 6 api / 610 ms
+● benchmark-runs · 13.6 s
 ```
 
-Click it to pin it open (hover or hold ⌥/Alt to peek). The expanded view shows:
+Green < 1 s, amber < 3 s, red otherwise. Click it to pin it open (hover or hold
+⌥/Alt to peek). The expanded view is still the current page only:
 
-1. **Last 10 navigations** — one line per page load, most recent first
-2. **Operations** — every `startMeasure`/`endMeasure` timing grouped by name,
-   updated live as measurements land, sorted slowest-average first:
-   - Average duration (colour-coded)
-   - Min–max range
-   - Call count
-   - Total measurement count and a **Clear** button
-3. **Color coding**:
-   - 🟢 Green: < 50ms (Fast)
-   - 🟡 Yellow: 50-200ms (OK)
-   - 🔴 Red: > 200ms (Slow)
+```
+Page ready     13.6 s
+First paint    9 ms
+API            37 requests · 13.2 s wall
+  GET /api/storage/evaluation-runs/:id   4.2 s
+  POST /api/storage/runs/search          4.0 s
+  …(5 slowest)
+Slow steps on this page                  (only if the page recorded any)
+  ● flowTransform · TraceFlowView        120 ms
+prev page: eval-runs 812 ms
+```
+
+- **Page ready** — reported by the page itself on the instrumented pages;
+  estimated (marked `~`) elsewhere from first paint + the last `/api/*`
+  response + 1 s of quiet.
+- **First paint** — the new page's first frame on screen, before any data.
+- **API** — every `/api/*` request the page made while loading, with the
+  wall-clock span from the first request start to the last response end
+  (requests overlap, so durations are deliberately not summed), and the 5
+  slowest as method + path template (ids collapsed to `:id`).
+- **Slow steps on this page** — `startMeasure`/`endMeasure` timings recorded
+  since this navigation started, slowest first, at most 3 rows, colour-coded
+  (green < 50 ms, amber < 200 ms, red otherwise). Rendered only when there
+  are any.
+
+Everything resets on every route change. There is no history and no legend.
 
 ## Key Metrics to Monitor
 
@@ -135,6 +153,7 @@ __agentHealthPerf.endMeasure('myFeature.step')
 
 __agentHealthPerf.getMetrics()          // raw samples
 __agentHealthPerf.getOperationStats()   // grouped avg / min / max / count
+__agentHealthPerf.getCurrentRecord()    // the current page's record incl. every request
 __agentHealthPerf.logSummary()          // console.group summary
 __agentHealthPerf.clearMetrics()
 ```

@@ -9,8 +9,8 @@
 
 /**
  * Render tests for DebugLatencyHud -- visible only when page-latency
- * instrumentation is active AND there is a current record; hidden
- * otherwise. Hover/click reveals history.
+ * instrumentation is active; a one-number pill for the CURRENT page, and
+ * an expanded panel (click pins, hover / Alt peeks) with plain-language rows.
  */
 
 import * as React from 'react';
@@ -18,41 +18,69 @@ import { render, screen, fireEvent, act } from '@testing-library/react';
 
 const mockIsActive = jest.fn();
 const mockGetCurrentRecord = jest.fn();
-const mockGetHistory = jest.fn();
+const mockGetPreviousPage = jest.fn();
 const mockSubscribe = jest.fn();
 const mockGetOperationStats = jest.fn();
-const mockClearOperationStats = jest.fn();
 const mockExposeConsoleApi = jest.fn();
 const mockRemoveConsoleApi = jest.fn();
 
-jest.mock('@/lib/pageLatency', () => ({
-  exposeConsoleApi: () => mockExposeConsoleApi(),
-  removeConsoleApi: () => mockRemoveConsoleApi(),
-  isPageLatencyActive: () => mockIsActive(),
-  getCurrentRecord: () => mockGetCurrentRecord(),
-  getHistory: () => mockGetHistory(),
-  getOperationStats: () => mockGetOperationStats(),
-  clearOperationStats: () => mockClearOperationStats(),
-  classifyDuration: (ms: number) => (ms < 50 ? 'fast' : ms < 200 ? 'ok' : 'slow'),
-  subscribe: (fn: () => void) => mockSubscribe(fn),
-}));
-
-const RECORD = {
-  route: 'benchmarks', startedAt: 0, renderMs: 50, readyMs: 200, apiCount: 1, apiTotalMs: 20,
-};
-const NO_OPS = { stats: [], totalMeasurements: 0 };
+jest.mock('@/lib/pageLatency', () => {
+  const actual = jest.requireActual('@/lib/pageLatency');
+  return {
+    exposeConsoleApi: () => mockExposeConsoleApi(),
+    removeConsoleApi: () => mockRemoveConsoleApi(),
+    isPageLatencyActive: () => mockIsActive(),
+    getCurrentRecord: () => mockGetCurrentRecord(),
+    getPreviousPage: () => mockGetPreviousPage(),
+    getOperationStats: () => mockGetOperationStats(),
+    subscribe: (fn: () => void) => mockSubscribe(fn),
+    // pure helpers: use the real ones so the rendered text is the real text
+    classifyDuration: actual.classifyDuration,
+    classifyPageReady: actual.classifyPageReady,
+    formatMs: actual.formatMs,
+  };
+});
 
 import { DebugLatencyHud } from '@/components/DebugLatencyHud';
+
+const NO_OPS = { stats: [], totalMeasurements: 0 };
+
+/** A benchmark Runs tab that took 13.6 s, with 37 overlapping requests. */
+const SLOW_PAGE = {
+  route: 'benchmark-runs',
+  startedAt: 0,
+  renderMs: 9,
+  readyMs: 13_612,
+  settledMs: null,
+  apiCount: 37,
+  apiWallMs: 13_204,
+  apiRequests: [
+    { method: 'GET', path: '/api/storage/benchmarks/:id', startMs: 12, ms: 310 },
+    { method: 'GET', path: '/api/storage/evaluation-runs/:id', startMs: 400, ms: 4_210 },
+    { method: 'POST', path: '/api/storage/runs/search', startMs: 420, ms: 3_950 },
+    { method: 'GET', path: '/api/storage/evaluation-runs/:id', startMs: 430, ms: 2_100 },
+    { method: 'GET', path: '/api/storage/evaluation-runs/:id', startMs: 440, ms: 1_900 },
+    { method: 'GET', path: '/api/storage/evaluation-runs/:id', startMs: 450, ms: 1_500 },
+    { method: 'GET', path: '/api/storage/evaluators', startMs: 20, ms: 40 },
+  ],
+};
+
+const FAST_PAGE = {
+  route: 'benchmarks', startedAt: 0, renderMs: 36, readyMs: 44, settledMs: null, apiCount: 2, apiWallMs: 30,
+  apiRequests: [
+    { method: 'GET', path: '/api/storage/benchmarks', startMs: 10, ms: 25 },
+    { method: 'GET', path: '/api/storage/evaluators', startMs: 12, ms: 20 },
+  ],
+};
 
 describe('DebugLatencyHud', () => {
   beforeEach(() => {
     jest.useFakeTimers();
     mockIsActive.mockReset().mockReturnValue(false);
     mockGetCurrentRecord.mockReset().mockReturnValue(null);
-    mockGetHistory.mockReset().mockReturnValue([]);
+    mockGetPreviousPage.mockReset().mockReturnValue(null);
     mockSubscribe.mockReset().mockReturnValue(() => {});
     mockGetOperationStats.mockReset().mockReturnValue(NO_OPS);
-    mockClearOperationStats.mockReset();
     mockExposeConsoleApi.mockReset();
     mockRemoveConsoleApi.mockReset();
   });
@@ -66,89 +94,54 @@ describe('DebugLatencyHud', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('renders a placeholder line when active but no navigation has been recorded yet (debug just switched on), still expandable', () => {
+  it('renders a placeholder pill when active but no navigation has been recorded yet', () => {
     mockIsActive.mockReturnValue(true);
     render(React.createElement(DebugLatencyHud));
-    const hud = screen.getByTestId('debug-latency-hud');
-    expect(hud.textContent).toContain('navigate to start measuring');
-    fireEvent.click(hud);
-    expect(screen.getByTestId('debug-latency-hud-operations')).toBeTruthy();
+    expect(screen.getByTestId('debug-latency-hud-pill').textContent).toContain('navigate to start measuring');
+    fireEvent.click(screen.getByTestId('debug-latency-hud'));
+    expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull(); // nothing to expand yet
   });
 
-  it('exposes the DevTools console API while active and removes it on deactivation/unmount', () => {
-    mockIsActive.mockReturnValue(true);
-    const { unmount } = render(React.createElement(DebugLatencyHud));
-    expect(mockExposeConsoleApi).toHaveBeenCalledTimes(1);
-    expect(mockRemoveConsoleApi).not.toHaveBeenCalled();
-    unmount();
-    expect(mockRemoveConsoleApi).toHaveBeenCalledTimes(1);
-  });
+  describe('collapsed pill', () => {
+    beforeEach(() => mockIsActive.mockReturnValue(true));
 
-  it('renders the current record\u2019s summary line when active with a record', () => {
-    mockIsActive.mockReturnValue(true);
-    mockGetCurrentRecord.mockReturnValue({
-      route: 'benchmark-runs', startedAt: Date.now(), renderMs: 120, readyMs: 840, apiCount: 6, apiTotalMs: 610,
+    it('is the current route + ONE number (time-to-ready) with a colour dot -- no first paint, no api numbers, no legend', () => {
+      mockGetCurrentRecord.mockReturnValue(SLOW_PAGE);
+      render(React.createElement(DebugLatencyHud));
+      const pill = screen.getByTestId('debug-latency-hud-pill');
+      expect(pill.textContent).toBe('● benchmark-runs · 13.6 s');
+      expect(screen.getByTestId('debug-latency-hud-dot').getAttribute('data-band')).toBe('slow');
+      expect(pill.textContent).not.toMatch(/render|paint|api|ms/i);
     });
-    render(React.createElement(DebugLatencyHud));
-    const hud = screen.getByTestId('debug-latency-hud');
-    expect(hud.textContent).toContain('benchmark-runs');
-    expect(hud.textContent).toContain('render 120 ms');
-    expect(hud.textContent).toContain('ready 840 ms');
-    expect(hud.textContent).toContain('6 api / 610 ms');
-  });
 
-  it('shows an em dash for renderMs/readyMs before they are measured', () => {
-    mockIsActive.mockReturnValue(true);
-    mockGetCurrentRecord.mockReturnValue({
-      route: 'benchmarks', startedAt: Date.now(), renderMs: null, readyMs: null, apiCount: 0, apiTotalMs: 0,
+    it('bands the dot by page-level thresholds (a 44 ms page is green, not "slow" by the 50 ms step threshold)', () => {
+      mockGetCurrentRecord.mockReturnValue(FAST_PAGE);
+      render(React.createElement(DebugLatencyHud));
+      expect(screen.getByTestId('debug-latency-hud-pill').textContent).toBe('● benchmarks · 44 ms');
+      expect(screen.getByTestId('debug-latency-hud-dot').getAttribute('data-band')).toBe('fast');
     });
-    render(React.createElement(DebugLatencyHud));
-    const hud = screen.getByTestId('debug-latency-hud');
-    expect(hud.textContent).toContain('render \u2014');
-    expect(hud.textContent).toContain('ready \u2014');
-  });
 
-  it('reveals history on hover and hides it again on mouse leave', () => {
-    mockIsActive.mockReturnValue(true);
-    mockGetCurrentRecord.mockReturnValue({
-      route: 'benchmarks', startedAt: Date.now(), renderMs: 50, readyMs: 200, apiCount: 1, apiTotalMs: 20,
+    it('shows an ellipsis and a neutral dot until the page is ready', () => {
+      mockGetCurrentRecord.mockReturnValue({ ...FAST_PAGE, readyMs: null, settledMs: null });
+      render(React.createElement(DebugLatencyHud));
+      expect(screen.getByTestId('debug-latency-hud-pill').textContent).toBe('● benchmarks · …');
+      expect(screen.getByTestId('debug-latency-hud-dot').getAttribute('data-band')).toBe('pending');
     });
-    mockGetHistory.mockReturnValue([
-      { route: 'benchmarks', startedAt: Date.now(), renderMs: 50, readyMs: 200, apiCount: 1, apiTotalMs: 20 },
-      { route: 'eval-runs', startedAt: Date.now() - 1000, renderMs: 40, readyMs: 150, apiCount: 2, apiTotalMs: 40 },
-    ]);
-    render(React.createElement(DebugLatencyHud));
-    const hud = screen.getByTestId('debug-latency-hud');
-    expect(screen.queryByTestId('debug-latency-hud-history')).toBeNull();
 
-    fireEvent.mouseEnter(hud);
-    expect(screen.getByTestId('debug-latency-hud-history')).toBeTruthy();
-    expect(screen.getByTestId('debug-latency-hud-history').textContent).toContain('eval-runs');
-
-    fireEvent.mouseLeave(hud);
-    expect(screen.queryByTestId('debug-latency-hud-history')).toBeNull();
-  });
-
-  it('polls isPageLatencyActive so a debug-mode toggle in another tab is picked up without a remount', () => {
-    mockIsActive.mockReturnValue(false);
-    render(React.createElement(DebugLatencyHud));
-    expect(screen.queryByTestId('debug-latency-hud')).toBeNull();
-
-    mockIsActive.mockReturnValue(true);
-    mockGetCurrentRecord.mockReturnValue({
-      route: 'benchmarks', startedAt: Date.now(), renderMs: 10, readyMs: 20, apiCount: 0, apiTotalMs: 0,
+    it('falls back to the automatic settle estimate for pages that never report ready', () => {
+      mockGetCurrentRecord.mockReturnValue({ ...FAST_PAGE, route: '/settings', readyMs: null, settledMs: 812 });
+      render(React.createElement(DebugLatencyHud));
+      expect(screen.getByTestId('debug-latency-hud-pill').textContent).toBe('● /settings · 812 ms');
     });
-    act(() => { jest.advanceTimersByTime(1100); });
-    expect(screen.getByTestId('debug-latency-hud')).toBeTruthy();
   });
 
-  describe('expanded view (merged PerformanceOverlay metrics)', () => {
+  describe('expanded panel', () => {
     beforeEach(() => {
       mockIsActive.mockReturnValue(true);
-      mockGetCurrentRecord.mockReturnValue(RECORD);
+      mockGetCurrentRecord.mockReturnValue(SLOW_PAGE);
     });
 
-    it('click pins the panel open (and a second click unpins), independent of hover', () => {
+    it('click pins it open (second click unpins), independent of hover', () => {
       render(React.createElement(DebugLatencyHud));
       const hud = screen.getByTestId('debug-latency-hud');
       expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
@@ -162,108 +155,141 @@ describe('DebugLatencyHud', () => {
       expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
     });
 
-    it('holding the \u2325 / Alt key peeks at the panel; releasing (or window blur) collapses it', () => {
+    it('holding \u2325 / Alt peeks; releasing (or window blur) collapses; auto-repeat and other keys are ignored', () => {
       render(React.createElement(DebugLatencyHud));
+      fireEvent.keyDown(window, { key: 'Alt', repeat: true });
       expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
-
       fireEvent.keyDown(window, { key: 'Alt' });
       expect(screen.getByTestId('debug-latency-hud-panel')).toBeTruthy();
       fireEvent.keyUp(window, { key: 'Alt' });
       expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
 
       fireEvent.keyDown(window, { key: 'Alt' });
-      expect(screen.getByTestId('debug-latency-hud-panel')).toBeTruthy();
       fireEvent.blur(window);
       expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
-
       fireEvent.keyDown(window, { key: 'Shift' });
       expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
     });
 
-    it('"hide" dismisses the HUD for the rest of the page load', () => {
+    it('shows plain-language rows for the current page: Page ready, First paint, API count + wall span, and the 5 slowest requests', () => {
       render(React.createElement(DebugLatencyHud));
       fireEvent.click(screen.getByTestId('debug-latency-hud'));
-      fireEvent.click(screen.getByTestId('debug-latency-hud-hide'));
-      expect(screen.queryByTestId('debug-latency-hud')).toBeNull();
-      // Later record/activation updates do not resurrect it.
-      act(() => { jest.advanceTimersByTime(2100); });
-      expect(screen.queryByTestId('debug-latency-hud')).toBeNull();
+
+      expect(screen.getByTestId('debug-latency-hud-ready').textContent).toBe('13.6 s');
+      expect(screen.getByTestId('debug-latency-hud-paint').textContent).toBe('First paint9 ms');
+      expect(screen.getByTestId('debug-latency-hud-paint').getAttribute('title')).toMatch(/first frame/i);
+      expect(screen.getByTestId('debug-latency-hud-api').textContent).toBe('API37 requests · 13.2 s wall');
+
+      const requests = screen.getAllByTestId('debug-latency-hud-request');
+      expect(requests).toHaveLength(5);
+      expect(requests.map(r => r.textContent)).toEqual([
+        'GET /api/storage/evaluation-runs/:id4.2 s',
+        'POST /api/storage/runs/search4.0 s',
+        'GET /api/storage/evaluation-runs/:id2.1 s',
+        'GET /api/storage/evaluation-runs/:id1.9 s',
+        'GET /api/storage/evaluation-runs/:id1.5 s',
+      ]);
+      // the wall span can never exceed the page's own time-to-ready
+      expect(SLOW_PAGE.apiWallMs).toBeLessThanOrEqual(SLOW_PAGE.readyMs);
     });
 
-    it('ignores auto-repeated Alt keydown events (holding the key must not flicker state)', () => {
-      render(React.createElement(DebugLatencyHud));
-      fireEvent.keyDown(window, { key: 'Alt', repeat: true });
-      expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
-      fireEvent.keyDown(window, { key: 'Alt' });
-      expect(screen.getByTestId('debug-latency-hud-panel')).toBeTruthy();
-    });
-
-    it('shows the operations empty state (and no Clear button) when nothing has been measured', () => {
+    it('never shows a legend, a navigation history, or a summed API duration', () => {
+      mockGetPreviousPage.mockReturnValue({ route: 'eval-runs', readyMs: 812 });
       render(React.createElement(DebugLatencyHud));
       fireEvent.click(screen.getByTestId('debug-latency-hud'));
-      const ops = screen.getByTestId('debug-latency-hud-operations');
-      expect(ops.textContent).toContain('Operations \u00b7 0 measurements');
-      expect(ops.textContent).toContain('No operation timings yet');
-      expect(ops.textContent).toContain('\u25cf < 50 ms \u00b7 \u25cf < 200 ms \u00b7 \u25cf \u2265 200 ms');
-      expect(screen.queryByTestId('debug-latency-hud-clear')).toBeNull();
-      expect(screen.queryAllByTestId('debug-latency-hud-op')).toHaveLength(0);
+      const text = screen.getByTestId('debug-latency-hud-panel').textContent!;
+      expect(text).not.toMatch(/< 50 ms|< 200 ms|≥ 200 ms|Last \d+ navigations|Operations|measurements|render /);
+      expect(text).not.toContain('185'); // 37 × ~5 s summed would be ~185 s -- must not appear anywhere
     });
 
-    it('lists each operation with icon, label, group, avg, min\u2013max and count, colour-coded by band', () => {
+    it('marks an automatic (estimated) readiness with ~ and says "no requests" for a page without API calls', () => {
+      mockGetCurrentRecord.mockReturnValue({ ...FAST_PAGE, route: '/settings', readyMs: null, settledMs: 812, apiCount: 0, apiWallMs: 0, apiRequests: [] });
+      render(React.createElement(DebugLatencyHud));
+      fireEvent.click(screen.getByTestId('debug-latency-hud'));
+      expect(screen.getByTestId('debug-latency-hud-ready').textContent).toBe('812 ms ~');
+      expect(screen.getByTestId('debug-latency-hud-api').textContent).toBe('APIno requests');
+      expect(screen.queryAllByTestId('debug-latency-hud-request')).toHaveLength(0);
+    });
+
+    it('renders the "Slow steps on this page" section only when the page recorded steps (no placeholder otherwise), capped at 3 rows', () => {
+      render(React.createElement(DebugLatencyHud));
+      fireEvent.click(screen.getByTestId('debug-latency-hud'));
+      expect(screen.queryByTestId('debug-latency-hud-operations')).toBeNull();
+      expect(screen.getByTestId('debug-latency-hud-panel').textContent).not.toMatch(/No operation timings|Slow steps/);
+    });
+
+    it('lists recorded steps slowest first with a colour dot, capped at 3', () => {
       mockGetOperationStats.mockReturnValue({
-        totalMeasurements: 4,
+        totalMeasurements: 5,
         stats: [
           { name: 'AgentTracesPage.fetchMore', label: 'fetchMore', group: 'AgentTracesPage', avgMs: 312.4, minMs: 300, maxMs: 324.8, count: 2 },
-          { name: 'TraceFlowView.preprocessing', label: 'preprocessing', group: 'TraceFlowView', avgMs: 75, minMs: 60, maxMs: 90, count: 1 },
-          { name: 'flat', label: 'flat', group: '', avgMs: 5, minMs: 5, maxMs: 5, count: 1 },
+          { name: 'TraceFlowView.flowTransform', label: 'flowTransform', group: 'TraceFlowView', avgMs: 120, minMs: 120, maxMs: 120, count: 1 },
+          { name: 'TraceFlowView.preprocessing', label: 'preprocessing', group: 'TraceFlowView', avgMs: 41.7, minMs: 35, maxMs: 48, count: 1 },
+          { name: 'x.y', label: 'y', group: 'x', avgMs: 1, minMs: 1, maxMs: 1, count: 1 },
         ],
       });
       render(React.createElement(DebugLatencyHud));
       fireEvent.click(screen.getByTestId('debug-latency-hud'));
-
-      expect(screen.getByTestId('debug-latency-hud-operations').textContent).toContain('Operations \u00b7 4 measurements');
+      const ops = screen.getByTestId('debug-latency-hud-operations');
+      expect(ops.textContent).toContain('Slow steps on this page');
       const rows = screen.getAllByTestId('debug-latency-hud-op');
       expect(rows).toHaveLength(3);
-
-      expect(rows[0].textContent).toContain('\u25cf fetchMore');
-      expect(rows[0].textContent).toContain('AgentTracesPage');
-      expect(rows[0].textContent).toContain('312.4 ms');
-      expect(rows[0].textContent).toContain('300\u2013325 \u00b7 \u00d72');
+      expect(rows[0].textContent).toBe('● fetchMore · AgentTracesPage312 ms ×2');
       expect(rows[0].querySelector('.text-red-400')).toBeTruthy();
-
-      expect(rows[1].textContent).toContain('\u25cf preprocessing');
       expect(rows[1].querySelector('.text-yellow-400')).toBeTruthy();
-
-      expect(rows[2].textContent).toContain('\u25cf flat');
-      expect(rows[2].textContent).not.toContain('\u00b7 flat'); // no group suffix for undotted names
       expect(rows[2].querySelector('.text-green-400')).toBeTruthy();
+      expect(ops.textContent).not.toMatch(/< 50 ms/); // no legend
     });
 
-    it('Clear calls clearOperationStats without toggling the pinned state', () => {
-      mockGetOperationStats.mockReturnValue({
-        totalMeasurements: 1,
-        stats: [{ name: 'a.b', label: 'b', group: 'a', avgMs: 1, minMs: 1, maxMs: 1, count: 1 }],
-      });
+    it('shows the previous page as a one-line footnote', () => {
+      mockGetPreviousPage.mockReturnValue({ route: 'eval-runs', readyMs: 812 });
       render(React.createElement(DebugLatencyHud));
       fireEvent.click(screen.getByTestId('debug-latency-hud'));
-      fireEvent.click(screen.getByTestId('debug-latency-hud-clear'));
-      expect(mockClearOperationStats).toHaveBeenCalledTimes(1);
-      expect(screen.getByTestId('debug-latency-hud-panel')).toBeTruthy();
+      expect(screen.getByTestId('debug-latency-hud-prev').textContent).toBe('prev page: eval-runs 812 ms');
     });
 
-    it('re-reads operation stats when the subscription fires (a new measurement landed)', () => {
+    it('"hide" dismisses the HUD for the rest of the page load without toggling anything else', () => {
+      render(React.createElement(DebugLatencyHud));
+      fireEvent.click(screen.getByTestId('debug-latency-hud'));
+      fireEvent.click(screen.getByTestId('debug-latency-hud-hide'));
+      expect(screen.queryByTestId('debug-latency-hud')).toBeNull();
+      act(() => { jest.advanceTimersByTime(2100); });
+      expect(screen.queryByTestId('debug-latency-hud')).toBeNull();
+    });
+
+    it('re-reads the record when the subscription fires, deferred to a microtask and coalesced (never setState mid-render)', async () => {
       let notifyFn: (() => void) | null = null;
       mockSubscribe.mockImplementation((fn: () => void) => { notifyFn = fn; return () => {}; });
+      mockGetCurrentRecord.mockReturnValue({ ...SLOW_PAGE, readyMs: null });
       render(React.createElement(DebugLatencyHud));
-      fireEvent.click(screen.getByTestId('debug-latency-hud'));
-      expect(screen.queryAllByTestId('debug-latency-hud-op')).toHaveLength(0);
+      expect(screen.getByTestId('debug-latency-hud-pill').textContent).toBe('● benchmark-runs · …');
 
-      mockGetOperationStats.mockReturnValue({
-        totalMeasurements: 1,
-        stats: [{ name: 'a.b', label: 'b', group: 'a', avgMs: 1, minMs: 1, maxMs: 1, count: 1 }],
-      });
-      act(() => { notifyFn!(); });
-      expect(screen.getAllByTestId('debug-latency-hud-op')).toHaveLength(1);
+      mockGetCurrentRecord.mockReturnValue(SLOW_PAGE);
+      notifyFn!();
+      notifyFn!();
+      notifyFn!(); // a burst of settled requests
+      expect(mockGetCurrentRecord).toHaveBeenCalledTimes(2); // initial useState + refresh(); the burst has NOT read yet
+      expect(screen.getByTestId('debug-latency-hud-pill').textContent).toBe('● benchmark-runs · …');
+      await act(async () => { await Promise.resolve(); });
+      expect(mockGetCurrentRecord).toHaveBeenCalledTimes(3); // one coalesced re-read for the whole burst
+      expect(screen.getByTestId('debug-latency-hud-pill').textContent).toBe('● benchmark-runs · 13.6 s');
     });
+  });
+
+  it('polls isPageLatencyActive so a debug-mode toggle in another tab is picked up without a remount', () => {
+    render(React.createElement(DebugLatencyHud));
+    expect(screen.queryByTestId('debug-latency-hud')).toBeNull();
+    mockIsActive.mockReturnValue(true);
+    mockGetCurrentRecord.mockReturnValue(FAST_PAGE);
+    act(() => { jest.advanceTimersByTime(1100); });
+    expect(screen.getByTestId('debug-latency-hud')).toBeTruthy();
+  });
+
+  it('exposes the DevTools console API while active and removes it on unmount', () => {
+    mockIsActive.mockReturnValue(true);
+    const { unmount } = render(React.createElement(DebugLatencyHud));
+    expect(mockExposeConsoleApi).toHaveBeenCalledTimes(1);
+    unmount();
+    expect(mockRemoveConsoleApi).toHaveBeenCalledTimes(1);
   });
 });

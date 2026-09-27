@@ -4,43 +4,45 @@
  */
 
 /**
- * Unobtrusive bottom-right HUD showing the current page's latency, visible
- * ONLY when debug mode is enabled, this is a dev build, or the legacy
- * `localStorage.DEBUG_PERFORMANCE` flag is set (the activation path of the
- * PerformanceOverlay this HUD replaced). It polls that rule once a second so
- * a debug-mode toggle in another tab / the Settings page is picked up
- * without a hard refresh.
+ * Unobtrusive bottom-right HUD for the CURRENT page's latency, visible ONLY
+ * when debug mode is enabled, this is a dev build, or the legacy
+ * `localStorage.DEBUG_PERFORMANCE` flag is set. It polls that rule once a
+ * second so a debug-mode toggle in another tab / the Settings page is picked
+ * up without a hard refresh.
  *
- * Collapsed: one line -- `route · render X ms · ready Y ms · N api / M ms`
- * (or a "navigate to start measuring" placeholder when debug mode was just
- * switched on and no navigation has happened yet). Expanded (click to pin,
- * hover or hold ⌥/Alt to peek): the last 10 navigations, plus the
- * per-operation timings recorded via `lib/performance.ts` (avg / min / max /
- * count, colour-coded dots, with the former overlay's "Clear" action) and a
- * "hide" control that dismisses the HUD until the next page load.
+ * Collapsed pill: colour dot + `benchmark-runs · 13.6 s` — one number, the
+ * time from route change until the page's data settled and rendered.
+ * Expanded (click to pin, hover or hold ⌥/Alt to peek), still the current
+ * page only:
+ *   Page ready   13.6 s
+ *   First paint  9 ms
+ *   API          37 requests · 13.2 s wall     + the 5 slowest requests
+ *   Slow steps on this page                     (only if the page recorded any)
+ *   prev page: eval-runs 0.8 s                  (one-line footnote)
+ * Everything resets on every route change.
  */
 
 import React, { useEffect, useState } from 'react';
 import {
   isPageLatencyActive,
   getCurrentRecord,
-  getHistory,
+  getPreviousPage,
   getOperationStats,
-  clearOperationStats,
   classifyDuration,
+  classifyPageReady,
+  formatMs,
   exposeConsoleApi,
   removeConsoleApi,
   subscribe,
   type PageLatencyRecord,
+  type PreviousPageSummary,
   type OperationStat,
+  type ApiRequestRecord,
   type DurationBand,
 } from '@/lib/pageLatency';
 
-function formatRecord(r: PageLatencyRecord): string {
-  const render = r.renderMs === null ? '—' : `${r.renderMs} ms`;
-  const ready = r.readyMs === null ? '—' : `${r.readyMs} ms`;
-  return `${r.route} · render ${render} · ready ${ready} · ${r.apiCount} api / ${r.apiTotalMs} ms`;
-}
+const SLOWEST_REQUESTS = 5;
+const MAX_STEPS = 3;
 
 const BAND_CLASS: Record<DurationBand, string> = {
   fast: 'text-green-400',
@@ -48,34 +50,49 @@ const BAND_CLASS: Record<DurationBand, string> = {
   slow: 'text-red-400',
 };
 
-const OperationRow: React.FC<{ stat: OperationStat }> = ({ stat }) => {
+const Dot: React.FC<{ band: DurationBand | null }> = ({ band }) => (
+  <span data-testid="debug-latency-hud-dot" data-band={band ?? 'pending'} className={band ? BAND_CLASS[band] : 'text-slate-500'}>
+    ●
+  </span>
+);
+
+/** The one number the pill shows: explicit page-ready, else the automatic settle estimate. */
+function readyMsOf(r: PageLatencyRecord): number | null {
+  return r.readyMs ?? r.settledMs;
+}
+
+function slowestRequests(r: PageLatencyRecord): ApiRequestRecord[] {
+  return [...r.apiRequests].sort((a, b) => b.ms - a.ms).slice(0, SLOWEST_REQUESTS);
+}
+
+const Row: React.FC<{ label: string; title?: string; children: React.ReactNode; testId?: string }> = ({ label, title, children, testId }) => (
+  <div data-testid={testId} className="flex items-baseline justify-between gap-3" title={title}>
+    <span className="text-slate-400">{label}</span>
+    <span className="tabular-nums text-right">{children}</span>
+  </div>
+);
+
+const StepRow: React.FC<{ stat: OperationStat }> = ({ stat }) => {
   const band = classifyDuration(stat.avgMs);
   return (
-    <div
-      data-testid="debug-latency-hud-op"
-      className="flex items-baseline justify-between gap-2 truncate"
-      title={stat.name}
-    >
+    <div data-testid="debug-latency-hud-op" className="flex items-baseline justify-between gap-2 truncate pl-2" title={stat.name}>
       <span className="truncate">
-        <span className={BAND_CLASS[band]}>●</span> {stat.label}
+        <Dot band={band} /> {stat.label}
         {stat.group && <span className="text-slate-500"> · {stat.group}</span>}
       </span>
       <span className="shrink-0 tabular-nums">
-        <span className={BAND_CLASS[band]}>{stat.avgMs.toFixed(1)} ms</span>
-        <span className="text-slate-500">
-          {' '}
-          {stat.minMs.toFixed(0)}–{stat.maxMs.toFixed(0)} · ×{stat.count}
-        </span>
+        <span className={BAND_CLASS[band]}>{formatMs(stat.avgMs)}</span>
+        {stat.count > 1 && <span className="text-slate-500"> ×{stat.count}</span>}
       </span>
     </div>
   );
 };
 
 export const DebugLatencyHud: React.FC = () => {
-  const [active, setActive] = useState(isPageLatencyActive());
-  const [current, setCurrent] = useState<PageLatencyRecord | null>(getCurrentRecord());
-  const [history, setHistory] = useState<PageLatencyRecord[]>(getHistory());
-  const [ops, setOps] = useState(getOperationStats());
+  const [active, setActive] = useState(() => isPageLatencyActive());
+  const [current, setCurrent] = useState<PageLatencyRecord | null>(() => getCurrentRecord());
+  const [previous, setPrevious] = useState<PreviousPageSummary | null>(() => getPreviousPage());
+  const [ops, setOps] = useState(() => getOperationStats());
   const [pinned, setPinned] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [altHeld, setAltHeld] = useState(false);
@@ -93,11 +110,29 @@ export const DebugLatencyHud: React.FC = () => {
     if (!active) return;
     const refresh = () => {
       setCurrent(getCurrentRecord());
-      setHistory(getHistory());
+      setPrevious(getPreviousPage());
       setOps(getOperationStats());
     };
     refresh();
-    return subscribe(refresh);
+    // Notifications can arrive while another component is rendering
+    // (Layout opens the navigation window during ITS render, see Layout.tsx)
+    // and in bursts (every settled request) -- defer + coalesce to a microtask
+    // so this never setStates mid-render and re-renders once per burst.
+    let queued = false;
+    let unsubscribed = false;
+    const onChange = () => {
+      if (queued) return;
+      queued = true;
+      Promise.resolve().then(() => {
+        queued = false;
+        if (!unsubscribed) refresh();
+      });
+    };
+    const unsubscribe = subscribe(onChange);
+    return () => {
+      unsubscribed = true;
+      unsubscribe();
+    };
   }, [active]);
 
   // DevTools console API lives exactly as long as the HUD is active.
@@ -130,6 +165,10 @@ export const DebugLatencyHud: React.FC = () => {
 
   if (!active || dismissed) return null;
 
+  const ready = current ? readyMsOf(current) : null;
+  const band = ready === null ? null : classifyPageReady(ready);
+  const steps = ops.stats.slice(0, MAX_STEPS);
+
   return (
     <div
       data-testid="debug-latency-hud"
@@ -139,71 +178,82 @@ export const DebugLatencyHud: React.FC = () => {
       onMouseLeave={() => setHovered(false)}
       className="fixed bottom-3 right-3 z-50 select-none"
     >
-      {expanded && (
+      {expanded && current && (
         <div
           data-testid="debug-latency-hud-panel"
-          className="mb-1 w-[28rem] max-h-80 overflow-auto rounded-md border border-slate-700 bg-slate-900/95 backdrop-blur text-[10px] text-slate-200 shadow-xl p-2 space-y-2 font-mono"
+          className="mb-1 w-[24rem] rounded-md border border-slate-700 bg-slate-900/95 backdrop-blur text-[10px] text-slate-200 shadow-xl p-2 space-y-0.5 font-mono"
         >
-          <div className="flex items-center justify-between text-slate-400">
-            <span>Latency HUD</span>
-            <button
-              type="button"
-              data-testid="debug-latency-hud-hide"
-              title="Hide until the next page load"
-              onClick={e => {
-                e.stopPropagation();
-                setDismissed(true);
-              }}
-              className="rounded border border-slate-600 px-1 leading-4 hover:bg-slate-700"
-            >
-              hide
-            </button>
+          <div className="flex items-baseline justify-between gap-3">
+            <span className="text-slate-400" title="Route change → the page's data settled and its content rendered (reported by the page, or estimated from first paint + last API response + 1 s of quiet)">
+              Page ready
+            </span>
+            <span className="flex items-baseline gap-2">
+              <span data-testid="debug-latency-hud-ready" className={`tabular-nums ${band ? BAND_CLASS[band] : 'text-slate-500'}`}>
+                {ready === null ? '…' : formatMs(ready)}
+                {current.readyMs === null && current.settledMs !== null && <span className="text-slate-500" title="Estimated: this page does not report readiness"> ~</span>}
+              </span>
+              <button
+                type="button"
+                data-testid="debug-latency-hud-hide"
+                title="Hide until the next page load"
+                onClick={e => {
+                  e.stopPropagation();
+                  setDismissed(true);
+                }}
+                className="rounded border border-slate-600 px-1 leading-4 text-slate-400 hover:bg-slate-700"
+              >
+                hide
+              </button>
+            </span>
           </div>
-
-          {history.length > 0 && (
-            <div data-testid="debug-latency-hud-history" className="space-y-1">
-              <div className="text-slate-400">Last {history.length} navigations</div>
-              {history.map((r, i) => (
-                <div key={`${r.route}-${r.startedAt}-${i}`} className="truncate">{formatRecord(r)}</div>
-              ))}
+          <Row
+            label="First paint"
+            testId="debug-latency-hud-paint"
+            title="Route change → the new page's first frame on screen (before any data arrived)"
+          >
+            {current.renderMs === null ? '…' : formatMs(current.renderMs)}
+          </Row>
+          <Row
+            label="API"
+            testId="debug-latency-hud-api"
+            title="/api/* requests this page made while loading; wall = first request start → last response end (requests overlap, so durations are not summed)"
+          >
+            {current.apiCount === 0
+              ? 'no requests'
+              : `${current.apiCount} request${current.apiCount === 1 ? '' : 's'} · ${formatMs(current.apiWallMs)} wall`}
+          </Row>
+          {slowestRequests(current).map((req, i) => (
+            <div key={`${req.method}-${req.path}-${req.startMs}-${i}`} data-testid="debug-latency-hud-request" className="flex items-baseline justify-between gap-2 pl-2 truncate text-slate-300">
+              <span className="truncate">
+                <span className="text-slate-500">{req.method}</span> {req.path}
+              </span>
+              <span className={`shrink-0 tabular-nums ${BAND_CLASS[classifyDuration(req.ms)]}`}>{formatMs(req.ms)}</span>
+            </div>
+          ))}
+          {steps.length > 0 && (
+            <div data-testid="debug-latency-hud-operations" className="pt-1">
+              <div className="text-slate-400">Slow steps on this page</div>
+              {steps.map(stat => <StepRow key={stat.name} stat={stat} />)}
             </div>
           )}
-
-          <div data-testid="debug-latency-hud-operations" className="space-y-1">
-            <div className="flex items-center justify-between">
-              <span className="text-slate-400">
-                Operations · {ops.totalMeasurements} measurement{ops.totalMeasurements === 1 ? '' : 's'}
-              </span>
-              {ops.totalMeasurements > 0 && (
-                <button
-                  type="button"
-                  data-testid="debug-latency-hud-clear"
-                  onClick={e => {
-                    e.stopPropagation();
-                    clearOperationStats();
-                  }}
-                  className="rounded border border-slate-600 px-1 leading-4 hover:bg-slate-700"
-                >
-                  Clear
-                </button>
-              )}
+          {previous && (
+            <div data-testid="debug-latency-hud-prev" className="pt-1 text-slate-500 truncate">
+              prev page: {previous.route} {previous.readyMs === null ? '—' : formatMs(previous.readyMs)}
             </div>
-            {ops.stats.length === 0 ? (
-              <div className="text-slate-500">
-                No operation timings yet — recorded by instrumented views (e.g. Agent Traces flow view).
-              </div>
-            ) : (
-              ops.stats.map(stat => <OperationRow key={stat.name} stat={stat} />)
-            )}
-            <div className="text-slate-500">
-              <span className={BAND_CLASS.fast}>●</span> &lt; 50 ms · <span className={BAND_CLASS.ok}>●</span> &lt; 200 ms ·{' '}
-              <span className={BAND_CLASS.slow}>●</span> ≥ 200 ms
-            </div>
-          </div>
+          )}
         </div>
       )}
-      <div className="rounded-md border border-slate-700 bg-slate-900/90 backdrop-blur text-[10px] text-slate-200 font-mono px-2 py-1 shadow-lg cursor-pointer">
-        {current ? formatRecord(current) : '— · navigate to start measuring'}
+      <div
+        data-testid="debug-latency-hud-pill"
+        className="rounded-md border border-slate-700 bg-slate-900/90 backdrop-blur text-[10px] text-slate-200 font-mono px-2 py-1 shadow-lg cursor-pointer"
+      >
+        {current ? (
+          <>
+            <Dot band={band} /> {current.route} · {ready === null ? '…' : formatMs(ready)}
+          </>
+        ) : (
+          '— · navigate to start measuring'
+        )}
       </div>
     </div>
   );

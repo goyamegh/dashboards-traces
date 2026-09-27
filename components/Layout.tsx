@@ -103,8 +103,16 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
   // Debug/dev-mode page-latency instrumentation (lib/pageLatency.ts) --
   // a no-op when neither is active. Every route change starts a fresh
   // navigation window; the page itself reports when it's done loading via
-  // markPageReady().
-  useEffect(() => startNavigation(location.pathname), [location.pathname]);
+  // markPageReady(). Deliberately done during render, keyed on the pathname,
+  // NOT in a useEffect: React runs a child's effects before its parent's, so
+  // the new page's very first data fetches (fired from its own useEffect)
+  // would start BEFORE a Layout effect could open the window and be charged
+  // to the previous, already-finalized record. Rendering is parent-first.
+  const latencyPathRef = useRef<string | null>(null);
+  if (latencyPathRef.current !== location.pathname) {
+    latencyPathRef.current = location.pathname;
+    startNavigation(location.pathname);
+  }
 
   // Chrome-vertical-tabs-style hover-open: when the sidebar is pinned
   // collapsed to the icon rail, hovering (or keyboard-focusing) it temporarily
