@@ -25,7 +25,7 @@
  */
 
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import {
   Play, Calendar, Pencil, AlertTriangle,
   FileText, Loader2, X, ChevronDown, ChevronRight, History,
@@ -58,6 +58,7 @@ import { getResultStatus, StatusIcon, getStatusDescription } from '@/components/
 import { runServerEvaluation } from '@/services/client/evaluationApi';
 import { DEFAULT_CONFIG, getPreferredDefaultAgentKey } from '@/lib/constants';
 import { PREFS_KEYS } from '@/lib/preferences';
+import { testCaseRunPath } from '@/lib/legacyRouteRedirects';
 import { ENV_CONFIG } from '@/lib/config';
 import { Markdown, hasRealMarkdown } from '@/components/ui/markdown';
 import { TestCaseDefinition } from '@/components/TestCaseDefinition';
@@ -100,6 +101,12 @@ function getTimeThreshold(range: TimeRange): Date | null {
 export const TestCaseDetailPage: React.FC = () => {
   const { testCaseId } = useParams<{ testCaseId: string }>();
   const navigate = useNavigate();
+  // `?run=<reportId>` deep-links a specific run (the share URL from
+  // `handleCopyRunLink`, QuickRunModal's "View Run Details", and the
+  // retired `/runs/:reportId` route's redirect all use it) — it preselects
+  // that run and expands the runs section on first load.
+  const [searchParams] = useSearchParams();
+  const requestedRunId = searchParams.get('run');
   const { isCollapsed, setIsCollapsed } = useSidebarCollapse();
 
   const [testCase, setTestCase] = useState<TestCase | null>(null);
@@ -158,13 +165,15 @@ export const TestCaseDetailPage: React.FC = () => {
       setRuns(sorted);
       setTotalRuns(total);
       if (sorted.length > 0 && !initialSelectionDone.current) {
-        setSelectedRunId(sorted[0].id);
+        const requested = requestedRunId ? sorted.find(r => r.id === requestedRunId) : undefined;
+        setSelectedRunId((requested ?? sorted[0]).id);
+        if (requested) setRunsExpanded(true);
         initialSelectionDone.current = true;
       }
     } catch (error) {
       console.error('Failed to refresh test case runs:', error);
     }
-  }, [testCaseId]);
+  }, [testCaseId, requestedRunId]);
 
   const loadData = useCallback(async () => {
     if (!testCaseId) return;
@@ -262,10 +271,9 @@ export const TestCaseDetailPage: React.FC = () => {
   }, []);
 
   // Keep the runs list rendered in a stable shape — selection is purely
-  // in-page state. Sharing a specific run uses the canonical `/runs/:runId`
-  // route (see `handleCopyRunLink` below), which loads the standalone
-  // RunDetailsPage so the recipient gets full run context without needing
-  // to know which test case it belonged to.
+  // in-page state. Sharing a specific run uses this page's own
+  // `?run=<reportId>` deep link (see `handleCopyRunLink` below), which
+  // preselects that run on load.
 
   // Build a quick lookup so the runs list can show evaluator names instead of
   // raw ids without re-rendering the whole evaluator picker.
@@ -276,19 +284,15 @@ export const TestCaseDetailPage: React.FC = () => {
   }, [evaluators]);
 
   // ── Copy-link handler ────────────────────────────────────────────────
-  // Copies the canonical share URL for a run — `<origin>/runs/<id>`
-  // — which lands on the standalone RunDetailsPage. We use the existing
-  // route rather than a `?run=` query on this page so deep links work the
-  // same regardless of how the user originally got to the run.
-  //
-  // The app uses BrowserRouter (see App.tsx) so the canonical URL has no
-  // leading `#`. Using the wrong shape here would silently break shared
-  // links — BrowserRouter would 404 on `#/runs/...`, dropping the user on
-  // the dashboard instead of the requested run.
+  // Copies the share URL for a run — `<origin>/evaluations/test-cases/<tc>?run=<id>`
+  // — which lands back on this page with that run preselected. (The
+  // standalone `/runs/<id>` page this used to link to is retired; that route
+  // now redirects here.) The app uses BrowserRouter (see App.tsx) so the URL
+  // has no leading `#`.
   const handleCopyRunLink = useCallback(async (runId: string, e: React.MouseEvent) => {
     e.stopPropagation(); // don't trigger the row's onClick (which selects the run)
     const { origin } = window.location;
-    const url = `${origin}/runs/${encodeURIComponent(runId)}`;
+    const url = `${origin}${testCaseRunPath(testCaseId!, runId)}`;
     try {
       await navigator.clipboard.writeText(url);
       setCopiedRunId(runId);
@@ -299,7 +303,7 @@ export const TestCaseDetailPage: React.FC = () => {
       console.warn('Clipboard write failed, falling back to prompt:', err);
       window.prompt('Copy run URL:', url);
     }
-  }, []);
+  }, [testCaseId]);
 
   const filteredRuns = useMemo(() => {
     const threshold = getTimeThreshold(timeRange);
@@ -659,6 +663,8 @@ export const TestCaseDetailPage: React.FC = () => {
                   return (
                     <div
                       key={run.id}
+                      data-testid={`test-case-run-row-${run.id}`}
+                      aria-selected={isSelected}
                       className={`flex items-start gap-2 px-2 py-1.5 rounded-md cursor-pointer transition-colors group ${
                         isSelected ? 'bg-primary/10 border border-primary/30' : 'hover:bg-muted/50 border border-transparent'
                       }`}
