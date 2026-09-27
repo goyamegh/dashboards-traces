@@ -672,8 +672,23 @@ export interface ScoringSnapshot {
 }
 
 /**
- * Why the AGENT step of a case failed (see {@link TestCaseRun.agentError}).
- * One family, three members:
+ * Which STAGE of a test-case run failed. Set alongside `metricsStatus:
+ * 'error'` / `status: 'failed'` so consumers stop inferring the stage from
+ * `traceError` prose, an empty trajectory, or a `kind=…` regex.
+ *
+ *  - `agent`: the agent request itself never produced output (HTTP timeout,
+ *    connection refused, non-2xx, subprocess crash, empty response). There is
+ *    NOTHING to judge — retry-judgement must not offer these; a re-run is the remedy.
+ *  - `judge`: the agent completed but the evaluator/judge could not produce a
+ *    verdict (empty model reply, parse failure, provider error). Salvageable
+ *    by retry-judgement against the stored trajectory.
+ *  - `trace`: the trace pipeline failed (spans never arrived / didn't
+ *    converge / fetch failed) before judging.
+ */
+export type FailureStage = 'agent' | 'judge' | 'trace';
+
+/**
+ * Failure FAMILY of an agent-step failure (see {@link AgentFailure.kind}):
  *  - `transport`      — connection / DNS / TLS / spawn failure or a rejected
  *                       status before any stream (`AgentTransportError`);
  *  - `unreachable`    — the run's endpoint circuit breaker was open, the case
@@ -683,15 +698,52 @@ export interface ScoringSnapshot {
  */
 export type AgentFailureKind = 'transport' | 'unreachable' | 'empty-response';
 
+/**
+ * Coarse CAUSE of an agent-request failure, derived from the unwrapped error
+ * chain (`services/evaluation/agentFailure.ts`): `timeout` / `connection` /
+ * `http_<status>` / `unknown`.
+ */
+export type AgentErrorKind = 'timeout' | 'connection' | `http_${number}` | 'unknown';
+
+/**
+ * Structured record of WHY the agent step failed, persisted on the report
+ * (`TestCaseRun.agentError`) so the run-detail failure card / inspector panel
+ * can show the real cause (the unwrapped `error.cause` for undici's opaque
+ * `fetch failed`, the endpoint, how long we waited, the timeout in force)
+ * instead of an empty trajectory and a misleading "evaluator could not run".
+ *
+ * ONE shape for both classification axes:
+ *  - `kind` is the failure FAMILY ({@link AgentFailureKind}) when the runner
+ *    could classify the error class (transport / unreachable / empty-response
+ *    — `services/evaluation/agentReachability.ts`); for anything else
+ *    (timeouts, subprocess crashes, hook errors) it is the coarse cause
+ *    ({@link AgentErrorKind}) so the failure card can still say "timed out".
+ *  - `cause` ALWAYS carries the coarse cause ({@link AgentErrorKind}) when the
+ *    producer derived one, so a family `kind` never hides "connection" vs
+ *    "http_503" vs "timeout".
+ */
 export interface AgentFailure {
-  /** Always `'agent'` — distinguishes from evaluator (judge / trace) failures. */
-  stage: 'agent';
-  kind: AgentFailureKind;
+  /** `'agent'` — distinguishes from evaluator (judge / trace) failures. */
+  stage?: 'agent';
+  kind: AgentFailureKind | AgentErrorKind;
+  /** Coarse cause (timeout / connection / http_<status> / unknown), when derived. */
+  cause?: AgentErrorKind;
   /** Machine-readable class: `ECONNREFUSED`, `HTTP_503`, `AGENT_ENDPOINT_UNREACHABLE`, `EMPTY_RESPONSE`, … */
-  code: string;
-  /** One-line human reason (host only, never a full URL). */
+  code?: string;
+  /** Unwrapped, one-line human cause (never the bare `fetch failed`; host only, never credentials). */
   message: string;
+  /** Wall-clock ms from the start of the agent request to the failure. */
+  elapsedMs?: number;
+  /** Endpoint/command the connector was calling. */
+  endpoint?: string;
+  /** Request timeout the connector applied, when known (ms). */
+  timeoutMs?: number;
+  /** HTTP status, for rejected-status failures. */
+  httpStatus?: number;
 }
+
+/** #496 name for the same record — see {@link AgentFailure}. */
+export type AgentErrorInfo = AgentFailure;
 
 // TestCaseRun = result of running a specific test case version (renamed from EvaluationReport)
 export interface TestCaseRun {
@@ -832,15 +884,32 @@ export interface TestCaseRun {
   lastTraceFetchAt?: string; // Timestamp of last trace fetch attempt
   traceError?: string; // Error message if trace fetch failed
   /**
+   * Human-readable terminal error for this run — the REAL cause (e.g. the
+   * unwrapped undici `HeadersTimeoutError` for an agent request that never
+   * returned), not a downstream symptom. Set whenever `failureStage` is set.
+   */
+  error?: string;
+  /** Which stage failed; see {@link FailureStage}. Unset for healthy runs. */
+  failureStage?: FailureStage;
+  /**
    * Structured classification when the AGENT step failed (as opposed to the
    * evaluator): the request never reached the endpoint (`transport`), the
-   * run's endpoint circuit breaker refused the case (`unreachable`), or the
-   * agent answered with nothing to judge (`empty-response`). Stamped by the
-   * runners from `services/evaluation/agentReachability.ts` /
-   * `emptyResponse.ts`; `traceError` / `llmJudgeReasoning` carry the human
-   * text. Reports carrying this are never (re-)judged.
+   * run's endpoint circuit breaker refused the case (`unreachable`), the
+   * agent answered with nothing to judge (`empty-response`), or the request
+   * timed out / crashed (`timeout` / `connection` / `http_<status>` /
+   * `unknown`). Stamped by the runners from
+   * `services/evaluation/agentReachability.ts` / `emptyResponse.ts` /
+   * `agentFailure.ts`; `traceError` / `llmJudgeReasoning` / `error` carry
+   * the human text. Set iff `failureStage === 'agent'`; reports carrying
+   * this are never (re-)judged.
    */
   agentError?: AgentFailure;
+  /**
+   * Judge-step failure detail (set iff `failureStage === 'judge'`): the raw
+   * text the judge model returned (empty string when it returned nothing) and
+   * how many attempts were made, so the failure is inspectable from the UI.
+   */
+  judgeError?: { message: string; rawResponse?: string; attempts?: number };
   spans?: Span[]; // Fetched trace spans for debugging
   /**
    * Set exclusively by the agent (trace) judge provider (`judgeModelId:

@@ -30,17 +30,25 @@ export default {
       endpoint: "http://localhost:8000/api/agent",
       connectorType: "rest",
       useTraces: true,           // Enable OpenTelemetry trace collection
-      // connectorConfig: {
-      //   // Fast-fail: after this many CONSECUTIVE connection-level failures
-      //   // (refused / DNS / TLS / rejected status) the remaining cases of a
-      //   // run fail immediately instead of re-dialling a dead endpoint.
-      //   // Default 3 (or AGENT_UNREACHABLE_THRESHOLD env); 0 disables.
-      //   unreachableThreshold: 3,
-      //   // An EMPTY response (2xx with no steps / answer / results) is always
-      //   // an agent failure that is never judged; by default it also counts
-      //   // toward unreachableThreshold. Set false to fail only that case.
-      //   emptyResponseTripsBreaker: true,
-      // },
+      connectorConfig: {
+        // HTTP request timeout for the agent call (headers + body), in ms.
+        // Default 300000 (5 min) — the same ceiling Node's fetch applied
+        // silently before this was configurable. When it fires, the report
+        // records `failureStage: 'agent'` with the real cause (e.g.
+        // "HeadersTimeoutError … no response within 300000ms") and the
+        // case is NOT judged. Raise it for agents that legitimately take
+        // longer; the run-detail error card shows the value in force.
+        timeoutMs: 300000,
+        // Fast-fail: after this many CONSECUTIVE connection-level failures
+        // (refused / DNS / TLS / rejected status) the remaining cases of a
+        // run fail immediately instead of re-dialling a dead endpoint.
+        // Default 3 (or AGENT_UNREACHABLE_THRESHOLD env); 0 disables.
+        // unreachableThreshold: 3,
+        // An EMPTY response (2xx with no steps / answer / results) is always
+        // an agent failure that is never judged; by default it also counts
+        // toward unreachableThreshold. Set false to fail only that case.
+        // emptyResponseTripsBreaker: true,
+      },
     },
 
     // Example 2: Streaming connector (Server-Sent Events)

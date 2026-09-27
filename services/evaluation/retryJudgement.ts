@@ -134,6 +134,10 @@ export function isJudgeFailedCase(
   result: RunResultLike | undefined
 ): boolean {
   if (!report || !result) return false;
+  // Explicit stage marker (post agent-error-surfacing): an agent-request
+  // failure has nothing to judge — never offer it for retry-judgement,
+  // regardless of what the rest of the report looks like.
+  if (report.failureStage === 'agent') return false;
   if (result.status !== 'completed') return false;
   // A classified AGENT failure (transport / unreachable / empty-response) has
   // nothing to salvage at judge cost: an empty response keeps its
@@ -163,7 +167,7 @@ export function isJudgeFailedCase(
  */
 export function hasRejudgeableOutput(report: EvaluationReport | null | undefined): boolean {
   if (!report) return false;
-  if (report.agentError) return false;
+  if (report.failureStage === 'agent' || report.agentError) return false;
   return Array.isArray(report.trajectory) && report.trajectory.length > 0;
 }
 

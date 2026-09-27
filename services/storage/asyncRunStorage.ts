@@ -28,6 +28,7 @@ import type {
 } from '@/types';
 import { fetchChunked } from '@/lib/chunkedFetch';
 import { resolveReportTraceId } from '@/lib/traceIdentity';
+import { copyReportFailureFields } from '@/lib/reportFailureFields';
 
 // Re-export search types for convenience
 export interface SearchQuery {
@@ -196,10 +197,10 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     traceFetchAttempts: storedAny.traceFetchAttempts,
     lastTraceFetchAt: storedAny.lastTraceFetchAt,
     traceError: storedAny.traceError,
-    // Structured agent-step failure (transport / unreachable / empty
-    // response) — see TestCaseRun.agentError. The inspector panel's reason
-    // line and the retry-judgement guard read it browser-side.
-    agentError: (stored as any).agentError,
+    // Failure detail (failureStage / error / agentError / judgeError) — see
+    // TestCaseRun.agentError. The inspector panel's reason line, the failure
+    // card and the retry-judgement guard read it browser-side.
+    ...copyReportFailureFields(storedAny, {} as Record<string, unknown>),
     judgeMode: storedAny.judgeMode,
     // Retry-judgement stamp (services/evaluation/retryJudgement.ts) — drives
     // the "Re-judged <when> with <evaluator> · <model>" line on the Judge tab.
@@ -269,6 +270,7 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
   if (report.traceFetchAttempts !== undefined) base.traceFetchAttempts = report.traceFetchAttempts;
   if (report.lastTraceFetchAt !== undefined) base.lastTraceFetchAt = report.lastTraceFetchAt;
   if (report.traceError !== undefined) base.traceError = report.traceError;
+  copyReportFailureFields(report as Record<string, any>, base as Record<string, any>);
   if ((report as any).judgeMode !== undefined) (base as any).judgeMode = (report as any).judgeMode;
   if (report.spans !== undefined) base.spans = report.spans;
   if (report.connectorProtocol !== undefined) base.connectorProtocol = report.connectorProtocol;
@@ -424,6 +426,9 @@ class AsyncRunStorage {
       'judgeModelId', 'judgeModel', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations', 'metrics',
       'scoringSnapshot', 'llmVerdict', 'verdictConflict', 'score',
       'connectorProtocol', 'performanceMetrics',
+      // Failure stage so list rows can badge 'Agent error' vs 'Judge error'
+      // without loading the full report (tiny keyword field).
+      'failureStage',
     ];
     // Chunk to keep the URL well under practical limits for large benchmarks.
     const stored = await fetchChunked(reportIds, REPORT_ID_CHUNK_SIZE, chunk => opensearchRuns.getByIds(chunk, { fields }));
@@ -508,6 +513,7 @@ class AsyncRunStorage {
     if (updates.traceFetchAttempts !== undefined) storageUpdates.traceFetchAttempts = updates.traceFetchAttempts;
     if (updates.lastTraceFetchAt !== undefined) storageUpdates.lastTraceFetchAt = updates.lastTraceFetchAt;
     if (updates.traceError !== undefined) storageUpdates.traceError = updates.traceError;
+    copyReportFailureFields(updates as Record<string, any>, storageUpdates);
     if ((updates as any).judgeMode !== undefined) storageUpdates.judgeMode = (updates as any).judgeMode;
     if (updates.scoringSnapshot !== undefined) storageUpdates.scoringSnapshot = updates.scoringSnapshot;
     if (updates.llmVerdict !== undefined) storageUpdates.llmVerdict = updates.llmVerdict;

@@ -355,6 +355,14 @@ export function getIndexMappings(): IndexMappings {
           // Retry-judgement stamp (services/evaluation/retryJudgement.ts).
           judgementRetriedAt: { type: 'date' },
           judgementRetryCount: { type: 'integer' },
+          // Terminal-failure detail (see lib/reportFailureFields.ts).
+          // `failureStage` is a keyword so list views can filter/aggregate
+          // "agent errors" vs "judge errors"; the structured detail objects
+          // are stored but not indexed (free-form, never queried).
+          error: { type: 'text' },
+          failureStage: { type: 'keyword' },
+          agentError: { type: 'object', enabled: false },
+          judgeError: { type: 'object', enabled: false },
         },
       },
     },

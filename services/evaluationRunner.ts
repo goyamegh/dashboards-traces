@@ -20,10 +20,12 @@ import type { IStorageModule } from '@/server/adapters/types';
 import {
   runEvaluationWithConnector,
   callBedrockJudge,
+  judgeErrorDetailFrom,
   invokeAgent,
   computeSdkMatcherSessionMetrics,
   stampObjectiveActuals,
   appendNotReachedMarker,
+  describeAgentStepFailure,
 } from '@/services/evaluation';
 import { resolveAgentModel } from '@/lib/resolveAgentModel';
 import { readEnv } from '@/lib/envCompat';
@@ -648,9 +650,14 @@ export async function executeEvaluationRun(
               // #335: the agent never produced a trajectory (timeout/crash).
               // Surface the underlying message (e.g. "Subprocess timed out after
               // 600000ms") on the report instead of a silent empty `failed`.
-              // Transport / unreachable / empty-response errors additionally get
-              // the structured `agentError` (and the empty-response label).
+              // `stampAgentFailure` applies the canonical agent-failure patch
+              // (empty-response label when applicable, connector payload,
+              // skipJudge); the structured `agentError` is then the unified
+              // record — failure family + unwrapped cause + connector context
+              // (describeAgentStepFailure) — so the failure card can say
+              // "timed out" for a subprocess timeout too.
               stampAgentFailure(report as any, evalError);
+              (report as any).agentError = describeAgentStepFailure(evalError, { endpoint: agentConfig.endpoint });
             } else {
               (report as any).passFailStatus = failed ? 'failed' : 'passed';
               // Option B BC shim: legacy `llmJudgeReasoning` is a derived view
@@ -809,6 +816,12 @@ export async function executeEvaluationRun(
           ) {
             debug('EvaluationRunner', `[${testCaseId}] Trace mode: polling for traces (runId=${savedReport.runId ?? 'none — window/session correlation'})`);
             judgeOutcome = await waitForTracesAndJudge(savedReport, testCase, storageModule, agentConfig, noteJudgeModel);
+          } else if ((savedReport as any).failureStage === 'agent') {
+            // The agent request failed (timeout / connection / non-2xx /
+            // empty response): the report is already final with the real
+            // cause. Log it at the runner level so the run log names the
+            // stage, and never judge.
+            console.warn(`[EvaluationRunner] [${testCaseId}] Agent request failed — not judged: ${(savedReport as any).error ?? savedReport.traceError}`);
           } else {
             noteJudgeModel((savedReport as any).judgeModel ?? (report as any).judgeModel);
           }
@@ -1117,6 +1130,7 @@ async function waitForTracesAndJudge(
             await storage.runs.update(report.id, buildEvaluatorErrorPatch(
               'judge_failed',
               error,
+              { judgeError: judgeErrorDetailFrom(error) },
             ) as any).catch(() => {});
             resolve(null); // Don't fail the whole run, just mark metrics as error
           }
