@@ -18,6 +18,7 @@ import { Select, SelectContent, SelectGroup, SelectItem, SelectLabel, SelectTrig
 import { TestCase, TrajectoryStep, Evaluator } from '@/types';
 import { DEFAULT_CONFIG, getPreferredDefaultAgentKey } from '@/lib/constants';
 import { PREFS_KEYS } from '@/lib/preferences';
+import { testCaseRunPath } from '@/lib/legacyRouteRedirects';
 import { ENV_CONFIG } from '@/lib/config';
 import { parseLabels } from '@/lib/labels';
 import { runServerEvaluation, ServerEvaluationReport } from '@/services/client/evaluationApi';
@@ -741,7 +742,11 @@ export const QuickRunModal: React.FC<QuickRunModalProps> = ({
                   onClick={() => {
                     if (reportId) {
                       onClose();
-                      navigate(`/runs/${reportId}`);
+                      // Stored test case → its evals3 detail page with this
+                      // run preselected; otherwise let the report-id
+                      // resolver route (`/runs/:reportId`) work out where
+                      // the report lives.
+                      navigate(testCase ? testCaseRunPath(testCase.id, reportId) : `/runs/${encodeURIComponent(reportId)}`);
                     }
                   }}
                   className="gap-1.5"
