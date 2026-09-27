@@ -172,8 +172,6 @@ test.describe('Run actions menu — Delete / Cancel / Retry judgement', () => {
     await expect(retryItem).toBeVisible({ timeout: 10000 });
     await expect(retryItem).toBeEnabled({ timeout: 10000 });
     await retryItem.click();
-    // The inspector confirms before re-judging.
-    await page.locator('[data-testid="retry-judgement-confirm-btn"]').click();
 
     // The kebab item opens the SAME picker dialog as the inspector (one
     // pipeline everywhere, not a fire-and-forget POST from the menu).

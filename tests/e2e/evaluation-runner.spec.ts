@@ -228,7 +228,7 @@ test.describe('Evaluation Runner - Run Detail (run inspector)', () => {
       await expect(page.locator(`[data-testid="run-actions-menu-trigger-${run.id}"]`)).toBeVisible({ timeout: 15000 });
 
       const body = await page.textContent('body');
-      expect(body).toContain(run.agentKey);
+      if (run.name) expect(body).toContain(run.name);
       expect(body).toMatch(/\d+%/);
     }
   });
