@@ -161,4 +161,49 @@ test.describe('Evaluation Runs list — rename pencil for dual-written benchmark
     // the benchmark-embedded and first-class copies into a single row.
     await expect(page.getByTestId('run-row')).toHaveCount(1);
   });
+
+  // Owner report (2026-09-27): "I tried renaming on the evaluation runs page;
+  // it did show on the page, but a refresh doesn't show the new name." The
+  // PATCH only rewrote the first-class doc, and the embedded benchmark.runs[]
+  // projection -- what the benchmark Runs tab renders -- kept the old name
+  // forever. The rename is now written through to the projection server-side
+  // AND the Runs tab overlays the canonical doc, so every surface that shows
+  // this run must agree after a hard reload.
+  test('a rename survives a hard reload on the runs list, the run header, and the benchmark Runs tab', async ({ page }) => {
+    test.skip(!benchmarkId || !runId, 'Could not seed dual-written run (storage not configured?)');
+
+    await page.goto('/evaluations/runs');
+    await page.getByPlaceholder('Search runs...').fill(runId!);
+    const editBtn = page.getByTestId(`run-row-rename-${runId}-edit-btn`);
+    await expect(editBtn).toBeVisible({ timeout: 30_000 });
+
+    const newName = uniqueTestName('dualwrite-reload-after');
+    await editBtn.click();
+    const input = page.getByTestId(`run-row-rename-${runId}-input`);
+    await input.fill(newName);
+    await input.press('Enter');
+    await expect(page.getByTestId(`run-row-rename-${runId}-text`)).toHaveText(newName, { timeout: 20_000 });
+
+    // 1. Runs list, fresh fetch after a hard reload.
+    await page.reload();
+    await page.getByPlaceholder('Search runs...').fill(runId!);
+    await expect(page.getByTestId(`run-row-rename-${runId}-text`)).toHaveText(newName, { timeout: 30_000 });
+
+    // 2. Run header (benchmark-scoped inspector route -- the one the Runs tab
+    //    links to), fresh load.
+    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs/${runId}/inspect`);
+    await expect(page.getByTestId('run-inspector-rename-text')).toHaveText(newName, { timeout: 30_000 });
+
+    // 3. Benchmark Runs tab -- the surface that reproduced the report: it
+    //    renders benchmark.runs[] and showed the OLD name here after reload.
+    await page.goto(`/evaluations/benchmarks/${benchmarkId}/runs`);
+    const runLink = page.getByTestId('run-name-link').filter({ hasText: newName });
+    await expect(runLink).toHaveCount(1, { timeout: 30_000 });
+    await expect(page.getByTestId('run-name-link')).toHaveCount(1);
+
+    // And the stored projection itself carries the rename (server write-through).
+    const bm = await (await page.request.get(`/api/storage/benchmarks/${benchmarkId}`)).json();
+    const embedded = (bm.runs || []).find((r: { id: string }) => r.id === runId);
+    expect(embedded?.name).toBe(newName);
+  });
 });

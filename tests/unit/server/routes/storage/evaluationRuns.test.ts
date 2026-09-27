@@ -21,6 +21,7 @@ const mockBenchmarksDeleteRun = jest.fn();
 const mockBenchmarksGetById = jest.fn();
 const mockBenchmarksUpdate = jest.fn();
 const mockBenchmarksAddRun = jest.fn();
+const mockBenchmarksUpdateRun = jest.fn();
 const mockEvaluationRunsMergeMissingResults = jest.fn();
 
 jest.mock('@/server/adapters/index', () => ({
@@ -38,6 +39,7 @@ jest.mock('@/server/adapters/index', () => ({
       getById: (...args: any[]) => mockBenchmarksGetById(...args),
       update: (...args: any[]) => mockBenchmarksUpdate(...args),
       addRun: (...args: any[]) => mockBenchmarksAddRun(...args),
+      updateRun: (...args: any[]) => mockBenchmarksUpdateRun(...args),
       deleteRun: (...args: any[]) => mockBenchmarksDeleteRun(...args),
     },
   }),
@@ -909,6 +911,93 @@ describe('Evaluation Runs API', () => {
 
       expect(res.status).toBe(200);
       expect(mockEvaluationRunsUpdate).toHaveBeenCalledWith('run-1', { name: 'New name' });
+    });
+
+    // #465 owner report: "it did show on the page, but a refresh doesn't show
+    // the new name" — a benchmark-scoped run is dual-written (#399) and the
+    // embedded benchmark.runs[] projection is what the benchmark Runs tab
+    // renders, so the rename must be mirrored onto it.
+    describe('dual-write sync of the embedded benchmark.runs[] projection', () => {
+      it('mirrors a rename onto the embedded projection of the run\'s benchmark (name only)', async () => {
+        mockEvaluationRunsGetById.mockResolvedValue({ id: 'run-1', benchmarkId: 'bench-1', status: 'completed' });
+        mockEvaluationRunsUpdate.mockResolvedValue({ id: 'run-1', name: 'New name' });
+        mockBenchmarksUpdateRun.mockResolvedValue(true);
+
+        const res = await request(app).patch('/api/storage/evaluation-runs/run-1').send({ name: '  New name  ' });
+
+        expect(res.status).toBe(200);
+        expect(mockEvaluationRunsUpdate).toHaveBeenCalledWith('run-1', { name: 'New name' });
+        expect(mockBenchmarksUpdateRun).toHaveBeenCalledTimes(1);
+        expect(mockBenchmarksUpdateRun).toHaveBeenCalledWith('bench-1', 'run-1', { name: 'New name' });
+      });
+
+      it('resolves the benchmark from sources[] when the doc has no top-level benchmarkId', async () => {
+        mockEvaluationRunsGetById.mockResolvedValue({
+          id: 'run-1', sources: [{ type: 'test-case-ids', ids: ['tc'] }, { type: 'benchmark', benchmarkId: 'bench-src' }],
+        });
+        mockEvaluationRunsUpdate.mockResolvedValue({ id: 'run-1', name: 'x' });
+        mockBenchmarksUpdateRun.mockResolvedValue(true);
+
+        await request(app).patch('/api/storage/evaluation-runs/run-1').send({ name: 'x' });
+
+        expect(mockBenchmarksUpdateRun).toHaveBeenCalledWith('bench-src', 'run-1', { name: 'x' });
+      });
+
+      it('mirrors description too, but never fields the projection does not display (benchmarkId)', async () => {
+        mockEvaluationRunsGetById.mockResolvedValue({ id: 'run-1', benchmarkId: 'bench-1' });
+        mockEvaluationRunsUpdate.mockResolvedValue({ id: 'run-1' });
+        mockBenchmarksUpdateRun.mockResolvedValue(true);
+
+        await request(app).patch('/api/storage/evaluation-runs/run-1').send({ description: 'd', benchmarkId: 'bench-2' });
+
+        expect(mockEvaluationRunsUpdate).toHaveBeenCalledWith('run-1', { description: 'd', benchmarkId: 'bench-2' });
+        expect(mockBenchmarksUpdateRun).toHaveBeenCalledWith('bench-1', 'run-1', { description: 'd' });
+      });
+
+      it('does not touch any benchmark for an ad-hoc run (no benchmarkId, no benchmark source)', async () => {
+        mockEvaluationRunsGetById.mockResolvedValue({ id: 'run-1', sources: [{ type: 'test-case-ids', ids: ['tc'] }] });
+        mockEvaluationRunsUpdate.mockResolvedValue({ id: 'run-1', name: 'x' });
+
+        const res = await request(app).patch('/api/storage/evaluation-runs/run-1').send({ name: 'x' });
+
+        expect(res.status).toBe(200);
+        expect(mockBenchmarksUpdateRun).not.toHaveBeenCalled();
+      });
+
+      it('a rejected (400) rename touches neither copy', async () => {
+        mockEvaluationRunsGetById.mockResolvedValue({ id: 'run-1', benchmarkId: 'bench-1' });
+
+        const res = await request(app).patch('/api/storage/evaluation-runs/run-1').send({ name: '   ' });
+
+        expect(res.status).toBe(400);
+        expect(mockEvaluationRunsUpdate).not.toHaveBeenCalled();
+        expect(mockBenchmarksUpdateRun).not.toHaveBeenCalled();
+      });
+
+      it('projection sync is best-effort: a failure there still returns the renamed doc with 200', async () => {
+        mockEvaluationRunsGetById.mockResolvedValue({ id: 'run-1', benchmarkId: 'bench-1' });
+        mockEvaluationRunsUpdate.mockResolvedValue({ id: 'run-1', name: 'New name' });
+        mockBenchmarksUpdateRun.mockRejectedValue(new Error('painless blew up'));
+        const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+
+        const res = await request(app).patch('/api/storage/evaluation-runs/run-1').send({ name: 'New name' });
+
+        expect(res.status).toBe(200);
+        expect(res.body).toEqual({ id: 'run-1', name: 'New name' });
+        expect(warn).toHaveBeenCalledWith(expect.stringContaining('failed to sync the embedded projection in benchmark bench-1'));
+        warn.mockRestore();
+      });
+
+      it('a run not (yet) embedded in its benchmark is a harmless no-op (updateRun → false), still 200', async () => {
+        mockEvaluationRunsGetById.mockResolvedValue({ id: 'run-1', benchmarkId: 'bench-1', status: 'running' });
+        mockEvaluationRunsUpdate.mockResolvedValue({ id: 'run-1', name: 'New name' });
+        mockBenchmarksUpdateRun.mockResolvedValue(false);
+
+        const res = await request(app).patch('/api/storage/evaluation-runs/run-1').send({ name: 'New name' });
+
+        expect(res.status).toBe(200);
+        expect(res.body.name).toBe('New name');
+      });
     });
 
     it('maps a meta.statusCode 404 error to a 404 response', async () => {

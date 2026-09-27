@@ -229,6 +229,25 @@ describe('BenchmarkRunsPage2 — associated (non-embedded) eval-runs merge (bug 
     expect(screen.getAllByText('Migrated Run')).toHaveLength(1);
   });
 
+  // Owner report (#465, 2026-09-27): "I tried renaming ... it did show on the
+  // page, but a refresh doesn't show the new name." The embedded
+  // benchmark.runs[] projection is a write-once snapshot; the first-class doc
+  // carries the rename. This tab must render the canonical doc's fields for a
+  // dual-written id.
+  it('a dual-written row renders the first-class doc\'s (renamed) name, not the stale embedded projection\'s', async () => {
+    const embedded = makeEmbeddedRun({ id: 'eval-run-dual', name: 'Run 3' });
+    mockGetById.mockResolvedValue(makeBenchmark({ runs: [embedded] }));
+    mockListEvaluationRuns.mockResolvedValue({
+      evaluationRuns: [makeAssociatedEvalRun({ id: 'eval-run-dual', name: 'Renamed after the fact', status: 'completed', createdAt: embedded.createdAt })],
+    });
+    await renderPage();
+
+    await waitFor(() => expect(screen.getByText('Renamed after the fact')).toBeTruthy());
+    expect(screen.queryByText('Run 3')).toBeNull();
+    // Still exactly one row for that id.
+    expect(screen.getAllByText('Renamed after the fact')).toHaveLength(1);
+  });
+
   // Owner report (2026-09-08): "Delete button should be present for all runs
   // on the benchmark details page." Merged-in (non-embedded) rows used to get
   // no Delete/Cancel at all because the row actions only knew the

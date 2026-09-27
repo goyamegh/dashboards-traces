@@ -516,29 +516,53 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
   async updateRun(benchmarkId: string, runId: string, updates: Partial<BenchmarkRun>): Promise<boolean> {
     assertNotMigrating(this.index);
     try {
-      await this.client.update({
+      const response = await this.client.update({
         index: this.index,
         id: benchmarkId,
         retry_on_conflict: 3,
         body: {
           script: {
+            // Null-safe on `runs` (a benchmark PUT/created without any runs
+            // has none yet) and `ctx.op = 'noop'` when the run id is not
+            // embedded, so the response's `result` tells "patched" apart from
+            // "not in runs[]" — same contract as deleteRun below and as the
+            // file adapter, which returns false when the run is absent. The
+            // rename write-through in the evaluation-runs PATCH route relies
+            // on this being a harmless no-op for runs that are not (yet)
+            // linked into their benchmark.
             source: `
-              for (int i = 0; i < ctx._source.runs.size(); i++) {
-                if (ctx._source.runs[i].id == params.runId) {
-                  for (def entry : params.updates.entrySet()) {
-                    ctx._source.runs[i][entry.getKey()] = entry.getValue();
+              boolean matched = false;
+              if (ctx._source.runs != null) {
+                for (int i = 0; i < ctx._source.runs.size(); i++) {
+                  if (ctx._source.runs[i].id == params.runId) {
+                    for (def entry : params.updates.entrySet()) {
+                      ctx._source.runs[i][entry.getKey()] = entry.getValue();
+                    }
+                    matched = true;
+                    break;
                   }
-                  break;
                 }
               }
-              ctx._source.updatedAt = params.now;
+              if (matched) {
+                ctx._source.updatedAt = params.now;
+              } else {
+                ctx.op = 'noop';
+              }
             `,
             params: { runId, updates, now: new Date().toISOString() },
           },
         },
         refresh: 'wait_for',
       });
-      return true;
+      const result =
+        (response?.body as { result?: string } | undefined)?.result ??
+        (response as unknown as { result?: string } | undefined)?.result;
+      // `noop` = benchmark exists but the run is not embedded in runs[].
+      // Anything else (`updated`, or an older mock/client shape with no
+      // `result` at all) keeps the historical "applied" answer — unlike
+      // deleteRun, a false positive here cannot resurrect data, so failing
+      // open on an unknown shape is the compatible choice.
+      return result !== 'noop';
     } catch (error: any) {
       if (error.meta?.statusCode === 404) return false;
       throw error;

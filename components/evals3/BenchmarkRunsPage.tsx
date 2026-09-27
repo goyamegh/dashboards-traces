@@ -299,11 +299,24 @@ export const BenchmarkRunsPage2: React.FC = () => {
     // double-counted). EvaluationRun is shape-compatible with BenchmarkRun for
     // every field this page reads (id, status, results, testCaseSnapshots,
     // createdAt, agentKey, modelId) — same convergence as EvalRunsPage.tsx.
-    const embeddedIds = new Set((benchmark?.runs || []).map(r => r.id));
+    //
+    // For a DUAL-WRITTEN id (embedded projection AND a first-class doc) the
+    // first-class doc is the source of truth for what this tab displays
+    // (#465 owner report: a run renamed via PATCH came back with its old name
+    // on reload here, because the embedded projection was a write-once
+    // snapshot). Overlay the canonical doc on top of the embedded copy so
+    // name/results/stats are always the live ones while embedded-only keys
+    // survive — same rule EvalRunsPage.tsx applies to its benchmark loop.
+    const canonicalById = new Map(associatedEvalRuns.map(er => [er.id, er] as const));
+    const embedded = (benchmark?.runs || []).map(run => {
+      const canonical = canonicalById.get(run.id);
+      return canonical ? ({ ...run, ...(canonical as unknown as BenchmarkRun) }) : run;
+    });
+    const embeddedIds = new Set(embedded.map(r => r.id));
     const extra = associatedEvalRuns
       .filter(er => !embeddedIds.has(er.id))
       .map(er => er as unknown as BenchmarkRun);
-    return [...(benchmark?.runs || []), ...extra];
+    return [...embedded, ...extra];
   }, [benchmark?.runs, associatedEvalRuns]);
 
   const filteredRuns = useMemo(
@@ -311,9 +324,12 @@ export const BenchmarkRunsPage2: React.FC = () => {
     [allMergedRuns, runVersionFilter]
   );
 
+  // Cases tab: the five most recent completed runs (heat-strip columns). Read
+  // from the canonical-overlaid merge so a renamed run shows its live name
+  // here too, not the write-once embedded snapshot's.
   const recentCompletedRuns = useMemo(
-    () => getRecentCompletedRuns(benchmark?.runs || [], 5),
-    [benchmark?.runs],
+    () => getRecentCompletedRuns(allMergedRuns, 5),
+    [allMergedRuns],
   );
 
   // Cases need only five runs, while the Runs tab needs every currently loaded
