@@ -32,10 +32,14 @@
  *                            `resultsTool` (default: `return_results` /
  *                            `final_results` / `submit_results` / `results`),
  *                            or — regardless of name — whose payload carries
- *                            an ordered id list under a "returned" key
- *                            (`results`, `result_ids`, `hit_ids`,
- *                            `returned_ids`, `recommended_ids`; the trace
- *                            convention for retrieved-vs-returned ids).
+ *                            an ordered id list under an EXPLICITLY-returned
+ *                            key (`returned_ids`, `recommended_ids`,
+ *                            `result_ids`; the trace convention for
+ *                            retrieved-vs-returned ids). Plain `results` /
+ *                            `hits` are NOT enough on an arbitrary tool: a
+ *                            search tool's `results[]` is what it RETRIEVED
+ *                            (codex_review) — those are read only from a
+ *                            name-matched results tool.
  *   4. `tool-hits`         — the evaluator's configured tool hits
  *                            (`prediction/toolHitsOrdered.ts`: every tool
  *                            result's `hitsPaths`, most recent first, cited
@@ -88,11 +92,11 @@ export const RETURNED_SOURCES: ReadonlyArray<CandidateSource> = ['report.output'
 /** Default tool-name pattern for the results tool (source 3); evaluator `inputs.prediction.resultsTool` overrides. */
 export const DEFAULT_RESULTS_TOOL_PATTERN = '^(return|final|submit|commit)_?results?$|^results?$';
 
-/** Payload keys that name a RETURNED id list (source 3, name-independent). */
-export const RETURNED_LIST_KEYS: ReadonlyArray<string> = ['results', 'result_ids', 'hit_ids', 'returned_ids', 'recommended_ids'];
+/** Payload keys that unambiguously name a RETURNED id list on ANY tool (source 3, name-independent). */
+export const RETURNED_LIST_KEYS: ReadonlyArray<string> = ['returned_ids', 'recommended_ids', 'result_ids'];
 
-/** Extra keys tried on a name-matched results tool (an agent's own "here is my answer" payload). */
-export const RESULTS_TOOL_LIST_KEYS: ReadonlyArray<string> = [...RETURNED_LIST_KEYS, 'records', 'items', 'ids', 'hits'];
+/** Keys tried on a NAME-matched results tool (an agent's own "here is my answer" payload). */
+export const RESULTS_TOOL_LIST_KEYS: ReadonlyArray<string> = [...RETURNED_LIST_KEYS, 'results', 'records', 'items', 'ids', 'hits'];
 
 export interface CandidateAttempt {
   source: CandidateSource;
@@ -258,7 +262,7 @@ export function extractCandidates(
   // 1. Typed output.
   const output = report?.output;
   if (output !== undefined && output !== null) {
-    const found = returnedListIn(output, [...RETURNED_LIST_KEYS, 'ids', 'items', 'records'], idField, rankField)
+    const found = returnedListIn(output, [...RETURNED_LIST_KEYS, 'results', 'ids', 'items', 'records'], idField, rankField)
       ?? (() => { const arr = findResultsArray(output, { idField, path: responseOpts.path }); return arr ? { ids: idsFromResultsArray(arr, { idField, rankField }), key: responseOpts.path ?? '(auto)' } : undefined; })();
     attempts.push({ source: 'report.output', count: found?.ids.length ?? 0, detail: found ? `report.output.${found.key}` : 'report.output (no id list recognised)' });
     if (found) claim('report.output', found.ids);

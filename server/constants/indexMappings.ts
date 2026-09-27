@@ -326,6 +326,7 @@ export function getIndexMappings(): IndexMappings {
               primaryMetrics: { type: 'keyword' },
               unevaluable: { type: 'keyword' },
               notApplicable: { type: 'keyword' },
+              implicitMetrics: { type: 'keyword' },
               extractionRule: { type: 'keyword' },
               goldIdsUsed: { type: 'keyword' },
               goldRule: { type: 'keyword' },

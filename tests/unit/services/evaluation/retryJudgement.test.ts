@@ -172,6 +172,23 @@ describe('selectRetryableCases', () => {
     expect(selectRetryableCases(run, reportsById, 'errored')).toEqual(['tc-errored']);
   });
 
+  it('scope=errored ALSO selects a case whose last retry produced no judgement (preserved verdict + lastRetryAttempt) — "Retry again" must reach it', () => {
+    const run = makeRun({
+      results: {
+        'tc-preserved': { reportId: 'r-preserved', status: 'completed', passFailStatus: 'passed' } as any,
+        'tc-passed': { reportId: 'r-passed', status: 'completed', passFailStatus: 'passed' } as any,
+        'tc-preserved-no-output': { reportId: 'r-no-output', status: 'completed', passFailStatus: 'passed' } as any,
+      },
+    });
+    const attempt = { at: '2026-01-01T00:00:00Z', evaluatorId: 'e', scope: 'all', outcome: 'not-evaluable', reason: 'x' } as any;
+    const reportsById = {
+      'r-preserved': makeReport({ id: 'r-preserved', metricsStatus: 'ready' as any, passFailStatus: 'passed', lastRetryAttempt: attempt }),
+      'r-passed': makeReport({ id: 'r-passed', metricsStatus: 'ready' as any, passFailStatus: 'passed' }),
+      'r-no-output': makeReport({ id: 'r-no-output', metricsStatus: 'ready' as any, passFailStatus: 'passed', lastRetryAttempt: attempt, trajectory: [] }),
+    };
+    expect(selectRetryableCases(run, reportsById, 'errored')).toEqual(['tc-preserved']);
+  });
+
   it('scope=all selects every completed case with rejudgeable output, regardless of current verdict', () => {
     const run = makeRun({
       results: {

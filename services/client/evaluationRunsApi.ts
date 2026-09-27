@@ -462,7 +462,8 @@ export async function getRetryJudgementStatus(id: string): Promise<RetryJudgemen
   const response = await fetch(`/api/storage/evaluation-runs/${id}/retry-judgement/status`);
   if (!response.ok) {
     const err = await response.json().catch(() => ({ error: response.statusText }));
-    throw new Error(err.error || 'Failed to fetch retry-judgement status');
+    // `status` lets callers tell "no such job" (404) from a transient failure without parsing the message.
+    throw Object.assign(new Error(err.error || 'Failed to fetch retry-judgement status'), { status: response.status });
   }
   return response.json();
 }

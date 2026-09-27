@@ -125,7 +125,7 @@ async function poll(runId: string): Promise<void> {
     // A 404 means the server no longer knows the job (restart, or the
     // tracking entry aged out) — stop polling with an explicit error rather
     // than spinning forever; any other error is transient, keep polling.
-    if (/No retry-judgement job/i.test(error?.message ?? '')) {
+    if (error?.status === 404) {
       finish(runId, { status: 'failed', error: 'The server lost track of this retry (restarted?) — check the run for updated verdicts' });
       return;
     }

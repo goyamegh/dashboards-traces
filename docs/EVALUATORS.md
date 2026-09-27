@@ -190,7 +190,7 @@ wins, and **every attempt is recorded** with its count:
 |---|---------------------|------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|-----------|
 | 1 | `report.output`     | a typed output the connector declared (`{ results: [{ id, rank? }] }`, `{ ids: [] }`, a bare array)                                                                          | yes       |
 | 2 | `response-results`  | the final answer — JSON, fenced JSON, the single raw payload, labelled list lines (`1. id 123 — …`)                                                                           | yes       |
-| 3 | `results-tool`      | the LAST tool result whose tool name matches `inputs.prediction.resultsTool` (default `return_results` / `final_results` / `submit_results` / `results`), or — any name — whose payload carries an ordered id list under `results` / `result_ids` / `hit_ids` / `returned_ids` / `recommended_ids` | yes       |
+| 3 | `results-tool`      | the LAST tool result whose tool name matches `inputs.prediction.resultsTool` (default `return_results` / `final_results` / `submit_results` / `results`; reads `results` / `records` / `items` / `ids` / `hits`), or — any name — whose payload carries an ordered id list under an explicitly-returned key `returned_ids` / `recommended_ids` / `result_ids` (a search tool's plain `results[]` is what it *retrieved* and stays a tool-hits candidate) | yes       |
 | 4 | `tool-hits`         | the configured tool hits (`hitsPaths` of every tool result, most recent first, cited ids first) — everything the agent **retrieved**                                          | no        |
 | 5 | `generic-scan`      | last resort, flagged `weak`: every `idFields` value anywhere in every tool result payload                                                                                     | no        |
 
@@ -204,9 +204,12 @@ past the prefix.
 **Gold lines** may carry the human-readable names after the ids —
 `Gold product id(s): 290226, 116770 (First Wrap; Second Wrap)` → ids `290226`,
 `116770` (parenthesised text is dropped before splitting). An
-`expectedOutcomes` line that *starts* with `NONE` / `No gold` (and no line
-matches the gold pattern) declares gold **explicitly empty** — an abstain case
-(`goldRule: expected-outcomes-none`).
+`expectedOutcomes` line that *is* `NONE` / `No gold` — the whole line, or
+followed only by punctuation / a dash (`NONE — the anchor has no edges…`) —
+declares gold **explicitly empty** when no line matches the gold pattern: an
+abstain case (`goldRule: expected-outcomes-none`). Prose that merely begins
+with the word (`None of the distractors should be returned`) is not a
+declaration.
 
 **Diagnostics.** Every deterministic result carries
 `scoringSnapshot.diagnostics = { gold: { source, ids, explicitlyEmpty },

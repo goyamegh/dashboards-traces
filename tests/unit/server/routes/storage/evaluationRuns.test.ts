@@ -672,6 +672,17 @@ describe('Evaluation Runs API', () => {
         expect(mockRetryJudgementForRun).not.toHaveBeenCalled();
       });
 
+      it("400s scope 'errored' when the RUN's own evaluator is deterministic and no evaluatorId is sent (fails the request, not the job — matches the pre-flight)", async () => {
+        mockEvaluationRunsGetById.mockResolvedValue({ ...terminalRun('run-own-det'), evaluatorId: 'eval-stored' });
+        const res = await request(app).post('/api/storage/evaluation-runs/run-own-det/retry-judgement').send({ scope: 'errored' });
+        expect(res.status).toBe(400);
+        expect(res.body.error).toMatch(/use scope 'all'/);
+        expect(mockRetryJudgementForRun).not.toHaveBeenCalled();
+        // scope 'all' is fine.
+        mockRetryJudgementForRun.mockResolvedValueOnce(summary);
+        expect((await request(app).post('/api/storage/evaluation-runs/run-own-det/retry-judgement').send({ scope: 'all' })).status).toBe(202);
+      });
+
       it('400s an invalid scope, an empty evaluatorId and an unknown evaluatorId — nothing is started', async () => {
         mockEvaluationRunsGetById.mockResolvedValue(terminalRun('run-body-3'));
         const bad = await request(app).post('/api/storage/evaluation-runs/run-body-3/retry-judgement').send({ scope: 'some' });

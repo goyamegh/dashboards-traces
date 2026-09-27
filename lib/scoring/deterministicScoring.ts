@@ -318,6 +318,7 @@ export function scoreDeterministic(
     },
     unevaluable,
     ...(notApplicable.length > 0 ? { notApplicable } : {}),
+    ...(implicitAbstainValue !== null ? { implicitMetrics: [IMPLICIT_ABSTAIN_METRIC] } : {}),
     diagnostics,
   };
 

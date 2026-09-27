@@ -106,16 +106,23 @@ function parseJsonLenient(text: string): unknown {
   } catch {
     /* fall through */
   }
-  const candidates: string[] = [];
-  const arrow = text.indexOf(' -> ');
-  if (arrow >= 0) candidates.push(text.slice(arrow + 4).trim());
-  const brace = text.search(/[[{]/);
-  if (brace > 0) candidates.push(text.slice(brace).trim());
-  for (const c of candidates) {
+  // A rendered call: only the part AFTER the LAST ` -> ` is the result; never
+  // fall back to the first `{` — that would be the call's ARGUMENTS
+  // (codex_review).
+  const arrow = text.lastIndexOf(' -> ');
+  if (arrow >= 0) {
     try {
-      return JSON.parse(c);
+      return JSON.parse(text.slice(arrow + 4).trim());
     } catch {
-      /* try the next */
+      return undefined;
+    }
+  }
+  const brace = text.search(/[[{]/);
+  if (brace > 0) {
+    try {
+      return JSON.parse(text.slice(brace).trim());
+    } catch {
+      return undefined;
     }
   }
   return undefined;

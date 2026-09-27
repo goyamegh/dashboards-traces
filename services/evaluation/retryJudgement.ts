@@ -223,8 +223,13 @@ export function hasRejudgeableOutput(report: EvaluationReport | null | undefined
 /**
  * Select the test-case ids eligible for retry-judgement.
  *
- * @param scope 'errored' (default) — only judge-failed cases (see
- *              {@link isJudgeFailedCase}).
+ * @param scope 'errored' (default) — judge-failed cases (see
+ *              {@link isJudgeFailedCase}) PLUS cases whose last retry
+ *              attempt produced no judgement (`report.lastRetryAttempt`):
+ *              their previous judgement was preserved, so they are not
+ *              errored, but "retry the ones that failed" must still reach
+ *              them (codex_review) — that is what the banner's "Retry
+ *              again" does.
  *              'all' — every case with rejudgeable agent output, regardless
  *              of its current verdict.
  */
@@ -240,7 +245,7 @@ export function selectRetryableCases(
     const report = reportsById[result.reportId];
     const eligible = scope === 'all'
       ? result.status === 'completed' && hasRejudgeableOutput(report)
-      : isJudgeFailedCase(report, result);
+      : isJudgeFailedCase(report, result) || (!!report?.lastRetryAttempt && result.status === 'completed' && hasRejudgeableOutput(report));
     if (eligible) ids.push(testCaseId);
   }
   return ids;

@@ -91,15 +91,20 @@ describe('extractCandidates — source order', () => {
     expect(r.sourceTried.filter(a => a.source === 'results-tool')).toEqual([{ source: 'results-tool', count: 2, detail: "tool 'return_results' records" }]);
   });
 
-  it('3. results tool by PAYLOAD convention (results / result_ids / hit_ids / returned_ids / recommended_ids) regardless of tool name', () => {
+  it('3. results tool by PAYLOAD convention (returned_ids / recommended_ids / result_ids) regardless of tool name — but never a plain `results` / `hits` list on an arbitrary tool', () => {
     const r = extractCandidates(
       { trajectory: [hits('search', 't1'), toolResult('rank_candidates', { status: 'ok', result_ids: ['p1', 'p2'] }), response('Done.')] },
       { prediction: TOOL_HITS },
     );
     expect(r).toMatchObject({ ranked: ['p1', 'p2'], sourceUsed: 'results-tool' });
     expect(r.sourceTried.find(a => a.source === 'results-tool')).toEqual({ source: 'results-tool', count: 2, detail: "tool 'rank_candidates' result_ids" });
-    // …but a random tool's EMPTY `results: []` is not an abstention.
-    const empty = extractCandidates({ trajectory: [toolResult('lookup', { results: [] }), hits('search', 't1')] }, { prediction: TOOL_HITS });
+    // A search tool's `results[]` is what it RETRIEVED, not a returned ranking (codex_review):
+    // it stays a tool-hits candidate (retrieved), never a RETURNED source.
+    const search = extractCandidates({ trajectory: [toolResult('search_catalog', { results: [{ id: 'a' }, { id: 'b' }] }), response('Nothing final.')] }, { prediction: TOOL_HITS });
+    expect(search).toMatchObject({ ranked: ['a', 'b'], sourceUsed: 'tool-hits', returned: false });
+    expect(search.sourceTried.some(a => a.source === 'results-tool')).toBe(false);
+    // …and a random tool's EMPTY `result_ids: []` is not an abstention.
+    const empty = extractCandidates({ trajectory: [toolResult('lookup', { result_ids: [] }), hits('search', 't1')] }, { prediction: TOOL_HITS });
     expect(empty.sourceUsed).toBe('tool-hits');
   });
 
@@ -172,11 +177,13 @@ describe('extractCandidates — anchor filter AFTER extraction', () => {
 });
 
 describe('parseToolResultContent — lenient', () => {
-  it('parses a rendered `tool(args) -> [{text}]` string past its prefix', () => {
+  it('parses a rendered `tool(args) -> [{text}]` string past its prefix — and never falls back to the ARGUMENTS when the result part does not parse', () => {
     const payload = { hits: [{ id: '1' }] };
     const rendered = `search({"q":"x"}) -> ${JSON.stringify([{ text: JSON.stringify(payload) }])}`;
     expect(parseToolResultContent(rendered)).toEqual(payload);
     expect(parseToolResultContent(`prefix text ${JSON.stringify(payload)}`)).toEqual(payload);
+    // codex_review: the first `{` in a rendering is the call's args — an unparseable result must be undefined, not the args.
+    expect(parseToolResultContent('search({"ids":["42"]}) -> <truncated>')).toBeUndefined();
     expect(parseToolResultContent('no json here')).toBeUndefined();
     expect(parseToolResultContent('')).toBeUndefined();
   });

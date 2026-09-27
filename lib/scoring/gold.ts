@@ -25,9 +25,13 @@
  *      {@link GOLD_EMPTY_TOKENS} (`none`, `n/a`, `-`) means "explicitly no
  *      gold".
  *   3. Under the same source, when NO line matches the pattern but a line
- *      STARTS with an explicit no-gold marker (`NONE`, `No gold`, `no gold
- *      ids`, …; {@link GOLD_NONE_LINE_RE}) → explicitly no gold: the right
- *      answer is "nothing" — an ABSTAIN case, never "gold not declared".
+ *      IS an explicit no-gold marker — `NONE` / `No gold` / `No gold ids` as
+ *      the whole line or followed only by punctuation / a dash
+ *      ({@link GOLD_NONE_LINE_RE}: `NONE — the anchor has no edges…`,
+ *      `No gold: abstain expected`) → explicitly no gold: the right answer
+ *      is "nothing" — an ABSTAIN case, never "gold not declared". Prose that
+ *      merely begins with the word (`None of the distractors should be
+ *      returned`, `No gold standard exists for …`) is NOT a declaration.
  *      (Owner incident: `NONE — the anchor has no … edges` was reported as
  *      "no gold ids on the test case" and the case marked not evaluable.)
  *   4. When the evaluator declares `gold.source: 'testCase.expected.ids'`
@@ -57,8 +61,12 @@ export interface ResolvedGold {
 /** Captured gold values (case-insensitive, trimmed) that mean "explicitly no gold". */
 export const GOLD_EMPTY_TOKENS: ReadonlyArray<string> = ['none', 'n/a', '-', '—', '[]', 'null'];
 
-/** An `expectedOutcomes` line that, on its own, declares "the right answer is nothing". */
-export const GOLD_NONE_LINE_RE = /^\s*(?:none|no gold(?:\s+ids?)?|no expected ids?|nothing)\b/i;
+/**
+ * An `expectedOutcomes` line that, on its own, declares "the right answer is
+ * nothing": the marker must be the whole line or be followed by punctuation
+ * / a dash — never by another word (`None of the …` is prose).
+ */
+export const GOLD_NONE_LINE_RE = /^\s*(?:none|no gold(?:\s+ids?)?)\s*(?:$|[—–\-:;.,(])/i;
 
 /** Drop every `(…)` group — gold lines carry the human names after the ids. */
 export function stripParenthesised(text: string): string {

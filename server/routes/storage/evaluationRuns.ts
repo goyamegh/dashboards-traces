@@ -700,6 +700,16 @@ router.post('/api/storage/evaluation-runs/:id/retry-judgement', async (req: Requ
         return res.status(400).json({ error: DETERMINISTIC_SCOPE_ERROR });
       }
       overrides.evaluatorId = evaluatorId;
+    } else if (scope !== 'all' && run.evaluatorId) {
+      // Same rule for the run's OWN evaluator — fail the request, not the job
+      // (codex_review: the pre-flight forces scope 'all' for a deterministic
+      // evaluator; the POST must agree up front).
+      const own = isSystemEvaluatorId(run.evaluatorId)
+        ? getSystemEvaluatorById(run.evaluatorId)
+        : await storage.evaluators.getById(run.evaluatorId).catch(() => null);
+      if (own && isDeterministicEvaluator(own)) {
+        return res.status(400).json({ error: DETERMINISTIC_SCOPE_ERROR });
+      }
     }
 
     // The run must be in a TERMINAL state — retrying judgement on a run

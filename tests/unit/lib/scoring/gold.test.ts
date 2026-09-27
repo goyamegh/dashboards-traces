@@ -66,9 +66,11 @@ describe('lib/scoring/gold — resolveGold', () => {
     it.each([
       'NONE — the anchor has no related edges in either direction; the answer recommends ZERO products.',
       'None. Nothing should be returned for this query.',
+      'NONE',
       'No gold ids: the right answer is an empty list.',
       'no gold — abstain expected',
-    ])('a line starting with an explicit no-gold marker (%p) is EXPLICITLY no gold, never "not declared"', (line) => {
+      'No gold (abstain case)',
+    ])('a line that IS an explicit no-gold marker (%p) is EXPLICITLY no gold, never "not declared"', (line) => {
       expect(resolveGold({ expectedOutcomes: ['Some prose first', line] }, PATTERN)).toEqual({ ids: [], rule: 'expected-outcomes-none', lineIndex: 1 });
     });
 
@@ -76,9 +78,16 @@ describe('lib/scoring/gold — resolveGold', () => {
       expect(resolveGold({ expectedOutcomes: ['NONE for the first sub-question', 'Gold id(s): 7'] }, PATTERN)).toEqual({ ids: ['7'], rule: 'expected-outcomes-pattern', lineIndex: 1 });
     });
 
-    it('a NONE marker mid-sentence is prose, not a declaration', () => {
-      expect(resolveGold({ expectedOutcomes: ['The agent returns none of the distractors'] }, PATTERN)).toBeNull();
-      // Only the pattern source reads expectedOutcomes at all.
+    it.each([
+      'The agent returns none of the distractors',
+      'None of the distractors should be returned',
+      'No gold standard exists for this query; judge by relevance',
+      'Nothing should be returned for this query',
+    ])('prose that merely begins with the word (%p) is NOT a declaration (codex_review)', (line) => {
+      expect(resolveGold({ expectedOutcomes: [line] }, PATTERN)).toBeNull();
+    });
+
+    it('only the pattern source reads expectedOutcomes at all', () => {
       expect(resolveGold({ expectedOutcomes: ['NONE'] }, STRUCTURED)).toBeNull();
     });
 

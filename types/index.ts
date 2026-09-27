@@ -689,6 +689,14 @@ export interface ScoringSnapshot {
    * not in the mean, not a failure reason, not an error.
    */
   notApplicable?: string[];
+  /**
+   * Metrics the engine ADDED because the evaluator declared none that speaks
+   * to the case (today: `abstain` on a gold-empty case scored by a ranked-only
+   * evaluator). They appear in `weights` / `scale` / `report.metrics` like a
+   * declared metric so the snapshot reproduces the score, but they were not
+   * part of the evaluator document.
+   */
+  implicitMetrics?: string[];
 }
 
 // TestCaseRun = result of running a specific test case version (renamed from EvaluationReport)
