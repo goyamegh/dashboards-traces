@@ -18,6 +18,7 @@ import {
 } from './define.js';
 import { getAuthoringSurface } from './authoringSurface.js';
 import * as metricsExports from '../metrics/index.js';
+import { getOwnPackageName } from '../ownPackageName.js';
 
 const CODE_EXTENSIONS = ['.ts', '.js', '.mjs'];
 
@@ -245,19 +246,19 @@ export async function loadTestCasesFromModule(filePath: string): Promise<LoadRes
     // Intercept the published package name as well — fixtures generally
     // do `require('@opensearch-project/agent-health')` and Node's resolver
     // would otherwise hit the package's exports map (which only exposes
-    // 'import' for ESM consumers).
+    // 'import' for ESM consumers). Any-scope `@x/agent-health` is accepted
+    // so eval files written against a forked/renamed publish (e.g.
+    // `@myorg/agent-health`) still get the test() registrar; the own-name
+    // check covers forks renamed to something else entirely.
     const isPackageName = (id: string) =>
-      id === '@opensearch-project/agent-health' ||
-      id === '@opensearch/agent-health' ||
-      id === 'agent-health';
+      /^(@[^/]+\/)?agent-health$/.test(id) || id === getOwnPackageName();
     // `@opensearch-project/agent-health/metrics` — the typed retrieval-metric
     // registry (lib/metrics). Intercepted for the same reason as the package
-    // root, and so an eval file computes Hit@k / Recall@k / MRR with the
-    // SAME functions the deterministic evaluator engine uses.
+    // root (any scope / the fork's own package name accepted, see above), so an
+    // eval file computes ranked metrics with the SAME functions the
+    // deterministic evaluator engine uses.
     const isMetricsSubpath = (id: string) =>
-      id === '@opensearch-project/agent-health/metrics' ||
-      id === '@opensearch/agent-health/metrics' ||
-      id === 'agent-health/metrics';
+      /^(@[^/]+\/)?agent-health\/metrics$/.test(id) || id === `${getOwnPackageName()}/metrics`;
     // The object handed back when a CJS eval file requires the SDK. Single
     // source of truth shared with the package exports (see authoringSurface)
     // so `.js` and `.ts`/`.mjs` files see the SAME surface — no drift (#232).
