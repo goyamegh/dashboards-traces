@@ -61,6 +61,16 @@ interface JudgeResult {
   verdictConflict?: boolean;
   score?: number;
   scoringSnapshot?: ScoringSnapshot;
+  /**
+   * The UNDERLYING LLM that produced the verdict, as the provider resolved it
+   * (forwarded from `/api/judge`). For the agent (trace) judge this is the
+   * provider-qualified pi-registry id (the configured `judgeModelId` there is
+   * a provider, not a model). Persisted onto `TestCaseRun.judgeModel` and
+   * `LLMJudgeResponse.modelId`. Absent from older `/api/judge` responses.
+   */
+  judgeModel?: string;
+  /** Provider kind that executed the call (forwarded from `/api/judge`). */
+  judgeProvider?: string;
 }
 
 /**
@@ -224,6 +234,8 @@ export async function callBedrockJudge(
         verdictConflict: result.verdictConflict,
         score: typeof result.score === 'number' ? result.score : undefined,
         scoringSnapshot: result.scoringSnapshot,
+        judgeModel: result.judgeModel,
+        judgeProvider: result.judgeProvider,
       };
     } catch (error) {
       const isLastAttempt = attempt === maxRetries;

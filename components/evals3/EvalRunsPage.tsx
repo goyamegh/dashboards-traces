@@ -41,7 +41,8 @@ import { ENV_CONFIG } from '@/lib/config';
 import { computeRunStats, getEffectiveRunStatus } from '@/lib/runStats';
 import { sortGroupsByRecency } from '@/lib/runSort';
 import { getRunActionVisibility } from '@/lib/runActions';
-import { formatRelativeTime, getModelName, getJudgeModelLabel, getEvaluatorLabel } from '@/lib/utils';
+import { formatRelativeTime, getModelName, getEvaluatorLabel } from '@/lib/utils';
+import { JudgeModelLabel, judgeModelText } from '@/components/JudgeModelLabel';
 import { Breadcrumbs } from './Breadcrumbs';
 import { InlineRenameField } from './InlineRenameField';
 import { RunConfigDialog } from './RunConfigDialog';
@@ -139,13 +140,14 @@ interface RunRow {
 const FLAT_COLUMN_COUNT = 12;
 const GROUPED_COLUMN_COUNT = 11;
 
-function SortHeader({ label, active, dir, onClick, className }: {
-  label: string; active: boolean; dir: 'asc' | 'desc'; onClick: () => void; className?: string;
+function SortHeader({ label, active, dir, onClick, className, title }: {
+  label: string; active: boolean; dir: 'asc' | 'desc'; onClick: () => void; className?: string; title?: string;
 }) {
   return (
     <th
       className={`h-7 px-2 text-left align-middle font-medium text-xs text-muted-foreground bg-background border-b cursor-pointer select-none hover:text-foreground transition-colors whitespace-nowrap ${className || ''}`}
       onClick={onClick}
+      title={title}
     >
       <span className="inline-flex items-center gap-1">
         {label}
@@ -476,7 +478,7 @@ export const EvalRunsPage: React.FC = () => {
         case 'runId': return dir * a.run.name.localeCompare(b.run.name);
         case 'benchmark': return dir * a.benchmarkName.localeCompare(b.benchmarkName);
         case 'agent': return dir * a.agentName.localeCompare(b.agentName);
-        case 'judge': return dir * getJudgeModelLabel(a.run.judgeModelId).localeCompare(getJudgeModelLabel(b.run.judgeModelId));
+        case 'judge': return dir * judgeModelText(a.run).localeCompare(judgeModelText(b.run));
         case 'evaluator': return dir * getEvaluatorLabel(a.run.evaluatorId, evaluatorNames).localeCompare(getEvaluatorLabel(b.run.evaluatorId, evaluatorNames));
         case 'timestamp': return dir * (new Date(a.run.createdAt).getTime() - new Date(b.run.createdAt).getTime());
         case 'results': return dir * (a.total - b.total);
@@ -832,7 +834,11 @@ export const EvalRunsPage: React.FC = () => {
         <td className="px-2 py-1.5 align-middle text-right text-[11px] text-muted-foreground" data-testid="run-concurrency-cell" title="Concurrency — parallel test cases">
           {rr.run.concurrency === undefined ? '—' : rr.run.concurrency}
         </td>
-        <td className="px-2 py-1.5 align-middle text-[11px]" data-testid="run-judge-cell">{getJudgeModelLabel(rr.run.judgeModelId)}</td>
+        <td className="px-2 py-1.5 align-middle text-[11px] max-w-[220px]" data-testid="run-judge-cell">
+          {/* Judge kind · underlying LLM (falls back to the configured id for
+              old runs; agentic judges without a recorded model say so). */}
+          <JudgeModelLabel run={rr.run} />
+        </td>
         <td className="px-2 py-1.5 align-middle text-[11px]" data-testid="run-evaluator-cell">
           {rr.run.evaluatorId ? (
             <button
@@ -1227,7 +1233,7 @@ export const EvalRunsPage: React.FC = () => {
               >
                 Conc.
               </th>
-              <SortHeader label="Judge" active={sort.field === 'judge'} dir={sort.dir} onClick={() => handleSort('judge')} />
+              <SortHeader label="Judge model" title="judge kind · underlying LLM" active={sort.field === 'judge'} dir={sort.dir} onClick={() => handleSort('judge')} />
               <SortHeader label="Evaluator" active={sort.field === 'evaluator'} dir={sort.dir} onClick={() => handleSort('evaluator')} />
               <SortHeader label="Timestamp" active={sort.field === 'timestamp'} dir={sort.dir} onClick={() => handleSort('timestamp')} />
               <th className="h-7 px-2 text-center align-middle font-medium text-xs text-muted-foreground bg-background border-b whitespace-nowrap">Annotations</th>

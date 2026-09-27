@@ -76,9 +76,11 @@ export interface FinalizeEvaluationRunInput {
    * reason, see lib/judgeFailureSummary.ts) is a plain top-level field the
    * runner computes and is carried through onto the doc when present;
    * `agentFailureSummary` (endpoint circuit breaker opened, see
-   * services/evaluation/agentReachability.ts) likewise.
+   * services/evaluation/agentReachability.ts) likewise; `judgeModel` (the
+   * underlying judge LLM, first resolved report wins — see
+   * lib/judgeIdentity.ts) likewise.
    */
-  completedRun: Pick<EvaluationRun, 'results' | 'testCaseSnapshots'> & Partial<Pick<EvaluationRun, 'judgeFailureSummary' | 'agentFailureSummary'>>;
+  completedRun: Pick<EvaluationRun, 'results' | 'testCaseSnapshots'> & Partial<Pick<EvaluationRun, 'judgeFailureSummary' | 'agentFailureSummary' | 'judgeModel'>>;
   completedAt?: string;
 }
 
@@ -129,6 +131,7 @@ export async function finalizeEvaluationRun(
     completedAt,
     ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
     ...(completedRun.agentFailureSummary ? { agentFailureSummary: completedRun.agentFailureSummary } : {}),
+    ...(completedRun.judgeModel ? { judgeModel: completedRun.judgeModel } : {}),
   });
   return { run, stats, cancelledMarkers };
 }

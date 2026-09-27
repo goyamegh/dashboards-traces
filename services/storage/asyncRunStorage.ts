@@ -122,6 +122,8 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     // mapping, browser-side trace-recovery judging silently fell back to the
     // agent's modelId even when a distinct judge model was configured.
     judgeModelId: stored.judgeModelId,
+    // Underlying LLM that judged (lib/judgeIdentity) -- optional, old docs lack it.
+    judgeModel: stored.judgeModel,
     status: stored.status,
     passFailStatus: stored.passFailStatus as 'passed' | 'failed' | undefined,
     evaluatorId: stored.evaluatorId,
@@ -263,6 +265,7 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
   // so this is a plain typed assignment now — no `as any` needed.
   if (report.evaluatorId !== undefined) base.evaluatorId = report.evaluatorId;
   if (report.judgeModelId !== undefined) base.judgeModelId = report.judgeModelId;
+  if (report.judgeModel !== undefined) base.judgeModel = report.judgeModel;
   if (report.traceFetchAttempts !== undefined) base.traceFetchAttempts = report.traceFetchAttempts;
   if (report.lastTraceFetchAt !== undefined) base.lastTraceFetchAt = report.lastTraceFetchAt;
   if (report.traceError !== undefined) base.traceError = report.traceError;
@@ -418,7 +421,7 @@ class AsyncRunStorage {
     // still KBs per 100 reports, no trajectory/messages bloat.
     const fields = [
       'status', 'passFailStatus', 'metricsStatus', 'runId', 'traceId', 'sessionId',
-      'judgeModelId', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations', 'metrics',
+      'judgeModelId', 'judgeModel', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations', 'metrics',
       'scoringSnapshot', 'llmVerdict', 'verdictConflict', 'score',
       'connectorProtocol', 'performanceMetrics',
     ];
@@ -510,6 +513,8 @@ class AsyncRunStorage {
     if (updates.llmVerdict !== undefined) storageUpdates.llmVerdict = updates.llmVerdict;
     if (updates.verdictConflict !== undefined) storageUpdates.verdictConflict = updates.verdictConflict;
     if (updates.score !== undefined) storageUpdates.score = updates.score;
+    if (updates.judgeModel !== undefined) storageUpdates.judgeModel = updates.judgeModel;
+    if (updates.llmJudgeResponse !== undefined) storageUpdates.llmJudgeResponse = updates.llmJudgeResponse;
     if (updates.spans !== undefined) storageUpdates.spans = updates.spans;
 
     const updated = await opensearchRuns.partialUpdate(reportId, storageUpdates);
