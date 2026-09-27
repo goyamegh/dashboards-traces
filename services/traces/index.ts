@@ -9,6 +9,7 @@
 
 import { Span, TimeRange, TraceQueryParams, TraceSearchResult } from '@/types';
 import { getSpanCategory } from './spanCategorization';
+import { compareSpansByStartTime } from './spanTime';
 import { getBackendUrl } from '@/lib/portConfig';
 
 // Re-export trace grouping utilities
@@ -218,9 +219,10 @@ export function processSpansIntoTree(flatSpans: Span[]): Span[] {
     }
   });
 
-  // Sort children by startTime
+  // Sort roots and children by startTime (ties broken by spanId) — the SAME
+  // total order every row surface uses, see ./spanTime.ts.
   const sortChildren = (spans: Span[]) => {
-    spans.sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime());
+    spans.sort(compareSpansByStartTime);
     spans.forEach(span => {
       if (span.children && span.children.length > 0) {
         sortChildren(span.children);

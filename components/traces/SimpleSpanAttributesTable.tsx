@@ -21,6 +21,8 @@ import { Input } from '@/components/ui/input';
 import { Search, Copy, Check, Database } from 'lucide-react';
 import { isDbSpan } from '@/services/traces/spanCategorization';
 import { extractRetrievalIO } from '@/services/traces/retrievalSpan';
+import { formatClockTime, formatIsoTime } from '@/services/traces/spanTime';
+import RetrievedReturnedLists from './RetrievedReturnedLists';
 
 interface SimpleSpanAttributesTableProps {
   span: Span;
@@ -141,11 +143,22 @@ const SimpleSpanAttributesTable: React.FC<SimpleSpanAttributesTableProps> = ({ s
           positioned close (X) button rendered by the parent drawer so
           it doesn't visually overlap the trailing "N attributes" text. */}
       <div className="flex items-center justify-between gap-3 pl-3 pr-10 py-2 border-b bg-muted/30 text-[11px] flex-wrap">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="font-medium truncate" title={span.name}>{span.name}</span>
+        <div className="flex items-center gap-2 min-w-0 flex-wrap">
+          {/* Full span name — never truncated here: the row it was opened
+              from may have had to ellipsize a long `execute_tool <name>`,
+              and the drawer is where the reader comes for the whole thing. */}
+          <span className="font-medium break-words" title={span.name} data-testid="span-drawer-name">{span.name}</span>
           <span className="text-muted-foreground">·</span>
           <span className="font-mono text-muted-foreground" title={span.spanId}>
             {span.spanId.slice(0, 12)}…
+          </span>
+          <span className="text-muted-foreground">·</span>
+          <span
+            className="font-mono text-muted-foreground"
+            title={`Started ${formatIsoTime(span.startTime)} (local ${formatClockTime(span.startTime)})`}
+            data-testid="span-drawer-start"
+          >
+            {formatClockTime(span.startTime)}
           </span>
           <span className="text-muted-foreground">·</span>
           <span className="font-mono text-amber-700 dark:text-amber-400">
@@ -227,9 +240,14 @@ const SimpleSpanAttributesTable: React.FC<SimpleSpanAttributesTableProps> = ({ s
         </div>
       </div>
 
-      {/* Plain attributes table. Two columns: key, value. Long values wrap
-          and use a monospace font so JSON / IDs stay readable. */}
+      {/* Retrieved vs returned id lists (labelled pair) — only renders when
+          the span carries either key family. Sits above the flat table so
+          the reader sees "seen" and "returned" side by side before the raw
+          attributes, where the two lists look identical. */}
       <div className="flex-1 overflow-auto">
+        <RetrievedReturnedLists span={span} compact className="px-3 py-2 border-b bg-background" />
+        {/* Plain attributes table. Two columns: key, value. Long values wrap
+            and use a monospace font so JSON / IDs stay readable. */}
         {filtered.length === 0 ? (
           <div className="px-3 py-6 text-center text-[11px] text-muted-foreground">
             {entries.length === 0
