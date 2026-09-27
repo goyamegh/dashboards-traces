@@ -291,15 +291,20 @@ both sources stay available as explicitly labelled extractors for stored runs.
   not read as a pass; the `traceError` tells you which gate to add).
 - **No** metric produced a value (gold not declared, no candidates / no
   recognisable ranked list, or no metric applies to the case), or no gate
-  applies ⇒ *not a verdict*:
-  `metricsStatus: "error"`, `passFailStatus: null`, `traceError` tagged
-  `kind=not_evaluable` (**never** `judge_failed` — the run-level judge-failure
-  banner ignores it) and carrying the stable reason plus the diagnostics
-  one-liner, `metrics: {}`. The report renders as an amber "Not evaluable" card
-  with the diagnostics and is excluded from the pass rate; flipping it to
-  `failed` would punish the agent for a missing gold label or an unparseable
-  artifact. Retry judgement reports these as a distinct outcome
-  (`not-evaluable`, with `reason` + `diagnostics`), never as "failed".
+  applies ⇒ *not a verdict* — and, on retry judgement, **not a write to the
+  judgement either**: the report's existing verdict / scores / snapshot /
+  judge response / evaluator stamp are left byte-identical and the attempt is
+  recorded as `report.lastRetryAttempt = { at, evaluatorId, evaluatorName,
+  judgeModelId?, scope, outcome: 'not-evaluable' | 'judge-error' | 'error',
+  reason, diagnostics? }` (the run doc gets a `lastRetryAttempt` summary with
+  counts + grouped reasons). Only a SUCCESSFUL re-judgement replaces the
+  judgement — wholesale, no history — and clears the record (`null`). The
+  Judge tab shows a dismissible amber "Last re-judgement failed … · <evaluator>
+  · <reason>" banner with a Details dialog (full reason, diagnostics, "Retry
+  again"); the runs list / inspector header show a "re-judge failed" pill until
+  the next successful retry or a per-browser dismissal. Retry judgement reports
+  these as a distinct outcome (`not-evaluable`, with `reason` + `diagnostics`),
+  never as "failed" — and never demotes a previously judged case to errored.
 - `report.scoringSnapshot` — `evaluatorId`, `evaluatorVersion`, `evaluatorName`,
   `contentHash` (sha256 over `{metrics, passPolicy, inputs}` as used), `weights`,
   `scale`, `passPolicy`, `primaryMetrics` (names with `primary: true`),

@@ -66,7 +66,7 @@ async function seed(request: APIRequestContext, testData: TestDataTracker): Prom
       // Left "not evaluable" by an earlier mis-scoring — the shape the owner hit; it is also what
       // enables the kebab's Retry judgement item on this branch (judge-failed cases > 0).
       status: 'completed', metricsStatus: 'error', passFailStatus: null, trajectory, ...(rawEvents ? { rawEvents } : {}),
-      traceError: 'Not evaluable (kind=not_evaluable): earlier evaluator: no candidate ids found', metrics: {}, llmJudgeReasoning: '**Not evaluable by this evaluator.**',
+      traceError: 'Judge evaluation failed (kind=judge_failed): earlier judge 400', metrics: {}, llmJudgeReasoning: '**Evaluator could not run.**',
     });
     if (!rep) return null;
     testData.run(rep.id);

@@ -714,7 +714,7 @@ export const EvalRunsPage: React.FC = () => {
             ) : (
               <span className="text-xs font-medium">{rr.run.name}</span>
             )}
-            {rr.kind === 'eval-run' && <RetryJudgementJobPill runId={rr.run.id} runName={rr.run.name} />}
+            {rr.kind === 'eval-run' && <RetryJudgementJobPill runId={rr.run.id} runName={rr.run.name} lastRetryAttempt={(rr.run as EvaluationRun).lastRetryAttempt} />}
             {rr.status === 'running' && !(rr.run as { cancelRequestedAt?: string }).cancelRequestedAt && (
               <span
                 data-testid="run-row-status-running"

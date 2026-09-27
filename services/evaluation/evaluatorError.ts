@@ -29,7 +29,6 @@
 
 export type EvaluatorErrorKind =
   | 'judge_failed'         // Judge call itself threw (e.g. Bedrock validation, network)
-  | 'not_evaluable'        // Deterministic evaluator's gold/extraction rules don't apply to this case (not a failure, not a judge error)
   | 'agent_failed'         // Agent never produced a result (subprocess timeout / crash)
   | 'trace_timeout'        // Trace polling exceeded max attempts with no spans
   | 'trace_incomplete'     // Spans arrived but never converged (no root span)
@@ -58,7 +57,6 @@ export interface EvaluatorErrorPatch {
 
 const KIND_LABEL: Record<EvaluatorErrorKind, string> = {
   judge_failed: 'Judge evaluation failed',
-  not_evaluable: 'Not evaluable',
   agent_failed: 'Agent run did not complete',
   trace_timeout: 'Traces never arrived',
   trace_incomplete: 'Trace did not converge',
@@ -89,11 +87,6 @@ export function buildEvaluatorErrorPatch(
   // produced a trajectory (timeout/crash). Use prose that says so, instead of
   // the misleading "the evaluator failed" wording, so the Judge tab is honest.
   const isAgent = kind === 'agent_failed';
-  // `not_evaluable` is not a failure of anything: the agent completed and the
-  // (deterministic) evaluator ran, but its gold / extraction rules do not
-  // apply to this case — no gold ids on the test case, no candidate ids in
-  // the stored tool results, … Say so plainly; never "the evaluator failed".
-  const isNotEvaluable = kind === 'not_evaluable';
   return {
     metricsStatus: 'error',
     // Both the human label AND the machine-readable kind token are
@@ -104,14 +97,7 @@ export function buildEvaluatorErrorPatch(
     traceError: `${label} (kind=${kind}): ${message}`,
     // The Judge tab renders this directly. Keep the prose concise and
     // explicit: the user must immediately see *why* there is no score.
-    llmJudgeReasoning: isNotEvaluable
-      ? `**Not evaluable by this evaluator.**\n\n` +
-        `The agent completed, but this evaluator's gold / extraction rules do not apply to this ` +
-        `case, so no metric could be computed. This is neither a failed verdict nor a judge error; ` +
-        `the case is excluded from pass-rate aggregation. Pick an evaluator that fits these cases ` +
-        `or add gold ids to the test case, then retry judgement.\n\n` +
-        `**Reason:** ${message}`
-      : isAgent
+    llmJudgeReasoning: isAgent
       ? `**Agent run did not complete.**\n\n` +
         `The agent failed to produce a result (e.g. a subprocess timeout or crash) before ` +
         `the evaluation could run, so there is no trajectory to judge. This run is excluded ` +

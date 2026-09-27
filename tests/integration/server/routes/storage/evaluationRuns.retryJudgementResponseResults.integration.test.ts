@@ -260,26 +260,34 @@ describe('deterministic evaluators — response-results source + abstain metric'
     expect(abstainBad.metrics).toEqual({ abstain: 0 });
     expect(rowOf(abstainBad, 'abstain')).toMatchObject({ pass: false, actual: 0 });
 
+    // Not-evaluable cases keep their PREVIOUS (seeded LLM) judgement and record the attempt.
     const noResp = await get(repNoResponse);
-    expect(noResp.metricsStatus).toBe('error');
-    expect(noResp.passFailStatus ?? null).toBeNull();
-    expect(noResp.metrics).toEqual({});
-    // Tagged not_evaluable (never judge_failed) and carrying the diagnostics: the retrieved hit is reported but not used.
-    expect(noResp.traceError).toMatch(/^Not evaluable \(kind=not_evaluable\): .*no candidate ids found in the final answer, a results tool or the stored tool results\. gold 1 id from expectedOutcomes\[1\]; candidates: 0 from no final response step, 1 from tool 'search products' hits \(hits \/ results\) \(not used: this evaluator scores returned lists only\)$/);
-    expect(noResp.scoringSnapshot.unevaluable).toEqual(['hit@5', 'recall@20', 'mrr', 'abstain']);
-    expect(noResp.scoringSnapshot.diagnostics).toMatchObject({ gold: { ids: ['707'] }, candidates: { sourceUsed: 'none', count: 0 }, toolsScanned: ['search products'] });
+    expect(noResp.metricsStatus).toBe('ready');
+    expect(noResp.passFailStatus).toBe('passed');
+    expect(noResp.metrics).toEqual({ accuracy: 90 });
+    expect(noResp.scoringSnapshot ?? undefined).toBeUndefined();
+    expect(noResp.traceError ?? undefined).toBeUndefined();
+    // The diagnostics say the retrieved hit was reported but not used (returned-lists-only evaluator).
+    expect(noResp.lastRetryAttempt).toMatchObject({
+      outcome: 'not-evaluable', scope: 'all', evaluatorId: evaluator.id,
+      reason: 'no candidate ids found in the final answer, a results tool or the stored tool results',
+      diagnostics: { gold: { ids: ['707'] }, candidates: { sourceUsed: 'none', count: 0 }, toolsScanned: ['search products'] },
+    });
+    expect(noResp.lastRetryAttempt.diagnostics.candidates.sourceTried).toEqual([
+      { source: 'response-results', count: 0, detail: 'no final response step' },
+      { source: 'tool-hits', count: 1, detail: "tool 'search products' hits (hits / results) (not used: this evaluator scores returned lists only)" },
+    ]);
 
     const prose = await get(repProse);
-    expect(prose.metricsStatus).toBe('error');
-    expect(prose.passFailStatus ?? null).toBeNull();
-    expect(prose.metrics).toEqual({});
-    expect(prose.traceError).toMatch(/no ranked list recognised in the final response/);
-    expect(prose.traceError).not.toMatch(/judge_failed/);
-    expect(prose.scoringSnapshot.extraction).toEqual({ candidateCount: 0, anchorsRemoved: 0, sourceUsed: 'none' });
+    expect(prose.passFailStatus).toBe('passed');
+    expect(prose.lastRetryAttempt).toMatchObject({ outcome: 'not-evaluable', reason: expect.stringMatching(/^no ranked list recognised in the final response/) });
+    expect(prose.lastRetryAttempt.diagnostics.candidates).toMatchObject({ sourceUsed: 'none', count: 0 });
 
     // 6. Run doc.
     const run = await (await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`)).json();
     expect(run.evaluatorId).toBe(evaluator.id);
-    expect(run.stats).toMatchObject({ passed: 4, failed: 2, errored: 2, total: 8 });
+    // The two preserved cases still count as passed (their seeded verdict).
+    expect(run.stats).toMatchObject({ passed: 6, failed: 2, errored: 0, total: 8 });
+    expect(run.lastRetryAttempt).toMatchObject({ retried: 8, succeeded: 6, notEvaluable: 2, failed: 0 });
   }, 60000);
 });

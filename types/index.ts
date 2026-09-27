@@ -404,6 +404,51 @@ export interface ScoringDiagnostics {
 }
 
 /**
+ * Why the LAST retry-judgement attempt on a report produced no judgement.
+ * Owner rule: a retry that fails (judge error, not evaluable, exception)
+ * must PRESERVE the report's existing judgement — verdict, scores, snapshot,
+ * judge response, evaluator stamp — and record the attempt here instead;
+ * only a SUCCESSFUL re-judgement replaces the judgement (and clears this,
+ * `null`). Rendered by the run report's Judge tab as a dismissible banner
+ * with a Details dialog.
+ */
+export interface RetryAttemptRecord {
+  /** ISO timestamp of the attempt. */
+  at: string;
+  /** Evaluator the retry used (override or the run's own); `null` when none. */
+  evaluatorId: string | null;
+  evaluatorName?: string;
+  /** LLM path only: the judge model that was called. */
+  judgeModelId?: string;
+  scope: 'errored' | 'all';
+  /** `not-evaluable` (deterministic rules did not apply) · `judge-error` (judge call failed) · `error` (scorer / pipeline exception). */
+  outcome: 'not-evaluable' | 'judge-error' | 'error';
+  reason: string;
+  /** Deterministic: gold source + every candidate source tried. */
+  diagnostics?: ScoringDiagnostics;
+}
+
+/**
+ * Run-level mirror of {@link RetryAttemptRecord}: set on the EvaluationRun
+ * doc when a retry finishes with at least one case that produced no
+ * judgement (the runs list / inspector header show a "re-judge failed" pill
+ * off it without loading every report); cleared (`null`) when a retry
+ * finishes with every case judged.
+ */
+export interface RunRetryAttemptSummary {
+  at: string;
+  evaluatorId: string | null;
+  evaluatorName?: string;
+  scope: 'errored' | 'all';
+  retried: number;
+  succeeded: number;
+  notEvaluable: number;
+  failed: number;
+  /** Not-evaluable / error reason → number of cases (stable wording). */
+  reasons: Record<string, number>;
+}
+
+/**
  * Evaluator version - immutable snapshot of evaluator configuration
  */
 export interface EvaluatorVersion {
@@ -732,6 +777,8 @@ export interface TestCaseRun {
    * lib/scoring/prediction/candidates.ts. Never interpreted otherwise.
    */
   output?: unknown;
+  /** Last retry-judgement attempt that produced NO judgement (the judgement above is the preserved previous one); `null`/absent after a successful re-judgement. */
+  lastRetryAttempt?: RetryAttemptRecord | null;
   connectorProtocol?: ConnectorProtocol; // Protocol used to execute this run (for trajectory parsing)
 
   // Per-matcher verdicts captured by the SDK during the test body
@@ -1580,6 +1627,8 @@ export interface EvaluationRun {
    * `EvaluationRun` and `BenchmarkRun` are independent doc shapes.
    */
   judgeFailureSummary?: string;
+  /** Last retry-judgement attempt in which ≥1 case produced no judgement (see RunRetryAttemptSummary); `null` after a fully successful retry. */
+  lastRetryAttempt?: RunRetryAttemptSummary | null;
 
   // Performance metrics
   performanceMetrics?: RunPerformanceMetrics;

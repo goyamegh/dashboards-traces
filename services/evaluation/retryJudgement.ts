@@ -34,13 +34,13 @@ import type {
   TestCase,
   AgentConfig,
   PassFailStatus,
+  RetryAttemptRecord,
   ScoringDiagnostics,
 } from '@/types';
 import type { IStorageModule } from '@/server/adapters/types';
 import { callBedrockJudge } from '@/services/evaluation';
 import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 import { buildJudgeMatcherEntry, formatExpectedOutcomesAsClaim } from '@/lib/matchers/index';
-import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
 import { spansToTrajectory } from '@/services/traces/spansToTrajectory';
 import { fetchSpansForRun } from '@/services/traces/fetchSpansForRun';
 import { computeRunStats } from '@/lib/runStats';
@@ -51,7 +51,7 @@ import { debug } from '@/lib/debug';
 import { readEnv } from '@/lib/envCompat';
 import { isSystemEvaluatorId, getSystemEvaluatorById } from '@/server/prompts/evaluatorTemplates';
 import { isDeterministicEvaluator } from '@/lib/evaluators/deterministic';
-import { scoreDeterministic, describeDiagnostics } from '@/lib/scoring/deterministicScoring';
+import { scoreDeterministic } from '@/lib/scoring/deterministicScoring';
 
 export type RetryJudgementScope = 'errored' | 'all';
 
@@ -80,14 +80,21 @@ export const DETERMINISTIC_SCOPE_ERROR =
  *   - `not-evaluable` — a deterministic evaluator ran but its gold /
  *                       extraction rules do not apply to this case (no gold
  *                       ids on the test case, no candidate ids in the stored
- *                       tool results, …). NOT a failure and NOT a judge error:
- *                       the report gets the `not_evaluable` evaluator-error
- *                       patch (no verdict, excluded from the pass rate) and
- *                       `reason` says why. Owner incident: a 5-case run
+ *                       tool results, …). NOT a failure and NOT a judge error.
+ *                       The report's EXISTING judgement is preserved and the
+ *                       attempt recorded as `report.lastRetryAttempt` with
+ *                       `reason` + `diagnostics`. Owner incident: a 5-case run
  *                       re-scored with an evaluator whose rules fit none of
  *                       the cases read "0 succeeded · 3 still failed".
  *   - `failed`        — the judgement itself could not be made (judge call
  *                       threw, report / test case missing, scorer crashed).
+ *                       Likewise preserved + recorded.
+ *
+ * Owner rule (write semantics): ONLY a successful re-judgement replaces a
+ * report's judgement (verdict, scores, snapshot, judge response, evaluator
+ * stamp) — and, keeping the no-history rule, it replaces it wholesale and
+ * clears `lastRetryAttempt`. Anything else leaves every judgement field
+ * byte-identical and writes exactly `lastRetryAttempt`.
  */
 export type RetryJudgementOutcome = 'succeeded' | 'not-evaluable' | 'failed';
 
@@ -269,7 +276,8 @@ export async function retryJudgementForCase(
   storage: IStorageModule,
   agentConfig: AgentConfig | undefined,
   overrides: RetryJudgementOverrides = {},
-  resolvedEvaluator?: Evaluator | null
+  resolvedEvaluator?: Evaluator | null,
+  scope: RetryJudgementScope = 'errored'
 ): Promise<RetryJudgementCaseOutcome> {
   const evaluatorId = overrides.evaluatorId || run.evaluatorId;
 
@@ -278,7 +286,7 @@ export async function retryJudgementForCase(
   // actually returned), no judge model, no LLM call of any kind.
   const evaluator = resolvedEvaluator === undefined ? await resolveEvaluatorDoc(evaluatorId, storage) : resolvedEvaluator;
   if (evaluator && isDeterministicEvaluator(evaluator)) {
-    return applyDeterministicJudgement(report, testCase, evaluator, storage);
+    return applyDeterministicJudgement(report, testCase, evaluator, storage, scope);
   }
 
   let trajectory = report.trajectory || [];
@@ -346,24 +354,43 @@ export async function retryJudgementForCase(
       // is a plain top-level key on the SAME update call, so `undefined`
       // is enough to drop it from the JSON body).
       traceError: undefined,
+      // A successful re-judgement supersedes any recorded failed attempt.
+      lastRetryAttempt: null,
     } as any);
 
     return { passFailStatus: judgment.passFailStatus };
   } catch (error: any) {
     const message = error?.message ?? String(error);
-    // codex_review: a repeat failure previously left the report's PRIOR
-    // `matcherResults` (a passing verdict, if this case was ever judged
-    // successfully before — e.g. under `scope=all`) stale and inconsistent
-    // with the new `metricsStatus: 'error'` — the Judge tab would show a
-    // green matcher entry on a report the UI otherwise renders as errored.
-    // Clear both alongside the canonical error patch.
-    await storage.runs.update(report.id, {
-      ...buildEvaluatorErrorPatch('judge_failed', `Retry judgement: ${message}`),
-      matcherResults: [],
-      improvementStrategies: [],
-    } as any).catch(() => {});
+    // PRESERVE the previous judgement (owner rule): a failed retry must not
+    // replace the report's verdict / scores / judge response with an error
+    // state. Record the attempt instead — the Judge tab shows it as a
+    // dismissible banner with the reason. (This used to write the
+    // `judge_failed` error patch and clear the matcher rows, which turned a
+    // previously-passed case into an errored one because a judge call hiccuped.)
+    await recordFailedAttempt(report, storage, {
+      evaluatorId: evaluatorId ?? null,
+      evaluatorName: evaluator?.name,
+      judgeModelId,
+      scope,
+      outcome: 'judge-error',
+      reason: message,
+    });
     return { passFailStatus: null, error: message };
   }
+}
+
+/**
+ * Persist a failed retry attempt WITHOUT touching the judgement fields.
+ * `storage.runs.update` merges, so this writes exactly one key.
+ */
+async function recordFailedAttempt(
+  report: Pick<EvaluationReport, 'id'>,
+  storage: IStorageModule,
+  attempt: Omit<RetryAttemptRecord, 'at'>
+): Promise<RetryAttemptRecord> {
+  const record: RetryAttemptRecord = { at: new Date().toISOString(), ...attempt };
+  await storage.runs.update(report.id, { lastRetryAttempt: record } as any).catch(() => {});
+  return record;
 }
 
 /** Resolve an evaluator id to its document (system template or stored). `null` when unset/unknown. */
@@ -387,19 +414,21 @@ export async function resolveEvaluatorDoc(evaluatorId: string | undefined, stora
  * re-scored deterministically never shows a stale judge reasoning or
  * response next to code-computed metrics. The agent output is untouched.
  *
- * Not-evaluable reports (no gold / no candidates ⇒ EVERY metric unevaluable)
- * get the `not_evaluable` evaluator-error patch (`metricsStatus: 'error'`,
- * `passFailStatus: null`, `traceError` tagged `kind=not_evaluable` — never
- * `judge_failed`): they render as "not evaluable", are excluded from the
- * pass rate rather than counted as failures, and the run-level judge-failure
- * banner (lib/judgeFailureSummary.ts keys on `kind=judge_failed`) ignores
- * them. See the module comment in lib/scoring/deterministicScoring.ts.
+ * Not-evaluable results (no gold / no candidates ⇒ EVERY metric unevaluable)
+ * and scorer exceptions PRESERVE the report's existing judgement (owner
+ * rule: only a successful re-judgement replaces it) and are recorded as
+ * `report.lastRetryAttempt` with the reason + diagnostics; the Judge tab
+ * shows them as a dismissible banner. They are never the `judge_failed`
+ * error patch, so a previously judged case keeps its verdict and the
+ * run-level judge-failure banner (lib/judgeFailureSummary.ts) stays quiet.
+ * See the module comment in lib/scoring/deterministicScoring.ts.
  */
 async function applyDeterministicJudgement(
   report: EvaluationReport,
   testCase: TestCase,
   evaluator: Evaluator,
-  storage: IStorageModule
+  storage: IStorageModule,
+  scope: RetryJudgementScope
 ): Promise<RetryJudgementCaseOutcome> {
   try {
     const result = scoreDeterministic(evaluator, testCase, report);
@@ -417,13 +446,10 @@ async function applyDeterministicJudgement(
     };
     if (!result.evaluable) {
       const reason = result.notEvaluableReason ?? result.summary;
-      await storage.runs.update(report.id, {
-        ...common,
-        ...buildEvaluatorErrorPatch('not_evaluable', `${evaluator.name}: ${reason}. ${describeDiagnostics(result.diagnostics)}`),
-        // No metrics on a not-evaluable report — never the legacy zeroed
-        // RCA keys the generic patch carries.
-        metrics: {},
-      } as any);
+      await recordFailedAttempt(report, storage, {
+        evaluatorId: evaluator.id, evaluatorName: evaluator.name, scope,
+        outcome: 'not-evaluable', reason, diagnostics: result.diagnostics,
+      });
       return { passFailStatus: null, notEvaluable: true, reason, diagnostics: result.diagnostics };
     }
     await storage.runs.update(report.id, {
@@ -432,15 +458,15 @@ async function applyDeterministicJudgement(
       metrics: result.metrics,
       metricsStatus: 'completed',
       traceError: undefined,
+      lastRetryAttempt: null,
     } as any);
     return { passFailStatus: result.passFailStatus, ...(result.kind === 'abstain' ? { abstain: true } : {}), diagnostics: result.diagnostics };
   } catch (error: any) {
     const message = error?.message ?? String(error);
-    await storage.runs.update(report.id, {
-      ...buildEvaluatorErrorPatch('judge_failed', `Deterministic scoring: ${message}`),
-      matcherResults: [],
-      improvementStrategies: [],
-    } as any).catch(() => {});
+    await recordFailedAttempt(report, storage, {
+      evaluatorId: evaluator.id, evaluatorName: evaluator.name, scope,
+      outcome: 'error', reason: `Deterministic scoring: ${message}`,
+    });
     return { passFailStatus: null, error: message };
   }
 }
@@ -589,19 +615,15 @@ export async function retryJudgementForRun(
       }
 
       const { passFailStatus, error, notEvaluable, reason, abstain, diagnostics } = await retryJudgementForCase(
-        report, testCase, run, storage, agentConfig, overrides, resolvedEvaluator
+        report, testCase, run, storage, agentConfig, overrides, resolvedEvaluator, scope
       );
 
-      const nextResult: any = { ...result, status: 'completed' };
+      // Only a SUCCESSFUL re-judgement changes the run's results map; a
+      // failed attempt left the report's judgement untouched, so the case's
+      // previous verdict (or previous errored state) stands.
       if (passFailStatus) {
-        nextResult.passFailStatus = passFailStatus;
-      } else {
-        // Drop the key entirely rather than persist `passFailStatus: undefined`
-        // — bucketRunResults() treats a missing verdict as errored, same as
-        // the very first run.
-        delete nextResult.passFailStatus;
+        updatedResults[testCaseId] = { ...result, status: 'completed', passFailStatus };
       }
-      updatedResults[testCaseId] = nextResult;
 
       results.push({
         testCaseId,
@@ -633,10 +655,32 @@ export async function retryJudgementForRun(
     .filter(Boolean)
     .map((rep) => extractJudgeFailureReason(rep as any));
   const judgeFailureSummary = computeJudgeFailureSummary(reasons, stats.total) ?? null;
+  // Run-level record of a retry in which ≥1 case produced no judgement (the
+  // runs list / inspector header show a "re-judge failed" pill off it);
+  // cleared when every retried case was judged.
+  const unjudged = results.filter(r => r.outcome !== 'succeeded');
+  const lastRetryAttempt = unjudged.length > 0
+    ? {
+        at: new Date().toISOString(),
+        evaluatorId: overrides.evaluatorId || run.evaluatorId || null,
+        ...(resolvedEvaluator?.name ? { evaluatorName: resolvedEvaluator.name } : {}),
+        scope,
+        retried: testCaseIds.length,
+        succeeded: results.filter(r => r.outcome === 'succeeded').length,
+        notEvaluable: results.filter(r => r.outcome === 'not-evaluable').length,
+        failed: results.filter(r => r.outcome === 'failed').length,
+        reasons: unjudged.reduce<Record<string, number>>((acc, r) => {
+          const key = r.reason ?? r.error ?? 'reason not recorded';
+          acc[key] = (acc[key] ?? 0) + 1;
+          return acc;
+        }, {}),
+      }
+    : null;
   await storage.evaluationRuns.update(run.id, {
     results: updatedResults,
     stats: { ...(run.stats || {}), ...stats } as any,
     judgeFailureSummary,
+    lastRetryAttempt,
     // The evaluator that produced the run's CURRENT verdicts (when the caller
     // overrode it) — keeps the run doc truthful about what it was judged with.
     ...(overrides.evaluatorId ? { evaluatorId: overrides.evaluatorId } : {}),

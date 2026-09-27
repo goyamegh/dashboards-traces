@@ -136,27 +136,39 @@ describe('retry judgement with a deterministic evaluator (override)', () => {
     expect(b.passFailStatus).toBe('failed');
     expect(b.metrics).toEqual({ 'hit@1': 0, mrr: 0.5 });
 
+    // Not evaluable → the PREVIOUS judgement is preserved byte-for-byte (the
+    // old LLM verdict, metrics, reasoning, matcher row all stand) and the
+    // attempt is recorded as lastRetryAttempt with reason + diagnostics.
     const c = reports['rep-c'];
-    expect(c.metricsStatus).toBe('error');
-    expect(c.passFailStatus).toBeNull();
-    expect(c.metrics).toEqual({});
-    // Tagged `not_evaluable`, never `judge_failed` — the run-level judge-failure
-    // banner (lib/judgeFailureSummary.ts) must not claim a judge broke.
-    expect(c.traceError).toMatch(/^Not evaluable \(kind=not_evaluable\): Ranked retrieval: no ranked list recognised in the final response .*\. gold 2 ids from expectedOutcomes\[0\]; candidates: 0 from final response \(no ranked list recognised\), 0 from no tool results in the stored trajectory$/);
-    expect(c.traceError).not.toMatch(/judge_failed/);
-    expect(c.scoringSnapshot?.diagnostics?.candidates.sourceUsed).toBe('none');
-    expect(c.llmJudgeReasoning).toMatch(/^\*\*Not evaluable by this evaluator\.\*\*/);
-    expect(c.llmJudgeReasoning).not.toMatch(/Evaluator could not run/);
-    expect(c.scoringSnapshot?.unevaluable).toEqual(['hit@1', 'mrr']);
-    expect(c.matcherResults?.every(m => m.errored)).toBe(true);
+    const { lastRetryAttempt: cAttempt, ...cRest } = c as any;
+    expect(cRest).toEqual(makeReport('rep-c', 'tc-c', { trajectory: [{ id: 't', timestamp: 1, type: 'response', content: 'nothing found' }] as any }));
+    expect(c.passFailStatus).toBe('passed');
+    expect(c.metricsStatus).toBe('ready');
+    expect(c.llmJudgeReasoning).toBe('old LLM reasoning');
+    expect(c.scoringSnapshot).toBeUndefined();
+    expect(c.traceError).toBeUndefined();
+    expect(cAttempt).toMatchObject({
+      evaluatorId: 'eval-det', evaluatorName: 'Ranked retrieval', scope: 'all', outcome: 'not-evaluable',
+      reason: expect.stringMatching(/^no ranked list recognised in the final response/),
+      diagnostics: { gold: { ids: ['g1', 'g2'] }, candidates: { sourceUsed: 'none' } },
+    });
+    // Exactly one write for rep-c, carrying only the attempt.
+    const cWrites = (storage.runs.update as jest.Mock).mock.calls.filter(w => w[0] === 'rep-c');
+    expect(cWrites).toHaveLength(1);
+    expect(Object.keys(cWrites[0][1])).toEqual(['lastRetryAttempt']);
+    // The successfully re-scored reports clear any earlier attempt.
+    expect(reports['rep-a'].lastRetryAttempt).toBeNull();
 
     // Run doc: results + stats recomputed, evaluatorId stamped with the override.
     const runUpdate = storage.evaluationRuns.update.mock.calls[0][1] as any;
     expect(runUpdate.evaluatorId).toBe('eval-det');
     expect(runUpdate.results['tc-a'].passFailStatus).toBe('passed');
     expect(runUpdate.results['tc-b'].passFailStatus).toBe('failed');
-    expect(runUpdate.results['tc-c'].passFailStatus).toBeUndefined();
-    expect(runUpdate.stats).toMatchObject({ passed: 1, failed: 1, errored: 1, total: 3 });
+    // tc-c keeps its PREVIOUS verdict (passed) — a failed attempt never demotes a case to errored.
+    expect(runUpdate.results['tc-c'].passFailStatus).toBe('passed');
+    expect(runUpdate.stats).toMatchObject({ passed: 2, failed: 1, errored: 0, total: 3 });
+    expect(runUpdate.lastRetryAttempt).toMatchObject({ evaluatorId: 'eval-det', evaluatorName: 'Ranked retrieval', scope: 'all', retried: 3, succeeded: 2, notEvaluable: 1, failed: 0 });
+    expect(Object.values(runUpdate.lastRetryAttempt.reasons)).toEqual([1]);
   });
 
   describe('preflightRetryJudgement — read-only evaluability check for the dialog', () => {
@@ -269,15 +281,17 @@ describe('retry judgement with a deterministic evaluator (override)', () => {
     expect(mockedJudge.mock.calls[0][5]).toBe('eval-llm-2');
   });
 
-  it('retryJudgementForCase: a scoring exception lands as the evaluator-error patch (never a verdict)', async () => {
+  it('retryJudgementForCase: a scoring exception preserves the judgement and records an `error` attempt (never a verdict, never an error patch)', async () => {
     const reports = { 'rep-a': makeReport('rep-a', 'tc-a') };
+    const before = JSON.parse(JSON.stringify(reports['rep-a']));
     const storage = makeStorage(reports, {});
     const broken = { ...evaluator, inputs: { ...evaluator.inputs!, gold: { source: 'expectedOutcomes-pattern', pattern: '(' } } } as Evaluator;
-    const out = await retryJudgementForCase(reports['rep-a'], { id: 'tc-a', expectedOutcomes: ['Gold: g1'] } as any, run({}), storage, undefined, { evaluatorId: 'x' }, broken);
+    const out = await retryJudgementForCase(reports['rep-a'], { id: 'tc-a', expectedOutcomes: ['Gold: g1'] } as any, run({}), storage, undefined, { evaluatorId: 'x' }, broken, 'all');
     expect(out.passFailStatus).toBeNull();
     expect(out.error).toMatch(/not a valid regular expression/);
-    expect(reports['rep-a'].metricsStatus).toBe('error');
-    expect(reports['rep-a'].matcherResults).toEqual([]);
+    const { lastRetryAttempt, ...rest } = reports['rep-a'] as any;
+    expect(rest).toEqual(before);
+    expect(lastRetryAttempt).toMatchObject({ outcome: 'error', scope: 'all', evaluatorId: 'eval-det', reason: expect.stringMatching(/^Deterministic scoring: .*not a valid regular expression/) });
     expect(mockedJudge).not.toHaveBeenCalled();
   });
 
@@ -469,6 +483,11 @@ describe('owner incident — misreported "not evaluable" cases (synthetic)', () 
     // Case 3: gold explicitly empty, but nothing RETURNED to observe an abstention from.
     expect(three.reason).toBe('abstention cannot be observed: the only candidates came from retrieved tool hits, not a returned list');
     expect(three.diagnostics?.gold.explicitlyEmpty).toBe(true);
-    expect(reports['rep-3'].traceError).toMatch(/^Not evaluable \(kind=not_evaluable\): Ranked products: abstention cannot be observed/);
+    // Preserved judgement + recorded attempt, on both reports and the run.
+    expect(reports['rep-3'].passFailStatus).toBe('passed');
+    expect(reports['rep-3'].lastRetryAttempt).toMatchObject({ outcome: 'not-evaluable', reason: three.reason, evaluatorName: 'Ranked products' });
+    const runUpdate = storage.evaluationRuns.update.mock.calls[0][1] as any;
+    expect(runUpdate.lastRetryAttempt).toMatchObject({ retried: 2, succeeded: 0, notEvaluable: 2, failed: 0 });
+    expect(runUpdate.lastRetryAttempt.reasons).toEqual({ [one.reason as string]: 1, [three.reason as string]: 1 });
   });
 });

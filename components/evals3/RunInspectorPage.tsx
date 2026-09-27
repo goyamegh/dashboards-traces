@@ -569,7 +569,7 @@ export const RunInspectorPage: React.FC = () => {
             ) : (
               <h2 className="text-lg font-bold truncate" title={run.name}>{run.name}</h2>
             )}
-            {evalRun && <RetryJudgementJobPill runId={evalRun.id} runName={evalRun.name} className="ml-2 align-middle" />}
+            {evalRun && <RetryJudgementJobPill runId={evalRun.id} runName={evalRun.name} lastRetryAttempt={evalRun.lastRetryAttempt} className="ml-2 align-middle" />}
             {/* Provenance chip visibility is a DOC concern (does this run
                 object actually carry rerunOf data?), not a route concern --
                 isEvaluationRun() narrows `run` so `.rerunOf` is type-safe.
@@ -780,6 +780,7 @@ export const RunInspectorPage: React.FC = () => {
                 testCase={selectedTestCase || selectedResult.testCase}
                 status={selectedResult.status}
                 testCaseFullRecord={selectedTestCaseFullRecord}
+                onRetryJudgement={evalRun ? handleRetryJudgement : undefined}
               />
             ) : (
               <div className="flex items-center justify-center h-full text-muted-foreground">

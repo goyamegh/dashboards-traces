@@ -129,6 +129,22 @@ export function getIndexMappings(): IndexMappings {
           // `results.put()` partial updates and `docType.keyword` term
           // queries both continued to work unchanged.
           results: { type: 'object', enabled: false },
+          // EvaluationRun: last retry-judgement attempt in which ≥1 case
+          // produced no judgement (RunRetryAttemptSummary). `reasons` is keyed
+          // by free-text reason strings → never mapped.
+          lastRetryAttempt: {
+            properties: {
+              at: { type: 'date' },
+              evaluatorId: { type: 'keyword' },
+              evaluatorName: { type: 'keyword' },
+              scope: { type: 'keyword' },
+              retried: { type: 'integer' },
+              succeeded: { type: 'integer' },
+              notEvaluable: { type: 'integer' },
+              failed: { type: 'integer' },
+              reasons: { type: 'object', enabled: false },
+            },
+          },
           runs: {
             type: 'nested',
             properties: {
@@ -224,6 +240,21 @@ export function getIndexMappings(): IndexMappings {
           rawEvents: { type: 'object', enabled: false },
           // Connector-declared typed output (optional); read, never queried.
           output: { type: 'object', enabled: false },
+          // Last retry-judgement attempt that produced NO judgement
+          // (RetryAttemptRecord) — the judgement fields above are the
+          // preserved previous judgement.
+          lastRetryAttempt: {
+            properties: {
+              at: { type: 'date' },
+              evaluatorId: { type: 'keyword' },
+              evaluatorName: { type: 'keyword' },
+              judgeModelId: { type: 'keyword' },
+              scope: { type: 'keyword' },
+              outcome: { type: 'keyword' },
+              reason: { type: 'text' },
+              diagnostics: { type: 'object', enabled: false },
+            },
+          },
           improvementStrategies: { type: 'object', enabled: false },
           // Per-matcher verdicts captured by the SDK during the test body.
           // Stored as a nested array so we can filter / aggregate by

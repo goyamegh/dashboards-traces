@@ -214,10 +214,28 @@ describe('retry-judgement pre-flight (read-only evaluability check)', () => {
     const none = await get(`/api/storage/runs/${repNone}`);
     expect(none).toMatchObject({ passFailStatus: 'passed', metrics: { abstain: 1 } });
     expect(none.scoringSnapshot).toMatchObject({ goldRule: 'expected-outcomes-none', notApplicable: ['hit@1', 'hit@5'] });
+    // Owner rule: the not-evaluable case keeps its PREVIOUS judgement (the seeded
+    // LLM verdict) byte-for-byte; the attempt is recorded on the report and the run.
     const noGold = await get(`/api/storage/runs/${repNoGold}`);
-    expect(noGold.metricsStatus).toBe('error');
-    expect(noGold.traceError).toMatch(/^Not evaluable \(kind=not_evaluable\): /);
-    expect(noGold.traceError).not.toMatch(/judge_failed/);
-    expect((await get(`/api/storage/evaluation-runs/${runId}`)).stats).toMatchObject({ passed: 2, failed: 0, errored: 1, total: 3 });
+    const { lastRetryAttempt: noGoldAttempt, ...noGoldRest } = noGold;
+    expect(noGoldRest).toEqual(before[1]);
+    expect(noGold.passFailStatus).toBe('passed');
+    expect(noGold.metricsStatus).toBe('ready');
+    expect(noGold.llmJudgeReasoning).toBe('previous LLM judgement');
+    expect(noGoldAttempt).toMatchObject({
+      evaluatorId: evaluator.id, evaluatorName: evaluator.name, scope: 'all', outcome: 'not-evaluable',
+      reason: byCase[tcNoGold].reason, diagnostics: byCase[tcNoGold].diagnostics,
+    });
+    expect(noGoldAttempt.at).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    // Successfully re-scored reports carry no attempt.
+    expect(gold.lastRetryAttempt ?? null).toBeNull();
+    const runDoc = await get(`/api/storage/evaluation-runs/${runId}`);
+    // The preserved case still counts as passed — a failed attempt never demotes it to errored.
+    expect(runDoc.stats).toMatchObject({ passed: 3, failed: 0, errored: 0, total: 3 });
+    expect(runDoc.results[tcNoGold].passFailStatus).toBe('passed');
+    expect(runDoc.lastRetryAttempt).toMatchObject({
+      evaluatorId: evaluator.id, evaluatorName: evaluator.name, scope: 'all', retried: 3, succeeded: 2, notEvaluable: 1, failed: 0,
+      reasons: { [byCase[tcNoGold].reason]: 1 },
+    });
   }, 60000);
 });

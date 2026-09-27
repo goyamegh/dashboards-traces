@@ -10,7 +10,11 @@
  *     "Retried 3 · 2 scored · 1 not evaluable" (never "still failed" for a
  *     case the evaluator simply could not apply to).
  *   - `RetryJudgementJobPill` — amber "Re-judging n/N…" pill shown on a run
- *     while its job runs (subscribes to the job store by run id).
+ *     while its job runs (subscribes to the job store by run id); once no job
+ *     runs it shows a dismissible "re-judge failed" pill while the run doc
+ *     carries a `lastRetryAttempt` (≥1 case produced no judgement — owner:
+ *     the previous judgement was preserved, the failure must stay visible
+ *     until the next successful retry or a UI-only dismissal).
  *   - `RetryJudgementToaster` — mounted once in Layout; announces each
  *     finished job (summary or error) with an "Open run" link, dismissible,
  *     auto-dismissed after a while. The repo has no general toast system;
@@ -24,6 +28,9 @@ import { useRetryJudgementJob, useRetryJudgementJobs } from '@/hooks/useRetryJud
 import { dismissRetryJudgementJob, type RetryJudgementJob } from '@/services/client/retryJudgementJobs';
 import { notEvaluableCount, type RetryJudgementSummary } from '@/services/client/evaluationRunsApi';
 import { runReportPath } from '@/lib/runReportPath';
+import { formatRelativeTime } from '@/lib/utils';
+import type { RunRetryAttemptSummary } from '@/types';
+import { dismissRetryAttempt, useDismissedAttempt } from './LastRetryAttemptBanner';
 
 /** "Retried 3 · 2 scored (1 abstain) · 1 not evaluable[ · 1 failed]". */
 export function formatRetryJudgementSummary(summary: RetryJudgementSummary): string {
@@ -42,19 +49,59 @@ export const NOT_EVALUABLE_HINT =
 /** Toasts linger this long before auto-dismissing (ms). */
 export const RETRY_JUDGEMENT_TOAST_MS = 15000;
 
-export const RetryJudgementJobPill: React.FC<{ runId: string; runName?: string; className?: string }> = ({ runId, runName, className }) => {
+/** "3 not evaluable · 1 failed — <reason> (×2), <reason>" for the failed pill's hover. */
+export function describeRunRetryAttempt(a: RunRetryAttemptSummary): string {
+  const counts = [
+    a.notEvaluable > 0 ? `${a.notEvaluable} not evaluable` : '',
+    a.failed > 0 ? `${a.failed} failed` : '',
+  ].filter(Boolean).join(' · ');
+  const reasons = Object.entries(a.reasons).map(([r, n]) => (n > 1 ? `${r} (×${n})` : r)).join('; ');
+  const who = a.evaluatorName || a.evaluatorId || 'the run\'s evaluator';
+  return `Last re-judgement ${formatRelativeTime(a.at)} with ${who}: ${a.succeeded} of ${a.retried} judged, ${counts}${reasons ? ` — ${reasons}` : ''}. The previous judgements were preserved.`;
+}
+
+export const RetryJudgementJobPill: React.FC<{
+  runId: string;
+  runName?: string;
+  className?: string;
+  /** The run doc's last failed attempt (RunRetryAttemptSummary); shows the "re-judge failed" state when no job is running. */
+  lastRetryAttempt?: RunRetryAttemptSummary | null;
+}> = ({ runId, runName, className, lastRetryAttempt }) => {
   const job = useRetryJudgementJob(runId, runName);
-  if (!job || job.status !== 'running') return null;
-  const progress = job.total > 0 ? `${job.completed}/${job.total}` : '';
-  return (
-    <span
-      data-testid={`retry-judgement-pill-${runId}`}
-      className={`inline-flex items-center gap-1 px-1.5 py-0 rounded-full text-[9px] font-medium bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 whitespace-nowrap ${className ?? ''}`}
-      title="Retry judgement is running in the background — you can keep navigating; the run refreshes when it finishes"
-    >
-      <Loader2 size={9} className="animate-spin" /> Re-judging{progress ? ` ${progress}` : ''}…
-    </span>
-  );
+  const dismissed = useDismissedAttempt(runId, lastRetryAttempt?.at);
+  if (job?.status === 'running') {
+    const progress = job.total > 0 ? `${job.completed}/${job.total}` : '';
+    return (
+      <span
+        data-testid={`retry-judgement-pill-${runId}`}
+        className={`inline-flex items-center gap-1 px-1.5 py-0 rounded-full text-[9px] font-medium bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/30 whitespace-nowrap ${className ?? ''}`}
+        title="Retry judgement is running in the background — you can keep navigating; the run refreshes when it finishes"
+      >
+        <Loader2 size={9} className="animate-spin" /> Re-judging{progress ? ` ${progress}` : ''}…
+      </span>
+    );
+  }
+  if (lastRetryAttempt && !dismissed) {
+    return (
+      <span
+        data-testid={`retry-judgement-failed-pill-${runId}`}
+        className={`inline-flex items-center gap-1 px-1.5 py-0 rounded-full text-[9px] font-medium bg-amber-500/15 text-amber-700 dark:text-amber-300 border border-amber-500/40 whitespace-nowrap ${className ?? ''}`}
+        title={describeRunRetryAttempt(lastRetryAttempt)}
+      >
+        <AlertTriangle size={9} /> re-judge failed
+        <button
+          type="button"
+          aria-label="Dismiss"
+          data-testid={`retry-judgement-failed-pill-dismiss-${runId}`}
+          onClick={e => { e.stopPropagation(); dismissRetryAttempt(runId, lastRetryAttempt.at); }}
+          className="ml-0.5 text-amber-700/70 hover:text-amber-900 dark:text-amber-300/70 dark:hover:text-amber-200"
+        >
+          <X size={9} />
+        </button>
+      </span>
+    );
+  }
+  return null;
 };
 
 const Toast: React.FC<{ job: RetryJudgementJob }> = ({ job }) => {

@@ -25,6 +25,7 @@ import type {
   ImprovementStrategy,
   OpenSearchLog,
   ConnectorProtocol,
+  RetryAttemptRecord,
 } from '@/types';
 import { fetchChunked } from '@/lib/chunkedFetch';
 
@@ -103,6 +104,7 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     connectorProtocol?: string;
     judgeMode?: 'trajectory-only' | 'trace-tools';
     output?: unknown;
+    lastRetryAttempt?: RetryAttemptRecord | null;
   };
 
   return {
@@ -177,6 +179,7 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     sessionId: (stored as any).sessionId,
     rawEvents: stored.rawEvents as any[] | undefined,
     output: storedAny.output,
+    lastRetryAttempt: storedAny.lastRetryAttempt,
     logs: (stored.logs || []) as OpenSearchLog[],
     improvementStrategies: stored.improvementStrategies as any[] | undefined,
     // The judge's full persisted response (raw model text, token counts,
@@ -234,6 +237,7 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
     trajectory: report.trajectory,
     rawEvents: report.rawEvents,
     ...(report.output !== undefined ? { output: report.output } : {}),
+    ...(report.lastRetryAttempt !== undefined ? { lastRetryAttempt: report.lastRetryAttempt } : {}),
     logs: report.logs || report.openSearchLogs,
     improvementStrategies: report.improvementStrategies,
   };
@@ -475,6 +479,7 @@ class AsyncRunStorage {
     if (updates.traceError !== undefined) storageUpdates.traceError = updates.traceError;
     if ((updates as any).judgeMode !== undefined) storageUpdates.judgeMode = (updates as any).judgeMode;
     if (updates.scoringSnapshot !== undefined) storageUpdates.scoringSnapshot = updates.scoringSnapshot;
+    if (updates.lastRetryAttempt !== undefined) storageUpdates.lastRetryAttempt = updates.lastRetryAttempt;
     if (updates.spans !== undefined) storageUpdates.spans = updates.spans;
 
     const updated = await opensearchRuns.partialUpdate(reportId, storageUpdates);
