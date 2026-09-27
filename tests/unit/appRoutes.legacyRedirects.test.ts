@@ -56,8 +56,14 @@ jest.mock('@/lib/constants', () => ({ refreshConfig: jest.fn(), subscribeConfigC
 jest.mock('@/lib/theme', () => ({ initializeTheme: jest.fn() }));
 
 const getReportById = jest.fn();
+const getBenchmarkById = jest.fn();
+const getEvaluationRun = jest.fn();
 jest.mock('@/services/storage', () => ({
   asyncRunStorage: { getReportById: (...args: unknown[]) => getReportById(...args) },
+  asyncBenchmarkStorage: { getById: (...args: unknown[]) => getBenchmarkById(...args) },
+}));
+jest.mock('@/services/client', () => ({
+  getEvaluationRun: (...args: unknown[]) => getEvaluationRun(...args),
 }));
 
 import { AppRoutes } from '../../App';
@@ -114,17 +120,42 @@ describe('App routes — retired legacy URLs redirect to their evals3 twin', () 
 });
 
 describe('App routes — /runs/:reportId resolves the report before redirecting', () => {
-  beforeEach(() => getReportById.mockReset());
+  beforeEach(() => {
+    getReportById.mockReset();
+    getBenchmarkById.mockReset();
+    getEvaluationRun.mockReset();
+    getEvaluationRun.mockResolvedValue({ id: 'run' });
+  });
 
   it('report of a benchmark run → benchmark-scoped inspector with ?reportId', async () => {
     getReportById.mockResolvedValue({ id: 'rep-1', testCaseId: 'tc-1', experimentId: 'bm-1', experimentRunId: 'run-1' });
     await landsOn('/runs/rep-1', 'evals3-run-inspector', '/evaluations/benchmarks/bm-1/runs/run-1/inspect?reportId=rep-1');
     expect(getReportById).toHaveBeenCalledWith('rep-1');
+    expect(getEvaluationRun).toHaveBeenCalledWith('run-1');
   });
 
   it('report of an ad-hoc evaluation run → bare inspector with ?reportId', async () => {
     getReportById.mockResolvedValue({ id: 'rep-2', testCaseId: 'tc-1', experimentRunId: 'run-2' });
     await landsOn('/runs/rep-2', 'evals3-run-inspector', '/evaluations/runs/run-2/inspect?reportId=rep-2');
+  });
+
+  it('report of a classic embedded benchmark run (no evaluation-run doc, listed in benchmark.runs[]) → benchmark-scoped inspector', async () => {
+    getReportById.mockResolvedValue({ id: 'rep-5', testCaseId: 'tc-1', experimentId: 'bm-1', experimentRunId: 'run-legacy' });
+    getEvaluationRun.mockRejectedValue(Object.assign(new Error('404'), { status: 404 }));
+    getBenchmarkById.mockResolvedValue({ id: 'bm-1', runs: [{ id: 'run-legacy' }] });
+    await landsOn('/runs/rep-5', 'evals3-run-inspector', '/evaluations/benchmarks/bm-1/runs/run-legacy/inspect?reportId=rep-5');
+  });
+
+  it('report whose run was deleted (no doc, not in benchmark.runs[]) → the test case detail page, not a "not found" inspector', async () => {
+    getReportById.mockResolvedValue({ id: 'rep-6', testCaseId: 'tc-6', experimentId: 'bm-1', experimentRunId: 'run-gone' });
+    getEvaluationRun.mockRejectedValue(Object.assign(new Error('404'), { status: 404 }));
+    getBenchmarkById.mockResolvedValue({ id: 'bm-1', runs: [] });
+    await landsOn('/runs/rep-6', 'evals3-test-case-detail', '/evaluations/test-cases/tc-6?run=rep-6');
+  });
+
+  it('carries the legacy query string over (destination keys win)', async () => {
+    getReportById.mockResolvedValue({ id: 'rep-7', testCaseId: 'tc-1', experimentRunId: 'run-7' });
+    await landsOn('/runs/rep-7?tab=traces', 'evals3-run-inspector', '/evaluations/runs/run-7/inspect?reportId=rep-7&tab=traces');
   });
 
   it('standalone single-case report → test case detail with ?run', async () => {

@@ -4,7 +4,7 @@
  */
 
 import React, { useState, useEffect } from 'react';
-import { BrowserRouter as Router, Routes, Route, Navigate, useParams, useLocation } from 'react-router-dom';
+import { BrowserRouter as Router, Routes, Route, Navigate, useParams, useLocation, generatePath } from 'react-router-dom';
 import { refreshConfig, subscribeConfigChange } from '@/lib/constants';
 import { initializeTheme } from '@/lib/theme';
 import { ENV_CONFIG } from '@/lib/config';
@@ -29,7 +29,7 @@ import { EvalRunsPage as Evals3EvalRuns } from './components/evals3/EvalRunsPage
 import { RunInspectorPage as Evals3RunInspector } from './components/evals3/RunInspectorPage';
 import { NewRunPage as Evals3NewRun } from './components/evals3/NewRunPage';
 import { ReportRedirect } from './components/ReportRedirect';
-import { legacyRouteRedirects, fillRedirectTemplate } from '@/lib/legacyRouteRedirects';
+import { legacyRouteRedirects } from '@/lib/legacyRouteRedirects';
 
 /**
  * `<Navigate replace>` to the evals3 twin of a retired route, carrying the
@@ -40,7 +40,7 @@ import { legacyRouteRedirects, fillRedirectTemplate } from '@/lib/legacyRouteRed
 function LegacyRedirect({ to }: { to: string }) {
   const params = useParams();
   const { search } = useLocation();
-  return <Navigate to={`${fillRedirectTemplate(to, params)}${search}`} replace />;
+  return <Navigate to={`${generatePath(to, params)}${search}`} replace />;
 }
 
 /**

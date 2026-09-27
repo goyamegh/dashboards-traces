@@ -17,13 +17,37 @@
  */
 
 import React, { useEffect, useState } from 'react';
-import { Navigate, useParams } from 'react-router-dom';
+import { Navigate, useLocation, useParams } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
-import { asyncRunStorage } from '@/services/storage';
+import { asyncRunStorage, asyncBenchmarkStorage } from '@/services/storage';
+import { getEvaluationRun } from '@/services/client';
 import { resolveReportRedirect } from '@/lib/legacyRouteRedirects';
+import type { EvaluationReport } from '@/types';
+
+/**
+ * Can the inspector actually open this report's run? True when the
+ * evaluation-run doc exists, or (classic embedded runs) when the benchmark
+ * still lists the run. False → the report is shown on the test case's detail
+ * page instead, which needs only the report itself.
+ */
+async function runReachable(report: EvaluationReport): Promise<boolean> {
+  if (!report.experimentRunId) return false;
+  try {
+    await getEvaluationRun(report.experimentRunId);
+    return true;
+  } catch { /* no first-class doc — check the benchmark projection below */ }
+  if (!report.experimentId) return false;
+  try {
+    const bm = await asyncBenchmarkStorage.getById(report.experimentId);
+    return !!bm?.runs?.some(r => r.id === report.experimentRunId);
+  } catch {
+    return false;
+  }
+}
 
 export const ReportRedirect: React.FC = () => {
   const { runId } = useParams<{ runId: string }>();
+  const { search } = useLocation();
   const [target, setTarget] = useState<string | null>(null);
   const [notFound, setNotFound] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -31,18 +55,19 @@ export const ReportRedirect: React.FC = () => {
   useEffect(() => {
     let cancelled = false;
     if (!runId) { setNotFound(true); return; }
-    asyncRunStorage.getReportById(runId)
-      .then(report => {
-        if (cancelled) return;
-        if (!report) { setNotFound(true); return; }
-        setTarget(resolveReportRedirect(report));
-      })
-      .catch(err => {
-        if (cancelled) return;
-        setError(err instanceof Error ? err.message : String(err));
-      });
+    (async () => {
+      const report = await asyncRunStorage.getReportById(runId);
+      if (cancelled) return;
+      if (!report) { setNotFound(true); return; }
+      const reachable = await runReachable(report);
+      if (cancelled) return;
+      setTarget(resolveReportRedirect(report, { runReachable: reachable, search }));
+    })().catch(err => {
+      if (cancelled) return;
+      setError(err instanceof Error ? err.message : String(err));
+    });
     return () => { cancelled = true; };
-  }, [runId]);
+  }, [runId, search]);
 
   if (target) return <Navigate to={target} replace />;
   if (notFound) return <Navigate to="/evaluations/runs" replace state={{ missingReportId: runId }} />;

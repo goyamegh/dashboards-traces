@@ -30,7 +30,7 @@ import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { asyncBenchmarkStorage, asyncTestCaseStorage } from '@/services/storage';
 import { executeBenchmarkRun } from '@/services/client';
-import { Benchmark, BenchmarkRun, TestCase } from '@/types';
+import { Benchmark, BenchmarkRun } from '@/types';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { formatRelativeTime, getModelName } from '@/lib/utils';
 import { BenchmarkEditor, RunConfigForExecution } from '@/components/BenchmarkEditor';
@@ -164,7 +164,6 @@ function SortHeader({ label, active, dir, onClick, className }: {
 export const BenchmarksPage4: React.FC = () => {
   const navigate = useNavigate();
   const [benchmarks, setBenchmarks] = useState<Benchmark[]>([]);
-  const [testCases, setTestCases] = useState<TestCase[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = usePersistedState<string>('benchmarks:search', '');
   const [timeRange, setTimeRange] = usePersistedState<TimeRange>(PREFS_KEYS.timeRange, 'all');
@@ -195,16 +194,11 @@ export const BenchmarksPage4: React.FC = () => {
 
   const loadData = useCallback(async () => {
     try {
-      const [bms, tcs] = await Promise.all([
-        asyncBenchmarkStorage.getAll({ includeSample: showSampleData === true ? true : undefined }),
-        // Summary projection (no context / expectedOutcomes / versions /
-        // sourceCode): this page only keys test cases by id. The retired
-        // pre-evals3 Benchmarks page already fetched the summary; the full
-        // corpus is ~168 MB on large installs (see test-cases-summary-fetch e2e).
-        asyncTestCaseStorage.getAll({ summary: true, includeSample: showSampleData === true ? true : undefined }),
-      ]);
+      // Only benchmarks are needed here. This page used to also pull the
+      // ENTIRE test-case corpus (full records, ~168 MB on large installs) into
+      // a map nothing read — dropped.
+      const bms = await asyncBenchmarkStorage.getAll({ includeSample: showSampleData === true ? true : undefined });
       setBenchmarks(bms);
-      setTestCases(tcs as TestCase[]);
     } catch (err) {
       console.error('Failed to load:', err);
     } finally {
@@ -223,7 +217,6 @@ export const BenchmarksPage4: React.FC = () => {
     return () => el.removeEventListener('scroll', handler);
   }, []);
 
-  const tcMap = useMemo(() => new Map(testCases.map(tc => [tc.id, tc])), [testCases]);
 
   // Agent options from config
   const agentOptions = useMemo(() => {

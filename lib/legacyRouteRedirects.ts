@@ -16,8 +16,9 @@
  * are deleted.
  *
  * `pattern` uses react-router path syntax; `to` is a template over the same
- * `:param` names. The query string is carried over untouched so deep links
- * like `?reportId=<id>` keep working on the inspector.
+ * `:param` names, filled with react-router's `generatePath` (URL-encodes each
+ * param, throws on a missing one). The query string is carried over untouched
+ * so deep links like `?reportId=<id>` keep working on the inspector.
  *
  * NOTE: `/runs/:runId` is deliberately NOT in this table — that legacy route
  * took a *report* id (an `EvaluationReport`, one test case's result), not an
@@ -51,39 +52,44 @@ export const legacyRouteRedirects: readonly LegacyRouteRedirect[] = [
 ];
 
 /**
- * Fill a redirect template from route params. Params are URL-encoded so an
- * id containing `/` or `?` cannot escape its segment.
- */
-export function fillRedirectTemplate(to: string, params: Record<string, string | undefined>): string {
-  return to.replace(/:([A-Za-z0-9_]+)/g, (_m, name: string) => {
-    const value = params[name];
-    return value === undefined ? '' : encodeURIComponent(value);
-  });
-}
-
-/**
  * The evals3 route for an individual report (`EvaluationReport`) — the id the
  * legacy `/runs/:runId` route used to take. Reports that belong to a run open
  * in the run inspector (benchmark-scoped when the benchmark is known, so
  * classic embedded `benchmark.runs[]` ids resolve too) with `?reportId=` so
- * the inspector preselects that case; standalone single-case reports open on
- * the test case's detail page with `?run=` preselecting the run.
+ * the inspector preselects that case; standalone single-case reports — and
+ * reports whose run no longer exists (`runReachable === false`; the inspector
+ * would only render "not found" for those) — open on the test case's detail
+ * page with `?run=` preselecting the run.
+ *
+ * `search` (the legacy URL's query string) is merged into the destination;
+ * keys the destination itself sets win.
  */
-export function resolveReportRedirect(report: {
-  id: string;
-  testCaseId: string;
-  experimentId?: string;
-  experimentRunId?: string;
-}): string {
+export function resolveReportRedirect(
+  report: { id: string; testCaseId: string; experimentId?: string; experimentRunId?: string },
+  options: { runReachable?: boolean; search?: string } = {},
+): string {
+  const { runReachable = true, search = '' } = options;
   const reportId = encodeURIComponent(report.id);
-  if (report.experimentRunId) {
+  let target: string;
+  if (report.experimentRunId && runReachable) {
     const runId = encodeURIComponent(report.experimentRunId);
-    if (report.experimentId) {
-      return `/evaluations/benchmarks/${encodeURIComponent(report.experimentId)}/runs/${runId}/inspect?reportId=${reportId}`;
-    }
-    return `/evaluations/runs/${runId}/inspect?reportId=${reportId}`;
+    target = report.experimentId
+      ? `/evaluations/benchmarks/${encodeURIComponent(report.experimentId)}/runs/${runId}/inspect?reportId=${reportId}`
+      : `/evaluations/runs/${runId}/inspect?reportId=${reportId}`;
+  } else {
+    target = `/evaluations/test-cases/${encodeURIComponent(report.testCaseId)}?run=${reportId}`;
   }
-  return `/evaluations/test-cases/${encodeURIComponent(report.testCaseId)}?run=${reportId}`;
+  return mergeSearch(target, search);
+}
+
+/** Append the params of `search` to `target` without overriding keys `target` already sets. */
+function mergeSearch(target: string, search: string): string {
+  const extra = new URLSearchParams(search);
+  if ([...extra.keys()].length === 0) return target;
+  const [path, existing = ''] = target.split('?');
+  const merged = new URLSearchParams(existing);
+  extra.forEach((value, key) => { if (!merged.has(key)) merged.append(key, value); });
+  return `${path}?${merged.toString()}`;
 }
 
 /** Path to a single test-case run on the evals3 test-case detail page. */
