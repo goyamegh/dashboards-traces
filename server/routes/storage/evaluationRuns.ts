@@ -365,13 +365,20 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       // Link the terminal projection into the benchmark. addRun is idempotent,
       // so a crash here can be retried without orphaning the run; the
       // projection carries the reconciled (persisted) results and stats.
+      // `name`/`description` come from the PERSISTED doc too, not the
+      // in-memory creation-time `run`: a rename issued while the run was still
+      // in flight (before this projection existed) lives only on the doc, and
+      // projecting `run.name` here would resurrect the pre-rename name in
+      // `benchmark.runs[]` (#465 follow-up, codex_review finding).
       if (benchmarkId) {
+        const persistedName = finalized.run.name ?? run.name;
+        const persistedDescription = finalized.run.description ?? run.description;
         const benchmarkRun: BenchmarkRun = {
-          id: run.id, name: run.name, createdAt: run.createdAt, completedAt,
+          id: run.id, name: persistedName, createdAt: run.createdAt, completedAt,
           status: finalStatus, agentKey: run.agentKey, modelId: run.modelId,
           judgeModelId: run.judgeModelId, results: finalized.run.results, stats: finalized.stats,
           ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
-          ...(run.description ? { description: run.description } : {}),
+          ...(persistedDescription ? { description: persistedDescription } : {}),
           ...(run.evaluatorId ? { evaluatorId: run.evaluatorId } : {}),
           ...(run.headers ? { headers: run.headers } : {}),
           ...(run.concurrency ? { concurrency: run.concurrency } : {}),

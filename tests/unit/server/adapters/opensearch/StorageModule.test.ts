@@ -803,7 +803,7 @@ describe('OpenSearchStorageModule', () => {
 
     describe('updateRun', () => {
       it('should update a specific run within a benchmark', async () => {
-        mockClient.update.mockResolvedValue({});
+        mockClient.update.mockResolvedValue({ body: { result: 'updated' } });
 
         const result = await mod.benchmarks.updateRun('bench-1', 'run-1', { name: 'Updated' } as any);
 
@@ -852,6 +852,13 @@ describe('OpenSearchStorageModule', () => {
         expect(source).toContain("ctx.op = 'noop'");
         // updatedAt is inside the matched branch, not unconditional.
         expect(source.indexOf('matched')).toBeLessThan(source.indexOf('ctx._source.updatedAt = params.now'));
+      });
+
+      it('fails CLOSED on an unrecognized update result instead of assuming the projection was patched (same contract as deleteRun)', async () => {
+        mockClient.update.mockResolvedValue({});
+
+        await expect(mod.benchmarks.updateRun('bench-1', 'run-1', { name: 'x' } as any))
+          .rejects.toThrow(/unrecognized OpenSearch update result/);
       });
     });
 

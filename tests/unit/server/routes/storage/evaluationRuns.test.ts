@@ -270,6 +270,30 @@ describe('Evaluation Runs API', () => {
       expect(mockBenchmarksAddRun).toHaveBeenCalledWith('bench-1', expect.objectContaining({ concurrency: 3 }));
     });
 
+    // #465 follow-up (codex_review finding): a rename issued while the run is
+    // still in flight lands on the first-class doc only — the projection does
+    // not exist yet. The completion-time link must therefore project the
+    // PERSISTED name, not the creation-time in-memory one, or the old name is
+    // resurrected in benchmark.runs[].
+    it('links the completed run with the PERSISTED name/description (a mid-run rename is not overwritten by the completion write)', async () => {
+      mockBenchmarksGetById.mockResolvedValue({ id: 'bench-1', testCaseIds: ['tc-1'] });
+      mockBenchmarksAddRun.mockResolvedValue(true);
+      // The persisted doc already carries a rename by the time finalization
+      // reads it back / performs the terminal update (both adapters' update()
+      // return the fresh doc, which is what finalizeEvaluationRun hands back).
+      const persistedDoc = (id: string) => {
+        const created = mockEvaluationRunsCreate.mock.calls.find((c: any[]) => c[0]?.id === id)?.[0];
+        return created ? { ...created, results: created.results || {}, name: 'Renamed mid-run', description: 'renamed desc' } : null;
+      };
+      mockEvaluationRunsGetById.mockImplementation(async (id: string) => persistedDoc(id));
+      mockEvaluationRunsUpdate.mockImplementation(async (id: string, fields: any) => ({ ...persistedDoc(id), ...fields }));
+
+      const res = await request(app).post('/api/storage/evaluation-runs').send({ ...body, name: 'Original name', benchmarkId: 'bench-1' });
+
+      expect(res.status).toBe(200);
+      expect(mockBenchmarksAddRun).toHaveBeenCalledWith('bench-1', expect.objectContaining({ name: 'Renamed mid-run', description: 'renamed desc' }));
+    });
+
     it('emits an SSE error when the benchmarkId does not exist', async () => {
       mockBenchmarksGetById.mockResolvedValue(null);
       const res = await request(app).post('/api/storage/evaluation-runs').send({ ...body, benchmarkId: 'missing-bench' });

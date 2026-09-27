@@ -557,12 +557,16 @@ class OpenSearchBenchmarkOperations implements IBenchmarkOperations {
       const result =
         (response?.body as { result?: string } | undefined)?.result ??
         (response as unknown as { result?: string } | undefined)?.result;
-      // `noop` = benchmark exists but the run is not embedded in runs[].
-      // Anything else (`updated`, or an older mock/client shape with no
-      // `result` at all) keeps the historical "applied" answer — unlike
-      // deleteRun, a false positive here cannot resurrect data, so failing
-      // open on an unknown shape is the compatible choice.
-      return result !== 'noop';
+      // Same fail-CLOSED contract as deleteRun below: `updated` is the only
+      // success value, `noop` means the benchmark exists but the run is not
+      // embedded in runs[], and anything else is refused rather than assumed
+      // — a caller (the rename write-through, the stats routes) must never be
+      // told the projection was patched when we cannot show that it was.
+      if (result === 'updated') return true;
+      if (result === 'noop') return false;
+      throw new Error(
+        `updateRun: unrecognized OpenSearch update result '${String(result)}' for benchmark ${benchmarkId}, run ${runId} — refusing to assume success`,
+      );
     } catch (error: any) {
       if (error.meta?.statusCode === 404) return false;
       throw error;
