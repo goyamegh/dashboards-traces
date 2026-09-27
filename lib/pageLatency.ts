@@ -5,44 +5,42 @@
 
 /**
  * Per-page latency instrumentation, active ONLY when debug mode is enabled
- * (see lib/debug.ts) or this is a dev build (`import.meta.env.DEV`). When
- * neither is true every exported function is a no-op: no timers, no
- * `fetch` wrapping, no state kept — zero behaviour change for normal users.
+ * (see lib/debug.ts), this is a dev build (`import.meta.env.DEV`), or the
+ * legacy `localStorage.DEBUG_PERFORMANCE` flag is set. When none is true every
+ * exported function is a no-op: no timers, no `fetch` wrapping, no state kept
+ * — zero behaviour change for normal users.
  *
- * Lifecycle of one "navigation" record:
+ * ONE record per navigation — the current page only (the previous page's
+ * route + ready time is kept as a one-line footnote, nothing else):
  *   1. `startNavigation(pathname)` — called by the top-level Layout on every
- *      route change. Maps the pathname to a stable route key (so dynamic
- *      segments like a benchmark id don't fragment the same page into many
- *      distinct routes), stamps `startedAt`, and schedules a first-render
- *      timestamp two animation frames out (paint has happened by then).
+ *      route change. Resets everything (record, in-flight bookkeeping, the
+ *      `lib/performance` step timings), maps the pathname to a stable route
+ *      key so dynamic segments don't fragment the same page into many routes,
+ *      and schedules a first-paint timestamp two animation frames out.
  *   2. `markPageReady(routeKey)` — a one-line call each instrumented page
  *      makes once its own primary data fetch(es) settle. `routeKey` must be
- *      the SAME key `routeKeyFromPath` produces for that page's route (a
- *      literal, e.g. 'benchmark-runs') — this is the guard against a slow
- *      page finalizing a LATER navigation's record after the user already
- *      moved on: markPageReady is a no-op unless it still matches the
- *      currently active navigation.
+ *      the SAME key `routeKeyFromPath` produces for that page's route: a
+ *      stale call from a page the user has since navigated away from is
+ *      ignored. Pages that don't report readiness get an automatic estimate
+ *      instead (`settledMs`): first paint + every `/api/*` request settled,
+ *      with a 1 s quiet period — i.e. "route change → last data fetch
+ *      settled". The HUD shows `readyMs ?? settledMs`.
  *   3. While a navigation is active, `window.fetch` calls to `/api/*` are
- *      counted (count + total ms) into whichever record was current WHEN
- *      THE CALL STARTED (not whichever is current when it resolves -- a
- *      slow request must count against the page that made it, not
- *      whichever page the user has since navigated to), and only until
- *      that record is finalized by `markPageReady` (a background
- *      poll/refresh firing after "ready" must not keep inflating a number
- *      already reported as final) or `isPageLatencyActive()` goes false
- *      (so toggling debug off stops polluting the hidden record even
- *      before the next navigation gets a chance to actually restore
- *      `window.fetch`).
+ *      recorded (method, path template with ids collapsed to `:id`, duration)
+ *      into whichever record was current WHEN THE CALL STARTED — a slow
+ *      request must count against the page that made it, not whichever page
+ *      the user has since navigated to — and only until that record is
+ *      finalized by `markPageReady` (a background poll firing after "ready"
+ *      must not keep inflating a number already reported as final) or
+ *      instrumentation goes inactive. `apiWallMs` is the wall-clock span from
+ *      the first request start to the last response end (requests overlap,
+ *      so a plain sum of durations is meaningless).
  *
- * Finalized records are pushed to a capped (10) history and logged via the
- * existing `debug()` logger so they land in the console/server debug log.
- *
- * The HUD's expanded view also surfaces the named operation timings recorded
- * through `lib/performance.ts` (`startMeasure` / `endMeasure`, e.g.
- * `TraceFlowView.preprocessing`) -- the data the former PerformanceOverlay
- * displayed. `getOperationStats()` groups them per name into avg / min / max /
- * count, `classifyDuration()` applies the same 🟢 < 50 ms · 🟡 < 200 ms ·
- * 🔴 ≥ 200 ms bands, and `subscribe()` fires on new measurements too.
+ * The named step timings recorded through `lib/performance.ts`
+ * (`startMeasure` / `endMeasure`, e.g. `TraceFlowView.flowTransform`) are
+ * scoped to the current page too: `startNavigation` clears them, and
+ * `getOperationStats()` groups what the current page recorded into
+ * avg / min / max / count for the HUD's "Slow steps on this page" section.
  */
 
 import { isDebugEnabled, debug } from './debug';
@@ -56,24 +54,47 @@ import {
   logSummary,
 } from './performance';
 
+/** One `/api/*` request observed during the current navigation. */
+export interface ApiRequestRecord {
+  method: string;
+  /** Path with the query string dropped and id-like segments collapsed to `:id`. */
+  path: string;
+  /** Offset (ms from navigation start) at which the request started. */
+  startMs: number;
+  /** Request duration in ms. */
+  ms: number;
+}
+
 export interface PageLatencyRecord {
   /** Stable route key (see {@link routeKeyFromPath}), NOT the raw pathname. */
   route: string;
-  /** Epoch ms (Date.now()) when the navigation started — for history ordering/display. */
+  /** Epoch ms (Date.now()) when the navigation started. */
   startedAt: number;
-  /** ms from navigation start to first render (2 animation frames), or null until measured. */
+  /** ms from navigation start to first paint (2 animation frames), or null until measured. */
   renderMs: number | null;
-  /** ms from navigation start to the page reporting itself ready, or null until markPageReady. */
+  /** ms from navigation start to the page reporting itself ready via markPageReady, or null. */
   readyMs: number | null;
+  /**
+   * Automatic readiness estimate for pages that don't call markPageReady:
+   * first paint + all `/api/*` requests settled, after a 1 s quiet period.
+   * Updated (not final) until an explicit readyMs arrives; null until then.
+   */
+  settledMs: number | null;
   /** Count of `/api/*` fetch() calls observed during this navigation's window. */
   apiCount: number;
-  /** Total ms spent in those fetch() calls (wall time, calls may overlap). */
-  apiTotalMs: number;
+  /** Wall-clock span (ms) from the first `/api/*` request start to the last response end. */
+  apiWallMs: number;
+  /** Every observed request (capped at {@link API_REQUEST_CAP}); the HUD lists the slowest 5. */
+  apiRequests: ApiRequestRecord[];
 }
 
-const HISTORY_CAP = 10;
+/** The previous page's footnote: route + the ready time it ended with. */
+export interface PreviousPageSummary {
+  route: string;
+  readyMs: number | null;
+}
 
-/** Per-operation aggregate of `lib/performance` measurements (one row in the HUD's expanded view). */
+/** Per-operation aggregate of `lib/performance` measurements (one row in the HUD's "Slow steps" section). */
 export interface OperationStat {
   /** Full measurement name, e.g. `TraceFlowView.preprocessing`. */
   name: string;
@@ -87,20 +108,32 @@ export interface OperationStat {
   count: number;
 }
 
-/** Duration band used for colour-coding: fast < 50 ms, ok < 200 ms, else slow. */
+/** Colour band. Steps: fast < 50 ms, ok < 200 ms. Page ready: fast < 1 s, ok < 3 s. */
 export type DurationBand = 'fast' | 'ok' | 'slow';
 
+/** Band for an internal step / single request (the former overlay's thresholds). */
 export function classifyDuration(ms: number): DurationBand {
   if (ms < 50) return 'fast';
   if (ms < 200) return 'ok';
   return 'slow';
 }
 
+/** Band for a whole page's time-to-ready (a page is not a 50 ms operation). */
+export function classifyPageReady(ms: number): DurationBand {
+  if (ms < 1000) return 'fast';
+  if (ms < 3000) return 'ok';
+  return 'slow';
+}
+
+/** `840 ms` below a second, `13.6 s` from there on. */
+export function formatMs(ms: number): string {
+  return ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1)} s`;
+}
+
 /**
- * Groups every recorded `lib/performance` measurement by name into
- * avg / min / max / count, sorted slowest-average first (same aggregation
- * the former PerformanceOverlay rendered). `totalMeasurements` is the raw
- * sample count across all names.
+ * Groups every `lib/performance` measurement recorded since the current
+ * navigation started by name into avg / min / max / count, slowest-average
+ * first. `totalMeasurements` is the raw sample count across all names.
  */
 export function getOperationStats(): { stats: OperationStat[]; totalMeasurements: number } {
   const metrics = getMetrics();
@@ -127,14 +160,23 @@ export function getOperationStats(): { stats: OperationStat[]; totalMeasurements
   return { stats, totalMeasurements: metrics.length };
 }
 
-/** Drops every recorded operation measurement (the HUD's "Clear" button). */
+/** Drops every recorded step measurement. */
 export function clearOperationStats(): void {
   clearMetrics();
 }
 
+const API_REQUEST_CAP = 200;
+const SETTLE_QUIET_MS = 1000;
+
 let current: PageLatencyRecord | null = null;
 let currentStartPerf = 0; // performance.now() at navigation start (monotonic, for accurate deltas)
-const history: PageLatencyRecord[] = [];
+let previous: PreviousPageSummary | null = null;
+// Per-navigation request bookkeeping (not displayed): in-flight count and
+// the raw perf timestamps the wall-clock span is derived from.
+let inFlight = 0;
+let firstRequestStartPerf: number | null = null;
+let lastResponseEndPerf: number | null = null;
+let settleTimer: ReturnType<typeof setTimeout> | null = null;
 
 type Listener = () => void;
 let listeners: Listener[] = [];
@@ -159,6 +201,33 @@ export function routeKeyFromPath(pathname: string): string {
     if (pattern.test(pathname)) return key;
   }
   return pathname;
+}
+
+/**
+ * Collapses id-like path segments (uuids, numbers, `tc-<ts>-<rand>`-style
+ * generated ids, percent-encoded values) to `:id` and drops the query string,
+ * so the HUD's request list groups the same endpoint regardless of which
+ * entity was fetched.
+ */
+export function templatePath(url: string): string {
+  let pathname: string;
+  try {
+    pathname = new URL(url, 'http://placeholder.local').pathname;
+  } catch {
+    pathname = url.split('?')[0];
+  }
+  return pathname
+    .split('/')
+    .map(seg => {
+      if (!seg) return seg;
+      if (/^\d+$/.test(seg)) return ':id';
+      if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(seg)) return ':id';
+      if (seg.includes('%')) return ':id';
+      if (/^[a-z]+[-_]\d{6,}/i.test(seg)) return ':id'; // tc-1716800000000-abc123 style
+      if (/\d/.test(seg) && seg.length >= 16) return ':id'; // long opaque ids
+      return seg;
+    })
+    .join('/');
 }
 
 function isDevBuild(): boolean {
@@ -189,7 +258,7 @@ function notify(): void {
 }
 
 /**
- * Subscribe to record updates (navigation start / render / api / ready) AND
+ * Subscribe to record updates (navigation start / paint / api / ready) AND
  * to `lib/performance` measurement changes. Returns an unsubscribe fn.
  */
 export function subscribe(fn: Listener): () => void {
@@ -204,8 +273,7 @@ export function subscribe(fn: Listener): () => void {
 /**
  * Console API (`window.__agentHealthPerf`) for ad-hoc `startMeasure` /
  * `endMeasure` timings from DevTools that then show up in the HUD. The HUD
- * exposes it while it is active and removes it when it deactivates (its
- * lifecycle is the HUD's activation, not a navigation).
+ * exposes it while it is active and removes it when it deactivates.
  */
 const CONSOLE_API_KEY = '__agentHealthPerf';
 
@@ -218,6 +286,7 @@ export function exposeConsoleApi(): void {
     endMeasure,
     getMetrics,
     getOperationStats,
+    getCurrentRecord,
     clearMetrics,
     logSummary,
   };
@@ -235,6 +304,40 @@ function apiUrlFrom(input: Parameters<typeof fetch>[0]): string {
   return (input as Request).url || '';
 }
 
+function apiMethodFrom(input: Parameters<typeof fetch>[0], init?: RequestInit): string {
+  const m = init?.method || (typeof input === 'object' && !(input instanceof URL) ? (input as Request).method : undefined);
+  return (m || 'GET').toUpperCase();
+}
+
+function clearSettleTimer(): void {
+  if (settleTimer !== null) {
+    clearTimeout(settleTimer);
+    settleTimer = null;
+  }
+}
+
+/**
+ * (Re)arms the automatic-readiness timer for the current record: fires after
+ * {@link SETTLE_QUIET_MS} of no `/api/*` activity and stamps `settledMs` with
+ * the moment the last thing settled (last response end, or first paint when
+ * the page made no requests). Ignored once the page reported ready itself.
+ */
+function scheduleSettle(record: PageLatencyRecord): void {
+  clearSettleTimer();
+  if (record.readyMs !== null) return;
+  settleTimer = setTimeout(() => {
+    settleTimer = null;
+    if (current !== record || record.readyMs !== null || inFlight > 0) return;
+    const lastPerf = lastResponseEndPerf ?? null;
+    const settled = lastPerf !== null
+      ? Math.round(lastPerf - currentStartPerf)
+      : record.renderMs;
+    if (settled === null) return;
+    record.settledMs = Math.max(settled, record.renderMs ?? 0);
+    notify();
+  }, SETTLE_QUIET_MS);
+}
+
 function wrapFetch(): void {
   if (fetchWrapped || typeof window === 'undefined' || typeof window.fetch !== 'function') return;
   originalFetch = window.fetch;
@@ -245,24 +348,49 @@ function wrapFetch(): void {
     // Attribute to whichever navigation is active WHEN THE CALL STARTS, not
     // whichever is active when it resolves -- a slow request started on
     // page A that resolves after the user has already navigated to page B
-    // must count against A's window, not silently pollute B's (codex_review
-    // finding). Captured once, up front, deliberately NOT re-read from the
-    // mutable module-level `current` inside `finally`.
+    // must count against A's window, not silently pollute B's. Captured
+    // once, up front, deliberately NOT re-read from the mutable
+    // module-level `current` inside `finally`.
     const recordAtCallStart = current;
+    const counts = isApiCall && recordAtCallStart !== null && recordAtCallStart.readyMs === null;
     const t0 = performance.now();
+    if (counts) {
+      inFlight += 1;
+      if (firstRequestStartPerf === null) firstRequestStartPerf = t0;
+    }
     try {
       return await boundOriginal(...args);
     } finally {
-      // Also stop counting once the record has been finalized (markPageReady
-      // already fired) -- a background poll/refresh firing after "ready"
-      // must not keep inflating a number the HUD already reported as final
-      // -- and once debug/dev mode is turned off, even before the NEXT
-      // navigation gets a chance to actually unwrap `window.fetch` (both
-      // codex_review findings).
-      if (isApiCall && recordAtCallStart && recordAtCallStart.readyMs === null && isPageLatencyActive()) {
-        recordAtCallStart.apiCount += 1;
-        recordAtCallStart.apiTotalMs += Math.round(performance.now() - t0);
-        notify();
+      if (counts) {
+        // Only decrement the counter we incremented: a request that outlives
+        // its navigation must not touch the NEXT navigation's bookkeeping.
+        if (current === recordAtCallStart) inFlight = Math.max(0, inFlight - 1);
+        const t1 = performance.now();
+        // Also stop counting once the record has been finalized (markPageReady
+        // already fired) -- a background poll/refresh firing after "ready"
+        // must not keep inflating a number the HUD already reported as final
+        // -- and once debug/dev mode is turned off, even before the NEXT
+        // navigation gets a chance to actually unwrap `window.fetch`.
+        if (recordAtCallStart!.readyMs === null && isPageLatencyActive()) {
+          const record = recordAtCallStart!;
+          record.apiCount += 1;
+          if (record.apiRequests.length < API_REQUEST_CAP) {
+            record.apiRequests.push({
+              method: apiMethodFrom(args[0], args[1]),
+              path: templatePath(url),
+              startMs: Math.round(t0 - currentStartPerf),
+              ms: Math.round(t1 - t0),
+            });
+          }
+          if (current === record) {
+            if (lastResponseEndPerf === null || t1 > lastResponseEndPerf) lastResponseEndPerf = t1;
+            if (firstRequestStartPerf !== null) {
+              record.apiWallMs = Math.round(lastResponseEndPerf - firstRequestStartPerf);
+            }
+            if (inFlight === 0) scheduleSettle(record);
+          }
+          notify();
+        }
       }
     }
   };
@@ -278,18 +406,31 @@ function unwrapFetch(): void {
   originalFetch = null;
 }
 
+function resetNavigationState(): void {
+  clearSettleTimer();
+  inFlight = 0;
+  firstRequestStartPerf = null;
+  lastResponseEndPerf = null;
+}
+
 /**
- * Called on every route change (Layout). No-op (and unwraps `fetch` if it
- * was previously wrapped) when instrumentation isn't active — e.g. the user
- * just turned debug mode off.
+ * Called on every route change (Layout). Resets everything to the new page:
+ * the record, the request bookkeeping and the `lib/performance` step
+ * timings. No-op (and unwraps `fetch` if it was previously wrapped) when
+ * instrumentation isn't active — e.g. the user just turned debug mode off.
  */
 export function startNavigation(pathname: string): void {
+  if (current) {
+    previous = { route: current.route, readyMs: current.readyMs ?? current.settledMs };
+  }
+  resetNavigationState();
   if (!isPageLatencyActive()) {
     current = null;
     unwrapFetch();
     return;
   }
   wrapFetch();
+  clearMetrics();
   const route = routeKeyFromPath(pathname);
   currentStartPerf = performance.now();
   current = {
@@ -297,8 +438,10 @@ export function startNavigation(pathname: string): void {
     startedAt: Date.now(),
     renderMs: null,
     readyMs: null,
+    settledMs: null,
     apiCount: 0,
-    apiTotalMs: 0,
+    apiWallMs: 0,
+    apiRequests: [],
   };
   const record = current;
   if (typeof requestAnimationFrame === 'function') {
@@ -308,6 +451,8 @@ export function startNavigation(pathname: string): void {
       requestAnimationFrame(() => {
         if (current === record && record.renderMs === null) {
           record.renderMs = Math.round(performance.now() - currentStartPerf);
+          // A page that never fetches anything is "ready" at first paint.
+          if (inFlight === 0 && record.apiCount === 0) scheduleSettle(record);
           notify();
         }
       });
@@ -322,27 +467,25 @@ export function startNavigation(pathname: string): void {
  * page's route — a mismatch (stale call from a page the user has since
  * navigated away from) is silently ignored, and a record is only finalized
  * once (a page calling this more than once, e.g. on a manual refresh
- * button, doesn't corrupt history with duplicates).
+ * button, doesn't overwrite the number already reported).
  */
 export function markPageReady(routeKey: string): void {
   if (!isPageLatencyActive() || !current) return;
   if (current.route !== routeKey) return;
   if (current.readyMs !== null) return;
-  // Render is measured 2 animation frames after navigation start; by the
-  // time a page's primary data load resolves that has virtually always
-  // already fired, but finalize it here too (rather than leaving it a
-  // permanent "—" in this record's history entry) for the rare case a page
+  // First paint is measured 2 animation frames after navigation start; by
+  // the time a page's primary data load resolves that has virtually always
+  // already fired, but finalize it here too for the rare case a page
   // reports ready before its own first paint has been observed.
   if (current.renderMs === null) {
     current.renderMs = Math.round(performance.now() - currentStartPerf);
   }
   current.readyMs = Math.round(performance.now() - currentStartPerf);
+  clearSettleTimer();
   debug(
     'pageLatency',
-    `${current.route} · render ${current.renderMs ?? '—'} ms · ready ${current.readyMs} ms · ${current.apiCount} api / ${current.apiTotalMs} ms`,
+    `${current.route} · ready ${formatMs(current.readyMs)} · first paint ${formatMs(current.renderMs)} · ${current.apiCount} api requests / ${formatMs(current.apiWallMs)} wall`,
   );
-  history.unshift({ ...current });
-  if (history.length > HISTORY_CAP) history.length = HISTORY_CAP;
   notify();
 }
 
@@ -351,16 +494,17 @@ export function getCurrentRecord(): PageLatencyRecord | null {
   return current;
 }
 
-/** Finalized navigations, most recent first, capped at 10. */
-export function getHistory(): PageLatencyRecord[] {
-  return history;
+/** The previous page's route + ready time (one-line footnote), or null. */
+export function getPreviousPage(): PreviousPageSummary | null {
+  return previous;
 }
 
-/** Test-only: reset all module state (records, history, fetch wrapping, listeners). */
+/** Test-only: reset all module state (record, previous page, fetch wrapping, listeners). */
 export function __resetPageLatencyForTests(): void {
   current = null;
   currentStartPerf = 0;
-  history.length = 0;
+  previous = null;
+  resetNavigationState();
   unwrapFetch();
   removeConsoleApi();
   clearMetrics();
