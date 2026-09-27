@@ -28,12 +28,14 @@ jest.mock('react-router-dom', () => ({
   useSearchParams: () => [mockSearchParams, jest.fn()],
 }));
 
+const mockGetReportById = jest.fn();
 jest.mock('@/services/storage', () => ({
   asyncTestCaseStorage: {
     getById: (...args: unknown[]) => mockGetTestCase(...args),
   },
   asyncRunStorage: {
     getReportsByTestCase: (...args: unknown[]) => mockGetReports(...args),
+    getReportById: (...args: unknown[]) => mockGetReportById(...args),
   },
 }));
 
@@ -346,9 +348,35 @@ describe('TestCaseDetailPage — `?run=<reportId>` deep link (share URL / retire
     expect(disclosure.getAttribute('aria-expanded')).toBe('true');
   });
 
+  it('fetches a requested run that is older than the first page of history by id and selects it', async () => {
+    const ancient = { ...report, id: 'report-ancient', name: 'Ancient run', timestamp: '2024-01-01T00:00:00Z' };
+    mockSearchParams = new URLSearchParams('run=report-ancient');
+    mockGetReports.mockResolvedValue({ reports: [report, older], total: 150 });
+    mockGetReportById.mockResolvedValue(ancient);
+    render(React.createElement(TestCaseDetailPage));
+
+    const row = await screen.findByTestId('test-case-run-row-report-ancient');
+    expect(row.getAttribute('aria-selected')).toBe('true');
+    expect(mockGetReportById).toHaveBeenCalledWith('report-ancient');
+  });
+
+  it('ignores a requested run id that belongs to a DIFFERENT test case', async () => {
+    mockSearchParams = new URLSearchParams('run=report-foreign');
+    mockGetReports.mockResolvedValue({ reports: [report], total: 1 });
+    mockGetReportById.mockResolvedValue({ ...report, id: 'report-foreign', testCaseId: 'tc-other' });
+    render(React.createElement(TestCaseDetailPage));
+
+    await screen.findByTestId('test-case-runs-section');
+    await waitFor(() => expect(mockGetReportById).toHaveBeenCalledWith('report-foreign'));
+    fireEvent.click(within(screen.getByTestId('test-case-runs-section')).getByRole('button', { name: /Run history/i }));
+    expect(screen.queryByTestId('test-case-run-row-report-foreign')).toBeNull();
+    expect(screen.getByTestId('test-case-run-row-report-1').getAttribute('aria-selected')).toBe('true');
+  });
+
   it('falls back to the latest run (history collapsed) when the requested run is unknown', async () => {
     mockSearchParams = new URLSearchParams('run=does-not-exist');
     mockGetReports.mockResolvedValue({ reports: [report, older], total: 2 });
+    mockGetReportById.mockResolvedValue(null);
     render(React.createElement(TestCaseDetailPage));
 
     const runsSection = await screen.findByTestId('test-case-runs-section');

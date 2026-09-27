@@ -162,9 +162,20 @@ export const TestCaseDetailPage: React.FC = () => {
       const sorted = reports.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
       setRuns(sorted);
       setTotalRuns(total);
-      if (sorted.length > 0 && !initialSelectionDone.current) {
-        const requested = requestedRunId ? sorted.find(r => r.id === requestedRunId) : undefined;
-        setSelectedRunId((requested ?? sorted[0]).id);
+      if (!initialSelectionDone.current) {
+        // A deep-linked run may be older than the first page of history —
+        // fetch it by id and surface it so the share URL keeps resolving.
+        let requested = requestedRunId ? sorted.find(r => r.id === requestedRunId) : undefined;
+        if (requestedRunId && !requested) {
+          const fetched = await asyncRunStorage.getReportById(requestedRunId).catch(() => null);
+          if (fetched && fetched.testCaseId === testCaseId) {
+            requested = fetched;
+            sorted.push(fetched);
+            setRuns([...sorted]);
+          }
+        }
+        const initial = requested ?? sorted[0];
+        if (initial) setSelectedRunId(initial.id);
         if (requested) setRunsExpanded(true);
         initialSelectionDone.current = true;
       }
@@ -191,6 +202,16 @@ export const TestCaseDetailPage: React.FC = () => {
   }, [testCaseId, navigate, refreshRuns]);
 
   useEffect(() => { loadData(); }, [loadData]);
+
+  // An in-place change of `?run=` (e.g. following another share link while
+  // already on this page) re-runs the one-shot selection above.
+  const lastRequestedRunIdRef = React.useRef(requestedRunId);
+  useEffect(() => {
+    if (lastRequestedRunIdRef.current === requestedRunId) return;
+    lastRequestedRunIdRef.current = requestedRunId;
+    initialSelectionDone.current = false;
+    refreshRuns();
+  }, [requestedRunId, refreshRuns]);
 
   // How many still-pending runs this page has polled for in a row, and the
   // budget before giving up on an orphaned pending run (bounded so opening a
