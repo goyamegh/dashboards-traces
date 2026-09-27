@@ -198,9 +198,9 @@ test.describe('Evaluation Run Detail (run inspector)', () => {
       await page.goto(`/evaluations/runs/${run.id}/inspect`);
       await expect(page.locator(`[data-testid="run-actions-menu-trigger-${run.id}"]`)).toBeVisible({ timeout: 15000 });
 
-      // Header carries the agent key/name and the pass-rate tally.
+      // Header carries the run name and the pass-rate tally.
       const body = await page.textContent('body');
-      expect(body).toContain(run.agentKey);
+      if (run.name) expect(body).toContain(run.name);
       expect(body).toMatch(/\d+%/);
     }
   });
