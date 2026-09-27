@@ -221,6 +221,7 @@ export function extractToolHitsOrdered(
 
 /** Build the extractor options from an evaluator's declared `inputs.prediction`. */
 export function toolHitsOptionsFromInputs(prediction: DeterministicEvaluatorInputs['prediction'] | undefined): ToolHitsOrderedOptions {
+  if (!prediction || prediction.source !== 'tool-hits-ordered') return {};
   return {
     idFields: prediction?.idFields,
     hitsPaths: prediction?.hitsPaths,

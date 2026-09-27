@@ -34,8 +34,35 @@ describe('lib/scoring/gold — resolveGold', () => {
     expect(resolveGold({ expectedOutcomes: [42 as unknown as string] }, PATTERN)).toBeNull();
   });
 
-  it('a matching line that captures nothing usable yields null (first match is authoritative)', () => {
-    expect(resolveGold({ expectedOutcomes: ['Gold id(s):  , ;', 'Gold id(s): 5'] }, PATTERN)).toBeNull();
+  it('a matching line that captures nothing usable is EXPLICITLY no gold (first match is authoritative; later lines ignored)', () => {
+    expect(resolveGold({ expectedOutcomes: ['Gold id(s):  , ;', 'Gold id(s): 5'] }, PATTERN)).toEqual({ ids: [], rule: 'expected-outcomes-pattern' });
+  });
+
+  describe('explicitly no gold vs gold not declared', () => {
+    it.each(['none', 'None', 'NONE', 'n/a', '-', '—', '[]', 'null', ''])('captured %p means explicitly no gold', (token) => {
+      expect(resolveGold({ expectedOutcomes: [`Gold id(s): ${token}`] }, PATTERN)).toEqual({ ids: [], rule: 'expected-outcomes-pattern' });
+    });
+
+    it('expected.ids = [] is explicitly no gold ONLY for the structured gold source; under the pattern source it is "unset"', () => {
+      expect(resolveGold({ expected: { ids: [] } }, STRUCTURED)).toEqual({ ids: [], rule: 'expected.ids' });
+      // Clients serialize [] for "unset"; a pattern evaluator never reads it as an abstain case.
+      expect(resolveGold({ expected: { ids: [] }, expectedOutcomes: ['prose only'] }, PATTERN)).toBeNull();
+    });
+
+    it('expected.ids = [] does not shadow a gold line (ids from the line win)', () => {
+      expect(resolveGold({ expected: { ids: [] }, expectedOutcomes: ['Gold id(s): 7'] }, PATTERN)).toEqual({ ids: ['7'], rule: 'expected-outcomes-pattern' });
+    });
+
+    it('no expected.ids at all and no matching line → null (gold NOT declared, never an abstain case)', () => {
+      expect(resolveGold({ expectedOutcomes: ['prose only'] }, PATTERN)).toBeNull();
+      expect(resolveGold({}, STRUCTURED)).toBeNull();
+      expect(resolveGold({ expected: {} }, STRUCTURED)).toBeNull();
+    });
+
+    it('a literal id that merely contains an empty token is still an id', () => {
+      expect(splitGoldIds('none-1, 2')).toEqual(['none-1', '2']);
+      expect(splitGoldIds('nonesuch')).toEqual(['nonesuch']);
+    });
   });
 
   it('splitGoldIds splits on comma / semicolon / whitespace and dedupes', () => {
