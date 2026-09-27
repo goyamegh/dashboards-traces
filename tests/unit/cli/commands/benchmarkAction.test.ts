@@ -105,17 +105,23 @@ import {
   createBenchmarkCommand,
   isFilePath,
   loadAndValidateTestCasesFile,
+  LEGACY_EXECUTE_ROUTE_NOTICE,
+  resolveBenchmarkDispatch,
 } from '@/cli/commands/benchmark.js';
 
 type MockApiClient = {
   bulkCreateTestCases: jest.Mock;
   createBenchmark: jest.Mock;
+  /** Legacy `/execute` route — the CLI must NEVER call this any more. */
   executeBenchmark: jest.Mock;
+  /** Unified evaluation-runs execution — what every mode calls now. */
+  executeBenchmarkAsEvaluationRun: jest.Mock;
   findBenchmark: jest.Mock;
   findBenchmarkDetailed: jest.Mock;
   getEvaluationRun: jest.Mock;
   getReportById: jest.Mock;
   listTestCases: jest.Mock;
+  listAgents: jest.Mock;
 };
 
 class ProcessExitError extends Error {
@@ -177,11 +183,13 @@ function makeApiClient(overrides: Partial<MockApiClient> = {}): MockApiClient {
     bulkCreateTestCases: jest.fn(),
     createBenchmark: jest.fn(),
     executeBenchmark: jest.fn(),
+    executeBenchmarkAsEvaluationRun: jest.fn(),
     findBenchmark: jest.fn(),
     findBenchmarkDetailed: jest.fn().mockResolvedValue({ benchmark: null, ambiguousMatches: [] }),
     getEvaluationRun: jest.fn(),
     getReportById: jest.fn(),
     listTestCases: jest.fn(),
+    listAgents: jest.fn().mockResolvedValue([]),
     ...overrides,
   };
 }
@@ -346,6 +354,21 @@ describe('Benchmark Command - Real Module Coverage', () => {
       );
     });
 
+    it('dispatch table: which flags take the ad-hoc unified-sources path vs. the benchmark-run path', () => {
+      // benchmark-run: the classic front-end whose execution now goes through
+      // the evaluation-runs API (was: the legacy /execute route).
+      expect(resolveBenchmarkDispatch({ files: [] })).toBe('benchmark-run');                       // -n <existing> / quick mode
+      expect(resolveBenchmarkDispatch({ files: ['cases.json'] })).toBe('benchmark-run');           // -f cases.json [-n]
+      // unified-sources: ad-hoc sources resolved server-side.
+      expect(resolveBenchmarkDispatch({ files: ['a.json', 'b.json'] })).toBe('unified-sources');   // several -f
+      expect(resolveBenchmarkDispatch({ files: ['suite.eval.js'] })).toBe('unified-sources');      // code eval file
+      expect(resolveBenchmarkDispatch({ files: ['suite.eval.ts'] })).toBe('unified-sources');
+      expect(resolveBenchmarkDispatch({ files: [], dir: ['./cases'] })).toBe('unified-sources');   // -d
+      expect(resolveBenchmarkDispatch({ files: [], testCase: ['tc-1'] })).toBe('unified-sources'); // -t
+      expect(resolveBenchmarkDispatch({ files: [], label: ['smoke'] })).toBe('unified-sources');   // --label
+      expect(resolveBenchmarkDispatch({ files: ['cases.json'], label: ['smoke'] })).toBe('unified-sources');
+    });
+
     it('splits code and json files into distinct source types', () => {
       expect(buildFileSources(['suite.eval.js', 'extra.json', 'suite.eval.ts'])).toEqual([
         { type: 'code-import', filenames: ['suite.eval.js', 'suite.eval.ts'], testCaseIds: [] },
@@ -383,7 +406,7 @@ describe('Benchmark Command - Real Module Coverage', () => {
       });
       currentApi.findBenchmark.mockResolvedValue(null);
       currentApi.createBenchmark.mockResolvedValue(benchmark);
-      currentApi.executeBenchmark.mockImplementation(
+      currentApi.executeBenchmarkAsEvaluationRun.mockImplementation(
         async (_benchmarkId: string, runConfig: any, onProgress?: (event: any) => void) => {
           expect(runConfig).toMatchObject({
             name: 'CLI Run - Demo Agent',
@@ -465,6 +488,10 @@ describe('Benchmark Command - Real Module Coverage', () => {
         true
       );
       expect(joinedConsoleOutput(logSpy)).toContain('"runId": "run-file"');
+      // JSON `-f` import mode now executes through the evaluation-runs API —
+      // never the deprecated /execute route — and says so once.
+      expect(currentApi.executeBenchmark).not.toHaveBeenCalled();
+      expect(joinedConsoleOutput(logSpy)).toContain(LEGACY_EXECUTE_ROUTE_NOTICE);
       expect(cleanupSpy).toHaveBeenCalled();
       expect(exitSpy).not.toHaveBeenCalled();
     });
@@ -534,6 +561,10 @@ describe('Benchmark Command - Real Module Coverage', () => {
       const postBody = JSON.parse((global.fetch as jest.Mock).mock.calls[0][1].body);
       expect(postBody.sources).toEqual([{ type: 'test-case-ids', ids: ['tc-1', 'tc-2'] }]);
       expect(postBody.benchmarkId).toBeUndefined();
+      // Quick mode is ad-hoc (unified sources): it neither creates a benchmark
+      // nor runs one through executeBenchmarkAsEvaluationRun (that path is for
+      // -n <existing> / single JSON -f), and never the legacy /execute route.
+      expect(currentApi.executeBenchmarkAsEvaluationRun).not.toHaveBeenCalled();
       expect(cleanupSpy).toHaveBeenCalled();
     });
 
@@ -557,7 +588,7 @@ describe('Benchmark Command - Real Module Coverage', () => {
         wasStarted: false,
       } as any);
       currentApi.findBenchmark.mockResolvedValue(benchmark);
-      currentApi.executeBenchmark.mockImplementation(
+      currentApi.executeBenchmarkAsEvaluationRun.mockImplementation(
         async (_benchmarkId: string, _runConfig: any, onProgress?: (event: any) => void) => {
           onProgress?.({
             type: 'started',
@@ -600,7 +631,55 @@ describe('Benchmark Command - Real Module Coverage', () => {
       expect(readFileSync(exportFile, 'utf-8')).toBe('<html>named benchmark report</html>');
       expect(joinedConsoleOutput(logSpy)).toContain('TABLE');
       expect(currentApi.findBenchmark).toHaveBeenCalledWith('Existing Benchmark');
+      // `-n <existing> -a <agent>` — the mode that hit the legacy /execute
+      // route (one shared OTel trace per run) — now runs as an evaluation run
+      // scoped to that benchmark.
+      expect(currentApi.executeBenchmarkAsEvaluationRun).toHaveBeenCalledWith(
+        'bench-existing',
+        expect.objectContaining({ name: 'CLI Run - Demo Agent', agentKey: 'demo-agent', modelId: 'agent-model-1' }),
+        expect.any(Function)
+      );
+      expect(currentApi.executeBenchmark).not.toHaveBeenCalled();
+      expect(joinedConsoleOutput(logSpy)).toContain(LEGACY_EXECUTE_ROUTE_NOTICE);
       expect(cleanupSpy).toHaveBeenCalled();
+    });
+
+    it('resolves an agent the server knows (UI-added custom endpoint) even when it is not in the local config', async () => {
+      const benchmark = makeBenchmark({ id: 'bench-existing', name: 'Existing Benchmark', testCaseIds: ['tc-1'] });
+      mockIsServerRunning.mockResolvedValue(true);
+      currentApi.findBenchmark.mockResolvedValue(benchmark);
+      currentApi.listAgents.mockResolvedValue([
+        { key: 'custom-123-abc', name: 'UI Added REST Agent', endpoint: 'http://127.0.0.1:9', connectorType: 'rest', useTraces: true },
+      ]);
+      currentApi.executeBenchmarkAsEvaluationRun.mockResolvedValue(
+        makeRun({ id: 'run-custom', agentKey: 'custom-123-abc', results: { 'tc-1': { reportId: 'report-1', status: 'completed' } } })
+      );
+      currentApi.getReportById.mockResolvedValue(makeReport('report-1', 'tc-1', 'passed'));
+
+      await runBenchmarkCommand(['-n', 'Existing Benchmark', '-a', 'custom-123-abc']);
+
+      expect(currentApi.listAgents).toHaveBeenCalledTimes(1);
+      expect(currentApi.executeBenchmarkAsEvaluationRun).toHaveBeenCalledWith(
+        'bench-existing',
+        expect.objectContaining({ agentKey: 'custom-123-abc', name: 'CLI Run - UI Added REST Agent' }),
+        expect.any(Function)
+      );
+      expect(exitSpy).not.toHaveBeenCalled();
+    });
+
+    it('lists both local and server-side agents when the requested agent exists nowhere', async () => {
+      const benchmark = makeBenchmark({ id: 'bench-existing', name: 'Existing Benchmark', testCaseIds: ['tc-1'] });
+      mockIsServerRunning.mockResolvedValue(true);
+      currentApi.findBenchmark.mockResolvedValue(benchmark);
+      currentApi.listAgents.mockResolvedValue([{ key: 'custom-9', name: 'Server Only Agent', endpoint: 'http://x' }]);
+
+      await expect(runBenchmarkCommand(['-n', 'Existing Benchmark', '-a', 'nope'])).rejects.toMatchObject({ code: 1 });
+
+      expect(joinedConsoleOutput(errorSpy)).toContain('Agent not found: nope');
+      const out = joinedConsoleOutput(logSpy);
+      expect(out).toContain('Demo Agent (demo-agent)');
+      expect(out).toContain('Server Only Agent (custom-9)');
+      expect(currentApi.executeBenchmarkAsEvaluationRun).not.toHaveBeenCalled();
     });
 
     it('exits with a helpful error when the server is already running and no source is specified', async () => {

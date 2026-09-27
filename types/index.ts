@@ -1076,6 +1076,13 @@ export interface SpanEvent {
   attributes?: Record<string, any>;
 }
 
+/** A span link (OTel `Link`): a causal pointer to a span in another trace. */
+export interface SpanLink {
+  traceId: string;
+  spanId: string;
+  attributes?: Record<string, any>;
+}
+
 export interface Span {
   traceId: string;
   spanId: string;
@@ -1092,6 +1099,8 @@ export interface Span {
   kind?: 'INTERNAL' | 'SERVER' | 'CLIENT' | 'PRODUCER' | 'CONSUMER';
   attributes?: Record<string, any>;
   events?: SpanEvent[];
+  /** Span links, e.g. a `test_case` root span → its benchmark's `test_suite_run` span. */
+  links?: SpanLink[];
   children?: Span[];
   depth?: number;
   hasChildren?: boolean;
