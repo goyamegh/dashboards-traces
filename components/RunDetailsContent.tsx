@@ -42,7 +42,7 @@ import { TrajectoryView } from './TrajectoryView';
 import { RawEventsPanel } from './RawEventsPanel';
 import { MatcherResultsPanel } from './MatcherResultsPanel';
 import { getJudgeReasoningText, getJudgeMatcherResults } from '@/lib/matchers/judgeAccessor';
-import { resolveJudgeIdentityFromMatchers, JUDGE_PROVIDER_NONE } from '@/lib/judgeIdentity';
+import { resolveJudgeIdentityFromMatchers } from '@/lib/judgeIdentity';
 import { resolveImprovementStrategies } from '@/lib/judgeStrategies';
 import TraceVisualization from './traces/TraceVisualization';
 import SimpleSpanAttributesTable from './traces/SimpleSpanAttributesTable';
@@ -1141,8 +1141,11 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                 ran). Reads the persisted `report.judgeModel` / `judgeProvider`
                 (runner rollup, lib/judgeIdentity) and counts the judge calls. */}
             {!liveReport.llmJudgeResponse && Array.isArray(liveReport.matcherResults) && liveReport.matcherResults.length > 0 && (() => {
+              // The matcher rows are the evidence: "no LLM judge" only when no
+              // `judge()` call was attempted — a stale `'none'` marker never
+              // overrides rows that show an actual judge call.
               const { judgeCallCount } = resolveJudgeIdentityFromMatchers(liveReport.matcherResults, liveReport.judgeModelId);
-              const noLlmJudge = liveReport.judgeProvider === JUDGE_PROVIDER_NONE || judgeCallCount === 0;
+              const noLlmJudge = judgeCallCount === 0;
               return (
                 <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1 text-xs text-muted-foreground" data-testid="sdk-judge-identity">
                   {noLlmJudge ? (

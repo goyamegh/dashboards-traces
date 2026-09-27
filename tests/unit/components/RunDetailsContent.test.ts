@@ -527,6 +527,26 @@ describe('RunDetailsContent', () => {
       expect(screen.queryByTestId('sdk-judge-model')).toBeNull();
     });
 
+    it("a stale 'none' marker never overrides matcher evidence: rows with a judge() call render the model, not 'No LLM judge'", async () => {
+      const report = createReport({
+        passFailStatus: 'passed',
+        evaluationType: 'deterministic',
+        judgeModelId: 'agent-trace-judge',
+        judgeModel: SONNET_45,
+        judgeProvider: 'none',
+        llmJudgeResponse: undefined,
+        matcherResults: [
+          { description: 'judge: claim', pass: true, method: 'llm-judge', role: 'gate', model: 'agent-trace-judge', judgeModel: SONNET_45, judgeProvider: 'agent' },
+        ],
+      } as any);
+      mockGetReportById.mockResolvedValue(report);
+      await renderAndWait(report);
+      await openJudgeTab();
+
+      expect(screen.queryByTestId('sdk-judge-none')).toBeNull();
+      expect(screen.getByTestId('sdk-judge-call-count').textContent).toBe('1 judge call');
+    });
+
     it('classic report (llmJudgeResponse present): no SDK strip -- the Judge Output card owns the identity', async () => {
       const report = createReport({
         judgeModelId: 'agent-trace-judge',

@@ -311,6 +311,44 @@ describe('judge identity persisted on report + run (integration)', () => {
       expect(result.judgeProvider).toBe('agent');
     });
 
+    it("a later deterministic-only case never downgrades the run-level identity to 'none' (judged case first)", async () => {
+      mockFetch.mockResolvedValue(okJudge({ judgeModel: SONNET_45, judgeProvider: 'agent' }));
+      const { storage, docs } = createStorage();
+      const run = createRun({ judgeModelId: 'agent-trace-judge', concurrency: 1 });
+      const judged = sdkTestCase('tc-sdk-judged-first');
+      const det = sdkTestCase('tc-sdk-det-second');
+      const evaluateFnMap = new Map<string, (f: any) => Promise<void>>([
+        [judged.id, async ({ agent, judge }: any) => { await judge(await agent.run('p'), 'claim'); }],
+        [det.id, async ({ agent }: any) => { await agent.run('p'); }],
+      ]);
+
+      const result = await executeEvaluationRun(run, [judged, det], { storageModule: storage, onProgress: () => {}, evaluateFnMap });
+
+      const byCase = Object.fromEntries([...docs.values()].filter(d => d.testCaseId).map(d => [d.testCaseId, d]));
+      expect(byCase[det.id].judgeProvider).toBe('none');          // per-report truth is kept
+      expect(result.judgeModel).toBe(SONNET_45);                   // run-level identity untouched
+      expect(result.judgeProvider).toBe('agent');
+    });
+
+    it('all judge() calls errored: no identity, and NOT the none marker (an LLM judge was attempted)', async () => {
+      mockFetch.mockResolvedValue({ ok: false, status: 400, text: () => Promise.resolve('bad request'), json: () => Promise.resolve({}) });
+      const { storage, docs } = createStorage();
+      const run = createRun({ judgeModelId: 'agent-trace-judge' });
+      const tc = sdkTestCase('tc-sdk-errored');
+      const evaluateFnMap = new Map<string, (f: any) => Promise<void>>([
+        [tc.id, async ({ agent, judge }: any) => { await judge(await agent.run('p'), 'claim'); }],
+      ]);
+
+      const result = await executeEvaluationRun(run, [tc], { storageModule: storage, onProgress: () => {}, evaluateFnMap });
+
+      const [report] = [...docs.values()].filter(d => d.testCaseId);
+      expect(report.matcherResults.some((m: any) => m.method === 'llm-judge' && m.errored)).toBe(true);
+      expect(report.judgeModel).toBeUndefined();
+      expect(report.judgeProvider).toBeUndefined();
+      expect(result.judgeModel).toBeUndefined();
+      expect(result.judgeProvider).toBeUndefined();
+    });
+
     it('old /api/judge (no identity in the response) + agent judge in an SDK body: no fabricated model, kind inferred, guard warns', async () => {
       mockFetch.mockResolvedValue(okJudge({}));
       const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});

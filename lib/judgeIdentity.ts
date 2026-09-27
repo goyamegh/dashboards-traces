@@ -57,7 +57,9 @@ export function resolveJudgeModelForReport(
   judgeModelId: string | undefined
 ): string | undefined {
   const resolved = judgment?.judgeModel?.trim();
-  if (resolved) return resolved;
+  // A provider pseudo-id echoed back as the "model" (an old server, or a
+  // service that copied the requested id) is never accepted as a model.
+  if (resolved && !isJudgeProviderPseudoModelId(resolved)) return resolved;
   if (judgeModelId && !isJudgeProviderPseudoModelId(judgeModelId)) return judgeModelId;
   return undefined;
 }
@@ -124,7 +126,7 @@ export interface SdkJudgeIdentity {
   judgeModel?: string;
   /** Judge kind of that matcher (or inferred from the requested id), or `'none'` when no LLM judge call was made. */
   judgeProvider?: string;
-  /** Number of llm-judge matchers that actually reached the judge (skipped / not-reached rows excluded; errored calls count). */
+  /** Number of llm-judge matchers that ATTEMPTED a judge call (skipped / not-reached rows excluded; errored attempts count). */
   judgeCallCount: number;
 }
 
@@ -157,13 +159,11 @@ export function resolveJudgeIdentityFromMatchers(
   let judgeProvider: string | undefined;
   for (const m of calls) {
     if (m.errored) continue;
-    const requested = m.model || judgeModelId;
-    const candidate = m.judgeModel?.trim();
-    const resolved = candidate && !isJudgeProviderPseudoModelId(candidate)
-      ? candidate
-      : resolveJudgeModelForReport(undefined, requested);
-    if (!judgeModel && resolved) judgeModel = resolved;
-    if (!judgeProvider) judgeProvider = resolveJudgeProvider(m, requested);
+    // Same normalization as the classic path and the SDK binding: ONE rule
+    // (buildJudgeIdentityPatch) decides what counts as a model / a kind.
+    const identity = buildJudgeIdentityPatch(m, m.model || judgeModelId);
+    if (!judgeModel && identity.judgeModel) judgeModel = identity.judgeModel;
+    if (!judgeProvider && identity.judgeProvider) judgeProvider = identity.judgeProvider;
     if (judgeModel && judgeProvider) break;
   }
   return {

@@ -61,6 +61,12 @@ describe('resolveJudgeModelForReport', () => {
   it('returns undefined with no judge at all', () => {
     expect(resolveJudgeModelForReport(undefined, undefined)).toBeUndefined();
   });
+  it('never accepts a provider pseudo-id REPORTED as the model (old server echoing the requested id) — single normalization rule for every path', () => {
+    expect(resolveJudgeModelForReport({ judgeModel: 'agent-trace-judge' }, 'agent-trace-judge')).toBeUndefined();
+    expect(resolveJudgeModelForReport({ judgeModel: 'pi-judge' }, undefined)).toBeUndefined();
+    // …but a real model id reported for a pseudo-id request is the model
+    expect(resolveJudgeModelForReport({ judgeModel: SONNET_45 }, 'agent-trace-judge')).toBe(SONNET_45);
+  });
 });
 
 describe('buildJudgeIdentityPatch', () => {

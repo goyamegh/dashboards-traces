@@ -45,7 +45,7 @@ import type { TrajectoryStep } from '@/types';
 import { recordVerdict } from '../matchers/session.js';
 import { readEnv } from '../envCompat.js';
 import { getBackendUrl, isBackendPortExplicit, DEFAULT_BACKEND_PORT } from '../portConfig.js';
-import { isJudgeProviderPseudoModelId, resolveJudgeModelForReport, resolveJudgeProvider } from '../judgeIdentity.js';
+import { buildJudgeIdentityPatch } from '../judgeIdentity.js';
 
 /** Whether a judge signal gates the test verdict or is observational only. */
 export type JudgeRole = 'gate' | 'observe';
@@ -243,30 +243,24 @@ function isResultLike(x: unknown): x is ResultLike {
 
 /**
  * The `judgeModel` / `judgeProvider` pair recorded on an llm-judge
- * MatcherResult from what `/api/judge` reported. Shares the derivation the
- * classic path uses (lib/judgeIdentity): a provider pseudo-id echoed back as
- * `judgeModel` by an old server is never stored as a model; a plain model id
- * requested on an old server (no `judgeModel` in the response) is its own
- * model; the kind is inferred from the requested id when the server didn't
- * say. Keys are omitted (not `undefined`) so the persisted row stays clean.
+ * MatcherResult from what `/api/judge` reported — the SAME derivation the
+ * classic runner path uses (lib/judgeIdentity `buildJudgeIdentityPatch`): a
+ * provider pseudo-id echoed back as `judgeModel` is never stored as a model;
+ * a plain model id requested on an old server (no `judgeModel` in the
+ * response) is its own model; the kind is inferred from the requested id
+ * when the server didn't say. Keys are omitted (not `undefined`).
  */
 function buildMatcherJudgeIdentity(
   raw: Pick<RawJudgeResponse, 'judgeModel' | 'judgeProvider'>,
   requestedModel: string | undefined
 ): { judgeModel?: string; judgeProvider?: string } {
-  const reported = typeof raw.judgeModel === 'string' ? raw.judgeModel.trim() : '';
-  const judgeModel = resolveJudgeModelForReport(
-    { judgeModel: reported && !isJudgeProviderPseudoModelId(reported) ? reported : undefined },
+  return buildJudgeIdentityPatch(
+    {
+      judgeModel: typeof raw.judgeModel === 'string' ? raw.judgeModel : undefined,
+      judgeProvider: typeof raw.judgeProvider === 'string' ? raw.judgeProvider : undefined,
+    },
     requestedModel
   );
-  const judgeProvider = resolveJudgeProvider(
-    { judgeProvider: typeof raw.judgeProvider === 'string' ? raw.judgeProvider : undefined },
-    requestedModel
-  );
-  return {
-    ...(judgeModel ? { judgeModel } : {}),
-    ...(judgeProvider ? { judgeProvider } : {}),
-  };
 }
 
 /**
