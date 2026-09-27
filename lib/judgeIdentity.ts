@@ -70,9 +70,199 @@ export function resolveJudgeModelForReport(
 export function buildJudgeIdentityPatch(
   judgment: JudgeIdentitySource | undefined,
   judgeModelId: string | undefined
-): { judgeModel?: string } {
+): { judgeModel?: string; judgeProvider?: string } {
   const judgeModel = resolveJudgeModelForReport(judgment, judgeModelId);
-  return judgeModel ? { judgeModel } : {};
+  const judgeProvider = resolveJudgeProvider(judgment, judgeModelId);
+  return {
+    ...(judgeModel ? { judgeModel } : {}),
+    ...(judgeProvider ? { judgeProvider } : {}),
+  };
+}
+
+/**
+ * The judge KIND for a report: what the judge service reported, else the
+ * kind inferred from a provider pseudo-id (`agent-trace-judge` → `agent`).
+ * Undefined for a plain model id with no provider reported (old server).
+ */
+export function resolveJudgeProvider(
+  judgment: JudgeIdentitySource | undefined,
+  judgeModelId: string | undefined
+): string | undefined {
+  return judgment?.judgeProvider?.trim() || inferJudgeProviderFromId(judgeModelId);
+}
+
+/** Infer the judge kind from a provider pseudo-id; undefined for real model ids. */
+export function inferJudgeProviderFromId(judgeModelId: string | undefined): string | undefined {
+  if (judgeModelId === 'agent-trace-judge') return 'agent';
+  if (judgeModelId === 'pi-judge') return 'pi';
+  if (judgeModelId === 'claude-code-judge') return 'claude-code';
+  if (judgeModelId?.startsWith('agentic-')) return 'agentic';
+  return undefined;
+}
+
+/**
+ * Marker persisted as `judgeProvider` on a report whose code-SDK body made
+ * NO LLM judge call (code assertions / trace checks only). Lets the UI say
+ * "No LLM judge" instead of presenting the run's configured judge as the
+ * one that judged.
+ */
+export const JUDGE_PROVIDER_NONE = 'none';
+
+/** The subset of a MatcherResult the SDK judge identity is derived from. */
+export interface JudgeMatcherLike {
+  method: string;
+  errored?: boolean;
+  notReached?: boolean;
+  skipped?: boolean;
+  model?: string;
+  judgeModel?: string;
+  judgeProvider?: string;
+}
+
+export interface SdkJudgeIdentity {
+  /** Underlying LLM from the first llm-judge matcher that resolved one (never a pseudo-id). */
+  judgeModel?: string;
+  /** Judge kind of that matcher (or inferred from the requested id), or `'none'` when no LLM judge call was made. */
+  judgeProvider?: string;
+  /** Number of llm-judge matchers that actually reached the judge (skipped / not-reached rows excluded; errored calls count). */
+  judgeCallCount: number;
+}
+
+/**
+ * Report-level judge identity for a code-SDK test body, derived from its
+ * recorded `matcherResults`. The SDK `judge()` fixture records one
+ * `llm-judge` matcher per call carrying what `/api/judge` reported
+ * (`judgeModel` / `judgeProvider`); this rolls the first resolved model up
+ * so `report.judgeModel` is populated for SDK reports exactly like the
+ * classic path does from `llmJudgeResponse`. Pre-fix nothing rolled up, so
+ * every agent-trace-judge SDK report showed the provider with no model.
+ *
+ *   - `judgeModel`: first matcher's `judgeModel`; a pseudo-id is never
+ *     accepted (an old server echoing the provider name). Falls back to the
+ *     matcher's requested `model` / the run's `judgeModelId` only when that
+ *     is a real model id (plain Bedrock judge on an old server).
+ *   - `judgeProvider`: the matcher's reported kind, else inferred from the
+ *     requested id; `'none'` when the body made no LLM judge call at all.
+ */
+export function resolveJudgeIdentityFromMatchers(
+  matcherResults: readonly JudgeMatcherLike[] | undefined,
+  judgeModelId: string | undefined
+): SdkJudgeIdentity {
+  const calls = (matcherResults ?? []).filter(
+    m => m.method === 'llm-judge' && !m.notReached && !m.skipped
+  );
+  if (calls.length === 0) return { judgeProvider: JUDGE_PROVIDER_NONE, judgeCallCount: 0 };
+
+  let judgeModel: string | undefined;
+  let judgeProvider: string | undefined;
+  for (const m of calls) {
+    if (m.errored) continue;
+    const requested = m.model || judgeModelId;
+    const candidate = m.judgeModel?.trim();
+    const resolved = candidate && !isJudgeProviderPseudoModelId(candidate)
+      ? candidate
+      : resolveJudgeModelForReport(undefined, requested);
+    if (!judgeModel && resolved) judgeModel = resolved;
+    if (!judgeProvider) judgeProvider = resolveJudgeProvider(m, requested);
+    if (judgeModel && judgeProvider) break;
+  }
+  return {
+    ...(judgeModel ? { judgeModel } : {}),
+    ...(judgeProvider ? { judgeProvider } : {}),
+    judgeCallCount: calls.length,
+  };
+}
+
+/**
+ * Report-level patch for a code-SDK test body — the SDK counterpart of
+ * {@link buildJudgeIdentityPatch}: `{ judgeModel?, judgeProvider? }` from the
+ * recorded matchers, `judgeProvider: 'none'` when the body made no LLM judge
+ * call. Shared by the unified runner and the legacy benchmark runner so both
+ * SDK persistence paths agree. Keys are omitted (never `undefined`) so a
+ * partial-update merge can't clobber an earlier value.
+ */
+export function buildSdkJudgeIdentityPatch(
+  matcherResults: readonly JudgeMatcherLike[] | undefined,
+  judgeModelId: string | undefined
+): { judgeModel?: string; judgeProvider?: string } {
+  const { judgeModel, judgeProvider } = resolveJudgeIdentityFromMatchers(matcherResults, judgeModelId);
+  return {
+    ...(judgeModel ? { judgeModel } : {}),
+    ...(judgeProvider ? { judgeProvider } : {}),
+  };
+}
+
+/** The subset of a persisted report the consistency guard inspects. */
+export interface JudgeIdentityReportLike {
+  id?: string;
+  judgeModelId?: string;
+  judgeModel?: string;
+  judgeProvider?: string;
+  llmJudgeResponse?: { modelId?: string } | null;
+  matcherResults?: readonly JudgeMatcherLike[];
+  metricsStatus?: string;
+}
+
+/**
+ * Runtime guard (not a source scan): did an LLM judge run on this report
+ * without a resolved model being recorded? "An LLM judge ran" means the
+ * classic `llmJudgeResponse` is present OR any `method: 'llm-judge'` matcher
+ * actually reached the judge (skipped / not-reached rows don't count; a
+ * report whose every judge call errored is exempt — there is no verdict
+ * whose model could be recorded). Returns the problem as a string, or
+ * `undefined` when the report is consistent. Pure; see
+ * {@link assertJudgeIdentityConsistent} for the logging wrapper.
+ */
+export function findJudgeIdentityInconsistency(report: JudgeIdentityReportLike | undefined | null): string | undefined {
+  if (!report) return undefined;
+  const judgeCalls = (report.matcherResults ?? []).filter(
+    m => m.method === 'llm-judge' && !m.notReached && !m.skipped
+  );
+  const completedCalls = judgeCalls.filter(m => !m.errored);
+  const llmJudgeRan = !!report.llmJudgeResponse || completedCalls.length > 0;
+  if (!llmJudgeRan) {
+    if (judgeCalls.length === 0 && report.judgeModel && isJudgeProviderPseudoModelId(report.judgeModel)) {
+      return `judgeModel "${report.judgeModel}" is a judge provider pseudo-id, not a model`;
+    }
+    return undefined;
+  }
+  if (!report.judgeModel) {
+    return `an LLM judge ran (${report.llmJudgeResponse ? 'llmJudgeResponse' : `${completedCalls.length} llm-judge matcher(s)`}) but no resolved judgeModel was recorded` +
+      (report.judgeModelId ? ` (judgeModelId: ${report.judgeModelId})` : '');
+  }
+  if (isJudgeProviderPseudoModelId(report.judgeModel)) {
+    return `judgeModel "${report.judgeModel}" is a judge provider pseudo-id, not a model`;
+  }
+  if (report.judgeProvider === JUDGE_PROVIDER_NONE) {
+    return `judgeProvider is '${JUDGE_PROVIDER_NONE}' although an LLM judge ran`;
+  }
+  return undefined;
+}
+
+/**
+ * Runner-side consistency guard: logs `[JudgeIdentity] WARN <report id>: …`
+ * (default `console.warn`) when {@link findJudgeIdentityInconsistency}
+ * finds a problem. NEVER throws — a missing judge model must not fail a
+ * run that already has its verdict; the warning is what makes the miss
+ * visible in server logs / CI output instead of silently shipping a report
+ * the UI can only render as "model not recorded". Returns `true` when the
+ * report is consistent.
+ */
+export function assertJudgeIdentityConsistent(
+  report: JudgeIdentityReportLike | undefined | null,
+  log: (message: string) => void = (m) => console.warn(m)
+): boolean {
+  let problem: string | undefined;
+  try {
+    problem = findJudgeIdentityInconsistency(report);
+  } catch {
+    return true;
+  }
+  if (!problem) return true;
+  try {
+    log(`[JudgeIdentity] WARN ${report?.id ?? '(unsaved report)'}: ${problem}`);
+  } catch { /* logging must never break the runner */ }
+  return false;
 }
 
 /**
@@ -86,16 +276,8 @@ export function buildLlmJudgeResponseIdentity(
   judgeModelId: string | undefined
 ): { modelId: string; judgeProvider?: string } {
   const modelId = resolveJudgeModelForReport(judgment, judgeModelId) ?? judgeModelId ?? '';
-  const judgeProvider =
-    judgment?.judgeProvider?.trim() ||
-    // Infer the kind from a provider pseudo-id when the service didn't say.
-    (judgeModelId === 'agent-trace-judge'
-      ? 'agent'
-      : judgeModelId === 'pi-judge'
-        ? 'pi'
-        : judgeModelId?.startsWith('agentic-')
-          ? 'agentic'
-          : undefined);
+  // Infer the kind from a provider pseudo-id when the service didn't say.
+  const judgeProvider = resolveJudgeProvider(judgment, judgeModelId);
   return { modelId, ...(judgeProvider ? { judgeProvider } : {}) };
 }
 
@@ -107,20 +289,24 @@ export function buildLlmJudgeResponseIdentity(
  * "model not recorded — auto-picked at run time" rather than pretending
  * the provider name is a model.
  */
-export function describeJudgeModel(run: { judgeModel?: string | null; judgeModelId?: string | null } | undefined | null): {
+export function describeJudgeModel(run: { judgeModel?: string | null; judgeModelId?: string | null; judgeProvider?: string | null } | undefined | null): {
   /** Configured judge kind/id (`agent-trace-judge`, a Bedrock id, …) or undefined. */
   judgeModelId?: string;
   /** Underlying LLM when recorded. */
   judgeModel?: string;
   /** True when judgeModelId is a provider and the underlying model was never persisted. */
   modelNotRecorded: boolean;
+  /** True when the report/run recorded that NO LLM judge call was made (code assertions only). */
+  noLlmJudge: boolean;
 } {
   const judgeModelId = run?.judgeModelId || undefined;
   const judgeModel = run?.judgeModel || undefined;
+  const noLlmJudge = run?.judgeProvider === JUDGE_PROVIDER_NONE && !judgeModel;
   return {
     judgeModelId,
     judgeModel,
-    modelNotRecorded: !judgeModel && isJudgeProviderPseudoModelId(judgeModelId),
+    modelNotRecorded: !noLlmJudge && !judgeModel && isJudgeProviderPseudoModelId(judgeModelId),
+    noLlmJudge,
   };
 }
 

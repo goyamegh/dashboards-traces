@@ -123,6 +123,8 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     judgeModelId: stored.judgeModelId,
     // Underlying LLM that judged (lib/judgeIdentity) -- optional, old docs lack it.
     judgeModel: stored.judgeModel,
+    // Judge kind, or 'none' when a code-SDK body made no LLM judge call.
+    judgeProvider: stored.judgeProvider,
     status: stored.status,
     passFailStatus: stored.passFailStatus as 'passed' | 'failed' | undefined,
     evaluatorId: stored.evaluatorId,
@@ -251,6 +253,7 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
   if (report.evaluatorId !== undefined) base.evaluatorId = report.evaluatorId;
   if (report.judgeModelId !== undefined) base.judgeModelId = report.judgeModelId;
   if (report.judgeModel !== undefined) base.judgeModel = report.judgeModel;
+  if (report.judgeProvider !== undefined) base.judgeProvider = report.judgeProvider;
   if (report.traceFetchAttempts !== undefined) base.traceFetchAttempts = report.traceFetchAttempts;
   if (report.lastTraceFetchAt !== undefined) base.lastTraceFetchAt = report.lastTraceFetchAt;
   if (report.traceError !== undefined) base.traceError = report.traceError;
@@ -393,7 +396,7 @@ class AsyncRunStorage {
     // summary-only readers can derive the snapshot score without the full doc.
     const fields = [
       'status', 'passFailStatus', 'metricsStatus', 'traceId', 'sessionId',
-      'judgeModelId', 'judgeModel', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations', 'metrics',
+      'judgeModelId', 'judgeModel', 'judgeProvider', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations', 'metrics',
       'scoringSnapshot',
     ];
     // Chunk to keep the URL well under practical limits for large benchmarks.
@@ -476,6 +479,7 @@ class AsyncRunStorage {
     if ((updates as any).judgeMode !== undefined) storageUpdates.judgeMode = (updates as any).judgeMode;
     if (updates.scoringSnapshot !== undefined) storageUpdates.scoringSnapshot = updates.scoringSnapshot;
     if (updates.judgeModel !== undefined) storageUpdates.judgeModel = updates.judgeModel;
+    if (updates.judgeProvider !== undefined) storageUpdates.judgeProvider = updates.judgeProvider;
     if (updates.llmJudgeResponse !== undefined) storageUpdates.llmJudgeResponse = updates.llmJudgeResponse;
     if (updates.spans !== undefined) storageUpdates.spans = updates.spans;
 

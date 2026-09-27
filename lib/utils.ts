@@ -150,13 +150,25 @@ export const getJudgeModelLabel = (judgeModelId?: string | null): string => {
  *   - Bedrock run:            label 'Claude Sonnet 4.6',            detail undefined
  *   - agent judge, recorded:  label 'Agent Trace Judge (…)',        detail 'claude-sonnet-4-5'
  *   - agent judge, old run:   label 'Agent Trace Judge (…)',        hint 'model not recorded — auto-picked at run time'
+ *   - SDK body, no judge():   label 'No LLM judge',                 hint 'code assertions only'
  *   - no judge on the run:    label '—'
  */
 export const getJudgeModelDisplay = (
-  run: { judgeModel?: string | null; judgeModelId?: string | null } | null | undefined
+  run: { judgeModel?: string | null; judgeModelId?: string | null; judgeProvider?: string | null } | null | undefined
 ): { label: string; detail?: string; hint?: string; title: string } => {
-  const { judgeModelId, judgeModel, modelNotRecorded } = describeJudgeModel(run);
+  const { judgeModelId, judgeModel, modelNotRecorded, noLlmJudge } = describeJudgeModel(run);
   const kindLabel = judgeModelId ? getModelName(judgeModelId) : undefined;
+  if (noLlmJudge) {
+    // A code-SDK report/run that recorded `judgeProvider: 'none'`: its body
+    // made no `judge()` call, so the configured judge (if any) never ran.
+    return {
+      label: 'No LLM judge',
+      hint: 'code assertions only',
+      title: kindLabel
+        ? `No LLM judge — code assertions only (configured judge ${kindLabel} was not called)`
+        : 'No LLM judge — code assertions only',
+    };
+  }
   if (!judgeModelId && !judgeModel) return { label: '—', title: 'No judge recorded for this run' };
   const isProvider = isJudgeProviderPseudoModelId(judgeModelId);
   if (judgeModel) {

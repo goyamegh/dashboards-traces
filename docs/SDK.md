@@ -487,6 +487,7 @@ Two fields describe the judge on every persisted report and run:
 |-------|---------|---------|
 | `judgeModelId` | The **configured** judge — what you picked in the run dialog / `--judge-model`. For the agent (trace) judge this is a **provider name**, not a model. | `agent-trace-judge`, `us.anthropic.claude-sonnet-4-6` |
 | `judgeModel` | The **underlying LLM** that produced the verdict, as the provider resolved it at judge time. Always recorded (not gated by `AH_JUDGE_DEBUG`). | `amazon-bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0` |
+| `judgeProvider` | The judge **kind** that ran (`agent`, `bedrock`, `pi`, `openai-compatible`, `demo`, …) — or the marker **`none`** on a code-SDK report whose body made no LLM judge call at all. | `agent`, `none` |
 
 For plain Bedrock/OpenAI-compatible judges the two are the same model. For
 `agent-trace-judge` (and `pi-judge`) the LLM is picked at run time from the
@@ -495,6 +496,22 @@ and `llmJudgeResponse.modelId` now carries it too (with
 `llmJudgeResponse.judgeProvider` keeping the judge kind). Reports persisted
 before this field existed have no `judgeModel`; the UI shows
 "model not recorded — auto-picked at run time" for them rather than guessing.
+
+**Code-SDK tests** (`test(...)` bodies) have no `llmJudgeResponse` — their
+judge data lives in `matcherResults`. Every `judge()` call records one
+`llm-judge` matcher whose `model` is the **requested** judge id (the run's
+`--judge-model`, e.g. `agent-trace-judge`) and whose `judgeModel` /
+`judgeProvider` are what `/api/judge` reported for that call. The runner rolls
+the first resolved `judgeModel` up onto the report and the run exactly like the
+classic path, so the Judge tab reads "Judge model: Agent Trace Judge ·
+claude-sonnet-4-5 · 2 judge calls". A body that only uses `expect()` / trace
+matchers (no `judge()`, or every `judge()` skipped) is persisted with
+`judgeProvider: 'none'` and no `judgeModel`, and the UI says "No LLM judge —
+code assertions only" instead of showing the run's configured judge as if it
+had run. A runtime guard in the runners (`assertJudgeIdentityConsistent`,
+[lib/judgeIdentity.ts](../lib/judgeIdentity.ts)) logs `[JudgeIdentity] WARN
+<report id>: …` whenever an LLM judge ran on a report without a resolved
+`judgeModel` being recorded — it never fails the run.
 
 **Pinning the agent judge's model** (the default is an auto-pick preferring
 a recent Claude Sonnet on an inference profile; the pick order is fixed for

@@ -73,6 +73,16 @@ describe('getJudgeModelDisplay', () => {
     expect(getJudgeModelDisplay(undefined).label).toBe('—');
     expect(getJudgeModelDisplay({}).label).toBe('—');
   });
+  it("code-SDK report/run that never called judge() (judgeProvider 'none'): 'No LLM judge' + 'code assertions only', naming the unused configured judge in the tooltip", () => {
+    const d = getJudgeModelDisplay({ judgeModelId: 'agent-trace-judge', judgeProvider: 'none' });
+    expect(d.label).toBe('No LLM judge');
+    expect(d.detail).toBeUndefined();
+    expect(d.hint).toBe('code assertions only');
+    expect(d.title).toContain('Agent Trace Judge (pi SDK + query_spans)');
+    expect(getJudgeModelDisplay({ judgeProvider: 'none' }).title).toBe('No LLM judge — code assertions only');
+    // a recorded model beats a stale 'none' marker
+    expect(getJudgeModelDisplay({ judgeModelId: 'agent-trace-judge', judgeModel: SONNET_45, judgeProvider: 'none' }).detail).toBe('claude-sonnet-4-5');
+  });
 });
 
 describe('<JudgeModelLabel />', () => {
@@ -109,6 +119,14 @@ describe('<JudgeModelLabel />', () => {
   it('judgeModelText mirrors the visible label for sorting/tooltips', () => {
     expect(judgeModelText({ judgeModelId: 'agent-trace-judge', judgeModel: SONNET_45 })).toBe('Agent Trace Judge (pi SDK + query_spans) · claude-sonnet-4-5');
     expect(judgeModelText({ judgeModelId: 'agent-trace-judge' })).toBe('Agent Trace Judge (pi SDK + query_spans)');
+    expect(judgeModelText({ judgeModelId: 'agent-trace-judge', judgeProvider: 'none' })).toBe('No LLM judge · code assertions only');
     expect(judgeModelText(undefined)).toBe('—');
+  });
+
+  it("renders 'No LLM judge · code assertions only' for a run/report marked judgeProvider 'none'", () => {
+    render(React.createElement(JudgeModelLabel, { run: { judgeModelId: 'agent-trace-judge', judgeProvider: 'none' } }));
+    expect(screen.getByTestId('judge-model-kind').textContent).toBe('No LLM judge');
+    expect(screen.queryByTestId('judge-model-resolved')).toBeNull();
+    expect(screen.getByTestId('judge-model-not-recorded').textContent).toContain('code assertions only');
   });
 });

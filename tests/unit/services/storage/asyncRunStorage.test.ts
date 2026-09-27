@@ -161,6 +161,16 @@ describe('AsyncRunStorage', () => {
       expect('evaluatorId' in arg).toBe(false);
       expect('judgeModelId' in arg).toBe(false);
       expect('judgeModel' in arg).toBe(false);
+      expect('judgeProvider' in arg).toBe(false);
+    });
+
+    it("persists judgeProvider (judge kind, or the 'none' marker for code-SDK bodies that never called judge()) on the write side", async () => {
+      mockOsRuns.create.mockResolvedValue(createMockStorageRun('run-jp'));
+      const report = createMockReport();
+      (report as any).judgeModelId = 'agent-trace-judge';
+      (report as any).judgeProvider = 'none';
+      await asyncRunStorage.saveReport(report);
+      expect(mockOsRuns.create).toHaveBeenCalledWith(expect.objectContaining({ judgeModelId: 'agent-trace-judge', judgeProvider: 'none' }));
     });
 
     it('persists judgeModel (the UNDERLYING judge LLM) alongside judgeModelId (the judge kind) on the write side', async () => {
@@ -324,6 +334,13 @@ describe('AsyncRunStorage', () => {
       mockOsRuns.getById.mockResolvedValue({ ...createMockStorageRun('run-2'), judgeModelId: 'agent-trace-judge' } as any);
       const old = await asyncRunStorage.getReportById('run-2');
       expect(old?.judgeModel).toBeUndefined();
+      expect(old?.judgeProvider).toBeUndefined();
+    });
+
+    it('maps judgeProvider from storage on the read side (SDK deterministic-only reports carry the none marker)', async () => {
+      mockOsRuns.getById.mockResolvedValue({ ...createMockStorageRun('run-3'), judgeModelId: 'agent-trace-judge', judgeProvider: 'none' } as any);
+      const result = await asyncRunStorage.getReportById('run-3');
+      expect(result?.judgeProvider).toBe('none');
     });
 
     it('returns null when not found', async () => {
@@ -545,10 +562,12 @@ describe('AsyncRunStorage', () => {
       const llmJudgeResponse = { modelId: 'amazon-bedrock/us.anthropic.claude-sonnet-4-5', judgeProvider: 'agent', timestamp: 't', promptTokens: 0, completionTokens: 0, latencyMs: 1, rawResponse: '{}' };
       await asyncRunStorage.updateReport('run-1', {
         judgeModel: 'amazon-bedrock/us.anthropic.claude-sonnet-4-5',
+        judgeProvider: 'agent',
         llmJudgeResponse,
       } as any);
       expect(mockOsRuns.partialUpdate).toHaveBeenCalledWith('run-1', expect.objectContaining({
         judgeModel: 'amazon-bedrock/us.anthropic.claude-sonnet-4-5',
+        judgeProvider: 'agent',
         llmJudgeResponse,
       }));
     });

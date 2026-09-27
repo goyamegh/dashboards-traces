@@ -59,8 +59,26 @@ export interface MatcherResult {
   score?: number;
   /** Free-form judge reasoning, when available. */
   reasoning?: string;
-  /** Model used by the judge for this matcher. */
+  /**
+   * The judge id the call was made with (`options.model` / the run's bound
+   * `judgeModelId`). For the agent (trace) judge this is the PROVIDER id
+   * (`agent-trace-judge`), not an LLM — see {@link judgeModel}.
+   */
   model?: string;
+  /**
+   * The UNDERLYING LLM that actually produced this verdict, as `/api/judge`
+   * reported it (`JudgeResponse.judgeModel`; lib/judgeIdentity). Never a
+   * provider pseudo-id. Undefined when the server did not report one.
+   */
+  judgeModel?: string;
+  /** Judge kind that executed the call (`'agent' | 'bedrock' | 'pi' | …`), when reported. */
+  judgeProvider?: string;
+  /**
+   * True when `judge()` was skipped (`skip: true` / `AH_SKIP_JUDGE`) — the
+   * row is recorded for visibility but NO LLM call was made, so it never
+   * counts as a judge call for the report's judge identity.
+   */
+  skipped?: boolean;
 
   // ─── llm-judge enriched fields ───
   // Optional fields populated for `method: 'llm-judge'` entries when the

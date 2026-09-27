@@ -104,6 +104,8 @@ export interface StorageBenchmarkRunConfig {
   judgeModelId?: string;
   /** Run-level underlying judge LLM (first resolved report); see BenchmarkRun.judgeModel. */
   judgeModel?: string;
+  /** Run-level judge kind, or 'none' when no report called an LLM judge; see BenchmarkRun.judgeProvider. */
+  judgeProvider?: string;
   evaluatorId?: string;
   headers?: Record<string, string>;
   iterationCount?: number;
@@ -177,6 +179,8 @@ export interface StorageRun {
   judgeModelId?: string;
   /** The UNDERLYING LLM that judged (see TestCaseRun.judgeModel) -- `judgeModelId` may name a provider. */
   judgeModel?: string;
+  /** Judge kind, or 'none' when a code-SDK body made no LLM judge call (see TestCaseRun.judgeProvider). */
+  judgeProvider?: string;
   improvementStrategies?: {
     category: string;
     issue: string;

@@ -78,7 +78,7 @@ export interface FinalizeEvaluationRunInput {
    * plain top-level fields the runner computes and are carried through onto
    * the doc when present.
    */
-  completedRun: Pick<EvaluationRun, 'results' | 'testCaseSnapshots'> & Partial<Pick<EvaluationRun, 'judgeFailureSummary' | 'judgeModel'>>;
+  completedRun: Pick<EvaluationRun, 'results' | 'testCaseSnapshots'> & Partial<Pick<EvaluationRun, 'judgeFailureSummary' | 'judgeModel' | 'judgeProvider'>>;
   completedAt?: string;
 }
 
@@ -129,6 +129,7 @@ export async function finalizeEvaluationRun(
     completedAt,
     ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
     ...(completedRun.judgeModel ? { judgeModel: completedRun.judgeModel } : {}),
+    ...(completedRun.judgeProvider ? { judgeProvider: completedRun.judgeProvider } : {}),
   });
   return { run, stats, cancelledMarkers };
 }

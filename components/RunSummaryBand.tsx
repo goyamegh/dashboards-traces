@@ -43,7 +43,7 @@ export interface RunSummaryBandProps {
    */
   judgeModelLabel?: string;
   /** The run's judge identity; rendered via JudgeModelLabel when provided. */
-  judgeRun?: { judgeModel?: string | null; judgeModelId?: string | null } | null;
+  judgeRun?: { judgeModel?: string | null; judgeModelId?: string | null; judgeProvider?: string | null } | null;
   evaluatorLabel: string;
   startedAt?: string;
   durationMs?: number;

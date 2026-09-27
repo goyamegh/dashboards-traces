@@ -18,8 +18,11 @@
 import React from 'react';
 import { getJudgeModelDisplay } from '@/lib/utils';
 
+export type JudgeIdentityLike = { judgeModel?: string | null; judgeModelId?: string | null; judgeProvider?: string | null };
+
 export interface JudgeModelLabelProps {
-  run: { judgeModel?: string | null; judgeModelId?: string | null } | null | undefined;
+  /** `judgeProvider: 'none'` (a code-SDK report/run that never called `judge()`) renders "No LLM judge · code assertions only". */
+  run: JudgeIdentityLike | null | undefined;
   className?: string;
   'data-testid'?: string;
 }
@@ -44,7 +47,10 @@ export const JudgeModelLabel: React.FC<JudgeModelLabelProps> = ({ run, className
 };
 
 /** Plain-text form of the same label (for `title=` attributes and sort keys). */
-export function judgeModelText(run: { judgeModel?: string | null; judgeModelId?: string | null } | null | undefined): string {
-  const { label, detail } = getJudgeModelDisplay(run);
-  return detail ? `${label} · ${detail}` : label;
+export function judgeModelText(run: JudgeIdentityLike | null | undefined): string {
+  const { label, detail, hint } = getJudgeModelDisplay(run);
+  if (detail) return `${label} · ${detail}`;
+  // "No LLM judge · code assertions only" -- the hint IS the information here.
+  if (hint && label === 'No LLM judge') return `${label} · ${hint}`;
+  return label;
 }

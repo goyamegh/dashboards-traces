@@ -183,6 +183,9 @@ export function getIndexMappings(): IndexMappings {
           // ensureIndexes()'s putMapping rejects a text->keyword change for
           // the whole request (which would then also skip this new field).
           judgeModel: { type: 'keyword' },
+          // Judge kind ('agent' | 'bedrock' | …) or the 'none' marker for
+          // code-SDK reports whose body made no LLM judge call.
+          judgeProvider: { type: 'keyword' },
           iteration: { type: 'integer' },
           author: { type: 'keyword' },
           createdAt: { type: 'date' },

@@ -557,6 +557,17 @@ export interface TestCaseRun {
    * See server/services/piAgenticJudgeService.ts and `JudgeResponse.judgeModel`.
    */
   judgeModel?: string;
+  /**
+   * Which judge KIND produced this report's verdict (`'agent' | 'bedrock' |
+   * 'pi' | 'openai-compatible' | 'demo' | …`), or the marker `'none'` when a
+   * code-SDK test body made NO LLM judge call at all (code assertions /
+   * trace checks only) — so the UI can say "No LLM judge" instead of
+   * showing the run's configured judge as if it had judged. Classic
+   * (auto-judged) reports carry the provider the judge service reported;
+   * undefined for reports persisted before this field existed. See
+   * lib/judgeIdentity.ts (`resolveJudgeIdentityFromMatchers`).
+   */
+  judgeProvider?: string;
   agentEndpoint?: string;
   evaluatorId?: string;              // Which evaluator was used (optional for backwards compatibility)
 
@@ -1235,6 +1246,13 @@ export interface BenchmarkRun {
    * {@link TestCaseRun.judgeModel}.
    */
   judgeModel?: string;
+  /**
+   * Run-level judge KIND: the provider of the first report that made an
+   * LLM judge call, or `'none'` when no report of the run called an LLM
+   * judge at all (code-SDK bodies with assertions only). See
+   * {@link TestCaseRun.judgeProvider}.
+   */
+  judgeProvider?: string;
   evaluatorId?: string;            // Evaluator to use for judging (optional, defaults to RCA Default)
   headers?: Record<string, string>; // Custom headers
   concurrency?: number;              // Parallel test case execution limit (1 = sequential, default)
@@ -1414,6 +1432,8 @@ export interface EvaluationRun {
    * {@link BenchmarkRun.judgeModel} / {@link TestCaseRun.judgeModel}.
    */
   judgeModel?: string;
+  /** Run-level judge kind, or `'none'` when no report called an LLM judge — see {@link BenchmarkRun.judgeProvider}. */
+  judgeProvider?: string;
   evaluatorId?: string;
   headers?: Record<string, string>;
   concurrency?: number;

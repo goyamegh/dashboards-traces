@@ -45,6 +45,7 @@ import type { TrajectoryStep } from '@/types';
 import { recordVerdict } from '../matchers/session.js';
 import { readEnv } from '../envCompat.js';
 import { getBackendUrl, isBackendPortExplicit, DEFAULT_BACKEND_PORT } from '../portConfig.js';
+import { isJudgeProviderPseudoModelId, resolveJudgeModelForReport, resolveJudgeProvider } from '../judgeIdentity.js';
 
 /** Whether a judge signal gates the test verdict or is observational only. */
 export type JudgeRole = 'gate' | 'observe';
@@ -160,6 +161,15 @@ interface RawJudgeResponse {
   overallScore?: number;
   /** Non-metric structured judge output (facts, failure_causes, evidence, …). */
   extraFields?: Record<string, unknown>;
+  /**
+   * The UNDERLYING LLM that produced the verdict, as the server's judge
+   * provider resolved it (`JudgeResponse.judgeModel`). For the agent (trace)
+   * judge the requested `modelId` is a PROVIDER pseudo-id, so this is the
+   * only place the real model is reported.
+   */
+  judgeModel?: string;
+  /** Judge kind that executed the call (`'agent' | 'bedrock' | 'pi' | …`). */
+  judgeProvider?: string;
 }
 const verdictCache = new Map<string, RawJudgeResponse>();
 
@@ -229,6 +239,34 @@ function isTrajectory(x: unknown): x is TrajectoryStep[] {
 
 function isResultLike(x: unknown): x is ResultLike {
   return typeof x === 'object' && x !== null && 'trajectory' in (x as object);
+}
+
+/**
+ * The `judgeModel` / `judgeProvider` pair recorded on an llm-judge
+ * MatcherResult from what `/api/judge` reported. Shares the derivation the
+ * classic path uses (lib/judgeIdentity): a provider pseudo-id echoed back as
+ * `judgeModel` by an old server is never stored as a model; a plain model id
+ * requested on an old server (no `judgeModel` in the response) is its own
+ * model; the kind is inferred from the requested id when the server didn't
+ * say. Keys are omitted (not `undefined`) so the persisted row stays clean.
+ */
+function buildMatcherJudgeIdentity(
+  raw: Pick<RawJudgeResponse, 'judgeModel' | 'judgeProvider'>,
+  requestedModel: string | undefined
+): { judgeModel?: string; judgeProvider?: string } {
+  const reported = typeof raw.judgeModel === 'string' ? raw.judgeModel.trim() : '';
+  const judgeModel = resolveJudgeModelForReport(
+    { judgeModel: reported && !isJudgeProviderPseudoModelId(reported) ? reported : undefined },
+    requestedModel
+  );
+  const judgeProvider = resolveJudgeProvider(
+    { judgeProvider: typeof raw.judgeProvider === 'string' ? raw.judgeProvider : undefined },
+    requestedModel
+  );
+  return {
+    ...(judgeModel ? { judgeModel } : {}),
+    ...(judgeProvider ? { judgeProvider } : {}),
+  };
 }
 
 /**
@@ -356,7 +394,14 @@ async function runJudge(
       // number — a fabricated 0 renders as a misleading "score 0%".
       ...(headline !== undefined ? { score: headline / 100 } : {}),
       reasoning: verdict.reasoning,
+      // `model` stays the REQUESTED judge id (backward compatible: the run's
+      // bound `judgeModelId`, which for the agent trace judge is a provider
+      // name). The LLM that actually judged goes on `judgeModel`, taken from
+      // the response — pre-fix the matcher recorded only the pseudo-id and
+      // nothing rolled a real model up to the report, so SDK reports judged
+      // by the agent trace judge showed a provider with no model.
       model: options?.model,
+      ...buildMatcherJudgeIdentity(raw, options?.model),
       // NOTE: no `errorMessage` mirror. It used to copy `reasoning` verbatim
       // on failure, which persisted the same multi-KB string twice and made
       // the UI render it twice (once red as "error", once as "reasoning").
@@ -393,6 +438,9 @@ async function runJudge(
       method: 'llm-judge',
       role: 'observe',
       durationMs: 0,
+      // No LLM call was made — flagged so the report's judge identity
+      // (lib/judgeIdentity resolveJudgeIdentityFromMatchers) doesn't count it.
+      skipped: true,
       reasoning: 'Judge skipped (AH_SKIP_JUDGE / skip option).',
     });
     return makeVerdict({

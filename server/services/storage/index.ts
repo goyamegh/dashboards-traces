@@ -226,6 +226,8 @@ export async function saveReportWithClient(
     judgeModelId: report.judgeModelId,
     // Underlying LLM that judged (lib/judgeIdentity) -- `judgeModelId` may be a provider name.
     judgeModel: report.judgeModel,
+    // Judge kind ('agent' | 'bedrock' | …), or 'none' when a code-SDK body made no LLM judge call.
+    judgeProvider: report.judgeProvider,
     evaluatorId: report.evaluatorId,
     // SDK matcher verdicts: persist alongside the report so the inspect
     // page can render the per-matcher breakdown.

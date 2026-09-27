@@ -20,6 +20,13 @@
  *   - plain Bedrock run: `judgeModel === judgeModelId` (trivially).
  *   - old-server shape (no judgeModel in the /api/judge response) for an
  *     agentic judge: `judgeModel` is NOT fabricated from the provider name.
+ *   - CODE-SDK bodies (`evaluateFnMap`): a `judge()` call rolls the resolved
+ *     LLM up to `report.judgeModel` / `report.judgeProvider` and to the run
+ *     (the owner-verified miss: SDK reports had only
+ *     `matcherResults[].model = 'agent-trace-judge'` and no `judgeModel`);
+ *     a deterministic-only body is marked `judgeProvider: 'none'`; the
+ *     run-level kind is the first REAL judge kind, never 'none' once any
+ *     report judged.
  *
  * Pre-fix every agent-trace-judge report on the shared cluster persisted
  * `judgeModelId: 'agent-trace-judge'` AND `llmJudgeResponse.modelId:
@@ -221,5 +228,107 @@ describe('judge identity persisted on report + run (integration)', () => {
     expect(report.llmJudgeResponse.modelId).toBe('agent-trace-judge');
     expect(report.llmJudgeResponse.judgeProvider).toBe('agent');
     expect(result.judgeModel).toBeUndefined();
+  });
+
+  describe('code-SDK bodies (evaluateFnMap)', () => {
+    const sdkTestCase = (id: string) => createTestCase(id);
+
+    it('judge() inside the body → report.judgeModel + judgeProvider + run.judgeModel (the SDK-path miss)', async () => {
+      mockFetch.mockResolvedValue(okJudge({ judgeModel: SONNET_45, judgeProvider: 'agent' }));
+      const { storage, docs } = createStorage();
+      const run = createRun({ judgeModelId: 'agent-trace-judge' });
+      const tc = sdkTestCase('tc-sdk-judge');
+      const evaluateFnMap = new Map<string, (f: any) => Promise<void>>([
+        [tc.id, async ({ agent, judge }: any) => {
+          const result = await agent.run('Why is it failing?');
+          await judge(result, ['names the failing dependency', 'proposes a fix']);
+        }],
+      ]);
+
+      const result = await executeEvaluationRun(run, [tc], { storageModule: storage, onProgress: () => {}, evaluateFnMap });
+
+      expect(result.status).toBe('completed');
+      const [report] = [...docs.values()].filter(d => d.testCaseId);
+      expect(report.evaluationType).toBe('deterministic');
+      expect(report.llmJudgeResponse).toBeUndefined();               // SDK reports have no classic sidecar
+      const judgeRows = report.matcherResults.filter((m: any) => m.method === 'llm-judge');
+      expect(judgeRows).toHaveLength(1);
+      expect(judgeRows[0].model).toBe('agent-trace-judge');           // requested id (BC)
+      expect(judgeRows[0].judgeModel).toBe(SONNET_45);                // resolved LLM on the matcher
+      expect(judgeRows[0].judgeProvider).toBe('agent');
+      // …and rolled up to the report + the run:
+      expect(report.judgeModelId).toBe('agent-trace-judge');
+      expect(report.judgeModel).toBe(SONNET_45);
+      expect(report.judgeProvider).toBe('agent');
+      expect(result.judgeModel).toBe(SONNET_45);
+      expect(result.judgeProvider).toBe('agent');
+      // the SDK judge call asked for the configured judge id
+      expect(JSON.parse(mockFetch.mock.calls[0][1].body).modelId).toBe('agent-trace-judge');
+    });
+
+    it("deterministic-only body → judgeModel unset, judgeProvider 'none' on the report AND the run", async () => {
+      const { storage, docs } = createStorage();
+      const run = createRun({ judgeModelId: 'agent-trace-judge' });
+      const tc = sdkTestCase('tc-sdk-det');
+      const { expect: ahExpect } = await import('@/lib/matchers/expect');
+      const evaluateFnMap = new Map<string, (f: any) => Promise<void>>([
+        [tc.id, async ({ agent }: any) => {
+          const result = await agent.run('Why is it failing?');
+          ahExpect(result.trajectory.length).to.be.greaterThan(0);
+        }],
+      ]);
+
+      const result = await executeEvaluationRun(run, [tc], { storageModule: storage, onProgress: () => {}, evaluateFnMap });
+
+      const [report] = [...docs.values()].filter(d => d.testCaseId);
+      expect(mockFetch).not.toHaveBeenCalled();
+      expect(report.passFailStatus).toBe('passed');
+      expect(report.judgeModel).toBeUndefined();
+      expect(report.judgeProvider).toBe('none');
+      expect(result.judgeModel).toBeUndefined();
+      expect(result.judgeProvider).toBe('none');
+    });
+
+    it("mixed run: the run-level kind is the first REAL judge kind, never 'none' once any case judged (order-independent)", async () => {
+      mockFetch.mockResolvedValue(okJudge({ judgeModel: SONNET_45, judgeProvider: 'agent' }));
+      const { storage, docs } = createStorage();
+      const run = createRun({ judgeModelId: 'agent-trace-judge', concurrency: 1 });
+      const det = sdkTestCase('tc-sdk-det-first');
+      const judged = sdkTestCase('tc-sdk-judged-second');
+      const evaluateFnMap = new Map<string, (f: any) => Promise<void>>([
+        [det.id, async ({ agent }: any) => { await agent.run('p'); }],
+        [judged.id, async ({ agent, judge }: any) => { await judge(await agent.run('p'), 'claim'); }],
+      ]);
+
+      const result = await executeEvaluationRun(run, [det, judged], { storageModule: storage, onProgress: () => {}, evaluateFnMap });
+
+      const byCase = Object.fromEntries([...docs.values()].filter(d => d.testCaseId).map(d => [d.testCaseId, d]));
+      expect(byCase[det.id].judgeProvider).toBe('none');
+      expect(byCase[det.id].judgeModel).toBeUndefined();
+      expect(byCase[judged.id].judgeProvider).toBe('agent');
+      expect(byCase[judged.id].judgeModel).toBe(SONNET_45);
+      expect(result.judgeModel).toBe(SONNET_45);
+      expect(result.judgeProvider).toBe('agent');
+    });
+
+    it('old /api/judge (no identity in the response) + agent judge in an SDK body: no fabricated model, kind inferred, guard warns', async () => {
+      mockFetch.mockResolvedValue(okJudge({}));
+      const warn = jest.spyOn(console, 'warn').mockImplementation(() => {});
+      const { storage, docs } = createStorage();
+      const run = createRun({ judgeModelId: 'agent-trace-judge' });
+      const tc = sdkTestCase('tc-sdk-old');
+      const evaluateFnMap = new Map<string, (f: any) => Promise<void>>([
+        [tc.id, async ({ agent, judge }: any) => { await judge(await agent.run('p'), 'claim'); }],
+      ]);
+
+      const result = await executeEvaluationRun(run, [tc], { storageModule: storage, onProgress: () => {}, evaluateFnMap });
+
+      const [report] = [...docs.values()].filter(d => d.testCaseId);
+      expect(report.judgeModel).toBeUndefined();
+      expect(report.judgeProvider).toBe('agent');
+      expect(result.judgeModel).toBeUndefined();
+      // The runtime guard made the miss visible instead of silently persisting it.
+      expect(warn.mock.calls.map(c => String(c[0])).some(m => m.startsWith(`[JudgeIdentity] WARN ${report.id}:`) && m.includes('no resolved judgeModel'))).toBe(true);
+    });
   });
 });

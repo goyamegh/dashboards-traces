@@ -97,6 +97,7 @@ function toBenchmarkRun(stored: StorageBenchmarkRunConfig): BenchmarkRun {
     // older docs is already correctly typed without a cast.
     judgeModelId: stored.judgeModelId,
     judgeModel: stored.judgeModel,
+    judgeProvider: stored.judgeProvider,
     evaluatorId: stored.evaluatorId,
     headers: stored.headers,
     // Parallel test case execution limit (1 = sequential, undefined = legacy
@@ -152,6 +153,7 @@ function toStorageFormat(benchmark: Partial<Benchmark>): Record<string, any> {
       modelId: run.modelId,
       judgeModelId: run.judgeModelId,
       judgeModel: run.judgeModel,
+      judgeProvider: run.judgeProvider,
       evaluatorId: run.evaluatorId,
       headers: run.headers,
       ...(run.concurrency !== undefined && { concurrency: run.concurrency }),
@@ -310,6 +312,7 @@ class AsyncBenchmarkStorage {
       modelId: r.modelId,
       judgeModelId: r.judgeModelId,
       judgeModel: r.judgeModel,
+      judgeProvider: r.judgeProvider,
       evaluatorId: r.evaluatorId,
       headers: r.headers,
       ...(r.concurrency !== undefined && { concurrency: r.concurrency }),

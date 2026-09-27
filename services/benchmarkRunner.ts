@@ -36,7 +36,7 @@ import { connectorRegistry } from '@/services/connectors/server';
 import { readEnv } from '@/lib/envCompat';
 import { buildJudgeAgentsHints, resolveJudgeRunId } from '@/services/traces/judgeAgentsHints';
 import { extractJudgeFailureReason, computeJudgeFailureSummary } from '@/lib/judgeFailureSummary';
-import { buildJudgeIdentityPatch, buildLlmJudgeResponseIdentity } from '@/lib/judgeIdentity';
+import { buildJudgeIdentityPatch, buildLlmJudgeResponseIdentity, buildSdkJudgeIdentityPatch, assertJudgeIdentityConsistent, JUDGE_PROVIDER_NONE } from '@/lib/judgeIdentity';
 import {
   runInSession,
   recordVerdict,
@@ -536,6 +536,10 @@ export async function executeRun(
             appendNotReachedMarker(matcherResults, evalError, agentFailed);
             (report as any).evaluationType = 'deterministic';
             (report as any).matcherResults = matcherResults;
+            // SDK judge identity (lib/judgeIdentity): `report.judgeModel` from
+            // the first `judge()` matcher that resolved an LLM, `judgeProvider`
+            // its kind, or `'none'` when the body made no LLM judge call.
+            Object.assign(report, buildSdkJudgeIdentityPatch(matcherResults, run.judgeModelId));
             if (evalError !== undefined) {
               (report as any).assertionError =
                 (evalError as any)?.message ?? String(evalError);
@@ -637,6 +641,16 @@ export async function executeRun(
             experimentId: benchmark.id,
             experimentRunId: run.id,
           });
+          // Run-level judge identity (BenchmarkRun.judgeModel / judgeProvider,
+          // lib/judgeIdentity): first report that resolved an LLM wins; the
+          // kind is the first REAL kind ('none' only while every report so far
+          // made no LLM judge call). Trace-mode reports contribute when their
+          // polled judge completes (startTracePollingForReport below).
+          noteRunJudgeIdentity(run, (report as any).judgeModel, (report as any).judgeProvider);
+          if ((report as any).metricsStatus !== 'pending') {
+            // Runtime guard: an inline judge ran → a resolved model must be recorded (warns, never throws).
+            assertJudgeIdentityConsistent({ ...(report as any), id: savedReport.id });
+          }
 
           // Denormalize lastRunAt onto the test case (fire-and-forget)
           updateTestCaseLastRunAt(client, testCaseId, new Date().toISOString())
@@ -801,6 +815,20 @@ export async function executeRun(
  * It creates a new BenchmarkRun from the provided configuration and executes it.
  */
 /**
+ * Run-level judge identity rollup (BenchmarkRun.judgeModel / judgeProvider):
+ * the first report that resolved an underlying LLM wins; the kind is the
+ * first REAL judge kind -- `'none'` (a code-SDK body that made no LLM judge
+ * call) only stands while every report so far said so. Mirrors
+ * `noteJudgeModel` / `noteJudgeProvider` in services/evaluationRunner.ts.
+ */
+function noteRunJudgeIdentity(run: BenchmarkRun, judgeModel: string | undefined, judgeProvider: string | undefined): void {
+  if (judgeModel && !run.judgeModel) run.judgeModel = judgeModel;
+  if (judgeProvider && (!run.judgeProvider || run.judgeProvider === JUDGE_PROVIDER_NONE)) {
+    run.judgeProvider = judgeProvider;
+  }
+}
+
+/**
  * Generate a unique run ID
  */
 function generateRunId(): string {
@@ -852,6 +880,8 @@ async function saveReportWithModule(storage: IStorageModule, report: any): Promi
     // Underlying LLM that judged (see lib/judgeIdentity) -- distinct from
     // judgeModelId, which for the agent trace judge is a provider name.
     judgeModel: report.judgeModel,
+    // Judge kind, or 'none' when a code-SDK body made no LLM judge call.
+    judgeProvider: report.judgeProvider,
     evaluatorId: report.evaluatorId,
     status: report.status,
     passFailStatus: report.passFailStatus,
@@ -987,6 +1017,7 @@ export async function runSingleUseCase(
       judgeModelId: run.judgeModelId,
       // Underlying LLM that judged this report (lib/judgeIdentity).
       judgeModel: (report as any).judgeModel,
+      judgeProvider: (report as any).judgeProvider,
       // Re-stamp evaluatorId for the same reason. /api/evaluate sets it
       // on the placeholder, but if that step failed silently the doc has
       // no evaluatorId — and the trace-mode polled judge then reads it
@@ -1024,6 +1055,13 @@ export async function runSingleUseCase(
     savedReport = { ...report, id: updated.id, timestamp: updated.timestamp };
   } else {
     savedReport = await saveReportWithModule(storage, report);
+  }
+  // Runtime guard (lib/judgeIdentity): when the synchronous judge ran (a
+  // non-trace agent judged inline), a resolved `judgeModel` must have been
+  // recorded on the saved report. Trace-mode reports are still `pending`
+  // here and are checked when their polled judge completes. Warns only.
+  if (savedReport.metricsStatus !== 'pending') {
+    assertJudgeIdentityConsistent(savedReport);
   }
 
   // Denormalize lastRunAt onto the test case (only for persisted test cases)
@@ -1259,7 +1297,8 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
             resolveJudgeRunId(report),
             buildJudgeAgentsHints(report, agentConfig?.traceServiceName)
           );
-          await updateRunWithClient(client, report.id, {
+          const identity = buildJudgeIdentityPatch(judgment, judgeModelId);
+          const judgedUpdate = {
             trajectory: finalTrajectory,
             metricsStatus: 'ready',
             passFailStatus: judgment.passFailStatus,
@@ -1269,7 +1308,7 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
             // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
             ...(judgment.judgeMode ? { judgeMode: judgment.judgeMode } : {}),
             // Underlying LLM that judged (TestCaseRun.judgeModel) -- see lib/judgeIdentity.
-            ...buildJudgeIdentityPatch(judgment, judgeModelId),
+            ...identity,
             // Unified judge surface (issue #230 follow-up).
             matcherResults: [
               buildJudgeMatcherEntry(judgment, {
@@ -1294,7 +1333,13 @@ function startTracePollingForReport(report: EvaluationReport, testCase: TestCase
               ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
               ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
             },
-          });
+          };
+          await updateRunWithClient(client, report.id, judgedUpdate);
+          // Run-level rollup for trace-mode cases (the in-memory `run` is what
+          // the /execute route persists after executeRun awaits these polls)
+          // + the runtime identity guard (warns, never throws).
+          if (run) noteRunJudgeIdentity(run, identity.judgeModel, identity.judgeProvider);
+          assertJudgeIdentityConsistent({ id: report.id, judgeModelId, ...judgedUpdate } as any);
           if (report.experimentId) {
             await updateBenchmarkRunStatsForReport(client, report.experimentId, report.id);
           }

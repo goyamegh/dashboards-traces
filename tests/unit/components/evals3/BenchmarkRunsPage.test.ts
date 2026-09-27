@@ -81,6 +81,18 @@ jest.mock('@/lib/utils', () => ({
   getModelName: jest.fn((id: string) => id),
   getLabelColor: jest.fn(() => ''),
   cn: jest.fn((...args: unknown[]) => args.filter(Boolean).join(' ')),
+  // The "J. Model" column renders the full judge identity via
+  // components/JudgeModelLabel.judgeModelText -> getJudgeModelDisplay. Faithful
+  // stub of the real shape (kind label, optional resolved detail, the
+  // "No LLM judge" form); the real implementation is covered in
+  // tests/unit/components/JudgeModelLabel.test.ts.
+  getJudgeModelDisplay: jest.fn((run: { judgeModel?: string | null; judgeModelId?: string | null; judgeProvider?: string | null } | null | undefined) => {
+    if (run?.judgeProvider === 'none' && !run.judgeModel) return { label: 'No LLM judge', hint: 'code assertions only', title: 'No LLM judge — code assertions only' };
+    if (!run?.judgeModelId && !run?.judgeModel) return { label: '—', title: 'No judge recorded for this run' };
+    const label = run.judgeModelId || run.judgeModel!;
+    const detail = run.judgeModel && run.judgeModel !== run.judgeModelId ? run.judgeModel : undefined;
+    return { label, detail, title: detail ? `${label} · ${detail}` : label };
+  }),
 }));
 
 // recharts' ResponsiveContainer measures the DOM (0×0 in jsdom → renders
@@ -363,6 +375,31 @@ describe('BenchmarkRunsPage2 — Runs tab table, chart and click-to-filter', () 
       ok: true,
       json: async () => ({ evaluators: [{ id: 'ev-1', name: 'Agent Persona' }, { id: 'ev-2', name: 'Human Persona' }] }),
     }));
+  });
+
+  it('"J. Model" renders the full judge identity: resolved LLM for a judged run, "No LLM judge" for a code-SDK run that never called judge()', async () => {
+    const judgedSdkRun = makeEmbeddedRun({
+      id: 'run-sdk-judged', name: 'SDK Judged Run', agentKey: 'agent-a', modelId: 'model-x',
+      judgeModelId: 'agent-trace-judge', judgeModel: 'amazon-bedrock/global.anthropic.claude-sonnet-4-5', judgeProvider: 'agent',
+      createdAt: '2026-09-03T00:00:00.000Z',
+      results: { 'tc-1': { reportId: 'r-9', status: 'completed', passFailStatus: 'passed' } as any },
+    });
+    const detSdkRun = makeEmbeddedRun({
+      id: 'run-sdk-det', name: 'SDK Deterministic Run', agentKey: 'agent-a', modelId: 'model-x',
+      judgeModelId: 'agent-trace-judge', judgeProvider: 'none',
+      createdAt: '2026-09-04T00:00:00.000Z',
+      results: { 'tc-1': { reportId: 'r-10', status: 'completed', passFailStatus: 'passed' } as any },
+    });
+    mockGetById.mockResolvedValue(makeBenchmark({ runs: [judgedSdkRun, detSdkRun], totalRuns: 2 }));
+    await renderPage();
+    await waitFor(() => expect(screen.getAllByTestId('run-row')).toHaveLength(2));
+
+    const judged = screen.getByText('SDK Judged Run').closest('[data-testid="run-row"]') as HTMLElement;
+    expect(within(judged).getByTestId('run-cell-judge').textContent).toBe('agent-trace-judge · amazon-bedrock/global.anthropic.claude-sonnet-4-5');
+    const det = screen.getByText('SDK Deterministic Run').closest('[data-testid="run-row"]') as HTMLElement;
+    expect(within(det).getByTestId('run-cell-judge').textContent).toBe('No LLM judge · code assertions only');
+    // filtering still keys on the configured judge id
+    expect(within(det).getByTestId('run-cell-judge').getAttribute('data-filter-value')).toBe('agent-trace-judge');
   });
 
   it('renders one table row per run with the sketch columns: Run link, Agent, Model, Size, Pass %, Judge, J. Model, Date', async () => {
