@@ -59,7 +59,9 @@ import {
   EndpointCircuitBreaker,
   finalizeAgentFailedReport,
   resolveUnreachableThreshold,
+  stampAgentFailure,
 } from '@/services/evaluation/agentReachability';
+import { resolveEmptyResponseTripsBreaker } from '@/services/evaluation/emptyResponse';
 import { buildCancelledMarkers } from '@/services/evaluationRunFinalize';
 import { loadConfigSync } from '@/lib/config/index';
 import { getBackendUrl } from '@/lib/portConfig';
@@ -240,7 +242,13 @@ export async function executeEvaluationRun(
   // re-dialling a dead endpoint (and, pre-fix, each trace-polling for the
   // full budget). Threshold: connectorConfig.unreachableThreshold >
   // AGENT_UNREACHABLE_THRESHOLD env > 3; 0 disables.
-  const endpointBreaker = new EndpointCircuitBreaker(resolveUnreachableThreshold(agentConfig.connectorConfig));
+  // Empty responses (2xx with no steps / answer / results) count toward the
+  // same threshold unless connectorConfig.emptyResponseTripsBreaker /
+  // AGENT_EMPTY_RESPONSE_TRIPS_BREAKER says otherwise.
+  const endpointBreaker = new EndpointCircuitBreaker(
+    resolveUnreachableThreshold(agentConfig.connectorConfig),
+    { countEmptyResponses: resolveEmptyResponseTripsBreaker(agentConfig.connectorConfig) },
+  );
 
   try {
     // Per-case result persistence is BOOKKEEPING, not evaluation. It used to
@@ -628,11 +636,9 @@ export async function executeEvaluationRun(
               // #335: the agent never produced a trajectory (timeout/crash).
               // Surface the underlying message (e.g. "Subprocess timed out after
               // 600000ms") on the report instead of a silent empty `failed`.
-              Object.assign(
-                report,
-                buildEvaluatorErrorPatch('agent_failed', (evalError as any)?.message ?? String(evalError)),
-              );
-              (report as any).skipJudge = true;
+              // Transport / unreachable / empty-response errors additionally get
+              // the structured `agentError` (and the empty-response label).
+              stampAgentFailure(report as any, evalError);
             } else {
               (report as any).passFailStatus = failed ? 'failed' : 'passed';
               // Option B BC shim: legacy `llmJudgeReasoning` is a derived view
@@ -929,10 +935,11 @@ export async function executeEvaluationRun(
       run.judgeFailureSummary = judgeFailureSummary;
     }
 
-    // Run-level agent-unreachable surfacing: when the endpoint breaker opened,
-    // say so once on the run doc (runs list badge + inspector banner) — the
-    // per-case reports carry the same reason, but "N errored" alone is silent
-    // about WHY, and about how many cases were never attempted.
+    // Run-level agent-failure surfacing: when the endpoint breaker opened (or
+    // any case came back with an empty response), say so once on the run doc
+    // (runs list badge + inspector banner) — the per-case reports carry the
+    // same reason, but "N errored" alone is silent about WHY, and about how
+    // many cases were never attempted.
     const agentFailureSummary = endpointBreaker.summary();
     if (agentFailureSummary) {
       run.agentFailureSummary = agentFailureSummary;

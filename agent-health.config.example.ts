@@ -36,6 +36,10 @@ export default {
       //   // run fail immediately instead of re-dialling a dead endpoint.
       //   // Default 3 (or AGENT_UNREACHABLE_THRESHOLD env); 0 disables.
       //   unreachableThreshold: 3,
+      //   // An EMPTY response (2xx with no steps / answer / results) is always
+      //   // an agent failure that is never judged; by default it also counts
+      //   // toward unreachableThreshold. Set false to fail only that case.
+      //   emptyResponseTripsBreaker: true,
       // },
     },
 

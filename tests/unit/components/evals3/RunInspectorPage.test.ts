@@ -640,6 +640,24 @@ describe('RunInspectorPage — Re-run button (eval-run mode)', () => {
     expect(screen.queryByTestId('run-judge-failure-banner')).toBeNull();
   });
 
+  it('renders the empty-response banner (count form) with its own remedy when cases came back empty but the breaker did not trip', async () => {
+    const summary = '2 cases returned an empty response (no steps, no answer, no results) — not judged';
+    const { getEvaluationRun } = require('@/services/client');
+    getEvaluationRun.mockResolvedValue({ ...makeEvaluationRunFixture('eval-run-empty', 4), agentFailureSummary: summary });
+    mockTestCasesGetByIds.mockResolvedValue(makeTestCases(4));
+    mockGetReportSummariesByIds.mockResolvedValue(makeErroredSummaries(4, [1, 3]));
+
+    renderPage();
+
+    const banner = await screen.findByTestId('run-agent-unreachable-banner');
+    expect(banner.textContent).toContain(summary);
+    expect(banner.textContent).toContain('the agent answered with nothing to judge on these cases');
+    expect(banner.textContent).not.toContain('nothing was judged');
+    // The two empty cases are ERRORED rows (not passed, not pending).
+    await waitFor(() => expect(screen.getAllByTestId('test-case-row')).toHaveLength(4));
+    expect(document.querySelectorAll('[data-testid="test-case-row"][data-status="errored"]')).toHaveLength(2);
+  });
+
   it('renders no "Agent unreachable" banner for a run without agentFailureSummary', async () => {
     const { getEvaluationRun } = require('@/services/client');
     getEvaluationRun.mockResolvedValue(makeEvaluationRunFixture('eval-run-plain', 2));

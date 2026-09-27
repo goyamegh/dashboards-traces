@@ -193,6 +193,10 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     traceFetchAttempts: storedAny.traceFetchAttempts,
     lastTraceFetchAt: storedAny.lastTraceFetchAt,
     traceError: storedAny.traceError,
+    // Structured agent-step failure (transport / unreachable / empty
+    // response) — see TestCaseRun.agentError. The inspector panel's reason
+    // line and the retry-judgement guard read it browser-side.
+    agentError: (stored as any).agentError,
     judgeMode: storedAny.judgeMode,
     // Retry-judgement stamp (services/evaluation/retryJudgement.ts) — drives
     // the "Re-judged <when> with <evaluator> · <model>" line on the Judge tab.

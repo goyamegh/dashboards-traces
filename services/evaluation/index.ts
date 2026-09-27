@@ -25,10 +25,17 @@ import {
   AgentTransportError,
   EndpointCircuitBreaker,
   classifyTransportFailure,
+  describeAgentFailure,
   describeEndpointHost,
   endpointKeyFor,
   isAgentReachabilityError,
 } from '@/services/evaluation/agentReachability';
+import {
+  AgentEmptyResponseError,
+  classifyEmptyResponse,
+  isAgentEmptyResponseError,
+  readExplicitEmptyFlag,
+} from '@/services/evaluation/emptyResponse';
 
 // Re-export for use by experimentRunner when calling judge after trace polling
 export { callBedrockJudge };
@@ -384,7 +391,10 @@ export interface InvokeAgentOptions {
    * WITHOUT calling the connector; a transport-level connector failure
    * (connection refused / DNS / TLS / rejected status / spawn ENOENT) is
    * counted against the endpoint and rethrown as `AgentTransportError`
-   * (original error on `cause`); a successful call resets the count.
+   * (original error on `cause`); a successful call resets the count. An
+   * EMPTY response (no steps / answer / results — see
+   * `services/evaluation/emptyResponse.ts`) throws `AgentEmptyResponseError`
+   * and, when the breaker counts empty responses (default), is counted too.
    */
   circuitBreaker?: EndpointCircuitBreaker;
 }
@@ -505,8 +515,13 @@ export async function invokeAgent(
     }
     throw error;
   }
-  breaker?.recordSuccess(endpointKey);
   const agentDurationMs = Date.now() - agentStartTime;
+
+  // Explicit empty flag from the afterResponse hook (see
+  // AfterResponseContext.empty): a hook that renders a placeholder from a
+  // structured payload tells us so; the built-in detection below decides
+  // otherwise.
+  let explicitEmpty: boolean | undefined;
 
   // Execute afterResponse hook if defined
   if (agent.hooks?.afterResponse) {
@@ -527,12 +542,17 @@ export async function invokeAgent(
         trajectory: hookResult.trajectory,
         runId: hookResult.runId || result.runId,
       };
+      explicitEmpty = readExplicitEmptyFlag(hookResult);
 
       debug('Eval', 'afterResponse hook applied:', {
         trajectorySteps: hookResult.trajectory.length,
         runId: hookResult.runId
       });
     } catch (hookError: any) {
+      // The endpoint DID answer — a bug in the local hook says nothing about
+      // endpoint health, so the breaker's consecutive count is reset here
+      // exactly as for a judgeable answer (codex_review).
+      breaker?.recordSuccess(endpointKey);
       const errorMsg = hookError instanceof Error ? hookError.message : String(hookError);
       console.error(`[Eval] afterResponse hook failed for agent "${agent.key}":`, errorMsg);
       debug('Eval', `afterResponse hook error details:`, {
@@ -545,6 +565,30 @@ export async function invokeAgent(
       throw hookError instanceof Error ? hookError : new Error(errorMsg);
     }
   }
+
+  // Empty-response detection (services/evaluation/emptyResponse.ts): the
+  // agent answered, but with no steps, no answer text and no results — or the
+  // hook said so. Nothing here may reach the judge as a candidate answer (the
+  // owner incident: a hook-rendered "no results" placeholder was PASSED on a
+  // lenient rubric). Counted toward the endpoint breaker by default; the
+  // connector's trajectory / raw payload ride along on the error so the
+  // failed report still shows what came back.
+  const emptiness = classifyEmptyResponse({ trajectory: result.trajectory, rawEvents: result.rawEvents, explicit: explicitEmpty });
+  if (emptiness.empty) {
+    breaker?.recordEmptyResponse(endpointKey);
+    const host = endpointKey.startsWith('command:') ? endpointKey.slice('command:'.length) : describeEndpointHost(effectiveEndpoint);
+    throw new AgentEmptyResponseError(emptiness, host, {
+      trajectory: result.trajectory,
+      rawEvents: result.rawEvents || [],
+      runId: result.runId,
+      metadata: result.metadata,
+      agentDurationMs,
+    });
+  }
+  // The agent answered with something judgeable: reset the consecutive count.
+  // (Deliberately after the hook + emptiness check, so an empty answer never
+  // resets the streak it is about to extend.)
+  breaker?.recordSuccess(endpointKey);
 
   return {
     trajectory: result.trajectory,
@@ -835,6 +879,23 @@ export async function runEvaluationWithConnector(
       // Connector lookup failed, leave undefined
     }
 
+    // An EMPTY response is an agent failure declared AFTER the connector
+    // returned: keep what the agent actually sent (trajectory / raw payload /
+    // ids) on the report so the run page shows it, instead of the empty
+    // arrays the pre-invocation state holds.
+    let agentDurationMs: number | undefined;
+    if (isAgentEmptyResponseError(error)) {
+      fullTrajectory = error.payload.trajectory;
+      rawEvents = error.payload.rawEvents as any[];
+      agentRunId = error.payload.runId;
+      agentSessionId = error.payload.metadata?.sessionId ?? undefined;
+      agentDurationMs = error.payload.agentDurationMs;
+    }
+    // Structured classification for the transport / unreachable /
+    // empty-response family (`finalizeAgentFailedReport` picks the label from
+    // it); other errors keep the plain shape.
+    const agentError = describeAgentFailure(error);
+
     return {
       id: reportId,
       timestamp: new Date().toISOString(),
@@ -852,6 +913,12 @@ export async function runEvaluationWithConnector(
       improvementStrategies: [],
       rawEvents,
       connectorProtocol: connectorType,
+      ...(agentError ? { agentError } : {}),
+      ...(agentRunId ? { runId: agentRunId } : {}),
+      ...(agentSessionId ? { sessionId: agentSessionId } : {}),
+      ...(agentDurationMs !== undefined
+        ? { performanceMetrics: { durationMs: Date.now() - evalStartTime, agentDurationMs } }
+        : {}),
     };
   }
 }
