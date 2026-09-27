@@ -25,6 +25,16 @@ jest.mock('@/lib/debug', () => ({
 
 import { isDebugEnabled, debug as debugLog } from '@/lib/debug';
 import * as pageLatency from '@/lib/pageLatency';
+import * as perf from '@/lib/performance';
+
+/** Records one lib/performance measurement of exactly `ms` (mocking performance.now). */
+function record(name: string, ms: number): void {
+  const nowSpy = jest.spyOn(performance, 'now');
+  nowSpy.mockReturnValueOnce(1000).mockReturnValueOnce(1000 + ms);
+  perf.startMeasure(name);
+  perf.endMeasure(name, false);
+  nowSpy.mockRestore();
+}
 
 describe('lib/pageLatency', () => {
   const mockIsDebugEnabled = isDebugEnabled as jest.Mock;
@@ -263,6 +273,95 @@ describe('lib/pageLatency', () => {
       const callsAfterUnsubscribe = listener.mock.calls.length;
       pageLatency.startNavigation('/evaluations/runs');
       expect(listener.mock.calls.length).toBe(callsAfterUnsubscribe);
+    });
+
+    it('exposes window.agentHealthPerf while active and removes it once inactive', () => {
+      pageLatency.startNavigation('/evaluations/benchmarks');
+      const api = (window as unknown as Record<string, any>).agentHealthPerf;
+      expect(api).toBeDefined();
+      expect(typeof api.startMeasure).toBe('function');
+      expect(typeof api.getOperationStats).toBe('function');
+
+      mockIsDebugEnabled.mockReturnValue(false);
+      pageLatency.startNavigation('/evaluations/runs');
+      expect((window as unknown as Record<string, any>).agentHealthPerf).toBeUndefined();
+    });
+  });
+
+  describe('activation via the legacy DEBUG_PERFORMANCE flag (former PerformanceOverlay path)', () => {
+    afterEach(() => localStorage.removeItem('DEBUG_PERFORMANCE'));
+
+    it('is active when only localStorage.DEBUG_PERFORMANCE is set', () => {
+      expect(pageLatency.isPageLatencyActive()).toBe(false);
+      localStorage.setItem('DEBUG_PERFORMANCE', 'true');
+      expect(pageLatency.isPageLatencyActive()).toBe(true);
+      pageLatency.startNavigation('/evaluations/benchmarks');
+      expect(pageLatency.getCurrentRecord()?.route).toBe('benchmarks');
+    });
+  });
+
+  describe('operation stats (merged from the former PerformanceOverlay)', () => {
+    beforeEach(() => {
+      mockIsDebugEnabled.mockReturnValue(true);
+    });
+
+    it('classifyDuration bands at 50 / 200 ms', () => {
+      expect(pageLatency.classifyDuration(0)).toBe('fast');
+      expect(pageLatency.classifyDuration(49.9)).toBe('fast');
+      expect(pageLatency.classifyDuration(50)).toBe('ok');
+      expect(pageLatency.classifyDuration(199.9)).toBe('ok');
+      expect(pageLatency.classifyDuration(200)).toBe('slow');
+    });
+
+    it('lib/performance records when debug mode alone is on (no DEBUG_PERFORMANCE flag), and not when both are off', () => {
+      expect(localStorage.getItem('DEBUG_PERFORMANCE')).toBeNull();
+      mockIsDebugEnabled.mockReturnValue(false);
+      record('TraceFlowView.preprocessing', 10);
+      expect(pageLatency.getOperationStats().totalMeasurements).toBe(0);
+
+      mockIsDebugEnabled.mockReturnValue(true);
+      record('TraceFlowView.preprocessing', 10);
+      expect(pageLatency.getOperationStats().totalMeasurements).toBe(1);
+    });
+
+    it('returns no stats and a zero total when nothing has been measured', () => {
+      expect(pageLatency.getOperationStats()).toEqual({ stats: [], totalMeasurements: 0 });
+    });
+
+    it('groups measurements by name into avg / min / max / count, sorted slowest-average first, with label/group split', () => {
+      record('TraceFlowView.preprocessing', 10);
+      record('TraceFlowView.preprocessing', 30);
+      record('AgentTracesPage.fetchMore', 300);
+      record('flat', 5);
+
+      const { stats, totalMeasurements } = pageLatency.getOperationStats();
+      expect(totalMeasurements).toBe(4);
+      expect(stats.map(s => s.name)).toEqual(['AgentTracesPage.fetchMore', 'TraceFlowView.preprocessing', 'flat']);
+
+      const pre = stats[1];
+      expect(pre).toMatchObject({ label: 'preprocessing', group: 'TraceFlowView', count: 2 });
+      expect(pre.avgMs).toBeCloseTo(20);
+      expect(pre.minMs).toBeCloseTo(10);
+      expect(pre.maxMs).toBeCloseTo(30);
+
+      expect(stats[2]).toMatchObject({ name: 'flat', label: 'flat', group: '', count: 1 });
+    });
+
+    it('subscribe() fires when a measurement is recorded and when stats are cleared; clearOperationStats empties them', () => {
+      const listener = jest.fn();
+      const unsubscribe = pageLatency.subscribe(listener);
+
+      record('TraceFlowView.preprocessing', 10);
+      expect(listener).toHaveBeenCalledTimes(1);
+      expect(pageLatency.getOperationStats().totalMeasurements).toBe(1);
+
+      pageLatency.clearOperationStats();
+      expect(listener).toHaveBeenCalledTimes(2);
+      expect(pageLatency.getOperationStats()).toEqual({ stats: [], totalMeasurements: 0 });
+
+      unsubscribe();
+      record('TraceFlowView.preprocessing', 10);
+      expect(listener).toHaveBeenCalledTimes(2);
     });
   });
 });

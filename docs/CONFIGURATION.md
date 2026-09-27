@@ -263,16 +263,24 @@ To configure additional agents (LangGraph, ML-Commons, HolmesGPT, Claude Code, e
 Debug logging can also be toggled at runtime via the Settings page "Verbose Logging" toggle or the `POST /api/debug` endpoint. When enabled, structured debug output appears in both the browser console and server terminal.
 
 **Page latency HUD:** with debug mode enabled (or in a local dev build,
-`import.meta.env.DEV`), a small HUD in the bottom-right corner shows the
-current page's navigation-start-to-first-render time, and (on the six
-heaviest evals3/comparison/traces pages that report it -- Benchmarks,
-Benchmark Runs, Evaluation Runs, Run Inspector, Comparison, Agent Traces)
-time until the page's data is ready plus the count/total time of `/api/*`
-calls made while it loaded (e.g. `benchmark-runs · render 120 ms · ready 840 ms
-· 6 api / 610 ms`). Other pages show render time only ("ready" stays —).
-Click or hover it to see the last 10 navigations. It's a zero-cost no-op
-otherwise: no timers, no `fetch` wrapping, nothing rendered. See
-`lib/pageLatency.ts`.
+`import.meta.env.DEV`, or with the legacy `localStorage.DEBUG_PERFORMANCE =
+'true'` flag set from the browser console), a one-line HUD in the bottom-right
+corner shows the current page's navigation-start-to-first-render time, and (on
+the six heaviest evals3/comparison/traces pages that report it -- Benchmarks,
+Benchmark Runs, Evaluation Runs, Run Inspector, Comparison, Agent Traces) time
+until the page's data is ready plus the count/total time of `/api/*` calls made
+while it loaded (e.g. `benchmark-runs · render 120 ms · ready 840 ms · 6 api /
+610 ms`). Other pages show render time only ("ready" stays —). Click the HUD to
+pin it open (or hover / hold ⌥ to peek): the expanded view lists the last 10
+navigations and the per-operation timings recorded through `lib/performance.ts`
+(`startMeasure` / `endMeasure`, e.g. `TraceFlowView.preprocessing`) as avg ·
+min–max · count, colour-coded green < 50 ms · yellow < 200 ms · red ≥ 200 ms, with a
+"Clear" button. (This replaces the former standalone "Performance Monitor"
+overlay, whose metrics now live here.) While active, `window.agentHealthPerf`
+exposes `startMeasure` / `endMeasure` / `getMetrics` / `getOperationStats` /
+`clearMetrics` / `logSummary` for ad-hoc timings from DevTools. It's a
+zero-cost no-op otherwise: no timers, no `fetch` wrapping, nothing rendered.
+See `lib/pageLatency.ts` and [PERFORMANCE-MONITORING.md](PERFORMANCE-MONITORING.md).
 
 ### Advanced Settings
 
