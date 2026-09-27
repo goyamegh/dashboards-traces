@@ -15,7 +15,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { ENV_CONFIG } from '@/lib/config';
-import type { Evaluator, EvaluatorKind, ScoringMetric } from '@/types';
+import type { Evaluator, EvaluatorKind, ScoringConfig, ScoringMetric, ScoringPassPolicy } from '@/types';
+import { validateScoringConfig } from '@/lib/scoring/validateScoringConfig';
 import { EvaluatorVersionHistory } from '@/components/evaluators/EvaluatorVersionHistory';
 import { validateDeterministicEvaluator } from '@/lib/evaluators/deterministic';
 
@@ -97,6 +98,13 @@ export const EvaluatorEditPage: React.FC = () => {
     { name: 'accuracy', description: 'Overall accuracy score', weight: 1.0, scale: 100 },
   ]);
   const [passThreshold, setPassThreshold] = useState(70);
+  // Pass policy (verdict engine). `llm-verdict` is the frozen default every
+  // existing evaluator keeps; switching to a computed policy is a new
+  // evaluator version. The threshold policy reuses `passThreshold` (0–100)
+  // as its minScore (normalized to [0,1] on save).
+  const [passPolicyKind, setPassPolicyKind] = useState<ScoringPassPolicy['kind']>('llm-verdict');
+  const [gates, setGates] = useState<Array<{ metric: string; min: number }>>([]);
+  const [primaryMetrics, setPrimaryMetrics] = useState<string[]>([]);
   const [provider, setProvider] = useState<string>('');
   const [modelId, setModelId] = useState('');
   const [temperature, setTemperature] = useState(0.1);
@@ -126,6 +134,40 @@ export const EvaluatorEditPage: React.FC = () => {
     }
   };
 
+  const applyPolicyFromConfig = (config: ScoringConfig) => {
+    const policy = config.passPolicy;
+    if (policy?.kind === 'threshold') {
+      setPassPolicyKind('threshold');
+      if (typeof policy.minScore === 'number') setPassThreshold(Math.round(policy.minScore * 100));
+      setGates([]);
+    } else if (policy?.kind === 'gates') {
+      setPassPolicyKind('gates');
+      setGates(policy.gates.map(g => ({ metric: g.metric, min: g.min })));
+    } else {
+      setPassPolicyKind('llm-verdict');
+      setGates([]);
+    }
+    setPrimaryMetrics(Array.isArray(config.primaryMetrics) ? config.primaryMetrics : []);
+  };
+
+  /** The scoringConfig exactly as it is sent to the server. */
+  const buildScoringConfig = (): ScoringConfig => {
+    const passPolicy: ScoringPassPolicy =
+      passPolicyKind === 'threshold'
+        ? { kind: 'threshold', minScore: Math.min(1, Math.max(0, passThreshold / 100)) }
+        : passPolicyKind === 'gates'
+          ? { kind: 'gates', gates: gates.filter(g => g.metric) }
+          : { kind: 'llm-verdict' };
+    const declared = new Set(metrics.map(m => m.name));
+    return {
+      metrics,
+      passThreshold,
+      scale: 100,
+      passPolicy,
+      ...(primaryMetrics.length > 0 ? { primaryMetrics: primaryMetrics.filter(p => declared.has(p)) } : {}),
+    };
+  };
+
   const loadEvaluator = async (id: string) => {
     try {
       setLoading(true);
@@ -150,6 +192,7 @@ export const EvaluatorEditPage: React.FC = () => {
       }
       setMetrics(evaluator.scoringConfig?.metrics ?? []);
       setPassThreshold(evaluator.scoringConfig.passThreshold);
+      applyPolicyFromConfig(evaluator.scoringConfig);
       setProvider(evaluator.inferenceConfig?.provider || '');
       setModelId(evaluator.inferenceConfig?.modelId || '');
       setTemperature(evaluator.inferenceConfig?.temperature ?? 0.1);
@@ -193,31 +236,37 @@ export const EvaluatorEditPage: React.FC = () => {
     try {
       setSaving(true);
 
-      const payload = deterministicBody
-        ? {
-            name: name.trim(),
-            description: description.trim(),
-            kind: 'deterministic',
-            metrics: deterministicBody.metrics,
-            passPolicy: deterministicBody.passPolicy,
-            inputs: deterministicBody.inputs,
-          }
-        : {
-            name: name.trim(),
-            description: description.trim(),
-            systemPrompt: systemPrompt.trim(),
-            scoringConfig: {
-              metrics,
-              passThreshold,
-              scale: 100,
-            },
-            inferenceConfig: {
-              ...(provider && { provider }),
-              ...(modelId && { modelId }),
-              temperature,
-              maxTokens,
-            },
-          };
+      let payload: Record<string, unknown>;
+      if (deterministicBody) {
+        payload = {
+          name: name.trim(),
+          description: description.trim(),
+          kind: 'deterministic',
+          metrics: deterministicBody.metrics,
+          passPolicy: deterministicBody.passPolicy,
+          inputs: deterministicBody.inputs,
+        };
+      } else {
+        const scoringConfig = buildScoringConfig();
+        const scoringError = validateScoringConfig(scoringConfig);
+        if (scoringError) {
+          alert(scoringError);
+          setSaving(false);
+          return;
+        }
+        payload = {
+          name: name.trim(),
+          description: description.trim(),
+          systemPrompt: systemPrompt.trim(),
+          scoringConfig,
+          inferenceConfig: {
+            ...(provider && { provider }),
+            ...(modelId && { modelId }),
+            temperature,
+            maxTokens,
+          },
+        };
+      }
 
       const url = isEditMode
         ? `${ENV_CONFIG.backendUrl}/api/storage/evaluators/${evaluatorId}`
@@ -271,6 +320,7 @@ export const EvaluatorEditPage: React.FC = () => {
           if (typeof updated.scoringConfig?.passThreshold === 'number') {
             setPassThreshold(updated.scoringConfig.passThreshold);
           }
+          if (updated.scoringConfig) applyPolicyFromConfig(updated.scoringConfig);
         } else {
           // Server responded 200 but the body is missing currentVersion
           // (server bug, partial response, etc.). Surface the issue
@@ -308,7 +358,7 @@ export const EvaluatorEditPage: React.FC = () => {
           name: `${name} (Copy)`,
           description,
           systemPrompt,
-          scoringConfig: { metrics, passThreshold, scale: 100 },
+          scoringConfig: buildScoringConfig(),
           inferenceConfig: {
             ...(provider && { provider }),
             ...(modelId && { modelId }),
@@ -827,8 +877,120 @@ export const EvaluatorEditPage: React.FC = () => {
                     disabled={readOnly}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Evaluations scoring at or above this value pass.
+                    {passPolicyKind === 'threshold'
+                      ? 'Enforced: a report passes when its weighted score (normalized) is at or above this value.'
+                      : 'Display hint only under the current pass policy — pick "Score threshold" below to enforce it.'}
                   </p>
+                </div>
+
+                {/* Pass policy — how the verdict engine decides pass/fail for
+                    reports judged with this evaluator. Default (and the frozen
+                    behaviour of every pre-existing evaluator) is the judge's
+                    own verdict; switching is a new evaluator version. */}
+                <div className="space-y-3 border-t pt-4" data-testid="pass-policy-section">
+                  <div className="space-y-1.5 max-w-xs">
+                    <Label htmlFor="passPolicy">Pass policy</Label>
+                    <Select
+                      value={passPolicyKind}
+                      onValueChange={(v) => setPassPolicyKind(v as ScoringPassPolicy['kind'])}
+                      disabled={readOnly}
+                    >
+                      <SelectTrigger id="passPolicy" data-testid="pass-policy-select">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="llm-verdict">Judge verdict (default)</SelectItem>
+                        <SelectItem value="threshold">Score threshold</SelectItem>
+                        <SelectItem value="gates">Per-metric gates</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <p className="text-xs text-muted-foreground">
+                      {passPolicyKind === 'llm-verdict' && 'The judge\'s own pass/fail decides. Metrics are recorded but not enforced.'}
+                      {passPolicyKind === 'threshold' && 'Pass when the weighted score is at or above the Pass Threshold and every metric was returned by the judge.'}
+                      {passPolicyKind === 'gates' && 'Pass only when every listed metric is at or above its minimum (in the metric\'s own scale).'}
+                    </p>
+                  </div>
+
+                  {passPolicyKind === 'gates' && (
+                    <div className="space-y-2" data-testid="pass-policy-gates">
+                      {gates.map((gate, index) => (
+                        <div key={index} className="flex items-end gap-2">
+                          <div className="space-y-1 flex-1 max-w-xs">
+                            <Label className="text-xs">Metric</Label>
+                            <Select
+                              value={gate.metric || undefined}
+                              onValueChange={(v) => setGates(gates.map((g, i) => (i === index ? { ...g, metric: v } : g)))}
+                              disabled={readOnly}
+                            >
+                              <SelectTrigger className="h-8 text-sm" aria-label={`Gate ${index + 1} metric`}>
+                                <SelectValue placeholder="Pick a metric" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {metrics.filter(m => m.name).map(m => (
+                                  <SelectItem key={m.name} value={m.name}>{m.name}</SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          <div className="space-y-1 w-28">
+                            <Label className="text-xs">Min (0–{metrics.find(m => m.name === gate.metric)?.scale ?? 100})</Label>
+                            <Input
+                              type="number"
+                              className="h-8 text-sm"
+                              aria-label={`Gate ${index + 1} minimum`}
+                              value={gate.min}
+                              onChange={(e) => setGates(gates.map((g, i) => (i === index ? { ...g, min: parseFloat(e.target.value) || 0 } : g)))}
+                              disabled={readOnly}
+                            />
+                          </div>
+                          {!readOnly && (
+                            <Button variant="ghost" size="icon" aria-label={`Remove gate ${index + 1}`} onClick={() => setGates(gates.filter((_, i) => i !== index))}>
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          )}
+                        </div>
+                      ))}
+                      {!readOnly && (
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setGates([...gates, { metric: metrics[0]?.name ?? '', min: 50 }])}
+                        >
+                          <Plus className="h-4 w-4 mr-1" /> Add gate
+                        </Button>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="space-y-1.5" data-testid="primary-metrics-section">
+                    <Label>Primary metrics</Label>
+                    <p className="text-xs text-muted-foreground">
+                      Headline metrics shown as their own columns on the compare page (optional).
+                    </p>
+                    <div className="flex flex-wrap gap-3">
+                      {metrics.filter(m => m.name).map(m => {
+                        const checked = primaryMetrics.includes(m.name);
+                        return (
+                          <label key={m.name} className="flex items-center gap-1.5 text-sm">
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              disabled={readOnly}
+                              aria-label={`Primary metric ${m.name}`}
+                              onChange={(e) =>
+                                setPrimaryMetrics(
+                                  e.target.checked
+                                    ? [...primaryMetrics, m.name]
+                                    : primaryMetrics.filter(p => p !== m.name)
+                                )
+                              }
+                            />
+                            {m.name}
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
                 </div>
               </CardContent>
             </Card>
