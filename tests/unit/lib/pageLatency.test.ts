@@ -275,16 +275,17 @@ describe('lib/pageLatency', () => {
       expect(listener.mock.calls.length).toBe(callsAfterUnsubscribe);
     });
 
-    it('exposes window.agentHealthPerf while active and removes it once inactive', () => {
-      pageLatency.startNavigation('/evaluations/benchmarks');
-      const api = (window as unknown as Record<string, any>).agentHealthPerf;
+    it('exposeConsoleApi / removeConsoleApi install and remove window.__agentHealthPerf', () => {
+      pageLatency.exposeConsoleApi();
+      const api = (window as unknown as Record<string, any>).__agentHealthPerf;
       expect(api).toBeDefined();
       expect(typeof api.startMeasure).toBe('function');
       expect(typeof api.getOperationStats).toBe('function');
+      pageLatency.exposeConsoleApi(); // idempotent
+      expect((window as unknown as Record<string, any>).__agentHealthPerf).toBe(api);
 
-      mockIsDebugEnabled.mockReturnValue(false);
-      pageLatency.startNavigation('/evaluations/runs');
-      expect((window as unknown as Record<string, any>).agentHealthPerf).toBeUndefined();
+      pageLatency.removeConsoleApi();
+      expect((window as unknown as Record<string, any>).__agentHealthPerf).toBeUndefined();
     });
   });
 

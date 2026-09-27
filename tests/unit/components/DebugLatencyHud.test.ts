@@ -22,8 +22,12 @@ const mockGetHistory = jest.fn();
 const mockSubscribe = jest.fn();
 const mockGetOperationStats = jest.fn();
 const mockClearOperationStats = jest.fn();
+const mockExposeConsoleApi = jest.fn();
+const mockRemoveConsoleApi = jest.fn();
 
 jest.mock('@/lib/pageLatency', () => ({
+  exposeConsoleApi: () => mockExposeConsoleApi(),
+  removeConsoleApi: () => mockRemoveConsoleApi(),
   isPageLatencyActive: () => mockIsActive(),
   getCurrentRecord: () => mockGetCurrentRecord(),
   getHistory: () => mockGetHistory(),
@@ -49,6 +53,8 @@ describe('DebugLatencyHud', () => {
     mockSubscribe.mockReset().mockReturnValue(() => {});
     mockGetOperationStats.mockReset().mockReturnValue(NO_OPS);
     mockClearOperationStats.mockReset();
+    mockExposeConsoleApi.mockReset();
+    mockRemoveConsoleApi.mockReset();
   });
 
   afterEach(() => {
@@ -60,10 +66,22 @@ describe('DebugLatencyHud', () => {
     expect(container.innerHTML).toBe('');
   });
 
-  it('renders nothing when active but there is no current record yet', () => {
+  it('renders a placeholder line when active but no navigation has been recorded yet (debug just switched on), still expandable', () => {
     mockIsActive.mockReturnValue(true);
-    const { container } = render(React.createElement(DebugLatencyHud));
-    expect(container.innerHTML).toBe('');
+    render(React.createElement(DebugLatencyHud));
+    const hud = screen.getByTestId('debug-latency-hud');
+    expect(hud.textContent).toContain('navigate to start measuring');
+    fireEvent.click(hud);
+    expect(screen.getByTestId('debug-latency-hud-operations')).toBeTruthy();
+  });
+
+  it('exposes the DevTools console API while active and removes it on deactivation/unmount', () => {
+    mockIsActive.mockReturnValue(true);
+    const { unmount } = render(React.createElement(DebugLatencyHud));
+    expect(mockExposeConsoleApi).toHaveBeenCalledTimes(1);
+    expect(mockRemoveConsoleApi).not.toHaveBeenCalled();
+    unmount();
+    expect(mockRemoveConsoleApi).toHaveBeenCalledTimes(1);
   });
 
   it('renders the current record\u2019s summary line when active with a record', () => {
@@ -160,6 +178,24 @@ describe('DebugLatencyHud', () => {
 
       fireEvent.keyDown(window, { key: 'Shift' });
       expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
+    });
+
+    it('"hide" dismisses the HUD for the rest of the page load', () => {
+      render(React.createElement(DebugLatencyHud));
+      fireEvent.click(screen.getByTestId('debug-latency-hud'));
+      fireEvent.click(screen.getByTestId('debug-latency-hud-hide'));
+      expect(screen.queryByTestId('debug-latency-hud')).toBeNull();
+      // Later record/activation updates do not resurrect it.
+      act(() => { jest.advanceTimersByTime(2100); });
+      expect(screen.queryByTestId('debug-latency-hud')).toBeNull();
+    });
+
+    it('ignores auto-repeated Alt keydown events (holding the key must not flicker state)', () => {
+      render(React.createElement(DebugLatencyHud));
+      fireEvent.keyDown(window, { key: 'Alt', repeat: true });
+      expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
+      fireEvent.keyDown(window, { key: 'Alt' });
+      expect(screen.getByTestId('debug-latency-hud-panel')).toBeTruthy();
     });
 
     it('shows the operations empty state (and no Clear button) when nothing has been measured', () => {

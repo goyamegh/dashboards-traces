@@ -238,8 +238,9 @@ pin it open (or hover / hold ⌥ to peek): the expanded view lists the last 10
 navigations and the per-operation timings recorded through `lib/performance.ts`
 (`startMeasure` / `endMeasure`, e.g. `TraceFlowView.preprocessing`) as avg ·
 min–max · count, colour-coded green < 50 ms · yellow < 200 ms · red ≥ 200 ms, with a
-"Clear" button. (This replaces the former standalone "Performance Monitor"
-overlay, whose metrics now live here.) While active, `window.agentHealthPerf`
+"Clear" button, and a "hide" control that dismisses the HUD until the next
+page load. (This replaces the former standalone "Performance Monitor" overlay,
+whose metrics now live here.) While active, `window.__agentHealthPerf`
 exposes `startMeasure` / `endMeasure` / `getMetrics` / `getOperationStats` /
 `clearMetrics` / `logSummary` for ad-hoc timings from DevTools. It's a
 zero-cost no-op otherwise: no timers, no `fetch` wrapping, nothing rendered.

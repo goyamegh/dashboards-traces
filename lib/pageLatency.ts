@@ -202,13 +202,14 @@ export function subscribe(fn: Listener): () => void {
 }
 
 /**
- * Console API (`window.agentHealthPerf`) exposed only while instrumentation
- * is active, so ad-hoc `startMeasure` / `endMeasure` timings can be taken
- * from DevTools and show up in the HUD.
+ * Console API (`window.__agentHealthPerf`) for ad-hoc `startMeasure` /
+ * `endMeasure` timings from DevTools that then show up in the HUD. The HUD
+ * exposes it while it is active and removes it when it deactivates (its
+ * lifecycle is the HUD's activation, not a navigation).
  */
-const CONSOLE_API_KEY = 'agentHealthPerf';
+const CONSOLE_API_KEY = '__agentHealthPerf';
 
-function exposeConsoleApi(): void {
+export function exposeConsoleApi(): void {
   if (typeof window === 'undefined') return;
   const w = window as unknown as Record<string, unknown>;
   if (w[CONSOLE_API_KEY]) return;
@@ -222,7 +223,7 @@ function exposeConsoleApi(): void {
   };
 }
 
-function removeConsoleApi(): void {
+export function removeConsoleApi(): void {
   if (typeof window === 'undefined') return;
   delete (window as unknown as Record<string, unknown>)[CONSOLE_API_KEY];
 }
@@ -286,11 +287,9 @@ export function startNavigation(pathname: string): void {
   if (!isPageLatencyActive()) {
     current = null;
     unwrapFetch();
-    removeConsoleApi();
     return;
   }
   wrapFetch();
-  exposeConsoleApi();
   const route = routeKeyFromPath(pathname);
   currentStartPerf = performance.now();
   current = {
