@@ -36,10 +36,25 @@
  *
  * Finalized records are pushed to a capped (10) history and logged via the
  * existing `debug()` logger so they land in the console/server debug log.
+ *
+ * The HUD's expanded view also surfaces the named operation timings recorded
+ * through `lib/performance.ts` (`startMeasure` / `endMeasure`, e.g.
+ * `TraceFlowView.preprocessing`) -- the data the former PerformanceOverlay
+ * displayed. `getOperationStats()` groups them per name into avg / min / max /
+ * count, `classifyDuration()` applies the same 🟢 < 50 ms · 🟡 < 200 ms ·
+ * 🔴 ≥ 200 ms bands, and `subscribe()` fires on new measurements too.
  */
 
 import { isDebugEnabled, debug } from './debug';
 import { isViteDev } from '@/lib/viteEnv';
+import {
+  getMetrics,
+  clearMetrics,
+  subscribeToMetrics,
+  startMeasure,
+  endMeasure,
+  logSummary,
+} from './performance';
 
 export interface PageLatencyRecord {
   /** Stable route key (see {@link routeKeyFromPath}), NOT the raw pathname. */
@@ -57,6 +72,65 @@ export interface PageLatencyRecord {
 }
 
 const HISTORY_CAP = 10;
+
+/** Per-operation aggregate of `lib/performance` measurements (one row in the HUD's expanded view). */
+export interface OperationStat {
+  /** Full measurement name, e.g. `TraceFlowView.preprocessing`. */
+  name: string;
+  /** Last dotted segment (`preprocessing`) -- the row's headline. */
+  label: string;
+  /** Everything before the last segment (`TraceFlowView`), '' if undotted. */
+  group: string;
+  avgMs: number;
+  minMs: number;
+  maxMs: number;
+  count: number;
+}
+
+/** Duration band used for colour-coding: fast < 50 ms, ok < 200 ms, else slow. */
+export type DurationBand = 'fast' | 'ok' | 'slow';
+
+export function classifyDuration(ms: number): DurationBand {
+  if (ms < 50) return 'fast';
+  if (ms < 200) return 'ok';
+  return 'slow';
+}
+
+/**
+ * Groups every recorded `lib/performance` measurement by name into
+ * avg / min / max / count, sorted slowest-average first (same aggregation
+ * the former PerformanceOverlay rendered). `totalMeasurements` is the raw
+ * sample count across all names.
+ */
+export function getOperationStats(): { stats: OperationStat[]; totalMeasurements: number } {
+  const metrics = getMetrics();
+  const byName = new Map<string, number[]>();
+  for (const m of metrics) {
+    const list = byName.get(m.name);
+    if (list) list.push(m.duration);
+    else byName.set(m.name, [m.duration]);
+  }
+  const stats: OperationStat[] = [];
+  byName.forEach((durations, name) => {
+    const dot = name.lastIndexOf('.');
+    stats.push({
+      name,
+      label: dot === -1 ? name : name.slice(dot + 1),
+      group: dot === -1 ? '' : name.slice(0, dot),
+      avgMs: durations.reduce((a, b) => a + b, 0) / durations.length,
+      minMs: Math.min(...durations),
+      maxMs: Math.max(...durations),
+      count: durations.length,
+    });
+  });
+  stats.sort((a, b) => b.avgMs - a.avgMs);
+  return { stats, totalMeasurements: metrics.length };
+}
+
+/** Drops every recorded operation measurement (the HUD's "Clear" button). */
+export function clearOperationStats(): void {
+  clearMetrics();
+}
 
 let current: PageLatencyRecord | null = null;
 let currentStartPerf = 0; // performance.now() at navigation start (monotonic, for accurate deltas)
@@ -91,21 +165,66 @@ function isDevBuild(): boolean {
   return isViteDev();
 }
 
+/**
+ * The pre-HUD PerformanceOverlay was switched on by setting
+ * `localStorage.DEBUG_PERFORMANCE = 'true'` from the browser console (still
+ * documented, and still written by the Settings debug toggle) -- keep that
+ * path working for the merged HUD.
+ */
+function isLegacyPerfFlagSet(): boolean {
+  try {
+    return typeof window !== 'undefined' && localStorage.getItem('DEBUG_PERFORMANCE') === 'true';
+  } catch {
+    return false;
+  }
+}
+
 /** Whether instrumentation should be doing ANYTHING right now. */
 export function isPageLatencyActive(): boolean {
-  return isDebugEnabled() || isDevBuild();
+  return isDebugEnabled() || isDevBuild() || isLegacyPerfFlagSet();
 }
 
 function notify(): void {
   for (const l of listeners) l();
 }
 
-/** Subscribe to record updates (navigation start / render / api / ready). Returns an unsubscribe fn. */
+/**
+ * Subscribe to record updates (navigation start / render / api / ready) AND
+ * to `lib/performance` measurement changes. Returns an unsubscribe fn.
+ */
 export function subscribe(fn: Listener): () => void {
   listeners.push(fn);
+  const unsubscribeMetrics = subscribeToMetrics(fn);
   return () => {
     listeners = listeners.filter(l => l !== fn);
+    unsubscribeMetrics();
   };
+}
+
+/**
+ * Console API (`window.agentHealthPerf`) exposed only while instrumentation
+ * is active, so ad-hoc `startMeasure` / `endMeasure` timings can be taken
+ * from DevTools and show up in the HUD.
+ */
+const CONSOLE_API_KEY = 'agentHealthPerf';
+
+function exposeConsoleApi(): void {
+  if (typeof window === 'undefined') return;
+  const w = window as unknown as Record<string, unknown>;
+  if (w[CONSOLE_API_KEY]) return;
+  w[CONSOLE_API_KEY] = {
+    startMeasure,
+    endMeasure,
+    getMetrics,
+    getOperationStats,
+    clearMetrics,
+    logSummary,
+  };
+}
+
+function removeConsoleApi(): void {
+  if (typeof window === 'undefined') return;
+  delete (window as unknown as Record<string, unknown>)[CONSOLE_API_KEY];
 }
 
 function apiUrlFrom(input: Parameters<typeof fetch>[0]): string {
@@ -167,9 +286,11 @@ export function startNavigation(pathname: string): void {
   if (!isPageLatencyActive()) {
     current = null;
     unwrapFetch();
+    removeConsoleApi();
     return;
   }
   wrapFetch();
+  exposeConsoleApi();
   const route = routeKeyFromPath(pathname);
   currentStartPerf = performance.now();
   current = {
@@ -242,5 +363,7 @@ export function __resetPageLatencyForTests(): void {
   currentStartPerf = 0;
   history.length = 0;
   unwrapFetch();
+  removeConsoleApi();
+  clearMetrics();
   listeners = [];
 }

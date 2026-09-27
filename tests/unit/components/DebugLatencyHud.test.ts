@@ -20,13 +20,23 @@ const mockIsActive = jest.fn();
 const mockGetCurrentRecord = jest.fn();
 const mockGetHistory = jest.fn();
 const mockSubscribe = jest.fn();
+const mockGetOperationStats = jest.fn();
+const mockClearOperationStats = jest.fn();
 
 jest.mock('@/lib/pageLatency', () => ({
   isPageLatencyActive: () => mockIsActive(),
   getCurrentRecord: () => mockGetCurrentRecord(),
   getHistory: () => mockGetHistory(),
+  getOperationStats: () => mockGetOperationStats(),
+  clearOperationStats: () => mockClearOperationStats(),
+  classifyDuration: (ms: number) => (ms < 50 ? 'fast' : ms < 200 ? 'ok' : 'slow'),
   subscribe: (fn: () => void) => mockSubscribe(fn),
 }));
+
+const RECORD = {
+  route: 'benchmarks', startedAt: 0, renderMs: 50, readyMs: 200, apiCount: 1, apiTotalMs: 20,
+};
+const NO_OPS = { stats: [], totalMeasurements: 0 };
 
 import { DebugLatencyHud } from '@/components/DebugLatencyHud';
 
@@ -37,6 +47,8 @@ describe('DebugLatencyHud', () => {
     mockGetCurrentRecord.mockReset().mockReturnValue(null);
     mockGetHistory.mockReset().mockReturnValue([]);
     mockSubscribe.mockReset().mockReturnValue(() => {});
+    mockGetOperationStats.mockReset().mockReturnValue(NO_OPS);
+    mockClearOperationStats.mockReset();
   });
 
   afterEach(() => {
@@ -110,5 +122,112 @@ describe('DebugLatencyHud', () => {
     });
     act(() => { jest.advanceTimersByTime(1100); });
     expect(screen.getByTestId('debug-latency-hud')).toBeTruthy();
+  });
+
+  describe('expanded view (merged PerformanceOverlay metrics)', () => {
+    beforeEach(() => {
+      mockIsActive.mockReturnValue(true);
+      mockGetCurrentRecord.mockReturnValue(RECORD);
+    });
+
+    it('click pins the panel open (and a second click unpins), independent of hover', () => {
+      render(React.createElement(DebugLatencyHud));
+      const hud = screen.getByTestId('debug-latency-hud');
+      expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
+
+      fireEvent.click(hud);
+      expect(screen.getByTestId('debug-latency-hud-panel')).toBeTruthy();
+      fireEvent.mouseLeave(hud); // pinned: leaving does not collapse it
+      expect(screen.getByTestId('debug-latency-hud-panel')).toBeTruthy();
+
+      fireEvent.click(hud);
+      expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
+    });
+
+    it('holding the \u2325 / Alt key peeks at the panel; releasing (or window blur) collapses it', () => {
+      render(React.createElement(DebugLatencyHud));
+      expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
+
+      fireEvent.keyDown(window, { key: 'Alt' });
+      expect(screen.getByTestId('debug-latency-hud-panel')).toBeTruthy();
+      fireEvent.keyUp(window, { key: 'Alt' });
+      expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
+
+      fireEvent.keyDown(window, { key: 'Alt' });
+      expect(screen.getByTestId('debug-latency-hud-panel')).toBeTruthy();
+      fireEvent.blur(window);
+      expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
+
+      fireEvent.keyDown(window, { key: 'Shift' });
+      expect(screen.queryByTestId('debug-latency-hud-panel')).toBeNull();
+    });
+
+    it('shows the operations empty state (and no Clear button) when nothing has been measured', () => {
+      render(React.createElement(DebugLatencyHud));
+      fireEvent.click(screen.getByTestId('debug-latency-hud'));
+      const ops = screen.getByTestId('debug-latency-hud-operations');
+      expect(ops.textContent).toContain('Operations \u00b7 0 measurements');
+      expect(ops.textContent).toContain('No operation timings yet');
+      expect(ops.textContent).toContain('\u25cf < 50 ms \u00b7 \u25cf < 200 ms \u00b7 \u25cf \u2265 200 ms');
+      expect(screen.queryByTestId('debug-latency-hud-clear')).toBeNull();
+      expect(screen.queryAllByTestId('debug-latency-hud-op')).toHaveLength(0);
+    });
+
+    it('lists each operation with icon, label, group, avg, min\u2013max and count, colour-coded by band', () => {
+      mockGetOperationStats.mockReturnValue({
+        totalMeasurements: 4,
+        stats: [
+          { name: 'AgentTracesPage.fetchMore', label: 'fetchMore', group: 'AgentTracesPage', avgMs: 312.4, minMs: 300, maxMs: 324.8, count: 2 },
+          { name: 'TraceFlowView.preprocessing', label: 'preprocessing', group: 'TraceFlowView', avgMs: 75, minMs: 60, maxMs: 90, count: 1 },
+          { name: 'flat', label: 'flat', group: '', avgMs: 5, minMs: 5, maxMs: 5, count: 1 },
+        ],
+      });
+      render(React.createElement(DebugLatencyHud));
+      fireEvent.click(screen.getByTestId('debug-latency-hud'));
+
+      expect(screen.getByTestId('debug-latency-hud-operations').textContent).toContain('Operations \u00b7 4 measurements');
+      const rows = screen.getAllByTestId('debug-latency-hud-op');
+      expect(rows).toHaveLength(3);
+
+      expect(rows[0].textContent).toContain('\u25cf fetchMore');
+      expect(rows[0].textContent).toContain('AgentTracesPage');
+      expect(rows[0].textContent).toContain('312.4 ms');
+      expect(rows[0].textContent).toContain('300\u2013325 \u00b7 \u00d72');
+      expect(rows[0].querySelector('.text-red-400')).toBeTruthy();
+
+      expect(rows[1].textContent).toContain('\u25cf preprocessing');
+      expect(rows[1].querySelector('.text-yellow-400')).toBeTruthy();
+
+      expect(rows[2].textContent).toContain('\u25cf flat');
+      expect(rows[2].textContent).not.toContain('\u00b7 flat'); // no group suffix for undotted names
+      expect(rows[2].querySelector('.text-green-400')).toBeTruthy();
+    });
+
+    it('Clear calls clearOperationStats without toggling the pinned state', () => {
+      mockGetOperationStats.mockReturnValue({
+        totalMeasurements: 1,
+        stats: [{ name: 'a.b', label: 'b', group: 'a', avgMs: 1, minMs: 1, maxMs: 1, count: 1 }],
+      });
+      render(React.createElement(DebugLatencyHud));
+      fireEvent.click(screen.getByTestId('debug-latency-hud'));
+      fireEvent.click(screen.getByTestId('debug-latency-hud-clear'));
+      expect(mockClearOperationStats).toHaveBeenCalledTimes(1);
+      expect(screen.getByTestId('debug-latency-hud-panel')).toBeTruthy();
+    });
+
+    it('re-reads operation stats when the subscription fires (a new measurement landed)', () => {
+      let notifyFn: (() => void) | null = null;
+      mockSubscribe.mockImplementation((fn: () => void) => { notifyFn = fn; return () => {}; });
+      render(React.createElement(DebugLatencyHud));
+      fireEvent.click(screen.getByTestId('debug-latency-hud'));
+      expect(screen.queryAllByTestId('debug-latency-hud-op')).toHaveLength(0);
+
+      mockGetOperationStats.mockReturnValue({
+        totalMeasurements: 1,
+        stats: [{ name: 'a.b', label: 'b', group: 'a', avgMs: 1, minMs: 1, maxMs: 1, count: 1 }],
+      });
+      act(() => { notifyFn!(); });
+      expect(screen.getAllByTestId('debug-latency-hud-op')).toHaveLength(1);
+    });
   });
 });
