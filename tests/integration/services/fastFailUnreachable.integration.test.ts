@@ -90,6 +90,16 @@ async function getReport(reportId: string): Promise<any> {
   return body.run ?? body;
 }
 
+async function searchReportsByTestCase(testCaseId: string): Promise<any[]> {
+  const r = await fetch(`${BASE_URL}/api/storage/runs/search`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ testCaseId, size: 50 }),
+  });
+  if (!r.ok) throw new Error(`search reports for ${testCaseId}: ${r.status}`);
+  const body = await r.json();
+  return (body.runs ?? []).filter((x: any) => x.testCaseId === testCaseId);
+}
+
 function trackReports(run: any) {
   for (const r of Object.values(run.results || {}) as any[]) if (r.reportId) tracker.run(r.reportId);
 }
@@ -198,24 +208,31 @@ describe('fast-fail for unreachable agent endpoints (real server, real REST conn
       tracker.evaluationRun(runId!);
       const drain = (async () => { for (;;) { const { done } = await reader.read(); if (done) return; } })();
 
-      // Wait until the case has a report doc, then inspect it.
+      // Wait until the case has a report doc that the AGENT has answered, then
+      // inspect it. The evaluation-run doc only records `results[id].reportId`
+      // when the case COMPLETES — for a trace-mode case that is after the trace
+      // poller gives up (the server default budget is 10 minutes), so the run
+      // doc cannot be the source here. The runner pre-persists a placeholder
+      // report for the case and updates it in place once the agent answers, so
+      // search reports by test-case id instead (the same id-scoped lookup the
+      // test-data tracker uses).
       let report: any;
       const deadline = Date.now() + 60_000;
       while (Date.now() < deadline) {
-        const run = await getRun(runId!);
-        const reportId = run.results?.[id]?.reportId;
-        if (reportId) {
-          const r = await getReport(reportId);
+        const found = await searchReportsByTestCase(id);
+        for (const r of found) tracker.run(r.id);
+        const answered = found.find(r =>
+          r.status === 'completed' &&
           // Either still polling, or the poller already finished (short budget on the server).
-          if (r.metricsStatus === 'pending' || r.metricsStatus === 'calculating' || (r.traceFetchAttempts ?? 0) > 0 || /kind=trace_/.test(r.traceError ?? '')) {
-            report = r;
-            break;
-          }
+          (r.metricsStatus === 'pending' || r.metricsStatus === 'calculating' || (r.traceFetchAttempts ?? 0) > 0 || /kind=trace_/.test(r.traceError ?? '')),
+        );
+        if (answered) {
+          report = answered;
+          break;
         }
         await new Promise(r => setTimeout(r, 500));
       }
       expect(report).toBeDefined();
-      tracker.run(report.id);
       // The agent answered: the case is NOT an agent failure and DID go to trace polling.
       expect(report.status).toBe('completed');
       expect(report.traceError ?? '').not.toContain('agent_failed');
