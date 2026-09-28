@@ -186,7 +186,7 @@ describe('retrieval-agent trace categorization round-trip (integration)', () => 
     expect(io.queryText).toBe(JSON.stringify(JSON.parse(QUERY), null, 2));
     expect(io.returnedRows).toBe(20);
     expect(io.statusCode).toBe('200');
-    expect(io.idLists).toEqual([{ attribute: 'retrieval-agent.search.hit_ids', ids: ['prod-101', 'prod-202', 'prod-303'] }]);
+    expect(io.idLists).toEqual([{ attribute: 'retrieval-agent.search.hit_ids', ids: ['prod-101', 'prod-202', 'prod-303'], role: 'ids' }]);
 
     const legacy = spans.find(s => s.spanId === 'a000000000000007');
     expect(extractRetrievalIO(legacy).queryText).toBe('SELECT id FROM products WHERE id = ANY($1)');
