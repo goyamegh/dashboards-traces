@@ -21,6 +21,7 @@ import { findConfiguredAgent, getBedrockModelId } from './runAgentConfig';
 import { readEnv } from '@/lib/envCompat';
 import { buildJudgeAgentsHints, resolveJudgeRunId } from '@/services/traces/judgeAgentsHints';
 import { extractJudgeFailureReason, computeJudgeFailureSummary } from '@/lib/judgeFailureSummary';
+import { buildJudgeIdentityPatch, buildLlmJudgeResponseIdentity } from '@/lib/judgeIdentity';
 import { buildJudgeMatcherEntry, formatExpectedOutcomesAsClaim } from '@/lib/matchers/index';
 import { tracePollingManager } from '@/services/traces/tracePoller';
 import { debug } from '@/lib/debug';
@@ -93,6 +94,8 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
             // Set only by the agent (trace) judge provider -- see
             // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
             ...(judgment.judgeMode ? { judgeMode: judgment.judgeMode } : {}),
+            // Underlying LLM that judged (TestCaseRun.judgeModel) -- see lib/judgeIdentity.
+            ...buildJudgeIdentityPatch(judgment, judgeModelId),
             // Unified judge surface (issue #230 follow-up).
             matcherResults: [
               buildJudgeMatcherEntry(judgment, {
@@ -108,7 +111,7 @@ export function startTracePollingForReportWithModule(report: EvaluationReport, t
             // dropped llmJudgeResponse, mirroring the placeholder-update
             // bug fixed earlier for the standard path.
             llmJudgeResponse: {
-              modelId: judgeModelId || '',
+              ...buildLlmJudgeResponseIdentity(judgment, judgeModelId),
               timestamp: new Date().toISOString(),
               promptTokens: 0,
               completionTokens: 0,

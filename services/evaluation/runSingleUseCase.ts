@@ -27,6 +27,7 @@ import {
 import { context } from '@opentelemetry/api';
 import { ATTR_AGENT_HEALTH_AGENT_RUN_ID } from '@/lib/telemetry/constants';
 import { resolveReportTraceId } from '@/lib/traceIdentity';
+import { assertJudgeIdentityConsistent } from '@/lib/judgeIdentity';
 
 /**
  * Save an evaluation report using the storage adapter (works with both file and OpenSearch backends).
@@ -48,6 +49,11 @@ async function saveReportWithModule(storage: IStorageModule, report: any): Promi
     // "agent: <m1> judge: <m2>" and the audit trail is intact. Inherits
     // from the run-level cx input (BenchmarkRun.judgeModelId).
     judgeModelId: report.judgeModelId,
+    // Underlying LLM that judged (see lib/judgeIdentity) -- distinct from
+    // judgeModelId, which for the agent trace judge is a provider name.
+    judgeModel: report.judgeModel,
+    // Judge kind, or 'none' when a code-SDK body made no LLM judge call.
+    judgeProvider: report.judgeProvider,
     evaluatorId: report.evaluatorId,
     status: report.status,
     passFailStatus: report.passFailStatus,
@@ -183,6 +189,9 @@ export async function runSingleUseCase(
       // it from the run config in case the placeholder pre-creation skipped
       // the field (storage transient failures during /api/evaluate).
       judgeModelId: run.judgeModelId,
+      // Underlying LLM that judged this report (lib/judgeIdentity).
+      judgeModel: (report as any).judgeModel,
+      judgeProvider: (report as any).judgeProvider,
       // Re-stamp evaluatorId for the same reason. /api/evaluate sets it
       // on the placeholder, but if that step failed silently the doc has
       // no evaluatorId — and the trace-mode polled judge then reads it
@@ -220,6 +229,13 @@ export async function runSingleUseCase(
     savedReport = { ...report, id: updated.id, timestamp: updated.timestamp };
   } else {
     savedReport = await saveReportWithModule(storage, report);
+  }
+  // Runtime guard (lib/judgeIdentity): when the synchronous judge ran (a
+  // non-trace agent judged inline), a resolved `judgeModel` must have been
+  // recorded on the saved report. Trace-mode reports are still `pending`
+  // here and are checked when their polled judge completes. Warns only.
+  if (savedReport.metricsStatus !== 'pending') {
+    assertJudgeIdentityConsistent(savedReport);
   }
 
   // Denormalize lastRunAt onto the test case (only for persisted test cases)
