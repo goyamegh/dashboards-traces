@@ -60,7 +60,7 @@ export class RESTConnector extends BaseConnector {
     // after any beforeRequest hook, which ran before execute()).
     const body = JSON.stringify(payload);
     const defaultHeaders = { 'Content-Type': 'application/json' };
-    const headers = await this.prepareRequestHeaders(auth, {
+    const { url, headers } = await this.prepareRequest(auth, {
       method: 'POST',
       url: endpoint,
       body,
@@ -68,10 +68,10 @@ export class RESTConnector extends BaseConnector {
     });
 
     this.debug('Executing REST request');
-    this.debug('Endpoint:', endpoint);
+    this.debug('Endpoint:', url);
     this.debug('Payload:', body.substring(0, 500));
 
-    const response = await fetch(endpoint, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: withDefaultHeaders(defaultHeaders, headers),
       body,

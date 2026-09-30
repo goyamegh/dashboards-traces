@@ -171,6 +171,13 @@ describe('aws-sigv4 through HTTP connectors', () => {
       await expect(recomputeAuthorization(url, init)).resolves.toBe(init.headers.authorization);
     });
 
+    it('a `+` in the endpoint query is sent as %2B — the wire URL is the canonical URL that was signed', async () => {
+      await connector.execute('https://abc123.execute-api.us-west-2.amazonaws.com/prod/invoke?q=a+b&s=x%20y', request, AUTH);
+      const { url, init } = lastFetch();
+      expect(url).toBe('https://abc123.execute-api.us-west-2.amazonaws.com/prod/invoke?q=a%2Bb&s=x%20y');
+      await expect(recomputeAuthorization(url, init)).resolves.toBe(init.headers.authorization);
+    });
+
     it('surfaces a signing failure as a clear error instead of sending unsigned', async () => {
       await expect(
         connector.execute(endpoint, request, { type: 'aws-sigv4', awsService: 'execute-api', awsAccessKeyId: 'a', awsSecretAccessKey: 'b' })
@@ -273,6 +280,8 @@ describe('aws-sigv4 through HTTP connectors', () => {
       await connector.execute(endpoint, { testCase, modelId: 'm' }, AUTH);
 
       const { url, init } = lastFetch();
+      // the SSE client sent the exact string the connector signed (no second JSON.stringify)
+      expect(init.headers['x-amz-content-sha256']).toBe(sha256Hex(init.body!));
       const lower = Object.keys(init.headers).map((k) => k.toLowerCase());
       expect(lower.filter((k) => k === 'content-type')).toHaveLength(1);
       expect(lower.filter((k) => k === 'accept')).toHaveLength(1);
@@ -328,8 +337,22 @@ describe('aws-sigv4 through HTTP connectors', () => {
   describe('non-sigv4 auth is unchanged', () => {
     it('bearer: plain headers, capitalised Content-Type default, no AWS headers', async () => {
       await new RESTConnector().execute('http://localhost:5170/agent', { testCase, modelId: 'm' }, { type: 'bearer', token: 't' });
-      const { init } = lastFetch();
+      const { url, init } = lastFetch();
+      expect(url).toBe('http://localhost:5170/agent');
       expect(init.headers).toEqual({ 'Content-Type': 'application/json', Authorization: 'Bearer t' });
+    });
+
+    it('a custom lowercase `content-type` now overrides the default instead of producing a duplicate pair', async () => {
+      await new RESTConnector().execute(
+        'http://localhost:5170/agent?b=2&a=1+1',
+        { testCase, modelId: 'm' },
+        { type: 'none', headers: { 'content-type': 'application/vnd.agent+json' } }
+      );
+      const { url, init } = lastFetch();
+      // URL untouched for non-sigv4 (no canonicalisation)
+      expect(url).toBe('http://localhost:5170/agent?b=2&a=1+1');
+      expect(init.headers).toEqual({ 'content-type': 'application/vnd.agent+json' });
+      expect(new Headers(init.headers).get('content-type')).toBe('application/vnd.agent+json');
     });
   });
 });

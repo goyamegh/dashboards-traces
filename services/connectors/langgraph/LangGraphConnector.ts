@@ -86,14 +86,14 @@ export class LangGraphConnector extends BaseConnector {
     // exactly the bytes sent to the final invoke URL.
     const body = JSON.stringify(payload);
     const defaultHeaders = { 'Content-Type': 'application/json' };
-    const headers = await this.prepareRequestHeaders(auth, {
+    const { url, headers } = await this.prepareRequest(auth, {
       method: 'POST',
       url: invokeUrl,
       body,
       defaultHeaders,
     });
 
-    const response = await fetch(invokeUrl, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: withDefaultHeaders(defaultHeaders, headers),
       body,
@@ -199,8 +199,8 @@ export class LangGraphConnector extends BaseConnector {
   async healthCheck(endpoint: string, auth: ConnectorAuth): Promise<boolean> {
     try {
       const baseUrl = endpoint.replace(/\/+$/, '');
-      const headers = await this.prepareRequestHeaders(auth, { method: 'GET', url: `${baseUrl}/ok` });
-      const response = await fetch(`${baseUrl}/ok`, {
+      const { url, headers } = await this.prepareRequest(auth, { method: 'GET', url: `${baseUrl}/ok` });
+      const response = await fetch(url, {
         method: 'GET',
         headers,
       });
@@ -208,8 +208,8 @@ export class LangGraphConnector extends BaseConnector {
     } catch {
       // Try root endpoint as fallback
       try {
-        const headers = await this.prepareRequestHeaders(auth, { method: 'GET', url: endpoint });
-        const response = await fetch(endpoint, { method: 'GET', headers });
+        const { url, headers } = await this.prepareRequest(auth, { method: 'GET', url: endpoint });
+        const response = await fetch(url, { method: 'GET', headers });
         return response.ok;
       } catch {
         return false;

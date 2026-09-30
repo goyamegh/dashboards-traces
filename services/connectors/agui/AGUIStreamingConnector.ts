@@ -58,12 +58,13 @@ export class AGUIStreamingConnector extends BaseConnector {
     // Use pre-built payload from hook if available, otherwise build fresh
     const hasPrebuiltPayload = !!request.payload;
     const payload = request.payload || this.buildPayload(request);
-    // consumeSSEStream sends JSON.stringify(payload) with these defaults; an
-    // aws-sigv4 signature must cover exactly that body and header set.
-    const headers = await this.prepareRequestHeaders(auth, {
+    // Serialise ONCE and send exactly these bytes: an aws-sigv4 signature
+    // covers this body string and the SSE client's default header set.
+    const body = JSON.stringify(payload);
+    const { url, headers } = await this.prepareRequest(auth, {
       method: 'POST',
       url: endpoint,
-      body: JSON.stringify(payload),
+      body,
       defaultHeaders: SSE_DEFAULT_HEADERS,
     });
     const trajectory: TrajectoryStep[] = [];
@@ -73,8 +74,8 @@ export class AGUIStreamingConnector extends BaseConnector {
     this.debug('Executing AG-UI streaming request');
 
     await consumeSSEStream(
-      endpoint,
-      payload,
+      url,
+      body,
       (event: AGUIEvent) => {
         // Capture raw event for debugging
         rawEvents.push(event);
@@ -117,10 +118,10 @@ export class AGUIStreamingConnector extends BaseConnector {
    */
   async healthCheck(endpoint: string, auth: ConnectorAuth): Promise<boolean> {
     try {
-      const headers = await this.prepareRequestHeaders(auth, { method: 'OPTIONS', url: endpoint });
+      const { url, headers } = await this.prepareRequest(auth, { method: 'OPTIONS', url: endpoint });
       // For AG-UI endpoints, we can't really do a health check without
       // making a full request, so just check if the endpoint is reachable
-      const response = await fetch(endpoint, {
+      const response = await fetch(url, {
         method: 'OPTIONS',
         headers,
       });

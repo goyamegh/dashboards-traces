@@ -59,6 +59,33 @@ export interface SigV4SignInput {
   signingDate?: Date;
 }
 
+export interface SigV4SignedRequest {
+  /**
+   * The URL to fetch. Same scheme/host/path and the same query parameters in
+   * the same order as the input, but with the query percent-encoded in the
+   * RFC 3986 form the signature was computed over — so the bytes on the wire
+   * and the canonical request cannot disagree on `+` / `%2B` / `%20`.
+   */
+  url: string;
+  /** Full header map to send (lowercase names, `host` omitted). */
+  headers: Record<string, string>;
+}
+
+/**
+ * Headers the caller may not supply for a signed request: they are produced
+ * by the signer or by the transport, and a stale/foreign value would either
+ * be signed and then overwritten on the wire (→ SignatureDoesNotMatch) or
+ * would hijack the payload hash (`x-amz-content-sha256`).
+ */
+const RESERVED_REQUEST_HEADERS = new Set([
+  'authorization',
+  'host',
+  'content-length',
+  'x-amz-date',
+  'x-amz-content-sha256',
+  'x-amz-security-token',
+]);
+
 const PROVIDER_CACHE_KEY_DEFAULT = '\u0000default';
 type CredentialProvider = Extract<SignatureV4Init['credentials'], (...args: any[]) => any>;
 const providerCache = new Map<string, CredentialProvider>();
@@ -108,10 +135,38 @@ export function resolveSigV4CredentialProvider(auth: ConnectorAuth): CredentialP
   return provider;
 }
 
-/** Split a URL's query string into the `{ key: value | value[] }` shape SigV4 canonicalises. */
-function queryFromUrl(url: URL): Record<string, string | string[]> {
+/** RFC 3986 unreserved-only percent-encoding — the same escaping SigV4 canonicalisation uses. */
+function rfc3986Encode(value: string): string {
+  return encodeURIComponent(value).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
+}
+
+/**
+ * Parse the RAW query string into ordered `[key, value]` pairs.
+ *
+ * Deliberately not `URLSearchParams`: that applies form-encoding rules
+ * (`+` → space) which AWS does not, so a value like `a=1+2` would be signed
+ * as `1 2`. Here each part is only percent-DEcoded, so `+` stays a literal
+ * plus and `%2B` decodes to a literal plus as well — both are then
+ * re-encoded as `%2B` on the wire and in the canonical request.
+ */
+function parseRawQuery(search: string): Array<[string, string]> {
+  const raw = search.startsWith('?') ? search.slice(1) : search;
+  if (!raw) return [];
+  return raw
+    .split('&')
+    .filter((part) => part.length > 0)
+    .map((part) => {
+      const eq = part.indexOf('=');
+      const k = eq === -1 ? part : part.slice(0, eq);
+      const v = eq === -1 ? '' : part.slice(eq + 1);
+      return [decodeURIComponent(k), decodeURIComponent(v)] as [string, string];
+    });
+}
+
+/** `{ key: value | value[] }` — the shape `@smithy/signature-v4` canonicalises. */
+function toQueryBag(pairs: Array<[string, string]>): Record<string, string | string[]> {
   const query: Record<string, string | string[]> = {};
-  for (const [key, value] of url.searchParams.entries()) {
+  for (const [key, value] of pairs) {
     const existing = query[key];
     if (existing === undefined) query[key] = value;
     else if (Array.isArray(existing)) existing.push(value);
@@ -121,10 +176,16 @@ function queryFromUrl(url: URL): Record<string, string | string[]> {
 }
 
 /**
- * Sign an outgoing request and return the FULL header map to send.
+ * Sign an outgoing request and return the URL to fetch plus the FULL header
+ * map to send.
  *
  * - Header names are lowercased first so the signer and the transport agree
- *   on one key per header (no `Content-Type` + `content-type` pair).
+ *   on one key per header (no `Content-Type` + `content-type` pair); caller
+ *   values for signer/transport-owned headers (RESERVED_REQUEST_HEADERS) are
+ *   dropped rather than signed.
+ * - The query string is parsed from the raw URL (no form-decoding) and
+ *   re-serialised in canonical RFC 3986 form for the wire, see
+ *   `SigV4SignedRequest.url`.
  * - `host` is signed (required by SigV4) but REMOVED from the returned map:
  *   `fetch` sets it itself and rejects/ignores a caller-supplied one.
  * - Adds `authorization`, `x-amz-date`, `x-amz-content-sha256` (payload hash
@@ -136,7 +197,7 @@ function queryFromUrl(url: URL): Record<string, string | string[]> {
  *   AFTER signing (e.g. `traceparent`) are fine as long as they stay out of
  *   `SignedHeaders`.
  */
-export async function signAwsSigV4Request(input: SigV4SignInput): Promise<Record<string, string>> {
+export async function signAwsSigV4Request(input: SigV4SignInput): Promise<SigV4SignedRequest> {
   const { auth } = input;
   const scope = { profile: resolveProfile(auth), region: auth.awsRegion, service: auth.awsService };
 
@@ -150,7 +211,17 @@ export async function signAwsSigV4Request(input: SigV4SignInput): Promise<Record
     throw new SigV4SigningError(`endpoint is not an absolute URL: ${input.url}`, scope, err);
   }
 
+  let queryPairs: Array<[string, string]>;
+  try {
+    queryPairs = parseRawQuery(url.search);
+  } catch (err) {
+    throw new SigV4SigningError(`endpoint query string is not valid percent-encoding: ${url.search}`, scope, err);
+  }
+  const wireQuery = queryPairs.map(([k, v]) => `${rfc3986Encode(k)}=${rfc3986Encode(v)}`).join('&');
+  const wireUrl = `${url.protocol}//${url.host}${url.pathname}${wireQuery ? `?${wireQuery}` : ''}`;
+
   const headers = normalizeHeaderKeys(input.headers);
+  for (const name of RESERVED_REQUEST_HEADERS) delete headers[name];
   headers.host = url.host;
 
   let credentials: CredentialProvider;
@@ -166,8 +237,6 @@ export async function signAwsSigV4Request(input: SigV4SignInput): Promise<Record
     region: auth.awsRegion,
     service: auth.awsService,
     sha256: Sha256,
-    // S3 is the one service whose canonical URI must NOT be double-encoded.
-    uriEscapePath: auth.awsService !== 's3',
   });
 
   try {
@@ -178,7 +247,7 @@ export async function signAwsSigV4Request(input: SigV4SignInput): Promise<Record
         hostname: url.hostname,
         ...(url.port ? { port: Number(url.port) } : {}),
         path: url.pathname,
-        query: queryFromUrl(url),
+        query: toQueryBag(queryPairs),
         headers,
         body: input.body,
       },
@@ -186,7 +255,7 @@ export async function signAwsSigV4Request(input: SigV4SignInput): Promise<Record
     );
     const out = normalizeHeaderKeys(signed.headers as Record<string, string>);
     delete out.host;
-    return out;
+    return { url: wireUrl, headers: out };
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err);
     throw new SigV4SigningError(reason, scope, err);

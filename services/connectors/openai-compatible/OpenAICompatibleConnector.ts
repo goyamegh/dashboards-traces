@@ -134,17 +134,17 @@ export class OpenAICompatibleConnector extends BaseConnector {
     // exactly the bytes sent.
     const body = JSON.stringify(payload);
     const defaultHeaders = { 'Content-Type': 'application/json' };
-    const headers = await this.prepareRequestHeaders(auth, {
+    const { url, headers } = await this.prepareRequest(auth, {
       method: 'POST',
       url: endpoint,
       body,
       defaultHeaders,
     });
     this.debug('Executing OpenAI-compatible request');
-    this.debug('Endpoint:', endpoint);
+    this.debug('Endpoint:', url);
     this.debug('Model:', payload.model);
 
-    const response = await fetch(endpoint, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: withDefaultHeaders(defaultHeaders, headers),
       body,

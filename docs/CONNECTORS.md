@@ -78,7 +78,7 @@ export class MyConnector extends BaseConnector {
     // for exactly this request (adds an AWS SigV4 signature for aws-sigv4).
     const body = JSON.stringify(payload);
     const defaultHeaders = { 'Content-Type': 'application/json' };
-    const headers = await this.prepareRequestHeaders(auth, {
+    const { url, headers } = await this.prepareRequest(auth, {
       method: 'POST',
       url: endpoint,
       body,
@@ -87,7 +87,7 @@ export class MyConnector extends BaseConnector {
     const trajectory: TrajectoryStep[] = [];
 
     // Make your API call here
-    const response = await fetch(endpoint, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: withDefaultHeaders(defaultHeaders, headers),
       body,
@@ -224,29 +224,31 @@ const step = this.createStep('action', 'Querying database', {
 
 Builds HTTP headers from authentication configuration (`basic`, `bearer`,
 `api-key`, plus `auth.headers`). It cannot produce an `aws-sigv4` signature —
-that is a function of the whole request, see `prepareRequestHeaders`.
+that is a function of the whole request, see `prepareRequest`.
 
 ```typescript
 const headers = this.buildAuthHeaders(auth);
 // Returns: { 'Authorization': 'Bearer xxx' } or similar
 ```
 
-#### `prepareRequestHeaders(auth, { method, url, body?, defaultHeaders? })`
+#### `prepareRequest(auth, { method, url, body?, defaultHeaders? })` → `{ url, headers }`
 
 What HTTP connectors call right before `fetch`, once endpoint, payload and
-custom headers are final. Returns `buildAuthHeaders(auth)` plus W3C trace
-context (`traceparent`) and — for `auth.type: 'aws-sigv4'` — the AWS
-Signature V4 headers computed over exactly this request. Pass the body string
-you will send and the defaults your transport adds (e.g. `Content-Type`) so they
-are part of the signature; then merge with `withDefaultHeaders()` from
+custom headers are final. Returns the URL to fetch and `buildAuthHeaders(auth)`
+plus W3C trace context (`traceparent`) — and for `auth.type: 'aws-sigv4'` the
+AWS Signature V4 headers computed over exactly this request, with the query
+string of the returned `url` re-serialised in the canonical RFC 3986 form that
+was signed (always fetch the returned `url`, not your input). Pass the body
+string you will send and the defaults your transport adds (e.g. `Content-Type`)
+so they are part of the signature; then merge with `withDefaultHeaders()` from
 `lib/httpHeaders.ts` so no duplicate `Content-Type`/`content-type` pair reaches
 the wire.
 
 ```typescript
 const body = JSON.stringify(payload);
 const defaultHeaders = { 'Content-Type': 'application/json' };
-const headers = await this.prepareRequestHeaders(auth, { method: 'POST', url: endpoint, body, defaultHeaders });
-await fetch(endpoint, { method: 'POST', headers: withDefaultHeaders(defaultHeaders, headers), body });
+const { url, headers } = await this.prepareRequest(auth, { method: 'POST', url: endpoint, body, defaultHeaders });
+await fetch(url, { method: 'POST', headers: withDefaultHeaders(defaultHeaders, headers), body });
 ```
 
 #### `buildAuthEnv(auth: ConnectorAuth)`
@@ -270,7 +272,7 @@ AWS SigV4 is used in two contexts:
 1. **OpenSearch cluster connections** (storage and observability) — handled by `opensearchClientFactory.ts` using `@opensearch-project/opensearch/aws-v3` and the AWS credential provider chain. Configure via environment variables (`OPENSEARCH_STORAGE_AUTH_TYPE=sigv4`) or the Settings UI. Set `awsService` to `es` for managed OpenSearch domains or `aoss` for OpenSearch Serverless collections.
 
 2. **Connector-level auth** (agent endpoints) — `auth: { type: 'aws-sigv4', … }` on an agent. What happens depends on the connector family:
-   - **HTTP connectors** (`rest`, `agui-streaming`, `langgraph`, `openai-compatible`) **sign every request with AWS Signature V4** (`services/connectors/base/awsSigV4.ts`, invoked through `BaseConnector.prepareRequestHeaders()`). This is what you need for agents behind API Gateway (`execute-api`), Lambda function URLs (`lambda`), Bedrock AgentCore (`bedrock-agentcore`), App Runner, or an ALB with IAM auth.
+   - **HTTP connectors** (`rest`, `agui-streaming`, `langgraph`, `openai-compatible`) **sign every request with AWS Signature V4** (`services/connectors/base/awsSigV4.ts`, invoked through `BaseConnector.prepareRequest()`). This is what you need for agents behind API Gateway (`execute-api`), Lambda function URLs (`lambda`), Bedrock AgentCore (`bedrock-agentcore`), App Runner, or an ALB with IAM auth.
    - **Subprocess connectors** export the static keys as `AWS_REGION` / `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` / `AWS_SESSION_TOKEN` into the child's environment (`buildAuthEnv()`); the child does its own signing.
 
 ```typescript
@@ -300,11 +302,11 @@ The provider is memoised per profile; the credentials it yields are re-resolved 
 
 The signature covers the request exactly as it goes over the wire:
 
-- method and the full URL — path **and** query string (the `beforeRequest` hook's final `endpoint`);
+- method and the full URL — path **and** query string (the `beforeRequest` hook's final `endpoint`). The query is parsed from the raw URL without form-decoding (`+` stays a literal plus, `%2B`/`%20` decode to `+`/space) and is re-serialised in canonical RFC 3986 form on the wire, so the bytes sent and the canonical request can never disagree — the fetched URL may therefore differ from the configured one only in percent-encoding (same parameters, same order);
 - the exact body bytes: `JSON.stringify(payload)` → `x-amz-content-sha256`;
 - the headers: `host`, `content-type` (and `accept` for SSE), `x-amz-date`, `x-amz-security-token` (when the credentials carry a session token), `x-amz-content-sha256`, every `auth.headers` / `agent.headers` entry and every header returned by a `beforeRequest` hook. They appear in `SignedHeaders=…` of the `Authorization: AWS4-HMAC-SHA256 …` header.
 
-Header names are lowercase-normalised before signing and the transport applies its `Content-Type`/`Accept` defaults case-insensitively. This matters: Node's `fetch` folds a `Content-Type` + `content-type` pair into one header valued `"application/json, application/json"`, which no longer matches what was signed. `host` is signed but not passed to `fetch` (the runtime sets it from the URL).
+Header names are lowercase-normalised before signing and the transport applies its `Content-Type`/`Accept` defaults case-insensitively. Caller-supplied values for signer/transport-owned headers (`authorization`, `host`, `content-length`, `x-amz-date`, `x-amz-content-sha256`, `x-amz-security-token`) are dropped rather than signed. This matters: Node's `fetch` folds a `Content-Type` + `content-type` pair into one header valued `"application/json, application/json"`, which no longer matches what was signed. `host` is signed but not passed to `fetch` (the runtime sets it from the URL).
 
 **Not signed by design:** the W3C `traceparent` / `tracestate` headers (`traceContext.propagateHeader`) are injected **after** signing and are therefore not in `SignedHeaders`. SigV4 allows unsigned extra headers, and keeping trace headers out of the signature means a proxy that rewrites them cannot cause `SignatureDoesNotMatch`.
 
@@ -480,9 +482,9 @@ export class PERAgentConnector extends BaseConnector {
     const payload = this.buildPayload(request);
     const body = JSON.stringify(payload);
     const defaultHeaders = { 'Content-Type': 'application/json' };
-    const headers = await this.prepareRequestHeaders(auth, { method: 'POST', url: endpoint, body, defaultHeaders });
+    const { url, headers } = await this.prepareRequest(auth, { method: 'POST', url: endpoint, body, defaultHeaders });
 
-    const response = await fetch(endpoint, {
+    const response = await fetch(url, {
       method: 'POST',
       headers: withDefaultHeaders(defaultHeaders, headers),
       body,

@@ -90,7 +90,7 @@ export abstract class BaseConnector implements AgentConnector {
       case 'aws-sigv4':
         // SigV4 is a signature over the whole request (method, URL, body,
         // headers), so it cannot be produced from the auth block alone —
-        // HTTP connectors obtain it via prepareRequestHeaders() at send time.
+        // HTTP connectors obtain it via prepareRequest() at send time.
         break;
 
       case 'none':
@@ -108,55 +108,65 @@ export abstract class BaseConnector implements AgentConnector {
   }
 
   /**
-   * Finalise the auth-derived headers for ONE concrete outgoing HTTP request.
+   * Finalise ONE concrete outgoing HTTP request: the URL to fetch and the
+   * auth-derived headers to send with it.
    *
    * This is what HTTP connectors must call (instead of `buildAuthHeaders` +
    * `injectTraceparentHeaders`) right before `fetch`, once the endpoint,
    * payload and custom headers are final — i.e. AFTER any `beforeRequest`
    * hook has run (hooks execute in `invokeAgent` before `connector.execute`).
    *
-   * - For every auth type: returns `buildAuthHeaders(auth)` (+ W3C trace
-   *   context when `traceContext.propagateHeader` is on).
-   * - For `aws-sigv4`: additionally signs the request with AWS Signature V4
-   *   over `method` + `url` + `body` + the exact header map that will be sent
+   * - For every auth type: `url` is returned unchanged and `headers` is
+   *   `buildAuthHeaders(auth)` (+ W3C trace context when
+   *   `traceContext.propagateHeader` is on).
+   * - For `aws-sigv4`: the request is signed with AWS Signature V4 over
+   *   `method` + URL + `body` + the exact header map that will be sent
    *   (`defaultHeaders` — the transport's defaults such as `Content-Type` —
-   *   merged with the auth/custom headers). The returned map then carries
-   *   `authorization`, `x-amz-date`, `x-amz-content-sha256`, optionally
-   *   `x-amz-security-token`, and every signed header under a lowercase name;
-   *   the transport must apply its defaults case-insensitively (see
-   *   `withDefaultHeaders`) so no `Content-Type`/`content-type` pair reaches
-   *   the wire. `host` is signed but not returned (`fetch` sets it).
-   *   `traceparent`/`tracestate` are injected AFTER signing and therefore stay
-   *   out of `SignedHeaders` — SigV4 permits unsigned extra headers, and this
-   *   keeps the signature valid even if an intermediary rewrites trace headers.
+   *   merged with the auth/custom headers). The returned `url` has its query
+   *   string re-serialised in the RFC 3986 form the signature was computed
+   *   over (same parameters, same order; only the percent-encoding is
+   *   canonical) — callers MUST fetch the returned `url`, not their input.
+   *   The returned `headers` carry `authorization`, `x-amz-date`,
+   *   `x-amz-content-sha256`, optionally `x-amz-security-token`, and every
+   *   signed header under a lowercase name; the transport must apply its
+   *   defaults case-insensitively (see `withDefaultHeaders`) so no
+   *   `Content-Type`/`content-type` pair reaches the wire. `host` is signed
+   *   but not returned (`fetch` sets it). `traceparent`/`tracestate` are
+   *   injected AFTER signing and therefore stay out of `SignedHeaders` —
+   *   SigV4 permits unsigned extra headers, and this keeps the signature
+   *   valid even if an intermediary rewrites trace headers.
    *
    * @throws SigV4SigningError with a message of the form
    *   `SigV4 signing failed: <reason> (profile X / region Y / service Z)` when
    *   credentials cannot be resolved or the request cannot be signed. The
    *   evaluation runner surfaces it as the failed agent step's error.
    */
-  protected async prepareRequestHeaders(
+  protected async prepareRequest(
     auth: ConnectorAuth,
     request: {
       method: string;
       url: string;
+      /** Exact body string that will be sent (`JSON.stringify(payload)`); omit for bodiless requests. */
       body?: string;
       /** Headers the transport adds on its own (e.g. `Content-Type`); needed so they can be signed. */
       defaultHeaders?: Record<string, string>;
     }
-  ): Promise<Record<string, string>> {
+  ): Promise<{ url: string; headers: Record<string, string> }> {
+    let url = request.url;
     let headers = this.buildAuthHeaders(auth);
     if (auth.type === 'aws-sigv4') {
-      headers = await signAwsSigV4Request({
+      const signed = await signAwsSigV4Request({
         auth,
         method: request.method,
         url: request.url,
         body: request.body,
         headers: { ...(request.defaultHeaders ?? {}), ...headers },
       });
+      url = signed.url;
+      headers = signed.headers;
     }
     this.injectTraceparentHeaders(headers);
-    return headers;
+    return { url, headers };
   }
 
   /**
@@ -207,8 +217,8 @@ export abstract class BaseConnector implements AgentConnector {
   async healthCheck(endpoint: string, auth: ConnectorAuth): Promise<boolean> {
     try {
       // Default: try a simple fetch with HEAD method
-      const headers = await this.prepareRequestHeaders(auth, { method: 'HEAD', url: endpoint });
-      const response = await fetch(endpoint, {
+      const { url, headers } = await this.prepareRequest(auth, { method: 'HEAD', url: endpoint });
+      const response = await fetch(url, {
         method: 'HEAD',
         headers,
       });

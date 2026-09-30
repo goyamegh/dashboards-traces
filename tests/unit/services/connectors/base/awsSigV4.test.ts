@@ -59,7 +59,7 @@ describe('signAwsSigV4Request', () => {
   });
 
   it('signs with the configured service/region and hashes the exact body that will be sent', async () => {
-    const headers = await signAwsSigV4Request({
+    const { headers } = await signAwsSigV4Request({
       auth: STATIC,
       method: 'POST',
       url: URL_,
@@ -86,7 +86,7 @@ describe('signAwsSigV4Request', () => {
   });
 
   it('produces a signature that an independent SignatureV4 (same creds, same request) reproduces', async () => {
-    const headers = await signAwsSigV4Request({
+    const { headers } = await signAwsSigV4Request({
       auth: STATIC,
       method: 'POST',
       url: URL_,
@@ -119,7 +119,7 @@ describe('signAwsSigV4Request', () => {
   });
 
   it('lowercases header names so the transport sends ONE content-type (no `Content-Type, content-type` merge)', async () => {
-    const headers = await signAwsSigV4Request({
+    const { headers } = await signAwsSigV4Request({
       auth: STATIC,
       method: 'POST',
       url: URL_,
@@ -135,7 +135,7 @@ describe('signAwsSigV4Request', () => {
   });
 
   it('signs `host` but does not return it (fetch sets it)', async () => {
-    const headers = await signAwsSigV4Request({
+    const { headers } = await signAwsSigV4Request({
       auth: STATIC,
       method: 'POST',
       url: 'https://example.com:8443/path',
@@ -170,7 +170,7 @@ describe('signAwsSigV4Request', () => {
   });
 
   it('adds and signs x-amz-security-token when a session token is configured', async () => {
-    const headers = await signAwsSigV4Request({
+    const { headers } = await signAwsSigV4Request({
       auth: { ...STATIC, awsSessionToken: 'SESSION-TOKEN' },
       method: 'POST',
       url: URL_,
@@ -183,9 +183,114 @@ describe('signAwsSigV4Request', () => {
   });
 
   it('a different body → different signature (the body is really covered)', async () => {
-    const a = await signAwsSigV4Request({ auth: STATIC, method: 'POST', url: URL_, body: BODY, headers: {}, signingDate: SIGNING_DATE });
-    const b = await signAwsSigV4Request({ auth: STATIC, method: 'POST', url: URL_, body: BODY + ' ', headers: {}, signingDate: SIGNING_DATE });
+    const { headers: a } = await signAwsSigV4Request({ auth: STATIC, method: 'POST', url: URL_, body: BODY, headers: {}, signingDate: SIGNING_DATE });
+    const { headers: b } = await signAwsSigV4Request({ auth: STATIC, method: 'POST', url: URL_, body: BODY + ' ', headers: {}, signingDate: SIGNING_DATE });
     expect(parseAuthorization(a.authorization).signature).not.toBe(parseAuthorization(b.authorization).signature);
+  });
+
+  describe('URL canonicalisation (wire bytes == signed bytes)', () => {
+    const base = { auth: STATIC, method: 'POST', body: BODY, headers: {}, signingDate: SIGNING_DATE };
+
+    async function expectedFor(url: string, query: Record<string, string | string[]>, headers: Record<string, string> = {}) {
+      const u = new URL(url);
+      const verifier = new SignatureV4({
+        credentials: { accessKeyId: STATIC.awsAccessKeyId!, secretAccessKey: STATIC.awsSecretAccessKey! },
+        region: 'us-west-2',
+        service: 'execute-api',
+        sha256: Sha256,
+      });
+      const signed = await verifier.sign(
+        { method: 'POST', protocol: u.protocol, hostname: u.hostname, ...(u.port ? { port: Number(u.port) } : {}), path: u.pathname, query, headers: { host: u.host, ...headers }, body: BODY },
+        { signingDate: SIGNING_DATE }
+      );
+      return signed.headers.authorization;
+    }
+
+    it('a literal `+` in a query value is NOT form-decoded to a space; wire and signature both carry %2B', async () => {
+      const r = await signAwsSigV4Request({ ...base, url: 'https://example.com/p?q=1+2&plain=x' });
+      expect(r.url).toBe('https://example.com/p?q=1%2B2&plain=x');
+      expect(r.headers.authorization).toBe(await expectedFor(r.url, { q: '1+2', plain: 'x' }));
+      // and NOT the form-decoded interpretation
+      expect(r.headers.authorization).not.toBe(await expectedFor(r.url, { q: '1 2', plain: 'x' }));
+    });
+
+    it('%2B and %20 decode to literal plus / space and re-encode canonically; parameter order is preserved', async () => {
+      const r = await signAwsSigV4Request({ ...base, url: 'https://example.com/p?z=a%2Bb&a=hello%20world&z=c%20d' });
+      expect(r.url).toBe('https://example.com/p?z=a%2Bb&a=hello%20world&z=c%20d');
+      expect(r.headers.authorization).toBe(await expectedFor(r.url, { z: ['a+b', 'c d'], a: 'hello world' }));
+    });
+
+    it('reserved characters that URLSearchParams would leave alone are RFC 3986-encoded on the wire', async () => {
+      const r = await signAwsSigV4Request({ ...base, url: "https://example.com/p?f=a*b!c(d)'e&k=v/w:x" });
+      expect(r.url).toBe('https://example.com/p?f=a%2Ab%21c%28d%29%27e&k=v%2Fw%3Ax');
+      expect(r.headers.authorization).toBe(await expectedFor(r.url, { f: "a*b!c(d)'e", k: 'v/w:x' }));
+    });
+
+    it('a bare `?`, an empty parameter and a key without `=` are handled (`a` → `a=`)', async () => {
+      expect((await signAwsSigV4Request({ ...base, url: 'https://example.com/p?' })).url).toBe('https://example.com/p');
+      const r = await signAwsSigV4Request({ ...base, url: 'https://example.com/p?flag&&x=' });
+      expect(r.url).toBe('https://example.com/p?flag=&x=');
+      expect(r.headers.authorization).toBe(await expectedFor(r.url, { flag: '', x: '' }));
+    });
+
+    it('an encoded slash inside a path segment is kept as-is on the wire and double-encoded in the canonical URI', async () => {
+      const r = await signAwsSigV4Request({ ...base, url: 'https://example.com/prod/items/a%2Fb/invoke' });
+      expect(r.url).toBe('https://example.com/prod/items/a%2Fb/invoke');
+      expect(r.headers.authorization).toBe(await expectedFor(r.url, {}));
+    });
+
+    it('IPv6 literal host with a non-default port: `host` is signed as `[::1]:8443`', async () => {
+      const r = await signAwsSigV4Request({ ...base, url: 'https://[::1]:8443/p' });
+      expect(r.url).toBe('https://[::1]:8443/p');
+      expect(r.headers.host).toBeUndefined();
+      expect(r.headers.authorization).toBe(await expectedFor('https://[::1]:8443/p', {}));
+    });
+
+    it('an explicit default port is dropped from host (fetch does the same)', async () => {
+      const r = await signAwsSigV4Request({ ...base, url: 'https://example.com:443/p' });
+      expect(r.url).toBe('https://example.com/p');
+      expect(r.headers.authorization).toBe(await expectedFor('https://example.com/p', {}));
+    });
+
+    it('malformed percent-encoding in the query is a SigV4SigningError, not a crash', async () => {
+      await expect(signAwsSigV4Request({ ...base, url: 'https://example.com/p?bad=%E0%A4%A' })).rejects.toThrow(
+        /SigV4 signing failed: endpoint query string is not valid percent-encoding/
+      );
+    });
+
+    it('a URL without a query is returned unchanged', async () => {
+      const r = await signAwsSigV4Request({ ...base, url: URL_.split('?')[0] });
+      expect(r.url).toBe(URL_.split('?')[0]);
+    });
+  });
+
+  describe('reserved headers supplied by the caller are dropped, not signed', () => {
+    it('x-amz-content-sha256 / x-amz-date / authorization / host / content-length from auth.headers do not leak into the signature', async () => {
+      const r = await signAwsSigV4Request({
+        auth: STATIC,
+        method: 'POST',
+        url: URL_,
+        body: BODY,
+        headers: {
+          'X-Amz-Content-Sha256': 'deadbeef',
+          'x-amz-date': '19990101T000000Z',
+          Authorization: 'Bearer stale',
+          Host: 'evil.example',
+          'Content-Length': '1',
+          'X-Keep': 'yes',
+        },
+        signingDate: SIGNING_DATE,
+      });
+      expect(r.headers['x-amz-content-sha256']).toBe(sha256Hex(BODY));
+      expect(r.headers['x-amz-date']).toBe('20260102T030405Z');
+      expect(r.headers.authorization).toMatch(/^AWS4-HMAC-SHA256 /);
+      expect(r.headers.host).toBeUndefined();
+      expect(r.headers['content-length']).toBeUndefined();
+      expect(r.headers['x-keep']).toBe('yes');
+      // identical to signing the same request without the junk
+      const clean = await signAwsSigV4Request({ auth: STATIC, method: 'POST', url: URL_, body: BODY, headers: { 'X-Keep': 'yes' }, signingDate: SIGNING_DATE });
+      expect(r.headers.authorization).toBe(clean.headers.authorization);
+    });
   });
 
   describe('credential precedence', () => {
@@ -202,8 +307,8 @@ describe('signAwsSigV4Request', () => {
       mockFromNodeProviderChain.mockReturnValue(provider);
 
       const auth: ConnectorAuth = { type: 'aws-sigv4', awsRegion: 'eu-west-1', awsService: 'lambda', awsProfile: 'eval' };
-      const h1 = await signAwsSigV4Request({ auth, method: 'POST', url: URL_, body: BODY, headers: {}, signingDate: SIGNING_DATE });
-      const h2 = await signAwsSigV4Request({ auth, method: 'POST', url: URL_, body: BODY, headers: {}, signingDate: SIGNING_DATE });
+      const { headers: h1 } = await signAwsSigV4Request({ auth, method: 'POST', url: URL_, body: BODY, headers: {}, signingDate: SIGNING_DATE });
+      const { headers: h2 } = await signAwsSigV4Request({ auth, method: 'POST', url: URL_, body: BODY, headers: {}, signingDate: SIGNING_DATE });
 
       expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(1); // provider memoised…
       expect(mockFromNodeProviderChain).toHaveBeenCalledWith(expect.objectContaining({ profile: 'eval', ignoreCache: true }));
