@@ -6,6 +6,7 @@
 import type { TrajectoryStep } from '@/types';
 import { debug as centralDebug } from '@/lib/debug';
 import { trace, context as otelContext, propagation } from '@opentelemetry/api';
+import { signAwsSigV4Request } from '@/services/connectors/base/awsSigV4';
 import type {
   AgentConnector,
   ConnectorAuth,
@@ -87,9 +88,9 @@ export abstract class BaseConnector implements AgentConnector {
         break;
 
       case 'aws-sigv4':
-        // AWS SigV4 signing would be handled separately
-        // This is a placeholder - actual implementation would use aws4 or @aws-sdk/signature-v4
-        console.warn('[BaseConnector] AWS SigV4 auth requires runtime signing');
+        // SigV4 is a signature over the whole request (method, URL, body,
+        // headers), so it cannot be produced from the auth block alone —
+        // HTTP connectors obtain it via prepareRequestHeaders() at send time.
         break;
 
       case 'none':
@@ -103,6 +104,58 @@ export abstract class BaseConnector implements AgentConnector {
       Object.assign(headers, auth.headers);
     }
 
+    return headers;
+  }
+
+  /**
+   * Finalise the auth-derived headers for ONE concrete outgoing HTTP request.
+   *
+   * This is what HTTP connectors must call (instead of `buildAuthHeaders` +
+   * `injectTraceparentHeaders`) right before `fetch`, once the endpoint,
+   * payload and custom headers are final — i.e. AFTER any `beforeRequest`
+   * hook has run (hooks execute in `invokeAgent` before `connector.execute`).
+   *
+   * - For every auth type: returns `buildAuthHeaders(auth)` (+ W3C trace
+   *   context when `traceContext.propagateHeader` is on).
+   * - For `aws-sigv4`: additionally signs the request with AWS Signature V4
+   *   over `method` + `url` + `body` + the exact header map that will be sent
+   *   (`defaultHeaders` — the transport's defaults such as `Content-Type` —
+   *   merged with the auth/custom headers). The returned map then carries
+   *   `authorization`, `x-amz-date`, `x-amz-content-sha256`, optionally
+   *   `x-amz-security-token`, and every signed header under a lowercase name;
+   *   the transport must apply its defaults case-insensitively (see
+   *   `withDefaultHeaders`) so no `Content-Type`/`content-type` pair reaches
+   *   the wire. `host` is signed but not returned (`fetch` sets it).
+   *   `traceparent`/`tracestate` are injected AFTER signing and therefore stay
+   *   out of `SignedHeaders` — SigV4 permits unsigned extra headers, and this
+   *   keeps the signature valid even if an intermediary rewrites trace headers.
+   *
+   * @throws SigV4SigningError with a message of the form
+   *   `SigV4 signing failed: <reason> (profile X / region Y / service Z)` when
+   *   credentials cannot be resolved or the request cannot be signed. The
+   *   evaluation runner surfaces it as the failed agent step's error.
+   */
+  protected async prepareRequestHeaders(
+    auth: ConnectorAuth,
+    request: {
+      method: string;
+      url: string;
+      body?: string;
+      /** Headers the transport adds on its own (e.g. `Content-Type`); needed so they can be signed. */
+      defaultHeaders?: Record<string, string>;
+    }
+  ): Promise<Record<string, string>> {
+    let headers = this.buildAuthHeaders(auth);
+    if (auth.type === 'aws-sigv4') {
+      headers = await signAwsSigV4Request({
+        auth,
+        method: request.method,
+        url: request.url,
+        body: request.body,
+        headers: { ...(request.defaultHeaders ?? {}), ...headers },
+      });
+    }
+    this.injectTraceparentHeaders(headers);
     return headers;
   }
 
@@ -154,7 +207,7 @@ export abstract class BaseConnector implements AgentConnector {
   async healthCheck(endpoint: string, auth: ConnectorAuth): Promise<boolean> {
     try {
       // Default: try a simple fetch with HEAD method
-      const headers = this.buildAuthHeaders(auth);
+      const headers = await this.prepareRequestHeaders(auth, { method: 'HEAD', url: endpoint });
       const response = await fetch(endpoint, {
         method: 'HEAD',
         headers,

@@ -13,6 +13,7 @@
 
 import type { TrajectoryStep, ToolCallStatus } from '@/types';
 import { BaseConnector } from '@/services/connectors/base/BaseConnector';
+import { withDefaultHeaders } from '@/lib/httpHeaders';
 import type {
   ConnectorAuth,
   ConnectorRequest,
@@ -68,8 +69,6 @@ export class LangGraphConnector extends BaseConnector {
     onRawEvent?: ConnectorRawEventCallback
   ): Promise<ConnectorResponse> {
     const payload = request.payload || this.buildPayload(request);
-    const headers = this.buildAuthHeaders(auth);
-    this.injectTraceparentHeaders(headers);
     const config = request.connectorConfig || {};
     const graphId = config.graphId || 'agent';
 
@@ -83,13 +82,21 @@ export class LangGraphConnector extends BaseConnector {
     this.debug('Executing LangGraph request');
     this.debug('URL:', invokeUrl);
 
+    // Body fixed before header preparation so an aws-sigv4 signature covers
+    // exactly the bytes sent to the final invoke URL.
+    const body = JSON.stringify(payload);
+    const defaultHeaders = { 'Content-Type': 'application/json' };
+    const headers = await this.prepareRequestHeaders(auth, {
+      method: 'POST',
+      url: invokeUrl,
+      body,
+      defaultHeaders,
+    });
+
     const response = await fetch(invokeUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...headers,
-      },
-      body: JSON.stringify(payload),
+      headers: withDefaultHeaders(defaultHeaders, headers),
+      body,
     });
 
     if (!response.ok) {
@@ -191,8 +198,8 @@ export class LangGraphConnector extends BaseConnector {
 
   async healthCheck(endpoint: string, auth: ConnectorAuth): Promise<boolean> {
     try {
-      const headers = this.buildAuthHeaders(auth);
       const baseUrl = endpoint.replace(/\/+$/, '');
+      const headers = await this.prepareRequestHeaders(auth, { method: 'GET', url: `${baseUrl}/ok` });
       const response = await fetch(`${baseUrl}/ok`, {
         method: 'GET',
         headers,
@@ -201,7 +208,7 @@ export class LangGraphConnector extends BaseConnector {
     } catch {
       // Try root endpoint as fallback
       try {
-        const headers = this.buildAuthHeaders(auth);
+        const headers = await this.prepareRequestHeaders(auth, { method: 'GET', url: endpoint });
         const response = await fetch(endpoint, { method: 'GET', headers });
         return response.ok;
       } catch {

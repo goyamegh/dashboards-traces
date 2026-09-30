@@ -10,6 +10,17 @@
 
 import { AGUIEvent, AGUIEventType } from '@/types/agui';
 import { debug, isDebugEnabled } from '@/lib/debug';
+import { withDefaultHeaders } from '@/lib/httpHeaders';
+
+/**
+ * Headers `SSEClient.consume` adds to every request unless the caller already
+ * supplies them (case-insensitively). Exported so connectors that sign
+ * requests (aws-sigv4) can include exactly these in the signed header set.
+ */
+export const SSE_DEFAULT_HEADERS: Readonly<Record<string, string>> = Object.freeze({
+  'Content-Type': 'application/json',
+  Accept: 'text/event-stream',
+});
 
 export interface SSEClientOptions {
   url: string;
@@ -56,11 +67,10 @@ export class SSEClient {
     try {
       const requestConfig = {
         method,
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'text/event-stream',
-          ...headers,
-        },
+        // Case-insensitive merge: a caller that already supplies
+        // `content-type`/`accept` (e.g. a SigV4-signed header set) must not
+        // end up with a duplicate `Content-Type`/`Accept` pair on the wire.
+        headers: withDefaultHeaders(SSE_DEFAULT_HEADERS, headers),
         body: body ? JSON.stringify(body) : undefined,
         signal: this.abortController.signal,
       };

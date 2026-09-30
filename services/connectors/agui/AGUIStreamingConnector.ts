@@ -18,7 +18,7 @@ import type {
   ConnectorProgressCallback,
   ConnectorRawEventCallback,
 } from '@/services/connectors/types';
-import { consumeSSEStream } from '@/services/agent/sseStream';
+import { consumeSSEStream, SSE_DEFAULT_HEADERS } from '@/services/agent/sseStream';
 import { buildAgentPayload, AgentRequestPayload } from '@/services/agent/payloadBuilder';
 import { AGUIToTrajectoryConverter, computeTrajectoryFromRawEvents } from '@/services/agent/aguiConverter';
 
@@ -58,8 +58,14 @@ export class AGUIStreamingConnector extends BaseConnector {
     // Use pre-built payload from hook if available, otherwise build fresh
     const hasPrebuiltPayload = !!request.payload;
     const payload = request.payload || this.buildPayload(request);
-    const headers = this.buildAuthHeaders(auth);
-    this.injectTraceparentHeaders(headers);
+    // consumeSSEStream sends JSON.stringify(payload) with these defaults; an
+    // aws-sigv4 signature must cover exactly that body and header set.
+    const headers = await this.prepareRequestHeaders(auth, {
+      method: 'POST',
+      url: endpoint,
+      body: JSON.stringify(payload),
+      defaultHeaders: SSE_DEFAULT_HEADERS,
+    });
     const trajectory: TrajectoryStep[] = [];
     const rawEvents: AGUIEvent[] = [];
     const converter = new AGUIToTrajectoryConverter();
@@ -111,7 +117,7 @@ export class AGUIStreamingConnector extends BaseConnector {
    */
   async healthCheck(endpoint: string, auth: ConnectorAuth): Promise<boolean> {
     try {
-      const headers = this.buildAuthHeaders(auth);
+      const headers = await this.prepareRequestHeaders(auth, { method: 'OPTIONS', url: endpoint });
       // For AG-UI endpoints, we can't really do a health check without
       // making a full request, so just check if the endpoint is reachable
       const response = await fetch(endpoint, {
