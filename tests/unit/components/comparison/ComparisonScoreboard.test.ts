@@ -73,10 +73,10 @@ describe('ComparisonScoreboard structure', () => {
     expect(src).not.toMatch(/delta === 0 \? '='/);
     expect(src).toContain("costDelta === 0 ? '\u2014'");
     expect(src).toContain("durationDelta === 0 ? '\u2014'");
-    expect(src).toContain("title={costDelta === 0 ? 'No change' : undefined}");
-    expect(src).toContain("title={durationDelta === 0 ? 'No change' : undefined}");
-    expect(src).toContain('data-testid="scoreboard-delta-cost"');
-    expect(src).toContain('data-testid="scoreboard-delta-duration"');
+    // The shared DeltaCell renders the "No change" tooltip for every zero delta.
+    expect(src).toContain("title={delta === 0 ? 'No change' : title}");
+    expect(src).toContain('testId="scoreboard-delta-cost"');
+    expect(src).toContain('testId="scoreboard-delta-duration"');
   });
 
   it('formatDelta returns an em dash (not "=") when there is no difference', () => {
@@ -84,9 +84,11 @@ describe('ComparisonScoreboard structure', () => {
     expect(src).toContain("if (diff === 0) return '\u2014';");
   });
 
-  it('coverage cell shows shared count from overlap prop', () => {
+  it('coverage cell shows shared count from overlap prop and never claims "fully comparable"', () => {
     expect(src).toContain('overlap.sharedTestCases');
-    expect(src).toContain('fully comparable');
+    expect(src).toContain('same case IDs');
+    expect(src).toContain('same cases, same scoring');
+    expect(src).not.toContain('fully comparable');
   });
 
   it('no longer has a per-run expandable drawer or chevron', () => {
@@ -99,11 +101,13 @@ describe('ComparisonScoreboard structure', () => {
 
   it('shows every RunAggregateMetrics metric directly on the run row', () => {
     // Headers are data-driven (SCOREBOARD_COLUMNS) so every one carries a tooltip.
-    for (const label of ['Pass Rate', 'Average accuracy', 'Avg score', 'Cost', 'Avg Duration', 'Tokens', 'LLM Calls', 'Tool Calls', 'Coverage']) {
+    for (const label of ['Pass rate', 'Avg score', 'Cost', 'Avg Duration', 'Tokens', 'LLM Calls', 'Tool Calls', 'Coverage']) {
       expect(src).toContain(`label: '${label}'`);
     }
+    // No accuracy-only column: "accuracy" is one evaluator's rubric name.
+    expect(src).not.toContain("label: 'Average accuracy'");
     expect(src).toContain('run-passrate-${run.runId}');
-    expect(src).toContain('run-accuracy-${run.runId}');
+    expect(src).not.toContain('run-accuracy-${run.runId}');
     expect(src).toContain('run-avgscore-${run.runId}');
   });
 
@@ -221,7 +225,11 @@ describe('ComparisonScoreboard "Open run" deep link (rendered)', () => {
     passedCount: 5,
     failedCount: 0,
     avgAccuracy: 100,
+    evaluatedCount: 5,
     passRatePercent: 100,
+    scoring: { source: 'legacy' as const },
+    judgeModelId: 'judge-model-x',
+    testCaseVersions: {},
   });
 
   const makeSelectedRun = (id: string) => ({
@@ -305,10 +313,66 @@ describe('ComparisonScoreboard "Open run" deep link (rendered)', () => {
     );
 
     expect(screen.getByTestId('run-passrate-run-a').textContent).toContain('100%');
-    expect(screen.getByTestId('run-accuracy-run-a').textContent).toContain('100%');
-    // Judge info renders exactly once (single shared model here).
+    expect(screen.getByTestId('run-passrate-detail-run-a').textContent).toBe('5 / 5');
+    // Legacy-scored fixture: no accuracy column, "—" + legacy label for Avg score.
+    expect(screen.queryByTestId('run-accuracy-run-a')).toBeNull();
+    expect(screen.getByTestId('run-avgscore-run-a').textContent).toContain('—');
+    expect(screen.getByTestId('run-avgscore-legacy-run-a').textContent).toBe('legacy scoring');
+    // Judge info renders exactly once and names the JUDGE, not the agent model.
     expect(screen.getAllByTestId('scoreboard-judge-line')).toHaveLength(1);
     expect(screen.getByTestId('scoreboard-judge-line').textContent).toContain('Judge:');
+    expect(screen.getByTestId('scoreboard-judge-line').textContent).not.toContain('claude-sonnet');
+  });
+
+  it('judge line shows the JUDGE identity (judgeModelId · judgeModel), not the agent model, when runs carry it', () => {
+    const runA = makeRun('run-a');
+    const runB = makeRun('run-b');
+    const SONNET_45 = 'amazon-bedrock/global.anthropic.claude-sonnet-4-5-20250929-v1:0';
+    render(
+      React.createElement(ComparisonScoreboard, {
+        runs: [runA, runB],
+        selectedRuns: [
+          { ...makeSelectedRun('run-a'), judgeModelId: 'agent-trace-judge', judgeModel: SONNET_45 },
+          { ...makeSelectedRun('run-b'), judgeModelId: 'agent-trace-judge', judgeModel: SONNET_45 },
+        ] as any,
+        overlap,
+        runBenchmarkIdById: new Map(),
+        onRemoveRun: () => {},
+        onSwapRuns: () => {},
+        getAgentName: (k: string) => k,
+      })
+    );
+    const line = screen.getByTestId('scoreboard-judge-line');
+    // Same judge on both -> collapsed to ONE label: kind + underlying LLM.
+    expect(screen.getAllByTestId('judge-model-label')).toHaveLength(1);
+    expect(line.textContent).toContain('agent-trace-judge');
+    expect(line.textContent).toContain('claude-sonnet-4-5');
+    // and NOT the agent's model, which is what the line used to show under "Judge:"
+    expect(line.textContent).not.toContain('claude-sonnet ');
+  });
+
+  it('judge line labels differing judges A/B and flags an unrecorded agent-judge model on old runs', () => {
+    const runA = makeRun('run-a');
+    const runB = makeRun('run-b');
+    render(
+      React.createElement(ComparisonScoreboard, {
+        runs: [runA, runB],
+        selectedRuns: [
+          { ...makeSelectedRun('run-a'), judgeModelId: 'agent-trace-judge' },            // old run: model never recorded
+          { ...makeSelectedRun('run-b'), judgeModelId: 'us.anthropic.claude-sonnet-4-6', judgeModel: 'us.anthropic.claude-sonnet-4-6' },
+        ] as any,
+        overlap,
+        runBenchmarkIdById: new Map(),
+        onRemoveRun: () => {},
+        onSwapRuns: () => {},
+        getAgentName: (k: string) => k,
+      })
+    );
+    const line = screen.getByTestId('scoreboard-judge-line');
+    expect(screen.getAllByTestId('judge-model-label')).toHaveLength(2);
+    expect(line.textContent).toMatch(/A .*agent-trace-judge/);
+    expect(line.textContent).toContain('model not recorded');
+    expect(line.textContent).toMatch(/B .*claude-sonnet-4-6/);
   });
 
   it('removing a run calls onRemoveRun with that run id', () => {
@@ -429,7 +493,7 @@ describe('ComparisonScoreboard "Open run" deep link (rendered)', () => {
     expect(screen.getByTestId('comparison-overlap-banner').textContent).toBe('4 in both · 3 only in A · 3 only in B');
   });
 
-  it('coverage cell for a fully-overlapping comparison reads "N in both, fully comparable" (green)', () => {
+  it('coverage cell for a fully-overlapping LEGACY comparison reads "N in both, same case IDs" (not "fully comparable")', () => {
     const runA = makeRun('run-a');
     const runB = makeRun('run-b');
     render(
@@ -444,6 +508,51 @@ describe('ComparisonScoreboard "Open run" deep link (rendered)', () => {
     );
     const banner = screen.getByTestId('comparison-overlap-banner');
     expect(banner.getAttribute('data-overlap')).toBe('full');
-    expect(banner.textContent).toBe('5 in both, fully comparable');
+    expect(banner.textContent).toBe('5 in both, same case IDs');
+  });
+});
+
+describe('ComparisonScoreboard trace-cell honesty markers (rendered)', () => {
+  // A run whose trace query hit its size cap is a LOWER bound (`≥` prefix);
+  // a run correlated via service.name + window says so in the tooltip. Both
+  // stay real numbers — never `--` — so the compare page is populated but not
+  // misleading.
+  const { ComparisonScoreboard } = require('@/components/comparison/ComparisonScoreboard');
+  const overlap = { runCount: 2, totalTestCases: 5, sharedTestCases: 5, partialTestCases: 0, perRun: [], fullyOverlapping: true };
+  const base = (runId: string) => ({
+    runId, runName: runId, createdAt: new Date().toISOString(), modelId: 'm', agentKey: 'mock',
+    totalTestCases: 5, passedCount: 5, failedCount: 0, avgAccuracy: 100, passRatePercent: 100,
+    totalCostUsd: 1.5, totalTokens: 250_100, totalLlmCalls: 6, totalToolCalls: 2, avgDurationMs: 1000,
+  });
+  const selected = (id: string) => ({ id, name: id, createdAt: new Date().toISOString(), agentKey: 'mock', modelId: 'm', results: {} });
+
+  it('renders `≥` before Cost/Tokens/LLM/Tool cells of a partial run and a window-correlation tooltip; exact runs get neither', () => {
+    render(
+      React.createElement(ComparisonScoreboard, {
+        runs: [
+          { ...base('run-partial'), traceMetricsPartial: true, traceMetricsWindowCorrelated: true },
+          base('run-exact'),
+        ],
+        selectedRuns: [selected('run-partial'), selected('run-exact')],
+        overlap,
+        runBenchmarkIdById: new Map(),
+        onRemoveRun: () => {},
+        onSwapRuns: () => {},
+        getAgentName: (k: string) => k,
+      })
+    );
+    const tokensP = screen.getByTestId('run-tokens-run-partial');
+    expect(tokensP.textContent).toBe('≥250.1K');
+    expect(screen.getByTestId('run-cost-run-partial').textContent).toBe('≥$1.50');
+    expect(screen.getByTestId('run-llmcalls-run-partial').textContent).toBe('≥6');
+    expect(tokensP.getAttribute('title')).toMatch(/Lower bound/);
+    expect(tokensP.getAttribute('title')).toMatch(/service name \+ run time window/);
+    // Duration is not a trace TOTAL (it's an average) — no prefix.
+    expect(screen.getByTestId('run-duration-run-partial').textContent).not.toContain('≥');
+
+    const tokensE = screen.getByTestId('run-tokens-run-exact');
+    expect(tokensE.textContent).toBe('250.1K');
+    expect(tokensE.getAttribute('title')).toBeNull();
+    expect(screen.getByTestId('run-cost-run-exact').textContent).toBe('$1.50');
   });
 });

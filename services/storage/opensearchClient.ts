@@ -11,7 +11,7 @@
  */
 
 import { ENV_CONFIG } from '@/lib/config';
-import type { TestCaseDefinitionCapture } from '@/types';
+import type { ScoringSnapshot, TestCaseDefinitionCapture } from '@/types';
 
 const STORAGE_BASE_URL = ENV_CONFIG.storageApiUrl;
 
@@ -83,6 +83,8 @@ export interface StorageTestCase {
   sourceLanguage?: 'javascript' | 'typescript';
   /** Per-test SDK definition capture (see TestCase.definition). */
   definition?: TestCaseDefinitionCapture;
+  /** describe() chain, outermost first (see TestCase.describePath). */
+  describePath?: string[];
 }
 
 export interface StorageBenchmarkRunConfig {
@@ -100,9 +102,15 @@ export interface StorageBenchmarkRunConfig {
    * `toBenchmarkRun`/`toStorageFormat` mapping boundary.
    */
   judgeModelId?: string;
+  /** Run-level underlying judge LLM (first resolved report); see BenchmarkRun.judgeModel. */
+  judgeModel?: string;
+  /** Run-level judge kind, or 'none' when no report called an LLM judge; see BenchmarkRun.judgeProvider. */
+  judgeProvider?: string;
   evaluatorId?: string;
   headers?: Record<string, string>;
   iterationCount?: number;
+  /** Parallel test case execution limit (1 = sequential). See BenchmarkRun.concurrency in types/index.ts. */
+  concurrency?: number;
   createdAt: string;
   results?: Record<string, { reportId: string; status: string; error?: string }>;
   status?: string;
@@ -169,6 +177,10 @@ export interface StorageRun {
   evaluatorId?: string;
   /** Which Bedrock judge model produced this run's verdict (see EvaluationReport/BenchmarkRun.judgeModelId). */
   judgeModelId?: string;
+  /** The UNDERLYING LLM that judged (see TestCaseRun.judgeModel) -- `judgeModelId` may name a provider. */
+  judgeModel?: string;
+  /** Judge kind, or 'none' when a code-SDK body made no LLM judge call (see TestCaseRun.judgeProvider). */
+  judgeProvider?: string;
   improvementStrategies?: {
     category: string;
     issue: string;
@@ -176,6 +188,8 @@ export interface StorageRun {
     priority: 'high' | 'medium' | 'low';
   }[];
   connectorProtocol?: string;
+  /** Frozen scoring provenance (types/index.ts ScoringSnapshot); absent on legacy reports. */
+  scoringSnapshot?: ScoringSnapshot;
 }
 
 export interface StorageAnalyticsRecord {

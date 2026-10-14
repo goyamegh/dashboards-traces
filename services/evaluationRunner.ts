@@ -55,6 +55,7 @@ import { createHookOrchestrator, type TestDescriptor } from './hookOrchestrator'
 import { bucketRunResults } from '@/lib/runStats';
 import { extractJudgeFailureReason, computeJudgeFailureSummary } from '@/lib/judgeFailureSummary';
 import { buildCancelledMarkers } from '@/services/evaluationRunFinalize';
+import { buildJudgeIdentityPatch, buildLlmJudgeResponseIdentity, buildSdkJudgeIdentityPatch, assertJudgeIdentityConsistent, JUDGE_PROVIDER_NONE } from '@/lib/judgeIdentity';
 import { loadConfigSync } from '@/lib/config/index';
 import { getBackendUrl } from '@/lib/portConfig';
 import { DEFAULT_CONFIG } from '@/lib/constants';
@@ -227,6 +228,24 @@ export async function executeEvaluationRun(
   // failure), accumulated for the run-level `judgeFailureSummary` computed
   // after the loop below. See lib/judgeFailureSummary.ts.
   const judgeFailureReasons: Array<string | undefined> = [];
+
+  // Run-level record of the UNDERLYING judge LLM (BenchmarkRun.judgeModel):
+  // the first report that resolved one wins -- every case of a run shares
+  // the judge configuration, so one value describes the run. Distinct from
+  // `run.judgeModelId`, which for the agent trace judge names a provider.
+  const noteJudgeModel = (judgeModel: string | undefined) => {
+    if (judgeModel && !run.judgeModel) run.judgeModel = judgeModel;
+  };
+  // Run-level judge KIND (BenchmarkRun.judgeProvider): the first report that
+  // actually called an LLM judge wins; `'none'` only while EVERY report so
+  // far made no LLM judge call (code-SDK assertions only), so a run whose
+  // bodies never judge can say "No LLM judge" instead of showing the
+  // configured judge as if it had run.
+  const noteJudgeProvider = (judgeProvider: string | undefined) => {
+    if (judgeProvider && (!run.judgeProvider || run.judgeProvider === JUDGE_PROVIDER_NONE)) {
+      run.judgeProvider = judgeProvider;
+    }
+  };
 
   try {
     // Per-case result persistence is BOOKKEEPING, not evaluation. It used to
@@ -588,6 +607,14 @@ export async function executeEvaluationRun(
             appendNotReachedMarker(matcherResults, evalError, agentFailed);
             (report as any).evaluationType = 'deterministic';
             (report as any).matcherResults = matcherResults;
+            // Judge identity for the SDK path (lib/judgeIdentity): the first
+            // `judge()` matcher that resolved an underlying LLM populates
+            // `report.judgeModel` (never a provider pseudo-id) and its kind
+            // `report.judgeProvider`; a body that made NO LLM judge call is
+            // marked `judgeProvider: 'none'`. The classic path gets the same
+            // fields from `llmJudgeResponse`; pre-fix SDK reports got neither,
+            // so an agent-trace-judge SDK run showed the provider with no model.
+            Object.assign(report, buildSdkJudgeIdentityPatch(matcherResults, run.judgeModelId));
             if (evalError !== undefined) {
               (report as any).assertionError =
                 (evalError as any)?.message ?? String(evalError);
@@ -754,7 +781,18 @@ export async function executeEvaluationRun(
             savedReport.metricsStatus === 'pending'
           ) {
             debug('EvaluationRunner', `[${testCaseId}] Trace mode: polling for traces (runId=${savedReport.runId ?? 'none — window/session correlation'})`);
-            judgeOutcome = await waitForTracesAndJudge(savedReport, testCase, storageModule, agentConfig);
+            judgeOutcome = await waitForTracesAndJudge(savedReport, testCase, storageModule, agentConfig, (judgeModel, judgeProvider) => {
+              noteJudgeModel(judgeModel);
+              noteJudgeProvider(judgeProvider);
+            });
+          } else {
+            noteJudgeModel((savedReport as any).judgeModel ?? (report as any).judgeModel);
+            noteJudgeProvider((savedReport as any).judgeProvider ?? (report as any).judgeProvider);
+            // Runtime guard (lib/judgeIdentity): if an LLM judge ran on this
+            // report -- classic `llmJudgeResponse` or any SDK `judge()`
+            // matcher -- a resolved `judgeModel` must have been recorded.
+            // Logs `[JudgeIdentity] WARN <report id>`, never throws.
+            assertJudgeIdentityConsistent({ ...(report as any), ...(savedReport as any), id: savedReport.id });
           }
 
           // Update result with success. The run-level status mirrors the
@@ -951,7 +989,8 @@ async function waitForTracesAndJudge(
   report: EvaluationReport,
   testCase: TestCase,
   storage: IStorageModule,
-  agentConfig: AgentConfig
+  agentConfig: AgentConfig,
+  onJudgeModel?: (judgeModel: string | undefined, judgeProvider: string | undefined) => void
 ): Promise<PassFailStatus | null> {
   return new Promise<PassFailStatus | null>((resolve) => {
     tracePollingManager.startPolling(
@@ -998,7 +1037,8 @@ async function waitForTracesAndJudge(
               buildJudgeAgentsHints(report, agentConfig?.traceServiceName)
             );
 
-            await storage.runs.update(report.id, {
+            const identity = buildJudgeIdentityPatch(judgment, judgeModelId);
+            const judgedUpdate = {
               trajectory: finalTrajectory,
               metricsStatus: 'ready',
               passFailStatus: judgment.passFailStatus,
@@ -1007,6 +1047,8 @@ async function waitForTracesAndJudge(
               // Set only by the agent (trace) judge provider -- see
               // JudgeResponse.judgeMode / TestCaseRun.judgeMode.
               ...(judgment.judgeMode ? { judgeMode: judgment.judgeMode } : {}),
+              // Underlying LLM that judged (TestCaseRun.judgeModel) -- see lib/judgeIdentity.
+              ...identity,
               // Unified judge surface (issue #230 follow-up).
               // The deterministic path doesn't reach here — trace-mode
               // judge runs only when the test case has no SDK body —
@@ -1023,7 +1065,7 @@ async function waitForTracesAndJudge(
               // trace-deferred SDK path. Same shape as the synchronous
               // /api/evaluate path.
               llmJudgeResponse: {
-                modelId: judgeModelId || '',
+                ...buildLlmJudgeResponseIdentity(judgment, judgeModelId),
                 timestamp: new Date().toISOString(),
                 promptTokens: 0,
                 completionTokens: 0,
@@ -1034,9 +1076,14 @@ async function waitForTracesAndJudge(
                 ...(judgment.extraFields ? { extraFields: judgment.extraFields } : {}),
                 ...(judgment.judgeDebug ? { judgeDebug: judgment.judgeDebug } : {}),
               },
-            } as any);
+            };
+            await storage.runs.update(report.id, judgedUpdate as any);
+            // Runtime guard: an LLM judge ran here, so a resolved model MUST
+            // have been recorded (warns, never throws -- lib/judgeIdentity).
+            assertJudgeIdentityConsistent({ id: report.id, judgeModelId, ...judgedUpdate } as any);
 
             debug('EvaluationRunner', `[${testCase.id}] Trace judge complete: ${judgment.passFailStatus}`);
+            onJudgeModel?.(identity.judgeModel, identity.judgeProvider);
             // Resolve with the JUDGMENT we just computed rather than making
             // the caller re-read `report.id` from storage — this is the fix
             // for the stale-`savedReport` bug (trace-judged runs displaying

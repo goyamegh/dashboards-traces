@@ -6,9 +6,12 @@
 import {
   calculateRunAggregates,
   mergeTraceMetrics,
+  metricsKeyForReport,
   collectRunIdsFromReports,
   collectSessionIdsFromReports,
   collectTraceIdsFromReports,
+  collectAgentHintsFromReports,
+  collectMetricsCorrelationFromReports,
   buildTestCaseComparisonRows,
   findBestRunForMetric,
   calculateDelta,
@@ -22,9 +25,6 @@ import {
   getRealTestCaseMeta,
   detectComparisonMode,
   computeTestCaseOverlap,
-  getPrimaryRubricKey,
-  getPrimaryRubric,
-  computeOverallScore,
 } from '@/services/comparisonService';
 import {
   BenchmarkRun,
@@ -236,12 +236,16 @@ describe('comparisonService', () => {
       expect(aggregates.failedCount).toBe(0);
       // Accuracy averaged over the evaluable (non-pending) case only.
       expect(aggregates.avgAccuracy).toBe(90);
-      // Pending stays in the denominator (total - errored = 2), matching
-      // lib/runStats: 1 passed / 2 = 50%.
-      expect(aggregates.passRatePercent).toBe(50);
+      // Pending is NOT in the denominator — the pass rate is over the JUDGED
+      // set (passed + failed), the same convention as lib/runStats
+      // passRateOverJudged and the runs list: 1 passed / 1 judged = 100%,
+      // with the pending case called out separately.
+      expect(aggregates.evaluatedCount).toBe(1);
+      expect(aggregates.pendingCount).toBe(1);
+      expect(aggregates.passRatePercent).toBe(100);
     });
 
-    // Live-tunnel regression (compare page, real STaRK-retail runs): reports
+    // Live-tunnel regression (compare page, real retrieval-benchmark runs): reports
     // scored by a custom evaluator carry ONLY that evaluator's metric keys
     // (fact_precision / provenance_verifiability / abstention_integrity /
     // payload_economy — the exact real shape) and NO `metrics.accuracy`. The
@@ -423,7 +427,7 @@ describe('comparisonService', () => {
       });
     });
 
-    it('omits entries whose report has no runId or no sessionId (nothing to correlate on)', () => {
+    it('omits entries whose report has no sessionId; a report with no runId is keyed by its own id (Strategy-C fallback key)', () => {
       const runs: BenchmarkRun[] = [
         {
           id: 'exp-run-1',
@@ -448,7 +452,10 @@ describe('comparisonService', () => {
 
       const sessionIdByRunId = collectSessionIdsFromReports(runs, reports);
 
-      expect(sessionIdByRunId).toEqual({ 'agent-run-3': 'session-ccc' });
+      // Pre-fix report-2 was silently dropped (no runId => nothing to key on);
+      // its session id is a perfectly good Strategy-D correlator, so it is now
+      // keyed by the report's own id.
+      expect(sessionIdByRunId).toEqual({ 'agent-run-3': 'session-ccc', 'report-2': 'session-orphan' });
     });
   });
 
@@ -948,8 +955,8 @@ describe('comparisonService', () => {
         difficulty: 'Easy',
         labels: [],
         results: {
-          'oldest-run': { status: 'completed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
-          'run-2': { status: 'completed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
+          'oldest-run': { status: 'completed', passFailStatus: 'passed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
+          'run-2': { status: 'completed', passFailStatus: 'passed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
         },
         hasVersionDifference: false,
         versions: [],
@@ -966,8 +973,8 @@ describe('comparisonService', () => {
         difficulty: 'Easy',
         labels: [],
         results: {
-          'oldest-run': { status: 'completed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
-          'run-2': { status: 'completed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
+          'oldest-run': { status: 'completed', passFailStatus: 'passed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
+          'run-2': { status: 'completed', passFailStatus: 'passed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
         },
         hasVersionDifference: false,
         versions: [],
@@ -984,9 +991,9 @@ describe('comparisonService', () => {
         difficulty: 'Easy',
         labels: [],
         results: {
-          'oldest-run': { status: 'completed', accuracy: 70, faithfulness: 70, trajectoryAlignment: 70, latencyScore: 70 },
-          'run-2': { status: 'completed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
-          'run-3': { status: 'completed', accuracy: 40, faithfulness: 40, trajectoryAlignment: 40, latencyScore: 40 },
+          'oldest-run': { status: 'completed', passFailStatus: 'passed', accuracy: 70, faithfulness: 70, trajectoryAlignment: 70, latencyScore: 70 },
+          'run-2': { status: 'completed', passFailStatus: 'passed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
+          'run-3': { status: 'completed', passFailStatus: 'passed', accuracy: 40, faithfulness: 40, trajectoryAlignment: 40, latencyScore: 40 },
         },
         hasVersionDifference: false,
         versions: [],
@@ -1083,8 +1090,8 @@ describe('comparisonService', () => {
         difficulty: 'Easy',
         labels: [],
         results: {
-          'oldest-run': { status: 'completed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
-          'run-2': { status: 'completed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
+          'oldest-run': { status: 'completed', passFailStatus: 'passed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
+          'run-2': { status: 'completed', passFailStatus: 'passed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
         },
         hasVersionDifference: false,
         versions: [],
@@ -1096,8 +1103,8 @@ describe('comparisonService', () => {
         difficulty: 'Medium',
         labels: [],
         results: {
-          'oldest-run': { status: 'completed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
-          'run-2': { status: 'completed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
+          'oldest-run': { status: 'completed', passFailStatus: 'passed', accuracy: 90, faithfulness: 90, trajectoryAlignment: 90, latencyScore: 90 },
+          'run-2': { status: 'completed', passFailStatus: 'passed', accuracy: 50, faithfulness: 50, trajectoryAlignment: 50, latencyScore: 50 },
         },
         hasVersionDifference: false,
         versions: [],
@@ -1109,8 +1116,8 @@ describe('comparisonService', () => {
         difficulty: 'Hard',
         labels: [],
         results: {
-          'oldest-run': { status: 'completed', accuracy: 70, faithfulness: 70, trajectoryAlignment: 70, latencyScore: 70 },
-          'run-2': { status: 'completed', accuracy: 71, faithfulness: 71, trajectoryAlignment: 71, latencyScore: 71 },
+          'oldest-run': { status: 'completed', passFailStatus: 'passed', accuracy: 70, faithfulness: 70, trajectoryAlignment: 70, latencyScore: 70 },
+          'run-2': { status: 'completed', passFailStatus: 'passed', accuracy: 71, faithfulness: 71, trajectoryAlignment: 71, latencyScore: 71 },
         },
         hasVersionDifference: false,
         versions: [],
@@ -1344,6 +1351,149 @@ describe('comparisonService', () => {
   // metrics are available at all, the display fell straight to "0ms" instead
   // of falling back to the per-result performanceMetrics the benchmark
   // runner already persists.
+  describe('metricsKeyForReport / collectAgentHintsFromReports / collectMetricsCorrelationFromReports (Strategy C on the compare page)', () => {
+    // Two reports from a REST-connector agent whose response carried NO
+    // correlation id (runId/sessionId/traceId all absent) — exactly the shape
+    // that rendered a blank Cost/Tokens/LLM-calls row — plus one Claude-Code-
+    // style report with a native runId + sessionId, and one from a generic
+    // `rest` agent with no traceServiceName configured (service.name unknowable).
+    const runs: BenchmarkRun[] = [
+      {
+        id: 'exp-run-rest',
+        name: 'REST arm',
+        createdAt: '2026-03-01T10:00:00Z',
+        agentKey: 'rest-arm',
+        modelId: 'm',
+        status: 'completed',
+        results: {
+          'tc-1': { reportId: 'report-r1', status: 'completed' },
+          'tc-2': { reportId: 'report-r2', status: 'completed' },
+          'tc-3': { reportId: 'report-unknowable', status: 'completed' },
+        },
+      } as unknown as BenchmarkRun,
+      {
+        id: 'exp-run-cc',
+        name: 'Subprocess arm',
+        createdAt: '2026-03-01T10:00:00Z',
+        agentKey: 'cc-arm',
+        modelId: 'm',
+        status: 'completed',
+        results: { 'tc-1': { reportId: 'report-cc', status: 'completed' } },
+      } as unknown as BenchmarkRun,
+    ];
+    const reports: Record<string, EvaluationReport> = {
+      'report-r1': {
+        id: 'report-r1', testCaseId: 'tc-1', agentKey: 'rest-arm', connectorProtocol: 'rest',
+        timestamp: '2026-03-01T10:00:30.000Z', performanceMetrics: { durationMs: 30_000 },
+      } as unknown as EvaluationReport,
+      'report-r2': {
+        id: 'report-r2', testCaseId: 'tc-2', agentKey: 'rest-arm', connectorProtocol: 'rest',
+        timestamp: '2026-03-01T10:05:00.000Z', // no durationMs -> 30-min fallback window
+      } as unknown as EvaluationReport,
+      'report-unknowable': {
+        id: 'report-unknowable', testCaseId: 'tc-3', agentKey: 'other-rest', connectorProtocol: 'rest',
+        timestamp: '2026-03-01T10:06:00.000Z',
+      } as unknown as EvaluationReport,
+      'report-cc': {
+        id: 'report-cc', testCaseId: 'tc-1', agentKey: 'cc-arm', connectorProtocol: 'claude-code',
+        runId: 'subprocess-1', sessionId: 'sess-cc', traceId: 'trace-cc',
+        timestamp: '2026-03-01T10:00:10.000Z', performanceMetrics: { durationMs: 10_000 },
+      } as unknown as EvaluationReport,
+    };
+    // Per-agent traceServiceName lookup (what ComparisonPage reads from the
+    // agent config); the second REST agent has none configured.
+    const resolveTraceServiceName = (agentKey: string | undefined) =>
+      agentKey === 'rest-arm' ? 'rest-arm-service' : undefined;
+
+    beforeEach(() => { jest.spyOn(console, 'warn').mockImplementation(() => {}); });
+    afterEach(() => { (console.warn as jest.Mock).mockRestore?.(); });
+
+    it('metricsKeyForReport prefers runId and falls back to the report id', () => {
+      expect(metricsKeyForReport({ id: 'report-x', runId: 'run-x' })).toBe('run-x');
+      expect(metricsKeyForReport({ id: 'report-x' })).toBe('report-x');
+      expect(metricsKeyForReport({ id: 'report-x', runId: '' })).toBe('report-x');
+      expect(metricsKeyForReport({ id: '' } as any)).toBeUndefined();
+    });
+
+    it('collectRunIdsFromReports keys no-runId reports by report id (they are no longer dropped)', () => {
+      expect(collectRunIdsFromReports(runs, reports)).toEqual(['report-r1', 'report-r2', 'report-unknowable', 'subprocess-1']);
+    });
+
+    it('derives one service.name + window hint per report through the judge\'s buildJudgeAgentsHints (same window math)', () => {
+      const hints = collectAgentHintsFromReports(runs, reports, resolveTraceServiceName);
+
+      // durationMs known: symmetric ±(duration + 60s slack) around the timestamp.
+      const r1 = Date.parse('2026-03-01T10:00:30.000Z');
+      expect(hints['report-r1']).toEqual([{ serviceName: 'rest-arm-service', startedAt: r1 - 90_000, endedAt: r1 + 90_000 }]);
+      // durationMs missing: 30-minute symmetric fallback.
+      const r2 = Date.parse('2026-03-01T10:05:00.000Z');
+      expect(hints['report-r2']).toEqual([{ serviceName: 'rest-arm-service', startedAt: r2 - 1_800_000, endedAt: r2 + 1_800_000 }]);
+      // Subprocess connector: protocol-default service name + sessionId (Strategy D) on the hint.
+      expect(hints['subprocess-1']).toEqual([expect.objectContaining({ serviceName: 'claude-code-agent', sessionId: 'sess-cc' })]);
+      // Generic transport protocol with no traceServiceName: NO hint (never a fabricated name).
+      expect(hints['report-unknowable']).toBeUndefined();
+    });
+
+    it('without a traceServiceName resolver, REST reports get no hint and subprocess reports still get the protocol default', () => {
+      const hints = collectAgentHintsFromReports(runs, reports);
+      expect(hints['report-r1']).toBeUndefined();
+      expect(hints['subprocess-1']?.[0]?.serviceName).toBe('claude-code-agent');
+    });
+
+    it('collectMetricsCorrelationFromReports bundles keys + A/C/D maps under the same keys', () => {
+      const c = collectMetricsCorrelationFromReports(runs, reports, resolveTraceServiceName);
+      expect(c.keys).toEqual(['report-r1', 'report-r2', 'report-unknowable', 'subprocess-1']);
+      expect(c.sessionIdByKey).toEqual({ 'subprocess-1': 'sess-cc' });
+      expect(c.traceIdByKey).toEqual({ 'subprocess-1': 'trace-cc' });
+      expect(Object.keys(c.agentsByKey).sort()).toEqual(['report-r1', 'report-r2', 'subprocess-1']);
+    });
+
+    it('mergeTraceMetrics sums metrics returned under a report-id key for a report with no runId', () => {
+      const base = calculateRunAggregates(runs[0], reports);
+      const traceMetricsMap = new Map<string, TraceMetrics>([
+        ['report-r1', { runId: 'report-r1', inputTokens: 100, outputTokens: 10, totalTokens: 110, costUsd: 0.5, durationMs: 1000, llmCalls: 2, toolCalls: 1, toolsUsed: ['t'], status: 'success' }],
+        ['report-r2', { runId: 'report-r2', inputTokens: 200, outputTokens: 20, totalTokens: 220, costUsd: 1.0, durationMs: 3000, llmCalls: 3, toolCalls: 0, toolsUsed: [], status: 'success' }],
+        // pending placeholder (no spans) is skipped, as before
+        ['report-unknowable', { runId: 'report-unknowable', inputTokens: 0, outputTokens: 0, totalTokens: 0, costUsd: 0, durationMs: 0, llmCalls: 0, toolCalls: 0, toolsUsed: [], status: 'pending' }],
+      ]);
+
+      const merged = mergeTraceMetrics(base, runs[0], reports, traceMetricsMap);
+
+      expect(merged.totalTokens).toBe(330);
+      expect(merged.totalCostUsd).toBe(1.5);
+      expect(merged.totalLlmCalls).toBe(5);
+      expect(merged.avgDurationMs).toBe(2000);
+      // Neither honesty flag when every contributing result was precise and complete.
+      expect(merged.traceMetricsPartial).toBeUndefined();
+      expect(merged.traceMetricsWindowCorrelated).toBeUndefined();
+    });
+
+    it('mergeTraceMetrics propagates `partial` (lower bound) and window-correlation honesty flags from any contributing result', () => {
+      const base = calculateRunAggregates(runs[0], reports);
+      const tm = (runId: string, extra: Partial<TraceMetrics>): TraceMetrics => ({
+        runId, inputTokens: 10, outputTokens: 1, totalTokens: 11, costUsd: 0.1, durationMs: 100, llmCalls: 1, toolCalls: 0, toolsUsed: [], status: 'success', ...extra,
+      });
+      const partialMap = new Map<string, TraceMetrics>([
+        ['report-r1', tm('report-r1', { correlatedBy: 'ids' })],
+        ['report-r2', tm('report-r2', { correlatedBy: 'ids', partial: true })],
+      ]);
+      expect(mergeTraceMetrics(base, runs[0], reports, partialMap)).toEqual(expect.objectContaining({ totalTokens: 22, traceMetricsPartial: true }));
+      expect(mergeTraceMetrics(base, runs[0], reports, partialMap).traceMetricsWindowCorrelated).toBeUndefined();
+
+      const windowMap = new Map<string, TraceMetrics>([
+        ['report-r1', tm('report-r1', { correlatedBy: 'window' })],
+      ]);
+      const w = mergeTraceMetrics(base, runs[0], reports, windowMap);
+      expect(w.traceMetricsWindowCorrelated).toBe(true);
+      expect(w.traceMetricsPartial).toBeUndefined();
+      // A pending placeholder flagged partial contributes nothing (still skipped).
+      const pendingPartial = new Map<string, TraceMetrics>([
+        ['report-r1', tm('report-r1', { status: 'pending', partial: true })],
+      ]);
+      expect(mergeTraceMetrics(base, runs[0], reports, pendingPartial).traceMetricsPartial).toBeUndefined();
+    });
+  });
+
   describe('mergeTraceMetrics', () => {
     const baseAgg = calculateRunAggregates(
       {
@@ -1557,72 +1707,29 @@ describe('comparisonService', () => {
   // test case should show the primary rubric." These describe blocks cover
   // the score-derivation primitives behind "Avg score" (avgScore) and the
   // per-case primary-rubric chip.
-  describe('getPrimaryRubricKey / getPrimaryRubric', () => {
-    it('returns undefined for null/undefined/empty metrics', () => {
-      expect(getPrimaryRubricKey(undefined)).toBeUndefined();
-      expect(getPrimaryRubricKey(null)).toBeUndefined();
-      expect(getPrimaryRubricKey({})).toBeUndefined();
-      expect(getPrimaryRubric(undefined)).toBeUndefined();
-    });
-
-    it('picks the alphabetically-first key with a finite numeric value (real custom-evaluator shape)', () => {
-      const metrics = { fact_precision: 100, provenance_verifiability: 100, abstention_integrity: 100, payload_economy: 85 };
-      expect(getPrimaryRubricKey(metrics)).toBe('abstention_integrity');
-      expect(getPrimaryRubric(metrics)).toEqual({ key: 'abstention_integrity', value: 100 });
-    });
-
-    it('ignores non-numeric / undefined / NaN entries', () => {
-      const metrics = { zzz_not_a_number: undefined, aaa_nan: NaN, bbb_real: 42 } as unknown as Record<string, number | undefined>;
-      expect(getPrimaryRubricKey(metrics)).toBe('bbb_real');
-    });
-
-    it('still resolves a primary rubric even when accuracy IS present (accuracy is not special-cased here)', () => {
-      const metrics = { accuracy: 90, faithfulness: 80 };
-      // 'accuracy' < 'faithfulness' alphabetically.
-      expect(getPrimaryRubricKey(metrics)).toBe('accuracy');
-    });
-  });
-
-  describe('computeOverallScore', () => {
-    it('tier 1: uses metrics.accuracy when present, ignoring other metrics', () => {
-      const report = { metrics: { accuracy: 90, faithfulness: 10 } };
-      expect(computeOverallScore(report)).toBe(90);
-    });
-
-    it('tier 1: a real accuracy of 0 counts (not treated as missing)', () => {
-      expect(computeOverallScore({ metrics: { accuracy: 0, faithfulness: 50 } })).toBe(0);
-    });
-
-    it('tier 2: falls back to the primary rubric when accuracy is absent (custom-evaluator shape)', () => {
-      const report = {
-        metrics: { fact_precision: 40, provenance_verifiability: 20, abstention_integrity: 60, payload_economy: 70 },
-      };
-      // Primary rubric is 'abstention_integrity' (alphabetically first) = 60.
-      expect(computeOverallScore(report)).toBe(60);
-    });
-
-    it('tier 3 (documented defensive fallback): returns undefined, matching tier 2, when metrics is empty', () => {
-      expect(computeOverallScore({ metrics: {} })).toBeUndefined();
-    });
-
-    it('returns undefined for a report with no metrics object at all', () => {
-      expect(computeOverallScore({})).toBeUndefined();
-      expect(computeOverallScore(undefined)).toBeUndefined();
-    });
-  });
-
-  describe('calculateRunAggregates — avgScore ("Avg score" aggregate)', () => {
+  describe('calculateRunAggregates — avgScore is snapshot-only (no alphabetical rubric pick)', () => {
     const mockRun: BenchmarkRun = {
       id: 'run-score',
       name: 'Score Run',
       createdAt: '2024-01-01T00:00:00Z',
       agentKey: 'agent-1',
       modelId: 'model-1',
+      judgeModelId: 'configured-judge',
       status: 'completed',
       results: {},
     } as BenchmarkRun;
 
-    it('accuracy-present: avgScore matches avgAccuracy when every report carries metrics.accuracy', () => {
+    const snapshot = {
+      evaluatorId: 'eval-demo',
+      evaluatorName: 'Demo evaluator',
+      evaluatorVersion: 3,
+      contentHash: 'hash-a',
+      weights: { fact_precision: 0.7, abstention_integrity: 0.3 },
+      passPolicy: { kind: 'threshold' as const, minScore: 0.7 },
+      primaryMetrics: ['hit_at_1'],
+    };
+
+    it('legacy run (no snapshots): avgScore undefined even though accuracy is present — accuracy is a rubric name, not the score', () => {
       const run: BenchmarkRun = {
         ...mockRun,
         results: {
@@ -1638,10 +1745,14 @@ describe('comparisonService', () => {
       const aggregates = calculateRunAggregates(run, reports);
 
       expect(aggregates.avgAccuracy).toBe(80);
-      expect(aggregates.avgScore).toBe(80);
+      expect(aggregates.avgScore).toBeUndefined();
+      expect(aggregates.scoring).toEqual({ source: 'legacy' });
+      expect(aggregates.evaluatedCount).toBe(2);
+      // Judge falls back to the run-level configured judge, never modelId.
+      expect(aggregates.judgeModelId).toBe('configured-judge');
     });
 
-    it('custom-evaluator-only: avgScore is defined (via the primary rubric) even though avgAccuracy is undefined', () => {
+    it('custom-evaluator legacy run: the headline bug — abstention_integrity (alphabetically first) is NOT shown as the score', () => {
       const run: BenchmarkRun = {
         ...mockRun,
         results: {
@@ -1663,39 +1774,184 @@ describe('comparisonService', () => {
       const aggregates = calculateRunAggregates(run, reports);
 
       expect(aggregates.avgAccuracy).toBeUndefined();
-      // Primary rubric per case is 'abstention_integrity': (100 + 60) / 2 = 80.
-      expect(aggregates.avgScore).toBe(80);
+      expect(aggregates.avgScore).toBeUndefined(); // used to be 80 = mean abstention_integrity
+      expect(aggregates.scoring.source).toBe('legacy');
     });
 
-    it('empty: avgScore is undefined when no case in the run has any numeric metric', () => {
+    it('snapshot run: avgScore is the weighted mean over normalized rubrics, with provenance + primary metric means', () => {
       const run: BenchmarkRun = {
         ...mockRun,
         results: {
-          'tc-1': { reportId: 'report-e1', status: 'completed', passFailStatus: 'passed' },
+          'tc-1': { reportId: 'report-s1', status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { reportId: 'report-s2', status: 'completed', passFailStatus: 'failed' },
         },
       };
       const reports: Record<string, EvaluationReport> = {
-        'report-e1': { id: 'report-e1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready', metrics: {} } as unknown as EvaluationReport,
+        'report-s1': {
+          id: 'report-s1', testCaseId: 'tc-1', testCaseVersion: 2, passFailStatus: 'passed', metricsStatus: 'ready',
+          metrics: { fact_precision: 80, abstention_integrity: 100, hit_at_1: 1 },
+          scoringSnapshot: snapshot,
+          llmJudgeResponse: { modelId: 'judge-from-response' },
+        } as unknown as EvaluationReport,
+        'report-s2': {
+          id: 'report-s2', testCaseId: 'tc-2', testCaseVersion: 2, passFailStatus: 'failed', metricsStatus: 'ready',
+          metrics: { fact_precision: 40, abstention_integrity: 80, hit_at_1: 0 },
+          scoringSnapshot: snapshot,
+        } as unknown as EvaluationReport,
       };
 
       const aggregates = calculateRunAggregates(run, reports);
 
-      expect(aggregates.avgAccuracy).toBeUndefined();
+      // s1 = 0.7*0.8 + 0.3*1.0 = 0.86 ; s2 = 0.7*0.4 + 0.3*0.8 = 0.52 ; mean = 0.69 → 69
+      expect(aggregates.avgScore).toBe(69);
+      expect(aggregates.scoring).toMatchObject({
+        source: 'snapshot',
+        evaluatorId: 'eval-demo',
+        evaluatorName: 'Demo evaluator',
+        evaluatorVersion: 3,
+        contentHashes: ['hash-a'],
+        weights: { fact_precision: 0.7, abstention_integrity: 0.3 },
+        passPolicy: { kind: 'threshold', minScore: 0.7 },
+        scoredReports: 2,
+        scoredRubrics: 4,
+        totalRubrics: 4,
+      });
+      expect((aggregates.scoring as { primaryMetrics: Array<{ name: string; mean?: number }> }).primaryMetrics).toEqual([
+        { name: 'hit_at_1', mean: 0.5, scale: { min: 0, max: 100 } },
+      ]);
+      expect(aggregates.testCaseVersions).toEqual({ 'tc-1': 2, 'tc-2': 2 });
+      // Judge resolves per report (s1: judge response; s2: the run-level
+      // configured judge) — two distinct judges → mixed, never the agent model.
+      expect(aggregates.judgeModelId).toBeUndefined();
+      expect(aggregates.judgeModelIds).toEqual(['judge-from-response', 'configured-judge']);
+      expect(aggregates.judgeModelIds).not.toContain('model-1');
+    });
+
+    it('mixed run (one snapshot report, one legacy): whole run is legacy — never a mean over half the cases', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        results: {
+          'tc-1': { reportId: 'report-m1', status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { reportId: 'report-m2', status: 'completed', passFailStatus: 'failed' },
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        'report-m1': { id: 'report-m1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready', metrics: { fact_precision: 80, abstention_integrity: 100 }, scoringSnapshot: snapshot } as unknown as EvaluationReport,
+        'report-m2': { id: 'report-m2', testCaseId: 'tc-2', passFailStatus: 'failed', metricsStatus: 'ready', metrics: { fact_precision: 40, abstention_integrity: 80 } } as unknown as EvaluationReport,
+      };
+      const aggregates = calculateRunAggregates(run, reports);
       expect(aggregates.avgScore).toBeUndefined();
+      expect(aggregates.scoring.source).toBe('legacy');
+    });
+
+    it('errored reports are excluded from the score AND from the pass-rate denominator (evaluatedCount)', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        results: {
+          'tc-1': { reportId: 'report-x1', status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { reportId: 'report-x2', status: 'completed' },
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        'report-x1': { id: 'report-x1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready', metrics: { fact_precision: 80, abstention_integrity: 100 }, scoringSnapshot: snapshot } as unknown as EvaluationReport,
+        'report-x2': { id: 'report-x2', testCaseId: 'tc-2', metricsStatus: 'error', metrics: { fact_precision: 0, abstention_integrity: 0 } } as unknown as EvaluationReport,
+      };
+      const aggregates = calculateRunAggregates(run, reports);
+      expect(aggregates.erroredCount).toBe(1);
+      expect(aggregates.evaluatedCount).toBe(1);
+      expect(aggregates.passRatePercent).toBe(100);
+      expect(aggregates.avgScore).toBe(86);
+      expect(aggregates.scoring.source).toBe('snapshot');
     });
 
     it('empty: avgScore is undefined when the run has no results at all', () => {
       const aggregates = calculateRunAggregates({ ...mockRun, results: {} }, {});
       expect(aggregates.avgScore).toBeUndefined();
+      expect(aggregates.scoring).toEqual({ source: 'legacy' });
     });
   });
 
-  describe('buildTestCaseComparisonRows — primaryRubric on TestCaseRunResult', () => {
-    it('attaches primaryRubric for a report with no metrics.accuracy (custom evaluator)', () => {
+  describe('calculateRunAggregates — denominators and judge identity (codex review)', () => {
+    const mockRun: BenchmarkRun = {
+      id: 'run-d', name: 'Denominators', createdAt: '2024-01-01T00:00:00Z', agentKey: 'agent-1', modelId: 'AGENT-MODEL',
+      status: 'running', results: {},
+    } as BenchmarkRun;
+
+    it('evaluated = passed + failed; pending/running cases are neither evaluated nor errored', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        results: {
+          'tc-1': { reportId: 'r1', status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { reportId: 'r2', status: 'running' },
+          'tc-3': { reportId: 'r3', status: 'completed' }, // completed without a verdict = errored (#242)
+        },
+      };
+      const reports: Record<string, EvaluationReport> = {
+        r1: { id: 'r1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready', metrics: { accuracy: 90 } } as EvaluationReport,
+        r2: { id: 'r2', testCaseId: 'tc-2', metricsStatus: 'pending', metrics: {} } as unknown as EvaluationReport,
+        r3: { id: 'r3', testCaseId: 'tc-3', metricsStatus: 'error', metrics: {} } as unknown as EvaluationReport,
+      };
+      const agg = calculateRunAggregates(run, reports);
+      expect(agg.passedCount).toBe(1);
+      expect(agg.failedCount).toBe(0);
+      expect(agg.erroredCount).toBe(1);
+      expect(agg.pendingCount).toBe(1);
+      expect(agg.evaluatedCount).toBe(1); // NOT 2 (total − errored)
+      expect(agg.passRatePercent).toBe(100);
+    });
+
+    it('judge identity: one distinct judge → judgeModelId; several → judgeModelIds only (mixed)', () => {
+      const run: BenchmarkRun = {
+        ...mockRun,
+        results: {
+          'tc-1': { reportId: 'r1', status: 'completed', passFailStatus: 'passed' },
+          'tc-2': { reportId: 'r2', status: 'completed', passFailStatus: 'failed' },
+        },
+      };
+      const same = calculateRunAggregates(run, {
+        r1: { id: 'r1', testCaseId: 'tc-1', judgeModelId: 'judge-x', metricsStatus: 'ready', metrics: {} } as unknown as EvaluationReport,
+        r2: { id: 'r2', testCaseId: 'tc-2', judgeModelId: 'judge-x', metricsStatus: 'ready', metrics: {} } as unknown as EvaluationReport,
+      });
+      expect(same.judgeModelId).toBe('judge-x');
+      expect(same.judgeModelIds).toEqual(['judge-x']);
+
+      const mixed = calculateRunAggregates(run, {
+        r1: { id: 'r1', testCaseId: 'tc-1', judgeModelId: 'judge-x', metricsStatus: 'ready', metrics: {} } as unknown as EvaluationReport,
+        r2: { id: 'r2', testCaseId: 'tc-2', llmJudgeResponse: { modelId: 'judge-y' }, metricsStatus: 'ready', metrics: {} } as unknown as EvaluationReport,
+      });
+      expect(mixed.judgeModelId).toBeUndefined();
+      expect(mixed.judgeModelIds).toEqual(['judge-x', 'judge-y']);
+      // The agent model never leaks in.
+      expect(mixed.judgeModelIds).not.toContain('AGENT-MODEL');
+    });
+  });
+
+  describe('buildTestCaseComparisonRows — in-flight / cancelled cases carry no verdict', () => {
+    it('maps pending/running/cancelled to "missing" (Not run), only run-level failed to "failed"', () => {
       const runs: BenchmarkRun[] = [{
-        id: 'run-1', name: 'Run 1', createdAt: '2024-01-01T00:00:00Z', agentKey: 'agent-1', modelId: 'model-1', status: 'completed',
-        results: { 'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' } },
+        id: 'run-1', name: 'Run 1', createdAt: '2024-01-01T00:00:00Z', agentKey: 'a', modelId: 'm', status: 'running',
+        results: {
+          'tc-p': { reportId: 'rp', status: 'pending' },
+          'tc-r': { reportId: 'rr', status: 'running' },
+          'tc-c': { reportId: 'rc', status: 'cancelled' },
+          'tc-f': { reportId: 'rf', status: 'failed' },
+        },
       } as BenchmarkRun];
+      const mk = (id: string) => ({ id, testCaseId: id, metrics: {} }) as unknown as EvaluationReport;
+      const reports = { rp: mk('rp'), rr: mk('rr'), rc: mk('rc'), rf: mk('rf') };
+      const rows = buildTestCaseComparisonRows(runs, reports, () => undefined, () => undefined);
+      const byId = Object.fromEntries(rows.map(r => [r.testCaseId, r.results['run-1'].status]));
+      expect(byId).toEqual({ 'tc-p': 'missing', 'tc-r': 'missing', 'tc-c': 'missing', 'tc-f': 'failed' });
+    });
+  });
+
+  describe('buildTestCaseComparisonRows — per-case score / rubricValues on TestCaseRunResult', () => {
+    const mkRuns = (): BenchmarkRun[] => [{
+      id: 'run-1', name: 'Run 1', createdAt: '2024-01-01T00:00:00Z', agentKey: 'agent-1', modelId: 'model-1', status: 'completed',
+      results: { 'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' } },
+    } as BenchmarkRun];
+
+    it('legacy report with no accuracy: no score, rubric values exposed by name in stored order (no alphabetical pick)', () => {
       const reports: Record<string, EvaluationReport> = {
         'report-1': {
           id: 'report-1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready',
@@ -1703,43 +1959,32 @@ describe('comparisonService', () => {
         } as unknown as EvaluationReport,
       };
 
-      const rows = buildTestCaseComparisonRows(runs, reports, () => undefined, () => undefined);
+      const rows = buildTestCaseComparisonRows(mkRuns(), reports, () => undefined, () => undefined);
       const result = rows[0].results['run-1'] as TestCaseRunResult;
 
       expect(result.accuracy).toBeUndefined();
-      expect(result.primaryRubric).toEqual({ key: 'abstention_integrity', value: 90 });
+      expect(result.score).toBeUndefined();
+      expect(Object.entries(result.rubricValues ?? {})).toEqual([['fact_precision', 72], ['abstention_integrity', 90]]);
+      expect((result as unknown as { primaryRubric?: unknown }).primaryRubric).toBeUndefined();
     });
 
-    it('leaves primaryRubric undefined at the source when metrics.accuracy IS present (codex review: avoid a heuristic value looking authoritative on every result)', () => {
-      const runs: BenchmarkRun[] = [{
-        id: 'run-1', name: 'Run 1', createdAt: '2024-01-01T00:00:00Z', agentKey: 'agent-1', modelId: 'model-1', status: 'completed',
-        results: { 'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' } },
-      } as BenchmarkRun];
+    it('snapshot report: score is the weighted mean on the 0–100 display scale', () => {
       const reports: Record<string, EvaluationReport> = {
         'report-1': {
           id: 'report-1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready',
-          metrics: { accuracy: 90, faithfulness: 10 },
-        } as EvaluationReport,
+          metrics: { fact_precision: 60, abstention_integrity: 92 },
+          scoringSnapshot: {
+            evaluatorId: 'e', evaluatorVersion: 1, contentHash: 'h',
+            weights: { fact_precision: 0.7, abstention_integrity: 0.3 },
+            passPolicy: { kind: 'llm-verdict' },
+          },
+        } as unknown as EvaluationReport,
       };
 
-      const rows = buildTestCaseComparisonRows(runs, reports, () => undefined, () => undefined);
+      const rows = buildTestCaseComparisonRows(mkRuns(), reports, () => undefined, () => undefined);
       const result = rows[0].results['run-1'] as TestCaseRunResult;
-
-      expect(result.accuracy).toBe(90);
-      expect(result.primaryRubric).toBeUndefined();
-    });
-
-    it('leaves primaryRubric undefined when the report has no numeric metrics at all', () => {
-      const runs: BenchmarkRun[] = [{
-        id: 'run-1', name: 'Run 1', createdAt: '2024-01-01T00:00:00Z', agentKey: 'agent-1', modelId: 'model-1', status: 'completed',
-        results: { 'tc-1': { reportId: 'report-1', status: 'completed', passFailStatus: 'passed' } },
-      } as BenchmarkRun];
-      const reports: Record<string, EvaluationReport> = {
-        'report-1': { id: 'report-1', testCaseId: 'tc-1', passFailStatus: 'passed', metricsStatus: 'ready', metrics: {} } as unknown as EvaluationReport,
-      };
-
-      const rows = buildTestCaseComparisonRows(runs, reports, () => undefined, () => undefined);
-      expect((rows[0].results['run-1'] as TestCaseRunResult).primaryRubric).toBeUndefined();
+      // 0.7*0.60 + 0.3*0.92 = 0.696 → 69.6 (NOT 92)
+      expect(result.score).toBe(69.6);
     });
   });
 });

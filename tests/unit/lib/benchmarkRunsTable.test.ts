@@ -150,12 +150,30 @@ describe('buildRunTableRow', () => {
     expect(rowFieldLabel(row, 'status')).toBe('completed');
   });
 
+  it('hands the judge-label resolver the RUN too (so the J. Model column can show the resolved LLM / "No LLM judge")', () => {
+    const judgeLabel = jest.fn((_id: string | undefined, r: BenchmarkRun) =>
+      r.judgeProvider === 'none' ? 'No LLM judge · code assertions only' : `${r.judgeModelId} · ${r.judgeModel}`);
+    const sdkRun = run({ id: 'sdk', judgeModelId: 'agent-trace-judge', judgeModel: 'amazon-bedrock/global.anthropic.claude-sonnet-4-5', judgeProvider: 'agent' });
+    expect(buildRunTableRow(sdkRun, { ...resolvers, judgeLabel }).judgeLabel).toBe('agent-trace-judge · amazon-bedrock/global.anthropic.claude-sonnet-4-5');
+    expect(judgeLabel).toHaveBeenCalledWith('agent-trace-judge', sdkRun);
+    const detRun = run({ id: 'det', judgeModelId: 'agent-trace-judge', judgeProvider: 'none' });
+    expect(buildRunTableRow(detRun, { ...resolvers, judgeLabel }).judgeLabel).toBe('No LLM judge · code assertions only');
+    // filtering still keys on the raw configured id
+    expect(rowFieldValue(buildRunTableRow(detRun, { ...resolvers, judgeLabel }), 'judge')).toBe('agent-trace-judge');
+  });
+
   it('handles missing judge/evaluator with em dashes and empty ids', () => {
     const row = buildRunTableRow(run({ id: 'a' }), resolvers);
     expect(row.judgeModelId).toBe('');
     expect(row.judgeLabel).toBe('—');
     expect(row.evaluatorId).toBe('');
     expect(row.passRate).toBeNull();
+  });
+
+  it('carries concurrency through as-is: a number for configured runs, undefined for legacy ones', () => {
+    expect(buildRunTableRow(run({ id: 'seq', concurrency: 1 }), resolvers).concurrency).toBe(1);
+    expect(buildRunTableRow(run({ id: 'par', concurrency: 5 }), resolvers).concurrency).toBe(5);
+    expect(buildRunTableRow(run({ id: 'legacy' }), resolvers).concurrency).toBeUndefined();
   });
 });
 
@@ -232,6 +250,20 @@ describe('sorting', () => {
 
   it('sorts by size numerically', () => {
     expect(sortRunRows(rows, { field: 'size', dir: 'desc' }).map(r => r.run.id)).toEqual(['c', 'b', 'a']);
+  });
+
+  it('sorts by concurrency numerically, sinking undefined (legacy) rows to the bottom', () => {
+    const withConc = [
+      run({ id: 'x', concurrency: 3 }),
+      run({ id: 'y', concurrency: 1 }),
+      run({ id: 'z' }), // legacy — no concurrency field
+    ].map(r => buildRunTableRow(r, resolvers));
+    expect(sortRunRows(withConc, { field: 'concurrency', dir: 'desc' }).map(r => r.run.id)).toEqual(['x', 'y', 'z']);
+    expect(sortRunRows(withConc, { field: 'concurrency', dir: 'asc' }).map(r => r.run.id)).toEqual(['y', 'x', 'z']);
+  });
+
+  it('toggleRunSort defaults concurrency to descending like other numeric columns', () => {
+    expect(toggleRunSort({ field: 'name', dir: 'asc' }, 'concurrency')).toEqual({ field: 'concurrency', dir: 'desc' });
   });
 
   it('sinks null pass rates to the bottom in either direction', () => {

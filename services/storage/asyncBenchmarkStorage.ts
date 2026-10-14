@@ -96,8 +96,17 @@ function toBenchmarkRun(stored: StorageBenchmarkRunConfig): BenchmarkRun {
     // declared optional on StorageBenchmarkRunConfig, so `undefined` on
     // older docs is already correctly typed without a cast.
     judgeModelId: stored.judgeModelId,
+    judgeModel: stored.judgeModel,
+    judgeProvider: stored.judgeProvider,
     evaluatorId: stored.evaluatorId,
     headers: stored.headers,
+    // Parallel test case execution limit (1 = sequential, undefined = legacy
+    // run persisted before this field existed) — surfaced as the "Conc."
+    // column on the benchmark Runs tab / Evaluation Runs list. Normalized to
+    // `undefined` (never `null`) so every render site's `=== undefined`
+    // check is the single source of truth for "missing" (codex_review
+    // finding: a schemaless stored `null` would otherwise slip past it).
+    concurrency: stored.concurrency ?? undefined,
     benchmarkVersion: (stored as any).benchmarkVersion ?? 1,
     testCaseSnapshots: (stored as any).testCaseSnapshots ?? [],
     status: stored.status as BenchmarkRunStatus | undefined,
@@ -143,8 +152,11 @@ function toStorageFormat(benchmark: Partial<Benchmark>): Record<string, any> {
       agentKey: run.agentKey,
       modelId: run.modelId,
       judgeModelId: run.judgeModelId,
+      judgeModel: run.judgeModel,
+      judgeProvider: run.judgeProvider,
       evaluatorId: run.evaluatorId,
       headers: run.headers,
+      ...(run.concurrency !== undefined && { concurrency: run.concurrency }),
       createdAt: run.createdAt,
       benchmarkVersion: run.benchmarkVersion,
       testCaseSnapshots: run.testCaseSnapshots,
@@ -299,8 +311,11 @@ class AsyncBenchmarkStorage {
       agentKey: r.agentKey,
       modelId: r.modelId,
       judgeModelId: r.judgeModelId,
+      judgeModel: r.judgeModel,
+      judgeProvider: r.judgeProvider,
       evaluatorId: r.evaluatorId,
       headers: r.headers,
+      ...(r.concurrency !== undefined && { concurrency: r.concurrency }),
       createdAt: r.createdAt,
       status: r.status,
       benchmarkVersion: r.benchmarkVersion,

@@ -588,10 +588,13 @@ export const RunInspectorPage: React.FC = () => {
               </div>
             )}
           </div>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0">
+          <div className="flex items-center gap-3 text-xs text-muted-foreground shrink-0" data-testid="run-inspector-header-meta">
             <span className="flex items-center gap-1"><Calendar size={11} /> {formatDate(run.createdAt)}</span>
             <span>{agentName}</span>
             <span>{modelName}</span>
+            {run.concurrency !== undefined && (
+              <span data-testid="run-inspector-concurrency" title="Concurrency — parallel test cases">· conc {run.concurrency}</span>
+            )}
             <span className="flex items-center gap-1">
               <span className="text-green-500 font-semibold">{passCount}✓</span>
               <span className="text-red-500 font-semibold">{failCount}✗</span>

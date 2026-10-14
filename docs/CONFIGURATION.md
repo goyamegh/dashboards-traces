@@ -207,6 +207,43 @@ View agent traces and logs. Only needed for ML-Commons agent.
 
 SigV4 authentication is also configurable via the Settings UI (select "AWS SigV4" from the Authentication Type dropdown) or the `agent-health.config.json` file.
 
+#### Verify telemetry after every restart: the smoke gate
+
+Trace-based surfaces (the run-report Traces tab, the agent trace judge, the
+comparison page's Cost / Tokens / LLM Calls) only work when each persisted
+report can be **correlated** with the spans its agent emitted. Two things
+break that silently: a server booted without the `telemetry` block (no eval
+span → no `report.traceId`), and a REST agent whose echoed request id isn't
+recognized (no `report.runId`). Reports still save, judges still run — the gap
+only shows up hours later as blank metrics.
+
+Run the smoke gate after every server restart or agent relaunch, before any
+real benchmark:
+
+```bash
+npm run smoke:telemetry -- --base http://127.0.0.1:4001 --agent-key <your-agent-key>
+```
+
+It runs ONE ad-hoc case and asserts, exiting non-zero on any failure:
+
+| Check | Meaning when it fails |
+|-------|-----------------------|
+| `report.traceId` set | The eval `test_case` span is off — add/restore the `telemetry` block (or `OTEL_EVAL_ENABLED=true`) and restart; the server must log `[Telemetry] Evaluation telemetry enabled`. |
+| `report.runId` set (REST connectors) | The agent's response carried no `runId`/`id` and no `afterResponse` hook mapped the echoed field (session/conversation id) onto `runId`. Add the hook; recover existing reports with `npm run backfill:report-run-ids -- --run <evaluationRunId> --apply`. |
+| spans found via `/api/traces` (Strategy A or B) | The observability backend never received the run's spans — check the agent's OTLP exporter endpoint and the cluster's index pattern. |
+| `/api/metrics/batch` `hasSpans` | Spans exist but the metrics reader doesn't correlate them (SKIP when no observability cluster is configured). |
+
+Options: `--model-id` (judge model, default: first configured), `--prompt`,
+`--spans-wait-ms` (how long to wait for ingestion, default 60s),
+`--allow-no-run-id` (downgrade the REST run-id check to a warning for agents
+that genuinely cannot echo an id), `--keep` (don't delete the ad-hoc report),
+`--json`.
+
+For a fully self-contained check with no observability cluster, point the eval
+span exporter at the server's own OTLP receiver:
+`OTEL_EVAL_ENABLED=true OTEL_EVAL_EXPORTER_ENDPOINT=http://127.0.0.1:<port>/v1/traces`
+(spans land in the file trace store; the metrics check reports SKIP).
+
 ### Agent Endpoints (Optional)
 
 Override default agent endpoints.
@@ -230,7 +267,60 @@ Debug logging can also be toggled at runtime via the Settings page "Verbose Logg
 | Variable | Description | Default |
 |----------|-------------|---------|
 | `VITE_BACKEND_PORT` | Backend server port | `4001` |
+| `AGENT_HEALTH_EVAL_ROOTS` | Path-delimiter-separated directories a relative code-SDK `sourceFile` is resolved against (see [`evalRoots`](#where-the-server-looks-for-eval-source-files-evalroots)) | server cwd |
 | `BEDROCK_MODEL_ID` | Judge model ID | `us.anthropic.claude-sonnet-4-5-20250929-v1:0` |
+
+## Where the server looks for eval source files (`evalRoots`)
+
+Code-SDK test cases imported from an `.eval.js` / `.eval.ts` / `.eval.mjs`
+file are stored with a **relative** `sourceFile` (e.g. `evals/demo.eval.js`).
+When a run of those stored cases starts, the server must re-open that file to
+execute the test bodies. Historically the path was resolved against the
+server's `process.cwd()` **only** — so a shared server started from the
+agent-health checkout could not run suites that live in another repo.
+
+The server now resolves a relative `sourceFile` against an ordered list of
+**eval roots**; the first directory that contains the file wins. Absolute
+`sourceFile`s are used verbatim.
+
+| Precedence | Source | Notes |
+|-----------|--------|-------|
+| 1 (highest) | `AGENT_HEALTH_EVAL_ROOTS` env var | Path-delimiter separated (`:` on POSIX, `;` on Windows), e.g. `AGENT_HEALTH_EVAL_ROOTS=/srv/eval-suites:/srv/other-suites` |
+| 2 | `evalRoots: string[]` in `agent-health.config.ts` (code-first) **or** `"evalRoots": [...]` in `.agent-health/state.json` (ui-first) | Same rule as every other setting: an authored `.ts` config makes `state.json` ignored |
+| 3 (default) | `[process.cwd()]` | Identical to the pre-feature behaviour |
+
+Relative roots are resolved against the server's cwd. A configured list
+**replaces** the default — add `.` explicitly to keep the cwd as a fallback.
+Because a stored `sourceFile` is relative, the same relative path under two
+roots resolves to the **first** root that has it — keep relative eval paths
+unique across roots (e.g. one suite repo per root, or distinct sub-directories).
+The effective list is exposed on `GET /api/storage/config/status` as
+`evalRoots: { roots, source }`, and the CLI `benchmark` command prints a
+one-line hint before a run when a stored case's `sourceFile` is under none of
+the server's roots.
+
+```ts
+// agent-health.config.ts
+export default defineConfig({
+  evalRoots: ['/srv/eval-suites', '.'],
+});
+```
+
+Two consequences worth knowing:
+
+- **Newly imported cases are keyed relative to the root that matched.** A
+  `code-import` of `evals/demo.eval.js` found under `/srv/eval-suites` is
+  stored as `evals/demo.eval.js`, so any server with the same roots can run it.
+- **An unresolvable `sourceFile` is a hard pre-start error** (with
+  [#503](https://github.com/opensearch-project/agent-health/pull/503)): a
+  stored code case whose file is under none of the roots fails the run before
+  it starts, listing the roots tried, instead of silently falling back to the
+  classic LLM-judge path. Fix it by pointing `AGENT_HEALTH_EVAL_ROOTS` at the
+  directory that contains the suite (or re-importing with `benchmark -f`).
+
+> Running the CLI from the eval repo against a server started from a
+> *different* directory trips the CLI's foreign-instance guard; set
+> `AH_REUSE_FOREIGN_SERVER=1` to opt in (that is the shared-server workflow).
 
 ## TypeScript Config File (Optional)
 
@@ -305,6 +395,7 @@ export default defineConfig({
 | `connectors` | `AgentConnector[]` | Custom connectors |
 | `storage` | `StorageClusterConfig` | OpenSearch storage cluster (endpoint + auth) |
 | `observability` | `ObservabilityClusterConfig` | OpenSearch traces/logs cluster (endpoint + auth + index patterns) |
+| `evalRoots` | `string[]` | Directories a relative code-SDK `sourceFile` is resolved against, first hit wins (see [Where the server looks for eval source files](#where-the-server-looks-for-eval-source-files-evalroots)) |
 | `testCases` | `string \| string[]` | Test case file patterns |
 | `reporters` | `ReporterConfig[]` | Output reporters |
 | `judge` | `JudgeConfig` | Judge model configuration |

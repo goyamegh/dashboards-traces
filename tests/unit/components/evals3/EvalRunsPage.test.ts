@@ -72,6 +72,8 @@ jest.mock('@/lib/utils', () => ({
   // state at their initial empty arrays (loadData's own try/catch swallows
   // it), which breaks every test in this file that expects real rows.
   getJudgeModelLabel: jest.fn(() => 'Judge'),
+  // JudgeModelLabel (judge kind · underlying LLM) reads this one.
+  getJudgeModelDisplay: jest.fn(() => ({ label: 'Judge', title: 'Judge' })),
   getEvaluatorLabel: jest.fn(() => 'Evaluator'),
 }));
 
@@ -217,6 +219,23 @@ describe('EvalRunsPage — Flat/Grouped view toggle', () => {
     expect(row.querySelector('.text-green-500')?.textContent).toBe('1');
     expect(row.querySelector('.text-red-500')?.textContent).toBe('1');
   });
+
+  it('renders the run\'s concurrency value, and an em dash for legacy runs missing the field', async () => {
+    mockGetAllBenchmarks.mockResolvedValueOnce([
+      makeBenchmark({ id: 'bench-1', name: 'Benchmark One', runs: [makeRun({ id: 'run-1', name: 'Run One', concurrency: 3 })] }),
+      makeBenchmark({ id: 'bench-2', name: 'Benchmark Two', runs: [makeRun({ id: 'run-2', name: 'Run Two', concurrency: undefined })] }),
+    ]);
+    await renderPage();
+
+    expect(screen.getByRole('columnheader', { name: 'Conc.' })).toBeTruthy();
+
+    await waitFor(() => expect(screen.getByText('Run One')).toBeTruthy());
+    const rowOne = screen.getByText('Run One').closest('tr') as HTMLElement;
+    expect(rowOne.querySelector('[data-testid="run-concurrency-cell"]')?.textContent).toBe('3');
+
+    const rowTwo = screen.getByText('Run Two').closest('tr') as HTMLElement;
+    expect(rowTwo.querySelector('[data-testid="run-concurrency-cell"]')?.textContent).toBe('—');
+  });
 });
 
 describe('EvalRunsPage — top-level evaluation-runs merge (RunRow convergence)', () => {
@@ -339,8 +358,69 @@ describe('EvalRunsPage — inline rename', () => {
 
     await waitFor(() => expect(screen.getByText('Ad-hoc Eval Run')).toBeTruthy());
     expect(screen.getByTestId('run-row-rename-eval-run-1-edit-btn')).toBeTruthy();
-    // 'Run One' is a legacy benchmark-embedded row (kind: 'benchmark') — no PATCH route for it.
+    // 'Run One' is a legacy benchmark-embedded row (kind: 'benchmark') AND has
+    // no matching id in listEvaluationRuns() — genuinely no PATCH route exists
+    // for it (pre-#399 run, never dual-written).
     expect(screen.queryByTestId('run-row-rename-run-1-edit-btn')).toBeNull();
+  });
+
+  // Regression test for #465: a run created WITH a benchmarkId is
+  // dual-written (#399) as BOTH the embedded BenchmarkRun projection (never
+  // carries `docType`, sourced into the row list via the benchmarks loop)
+  // AND a first-class EvaluationRun doc (returned by listEvaluationRuns()).
+  // The row-merge's id-dedup keeps the FIRST (benchmark-sourced,
+  // `kind: 'benchmark'`) copy of that run — gating the pencil on `kind`
+  // (instead of "does a first-class doc exist for this id") hid rename for
+  // every such row, i.e. the overwhelming majority of real production runs.
+  // This fixture reproduces that exact dual-written shape: the SAME id
+  // appears both embedded in benchmark.runs[] (no docType) and in
+  // listEvaluationRuns()'s response (docType: 'evaluation-run').
+  it('shows a rename pencil for a benchmark-embedded row that is ALSO a first-class evaluation-run doc (dual-write), and displays the CANONICAL name', async () => {
+    mockGetAllBenchmarks.mockResolvedValue([
+      makeBenchmark({
+        id: 'bench-1',
+        name: 'Benchmark One',
+        // Deliberately stale/different name -- the embedded projection is a
+        // write-once snapshot the server never updates again (a prior
+        // rename via PATCH /api/storage/evaluation-runs/:id only touches
+        // the top-level doc). The row must display the canonical name, not
+        // this stale one, or a rename would appear to silently do nothing
+        // for every dual-written run (the exact e2e failure #465 hit before
+        // this fix).
+        runs: [makeRun({ id: 'dual-written-run-1', name: 'Stale Embedded Name' })],
+      }),
+    ]);
+    mockListEvaluationRuns.mockResolvedValue({
+      evaluationRuns: [
+        {
+          id: 'dual-written-run-1',
+          docType: 'evaluation-run',
+          name: 'Dual Written Run',
+          createdAt: new Date().toISOString(),
+          status: 'completed',
+          agentKey: 'agent-a',
+          modelId: 'claude-3',
+          benchmarkId: 'bench-1',
+          sources: [{ type: 'benchmark', benchmarkId: 'bench-1' }],
+          trigger: 'ui',
+          testCaseSnapshots: [],
+          results: {},
+        },
+      ],
+    });
+
+    await renderPage();
+
+    await waitFor(() => expect(screen.getByText('Dual Written Run')).toBeTruthy());
+    // The row is sourced via the benchmarks loop (kind: 'benchmark' — its
+    // inspector link stays the benchmark-scoped route), but a first-class
+    // doc exists for its id, so rename must still be available.
+    expect(screen.getByTestId('run-row-rename-dual-written-run-1-edit-btn')).toBeTruthy();
+    // The stale embedded name must NOT be what's rendered.
+    expect(screen.queryByText('Stale Embedded Name')).toBeNull();
+    // Exactly one row rendered for this id — the merge's dedup must not
+    // double-render it once per source.
+    expect(screen.getAllByText('Dual Written Run')).toHaveLength(1);
   });
 
   it('renames an eval-run row and persists via updateEvaluationRun, with optimistic UI update', async () => {

@@ -117,6 +117,70 @@ function sendSSE(res: Response, event: string, data: any): void {
   }
 }
 
+/**
+ * The benchmark a run's embedded `BenchmarkRun` projection lives in, if any.
+ * `benchmarkId` is stamped at creation for benchmark-scoped runs; the
+ * `sources[]` entry is the fallback for docs promoted/linked later.
+ */
+function resolveLinkedBenchmarkId(run: EvaluationRun): string | undefined {
+  if (run.benchmarkId) return run.benchmarkId;
+  const source = (run.sources || []).find(
+    (s): s is Extract<TestCaseSource, { type: 'benchmark' }> => s.type === 'benchmark',
+  );
+  return source?.benchmarkId;
+}
+
+/**
+ * Heartbeat interval for the POST /api/storage/evaluation-runs SSE stream.
+ *
+ * A benchmark run can go 30–60+ minutes; between per-case events the stream
+ * is idle for minutes at a time, and idle proxies / tunnels / the Vite dev
+ * proxy / browsers close a silent connection well before the run finishes
+ * (owner report 2026-09-09: the "Add Run" header stuck on "Running…"). A
+ * periodic SSE comment line (`: ping`) keeps the connection alive without
+ * being an event the client has to understand. Injectable via
+ * EVALUATION_RUN_SSE_HEARTBEAT_MS (tests set it low); 0 disables.
+ */
+export const DEFAULT_EVALUATION_RUN_SSE_HEARTBEAT_MS = 15_000;
+
+export function getEvaluationRunSseHeartbeatMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.EVALUATION_RUN_SSE_HEARTBEAT_MS;
+  if (raw === undefined || raw === '') return DEFAULT_EVALUATION_RUN_SSE_HEARTBEAT_MS;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : DEFAULT_EVALUATION_RUN_SSE_HEARTBEAT_MS;
+}
+
+/**
+ * Start writing `: ping` comment lines to an open SSE response every
+ * `intervalMs`. Returns a stop function (idempotent). Writes are guarded the
+ * same way sendSSE is: a dead socket is ignored, never thrown — and the timer
+ * stops itself as soon as the response closes, so a client that disconnects
+ * ten minutes into an hour-long run doesn't leave a ticking interval behind.
+ */
+export function startSseHeartbeat(res: Response, intervalMs: number = getEvaluationRunSseHeartbeatMs()): () => void {
+  if (intervalMs <= 0) return () => {};
+  let timer: ReturnType<typeof setInterval> | null = null;
+  const stop = () => {
+    if (timer) {
+      clearInterval(timer);
+      timer = null;
+    }
+  };
+  timer = setInterval(() => {
+    if (res.destroyed || res.writableEnded) {
+      stop();
+      return;
+    }
+    try {
+      res.write(': ping\n\n');
+    } catch {
+      // Observer-only stream; the run continues regardless.
+    }
+  }, intervalMs);
+  res.once('close', stop);
+  return stop;
+}
+
 // GET /api/storage/evaluation-runs - List evaluation runs
 router.get('/api/storage/evaluation-runs', async (req: Request, res: Response) => {
   try {
@@ -321,6 +385,9 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
     const cancellationToken = createCancellationToken();
     activeCancellationTokens.set(runId, cancellationToken);
 
+    // Keep the (possibly minutes-idle) stream alive while the run executes.
+    const stopHeartbeat = startSseHeartbeat(res);
+
     try {
       // Execute the evaluation run
       const completedRun = await executeEvaluationRun(run, testCases, {
@@ -352,13 +419,22 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
       // Link the terminal projection into the benchmark. addRun is idempotent,
       // so a crash here can be retried without orphaning the run; the
       // projection carries the reconciled (persisted) results and stats.
+      // `name`/`description` come from the PERSISTED doc too, not the
+      // in-memory creation-time `run`: a rename issued while the run was still
+      // in flight (before this projection existed) lives only on the doc, and
+      // projecting `run.name` here would resurrect the pre-rename name in
+      // `benchmark.runs[]` (#465 follow-up, codex_review finding).
       if (benchmarkId) {
+        const persistedName = finalized.run.name ?? run.name;
+        const persistedDescription = finalized.run.description ?? run.description;
         const benchmarkRun: BenchmarkRun = {
-          id: run.id, name: run.name, createdAt: run.createdAt, completedAt,
+          id: run.id, name: persistedName, createdAt: run.createdAt, completedAt,
           status: finalStatus, agentKey: run.agentKey, modelId: run.modelId,
           judgeModelId: run.judgeModelId, results: finalized.run.results, stats: finalized.stats,
+          ...(completedRun.judgeModel ? { judgeModel: completedRun.judgeModel } : {}),
+          ...(completedRun.judgeProvider ? { judgeProvider: completedRun.judgeProvider } : {}),
           ...(completedRun.judgeFailureSummary ? { judgeFailureSummary: completedRun.judgeFailureSummary } : {}),
-          ...(run.description ? { description: run.description } : {}),
+          ...(persistedDescription ? { description: persistedDescription } : {}),
           ...(run.evaluatorId ? { evaluatorId: run.evaluatorId } : {}),
           ...(run.headers ? { headers: run.headers } : {}),
           ...(run.concurrency ? { concurrency: run.concurrency } : {}),
@@ -385,6 +461,7 @@ router.post('/api/storage/evaluation-runs', async (req: Request, res: Response) 
 
       sendSSE(res, 'error', { error: error.message, runId });
     } finally {
+      stopHeartbeat();
       // Clean up cancellation token
       activeCancellationTokens.delete(runId);
       res.end();
@@ -869,6 +946,31 @@ router.patch('/api/storage/evaluation-runs/:id', async (req: Request, res: Respo
     if (benchmarkId !== undefined) allowedFields.benchmarkId = benchmarkId;
 
     const updated = await storage.evaluationRuns.update(id, allowedFields);
+
+    // Dual-write sync (#465 owner report: "it did show on the page, but a
+    // refresh doesn't show the new name"). A run created WITH a benchmarkId
+    // is dual-written (#399): this first-class doc AND a legacy-shaped
+    // BenchmarkRun projection embedded in `benchmark.runs[]`, which the
+    // benchmark Runs tab and every legacy benchmark surface render. The
+    // projection was written once at completion and never updated again, so
+    // a rename that only touched the top-level doc came back stale on any
+    // reload of those surfaces. Mirror the projected display fields onto the
+    // embedded copy. Best-effort on purpose: the canonical rename above has
+    // already succeeded (and is what this route returns); a projection that
+    // does not exist yet (run still in flight, linked only at completion) or
+    // a transient failure here must not turn a successful rename into a 500.
+    const projectionUpdates: Partial<BenchmarkRun> = {};
+    if ('name' in allowedFields) projectionUpdates.name = allowedFields.name;
+    if ('description' in allowedFields) projectionUpdates.description = allowedFields.description;
+    const linkedBenchmarkId = resolveLinkedBenchmarkId(existing);
+    if (linkedBenchmarkId && Object.keys(projectionUpdates).length > 0) {
+      try {
+        await storage.benchmarks.updateRun(linkedBenchmarkId, id, projectionUpdates);
+      } catch (syncError: any) {
+        console.warn(`[StorageAPI] Renamed evaluation run ${id} but failed to sync the embedded projection in benchmark ${linkedBenchmarkId}: ${syncError.message}`);
+      }
+    }
+
     res.json(updated);
   } catch (error: any) {
     if (error.meta?.statusCode === 404) {

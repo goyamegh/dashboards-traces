@@ -225,6 +225,15 @@ const MatcherRow: React.FC<RowProps> = ({ result }) => {
             <div className="text-muted-foreground">
               <span className="font-semibold text-foreground">model:</span>{' '}
               <code className="bg-muted px-1 py-0.5 rounded">{result.model}</code>
+              {/* `model` is the REQUESTED judge id (a provider name for the
+                  agent trace judge); `judgeModel` is the LLM that actually
+                  produced this verdict (lib/judgeIdentity). */}
+              {result.judgeModel && result.judgeModel !== result.model && (
+                <>
+                  {' '}<span className="font-semibold text-foreground">judged by:</span>{' '}
+                  <code className="bg-muted px-1 py-0.5 rounded" data-testid="matcher-judge-model">{result.judgeModel}</code>
+                </>
+              )}
             </div>
           )}
         </div>
@@ -539,6 +548,15 @@ const JudgeRow: React.FC<RowProps> = ({ result }) => {
             <div className="text-muted-foreground">
               <span className="font-semibold text-foreground">model:</span>{' '}
               <code className="bg-muted px-1 py-0.5 rounded">{result.model}</code>
+              {/* `model` is the REQUESTED judge id (a provider name for the
+                  agent trace judge); `judgeModel` is the LLM that actually
+                  produced this verdict (lib/judgeIdentity). */}
+              {result.judgeModel && result.judgeModel !== result.model && (
+                <>
+                  {' '}<span className="font-semibold text-foreground">judged by:</span>{' '}
+                  <code className="bg-muted px-1 py-0.5 rounded" data-testid="matcher-judge-model">{result.judgeModel}</code>
+                </>
+              )}
             </div>
           )}
         </div>

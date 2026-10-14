@@ -150,6 +150,126 @@ describe('Evaluation run rename + list ordering (integration)', () => {
     });
   });
 
+  describe('PATCH rename of a dual-written benchmark run (#465 owner report: "a refresh doesn\'t show the new name")', () => {
+    /**
+     * Runs created WITH a benchmarkId are dual-written (#399): a first-class
+     * evaluation-run doc AND a legacy-shaped `BenchmarkRun` projection embedded
+     * in `benchmark.runs[]`. The projection is what the benchmark Runs tab
+     * (`/evaluations/benchmarks/:id/runs`) and every legacy benchmark surface
+     * render, so a rename that only touches the top-level doc is invisible
+     * there after a reload. This seeds the exact dual-written shape through the
+     * public API (same recipe as tests/e2e/evalrun-rename-dualwrite.spec.ts),
+     * renames, then re-fetches EVERY read surface fresh.
+     */
+    const seedDualWrittenRun = async () => {
+      const tcRes = await fetch(`${BASE_URL}/api/storage/test-cases`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: uniqueTestName('rename-dualwrite-tc'),
+          category: 'Test', difficulty: 'Easy', initialPrompt: 'p', expectedOutcomes: ['o'],
+        }),
+      });
+      if (!tcRes.ok) throw new Error(`seed test case failed: ${tcRes.status}`);
+      const tc = await tcRes.json();
+      const tcId: string = tc.id || tc.testCase?.id;
+      tracker.testCase(tcId);
+
+      const bmRes = await fetch(`${BASE_URL}/api/storage/benchmarks`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: uniqueTestName('rename-dualwrite-benchmark'),
+          description: 'dual-write rename integration (#465)',
+          testCaseIds: [tcId],
+          runs: [],
+          currentVersion: 1,
+          versions: [{ version: 1, createdAt: new Date().toISOString(), testCaseIds: [tcId] }],
+        }),
+      });
+      if (!bmRes.ok) throw new Error(`seed benchmark failed: ${bmRes.status}`);
+      const benchmarkId: string = (await bmRes.json()).id;
+      tracker.benchmark(benchmarkId);
+
+      const runId = `eval-run-rename-dualwrite-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      const runName = uniqueTestName('rename-dualwrite-run');
+      const createdAt = new Date().toISOString();
+
+      // 1. Embedded projection (never carries docType — matches production).
+      const bm = await (await fetch(`${BASE_URL}/api/storage/benchmarks/${benchmarkId}`)).json();
+      const putBm = await fetch(`${BASE_URL}/api/storage/benchmarks/${benchmarkId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          name: bm.name, description: bm.description, testCaseIds: bm.testCaseIds,
+          runs: [{
+            id: runId, name: runName, agentKey: 'demo', modelId: 'demo-model', createdAt,
+            status: 'completed', benchmarkVersion: 1, testCaseSnapshots: [], results: {},
+          }],
+        }),
+      });
+      if (!putBm.ok) throw new Error(`embed projection failed: ${putBm.status}`);
+
+      // 2. First-class doc with the SAME id.
+      const seeded = await seedEvalRun({
+        id: runId, name: runName, benchmarkId, createdAt,
+        sources: [{ type: 'benchmark', benchmarkId }],
+      });
+      tracker.evaluationRun(seeded.id);
+      return { benchmarkId, runId, runName };
+    };
+
+    it('after PATCH, a fresh GET of the run, the run list, AND the benchmark\'s embedded runs[] all return the new name', async () => {
+      if (!backendAvailable) return;
+
+      const { benchmarkId, runId } = await seedDualWrittenRun();
+      const newName = uniqueTestName('rename-dualwrite-after');
+
+      const res = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName }),
+      });
+      expect(res.status).toBe(200);
+
+      // Fresh reads — nothing below reuses the PATCH response.
+      const run = await (await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`)).json();
+      expect(run.name).toBe(newName);
+
+      const list = await (await fetch(`${BASE_URL}/api/storage/evaluation-runs?benchmarkId=${encodeURIComponent(benchmarkId)}&size=50`)).json();
+      const listed = list.evaluationRuns.find((r: any) => r.id === runId);
+      expect(listed?.name).toBe(newName);
+
+      // The embedded projection is what the benchmark Runs tab renders on
+      // reload — it MUST carry the rename too (this is the assertion that
+      // reproduced the owner report before the server write-through fix).
+      const bmAfter = await (await fetch(`${BASE_URL}/api/storage/benchmarks/${benchmarkId}`)).json();
+      const embedded = (bmAfter.runs || []).find((r: any) => r.id === runId);
+      expect(embedded).toBeDefined();
+      expect(embedded.name).toBe(newName);
+      // Write-through is name-only: the projection's other fields are untouched.
+      expect(embedded.status).toBe('completed');
+      expect(embedded.benchmarkVersion).toBe(1);
+    });
+
+    it('a rejected rename (400) leaves both copies at the original name', async () => {
+      if (!backendAvailable) return;
+
+      const { benchmarkId, runId, runName } = await seedDualWrittenRun();
+      const res = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: '   ' }),
+      });
+      expect(res.status).toBe(400);
+
+      const run = await (await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`)).json();
+      expect(run.name).toBe(runName);
+      const bmAfter = await (await fetch(`${BASE_URL}/api/storage/benchmarks/${benchmarkId}`)).json();
+      expect((bmAfter.runs || []).find((r: any) => r.id === runId)?.name).toBe(runName);
+    });
+  });
+
   describe('GET /api/storage/evaluation-runs \u2014 default order', () => {
     it('returns runs newest-first by default (createdAt desc at the storage layer)', async () => {
       if (!backendAvailable) return;

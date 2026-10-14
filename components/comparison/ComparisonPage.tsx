@@ -36,14 +36,13 @@ import {
   getRealTestCaseMeta,
   countRowsByStatus,
   calculateRowStatus,
-  collectRunIdsFromReports,
-  collectSessionIdsFromReports,
-  collectTraceIdsFromReports,
+  collectMetricsCorrelationFromReports,
   calculateCombinedScore,
   computeTestCaseOverlap,
   RowStatus,
 } from '@/services/comparisonService';
 import { fetchBatchMetrics } from '@/services/metrics';
+import { assessScoringComparability, readCompareAnyway, writeCompareAnyway } from '@/lib/comparison/scoringDisplay';
 import { DEFAULT_CONFIG } from '@/lib/constants';
 import { Benchmark, BenchmarkRun, EvaluationReport, EvaluationRun, RunAggregateMetrics, TestCaseComparisonRow, TraceMetrics, TestCase } from '@/types';
 
@@ -51,6 +50,15 @@ type StatusFilter = 'all' | 'passed' | 'failed' | 'mixed';
 
 const getAgentName = (key: string) =>
   DEFAULT_CONFIG.agents.find(a => a.key === key)?.name || key;
+
+/**
+ * The OTel `service.name` an agent is configured to emit spans under
+ * (`AgentConfig.traceServiceName`, from agent-health.config.ts via
+ * `refreshConfig()`), used for the Strategy-C metrics correlation hint. The
+ * same lookup the run-report Traces tab performs.
+ */
+const getAgentTraceServiceName = (key: string | undefined) =>
+  key ? DEFAULT_CONFIG.agents.find(a => a.key === key)?.traceServiceName : undefined;
 
 /** A selectable run plus the benchmark it came from (label only). */
 interface RunPoolEntry {
@@ -380,16 +388,20 @@ export const ComparisonPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runPool, selectedRunIds]);
 
-  // Fetch trace metrics for the selected runs.
+  // Fetch trace metrics for the selected runs. Every report is keyed by its
+  // runId (or its own id when the connector produced none) and correlated by
+  // the union of Strategy A/B/C/D — the same hints the trace judge and the
+  // Traces tab use — so a run whose reports carry no correlation id at all
+  // still gets Cost / Tokens / LLM Calls from its agent's service-name +
+  // time-window spans instead of a blank scoreboard row.
   useEffect(() => {
     const loadTraceMetrics = async () => {
       const selectedRunsForMetrics = runPool.filter(p => selectedRunIds.includes(p.run.id)).map(p => p.run);
-      const runIds = collectRunIdsFromReports(selectedRunsForMetrics, reports);
-      const sessionIdByRunId = collectSessionIdsFromReports(selectedRunsForMetrics, reports);
-      const traceIdByRunId = collectTraceIdsFromReports(selectedRunsForMetrics, reports);
-      if (runIds.length === 0) { setTraceMetricsMap(new Map()); return; }
+      const { keys, sessionIdByKey, traceIdByKey, agentsByKey } =
+        collectMetricsCorrelationFromReports(selectedRunsForMetrics, reports, getAgentTraceServiceName);
+      if (keys.length === 0) { setTraceMetricsMap(new Map()); return; }
       try {
-        const { metrics } = await fetchBatchMetrics(runIds, sessionIdByRunId, traceIdByRunId);
+        const { metrics } = await fetchBatchMetrics(keys, sessionIdByKey, traceIdByKey, agentsByKey);
         const map = new Map<string, TraceMetrics>();
         metrics.forEach(m => { if (m.runId && !('error' in m)) map.set(m.runId, m as TraceMetrics); });
         setTraceMetricsMap(map);
@@ -472,6 +484,20 @@ export const ComparisonPage: React.FC = () => {
       return mergeTraceMetrics(base, run, reports, traceMetricsMap);
     });
   }, [selectedRuns, reports, traceMetricsMap]);
+
+  // Coverage gate: may the aggregate Δ row be shown? Not when the runs carry
+  // different scoring snapshots (or one is legacy-scored) or shared cases ran
+  // at different versions. "Compare anyway" is an explicit, session-scoped
+  // override keyed by the compared run set.
+  const comparability = useMemo(() => assessScoringComparability(runAggregates), [runAggregates]);
+  const [compareAnyway, setCompareAnyway] = useState(false);
+  useEffect(() => {
+    setCompareAnyway(readCompareAnyway(selectedRunIds));
+  }, [selectedRunIds]);
+  const handleCompareAnyway = useCallback(() => {
+    writeCompareAnyway(selectedRunIds, true);
+    setCompareAnyway(true);
+  }, [selectedRunIds]);
 
   // Test case name lookup — checks loaded test cases first, falls back to getRealTestCaseMeta (static data)
   const getTestCaseMeta = useCallback((testCaseId: string) => {
@@ -862,6 +888,9 @@ export const ComparisonPage: React.FC = () => {
                   }
                 }}
                 getAgentName={getAgentName}
+                comparability={comparability}
+                compareAnyway={compareAnyway}
+                onCompareAnyway={handleCompareAnyway}
               />
             )}
 
@@ -918,16 +947,28 @@ export const ComparisonPage: React.FC = () => {
                   <h2 className="text-sm font-semibold">Table Compare</h2>
                   <div className="flex items-center gap-1 ml-2">
                     {(() => {
-                      const totalDiffs =
-                        rowStatusCounts.regression + rowStatusCounts.improvement + rowStatusCounts.mixed;
+                      // Two distinct counts, labelled distinctly: verdict
+                      // changes (== the insights band's "Split" — same
+                      // predicate, lib/comparison/verdictAgreement.ts) and
+                      // score-only moves (verdicts agree, score moved > 5pts).
+                      const { verdictDifferences, scoreOnlyDifferences } = rowStatusCounts;
                       return (
                         <Badge
                           variant="outline"
+                          data-testid="differences-badge"
                           className={`cursor-pointer text-[9px] px-2 py-0.5 transition-colors ${rowStatusFilter === 'differences' ? 'bg-primary/20 border-primary text-primary' : 'hover:bg-muted'}`}
                           onClick={() => setRowStatusFilter('differences')}
-                          title="Show only the rows where the runs disagree"
+                          title="Show only the rows where the runs disagree — verdict changes (same count as “Split” above) plus score-only moves"
                         >
-                          {totalDiffs} differences
+                          {/* One text run: the Badge is a flex container, which
+                              would trim a leading space in a bare text node. */}
+                          <span>
+                            <span data-testid="verdict-differences-count">{verdictDifferences}</span>
+                            {` verdict change${verdictDifferences === 1 ? '' : 's'}`}
+                            {scoreOnlyDifferences > 0 && (
+                              <>{' · '}<span data-testid="score-only-differences-count">{scoreOnlyDifferences}</span>{' score-only'}</>
+                            )}
+                          </span>
                         </Badge>
                       );
                     })()}

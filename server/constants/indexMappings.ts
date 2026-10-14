@@ -62,6 +62,9 @@ export function getIndexMappings(): IndexMappings {
           // and `options` is user-shaped, so keep it out of dynamic mapping
           // the same way `context` / `expectedTrajectory` are.
           definition: { type: 'object', enabled: false },
+          // describe() chain of a code-SDK test (outermost first). Keyword so
+          // the Cases tab can group/aggregate by describePath[0].
+          describePath: { type: 'keyword' },
           category: { type: 'keyword' },
           difficulty: { type: 'keyword' },
           tags: { type: 'keyword' },
@@ -170,6 +173,19 @@ export function getIndexMappings(): IndexMappings {
           testCaseVersionId: { type: 'keyword' },
           agentId: { type: 'keyword' },
           modelId: { type: 'keyword' },
+          // The UNDERLYING LLM the verdict actually came from
+          // (`amazon-bedrock/global.anthropic.claude-sonnet-4-5-...`), as
+          // opposed to `judgeModelId`, which for the agent trace judge is a
+          // provider name (`agent-trace-judge`). Keyword so runs can be
+          // filtered/aggregated by the real judge. `judgeModelId` /
+          // `evaluatorId` are deliberately NOT listed here: existing indexes
+          // already have them dynamically mapped as text+keyword, and
+          // ensureIndexes()'s putMapping rejects a text->keyword change for
+          // the whole request (which would then also skip this new field).
+          judgeModel: { type: 'keyword' },
+          // Judge kind ('agent' | 'bedrock' | …) or the 'none' marker for
+          // code-SDK reports whose body made no LLM judge call.
+          judgeProvider: { type: 'keyword' },
           iteration: { type: 'integer' },
           author: { type: 'keyword' },
           createdAt: { type: 'date' },
@@ -273,6 +289,32 @@ export function getIndexMappings(): IndexMappings {
           traceFetchAttempts: { type: 'integer' },
           lastTraceFetchAt: { type: 'date' },
           traceError: { type: 'text' },
+          // Frozen scoring provenance (types/index.ts ScoringSnapshot). The
+          // identity fields are keyword-typed so the compare page / audits
+          // can filter by evaluator or content hash; `weights` / `scale` are
+          // keyed by evaluator-defined rubric NAMES, so they get the same
+          // `dynamic: false` treatment as `metrics` above (no new mapped
+          // field per rubric name; `_source` round-trips regardless).
+          scoringSnapshot: {
+            dynamic: false,
+            properties: {
+              evaluatorId: { type: 'keyword' },
+              evaluatorVersion: { type: 'integer' },
+              contentHash: { type: 'keyword' },
+              evaluatorName: { type: 'keyword' },
+              judgeModelId: { type: 'keyword' },
+              primaryMetrics: { type: 'keyword' },
+              unevaluable: { type: 'keyword' },
+              extractionRule: { type: 'keyword' },
+              goldIdsUsed: { type: 'keyword' },
+              passPolicy: {
+                dynamic: false,
+                properties: { kind: { type: 'keyword' }, minScore: { type: 'float' } },
+              },
+              weights: { type: 'object', enabled: false },
+              scale: { type: 'object', enabled: false },
+            },
+          },
         },
       },
     },
