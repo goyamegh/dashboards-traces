@@ -33,17 +33,13 @@ const createdMs = (run: BenchmarkRun): number => {
 
 /**
  * Default pair for a set of selected runs: oldest (baseline) → A, newest → B.
- * Ties (identical/unparseable `createdAt`) fall back to selection order, so
- * the result is deterministic for a given selection. `null` when fewer than
- * two runs are selected.
+ * Total ordering: `createdAt`, then `id` — so identical/unparseable
+ * timestamps still yield the same pair no matter how the backing run list
+ * happens to be ordered. `null` when fewer than two runs are selected.
  */
 export function defaultDeepDivePair(runs: BenchmarkRun[]): DeepDivePair | null {
   if (runs.length < 2) return null;
-  // Stable sort: equal timestamps keep their selection order.
-  const sorted = runs
-    .map((run, index) => ({ run, index }))
-    .sort((x, y) => createdMs(x.run) - createdMs(y.run) || x.index - y.index)
-    .map((x) => x.run);
+  const sorted = [...runs].sort((x, y) => createdMs(x) - createdMs(y) || x.id.localeCompare(y.id));
   return [sorted[0].id, sorted[sorted.length - 1].id];
 }
 

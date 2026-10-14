@@ -480,7 +480,7 @@ export const ComparisonPage: React.FC = () => {
 
   // Which two runs the trace-grounded deep-dive compares. The server contract
   // is pairwise, so with exactly 2 runs it is simply the selection (A = first,
-  // B = second, URL order — unchanged); with 3+ runs the page resolves a pair
+  // B = second, selection order — unchanged); with 3+ runs the page resolves a pair
   // (URL `deepDive=a,b` if valid, else oldest-vs-newest) and the panel shows
   // a picker. Only the default pair auto-starts the LLM job.
   const deepDiveParam = searchParams.get(DEEP_DIVE_PAIR_PARAM);

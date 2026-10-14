@@ -34,9 +34,10 @@ describe('defaultDeepDivePair', () => {
     expect(defaultDeepDivePair([run('only', '2026-10-01T00:00:00Z')])).toBeNull();
   });
 
-  it('breaks ties / unparseable dates by selection order so the result is deterministic', () => {
+  it('breaks ties / unparseable dates by id so the result is deterministic regardless of list order', () => {
     expect(defaultDeepDivePair([run('x', 'garbage'), run('y', 'garbage'), run('z', 'garbage')])).toEqual(['x', 'z']);
-    expect(defaultDeepDivePair([run('x', '2026-10-01T00:00:00Z'), run('y', '2026-10-01T00:00:00Z')])).toEqual(['x', 'y']);
+    expect(defaultDeepDivePair([run('z', 'garbage'), run('y', 'garbage'), run('x', 'garbage')])).toEqual(['x', 'z']);
+    expect(defaultDeepDivePair([run('y', '2026-10-01T00:00:00Z'), run('x', '2026-10-01T00:00:00Z')])).toEqual(['x', 'y']);
   });
 });
 
