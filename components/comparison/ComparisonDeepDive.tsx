@@ -17,6 +17,14 @@
  *
  * The agent run is ~30-60s and costs tokens, so results are cached in-memory by
  * report-id pair; the panel auto-runs once per pair and offers a regenerate.
+ *
+ * With THREE OR MORE runs selected on the compare page the server contract
+ * stays pairwise: the page resolves which two runs to compare (see
+ * lib/comparison/deepDivePair.ts) and renders this panel with a compact
+ * `pairPicker` (two selects, A ≠ B) in the header. Only the DEFAULT pair
+ * (oldest vs newest) auto-starts — any other pair waits for an explicit
+ * "Generate" click unless its narrative is already cached, so toggling the
+ * picker never launches surprise LLM work.
  */
 
 import React, { useState, useMemo, useCallback, useEffect, useRef } from 'react';
@@ -25,6 +33,8 @@ import remarkGfm from 'remark-gfm';
 import { Sparkles, Loader2, RefreshCw, ArrowUpRight, AlertTriangle, Lightbulb, ChevronRight, RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { BenchmarkRun, EvaluationReport, TestCaseComparisonRow } from '@/types';
+import { formatDate } from '@/lib/utils';
+import { changeDeepDivePairSide, DeepDivePair } from '@/lib/comparison/deepDivePair';
 import { sanitizeMarkdownUrl } from './sanitizeMarkdownUrl';
 
 export interface DeepDiveRunMeta {
@@ -182,6 +192,30 @@ interface ComparisonDeepDiveProps {
   onSpanLink: (testCaseId: string, runId: string, spanId: string) => void;
   /** Resolved window-agent hints (serviceName + window) so the Traces tab can render spans. */
   onWindowAgents: (meta: DeepDiveRunMeta[]) => void;
+  /**
+   * Whether a pair with no cached narrative starts generating on its own
+   * (default true — the 2-run page's behaviour). The 3+-run page passes
+   * false for any non-default pair so a picker toggle never launches an LLM
+   * job without a click; a cached pair is always served regardless.
+   */
+  autoStart?: boolean;
+  /**
+   * Present only on a 3+-run compare page: the selectable runs and the
+   * callback that moves the pair (the page persists it in the URL). `runs`
+   * is then the resolved [A, B] pair, always a subset of `options`.
+   */
+  pairPicker?: {
+    options: BenchmarkRun[];
+    onChange: (pair: DeepDivePair) => void;
+  };
+}
+
+/** "<run name> · <date>" — the picker's option label (name falls back to the agent). Exported for tests. */
+export function deepDiveRunLabel(run: BenchmarkRun, getAgentName: (key: string) => string, withDate = true): string {
+  const name = run.name || getAgentName(run.agentKey) || run.id;
+  if (!withDate) return name;
+  const t = Date.parse(run.createdAt ?? '');
+  return Number.isFinite(t) ? `${name} · ${formatDate(run.createdAt, 'datetime')}` : name;
 }
 
 export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
@@ -191,6 +225,8 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
   getAgentName,
   onSpanLink,
   onWindowAgents,
+  autoStart = true,
+  pairPicker,
 }) => {
   // Representative pair: the first test case both runs executed.
   const pair = useMemo(() => {
@@ -440,10 +476,27 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
   // has resolved, so the first request already carries the right modelId.
   // A model change re-keys the cache: a previously generated narrative for
   // that model is served instantly, otherwise a fresh generation starts.
+  //
+  // With `autoStart === false` (a non-default pair picked on a 3+-run page)
+  // a CACHED narrative is still served instantly, but an uncached pair parks
+  // in 'idle' with a Generate button instead of launching the LLM job — and
+  // any poll loop still running for the previous pair is superseded so it
+  // can't paint that pair's result under this one.
   useEffect(() => {
-    if (pair && modelsLoaded) generate(false);
+    if (!modelsLoaded) return;
+    if (pair && cacheKey && (autoStart || deepDiveCache.has(cacheKey))) {
+      generate(false);
+      return;
+    }
+    // Either an uncached non-default pair, or no shared case at all: show
+    // nothing from the previous pair.
+    if (activeGenerationRef.current) activeGenerationRef.current.cancelled = true;
+    setStatus('idle');
+    setMarkdown('');
+    setMeta(null);
+    setError('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cacheKey, modelsLoaded]);
+  }, [cacheKey, modelsLoaded, autoStart]);
 
   // Map a cited runId → which agent label (for nicer pill titles). Each
   // meta.runs entry now carries `key` ('A'|'B') directly — comparison-wide
@@ -460,10 +513,17 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
     return m;
   }, [meta, runs, getAgentName]);
 
-  if (!pair) return null;
+  // No shared test case between A and B → nothing to deep-dive on this pair.
+  // With a picker the user can still move to another pair, so keep the
+  // header (and the selects) instead of vanishing; without one, stay hidden
+  // exactly as before.
+  if (!pair && !pairPicker) return null;
 
   const nameA = getAgentName(runs[0].agentKey);
   const nameB = getAgentName(runs[1].agentKey);
+  const pickerLabelA = deepDiveRunLabel(runs[0], getAgentName, false);
+  const pickerLabelB = deepDiveRunLabel(runs[1], getAgentName, false);
+  const currentPair: DeepDivePair = [runs[0].id, runs[1].id];
 
   // A = runs[0], B = runs[1] (the URL order). Surface the A/B mapping
   // everywhere — header + span-citation pills — so a `span:<caseId>:<runId>:...`
@@ -482,7 +542,7 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
   const SpanAnchor = ({ href, children }: { href?: string; children?: React.ReactNode }) => {
     const m3 = /^span:([^:]+):([^:]+):(.+)$/.exec(href || '');
     const m2 = !m3 ? /^span:([^:]+):(.+)$/.exec(href || '') : null;
-    if (m3 || m2) {
+    if ((m3 || m2) && pair) {
       const caseId = m3 ? m3[1] : pair.testCaseId;
       const runId = m3 ? m3[2] : m2![1];
       const spanId = m3 ? m3[3] : m2![2];
@@ -523,10 +583,23 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
         <div className="flex items-center gap-2 min-w-0">
           <Sparkles size={16} className="text-opensearch-blue flex-shrink-0" />
           <div className="min-w-0">
-            <h3 className="text-sm font-semibold text-foreground">What's actually different</h3>
-            <p className="text-xs text-muted-foreground truncate flex items-center gap-1">
-              <AbBadge ab="A" /> {nameA} <span className="opacity-60">vs</span> <AbBadge ab="B" /> {nameB} <span className="opacity-60">· grounded in both runs' traces</span>
-            </p>
+            {pairPicker ? (
+              <>
+                <h3 className="text-sm font-semibold text-foreground truncate" data-testid="deep-dive-heading">
+                  What's actually different <span className="opacity-60">—</span> {pickerLabelA} <span className="opacity-60">vs</span> {pickerLabelB}
+                </h3>
+                <p className="text-xs text-muted-foreground truncate" data-testid="deep-dive-pair-hint">
+                  The trace-grounded deep-dive compares two runs at a time; pick the pair.
+                </p>
+              </>
+            ) : (
+              <>
+                <h3 className="text-sm font-semibold text-foreground" data-testid="deep-dive-heading">What's actually different</h3>
+                <p className="text-xs text-muted-foreground truncate flex items-center gap-1">
+                  <AbBadge ab="A" /> {nameA} <span className="opacity-60">vs</span> <AbBadge ab="B" /> {nameB} <span className="opacity-60">· grounded in both runs' traces</span>
+                </p>
+              </>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-1.5 flex-shrink-0">
@@ -552,6 +625,32 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
           )}
         </div>
       </div>
+
+      {pairPicker && (
+        <div className="mb-2 flex flex-wrap items-center gap-2" data-testid="deep-dive-pair-picker">
+          {(['A', 'B'] as const).map((side) => {
+            const value = side === 'A' ? currentPair[0] : currentPair[1];
+            return (
+              <label key={side} className="flex items-center gap-1.5 text-xs text-muted-foreground min-w-0">
+                <AbBadge ab={side} />
+                <span className="sr-only">Run {side}</span>
+                <select
+                  value={value}
+                  onChange={(e) => pairPicker.onChange(changeDeepDivePairSide(currentPair, side, e.target.value))}
+                  disabled={status === 'loading'}
+                  aria-label={`Run ${side}`}
+                  data-testid={`deep-dive-pair-select-${side.toLowerCase()}`}
+                  className="h-7 max-w-[18rem] truncate rounded border border-border bg-background px-1.5 text-[11px] text-foreground focus:outline-none focus:ring-1 focus:ring-opensearch-blue disabled:opacity-60"
+                >
+                  {pairPicker.options.map((run) => (
+                    <option key={run.id} value={run.id}>{deepDiveRunLabel(run, getAgentName)}</option>
+                  ))}
+                </select>
+              </label>
+            );
+          })}
+        </div>
+      )}
 
       {/* Change 4 — editable system prompt (browser-cache only, nothing
           persisted server-side). Collapsed by default; edits are saved to
@@ -595,6 +694,21 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
           </div>
         )}
       </div>
+
+      {!pair && (
+        <p className="py-3 text-sm text-muted-foreground" data-testid="deep-dive-no-shared-case">
+          These two runs share no test case, so there is nothing to compare — pick a different pair.
+        </p>
+      )}
+
+      {pair && status === 'idle' && !autoStart && (
+        <div className="flex flex-col items-center gap-2 py-5 text-sm text-muted-foreground" data-testid="deep-dive-idle">
+          <p>Not generated yet for this pair — the deep-dive runs an LLM over both runs' traces, so it only starts on request.</p>
+          <Button variant="outline" size="sm" className="h-7 gap-1 text-xs" onClick={() => generate(false)} data-testid="deep-dive-generate">
+            <Sparkles size={12} /> Generate deep-dive
+          </Button>
+        </div>
+      )}
 
       {status === 'loading' && (
         <div className="flex flex-col items-center gap-1 py-6 justify-center text-sm text-muted-foreground" data-testid="deep-dive-loading">

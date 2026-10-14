@@ -22,6 +22,7 @@ import { ComparisonScoreboard } from './ComparisonScoreboard';
 import { ComparisonInsightsBand, type CategorySelection } from './ComparisonInsightsBand';
 import { bucketRow, extractRowCategoryEffective, categoryLabelIsUsableFallback, type AgreementBucket } from '@/lib/comparisonInsights';
 import { ComparisonDeepDive, DeepDiveRunMeta } from './ComparisonDeepDive';
+import { DEEP_DIVE_PAIR_PARAM, DeepDivePair, resolveDeepDivePair, retainDeepDivePairForSelection, serializeDeepDivePair } from '@/lib/comparison/deepDivePair';
 import { FailureClusterPanel } from './FailureClusterPanel';
 import { extractFirstDivergence } from '@/services/trajectoryDiffService';
 import type { FailureCluster, FailureCaseEvidenceInput } from '@/services/client/comparisonClusterApi';
@@ -417,17 +418,21 @@ export const ComparisonPage: React.FC = () => {
   //   - scoped:   drop the `runs` param when the whole benchmark is selected
   //               (keeps the URL clean / matches prior behavior).
   //   - unscoped: runs ARE the source of truth, so always serialize them.
+  // A pinned deep-dive pair (`deepDive=a,b`) survives only while both of its
+  // runs stay selected; otherwise the panel falls back to its default pair.
   const updateSelection = (runIds: string[]) => {
     setSelectedRunIds(runIds);
+    const deepDive = retainDeepDivePairForSelection(searchParams.get(DEEP_DIVE_PAIR_PARAM), runIds);
+    const withPair = (params: Record<string, string>) => (deepDive ? { ...params, [DEEP_DIVE_PAIR_PARAM]: deepDive } : params);
     if (benchmarkId) {
       if (runIds.length > 0 && runIds.length < allRuns.length) {
-        setSearchParams({ runs: runIds.join(',') }, { replace: true });
+        setSearchParams(withPair({ runs: runIds.join(',') }), { replace: true });
       } else if (runIds.length === allRuns.length) {
-        setSearchParams({}, { replace: true });
+        setSearchParams(withPair({}), { replace: true });
       }
     } else {
       if (runIds.length > 0) {
-        setSearchParams({ runs: runIds.join(',') }, { replace: true });
+        setSearchParams(withPair({ runs: runIds.join(',') }), { replace: true });
       } else {
         setSearchParams({}, { replace: true });
       }
@@ -472,6 +477,31 @@ export const ComparisonPage: React.FC = () => {
   };
 
   const selectedRuns = useMemo((): BenchmarkRun[] => allRuns.filter(r => selectedRunIds.includes(r.id)), [allRuns, selectedRunIds]);
+
+  // Which two runs the trace-grounded deep-dive compares. The server contract
+  // is pairwise, so with exactly 2 runs it is simply the selection (A = first,
+  // B = second, URL order — unchanged); with 3+ runs the page resolves a pair
+  // (URL `deepDive=a,b` if valid, else oldest-vs-newest) and the panel shows
+  // a picker. Only the default pair auto-starts the LLM job.
+  const deepDiveParam = searchParams.get(DEEP_DIVE_PAIR_PARAM);
+  const deepDive = useMemo((): { runs: [BenchmarkRun, BenchmarkRun]; autoStart: boolean; picker: boolean } | null => {
+    if (selectedRuns.length < 2) return null;
+    if (selectedRuns.length === 2) return { runs: [selectedRuns[0], selectedRuns[1]], autoStart: true, picker: false };
+    const resolved = resolveDeepDivePair(selectedRuns, deepDiveParam);
+    if (!resolved) return null;
+    const byId = new Map(selectedRuns.map(r => [r.id, r] as const));
+    const a = byId.get(resolved.pair[0]);
+    const b = byId.get(resolved.pair[1]);
+    if (!a || !b) return null;
+    return { runs: [a, b], autoStart: resolved.isDefault, picker: true };
+  }, [selectedRuns, deepDiveParam]);
+  const handleDeepDivePairChange = useCallback((pair: DeepDivePair) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.set(DEEP_DIVE_PAIR_PARAM, serializeDeepDivePair(pair));
+      return next;
+    }, { replace: true });
+  }, [setSearchParams]);
 
   // Test-level overlap across the selected runs — the honesty surface for
   // benchmark-free comparison (which cases overlap, which don't).
@@ -917,13 +947,17 @@ export const ComparisonPage: React.FC = () => {
               />
             )}
 
-            {/* What's actually different — agentic, trace-grounded deep-dive */}
-            {selectedRuns.length === 2 && runAggregates.length === 2 && (
+            {/* What's actually different — agentic, trace-grounded deep-dive.
+                Always rendered for 2+ runs; the server job stays pairwise, so
+                3+ runs get a pair picker inside the panel. */}
+            {deepDive && runAggregates.length === selectedRuns.length && (
               <ComparisonDeepDive
-                runs={selectedRuns}
+                runs={deepDive.runs}
                 rows={allComparisonRows}
                 reports={reports}
                 getAgentName={getAgentName}
+                autoStart={deepDive.autoStart}
+                pairPicker={deepDive.picker ? { options: selectedRuns, onChange: handleDeepDivePairChange } : undefined}
                 onWindowAgents={(metaRuns: DeepDiveRunMeta[]) => {
                   const m = new Map<string, { serviceName?: string; startedAt: number; endedAt: number }>();
                   metaRuns.forEach((r) => {
