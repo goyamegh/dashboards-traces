@@ -287,6 +287,61 @@ describe('ComparisonScoreboard — coverage wording for N runs', () => {
     });
     expect(screen.getByTestId('comparison-overlap-banner').textContent).toBe('6 in all 3 · 2 only in A · 4 only in C');
   });
+
+  it('cases shared by SOME runs but unique to none (in B and C, not A) are reported as "in some runs"', () => {
+    // 10 total: 6 in all three, 1 only in A, 3 in B+C but not A.
+    renderScoreboard(threeRuns(), {
+      overlap: {
+        runCount: 3,
+        totalTestCases: 10,
+        sharedTestCases: 6,
+        partialTestCases: 4,
+        perRun: [
+          { runId: 'a', runName: 'Run a', count: 7, uniqueCount: 1 },
+          { runId: 'b', runName: 'Run b', count: 9, uniqueCount: 0 },
+          { runId: 'c', runName: 'Run c', count: 9, uniqueCount: 0 },
+        ],
+        fullyOverlapping: false,
+      },
+    });
+    expect(screen.getByTestId('comparison-overlap-banner').textContent).toBe('6 in all 3 · 1 only in A · 3 in some runs');
+  });
+
+  it('letters in the coverage label follow the run id, not the position of perRun', () => {
+    renderScoreboard(threeRuns(), {
+      overlap: {
+        runCount: 3,
+        totalTestCases: 9,
+        sharedTestCases: 6,
+        partialTestCases: 3,
+        // Deliberately reversed relative to the rows (C, B, A).
+        perRun: [
+          { runId: 'c', runName: 'Run c', count: 9, uniqueCount: 3 },
+          { runId: 'b', runName: 'Run b', count: 6, uniqueCount: 0 },
+          { runId: 'a', runName: 'Run a', count: 6, uniqueCount: 0 },
+        ],
+        fullyOverlapping: false,
+      },
+    });
+    expect(screen.getByTestId('comparison-overlap-banner').textContent).toBe('6 in all 3 · 3 only in C');
+  });
+});
+
+describe('ComparisonScoreboard — more runs than the colour palette', () => {
+  it('seven runs: seven rows A–G, six Δ rows, badge colours cycle past the sixth run', () => {
+    const runs = ['a', 'b', 'c', 'd', 'e', 'f', 'g'].map((id, i) => makeRun(id, { passRatePercent: 90 - i * 10 }));
+    renderScoreboard(runs, { overlap: fullOverlap(7) });
+    for (const letter of ['A', 'B', 'C', 'D', 'E', 'F', 'G']) {
+      expect(screen.getByTestId(`scoreboard-row-${letter}`)).toBeTruthy();
+    }
+    expect(screen.queryByTestId('scoreboard-row-H')).toBeNull();
+    expect(screen.getAllByTestId(/^scoreboard-delta-row-/)).toHaveLength(6);
+    expect(screen.getByTestId('scoreboard-delta-passrate-G').textContent).toBe('+60pp');
+    // The 7th badge reuses the 1st colour (palette of six, cycling).
+    expect(screen.getByTestId('run-badge-G').className).toBe(screen.getByTestId('run-badge-A').className);
+    expect(screen.getByTestId('run-badge-B').className).not.toBe(screen.getByTestId('run-badge-A').className);
+    expect(screen.getByTestId('comparison-overlap-banner').textContent).toBe('10 in all 7, same case IDs');
+  });
 });
 
 describe('ComparisonScoreboard — comparability / scoring checks span all runs', () => {

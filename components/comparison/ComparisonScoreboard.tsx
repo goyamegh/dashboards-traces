@@ -206,17 +206,30 @@ const formatDelta = (a: number | undefined, b: number | undefined, suffix = ''):
 /**
  * Coverage cell label — owner feedback: "how many tests are tested in both
  * — Coverage column is confusing". Reworded from "N shared / M total" to a
- * plain statement of overlap, naming WHICH side carries the extra cases (the
+ * plain statement of overlap, naming WHICH run carries the extra cases (the
  * common real-world shape: a small smoke run vs. a full benchmark run), e.g.
- * "6 in both · 56 only in A". Falls back to just "N in both" if, unusually,
- * neither side has any test cases the other lacks (shouldn't happen once
- * `fullyOverlapping` is false, but stay defensive).
+ * "6 in both · 56 only in A". With three or more runs a case can also sit in
+ * SOME runs without being unique to one (in B and C but not A) — those are
+ * neither "in all N" nor "only in X", so they get their own "K in some runs"
+ * part (always 0 for two runs, where every non-shared case is unique to one
+ * side). Letters are looked up by run id, not array position, so the label
+ * cannot mis-attribute counts if `perRun` is ever ordered differently from
+ * the rows.
  */
-const formatCoverageLabel = (overlap: TestCaseOverlap, runCount: number): string => {
-  const parts = [`${overlap.sharedTestCases} ${inAllLabel(runCount)}`];
+const formatCoverageLabel = (
+  overlap: TestCaseOverlap,
+  runs: ReadonlyArray<Pick<RunAggregateMetrics, 'runId'>>
+): string => {
+  const parts = [`${overlap.sharedTestCases} ${inAllLabel(runs.length)}`];
+  let uniqueTotal = 0;
   overlap.perRun.forEach((r, i) => {
-    if (r.uniqueCount > 0) parts.push(`${r.uniqueCount} only in ${runLetter(i)}`);
+    if (r.uniqueCount <= 0) return;
+    uniqueTotal += r.uniqueCount;
+    const idx = runs.findIndex(run => run.runId === r.runId);
+    parts.push(`${r.uniqueCount} only in ${runLetter(idx >= 0 ? idx : i)}`);
   });
+  const inSome = overlap.partialTestCases - uniqueTotal;
+  if (inSome > 0) parts.push(`${inSome} in some runs`);
   return parts.join(' · ');
 };
 
@@ -649,7 +662,7 @@ export const ComparisonScoreboard: React.FC<ComparisonScoreboardProps> = ({
                                 </span>
                               ) : (
                                 <span className="text-amber-400">
-                                  {formatCoverageLabel(overlap, runs.length)}
+                                  {formatCoverageLabel(overlap, runs)}
                                 </span>
                               )}
                             </span>
