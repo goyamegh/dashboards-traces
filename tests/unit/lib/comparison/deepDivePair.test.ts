@@ -8,14 +8,23 @@
  * (lib/comparison/deepDivePair.ts): defaults (oldest → A, newest → B), URL
  * round-trip, A ≠ B enforcement, and the "keep the pinned pair only while
  * both runs stay selected" rule.
+ *
+ * Plus the representative-case resolution for a resolved [A, B]
+ * (`resolveDeepDiveCasePair`): the owner's 2-run report — the section was
+ * missing with exactly two runs — came down to the pair being read ONLY from
+ * the comparison rows, which carry a reportId only after the browser has
+ * downloaded that report doc. The run docs carry the ids from the start.
  */
 
 import {
   changeDeepDivePairSide,
   defaultDeepDivePair,
+  fillRunReportIds,
   parseDeepDivePairParam,
+  resolveDeepDiveCasePair,
   resolveDeepDivePair,
   retainDeepDivePairForSelection,
+  runResultsLackReportIds,
   serializeDeepDivePair,
 } from '@/lib/comparison/deepDivePair';
 
@@ -96,5 +105,118 @@ describe('retainDeepDivePairForSelection', () => {
     expect(retainDeepDivePairForSelection('oldest,mid', IDS)).toBe('oldest,mid');
     expect(retainDeepDivePairForSelection('oldest,mid', ['oldest', 'newest'])).toBeUndefined();
     expect(retainDeepDivePairForSelection(null, IDS)).toBeUndefined();
+  });
+});
+
+// ── Representative case for the resolved pair ─────────────────────────────────
+
+const RUN_A = {
+  id: 'run-a',
+  createdAt: '2026-10-01T00:00:00Z',
+  testCaseSnapshots: [{ id: 'tc-1', version: 1, name: 'Case One' }, { id: 'tc-2', version: 1, name: 'Case Two' }],
+  results: {
+    'tc-1': { reportId: 'rep-a-1', status: 'completed' },
+    'tc-2': { reportId: 'rep-a-2', status: 'failed' },
+    'tc-3': { reportId: '', status: 'cancelled' },
+  },
+} as any;
+const RUN_B = {
+  id: 'run-b',
+  createdAt: '2026-10-02T00:00:00Z',
+  results: {
+    'tc-1': { reportId: 'rep-b-1', status: 'completed' },
+    'tc-2': { reportId: 'rep-b-2', status: 'completed' },
+  },
+} as any;
+/** A row as buildTestCaseComparisonRows emits it BEFORE the report docs are loaded: no reportId, status 'missing'. */
+const unloadedRow = (testCaseId: string, name: string) =>
+  ({ testCaseId, testCaseName: name, results: { 'run-a': { status: 'missing' }, 'run-b': { status: 'missing' } } } as any);
+const loadedRow = (testCaseId: string, name: string, a: string, b: string) =>
+  ({ testCaseId, testCaseName: name, results: { 'run-a': { reportId: a, status: 'completed' }, 'run-b': { reportId: b, status: 'completed' } } } as any);
+
+describe('resolveDeepDiveCasePair', () => {
+  it('uses the rows\' report ids when they carry them (the loaded-reports path, unchanged)', () => {
+    const pair = resolveDeepDiveCasePair([RUN_A, RUN_B], [loadedRow('tc-2', 'Case Two', 'rep-a-2', 'rep-b-2'), loadedRow('tc-1', 'Case One', 'rep-a-1', 'rep-b-1')]);
+    expect(pair).toEqual({ testCaseId: 'tc-2', testCaseName: 'Case Two', reportIdA: 'rep-a-2', reportIdB: 'rep-b-2', cacheKey: 'rep-a-2|rep-b-2' });
+  });
+
+  it('falls back to the run docs\' report ids when the rows do not carry them yet (reports still downloading / failed to load)', () => {
+    const pair = resolveDeepDiveCasePair([RUN_A, RUN_B], [unloadedRow('tc-1', 'Case One'), unloadedRow('tc-2', 'Case Two')]);
+    expect(pair).toEqual({ testCaseId: 'tc-1', testCaseName: 'Case One', reportIdA: 'rep-a-1', reportIdB: 'rep-b-1', cacheKey: 'rep-a-1|rep-b-1' });
+  });
+
+  it('resolves with NO rows at all, naming the case from a run\'s test-case snapshot', () => {
+    const pair = resolveDeepDiveCasePair([RUN_A, RUN_B], []);
+    expect(pair).toMatchObject({ testCaseId: 'tc-1', testCaseName: 'Case One', reportIdA: 'rep-a-1', reportIdB: 'rep-b-1' });
+    // No snapshot anywhere → the id is the name.
+    const bare = { ...RUN_A, testCaseSnapshots: undefined };
+    expect(resolveDeepDiveCasePair([bare, RUN_B], [])).toMatchObject({ testCaseName: 'tc-1' });
+  });
+
+  it('skips cases that have a report on only one side and keeps the rows\' order', () => {
+    const onlyA = { ...RUN_B, results: { 'tc-1': { status: 'cancelled' }, 'tc-2': { reportId: 'rep-b-2', status: 'completed' } } };
+    expect(resolveDeepDiveCasePair([RUN_A, onlyA], [unloadedRow('tc-1', 'Case One'), unloadedRow('tc-2', 'Case Two')]))
+      .toMatchObject({ testCaseId: 'tc-2', reportIdA: 'rep-a-2', reportIdB: 'rep-b-2' });
+  });
+
+  it('mixes sources per side: a row id on one side, the run doc on the other', () => {
+    const row = { testCaseId: 'tc-1', testCaseName: 'Case One', results: { 'run-a': { reportId: 'rep-a-1', status: 'completed' }, 'run-b': { status: 'missing' } } } as any;
+    expect(resolveDeepDiveCasePair([RUN_A, RUN_B], [row])).toMatchObject({ reportIdA: 'rep-a-1', reportIdB: 'rep-b-1' });
+  });
+
+  it('returns null when no case has a report on both sides, and for anything but exactly two runs', () => {
+    const disjoint = { ...RUN_B, results: { 'tc-9': { reportId: 'rep-b-9', status: 'completed' } } };
+    expect(resolveDeepDiveCasePair([RUN_A, disjoint], [unloadedRow('tc-1', 'Case One')])).toBeNull();
+    expect(resolveDeepDiveCasePair([RUN_A, { ...RUN_B, results: undefined }], [])).toBeNull();
+    expect(resolveDeepDiveCasePair([RUN_A], [])).toBeNull();
+    expect(resolveDeepDiveCasePair([RUN_A, RUN_B, RUN_A], [])).toBeNull();
+  });
+});
+
+// ── Projection gap: embedded run without report ids ───────────────────────────
+
+describe('runResultsLackReportIds', () => {
+  it('flags a run whose finished cases carry no reportId at all', () => {
+    expect(runResultsLackReportIds({ results: { 'tc-1': { status: 'completed' }, 'tc-2': { status: 'failed', reportId: '' } } } as any)).toBe(true);
+  });
+
+  it('leaves alone runs with any reportId, with only non-terminal cases, or with no results', () => {
+    expect(runResultsLackReportIds(RUN_A)).toBe(false);
+    expect(runResultsLackReportIds({ results: { 'tc-1': { status: 'completed' }, 'tc-2': { status: 'failed', reportId: 'rep-2' } } } as any)).toBe(false);
+    expect(runResultsLackReportIds({ results: { 'tc-1': { status: 'pending' }, 'tc-2': { status: 'cancelled' } } } as any)).toBe(false);
+    expect(runResultsLackReportIds({ results: {} } as any)).toBe(false);
+    expect(runResultsLackReportIds({} as any)).toBe(false);
+  });
+});
+
+describe('fillRunReportIds', () => {
+  const projection = {
+    id: 'run-a', name: 'kept',
+    results: { 'tc-1': { status: 'completed', performanceMetrics: { durationMs: 5 } }, 'tc-2': { status: 'failed', reportId: '' }, 'tc-3': { status: 'cancelled' } },
+  } as any;
+
+  it('fills only the EMPTY ids from the doc and keeps every other projection field', () => {
+    const filled = fillRunReportIds(projection, { results: { 'tc-1': { reportId: 'rep-1' }, 'tc-2': { reportId: 'rep-2' }, 'tc-4': { reportId: 'rep-4' } } });
+    expect(filled).not.toBe(projection);
+    expect(filled.name).toBe('kept');
+    expect(filled.results).toEqual({
+      'tc-1': { status: 'completed', performanceMetrics: { durationMs: 5 }, reportId: 'rep-1' },
+      'tc-2': { status: 'failed', reportId: 'rep-2' },
+      'tc-3': { status: 'cancelled' },
+    });
+    // Input untouched.
+    expect(projection.results['tc-1'].reportId).toBeUndefined();
+  });
+
+  it('never overwrites an id the projection already has', () => {
+    const withId = { results: { 'tc-1': { status: 'completed', reportId: 'rep-own' } } } as any;
+    expect(fillRunReportIds(withId, { results: { 'tc-1': { reportId: 'rep-doc' } } })).toBe(withId);
+  });
+
+  it('returns the SAME object when the doc contributes nothing (missing doc, no results, no matching ids)', () => {
+    expect(fillRunReportIds(projection, null)).toBe(projection);
+    expect(fillRunReportIds(projection, {})).toBe(projection);
+    expect(fillRunReportIds(projection, { results: { 'tc-9': { reportId: 'rep-9' } } })).toBe(projection);
+    expect(fillRunReportIds(projection, { results: { 'tc-1': {} } })).toBe(projection);
   });
 });

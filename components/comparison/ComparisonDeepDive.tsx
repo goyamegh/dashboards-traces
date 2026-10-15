@@ -34,7 +34,7 @@ import { Sparkles, Loader2, RefreshCw, ArrowUpRight, AlertTriangle, Lightbulb, C
 import { Button } from '@/components/ui/button';
 import { BenchmarkRun, EvaluationReport, TestCaseComparisonRow } from '@/types';
 import { formatDate } from '@/lib/utils';
-import { changeDeepDivePairSide, DeepDivePair } from '@/lib/comparison/deepDivePair';
+import { changeDeepDivePairSide, DeepDivePair, resolveDeepDiveCasePair } from '@/lib/comparison/deepDivePair';
 import { sanitizeMarkdownUrl } from './sanitizeMarkdownUrl';
 
 export interface DeepDiveRunMeta {
@@ -208,6 +208,13 @@ interface ComparisonDeepDiveProps {
     options: BenchmarkRun[];
     onChange: (pair: DeepDivePair) => void;
   };
+  /**
+   * True while the page is still fetching the compared runs' report docs.
+   * The panel stays mounted (its pair comes from the run docs' report ids)
+   * but shows a "loading reports" line and defers the auto-start until the
+   * rows summary it sends along is complete.
+   */
+  reportsLoading?: boolean;
 }
 
 /** "<run name> · <date>" — the picker's option label (name falls back to the agent). Exported for tests. */
@@ -227,25 +234,13 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
   onWindowAgents,
   autoStart = true,
   pairPicker,
+  reportsLoading = false,
 }) => {
-  // Representative pair: the first test case both runs executed.
-  const pair = useMemo(() => {
-    if (runs.length !== 2) return null;
-    for (const row of rows) {
-      const a = row.results[runs[0].id]?.reportId;
-      const b = row.results[runs[1].id]?.reportId;
-      if (a && b) {
-        return {
-          testCaseId: row.testCaseId,
-          testCaseName: row.testCaseName,
-          reportIdA: a,
-          reportIdB: b,
-          cacheKey: `${a}|${b}`,
-        };
-      }
-    }
-    return null;
-  }, [runs, rows]);
+  // Representative pair: the first test case with a report on both sides.
+  // Report ids come from the rows when they carry them and from the run docs
+  // otherwise, so the pair resolves as soon as the runs are known — not only
+  // after every report doc has been downloaded (see resolveDeepDiveCasePair).
+  const pair = useMemo(() => resolveDeepDiveCasePair(runs, rows), [runs, rows]);
 
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
   const [markdown, setMarkdown] = useState<string>('');
@@ -357,7 +352,7 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
   // Each generate() call owns its own token object; the poll loop checks
   // `token.cancelled` before every state update and before scheduling the
   // next poll.
-  const activeGenerationRef = useRef<{ cancelled: boolean } | null>(null);
+  const activeGenerationRef = useRef<{ cancelled: boolean; key: string } | null>(null);
   useEffect(() => {
     return () => {
       if (activeGenerationRef.current) activeGenerationRef.current.cancelled = true;
@@ -379,7 +374,7 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
       // Supersede any in-flight poll loop (a previous Regenerate, or a pair
       // switch) before starting this one.
       if (activeGenerationRef.current) activeGenerationRef.current.cancelled = true;
-      const token = { cancelled: false };
+      const token = { cancelled: false, key: cacheKey };
       activeGenerationRef.current = token;
 
       setStatus('loading');
@@ -482,21 +477,37 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
   // in 'idle' with a Generate button instead of launching the LLM job — and
   // any poll loop still running for the previous pair is superseded so it
   // can't paint that pair's result under this one.
+  //
+  // While the page is still downloading the report docs (`reportsLoading`)
+  // a cached narrative is served, but a fresh generation waits: the request
+  // carries a per-row verdict summary that is empty until the reports are in,
+  // and the LLM would otherwise be briefed on a comparison with no verdicts.
   useEffect(() => {
     if (!modelsLoaded) return;
-    if (pair && cacheKey && (autoStart || deepDiveCache.has(cacheKey))) {
-      generate(false);
-      return;
+    if (pair && cacheKey) {
+      if (deepDiveCache.has(cacheKey)) {
+        generate(false);
+        return;
+      }
+      // Already generating (or generated) THIS pair: leave it alone. A
+      // reports (re)load flipping `reportsLoading` must not cancel an LLM job
+      // in flight and then launch it a second time.
+      const active = activeGenerationRef.current;
+      if (active && !active.cancelled && active.key === cacheKey) return;
+      if (autoStart && !reportsLoading) {
+        generate(false);
+        return;
+      }
     }
-    // Either an uncached non-default pair, or no shared case at all: show
-    // nothing from the previous pair.
+    // An uncached non-default pair, reports still loading, or no shared case
+    // at all: show nothing from the previous pair.
     if (activeGenerationRef.current) activeGenerationRef.current.cancelled = true;
     setStatus('idle');
     setMarkdown('');
     setMeta(null);
     setError('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cacheKey, modelsLoaded, autoStart]);
+  }, [cacheKey, modelsLoaded, autoStart, reportsLoading]);
 
   // Map a cited runId → which agent label (for nicer pill titles). Each
   // meta.runs entry now carries `key` ('A'|'B') directly — comparison-wide
@@ -513,11 +524,10 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
     return m;
   }, [meta, runs, getAgentName]);
 
-  // No shared test case between A and B → nothing to deep-dive on this pair.
-  // With a picker the user can still move to another pair, so keep the
-  // header (and the selects) instead of vanishing; without one, stay hidden
-  // exactly as before.
-  if (!pair && !pairPicker) return null;
+  // No test case with a report on both sides → nothing to deep-dive on this
+  // pair. The panel still renders and SAYS so (with a picker the user can
+  // move to another pair) — it used to return null here, which made the
+  // section silently vanish for the exact two runs the user asked about.
 
   const nameA = getAgentName(runs[0].agentKey);
   const nameB = getAgentName(runs[1].agentKey);
@@ -697,11 +707,18 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
 
       {!pair && (
         <p className="py-3 text-sm text-muted-foreground" data-testid="deep-dive-no-shared-case">
-          These two runs share no test case, so there is nothing to compare — pick a different pair.
+          The deep-dive needs at least one test case that both runs completed — none found.
+          {pairPicker ? ' Pick a different pair.' : ''}
         </p>
       )}
 
-      {pair && status === 'idle' && !autoStart && (
+      {pair && status === 'idle' && reportsLoading && (
+        <div className="flex items-center justify-center gap-2 py-5 text-sm text-muted-foreground" data-testid="deep-dive-reports-loading">
+          <Loader2 size={14} className="animate-spin" /> Loading both runs' test case reports…
+        </div>
+      )}
+
+      {pair && status === 'idle' && !reportsLoading && !autoStart && (
         <div className="flex flex-col items-center gap-2 py-5 text-sm text-muted-foreground" data-testid="deep-dive-idle">
           <p>Not generated yet for this pair — the deep-dive runs an LLM over both runs' traces, so it only starts on request.</p>
           <Button variant="outline" size="sm" className="h-7 gap-1 text-xs" onClick={() => generate(false)} data-testid="deep-dive-generate">
