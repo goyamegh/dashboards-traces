@@ -22,14 +22,15 @@
  *  - rows without reportIds + run docs WITH them → the panel renders; while
  *    `reportsLoading` it shows a loading line and does NOT POST; once the
  *    reports are in it auto-starts with the run docs' report ids
- *  - no rows at all → same (the pair comes from the run docs alone)
+ *  - reports FAILED to load → mounted, no auto-start, "Generate anyway"
  *  - a cached narrative is served even while reports are loading
+ *  - a reports reload mid-job never cancels/relaunches the job
  *  - no test case with a report on both sides → the panel renders an explicit
  *    message instead of returning null
  */
 
 import * as React from 'react';
-import { render, screen, act, cleanup } from '@testing-library/react';
+import { render, screen, act, cleanup, fireEvent } from '@testing-library/react';
 
 jest.mock('react-markdown', () => ({
   __esModule: true,
@@ -132,12 +133,31 @@ describe('ComparisonDeepDive — two runs, report ids not (yet) on the rows', ()
     expect(screen.getByTestId('md').textContent).toBe(`narrative for ${rep('a', 'tc-1')}+${rep('b', 'tc-1')}`);
   });
 
-  it('generates from the run docs alone when the reports never load (fetch failed → rows stay id-less, no rows at all)', async () => {
-    mount({ rows: [], reportsLoading: false });
+  it('reports failed to load: stays mounted, does NOT auto-start, and "Generate anyway" posts the run docs\' report ids', async () => {
+    mount({ reportsLoading: false, reportsFailed: true });
     await flush(3000);
     expect(screen.getByTestId('comparison-deep-dive')).toBeTruthy();
+    expect(screen.getByTestId('deep-dive-reports-failed')).toBeTruthy();
+    expect(screen.queryByTestId('deep-dive-idle')).toBeNull();
+    expect(postCalls()).toHaveLength(0);
+
+    fireEvent.click(screen.getByTestId('deep-dive-generate-anyway'));
+    await flush(3000);
     expect(postCalls()).toHaveLength(1);
     expect(postCalls()[0].body.reportIds).toEqual([rep('a', 'tc-1'), rep('b', 'tc-1')]);
+    expect(screen.getByTestId('md').textContent).toBe(`narrative for ${rep('a', 'tc-1')}+${rep('b', 'tc-1')}`);
+    expect(screen.queryByTestId('deep-dive-reports-failed')).toBeNull();
+  });
+
+  it('a reports reload flipping `reportsLoading` while a job is in flight neither cancels nor relaunches it', async () => {
+    const view = mount({ reportsLoading: false });
+    await flush(0);
+    expect(postCalls()).toHaveLength(1); // POST sent, poll pending
+    view.rerender({ reportsLoading: true });
+    await flush(0);
+    view.rerender({ reportsLoading: false });
+    await flush(3000);
+    expect(postCalls()).toHaveLength(1);
     expect(screen.getByTestId('md').textContent).toBe(`narrative for ${rep('a', 'tc-1')}+${rep('b', 'tc-1')}`);
   });
 
@@ -158,7 +178,8 @@ describe('ComparisonDeepDive — two runs, report ids not (yet) on the rows', ()
   it('with no test case completed on both sides it renders an explicit message instead of nothing', async () => {
     const [a, b] = runs();
     b.results = { 'tc-9': { reportId: rep('b', 'tc-9'), status: 'completed' } };
-    mount({ runs: [a, b], rows: [], reportsLoading: false });
+    const rows = ['tc-1', 'tc-2', 'tc-9'].map((tc) => ({ testCaseId: tc, testCaseName: tc, results: { 'run-a': { status: 'missing' }, 'run-b': { status: 'missing' } } }));
+    mount({ runs: [a, b], rows, reportsLoading: false });
     await flush(3000);
     expect(screen.getByTestId('comparison-deep-dive')).toBeTruthy();
     expect(screen.getByTestId('deep-dive-no-shared-case').textContent)

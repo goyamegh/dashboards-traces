@@ -22,7 +22,7 @@ import { ComparisonScoreboard } from './ComparisonScoreboard';
 import { ComparisonInsightsBand, type CategorySelection } from './ComparisonInsightsBand';
 import { bucketRow, extractRowCategoryEffective, categoryLabelIsUsableFallback, type AgreementBucket } from '@/lib/comparisonInsights';
 import { ComparisonDeepDive, DeepDiveRunMeta } from './ComparisonDeepDive';
-import { DEEP_DIVE_PAIR_PARAM, DeepDivePair, fillRunReportIds, resolveDeepDivePair, retainDeepDivePairForSelection, runResultsLackReportIds, serializeDeepDivePair } from '@/lib/comparison/deepDivePair';
+import { DEEP_DIVE_PAIR_PARAM, DeepDivePair, resolveDeepDivePair, retainDeepDivePairForSelection, serializeDeepDivePair } from '@/lib/comparison/deepDivePair';
 import { FailureClusterPanel } from './FailureClusterPanel';
 import { extractFirstDivergence } from '@/services/trajectoryDiffService';
 import type { FailureCluster, FailureCaseEvidenceInput } from '@/services/client/comparisonClusterApi';
@@ -110,12 +110,6 @@ export const ComparisonPage: React.FC = () => {
   // the PREVIOUS selection is still in flight; that response (success or
   // error) must be discarded, not applied on top of the new selection.
   const reportsRequestIdRef = useRef(0);
-  // Run ids whose embedded projection was already (re)read from the
-  // evaluation-run doc — one attempt per run, success or not. The ref is the
-  // synchronous guard against a second fetch; the state mirror re-renders
-  // `reportsPending` once the attempt has settled.
-  const hydratedRunIdsRef = useRef(new Set<string>());
-  const [hydratedRunIds, setHydratedRunIds] = useState<Set<string>>(() => new Set());
   // Report ids whose batch fetch has COMPLETED (found or not, success or
   // failure). A report that is absent from `reports` but settled is known to
   // be unavailable, so nothing downstream keeps waiting for it.
@@ -363,28 +357,6 @@ export const ComparisonPage: React.FC = () => {
   useEffect(() => {
     const loadReports = async () => {
       const selected = runPool.filter(p => selectedRunIds.includes(p.run.id));
-
-      // Projection gap: a run embedded in `benchmark.runs[]` whose finished
-      // cases carry no reportId at all cannot be compared — no reports, no
-      // verdict cells, no deep-dive pair. The first-class evaluation-run doc
-      // (same id) is the source of truth for those ids, so read it once and
-      // patch the pool; this effect then re-runs with the filled projection.
-      const gaps = selected.filter(({ run }) => runResultsLackReportIds(run) && !hydratedRunIdsRef.current.has(run.id));
-      if (gaps.length > 0) {
-        gaps.forEach(({ run }) => hydratedRunIdsRef.current.add(run.id));
-        const docs = await Promise.all(gaps.map(({ run }) => getEvaluationRun(run.id).catch(() => null)));
-        const filled = new Map<string, BenchmarkRun>();
-        gaps.forEach(({ run }, i) => {
-          const next = fillRunReportIds(run, docs[i] as { results?: Record<string, { reportId?: string }> } | null);
-          if (next !== run) filled.set(run.id, next);
-        });
-        setHydratedRunIds(new Set(hydratedRunIdsRef.current));
-        if (filled.size > 0) {
-          setRunPool(prev => prev.map(p => (filled.has(p.run.id) ? { ...p, run: filled.get(p.run.id)! } : p)));
-          return;
-        }
-      }
-
       const reportIds = new Set<string>();
       selected.forEach(({ run }) => {
         Object.values(run.results || {}).forEach(result => {
@@ -513,17 +485,15 @@ export const ComparisonPage: React.FC = () => {
 
   const selectedRuns = useMemo((): BenchmarkRun[] => allRuns.filter(r => selectedRunIds.includes(r.id)), [allRuns, selectedRunIds]);
 
-  // Whether some selected run's report ids are still being resolved — either
-  // the report docs have not been fetched yet, or the run's embedded
-  // projection is still being filled from its evaluation-run doc. Derived
+  // Whether some selected run's report docs are still being fetched. Derived
   // from the data (not from the async `reportsLoading` flag) so it is true
   // from the very first render that shows the runs and never flaps: the
   // deep-dive panel uses it to hold its auto-start until the per-row verdict
-  // summary it sends along is complete.
-  const reportsPending = useMemo((): boolean => selectedRuns.some(run => {
-    if (runResultsLackReportIds(run)) return !hydratedRunIds.has(run.id);
-    return Object.values(run.results || {}).some(r => r.reportId && !reports[r.reportId] && !settledReportIds.has(r.reportId));
-  }), [selectedRuns, reports, settledReportIds, hydratedRunIds]);
+  // summary it sends along is complete. A report the fetch did not return
+  // (deleted, or the batch failed) counts as settled, never as pending.
+  const reportsPending = useMemo((): boolean => selectedRuns.some(run =>
+    Object.values(run.results || {}).some(r => r.reportId && !reports[r.reportId] && !settledReportIds.has(r.reportId))
+  ), [selectedRuns, reports, settledReportIds]);
 
   // Which two runs the trace-grounded deep-dive compares. The server contract
   // is pairwise, so with exactly 2 runs it is simply the selection (A = first,
@@ -1005,6 +975,7 @@ export const ComparisonPage: React.FC = () => {
                 getAgentName={getAgentName}
                 autoStart={deepDive.autoStart}
                 reportsLoading={reportsPending}
+                reportsFailed={!!reportsError}
                 pairPicker={deepDive.picker ? { options: selectedRuns, onChange: handleDeepDivePairChange } : undefined}
                 onWindowAgents={(metaRuns: DeepDiveRunMeta[]) => {
                   const m = new Map<string, { serviceName?: string; startedAt: number; endedAt: number }>();

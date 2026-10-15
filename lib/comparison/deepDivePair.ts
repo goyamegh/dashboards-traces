@@ -18,8 +18,7 @@
  *
  * It also resolves, for the chosen [A, B], the representative TEST CASE the
  * job is anchored on (`resolveDeepDiveCasePair`) — reading report ids from
- * the run docs when the comparison rows don't carry them yet — and repairs
- * an embedded run projection that lost its report ids (`fillRunReportIds`).
+ * the run docs when the comparison rows don't carry them yet.
  *
  * Pure functions, unit tested directly.
  */
@@ -135,10 +134,11 @@ const reportIdOnRun = (run: BenchmarkRun, testCaseId: string): string | undefine
  *
  * Reading (2) is what keeps the panel mounted while the reports are still
  * downloading — and when that download fails outright — instead of silently
- * vanishing for the exact two runs the user asked to compare. Rows come
- * first so the pair follows the table's order whenever rows exist; with no
- * rows yet the run docs' own key order is used. `null` only when no test
- * case has a report on both sides (the panel then says so explicitly).
+ * vanishing for the exact two runs the user asked to compare. Only the
+ * rows are walked (the page builds one per test case across both runs, so
+ * they cover every case) and in table order, so the chosen case is always
+ * one the user can see. `null` only when no test case has a report on both
+ * sides (the panel then says so explicitly).
  */
 export function resolveDeepDiveCasePair(
   runs: readonly BenchmarkRun[],
@@ -146,69 +146,21 @@ export function resolveDeepDiveCasePair(
 ): DeepDiveCasePair | null {
   if (runs.length !== 2) return null;
   const [runA, runB] = runs;
-  const nameOf = (testCaseId: string, row?: TestCaseComparisonRow): string =>
-    row?.testCaseName
+  const nameOf = (testCaseId: string, row: TestCaseComparisonRow): string =>
+    row.testCaseName
     || runA.testCaseSnapshots?.find((s) => s.id === testCaseId)?.name
     || runB.testCaseSnapshots?.find((s) => s.id === testCaseId)?.name
     || testCaseId;
-  const pairFor = (testCaseId: string, row?: TestCaseComparisonRow): DeepDiveCasePair | null => {
-    const a = row?.results[runA.id]?.reportId || reportIdOnRun(runA, testCaseId);
-    const b = row?.results[runB.id]?.reportId || reportIdOnRun(runB, testCaseId);
+  const pairFor = (testCaseId: string, row: TestCaseComparisonRow): DeepDiveCasePair | null => {
+    const a = row.results[runA.id]?.reportId || reportIdOnRun(runA, testCaseId);
+    const b = row.results[runB.id]?.reportId || reportIdOnRun(runB, testCaseId);
     if (!a || !b) return null;
     return { testCaseId, testCaseName: nameOf(testCaseId, row), reportIdA: a, reportIdB: b, cacheKey: `${a}|${b}` };
   };
 
-  const seen = new Set<string>();
   for (const row of rows) {
-    seen.add(row.testCaseId);
     const pair = pairFor(row.testCaseId, row);
     if (pair) return pair;
   }
-  // Cases the rows don't cover yet (no rows at all before the pool resolves,
-  // or a run whose cases the table has not been handed).
-  for (const testCaseId of Object.keys(runA.results ?? {})) {
-    if (seen.has(testCaseId)) continue;
-    const pair = pairFor(testCaseId);
-    if (pair) return pair;
-  }
   return null;
-}
-
-// ── Projection gap: a run embedded in `benchmark.runs[]` without report ids ──
-
-/**
- * True when a run's results have at least one case that reached a terminal
- * state yet NONE of its cases carries a `reportId`. That is the signature of
- * an embedded `benchmark.runs[]` projection that lost its report ids (the
- * first-class evaluation-run doc still has them); a run with no results, or
- * with ids on any case, is left alone.
- */
-export function runResultsLackReportIds(run: Pick<BenchmarkRun, 'results'>): boolean {
-  const entries = Object.values(run.results ?? {});
-  if (entries.length === 0) return false;
-  if (entries.some((r) => !!r?.reportId)) return false;
-  return entries.some((r) => r?.status === 'completed' || r?.status === 'failed');
-}
-
-/**
- * Fill the `reportId`s a projection is missing from the evaluation-run doc
- * (same run id). Only EMPTY ids are filled — the projection's own values,
- * statuses and metrics are never overwritten — and a doc that contributes
- * nothing returns the very same object so callers can skip a state update.
- */
-export function fillRunReportIds<T extends Pick<BenchmarkRun, 'results'>>(
-  run: T,
-  doc: { results?: Record<string, { reportId?: string }> } | null | undefined
-): T {
-  if (!doc?.results) return run;
-  let changed = false;
-  const results = { ...(run.results ?? {}) };
-  for (const [testCaseId, result] of Object.entries(results)) {
-    if (result?.reportId) continue;
-    const fromDoc = doc.results[testCaseId]?.reportId;
-    if (!fromDoc) continue;
-    results[testCaseId] = { ...result, reportId: fromDoc };
-    changed = true;
-  }
-  return changed ? { ...run, results } : run;
 }

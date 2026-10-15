@@ -215,6 +215,13 @@ interface ComparisonDeepDiveProps {
    * rows summary it sends along is complete.
    */
   reportsLoading?: boolean;
+  /**
+   * True when the page's report fetch FAILED. The panel stays mounted (the
+   * pair still resolves from the run docs) but does not launch the LLM job on
+   * its own — the per-row verdict summary it would send is empty — and offers
+   * an explicit "Generate anyway" instead.
+   */
+  reportsFailed?: boolean;
 }
 
 /** "<run name> · <date>" — the picker's option label (name falls back to the agent). Exported for tests. */
@@ -235,6 +242,7 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
   autoStart = true,
   pairPicker,
   reportsLoading = false,
+  reportsFailed = false,
 }) => {
   // Representative pair: the first test case with a report on both sides.
   // Report ids come from the rows when they carry them and from the run docs
@@ -494,20 +502,20 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
       // in flight and then launch it a second time.
       const active = activeGenerationRef.current;
       if (active && !active.cancelled && active.key === cacheKey) return;
-      if (autoStart && !reportsLoading) {
+      if (autoStart && !reportsLoading && !reportsFailed) {
         generate(false);
         return;
       }
     }
-    // An uncached non-default pair, reports still loading, or no shared case
-    // at all: show nothing from the previous pair.
+    // An uncached non-default pair, reports still loading or failed to load,
+    // or no shared case at all: show nothing from the previous pair.
     if (activeGenerationRef.current) activeGenerationRef.current.cancelled = true;
     setStatus('idle');
     setMarkdown('');
     setMeta(null);
     setError('');
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cacheKey, modelsLoaded, autoStart, reportsLoading]);
+  }, [cacheKey, modelsLoaded, autoStart, reportsLoading, reportsFailed]);
 
   // Map a cited runId → which agent label (for nicer pill titles). Each
   // meta.runs entry now carries `key` ('A'|'B') directly — comparison-wide
@@ -718,7 +726,16 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
         </div>
       )}
 
-      {pair && status === 'idle' && !reportsLoading && !autoStart && (
+      {pair && status === 'idle' && !reportsLoading && reportsFailed && (
+        <div className="flex flex-col items-center gap-2 py-5 text-sm text-muted-foreground" data-testid="deep-dive-reports-failed">
+          <p>The test case reports could not be loaded, so the deep-dive was not started — it would be briefed without the per-case verdicts.</p>
+          <Button variant="outline" size="sm" className="h-7 gap-1 text-xs" onClick={() => generate(false)} data-testid="deep-dive-generate-anyway">
+            <Sparkles size={12} /> Generate anyway
+          </Button>
+        </div>
+      )}
+
+      {pair && status === 'idle' && !reportsLoading && !reportsFailed && !autoStart && (
         <div className="flex flex-col items-center gap-2 py-5 text-sm text-muted-foreground" data-testid="deep-dive-idle">
           <p>Not generated yet for this pair — the deep-dive runs an LLM over both runs' traces, so it only starts on request.</p>
           <Button variant="outline" size="sm" className="h-7 gap-1 text-xs" onClick={() => generate(false)} data-testid="deep-dive-generate">

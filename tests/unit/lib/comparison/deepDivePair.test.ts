@@ -19,12 +19,10 @@
 import {
   changeDeepDivePairSide,
   defaultDeepDivePair,
-  fillRunReportIds,
   parseDeepDivePairParam,
   resolveDeepDiveCasePair,
   resolveDeepDivePair,
   retainDeepDivePairForSelection,
-  runResultsLackReportIds,
   serializeDeepDivePair,
 } from '@/lib/comparison/deepDivePair';
 
@@ -145,12 +143,14 @@ describe('resolveDeepDiveCasePair', () => {
     expect(pair).toEqual({ testCaseId: 'tc-1', testCaseName: 'Case One', reportIdA: 'rep-a-1', reportIdB: 'rep-b-1', cacheKey: 'rep-a-1|rep-b-1' });
   });
 
-  it('resolves with NO rows at all, naming the case from a run\'s test-case snapshot', () => {
-    const pair = resolveDeepDiveCasePair([RUN_A, RUN_B], []);
-    expect(pair).toMatchObject({ testCaseId: 'tc-1', testCaseName: 'Case One', reportIdA: 'rep-a-1', reportIdB: 'rep-b-1' });
-    // No snapshot anywhere → the id is the name.
+  it('names the case from the row, else a run\'s test-case snapshot, else the id — and never looks past the rows', () => {
+    const nameless = { testCaseId: 'tc-1', testCaseName: '', results: { 'run-a': { status: 'missing' }, 'run-b': { status: 'missing' } } } as any;
+    expect(resolveDeepDiveCasePair([RUN_A, RUN_B], [nameless])).toMatchObject({ testCaseId: 'tc-1', testCaseName: 'Case One', reportIdA: 'rep-a-1', reportIdB: 'rep-b-1' });
     const bare = { ...RUN_A, testCaseSnapshots: undefined };
-    expect(resolveDeepDiveCasePair([bare, RUN_B], [])).toMatchObject({ testCaseName: 'tc-1' });
+    expect(resolveDeepDiveCasePair([bare, RUN_B], [nameless])).toMatchObject({ testCaseName: 'tc-1' });
+    // The rows are the visible comparison surface: a case both run docs have
+    // but no row shows is not picked (no rows → no pair).
+    expect(resolveDeepDiveCasePair([RUN_A, RUN_B], [])).toBeNull();
   });
 
   it('skips cases that have a report on only one side and keeps the rows\' order', () => {
@@ -167,56 +167,8 @@ describe('resolveDeepDiveCasePair', () => {
   it('returns null when no case has a report on both sides, and for anything but exactly two runs', () => {
     const disjoint = { ...RUN_B, results: { 'tc-9': { reportId: 'rep-b-9', status: 'completed' } } };
     expect(resolveDeepDiveCasePair([RUN_A, disjoint], [unloadedRow('tc-1', 'Case One')])).toBeNull();
-    expect(resolveDeepDiveCasePair([RUN_A, { ...RUN_B, results: undefined }], [])).toBeNull();
-    expect(resolveDeepDiveCasePair([RUN_A], [])).toBeNull();
-    expect(resolveDeepDiveCasePair([RUN_A, RUN_B, RUN_A], [])).toBeNull();
-  });
-});
-
-// ── Projection gap: embedded run without report ids ───────────────────────────
-
-describe('runResultsLackReportIds', () => {
-  it('flags a run whose finished cases carry no reportId at all', () => {
-    expect(runResultsLackReportIds({ results: { 'tc-1': { status: 'completed' }, 'tc-2': { status: 'failed', reportId: '' } } } as any)).toBe(true);
-  });
-
-  it('leaves alone runs with any reportId, with only non-terminal cases, or with no results', () => {
-    expect(runResultsLackReportIds(RUN_A)).toBe(false);
-    expect(runResultsLackReportIds({ results: { 'tc-1': { status: 'completed' }, 'tc-2': { status: 'failed', reportId: 'rep-2' } } } as any)).toBe(false);
-    expect(runResultsLackReportIds({ results: { 'tc-1': { status: 'pending' }, 'tc-2': { status: 'cancelled' } } } as any)).toBe(false);
-    expect(runResultsLackReportIds({ results: {} } as any)).toBe(false);
-    expect(runResultsLackReportIds({} as any)).toBe(false);
-  });
-});
-
-describe('fillRunReportIds', () => {
-  const projection = {
-    id: 'run-a', name: 'kept',
-    results: { 'tc-1': { status: 'completed', performanceMetrics: { durationMs: 5 } }, 'tc-2': { status: 'failed', reportId: '' }, 'tc-3': { status: 'cancelled' } },
-  } as any;
-
-  it('fills only the EMPTY ids from the doc and keeps every other projection field', () => {
-    const filled = fillRunReportIds(projection, { results: { 'tc-1': { reportId: 'rep-1' }, 'tc-2': { reportId: 'rep-2' }, 'tc-4': { reportId: 'rep-4' } } });
-    expect(filled).not.toBe(projection);
-    expect(filled.name).toBe('kept');
-    expect(filled.results).toEqual({
-      'tc-1': { status: 'completed', performanceMetrics: { durationMs: 5 }, reportId: 'rep-1' },
-      'tc-2': { status: 'failed', reportId: 'rep-2' },
-      'tc-3': { status: 'cancelled' },
-    });
-    // Input untouched.
-    expect(projection.results['tc-1'].reportId).toBeUndefined();
-  });
-
-  it('never overwrites an id the projection already has', () => {
-    const withId = { results: { 'tc-1': { status: 'completed', reportId: 'rep-own' } } } as any;
-    expect(fillRunReportIds(withId, { results: { 'tc-1': { reportId: 'rep-doc' } } })).toBe(withId);
-  });
-
-  it('returns the SAME object when the doc contributes nothing (missing doc, no results, no matching ids)', () => {
-    expect(fillRunReportIds(projection, null)).toBe(projection);
-    expect(fillRunReportIds(projection, {})).toBe(projection);
-    expect(fillRunReportIds(projection, { results: { 'tc-9': { reportId: 'rep-9' } } })).toBe(projection);
-    expect(fillRunReportIds(projection, { results: { 'tc-1': {} } })).toBe(projection);
+    expect(resolveDeepDiveCasePair([RUN_A, { ...RUN_B, results: undefined }], [unloadedRow('tc-1', 'Case One')])).toBeNull();
+    expect(resolveDeepDiveCasePair([RUN_A], [unloadedRow('tc-1', 'Case One')])).toBeNull();
+    expect(resolveDeepDiveCasePair([RUN_A, RUN_B, RUN_A], [unloadedRow('tc-1', 'Case One')])).toBeNull();
   });
 });

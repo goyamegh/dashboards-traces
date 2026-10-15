@@ -20,10 +20,8 @@
  *  - reports slow → the section is visible immediately with a "loading
  *    reports" line and NO LLM job yet; once the reports land it generates
  *    with the run docs' report ids
- *  - reports fetch fails → the section still renders and still generates
- *  - projection without reportIds (evaluation-run doc has them) → the ids
- *    are read from the doc: the section renders, the job is posted with the
- *    doc's ids, and the table shows verdicts instead of "Not run"
+ *  - reports fetch fails → the section still renders but does not launch
+ *    the job on its own; "Generate anyway" posts the run docs' report ids
  *  - no test case completed on both sides → an explicit message, not nothing
  *
  * Deterministic: storage, the models endpoint and the deep-dive job are all
@@ -43,12 +41,13 @@ const REP: Record<string, Record<string, string>> = {
 };
 const FABLE = 'us.anthropic.claude-fable-5-1';
 
-type Result = { reportId?: string; status: string; passFailStatus?: string };
-type RunShape = { withReportIds: boolean; cases?: string[] };
+type Result = { reportId: string; status: string; passFailStatus?: string };
+/** Which test cases a run executed (every executed case carries its reportId, as the dual-written projection does). */
+type RunShape = { cases?: string[] };
 
-const results = (runId: string, { withReportIds, cases = CASES }: RunShape): Record<string, Result> =>
+const results = (runId: string, { cases = CASES }: RunShape): Record<string, Result> =>
   Object.fromEntries(cases.map((tc) => [tc, {
-    ...(withReportIds ? { reportId: REP[runId][tc] } : {}),
+    reportId: REP[runId][tc],
     status: 'completed',
     passFailStatus: runId === RUN_A ? 'failed' : 'passed',
   }]));
@@ -88,16 +87,13 @@ const json = (route: Route, body: unknown) =>
   route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(body) });
 
 interface Scenario {
-  /** Shape of the projection embedded in `benchmark.runs[]` (what the page reads first). */
+  /** Shape of the projection embedded in `benchmark.runs[]` (what the page reads). */
   projection: Record<string, RunShape>;
-  /** Shape of the first-class evaluation-run doc (`GET /evaluation-runs/:id`). */
-  doc?: Record<string, RunShape>;
   /** Reports batch (`GET /runs?ids=`): normal, held until released, or a 500. */
   reports?: 'ok' | 'hold' | 'fail';
 }
 
 async function setupRoutes(page: Page, s: Scenario): Promise<{ releaseReports: () => void; reportRequests: () => number }> {
-  const docShape = s.doc ?? s.projection;
   const benchmark = {
     id: BM, name: 'Deep-dive two-run benchmark', description: '', testCaseIds: CASES, currentVersion: 1, versions: [],
     createdAt: '2026-09-30T10:00:00Z', updatedAt: '2026-10-02T11:00:00Z',
@@ -115,7 +111,7 @@ async function setupRoutes(page: Page, s: Scenario): Promise<{ releaseReports: (
   await page.route('**/api/storage/test-cases**', (route) => json(route, { testCases: [], total: 0 }));
   await page.route('**/api/storage/evaluation-runs**', (route) => {
     const url = new URL(route.request().url());
-    for (const id of [RUN_A, RUN_B]) if (url.pathname.endsWith(`/evaluation-runs/${id}`)) return json(route, runDoc(id, docShape[id]));
+    for (const id of [RUN_A, RUN_B]) if (url.pathname.endsWith(`/evaluation-runs/${id}`)) return json(route, runDoc(id, s.projection[id]));
     if (url.pathname.endsWith('/evaluation-runs')) return json(route, { evaluationRuns: [], total: 0 });
     return route.fulfill({ status: 404, contentType: 'application/json', body: '{}' });
   });
@@ -143,7 +139,7 @@ const url = `/compare/${BM}?runs=${RUN_A},${RUN_B}`;
 test.describe('Comparison deep-dive — exactly two runs, report ids from the run docs', () => {
   test('reports still downloading: the section is visible at once (no job yet), then generates from the run docs\' report ids', async ({ page }) => {
     const { releaseReports, reportRequests } = await setupRoutes(page, {
-      projection: { [RUN_A]: { withReportIds: true }, [RUN_B]: { withReportIds: true } },
+      projection: { [RUN_A]: {}, [RUN_B]: {} },
       reports: 'hold',
     });
     const bodies: any[] = [];
@@ -169,9 +165,9 @@ test.describe('Comparison deep-dive — exactly two runs, report ids from the ru
     expect(bodies[0].rows.map((r: any) => [r.a?.passFailStatus, r.b?.passFailStatus])).toEqual([['failed', 'passed'], ['failed', 'passed']]);
   });
 
-  test('reports fetch fails: the section still renders and still generates (ids come from the run docs)', async ({ page }) => {
+  test('reports fetch fails: the section still renders, does not auto-start, and "Generate anyway" posts the run docs\' report ids', async ({ page }) => {
     await setupRoutes(page, {
-      projection: { [RUN_A]: { withReportIds: true }, [RUN_B]: { withReportIds: true } },
+      projection: { [RUN_A]: {}, [RUN_B]: {} },
       reports: 'fail',
     });
     const bodies: any[] = [];
@@ -182,38 +178,19 @@ test.describe('Comparison deep-dive — exactly two runs, report ids from the ru
 
     await page.goto(url);
     await expect(panel(page)).toBeVisible({ timeout: 30000 });
+    await expect(page.locator('[data-testid="deep-dive-reports-failed"]')).toBeVisible({ timeout: 30000 });
+    await expect(page.getByText(/Failed to load test case reports/)).toBeVisible();
+    expect(bodies).toHaveLength(0);
+
+    await page.locator('[data-testid="deep-dive-generate-anyway"]').click();
     await expect(panel(page)).toContainText('generated without client-side reports', { timeout: 30000 });
     expect(bodies).toHaveLength(1);
     expect(bodies[0].reportIds).toEqual([REP[RUN_A]['tc-dd2-1'], REP[RUN_B]['tc-dd2-1']]);
-    await expect(page.getByText(/Failed to load test case reports/)).toBeVisible();
-  });
-
-  test('projection without reportIds: the ids are read from the evaluation-run doc — section renders, job posted, table shows verdicts', async ({ page }) => {
-    await setupRoutes(page, {
-      projection: { [RUN_A]: { withReportIds: false }, [RUN_B]: { withReportIds: false } },
-      doc: { [RUN_A]: { withReportIds: true }, [RUN_B]: { withReportIds: true } },
-    });
-    const bodies: any[] = [];
-    await mockDeepDiveJob(page, {
-      result: { markdown: 'ids came from the evaluation-run doc', modelId: `amazon-bedrock/${FABLE}`, durationMs: 1000, runs: [] },
-      onPost: (body) => bodies.push(body),
-    });
-
-    await page.goto(url);
-    await expect(panel(page)).toBeVisible({ timeout: 30000 });
-    await expect(panel(page)).toContainText('ids came from the evaluation-run doc', { timeout: 30000 });
-    expect(bodies).toHaveLength(1);
-    expect(bodies[0].reportIds).toEqual([REP[RUN_A]['tc-dd2-1'], REP[RUN_B]['tc-dd2-1']]);
-
-    // The table was repaired too: verdict cells, not "Not run" everywhere.
-    await expect(page.getByText('Passed', { exact: true }).first()).toBeVisible();
-    await expect(page.getByText('Failed', { exact: true }).first()).toBeVisible();
-    expect(await page.getByText('Not run', { exact: true }).count()).toBe(0);
   });
 
   test('no test case completed on both sides: an explicit message instead of a vanished section', async ({ page }) => {
     await setupRoutes(page, {
-      projection: { [RUN_A]: { withReportIds: true, cases: ['tc-dd2-1'] }, [RUN_B]: { withReportIds: true, cases: ['tc-dd2-2'] } },
+      projection: { [RUN_A]: { cases: ['tc-dd2-1'] }, [RUN_B]: { cases: ['tc-dd2-2'] } },
     });
     const bodies: any[] = [];
     await mockDeepDiveJob(page, { result: { markdown: 'never', modelId: 'x', durationMs: 1, runs: [] }, onPost: (body) => bodies.push(body) });
