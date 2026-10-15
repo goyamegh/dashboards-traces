@@ -133,9 +133,19 @@ const loadedRow = (testCaseId: string, name: string, a: string, b: string) =>
   ({ testCaseId, testCaseName: name, results: { 'run-a': { reportId: a, status: 'completed' }, 'run-b': { reportId: b, status: 'completed' } } } as any);
 
 describe('resolveDeepDiveCasePair', () => {
-  it('uses the rows\' report ids when they carry them (the loaded-reports path, unchanged)', () => {
-    const pair = resolveDeepDiveCasePair([RUN_A, RUN_B], [loadedRow('tc-2', 'Case Two', 'rep-a-2', 'rep-b-2'), loadedRow('tc-1', 'Case One', 'rep-a-1', 'rep-b-1')]);
+  it('uses the rows\' report ids when they carry them (the loaded-reports path)', () => {
+    const pair = resolveDeepDiveCasePair([RUN_A, RUN_B], [loadedRow('tc-2', 'Case Two', 'rep-a-2', 'rep-b-2')]);
     expect(pair).toEqual({ testCaseId: 'tc-2', testCaseName: 'Case Two', reportIdA: 'rep-a-2', reportIdB: 'rep-b-2', cacheKey: 'rep-a-2|rep-b-2' });
+  });
+
+  it('picks the LOWEST testCaseId among the candidates, independent of row order — the table re-sorts as metadata loads and a moving pair relaunched the LLM job', () => {
+    const byName = [loadedRow('tc-2', 'Alpha', 'rep-a-2', 'rep-b-2'), loadedRow('tc-1', 'Beta', 'rep-a-1', 'rep-b-1')];
+    const byId = [...byName].reverse();
+    const expected = { testCaseId: 'tc-1', testCaseName: 'Beta', reportIdA: 'rep-a-1', reportIdB: 'rep-b-1', cacheKey: 'rep-a-1|rep-b-1' };
+    expect(resolveDeepDiveCasePair([RUN_A, RUN_B], byName)).toEqual(expected);
+    expect(resolveDeepDiveCasePair([RUN_A, RUN_B], byId)).toEqual(expected);
+    // Same choice before the reports are in (run-doc ids) and after (row ids): the cache key never moves.
+    expect(resolveDeepDiveCasePair([RUN_A, RUN_B], [unloadedRow('tc-2', 'Alpha'), unloadedRow('tc-1', 'Beta')])?.cacheKey).toBe('rep-a-1|rep-b-1');
   });
 
   it('falls back to the run docs\' report ids when the rows do not carry them yet (reports still downloading / failed to load)', () => {
@@ -153,7 +163,7 @@ describe('resolveDeepDiveCasePair', () => {
     expect(resolveDeepDiveCasePair([RUN_A, RUN_B], [])).toBeNull();
   });
 
-  it('skips cases that have a report on only one side and keeps the rows\' order', () => {
+  it('skips cases that have a report on only one side', () => {
     const onlyA = { ...RUN_B, results: { 'tc-1': { status: 'cancelled' }, 'tc-2': { reportId: 'rep-b-2', status: 'completed' } } };
     expect(resolveDeepDiveCasePair([RUN_A, onlyA], [unloadedRow('tc-1', 'Case One'), unloadedRow('tc-2', 'Case Two')]))
       .toMatchObject({ testCaseId: 'tc-2', reportIdA: 'rep-a-2', reportIdB: 'rep-b-2' });

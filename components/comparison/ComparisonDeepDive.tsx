@@ -35,6 +35,7 @@ import { Button } from '@/components/ui/button';
 import { BenchmarkRun, EvaluationReport, TestCaseComparisonRow } from '@/types';
 import { formatDate } from '@/lib/utils';
 import { changeDeepDivePairSide, DeepDivePair, resolveDeepDiveCasePair } from '@/lib/comparison/deepDivePair';
+import { DeepDiveFacts, formatDeepDiveFactsLine } from '@/lib/comparison/deepDiveFacts';
 import { sanitizeMarkdownUrl } from './sanitizeMarkdownUrl';
 
 export interface DeepDiveRunMeta {
@@ -209,10 +210,11 @@ interface ComparisonDeepDiveProps {
     onChange: (pair: DeepDivePair) => void;
   };
   /**
-   * True while the page is still fetching the compared runs' report docs.
-   * The panel stays mounted (its pair comes from the run docs' report ids)
-   * but shows a "loading reports" line and defers the auto-start until the
-   * rows summary it sends along is complete.
+   * True while the page is still fetching the data the per-row summary is
+   * built from (the compared runs' report docs and the test-case metadata
+   * that names/categorises the rows). The panel stays mounted (its pair
+   * comes from the run docs' report ids) but shows a "loading reports" line
+   * and defers the auto-start until that summary is complete.
    */
   reportsLoading?: boolean;
   /**
@@ -222,6 +224,14 @@ interface ComparisonDeepDiveProps {
    * an explicit "Generate anyway" instead.
    */
   reportsFailed?: boolean;
+  /**
+   * Deterministic headline numbers for this pair, computed by the page from
+   * the SAME aggregates the scoreboard renders (see lib/comparison/
+   * deepDiveFacts.ts). Sent with the job as authoritative facts and rendered
+   * as a data line above the narrative so the reader never depends on the
+   * model's arithmetic.
+   */
+  facts?: DeepDiveFacts;
 }
 
 /** "<run name> · <date>" — the picker's option label (name falls back to the agent). Exported for tests. */
@@ -243,11 +253,14 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
   pairPicker,
   reportsLoading = false,
   reportsFailed = false,
+  facts,
 }) => {
-  // Representative pair: the first test case with a report on both sides.
-  // Report ids come from the rows when they carry them and from the run docs
-  // otherwise, so the pair resolves as soon as the runs are known — not only
-  // after every report doc has been downloaded (see resolveDeepDiveCasePair).
+  // Representative pair: the lowest-id test case with a report on both sides
+  // (a STABLE choice — table order changes as metadata loads, and a changing
+  // pair re-keyed the cache and launched a second job; see
+  // resolveDeepDiveCasePair). Report ids come from the rows when they carry
+  // them and from the run docs otherwise, so the pair resolves as soon as the
+  // runs are known — not only after every report doc has been downloaded.
   const pair = useMemo(() => resolveDeepDiveCasePair(runs, rows), [runs, rows]);
 
   const [status, setStatus] = useState<'idle' | 'loading' | 'done' | 'error'>('idle');
@@ -408,6 +421,7 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
             reportIds: [pair.reportIdA, pair.reportIdB],
             ...(modelId ? { modelId } : {}),
             ...(rowsSummary.length > 0 ? { rows: rowsSummary } : {}),
+            ...(facts ? { facts } : {}),
             ...(customSystemPrompt ? { systemPrompt: customSystemPrompt } : {}),
           }),
         });
@@ -454,7 +468,7 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
         setStatus('error');
       }
     },
-    [pair, cacheKey, modelId, onWindowAgents, systemPromptText, defaultSystemPrompt, rowsSummary]
+    [pair, cacheKey, modelId, onWindowAgents, systemPromptText, defaultSystemPrompt, rowsSummary, facts]
   );
 
   // Elapsed-time indicator while generating — owner bug report: the panel
@@ -720,9 +734,16 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
         </p>
       )}
 
+      {/* Same geometry as the generating block below (py-6, one spinner row)
+          so the reports-loading → generating hand-off never moves the table
+          (the panel sits above the results table; any height change here
+          shifts every row under it — and swallows a hover in flight, see
+          comparison-hover-prompt-preview.spec.ts). */}
       {pair && status === 'idle' && reportsLoading && (
-        <div className="flex items-center justify-center gap-2 py-5 text-sm text-muted-foreground" data-testid="deep-dive-reports-loading">
-          <Loader2 size={14} className="animate-spin" /> Loading both runs' test case reports…
+        <div className="flex flex-col items-center gap-1 py-6 justify-center text-sm text-muted-foreground" data-testid="deep-dive-reports-loading">
+          <div className="flex items-center gap-2 flex-wrap justify-center">
+            <Loader2 size={15} className="animate-spin" /> Loading both runs' test case reports…
+          </div>
         </div>
       )}
 
@@ -790,6 +811,16 @@ export const ComparisonDeepDive: React.FC<ComparisonDeepDiveProps> = ({
 
       {status === 'done' && (
         <>
+          {/* Data-derived headline numbers ABOVE the narrative — the
+              scoreboard's own tallies, never the model's recount, so the
+              reader never depends on the LLM's arithmetic. Rendered with the
+              narrative (not earlier) so the panel's height is unchanged in
+              every pre-'done' state. */}
+          {facts && (
+            <p className="mb-2 text-xs text-muted-foreground tabular-nums" data-testid="deep-dive-facts" title="Computed from the scoreboard data (passed / evaluated per side; disagreements = cases both runs judged with different verdicts)">
+              {formatDeepDiveFactsLine(facts)}
+            </p>
+          )}
           <div className="prose prose-sm dark:prose-invert max-w-none text-sm leading-relaxed [&_p]:my-1.5 [&_ul]:my-1.5 [&_li]:my-0.5 [&_strong]:text-foreground">
             <ReactMarkdown remarkPlugins={[remarkGfm]} urlTransform={sanitizeMarkdownUrl} components={{ a: SpanAnchor }}>
               {markdown}

@@ -36,14 +36,24 @@ const createdMs = (run: BenchmarkRun): number => {
 };
 
 /**
- * Default pair for a set of selected runs: oldest (baseline) → A, newest → B.
- * Total ordering: `createdAt`, then `id` — so identical/unparseable
- * timestamps still yield the same pair no matter how the backing run list
- * happens to be ordered. `null` when fewer than two runs are selected.
+ * Runs oldest → newest. Total ordering: `createdAt`, then `id` — so
+ * identical/unparseable timestamps still sort the same no matter how the
+ * input happens to be ordered. The pair picker lists its options in this
+ * order (the page's selection order is the URL's A/B order, which is not a
+ * useful order for a list to choose from).
+ */
+export function sortRunsChronologically<R extends BenchmarkRun>(runs: readonly R[]): R[] {
+  return [...runs].sort((x, y) => createdMs(x) - createdMs(y) || x.id.localeCompare(y.id));
+}
+
+/**
+ * Default pair for a set of selected runs: oldest (baseline) → A, newest → B
+ * (see {@link sortRunsChronologically} for the ordering). `null` when fewer
+ * than two runs are selected.
  */
 export function defaultDeepDivePair(runs: BenchmarkRun[]): DeepDivePair | null {
   if (runs.length < 2) return null;
-  const sorted = [...runs].sort((x, y) => createdMs(x) - createdMs(y) || x.id.localeCompare(y.id));
+  const sorted = sortRunsChronologically(runs);
   return [sorted[0].id, sorted[sorted.length - 1].id];
 }
 
@@ -136,9 +146,17 @@ const reportIdOnRun = (run: BenchmarkRun, testCaseId: string): string | undefine
  * downloading — and when that download fails outright — instead of silently
  * vanishing for the exact two runs the user asked to compare. Only the
  * rows are walked (the page builds one per test case across both runs, so
- * they cover every case) and in table order, so the chosen case is always
- * one the user can see. `null` only when no test case has a report on both
- * sides (the panel then says so explicitly).
+ * they cover every case), so the chosen case is always one the user can see.
+ *
+ * Among the candidates the one with the LOWEST `testCaseId` wins — NOT the
+ * first row in table order. The table is sorted by category, then name, and
+ * both arrive asynchronously (test-case metadata loads after the runs), so
+ * "first row" changed under the panel as the page filled in: a different
+ * representative case → a different report-id pair → a different cache key →
+ * the auto-start effect fired a SECOND `POST /api/comparison/deep-dive` ~70 ms
+ * after the first, and one full LLM generation per visit was wasted. The id
+ * order never changes once the runs are known. `null` only when no test case
+ * has a report on both sides (the panel then says so explicitly).
  */
 export function resolveDeepDiveCasePair(
   runs: readonly BenchmarkRun[],
@@ -158,9 +176,11 @@ export function resolveDeepDiveCasePair(
     return { testCaseId, testCaseName: nameOf(testCaseId, row), reportIdA: a, reportIdB: b, cacheKey: `${a}|${b}` };
   };
 
+  let best: DeepDiveCasePair | null = null;
   for (const row of rows) {
+    if (best && row.testCaseId.localeCompare(best.testCaseId) >= 0) continue;
     const pair = pairFor(row.testCaseId, row);
-    if (pair) return pair;
+    if (pair) best = pair;
   }
-  return null;
+  return best;
 }
