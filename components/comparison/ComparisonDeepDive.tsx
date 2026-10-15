@@ -126,7 +126,12 @@ interface CacheEntry { markdown: string; meta: DeepDiveResponse; }
 // with (`<a>|<b>|<modelId>`), so switching the selector never serves a
 // narrative produced by a different model, and v3 entries (all generated on
 // the old implicit Sonnet 4.x default) are never mistaken for Fable output.
-const DEEPDIVE_CACHE_PREFIX = 'agent-health:deepdive:v4:';
+//
+// v5: the job is now briefed with deterministic headline tallies (`facts`,
+// lib/comparison/deepDiveFacts.ts) it must quote verbatim. A v4 narrative
+// recounted the rows itself and could contradict the scoreboard, so it is
+// never served as if it had been generated under the new contract.
+const DEEPDIVE_CACHE_PREFIX = 'agent-health:deepdive:v5:';
 const deepDiveMemCache = new Map<string, CacheEntry>();
 
 // Model selector (browser-cache-only, same pattern as the system prompt):

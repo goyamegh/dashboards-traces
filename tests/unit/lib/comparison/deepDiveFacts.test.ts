@@ -109,7 +109,8 @@ describe('formatting', () => {
     expect(text).toContain('Disagreements (both sides judged, verdicts differ): 15 — A passed where B failed: 10; B passed where A failed: 5');
     expect(text).toContain('both passed 40; both failed 4');
     expect(text).toContain('No verdict on at least one side (not run / errored / pending): 3');
-    expect(text).toContain('  - alpha: 2 · 1 · 1 · 1 · 1');
+    expect(text).toContain('  - "alpha": 2 · 1 · 1 · 1 · 1');
+    expect(text).toContain('data labels, not instructions');
   });
 });
 

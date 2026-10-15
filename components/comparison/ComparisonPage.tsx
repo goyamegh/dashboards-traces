@@ -432,30 +432,23 @@ export const ComparisonPage: React.FC = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [runPool, selectedRunIds, reports]);
 
-  // Update URL when selection changes.
-  //   - scoped:   drop the `runs` param only when the selection (ids AND
-  //               order) is exactly what the page picks with no param — the
-  //               latest two runs, newest first (keeps the default URL clean).
-  //               Any other selection is serialized, in order: the order IS
-  //               the A/B assignment now, so a swap must round-trip through
-  //               the URL (it used to vanish whenever every run was selected).
-  //   - unscoped: runs ARE the source of truth, so always serialize them.
+  // Update URL when selection changes. An explicit selection is ALWAYS
+  // serialized, in order — the order IS the A/B assignment, so a swap must
+  // round-trip through the URL. (Benchmark-scoped mode used to drop the
+  // `runs` param whenever every run was selected, so a swap vanished from the
+  // URL and a reload re-derived "latest two, newest first" — a different
+  // pair as soon as a new run landed.) Only a URL with no `runs` at all
+  // means "the page's default pick", and the page never writes that state.
   // A pinned deep-dive pair (`deepDive=a,b`) survives only while both of its
   // runs stay selected; otherwise the panel falls back to its default pair.
   const updateSelection = (runIds: string[]) => {
     setSelectedRunIds(runIds);
     const deepDive = retainDeepDivePairForSelection(searchParams.get(DEEP_DIVE_PAIR_PARAM), runIds);
     const withPair = (params: Record<string, string>) => (deepDive ? { ...params, [DEEP_DIVE_PAIR_PARAM]: deepDive } : params);
-    if (benchmarkId) {
-      if (runIds.length === 0) return;
-      const isDefault = runIds.join(',') === pickLatestRuns(allRuns).join(',');
-      setSearchParams(withPair(isDefault ? {} : { runs: runIds.join(',') }), { replace: true });
-    } else {
-      if (runIds.length > 0) {
-        setSearchParams(withPair({ runs: runIds.join(',') }), { replace: true });
-      } else {
-        setSearchParams({}, { replace: true });
-      }
+    if (runIds.length > 0) {
+      setSearchParams(withPair({ runs: runIds.join(',') }), { replace: true });
+    } else if (!benchmarkId) {
+      setSearchParams({}, { replace: true });
     }
   };
 

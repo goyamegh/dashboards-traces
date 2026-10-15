@@ -173,19 +173,19 @@ test.describe('Compare page — URL order is A/B, one deep-dive job per visit, d
     expect(bodies[0].reportIds).toEqual([rep(OLD, 'tc-ab3-1'), rep(NEW, 'tc-ab3-1')]);
     expect(bodies[0].rows.map((r: any) => [r.a.passFailStatus, r.b.passFailStatus])).toContainEqual(['passed', 'failed']);
 
-    // Swap A/B — every A/B surface flips. [NEW, OLD] is exactly the page's
-    // default pick for this benchmark (latest two, newest first), so the URL
-    // goes back to the clean form — and a reload reproduces that order.
+    // Swap A/B — every A/B surface flips AND the order is written to the URL
+    // (even though both of the benchmark's runs are selected), so a reload
+    // reproduces it.
     await page.locator('button[title="Swap A/B"]').click();
     await expect(rowA(page).locator(`[data-testid="run-name-link-${NEW}"]`)).toBeVisible();
     await expect(rowB(page).locator(`[data-testid="run-name-link-${OLD}"]`)).toBeVisible();
     await expect(panel(page)).toContainText(new RegExp(`A\\s*${AGENT[NEW]}\\s*vs\\s*B\\s*${AGENT[OLD]}`));
-    await expect(page).not.toHaveURL(/runs=/);
+    await expect(page).toHaveURL(new RegExp(`runs=${NEW}(,|%2C)${OLD}`));
     await page.reload();
     await expect(rowA(page).locator(`[data-testid="run-name-link-${NEW}"]`)).toBeVisible({ timeout: 30000 });
     await expect(rowB(page).locator(`[data-testid="run-name-link-${OLD}"]`)).toBeVisible();
 
-    // Swap again — a non-default order is written to the URL so it round-trips.
+    // Swap back — the URL follows again.
     await page.locator('button[title="Swap A/B"]').click();
     await expect(page).toHaveURL(new RegExp(`runs=${OLD}(,|%2C)${NEW}`));
     await expect(rowA(page).locator(`[data-testid="run-name-link-${OLD}"]`)).toBeVisible();

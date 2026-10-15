@@ -344,6 +344,8 @@ describe('Comparison routes', () => {
         .send({ reportIds: ['report-a', 'report-b'], facts: { a: { passed: 'many' } } });
       expect(res.status).toBe(202);
       expect(mockGenerateComparisonDeepDive.mock.calls[0][0].facts).toBeUndefined();
+      // …but not silently: a dropped section hands the counting back to the model.
+      expect(mockDebug).toHaveBeenCalledWith('CompareDeepDiveAPI', expect.stringContaining('facts rejected as malformed'));
     });
 
     it('omits facts when the request carries none', async () => {

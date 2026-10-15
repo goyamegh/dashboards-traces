@@ -184,8 +184,8 @@ describe('comparisonDeepDiveService — buildUserPrompt', () => {
     expect(prompt).toContain('- A: 29 passed, 33 failed → 29/62 evaluated (62 cases total)');
     expect(prompt).toContain('- B: 24 passed, 35 failed → 24/59 evaluated; 3 errored (judge produced no verdict — excluded from the denominator) (62 cases total)');
     expect(prompt).toContain('Disagreements (both sides judged, verdicts differ): 15 — A passed where B failed: 10; B passed where A failed: 5');
-    expect(prompt).toContain('  - rca: 10 · 7 · 4 · 3 · 0');
-    expect(prompt).toContain('  - search: 52 · 22 · 20 · 7 · 5');
+    expect(prompt).toContain('  - "rca": 10 · 7 · 4 · 3 · 0');
+    expect(prompt).toContain('  - "search": 52 · 22 · 20 · 7 · 5');
     expect(prompt.indexOf('Authoritative tallies')).toBeLessThan(prompt.indexOf('Full results table'));
     expect(prompt.indexOf('Full results table')).toBeLessThan(prompt.indexOf('## A — '));
 

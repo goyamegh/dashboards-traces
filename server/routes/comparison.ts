@@ -227,8 +227,12 @@ router.post('/api/comparison/deep-dive', async (req: Request, res: Response) => 
     rowsSummary = rows.map(sanitizeRow).filter((r): r is ComparisonRowSummary => r !== undefined);
   }
   // Best-effort like `rows`: a malformed facts object drops the section, it
-  // never fails the request.
+  // never fails the request — but it is logged, because a dropped section
+  // silently hands the counting back to the model (the very bug the facts fix).
   const factsSummary = facts === undefined ? undefined : sanitizeDeepDiveFacts(facts);
+  if (facts !== undefined && !factsSummary) {
+    debug('CompareDeepDiveAPI', 'facts rejected as malformed — the authoritative-tallies section is omitted from this brief');
+  }
 
   try {
     const storage = getStorageModule();
