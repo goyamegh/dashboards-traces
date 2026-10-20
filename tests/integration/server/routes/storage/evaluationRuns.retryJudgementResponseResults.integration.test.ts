@@ -269,7 +269,7 @@ describe('deterministic evaluators — response-results source + abstain metric'
 
     // 6. Run doc.
     const run = await (await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}`)).json();
-    expect(run.evaluatorId).toBe(evaluator.id);
+    expect(run.lastJudgementRetry).toMatchObject({ scope: 'all', evaluatorId: evaluator.id }); // #509: run.evaluatorId itself is not rewritten
     expect(run.stats).toMatchObject({ passed: 4, failed: 2, errored: 2, total: 8 });
   }, 60000);
 });
