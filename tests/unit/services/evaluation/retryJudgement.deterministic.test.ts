@@ -130,13 +130,13 @@ describe('retry judgement with a deterministic evaluator (override)', () => {
     expect(c.scoringSnapshot?.unevaluable).toEqual(['hit@1', 'mrr']);
     expect(c.matcherResults?.every(m => m.errored)).toBe(true);
 
-    // Run doc: results + stats recomputed, evaluatorId stamped with the override.
-    // (The first update is #509's up-front `lastJudgementRetry` stamp; the
-    // final one carries the results.)
+    // Run doc: results + stats recomputed. (The first update is #509's
+    // up-front `lastJudgementRetry` stamp; the final one carries the results.)
     const runCalls = storage.evaluationRuns.update.mock.calls;
     expect(runCalls[0][1]).toMatchObject({ lastJudgementRetry: expect.objectContaining({ evaluatorId: 'eval-det', scope: 'all' }) });
     const runUpdate = runCalls[runCalls.length - 1][1] as any;
-    expect(runUpdate.evaluatorId).toBe('eval-det');
+    // #509 contract: the run's ORIGINAL evaluatorId is not rewritten; the selection lives in lastJudgementRetry.
+    expect(runUpdate.evaluatorId).toBeUndefined();
     expect(runUpdate.results['tc-a'].passFailStatus).toBe('passed');
     expect(runUpdate.results['tc-b'].passFailStatus).toBe('failed');
     expect(runUpdate.results['tc-c'].passFailStatus).toBeUndefined();
