@@ -296,7 +296,7 @@ AWS SigV4 is used in two contexts:
 1. **Explicit static credentials** — `awsAccessKeyId` + `awsSecretAccessKey` (+ `awsSessionToken` for temporary credentials). Both key fields must be set together. Read them from `process.env` in `agent-health.config.ts`; never commit them.
 2. **AWS default credential provider chain** (`fromNodeProviderChain`) for the profile `awsProfile` → `$AWS_PROFILE` → the chain's default: environment variables, `~/.aws/credentials` / `~/.aws/config` (incl. SSO and `credential_process`), web identity, ECS/EC2 instance roles.
 
-The provider is memoised per profile; the credentials it yields are re-resolved per request (the chain refreshes on expiry and the ini files are re-read), so rotated profile / STS credentials are picked up without restarting the server.
+Credentials are re-resolved from a fresh chain when the source reports an expiration that is about to pass (STS / SSO / instance roles) and, for static profile credentials that carry no expiration, every 60 seconds — so a profile rotated on disk (`aws configure`, a credential helper rewriting `~/.aws/credentials`) is picked up within a minute without restarting the server. The same provider backs the server's long-lived Bedrock judge client.
 
 #### What is signed
 

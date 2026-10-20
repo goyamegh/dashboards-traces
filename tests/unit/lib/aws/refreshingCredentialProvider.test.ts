@@ -1,0 +1,161 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * Logic of the refreshing provider with the AWS chain mocked. The claims that
+ * depend on the REAL SDK (the stock chain never re-reads a rotated static
+ * profile; an SDK client only re-invokes a provider whose identity carries an
+ * `expiration`) are proven in refreshingCredentialProvider.realSdk.test.ts.
+ */
+
+const mockFromNodeProviderChain = jest.fn();
+jest.mock('@aws-sdk/credential-providers', () => ({
+  fromNodeProviderChain: (...args: unknown[]) => mockFromNodeProviderChain(...args),
+}));
+
+import {
+  DEFAULT_CREDENTIAL_TTL_MS,
+  createRefreshingCredentialProvider,
+} from '@/lib/aws/refreshingCredentialProvider';
+
+const KEY_A = { accessKeyId: 'AKIDA', secretAccessKey: 'sa', sessionToken: 'ta' };
+const KEY_B = { accessKeyId: 'AKIDB', secretAccessKey: 'sb', sessionToken: 'tb' };
+
+/** Each chain construction resolves to the "file contents" at that moment. */
+let onDisk: Record<string, unknown> = KEY_A;
+let resolveCalls = 0;
+
+beforeEach(() => {
+  onDisk = KEY_A;
+  resolveCalls = 0;
+  mockFromNodeProviderChain.mockReset();
+  mockFromNodeProviderChain.mockImplementation(() => async () => {
+    resolveCalls += 1;
+    return onDisk;
+  });
+});
+
+describe('createRefreshingCredentialProvider', () => {
+  it('builds a FRESH chain with ignoreCache (and the profile) on every refresh — never a memoised one', async () => {
+    let clock = 0;
+    const provider = createRefreshingCredentialProvider({ profile: 'eval', now: () => clock });
+    await provider();
+    clock += DEFAULT_CREDENTIAL_TTL_MS;
+    await provider();
+    expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(2);
+    expect(mockFromNodeProviderChain).toHaveBeenCalledWith({ profile: 'eval', ignoreCache: true });
+  });
+
+  it('omits `profile` when none is given so the chain falls back to $AWS_PROFILE / default ordering', async () => {
+    await createRefreshingCredentialProvider()();
+    expect(mockFromNodeProviderChain).toHaveBeenCalledWith({ ignoreCache: true });
+  });
+
+  it('reuses credentials without an expiration inside the TTL and re-resolves the rotated key after it', async () => {
+    let clock = 1_000_000;
+    const provider = createRefreshingCredentialProvider({ now: () => clock });
+
+    const first = await provider();
+    expect(first).toMatchObject(KEY_A);
+    expect(first.expiration?.getTime()).toBe(clock + DEFAULT_CREDENTIAL_TTL_MS);
+
+    onDisk = KEY_B;
+    clock += DEFAULT_CREDENTIAL_TTL_MS - 1;
+    expect((await provider()).accessKeyId).toBe('AKIDA');
+    expect(resolveCalls).toBe(1);
+
+    clock += 1;
+    const rotated = await provider();
+    expect(rotated).toMatchObject(KEY_B);
+    expect(rotated.expiration?.getTime()).toBe(clock + DEFAULT_CREDENTIAL_TTL_MS);
+    expect(resolveCalls).toBe(2);
+  });
+
+  it('honours a custom ttlMs', async () => {
+    let clock = 0;
+    const provider = createRefreshingCredentialProvider({ ttlMs: 10, now: () => clock });
+    await provider();
+    onDisk = KEY_B;
+    clock = 9;
+    expect((await provider()).accessKeyId).toBe('AKIDA');
+    clock = 10;
+    expect((await provider()).accessKeyId).toBe('AKIDB');
+  });
+
+  it('stamps the synthetic expiration on a COPY — the object the chain handed out is not mutated', async () => {
+    const shared = { ...KEY_A };
+    onDisk = shared;
+    const got = await createRefreshingCredentialProvider()();
+    expect(got).not.toBe(shared);
+    expect(got.expiration).toBeInstanceOf(Date);
+    expect((shared as { expiration?: Date }).expiration).toBeUndefined();
+  });
+
+  it('coalesces concurrent calls into one chain resolution', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    mockFromNodeProviderChain.mockImplementation(() => async () => {
+      resolveCalls += 1;
+      await gate;
+      return onDisk;
+    });
+    const provider = createRefreshingCredentialProvider();
+    const all = Promise.all([provider(), provider(), provider()]);
+    release();
+    const results = await all;
+    expect(resolveCalls).toBe(1);
+    expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(1);
+    expect(results[1]).toBe(results[0]);
+    expect(results[2]).toBe(results[0]);
+  });
+
+  it('a failed refresh is not cached: the next call builds a new chain and retries', async () => {
+    mockFromNodeProviderChain
+      .mockImplementationOnce(() => async () => {
+        throw new Error('Could not load credentials from any providers');
+      })
+      .mockImplementation(() => async () => KEY_B);
+    const provider = createRefreshingCredentialProvider();
+    await expect(provider()).rejects.toThrow('Could not load credentials from any providers');
+    expect((await provider()).accessKeyId).toBe('AKIDB');
+    expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(2);
+  });
+
+  describe('credentials that carry a real expiration (STS / SSO / IMDS / credential_process)', () => {
+    it('keeps the source expiration and refreshes 5 minutes before it, not after the TTL', async () => {
+      let clock = Date.parse('2026-06-01T00:00:00Z');
+      const expiration = new Date(clock + 60 * 60_000);
+      onDisk = { ...KEY_A, expiration };
+      const provider = createRefreshingCredentialProvider({ now: () => clock });
+
+      const first = await provider();
+      expect(first.accessKeyId).toBe('AKIDA');
+      expect(first.expiration).toBe(expiration); // real, not synthetic
+
+      onDisk = { ...KEY_B, expiration: new Date(expiration.getTime() + 60 * 60_000) };
+      clock += 30 * 60_000; // far past the TTL, still > 5 min before expiry
+      expect((await provider()).accessKeyId).toBe('AKIDA');
+      expect(resolveCalls).toBe(1);
+
+      clock = expiration.getTime() - 5 * 60_000; // lead window reached
+      expect((await provider()).accessKeyId).toBe('AKIDB');
+      expect(resolveCalls).toBe(2);
+    });
+
+    it('does not spin on a source whose credentials are already inside the lead window: reuses them for one TTL', async () => {
+      let clock = Date.parse('2026-06-01T00:00:00Z');
+      onDisk = { ...KEY_A, expiration: new Date(clock + 2 * 60_000) }; // 2 min < 5 min lead
+      const provider = createRefreshingCredentialProvider({ now: () => clock });
+      expect((await provider()).accessKeyId).toBe('AKIDA');
+
+      onDisk = { ...KEY_B, expiration: new Date(clock + 60 * 60_000) };
+      clock += DEFAULT_CREDENTIAL_TTL_MS - 1;
+      expect((await provider()).accessKeyId).toBe('AKIDA');
+      expect(resolveCalls).toBe(1);
+      clock += 1;
+      expect((await provider()).accessKeyId).toBe('AKIDB');
+    });
+  });
+});

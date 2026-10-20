@@ -18,16 +18,20 @@
  *      env vars → shared ini profile / SSO → process → web identity →
  *      container / instance metadata).
  *
- * The provider is memoised per profile; the credentials it yields are NOT —
- * the chain re-resolves whenever the cached credentials expire, so rotated
- * profile / STS credentials are picked up without a restart.
+ * One refreshing provider is kept per profile
+ * (`lib/aws/refreshingCredentialProvider.ts`): it re-resolves through a fresh
+ * chain when the source's `expiration` nears or, for static profile
+ * credentials that carry none, every DEFAULT_CREDENTIAL_TTL_MS — so a profile
+ * rotated on disk is signed with within that window, no restart needed.
+ * (A plain memoised `fromNodeProviderChain` never re-reads credentials
+ * without an `expiration`: issue #569.)
  */
 
 import { SignatureV4, type SignatureV4Init } from '@smithy/signature-v4';
 import { Sha256 } from '@aws-crypto/sha256-js';
-import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
 import type { ConnectorAuth } from '@/services/connectors/types';
 import { normalizeHeaderKeys } from '@/lib/httpHeaders';
+import { createRefreshingCredentialProvider } from '@/lib/aws/refreshingCredentialProvider';
 
 /** Thrown for every failure between "we need a signature" and "we have one". */
 export class SigV4SigningError extends Error {
@@ -90,7 +94,7 @@ const PROVIDER_CACHE_KEY_DEFAULT = '\u0000default';
 type CredentialProvider = Extract<SignatureV4Init['credentials'], (...args: any[]) => any>;
 const providerCache = new Map<string, CredentialProvider>();
 
-/** Test hook: forget memoised provider chains. */
+/** Test hook: forget the per-profile refreshing providers. */
 export function clearSigV4ProviderCache(): void {
   providerCache.clear();
 }
@@ -101,7 +105,7 @@ function resolveProfile(auth: ConnectorAuth): string | undefined {
 
 /**
  * Pick the credential source for this auth block. Explicit static keys win;
- * otherwise the (memoised) Node provider chain for the requested profile.
+ * otherwise the per-profile refreshing provider over the Node provider chain.
  */
 export function resolveSigV4CredentialProvider(auth: ConnectorAuth): CredentialProvider {
   if (auth.awsAccessKeyId || auth.awsSecretAccessKey) {
@@ -123,13 +127,7 @@ export function resolveSigV4CredentialProvider(auth: ConnectorAuth): CredentialP
   const key = profile ?? PROVIDER_CACHE_KEY_DEFAULT;
   let provider = providerCache.get(key);
   if (!provider) {
-    provider = fromNodeProviderChain({
-      ...(profile ? { profile } : {}),
-      // Re-read ~/.aws/credentials on every (re)resolution so rotated
-      // profile credentials are picked up without a process restart
-      // (same reasoning as server/services/opensearchClientFactory.ts).
-      ignoreCache: true,
-    });
+    provider = createRefreshingCredentialProvider({ profile });
     providerCache.set(key, provider);
   }
   return provider;
