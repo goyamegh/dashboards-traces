@@ -210,6 +210,22 @@ Environment variables are exposed via `vite.config.ts` using `loadEnv()`. Access
 - Simpler local agent without ML-Commons dependencies
 - Endpoint configured via `LANGGRAPH_ENDPOINT`
 
+## AWS SDK clients: always pass the refreshing credential provider
+
+Every server-side AWS SDK client (`BedrockRuntimeClient`, `BedrockAgent*Client`,
+any `fromNodeProviderChain` use, SigV4 signers) MUST take
+`credentials: createRefreshingCredentialProvider({ profile? })` from
+[`lib/aws/refreshingCredentialProvider.ts`](lib/aws/refreshingCredentialProvider.ts)
+— never the SDK's implicit default chain, not even for a client created per
+call. Profile-file credentials carry no expiry, so the SDK caches them for the
+life of the process, and `@smithy/shared-ini-file-loader` caches the ini file
+contents process-wide, so even a brand-new client keeps seeing the old keys
+after a rotation ([#569](https://github.com/opensearch-project/agent-health/issues/569)).
+There is no lint for this (the repo has no ESLint and source-regex tests are
+banned here): this rule plus a per-call-site wiring test (`BedrockRuntimeClient`
+called with `credentials: <the provider>`) is the guard — add one for every new
+client.
+
 ## OpenTelemetry Instrumentation Standards
 
 **CRITICAL:** All agents integrating with Agent Health MUST follow OpenTelemetry semantic conventions for instrumentation data.
