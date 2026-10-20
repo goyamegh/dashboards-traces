@@ -10,19 +10,21 @@
  * One long-lived process, like the Agent Health server:
  *   1. a local HTTP server plays the AWS side — it rebuilds the canonical
  *      request from the bytes it received and re-signs with the key it
- *      CURRENTLY trusts (key A, then key B after the rotation);
+ *      CURRENTLY trusts (key A, then B, then A again);
  *   2. the REAL `RESTConnector` with `auth.type = 'aws-sigv4'` + `awsProfile`
  *      (no static keys → credential chain → `$AWS_SHARED_CREDENTIALS_FILE`)
  *      sends request 1 → accepted with key A;
- *   3. the credentials file is rewritten to key B and the server now trusts
- *      only B; request 2 (still inside the TTL) is signed with A → 403, the
- *      bounded failure window; the clock is advanced past the TTL and
- *      request 3 is signed with B → accepted. No restart, no cache clearing;
- *   4. the profile is rotated AGAIN (back to key A, the only other key; the
- *      cache still holds B, well inside its TTL) and the request goes through
- *      `invokeAgent` — the production path, which retries once on an
- *      expired-credentials 403: the server sees B → 403 ExpiredToken, then A →
- *      accepted, and the caller sees one successful result.
+ *   3. the credentials file is rewritten to key B and the server trusts only
+ *      B, answering a stale key the way AWS does (403 + "security token …
+ *      expired"). Request 2, inside the TTL, is signed with A → rejected →
+ *      the connector re-resolves, re-signs with B and is accepted (one replay,
+ *      `BaseConnector.fetchSigned`);
+ *   4. the file is rotated back to A and the server now rejects a stale key
+ *      with a BARE `403 {}` (no credential signal — the body from the issue
+ *      report). Request 3, inside the TTL, is signed with the cached B →
+ *      403, NOT replayed (the bounded failure window); the clock is advanced
+ *      past the TTL and request 4 is signed with A → accepted. No restart, no
+ *      cache clearing.
  * Prints one JSON line with, per request, the access key id the connector
  * signed with, the server's verdict and the status the connector saw.
  */
@@ -32,8 +34,6 @@ import type { AddressInfo } from 'net';
 import { SignatureV4 } from '@smithy/signature-v4';
 import { Sha256 } from '@aws-crypto/sha256-js';
 import { RESTConnector } from '@/services/connectors/rest/RESTConnector';
-import { invokeAgent } from '@/services/evaluation';
-import type { AgentConfig } from '@/types';
 import type { ConnectorAuth } from '@/services/connectors/types';
 import type { TestCase } from '@/types';
 import { DEFAULT_CREDENTIAL_TTL_MS } from '@/lib/aws/refreshingCredentialProvider';
@@ -50,8 +50,9 @@ const realNow = Date.now;
 let offsetMs = 0;
 Date.now = () => realNow() + offsetMs;
 
-/** Which key the "AWS side" currently trusts. */
+/** Which key the "AWS side" currently trusts, and how it answers a stale one. */
 let trusted: StaticKeyName = 'A';
+let staleKeyVerdict = 'The security token included in the request is expired';
 let baseUrl = '';
 
 interface Observed {
@@ -68,7 +69,7 @@ async function verify(req: http.IncomingMessage, body: string): Promise<Observed
   const [, accessKeyId, , region, service, signedHeaderList] = m;
   const creds = STATIC_KEY[trusted];
   // What AWS answers for a key that has been rotated out.
-  if (accessKeyId !== creds.accessKeyId) return { signedWith: accessKeyId, verdict: 'The security token included in the request is expired' };
+  if (accessKeyId !== creds.accessKeyId) return { signedWith: accessKeyId, verdict: staleKeyVerdict };
   if (req.headers['x-amz-security-token'] !== creds.sessionToken) return { signedWith: accessKeyId, verdict: 'InvalidToken' };
 
   const signedHeaders: Record<string, string> = {};
@@ -120,7 +121,7 @@ async function main(): Promise<void> {
       observed.push(result);
       if (result.verdict !== 'ok') {
         res.writeHead(403, { 'content-type': 'application/json' });
-        res.end(JSON.stringify({ message: result.verdict }));
+        res.end(result.verdict === 'bare' ? '{}' : JSON.stringify({ message: result.verdict }));
         return;
       }
       res.writeHead(200, { 'content-type': 'application/json' });
@@ -141,39 +142,32 @@ async function main(): Promise<void> {
     }
   };
 
-  const request1 = { ...(await invoke()), ...observed[0] };
+  const attemptsSince = (n: number) => observed.slice(n);
+  const request1 = { ...(await invoke()), attempts: attemptsSince(0) };
 
-  // Rotation: the credential helper rewrites the profile; AWS stops trusting A.
+  // Rotation A → B: the credential helper rewrites the profile; AWS stops
+  // trusting A and says so.
   writeStaticProfile(credentialsFile, 'B');
   trusted = 'B';
-
   offsetMs = DEFAULT_CREDENTIAL_TTL_MS / 2;
-  const request2InTtl = { ...(await invoke()), ...observed[1] };
+  const seen2 = observed.length;
+  const request2InTtlWithSignal = { ...(await invoke()), attempts: attemptsSince(seen2) };
 
-  offsetMs = DEFAULT_CREDENTIAL_TTL_MS + 1_000;
-  const request3AfterTtl = { ...(await invoke()), ...observed[2] };
-
-  // Second rotation, back to A; the cached B is fresh (TTL just restarted).
+  // Rotation B → A, but this time the front door rejects a stale key with a
+  // bare `403 {}` — no credential signal, nothing to retry on.
   writeStaticProfile(credentialsFile, 'A');
   trusted = 'A';
-  const agent = {
-    key: 'sigv4-rotation-agent',
-    name: 'SigV4 rotation agent',
-    endpoint: `${baseUrl}/prod/invoke`,
-    connectorType: 'rest',
-    auth,
-  } as unknown as AgentConfig;
-  const registry = { getForAgent: () => connector, get: () => connector, getAll: () => [connector], has: () => true, register: () => {} } as any;
-  let request4ViaInvokeAgent: { status: number; error: string | null; attempts: Observed[] };
-  try {
-    const result = await invokeAgent(agent, 'm', testCase, { registry });
-    request4ViaInvokeAgent = { status: result.metadata?.status ?? 200, error: null, attempts: observed.slice(3) };
-  } catch (err) {
-    request4ViaInvokeAgent = { status: 403, error: err instanceof Error ? err.message : String(err), attempts: observed.slice(3) };
-  }
+  staleKeyVerdict = 'bare';
+  offsetMs = DEFAULT_CREDENTIAL_TTL_MS / 2 + 5_000; // still inside the TTL that restarted at request 2's refresh
+  const seen3 = observed.length;
+  const request3InTtlBare = { ...(await invoke()), attempts: attemptsSince(seen3) };
+
+  offsetMs = DEFAULT_CREDENTIAL_TTL_MS / 2 + 5_000 + DEFAULT_CREDENTIAL_TTL_MS; // past the TTL
+  const seen4 = observed.length;
+  const request4AfterTtl = { ...(await invoke()), attempts: attemptsSince(seen4) };
 
   await new Promise<void>((resolve) => server.close(() => resolve()));
-  process.stdout.write(`${JSON.stringify({ request1, request2InTtl, request3AfterTtl, request4ViaInvokeAgent })}\n`);
+  process.stdout.write(`${JSON.stringify({ request1, request2InTtlWithSignal, request3InTtlBare, request4AfterTtl })}\n`);
 }
 
 main().catch((err) => {
