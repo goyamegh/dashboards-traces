@@ -711,7 +711,13 @@ async function streamFromBedrock(
 ): Promise<void> {
   try {
     const { BedrockRuntimeClient, ConverseStreamCommand } = await import('@aws-sdk/client-bedrock-runtime');
-    const client = new BedrockRuntimeClient({ region: serverConfig.AWS_REGION });
+    const { createRefreshingCredentialProvider } = await import('@/lib/aws/refreshingCredentialProvider');
+    // Even a per-call client on the default chain reads ~/.aws/credentials
+    // through a process-wide file cache; the refreshing provider bypasses it (#569).
+    const client = new BedrockRuntimeClient({
+      region: serverConfig.AWS_REGION,
+      credentials: createRefreshingCredentialProvider(),
+    });
     const appConfig = loadConfigSync();
     const modelId = resolveRegionAwareModelId(appConfig.judge?.model || serverConfig.BEDROCK_MODEL_ID);
     debug('Assistant', 'Using Bedrock model:', modelId);

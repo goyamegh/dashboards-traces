@@ -18,6 +18,25 @@ import type {
   ConnectorProgressCallback,
   ConnectorRawEventCallback,
 } from '@/services/connectors/types';
+import { createRefreshingCredentialProvider } from '@/lib/aws/refreshingCredentialProvider';
+
+/**
+ * Credentials for the Bedrock Agent clients: explicit static keys from the
+ * auth block win; otherwise the refreshing provider over the default chain for
+ * `auth.awsProfile` (→ `$AWS_PROFILE` → chain default). Not the SDK's implicit
+ * default: even a per-call client reads `~/.aws/credentials` through a
+ * process-wide file cache and would keep a rotated-out key (#569).
+ */
+function resolveStrandsCredentials(auth: ConnectorAuth) {
+  if (auth.type === 'aws-sigv4' && auth.awsAccessKeyId && auth.awsSecretAccessKey) {
+    return {
+      accessKeyId: auth.awsAccessKeyId,
+      secretAccessKey: auth.awsSecretAccessKey,
+      ...(auth.awsSessionToken && { sessionToken: auth.awsSessionToken }),
+    };
+  }
+  return createRefreshingCredentialProvider({ profile: auth.awsProfile });
+}
 
 /**
  * Configuration for Strands connector
@@ -80,18 +99,7 @@ export class StrandsConnector extends BaseConnector {
       '@aws-sdk/client-bedrock-agent-runtime'
     );
 
-    const clientConfig: Record<string, any> = { region };
-
-    // Use explicit credentials if provided via auth
-    if (auth.type === 'aws-sigv4' && auth.awsAccessKeyId && auth.awsSecretAccessKey) {
-      clientConfig.credentials = {
-        accessKeyId: auth.awsAccessKeyId,
-        secretAccessKey: auth.awsSecretAccessKey,
-        ...(auth.awsSessionToken && { sessionToken: auth.awsSessionToken }),
-      };
-    }
-
-    const client = new BedrockAgentRuntimeClient(clientConfig);
+    const client = new BedrockAgentRuntimeClient({ region, credentials: resolveStrandsCredentials(auth) });
 
     const command = new InvokeAgentCommand({
       agentId: payload.agentId,
@@ -270,16 +278,7 @@ export class StrandsConnector extends BaseConnector {
         '@aws-sdk/client-bedrock-agent'
       );
 
-      const clientConfig: Record<string, any> = { region };
-      if (auth.type === 'aws-sigv4' && auth.awsAccessKeyId && auth.awsSecretAccessKey) {
-        clientConfig.credentials = {
-          accessKeyId: auth.awsAccessKeyId,
-          secretAccessKey: auth.awsSecretAccessKey,
-          ...(auth.awsSessionToken && { sessionToken: auth.awsSessionToken }),
-        };
-      }
-
-      const client = new BedrockAgentClient(clientConfig);
+      const client = new BedrockAgentClient({ region, credentials: resolveStrandsCredentials(auth) });
       const result = await client.send(new GetAgentCommand({ agentId: endpoint }));
       return result.agent?.agentStatus === 'PREPARED';
     } catch (error) {

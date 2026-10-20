@@ -27,11 +27,14 @@
  * without an `expiration`: issue #569.)
  */
 
-import { SignatureV4, type SignatureV4Init } from '@smithy/signature-v4';
+import { SignatureV4 } from '@smithy/signature-v4';
 import { Sha256 } from '@aws-crypto/sha256-js';
 import type { ConnectorAuth } from '@/services/connectors/types';
 import { normalizeHeaderKeys } from '@/lib/httpHeaders';
-import { createRefreshingCredentialProvider } from '@/lib/aws/refreshingCredentialProvider';
+import {
+  createRefreshingCredentialProvider,
+  type AwsCredentialIdentityProvider,
+} from '@/lib/aws/refreshingCredentialProvider';
 
 /** Thrown for every failure between "we need a signature" and "we have one". */
 export class SigV4SigningError extends Error {
@@ -91,7 +94,7 @@ const RESERVED_REQUEST_HEADERS = new Set([
 ]);
 
 const PROVIDER_CACHE_KEY_DEFAULT = '\u0000default';
-type CredentialProvider = Extract<SignatureV4Init['credentials'], (...args: any[]) => any>;
+type CredentialProvider = AwsCredentialIdentityProvider;
 const providerCache = new Map<string, CredentialProvider>();
 
 /** Test hook: forget the per-profile refreshing providers. */
@@ -131,6 +134,59 @@ export function resolveSigV4CredentialProvider(auth: ConnectorAuth): CredentialP
     providerCache.set(key, provider);
   }
   return provider;
+}
+
+/**
+ * Drop the cached credentials for this auth block's profile so the next
+ * signature resolves fresh ones (no-op for explicit static keys, which cannot
+ * be refreshed, and when nothing has been resolved yet).
+ */
+export async function refreshSigV4Credentials(auth: ConnectorAuth): Promise<void> {
+  if (auth.awsAccessKeyId || auth.awsSecretAccessKey) return;
+  const provider = providerCache.get(resolveProfile(auth) ?? PROVIDER_CACHE_KEY_DEFAULT);
+  if (provider) await provider({ forceRefresh: true });
+}
+
+/**
+ * Does this connector error describe a 401/403 caused by expired or invalid
+ * AWS credentials (as opposed to an authorization denial or any other 4xx)?
+ * Matches the messages HTTP connectors throw (`… failed: 403 - <body>`,
+ * `HTTP 403: … - <body>`) against the signals AWS-fronted endpoints return.
+ */
+export function isExpiredCredentialsError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  return (
+    /\b40[13]\b/.test(message) &&
+    /ExpiredToken(Exception)?\b|InvalidClientTokenId|UnrecognizedClientException|security token included in the request is (expired|invalid)/i.test(
+      message
+    )
+  );
+}
+
+/**
+ * Run `attempt` and, if it fails because the signed request was rejected for
+ * expired/invalid credentials, re-resolve the profile's credentials and run
+ * it exactly once more (the retry re-signs the same request; connector bodies
+ * are fixed strings, so the replay is byte-identical). Anything else — other
+ * 403s, network errors, non-SigV4 auth — propagates untouched. A second
+ * failure surfaces the original error annotated with the retry.
+ */
+export async function retryOnceOnExpiredCredentials<T>(auth: ConnectorAuth, attempt: () => Promise<T>): Promise<T> {
+  try {
+    return await attempt();
+  } catch (first) {
+    if (auth.type !== 'aws-sigv4' || !isExpiredCredentialsError(first)) throw first;
+    try {
+      await refreshSigV4Credentials(auth);
+      return await attempt();
+    } catch (second) {
+      const firstMessage = first instanceof Error ? first.message : String(first);
+      const secondMessage = second instanceof Error ? second.message : String(second);
+      throw new Error(`${firstMessage} (retried once with refreshed credentials; retry failed: ${secondMessage})`, {
+        cause: second,
+      });
+    }
+  }
 }
 
 /** RFC 3986 unreserved-only percent-encoding — the same escaping SigV4 canonicalisation uses. */

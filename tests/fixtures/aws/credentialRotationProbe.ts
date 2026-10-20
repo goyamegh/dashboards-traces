@@ -14,7 +14,12 @@
  *   defaultChainClient  — `new BedrockRuntimeClient({ region })` on the default chain (bedrockService.ts shape)
  *   refreshingProvider  — createRefreshingCredentialProvider({ profile })
  *   refreshingClient    — `new BedrockRuntimeClient({ region, credentials: refreshing })`, read via client.config.credentials()
- * Prints one JSON line: { <path>: { before, inTtl, afterTtl } } of access key ids.
+ * Prints one JSON line: { <path>: { before, inTtl, afterTtl } } of access key ids,
+ * plus `newClientsAfterRotation`: clients CREATED after the rotation —
+ *   defaultChain  — `new BedrockRuntimeClient({ region })`: still key A, because
+ *                   @smithy/shared-ini-file-loader caches the ini file contents
+ *                   process-wide (only `ignoreCache: true` bypasses it);
+ *   refreshing    — `new BedrockRuntimeClient({ region, credentials: refreshing })`: key B.
  */
 
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
@@ -57,14 +62,30 @@ async function main(): Promise<void> {
   const before = await snapshot();
   writeStaticProfile(credentialsFile, 'B');
   offsetMs = DEFAULT_CREDENTIAL_TTL_MS / 2; // real ms also tick between snapshots
-  const inTtl = await snapshot();
+  const inTtl = await snapshot(); // no refresh happens here: nothing re-reads the file
+
+  // A client CREATED after the rotation (the "per-call client" shape), read
+  // BEFORE anything with `ignoreCache: true` has touched the file again: the
+  // default chain serves the process-wide cached contents → still key A.
+  // (`ignoreCache` re-reads AND overwrites that cache, so the order matters.)
+  const newDefaultChainClient = new BedrockRuntimeClient({ region: 'us-east-1' });
+  const newDefaultChainAfterRotation = (await newDefaultChainClient.config.credentials()).accessKeyId;
+
   offsetMs = DEFAULT_CREDENTIAL_TTL_MS;
   const afterTtl = await snapshot();
 
-  const out: Record<string, { before: string; inTtl: string; afterTtl: string }> = {};
+  const newRefreshingClient = new BedrockRuntimeClient({
+    region: 'us-east-1',
+    credentials: createRefreshingCredentialProvider({ profile: ROTATION_PROFILE }),
+  });
+  const newClientsAfterRotation = {
+    defaultChain: newDefaultChainAfterRotation,
+    refreshing: (await newRefreshingClient.config.credentials()).accessKeyId,
+  };
+
+  const out: Record<string, unknown> = { newClientsAfterRotation };
   for (const name of Object.keys(paths)) out[name] = { before: before[name], inTtl: inTtl[name], afterTtl: afterTtl[name] };
-  defaultChainClient.destroy();
-  refreshingClient.destroy();
+  for (const c of [defaultChainClient, refreshingClient, newDefaultChainClient, newRefreshingClient]) c.destroy();
   process.stdout.write(`${JSON.stringify(out)}\n`);
 }
 

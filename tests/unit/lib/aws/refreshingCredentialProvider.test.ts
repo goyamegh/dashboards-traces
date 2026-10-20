@@ -123,6 +123,20 @@ describe('createRefreshingCredentialProvider', () => {
     expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(2);
   });
 
+  it('`{ forceRefresh: true }` drops the cache and re-resolves immediately, inside the TTL', async () => {
+    let clock = 0;
+    const provider = createRefreshingCredentialProvider({ now: () => clock });
+    expect((await provider()).accessKeyId).toBe('AKIDA');
+    onDisk = KEY_B;
+    clock = 10; // well inside the TTL
+    expect((await provider()).accessKeyId).toBe('AKIDA');
+    const forced = await provider({ forceRefresh: true });
+    expect(forced.accessKeyId).toBe('AKIDB');
+    expect(forced.expiration?.getTime()).toBe(clock + DEFAULT_CREDENTIAL_TTL_MS); // new TTL starts now
+    expect((await provider()).accessKeyId).toBe('AKIDB'); // and the cache holds the refreshed key
+    expect(resolveCalls).toBe(2);
+  });
+
   describe('credentials that carry a real expiration (STS / SSO / IMDS / credential_process)', () => {
     it('keeps the source expiration and refreshes 5 minutes before it, not after the TTL', async () => {
       let clock = Date.parse('2026-06-01T00:00:00Z');

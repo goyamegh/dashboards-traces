@@ -96,8 +96,14 @@ async function getDefaultInvoker(): Promise<GatherInvoker> {
     '@aws-sdk/client-bedrock-runtime'
   );
   const config = (await import('@/server/config')).default;
+  const { createRefreshingCredentialProvider } = await import('@/lib/aws/refreshingCredentialProvider');
 
-  const client = new BedrockRuntimeClient({ region: config.AWS_REGION });
+  // Cached for the life of the process: on the default chain it would pin the
+  // first profile key ever resolved (#569).
+  const client = new BedrockRuntimeClient({
+    region: config.AWS_REGION,
+    credentials: createRefreshingCredentialProvider(),
+  });
 
   cachedDefaultInvoker = async ({ systemPrompt, userPrompt, modelId }) => {
     const command = new ConverseCommand({

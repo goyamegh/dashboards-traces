@@ -30,6 +30,20 @@ function makeTree(structure: Record<string, string>): string {
 const traj = (steps: Partial<TrajectoryStep>[]): TrajectoryStep[] =>
   steps.map((s, i) => ({ type: 'action', timestamp: i, ...s } as TrajectoryStep));
 
+const mockCredentialProvider = jest.fn();
+jest.mock('@/lib/aws/refreshingCredentialProvider', () => ({
+  createRefreshingCredentialProvider: jest.fn(() => mockCredentialProvider),
+}));
+const mockBedrockRuntimeClient = jest.fn(() => ({
+  send: jest.fn().mockResolvedValue({ output: { message: { content: [{ text: '{"files":[]}' }] } } }),
+}));
+jest.mock('@aws-sdk/client-bedrock-runtime', () => ({
+  BedrockRuntimeClient: function (this: unknown, ...args: unknown[]) {
+    return mockBedrockRuntimeClient(...args);
+  },
+  ConverseCommand: jest.fn((input: unknown) => input),
+}));
+
 describe('agentPath/gather', () => {
   beforeEach(() => {
     _resetDiscoveryCacheForTests();
@@ -62,6 +76,18 @@ describe('agentPath/gather', () => {
   });
 
   describe('gatherAgentFiles', () => {
+    it('the cached default invoker builds its process-wide Bedrock client on the refreshing credential provider (#569)', async () => {
+      const root = makeTree({ 'src/x.ts': 'ok' });
+      try {
+        await gatherAgentFiles({ rootPath: root, trajectory: traj([{ toolName: 'foo' }]), modelId: 'm', phase2FileCount: 0 });
+        await gatherAgentFiles({ rootPath: root, trajectory: traj([{ toolName: 'foo' }]), modelId: 'm', phase2FileCount: 0 });
+        expect(mockBedrockRuntimeClient).toHaveBeenCalledTimes(1); // cached…
+        expect(mockBedrockRuntimeClient).toHaveBeenCalledWith(expect.objectContaining({ credentials: mockCredentialProvider })); // …so it must refresh
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
     it('skips when AH_AGENT_GATHER=off', async () => {
       process.env.AH_AGENT_GATHER = 'off';
       const root = makeTree({ 'src/x.ts': 'ok' });

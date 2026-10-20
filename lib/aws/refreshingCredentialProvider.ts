@@ -29,7 +29,10 @@
  *     user-supplied providers in `memoizeIdentityProvider`, which treats an
  *     identity without `expiration` as constant and never calls the provider
  *     again — the synthetic deadline is what makes the SDK come back to us;
- *   - coalesces concurrent refreshes into one chain resolution.
+ *   - coalesces concurrent refreshes into one chain resolution;
+ *   - honours the SDK's `{ forceRefresh: true }` call option (drop the cache
+ *     and resolve now) so a caller that just saw an expired-credentials
+ *     rejection can re-resolve without waiting for the TTL.
  */
 
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
@@ -95,8 +98,8 @@ export function createRefreshingCredentialProvider(
     return credentials;
   };
 
-  return async () => {
-    if (cached && now() < cached.refreshAt) return cached.credentials;
+  return async (options?: { forceRefresh?: boolean }) => {
+    if (!options?.forceRefresh && cached && now() < cached.refreshAt) return cached.credentials;
     if (!pending) {
       pending = refresh().finally(() => {
         pending = undefined;

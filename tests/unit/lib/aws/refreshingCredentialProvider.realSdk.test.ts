@@ -22,7 +22,9 @@ import {
 } from '../../../helpers/awsCredentialRotation';
 
 type Snapshot = { before: string; inTtl: string; afterTtl: string };
-type ProbeResult = Record<'stockChain' | 'defaultChainClient' | 'refreshingProvider' | 'refreshingClient', Snapshot>;
+type ProbeResult = Record<'stockChain' | 'defaultChainClient' | 'refreshingProvider' | 'refreshingClient', Snapshot> & {
+  newClientsAfterRotation: { defaultChain: string; refreshing: string };
+};
 
 describe('refreshing credential provider vs the real AWS SDK', () => {
   let profileDir: AwsProfileDir;
@@ -36,7 +38,16 @@ describe('refreshing credential provider vs the real AWS SDK', () => {
   afterAll(() => profileDir.cleanup());
 
   it('every path resolves key A before the rotation', () => {
-    for (const snap of Object.values(result)) expect(snap.before).toBe(STATIC_KEY.A.accessKeyId);
+    const { newClientsAfterRotation: _created_later, ...snapshots } = result;
+    for (const snap of Object.values(snapshots)) expect(snap.before).toBe(STATIC_KEY.A.accessKeyId);
+  });
+
+  it('control (the bug, per-call shape): a NEW default-chain client created AFTER the rotation still reads key A (process-wide ini file cache)', () => {
+    expect(result.newClientsAfterRotation.defaultChain).toBe(STATIC_KEY.A.accessKeyId);
+  });
+
+  it('a NEW client created after the rotation on the refreshing provider reads key B', () => {
+    expect(result.newClientsAfterRotation.refreshing).toBe(STATIC_KEY.B.accessKeyId);
   });
 
   it('control (the bug): the stock memoised chain never re-reads a rotated static profile', () => {

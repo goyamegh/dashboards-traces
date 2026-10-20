@@ -28,7 +28,12 @@ interface Request {
   signedWith: string | null;
   verdict: string;
 }
-type ProbeResult = { request1: Request; request2InTtl: Request; request3AfterTtl: Request };
+type ProbeResult = {
+  request1: Request;
+  request2InTtl: Request;
+  request3AfterTtl: Request;
+  request4ViaInvokeAgent: { status: number; error: string | null; attempts: Array<Pick<Request, 'signedWith' | 'verdict'>> };
+};
 
 describe('REST connector + aws-sigv4 profile credentials rotated on disk (no restart)', () => {
   let profileDir: AwsProfileDir;
@@ -53,5 +58,13 @@ describe('REST connector + aws-sigv4 profile credentials rotated on disk (no res
 
   it('after the TTL the SAME connector in the SAME process signs with key B and is accepted', () => {
     expect(result.request3AfterTtl).toEqual({ status: 200, error: null, signedWith: STATIC_KEY.B.accessKeyId, verdict: 'ok' });
+  });
+
+  it('through invokeAgent, a 403 ExpiredToken for a just-rotated key is re-signed with fresh credentials and retried once → 200', () => {
+    expect(result.request4ViaInvokeAgent.attempts).toEqual([
+      { signedWith: STATIC_KEY.B.accessKeyId, verdict: 'The security token included in the request is expired' },
+      { signedWith: STATIC_KEY.A.accessKeyId, verdict: 'ok' },
+    ]);
+    expect(result.request4ViaInvokeAgent).toMatchObject({ status: 200, error: null });
   });
 });

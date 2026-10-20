@@ -19,6 +19,13 @@ jest.mock('fs', () => ({
   existsSync: jest.fn().mockReturnValue(true),
 }));
 
+// The Bedrock fallback resolves credentials through the refreshing provider,
+// whose AWS SDK import needs the real `fs.promises` (mocked away above).
+const mockCredentialProvider = jest.fn();
+jest.mock('@/lib/aws/refreshingCredentialProvider', () => ({
+  createRefreshingCredentialProvider: jest.fn(() => mockCredentialProvider),
+}));
+
 // Mock crypto.randomUUID for deterministic session ids
 jest.mock('crypto', () => ({
   ...jest.requireActual('crypto'),
@@ -867,6 +874,7 @@ describe('AssistantService', () => {
         models: {},
         judge: { provider: 'bedrock', model: 'us.anthropic.claude-opus-4-8' },
       });
+      const { BedrockRuntimeClient } = require('@aws-sdk/client-bedrock-runtime');
 
       assistantService = require('@/server/services/assistantService');
       assistantService.streamAssistantResponse(
@@ -880,6 +888,8 @@ describe('AssistantService', () => {
             expect(capturedInputs[0].modelId).toBe('us.anthropic.claude-opus-4-8');
             expect(capturedInputs[0].inferenceConfig.temperature).toBeUndefined();
             expect(capturedInputs[0].inferenceConfig.maxTokens).toBe(4096);
+            // #569: the per-call fallback client must not use the SDK's implicit default chain.
+            expect(BedrockRuntimeClient).toHaveBeenCalledWith(expect.objectContaining({ credentials: mockCredentialProvider }));
             done();
           } catch (e) { done(e as Error); }
         },
