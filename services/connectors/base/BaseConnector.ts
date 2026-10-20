@@ -6,7 +6,7 @@
 import type { TrajectoryStep } from '@/types';
 import { debug as centralDebug } from '@/lib/debug';
 import { trace, context as otelContext, propagation } from '@opentelemetry/api';
-import { signAwsSigV4Request } from '@/services/connectors/base/awsSigV4';
+import { refreshSigV4Credentials, signAwsSigV4Request } from '@/services/connectors/base/awsSigV4';
 import type {
   AgentConnector,
   ConnectorAuth,
@@ -208,6 +208,15 @@ export abstract class BaseConnector implements AgentConnector {
       content,
       ...extra,
     };
+  }
+
+  /**
+   * Drop cached `aws-sigv4` credentials for this auth block so the next
+   * `prepareRequest()` signs with freshly resolved ones (see
+   * `retryOnceOnExpiredCredentials`). No-op for every other auth type.
+   */
+  async refreshCredentials(auth: ConnectorAuth): Promise<void> {
+    if (auth.type === 'aws-sigv4') await refreshSigV4Credentials(auth);
   }
 
   /**

@@ -20,7 +20,7 @@ import type { MatcherResult } from '@/lib/matchers/types';
 import type { TracesAccessor } from '@/lib/matchers/traces';
 import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
-import { retryOnceOnExpiredCredentials } from '@/services/connectors/base/awsSigV4';
+import { retryOnceOnExpiredCredentials } from '@/services/connectors/base/expiredCredentials';
 
 // Re-export for use by experimentRunner when calling judge after trace polling
 export { callBedrockJudge };
@@ -441,8 +441,10 @@ export async function invokeAgent(
   // and retried exactly once (#569: the profile may have been rotated on disk
   // moments ago); everything else surfaces as-is.
   const agentStartTime = Date.now();
-  let result = await retryOnceOnExpiredCredentials(auth, () =>
-    connector.execute(effectiveEndpoint, request, auth, onStep, onRawEvent)
+  let result = await retryOnceOnExpiredCredentials(
+    auth,
+    () => connector.execute(effectiveEndpoint, request, auth, onStep, onRawEvent),
+    () => connector.refreshCredentials?.(auth) ?? Promise.resolve()
   );
   const agentDurationMs = Date.now() - agentStartTime;
 

@@ -16,10 +16,8 @@ jest.mock('@aws-sdk/credential-providers', () => ({
 import {
   SigV4SigningError,
   clearSigV4ProviderCache,
-  isExpiredCredentialsError,
   refreshSigV4Credentials,
   resolveSigV4CredentialProvider,
-  retryOnceOnExpiredCredentials,
   signAwsSigV4Request,
 } from '@/services/connectors/base/awsSigV4';
 import { DEFAULT_CREDENTIAL_TTL_MS } from '@/lib/aws/refreshingCredentialProvider';
@@ -406,8 +404,7 @@ describe('signAwsSigV4Request', () => {
   });
 });
 
-
-describe('retry-once on expired credentials', () => {
+describe('refreshSigV4Credentials', () => {
   const PROFILE_AUTH: ConnectorAuth = { type: 'aws-sigv4', awsRegion: 'us-west-2', awsService: 'execute-api', awsProfile: 'eval' };
 
   beforeEach(() => {
@@ -415,105 +412,28 @@ describe('retry-once on expired credentials', () => {
     mockFromNodeProviderChain.mockReset();
   });
 
-  describe('isExpiredCredentialsError', () => {
-    it.each([
-      'REST request failed: 403 - {"message":"The security token included in the request is expired"}',
-      'REST request failed: 403 - {"message":"The security token included in the request is invalid."}',
-      'OpenAI-compatible request failed: 403 - {"__type":"ExpiredTokenException","message":"…"}',
-      'LangGraph request failed: 403 - <ErrorResponse><Error><Code>ExpiredToken</Code></Error></ErrorResponse>',
-      'HTTP 403: Forbidden - {"__type":"UnrecognizedClientException"}',
-      'REST request failed: 401 - {"Code":"InvalidClientTokenId"}',
-    ])('recognises %s', (message) => {
-      expect(isExpiredCredentialsError(new Error(message))).toBe(true);
-    });
+  it('forces the per-profile provider to re-resolve; a no-op for static keys and unresolved profiles', async () => {
+    const chain = jest.fn().mockResolvedValue({ accessKeyId: 'k', secretAccessKey: 's' });
+    mockFromNodeProviderChain.mockReturnValue(chain);
 
-    it.each([
-      'REST request failed: 403 - {}', // the bare 403 from the report: no credential signal → not retried
-      'REST request failed: 403 - {"Message":"User: arn:aws:sts::123:assumed-role/x is not authorized to perform: execute-api:Invoke"}',
-      'REST request failed: 403 - {"message":"SignatureDoesNotMatch"}',
-      'REST request failed: 500 - ExpiredTokenException', // a credential signal without a 401/403
-      'fetch failed',
-      'SigV4 signing failed: Could not load credentials from any providers (profile eval / region r / service s)',
-    ])('does not match %s', (message) => {
-      expect(isExpiredCredentialsError(new Error(message))).toBe(false);
-    });
+    await refreshSigV4Credentials(PROFILE_AUTH); // nothing resolved yet → nothing to refresh
+    expect(mockFromNodeProviderChain).not.toHaveBeenCalled();
+
+    await resolveSigV4CredentialProvider(PROFILE_AUTH)();
+    expect(chain).toHaveBeenCalledTimes(1);
+    await refreshSigV4Credentials(PROFILE_AUTH);
+    expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(2); // fresh chain, resolved again
+    expect(mockFromNodeProviderChain).toHaveBeenLastCalledWith({ profile: 'eval', ignoreCache: true });
+
+    await refreshSigV4Credentials(STATIC);
+    expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(2);
   });
 
-  describe('refreshSigV4Credentials', () => {
-    it('forces the per-profile provider to re-resolve; a no-op for static keys and unresolved profiles', async () => {
-      const chain = jest.fn().mockResolvedValue({ accessKeyId: 'k', secretAccessKey: 's' });
-      mockFromNodeProviderChain.mockReturnValue(chain);
-
-      await refreshSigV4Credentials(PROFILE_AUTH); // nothing resolved yet → nothing to refresh
-      expect(mockFromNodeProviderChain).not.toHaveBeenCalled();
-
-      await resolveSigV4CredentialProvider(PROFILE_AUTH)();
-      expect(chain).toHaveBeenCalledTimes(1);
-      await refreshSigV4Credentials(PROFILE_AUTH);
-      expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(2); // fresh chain, resolved again
-      expect(mockFromNodeProviderChain).toHaveBeenLastCalledWith({ profile: 'eval', ignoreCache: true });
-
-      await refreshSigV4Credentials(STATIC);
-      expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(2);
-    });
-  });
-
-  describe('retryOnceOnExpiredCredentials', () => {
-    const expired = () => new Error('REST request failed: 403 - {"message":"The security token included in the request is expired"}');
-
-    it('re-resolves credentials and runs the attempt exactly once more after an expired-credentials 403', async () => {
-      const chain = jest
-        .fn()
-        .mockResolvedValueOnce({ accessKeyId: 'AKID-STALE', secretAccessKey: 's' })
-        .mockResolvedValueOnce({ accessKeyId: 'AKID-FRESH', secretAccessKey: 's' });
-      mockFromNodeProviderChain.mockReturnValue(chain);
-      const signedWith: string[] = [];
-      const attempt = jest.fn(async () => {
-        signedWith.push((await resolveSigV4CredentialProvider(PROFILE_AUTH)()).accessKeyId);
-        if (signedWith.length === 1) throw expired();
-        return 'ok';
-      });
-
-      await expect(retryOnceOnExpiredCredentials(PROFILE_AUTH, attempt)).resolves.toBe('ok');
-      expect(attempt).toHaveBeenCalledTimes(2);
-      expect(signedWith).toEqual(['AKID-STALE', 'AKID-FRESH']);
-    });
-
-    it('does not retry a non-credential 403, a non-SigV4 auth block, or a network error', async () => {
-      const denied = new Error('REST request failed: 403 - {"Message":"not authorized to perform: execute-api:Invoke"}');
-      const attempt = jest.fn().mockRejectedValue(denied);
-      await expect(retryOnceOnExpiredCredentials(PROFILE_AUTH, attempt)).rejects.toBe(denied);
-      expect(attempt).toHaveBeenCalledTimes(1);
-
-      const bearer = jest.fn().mockRejectedValue(expired());
-      await expect(retryOnceOnExpiredCredentials({ type: 'bearer', token: 't' }, bearer)).rejects.toThrow(/expired/);
-      expect(bearer).toHaveBeenCalledTimes(1);
-
-      const network = jest.fn().mockRejectedValue(new Error('fetch failed'));
-      await expect(retryOnceOnExpiredCredentials(PROFILE_AUTH, network)).rejects.toThrow('fetch failed');
-      expect(network).toHaveBeenCalledTimes(1);
-    });
-
-    it('a second failure surfaces the original error annotated with the retry, and never retries again', async () => {
-      mockFromNodeProviderChain.mockReturnValue(jest.fn().mockResolvedValue({ accessKeyId: 'k', secretAccessKey: 's' }));
-      const attempt = jest.fn().mockRejectedValue(expired());
-      await expect(retryOnceOnExpiredCredentials(PROFILE_AUTH, attempt)).rejects.toThrow(
-        'REST request failed: 403 - {"message":"The security token included in the request is expired"} ' +
-          '(retried once with refreshed credentials; retry failed: REST request failed: 403 - {"message":"The security token included in the request is expired"})'
-      );
-      expect(attempt).toHaveBeenCalledTimes(2);
-    });
-
-    it('a failed re-resolution is reported as the retry failure (not swallowed)', async () => {
-      mockFromNodeProviderChain
-        .mockReturnValueOnce(jest.fn().mockResolvedValue({ accessKeyId: 'k', secretAccessKey: 's' }))
-        .mockReturnValueOnce(jest.fn().mockRejectedValue(new Error('Could not load credentials from any providers')));
-      await resolveSigV4CredentialProvider(PROFILE_AUTH)();
-      const attempt = jest.fn().mockRejectedValue(expired());
-      await expect(retryOnceOnExpiredCredentials(PROFILE_AUTH, attempt)).rejects.toThrow(
-        /retried once with refreshed credentials; retry failed: Could not load credentials from any providers/
-      );
-      expect(attempt).toHaveBeenCalledTimes(1);
-    });
+  it('a failed forced re-resolution propagates (the caller decides how to report it)', async () => {
+    mockFromNodeProviderChain
+      .mockReturnValueOnce(jest.fn().mockResolvedValue({ accessKeyId: 'k', secretAccessKey: 's' }))
+      .mockReturnValueOnce(jest.fn().mockRejectedValue(new Error('Could not load credentials from any providers')));
+    await resolveSigV4CredentialProvider(PROFILE_AUTH)();
+    await expect(refreshSigV4Credentials(PROFILE_AUTH)).rejects.toThrow('Could not load credentials from any providers');
   });
 });

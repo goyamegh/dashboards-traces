@@ -177,6 +177,13 @@ export interface AgentConnector {
   healthCheck?(endpoint: string, auth: ConnectorAuth): Promise<boolean>;
 
   /**
+   * Optional: drop any credentials cached for this auth block so the next
+   * request resolves fresh ones. Called by `invokeAgent` before it retries a
+   * request that was rejected for expired/invalid credentials.
+   */
+  refreshCredentials?(auth: ConnectorAuth): Promise<void>;
+
+  /**
    * Optional trace-context propagation strategy. Defaults provided by each
    * connector class; users may override per-agent via `connectorConfig.traceContext`.
    */

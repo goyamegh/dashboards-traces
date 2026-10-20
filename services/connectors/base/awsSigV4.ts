@@ -147,48 +147,6 @@ export async function refreshSigV4Credentials(auth: ConnectorAuth): Promise<void
   if (provider) await provider({ forceRefresh: true });
 }
 
-/**
- * Does this connector error describe a 401/403 caused by expired or invalid
- * AWS credentials (as opposed to an authorization denial or any other 4xx)?
- * Matches the messages HTTP connectors throw (`… failed: 403 - <body>`,
- * `HTTP 403: … - <body>`) against the signals AWS-fronted endpoints return.
- */
-export function isExpiredCredentialsError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return (
-    /\b40[13]\b/.test(message) &&
-    /ExpiredToken(Exception)?\b|InvalidClientTokenId|UnrecognizedClientException|security token included in the request is (expired|invalid)/i.test(
-      message
-    )
-  );
-}
-
-/**
- * Run `attempt` and, if it fails because the signed request was rejected for
- * expired/invalid credentials, re-resolve the profile's credentials and run
- * it exactly once more (the retry re-signs the same request; connector bodies
- * are fixed strings, so the replay is byte-identical). Anything else — other
- * 403s, network errors, non-SigV4 auth — propagates untouched. A second
- * failure surfaces the original error annotated with the retry.
- */
-export async function retryOnceOnExpiredCredentials<T>(auth: ConnectorAuth, attempt: () => Promise<T>): Promise<T> {
-  try {
-    return await attempt();
-  } catch (first) {
-    if (auth.type !== 'aws-sigv4' || !isExpiredCredentialsError(first)) throw first;
-    try {
-      await refreshSigV4Credentials(auth);
-      return await attempt();
-    } catch (second) {
-      const firstMessage = first instanceof Error ? first.message : String(first);
-      const secondMessage = second instanceof Error ? second.message : String(second);
-      throw new Error(`${firstMessage} (retried once with refreshed credentials; retry failed: ${secondMessage})`, {
-        cause: second,
-      });
-    }
-  }
-}
-
 /** RFC 3986 unreserved-only percent-encoding — the same escaping SigV4 canonicalisation uses. */
 function rfc3986Encode(value: string): string {
   return encodeURIComponent(value).replace(/[!'()*]/g, (c) => `%${c.charCodeAt(0).toString(16).toUpperCase()}`);
