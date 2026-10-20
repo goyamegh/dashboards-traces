@@ -4,57 +4,37 @@
  */
 
 /**
- * Retry-once policy for signed requests rejected because the AWS credentials
- * behind them expired or were rotated (#569). Pure — no AWS SDK import — so
- * it can sit on the `invokeAgent` path that the browser bundle also includes;
- * the credential refresh itself is delegated to the connector
- * (`AgentConnector.refreshCredentials`).
+ * Classifier for "AWS rejected the signature because the credentials behind
+ * it are expired, rotated out or unknown" (#569). Decided from the HTTP
+ * RESPONSE itself — its own status plus the AWS error signal in the
+ * `x-amzn-errortype` header or the body — never from an error message, so a
+ * nested `"upstreamStatus": 403` inside some other failure cannot pass.
  */
 
-import type { ConnectorAuth } from '@/services/connectors/types';
+/** Error codes / messages AWS-fronted endpoints return for stale or unknown credentials. */
+const AWS_CREDENTIAL_SIGNAL =
+  /ExpiredToken(Exception)?\b|InvalidClientTokenId|UnrecognizedClientException|security token included in the request is (expired|invalid)/i;
 
-/**
- * Does this connector error describe a 401/403 caused by expired or invalid
- * AWS credentials (as opposed to an authorization denial or any other 4xx)?
- * Matches the messages HTTP connectors throw (`… failed: 403 - <body>`,
- * `HTTP 403: … - <body>`) against the signals AWS-fronted endpoints return.
- */
-export function isExpiredCredentialsError(err: unknown): boolean {
-  const message = err instanceof Error ? err.message : String(err);
-  return (
-    /\b40[13]\b/.test(message) &&
-    /ExpiredToken(Exception)?\b|InvalidClientTokenId|UnrecognizedClientException|security token included in the request is (expired|invalid)/i.test(
-      message
-    )
-  );
+/** The subset of `Response` the classifier reads (lets tests pass plain objects). */
+export interface RejectionProbe {
+  status: number;
+  headers: { get(name: string): string | null | undefined };
+  clone?: () => { text(): Promise<string> };
 }
 
 /**
- * Run `attempt` and, if it fails because the signed request was rejected for
- * expired/invalid credentials, call `refreshCredentials` and run it exactly
- * once more (the retry re-signs the same request; connector bodies are fixed
- * strings, so the replay is byte-identical). Anything else — other 403s,
- * network errors, non-SigV4 auth — propagates untouched. A second failure
- * surfaces the original error annotated with the retry.
+ * True when `response` is a 401/403 that carries an AWS credential signal.
+ * The body is read from a clone so the caller can still consume it. An AWS
+ * front door (API Gateway, Lambda URL, ALB+IAM, Bedrock) rejects such a request
+ * before the agent runs, so replaying it is safe.
  */
-export async function retryOnceOnExpiredCredentials<T>(
-  auth: ConnectorAuth,
-  attempt: () => Promise<T>,
-  refreshCredentials: () => Promise<void>
-): Promise<T> {
+export async function isAwsCredentialRejection(response: RejectionProbe): Promise<boolean> {
+  if (response.status !== 401 && response.status !== 403) return false;
+  if (AWS_CREDENTIAL_SIGNAL.test(response.headers.get('x-amzn-errortype') ?? '')) return true;
+  if (typeof response.clone !== 'function') return false;
   try {
-    return await attempt();
-  } catch (first) {
-    if (auth.type !== 'aws-sigv4' || !isExpiredCredentialsError(first)) throw first;
-    try {
-      await refreshCredentials();
-      return await attempt();
-    } catch (second) {
-      const firstMessage = first instanceof Error ? first.message : String(first);
-      const secondMessage = second instanceof Error ? second.message : String(second);
-      throw new Error(`${firstMessage} (retried once with refreshed credentials; retry failed: ${secondMessage})`, {
-        cause: second,
-      });
-    }
+    return AWS_CREDENTIAL_SIGNAL.test(await response.clone().text());
+  } catch {
+    return false;
   }
 }

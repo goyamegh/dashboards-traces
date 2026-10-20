@@ -77,8 +77,8 @@ describe('aws-sigv4 credential failure → failed report', () => {
   });
 });
 
-describe('aws-sigv4 expired-credentials 403 → re-signed and retried once through invokeAgent', () => {
-  const EXPIRED_BODY = JSON.stringify({ message: 'The security token included in the request is expired' });
+describe('aws-sigv4 credential rejection → the HTTP request is re-signed and re-sent once, inside the connector', () => {
+  const EXPIRED_BODY = { message: 'The security token included in the request is expired' };
   const agent = {
     key: 'sigv4-agent',
     name: 'SigV4 agent',
@@ -86,40 +86,85 @@ describe('aws-sigv4 expired-credentials 403 → re-signed and retried once throu
     connectorType: 'rest',
     auth: { type: 'aws-sigv4', awsRegion: 'us-west-2', awsService: 'execute-api', awsProfile: 'eval' },
   } as unknown as AgentConfig;
-  const registryFor = (connector: RESTConnector) =>
+  const registryFor = (connector: unknown) =>
     ({ getForAgent: jest.fn().mockReturnValue(connector), get: jest.fn(), getAll: jest.fn().mockReturnValue([connector]), has: jest.fn().mockReturnValue(true), register: jest.fn() }) as any;
-  const response = (status: number, body: unknown) =>
-    ({ ok: status < 400, status, text: async () => JSON.stringify(body), json: async () => body, headers: new Map() }) as unknown as Response;
+  const response = (status: number, body: unknown, headers: Record<string, string> = {}) => {
+    const text = JSON.stringify(body);
+    const map = new Map(Object.entries(headers));
+    return {
+      ok: status < 400,
+      status,
+      headers: { get: (n: string) => map.get(n) ?? null, entries: () => map.entries() },
+      clone: () => ({ text: async () => text }),
+      text: async () => text,
+      json: async () => body,
+    } as unknown as Response;
+  };
+  const credentialOf = (fetchMock: jest.SpyInstance, call: number) =>
+    ((fetchMock.mock.calls[call][1] as RequestInit).headers as Record<string, string>).authorization.match(/Credential=([^/]+)\//)![1];
 
   beforeEach(() => {
     clearSigV4ProviderCache();
     jest.spyOn(console, 'error').mockImplementation(() => undefined);
+    mockFromNodeProviderChain.mockReset();
+    mockFromNodeProviderChain
+      .mockReturnValueOnce(jest.fn().mockResolvedValue({ accessKeyId: 'AKIDSTALE', secretAccessKey: 's' }))
+      .mockReturnValue(jest.fn().mockResolvedValue({ accessKeyId: 'AKIDFRESH', secretAccessKey: 's' }));
   });
   afterEach(() => jest.restoreAllMocks());
 
-  it('the stale key gets 403 ExpiredToken, the request is re-signed with freshly resolved credentials and succeeds', async () => {
-    mockFromNodeProviderChain
-      .mockReturnValueOnce(jest.fn().mockResolvedValue({ accessKeyId: 'AKIDSTALE', secretAccessKey: 's' }))
-      .mockReturnValueOnce(jest.fn().mockResolvedValue({ accessKeyId: 'AKIDFRESH', secretAccessKey: 's' }));
+  it('403 + ExpiredToken body: re-signed with freshly resolved credentials, byte-identical body, exactly one more request', async () => {
     const fetchMock = jest
       .spyOn(global, 'fetch')
-      .mockResolvedValueOnce(response(403, JSON.parse(EXPIRED_BODY)))
+      .mockResolvedValueOnce(response(403, EXPIRED_BODY))
       .mockResolvedValueOnce(response(200, { response: 'ok' }));
 
     const { invokeAgent } = await import('@/services/evaluation');
     const result = await invokeAgent(agent, 'm', testCase, { registry: registryFor(new RESTConnector()) });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
-    const credentialOf = (call: number) =>
-      ((fetchMock.mock.calls[call][1] as RequestInit).headers as Record<string, string>).authorization.match(/Credential=([^/]+)\//)![1];
-    expect(credentialOf(0)).toBe('AKIDSTALE');
-    expect(credentialOf(1)).toBe('AKIDFRESH');
-    expect(fetchMock.mock.calls[1][1]).toMatchObject({ body: (fetchMock.mock.calls[0][1] as RequestInit).body }); // byte-identical replay
+    expect(credentialOf(fetchMock, 0)).toBe('AKIDSTALE');
+    expect(credentialOf(fetchMock, 1)).toBe('AKIDFRESH');
+    expect((fetchMock.mock.calls[1][1] as RequestInit).body).toBe((fetchMock.mock.calls[0][1] as RequestInit).body);
     expect(result.metadata?.status).toBe(200);
   });
 
+  it('403 with only the x-amzn-errortype header as signal is retried too', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValueOnce(response(403, {}, { 'x-amzn-errortype': 'ExpiredTokenException' }))
+      .mockResolvedValueOnce(response(200, { response: 'ok' }));
+    const { invokeAgent } = await import('@/services/evaluation');
+    await invokeAgent(agent, 'm', testCase, { registry: registryFor(new RESTConnector()) });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(credentialOf(fetchMock, 1)).toBe('AKIDFRESH');
+  });
+
+  it('REGRESSION: an HTTP 500 whose body nests a 403 / ExpiredToken is NOT retried — the agent is executed exactly once', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(response(500, { upstreamStatus: 403, code: 'ExpiredToken' }));
+
+    const report = await runEvaluationWithConnector(agent, 'm', testCase, jest.fn(), { registry: registryFor(new RESTConnector()) });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(report.status).toBe('failed');
+    expect(report.llmJudgeReasoning).toBe('Evaluation failed: REST request failed: 500 - {"upstreamStatus":403,"code":"ExpiredToken"}');
+  });
+
+  it('REGRESSION: a failure after the connector already emitted progress is NOT retried — execute() runs exactly once', async () => {
+    const onStep = jest.fn();
+    const execute = jest.fn(async (_endpoint: string, _request: unknown, _auth: unknown, onProgress?: (s: unknown) => void) => {
+      onProgress?.({ type: 'action', content: 'did something with side effects', timestamp: Date.now() });
+      throw new Error('REST request failed: 403 - {"message":"The security token included in the request is expired"}');
+    });
+    const connector = { execute, parseResponse: jest.fn().mockReturnValue([]) };
+
+    const { invokeAgent } = await import('@/services/evaluation');
+    await expect(invokeAgent(agent, 'm', testCase, { registry: registryFor(connector), onStep })).rejects.toThrow(/REST request failed: 403/);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(onStep).toHaveBeenCalledTimes(1);
+  });
+
   it('a 403 without a credential signal is not retried and surfaces as the failed step', async () => {
-    mockFromNodeProviderChain.mockReturnValue(jest.fn().mockResolvedValue({ accessKeyId: 'AKID', secretAccessKey: 's' }));
     const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(response(403, {}));
 
     const report = await runEvaluationWithConnector(agent, 'm', testCase, jest.fn(), { registry: registryFor(new RESTConnector()) });
@@ -129,14 +174,14 @@ describe('aws-sigv4 expired-credentials 403 → re-signed and retried once throu
     expect(report.llmJudgeReasoning).toBe('Evaluation failed: REST request failed: 403 - {}');
   });
 
-  it('a second ExpiredToken 403 is reported once, annotated, after exactly one retry', async () => {
-    mockFromNodeProviderChain.mockReturnValue(jest.fn().mockResolvedValue({ accessKeyId: 'AKID', secretAccessKey: 's' }));
-    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(response(403, JSON.parse(EXPIRED_BODY)));
+  it('a second credential rejection is reported once, after exactly one retry', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue(response(403, EXPIRED_BODY));
 
     const report = await runEvaluationWithConnector(agent, 'm', testCase, jest.fn(), { registry: registryFor(new RESTConnector()) });
 
     expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(credentialOf(fetchMock, 1)).toBe('AKIDFRESH');
     expect(report.status).toBe('failed');
-    expect(report.llmJudgeReasoning).toContain('(retried once with refreshed credentials; retry failed: REST request failed: 403 -');
+    expect(report.llmJudgeReasoning).toBe(`Evaluation failed: REST request failed: 403 - ${JSON.stringify(EXPIRED_BODY)}`);
   });
 });

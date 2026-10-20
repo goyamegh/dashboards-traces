@@ -137,6 +137,34 @@ describe('createRefreshingCredentialProvider', () => {
     expect(resolveCalls).toBe(2);
   });
 
+  it('`{ forceRefresh: true }` never joins a resolution that started before the force request (it may have read the file before the rotation)', async () => {
+    // The mock "reads the file" when the chain is invoked and returns that snapshot once released.
+    const gates: Array<() => void> = [];
+    mockFromNodeProviderChain.mockImplementation(() => async () => {
+      resolveCalls += 1;
+      const snapshot = onDisk;
+      await new Promise<void>((release) => gates.push(release));
+      return snapshot;
+    });
+    const provider = createRefreshingCredentialProvider();
+
+    const flush = () => new Promise((r) => setImmediate(r));
+    const plain = provider(); // in flight, read key A
+    await flush();
+    expect(gates).toHaveLength(1); // the read has happened (snapshot = A) and is waiting
+    onDisk = KEY_B; // rotation
+    const forced = provider({ forceRefresh: true }); // must NOT be satisfied by the in-flight read
+
+    gates.shift()!(); // release the first read
+    expect((await plain).accessKeyId).toBe('AKIDA');
+    await flush(); // the forced resolution starts only after the first settles
+    expect(gates).toHaveLength(1);
+    gates.shift()!();
+    expect((await forced).accessKeyId).toBe('AKIDB');
+    expect(resolveCalls).toBe(2);
+    expect((await provider()).accessKeyId).toBe('AKIDB'); // and the cache holds the refreshed key
+  });
+
   describe('credentials that carry a real expiration (STS / SSO / IMDS / credential_process)', () => {
     it('keeps the source expiration and refreshes 5 minutes before it, not after the TTL', async () => {
       let clock = Date.parse('2026-06-01T00:00:00Z');
@@ -155,6 +183,23 @@ describe('createRefreshingCredentialProvider', () => {
 
       clock = expiration.getTime() - 5 * 60_000; // lead window reached
       expect((await provider()).accessKeyId).toBe('AKIDB');
+      expect(resolveCalls).toBe(2);
+    });
+
+    it('never reuses credentials past their real expiry: with less than one TTL left, a fresh resolution happens at the expiry', async () => {
+      let clock = Date.parse('2026-06-01T00:00:00Z');
+      onDisk = { ...KEY_A, expiration: new Date(clock + 30_000) }; // 30 s left (< TTL, < lead)
+      const provider = createRefreshingCredentialProvider({ now: () => clock });
+      expect((await provider()).accessKeyId).toBe('AKIDA');
+
+      onDisk = { ...KEY_B, expiration: new Date(clock + 60 * 60_000) };
+      clock += 29_999;
+      expect((await provider()).accessKeyId).toBe('AKIDA'); // still valid → reused
+      expect(resolveCalls).toBe(1);
+      clock += 1; // == expiration
+      const fresh = await provider();
+      expect(fresh.accessKeyId).toBe('AKIDB');
+      expect(fresh.expiration!.getTime()).toBeGreaterThan(clock); // what we hand out is never already expired
       expect(resolveCalls).toBe(2);
     });
 

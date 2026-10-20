@@ -22,7 +22,8 @@
  *   - resolves through a FRESH `fromNodeProviderChain({ profile, ignoreCache })`
  *     on every refresh, so whatever is on disk / in the environment NOW wins;
  *   - honours a real `expiration` when the source provides one (STS, SSO,
- *     IMDS, `credential_process`), refreshing shortly before it passes;
+ *     IMDS, `credential_process`): refreshes 5 min before it passes and never
+ *     reuses credentials past it;
  *   - for credentials WITHOUT an expiration, re-resolves after
  *     {@link DEFAULT_CREDENTIAL_TTL_MS} and stamps that deadline as a
  *     synthetic `expiration` on the returned object. AWS SDK clients wrap
@@ -30,9 +31,10 @@
  *     identity without `expiration` as constant and never calls the provider
  *     again — the synthetic deadline is what makes the SDK come back to us;
  *   - coalesces concurrent refreshes into one chain resolution;
- *   - honours the SDK's `{ forceRefresh: true }` call option (drop the cache
- *     and resolve now) so a caller that just saw an expired-credentials
- *     rejection can re-resolve without waiting for the TTL.
+ *   - honours the SDK's `{ forceRefresh: true }` call option: starts a NEW
+ *     resolution that begins after the request (never joins one already in
+ *     flight, which may have read the file before the rotation) so a caller
+ *     that just saw an expired-credentials rejection gets what is on disk now.
  */
 
 import { fromNodeProviderChain } from '@aws-sdk/credential-providers';
@@ -73,7 +75,7 @@ export function createRefreshingCredentialProvider(
   let cached: { credentials: AwsCredentialIdentity; refreshAt: number } | undefined;
   let pending: Promise<AwsCredentialIdentity> | undefined;
 
-  const refresh = async (): Promise<AwsCredentialIdentity> => {
+  const resolve = async (): Promise<AwsCredentialIdentity> => {
     const resolved = await fromNodeProviderChain({
       ...(profile ? { profile } : {}),
       // Bypass @smithy/shared-ini-file-loader's process-lifetime cache of the
@@ -85,9 +87,11 @@ export function createRefreshingCredentialProvider(
     let refreshAt: number;
     if (resolved.expiration) {
       credentials = resolved;
-      // Never spin on a source that hands out credentials already inside the
-      // lead window: reuse them for at least one TTL.
-      refreshAt = Math.max(resolvedAt + ttlMs, resolved.expiration.getTime() - EXPIRATION_LEAD_MS);
+      const expiresAt = resolved.expiration.getTime();
+      // Refresh EXPIRATION_LEAD_MS ahead of the real expiry; inside that lead
+      // window reuse for at most one TTL (never spin on a source that only
+      // hands out short-lived credentials) — but never past the expiry itself.
+      refreshAt = Math.min(expiresAt, Math.max(resolvedAt + ttlMs, expiresAt - EXPIRATION_LEAD_MS));
     } else {
       refreshAt = resolvedAt + ttlMs;
       // New object: the chain may hand out a shared instance; do not leak the
@@ -98,13 +102,24 @@ export function createRefreshingCredentialProvider(
     return credentials;
   };
 
+  /**
+   * Start a resolution. `after` (an in-flight resolution) is awaited first so
+   * a forced refresh never joins a read that began BEFORE the force request —
+   * that read may have seen the file before the rotation. Concurrent callers
+   * share the newest in-flight resolution.
+   */
+  const startResolution = (after?: Promise<unknown>): Promise<AwsCredentialIdentity> => {
+    const run = (after ?? Promise.resolve()).catch(() => undefined).then(resolve);
+    const tracked: Promise<AwsCredentialIdentity> = run.finally(() => {
+      if (pending === tracked) pending = undefined;
+    });
+    pending = tracked;
+    return tracked;
+  };
+
   return async (options?: { forceRefresh?: boolean }) => {
-    if (!options?.forceRefresh && cached && now() < cached.refreshAt) return cached.credentials;
-    if (!pending) {
-      pending = refresh().finally(() => {
-        pending = undefined;
-      });
-    }
-    return pending;
+    if (options?.forceRefresh) return startResolution(pending);
+    if (cached && now() < cached.refreshAt) return cached.credentials;
+    return pending ?? startResolution();
   };
 }

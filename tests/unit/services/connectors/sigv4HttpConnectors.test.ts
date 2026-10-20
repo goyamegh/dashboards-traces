@@ -334,6 +334,71 @@ describe('aws-sigv4 through HTTP connectors', () => {
     });
   });
 
+  describe('retry once on an AWS credential rejection (fetchSigned), per connector', () => {
+    // Static keys are used (the chain is not involved); what is asserted is the
+    // request path: one rejected attempt → exactly one re-signed replay of the
+    // same bytes, before any body is parsed/streamed.
+    const rejected = () =>
+      ({
+        ok: false,
+        status: 403,
+        headers: new Map<string, string>([['x-amzn-errortype', 'ExpiredTokenException']]),
+        clone: () => ({ text: () => Promise.resolve('{"message":"The security token included in the request is expired"}') }),
+        text: () => Promise.resolve('{"message":"The security token included in the request is expired"}'),
+      }) as unknown as Response;
+    const sseOk = () =>
+      ({
+        ok: true,
+        status: 200,
+        headers: new Map([['content-type', 'text/event-stream']]),
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('data: {"type":"RUN_STARTED","threadId":"t","runId":"r"}\n\ndata: {"type":"RUN_FINISHED","threadId":"t","runId":"r"}\n\n'));
+            controller.close();
+          },
+        }),
+      }) as unknown as Response;
+
+    it('AGUIStreamingConnector: the SSE request goes through fetchSigned — rejected once, replayed signed, then streamed', async () => {
+      fetchMock.mockReset().mockResolvedValueOnce(rejected()).mockResolvedValueOnce(sseOk());
+      const onProgress = jest.fn();
+      const result = await new AGUIStreamingConnector().execute('https://abc123.execute-api.us-west-2.amazonaws.com/prod/stream', { testCase, modelId: 'm' }, AUTH, onProgress);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const [first, second] = fetchMock.mock.calls as Array<[string, { headers: Record<string, string>; body: string; signal?: AbortSignal }]>;
+      expect(second[1].body).toBe(first[1].body);
+      expect(second[1].signal).toBeInstanceOf(AbortSignal);
+      await expect(recomputeAuthorization(second[0], second[1])).resolves.toBe(second[1].headers.authorization);
+      expect(result.runId).toBe('r');
+    });
+
+    it.each([
+      ['LangGraphConnector', () => new LangGraphConnector(), 'https://abc123.execute-api.us-west-2.amazonaws.com/prod', { testCase, modelId: 'm', connectorConfig: { graphId: 'agent' } } as ConnectorRequest],
+      ['OpenAICompatibleConnector', () => new OpenAICompatibleConnector(), 'https://abc123.execute-api.us-west-2.amazonaws.com/v1/chat/completions', { testCase: { ...testCase, context: ['ctx'] } as unknown as TestCase, modelId: 'm' } as ConnectorRequest],
+    ])('%s: rejected once → one re-signed replay', async (_name, make, endpoint, request) => {
+      fetchMock
+        .mockReset()
+        .mockResolvedValueOnce(rejected())
+        .mockResolvedValueOnce(okJson({ output: 'x', id: 'c1', model: 'm', choices: [{ message: { role: 'assistant', content: 'hi' }, finish_reason: 'stop' }] }));
+      await make().execute(endpoint, request, AUTH);
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const [first, second] = fetchMock.mock.calls as Array<[string, { headers: Record<string, string>; body: string }]>;
+      expect(second[1].body).toBe(first[1].body);
+      await expect(recomputeAuthorization(second[0], second[1])).resolves.toBe(second[1].headers.authorization);
+    });
+
+    it('a 403 without an AWS credential signal is not replayed (one request, error surfaces)', async () => {
+      fetchMock.mockReset().mockResolvedValue({
+        ok: false,
+        status: 403,
+        headers: new Map(),
+        clone: () => ({ text: () => Promise.resolve('{}') }),
+        text: () => Promise.resolve('{}'),
+      } as unknown as Response);
+      await expect(new RESTConnector().execute('https://abc123.execute-api.us-west-2.amazonaws.com/prod/invoke', { testCase, modelId: 'm' }, AUTH)).rejects.toThrow('REST request failed: 403 - {}');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
   describe('non-sigv4 auth is unchanged', () => {
     it('bearer: plain headers, capitalised Content-Type default, no AWS headers', async () => {
       await new RESTConnector().execute('http://localhost:5170/agent', { testCase, modelId: 'm' }, { type: 'bearer', token: 't' });

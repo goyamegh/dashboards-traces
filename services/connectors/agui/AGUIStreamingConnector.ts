@@ -61,20 +61,17 @@ export class AGUIStreamingConnector extends BaseConnector {
     // Serialise ONCE and send exactly these bytes: an aws-sigv4 signature
     // covers this body string and the SSE client's default header set.
     const body = JSON.stringify(payload);
-    const { url, headers } = await this.prepareRequest(auth, {
-      method: 'POST',
-      url: endpoint,
-      body,
-      defaultHeaders: SSE_DEFAULT_HEADERS,
-    });
+    const signedRequest = { method: 'POST', url: endpoint, body, defaultHeaders: SSE_DEFAULT_HEADERS as Record<string, string> };
     const trajectory: TrajectoryStep[] = [];
     const rawEvents: AGUIEvent[] = [];
     const converter = new AGUIToTrajectoryConverter();
 
     this.debug('Executing AG-UI streaming request');
 
+    // The request is sent through fetchSigned (signing + one retry on an AWS
+    // credential rejection); the SSE client owns the abort signal and stream.
     await consumeSSEStream(
-      url,
+      endpoint,
       body,
       (event: AGUIEvent) => {
         // Capture raw event for debugging
@@ -88,7 +85,8 @@ export class AGUIStreamingConnector extends BaseConnector {
           onProgress?.(step);
         });
       },
-      headers
+      undefined,
+      { fetchResponse: (signal) => this.fetchSigned(auth, signedRequest, { signal }) }
     );
 
     const runId = converter.getRunId();

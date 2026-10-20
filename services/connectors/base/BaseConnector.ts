@@ -7,6 +7,8 @@ import type { TrajectoryStep } from '@/types';
 import { debug as centralDebug } from '@/lib/debug';
 import { trace, context as otelContext, propagation } from '@opentelemetry/api';
 import { refreshSigV4Credentials, signAwsSigV4Request } from '@/services/connectors/base/awsSigV4';
+import { isAwsCredentialRejection } from '@/services/connectors/base/expiredCredentials';
+import { withDefaultHeaders } from '@/lib/httpHeaders';
 import type {
   AgentConnector,
   ConnectorAuth,
@@ -211,12 +213,41 @@ export abstract class BaseConnector implements AgentConnector {
   }
 
   /**
-   * Drop cached `aws-sigv4` credentials for this auth block so the next
-   * `prepareRequest()` signs with freshly resolved ones (see
-   * `retryOnceOnExpiredCredentials`). No-op for every other auth type.
+   * `prepareRequest()` + `fetch` for the signed/authenticated request the HTTP
+   * connectors send, with ONE retry for a specific failure: an `aws-sigv4`
+   * request that the AWS front door rejected with 401/403 for expired /
+   * rotated-out / unknown credentials (`isAwsCredentialRejection`, decided from
+   * that response's own status + AWS error signal). The profile's credentials
+   * are force-refreshed and the same request is re-signed and re-sent once —
+   * before any body is parsed or streamed and before any step is emitted, and
+   * AWS rejected it before the agent ran, so the replay cannot duplicate agent
+   * work. Every other response (other 403s, 5xx, network errors) is returned /
+   * thrown as-is; callers keep their own `response.ok` handling.
    */
-  async refreshCredentials(auth: ConnectorAuth): Promise<void> {
-    if (auth.type === 'aws-sigv4') await refreshSigV4Credentials(auth);
+  protected async fetchSigned(
+    auth: ConnectorAuth,
+    request: { method: string; url: string; body?: string; defaultHeaders?: Record<string, string> },
+    init?: {
+      signal?: AbortSignal;
+      /** Transport override (e.g. `fetchWithTimeout`); defaults to global `fetch`. Called once per attempt. */
+      fetchImpl?: (url: string, init: RequestInit) => Promise<Response>;
+    }
+  ): Promise<Response> {
+    const send = init?.fetchImpl ?? ((url: string, i: RequestInit) => fetch(url, i));
+    const attempt = async () => {
+      const { url, headers } = await this.prepareRequest(auth, request);
+      return send(url, {
+        method: request.method,
+        headers: withDefaultHeaders(request.defaultHeaders ?? {}, headers),
+        body: request.body,
+        ...(init?.signal ? { signal: init.signal } : {}),
+      });
+    };
+    const response = await attempt();
+    if (auth.type !== 'aws-sigv4' || !(await isAwsCredentialRejection(response))) return response;
+    this.debug(`AWS rejected the signed request (${response.status}, credentials expired/invalid); refreshing credentials and retrying once`);
+    await refreshSigV4Credentials(auth);
+    return attempt();
   }
 
   /**
