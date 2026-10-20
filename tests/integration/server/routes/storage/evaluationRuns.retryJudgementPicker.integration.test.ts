@@ -207,7 +207,11 @@ describe('POST /api/storage/evaluation-runs/:id/retry-judgement — evaluator / 
       expect(persisted.passFailStatus).toBe('passed'); // demo judge floor
       expect(persisted.metricsStatus).toBe('completed');
       expect(persisted.llmJudgeReasoning).not.toBe('Original verdict: looks good.');
-      expect(persisted.llmJudgeResponse).toEqual(expect.objectContaining({ modelId: 'demo-model' }));
+      // `llmJudgeResponse.modelId` names the UNDERLYING model the judge
+      // resolved (lib/judgeIdentity, #494) — for the demo judge that is the
+      // `mock://…` model id behind the picked `demo-model` entry; the picked
+      // id itself is `judgeModelId` above.
+      expect(persisted.llmJudgeResponse.modelId).toMatch(/demo-model$/);
       // …stamped as a retry…
       expect(persisted.judgementRetryCount).toBe(1);
       expect(Date.parse(persisted.judgementRetriedAt)).not.toBeNaN();
