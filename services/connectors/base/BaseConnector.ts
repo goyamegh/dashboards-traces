@@ -20,6 +20,17 @@ import type {
   TraceContextStrategy,
 } from '@/services/connectors/types';
 
+/** Cancel (or, failing that, drain) a response body we will never read. Never throws. */
+async function discardResponseBody(response: Response): Promise<void> {
+  try {
+    if (response.bodyUsed) return;
+    if (response.body) await response.body.cancel();
+    else if (typeof response.text === 'function') await response.text();
+  } catch {
+    // Already closed / locked / not a real Response: nothing to release.
+  }
+}
+
 /**
  * Abstract base class for connectors
  * Provides common functionality like auth header building and error handling
@@ -246,6 +257,9 @@ export abstract class BaseConnector implements AgentConnector {
     const response = await attempt();
     if (auth.type !== 'aws-sigv4' || !(await isAwsCredentialRejection(response))) return response;
     this.debug(`AWS rejected the signed request (${response.status}, credentials expired/invalid); refreshing credentials and retrying once`);
+    // The rejected response is discarded: release its body (the classifier
+    // only read a clone) before the replay so the connection is not held open.
+    await discardResponseBody(response);
     await refreshSigV4Credentials(auth);
     return attempt();
   }

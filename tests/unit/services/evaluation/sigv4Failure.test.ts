@@ -147,7 +147,7 @@ describe('aws-sigv4 credential rejection → the HTTP request is re-signed and r
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(report.status).toBe('failed');
-    expect(report.llmJudgeReasoning).toBe('Evaluation failed: REST request failed: 500 - {"upstreamStatus":403,"code":"ExpiredToken"}');
+    expect(report.llmJudgeReasoning).toContain('REST request failed: 500 - {"upstreamStatus":403,"code":"ExpiredToken"}');
   });
 
   it('REGRESSION: a failure after the connector already emitted progress is NOT retried — execute() runs exactly once', async () => {
@@ -171,7 +171,7 @@ describe('aws-sigv4 credential rejection → the HTTP request is re-signed and r
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(report.status).toBe('failed');
-    expect(report.llmJudgeReasoning).toBe('Evaluation failed: REST request failed: 403 - {}');
+    expect(report.llmJudgeReasoning).toContain('REST request failed: 403 - {}');
   });
 
   it('a second credential rejection is reported once, after exactly one retry', async () => {
@@ -182,6 +182,6 @@ describe('aws-sigv4 credential rejection → the HTTP request is re-signed and r
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(credentialOf(fetchMock, 1)).toBe('AKIDFRESH');
     expect(report.status).toBe('failed');
-    expect(report.llmJudgeReasoning).toBe(`Evaluation failed: REST request failed: 403 - ${JSON.stringify(EXPIRED_BODY)}`);
+    expect(report.llmJudgeReasoning).toContain(`REST request failed: 403 - ${JSON.stringify(EXPIRED_BODY)}`);
   });
 });

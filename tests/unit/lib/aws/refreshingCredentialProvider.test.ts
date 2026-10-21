@@ -203,6 +203,22 @@ describe('createRefreshingCredentialProvider', () => {
       expect(resolveCalls).toBe(2);
     });
 
+    it('an identity that is ALREADY expired when resolved is returned (nothing better exists) but never cached', async () => {
+      let clock = Date.parse('2026-06-01T00:00:00Z');
+      onDisk = { ...KEY_A, expiration: new Date(clock - 1) };
+      const provider = createRefreshingCredentialProvider({ now: () => clock });
+      expect((await provider()).accessKeyId).toBe('AKIDA');
+      expect(resolveCalls).toBe(1);
+
+      onDisk = { ...KEY_B, expiration: new Date(clock + 60 * 60_000) };
+      // Same instant: a cached-and-reused expired identity would come back as A.
+      expect((await provider()).accessKeyId).toBe('AKIDB');
+      expect(resolveCalls).toBe(2);
+      // The valid identity IS cached.
+      expect((await provider()).accessKeyId).toBe('AKIDB');
+      expect(resolveCalls).toBe(2);
+    });
+
     it('does not spin on a source whose credentials are already inside the lead window: reuses them for one TTL', async () => {
       let clock = Date.parse('2026-06-01T00:00:00Z');
       onDisk = { ...KEY_A, expiration: new Date(clock + 2 * 60_000) }; // 2 min < 5 min lead

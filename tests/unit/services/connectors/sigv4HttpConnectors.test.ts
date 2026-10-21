@@ -386,6 +386,36 @@ describe('aws-sigv4 through HTTP connectors', () => {
       await expect(recomputeAuthorization(second[0], second[1])).resolves.toBe(second[1].headers.authorization);
     });
 
+    it('REGRESSION: the rejected response body (a real streaming Response) is cancelled/consumed BEFORE the replay is sent', async () => {
+      let cancelled = false;
+      let pulls = 0;
+      const stream = new ReadableStream<Uint8Array>({
+        pull(controller) {
+          pulls += 1;
+          controller.enqueue(new TextEncoder().encode(pulls === 1 ? '{"__type":"ExpiredTokenException",' : '"message":"…"}'));
+          if (pulls >= 2) controller.close();
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      const rejectedReal = new Response(stream, { status: 403, headers: { 'x-amzn-errortype': 'ExpiredTokenException' } });
+      let firstBodySettledBeforeReplay = false;
+      fetchMock
+        .mockReset()
+        .mockImplementationOnce(async () => rejectedReal)
+        .mockImplementationOnce(async () => {
+          firstBodySettledBeforeReplay = cancelled || rejectedReal.bodyUsed;
+          return okJson({ response: 'done' });
+        });
+
+      await new RESTConnector().execute('https://abc123.execute-api.us-west-2.amazonaws.com/prod/invoke', { testCase, modelId: 'm' }, AUTH);
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      expect(firstBodySettledBeforeReplay).toBe(true);
+      expect(cancelled || rejectedReal.bodyUsed).toBe(true);
+    });
+
     it('a 403 without an AWS credential signal is not replayed (one request, error surfaces)', async () => {
       fetchMock.mockReset().mockResolvedValue({
         ok: false,

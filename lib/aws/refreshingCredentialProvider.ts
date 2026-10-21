@@ -23,7 +23,10 @@
  *     on every refresh, so whatever is on disk / in the environment NOW wins;
  *   - honours a real `expiration` when the source provides one (STS, SSO,
  *     IMDS, `credential_process`): refreshes 5 min before it passes and never
- *     reuses credentials past it;
+ *     reuses credentials past it. If the source itself hands out credentials
+ *     that are already expired, they are returned to that one caller (there is
+ *     nothing better to sign with) but never cached — the next call resolves
+ *     again;
  *   - for credentials WITHOUT an expiration, re-resolves after
  *     {@link DEFAULT_CREDENTIAL_TTL_MS} and stamps that deadline as a
  *     synthetic `expiration` on the returned object. AWS SDK clients wrap
@@ -88,6 +91,13 @@ export function createRefreshingCredentialProvider(
     if (resolved.expiration) {
       credentials = resolved;
       const expiresAt = resolved.expiration.getTime();
+      if (expiresAt <= resolvedAt) {
+        // The source handed out credentials that are already expired. Return
+        // them (there is nothing better to sign with) but never cache them:
+        // the next call resolves again.
+        cached = undefined;
+        return credentials;
+      }
       // Refresh EXPIRATION_LEAD_MS ahead of the real expiry; inside that lead
       // window reuse for at most one TTL (never spin on a source that only
       // hands out short-lived credentials) — but never past the expiry itself.
