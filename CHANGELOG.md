@@ -9,6 +9,9 @@ Inspired by [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 
 ## [Unreleased]
 
+### Fixed
+- CLI commands that auto-start a persistent server no longer hang after printing their result or leave a server that crashes with `EPIPE` when the CLI exits. Background server output is written to private files under `.agent-health/logs/`; startup reports the actual bound port over a short-lived IPC channel and preserves bounded failure diagnostics. A real packaged-CLI integration test covers fresh `list agents`, clean exit, server reuse, and a three-case REST benchmark.
+
 ## [0.8.1] - 2026-10-21
 
 Release 0.8.1 is a correctness patch on 0.8.0. The headline fix is for AWS credentials: `aws-sigv4` agents and every server-side AWS SDK client (the Bedrock LLM judge, the assistant fallback, skills, Strands) kept using the first AWS profile credentials the process ever read — after the profile was refreshed on disk every request failed with `403` until the server was restarted — because the AWS SDK caches profile-file credentials (which carry no expiry) for the life of the process and caches the ini file contents process-wide; a shared refreshing credential provider now re-reads rotated credentials within 60 s, honours real expirations, and the HTTP connectors replay a request exactly once when AWS rejects it for expired credentials (#570, fixes #569). The compare page gets two fixes: with three or more runs selected the scoreboard renders every selected run instead of only A and B (#568), and the trace-grounded "What's actually different" deep-dive stays visible for 3+ runs with a Run A / Run B picker, mounts as soon as the runs are known, launches its LLM job exactly once, follows the URL's A/B order and reports authoritative tallies instead of the model's own arithmetic (#567). Ashwin P Chandran joins as maintainer and code owner (#540).

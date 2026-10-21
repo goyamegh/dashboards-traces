@@ -89,5 +89,11 @@ export async function startServer(options: StartOptions): Promise<number> {
   if (actualPort !== options.port) {
     process.env.VITE_BACKEND_PORT = String(actualPort);
   }
+  // An auto-starting CLI needs the actual bound port, not a human log format.
+  // No IPC channel exists for a directly invoked `serve`. A parent that exits
+  // during startup must not turn a notification failure into a server crash.
+  if (process.send && process.connected) {
+    process.send({ type: 'agent-health:server-ready', port: actualPort }, () => {});
+  }
   return actualPort;
 }
