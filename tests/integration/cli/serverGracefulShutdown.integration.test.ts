@@ -7,7 +7,7 @@
  * Real child servers, real SIGTERM, real HTTP — no lifecycle mocks.
  *
  * Both entrypoints that listen with an app from createApp() must react to
- * SIGTERM the same way: flush, close the listener, exit 0 — within the shared
+ * SIGTERM the same way: stop accepting, drain/flush, exit 0 — within the shared
  * 5 s bound, even while a client holds an in-flight connection open. The CLI's
  * stopServer() only escalates to SIGKILL after 7 s; a server that still needs
  * that escalation has NOT shut down gracefully.

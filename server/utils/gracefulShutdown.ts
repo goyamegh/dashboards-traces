@@ -7,7 +7,8 @@
  * Graceful HTTP server shutdown shared by every entrypoint that listens with an
  * app from `createApp()` (`server/index.ts` and the CLI's `startServer`).
  *
- * On SIGTERM/SIGINT: run the cleanup hooks, close the listener, exit 0. The
+ * On SIGTERM/SIGINT: stop accepting requests immediately, then drain existing
+ * requests and run cleanup hooks concurrently before exiting 0. The
  * whole sequence is bounded by `timeoutMs`: a hung hook, a never-ending
  * in-flight request, or a lingering keep-alive connection cannot keep the
  * process alive past the deadline — at that point remaining connections are
@@ -23,7 +24,7 @@ import type { Server } from 'http';
 export type CleanupHook = () => void | Promise<void>;
 
 export interface GracefulShutdownOptions {
-  /** Run (concurrently) before the listener is closed. Failures are logged, never fatal. */
+  /** Run concurrently with draining, after accepting stops. Failures are logged. */
   cleanup?: CleanupHook[];
   /** Upper bound for the entire shutdown, in ms. Default 5000. */
   timeoutMs?: number;
@@ -69,23 +70,24 @@ export function installGracefulShutdown(server: Server, options: GracefulShutdow
     }, timeoutMs);
     deadline.unref();
 
-    const results = await Promise.allSettled(cleanup.map((hook) => Promise.resolve().then(hook)));
-    for (const result of results) {
-      if (result.status === 'rejected') {
-        const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
-        log(`  Shutdown cleanup step failed: ${reason}`);
-      }
-    }
-    if (exited) return;
-
-    server.close(() => {
-      clearTimeout(deadline);
-      log('  Server closed.');
-      exitOnce(0);
-    });
-    // Keep-alive sockets with no request in flight would otherwise hold
-    // `close()` open until the keep-alive timeout.
+    // Stop accepting BEFORE awaiting telemetry or any other hook. Otherwise a
+    // restarting server could accept a new evaluation and kill it at the deadline.
+    const drained = new Promise<void>((resolve) => server.close(() => resolve()));
     server.closeIdleConnections();
+    const cleaned = Promise.allSettled(cleanup.map((hook) => Promise.resolve().then(hook)))
+      .then((results) => {
+        for (const result of results) {
+          if (result.status === 'rejected') {
+            const reason = result.reason instanceof Error ? result.reason.message : String(result.reason);
+            log(`  Shutdown cleanup step failed: ${reason}`);
+          }
+        }
+      });
+    await Promise.all([drained, cleaned]);
+    if (exited) return;
+    clearTimeout(deadline);
+    log('  Server closed.');
+    exitOnce(0);
   };
 
   const listeners = (['SIGTERM', 'SIGINT'] as NodeJS.Signals[]).map((signal) => {

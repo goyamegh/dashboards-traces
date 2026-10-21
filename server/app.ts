@@ -140,8 +140,8 @@ export async function createApp(): Promise<Express> {
 
 /**
  * Wire SIGTERM/SIGINT handling for a listener serving an app from createApp():
- * run `options.cleanup` (entrypoint-specific: child agents, timers), flush eval
- * telemetry, close the listener, exit 0 — all bounded by the shutdown timeout.
+ * stop accepting requests immediately, then drain and flush eval telemetry plus
+ * entrypoint cleanup (child agents, timers), exit 0 — all bounded by the timeout.
  * Every entrypoint that calls `app.listen()` must call this on the resulting
  * server, otherwise the process does not react to termination signals the
  * same way (see server/utils/gracefulShutdown.ts).

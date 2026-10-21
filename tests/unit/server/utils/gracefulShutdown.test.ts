@@ -5,12 +5,12 @@
 
 /**
  * server/utils/gracefulShutdown.ts against a REAL http.Server (no http mocks):
- * cleanup runs before the listener closes, the port is released, exit is
+ * accepting stops immediately, cleanup/draining finish before exit, exit is
  * called exactly once, and the deadline bounds hung cleanup / stuck
  * connections (which `server.close()` alone would wait on forever).
  */
 
-import { createServer, request as httpRequest, type Server } from 'http';
+import { Agent, createServer, request as httpRequest, type Server } from 'http';
 import { connect, type Socket } from 'net';
 import { installGracefulShutdown, type GracefulShutdownHandle } from '@/server/utils/gracefulShutdown';
 
@@ -47,6 +47,7 @@ describe('installGracefulShutdown (real http.Server)', () => {
   let handle: GracefulShutdownHandle | undefined;
   let exits: number[];
   let logs: string[];
+  let keepAliveAgent: Agent | undefined;
   const sockets = new Set<Socket>();
 
   beforeEach(() => {
@@ -59,6 +60,8 @@ describe('installGracefulShutdown (real http.Server)', () => {
   afterEach(async () => {
     handle?.dispose();
     handle = undefined;
+    keepAliveAgent?.destroy();
+    keepAliveAgent = undefined;
     for (const socket of sockets) socket.destroy();
     sockets.clear();
     server.closeAllConnections();
@@ -74,14 +77,15 @@ describe('installGracefulShutdown (real http.Server)', () => {
     return handle;
   };
 
-  it('runs cleanup, then closes the listener (port refused), then exits 0 once', async () => {
+  it('stops accepting, completes cleanup and draining, then exits 0 once', async () => {
     const port = await listen(server);
     const order: string[] = [];
     const h = install({
       cleanup: [
         async () => { await sleep(20); order.push('async-hook'); },
-        () => { order.push('sync-hook'); },
+        () => { expect(server.listening).toBe(false); order.push('sync-hook'); },
       ],
+      exit: (code) => { order.push('exit'); exits.push(code); },
     });
     server.on('close', () => order.push('listener-closed'));
 
@@ -89,7 +93,9 @@ describe('installGracefulShutdown (real http.Server)', () => {
     await h.shutdown('SIGTERM');
     await sleep(20);
 
-    expect(order).toEqual(['sync-hook', 'async-hook', 'listener-closed']);
+    expect(order).toHaveLength(4);
+    expect(order).toEqual(expect.arrayContaining(['sync-hook', 'async-hook', 'listener-closed']));
+    expect(order[order.length - 1]).toBe('exit');
     expect(server.listening).toBe(false);
     expect(await connectRefused(port)).toBe('ECONNREFUSED');
     expect(exits).toEqual([0]);
@@ -99,6 +105,25 @@ describe('installGracefulShutdown (real http.Server)', () => {
     expect(process.listenerCount('SIGTERM')).toBe(before);
     await h.shutdown('SIGINT');
     expect(exits).toEqual([0]);
+  });
+
+  it('refuses new connections while a cleanup hook is still pending', async () => {
+    const port = await listen(server);
+    let release!: () => void;
+    let entered!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    const started = new Promise<void>((resolve) => { entered = resolve; });
+    const h = install({ cleanup: [async () => { entered(); await pending; }] });
+    const shutdown = h.shutdown('SIGTERM');
+    try {
+      await started;
+      // A real new TCP connection, not a mocked Server.close/listening flag.
+      expect(await connectRefused(port)).toBe('ECONNREFUSED');
+      expect(exits).toEqual([]); // Do not exit before the pending cleanup finishes.
+    } finally {
+      release();
+      await shutdown;
+    }
   });
 
   it('a rejected cleanup hook is logged and does not prevent close/exit', async () => {
@@ -113,8 +138,11 @@ describe('installGracefulShutdown (real http.Server)', () => {
 
   it('closes idle keep-alive connections so close() does not wait for keepAliveTimeout', async () => {
     const port = await listen(server);
+    // Node 18's global agent does not retain idle sockets; a Connection header
+    // alone cannot make it do so. Own the fixture's keep-alive agent explicitly.
+    keepAliveAgent = new Agent({ keepAlive: true });
     const agentSocket = await new Promise<Socket>((resolve, reject) => {
-      const req = httpRequest({ port, host: '127.0.0.1', path: '/', headers: { Connection: 'keep-alive' } }, (res) => {
+      const req = httpRequest({ port, host: '127.0.0.1', path: '/', agent: keepAliveAgent }, (res) => {
         res.resume();
         res.on('end', () => resolve(req.socket as Socket));
       });
@@ -124,10 +152,11 @@ describe('installGracefulShutdown (real http.Server)', () => {
     sockets.add(agentSocket);
     expect(agentSocket.destroyed).toBe(false);
 
+    const socketClosed = new Promise<void>((resolve) => agentSocket.once('close', resolve));
     const h = install({ timeoutMs: 10_000 });
     const started = Date.now();
     await h.shutdown('SIGTERM');
-    await new Promise<void>((resolve) => agentSocket.once('close', resolve));
+    await socketClosed;
     await sleep(20);
     expect(Date.now() - started).toBeLessThan(2_000);
     expect(server.listening).toBe(false);
@@ -149,9 +178,9 @@ describe('installGracefulShutdown (real http.Server)', () => {
     expect(logs.join('\n')).toContain('did not finish within 150ms');
     await heldClosed;
     expect(held.destroyed).toBe(true);
-    // close() was never reached (cleanup hung) — the listener is still open,
-    // which is exactly why the deadline must exit rather than wait.
-    expect(server.listening).toBe(true);
+    // Even with a hung cleanup, the listener stopped accepting immediately.
+    expect(server.listening).toBe(false);
+    expect(await connectRefused(port)).toBe('ECONNREFUSED');
   });
 
   it('an active (in-flight) connection cannot hold the process past the deadline', async () => {
