@@ -127,7 +127,9 @@ jest.mock('@/server/services/storageInitializer', () => ({
   }),
 }));
 
-import { createApp } from '@/server/app';
+import { createServer } from 'http';
+import { createApp, installAppShutdown } from '@/server/app';
+import { shutdownEvalTracer } from '@/lib/telemetry';
 
 describe('createApp', () => {
   beforeEach(() => {
@@ -216,5 +218,40 @@ describe('createApp', () => {
     expect(mockSetupSpaFallback).toHaveBeenCalledTimes(1);
     expect(mockSetupSpaFallback).toHaveBeenCalledWith(mockApp);
     expect(callOrder.indexOf('routes')).toBeLessThan(callOrder.indexOf('spaFallback'));
+  });
+
+  // Regression (#576 follow-up): createApp() used to register a bare
+  // `process.once('SIGTERM', shutdownEvalTracer)`. Any SIGTERM listener
+  // suppresses Node's default termination, so a caller that only called
+  // createApp() + listen() (the CLI) never exited on SIGTERM.
+  it('registers no SIGTERM/SIGINT listener itself', async () => {
+    const term = process.listenerCount('SIGTERM');
+    const int = process.listenerCount('SIGINT');
+    await createApp();
+    expect(process.listenerCount('SIGTERM')).toBe(term);
+    expect(process.listenerCount('SIGINT')).toBe(int);
+  });
+
+  it('installAppShutdown runs caller cleanup + telemetry flush, closes the real listener, then exits 0', async () => {
+    const server = createServer((_req, res) => res.end('ok'));
+    await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+    const order: string[] = [];
+    (shutdownEvalTracer as jest.Mock).mockImplementation(async () => { order.push('telemetry'); });
+    const exit = jest.fn((code: number) => order.push(`exit:${code}`));
+    const handle = installAppShutdown(server, {
+      cleanup: [() => { order.push('caller-hook'); }],
+      log: () => {},
+      exit,
+    });
+    try {
+      await handle.shutdown('SIGTERM');
+      await new Promise((r) => setTimeout(r, 20));
+      expect(order).toEqual(['caller-hook', 'telemetry', 'exit:0']);
+      expect(server.listening).toBe(false);
+      expect(exit).toHaveBeenCalledTimes(1);
+    } finally {
+      handle.dispose();
+      if (server.listening) await new Promise((r) => server.close(() => r(undefined)));
+    }
   });
 });

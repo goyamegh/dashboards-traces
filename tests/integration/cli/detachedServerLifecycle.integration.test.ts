@@ -14,7 +14,7 @@
  * Storage uses the normal OPENSEARCH_STORAGE_* environment when configured.
  */
 import { spawn, type ChildProcess } from 'child_process';
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'fs';
 import { createServer, type Server } from 'http';
 import { join } from 'path';
 import { createTestDataTracker, uniqueTestName } from '../../helpers/testDataTracker';
@@ -84,6 +84,26 @@ function packagedProject() {
   // Observation only: capture our exact child even if it fails before /health.
   writeFileSync(pidProbe, `if (process.argv.includes('serve')) require('node:fs').appendFileSync(${JSON.stringify(pidFile)}, process.pid + '\\n');\n`);
   return { project, packageDir, cli: join(packageDir, 'bin/cli.js'), pidFile, pidProbe };
+}
+
+function serverPids(pidFile: string): number[] {
+  return existsSync(pidFile) ? readFileSync(pidFile, 'utf8').trim().split('\n').map(Number)
+    .filter(pid => Number.isInteger(pid) && pid > 1) : [];
+}
+
+function isAlive(pid: number): boolean {
+  try { process.kill(pid, 0); return true; } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ESRCH') return false;
+    throw error;
+  }
+}
+
+async function assertServerExited(pidFile: string): Promise<void> {
+  const pids = serverPids(pidFile);
+  expect(pids.length).toBeGreaterThan(0);
+  if (!await waitUntil(() => pids.every(pid => !isAlive(pid)), 10_000)) {
+    throw new Error('REGRESSION: production cleanup left its owned server PID alive; emergency test cleanup has not run.');
+  }
 }
 
 function removeProject(project: string, pidFile: string): void {
@@ -174,7 +194,7 @@ for (let i = 1; i <= 3; i++) {
       if (!benchmarkId) throw new Error('Benchmark creation did not return an id');
       tracker.benchmark(benchmarkId);
       const benchmark = startCli(cli, ['benchmark', '-f', './evals/lifecycle.eval.ts',
-        '-n', benchmarkId, '-a', AGENT_KEY], project, env);
+        '-n', benchmarkId, '-a', AGENT_KEY, '--stop-server'], project, env);
       children.push(benchmark.child);
       const completed = await waitUntil(() => benchmark.child.exitCode !== null || benchmark.child.signalCode !== null, 90_000);
       if (!completed || benchmark.child.exitCode !== 0) {
@@ -218,7 +238,8 @@ for (let i = 1; i <= 3; i++) {
     const delay = failure === 'startup timeout'
       ? "if (process.argv.includes('serve')) await new Promise(resolve => setTimeout(resolve, 60000));\n"
       : '';
-    writeFileSync(join(project, 'agent-health.config.mjs'), delay + 'export default { server: { startTimeout: 2500 } };\n');
+    const startupTimeout = failure === 'startup timeout' ? 2500 : 15_000;
+    writeFileSync(join(project, 'agent-health.config.mjs'), delay + `export default { server: { startTimeout: ${startupTimeout} } };\n`);
     const env: NodeJS.ProcessEnv = { ...process.env, AH_PORT: String(port), PORT: String(port),
       NODE_OPTIONS: `--require=${pidProbe}`, BENCHMARK_RUN_RECOVERY_DISABLED: '1', EVALUATION_RUN_RECOVERY_DISABLED: '1' };
     delete env.CI;
@@ -234,11 +255,79 @@ for (let i = 1; i <= 3; i++) {
       } else {
         expect(command.stderr()).toContain('Server failed to start within 2500ms');
       }
+      await assertServerExited(pidFile);
     } finally {
       await stopChild(command.child);
       removeProject(project, pidFile);
     }
-  }, 30_000);
+  }, 45_000);
+
+  it.each([false, true])('temporary mode exits its owned server (stalled SIGTERM handler: %s)', async (stallSignal) => {
+    const { project, cli, pidFile, pidProbe } = packagedProject();
+    const reservation = createServer();
+    const port = await listen(reservation);
+    await close(reservation);
+    writeFileSync(join(project, 'agent-health.config.mjs'), 'export default {};\n');
+    if (stallSignal) {
+      // A real unresponsive child: exercise escalation without mocking kill/spawn.
+      writeFileSync(pidProbe, readFileSync(pidProbe, 'utf8') +
+        "if (process.argv.includes('serve')) process.on('SIGTERM', () => { while (true) {} });\n");
+    }
+    const env: NodeJS.ProcessEnv = { ...process.env, CI: '1', AH_PORT: String(port), PORT: String(port),
+      NODE_OPTIONS: `--require=${pidProbe}`, BENCHMARK_RUN_RECOVERY_DISABLED: '1', EVALUATION_RUN_RECOVERY_DISABLED: '1' };
+    const command = startCli(cli, ['list', 'agents', '--output', 'json'], project, env);
+    try {
+      const exited = await waitUntil(() => command.child.exitCode !== null || command.child.signalCode !== null, 60_000);
+      expect(exited).toBe(true);
+      expect(command.child.exitCode).toBe(0);
+      expect(Array.isArray(JSON.parse(command.stdout()))).toBe(true);
+      await assertServerExited(pidFile);
+      console.log(`[lifecycle] temporary server exited before emergency cleanup; stalled SIGTERM=${stallSignal}`);
+    } finally {
+      await stopChild(command.child);
+      removeProject(project, pidFile);
+    }
+  }, 90_000);
+
+  it('auto-starts in a read-only project using a private fallback log', async () => {
+    const { project, cli, pidFile, pidProbe } = packagedProject();
+    const reservation = createServer();
+    const port = await listen(reservation);
+    await close(reservation);
+    writeFileSync(join(project, 'agent-health.config.mjs'), 'export default {};\n');
+    // Existing file stays writable so the PID-only observer does not require a
+    // writable project directory. The server may not mkdir .agent-health/logs.
+    // Existing runtime data remains writable: the file-storage module creates
+    // this directory even before selecting an external backend. Isolate the NEW
+    // log-directory requirement from that pre-existing storage prerequisite.
+    mkdirSync(join(project, '.agent-health/data'), { recursive: true });
+    chmodSync(join(project, '.agent-health'), 0o555);
+    writeFileSync(pidFile, '');
+    chmodSync(project, 0o555);
+    const env: NodeJS.ProcessEnv = { ...process.env, CI: '1', AH_PORT: String(port), PORT: String(port),
+      NODE_OPTIONS: `--require=${pidProbe}`, BENCHMARK_RUN_RECOVERY_DISABLED: '1', EVALUATION_RUN_RECOVERY_DISABLED: '1' };
+    const command = startCli(cli, ['list', 'agents', '--output', 'json'], project, env);
+    let logPath: string | undefined;
+    try {
+      const exited = await waitUntil(() => command.child.exitCode !== null || command.child.signalCode !== null, 60_000);
+      logPath = command.stderr().match(/Server log: (.+)/)?.[1];
+      if (!exited || command.child.exitCode !== 0) {
+        throw new Error(`REGRESSION: read-only project prevented auto-start (exit=${command.child.exitCode}).\n${command.stderr()}`);
+      }
+      expect(Array.isArray(JSON.parse(command.stdout()))).toBe(true);
+      expect(logPath).toBeDefined();
+      expect(logPath!.startsWith(project)).toBe(false);
+      expect(statSync(logPath!).mode & 0o777).toBe(0o600);
+      expect(statSync(join(logPath!, '..')).mode & 0o777).toBe(0o700);
+      await assertServerExited(pidFile);
+    } finally {
+      await stopChild(command.child);
+      chmodSync(project, 0o755);
+      chmodSync(join(project, '.agent-health'), 0o755);
+      removeProject(project, pidFile);
+      if (logPath) rmSync(logPath, { force: true });
+    }
+  }, 90_000);
 
   it('uses the child-reported fallback port without touching the occupied port', async () => {
     const { project, cli, pidFile, pidProbe } = packagedProject();

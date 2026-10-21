@@ -11,6 +11,7 @@
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { existsSync } from 'fs';
+import type { Server } from 'http';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -49,16 +50,16 @@ export async function startServer(options: StartOptions): Promise<number> {
 
   const packageRoot = findPackageRoot();
   const serverPath = join(packageRoot, 'server', 'dist', 'app.js');
-  const { createApp } = await import(serverPath);
+  const { createApp, installAppShutdown } = await import(serverPath);
 
   const app = await createApp();
 
-  const tryListen = (port: number): Promise<number> => {
+  const tryListen = (port: number): Promise<{ server: Server; port: number }> => {
     return new Promise((resolve, reject) => {
-      const server = app.listen(port, '0.0.0.0');
+      const server: Server = app.listen(port, '0.0.0.0');
 
       server.on('listening', () => {
-        resolve(port);
+        resolve({ server, port });
       });
 
       server.on('error', (err: NodeJS.ErrnoException) => {
@@ -79,7 +80,12 @@ export async function startServer(options: StartOptions): Promise<number> {
     });
   };
 
-  const actualPort = await tryListen(options.port);
+  const { server, port: actualPort } = await tryListen(options.port);
+  // SIGTERM/SIGINT: flush telemetry, close the listener, exit within the
+  // shared bound. Must come from the server bundle we just imported so the
+  // telemetry flush sees the tracer createApp() initialized (the CLI bundle
+  // has its own, uninitialized copy of lib/telemetry).
+  installAppShutdown(server);
   // Keep AH_PORT in lockstep with the port we actually bound. Without this,
   // an auto-incremented server (e.g. 4001 busy → bound 4002) leaves
   // AH_PORT=4001, so every self-call (judge proxy, assistant, traces, pi

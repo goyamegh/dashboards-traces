@@ -15,7 +15,8 @@
 import { spawn, execSync, type ChildProcess } from 'child_process';
 import net from 'net';
 import path from 'path';
-import { closeSync, fstatSync, mkdirSync, openSync, readFileSync, readSync } from 'fs';
+import { closeSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync } from 'fs';
+import { tmpdir } from 'os';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import type { ResolvedServerConfig } from '@/lib/config/types.js';
@@ -226,6 +227,24 @@ function readLogTail(logPath: string): string {
   }
 }
 
+function openServerLog(port: number): { logPath: string; logFd: number } {
+  const name = `server-${port}-${Date.now()}-${process.pid}.log`;
+  const openIn = (directory: string) => {
+    mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const logPath = join(directory, name);
+    return { logPath, logFd: openSync(logPath, 'wx', 0o600) };
+  };
+  try {
+    return openIn(join(process.cwd(), '.agent-health', 'logs'));
+  } catch {
+    // A read-only checkout must not prevent a CLI command from starting. An
+    // atomically-created private directory avoids trusting a pre-existing path
+    // in shared /tmp; include the user id for attribution, not authorization.
+    const privateDir = mkdtempSync(join(tmpdir(), `agent-health-${process.getuid?.() ?? 'user'}-`));
+    return openIn(join(privateDir, 'logs'));
+  }
+}
+
 interface StartServerResult {
   child: ChildProcess;
   actualPort: number;
@@ -241,10 +260,8 @@ export async function startServer(
   timeout: number
 ): Promise<StartServerResult> {
   const cliPath = join(__dirname, '..', '..', 'bin', 'cli.js');
-  const logDir = join(process.cwd(), '.agent-health', 'logs');
-  mkdirSync(logDir, { recursive: true, mode: 0o700 });
-  const logPath = join(logDir, `server-${port}-${Date.now()}-${process.pid}.log`);
-  const logFd = openSync(logPath, 'wx', 0o600);
+  const { logPath, logFd } = openServerLog(port);
+  console.error(`[ServerLifecycle] Server log: ${logPath}`);
   let child: ChildProcess;
   try {
     child = spawn(process.execPath, [cliPath, 'serve', '-p', String(port), '--no-browser'], {
@@ -306,20 +323,29 @@ export async function startServer(
 /**
  * Stop a server process
  */
-export function stopServer(process: ChildProcess): void {
-  try {
-    // Kill the process group (negative PID)
-    if (process.pid) {
-      // On Unix, kill the process group
-      try {
-        process.kill('SIGTERM');
-      } catch {
-        // Process may already be dead
-      }
-    }
-  } catch {
-    // Ignore errors during cleanup
-  }
+export function stopServer(child: ChildProcess): void {
+  if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+
+  // Preserve the synchronous cleanup API, but keep Node alive until this exact
+  // child exits. SIGTERM alone is insufficient if its handler stalls or ignores
+  // shutdown. The server has a 5s graceful deadline; allow it 7s before escalation.
+  child.ref();
+  const finish = () => {
+    clearTimeout(escalate);
+    child.removeListener('exit', finish);
+    child.removeListener('error', onError);
+    child.unref();
+  };
+  const onError = (error: Error) => {
+    console.error(`[ServerLifecycle] Could not stop child ${child.pid}: ${error.message}`);
+    finish();
+  };
+  const escalate = setTimeout(() => {
+    if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+  }, 7000);
+  child.once('exit', finish);
+  child.once('error', onError);
+  child.kill('SIGTERM');
 }
 
 /**

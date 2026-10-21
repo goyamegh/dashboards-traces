@@ -11,7 +11,7 @@
 import 'dotenv/config';
 import { ChildProcess } from 'child_process';
 import config from './config/index.js';
-import { createApp } from './app.js';
+import { createApp, installAppShutdown } from './app.js';
 import { getStorageConfigFromFile, getObservabilityConfigFromFile, getStorageConfigFromTs, getObservabilityConfigFromTs } from './services/configService.js';
 import { findObservioRoot, spawnObservioAgent, OBSERVIO_DEFAULT_PORT, resetObservioPort, isPortFree, setObservioPort, waitForObservioReady, killObservioAgent } from './services/observioAgent.js';
 import { validateAwsCredentials } from './services/tracesService.js';
@@ -105,6 +105,23 @@ async function tryStartObservioAgent(): Promise<void> {
   }
 }
 
+/** Stop the observio sample agent if we spawned it. */
+function stopObservioAgent(): void {
+  if (observioChild && !observioChild.killed) {
+    console.log('  Stopping observio sample agent...');
+    observioChild.kill('SIGTERM');
+    observioChild = null;
+    resetObservioPort();
+  }
+}
+
+function stopCodingAgentRefresh(): void {
+  try {
+    const { codingAgentRegistry } = require('./services/codingAgents');
+    codingAgentRegistry?.stopBackgroundRefresh();
+  } catch { /* registry may not be initialized */ }
+}
+
 async function startServer() {
   const app = await createApp();
 
@@ -175,30 +192,11 @@ async function startServer() {
           console.warn(`[bootRecovery] Could not start: ${err?.message || err}`);
         }
 
-        // Graceful shutdown — stop background timers, kill child processes, drain connections
-        const shutdown = (signal: string) => {
-          console.log(`\n  Received ${signal}, shutting down gracefully...`);
-          // Stop the observio sample agent if we spawned it
-          if (observioChild && !observioChild.killed) {
-            console.log('  Stopping observio sample agent...');
-            observioChild.kill('SIGTERM');
-            observioChild = null;
-            resetObservioPort();
-          }
-          try {
-            const { codingAgentRegistry } = require('./services/codingAgents');
-            if (codingAgentRegistry) {
-              codingAgentRegistry.stopBackgroundRefresh();
-            }
-          } catch { /* registry may not be initialized */ }
-          server.close(() => {
-            console.log('  Server closed.');
-            process.exit(0);
-          });
-          setTimeout(() => process.exit(0), 5000).unref();
-        };
-        process.on('SIGTERM', () => shutdown('SIGTERM'));
-        process.on('SIGINT', () => shutdown('SIGINT'));
+        // Graceful shutdown — stop the observio child + background timers, flush
+        // telemetry, close the listener, exit within the shared bound.
+        installAppShutdown(server, {
+          cleanup: [stopObservioAgent, stopCodingAgentRefresh],
+        });
 
         resolve();
       });
