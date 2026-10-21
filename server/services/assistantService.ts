@@ -342,7 +342,7 @@ Use them. Don't ask permission — you are already authorized (\`--dangerously-s
 ### How to investigate Agent Health questions
 
 The user is running Agent Health locally:
-- **Frontend** (Vite/React, hash router): http://localhost:${frontendPort}
+- **Frontend** (Vite/React, PATH-routed BrowserRouter — never use /#/ hash URLs): http://localhost:${frontendPort}
 - **Backend** (Express, REST): http://localhost:${backendPort}
 
 Prefer hitting the backend API directly (faster and more structured than DOM scraping). Useful endpoints:
@@ -370,7 +370,7 @@ Example workflow for "which tests passed for which agent?" on the comparison pag
 2. For each run id, \`curl http://localhost:${backendPort}/api/storage/runs/by-benchmark-run/<benchmarkId>/<runId>\` to get the per-test-case pass/fail for that agent.
 3. Cross-tabulate by \`testCaseId\` and present the result.
 
-Reach for \`chrome-devtools\` (navigate, take_screenshot, evaluate_script) when the user is asking about something visual that the API can't capture — e.g. "what does the trajectory diff look like for test X?". The frontend route is hash-based, so URLs look like http://localhost:${frontendPort}/#/compare/<benchmarkId>?runs=<id1>,<id2>.
+Reach for \`chrome-devtools\` (navigate, take_screenshot, evaluate_script) when the user is asking about something visual that the API can't capture — e.g. "what does the trajectory diff look like for test X?". The frontend is PATH-routed, so URLs look like http://localhost:${frontendPort}/compare/<benchmarkId>?runs=<id1>,<id2> and http://localhost:${frontendPort}/evaluations/benchmarks/<benchmarkId>/runs/<runId>/inspect?reportId=<reportId>. Never emit /#/ hash routes.
 
 ### Evaluator Architecture Knowledge
 
