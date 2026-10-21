@@ -47,6 +47,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { AssistantProvider } from "@/components/assistant-ui/AssistantProvider";
 import { AssistantModal } from "@/components/assistant-ui/AssistantModal";
+import { AskSurface } from "@/components/ask/AskSurface";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -530,7 +531,7 @@ export const Layout: React.FC<LayoutProps> = ({ children }) => {
           <span className="w-10" aria-hidden="true" />
         </div>
         <AssistantProvider>
-          {children}
+          <AskSurface>{children}</AskSurface>
           <AssistantModal />
         </AssistantProvider>
       </SidebarInset>
