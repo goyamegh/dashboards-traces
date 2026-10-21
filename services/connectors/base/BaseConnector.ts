@@ -240,7 +240,7 @@ export abstract class BaseConnector implements AgentConnector {
     request: { method: string; url: string; body?: string; defaultHeaders?: Record<string, string> },
     init?: {
       signal?: AbortSignal;
-      /** Transport override (e.g. `fetchWithTimeout`); defaults to global `fetch`. Called once per attempt. */
+      /** Transport override (e.g. a fetch with an explicit timeout); defaults to global `fetch`. Called once per attempt. */
       fetchImpl?: (url: string, init: RequestInit) => Promise<Response>;
     }
   ): Promise<Response> {
