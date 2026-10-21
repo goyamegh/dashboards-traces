@@ -20,6 +20,11 @@ import { proposeImprovement } from '@/services/skills/improver';
 import type { Skill, SkillBenchmarkResult } from '@/types';
 
 const mockSend = jest.fn();
+const mockCredentialProvider = jest.fn();
+
+jest.mock('@/lib/aws/refreshingCredentialProvider', () => ({
+  createRefreshingCredentialProvider: jest.fn(() => mockCredentialProvider),
+}));
 
 jest.mock('@aws-sdk/client-bedrock-runtime', () => ({
   BedrockRuntimeClient: jest.fn(() => ({ send: mockSend })),
@@ -87,6 +92,15 @@ describe('Bedrock call-site wiring (#298 region prefix, #299 temperature)', () =
       expect(cmd.modelId).toBe('eu.anthropic.claude-sonnet-4-6');
     });
 
+    it('builds its per-call Bedrock client on the refreshing credential provider, not the implicit default chain (#569)', async () => {
+      mockSend.mockResolvedValue({
+        output: { message: { content: [{ text: `<EVALS_JSON>${VALID_EVALS_JSON}</EVALS_JSON>` }] } },
+      });
+      await generateEvals(makeSkill(), 'http://localhost:4001').catch(() => {});
+      const { BedrockRuntimeClient } = require('@aws-sdk/client-bedrock-runtime');
+      expect(BedrockRuntimeClient).toHaveBeenCalledWith(expect.objectContaining({ credentials: mockCredentialProvider }));
+    });
+
     it('omits temperature for a model that deprecated it, keeps it for one that accepts it', async () => {
       process.env.AWS_REGION = 'us-east-1';
       mockSend.mockResolvedValue({
@@ -122,6 +136,8 @@ describe('Bedrock call-site wiring (#298 region prefix, #299 temperature)', () =
       expect(cmd.modelId).toBe('apac.anthropic.claude-opus-4-8');
       expect(cmd.inferenceConfig.temperature).toBeUndefined();
       expect(cmd.inferenceConfig.maxTokens).toBe(8192);
+      const { BedrockRuntimeClient } = require('@aws-sdk/client-bedrock-runtime');
+      expect(BedrockRuntimeClient).toHaveBeenCalledWith(expect.objectContaining({ credentials: mockCredentialProvider })); // #569
     });
 
     it('keeps temperature 0.3 for a model that still accepts it', async () => {

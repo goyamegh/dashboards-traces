@@ -16,6 +16,7 @@ import type { Skill, SkillEvalsFile } from '@/types';
 import { debug } from '@/lib/debug';
 import { DEFAULT_SKILL_MODEL_ID } from './constants';
 import { buildInferenceConfig, resolveRegionAwareModelId } from '@/lib/bedrockCompat';
+import { createRefreshingCredentialProvider } from '@/lib/aws/refreshingCredentialProvider';
 
 /**
  * Generate eval cases by calling Bedrock with the skill's instructions.
@@ -32,6 +33,9 @@ export async function generateEvals(
 
   const client = new BedrockRuntimeClient({
     region: process.env.AWS_REGION || 'us-west-2',
+    // Per-call client, but the default chain reads ~/.aws/credentials through a
+    // process-wide file cache — a rotated profile would still be invisible (#569).
+    credentials: createRefreshingCredentialProvider(),
   });
 
   const command = new ConverseCommand({

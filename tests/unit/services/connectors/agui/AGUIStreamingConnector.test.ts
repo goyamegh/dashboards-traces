@@ -103,11 +103,15 @@ describe('AGUIStreamingConnector', () => {
 
       // The payload is serialised ONCE in the connector and passed as the exact
       // string to send (so an aws-sigv4 signature covers the same bytes).
+      // Headers are not passed to the SSE client: the request itself is sent by
+      // the connector's fetchSigned (auth/signing + credential-rejection retry)
+      // through the `fetchResponse` hook.
       expect(consumeSSEStream).toHaveBeenCalledWith(
         'http://localhost:8080/stream',
         expect.any(String),
         expect.any(Function),
-        {}
+        undefined,
+        { fetchResponse: expect.any(Function) }
       );
       const sentBody = (consumeSSEStream as jest.Mock).mock.calls[0][1];
       expect(JSON.parse(sentBody)).toEqual(connector.buildPayload(request));
@@ -127,12 +131,26 @@ describe('AGUIStreamingConnector', () => {
         { type: 'bearer', token: 'my-token' }
       );
 
-      expect(consumeSSEStream).toHaveBeenCalledWith(
-        expect.any(String),
-        expect.any(String),
-        expect.any(Function),
-        expect.objectContaining({ 'Authorization': 'Bearer my-token' })
-      );
+      // The hook performs the real request with the auth headers, the SSE
+      // client's default headers, the exact body string and the client's signal.
+      const { fetchResponse } = (consumeSSEStream as jest.Mock).mock.calls[0][4];
+      const sentBody = (consumeSSEStream as jest.Mock).mock.calls[0][1];
+      const fetchMock = jest.spyOn(global, 'fetch').mockResolvedValue({ ok: true, status: 200, headers: new Map() } as unknown as Response);
+      try {
+        const signal = new AbortController().signal;
+        await fetchResponse(signal);
+        expect(fetchMock).toHaveBeenCalledWith(
+          'http://localhost:8080/stream',
+          expect.objectContaining({
+            method: 'POST',
+            body: sentBody,
+            signal,
+            headers: expect.objectContaining({ Authorization: 'Bearer my-token' }),
+          })
+        );
+      } finally {
+        fetchMock.mockRestore();
+      }
     });
 
     it('should return response with trajectory and metadata', async () => {

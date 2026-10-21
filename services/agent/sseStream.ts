@@ -36,6 +36,13 @@ export interface SSEClientOptions {
   completeOnRunEnd?: boolean;
   /** Timeout (ms) after last event to assume stream is complete (default: 120000) */
   idleTimeoutMs?: number;
+  /**
+   * Bring-your-own request: when set, the client calls this instead of its own
+   * `fetch(url, …)` and streams the returned response. Lets a connector send
+   * the request through its signing/retry path (`BaseConnector.fetchSigned`)
+   * while this client still owns the abort signal and stream processing.
+   */
+  fetchResponse?: (signal: AbortSignal) => Promise<Response>;
 }
 
 export class SSEClient {
@@ -55,6 +62,7 @@ export class SSEClient {
       onComplete,
       completeOnRunEnd = false,
       idleTimeoutMs = 120000, // 2 minute idle timeout by default (LLM agents can be slow)
+      fetchResponse,
     } = options;
 
     this.abortController = new AbortController();
@@ -78,7 +86,9 @@ export class SSEClient {
       };
       debug('SSE', 'Request config:', JSON.stringify(requestConfig, null, 2).substring(0, 500));
 
-      const response = await fetch(url, requestConfig);
+      const response = fetchResponse
+        ? await fetchResponse(this.abortController.signal)
+        : await fetch(url, requestConfig);
 
       debug('SSE', 'Response received:', response.status, response.statusText);
 
@@ -274,7 +284,7 @@ export async function consumeSSEStream(
   payload: any,
   onEvent: (event: AGUIEvent) => void,
   headers?: Record<string, string>,
-  options?: { idleTimeoutMs?: number }
+  options?: { idleTimeoutMs?: number; fetchResponse?: SSEClientOptions['fetchResponse'] }
 ): Promise<void> {
   const client = new SSEClient();
 
@@ -291,6 +301,7 @@ export async function consumeSSEStream(
       // This prevents hanging when the agent doesn't close the connection
       completeOnRunEnd: true,
       idleTimeoutMs: options?.idleTimeoutMs,
+      fetchResponse: options?.fetchResponse,
     });
   });
 }

@@ -17,6 +17,7 @@ import { parseJudgeResponse } from '@/server/services/judgeResponseParser';
 import { buildJudgeDebug } from '@/server/services/judgeDebug';
 import { getAgentSourceForPrompt, isAgentPathConfigured } from '@/server/services/agentPath';
 import { buildInferenceConfig, resolveRegionAwareModelId } from '@/lib/bedrockCompat';
+import { createRefreshingCredentialProvider } from '@/lib/aws/refreshingCredentialProvider';
 
 // ============================================================================
 // Types
@@ -136,8 +137,13 @@ export interface JudgeResponse {
 // Bedrock Client Initialization
 // ============================================================================
 
+// Long-lived client: the SDK's default chain would pin the first static
+// profile key it resolves for the life of the process (#569). The refreshing
+// provider keeps the same credential selection ($AWS_PROFILE / default chain
+// order) but re-reads rotated credentials.
 const bedrockClient = new BedrockRuntimeClient({
   region: config.AWS_REGION,
+  credentials: createRefreshingCredentialProvider(),
 });
 
 // ============================================================================

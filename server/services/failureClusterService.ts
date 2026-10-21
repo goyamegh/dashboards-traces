@@ -20,6 +20,7 @@ import { BedrockRuntimeClient, ConverseCommand } from '@aws-sdk/client-bedrock-r
 import config from '../config';
 import { debug } from '@/lib/debug';
 import { buildInferenceConfig, resolveRegionAwareModelId } from '@/lib/bedrockCompat';
+import { createRefreshingCredentialProvider } from '@/lib/aws/refreshingCredentialProvider';
 import type { ImprovementStrategy } from '@/types';
 
 export interface FailureCaseEvidence {
@@ -79,8 +80,13 @@ const DEFAULT_MODEL_ID =
   process.env.SKILL_IMPROVER_MODEL_ID ||
   'us.anthropic.claude-sonnet-4-5-20250929-v1:0';
 
+// Long-lived client: the SDK's default chain would pin the first static
+// profile key it resolves for the life of the process (#569). The refreshing
+// provider keeps the same credential selection ($AWS_PROFILE / default chain
+// order) but re-reads rotated credentials.
 const bedrockClient = new BedrockRuntimeClient({
   region: config.AWS_REGION,
+  credentials: createRefreshingCredentialProvider(),
 });
 
 // ─── In-memory caches ─────────────────────────────────────────────────────

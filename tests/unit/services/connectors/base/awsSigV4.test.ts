@@ -16,9 +16,11 @@ jest.mock('@aws-sdk/credential-providers', () => ({
 import {
   SigV4SigningError,
   clearSigV4ProviderCache,
+  refreshSigV4Credentials,
   resolveSigV4CredentialProvider,
   signAwsSigV4Request,
 } from '@/services/connectors/base/awsSigV4';
+import { DEFAULT_CREDENTIAL_TTL_MS } from '@/lib/aws/refreshingCredentialProvider';
 
 const STATIC: ConnectorAuth = {
   type: 'aws-sigv4',
@@ -299,48 +301,62 @@ describe('signAwsSigV4Request', () => {
       expect(mockFromNodeProviderChain).not.toHaveBeenCalled();
     });
 
-    it('falls back to fromNodeProviderChain with auth.awsProfile and resolves credentials per request', async () => {
-      const provider = jest
-        .fn()
-        .mockResolvedValueOnce({ accessKeyId: 'AKID-FIRST', secretAccessKey: 's1', sessionToken: 'tok1' })
-        .mockResolvedValueOnce({ accessKeyId: 'AKID-ROTATED', secretAccessKey: 's2' });
-      mockFromNodeProviderChain.mockReturnValue(provider);
+    it('falls back to a refreshing provider over fromNodeProviderChain(auth.awsProfile) and picks up rotated credentials after the TTL', async () => {
+      jest.useFakeTimers({ now: new Date('2026-01-02T03:00:00Z') });
+      try {
+        const provider = jest
+          .fn()
+          .mockResolvedValueOnce({ accessKeyId: 'AKID-FIRST', secretAccessKey: 's1', sessionToken: 'tok1' })
+          .mockResolvedValueOnce({ accessKeyId: 'AKID-ROTATED', secretAccessKey: 's2' });
+        mockFromNodeProviderChain.mockReturnValue(provider);
 
-      const auth: ConnectorAuth = { type: 'aws-sigv4', awsRegion: 'eu-west-1', awsService: 'lambda', awsProfile: 'eval' };
-      const { headers: h1 } = await signAwsSigV4Request({ auth, method: 'POST', url: URL_, body: BODY, headers: {}, signingDate: SIGNING_DATE });
-      const { headers: h2 } = await signAwsSigV4Request({ auth, method: 'POST', url: URL_, body: BODY, headers: {}, signingDate: SIGNING_DATE });
+        const auth: ConnectorAuth = { type: 'aws-sigv4', awsRegion: 'eu-west-1', awsService: 'lambda', awsProfile: 'eval' };
+        const sign = () => signAwsSigV4Request({ auth, method: 'POST', url: URL_, body: BODY, headers: {}, signingDate: SIGNING_DATE });
 
-      expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(1); // provider memoised…
-      expect(mockFromNodeProviderChain).toHaveBeenCalledWith(expect.objectContaining({ profile: 'eval', ignoreCache: true }));
-      expect(provider).toHaveBeenCalledTimes(2); // …credentials resolved per request
-      expect(parseAuthorization(h1.authorization).accessKeyId).toBe('AKID-FIRST');
-      expect(h1['x-amz-security-token']).toBe('tok1');
-      expect(parseAuthorization(h2.authorization).accessKeyId).toBe('AKID-ROTATED');
-      expect(h2['x-amz-security-token']).toBeUndefined();
-      expect(parseAuthorization(h1.authorization).region).toBe('eu-west-1');
-      expect(parseAuthorization(h1.authorization).service).toBe('lambda');
+        const { headers: h1 } = await sign();
+        const { headers: h2 } = await sign(); // inside the TTL → same credentials, no re-resolution
+        jest.advanceTimersByTime(DEFAULT_CREDENTIAL_TTL_MS);
+        const { headers: h3 } = await sign(); // TTL elapsed → fresh chain, rotated key
+
+        expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(2); // one FRESH chain per resolution…
+        expect(mockFromNodeProviderChain).toHaveBeenCalledWith({ profile: 'eval', ignoreCache: true });
+        expect(provider).toHaveBeenCalledTimes(2); // …not per request
+        expect(parseAuthorization(h1.authorization).accessKeyId).toBe('AKID-FIRST');
+        expect(h1['x-amz-security-token']).toBe('tok1');
+        expect(parseAuthorization(h2.authorization).accessKeyId).toBe('AKID-FIRST');
+        expect(parseAuthorization(h3.authorization).accessKeyId).toBe('AKID-ROTATED');
+        expect(h3['x-amz-security-token']).toBeUndefined();
+        expect(parseAuthorization(h1.authorization).region).toBe('eu-west-1');
+        expect(parseAuthorization(h1.authorization).service).toBe('lambda');
+      } finally {
+        jest.useRealTimers();
+      }
     });
 
-    it('uses $AWS_PROFILE when awsProfile is not set, and no profile at all otherwise', () => {
-      mockFromNodeProviderChain.mockReturnValue(jest.fn());
+    it('uses $AWS_PROFILE when awsProfile is not set, and no profile at all otherwise', async () => {
+      mockFromNodeProviderChain.mockReturnValue(async () => ({ accessKeyId: 'k', secretAccessKey: 's' }));
       process.env.AWS_PROFILE = 'from-env';
-      resolveSigV4CredentialProvider({ type: 'aws-sigv4', awsRegion: 'r', awsService: 's' });
+      await resolveSigV4CredentialProvider({ type: 'aws-sigv4', awsRegion: 'r', awsService: 's' })();
       expect(mockFromNodeProviderChain).toHaveBeenLastCalledWith(expect.objectContaining({ profile: 'from-env' }));
 
       delete process.env.AWS_PROFILE;
       clearSigV4ProviderCache();
-      resolveSigV4CredentialProvider({ type: 'aws-sigv4', awsRegion: 'r', awsService: 's' });
+      await resolveSigV4CredentialProvider({ type: 'aws-sigv4', awsRegion: 'r', awsService: 's' })();
       expect(mockFromNodeProviderChain).toHaveBeenLastCalledWith(expect.not.objectContaining({ profile: expect.anything() }));
     });
 
-    it('memoises one provider per profile', () => {
-      mockFromNodeProviderChain.mockImplementation(() => jest.fn());
+    it('keeps one refreshing provider per profile (the chain itself is only built when credentials are resolved)', async () => {
+      mockFromNodeProviderChain.mockImplementation(() => async () => ({ accessKeyId: 'k', secretAccessKey: 's' }));
       const a1 = resolveSigV4CredentialProvider({ type: 'aws-sigv4', awsProfile: 'a' });
       const a2 = resolveSigV4CredentialProvider({ type: 'aws-sigv4', awsProfile: 'a' });
       const b = resolveSigV4CredentialProvider({ type: 'aws-sigv4', awsProfile: 'b' });
       expect(a1).toBe(a2);
       expect(b).not.toBe(a1);
+      expect(mockFromNodeProviderChain).not.toHaveBeenCalled();
+      await Promise.all([a1(), a2(), b()]);
       expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(2);
+      expect(mockFromNodeProviderChain).toHaveBeenCalledWith({ profile: 'a', ignoreCache: true });
+      expect(mockFromNodeProviderChain).toHaveBeenCalledWith({ profile: 'b', ignoreCache: true });
     });
   });
 
@@ -385,5 +401,39 @@ describe('signAwsSigV4Request', () => {
       );
       expect(err.cause).toBeInstanceOf(Error);
     });
+  });
+});
+
+describe('refreshSigV4Credentials', () => {
+  const PROFILE_AUTH: ConnectorAuth = { type: 'aws-sigv4', awsRegion: 'us-west-2', awsService: 'execute-api', awsProfile: 'eval' };
+
+  beforeEach(() => {
+    clearSigV4ProviderCache();
+    mockFromNodeProviderChain.mockReset();
+  });
+
+  it('forces the per-profile provider to re-resolve; a no-op for static keys and unresolved profiles', async () => {
+    const chain = jest.fn().mockResolvedValue({ accessKeyId: 'k', secretAccessKey: 's' });
+    mockFromNodeProviderChain.mockReturnValue(chain);
+
+    await refreshSigV4Credentials(PROFILE_AUTH); // nothing resolved yet → nothing to refresh
+    expect(mockFromNodeProviderChain).not.toHaveBeenCalled();
+
+    await resolveSigV4CredentialProvider(PROFILE_AUTH)();
+    expect(chain).toHaveBeenCalledTimes(1);
+    await refreshSigV4Credentials(PROFILE_AUTH);
+    expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(2); // fresh chain, resolved again
+    expect(mockFromNodeProviderChain).toHaveBeenLastCalledWith({ profile: 'eval', ignoreCache: true });
+
+    await refreshSigV4Credentials(STATIC);
+    expect(mockFromNodeProviderChain).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed forced re-resolution propagates (the caller decides how to report it)', async () => {
+    mockFromNodeProviderChain
+      .mockReturnValueOnce(jest.fn().mockResolvedValue({ accessKeyId: 'k', secretAccessKey: 's' }))
+      .mockReturnValueOnce(jest.fn().mockRejectedValue(new Error('Could not load credentials from any providers')));
+    await resolveSigV4CredentialProvider(PROFILE_AUTH)();
+    await expect(refreshSigV4Credentials(PROFILE_AUTH)).rejects.toThrow('Could not load credentials from any providers');
   });
 });

@@ -13,7 +13,6 @@
 
 import type { TrajectoryStep, ToolCallStatus } from '@/types';
 import { BaseConnector } from '@/services/connectors/base/BaseConnector';
-import { withDefaultHeaders } from '@/lib/httpHeaders';
 import type {
   ConnectorAuth,
   ConnectorRequest,
@@ -86,18 +85,8 @@ export class LangGraphConnector extends BaseConnector {
     // exactly the bytes sent to the final invoke URL.
     const body = JSON.stringify(payload);
     const defaultHeaders = { 'Content-Type': 'application/json' };
-    const { url, headers } = await this.prepareRequest(auth, {
-      method: 'POST',
-      url: invokeUrl,
-      body,
-      defaultHeaders,
-    });
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: withDefaultHeaders(defaultHeaders, headers),
-      body,
-    });
+    const response = await this.fetchSigned(auth, { method: 'POST', url: invokeUrl, body, defaultHeaders });
 
     if (!response.ok) {
       const errorText = await response.text();

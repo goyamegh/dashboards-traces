@@ -16,6 +16,12 @@ jest.mock('@aws-sdk/client-bedrock-agent-runtime', () => ({
   InvokeAgentCommand: jest.fn().mockImplementation((params: any) => params),
 }));
 
+const mockCredentialProvider = jest.fn();
+const mockCreateRefreshingCredentialProvider = jest.fn(() => mockCredentialProvider);
+jest.mock('@/lib/aws/refreshingCredentialProvider', () => ({
+  createRefreshingCredentialProvider: (...args: unknown[]) => mockCreateRefreshingCredentialProvider(...args),
+}));
+
 const mockAgentSend = jest.fn();
 jest.mock('@aws-sdk/client-bedrock-agent', () => ({
   BedrockAgentClient: jest.fn().mockImplementation(() => ({
@@ -276,6 +282,17 @@ describe('StrandsConnector', () => {
       );
     });
 
+    it('without explicit keys, builds the client on the refreshing credential provider for auth.awsProfile (#569)', async () => {
+      mockSend.mockResolvedValue(createStreamingResponse([]));
+      mockCreateRefreshingCredentialProvider.mockClear();
+
+      await connector.execute('AGENT123', { testCase: mockTestCase }, { type: 'aws-sigv4', awsRegion: 'us-west-2', awsProfile: 'eval' });
+
+      expect(mockCreateRefreshingCredentialProvider).toHaveBeenCalledWith({ profile: 'eval' });
+      const { BedrockAgentRuntimeClient } = require('@aws-sdk/client-bedrock-agent-runtime');
+      expect(BedrockAgentRuntimeClient).toHaveBeenLastCalledWith({ region: 'us-west-2', credentials: mockCredentialProvider });
+    });
+
     it('should return metadata with agent and session info', async () => {
       mockSend.mockResolvedValue(createStreamingResponse([]));
 
@@ -481,6 +498,8 @@ describe('StrandsConnector', () => {
       const result = await connector.healthCheck('AGENT123', mockAuth);
 
       expect(result).toBe(true);
+      const { BedrockAgentClient } = require('@aws-sdk/client-bedrock-agent');
+      expect(BedrockAgentClient).toHaveBeenLastCalledWith(expect.objectContaining({ credentials: mockCredentialProvider })); // #569
     });
 
     it('should return false when agent is not PREPARED', async () => {

@@ -17,7 +17,6 @@
 
 import type { TrajectoryStep, ToolCallStatus } from '@/types';
 import { BaseConnector } from '@/services/connectors/base/BaseConnector';
-import { withDefaultHeaders } from '@/lib/httpHeaders';
 import type {
   ConnectorAuth,
   ConnectorRequest,
@@ -134,21 +133,11 @@ export class OpenAICompatibleConnector extends BaseConnector {
     // exactly the bytes sent.
     const body = JSON.stringify(payload);
     const defaultHeaders = { 'Content-Type': 'application/json' };
-    const { url, headers } = await this.prepareRequest(auth, {
-      method: 'POST',
-      url: endpoint,
-      body,
-      defaultHeaders,
-    });
     this.debug('Executing OpenAI-compatible request');
-    this.debug('Endpoint:', url);
+    this.debug('Endpoint:', endpoint);
     this.debug('Model:', payload.model);
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: withDefaultHeaders(defaultHeaders, headers),
-      body,
-    });
+    const response = await this.fetchSigned(auth, { method: 'POST', url: endpoint, body, defaultHeaders });
 
     if (!response.ok) {
       const errorText = await response.text();
