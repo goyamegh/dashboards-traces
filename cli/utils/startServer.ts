@@ -93,7 +93,7 @@ export async function startServer(options: StartOptions): Promise<number> {
   // No IPC channel exists for a directly invoked `serve`. A parent that exits
   // during startup must not turn a notification failure into a server crash.
   if (process.send && process.connected) {
-    process.send({ type: 'agent-health:server-ready', port: actualPort }, () => {});
+    process.send({ type: 'agent-health:server-ready', port: actualPort }, undefined, undefined, () => {});
   }
   return actualPort;
 }

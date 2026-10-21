@@ -270,8 +270,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build server
-        run: npm run build:server
+      - name: Build packaged CLI and server
+        # The lifecycle regression runs the production package (CLI + SDK +
+        # server + frontend assets), not a source-mode CLI against a mock server.
+        run: npm run build:all
 
       - name: Wait for OpenSearch to be healthy
         run: |
