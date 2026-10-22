@@ -40,6 +40,43 @@ const checkBackend = async (): Promise<boolean> => {
 // or other test runs sharing the cluster.
 const NAME_MARKER = `createvalidation-integration-${Date.now()}-${process.pid}`;
 
+/**
+ * "Nothing was persisted" without comparing global totals.
+ *
+ * The first version of these tests asserted `after.total === before.total`
+ * on the collection endpoints. That is a GLOBAL count: any other writer — a
+ * sibling jest worker creating its own fixtures, another developer on a
+ * shared cluster — moves it between the two reads and the test fails for a
+ * reason unrelated to the route under test (observed: 24/24 green serially,
+ * red under the default parallel workers; and "Expected 2945, Received
+ * 2946" against a shared cluster). Assert only on data THIS test owns
+ * instead: the rejected body carries a unique marker in a field that WOULD
+ * be stored if the route wrongly persisted it, and the collection is scanned
+ * for that marker afterwards. The scan is read-only and independent of what
+ * anyone else creates or deletes meanwhile.
+ */
+async function listItems(url: string, key: 'testCases' | 'benchmarks'): Promise<any[]> {
+  const body = await fetch(url).then((r) => r.json());
+  return (body?.[key] ?? body?.items ?? []) as any[];
+}
+
+function itemsMentioning(items: any[], marker: string): any[] {
+  return items.filter((item) => JSON.stringify(item).includes(marker));
+}
+
+/**
+ * Secondary, owner-independent check: every document that appeared since
+ * `beforeIds` must carry a non-empty string name. Concurrent writers can only
+ * create documents through the same validated routes, so a nameless newcomer
+ * can only come from the rejected body under test having been persisted.
+ */
+function newNamelessItems(items: any[], beforeIds: Set<string>): any[] {
+  return items.filter((item) => !beforeIds.has(item.id) && !(typeof item.name === 'string' && item.name.trim()));
+}
+
+const TEST_CASES_URL = `${BASE_URL}/api/storage/test-cases?includeSample=false`;
+const BENCHMARKS_URL = `${BASE_URL}/api/storage/benchmarks?includeSample=false`;
+
 // Track every id this suite creates, deleted by id only (never by name scan).
 const createdTestCaseIds: string[] = [];
 const createdBenchmarkIds: string[] = [];
@@ -86,16 +123,21 @@ describe('Storage create-route validation (regression: empty/garbage body must 4
       expect(body.error.toLowerCase()).toContain('name');
     });
 
-    it('does not persist anything for the rejected empty body', async () => {
+    it('does not persist anything for the rejected nameless body', async () => {
       if (!backendAvailable) return;
-      const before = await fetch(`${BASE_URL}/api/storage/test-cases?includeSample=false`).then((r) => r.json());
-      await fetch(`${BASE_URL}/api/storage/test-cases`, {
+      const marker = `${NAME_MARKER}-tc-rejected-marker`;
+      const beforeIds = new Set((await listItems(TEST_CASES_URL, 'testCases')).map((tc) => tc.id));
+      const response = await fetch(`${BASE_URL}/api/storage/test-cases`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        // Nameless (the rejection trigger) but otherwise storable — if the
+        // route persisted it anyway, the marker would be findable.
+        body: JSON.stringify({ initialPrompt: marker, description: marker }),
       });
-      const after = await fetch(`${BASE_URL}/api/storage/test-cases?includeSample=false`).then((r) => r.json());
-      expect(after.total).toBe(before.total);
+      expect(response.status).toBe(400);
+      const after = await listItems(TEST_CASES_URL, 'testCases');
+      expect(itemsMentioning(after, marker)).toEqual([]);
+      expect(newNamelessItems(after, beforeIds)).toEqual([]);
     }, 60000);
 
     it('rejects a body with a non-string name with 400', async () => {
@@ -133,7 +175,8 @@ describe('Storage create-route validation (regression: empty/garbage body must 4
   describe('POST /api/storage/test-cases/bulk', () => {
     it('rejects a batch containing a nameless item with 400 (never persists, never 500)', async () => {
       if (!backendAvailable) return;
-      const before = await fetch(`${BASE_URL}/api/storage/test-cases?includeSample=false`).then((r) => r.json());
+      const marker = `${NAME_MARKER}-bulk-rejected-marker`;
+      const beforeIds = new Set((await listItems(TEST_CASES_URL, 'testCases')).map((tc) => tc.id));
 
       const response = await fetch(`${BASE_URL}/api/storage/test-cases/bulk`, {
         method: 'POST',
@@ -141,7 +184,7 @@ describe('Storage create-route validation (regression: empty/garbage body must 4
         body: JSON.stringify({
           testCases: [
             { name: `${NAME_MARKER}-bulk-valid` },
-            {}, // garbage item
+            { initialPrompt: marker }, // garbage item: nameless
           ],
         }),
       });
@@ -149,8 +192,12 @@ describe('Storage create-route validation (regression: empty/garbage body must 4
       const body = await response.json();
       expect(typeof body.error).toBe('string');
 
-      const after = await fetch(`${BASE_URL}/api/storage/test-cases?includeSample=false`).then((r) => r.json());
-      expect(after.total).toBe(before.total);
+      // The batch is rejected atomically: neither the garbage item nor its
+      // valid sibling may have been written.
+      const after = await listItems(TEST_CASES_URL, 'testCases');
+      expect(itemsMentioning(after, marker)).toEqual([]);
+      expect(after.filter((tc) => tc.name === `${NAME_MARKER}-bulk-valid`)).toEqual([]);
+      expect(newNamelessItems(after, beforeIds)).toEqual([]);
     }, 60000);
 
     it('rejects a non-array body with 400', async () => {
@@ -199,16 +246,19 @@ describe('Storage create-route validation (regression: empty/garbage body must 4
       expect(body.error.toLowerCase()).toContain('name');
     });
 
-    it('does not persist anything for the rejected empty body', async () => {
+    it('does not persist anything for the rejected nameless body', async () => {
       if (!backendAvailable) return;
-      const before = await fetch(`${BASE_URL}/api/storage/benchmarks?includeSample=false`).then((r) => r.json());
-      await fetch(`${BASE_URL}/api/storage/benchmarks`, {
+      const marker = `${NAME_MARKER}-bm-rejected-marker`;
+      const beforeIds = new Set((await listItems(BENCHMARKS_URL, 'benchmarks')).map((b) => b.id));
+      const response = await fetch(`${BASE_URL}/api/storage/benchmarks`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({}),
+        body: JSON.stringify({ description: marker, testCaseIds: [] }),
       });
-      const after = await fetch(`${BASE_URL}/api/storage/benchmarks?includeSample=false`).then((r) => r.json());
-      expect(after.total).toBe(before.total);
+      expect(response.status).toBe(400);
+      const after = await listItems(BENCHMARKS_URL, 'benchmarks');
+      expect(itemsMentioning(after, marker)).toEqual([]);
+      expect(newNamelessItems(after, beforeIds)).toEqual([]);
     });
 
     it('rejects testCaseIds that is not an array of strings with 400', async () => {
@@ -240,20 +290,22 @@ describe('Storage create-route validation (regression: empty/garbage body must 4
   describe('POST /api/storage/benchmarks/bulk', () => {
     it('does not persist a nameless item from a mixed batch (regression: previously always persisted)', async () => {
       if (!backendAvailable) return;
-      const before = await fetch(`${BASE_URL}/api/storage/benchmarks?includeSample=false`).then((r) => r.json());
+      const marker = `${NAME_MARKER}-bulk-bm-rejected-marker`;
+      const beforeIds = new Set((await listItems(BENCHMARKS_URL, 'benchmarks')).map((b) => b.id));
 
       const response = await fetch(`${BASE_URL}/api/storage/benchmarks/bulk`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ benchmarks: [{}] }),
+        body: JSON.stringify({ benchmarks: [{ description: marker, testCaseIds: [] }] }),
       });
       expect(response.ok).toBe(true);
       const body = await response.json();
       expect(body.created).toBe(0);
       expect(body.errors).toBeGreaterThanOrEqual(1);
 
-      const after = await fetch(`${BASE_URL}/api/storage/benchmarks?includeSample=false`).then((r) => r.json());
-      expect(after.total).toBe(before.total);
+      const after = await listItems(BENCHMARKS_URL, 'benchmarks');
+      expect(itemsMentioning(after, marker)).toEqual([]);
+      expect(newNamelessItems(after, beforeIds)).toEqual([]);
     });
 
     it('rejects a non-array body with 400', async () => {

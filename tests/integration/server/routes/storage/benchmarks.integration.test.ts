@@ -47,6 +47,25 @@ const checkBackend = async (): Promise<boolean> => {
   }
 };
 
+/**
+ * Whether the backend can EXECUTE a benchmark run. `POST
+ * /api/storage/benchmarks/:id/execute` hard-requires an OpenSearch storage
+ * client (`isStorageAvailable` → `requireStorageClient`) and answers 400
+ * "OpenSearch not configured" on a healthy file-storage server, so the
+ * execute-then-cancel test below can only run against OpenSearch. The
+ * `/cancel` route itself (and its 404 for an unknown run) works on both
+ * backends and keeps running everywhere.
+ */
+const checkCanExecute = async (): Promise<boolean> => {
+  try {
+    const response = await fetch(`${BASE_URL}/api/storage/health`);
+    const data = await response.json();
+    return data.status === 'ok' && data.backend !== 'file';
+  } catch {
+    return false;
+  }
+};
+
 // Create a test case for the benchmark
 const createTestCase = async (): Promise<string> => {
   const response = await fetch(`${BASE_URL}/api/storage/test-cases`, {
@@ -264,6 +283,7 @@ const startExecutionAndGetRunId = async (benchmarkId: string): Promise<string> =
 
 describe('Benchmark Cancel Integration Tests', () => {
   let backendAvailable = false;
+  let canExecute = false;
   let testCaseId: string | null = null;
   let benchmarkId: string | null = null;
   // Per-test-case report doc(s) the executed-then-cancelled run created.
@@ -278,6 +298,10 @@ describe('Benchmark Cancel Integration Tests', () => {
       console.warn('Backend not available - skipping integration tests');
       console.warn('Start the backend with: npm run dev:server');
       return;
+    }
+    canExecute = await checkCanExecute();
+    if (!canExecute) {
+      console.warn('[benchmarks.integration] file-storage backend: POST .../benchmarks/:id/execute requires OpenSearch (returns 400) — skipping the execute-then-cancel test; the /cancel 404 test still runs');
     }
 
     // Create test fixtures
@@ -307,6 +331,10 @@ describe('Benchmark Cancel Integration Tests', () => {
   it('should immediately update DB status to cancelled when cancel is called', async () => {
     if (!backendAvailable || !benchmarkId) {
       console.warn('Skipping test - backend not available or benchmark not created');
+      return;
+    }
+    if (!canExecute) {
+      console.warn('Skipping test - /execute needs an OpenSearch-backed server (file storage active)');
       return;
     }
 

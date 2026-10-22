@@ -58,6 +58,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { request as httpRequest } from 'http';
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
+import { createTestDataTracker } from '../../helpers/testDataTracker';
 
 function httpGet<T = any>(url: string): Promise<{ status: number; body: T }> {
   return new Promise((resolve, reject) => {
@@ -111,6 +112,11 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
   const reportIds = new Map<string, any>();
   const testCasesByName = new Map<string, any>();
   let benchmarkId = '';
+  // Everything the spawned CLI persists (benchmark, evaluation runs, their
+  // per-case reports, the imported test cases) is deleted in afterAll BY ID
+  // via the shared tracker — this suite used to leave all of it behind on
+  // every run (two test cases + a benchmark + runs + reports per execution).
+  const tracker = createTestDataTracker(BASE_URL);
   let cliStdout = '';
   let cliStderr = '';
   let cliStatus: number | null = null;
@@ -191,9 +197,11 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
     if (benchRunPairs.length === 0) return;
 
     benchmarkId = benchRunPairs[0].bid;
+    tracker.benchmark(benchmarkId);
 
     const allRuns: any[] = [];
     for (const { rid } of benchRunPairs) {
+      tracker.evaluationRun(rid);
       const runRes = await httpGet<any>(`${BASE_URL}/api/storage/evaluation-runs/${rid}`);
       if (runRes.status !== 200) continue;
       allRuns.push(runRes.body);
@@ -207,7 +215,13 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
     }
 
     for (const run of allRuns) {
+      // The run's own snapshots/results name exactly the test cases and
+      // reports this CLI invocation created — track by those ids, never by
+      // name.
+      for (const snapshot of (run.testCaseSnapshots || []) as Array<{ id?: string }>) tracker.testCase(snapshot.id);
       for (const [tcId, result] of Object.entries((run.results || {}) as Record<string, any>)) {
+        tracker.testCase(tcId);
+        tracker.run((result as any).reportId);
         const tcName = (run.testCaseSnapshots || []).find((s: any) => s.id === tcId)?.name;
         if (tcName && (result as any).reportId) {
           const rep = (await httpGet<any>(`${BASE_URL}/api/storage/runs/${(result as any).reportId}`)).body;
@@ -217,9 +231,10 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
     }
   }, TEST_TIMEOUT);
 
-  afterAll(() => {
+  afterAll(async () => {
     if (projectDir) rmSync(projectDir, { recursive: true, force: true });
-  });
+    await tracker.cleanup();
+  }, 60_000);
 
   it('requires a running backend (skip otherwise)', () => {
     if (!backendAvailable) {
