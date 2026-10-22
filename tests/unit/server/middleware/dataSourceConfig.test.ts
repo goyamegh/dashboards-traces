@@ -52,6 +52,57 @@ beforeEach(() => {
   delete process.env.OPENSEARCH_STORAGE_USERNAME;
   delete process.env.OPENSEARCH_LOGS_ENDPOINT;
   delete process.env.OPENSEARCH_LOGS_TRACES_INDEX;
+  delete process.env.OBSERVABILITY_TYPE;
+  delete process.env.CLOUDWATCH_REGION;
+  delete process.env.CLOUDWATCH_AWS_PROFILE;
+  delete process.env.CLOUDWATCH_TRACES_LOG_GROUP;
+  delete process.env.CLOUDWATCH_LOGS_LOG_GROUP;
+  delete process.env.AWS_REGION; // CLOUDWATCH_REGION falls back to it
+});
+
+describe('resolveObservabilityConfig — CloudWatch backend', () => {
+  it('fills log-group defaults for a TS CloudWatch config and drops OpenSearch-only fields', () => {
+    mockObsTs.mockReturnValue({ type: 'cloudwatch', awsRegion: 'us-east-1', awsProfile: 'default' });
+    const cfg = resolveObservabilityConfig(req);
+    expect(cfg).toMatchObject({
+      type: 'cloudwatch',
+      awsRegion: 'us-east-1',
+      awsProfile: 'default',
+      logGroups: { traces: 'aws/spans', logs: '/agent-health/{service.name}' },
+    });
+    expect(cfg?.endpoint).toBeUndefined();
+    expect(cfg?.indexes).toBeUndefined();
+  });
+
+  it('honours custom log groups', () => {
+    mockObsFile.mockReturnValue({ type: 'cloudwatch', awsRegion: 'us-east-1', logGroups: { logs: '/my/{service.name}' } });
+    expect(resolveObservabilityConfig(req)?.logGroups).toEqual({ traces: 'aws/spans', logs: '/my/{service.name}' });
+  });
+
+  it('resolves CloudWatch from env (OBSERVABILITY_TYPE + CLOUDWATCH_*)', () => {
+    process.env.OBSERVABILITY_TYPE = 'cloudwatch';
+    process.env.CLOUDWATCH_REGION = 'us-west-2';
+    process.env.CLOUDWATCH_AWS_PROFILE = 'obs';
+    process.env.CLOUDWATCH_TRACES_LOG_GROUP = 'custom/spans';
+    const cfg = resolveObservabilityConfig(req);
+    expect(cfg).toMatchObject({ type: 'cloudwatch', awsRegion: 'us-west-2', awsProfile: 'obs', logGroups: { traces: 'custom/spans', logs: '/agent-health/{service.name}' } });
+  });
+
+  it('CloudWatch env without a region is not configured (AWS_REGION is an accepted fallback); OpenSearch env still wins when type is not cloudwatch', () => {
+    process.env.OBSERVABILITY_TYPE = 'cloudwatch';
+    expect(resolveObservabilityConfig(req)).toBeNull();
+    process.env.AWS_REGION = 'ap-south-1';
+    expect(resolveObservabilityConfig(req)?.awsRegion).toBe('ap-south-1');
+    delete process.env.AWS_REGION;
+    delete process.env.OBSERVABILITY_TYPE;
+    process.env.OPENSEARCH_LOGS_ENDPOINT = 'https://env-obs.com';
+    expect(resolveObservabilityConfig(req)).toMatchObject({ type: 'opensearch', endpoint: 'https://env-obs.com' });
+  });
+
+  it('an OpenSearch config is tagged type opensearch', () => {
+    mockObsTs.mockReturnValue({ endpoint: 'https://ts-obs.com' });
+    expect(resolveObservabilityConfig(req)?.type).toBe('opensearch');
+  });
 });
 
 afterEach(() => {

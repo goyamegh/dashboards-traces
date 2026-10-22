@@ -14,7 +14,8 @@
  */
 
 import { Request } from 'express';
-import type { StorageClusterConfig, ObservabilityClusterConfig, ClusterAuthType } from '../../types/index.js';
+import type { StorageClusterConfig, ObservabilityClusterConfig, ClusterAuthType, ObservabilityBackendType } from '../../types/index.js';
+import { DEFAULT_CLOUDWATCH_LOG_GROUPS } from '../../types/index.js';
 import {
   getStorageConfigFromFile,
   getObservabilityConfigFromFile,
@@ -96,66 +97,53 @@ export function resolveObservabilityConfig(req: Request): ObservabilityClusterCo
   // 1. Check file config first
   const fileConfig = getObservabilityConfigFromFile();
   
-  if (fileConfig) {
-    return {
-      endpoint: fileConfig.endpoint,
-      authType: fileConfig.authType,
-      username: fileConfig.username,
-      password: fileConfig.password,
-      awsProfile: fileConfig.awsProfile,
-      awsRegion: fileConfig.awsRegion,
-      awsService: fileConfig.awsService,
-      tlsSkipVerify: fileConfig.tlsSkipVerify,
-      indexes: {
-        traces: fileConfig.indexes?.traces || DEFAULT_OTEL_INDEXES.traces,
-        logs: fileConfig.indexes?.logs || DEFAULT_OTEL_INDEXES.logs,
-        metrics: fileConfig.indexes?.metrics || DEFAULT_OTEL_INDEXES.metrics,
-      },
-    };
-  }
+  if (fileConfig) return withObservabilityDefaults(fileConfig);
 
   // 2. TypeScript config (agent-health.config.ts)
   const tsConfig = getObservabilityConfigFromTs();
-  if (tsConfig) {
-    return {
-      endpoint: tsConfig.endpoint,
-      authType: tsConfig.authType,
-      username: tsConfig.username,
-      password: tsConfig.password,
-      awsProfile: tsConfig.awsProfile,
-      awsRegion: tsConfig.awsRegion,
-      awsService: tsConfig.awsService,
-      tlsSkipVerify: tsConfig.tlsSkipVerify,
-      indexes: {
-        traces: tsConfig.indexes?.traces || DEFAULT_OTEL_INDEXES.traces,
-        logs: tsConfig.indexes?.logs || DEFAULT_OTEL_INDEXES.logs,
-        metrics: tsConfig.indexes?.metrics || DEFAULT_OTEL_INDEXES.metrics,
-      },
-    };
-  }
+  if (tsConfig) return withObservabilityDefaults(tsConfig);
 
   // 3. Fall back to environment variables
-  const envEndpoint = process.env.OPENSEARCH_LOGS_ENDPOINT;
+  const envConfig = getObservabilityConfigFromEnv();
+  if (envConfig) return withObservabilityDefaults(envConfig);
 
-  if (envEndpoint) {
+  return null;
+}
+
+/**
+ * Fill in backend defaults (index patterns for OpenSearch, log groups for
+ * CloudWatch) and drop the fields the other backend does not use.
+ */
+export function withObservabilityDefaults(config: ObservabilityClusterConfig): ObservabilityClusterConfig {
+  const base = {
+    authType: config.authType,
+    username: config.username,
+    password: config.password,
+    awsProfile: config.awsProfile,
+    awsRegion: config.awsRegion,
+    awsService: config.awsService,
+    tlsSkipVerify: config.tlsSkipVerify,
+  };
+  if (config.type === 'cloudwatch') {
     return {
-      endpoint: envEndpoint,
-      authType: (process.env.OPENSEARCH_LOGS_AUTH_TYPE as ClusterAuthType) || undefined,
-      username: process.env.OPENSEARCH_LOGS_USERNAME,
-      password: process.env.OPENSEARCH_LOGS_PASSWORD,
-      awsProfile: process.env.OPENSEARCH_LOGS_AWS_PROFILE,
-      awsRegion: process.env.OPENSEARCH_LOGS_AWS_REGION,
-      awsService: (process.env.OPENSEARCH_LOGS_AWS_SERVICE as 'es' | 'aoss') || undefined,
-      tlsSkipVerify: process.env.OPENSEARCH_LOGS_TLS_SKIP_VERIFY === 'true',
-      indexes: {
-        traces: process.env.OPENSEARCH_LOGS_TRACES_INDEX || DEFAULT_OTEL_INDEXES.traces,
-        logs: process.env.OPENSEARCH_LOGS_INDEX || DEFAULT_OTEL_INDEXES.logs,
-        metrics: DEFAULT_OTEL_INDEXES.metrics,
+      ...base,
+      type: 'cloudwatch',
+      logGroups: {
+        traces: config.logGroups?.traces || DEFAULT_CLOUDWATCH_LOG_GROUPS.traces,
+        logs: config.logGroups?.logs || DEFAULT_CLOUDWATCH_LOG_GROUPS.logs,
       },
     };
   }
-
-  return null;
+  return {
+    ...base,
+    type: 'opensearch',
+    endpoint: config.endpoint,
+    indexes: {
+      traces: config.indexes?.traces || DEFAULT_OTEL_INDEXES.traces,
+      logs: config.indexes?.logs || DEFAULT_OTEL_INDEXES.logs,
+      metrics: config.indexes?.metrics || DEFAULT_OTEL_INDEXES.metrics,
+    },
+  };
 }
 
 /**
@@ -200,6 +188,21 @@ export function getStorageConfigFromEnv(): StorageClusterConfig | null {
  * Used by routes that don't yet support file-based config
  */
 export function getObservabilityConfigFromEnv(): ObservabilityClusterConfig | null {
+  // CloudWatch: OBSERVABILITY_TYPE=cloudwatch + CLOUDWATCH_REGION (profile / log groups optional)
+  if ((process.env.OBSERVABILITY_TYPE as ObservabilityBackendType | undefined) === 'cloudwatch') {
+    const awsRegion = process.env.CLOUDWATCH_REGION || process.env.AWS_REGION;
+    if (!awsRegion) return null;
+    return {
+      type: 'cloudwatch',
+      awsRegion,
+      awsProfile: process.env.CLOUDWATCH_AWS_PROFILE,
+      logGroups: {
+        traces: process.env.CLOUDWATCH_TRACES_LOG_GROUP || DEFAULT_CLOUDWATCH_LOG_GROUPS.traces,
+        logs: process.env.CLOUDWATCH_LOGS_LOG_GROUP || DEFAULT_CLOUDWATCH_LOG_GROUPS.logs,
+      },
+    };
+  }
+
   const endpoint = process.env.OPENSEARCH_LOGS_ENDPOINT;
 
   if (!endpoint) {
@@ -207,6 +210,7 @@ export function getObservabilityConfigFromEnv(): ObservabilityClusterConfig | nu
   }
 
   return {
+    type: 'opensearch',
     endpoint,
     authType: (process.env.OPENSEARCH_LOGS_AUTH_TYPE as ClusterAuthType) || undefined,
     username: process.env.OPENSEARCH_LOGS_USERNAME,
