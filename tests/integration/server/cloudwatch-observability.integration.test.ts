@@ -1,0 +1,232 @@
+/*
+ * Copyright OpenSearch Contributors
+ * SPDX-License-Identifier: Apache-2.0
+ */
+
+/**
+ * CloudWatch observability backend — HTTP integration.
+ *
+ * Boots the real routers (traces / logs / metrics / observability)
+ * with `OBSERVABILITY_TYPE=cloudwatch` and asserts the responses a browser or
+ * the trace poller would see. Only the AWS network hop is faked: the real
+ * `@aws-sdk/client-cloudwatch-logs` command objects are intercepted at
+ * `send()`, so the test fails if the module stops issuing FilterLogEvents /
+ * StartQuery / GetQueryResults / DescribeLogGroups with the expected inputs.
+ */
+
+import express, { Express } from 'express';
+import request from 'supertest';
+import {
+  FilterLogEventsCommand,
+  StartQueryCommand,
+  GetQueryResultsCommand,
+  DescribeLogGroupsCommand,
+} from '@aws-sdk/client-cloudwatch-logs';
+import spanFixture from '../../fixtures/cloudwatch/aws-spans-trace.json';
+import logFixture from '../../fixtures/cloudwatch/otel-logs.json';
+
+// --- fake CloudWatch Logs transport -----------------------------------------
+
+const sent: any[] = [];
+const groups: Record<string, string[]> = {
+  'aws/spans': (spanFixture as any[]).map((r) => JSON.stringify(r)),
+  '/agent-health/demo-retrieval-agent': (logFixture as any[]).map((r) => JSON.stringify(r)),
+};
+let authFailure: Error | null = null;
+
+function fakeSend(command: any): any {
+  sent.push(command);
+  if (authFailure) throw authFailure;
+  const input = command.input;
+  if (command instanceof DescribeLogGroupsCommand) {
+    const names = Object.keys(groups).filter((g) => g.startsWith(input.logGroupNamePrefix || ''));
+    return { logGroups: names.map((n) => ({ logGroupName: n })) };
+  }
+  if (command instanceof FilterLogEventsCommand) {
+    const msgs = groups[input.logGroupName];
+    if (!msgs) throw Object.assign(new Error('The specified log group does not exist.'), { name: 'ResourceNotFoundException' });
+    const m = /\{ \$\.traceId = "([0-9a-f]+)" \}/.exec(input.filterPattern || '');
+    const term = !m && input.filterPattern ? JSON.parse(input.filterPattern) : null;
+    const events = msgs
+      .filter((s) => (m ? JSON.parse(s).traceId === m[1] : term ? s.includes(term) : true))
+      .map((s) => ({ message: s, timestamp: 1788467284282, logStreamName: 'default' }));
+    return { events };
+  }
+  if (command instanceof StartQueryCommand) {
+    return { queryId: `q-${input.logGroupNames.join(',')}` };
+  }
+  if (command instanceof GetQueryResultsCommand) {
+    const g = (input.queryId as string).replace(/^q-/, '');
+    return { status: 'Complete', results: (groups[g] || []).map((m) => [{ field: '@message', value: m }]) };
+  }
+  throw new Error(`unexpected command ${command.constructor.name}`);
+}
+
+jest.mock('@aws-sdk/client-cloudwatch-logs', () => {
+  const actual = jest.requireActual('@aws-sdk/client-cloudwatch-logs');
+  return {
+    ...actual,
+    CloudWatchLogsClient: jest.fn().mockImplementation(() => ({
+      send: (cmd: any) => Promise.resolve().then(() => fakeSend(cmd)),
+      destroy: () => {},
+    })),
+  };
+});
+
+// Routes under test (real).
+import tracesRoutes from '@/server/routes/traces';
+import logsRoutes from '@/server/routes/logs';
+import metricsRoutes from '@/server/routes/metrics';
+import observabilityRoutes from '@/server/routes/observability';
+import { __resetObservabilityCachesForTests } from '@/server/services/observabilityClient';
+
+const TRACE = 'a54f35c518ca4fe4b86b07f10aeea457';
+const RUN = 'cw-run-2';
+const SERVICE = 'demo-retrieval-agent';
+
+describe('CloudWatch observability backend (HTTP integration)', () => {
+  let app: Express;
+  const ENV = ['OBSERVABILITY_TYPE', 'CLOUDWATCH_REGION', 'CLOUDWATCH_AWS_PROFILE', 'OPENSEARCH_LOGS_ENDPOINT', 'OPENSEARCH_LOGS_USERNAME', 'OPENSEARCH_LOGS_PASSWORD', 'AGENT_HEALTH_DATA_DIR'];
+  const saved: Record<string, string | undefined> = {};
+
+  beforeAll(() => {
+    for (const k of ENV) saved[k] = process.env[k];
+    delete process.env.OPENSEARCH_LOGS_ENDPOINT;
+    process.env.OBSERVABILITY_TYPE = 'cloudwatch';
+    process.env.CLOUDWATCH_REGION = 'us-east-1';
+    process.env.CLOUDWATCH_AWS_PROFILE = 'test-profile';
+    app = express();
+    app.use(express.json({ limit: '10mb' }));
+    app.use(tracesRoutes);
+    app.use(logsRoutes);
+    app.use(metricsRoutes);
+    app.use(observabilityRoutes);
+  });
+
+  afterAll(() => {
+    for (const k of ENV) {
+      if (saved[k] === undefined) delete process.env[k];
+      else process.env[k] = saved[k];
+    }
+    __resetObservabilityCachesForTests();
+  });
+
+  beforeEach(() => {
+    sent.length = 0;
+    authFailure = null;
+  });
+
+  it('POST /api/traces by traceId returns the normalized tree via FilterLogEvents', async () => {
+    const res = await request(app).post('/api/traces').send({ traceId: TRACE, size: 100 });
+    expect(res.status).toBe(200);
+    expect(res.body.backend).toBe('cloudwatch');
+    expect(res.body.total).toBe(12);
+    expect(res.body.warning).toBeUndefined();
+    const root = res.body.spans.find((s: any) => s.spanId === 'aaad0bc29275b362');
+    expect(root).toMatchObject({ traceId: TRACE, parentSpanId: 'b7ad6b7169203331', name: 'POST /invoke', status: 'OK', duration: 11442 });
+    expect(root.attributes['service.name']).toBe(SERVICE);
+    expect(root.attributes['agent_health.run.id']).toBe(RUN);
+    const filter = sent.find((c) => c instanceof FilterLogEventsCommand);
+    expect(filter.input).toMatchObject({ logGroupName: 'aws/spans', filterPattern: `{ $.traceId = "${TRACE}" }` });
+    expect(sent.some((c) => c instanceof StartQueryCommand)).toBe(false);
+  });
+
+  it('POST /api/traces in the run-report shape (traceId + runIds + agents) unions via Logs Insights', async () => {
+    const res = await request(app).post('/api/traces').send({
+      traceId: 'f'.repeat(32),
+      runIds: [RUN],
+      agents: [{ serviceName: SERVICE, startedAt: 1788467284000, endedAt: 1788467300000 }],
+      size: 1000,
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(12);
+    const start = sent.find((c) => c instanceof StartQueryCommand);
+    expect(start.input.logGroupNames).toEqual(['aws/spans']);
+    expect(start.input.queryString).toContain(`"${RUN}"`);
+    expect(start.input.queryString).toContain(`\`resource.attributes.service.name\` = "${SERVICE}"`);
+    expect(sent.some((c) => c instanceof GetQueryResultsCommand)).toBe(true);
+  });
+
+  it('POST /api/traces still validates the request before touching AWS', async () => {
+    const res = await request(app).post('/api/traces').send({});
+    expect(res.status).toBe(400);
+    expect(sent).toHaveLength(0);
+  });
+
+  it('POST /api/logs correlates by traceId in the per-service log group', async () => {
+    const res = await request(app).post('/api/logs').send({ traceId: TRACE, serviceName: SERVICE });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ total: 3, backend: 'cloudwatch' });
+    expect(res.body.logs.map((l: any) => l.spanId).sort()).toEqual(['aaad0bc29275b362', 'aaad0bc29275b362', 'b93daa8692261d13']);
+    const filter = sent.find((c) => c instanceof FilterLogEventsCommand);
+    expect(filter.input.logGroupName).toBe(`/agent-health/${SERVICE}`);
+  });
+
+  it('POST /api/logs without a service discovers groups under the template prefix', async () => {
+    const res = await request(app).post('/api/logs').send({ traceId: TRACE });
+    expect(res.status).toBe(200);
+    expect(res.body.total).toBe(3);
+    const describe = sent.find((c) => c instanceof DescribeLogGroupsCommand);
+    expect(describe.input.logGroupNamePrefix).toBe('/agent-health/');
+  });
+
+  it('GET /api/metrics/:runId computes tokens/cost from aws/spans without double-counting the roll-up', async () => {
+    const res = await request(app).get(`/api/metrics/${RUN}`);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ runId: RUN, traceId: TRACE, inputTokens: 21476, outputTokens: 843, totalTokens: 22319, llmCalls: 3, toolCalls: 3, status: 'success' });
+    expect(res.body.costUsd).toBeGreaterThan(0);
+  });
+
+  it('POST /api/metrics/batch aggregates across runs and reports unknown runs as empty', async () => {
+    const res = await request(app).post('/api/metrics/batch').send({ runIds: [RUN, 'nope'] });
+    expect(res.status).toBe(200);
+    expect(res.body.metrics[0]).toMatchObject({ runId: RUN, totalTokens: 22319 });
+    expect(res.body.metrics[1]).toMatchObject({ runId: 'nope', totalTokens: 0 });
+    expect(res.body.aggregate.totalRuns).toBe(2);
+  });
+
+  it('GET /api/traces/health reports the CloudWatch backend', async () => {
+    const res = await request(app).get('/api/traces/health');
+    expect(res.status).toBe(200);
+    // validateAwsCredentials probes Bedrock with real credentials — on a CI box
+    // without AWS access the route answers an auth error before reaching our
+    // backend; both shapes are acceptable here as long as nothing crashes.
+    if (res.body.status === 'ok') {
+      expect(res.body).toMatchObject({ status: 'ok', index: 'aws/spans', backend: 'cloudwatch' });
+    } else {
+      expect(res.body.errorCategory).toBe('auth');
+    }
+  });
+
+  it('POST /api/observability/test-connection validates a CloudWatch config without an endpoint', async () => {
+    const res = await request(app).post('/api/observability/test-connection').send({ type: 'cloudwatch', awsRegion: 'us-east-1' });
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ status: 'ok', clusterName: 'CloudWatch Logs (us-east-1)', clusterStatus: 'aws/spans' });
+    expect(res.body.message).toBeUndefined(); // a per-service log group exists
+
+    const missingRegion = await request(app).post('/api/observability/test-connection').send({ type: 'cloudwatch' });
+    expect(missingRegion.status).toBe(400);
+
+    delete groups['/agent-health/demo-retrieval-agent'];
+    try {
+      const noLogs = await request(app).post('/api/observability/test-connection').send({ type: 'cloudwatch', awsRegion: 'us-east-1' });
+      expect(noLogs.body.status).toBe('ok');
+      expect(noLogs.body.message).toMatch(/No log groups matching/);
+    } finally {
+      groups['/agent-health/demo-retrieval-agent'] = (logFixture as any[]).map((r) => JSON.stringify(r));
+    }
+  });
+
+  it('surfaces expired credentials as a classified auth error instead of a 500 stack', async () => {
+    authFailure = Object.assign(new Error('The security token included in the request is expired'), { name: 'ExpiredTokenException' });
+    const tc = await request(app).post('/api/observability/test-connection').send({ type: 'cloudwatch', awsRegion: 'us-east-1' });
+    expect(tc.body.status).toBe('error');
+    expect(tc.body.message).toMatch(/expired/);
+    expect(tc.body.message).toMatch(/Refresh the AWS credentials/);
+
+    const traces = await request(app).post('/api/traces').send({ traceId: TRACE });
+    expect(traces.status).toBe(200); // the route degrades to a warning, same as the OpenSearch backend
+    expect(traces.body.total).toBe(0);
+    expect(traces.body.warning).toMatch(/expired/);
+  });
+});
