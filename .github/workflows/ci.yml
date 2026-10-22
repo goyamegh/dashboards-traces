@@ -31,6 +31,9 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     strategy:
+      # A Codecov upload failure on one Node version (dependabot PRs have no
+      # CODECOV_TOKEN) must not cancel the required `build-and-test (22)` job.
+      fail-fast: false
       matrix:
         node-version: [18, 20, 22]
 
@@ -123,7 +126,13 @@ jobs:
           files: coverage/lcov.info
           flags: unit
           name: unit-tests
-          fail_ci_if_error: true
+          # Dependabot PRs come from an upstream branch with no secrets, and
+          # Codecov requires a token for non-fork PRs, so their upload always
+          # fails ("Token required because branch is protected"). Fork PRs use
+          # tokenless upload and pushes to main have the token, so both keep
+          # failing loudly. Keyed on the PR author (not github.actor) so a human
+          # re-running a dependabot workflow does not flip it back.
+          fail_ci_if_error: ${{ github.event.pull_request.user.login != 'dependabot[bot]' }}
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
@@ -339,7 +348,13 @@ jobs:
           files: coverage-integration/lcov.info
           flags: integration
           name: integration-tests
-          fail_ci_if_error: true
+          # Dependabot PRs come from an upstream branch with no secrets, and
+          # Codecov requires a token for non-fork PRs, so their upload always
+          # fails ("Token required because branch is protected"). Fork PRs use
+          # tokenless upload and pushes to main have the token, so both keep
+          # failing loudly. Keyed on the PR author (not github.actor) so a human
+          # re-running a dependabot workflow does not flip it back.
+          fail_ci_if_error: ${{ github.event.pull_request.user.login != 'dependabot[bot]' }}
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
@@ -421,7 +436,13 @@ jobs:
           directory: coverage-integration/
           flags: integration
           name: integration-tests
-          fail_ci_if_error: true
+          # Dependabot PRs come from an upstream branch with no secrets, and
+          # Codecov requires a token for non-fork PRs, so their upload always
+          # fails ("Token required because branch is protected"). Fork PRs use
+          # tokenless upload and pushes to main have the token, so both keep
+          # failing loudly. Keyed on the PR author (not github.actor) so a human
+          # re-running a dependabot workflow does not flip it back.
+          fail_ci_if_error: ${{ github.event.pull_request.user.login != 'dependabot[bot]' }}
         env:
           CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
 
