@@ -135,6 +135,8 @@ describe('Storage create-route validation (regression: empty/garbage body must 4
         body: JSON.stringify({ initialPrompt: marker, description: marker }),
       });
       expect(response.status).toBe(400);
+      // Rejected for being nameless — not for some other validation reason.
+      expect((await response.json()).error.toLowerCase()).toContain('name');
       const after = await listItems(TEST_CASES_URL, 'testCases');
       expect(itemsMentioning(after, marker)).toEqual([]);
       expect(newNamelessItems(after, beforeIds)).toEqual([]);
@@ -191,6 +193,8 @@ describe('Storage create-route validation (regression: empty/garbage body must 4
       expect(response.status).toBe(400);
       const body = await response.json();
       expect(typeof body.error).toBe('string');
+      // Rejected for the nameless item — not for some other validation reason.
+      expect(body.error.toLowerCase()).toContain('name');
 
       // The batch is rejected atomically: neither the garbage item nor its
       // valid sibling may have been written.
@@ -256,6 +260,8 @@ describe('Storage create-route validation (regression: empty/garbage body must 4
         body: JSON.stringify({ description: marker, testCaseIds: [] }),
       });
       expect(response.status).toBe(400);
+      // Rejected for being nameless — not for some other validation reason.
+      expect((await response.json()).error.toLowerCase()).toContain('name');
       const after = await listItems(BENCHMARKS_URL, 'benchmarks');
       expect(itemsMentioning(after, marker)).toEqual([]);
       expect(newNamelessItems(after, beforeIds)).toEqual([]);
