@@ -53,8 +53,12 @@ test.describe('Settings → Observability: CloudWatch backend', () => {
     await expect(page.getByTestId('cw-traces-group')).toHaveText('aws/spans');
     await expect(page.getByTestId('cw-logs-group')).toHaveText('/agent-health/{service.name}');
 
-    // The OpenSearch form (Endpoint URL input) is not shown for this backend.
+    // The OpenSearch form (Endpoint URL input) and its Save/Clear actions are not shown for this backend.
     await expect(page.locator('#obs-endpoint')).toHaveCount(0);
+    const card = panel.locator('xpath=ancestor::div[contains(@class,"rounded")][1]');
+    await expect(card.getByRole('button', { name: 'Save' })).toHaveCount(0);
+    await expect(card.getByRole('button', { name: 'Clear' })).toHaveCount(0);
+    await expect(card.getByRole('button', { name: 'Test Connection' })).toHaveCount(1);
     await expect(page.getByText('Config file (agent-health.config.ts)')).toBeVisible();
   });
 
