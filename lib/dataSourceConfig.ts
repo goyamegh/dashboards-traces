@@ -49,6 +49,8 @@ export interface ConfigStatus {
   observability: {
     configured: boolean;
     source: 'file' | 'typescript' | 'environment' | 'none';
+    /** 'opensearch' (default) or 'cloudwatch'. */
+    type?: 'opensearch' | 'cloudwatch';
     endpoint?: string;
     authType?: ClusterAuthType;
     username?: string;
@@ -60,6 +62,11 @@ export interface ConfigStatus {
       traces?: string;
       logs?: string;
       metrics?: string;
+    };
+    /** CloudWatch only. */
+    logGroups?: {
+      traces?: string;
+      logs?: string;
     };
   };
   runtime?: {

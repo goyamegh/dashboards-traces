@@ -1865,15 +1865,57 @@ export interface ClusterConfig {
 export type StorageClusterConfig = ClusterConfig;
 
 /**
- * Observability cluster configuration - endpoint + credentials + OTEL index patterns
- * Used for traces, logs, and metrics from OpenTelemetry instrumentation
+ * Which backend the observability module reads traces/logs from.
+ * - 'opensearch' (default): an OpenSearch cluster holding OTel Data Prepper indices
+ * - 'cloudwatch': CloudWatch Logs — spans in the Transaction Search `aws/spans`
+ *   log group, application logs in per-service log groups
  */
-export interface ObservabilityClusterConfig extends ClusterConfig {
+export type ObservabilityBackendType = 'opensearch' | 'cloudwatch';
+
+/**
+ * Default CloudWatch log groups. `{service.name}` in the logs template is
+ * replaced with the agent's OTel `service.name` (connector `traceContext.serviceName`).
+ */
+export const DEFAULT_CLOUDWATCH_LOG_GROUPS = {
+  traces: 'aws/spans',
+  logs: '/agent-health/{service.name}',
+} as const;
+
+/**
+ * Observability data source configuration.
+ *
+ * OpenSearch (`type` omitted or 'opensearch'): `endpoint` + credentials + OTEL
+ * index patterns. CloudWatch (`type: 'cloudwatch'`): `awsRegion` (+ optional
+ * `awsProfile`) and optional `logGroups`; `endpoint` is not used because the
+ * AWS SDK derives it from the region.
+ */
+export interface ObservabilityClusterConfig extends Omit<ClusterConfig, 'endpoint'> {
+  type?: ObservabilityBackendType;   // default: 'opensearch'
+  endpoint?: string;                 // required for 'opensearch'; ignored for 'cloudwatch'
   indexes?: {
     traces?: string;   // default: 'otel-v1-apm-span-*'
     logs?: string;     // default: 'ml-commons-logs-*'
     metrics?: string;  // default: 'otel-v1-apm-service-map*'
   };
+  /** CloudWatch only. */
+  logGroups?: {
+    traces?: string;   // default: 'aws/spans'
+    logs?: string;     // default: '/agent-health/{service.name}'
+  };
+}
+
+/** Effective backend type for an observability config (defaults to 'opensearch'). */
+export function observabilityBackendType(config: Pick<ObservabilityClusterConfig, 'type'> | null | undefined): ObservabilityBackendType {
+  return config?.type === 'cloudwatch' ? 'cloudwatch' : 'opensearch';
+}
+
+/**
+ * Whether an observability config carries enough to select a backend:
+ * an endpoint for OpenSearch, a region for CloudWatch.
+ */
+export function isObservabilityConfigPresent(config: Partial<ObservabilityClusterConfig> | null | undefined): boolean {
+  if (!config) return false;
+  return observabilityBackendType(config) === 'cloudwatch' ? Boolean(config.awsRegion) : Boolean(config.endpoint);
 }
 
 /**

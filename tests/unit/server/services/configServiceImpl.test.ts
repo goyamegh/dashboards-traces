@@ -91,10 +91,60 @@ describe('configService (real implementation, config v2)', () => {
     delete process.env.OPENSEARCH_LOGS_ENDPOINT;
     delete process.env.OPENSEARCH_LOGS_USERNAME;
     delete process.env.OPENSEARCH_LOGS_PASSWORD;
+    delete process.env.OBSERVABILITY_TYPE;
+    delete process.env.CLOUDWATCH_REGION;
+    delete process.env.CLOUDWATCH_AWS_PROFILE;
   });
 
   afterEach(() => {
     process.env = OLD_ENV;
+  });
+
+  // ==========================================================================
+  // CloudWatch observability backend (type: 'cloudwatch', no endpoint)
+  // ==========================================================================
+
+  describe('CloudWatch observability config', () => {
+    it('getConfigStatus reports a CloudWatch TS config as configured without an endpoint', () => {
+      setTsClusterConfig({ observability: { type: 'cloudwatch', awsRegion: 'us-east-1', awsProfile: 'default', logGroups: { traces: 'aws/spans' } } });
+      const s = getConfigStatus().observability;
+      expect(s).toMatchObject({ configured: true, source: 'typescript', type: 'cloudwatch', awsRegion: 'us-east-1', awsProfile: 'default', logGroups: { traces: 'aws/spans' } });
+      expect(s.endpoint).toBeUndefined();
+    });
+
+    it('a CloudWatch TS config without a region is not configured', () => {
+      setTsClusterConfig({ observability: { type: 'cloudwatch' } as any });
+      expect(getObservabilityConfigFromTs()).toBeNull();
+      expect(getConfigStatus().observability.configured).toBe(false);
+    });
+
+    it('an OpenSearch config still requires an endpoint and reports type opensearch', () => {
+      setTsClusterConfig({ observability: { awsRegion: 'us-east-1' } as any });
+      expect(getObservabilityConfigFromTs()).toBeNull();
+      setTsClusterConfig({ observability: { endpoint: 'https://os.example' } });
+      expect(getConfigStatus().observability).toMatchObject({ configured: true, type: 'opensearch', endpoint: 'https://os.example' });
+    });
+
+    it('getConfigStatus resolves CloudWatch from OBSERVABILITY_TYPE / CLOUDWATCH_* env', () => {
+      process.env.OBSERVABILITY_TYPE = 'cloudwatch';
+      process.env.CLOUDWATCH_REGION = 'eu-west-1';
+      process.env.CLOUDWATCH_AWS_PROFILE = 'obs';
+      expect(getConfigStatus().observability).toMatchObject({ configured: true, source: 'environment', type: 'cloudwatch', awsRegion: 'eu-west-1', awsProfile: 'obs' });
+    });
+
+    it('state file: a CloudWatch block is read back with type and logGroups', () => {
+      mockReadLayeredState.mockReturnValue({ observability: { type: 'cloudwatch', awsRegion: 'us-west-2', logGroups: { logs: '/custom/{service.name}' } } });
+      expect(getObservabilityConfigFromFile()).toMatchObject({ type: 'cloudwatch', awsRegion: 'us-west-2', logGroups: { logs: '/custom/{service.name}' } });
+      expect(getConfigStatus().observability).toMatchObject({ source: 'file', type: 'cloudwatch' });
+    });
+
+    it('saveObservabilityConfig persists type and logGroups and omits an empty endpoint', () => {
+      saveObservabilityConfig({ type: 'cloudwatch', awsRegion: 'us-east-1', awsProfile: 'p', logGroups: { traces: 'aws/spans' } });
+      const { patch, scope } = lastWrite();
+      expect(scope).toBe('project');
+      expect(patch.observability).toEqual({ type: 'cloudwatch', awsRegion: 'us-east-1', awsProfile: 'p', logGroups: { traces: 'aws/spans' } });
+      expect('endpoint' in patch.observability).toBe(false);
+    });
   });
 
   // ==========================================================================
