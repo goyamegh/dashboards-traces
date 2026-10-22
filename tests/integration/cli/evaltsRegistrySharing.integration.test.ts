@@ -119,6 +119,40 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
   // afterAll via the shared tracker. This suite used to leave all of it
   // behind on every run (two test cases + a benchmark + runs + reports).
   const tracker = createTestDataTracker(BASE_URL);
+  // Run ids the CLI printed (tracked as soon as they are known). Used by
+  // harvestRunChildren() so the test cases / reports those runs own are
+  // tracked too — on the happy path AND on every failure path (CLI timeout,
+  // failed collection read, thrown assertion in beforeAll).
+  const knownRunIds = new Set<string>();
+
+  /**
+   * Track the children of every known run: `testCaseSnapshots[].id` (the
+   * test cases the import created — the tracker's reconciliation pass finds
+   * that case's reports through them) and `results[].reportId`. Idempotent,
+   * best-effort, and independent of any other collection read: a run doc
+   * that cannot be fetched is simply skipped here (its id stays tracked and
+   * is deleted by cleanup()).
+   */
+  async function harvestRunChildren(): Promise<any[]> {
+    const runs: any[] = [];
+    for (const rid of knownRunIds) {
+      let runRes: { status: number; body: any };
+      try {
+        runRes = await httpGet<any>(`${BASE_URL}/api/storage/evaluation-runs/${rid}`);
+      } catch {
+        continue;
+      }
+      if (runRes.status !== 200) continue;
+      const run = runRes.body;
+      for (const snapshot of (run.testCaseSnapshots || []) as Array<{ id?: string }>) tracker.testCase(snapshot.id);
+      for (const [tcId, result] of Object.entries((run.results || {}) as Record<string, any>)) {
+        tracker.testCase(tcId);
+        tracker.run((result as any)?.reportId);
+      }
+      runs.push(run);
+    }
+    return runs;
+  }
   let cliStdout = '';
   let cliStderr = '';
   let cliStatus: number | null = null;
@@ -192,6 +226,7 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
       benchRunPairs.push({ bid: m[1], rid: m[2] });
       tracker.benchmark(m[1]);
       tracker.evaluationRun(m[2]);
+      knownRunIds.add(m[2]);
     }
 
     if (cli.status === null) {
@@ -206,12 +241,9 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
 
     benchmarkId = benchRunPairs[0].bid;
 
-    const allRuns: any[] = [];
-    for (const { rid } of benchRunPairs) {
-      const runRes = await httpGet<any>(`${BASE_URL}/api/storage/evaluation-runs/${rid}`);
-      if (runRes.status !== 200) continue;
-      allRuns.push(runRes.body);
-    }
+    // Children (test cases, reports) are tracked here — BEFORE the unrelated
+    // collection read below, which is not on the cleanup-critical path.
+    const allRuns = await harvestRunChildren();
 
     const tcAll = (await httpGet<any>(`${BASE_URL}/api/storage/test-cases?size=500`)).body;
     for (const tc of tcAll.testCases || tcAll.items || []) {
@@ -221,13 +253,7 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
     }
 
     for (const run of allRuns) {
-      // The run's own snapshots/results name exactly the test cases and
-      // reports this CLI invocation created — track by those ids, never by
-      // name.
-      for (const snapshot of (run.testCaseSnapshots || []) as Array<{ id?: string }>) tracker.testCase(snapshot.id);
       for (const [tcId, result] of Object.entries((run.results || {}) as Record<string, any>)) {
-        tracker.testCase(tcId);
-        tracker.run((result as any).reportId);
         const tcName = (run.testCaseSnapshots || []).find((s: any) => s.id === tcId)?.name;
         if (tcName && (result as any).reportId) {
           const rep = (await httpGet<any>(`${BASE_URL}/api/storage/runs/${(result as any).reportId}`)).body;
@@ -239,6 +265,10 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
 
   afterAll(async () => {
     if (projectDir) rmSync(projectDir, { recursive: true, force: true });
+    // Failure paths in beforeAll (CLI timeout, a thrown collection read)
+    // may have exited before the run docs were read — harvest the children
+    // of every known run now, before cleanup() deletes their parents.
+    await harvestRunChildren();
     await tracker.cleanup();
   }, 60_000);
 

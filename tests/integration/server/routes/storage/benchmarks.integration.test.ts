@@ -64,7 +64,14 @@ const checkBackend = async (): Promise<boolean> => {
  */
 type StorageBackend = 'file' | 'opensearch';
 const probeStorageBackend = async (): Promise<StorageBackend> => {
-  const response = await fetch(`${BASE_URL}/api/storage/health`);
+  let response: Response;
+  try {
+    response = await fetch(`${BASE_URL}/api/storage/health`);
+  } catch (error: any) {
+    // Network-level failure (server down, wrong AH_PORT, DNS). Rethrown with
+    // context — this is a suite FAILURE, not "file storage".
+    throw new Error(`storage health probe: ${BASE_URL} unreachable — ${error?.cause?.message || error?.message || error}`);
+  }
   const text = await response.text();
   if (!response.ok) {
     throw new Error(`storage health probe: HTTP ${response.status} — ${text.slice(0, 300)}`);
@@ -325,13 +332,15 @@ describe('Benchmark Cancel Integration Tests', () => {
   let leakedReportIds: string[] = [];
 
   beforeAll(async () => {
-    backendAvailable = await checkBackend();
-    if (!backendAvailable) {
-      console.warn('Backend not available - skipping integration tests');
-      console.warn('Start the backend with: npm run dev:server');
-      return;
-    }
-    const backend = await probeStorageBackend(); // throws → suite fails, never a silent skip
+    // The strict probe is this suite's FIRST and ONLY gate. An unreachable
+    // server, a non-2xx / malformed health answer or an unhealthy storage
+    // state all THROW here and fail the suite (the lenient `checkBackend()`
+    // used by the sibling describes below would have turned every one of
+    // those into a silent skip — even in CI). The only outcome that skips
+    // anything is an explicitly detected file backend, and that skips just
+    // the execute-then-cancel test.
+    const backend = await probeStorageBackend();
+    backendAvailable = true;
     if (EXPECTED_BACKEND && backend !== EXPECTED_BACKEND) {
       throw new Error(
         `AH_TEST_EXPECT_BACKEND=${EXPECTED_BACKEND} but the server at ${BASE_URL} is on "${backend}" storage — ` +
