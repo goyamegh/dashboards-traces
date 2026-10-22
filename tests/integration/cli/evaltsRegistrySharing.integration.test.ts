@@ -58,6 +58,7 @@ import { join } from 'path';
 import { tmpdir } from 'os';
 import { request as httpRequest } from 'http';
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
+import { createTestDataTracker } from '../../helpers/testDataTracker';
 
 function httpGet<T = any>(url: string): Promise<{ status: number; body: T }> {
   return new Promise((resolve, reject) => {
@@ -111,6 +112,47 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
   const reportIds = new Map<string, any>();
   const testCasesByName = new Map<string, any>();
   let benchmarkId = '';
+  // What the spawned CLI persists (benchmark, evaluation runs, their per-case
+  // reports, the imported test cases) is tracked BY ID as soon as each id is
+  // known — benchmark/run ids straight from the CLI's stdout, even when it
+  // times out; test-case/report ids from the run docs — and deleted in
+  // afterAll via the shared tracker. This suite used to leave all of it
+  // behind on every run (two test cases + a benchmark + runs + reports).
+  const tracker = createTestDataTracker(BASE_URL);
+  // Run ids the CLI printed (tracked as soon as they are known). Used by
+  // harvestRunChildren() so the test cases / reports those runs own are
+  // tracked too — on the happy path AND on every failure path (CLI timeout,
+  // failed collection read, thrown assertion in beforeAll).
+  const knownRunIds = new Set<string>();
+
+  /**
+   * Track the children of every known run: `testCaseSnapshots[].id` (the
+   * test cases the import created — the tracker's reconciliation pass finds
+   * that case's reports through them) and `results[].reportId`. Idempotent,
+   * best-effort, and independent of any other collection read: a run doc
+   * that cannot be fetched is simply skipped here (its id stays tracked and
+   * is deleted by cleanup()).
+   */
+  async function harvestRunChildren(): Promise<any[]> {
+    const runs: any[] = [];
+    for (const rid of knownRunIds) {
+      let runRes: { status: number; body: any };
+      try {
+        runRes = await httpGet<any>(`${BASE_URL}/api/storage/evaluation-runs/${rid}`);
+      } catch {
+        continue;
+      }
+      if (runRes.status !== 200) continue;
+      const run = runRes.body;
+      for (const snapshot of (run.testCaseSnapshots || []) as Array<{ id?: string }>) tracker.testCase(snapshot.id);
+      for (const [tcId, result] of Object.entries((run.results || {}) as Record<string, any>)) {
+        tracker.testCase(tcId);
+        tracker.run((result as any)?.reportId);
+      }
+      runs.push(run);
+    }
+    return runs;
+  }
   let cliStdout = '';
   let cliStderr = '';
   let cliStatus: number | null = null;
@@ -174,16 +216,23 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
     cliStderr = cli.stderr || '';
     cliStatus = cli.status;
 
-    if (cli.status === null) {
-      throw new Error(`CLI subprocess timed out or was killed.\nSTDOUT:\n${cliStdout}\nSTDERR:\n${cliStderr}`);
-    }
-
+    // Track the benchmark + run ids the CLI printed BEFORE any throw below,
+    // so a timed-out / killed CLI (which may already have persisted them)
+    // still gets cleaned up by id.
     const urlRe = /\/evaluations\/benchmarks\/(bench-[A-Za-z0-9-]+)\/runs\/((?:eval-)?run-[A-Za-z0-9-]+)/g;
     const benchRunPairs: Array<{ bid: string; rid: string }> = [];
     let m: RegExpExecArray | null;
     while ((m = urlRe.exec(cliStdout)) !== null) {
       benchRunPairs.push({ bid: m[1], rid: m[2] });
+      tracker.benchmark(m[1]);
+      tracker.evaluationRun(m[2]);
+      knownRunIds.add(m[2]);
     }
+
+    if (cli.status === null) {
+      throw new Error(`CLI subprocess timed out or was killed.\nSTDOUT:\n${cliStdout}\nSTDERR:\n${cliStderr}`);
+    }
+
     // If the bug regresses, the CLI exits non-zero with "has no test
     // cases" and prints no run URLs — don't throw here so the dedicated
     // "did not regress" assertion below can report the real failure
@@ -192,12 +241,9 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
 
     benchmarkId = benchRunPairs[0].bid;
 
-    const allRuns: any[] = [];
-    for (const { rid } of benchRunPairs) {
-      const runRes = await httpGet<any>(`${BASE_URL}/api/storage/evaluation-runs/${rid}`);
-      if (runRes.status !== 200) continue;
-      allRuns.push(runRes.body);
-    }
+    // Children (test cases, reports) are tracked here — BEFORE the unrelated
+    // collection read below, which is not on the cleanup-critical path.
+    const allRuns = await harvestRunChildren();
 
     const tcAll = (await httpGet<any>(`${BASE_URL}/api/storage/test-cases?size=500`)).body;
     for (const tc of tcAll.testCases || tcAll.items || []) {
@@ -217,9 +263,14 @@ describe('Code SDK — .eval.ts CLI subprocess integration (module-instance regr
     }
   }, TEST_TIMEOUT);
 
-  afterAll(() => {
+  afterAll(async () => {
     if (projectDir) rmSync(projectDir, { recursive: true, force: true });
-  });
+    // Failure paths in beforeAll (CLI timeout, a thrown collection read)
+    // may have exited before the run docs were read — harvest the children
+    // of every known run now, before cleanup() deletes their parents.
+    await harvestRunChildren();
+    await tracker.cleanup();
+  }, 60_000);
 
   it('requires a running backend (skip otherwise)', () => {
     if (!backendAvailable) {

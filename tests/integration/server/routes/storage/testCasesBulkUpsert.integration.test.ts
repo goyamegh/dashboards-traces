@@ -68,7 +68,17 @@
 import { ApiClient } from '@/cli/utils/apiClient';
 import { getTestBackendUrl } from '@/tests/integration/testConfig';
 
-const TEST_TIMEOUT = 30_000;
+// Per-test budget. The dedup lookup path (`bulkUpsert`) scans EVERY existing
+// test case server-side (`getAll({ size: 10000 })`), so against a large
+// shared OpenSearch cluster one upsert round-trip is 15-60 s (measured:
+// `first import` 16 s, the two-round-trip dedup tests > 30 s on a ~3k-doc
+// cluster with multi-MB documents). The suite used to declare
+// `jest.setTimeout(120_000)` for exactly this reason, but every `it(...)`
+// below ALSO passed a 30 s timeout argument — and a per-test timeout
+// overrides `jest.setTimeout`, so the documented 120 s budget never applied
+// and five tests timed out on the shared cluster. CI's file backend stays
+// instant either way. One constant, used everywhere, sized to the slow path.
+const TEST_TIMEOUT = 120_000;
 const BASE_URL = getTestBackendUrl();
 // Ids of every test case this run created (auto-populated by postBulk).
 const createdTestCaseIds: string[] = [];
@@ -110,12 +120,6 @@ async function postBulk(testCases: any[]): Promise<{ status: number; body: BulkR
 }
 
 describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
-  // The dedup lookup path scans existing test cases server-side; against a
-  // large shared OpenSearch cluster a single round-trip can exceed jest's
-  // default 30s (measured: three of these tests at 30–60s on a ~1.5k-doc
-  // cluster with multi-MB documents). CI's file backend stays instant.
-  jest.setTimeout(120_000);
-
   let backendAvailable = false;
   let client: ApiClient;
   // Per-run prefix: every TC and benchmark name gets this prefix so
@@ -475,6 +479,12 @@ describe('SDK dedup contract — POST /api/storage/test-cases/bulk', () => {
         sourceHash: 'cli-h-1',
       };
       const first = await client.bulkCreateTestCases([tc]);
+      // This path bypasses postBulk's auto-tracking — record the id here or
+      // the test case leaks on every run (observed: one `-client-shape`
+      // document per historical run left on the shared cluster).
+      for (const created of first.testCases ?? []) {
+        if (created?.id) createdTestCaseIds.push(created.id);
+      }
       // Created on first call; updated/unchanged are present (numeric 0).
       expect(first.created).toBe(1);
       expect(typeof first.updated).toBe('number');

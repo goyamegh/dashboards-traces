@@ -25,9 +25,19 @@
  *
  *   - The interaction between `--agent-engine v2` and `--no-interactive`.
  *
- * Skipped (with a clear console message) when `kiro-cli` is not on PATH so
- * CI runners without it installed pass cleanly. Locally on a developer host
- * with kiro-cli installed and authenticated, all tests run.
+ * Skipped (with a clear console message) when `kiro-cli` is not on PATH OR
+ * is installed but not logged in, so CI runners without it installed and
+ * developer hosts whose login has lapsed report the suite as SKIPPED rather
+ * than failing. Locally on a developer host with kiro-cli installed AND
+ * authenticated, all tests run.
+ *
+ * Why the login probe: an installed-but-logged-out kiro-cli exits 1 on every
+ * `chat` with "Failed to open browser for authentication" on stderr, so the
+ * connector sees a process that produced no tool markers — the real-run
+ * tests then fail on `actions.length >= 1` for an environmental reason that
+ * has nothing to do with the connector. `kiro-cli whoami` exits 0 when a
+ * session exists and 1 ("Not logged in") otherwise, which is the cheap,
+ * deterministic signal used here.
  */
 
 import { execSync } from 'child_process';
@@ -37,19 +47,36 @@ import type { ConnectorAuth, ConnectorRequest } from '@/services/connectors/type
 import type { TestCase } from '@/types';
 import { KiroConnector } from '@/services/connectors/kiro/KiroConnector';
 
-/** Detect kiro-cli at module load. If absent, every test in the file is skipped. */
-function kiroAvailable(): boolean {
+/**
+ * Detect kiro-cli at module load. Returns the reason the real-run suite
+ * cannot execute, or `null` when the binary is present AND logged in.
+ */
+function kiroUnavailableReason(): string | null {
   try {
     execSync('which kiro-cli', { stdio: 'ignore' });
-    return true;
   } catch {
-    return false;
+    return 'kiro-cli not found in PATH';
+  }
+  try {
+    // Exit 0 = authenticated session; exit 1 prints "Not logged in".
+    execSync('kiro-cli whoami', { stdio: 'ignore', timeout: 15_000 });
+    return null;
+  } catch {
+    return 'kiro-cli is installed but not logged in (run `kiro-cli login`)';
   }
 }
 
-const HAS_KIRO = kiroAvailable();
-// Use describe.skip when kiro-cli is unavailable so the file still loads but
-// every test is reported as skipped rather than failing on a missing binary.
+const KIRO_SKIP_REASON = kiroUnavailableReason();
+const HAS_KIRO = KIRO_SKIP_REASON === null;
+if (!HAS_KIRO) {
+  // Logged at module load so the reason appears in the jest output next to
+  // the skipped suite instead of the suite silently vanishing from the run.
+  // eslint-disable-next-line no-console
+  console.warn(`[KiroConnector integration] ${KIRO_SKIP_REASON} — skipping real kiro-cli tests`);
+}
+// Use describe.skip when kiro-cli is unusable so the file still loads but
+// every test is reported as skipped rather than failing on a missing binary
+// or an expired login.
 const describeIfKiro = HAS_KIRO ? describe : describe.skip;
 
 /**
@@ -60,11 +87,6 @@ const describeIfKiro = HAS_KIRO ? describe : describe.skip;
 const PER_TEST_TIMEOUT = 120_000;
 
 describeIfKiro('KiroConnector (integration — real kiro-cli)', () => {
-  if (!HAS_KIRO) {
-    // eslint-disable-next-line no-console
-    console.warn('[KiroConnector integration] kiro-cli not found in PATH — skipping');
-  }
-
   const makeTestCase = (prompt: string): TestCase => ({
     id: `tc-int-${Date.now()}`,
     name: 'kiro integration test',

@@ -47,6 +47,71 @@ const checkBackend = async (): Promise<boolean> => {
   }
 };
 
+/**
+ * Which storage backend the server is running on. `POST
+ * /api/storage/benchmarks/:id/execute` hard-requires an OpenSearch storage
+ * client (`isStorageAvailable` → `requireStorageClient`) and answers 400
+ * "OpenSearch not configured" on a healthy file-storage server, so the
+ * execute-then-cancel test below can only run against OpenSearch. The
+ * `/cancel` route itself (and its 404 for an unknown run) works on both
+ * backends and keeps running everywhere.
+ *
+ * Fails CLOSED: only an explicit `{ status: 'ok', backend: 'file' }` means
+ * "file". Once a server answers, a non-2xx health response, a malformed body
+ * or a storage error state THROWS (failing the suite in beforeAll) instead
+ * of being mistaken for file storage and silently skipping the only test
+ * that exercises /execute → /cancel.
+ *
+ * The one outcome that is NOT a throw is `'unreachable'` (connection
+ * refused / DNS / no server at AH_PORT): that is the repo-wide "no backend
+ * started" convention every integration suite follows — ci.yml's
+ * `release-rehearsal` job runs plain `npm test` (all suites, integration
+ * included) on a runner with NO server, and must stay green. The caller
+ * decides what unreachable means: a skip-with-warning normally, a FAILURE
+ * when AH_TEST_EXPECT_BACKEND promised a backend (the integration-tests job).
+ */
+type StorageBackend = 'file' | 'opensearch' | 'unreachable';
+const probeStorageBackend = async (): Promise<StorageBackend> => {
+  let response: Response;
+  try {
+    response = await fetch(`${BASE_URL}/api/storage/health`);
+  } catch (error: any) {
+    console.warn(`[benchmarks.integration] ${BASE_URL} unreachable — ${error?.cause?.message || error?.message || error}`);
+    return 'unreachable';
+  }
+  const text = await response.text();
+  if (!response.ok) {
+    throw new Error(`storage health probe: HTTP ${response.status} — ${text.slice(0, 300)}`);
+  }
+  let data: any;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    throw new Error(`storage health probe: non-JSON body — ${text.slice(0, 300)}`);
+  }
+  if (data?.status !== 'ok') {
+    throw new Error(`storage health probe: backend not healthy — ${text.slice(0, 300)}`);
+  }
+  if (data.backend === 'file') return 'file';
+  // The OpenSearch module reports its cluster health with no `backend` key
+  // (server/routes/storage/admin.ts); any other explicit backend value
+  // ('error', or something new) is not a shape this suite understands.
+  if (data.backend === undefined || data.backend === 'opensearch') return 'opensearch';
+  throw new Error(`storage health probe: unexpected backend "${data.backend}" — ${text.slice(0, 300)}`);
+};
+
+/**
+ * The backend a CI job PROMISES. ci.yml's `integration-tests` job provisions
+ * an OpenSearch service and sets `AH_TEST_EXPECT_BACKEND=opensearch` for the
+ * test step; when that promise is broken (service down, env lost, server
+ * fell back to file mode) the execute-then-cancel test must FAIL, not skip —
+ * otherwise /execute coverage disappears from CI with a green check. Keyed
+ * on a dedicated variable rather than `CI`, which GitHub Actions sets for
+ * EVERY job including `release-rehearsal` (plain `npm test`, no OpenSearch)
+ * — see the note in traceTextSearch.opensearch.integration.test.ts.
+ */
+const EXPECTED_BACKEND = process.env.AH_TEST_EXPECT_BACKEND;
+
 // Create a test case for the benchmark
 const createTestCase = async (): Promise<string> => {
   const response = await fetch(`${BASE_URL}/api/storage/test-cases`, {
@@ -264,6 +329,7 @@ const startExecutionAndGetRunId = async (benchmarkId: string): Promise<string> =
 
 describe('Benchmark Cancel Integration Tests', () => {
   let backendAvailable = false;
+  let canExecute = false;
   let testCaseId: string | null = null;
   let benchmarkId: string | null = null;
   // Per-test-case report doc(s) the executed-then-cancelled run created.
@@ -273,11 +339,37 @@ describe('Benchmark Cancel Integration Tests', () => {
   let leakedReportIds: string[] = [];
 
   beforeAll(async () => {
-    backendAvailable = await checkBackend();
-    if (!backendAvailable) {
+    // The strict probe is this suite's FIRST and ONLY gate. A non-2xx /
+    // malformed health answer or an unhealthy storage state THROWS here and
+    // fails the suite (the lenient `checkBackend()` used by the sibling
+    // describes below would have turned every one of those into a silent
+    // skip — even in CI). An unreachable server skips the suite with a
+    // warning like every other integration suite — UNLESS a CI job promised
+    // a backend via AH_TEST_EXPECT_BACKEND, in which case it fails. An
+    // explicitly detected file backend skips just the execute-then-cancel
+    // test.
+    const backend = await probeStorageBackend();
+    if (backend === 'unreachable') {
+      if (EXPECTED_BACKEND) {
+        throw new Error(
+          `AH_TEST_EXPECT_BACKEND=${EXPECTED_BACKEND} but no server answers at ${BASE_URL} — ` +
+          'the CI job promised a backend; refusing to skip',
+        );
+      }
       console.warn('Backend not available - skipping integration tests');
       console.warn('Start the backend with: npm run dev:server');
       return;
+    }
+    backendAvailable = true;
+    if (EXPECTED_BACKEND && backend !== EXPECTED_BACKEND) {
+      throw new Error(
+        `AH_TEST_EXPECT_BACKEND=${EXPECTED_BACKEND} but the server at ${BASE_URL} is on "${backend}" storage — ` +
+        'the CI job promised an OpenSearch backend; refusing to skip the execute-then-cancel test',
+      );
+    }
+    canExecute = backend === 'opensearch';
+    if (!canExecute) {
+      console.warn('[benchmarks.integration] file-storage backend: POST .../benchmarks/:id/execute requires OpenSearch (returns 400) — skipping the execute-then-cancel test; the /cancel 404 test still runs');
     }
 
     // Create test fixtures
@@ -307,6 +399,10 @@ describe('Benchmark Cancel Integration Tests', () => {
   it('should immediately update DB status to cancelled when cancel is called', async () => {
     if (!backendAvailable || !benchmarkId) {
       console.warn('Skipping test - backend not available or benchmark not created');
+      return;
+    }
+    if (!canExecute) {
+      console.warn('Skipping test - /execute needs an OpenSearch-backed server (file storage active)');
       return;
     }
 

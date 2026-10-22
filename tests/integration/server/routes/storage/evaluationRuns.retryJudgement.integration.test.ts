@@ -58,15 +58,21 @@ const checkBackend = async (): Promise<boolean> => {
  * loop, at a tighter interval since the demo judge resolves in ms not
  * minutes.
  */
-async function pollRetryJudgement(runId: string, maxAttempts = 50): Promise<any> {
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+async function pollRetryJudgement(runId: string, timeoutMs = 10_000): Promise<any> {
+  // Wall-clock bounded, not attempt-bounded: a status round-trip against a
+  // shared OpenSearch cluster is itself 100-800 ms, so "N attempts x 100 ms
+  // sleep" was a budget that depended on the backend's latency rather than
+  // on the job. The deadline below is what the caller actually means.
+  const deadline = Date.now() + timeoutMs;
+  let job: any;
+  do {
     const res = await fetch(`${BASE_URL}/api/storage/evaluation-runs/${runId}/retry-judgement/status`);
     if (!res.ok) throw new Error(`Status poll failed: ${res.status} ${await res.text()}`);
-    const job = await res.json();
+    job = await res.json();
     if (job.status === 'completed' || job.status === 'failed') return job;
     await new Promise(resolve => setTimeout(resolve, 100));
-  }
-  throw new Error(`retry-judgement job for ${runId} did not complete within ${maxAttempts} polls`);
+  } while (Date.now() < deadline);
+  throw new Error(`retry-judgement job for ${runId} did not complete within ${timeoutMs} ms (last status: ${JSON.stringify(job)})`);
 }
 
 const createTestCase = async (name: string): Promise<string> => {
@@ -146,15 +152,14 @@ const cleanupIds: { testCases: string[]; evalRuns: string[]; reports: string[] }
 };
 
 async function cleanup() {
-  for (const id of cleanupIds.evalRuns) {
-    await fetch(`${BASE_URL}/api/storage/evaluation-runs/${id}`, { method: 'DELETE' }).catch(() => {});
-  }
-  for (const id of cleanupIds.reports) {
-    await fetch(`${BASE_URL}/api/storage/runs/${id}`, { method: 'DELETE' }).catch(() => {});
-  }
-  for (const id of cleanupIds.testCases) {
-    await fetch(`${BASE_URL}/api/storage/test-cases/${id}`, { method: 'DELETE' }).catch(() => {});
-  }
+  // Children before parents; each tier fanned out in parallel — this suite
+  // owns ~45 documents and sequential deletes against a shared cluster
+  // overran afterAll's 30 s hook timeout (which then marks the whole suite
+  // "failed to run" even when every test passed).
+  const del = (path: string) => fetch(`${BASE_URL}${path}`, { method: 'DELETE' }).catch(() => {});
+  await Promise.all(cleanupIds.evalRuns.map(id => del(`/api/storage/evaluation-runs/${id}`)));
+  await Promise.all(cleanupIds.reports.map(id => del(`/api/storage/runs/${id}`)));
+  await Promise.all(cleanupIds.testCases.map(id => del(`/api/storage/test-cases/${id}`)));
 }
 
 describe('POST /api/storage/evaluation-runs/:id/retry-judgement', () => {
@@ -166,7 +171,7 @@ describe('POST /api/storage/evaluation-runs/:id/retry-judgement', () => {
 
   afterAll(async () => {
     if (backendAvailable) await cleanup();
-  });
+  }, 60_000);
 
   it('returns 404 when the run does not exist', async () => {
     if (!backendAvailable) return;
@@ -197,21 +202,29 @@ describe('POST /api/storage/evaluation-runs/:id/retry-judgement', () => {
     // not a guard bug: a REAL Bedrock judge call takes ~40-90s per case,
     // so this race window never gets anywhere near this tight in
     // production). More cases -> a longer-lived job -> a reliable margin.
+    //
+    // Seeding is fanned out in parallel: 30 sequential writes at the
+    // 300-800 ms per round-trip a shared OpenSearch cluster shows were
+    // 10-20 s of this test's budget before the behaviour under test even
+    // started (measured 36 s total against a 45 s budget — a pass with no
+    // margin, and a timeout whenever the cluster was busier).
     const CASE_COUNT = 15;
-    const ids: string[] = [];
-    const reportIds: string[] = [];
-    for (let i = 0; i < CASE_COUNT; i++) {
-      const tc = await createTestCase(`Retry Judgement — concurrent submit ${i}`);
-      cleanupIds.testCases.push(tc);
-      const report = await createReport(`report-retry-concurrent-${Date.now()}-${i}`, {
-        testCaseId: tc,
-        metricsStatus: 'error',
-        passFailStatus: null,
-      });
-      cleanupIds.reports.push(report.id);
-      ids.push(tc);
-      reportIds.push(report.id);
-    }
+    const seedStamp = Date.now();
+    const seeded = await Promise.all(
+      Array.from({ length: CASE_COUNT }, async (_, i) => {
+        const tc = await createTestCase(`Retry Judgement — concurrent submit ${i}`);
+        cleanupIds.testCases.push(tc);
+        const report = await createReport(`report-retry-concurrent-${seedStamp}-${i}`, {
+          testCaseId: tc,
+          metricsStatus: 'error',
+          passFailStatus: null,
+        });
+        cleanupIds.reports.push(report.id);
+        return { tc, reportId: report.id };
+      }),
+    );
+    const ids = seeded.map(s => s.tc);
+    const reportIds = seeded.map(s => s.reportId);
 
     const run = await seedEvalRun({
       testCaseSnapshots: ids.map((id, i) => ({ id, version: 1, name: `Retry Judgement — concurrent submit ${i}` })),
@@ -237,14 +250,12 @@ describe('POST /api/storage/evaluation-runs/:id/retry-judgement', () => {
     // deliberately, to create the race window above) and the runner caps
     // retry concurrency at 3 (MAX_RETRY_CONCURRENCY in
     // services/evaluation/retryJudgement.ts) — five real sequential judge
-    // batches, not "a few ms". The poll helper's default budget
-    // (50 attempts x 100ms = 5s) was sized for the single-case near-instant
-    // case in the OTHER tests below and was flaky here (~2/3 failures
-    // locally: "did not complete within 50 polls" while the job was still
-    // legitimately draining, not stuck) — give this call a budget sized to
-    // its own workload instead of the default.
-    await pollRetryJudgement(run.id, 200);
-  }, 45000);
+    // batches, each a report read + report write + run write, not "a few
+    // ms". The poll helper's default budget was sized for the single-case
+    // near-instant case in the OTHER tests below and was flaky here — give
+    // this call a budget sized to its own workload instead of the default.
+    await pollRetryJudgement(run.id, 60_000);
+  }, 90_000);
 
   it('retries only the judge-failed case, leaves the passed case untouched, and recomputes stats', async () => {
     if (!backendAvailable) return;
