@@ -18,6 +18,7 @@
 import { Span } from '@/types';
 import { categorizeSpanTree, countByCategory } from './spanCategorization';
 import { flattenSpans } from './traceStats';
+import { readInputTokens, readOutputTokens, selectUsageSpans } from './tokenUsage';
 
 export interface TraceSummary {
   llm: number;
@@ -56,16 +57,18 @@ export function computeTraceSummary(spanTree: Span[]): TraceSummary {
   let peakInputTokens = 0;
   const modelSet = new Set<string>();
 
-  for (const s of flat) {
-    const a = s.attributes || {};
-    const it =
-      Number(a['gen_ai.usage.input_tokens'] ?? a['gen_ai.usage.prompt_tokens'] ?? a['input_tokens'] ?? 0) || 0;
-    const ot =
-      Number(a['gen_ai.usage.output_tokens'] ?? a['gen_ai.usage.completion_tokens'] ?? a['output_tokens'] ?? 0) || 0;
+  // Roll-up aware: a parent that mirrors / aggregates its children's usage is
+  // not counted twice (see ./tokenUsage.ts); independent nested usage is summed.
+  for (const s of selectUsageSpans(flat).counted) {
+    const it = readInputTokens(s.attributes);
+    const ot = readOutputTokens(s.attributes);
     inputTokens += it;
     outputTokens += ot;
     totalTokens += it + ot;
     if (it > peakInputTokens) peakInputTokens = it;
+  }
+  for (const s of flat) {
+    const a = s.attributes || {};
     const m = a['gen_ai.request.model'] || a['gen_ai.response.model'] || a['model'];
     if (typeof m === 'string' && m.trim()) modelSet.add(m.trim());
   }

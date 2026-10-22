@@ -12,6 +12,7 @@
 import { Client } from '@opensearch-project/opensearch';
 import { MetricsResult, AggregateMetrics, OpenSearchConfig, Span } from '@/types';
 import { getSampleSpansForRunIds } from '../../cli/demo/sampleTraces.js';
+import { sumUsage } from '@/services/traces/tokenUsage';
 import { transformSpan, buildRunIdShouldClauses, buildSessionIdShouldClauses, buildAgentHintClause, type ServiceWindowHint } from './tracesService.js';
 
 // ============================================================================
@@ -68,6 +69,8 @@ export function getPricing(modelId?: string): ModelPricing {
 interface OpenSearchSpanSource {
   name?: string;
   traceId?: string;
+  spanId?: string;
+  parentSpanId?: string;
   startTime?: string;
   endTime?: string;
   durationInNanos?: number;
@@ -480,6 +483,8 @@ const METRICS_SOURCE_FIELDS = [
   'resource.attributes.*',
   'name',
   'traceId',
+  'spanId',
+  'parentSpanId',
   // Top-level OTel resource service name (both schemas). Needed to attribute
   // a span back to its Strategy-C hint (service.name + window) in the batch
   // path — without it in the projection the query MATCHES the span but the
@@ -521,27 +526,28 @@ export function computeMetricsFromSpans(
   // Find the root agent.run span
   const rootSpan = spans.find(s => s.name === 'agent.run');
 
-  // Aggregate metrics from all spans
-  let inputTokens = 0;
-  let outputTokens = 0;
-  let llmCalls = 0;
+  // Strategy A correlation (below) pulls in the whole shared trace, which
+  // can include agent-health's own eval/judge spans — exclude them so the
+  // agent's own tokens/cost/LLM-call count aren't inflated by ours.
+  const agentSpans = spans
+    .map((span) => ({ span, attrs: readAttrs(span) }))
+    .filter(({ span, attrs }) => !isEvalOrJudgeSpan(attrs, span.name));
+
+  // Tokens + LLM calls: roll-up aware (see services/traces/tokenUsage.ts) —
+  // a parent that mirrors or aggregates its children is not counted twice;
+  // independent nested usage is still summed.
+  const usage = sumUsage(agentSpans.map(({ span, attrs }) => ({ spanId: span.spanId, parentSpanId: span.parentSpanId, attributes: attrs })));
+  const { inputTokens, outputTokens } = usage;
+  const anyUsage = usage.counted.length > 0;
+  let llmCalls = anyUsage ? usage.llmCalls : 0;
   const toolsUsed = new Set<string>();
   let modelId = 'default';
 
-  for (const span of spans) {
-    const attrs = readAttrs(span);
-    // Strategy A correlation (below) pulls in the whole shared trace, which
-    // can include agent-health's own eval/judge spans — exclude them so the
-    // agent's own tokens/cost/LLM-call count aren't inflated by ours.
-    if (isEvalOrJudgeSpan(attrs, span.name)) continue;
-    const inTokens = readInputTokens(attrs);
-    const outTokens = readOutputTokens(attrs);
-    inputTokens += inTokens;
-    outputTokens += outTokens;
-
+  for (const { span, attrs } of agentSpans) {
     const spanModel = attrs['gen_ai.request.model'];
     if (spanModel) {
-      llmCalls++;
+      // Legacy: a model-bearing span with NO usage anywhere in the tree is still a call.
+      if (!anyUsage) llmCalls++;
       modelId = spanModel;
     }
 
