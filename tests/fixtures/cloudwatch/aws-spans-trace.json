@@ -1,0 +1,574 @@
+[
+ {
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  },
+  "scope": {
+   "name": "demo_agent",
+   "version": ""
+  },
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "aaad0bc29275b362",
+  "flags": 768,
+  "name": "POST /invoke",
+  "kind": "SERVER",
+  "startTimeUnixNano": 1788467284282849057,
+  "endTimeUnixNano": 1788467295724849057,
+  "durationNano": 11442000000,
+  "attributes": {
+   "gen_ai.conversation.id": "cw-sess-2",
+   "agent_health.run.id": "cw-run-2",
+   "http.request.method": "POST",
+   "http.route": "/invoke",
+   "url.path": "/invoke",
+   "http.response.status_code": 200,
+   "aws.local.service": "demo-retrieval-agent",
+   "aws.local.operation": "POST",
+   "aws.span.kind": "SERVER",
+   "aws.local.environment": "dev",
+   "PlatformType": "Generic",
+   "telemetry.extended": "true"
+  },
+  "status": {
+   "code": "OK"
+  },
+  "parentSpanId": "b7ad6b7169203331"
+ },
+ {
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  },
+  "scope": {
+   "name": "demo_agent",
+   "version": ""
+  },
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "1000000000000001",
+  "flags": 768,
+  "name": "invoke_agent demo-retrieval-agent",
+  "kind": "INTERNAL",
+  "startTimeUnixNano": 1788467284284849057,
+  "endTimeUnixNano": 1788467295684849057,
+  "durationNano": 11400000000,
+  "attributes": {
+   "gen_ai.conversation.id": "cw-sess-2",
+   "agent_health.run.id": "cw-run-2",
+   "gen_ai.operation.name": "invoke_agent",
+   "gen_ai.agent.name": "demo-retrieval-agent",
+   "gen_ai.provider.name": "demo-provider",
+   "gen_ai.request.model": "demo-provider.demo-model-v1",
+   "gen_ai.usage.input_tokens": 21476,
+   "gen_ai.usage.output_tokens": 843,
+   "aws.genai.token_count_total": 22319,
+   "gen_ai.agent.tools": [
+    "search_docs",
+    "describe_index",
+    "run_query"
+   ],
+   "aws.local.service": "demo-retrieval-agent",
+   "aws.local.operation": "invoke_agent",
+   "aws.span.kind": "INTERNAL",
+   "aws.local.environment": "dev",
+   "PlatformType": "Generic",
+   "telemetry.extended": "true",
+   "aws.genai.span_kind": "AGENT"
+  },
+  "status": {
+   "code": "UNSET"
+  },
+  "parentSpanId": "aaad0bc29275b362"
+ },
+ {
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  },
+  "scope": {
+   "name": "demo_agent",
+   "version": ""
+  },
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "2000000000000001",
+  "flags": 768,
+  "name": "execute_event_loop_cycle",
+  "kind": "INTERNAL",
+  "startTimeUnixNano": 1788467284285849057,
+  "endTimeUnixNano": 1788467288285849057,
+  "durationNano": 4000000000,
+  "attributes": {
+   "gen_ai.conversation.id": "cw-sess-2",
+   "agent_health.run.id": "cw-run-2",
+   "event_loop.cycle_id": "c1",
+   "aws.local.service": "demo-retrieval-agent",
+   "aws.local.operation": "execute_event_loop_cycle",
+   "aws.span.kind": "INTERNAL",
+   "aws.local.environment": "dev",
+   "PlatformType": "Generic",
+   "telemetry.extended": "true"
+  },
+  "status": {
+   "code": "UNSET"
+  },
+  "parentSpanId": "1000000000000001"
+ },
+ {
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  },
+  "scope": {
+   "name": "demo_agent",
+   "version": ""
+  },
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "3000000000000001",
+  "flags": 768,
+  "name": "chat",
+  "kind": "INTERNAL",
+  "startTimeUnixNano": 1788467284286849057,
+  "endTimeUnixNano": 1788467286786849057,
+  "durationNano": 2500000000,
+  "attributes": {
+   "gen_ai.conversation.id": "cw-sess-2",
+   "agent_health.run.id": "cw-run-2",
+   "gen_ai.operation.name": "chat",
+   "gen_ai.provider.name": "demo-provider",
+   "gen_ai.request.model": "demo-provider.demo-model-v1",
+   "gen_ai.usage.input_tokens": 5542,
+   "gen_ai.usage.output_tokens": 175,
+   "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Which products \u2026\"}]}]",
+   "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"\u2026\"}]}]",
+   "gen_ai.system_instructions": "You are a retrieval agent. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \u2026[truncated: 40000 bytes total, showing head+tail] \u2026 tail",
+   "aws.local.service": "demo-retrieval-agent",
+   "aws.local.operation": "chat",
+   "aws.span.kind": "INTERNAL",
+   "aws.local.environment": "dev",
+   "PlatformType": "Generic",
+   "telemetry.extended": "true",
+   "aws.genai.span_kind": "LLM"
+  },
+  "status": {
+   "code": "UNSET"
+  },
+  "parentSpanId": "2000000000000001"
+ },
+ {
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  },
+  "scope": {
+   "name": "demo_agent",
+   "version": ""
+  },
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "3000000000000002",
+  "flags": 768,
+  "name": "execute_tool search_docs",
+  "kind": "INTERNAL",
+  "startTimeUnixNano": 1788467286882849057,
+  "endTimeUnixNano": 1788467287182849057,
+  "durationNano": 300000000,
+  "attributes": {
+   "gen_ai.conversation.id": "cw-sess-2",
+   "agent_health.run.id": "cw-run-2",
+   "gen_ai.operation.name": "execute_tool",
+   "gen_ai.tool.name": "search_docs",
+   "gen_ai.tool.call.id": "call-search_docs",
+   "gen_ai.tool.call.arguments": "{\"datasource\":\"ds-demo\"}",
+   "gen_ai.tool.call.result": "{\"ok\":true}",
+   "aws.local.service": "demo-retrieval-agent",
+   "aws.local.operation": "execute_tool",
+   "aws.span.kind": "INTERNAL",
+   "aws.local.environment": "dev",
+   "PlatformType": "Generic",
+   "telemetry.extended": "true",
+   "aws.genai.span_kind": "TOOL"
+  },
+  "status": {
+   "code": "UNSET"
+  },
+  "parentSpanId": "2000000000000001"
+ },
+ {
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  },
+  "scope": {
+   "name": "demo_agent",
+   "version": ""
+  },
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "3000000000000003",
+  "flags": 768,
+  "name": "execute_tool describe_index",
+  "kind": "INTERNAL",
+  "startTimeUnixNano": 1788467287232849057,
+  "endTimeUnixNano": 1788467287632849057,
+  "durationNano": 400000000,
+  "attributes": {
+   "gen_ai.conversation.id": "cw-sess-2",
+   "agent_health.run.id": "cw-run-2",
+   "gen_ai.operation.name": "execute_tool",
+   "gen_ai.tool.name": "describe_index",
+   "gen_ai.tool.call.id": "call-describe_index",
+   "gen_ai.tool.call.arguments": "{\"index\":\"demo-kb\"}",
+   "gen_ai.tool.call.result": "{\"fields\":[]}",
+   "aws.local.service": "demo-retrieval-agent",
+   "aws.local.operation": "execute_tool",
+   "aws.span.kind": "INTERNAL",
+   "aws.local.environment": "dev",
+   "PlatformType": "Generic",
+   "telemetry.extended": "true",
+   "aws.genai.span_kind": "TOOL"
+  },
+  "status": {
+   "code": "UNSET"
+  },
+  "parentSpanId": "2000000000000001"
+ },
+ {
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  },
+  "scope": {
+   "name": "demo_agent",
+   "version": ""
+  },
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "2000000000000002",
+  "flags": 768,
+  "name": "execute_event_loop_cycle",
+  "kind": "INTERNAL",
+  "startTimeUnixNano": 1788467288382849057,
+  "endTimeUnixNano": 1788467292882849057,
+  "durationNano": 4500000000,
+  "attributes": {
+   "gen_ai.conversation.id": "cw-sess-2",
+   "agent_health.run.id": "cw-run-2",
+   "event_loop.cycle_id": "c2",
+   "event_loop.parent_cycle_id": "c1",
+   "aws.local.service": "demo-retrieval-agent",
+   "aws.local.operation": "execute_event_loop_cycle",
+   "aws.span.kind": "INTERNAL",
+   "aws.local.environment": "dev",
+   "PlatformType": "Generic",
+   "telemetry.extended": "true"
+  },
+  "status": {
+   "code": "UNSET"
+  },
+  "parentSpanId": "1000000000000001"
+ },
+ {
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  },
+  "scope": {
+   "name": "demo_agent",
+   "version": ""
+  },
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "3000000000000004",
+  "flags": 768,
+  "name": "chat",
+  "kind": "INTERNAL",
+  "startTimeUnixNano": 1788467288482849057,
+  "endTimeUnixNano": 1788467291482849057,
+  "durationNano": 3000000000,
+  "attributes": {
+   "gen_ai.conversation.id": "cw-sess-2",
+   "agent_health.run.id": "cw-run-2",
+   "gen_ai.operation.name": "chat",
+   "gen_ai.provider.name": "demo-provider",
+   "gen_ai.request.model": "demo-provider.demo-model-v1",
+   "gen_ai.usage.input_tokens": 7470,
+   "gen_ai.usage.output_tokens": 325,
+   "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Which products \u2026\"}]}]",
+   "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"\u2026\"}]}]",
+   "gen_ai.system_instructions": "You are a retrieval agent. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \u2026[truncated: 40000 bytes total, showing head+tail] \u2026 tail",
+   "aws.local.service": "demo-retrieval-agent",
+   "aws.local.operation": "chat",
+   "aws.span.kind": "INTERNAL",
+   "aws.local.environment": "dev",
+   "PlatformType": "Generic",
+   "telemetry.extended": "true",
+   "aws.genai.span_kind": "LLM"
+  },
+  "status": {
+   "code": "UNSET"
+  },
+  "parentSpanId": "2000000000000002"
+ },
+ {
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  },
+  "scope": {
+   "name": "demo_agent",
+   "version": ""
+  },
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "3000000000000005",
+  "flags": 768,
+  "name": "execute_tool run_query",
+  "kind": "INTERNAL",
+  "startTimeUnixNano": 1788467291582849057,
+  "endTimeUnixNano": 1788467292782849057,
+  "durationNano": 1200000000,
+  "attributes": {
+   "gen_ai.conversation.id": "cw-sess-2",
+   "agent_health.run.id": "cw-run-2",
+   "gen_ai.operation.name": "execute_tool",
+   "gen_ai.tool.name": "run_query",
+   "gen_ai.tool.call.id": "call-run_query",
+   "gen_ai.tool.call.arguments": "{\"query\":{\"match\":{\"title\":\"\u2026\"}}}",
+   "gen_ai.tool.call.result": "{\"hits\":1}",
+   "aws.local.service": "demo-retrieval-agent",
+   "aws.local.operation": "execute_tool",
+   "aws.span.kind": "INTERNAL",
+   "aws.local.environment": "dev",
+   "PlatformType": "Generic",
+   "telemetry.extended": "true",
+   "aws.genai.span_kind": "TOOL"
+  },
+  "status": {
+   "code": "UNSET"
+  },
+  "parentSpanId": "2000000000000002"
+ },
+ {
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  },
+  "scope": {
+   "name": "demo_agent",
+   "version": ""
+  },
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "b93daa8692261d13",
+  "flags": 768,
+  "name": "search demo-kb",
+  "kind": "CLIENT",
+  "startTimeUnixNano": 1788467291682849057,
+  "endTimeUnixNano": 1788467292582849057,
+  "durationNano": 900000000,
+  "attributes": {
+   "gen_ai.conversation.id": "cw-sess-2",
+   "agent_health.run.id": "cw-run-2",
+   "db.system.name": "opensearch",
+   "db.operation.name": "search",
+   "db.collection.name": "demo-kb",
+   "db.namespace": "demo-kb",
+   "db.query.text": "{\"query\":{\"match\":{\"title\":\"\u2026\"}}}",
+   "db.response.returned_rows": 1,
+   "retrieval.search.hit_ids": [
+    "doc-1"
+   ],
+   "retrieval.retrieved.doc_ids": [
+    "doc-1"
+   ],
+   "retrieval.search.took_ms": 2,
+   "aws.local.service": "demo-retrieval-agent",
+   "aws.local.operation": "search",
+   "aws.span.kind": "CLIENT",
+   "aws.local.environment": "dev",
+   "PlatformType": "Generic",
+   "telemetry.extended": "true"
+  },
+  "status": {
+   "code": "UNSET"
+  },
+  "parentSpanId": "3000000000000005"
+ },
+ {
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  },
+  "scope": {
+   "name": "demo_agent",
+   "version": ""
+  },
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "2000000000000003",
+  "flags": 768,
+  "name": "execute_event_loop_cycle",
+  "kind": "INTERNAL",
+  "startTimeUnixNano": 1788467292982849057,
+  "endTimeUnixNano": 1788467295682849057,
+  "durationNano": 2700000000,
+  "attributes": {
+   "gen_ai.conversation.id": "cw-sess-2",
+   "agent_health.run.id": "cw-run-2",
+   "event_loop.cycle_id": "c3",
+   "event_loop.parent_cycle_id": "c2",
+   "aws.local.service": "demo-retrieval-agent",
+   "aws.local.operation": "execute_event_loop_cycle",
+   "aws.span.kind": "INTERNAL",
+   "aws.local.environment": "dev",
+   "PlatformType": "Generic",
+   "telemetry.extended": "true"
+  },
+  "status": {
+   "code": "UNSET"
+  },
+  "parentSpanId": "1000000000000001"
+ },
+ {
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  },
+  "scope": {
+   "name": "demo_agent",
+   "version": ""
+  },
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "3000000000000006",
+  "flags": 768,
+  "name": "chat",
+  "kind": "INTERNAL",
+  "startTimeUnixNano": 1788467293082849057,
+  "endTimeUnixNano": 1788467295682849057,
+  "durationNano": 2600000000,
+  "attributes": {
+   "gen_ai.conversation.id": "cw-sess-2",
+   "agent_health.run.id": "cw-run-2",
+   "gen_ai.operation.name": "chat",
+   "gen_ai.provider.name": "demo-provider",
+   "gen_ai.request.model": "demo-provider.demo-model-v1",
+   "gen_ai.usage.input_tokens": 8464,
+   "gen_ai.usage.output_tokens": 343,
+   "gen_ai.input.messages": "[{\"role\":\"user\",\"parts\":[{\"type\":\"text\",\"content\":\"Which products \u2026\"}]}]",
+   "gen_ai.output.messages": "[{\"role\":\"assistant\",\"parts\":[{\"type\":\"text\",\"content\":\"\u2026\"}]}]",
+   "gen_ai.system_instructions": "You are a retrieval agent. xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx \u2026[truncated: 40000 bytes total, showing head+tail] \u2026 tail",
+   "aws.local.service": "demo-retrieval-agent",
+   "aws.local.operation": "chat",
+   "aws.span.kind": "INTERNAL",
+   "aws.local.environment": "dev",
+   "PlatformType": "Generic",
+   "telemetry.extended": "true",
+   "aws.genai.span_kind": "LLM"
+  },
+  "status": {
+   "code": "UNSET"
+  },
+  "parentSpanId": "2000000000000003"
+ }
+]

@@ -18,6 +18,7 @@
 import { Span } from '@/types';
 import { categorizeSpanTree, countByCategory } from './spanCategorization';
 import { flattenSpans } from './traceStats';
+import { readInputTokens, readOutputTokens, selectUsageSpans } from './tokenUsage';
 
 export interface TraceSummary {
   llm: number;
@@ -41,7 +42,9 @@ export interface TraceSummary {
  * tree. The token counters look at every span (including children) and
  * sum the OTel GenAI usage attributes, with `prompt_tokens` /
  * `completion_tokens` accepted as fallbacks for older instrumentation
- * that pre-dates the input/output rename. Models are collected and
+ * that pre-dates the input/output rename — counting only leaf usage spans
+ * so roll-up totals on parent spans are not double-counted
+ * (see ./tokenUsage.ts). Models are collected and
  * deduplicated across the trace because some agents fan out to multiple
  * models in one trace (e.g. a planner + a tool-using model).
  */
@@ -56,16 +59,18 @@ export function computeTraceSummary(spanTree: Span[]): TraceSummary {
   let peakInputTokens = 0;
   const modelSet = new Set<string>();
 
-  for (const s of flat) {
-    const a = s.attributes || {};
-    const it =
-      Number(a['gen_ai.usage.input_tokens'] ?? a['gen_ai.usage.prompt_tokens'] ?? a['input_tokens'] ?? 0) || 0;
-    const ot =
-      Number(a['gen_ai.usage.output_tokens'] ?? a['gen_ai.usage.completion_tokens'] ?? a['output_tokens'] ?? 0) || 0;
+  // Usage is counted on leaf usage spans only, so a framework that mirrors
+  // the per-call totals onto its root (`invoke_agent`) is not counted twice.
+  for (const s of selectUsageSpans(flat)) {
+    const it = readInputTokens(s.attributes);
+    const ot = readOutputTokens(s.attributes);
     inputTokens += it;
     outputTokens += ot;
     totalTokens += it + ot;
     if (it > peakInputTokens) peakInputTokens = it;
+  }
+  for (const s of flat) {
+    const a = s.attributes || {};
     const m = a['gen_ai.request.model'] || a['gen_ai.response.model'] || a['model'];
     if (typeof m === 'string' && m.trim()) modelSet.add(m.trim());
   }

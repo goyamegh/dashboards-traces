@@ -1,0 +1,77 @@
+[
+ {
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "aaad0bc29275b362",
+  "flags": 1,
+  "severityText": "INFO",
+  "severityNumber": 9,
+  "body": "planner request start path=/invoke session_id=cw-sess-2 question_chars=65",
+  "timeUnixNano": 1788467284283849057,
+  "attributes": {
+   "code.function.name": "invoke"
+  },
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  }
+ },
+ {
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "b93daa8692261d13",
+  "flags": 1,
+  "severityText": "INFO",
+  "severityNumber": 9,
+  "body": "search ok datasource=ds-demo index=demo-kb hits=1 total=1 took_ms=2",
+  "timeUnixNano": 1788467292282849057,
+  "attributes": {
+   "code.function.name": "search"
+  },
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  }
+ },
+ {
+  "traceId": "a54f35c518ca4fe4b86b07f10aeea457",
+  "spanId": "aaad0bc29275b362",
+  "flags": 1,
+  "severityText": "INFO",
+  "severityNumber": 9,
+  "body": "planner request ok path=/invoke session_id=cw-sess-2 duration_ms=11442 answer_chars=756",
+  "timeUnixNano": 1788467295724849057,
+  "attributes": {
+   "code.function.name": "invoke"
+  },
+  "resource": {
+   "attributes": {
+    "service.name": "demo-retrieval-agent",
+    "deployment.environment.name": "dev",
+    "cloud.provider": "aws",
+    "cloud.region": "us-east-1",
+    "aws.log.group.names": [
+     "/agent-health/demo-retrieval-agent"
+    ],
+    "telemetry.sdk.language": "python",
+    "telemetry.sdk.name": "opentelemetry"
+   }
+  }
+ }
+]

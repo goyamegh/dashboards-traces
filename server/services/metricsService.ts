@@ -13,6 +13,7 @@ import { Client } from '@opensearch-project/opensearch';
 import { MetricsResult, AggregateMetrics, OpenSearchConfig, Span } from '@/types';
 import { getSampleSpansForRunIds } from '../../cli/demo/sampleTraces.js';
 import { transformSpan, buildRunIdShouldClauses, buildSessionIdShouldClauses, buildAgentHintClause, type ServiceWindowHint } from './tracesService.js';
+import { sumUsage, readInputTokens, readOutputTokens } from '@/services/traces/tokenUsage';
 
 // ============================================================================
 // Model Pricing
@@ -68,6 +69,8 @@ export function getPricing(modelId?: string): ModelPricing {
 interface OpenSearchSpanSource {
   name?: string;
   traceId?: string;
+  spanId?: string;
+  parentSpanId?: string;
   startTime?: string;
   endTime?: string;
   durationInNanos?: number;
@@ -77,6 +80,13 @@ interface OpenSearchSpanSource {
   // attributes['agent_health.run.id'] for the runId. (Data Prepper trace-analytics-plain-raw.)
   attributes?: Record<string, any>;
 }
+
+/**
+ * Backend-neutral input to the metrics math: the OTel plain-raw span shape
+ * (nested `attributes`, ISO `startTime`/`endTime`, `durationInNanos`, numeric
+ * `status.code`). OpenSearch returns it directly; other backends map into it.
+ */
+export type MetricsSpanSource = OpenSearchSpanSource;
 
 /**
  * Read a span's attributes tolerant of BOTH OpenSearch schemas this cluster
@@ -112,17 +122,8 @@ function readAttrs(span: OpenSearchSpanSource): Record<string, any> {
  * carry this exact fallback for the Traces tab and the SDK `traces` fixture —
  * this file was the one remaining reader using registry-only keys.
  */
-function readInputTokens(attrs: Record<string, any>): number {
-  return Number(
-    attrs['gen_ai.usage.input_tokens'] ?? attrs['gen_ai.usage.prompt_tokens'] ?? attrs['input_tokens'] ?? 0,
-  ) || 0;
-}
-
-function readOutputTokens(attrs: Record<string, any>): number {
-  return Number(
-    attrs['gen_ai.usage.output_tokens'] ?? attrs['gen_ai.usage.completion_tokens'] ?? attrs['output_tokens'] ?? 0,
-  ) || 0;
-}
+// Token readers live in services/traces/tokenUsage.ts (shared with the
+// Traces tab summary) so every reader accepts the same aliases.
 
 /**
  * True when a span is one of AGENT HEALTH's OWN eval/judge spans (the
@@ -300,7 +301,7 @@ function resolveSpanAttribution(
  * carry the same string (or, for sloppy callers, a real run's id) be attributed
  * to this key. Keys are still always returned in the result set.
  */
-function buildChunkLookups(
+export function buildChunkLookups(
   chunk: string[],
   sessionIdByRunId?: Record<string, string>,
   traceIdByRunId?: Record<string, string>,
@@ -340,7 +341,7 @@ function buildChunkLookups(
  * bound — we cannot know which keys lost spans). Shared by both transport
  * branches.
  */
-function groupAndCompute(
+export function groupAndCompute(
   chunk: string[],
   allSpans: OpenSearchSpanSource[],
   lookups: ReturnType<typeof buildChunkLookups>,
@@ -480,6 +481,8 @@ const METRICS_SOURCE_FIELDS = [
   'resource.attributes.*',
   'name',
   'traceId',
+  'spanId',
+  'parentSpanId',
   // Top-level OTel resource service name (both schemas). Needed to attribute
   // a span back to its Strategy-C hint (service.name + window) in the batch
   // path — without it in the projection the query MATCHES the span but the
@@ -521,27 +524,30 @@ export function computeMetricsFromSpans(
   // Find the root agent.run span
   const rootSpan = spans.find(s => s.name === 'agent.run');
 
-  // Aggregate metrics from all spans
-  let inputTokens = 0;
-  let outputTokens = 0;
+  // Strategy A correlation (below) pulls in the whole shared trace, which
+  // can include agent-health's own eval/judge spans — exclude them so the
+  // agent's own tokens/cost/LLM-call count aren't inflated by ours.
+  const agentSpans = spans
+    .map((span) => ({ span, attrs: readAttrs(span) }))
+    .filter(({ span, attrs }) => !isEvalOrJudgeSpan(attrs, span.name));
+
+  // Tokens: count usage only on spans with no usage-bearing descendant, so a
+  // framework that mirrors the per-call totals onto `invoke_agent` is not
+  // counted twice (see services/traces/tokenUsage.ts).
+  const usage = sumUsage(agentSpans.map(({ span, attrs }) => ({ spanId: span.spanId, parentSpanId: span.parentSpanId, attributes: attrs })));
+  const { inputTokens, outputTokens } = usage;
+  const countedIds = new Set(usage.counted.map((u) => u.spanId).filter(Boolean));
+  const usageHasTree = usage.counted.length > 0 && countedIds.size > 0;
   let llmCalls = 0;
   const toolsUsed = new Set<string>();
   let modelId = 'default';
 
-  for (const span of spans) {
-    const attrs = readAttrs(span);
-    // Strategy A correlation (below) pulls in the whole shared trace, which
-    // can include agent-health's own eval/judge spans — exclude them so the
-    // agent's own tokens/cost/LLM-call count aren't inflated by ours.
-    if (isEvalOrJudgeSpan(attrs, span.name)) continue;
-    const inTokens = readInputTokens(attrs);
-    const outTokens = readOutputTokens(attrs);
-    inputTokens += inTokens;
-    outputTokens += outTokens;
-
+  for (const { span, attrs } of agentSpans) {
     const spanModel = attrs['gen_ai.request.model'];
     if (spanModel) {
-      llmCalls++;
+      // An LLM call is a model-bearing span whose usage we counted; without
+      // tree information every model-bearing span counts (legacy behaviour).
+      if (!usageHasTree || countedIds.has(span.spanId)) llmCalls++;
       modelId = spanModel;
     }
 
