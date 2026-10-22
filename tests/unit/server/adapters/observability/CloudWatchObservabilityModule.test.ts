@@ -399,6 +399,27 @@ describe('CloudWatchObservabilityModule', () => {
       expect(m).toMatchObject({ runId: RUN, traceId: TRACE, inputTokens: 21476, outputTokens: 843, llmCalls: 3, toolCalls: 3, status: 'success' });
     });
 
+    it('forRun threads upstream hints (traceId / agents) and stamps correlatedBy', async () => {
+      const m = await mod(reader).metrics.forRun('report-key', { traceId: TRACE, agents: [{ serviceName: SERVICE, startedAt: T0_MS - 1000, endedAt: T0_MS + 60_000 }] });
+      expect(m.inputTokens).toBe(21476);
+      expect(m.correlatedBy).toBe('ids'); // traceId is an id correlator
+      expect(m.hasSpans).toBe(true);
+    });
+
+    it('forRuns serves a window-only (surrogate) key alongside an id key — the window query runs even though ids hit', async () => {
+      // A second trace of the same service, with a run id nobody asks for.
+      const flip = (id: string) => id.split('').reverse().join(''); // injective id rewrite
+      const other = records.map((r) => ({ ...r, traceId: 'b'.repeat(32), spanId: flip(r.spanId!), parentSpanId: r.parentSpanId ? flip(r.parentSpanId) : undefined,
+        attributes: { ...r.attributes, 'agent_health.run.id': 'someone-else', 'gen_ai.conversation.id': 'other-sess' } }));
+      reader.groups['aws/spans'] = [...spanMessages, ...other.map((r) => JSON.stringify(r))];
+      const [surrogate, real] = await mod(reader).metrics.forRuns(['report-xyz', RUN], {
+        agentsByRunId: { 'report-xyz': [{ serviceName: SERVICE, startedAt: T0_MS - 1000, endedAt: T0_MS + 60_000 }] },
+      });
+      expect(reader.calls.insights).toHaveLength(1);
+      expect(real).toMatchObject({ runId: RUN, inputTokens: 21476, correlatedBy: 'ids' });
+      expect(surrogate).toMatchObject({ runId: 'report-xyz', inputTokens: 21476, correlatedBy: 'window' });
+    });
+
     it('forRuns falls back to Insights when the bounded FilterLogEvents scan is incomplete', async () => {
       reader.incompleteFilter = true;
       const m = await mod(reader).metrics.forRun(RUN);

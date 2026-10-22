@@ -29,13 +29,15 @@ import type {
   TracesQueryOptions,
   LogsQueryOptions,
   ObservabilityBackendInfo,
+  RunMetricsHints,
+  BatchMetricsHints,
 } from '../types.js';
 import type { Span, HealthStatus, OpenSearchLog, MetricsResult } from '../../../types/index.js';
 import { TraceStore } from '../file/TraceStore.js';
 import { computeUseUnion, matchesQuery, spanMs } from './traceQueryMatch.js';
 
 export { computeUseUnion, matchesQuery } from './traceQueryMatch.js';
-import { computeMetricsFromSpans, type MetricsSpanSource } from '../../services/metricsService.js';
+import { buildChunkLookups, groupAndCompute, type MetricsSpanSource } from '../../services/metricsService.js';
 
 function decodeOffset(cursor?: string): number {
   if (!cursor) return 0;
@@ -122,14 +124,28 @@ export function spanToMetricsSource(s: Span): MetricsSpanSource {
 class FileMetricsOperations implements IMetricsOperations {
   constructor(private readonly traces: ITracesOperations) {}
 
-  async forRun(runId: string): Promise<MetricsResult> {
-    const spans = await this.traces.getByRunIds([runId]);
-    const sorted = [...spans].sort((a, b) => spanMs(a) - spanMs(b));
-    return computeMetricsFromSpans(runId, sorted.map(spanToMetricsSource));
+  async forRun(runId: string, hints?: RunMetricsHints): Promise<MetricsResult> {
+    return (await this.forRuns([runId], {
+      sessionIdByRunId: hints?.sessionId ? { [runId]: hints.sessionId } : undefined,
+      traceIdByRunId: hints?.traceId ? { [runId]: hints.traceId } : undefined,
+      agentsByRunId: hints?.agents?.length ? { [runId]: hints.agents } : undefined,
+    }))[0];
   }
 
-  async forRuns(runIds: string[]): Promise<MetricsResult[]> {
-    return Promise.all(runIds.map((id) => this.forRun(id)));
+  /** Union every correlator into one traces query, then the shared attribution + math. */
+  async forRuns(runIds: string[], hints?: BatchMetricsHints): Promise<MetricsResult[]> {
+    const valid = runIds.filter((id) => typeof id === 'string' && id.length > 0);
+    if (valid.length === 0) return [];
+    const lookups = buildChunkLookups(valid, hints?.sessionIdByRunId, hints?.traceIdByRunId, hints?.agentsByRunId);
+    const spans: Span[] = [];
+    const seen = new Set<string>();
+    const add = (list: Span[]) => { for (const s of list) if (!seen.has(s.spanId)) { seen.add(s.spanId); spans.push(s); } };
+    if (lookups.runIdCorrelators.length) add((await this.traces.query({ runIds: lookups.runIdCorrelators, size: 100000 })).spans);
+    for (const tid of lookups.traceIdToRunId.keys()) add(await this.traces.getByTraceId(tid));
+    for (const sid of lookups.sessionIdToRunId.keys()) add((await this.traces.query({ sessionId: sid, size: 100000 })).spans);
+    if (lookups.agentHints.length) add((await this.traces.query({ agents: lookups.agentHints, size: 100000 })).spans);
+    const sources = spans.sort((a, b) => spanMs(a) - spanMs(b)).map(spanToMetricsSource);
+    return groupAndCompute(valid, sources, lookups, false);
   }
 }
 
