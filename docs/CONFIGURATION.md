@@ -243,6 +243,71 @@ For a fully self-contained check with no observability cluster, point the eval
 span exporter at the server's own OTLP receiver:
 `OTEL_EVAL_ENABLED=true OTEL_EVAL_EXPORTER_ENDPOINT=http://127.0.0.1:<port>/v1/traces`
 (spans land in the file trace store; the metrics check reports SKIP).
+### CloudWatch Observability (Optional)
+
+Read traces, logs and metrics from **Amazon CloudWatch** instead of an OpenSearch
+cluster. Agents export OTLP to the X-Ray OTLP endpoint
+(`https://xray.<region>.amazonaws.com/v1/traces`); with
+[CloudWatch Transaction Search](https://docs.aws.amazon.com/AmazonCloudWatch/latest/monitoring/CloudWatch-Transaction-Search.html)
+enabled every span lands as a structured record in the `aws/spans` log group,
+which Agent Health reads with `FilterLogEvents` (single-trace lookups) and
+Logs Insights (multi-strategy correlation and search). Application logs are read
+from one log group per agent, named after the agent's OTel `service.name`.
+
+```ts
+// agent-health.config.ts — the whole change for an existing OpenSearch user
+observability: {
+  type: 'cloudwatch',
+  awsRegion: 'us-east-1',
+  awsProfile: 'default',                        // optional → default credential chain
+  // logGroups: { traces: 'aws/spans', logs: '/agent-health/{service.name}' },  // defaults
+}
+```
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `OBSERVABILITY_TYPE` | `cloudwatch` selects this backend (`opensearch` / unset = OpenSearch) | - |
+| `CLOUDWATCH_REGION` | AWS region (falls back to `AWS_REGION`) | - |
+| `CLOUDWATCH_AWS_PROFILE` | AWS profile (default credential chain if omitted) | - |
+| `CLOUDWATCH_TRACES_LOG_GROUP` | Log group Transaction Search writes spans to | `aws/spans` |
+| `CLOUDWATCH_LOGS_LOG_GROUP` | Per-agent log group template; `{service.name}` is replaced with the agent's `traceContext.serviceName` | `/agent-health/{service.name}` |
+
+`endpoint`, `indexes` and basic-auth fields are not used by this backend. Trace
+correlation (strategies A–D in [AGENTS.md](../AGENTS.md)) is identical to the
+OpenSearch reader: agents should adopt the incoming `traceparent`, and may stamp
+the `agent_health.run.id` W3C **baggage** entry Agent Health sends alongside it
+as a span attribute. Note that `aws/spans` is indexed asynchronously —
+a brand-new run can take 1–2 minutes to become queryable, which the trace
+poller already tolerates.
+
+**One-time account setup**
+
+1. Enable Transaction Search in the account/region
+   (`aws xray update-trace-segment-destination --destination CloudWatchLogs`);
+   this creates and fills `aws/spans`.
+2. Grant the Agent Health profile read access:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [{
+    "Effect": "Allow",
+    "Action": ["logs:FilterLogEvents", "logs:StartQuery", "logs:GetQueryResults", "logs:DescribeLogGroups"],
+    "Resource": [
+      "arn:aws:logs:<region>:<account>:log-group:aws/spans:*",
+      "arn:aws:logs:<region>:<account>:log-group:/agent-health/*"
+    ]
+  }, {
+    "Effect": "Allow",
+    "Action": ["logs:DescribeLogGroups", "logs:StopQuery"],
+    "Resource": "*"
+  }]
+}
+```
+
+Settings → Observability shows the active CloudWatch backend (region, profile,
+log groups) read-only, with a Test Connection that verifies credentials, that
+`aws/spans` exists, and that at least one per-agent log group is present.
 
 ### Agent Endpoints (Optional)
 
