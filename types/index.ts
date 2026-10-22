@@ -2282,6 +2282,13 @@ export interface MetricsResult {
   partial?: boolean;
   /** See TraceMetrics.correlatedBy. */
   correlatedBy?: 'ids' | 'window' | 'mixed';
+  /**
+   * Set (with `status: 'error'`) when the trace-store query for this key
+   * FAILED — timeout, 5xx, rejected query. The key's spans are then UNKNOWN,
+   * not absent: `hasSpans` is left undefined so consumers render
+   * "unavailable" (and offer a retry) rather than "no spans".
+   */
+  error?: string;
 }
 
 // ============ Data Source Configuration Types ============
