@@ -25,6 +25,8 @@ import type {
   ImprovementStrategy,
   OpenSearchLog,
   ConnectorProtocol,
+  FailureStage,
+  AgentErrorInfo,
 } from '@/types';
 import { fetchChunked } from '@/lib/chunkedFetch';
 
@@ -58,6 +60,10 @@ interface TraceModeFields {
   lastTraceFetchAt?: string;
   traceError?: string;
   spans?: unknown[];
+  // Terminal-failure detail (failureStage / error / agentError).
+  error?: string;
+  failureStage?: FailureStage;
+  agentError?: AgentErrorInfo;
 }
 
 /**
@@ -99,6 +105,9 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     traceFetchAttempts?: number;
     lastTraceFetchAt?: string;
     traceError?: string;
+    error?: string;
+    failureStage?: FailureStage;
+    agentError?: AgentErrorInfo;
     spans?: unknown[];
     connectorProtocol?: string;
     judgeMode?: 'trajectory-only' | 'trace-tools';
@@ -197,6 +206,9 @@ function toTestCaseRun(stored: StorageRun): TestCaseRun {
     traceFetchAttempts: storedAny.traceFetchAttempts,
     lastTraceFetchAt: storedAny.lastTraceFetchAt,
     traceError: storedAny.traceError,
+    error: storedAny.error,
+    failureStage: storedAny.failureStage,
+    agentError: storedAny.agentError,
     judgeMode: storedAny.judgeMode,
     spans: storedAny.spans as any[] | undefined,
     connectorProtocol: storedAny.connectorProtocol as ConnectorProtocol | undefined,
@@ -257,6 +269,9 @@ function toStorageFormat(report: EvaluationReport): Omit<StorageRun, 'id' | 'cre
   if (report.traceFetchAttempts !== undefined) base.traceFetchAttempts = report.traceFetchAttempts;
   if (report.lastTraceFetchAt !== undefined) base.lastTraceFetchAt = report.lastTraceFetchAt;
   if (report.traceError !== undefined) base.traceError = report.traceError;
+  if (report.error !== undefined) base.error = report.error;
+  if (report.failureStage !== undefined) base.failureStage = report.failureStage;
+  if (report.agentError !== undefined) base.agentError = report.agentError;
   if ((report as any).judgeMode !== undefined) (base as any).judgeMode = (report as any).judgeMode;
   if (report.spans !== undefined) base.spans = report.spans;
   if (report.connectorProtocol !== undefined) base.connectorProtocol = report.connectorProtocol;
@@ -398,6 +413,8 @@ class AsyncRunStorage {
       'status', 'passFailStatus', 'metricsStatus', 'traceId', 'sessionId',
       'judgeModelId', 'judgeModel', 'judgeProvider', 'modelId', 'agentId', 'testCaseId', 'createdAt', 'annotations', 'metrics',
       'scoringSnapshot',
+      // Failure stage so list rows can badge AGENT ERROR without loading the full report.
+      'failureStage',
     ];
     // Chunk to keep the URL well under practical limits for large benchmarks.
     const stored = await fetchChunked(reportIds, REPORT_ID_CHUNK_SIZE, chunk => opensearchRuns.getByIds(chunk, { fields }));
@@ -476,6 +493,9 @@ class AsyncRunStorage {
     if (updates.traceFetchAttempts !== undefined) storageUpdates.traceFetchAttempts = updates.traceFetchAttempts;
     if (updates.lastTraceFetchAt !== undefined) storageUpdates.lastTraceFetchAt = updates.lastTraceFetchAt;
     if (updates.traceError !== undefined) storageUpdates.traceError = updates.traceError;
+    if (updates.error !== undefined) storageUpdates.error = updates.error;
+    if (updates.failureStage !== undefined) storageUpdates.failureStage = updates.failureStage;
+    if (updates.agentError !== undefined) storageUpdates.agentError = updates.agentError;
     if ((updates as any).judgeMode !== undefined) storageUpdates.judgeMode = (updates as any).judgeMode;
     if (updates.scoringSnapshot !== undefined) storageUpdates.scoringSnapshot = updates.scoringSnapshot;
     if (updates.judgeModel !== undefined) storageUpdates.judgeModel = updates.judgeModel;

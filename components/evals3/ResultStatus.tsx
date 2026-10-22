@@ -13,7 +13,7 @@
  */
 
 import React from 'react';
-import { CheckCircle2, XCircle, Loader2, Clock, AlertTriangle, Ban } from 'lucide-react';
+import { CheckCircle2, XCircle, Loader2, Clock, AlertTriangle, PlugZap, Ban } from 'lucide-react';
 import type { EvaluationReport } from '@/types';
 
 /**
@@ -33,6 +33,11 @@ export function getResultStatus(
 ): ResultStatus {
   if (runResult.status === 'running') return 'running';
   if (runResult.status === 'pending') return 'pending';
+  // Agent-request failure (timeout / connection / non-2xx): the runner persists
+  // status:'failed' + metricsStatus:'error' + failureStage:'agent'. It is
+  // `errored` (excluded from pass-rate) — the agent never answered, so it is
+  // NOT a failed verdict. The badge reads "AGENT ERROR" via `agentError` below.
+  if (report?.failureStage === 'agent') return 'errored';
   if (runResult.status === 'cancelled') return 'cancelled';
   if (runResult.status === 'failed') return 'failed';
 
@@ -56,14 +61,22 @@ export function getResultStatus(
   return 'pending';
 }
 
+/** True when an `errored` status is an agent-request failure (drives the AGENT ERROR badge). */
+export function isAgentError(status: ResultStatus, report: EvaluationReport | null | undefined): boolean {
+  return status === 'errored' && report?.failureStage === 'agent';
+}
+
 /**
  * Status icon component — consistent across all eval pages.
  */
-export function StatusIcon({ status, size = 14 }: { status: ResultStatus; size?: number }) {
+export function StatusIcon({ status, size = 14, agentError }: { status: ResultStatus; size?: number; agentError?: boolean }) {
   switch (status) {
     case 'passed': return <CheckCircle2 size={size} className="text-green-500" />;
     case 'failed': return <XCircle size={size} className="text-red-500" />;
-    case 'errored': return <AlertTriangle size={size} className="text-amber-500" />;
+    case 'errored':
+      return agentError
+        ? <PlugZap size={size} className="text-orange-500" data-testid="status-icon-agent-error" />
+        : <AlertTriangle size={size} className="text-amber-500" />;
     case 'cancelled': return <Ban size={size} className="text-muted-foreground" />;
     case 'running': return <Loader2 size={size} className="text-blue-500 animate-spin" />;
     case 'pending_traces': return <Loader2 size={size} className="text-amber-500 animate-spin" />;
@@ -73,9 +86,12 @@ export function StatusIcon({ status, size = 14 }: { status: ResultStatus; size?:
 }
 
 /**
- * Status label component — short text badge.
+ * Status label component — short text badge. Pass `agentError` (from
+ * {@link isAgentError}) to read "AGENT ERROR" instead of the generic
+ * "ERRORED" so users can tell "the agent never answered" from "the
+ * evaluator couldn't score it" at a glance.
  */
-export function StatusLabel({ status }: { status: ResultStatus }) {
+export function StatusLabel({ status, agentError }: { status: ResultStatus; agentError?: boolean }) {
   const config: Record<ResultStatus, { label: string; cls: string }> = {
     passed: { label: 'PASSED', cls: 'text-green-500' },
     failed: { label: 'FAILED', cls: 'text-red-500' },
@@ -86,14 +102,16 @@ export function StatusLabel({ status }: { status: ResultStatus }) {
     pending_judgment: { label: 'JUDGING', cls: 'text-purple-500' },
     pending: { label: 'PENDING', cls: 'text-muted-foreground' },
   };
-  const { label, cls } = config[status];
-  return <span className={`text-[10px] font-semibold ${cls}`}>{label}</span>;
+  const { label, cls } = status === 'errored' && agentError
+    ? { label: 'AGENT ERROR', cls: 'text-orange-500' }
+    : config[status];
+  return <span className={`text-[10px] font-semibold ${cls}`} data-testid="status-label">{label}</span>;
 }
 
 /**
  * Human-readable status description for detail panels.
  */
-export function getStatusDescription(status: ResultStatus): string {
+export function getStatusDescription(status: ResultStatus, agentError?: boolean): string {
   switch (status) {
     case 'running': return 'Running agent...';
     case 'pending_traces': return 'Agent done \u2014 waiting for traces...';
@@ -101,7 +119,7 @@ export function getStatusDescription(status: ResultStatus): string {
     case 'pending': return 'Pending';
     case 'passed': return 'Passed';
     case 'failed': return 'Failed';
-    case 'errored': return 'Evaluator could not run';
+    case 'errored': return agentError ? 'Agent request failed \u2014 not judged' : 'Evaluator could not run';
     case 'cancelled': return 'Not run \u2014 the run was cancelled before this case started';
   }
 }

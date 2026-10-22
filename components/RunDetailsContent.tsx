@@ -57,7 +57,8 @@ import { RunScore } from '@/components/RunScore';
 import { asyncRunStorage, asyncTestCaseStorage } from '@/services/storage';
 import { tracePollingManager } from '@/services/traces/tracePoller';
 import { ensureTracePollingForReport } from '@/services/traces/browserRecovery';
-import { getResultStatus as getSharedResultStatus, StatusIcon as SharedStatusIcon, StatusLabel as SharedStatusLabel } from '@/components/evals3/ResultStatus';
+import { getResultStatus as getSharedResultStatus, StatusIcon as SharedStatusIcon, StatusLabel as SharedStatusLabel, isAgentError } from '@/components/evals3/ResultStatus';
+import { AgentFailureCard } from '@/components/evals3/AgentFailureCard';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { Card, CardContent } from '@/components/ui/card';
@@ -521,8 +522,15 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
           </Card>
         )}
 
-        {/* Trace Mode: Error state */}
-        {!hideMetrics && liveReport.metricsStatus === 'error' && (
+        {/* Agent-request failure: the stage-aware card (cause / endpoint /
+            waited / HTTP status / connector) replaces the generic error
+            cards below for failureStage:'agent'. */}
+        {!hideMetrics && liveReport.failureStage === 'agent' && (
+          <AgentFailureCard report={liveReport} className="mt-4" />
+        )}
+
+        {/* Trace Mode: Error state (judge / trace stage) */}
+        {!hideMetrics && liveReport.metricsStatus === 'error' && liveReport.failureStage !== 'agent' && (
           <Card className="bg-red-50 dark:bg-red-500/10 border-red-300 dark:border-red-500/30 mt-4">
             <CardContent className="p-3 flex items-center gap-3">
               <AlertCircle className="text-red-700 dark:text-red-400" size={18} />
@@ -543,7 +551,7 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
         )}
 
         {/* Evaluation Error: Agent endpoint failed — hidden in inspector panel (status shown in compact bar) */}
-        {!hideMetrics && liveReport.status === 'failed' && getJudgeReasoningText(liveReport) && (
+        {!hideMetrics && liveReport.status === 'failed' && liveReport.failureStage !== 'agent' && getJudgeReasoningText(liveReport) && (
           <Card className="bg-red-500/10 border-red-500/30 mt-4">
             <CardContent className="p-3 flex items-start gap-3">
               <AlertCircle className="text-red-400 shrink-0 mt-0.5" size={18} />
@@ -590,8 +598,8 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
                   ? 'pending_judgment' : derivedStatus;
                 return (
                   <div className="flex items-center gap-1 text-xs font-semibold">
-                    <SharedStatusIcon status={finalStatus} size={12} />
-                    <SharedStatusLabel status={finalStatus} />
+                    <SharedStatusIcon status={finalStatus} size={12} agentError={isAgentError(finalStatus, liveReport)} />
+                    <SharedStatusLabel status={finalStatus} agentError={isAgentError(finalStatus, liveReport)} />
                   </div>
                 );
               })()}
@@ -870,6 +878,12 @@ export const RunDetailsContent: React.FC<RunDetailsContentProps> = ({
             instead of relying on a shared scroll container. */}
         <div className="flex-1 flex flex-col overflow-hidden min-h-0">
           <TabsContent value="trajectory" className="p-6 mt-0 overflow-y-auto">
+            {/* Agent-failure card FIRST in the inspector panel (hideMetrics
+                hides the header cards above): when the agent request failed
+                there is no trajectory to show and this tab was simply empty. */}
+            {hideMetrics && liveReport.failureStage === 'agent' && (
+              <AgentFailureCard report={liveReport} className="mb-4" />
+            )}
             {/* Header with Toggle */}
             <div className="flex items-center justify-between mb-4">
               <h3 className="text-lg font-semibold">Test Case Output</h3>

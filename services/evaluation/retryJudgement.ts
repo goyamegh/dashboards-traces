@@ -98,6 +98,9 @@ export function isJudgeFailedCase(
   result: RunResultLike | undefined
 ): boolean {
   if (!report || !result) return false;
+  // An agent-request failure has nothing to judge — never offer it for
+  // retry-judgement, regardless of what the rest of the report looks like.
+  if (report.failureStage === 'agent') return false;
   if (result.status !== 'completed') return false;
   const hasTrajectory = Array.isArray(report.trajectory) && report.trajectory.length > 0;
   if (!hasTrajectory) return false;
@@ -122,6 +125,7 @@ export function isJudgeFailedCase(
  */
 export function hasRejudgeableOutput(report: EvaluationReport | null | undefined): boolean {
   if (!report) return false;
+  if (report.failureStage === 'agent') return false;
   return Array.isArray(report.trajectory) && report.trajectory.length > 0;
 }
 

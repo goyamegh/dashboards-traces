@@ -29,6 +29,7 @@ import { resolveAgentModel } from '@/lib/resolveAgentModel';
 import { readEnv } from '@/lib/envCompat';
 import { buildJudgeAgentsHints, resolveJudgeRunId } from '@/services/traces/judgeAgentsHints';
 import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
+import { describeAgentError } from '@/services/evaluation/agentFailure';
 import { connectorRegistry } from '@/services/connectors/server';
 import { startTestCaseSpan, finalizeTestCaseSpan, addEvaluationResultEvents } from '@/lib/telemetry';
 import { ATTR_AGENT_HEALTH_AGENT_RUN_ID } from '@/lib/telemetry/constants';
@@ -636,7 +637,7 @@ export async function executeEvaluationRun(
               // 600000ms") on the report instead of a silent empty `failed`.
               Object.assign(
                 report,
-                buildEvaluatorErrorPatch('agent_failed', (evalError as any)?.message ?? String(evalError)),
+                buildEvaluatorErrorPatch('agent_failed', evalError, describeAgentError(evalError, { endpoint: agentConfig.endpoint })),
               );
               (report as any).skipJudge = true;
             } else {

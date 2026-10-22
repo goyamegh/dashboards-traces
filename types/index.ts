@@ -515,6 +515,38 @@ export interface ScoringSnapshot {
   unevaluable?: string[];
 }
 
+/**
+ * Which STAGE of a test-case run failed, set alongside `metricsStatus: 'error'`.
+ *  - `agent`: the agent request produced no output (HTTP timeout, connection
+ *    refused, non-2xx, subprocess crash). Nothing to judge — retry-judgement
+ *    must not offer it; re-run is the remedy.
+ *  - `judge`: the agent completed but the judge produced no verdict
+ *    (salvageable by retry-judgement).
+ *  - `trace`: the trace pipeline failed before judging.
+ */
+export type FailureStage = 'agent' | 'judge' | 'trace';
+
+/** Coarse classification of an agent-request failure (`TestCaseRun.agentError`). */
+export type AgentErrorKind = 'timeout' | 'connection' | `http_${number}` | 'unknown';
+
+/**
+ * Why the agent step failed, persisted on the report so the run-detail page
+ * can show the real cause (the unwrapped `error.cause` behind undici's opaque
+ * `fetch failed`, the endpoint, how long we waited) instead of an empty
+ * trajectory.
+ */
+export interface AgentErrorInfo {
+  kind: AgentErrorKind;
+  /** Unwrapped, human-readable cause (never the bare `fetch failed`). */
+  message: string;
+  /** Wall-clock ms from the start of the agent request to the failure. */
+  elapsedMs?: number;
+  /** Endpoint/command the connector was calling. */
+  endpoint?: string;
+  /** HTTP status, for `http_<status>` kinds. */
+  httpStatus?: number;
+}
+
 // TestCaseRun = result of running a specific test case version (renamed from EvaluationReport)
 export interface TestCaseRun {
   id: string;
@@ -632,6 +664,12 @@ export interface TestCaseRun {
   traceFetchAttempts?: number; // Number of polling attempts for traces
   lastTraceFetchAt?: string; // Timestamp of last trace fetch attempt
   traceError?: string; // Error message if trace fetch failed
+  /** One-line terminal cause (the REAL cause, not a downstream symptom). Set whenever `failureStage` is set. */
+  error?: string;
+  /** Which stage failed; see {@link FailureStage}. Unset for healthy runs. */
+  failureStage?: FailureStage;
+  /** Structured agent-request failure detail; set iff `failureStage === 'agent'`. */
+  agentError?: AgentErrorInfo;
   spans?: Span[]; // Fetched trace spans for debugging
   /**
    * Set exclusively by the agent (trace) judge provider (`judgeModelId:

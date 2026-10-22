@@ -239,6 +239,9 @@ export async function saveReportWithClient(
   if (report.traceFetchAttempts !== undefined) storageData.traceFetchAttempts = report.traceFetchAttempts;
   if (report.lastTraceFetchAt !== undefined) storageData.lastTraceFetchAt = report.lastTraceFetchAt;
   if (report.traceError !== undefined) storageData.traceError = report.traceError;
+  if (report.error !== undefined) storageData.error = report.error;
+  if (report.failureStage !== undefined) storageData.failureStage = report.failureStage;
+  if (report.agentError !== undefined) storageData.agentError = report.agentError;
   if (report.spans !== undefined) storageData.spans = report.spans;
   if (report.connectorProtocol !== undefined) storageData.connectorProtocol = report.connectorProtocol;
   if (report.scoringSnapshot !== undefined) storageData.scoringSnapshot = report.scoringSnapshot;

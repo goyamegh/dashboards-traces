@@ -289,6 +289,11 @@ export function getIndexMappings(): IndexMappings {
           traceFetchAttempts: { type: 'integer' },
           lastTraceFetchAt: { type: 'date' },
           traceError: { type: 'text' },
+          // Terminal-failure detail: `failureStage` is a keyword so list views
+          // can filter "agent errors"; `agentError` is stored but not indexed.
+          error: { type: 'text' },
+          failureStage: { type: 'keyword' },
+          agentError: { type: 'object', enabled: false },
           // Frozen scoring provenance (types/index.ts ScoringSnapshot). The
           // identity fields are keyword-typed so the compare page / audits
           // can filter by evaluator or content hash; `weights` / `scale` are

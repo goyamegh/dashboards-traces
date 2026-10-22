@@ -20,6 +20,7 @@ import type { MatcherResult } from '@/lib/matchers/types';
 import type { TracesAccessor } from '@/lib/matchers/traces';
 import { buildJudgeAgentsHints } from '@/services/traces/judgeAgentsHints';
 import { buildEvaluatorErrorPatch } from '@/services/evaluation/evaluatorError';
+import { describeAgentError } from '@/services/evaluation/agentFailure';
 
 // Re-export for use by experimentRunner when calling judge after trace polling
 export { callBedrockJudge };
@@ -748,7 +749,14 @@ export async function runEvaluationWithConnector(
       },
     };
   } catch (error) {
-    console.error('[Eval] Error:', error instanceof Error ? error.message : error);
+    // The AGENT step failed (connector threw: undici `fetch failed` /
+    // HeadersTimeoutError, ECONNREFUSED, non-2xx, subprocess crash). Persist
+    // the REAL cause (unwrapped `error.cause`) and stamp `failureStage:
+    // 'agent'` + `metricsStatus: 'error'` so the report is terminal from the
+    // outset: the runner's trace-poll/judge gate (`metricsStatus === 'pending'`)
+    // can no longer fire on an empty trajectory, and retry-judgement skips it.
+    const agentError = describeAgentError(error, { endpoint: agent.endpoint, elapsedMs: Date.now() - evalStartTime });
+    console.error(`[Eval] Agent request failed (${agentError.kind}) for agent "${agent.key}": ${agentError.message}`);
 
     // Enhanced debug logging for connection failures
     if (error instanceof Error) {
@@ -789,17 +797,13 @@ export async function runEvaluationWithConnector(
       testCaseVersion: testCase.currentVersion ?? 1,
       status: 'failed',
       trajectory: fullTrajectory,
-      metrics: {
-        accuracy: 0,
-        faithfulness: 0,
-        latency_score: 0,
-        trajectory_alignment_score: 0,
-      },
-      llmJudgeReasoning: `Evaluation failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
+      ...buildEvaluatorErrorPatch('agent_failed', error, agentError),
       improvementStrategies: [],
       rawEvents,
       connectorProtocol: connectorType,
-    };
+      skipJudge: true,
+      performanceMetrics: { durationMs: Date.now() - evalStartTime, agentDurationMs: agentError.elapsedMs },
+    } as EvaluationReport;
   }
 }
 

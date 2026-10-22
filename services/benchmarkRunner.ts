@@ -32,6 +32,7 @@ import {
   appendNotReachedMarker,
 } from './evaluation';
 import { buildEvaluatorErrorPatch } from './evaluation/evaluatorError';
+import { describeAgentError } from './evaluation/agentFailure';
 import { connectorRegistry } from '@/services/connectors/server';
 import { readEnv } from '@/lib/envCompat';
 import { buildJudgeAgentsHints, resolveJudgeRunId } from '@/services/traces/judgeAgentsHints';
@@ -559,7 +560,7 @@ export async function executeRun(
               // the underlying message instead of a silent empty `failed`.
               Object.assign(
                 report,
-                buildEvaluatorErrorPatch('agent_failed', (evalError as any)?.message ?? String(evalError)),
+                buildEvaluatorErrorPatch('agent_failed', evalError, describeAgentError(evalError, { endpoint: agentConfig.endpoint })),
               );
               (report as any).skipJudge = true;
             } else {
@@ -915,6 +916,9 @@ async function saveReportWithModule(storage: IStorageModule, report: any): Promi
     traceFetchAttempts: report.traceFetchAttempts,
     lastTraceFetchAt: report.lastTraceFetchAt,
     traceError: report.traceError,
+    error: report.error,
+    failureStage: report.failureStage,
+    agentError: report.agentError,
     spans: report.spans,
     connectorProtocol: report.connectorProtocol,
     // Set only by the agent (trace) judge provider -- see
@@ -1045,6 +1049,11 @@ export async function runSingleUseCase(
       traceFetchAttempts: report.traceFetchAttempts,
       lastTraceFetchAt: report.lastTraceFetchAt,
       traceError: report.traceError,
+      // Failure detail — the placeholder-update path hand-copies fields, so
+      // without these the real agent cause the runner recorded was dropped.
+      error: report.error,
+      failureStage: report.failureStage,
+      agentError: report.agentError,
       spans: report.spans,
       connectorProtocol: report.connectorProtocol,
       // Set only by the agent (trace) judge provider -- see
